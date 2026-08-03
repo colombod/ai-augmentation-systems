@@ -55,6 +55,15 @@ Then, and this is the output that feeds staging, produce **per-step value data**
 
 ## Write
 
+Every simulation file opens with this banner, verbatim — it is reproduced here because
+the template may not be readable:
+
+```markdown
+> ⚠ **SIMULATED OUTPUT — hypotheses about where friction lives, not usability findings.**
+> Personas walked: <list, with grounding grades>. Nobody was observed.
+> Never turn a simulated abandonment count into a number in a business case.
+```
+
 Write to `docs/product/simulations/<journey-slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/simulation.md`, with the synthetic label at the top. Note which basis you walked — real product, specified flow, or proposed flow.
 
 ## Exit criteria
@@ -70,12 +79,22 @@ Write to `docs/product/simulations/<journey-slug>.md` using `${CLAUDE_PLUGIN_ROO
 
 ## Writing
 
-Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
-template header. An artifact nobody finishes has failed, however correct it is.
+**Budget: 900 words target, 1500 hard cap, for the document.** Excludes code, YAML and data
+tables. Count before finishing; do not estimate.
 
-Cut restatement, process narration and hedging before anything else. Never cut findings,
-citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
-without losing those, go over the cap and say so in the document, with the reason.
+These numbers are stated here, not only in the template, because the template file may not
+be readable from the working directory this runs in — a rule that lives only in a file the
+model cannot open is not a rule.
+
+Over the cap, cut in this order: preamble and recap, restatement (each fact appears once,
+in the form that carries it best), process narration, hedging, redundant citations,
+examples past the first. **Never cut** findings and their failure scenarios, one citation
+per claim, grounding and confidence labels, synthetic-output warnings, open questions, or
+IDs a later phase reads. If it will not fit without losing those, keep them, go over, and
+**write the overrun and its reason into the document.**
+
+The full standard is at `templates/writing-standard.md` in the plugin, where readable.
+
 
 ## Hand off
 

@@ -82,6 +82,22 @@ Mixed grading within one persona is normal and expected. An `assumed` persona is
 
 One file per persona at `docs/product/personas/<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/persona.md`, plus an index at `docs/product/personas/README.md` listing each with its ID and grounding grade.
 
+Write this frontmatter literally — reproduced here because the template may not be
+readable from the working directory:
+
+```yaml
+---
+id: P-<n>              # stable, never reused; a retired P-2 stays P-2
+slug: <kebab-case>
+name: <persona name>
+grounding: observed | reported | assumed
+segment: <behavioural segment, not demographic>
+status: active | retired
+introduced: <date or the feature that first needed this persona>
+source: derived | seeded-from:<project> | refined:<date>
+---
+```
+
 **The frontmatter fields are mandatory and machine-readable** — `id`, `grounding`, `status`,
 `source`. `/delivery:status` reports the grounding mix from them and `/delivery:prioritize`
 checks per-stage persona coverage by them. Writing the grade only in the body, however
@@ -104,12 +120,22 @@ IDs are stable and never reused. A retired `P-2` stays `P-2`.
 
 ## Writing
 
-Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
-template header. An artifact nobody finishes has failed, however correct it is.
+**Budget: 400 words target, 600 hard cap, for each persona file.** Excludes code, YAML and data
+tables. Count before finishing; do not estimate.
 
-Cut restatement, process narration and hedging before anything else. Never cut findings,
-citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
-without losing those, go over the cap and say so in the document, with the reason.
+These numbers are stated here, not only in the template, because the template file may not
+be readable from the working directory this runs in — a rule that lives only in a file the
+model cannot open is not a rule.
+
+Over the cap, cut in this order: preamble and recap, restatement (each fact appears once,
+in the form that carries it best), process narration, hedging, redundant citations,
+examples past the first. **Never cut** findings and their failure scenarios, one citation
+per claim, grounding and confidence labels, synthetic-output warnings, open questions, or
+IDs a later phase reads. If it will not fit without losing those, keep them, go over, and
+**write the overrun and its reason into the document.**
+
+The full standard is at `templates/writing-standard.md` in the plugin, where readable.
+
 
 ## Hand off
 

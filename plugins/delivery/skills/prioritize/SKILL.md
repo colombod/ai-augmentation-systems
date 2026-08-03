@@ -14,6 +14,17 @@ Read the PRD. If it is missing, stop — you cannot prioritise requirements that
 
 Read the simulation and interview outputs if they exist. If they do not, warn clearly: **prioritisation without persona data is prioritisation by opinion.** It is a legitimate choice, but the resulting stages rest on the team's beliefs about value rather than on any model of user behavior, and the document must say so. Offer to run `/delivery:simulate` first.
 
+
+**Open blocking findings.** Read `docs/product/reviews/`. If any finding against an artifact
+this phase consumes has status `open` and severity `blocking`, **stop and report them** — do
+not proceed. A blocking finding is one a reviewer said must be resolved before this point;
+building on it means every downstream artifact inherits a known, documented defect with no
+resolution on record.
+
+Resolving means the finding is marked `fixed`, or `rejected` with the reason recorded. The
+user may still choose to proceed over an open finding — that is their call, not a default.
+Ask, and record what they chose.
+
 ## Run
 
 **1. Establish the staging rule.** A stage is not a batch of features. A stage is a set of features that lets **at least one persona complete a journey end to end and get value**. A stage that serves nobody completely is a milestone in the project plan, not a release — and calling it an MVP is how teams ship something no one can use.
@@ -66,12 +77,22 @@ Where scores rest on `assumed`-grade personas, mark them. A prioritisation built
 
 ## Writing
 
-Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
-template header. An artifact nobody finishes has failed, however correct it is.
+**Budget: 700 words target, 1100 hard cap, for the document.** Excludes code, YAML and data
+tables. Count before finishing; do not estimate.
 
-Cut restatement, process narration and hedging before anything else. Never cut findings,
-citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
-without losing those, go over the cap and say so in the document, with the reason.
+These numbers are stated here, not only in the template, because the template file may not
+be readable from the working directory this runs in — a rule that lives only in a file the
+model cannot open is not a rule.
+
+Over the cap, cut in this order: preamble and recap, restatement (each fact appears once,
+in the form that carries it best), process narration, hedging, redundant citations,
+examples past the first. **Never cut** findings and their failure scenarios, one citation
+per claim, grounding and confidence labels, synthetic-output warnings, open questions, or
+IDs a later phase reads. If it will not fit without losing those, keep them, go over, and
+**write the overrun and its reason into the document.**
+
+The full standard is at `templates/writing-standard.md` in the plugin, where readable.
+
 
 ## Hand off
 

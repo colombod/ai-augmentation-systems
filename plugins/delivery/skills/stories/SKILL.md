@@ -18,6 +18,17 @@ Read all three inputs and list any existing stories in `docs/product/stories/`.
 
 Resolve the target phase from `$ARGUMENTS`, or take the first phase in the roadmap with no stories yet. State which phase you are decomposing before you start.
 
+
+**Open blocking findings.** Read `docs/product/reviews/`. If any finding against an artifact
+this phase consumes has status `open` and severity `blocking`, **stop and report them** — do
+not proceed. A blocking finding is one a reviewer said must be resolved before this point;
+building on it means every downstream artifact inherits a known, documented defect with no
+resolution on record.
+
+Resolving means the finding is marked `fixed`, or `rejected` with the reason recorded. The
+user may still choose to proceed over an open finding — that is their call, not a default.
+Ask, and record what they chose.
+
 ## Run
 
 **1. Delivery Lead writes the stories.** Delegate to `delivery:delivery-lead` (via the Agent tool; if subagents are unavailable, read `${CLAUDE_PLUGIN_ROOT}/agents/delivery-lead.md` and adopt the persona).
@@ -48,12 +59,22 @@ Each story carries: user-facing goal, real verified file paths, the interfaces a
 
 ## Writing
 
-Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
-template header. An artifact nobody finishes has failed, however correct it is.
+**Budget: 700 words target, 1200 hard cap, for each story file.** Excludes code, YAML and data
+tables. Count before finishing; do not estimate.
 
-Cut restatement, process narration and hedging before anything else. Never cut findings,
-citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
-without losing those, go over the cap and say so in the document, with the reason.
+These numbers are stated here, not only in the template, because the template file may not
+be readable from the working directory this runs in — a rule that lives only in a file the
+model cannot open is not a rule.
+
+Over the cap, cut in this order: preamble and recap, restatement (each fact appears once,
+in the form that carries it best), process narration, hedging, redundant citations,
+examples past the first. **Never cut** findings and their failure scenarios, one citation
+per claim, grounding and confidence labels, synthetic-output warnings, open questions, or
+IDs a later phase reads. If it will not fit without losing those, keep them, go over, and
+**write the overrun and its reason into the document.**
+
+The full standard is at `templates/writing-standard.md` in the plugin, where readable.
+
 
 ## Hand off
 
