@@ -4,8 +4,8 @@
     "name": "Diego Colombo",
     "url": "https://github.com/colombod"
   },
-  "version": "0.8.0",
-  "description": "Private marketplace of AI augmentation systems: role-persona agents and phase-gated workflows that carry work from feature idea to delivered code.",
+  "version": "1.0.0",
+  "description": "Private marketplace of AI augmentation systems. Each plugin is self-contained under plugins/<name>/ and versioned independently of this registry.",
   "plugins": [
     {
       "name": "delivery",

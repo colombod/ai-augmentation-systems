@@ -48,6 +48,18 @@ plugins/<name>/
   templates/                      artifact templates
 ```
 
+## Versioning
+
+The marketplace and its plugins version **independently**.
+
+- `.claude-plugin/marketplace.json` → `version` describes the **registry** — bump when the
+  set of plugins or the registry's own shape changes, not when a plugin changes.
+- `plugins/<name>/.claude-plugin/plugin.json` → `version` describes **that plugin**. This is
+  the one that decides whether installed copies pick up your changes.
+- The `version` mirrored in the registry's `plugins[]` entry should match the plugin's own.
+
+Bumping both in lockstep works with one plugin and stops meaning anything with two.
+
 ## Adding a plugin
 
 1. Create `plugins/<name>/` with a `.claude-plugin/plugin.json` manifest.
