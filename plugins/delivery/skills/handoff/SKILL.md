@@ -41,17 +41,39 @@ it and nothing else. **This is the whole job of Mode A** — the goal is not to 
 the pipeline, it is to be sufficient input.
 
 **Write** `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` — the path its
-`writing-plans` skill looks for. Synthesize it from the pipeline's artifacts:
+`writing-plans` skill looks for.
+
+**Match the section set `brainstorming` produces**, since that is what `writing-plans` is
+built to read. Its five are **Architecture, Components, Data flow, Error handling,
+Testing**. Emit those names, then add ours. Scale each to complexity — brief where the
+answer is obvious, up to ~300 words where it is nuanced.
 
 | Spec section | Sourced from |
 | :-- | :-- |
+| **Architecture** | `architecture.md` — structure and boundaries |
+| **Components** | `architecture.md` — each unit and its purpose |
+| **Data flow** | `architecture.md` interfaces and contracts — how information moves |
+| **Error handling** | `prd.md` error and edge paths — failure modes and recovery |
+| **Testing** | acceptance criteria + the exact test command |
 | Problem and users | `brief.md`, `personas/` |
 | Requirements | `prd.md` — keep the `FR-n`/`NFR-n` IDs |
 | Scope boundary | `prioritization.md` — this stage only, plus what is excluded |
 | Design constraints | `design-system.md` — token names, required states, a11y rules |
-| Technical approach | `architecture.md` — components, interfaces, ADR outcomes |
-| Verification | acceptance criteria and the exact test command |
+| Global constraints | version floors, **dependency limits**, naming and copy rules, platform requirements |
 | Known risks | open findings in `reviews/`, un-run spikes |
+
+Two rules from `writing-plans` that our artifacts violate by default:
+
+**Write for someone who knows nothing about this domain.** It assumes the engineer is
+"a skilled developer, but knows almost nothing about our toolset or problem domain."
+Every artifact upstream of here was written for people who sat through the planning, so
+it leans on domain vocabulary freely. Define the terms in the spec. A word the PRD uses
+without explanation is a word the plan will guess at.
+
+**Split independent subsystems into separate specs.** `writing-plans` asks for a spec
+"broken into sub-project specs" when the work spans multiple independent subsystems. An
+MVP stage often does. If yours does, emit one spec per subsystem and say which is which —
+handing over one spec spanning three subsystems produces a plan with muddled boundaries.
 
 #### The sufficiency gate
 
@@ -75,6 +97,8 @@ scope**. This pipeline already produces all of it — the check is that it actua
 | **Expected output** per verification step | acceptance criteria, test names | write a step nobody can check |
 | Falsifiable acceptance criteria with `FR-n` | `prd.md` via the story | verify against its own interpretation |
 | Explicit out-of-scope | story out-of-scope notes | helpfully add adjacent work |
+| Domain terms defined | you, from the brief | guess at vocabulary it has never seen |
+| Subsystem split, if the stage spans several | `architecture.md` boundaries | produce one plan with muddled boundaries |
 
 **If any row is missing, stop and fix it upstream** — in `/delivery:stories` or
 `/delivery:architecture` — rather than handing over a spec with a hole in it. A gap here
@@ -103,7 +127,8 @@ Emit the execution plan directly and skip superpowers' planning step.
 - **Header**: feature name, note for agentic workers, goal, architecture, tech stack, global constraints
 - **Per task**: `## Task N: [Component Name]`, then `Files:` (create / modify / test) and `Interfaces:` (consumes / produces)
 - **Steps**: `- [ ] **Step N:** …` containing real code, real commands, and expected output
-- **No placeholders.** `TBD` and `TODO` are forbidden by the format
+- **No placeholders**, and the ban is broader than `TBD`/`TODO`. Also forbidden: "add appropriate error handling" without specifics, "similar to Task N" instead of repeating the code, steps that describe without showing code, and references to types or functions no task defines.
+- **Type and name consistency across tasks** is checked: `clearLayers()` in task 3 and `clearFullLayers()` in task 7 is treated as a bug.
 
 **The granularity gap you must close.** Our stories are vertical slices sized for one
 focused sitting. Superpowers tasks are 2–5 minutes with complete code inline. So this mode
