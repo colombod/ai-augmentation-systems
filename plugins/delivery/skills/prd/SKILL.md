@@ -65,23 +65,40 @@ their world. A question for the business owner written in engineering terms is a
 with a name on it, not a question. If a question is really an engineering call, decide it
 here rather than routing it to them.
 
-## Writing
+## Writing, then revising
 
-**Budget: 1000 words target, 1600 hard cap, for the document.** Excludes code, YAML and data
-tables. Count before finishing; do not estimate.
+**Budget: 1000 words target, 1600 hard cap** (excludes code, YAML and data tables).
 
-These numbers are stated here, not only in the template, because the template file may not
-be readable from the working directory this runs in — a rule that lives only in a file the
-model cannot open is not a rule.
+**Compose first. Do not try to hit the budget while writing.** Restraint during
+composition trades substance for brevity in the wrong order — the findings get thinner
+while the scaffolding survives. Write what the artifact needs, then cut what it does not.
 
-Over the cap, cut in this order: preamble and recap, restatement (each fact appears once,
-in the form that carries it best), process narration, hedging, redundant citations,
-examples past the first. **Never cut** findings and their failure scenarios, one citation
-per claim, grounding and confidence labels, synthetic-output warnings, open questions, or
-IDs a later phase reads. If it will not fit without losing those, keep them, go over, and
-**write the overrun and its reason into the document.**
+**Then measure, do not estimate.** After writing the file, actually run:
 
-The full standard is at `templates/writing-standard.md` in the plugin, where readable.
+```bash
+wc -w <the file you just wrote>
+```
+
+An estimate is always wrong and always low. If you did not run the command, you do not
+know the count.
+
+**If the count exceeds 1600, you are not finished.** Make a revision pass over the file and
+delete, in this order, until it fits:
+
+1. Preamble, recap, and any sentence describing what the document is about to say
+2. **Restatement** — the same fact as prose *and* a table row *and* a summary bullet. Keep the form that carries it best; delete the others. This is almost always the biggest win.
+3. Process narration — "I examined X and found Y" becomes Y
+4. Hedging — either you know it, or it is labelled an assumption. Both are shorter.
+5. Citations past the first for a given claim
+6. Examples past the first, unless the next one shows a *different* failure mode
+
+Then re-run `wc -w` and confirm.
+
+**Never delete** findings and their failure scenarios, one citation per claim, grounding
+and confidence labels, synthetic-output warnings, open questions, or IDs a later phase
+reads. If the artifact cannot fit without losing those, keep them, exceed the cap, and
+**write the final count and the reason into the document**. A declared overrun is a
+judgement. A silent one is a habit.
 
 
 ## Hand off
