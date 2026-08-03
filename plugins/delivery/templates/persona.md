@@ -1,9 +1,19 @@
 ---
+id: P-<n>
 slug: <kebab-case>
 name: <persona name>
 grounding: observed | reported | assumed
 segment: <behavioral segment, not demographic>
+status: active | retired
+introduced: <date or feature that first needed this persona>
+source: derived | seeded-from:<project> | refined:<date>
 ---
+
+> **These frontmatter fields are required, machine-readable, and not optional prose.**
+> `/delivery:status` reports the grounding mix and `/delivery:prioritize` checks per-stage
+> persona coverage by reading them. Stating the grade only in the body — however
+> prominently — silently breaks both. Put it in the frontmatter *and* explain it in the
+> body; the two serve different readers.
 
 # <Persona name>
 
