@@ -59,13 +59,31 @@ Ask, and record what they chose.
 
 ## Run
 
-**1. Delivery Lead writes the stories.** Delegate to `delivery:delivery-lead` (via the Agent tool; if subagents are unavailable, read `${CLAUDE_PLUGIN_ROOT}/agents/delivery-lead.md` and adopt the persona).
+**0. Decompose first, then write in parallel — do not write them one at a time.**
+
+Deciding *what the stories are* is one judgement over the whole phase and must happen once,
+in sequence: the slice boundaries, the dependency order, what each story owns. That is fast.
+
+**Writing** them is not one judgement — it is N independent ones. Each story is
+self-contained by construction, so nothing in story 7 depends on the prose of story 3.
+Dispatch the writing as a **single parallel batch, one agent per story**, passing each the
+decomposition, its own slice, and the shared context it needs.
+
+Writing fifteen stories sequentially takes fifteen times as long as writing one and buys
+nothing. This is the same fan-out already used by `/delivery:simulate` and
+`/delivery:challenge`, and for the same reason.
+
+Then reconcile centrally: interfaces named in one story must match the others, dependency
+IDs must resolve, and no two stories may claim the same file for the same change. That
+check is cheap and it is the only part that genuinely needs the whole set in hand.
+
+**1. Delivery Lead decides the decomposition.** Delegate to `delivery:delivery-lead` (via the Agent tool; if subagents are unavailable, read `${CLAUDE_PLUGIN_ROOT}/agents/delivery-lead.md` and adopt the persona).
 
 The governing rule: **the story file is the complete context.** Someone opening one story file — a teammate who missed the planning, or an agent with no memory of it — must have everything needed to finish it. Extract the relevant slices of the PRD and architecture *into* the story. Do not link out. A story requiring three other documents to be read has failed at its one job.
 
 Each story carries: user-facing goal, real verified file paths, the interfaces and contracts it must honor, the architecture decisions that apply and why, acceptance criteria traced to `FR-n`, the test approach with the actual command to run tests in this repo, dependencies on other stories, and explicit out-of-scope notes.
 
-**2. Carry the design system into every UI story.** Where `design-system.md` exists, each story touching UI names the **tokens by their real project name**, the component states it must implement (including error and empty), and the accessibility rules that apply. An implementer who cannot find the token reaches for a raw value, and the design system erodes one commit at a time — naming them in the story is what prevents that.
+**2. Each writer carries the design system into its UI story.** Where `design-system.md` exists, each story touching UI names the **tokens by their real project name**, the component states it must implement (including error and empty), and the accessibility rules that apply. An implementer who cannot find the token reaches for a raw value, and the design system erodes one commit at a time — naming them in the story is what prevents that.
 
 **3. Verify the file paths exist.** The Delivery Lead cites paths; you check them against the repo. A story pointing at a file that does not exist sends the implementer looking for something imaginary.
 
