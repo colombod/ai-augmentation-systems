@@ -36,7 +36,9 @@ matters**, so decide deliberately:
 
 ### Mode A — spec handoff (recommended)
 
-Emit the design spec; let superpowers write its own execution plan.
+Emit a spec rich enough that `writing-plans` can produce a complete execution plan from
+it and nothing else. **This is the whole job of Mode A** — the goal is not to summarize
+the pipeline, it is to be sufficient input.
 
 **Write** `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` — the path its
 `writing-plans` skill looks for. Synthesize it from the pipeline's artifacts:
@@ -51,7 +53,38 @@ Emit the design spec; let superpowers write its own execution plan.
 | Verification | acceptance criteria and the exact test command |
 | Known risks | open findings in `reviews/`, un-run spikes |
 
-Then tell the user to run superpowers' `writing-plans` against it, followed by
+#### The sufficiency gate
+
+`writing-plans` must emit tasks of 2–5 minutes containing **real file paths, real
+interfaces, actual code and expected command output**, and its format **forbids `TBD` and
+`TODO`**. That ban is the danger: faced with a gap, it cannot leave a placeholder and it
+cannot ask you — so it invents, confidently, and the invention reaches
+`subagent-driven-development` as if it were a decision somebody made.
+
+So before writing the spec, verify every one of these is present for **every story in
+scope**. This pipeline already produces all of it — the check is that it actually did.
+
+| `writing-plans` needs | Comes from | Missing means it will… |
+| :-- | :-- | :-- |
+| Goal — user-facing outcome | story goal | invent a rationale, then optimise for it |
+| **Exact file paths**, create / modify / test | story file table, verified against the repo | guess a project layout |
+| **Interfaces** — real signatures, schemas, shapes | story contracts, `architecture.md` | design an API on the spot |
+| Tech stack and versions | `package.json` / project manifest, `architecture.md` | assume idioms from a different stack |
+| **Actual commands** — build, test, dev | story test approach, project scripts | invent a command that does not exist |
+| Global constraints and conventions | `AGENTS.md`/`CLAUDE.md`, `design-system.md` | write code that fails review on style |
+| **Expected output** per verification step | acceptance criteria, test names | write a step nobody can check |
+| Falsifiable acceptance criteria with `FR-n` | `prd.md` via the story | verify against its own interpretation |
+| Explicit out-of-scope | story out-of-scope notes | helpfully add adjacent work |
+
+**If any row is missing, stop and fix it upstream** — in `/delivery:stories` or
+`/delivery:architecture` — rather than handing over a spec with a hole in it. A gap here
+is cheap to close; the same gap discovered inside a subagent-driven run is not, and it
+arrives disguised as a confident decision.
+
+Record the ID mapping — `FR-n` → the spec section that carries it — so
+`/delivery:sprint-review` can trace superpowers' task results back to requirements.
+
+Then tell the user to run superpowers' `writing-plans` against the spec, followed by
 `subagent-driven-development`.
 
 **Why this is the default:** superpowers' plan format is tuned to its own executor —
