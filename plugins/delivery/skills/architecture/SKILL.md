@@ -6,7 +6,7 @@ description: Turn an approved PRD into a technical design grounded in the actual
 
 Focus note from user: **$ARGUMENTS**
 
-Phase 3 of 5. Input: `docs/product/prd.md`. Output: `docs/product/architecture.md` and ADRs in `docs/product/decisions/`.
+Phase 8 of the pipeline. Inputs: `docs/product/prd.md`, plus `prioritization.md` and `design-system.md` where they exist. Output: `docs/product/architecture.md` and ADRs in `docs/product/decisions/`.
 
 ## Gate check
 

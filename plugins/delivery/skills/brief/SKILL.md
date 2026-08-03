@@ -6,7 +6,7 @@ description: Run discovery on a feature idea and produce a product brief. Use at
 
 Feature idea: **$ARGUMENTS**
 
-Phase 1 of 5 in the delivery pipeline. Output: `docs/product/brief.md`.
+Phase 1 of the pipeline. Output: `docs/product/brief.md`.
 
 ## Gate check
 
@@ -35,4 +35,4 @@ Do not report this phase complete unless the brief has:
 
 ## Hand off
 
-Report which exit criteria are met and which are not. If open questions are blocking, say what is blocked. Then tell the user the next step is `/delivery:prd`.
+Report which exit criteria are met and which are not. If open questions are blocking, say what is blocked. Then tell the user the next step is `/delivery:research`.

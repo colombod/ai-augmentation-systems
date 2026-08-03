@@ -6,7 +6,7 @@ description: Turn a product brief into a full PRD with user scenarios, acceptanc
 
 Scope note from user: **$ARGUMENTS**
 
-Phase 2 of 5. Input: `docs/product/brief.md`. Output: `docs/product/prd.md`.
+Phase 5 of the pipeline. Inputs: `docs/product/brief.md`, plus `research.md`, `personas/`, `interviews/` and `simulations/` where they exist. Output: `docs/product/prd.md`.
 
 ## Gate check
 

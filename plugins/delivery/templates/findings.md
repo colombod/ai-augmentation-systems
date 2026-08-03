@@ -1,0 +1,51 @@
+# Challenge findings: <artifact>
+
+> Adversarial review. Read-only — findings are recorded here, not applied.
+> Panel: <reviewers> · Reviewed: <date> · Artifact version: <git sha or date>
+>
+> A finding leaves this list by being **fixed** or **rejected with a stated reason**.
+> Never by being ignored. `/delivery:status` reports anything still `open`.
+
+## Summary
+
+| Blocking | Significant | Minor | Dropped as preference |
+| :-- | :-- | :-- | :-- |
+
+**Independent convergence:** findings raised by more than one reviewer who could not
+see each other's output. This is the strongest signal available here.
+
+**Reviewer quality note:** any reviewer that returned only praise or only style notes
+did not do its job — record that rather than padding its output into the list.
+
+## Findings
+
+### R-<artifact>-1 — <short claim>
+
+**Status:** open | fixed | rejected
+**Severity:** blocking | significant | minor
+**Raised by:** <reviewer(s)> — independently: yes / no
+
+**The claim or omission:**
+
+**Concrete failure scenario:** specific inputs or circumstances → what goes wrong.
+A finding without one is a preference, not a finding.
+
+**What would resolve it:**
+
+**Resolution:** *(filled in when status changes)*
+- If **fixed**: what changed, and where.
+- If **rejected**: the stated reason. This is the valuable part — it is the
+  assumption you will want to revisit when something goes wrong.
+
+---
+
+### R-<artifact>-2 — <short claim>
+
+...
+
+## Assumptions worth watching
+
+Where the artifact is sound but rests on something unverified. Not findings — but
+the things to check first if it later goes wrong.
+
+- 

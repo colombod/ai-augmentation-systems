@@ -1,7 +1,7 @@
 {
   "name": "delivery",
-  "description": "Role personas (Product Owner, Program Manager, Business Analyst, Solution Architect, Delivery Lead, QA Strategist) and a phase-gated pipeline that turns a feature idea into a PRD, architecture, delivery roadmap and implementation-ready stories.",
-  "version": "0.1.0",
+  "description": "You supply intent and a design seed; the plugin runs the rest \u2014 research, evidence-graded end-user personas, simulated interviews and journey walks, PRD, MVP staging, design system, architecture, roadmap, stories, automated sprints, and independent sprint acceptance review. Adversarial review is a tracked mechanism at every gate.",
+  "version": "0.2.0",
   "author": {
     "name": "Diego Colombo",
     "url": "https://github.com/colombod"
@@ -15,6 +15,10 @@
     "planning",
     "personas",
     "sdlc",
-    "delivery"
+    "delivery",
+    "design-system",
+    "sprint",
+    "user-research",
+    "adversarial-review"
   ]
 }

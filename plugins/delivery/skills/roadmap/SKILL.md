@@ -6,7 +6,7 @@ description: Build a phased delivery roadmap with sequencing, dependencies, crit
 
 Constraints from user (deadlines, team size, fixed dates): **$ARGUMENTS**
 
-Phase 4 of 5. Inputs: `docs/product/prd.md`, `docs/product/architecture.md`. Output: `docs/product/roadmap.md`.
+Phase 9 of the pipeline. Inputs: `docs/product/prd.md`, `docs/product/architecture.md`, `docs/product/prioritization.md`. Output: `docs/product/roadmap.md`.
 
 ## Gate check
 
@@ -28,11 +28,17 @@ Ask the user for any constraints not given in `$ARGUMENTS`: team size and compos
 - **Risks** with mitigations and owners
 - **Cut list per phase** — what gets dropped first if the phase runs late, decided now rather than under pressure
 
-**2. QA Strategist places the verification.** Delegate to `delivery:qa-strategist` to map risk-based coverage onto the phases, so testing is continuous rather than a final phase.
+**2. Reconcile value against real cost — the second prioritisation pass.** `prioritization.md` ranked requirements on value with pre-architecture effort guesses. Now the architecture has revealed what things actually cost, so re-check the staging against real numbers.
 
-**3. Critic checks the plan holds.** Delegate to `delivery:feature-critic` (read-only) specifically to check: do parallel tracks secretly share a person or an unbuilt component? Does the sequence match the architecture's dependencies? Is integration deferred to the end? Fold blocking findings in.
+Look specifically for **inversions**: a requirement sitting in the MVP whose cost turned out far higher than assumed, or a deferred requirement that turns out nearly free once the MVP work exists. Both are common and neither is visible before architecture. For each inversion, state the value, the revised cost, and a recommendation.
 
-**4. Write the roadmap** to `docs/product/roadmap.md` using `${CLAUDE_PLUGIN_ROOT}/templates/roadmap.md`. Trace each phase back to the `FR-n` IDs it delivers, so coverage gaps are visible.
+Do not silently re-stage. Prioritisation is the Product Owner's call — present the inversions and let them decide, then record what they chose.
+
+**3. QA Strategist places the verification.** Delegate to `delivery:qa-strategist` to map risk-based coverage onto the phases, so testing is continuous rather than a final phase.
+
+**4. Critic checks the plan holds.** Delegate to `delivery:feature-critic` (read-only) specifically to check: do parallel tracks secretly share a person or an unbuilt component? Does the sequence match the architecture's dependencies? Is integration deferred to the end? Fold blocking findings in.
+
+**5. Write the roadmap** to `docs/product/roadmap.md` using `${CLAUDE_PLUGIN_ROOT}/templates/roadmap.md`. Trace each phase back to the `FR-n` IDs it delivers, so coverage gaps are visible.
 
 ## Exit criteria
 
