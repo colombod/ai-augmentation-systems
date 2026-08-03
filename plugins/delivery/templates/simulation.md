@@ -1,3 +1,11 @@
+<!--
+BUDGET — target 900 words, hard cap 1500 words. Excludes code, YAML and data tables.
+The friction map and coverage tables are data and excluded.
+Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
+and hedging first; never cut findings, citations, grounding labels, open questions, or
+IDs a later phase reads. Over the cap? Say so in the document, and why.
+-->
+
 # Journey simulation: <journey>
 
 > ⚠ **SIMULATED OUTPUT — hypotheses about where friction lives, not usability findings.**

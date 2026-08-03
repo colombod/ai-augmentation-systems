@@ -59,6 +59,15 @@ Write per-persona transcripts to `docs/product/interviews/<persona-slug>-<topic>
 - Synthesis separates convergent from divergent, with confidence tied to grounding
 - The research backlog names what simulation cannot settle
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Hand off
 
 Report the synthesis with the synthetic label attached. Lead with the divergences and the fatal objections — the comfortable findings are not what this phase is for.

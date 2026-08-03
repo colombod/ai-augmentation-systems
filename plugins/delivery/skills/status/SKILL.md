@@ -65,6 +65,15 @@ falls through. Check specifically:
 **Open items.** Unresolved open questions, un-run spikes, and the research backlog —
 questions simulation cannot settle that still need real people.
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Report
 
 Lead with a short summary: the active phase, and the one thing most worth doing next.

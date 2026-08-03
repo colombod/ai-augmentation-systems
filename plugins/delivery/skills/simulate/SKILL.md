@@ -66,6 +66,15 @@ Write to `docs/product/simulations/<journey-slug>.md` using `${CLAUDE_PLUGIN_ROO
 - Load-bearing versus enhancement steps separated, and per-persona end-to-end coverage stated
 - Basis of the simulation stated
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Hand off
 
 Report the ranked friction map and the load-bearing step set, labelled synthetic. Flag any persona that cannot complete the journey at all — that is either a scope decision or a segment you are choosing not to serve, and it should be a choice rather than an accident.

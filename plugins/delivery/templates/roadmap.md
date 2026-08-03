@@ -1,3 +1,11 @@
+<!--
+BUDGET — target 700 words, hard cap 1100 words. Excludes code, YAML and data tables.
+Phase, dependency and coverage tables are data.
+Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
+and hedging first; never cut findings, citations, grounding labels, open questions, or
+IDs a later phase reads. Over the cap? Say so in the document, and why.
+-->
+
 # Delivery roadmap: <feature name>
 
 > Phase 4 artifact. Owned by Program Manager, with QA Strategist.

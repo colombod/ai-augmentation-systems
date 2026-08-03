@@ -49,6 +49,15 @@ Do not silently re-stage. Prioritisation is the Product Owner's call — present
 - Each phase has a cut list
 - Every `FR-n` in the PRD maps to a phase, or is explicitly deferred
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Hand off
 
 Report exit criteria status. Call out any `FR-n` that landed in no phase — that is a silent scope drop and the Product Owner needs to see it. If the plan cannot fit the scope, present the tradeoff with options rather than trimming requirements to make a date work. Next step: `/delivery:stories`.

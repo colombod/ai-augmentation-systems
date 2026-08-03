@@ -37,6 +37,15 @@ Read `docs/product/brief.md`.
 - Requirements have stable IDs
 - Out of scope is stated explicitly
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Hand off
 
 Report exit criteria status honestly, including any criterion you could not make falsifiable. Recommend `/delivery:review-scenarios` before design — the adversarial pass is cheapest here. Then `/delivery:architecture`.

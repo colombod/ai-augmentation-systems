@@ -1,3 +1,11 @@
+<!--
+BUDGET — target 600 words, hard cap 900 words. Excludes code, YAML and data tables.
+The decisions are: who, what problem, what success looks like, what is out.
+Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
+and hedging first; never cut findings, citations, grounding labels, open questions, or
+IDs a later phase reads. Over the cap? Say so in the document, and why.
+-->
+
 # Product brief: <feature name>
 
 > Phase 1 artifact. Owned by Product Owner and Business Analyst.

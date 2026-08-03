@@ -1,3 +1,11 @@
+<!--
+BUDGET — target 600 words, hard cap 1000 words. Excludes code, YAML and data tables.
+Criteria and journey tables are data.
+Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
+and hedging first; never cut findings, citations, grounding labels, open questions, or
+IDs a later phase reads. Over the cap? Say so in the document, and why.
+-->
+
 # Sprint <n> acceptance review
 
 > Independent re-check. The sprint reported its own results; this verifies them

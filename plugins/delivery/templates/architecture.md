@@ -1,3 +1,11 @@
+<!--
+BUDGET — target 1000 words, hard cap 1600 words. Excludes code, YAML and data tables.
+Interface blocks and NFR tables are data.
+Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
+and hedging first; never cut findings, citations, grounding labels, open questions, or
+IDs a later phase reads. Over the cap? Say so in the document, and why.
+-->
+
 # Architecture: <feature name>
 
 > Phase 3 artifact. Owned by Solution Architect, with QA Strategist.

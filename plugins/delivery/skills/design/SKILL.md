@@ -49,6 +49,15 @@ Write to `docs/product/design-system.md` using `${CLAUDE_PLUGIN_ROOT}/templates/
 - Each identity decision names the persona it serves
 - Existing codebase design conventions are cited and either extended or explicitly superseded
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Hand off
 
 Report the system, and lead with anything the seed forced that you would push back on — a brand colour failing contrast, an identity that conflicts with a persona the product needs. Those are the originator's decisions to make, and now is when they are cheap.

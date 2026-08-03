@@ -100,6 +100,15 @@ IDs are stable and never reused. A retired `P-2` stays `P-2`.
 - Every persona has an abandonment condition and a falsification test
 - The research backlog exists: what simulation cannot answer and needs real people
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Hand off
 
 Report the personas with their grades. State plainly how much of this set is `assumed` — if most of it is, say that the phases downstream are generating hypotheses rather than validating a design, because that changes how their output should be read.

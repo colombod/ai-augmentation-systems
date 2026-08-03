@@ -75,6 +75,15 @@ changed and why. Then make the actual edits to those documents.
 - Simulation calibration recorded
 - Findings closed or explicitly still open
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Hand off
 
 Report what changed and what it means for the plan — particularly any change to the MVP

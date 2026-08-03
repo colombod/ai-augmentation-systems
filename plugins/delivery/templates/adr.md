@@ -1,3 +1,11 @@
+<!--
+BUDGET — target 400 words, hard cap 600 words. Excludes code, YAML and data tables.
+Context, decision, alternatives, consequences — nothing else.
+Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
+and hedging first; never cut findings, citations, grounding labels, open questions, or
+IDs a later phase reads. Over the cap? Say so in the document, and why.
+-->
+
 # ADR-NNN: <decision in a short imperative phrase>
 
 **Status:** proposed | accepted | superseded by ADR-NNN

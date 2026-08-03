@@ -1,3 +1,11 @@
+<!--
+BUDGET — target 1000 words, hard cap 1600 words. Excludes code, YAML and data tables.
+Scenario and requirement tables are data.
+Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
+and hedging first; never cut findings, citations, grounding labels, open questions, or
+IDs a later phase reads. Over the cap? Say so in the document, and why.
+-->
+
 # PRD: <feature name>
 
 > Phase 2 artifact. Owned by Product Owner, with Business Analyst and QA Strategist.

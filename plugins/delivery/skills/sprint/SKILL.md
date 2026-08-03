@@ -73,6 +73,15 @@ counteracts that.
 **7. Working agreement.** Branch name, one commit per story, and that tests must not be
 weakened to pass — if a test is wrong, report it rather than editing the assertion.
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Report
 
 Present the package location and a summary: stories included, excluded and why, the

@@ -62,6 +62,15 @@ Where scores rest on `assumed`-grade personas, mark them. A prioritisation built
 - Milestones are demonstrable, and release milestones are distinguished from learning milestones
 - Confidence reflects the grounding of the persona evidence
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Hand off
 
 Report the stages, and lead with the MVP's persona coverage — that is the claim everything else rests on. Flag any persona served by no stage at all.

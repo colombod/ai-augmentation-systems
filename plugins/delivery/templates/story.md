@@ -1,3 +1,11 @@
+<!--
+BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data tables.
+Stories carry full context deliberately — cut restatement, never context an implementer needs.
+Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
+and hedging first; never cut findings, citations, grounding labels, open questions, or
+IDs a later phase reads. Over the cap? Say so in the document, and why.
+-->
+
 ---
 id: <epic>-<nn>
 title: <short imperative title>

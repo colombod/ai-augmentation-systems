@@ -1,3 +1,11 @@
+<!--
+BUDGET — target 500 words, hard cap 800 words. Excludes code, YAML and data tables.
+Per transcript; the synthesis is tables.
+Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
+and hedging first; never cut findings, citations, grounding labels, open questions, or
+IDs a later phase reads. Over the cap? Say so in the document, and why.
+-->
+
 # Persona interview: <persona> — <topic>
 
 > ⚠ **SIMULATED PERSONA OUTPUT — a hypothesis to test, not a research finding.**

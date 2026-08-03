@@ -1,3 +1,11 @@
+<!--
+BUDGET — target 900 words, hard cap 1400 words. Excludes code, YAML and data tables.
+Prior-art rows and constraint tables are data, not prose.
+Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
+and hedging first; never cut findings, citations, grounding labels, open questions, or
+IDs a later phase reads. Over the cap? Say so in the document, and why.
+-->
+
 # Feature research: <topic>
 
 > Phase 2 artifact. Owned by the pipeline, informed by web research where available.

@@ -33,6 +33,15 @@ Do not report this phase complete unless the brief has:
 - An explicit out-of-scope list
 - Open questions with owners, where any remain
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Hand off
 
 Report which exit criteria are met and which are not. If open questions are blocking, say what is blocked. Then tell the user the next step is `/delivery:research`.

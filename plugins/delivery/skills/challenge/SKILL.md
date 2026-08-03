@@ -62,6 +62,15 @@ Append to `docs/product/reviews/<artifact>-<nn>.md` using `${CLAUDE_PLUGIN_ROOT}
 
 Do not edit the target artifact in this skill. Present the findings and let the user decide; then apply agreed changes and mark those findings `fixed`. A finding the user declines is marked `rejected` **with their stated reason recorded** — the reason is the valuable part, because it is the assumption you will want to revisit when something goes wrong.
 
+## Writing
+
+Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`, and the budget in the
+template header. An artifact nobody finishes has failed, however correct it is.
+
+Cut restatement, process narration and hedging before anything else. Never cut findings,
+citations, grounding labels, open questions, or IDs a later phase reads — if it cannot fit
+without losing those, go over the cap and say so in the document, with the reason.
+
 ## Report
 
 Lead with blocking findings and with anything multiple reviewers found independently.

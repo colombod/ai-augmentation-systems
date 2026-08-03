@@ -1,3 +1,11 @@
+<!--
+BUDGET — target 120 words, hard cap 200 words. Excludes code, YAML and data tables.
+Per finding; the summary table is data.
+Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
+and hedging first; never cut findings, citations, grounding labels, open questions, or
+IDs a later phase reads. Over the cap? Say so in the document, and why.
+-->
+
 # Challenge findings: <artifact>
 
 > Adversarial review. Read-only — findings are recorded here, not applied.
