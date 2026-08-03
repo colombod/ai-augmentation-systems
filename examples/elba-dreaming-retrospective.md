@@ -177,8 +177,9 @@ architecture and design gates, phases 7 and 8, and they are cheap to run.
 /delivery:architecture → content-in-YAML declared as the seam, day one
 /delivery:roadmap  → cost reconciliation: is 12 languages an MVP item?
 /delivery:stories  → each naming real token names
-/delivery:sprint   → implement the wave
-/delivery:sprint-review → criteria re-verified against code; personas walk the
+/delivery:sprint   → scope the wave; /delivery:handoff hands it to a runner
+/delivery:sprint-review → criteria re-verified against code, not the runner's
+                          report; personas walk the
                           real site; token bypasses caught at 1 line, not 15 commits
 ```
 

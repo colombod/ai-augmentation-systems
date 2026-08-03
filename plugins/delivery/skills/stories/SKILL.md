@@ -55,4 +55,4 @@ without losing those, go over the cap and say so in the document, with the reaso
 
 ## Hand off
 
-Report: stories written, how many are `ready` versus `draft`, and what each draft is missing. Flag any acceptance criterion in the phase that no story covers. Next step: `/delivery:next-story` to implement.
+Report: stories written, how many are `ready` versus `draft`, and what each draft is missing. Flag any acceptance criterion in the phase that no story covers. Next step: `/delivery:sprint` to scope a wave for an implementation runner.
