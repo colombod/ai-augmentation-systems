@@ -2,71 +2,95 @@
 sprint: <n>
 slug: <kebab-case>
 scope: <roadmap phase or MVP stage>
-branch: <branch name>
-status: planned | running | complete | blocked
+status: scoped | handed-off | returned | reviewed
+runner: <who or what will implement — external to this plugin>
+branch: <branch the run should use>
 ---
 
-# Sprint <n>: <name>
+# Sprint <n> scope package: <name>
 
-> Implementation wave log. This file survives interruption — an interrupted sprint
-> must be resumable, and this is what makes that possible.
+> **Input for an implementation run.** This plugin does not implement — it scopes,
+> reviews and re-aligns. Whatever runs this (your harness, a coding agent, a team)
+> should need nothing but this file and the repository.
+>
+> Assume the runner has no memory of the planning and cannot ask questions.
 
-## Plan
+## Scope
 
-**Scope:** which roadmap phase or MVP stage
-**Stage promise:** what `prioritization.md` said this stage delivers, and which
-personas it serves. `/delivery:sprint-review` checks the result against this.
+**Stage promise:** what `prioritization.md` says this stage delivers, and which personas
+it serves. `/delivery:sprint-review` checks the result against exactly this.
 
-| Order | Story | Depends on | Status |
-| :-- | :-- | :-- | :-- |
-| 1 | | | ready |
+| Order | Story | Path | Depends on | Size |
+| :-- | :-- | :-- | :-- | :-- |
+| 1 | | `docs/product/stories/...` | | |
 
-**Pre-flight checks**
+**Deliberately excluded** — do not add these; they were scoped out on purpose.
 
-- [ ] All stories in scope are `ready`
+| Story / feature | Why excluded |
+| :-- | :-- |
+
+## Pre-flight (verified before hand-off)
+
+- [ ] Every story in scope is `ready`
+- [ ] Every acceptance criterion is falsifiable
 - [ ] No open **blocking** findings against the specs this scope depends on
-- [ ] No story depends on an unfinished story outside the scope
-- [ ] Working tree clean
-- [ ] Working on a branch, not the default branch
+- [ ] No story depends on unfinished work outside the scope
+- [ ] Story file paths verified to exist
 
-## Log
+## Design constraints
 
-### <story-id> — <title>
+Where a design system exists. **Raw values are not acceptable where a token exists.**
 
-**Started:** <timestamp>
-**Files changed:**
-**Tests written:**
-**Test result:** actual output, not a claim
-
-| Acceptance criterion | Met | Evidence |
+| Need | Token to use | Notes |
 | :-- | :-- | :-- |
-| FR-n | yes / no | |
 
-**Commit:** <sha>
-**Outcome:** done | blocked
-**If blocked:** what stopped it, and whose decision it needs
+**Required component states:** default, hover, focus, active, disabled, loading, error, empty
+**Accessibility rules that apply:**
 
-**Notes:** surprises, deviations and why, follow-up work
+## Verification contract
 
----
+What the runner self-checks against, and what the review will independently re-check.
 
-## Stop conditions hit
+**Test command:** `<exact command>`
+**Must pass:** `<which suites>`
 
-Record any of these rather than pressing on — continuing past them produces work
-that gets thrown away.
+| Story | FR | Acceptance criterion | How verified |
+| :-- | :-- | :-- | :-- |
 
-| Condition | Story | Detail |
-| :-- | :-- | :-- |
-| spec conflicts with reality | | |
-| tests failed after bounded retries | | |
-| acceptance criterion wrong or unachievable | | |
-| change would exceed story scope | | |
-| two consecutive stories blocked | | |
+## Stop conditions
 
-## Summary
+Stop and report rather than improvising. **A blocked story reported honestly is a
+success. Quietly redesigning around a blocker is a failure.**
 
-**Completed:** n of m stories
-**Criteria met:** n of m
-**Tests:** actual state
-**Blocked:**
-**Needs a human decision:**
+- The story cannot be implemented as written — spec conflicts with reality
+- An acceptance criterion turns out wrong or unachievable
+- Making it work would exceed the story's stated scope
+- Tests fail for reasons inside the story's scope after bounded retries
+- Two consecutive stories block — the plan is wrong, not the stories
+
+Design decisions belong to the Solution Architect. Do not redesign mid-run.
+
+## Working agreement
+
+- Branch: `<name>` — not the default branch
+- One commit per story, message naming the story ID
+- **Do not weaken a test to make it pass.** If a test is wrong, report it and say why.
+
+## Required report-back
+
+`/delivery:sprint-review` needs all of this. Return it verbatim rather than summarised.
+
+| Story | Outcome | Criteria met | Evidence | Commit |
+| :-- | :-- | :-- | :-- | :-- |
+| | done / blocked / not attempted | n of m | test name or observed behavior | sha |
+
+**Actual test output** (the output itself, not a claim about it):
+
+```
+```
+
+**Conflicts with the spec encountered:**
+
+**Design system deviations, and why:**
+
+**Anything the next planning cycle should know:**

@@ -1,66 +1,82 @@
 ---
-description: Run an automated implementation wave — take a scope of ready stories, implement and test each in dependency order, and stop on conditions that need a human. Use to execute a roadmap phase or MVP stage as a sprint. Writes code; produces docs/product/sprints/.
+description: Produce a scoped implementation package for an external runner — which stories, in what order, with acceptance criteria, design tokens, test commands and required report-back. Use before handing a wave of work to an implementation system. Writes no source code.
 ---
 
-# Sprint — automated implementation wave
+# Sprint scope package
 
 Scope: **$ARGUMENTS** (a roadmap phase, an MVP stage, a story-ID list, or empty for the next unstarted phase)
 
-The execution engine. A sprint takes a scope of stories and works through them autonomously, rather than one `/delivery:next-story` invocation at a time.
+**This skill does not implement anything.** It produces the input an implementation
+run consumes — your own harness, a coding agent, a contractor, or a team. The plugin
+plans, scopes, reviews and re-aligns; building is somebody else's job.
+
+That boundary is deliberate. It keeps this package harness-agnostic, and it keeps the
+thing that reviews the work separate from the thing that produced it — which is what
+makes `/delivery:sprint-review` worth trusting.
 
 ## Gate check
 
-Read `docs/product/roadmap.md`, `docs/product/prioritization.md` if present, and all stories in `docs/product/stories/`.
+Read `docs/product/roadmap.md`, `docs/product/prioritization.md` if present,
+`docs/product/design-system.md` if present, and all stories in `docs/product/stories/`.
 
-Resolve the scope, then refuse to start in these cases — each one produces expensive, wrong work if you push through:
+Resolve the scope, then refuse to package in these cases — each one ships a known
+defect into the implementation run, where it is far more expensive:
 
 - **No stories are `ready`** — report what each `draft` story is missing and stop. Run `/delivery:stories`.
-- **Open blocking findings against the artifacts this scope depends on** — check `docs/product/reviews/`. Implementing against a spec with an unresolved blocking finding is how a known problem gets built into the code. Report them and ask before proceeding.
-- **A story in scope depends on a story outside it** that is not `done` — report the dependency and either widen the scope or drop that story.
-- **The working tree is dirty** — report it. A sprint makes many commits; starting on top of unrelated uncommitted work makes the result impossible to review.
+- **Open blocking findings** against the artifacts this scope depends on (check `docs/product/reviews/`) — handing over a spec with an unresolved blocking finding builds the known problem into the code. Report them and ask before proceeding.
+- **A story in scope depends on a story outside it** that is not `done` — report it, and either widen the scope or drop that story.
+- **Acceptance criteria that are not falsifiable** — the external runner cannot self-verify against prose. Send it back to `/delivery:stories`.
 
-State the sprint plan before starting: which stories, in which order, and the dependency reasoning. Get confirmation unless the user has already said to run unattended.
+## Build the package
 
-## Set up
+Write `docs/product/sprints/<n>-<slug>.md` from `${CLAUDE_PLUGIN_ROOT}/templates/sprint.md`.
 
-Create `docs/product/sprints/<n>-<slug>.md` from `${CLAUDE_PLUGIN_ROOT}/templates/sprint.md` and record the plan. This file is the sprint's log and survives interruption — an interrupted sprint must be resumable, and this is what makes that possible.
+The package must be **self-sufficient**: the runner should need nothing but this file and
+the repository. Assume it has no memory of the planning and cannot ask you questions.
 
-Work on a branch, not on the default branch. Name it for the sprint.
+**1. Scope and order.** Which stories, in dependency order, with the reasoning. Name any
+story deliberately excluded and why, so the runner does not helpfully add it.
 
-## Run the loop
+**2. The stories themselves**, or exact paths to them. Each already carries its own full
+context by construction — verify that is still true rather than assuming it.
 
-For each story, in dependency order:
+**3. Design constraints.** Where a design system exists, the token names the runner must
+use, the component states required including error and empty, and the accessibility rules.
+Say explicitly that raw values are not acceptable where a token exists.
 
-**1. Set status `in-progress`** in the story frontmatter and log the start. If the process dies, this is what tells the next session where it was.
+**4. Verification contract.** The exact test command, which tests must pass, and the
+acceptance criteria per story with their `FR-n` IDs. This is what the runner self-checks
+against and what the review will independently re-check.
 
-**2. Implement**, following `/delivery:next-story`'s discipline: read the story completely, read the code it names plus enough context to match conventions, honor the specified interfaces, respect the design system tokens by name, and stay inside the stated scope.
+**5. Stop conditions.** Tell the runner when to stop and report rather than improvising:
 
-**3. Write the tests the story specifies**, at the specified level, covering its negative and boundary cases.
+- A story cannot be implemented as written — the spec conflicts with reality
+- An acceptance criterion turns out wrong or unachievable
+- Making it work would exceed the story's stated scope
+- Tests fail for reasons inside the story's scope after bounded retries
+- Two consecutive stories block — that means the plan is wrong, not the stories
 
-**4. Run the tests.** Report actual results. On failure, fix and re-run — up to a bounded number of attempts. Do not loosen a test to make it pass; if a test is wrong, say so explicitly and explain why rather than quietly editing the assertion. That distinction is the difference between a sprint that works and one that reports success falsely.
+Say plainly that a blocked story reported honestly is a **success**, and that quietly
+redesigning around a blocker is a failure. Runners optimise for finishing; this is what
+counteracts that.
 
-**5. Verify against acceptance criteria.** Delegate to `delivery:qa-strategist`, criteria-first — read the criteria and check each independently *before* reading the implementation, so the check is not anchored to what the code happens to do.
+**6. Required report-back.** State exactly what the run must return, because
+`/delivery:sprint-review` needs it:
 
-**6. Commit** the story's work with a message naming the story ID. One commit per story keeps the sprint reviewable.
+- Per story: done / blocked / not attempted
+- Per acceptance criterion: met / not met, with evidence (test name or observed behavior)
+- Actual test output, not a claim about it
+- Files changed, and the commit or branch
+- Anything that conflicted with the spec
+- Any deviation from the design system and why
 
-**7. Record the outcome** in the sprint log and set story status: `done` only if every criterion is met and tests pass. Otherwise `blocked`, with what stopped it.
-
-## Stop conditions
-
-Stop the wave and report, rather than pressing on, when:
-
-- A story cannot be implemented as written — the spec conflicts with reality. This belongs to the Solution Architect; do not redesign mid-sprint.
-- Tests fail after the bounded retries for reasons inside the story's scope
-- Implementation reveals that an acceptance criterion is wrong or unachievable
-- A change would exceed the story's stated scope to make it work
-- Two consecutive stories block — that pattern means the plan is wrong, not the stories
-
-Continuing past these produces work that has to be thrown away, which costs far more than stopping did.
+**7. Working agreement.** Branch name, one commit per story, and that tests must not be
+weakened to pass — if a test is wrong, report it rather than editing the assertion.
 
 ## Report
 
-State honestly, per story: done, blocked, or not attempted, with test results as they actually came out. Never report a story done whose criteria are unmet.
+Present the package location and a summary: stories included, excluded and why, the
+verification contract, and any risk you want the runner warned about.
 
-Summarize: stories completed, criteria met versus unmet, tests passing, what blocked and why, and what a human needs to decide.
-
-Next step: `/delivery:sprint-review` to assess acceptance of the wave.
+State clearly that the next step after the external run is `/delivery:sprint-review`,
+which will re-verify independently rather than trusting the run's own report.

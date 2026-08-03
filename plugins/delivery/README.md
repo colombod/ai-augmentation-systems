@@ -2,8 +2,14 @@
 
 You supply **intent** — why this app exists, what it should do — and optionally a
 **design seed** for identity and look and feel. The plugin produces everything needed
-to reach implementation, runs implementation as sprints, and reviews whether each
-sprint is actually acceptable.
+to reach implementation, scopes it into sprints, hands each one to whatever runner you
+choose, then independently reviews acceptance and re-aligns the plan.
+
+**This package does not build.** Implementation belongs to an external runner —
+[superpowers](https://github.com/obra/superpowers), your own harness, an agent, a team.
+That boundary is deliberate: it keeps the pipeline harness-agnostic, and it keeps the
+thing that reviews the work separate from the thing that produced it, which is what makes
+`/delivery:sprint-review` worth trusting.
 
 ## Why this exists
 
@@ -32,8 +38,11 @@ INTENT (+ design seed)
  8 │ /delivery:architecture   design against the real codebase, ADRs, spikes
  9 │ /delivery:roadmap        risk-first sequencing + value/cost reconciliation
 10 │ /delivery:stories        self-contained, implementation-ready
-11 │ /delivery:sprint         automated implementation wave
-12 │ /delivery:sprint-review  acceptance verdict → feeds the next cycle
+11 │ /delivery:sprint         scope package for an external runner
+12 │ /delivery:handoff        translate to the runner's native format
+   ├──▶ EXTERNAL IMPLEMENTATION RUN (superpowers / your harness)
+13 │ /delivery:sprint-review  independent acceptance verdict
+14 │ /delivery:realign        fold what it taught back into the plan
    ↺
 /delivery:challenge   adversarial panel — usable at ANY gate
 /delivery:status      gates, open findings, drift, sprint state
@@ -42,6 +51,34 @@ INTENT (+ design seed)
 Every phase reads the previous artifact and **stops if it is missing** rather than
 improvising one. That gate is the point: it is what stops a confident plan being built
 on nothing.
+
+## Using it with superpowers
+
+[superpowers](https://github.com/obra/superpowers) has its own chain:
+`brainstorming` → `writing-plans` → `subagent-driven-development`. This pipeline
+**replaces `brainstorming`** with something far richer — research, evidence-graded
+personas, journey simulation, prioritisation, design system, architecture, and
+adversarial review at every gate — and then hands over.
+
+`/delivery:handoff superpowers` offers two modes:
+
+**Mode A — spec handoff (recommended).** Writes
+`docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`, the path `writing-plans` reads.
+Superpowers then writes its own execution plan and runs it.
+
+**Mode B — plan handoff.** Writes `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`
+directly, in superpowers' exact format, skipping its planning step.
+
+**Mode A is the default for a reason.** Superpowers' plan format is tuned to its own
+executor — tasks of 2–5 minutes, `Files:`/`Interfaces:` blocks, checkbox steps containing
+*actual code*, a hard ban on `TBD`. Reproducing that here means maintaining a mirror of
+someone else's contract that will drift silently when they change it. There is also a real
+granularity gap: our stories are vertical slices sized for one sitting, so Mode B is a
+second planning pass, not a reformat. This pipeline's value is upstream; theirs is
+fine-grained execution planning. Let each do its own job.
+
+Either way, the loop closes back here: `/delivery:sprint-review` re-verifies the result
+independently, and `/delivery:realign` folds what it taught into the plan.
 
 ## The five ideas doing the real work
 
@@ -71,11 +108,12 @@ it is a set that lets **at least one persona finish a journey and get value**. T
 simulation's per-persona coverage data is what tests this. A stage serving nobody
 end to end is a project milestone, not a release.
 
-**5. Sprint review is independent of the sprint.** The sprint reports its own results;
-the review re-checks acceptance criteria against the code as it now exists. Where log
-and code disagree, the code wins and the discrepancy is itself a finding. It also walks
-personas through the **real** implementation — because every story can pass while no one
-can actually complete a journey.
+**5. Review is independent of the builder.** The runner reports its own results and
+optimises for finishing; the review re-checks criteria against the code as it now exists.
+Where the report and the code disagree, the code wins and the discrepancy is itself a
+finding — it should change how much of that runner's next report you believe. The review
+also walks personas through the **real** implementation, because every story can pass
+while nobody can actually complete a journey.
 
 ## Skills
 
@@ -92,9 +130,10 @@ can actually complete a journey.
 | `/delivery:architecture` | Real-codebase design, alternatives, spikes, migration |
 | `/delivery:roadmap` | Risk-first sequencing, critical path, cut lists, inversions |
 | `/delivery:stories` | Vertical slices carrying full context and design tokens |
-| `/delivery:sprint` | Automated implementation wave with explicit stop conditions |
+| `/delivery:sprint` | Scope package for an external runner, with stop conditions |
+| `/delivery:handoff` | Translate to superpowers' format, or a generic brief |
 | `/delivery:sprint-review` | Independent acceptance verdict + calibration feedback |
-| `/delivery:next-story` | Single-story implementation |
+| `/delivery:realign` | Update assumptions, estimates, staging and roadmap |
 | `/delivery:challenge` | Adversarial panel against any artifact |
 | `/delivery:status` | Gates, open findings, drift, evidence grounding |
 

@@ -4,14 +4,14 @@
     "name": "Diego Colombo",
     "url": "https://github.com/colombod"
   },
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Private marketplace of AI augmentation systems: role-persona agents and phase-gated workflows that carry work from feature idea to delivered code.",
   "plugins": [
     {
       "name": "delivery",
       "source": "./plugins/delivery",
-      "version": "0.2.0",
-      "description": "Intent-to-implementation pipeline: research, evidence-graded user personas, simulated interviews and journey walks, PRD, MVP staging, design system, architecture, roadmap, stories, automated sprints and independent acceptance review, with adversarial challenge at every gate.",
+      "version": "0.3.0",
+      "description": "Intent-to-implementation planning pipeline: research, evidence-graded personas, journey simulation, PRD, MVP staging, design system, architecture, roadmap, stories, sprint scoping, handoff to an external runner (e.g. superpowers), independent acceptance review and plan re-alignment. Adversarial challenge at every gate.",
       "keywords": [
         "product",
         "roadmap",
@@ -22,7 +22,8 @@
         "design-system",
         "sprint",
         "user-research",
-        "adversarial-review"
+        "adversarial-review",
+        "superpowers"
       ]
     }
   ]

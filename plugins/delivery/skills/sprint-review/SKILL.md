@@ -16,9 +16,11 @@ If no sprint log exists, stop — there is nothing to review.
 
 ## The rule this skill exists under
 
-The sprint reports its own results, and a process that only ever grades itself drifts toward optimism. This review is deliberately independent: it re-checks acceptance criteria **against the code as it now exists**, rather than trusting the sprint log's claims.
+The implementation was run by something else — your harness, superpowers, an agent, a team — and it reported its own results. A process that only ever grades itself drifts toward optimism, and a runner optimises for finishing. This review is deliberately independent: it re-checks acceptance criteria **against the code as it now exists**, rather than trusting the runner's report-back.
 
-Where the log and the code disagree, the code wins and the discrepancy is itself a finding — it means the sprint's self-assessment cannot be relied on, which matters more than the individual story.
+Where the report and the code disagree, the code wins and the discrepancy is itself a finding — it means that runner's self-assessment cannot be relied on, which matters more than the individual story and should change how much of its next report you believe.
+
+Where the runner used its own task IDs rather than `FR-n` (superpowers does), use the ID mapping recorded in the scope package to trace results back to requirements. A criterion nobody can trace to a task is a criterion nobody verified.
 
 ## Run
 
