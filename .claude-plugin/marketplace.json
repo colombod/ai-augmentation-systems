@@ -1,0 +1,25 @@
+{
+  "name": "ai-augmentation-systems",
+  "owner": {
+    "name": "Diego Colombo",
+    "url": "https://github.com/colombod"
+  },
+  "version": "0.1.0",
+  "description": "Private marketplace of AI augmentation systems: role-persona agents and phase-gated workflows that carry work from feature idea to delivered code.",
+  "plugins": [
+    {
+      "name": "delivery",
+      "source": "./plugins/delivery",
+      "version": "0.1.0",
+      "description": "Product Owner, Program Manager, Business Analyst, Architect, Delivery Lead and QA personas that review features and user scenarios, then produce a PRD, architecture, delivery roadmap and implementation-ready stories.",
+      "keywords": [
+        "product",
+        "roadmap",
+        "planning",
+        "personas",
+        "sdlc",
+        "delivery"
+      ]
+    }
+  ]
+}

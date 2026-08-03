@@ -1,0 +1,20 @@
+{
+  "name": "delivery",
+  "description": "Role personas (Product Owner, Program Manager, Business Analyst, Solution Architect, Delivery Lead, QA Strategist) and a phase-gated pipeline that turns a feature idea into a PRD, architecture, delivery roadmap and implementation-ready stories.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Diego Colombo",
+    "url": "https://github.com/colombod"
+  },
+  "homepage": "https://github.com/colombod/ai-augmentation-systems",
+  "repository": "https://github.com/colombod/ai-augmentation-systems",
+  "license": "MIT",
+  "keywords": [
+    "product",
+    "roadmap",
+    "planning",
+    "personas",
+    "sdlc",
+    "delivery"
+  ]
+}
