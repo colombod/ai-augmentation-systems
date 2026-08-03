@@ -46,6 +46,12 @@ the stated reasons are the assumptions to revisit when something goes wrong.
 `assumed`). If prioritisation and staging rest mostly on `assumed` personas, say so
 here — it changes how every downstream decision should be read.
 
+**Story lifecycle.** Count by status including `superseded`. Report:
+
+- Stories `superseded` with no `superseded_by`, or pointing at an ID that does not exist — a dangling link leaves a reader unable to tell stale from broken
+- A `superseded_reason` that is missing or says only which story replaced it. The reason the design changed is the part worth keeping
+- How often stories are superseded. Frequent supersession is not failure — it is a design being learned — but it belongs in the next sprint review's calibration rather than passing unnoticed
+
 **Sprint state.** Current and past sprints: stories done, blocked, criteria met, last
 acceptance verdict. Name any story stuck `in-progress` or any sprint left `running` —
 that usually means an interrupted session.

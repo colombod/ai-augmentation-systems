@@ -14,7 +14,35 @@ Read all three inputs and list any existing stories in `docs/product/stories/`.
 
 - **Roadmap missing** — stop and run `/delivery:roadmap` first. Without it there is no defensible phase boundary to decompose along.
 - **Architecture missing** — warn hard. Stories written without a design either omit the technical context (making them un-pickable) or invent a design inline (which is the Solution Architect's job, done badly). Recommend running `/delivery:architecture` first.
-- Never overwrite a story whose status is `in-progress` or `done`.
+- Never overwrite a story whose status is `in-progress` or `done` — supersede it instead, per the protocol below.
+
+## When a ruling invalidates existing stories
+
+A decision that lands mid-flight does not entitle you to rewrite history. What you do
+depends on whether work has started, and **nothing is ever deleted** — a story is a record
+of what was intended, and deleting it destroys the reason the code looks the way it does.
+
+| Status | What to do |
+| :-- | :-- |
+| `draft` | Revise in place. No work is lost and nothing referenced it yet. |
+| `ready` | Revise in place, and note in the story what changed and which ruling caused it. Someone may have read it. |
+| `in-progress` | **Stop the work first.** Mark `superseded`, record what was actually built, and say whether that partial work is kept, reverted, or left for the replacement to absorb. Then write the replacement. |
+| `done` | Mark `superseded`. It shipped — the record stands as the explanation for code that exists. Write a new story for the change. |
+
+**Link both directions.** The old story gets `superseded_by: [<new-id>]` and a one-line
+reason. The new story gets `supersedes: [<old-id>]`. Without both, the next reader finds a
+story describing behaviour the code does not have and cannot tell whether it is stale or
+broken.
+
+**Give the reason, not just the link.** "Superseded by p1-15" says nothing. "Superseded by
+p1-15: the owner ruled that out of season the estimate is disabled rather than falling back
+to a minimum rate" tells a future reader why the design changed, which is the part worth
+keeping.
+
+**A superseded story is not a failed story.** It records a decision that was correct given
+what was known. Treat the supersession as information about how the understanding moved,
+and say so in the sprint review's calibration section — a design that supersedes often is a
+design being learned, and that is worth knowing.
 
 Resolve the target phase from `$ARGUMENTS`, or take the first phase in the roadmap with no stories yet. State which phase you are decomposing before you start.
 

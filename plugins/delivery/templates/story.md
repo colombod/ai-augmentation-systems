@@ -9,8 +9,11 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 ---
 id: <epic>-<nn>
 title: <short imperative title>
-status: draft
+status: draft | ready | in-progress | done | superseded
 epic: <epic name>
+supersedes: []          # story IDs this replaces, if any
+superseded_by: []       # story IDs that replace this, if any
+superseded_reason:      # one line — WHY the design changed, not just what replaced it
 phase: <roadmap phase>
 requirements: [FR-1]
 depends_on: []
