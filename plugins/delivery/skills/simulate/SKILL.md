@@ -100,14 +100,20 @@ here rather than routing it to them.
 composition trades substance for brevity in the wrong order — the findings get thinner
 while the scaffolding survives. Write what the artifact needs, then cut what it does not.
 
-**Then measure, do not estimate.** After writing the file, actually run:
+**Then measure, do not estimate.** The budget counts **prose only**. Data tables, code
+blocks and YAML are excluded, so measure with them stripped:
 
 ```bash
-wc -w <the file you just wrote>
+grep -v '^|' <the file you just wrote> | wc -w
 ```
 
-An estimate is always wrong and always low. If you did not run the command, you do not
-know the count.
+A plain `wc -w` counts the tables and will overstate the total, often by several times.
+Measuring the wrong number leads to cutting the wrong thing.
+
+**Rows in a data table can never help you meet the budget, because they are not counted.**
+Deleting them is pure loss for zero benefit. The term table, the requirement table, the
+findings table, the friction map — these *are* the artifact. If a revision pass is removing
+rows, it has misunderstood the rule and should stop.
 
 **If the count exceeds 1500, you are not finished.** Make a revision pass over the file and
 delete, in this order, until it fits:
@@ -119,9 +125,9 @@ delete, in this order, until it fits:
 5. Citations past the first for a given claim
 6. Examples past the first, unless the next one shows a *different* failure mode
 
-Then re-run `wc -w` and confirm.
+Then re-measure with the same command and confirm.
 
-**Never delete** findings and their failure scenarios, one citation per claim, grounding
+**Never delete** any row of a data table, findings and their failure scenarios, one citation per claim, grounding
 and confidence labels, synthetic-output warnings, open questions, or IDs a later phase
 reads. If the artifact cannot fit without losing those, keep them, exceed the cap, and
 **write the final count and the reason into the document**. A declared overrun is a
