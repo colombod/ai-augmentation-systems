@@ -88,6 +88,21 @@ an answer, and never quietly drop a question because it is inconvenient.
 - Explicit out-of-scope list
 - Open questions with owners, where any remain
 
+## Language
+
+Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+`/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
+at the end. Do not coin synonyms for concepts it already names.
+
+Any term you need that is missing gets **proposed explicitly**, with a definition in the
+business's vocabulary and a concrete referent. Any term carrying two meanings gets raised as
+a defect, not resolved silently.
+
+**Questions go out in the vocabulary of whoever must answer them**, with a worked example in
+their world. A question for the business owner written in engineering terms is a blocker
+with a name on it, not a question. If a question is really an engineering call, decide it
+here rather than routing it to them.
+
 ## Writing
 
 Obey `${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md`.

@@ -25,6 +25,7 @@ Read whichever exist, and note which do not:
 | 10 Stories | `docs/product/stories/` |
 | 11 Sprints | `docs/product/sprints/` |
 | — Reviews | `docs/product/reviews/` |
+| — Glossary | `docs/product/glossary.md` |
 
 If none exist, say the pipeline has not started and point at `/delivery:brief`.
 
@@ -61,6 +62,11 @@ falls through. Check specifically:
 - Hardcoded values where the design system defines a token
 - Documents whose modification time is newer than the ones downstream of them — a PRD
   edited after the architecture was written means the architecture may be stale
+
+**Language drift.** Read `docs/product/glossary.md`. Report: domain terms used in documents
+that have no glossary entry; aliases the glossary bans that are still in use, and where; and
+terms listed as undefined, which are open product decisions rather than vocabulary gaps. A
+glossary nobody audits is a glossary that has already decayed.
 
 **Open items.** Unresolved open questions, un-run spikes, and the research backlog —
 questions simulation cannot settle that still need real people.

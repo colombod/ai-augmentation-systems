@@ -61,6 +61,21 @@ Then capture what the wave taught, which is the part that improves the next one:
 
 Write to `docs/product/sprints/<n>-<slug>-review.md` using `${CLAUDE_PLUGIN_ROOT}/templates/sprint-review.md`. Record carried debt and invalidated assumptions as findings in `docs/product/reviews/` with status `open`, so `/delivery:status` keeps surfacing them until they are resolved or explicitly rejected.
 
+## Language
+
+Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+`/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
+at the end. Do not coin synonyms for concepts it already names.
+
+Any term you need that is missing gets **proposed explicitly**, with a definition in the
+business's vocabulary and a concrete referent. Any term carrying two meanings gets raised as
+a defect, not resolved silently.
+
+**Questions go out in the vocabulary of whoever must answer them**, with a worked example in
+their world. A question for the business owner written in engineering terms is a blocker
+with a name on it, not a question. If a question is really an engineering call, decide it
+here rather than routing it to them.
+
 ## Writing
 
 **Budget: 600 words target, 1000 hard cap, for the document.** Excludes code, YAML and data
