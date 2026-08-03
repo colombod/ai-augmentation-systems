@@ -91,6 +91,8 @@ IDs are stable and never reused. A retired `P-2` stays `P-2`.
 
 ## Exit criteria
 
+- Within the template's budget, or the overrun declared in the document with its reason — count the words, do not estimate
+
 - Every persona has complete frontmatter: `id`, `grounding`, `status`, `source`
 - Three to five active personas, each with a named behavioral divergence from the others
 - Existing personas were reused or refined rather than regenerated, unless a replace was explicitly agreed

@@ -55,6 +55,8 @@ Where scores rest on `assumed`-grade personas, mark them. A prioritisation built
 
 ## Exit criteria
 
+- Within the template's budget, or the overrun declared in the document with its reason — count the words, do not estimate
+
 - Every `FR-n` scored and assigned to a stage or explicitly excluded
 - Every stage names the personas who can complete a journey end to end
 - Personas not yet served are named per stage, with when they will be

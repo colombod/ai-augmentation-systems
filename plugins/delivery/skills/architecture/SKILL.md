@@ -38,6 +38,8 @@ If `docs/product/architecture.md` exists, read it and ask whether to revise or r
 
 ## Exit criteria
 
+- Within the template's budget, or the overrun declared in the document with its reason — count the words, do not estimate
+
 - Component structure cites real, verified file paths
 - Every `NFR-n` in the PRD is addressed explicitly, or listed as unmet with the reason
 - Every consequential decision has stated alternatives

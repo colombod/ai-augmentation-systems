@@ -1,6 +1,7 @@
 <!--
-BUDGET — target 600 words, hard cap 900 words. Excludes code, YAML and data tables.
-The decisions are: who, what problem, what success looks like, what is out.
+BUDGET — mode-dependent, set by the skill. Frame: target 600, cap 900.
+Assess: target 1200, cap 2000. Excludes code, YAML and data tables.
+State the mode in the header below.
 Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
 and hedging first; never cut findings, citations, grounding labels, open questions, or
 IDs a later phase reads. Over the cap? Say so in the document, and why.
@@ -10,6 +11,25 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 
 > Phase 1 artifact. Owned by Product Owner and Business Analyst.
 > Status: draft | agreed  ·  Last updated: <date>
+
+**Mode:** frame | assess · **Word count:** <n> (cap <n>) · overrun reason, if any
+
+## Coverage
+
+Lenses run independently, and whether they agreed. If each lens found material the
+others missed, the space is **not exhausted** — say so rather than implying completeness.
+
+| Lens | Ran | Found nothing others did? |
+| :-- | :-- | :-- |
+| value | | |
+| precision | | |
+| absence | | |
+| decay (assess mode) | | |
+
+**Findings by convergence:** <n> found by 3+ lenses · <n> by 2 · <n> by one only
+
+Single-lens findings are the least reliable *and* the ones a single pass would have
+missed entirely. Mark them, do not drop them.
 
 ## Problem
 

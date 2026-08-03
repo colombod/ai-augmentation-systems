@@ -42,6 +42,8 @@ Do not silently re-stage. Prioritisation is the Product Owner's call — present
 
 ## Exit criteria
 
+- Within the template's budget, or the overrun declared in the document with its reason — count the words, do not estimate
+
 - Every phase has a demonstrable exit criterion, not an internal artifact
 - The critical path is named
 - Dependencies outside the team's control have owners and dates

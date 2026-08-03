@@ -18,6 +18,15 @@ If `docs/product/research.md` exists, read it and ask whether to extend or repla
 
 Research from evidence, not from recall. Where web tools are available (`WebSearch`, `WebFetch`, or Perplexity/Tavily MCP tools), use them and cite what you find. Where they are not, say so explicitly and mark the affected sections as **unresearched** rather than filling them from memory — confident, uncited claims about a market are the most dangerous output this phase can produce.
 
+**0. Search convergently, not once.** A single sweep finds what one phrasing surfaces. Run
+the prior-art and constraint searches as **at least three parallel passes with different
+angles** — by product category, by the user's problem in their own words, and by the
+failure people complain about. They must not share context. Merge, and record which
+findings appeared in more than one pass.
+
+Where each angle returned material the others missed, say so: the space is not exhausted,
+and the document should not imply that it is.
+
 **1. Prior art — how is this problem solved today?**
 Find three to five products or projects that solve it, including at least one outside the obvious category. For each: the approach, what it gets right, what users complain about. Public reviews, forum threads and issue trackers are the highest-value source here, because complaints are unmet requirements stated by the people who have them.
 
@@ -47,6 +56,8 @@ Cite every external claim with a URL. Mark each finding as **verified** (you rea
 - Existing-codebase constraints cited with real paths
 - Every external claim carries a source
 - Open gaps listed
+- At least three search angles run independently, with convergence recorded
+- Within the template's budget, or the overrun declared in the document with its reason
 
 ## Writing
 

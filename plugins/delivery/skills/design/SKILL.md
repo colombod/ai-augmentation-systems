@@ -42,6 +42,8 @@ Write to `docs/product/design-system.md` using `${CLAUDE_PLUGIN_ROOT}/templates/
 
 ## Exit criteria
 
+- Within the template's budget, or the overrun declared in the document with its reason — count the words, do not estimate
+
 - Seeded versus inferred is marked on every significant decision
 - Tokens are named with intent and mapped to real project token names where they exist
 - Every component spec covers error and empty states

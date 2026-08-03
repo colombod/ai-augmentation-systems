@@ -30,6 +30,8 @@ Read `docs/product/brief.md`.
 
 ## Exit criteria
 
+- Within the template's budget, or the overrun declared in the document with its reason — count the words, do not estimate
+
 - Every scenario has an actor, trigger, sequence and observable outcome
 - Every scenario has at least one error or edge path
 - Every acceptance criterion is falsifiable by someone who did not write it

@@ -68,6 +68,8 @@ changed and why. Then make the actual edits to those documents.
 
 ## Exit criteria
 
+- Within the template's budget, or the overrun declared in the document with its reason — count the words, do not estimate
+
 - Every invalidated assumption updated at its source, not just noted
 - Estimate corrections applied to comparable remaining work, not only the item that missed
 - MVP staging re-checked against end-to-end persona coverage

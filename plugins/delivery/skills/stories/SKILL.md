@@ -38,6 +38,8 @@ Each story carries: user-facing goal, real verified file paths, the interfaces a
 
 ## Exit criteria
 
+- Within the template's budget, or the overrun declared in the document with its reason — count the words, do not estimate
+
 - Every story is a vertical slice delivering observable behavior, or states why it cannot be
 - Every acceptance criterion in the target phase is covered by at least one story
 - Every story's file paths verified against the repo

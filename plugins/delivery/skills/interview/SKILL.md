@@ -54,6 +54,8 @@ Write per-persona transcripts to `docs/product/interviews/<persona-slug>-<topic>
 
 ## Exit criteria
 
+- Within the template's budget, or the overrun declared in the document with its reason — count the words, do not estimate
+
 - Interview guide written before the interviews, questions non-leading
 - Every persona interviewed independently, in parallel
 - Synthesis separates convergent from divergent, with confidence tied to grounding

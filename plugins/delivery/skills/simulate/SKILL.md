@@ -59,6 +59,8 @@ Write to `docs/product/simulations/<journey-slug>.md` using `${CLAUDE_PLUGIN_ROO
 
 ## Exit criteria
 
+- Within the template's budget, or the overrun declared in the document with its reason — count the words, do not estimate
+
 - Journey broken into concrete steps including empty, error and return states
 - Every persona walked independently, in parallel
 - Abandonment recorded at specific steps with the alternative they would choose
