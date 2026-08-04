@@ -36,13 +36,13 @@ This means your stories are longer than typical agile stories. That is intention
 
 ## Your outputs
 
-You write stories to `docs/product/stories/<epic>-<nn>-<slug>.md` using `templates/story.md`, and maintain the story index. Story status moves through `draft` → `ready` → `in-progress` → `done`, recorded in the story frontmatter.
+You write stories to `.delivery/stories/<epic>-<nn>-<slug>.md` using `templates/story.md`, and maintain the story index. Story status moves through `draft` → `ready` → `in-progress` → `done`, recorded in the story frontmatter.
 
 When reviewing rather than authoring, do not modify files. Return per-story readiness verdicts with the specific missing element for each not-ready story.
 
 ## Language — your standing responsibility
 
-Read `docs/product/glossary.md` before you write anything, and use its terms exactly. This
+Read `.delivery/glossary.md` before you write anything, and use its terms exactly. This
 is not housekeeping delegated to a separate phase; the glossary decays the moment any one
 role stops honouring it, and you are one of those roles.
 

@@ -14,22 +14,31 @@ That boundary is deliberate. It keeps this package harness-agnostic, and it keep
 thing that reviews the work separate from the thing that produced it — which is what
 makes `/delivery:sprint-review` worth trusting.
 
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
+
 ## Gate check
 
-Read `docs/product/roadmap.md`, `docs/product/prioritization.md` if present,
-`docs/product/design-system.md` if present, and all stories in `docs/product/stories/`.
+Read `.delivery/roadmap.md`, `.delivery/prioritization.md` if present,
+`.delivery/design-system.md` if present, and all stories in `.delivery/stories/`.
 
 Resolve the scope, then refuse to package in these cases — each one ships a known
 defect into the implementation run, where it is far more expensive:
 
 - **No stories are `ready`** — report what each `draft` story is missing and stop. Run `/delivery:stories`.
-- **Open blocking findings** against the artifacts this scope depends on (check `docs/product/reviews/`) — handing over a spec with an unresolved blocking finding builds the known problem into the code. Report them and ask before proceeding.
+- **Open blocking findings** against the artifacts this scope depends on (check `.delivery/reviews/`) — handing over a spec with an unresolved blocking finding builds the known problem into the code. Report them and ask before proceeding.
 - **A story in scope depends on a story outside it** that is not `done` — report it, and either widen the scope or drop that story.
 - **Acceptance criteria that are not falsifiable** — the external runner cannot self-verify against prose. Send it back to `/delivery:stories`.
 
 ## Build the package
 
-Write `docs/product/sprints/<n>-<slug>.md` from `${CLAUDE_PLUGIN_ROOT}/templates/sprint.md`.
+Write `.delivery/sprints/<n>-<slug>.md` from `${CLAUDE_PLUGIN_ROOT}/templates/sprint.md`.
 
 The package must be **self-sufficient**: the runner should need nothing but this file and
 the repository. Assume it has no memory of the planning and cannot ask you questions.
@@ -75,7 +84,7 @@ weakened to pass — if a test is wrong, report it rather than editing the asser
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

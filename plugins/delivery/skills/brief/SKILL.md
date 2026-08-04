@@ -1,12 +1,21 @@
 ---
-description: Frame a feature idea, or assess an existing product, and produce a brief. Use at the very start — when the idea is still a sentence, or when you need an honest account of what a working product gets wrong today. Produces docs/product/brief.md.
+description: Frame a feature idea, or assess an existing product, and produce a brief. Use at the very start — when the idea is still a sentence, or when you need an honest account of what a working product gets wrong today. Produces .delivery/brief.md.
 ---
 
 # Product brief
 
 Subject: **$ARGUMENTS**
 
-Phase 1 of the pipeline. Output: `docs/product/brief.md`.
+Phase 1 of the pipeline. Output: `.delivery/brief.md`.
+
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
 ## Pick the mode first, and say which
 
@@ -23,7 +32,7 @@ not the subject.
 
 ## Gate check
 
-No prerequisites — this is the entry point. If `docs/product/brief.md` exists, read it, say
+No prerequisites — this is the entry point. If `.delivery/brief.md` exists, read it, say
 so, and ask whether to revise or start fresh. Never silently overwrite.
 
 ## Run
@@ -74,7 +83,7 @@ the worst thing this phase can produce, because precision reads as authority.
 answers, put the rest to the user in one batch. Record what stays unanswered. Never invent
 an answer, and never quietly drop a question because it is inconvenient.
 
-**6. Write** to `docs/product/brief.md` using `${CLAUDE_PLUGIN_ROOT}/templates/brief.md`.
+**6. Write** to `.delivery/brief.md` using `${CLAUDE_PLUGIN_ROOT}/templates/brief.md`.
 
 ## Exit criteria
 
@@ -90,7 +99,7 @@ an answer, and never quietly drop a question because it is inconvenient.
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 
@@ -119,4 +128,4 @@ Report exit criteria status, the convergence picture, and anything found by only
 If the finders disagreed enough that the space looks unexplored, say so — that is a reason
 to run again, not to proceed.
 
-Next step: `/delivery:challenge docs/product/brief.md`, then `/delivery:research`.
+Next step: `/delivery:challenge .delivery/brief.md`, then `/delivery:research`.

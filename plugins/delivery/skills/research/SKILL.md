@@ -1,18 +1,27 @@
 ---
-description: Research the feature space before specifying anything — how others solve this, what the domain requires, what users complain about today, and what the existing codebase already constrains. Use after the brief and before personas. Produces docs/product/research.md.
+description: Research the feature space before specifying anything — how others solve this, what the domain requires, what users complain about today, and what the existing codebase already constrains. Use after the brief and before personas. Produces .delivery/research.md.
 ---
 
 # Feature research
 
 Topic: **$ARGUMENTS** (defaults to the feature named in the brief)
 
-Phase 2 of the pipeline. Input: `docs/product/brief.md`. Output: `docs/product/research.md`.
+Phase 2 of the pipeline. Input: `.delivery/brief.md`. Output: `.delivery/research.md`.
+
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
 ## Gate check
 
-Read `docs/product/brief.md`. If it is missing, stop and point at `/delivery:brief` — research without a framed problem produces a literature review nobody uses.
+Read `.delivery/brief.md`. If it is missing, stop and point at `/delivery:brief` — research without a framed problem produces a literature review nobody uses.
 
-If `docs/product/research.md` exists, read it and ask whether to extend or replace.
+If `.delivery/research.md` exists, read it and ask whether to extend or replace.
 
 ## Run
 
@@ -44,7 +53,7 @@ The gaps matter as much as the findings. List what you looked for and did not fi
 
 ## Write
 
-Write to `docs/product/research.md` using `${CLAUDE_PLUGIN_ROOT}/templates/research.md`.
+Write to `.delivery/research.md` using `${CLAUDE_PLUGIN_ROOT}/templates/research.md`.
 
 Cite every external claim with a URL. Mark each finding as **verified** (you read the source), **reported** (a secondary source says so), or **assumed** (your inference). Keep those three visually distinct — the later phases will lean on this document, and an unmarked assumption becomes a fact by the time it reaches a story.
 
@@ -61,7 +70,7 @@ Cite every external claim with a URL. Mark each finding as **verified** (you rea
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

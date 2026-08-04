@@ -1,24 +1,33 @@
 ---
-description: Turn an approved PRD into a technical design grounded in the actual codebase, with decisions, spikes, migration plan and test strategy. Use once requirements are settled and before work is broken into stories. Produces docs/product/architecture.md.
+description: Turn an approved PRD into a technical design grounded in the actual codebase, with decisions, spikes, migration plan and test strategy. Use once requirements are settled and before work is broken into stories. Produces .delivery/architecture.md.
 ---
 
 # Architecture and technical design
 
 Focus note from user: **$ARGUMENTS**
 
-Phase 8 of the pipeline. Inputs: `docs/product/prd.md`, plus `prioritization.md` and `design-system.md` where they exist. Output: `docs/product/architecture.md` and ADRs in `docs/product/decisions/`.
+Phase 8 of the pipeline. Inputs: `.delivery/prd.md`, plus `prioritization.md` and `design-system.md` where they exist. Output: `.delivery/architecture.md` and ADRs in `.delivery/decisions/`.
+
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
 ## Gate check
 
-Read `docs/product/prd.md`.
+Read `.delivery/prd.md`.
 
 - **Missing** — stop. Designing against an unwritten specification produces a design for the wrong thing. Tell the user to run `/delivery:prd` and offer to run it now.
 - **Non-functional requirements are vague or absent** — flag it. The architect needs numbers to design against; without them the design cannot be checked. Ask the user for the numbers or accept explicitly that the design is unvalidated on those axes.
 
-If `docs/product/architecture.md` exists, read it and ask whether to revise or replace.
+If `.delivery/architecture.md` exists, read it and ask whether to revise or replace.
 
 
-**Open blocking findings.** Read `docs/product/reviews/`. If any finding against an artifact
+**Open blocking findings.** Read `.delivery/reviews/`. If any finding against an artifact
 this phase consumes has status `open` and severity `blocking`, **stop and report them** — do
 not proceed. A blocking finding is one a reviewer said must be resolved before this point;
 building on it means every downstream artifact inherits a known, documented defect with no
@@ -45,7 +54,7 @@ Ask, and record what they chose.
 
 **4. Critic passes over it.** Delegate to `delivery:feature-critic` (read-only) to find the unstated assumption. Fold the blocking findings in before writing; report the rest.
 
-**5. Write the design** to `docs/product/architecture.md` using `${CLAUDE_PLUGIN_ROOT}/templates/architecture.md`. Write each consequential decision as its own ADR in `docs/product/decisions/ADR-NNN-<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/adr.md`.
+**5. Write the design** to `.delivery/architecture.md` using `${CLAUDE_PLUGIN_ROOT}/templates/architecture.md`. Write each consequential decision as its own ADR in `.delivery/decisions/ADR-NNN-<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/adr.md`.
 
 ## Exit criteria
 
@@ -60,7 +69,7 @@ Ask, and record what they chose.
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

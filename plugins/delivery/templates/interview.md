@@ -9,7 +9,7 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 # Persona interview: <persona> — <topic>
 
 > ⚠ **SIMULATED PERSONA OUTPUT — a hypothesis to test, not a research finding.**
-> Generated from `docs/product/personas/<slug>.md`, grounding: **<grade>**.
+> Generated from `.delivery/personas/<slug>.md`, grounding: **<grade>**.
 > Nothing here is something a real user said. Do not cite as "users told us".
 
 ## Interview guide

@@ -8,13 +8,22 @@ Target: **$ARGUMENTS** (an artifact path, or a phase name; defaults to the most 
 
 This is the pipeline's review mechanism, usable at any gate. It is read-only: it produces findings, never edits.
 
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
+
 ## Why findings are tracked
 
-An adversarial review that produces a list nobody acts on is theatre, and it is worse than no review because it manufactures the feeling of rigor. So every finding here is written to `docs/product/reviews/` with a status, and `/delivery:status` reports any that are still **open**. A finding leaves the list by being **fixed** or **rejected with a stated reason** — never by being ignored.
+An adversarial review that produces a list nobody acts on is theatre, and it is worse than no review because it manufactures the feeling of rigor. So every finding here is written to `.delivery/reviews/` with a status, and `/delivery:status` reports any that are still **open**. A finding leaves the list by being **fixed** or **rejected with a stated reason** — never by being ignored.
 
 ## Gate check
 
-Resolve the target. If given a phase name, map it to its artifact. If nothing is given, take the most recently modified artifact under `docs/product/`. If the target does not exist, say so and stop.
+Resolve the target. If given a phase name, map it to its artifact. If nothing is given, take the most recently modified artifact under `.delivery/`. If the target does not exist, say so and stop.
 
 ## Choose the panel
 
@@ -58,13 +67,13 @@ For each surviving finding: the specific claim or omission, the concrete failure
 
 ## Write
 
-Append to `docs/product/reviews/<artifact>-<nn>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/findings.md`. Every finding gets an ID (`R-<artifact>-<n>`) and status `open`.
+Append to `.delivery/reviews/<artifact>-<nn>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/findings.md`. Every finding gets an ID (`R-<artifact>-<n>`) and status `open`.
 
 Do not edit the target artifact in this skill. Present the findings and let the user decide; then apply agreed changes and mark those findings `fixed`. A finding the user declines is marked `rejected` **with their stated reason recorded** — the reason is the valuable part, because it is the assumption you will want to revisit when something goes wrong.
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

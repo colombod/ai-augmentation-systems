@@ -90,7 +90,7 @@ persona phases ever get; it decides how much to trust them next time.
 
 ## Carried debt
 
-Recorded as findings in `docs/product/reviews/` with status `open`, so
+Recorded as findings in `.delivery/reviews/` with status `open`, so
 `/delivery:status` keeps surfacing them.
 
 | ID | Debt | Why accepted | Repay by |

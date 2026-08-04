@@ -6,26 +6,35 @@ description: Report where a product effort stands across the whole pipeline — 
 
 Read-only. This skill reports and recommends; it changes nothing.
 
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
+
 ## Gather
 
 Read whichever exist, and note which do not:
 
 | Phase | Artifact |
 | :-- | :-- |
-| 1 Brief | `docs/product/brief.md` |
-| 2 Research | `docs/product/research.md` |
-| 3 Personas | `docs/product/personas/` |
-| 4a Interviews | `docs/product/interviews/` |
-| 4b Simulation | `docs/product/simulations/` |
-| 5 PRD | `docs/product/prd.md` |
-| 6 Prioritisation | `docs/product/prioritization.md` |
-| 7 Design | `docs/product/design-system.md` |
-| 8 Architecture | `docs/product/architecture.md`, `decisions/` |
-| 9 Roadmap | `docs/product/roadmap.md` |
-| 10 Stories | `docs/product/stories/` |
-| 11 Sprints | `docs/product/sprints/` |
-| — Reviews | `docs/product/reviews/` |
-| — Glossary | `docs/product/glossary.md` |
+| 1 Brief | `.delivery/brief.md` |
+| 2 Research | `.delivery/research.md` |
+| 3 Personas | `.delivery/personas/` |
+| 4a Interviews | `.delivery/interviews/` |
+| 4b Simulation | `.delivery/simulations/` |
+| 5 PRD | `.delivery/prd.md` |
+| 6 Prioritisation | `.delivery/prioritization.md` |
+| 7 Design | `.delivery/design-system.md` |
+| 8 Architecture | `.delivery/architecture.md`, `decisions/` |
+| 9 Roadmap | `.delivery/roadmap.md` |
+| 10 Stories | `.delivery/stories/` |
+| 11 Sprints | `.delivery/sprints/` |
+| — Reviews | `.delivery/reviews/` |
+| — Glossary | `.delivery/glossary.md` |
 
 If none exist, say the pipeline has not started and point at `/delivery:brief`.
 
@@ -36,7 +45,7 @@ that phase's exit criteria, not merely on whether the file exists. A file that e
 fails its exit criteria is **in progress**; saying otherwise gives false confidence, which
 is the specific failure this skill exists to prevent.
 
-**Open findings.** Read `docs/product/reviews/`. Report every finding still `open`,
+**Open findings.** Read `.delivery/reviews/`. Report every finding still `open`,
 blocking ones first, with the artifact they target. This is the highest-value section:
 an adversarial review whose findings are ignored is worse than no review, and this is
 what stops that happening. Findings marked `rejected` are fine — note the count, since
@@ -69,7 +78,7 @@ falls through. Check specifically:
 - Documents whose modification time is newer than the ones downstream of them — a PRD
   edited after the architecture was written means the architecture may be stale
 
-**Language drift.** Read `docs/product/glossary.md`. Report: domain terms used in documents
+**Language drift.** Read `.delivery/glossary.md`. Report: domain terms used in documents
 that have no glossary entry; aliases the glossary bans that are still in use, and where; and
 terms listed as undefined, which are open product decisions rather than vocabulary gaps. A
 glossary nobody audits is a glossary that has already decayed.

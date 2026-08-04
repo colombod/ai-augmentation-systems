@@ -30,7 +30,7 @@ it serves. `/delivery:sprint-review` checks the result against exactly this.
 
 | Order | Story | Path | Depends on | Size |
 | :-- | :-- | :-- | :-- | :-- |
-| 1 | | `docs/product/stories/...` | | |
+| 1 | | `.delivery/stories/...` | | |
 
 **Deliberately excluded** — do not add these; they were scoped out on purpose.
 

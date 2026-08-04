@@ -10,9 +10,18 @@ This plugin plans, scopes, reviews and re-aligns. It does not build. This skill 
 the scope package into whatever the chosen runner expects, so the hand-off is a real
 contract rather than a pile of markdown someone has to re-read.
 
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
+
 ## Gate check
 
-Read the sprint scope package in `docs/product/sprints/`. If none exists, stop and run
+Read the sprint scope package in `.delivery/sprints/`. If none exists, stop and run
 `/delivery:sprint` first.
 
 Verify the package is genuinely hand-off ready — each of these becomes a defect inside the
@@ -157,7 +166,7 @@ the review needs to trace results back to requirements.
 ## Runner: `generic`
 
 For your own harness, a contractor, or any agent without a fixed plan format. Write a
-single self-contained brief to `docs/product/sprints/<n>-<slug>-handoff.md` containing the
+single self-contained brief to `.delivery/sprints/<n>-<slug>-handoff.md` containing the
 scope package inline — stories, acceptance criteria, design constraints, verification
 contract, stop conditions, working agreement and required report-back — assuming the reader
 has no memory of the planning and cannot ask questions.
