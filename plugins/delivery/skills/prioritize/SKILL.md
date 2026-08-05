@@ -1,12 +1,21 @@
 ---
-description: Prioritise features and define MVP stages and milestones, using persona simulation data to decide what each stage must contain to be worth shipping. Use after the PRD and simulation exist and before architecture. Produces docs/product/prioritization.md.
+description: Prioritise features and define MVP stages and milestones, using persona simulation data to decide what each stage must contain to be worth shipping. Use after the PRD and simulation exist and before architecture. Produces .delivery/prioritization.md.
 ---
 
 # Feature prioritisation and MVP staging
 
 Constraint or focus: **$ARGUMENTS**
 
-Phase 6 of the pipeline. Inputs: `docs/product/prd.md`, `docs/product/simulations/`, `docs/product/interviews/`, `docs/product/personas/`. Output: `docs/product/prioritization.md`.
+Phase 6 of the pipeline. Inputs: `.delivery/prd.md`, `.delivery/simulations/`, `.delivery/interviews/`, `.delivery/personas/`. Output: `.delivery/prioritization.md`.
+
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
 ## Gate check
 
@@ -15,7 +24,7 @@ Read the PRD. If it is missing, stop — you cannot prioritise requirements that
 Read the simulation and interview outputs if they exist. If they do not, warn clearly: **prioritisation without persona data is prioritisation by opinion.** It is a legitimate choice, but the resulting stages rest on the team's beliefs about value rather than on any model of user behavior, and the document must say so. Offer to run `/delivery:simulate` first.
 
 
-**Open blocking findings.** Read `docs/product/reviews/`. If any finding against an artifact
+**Open blocking findings.** Read `.delivery/reviews/`. If any finding against an artifact
 this phase consumes has status `open` and severity `blocking`, **stop and report them** — do
 not proceed. A blocking finding is one a reviewer said must be resolved before this point;
 building on it means every downstream artifact inherits a known, documented defect with no
@@ -52,6 +61,20 @@ Load-bearing beats enhancement. A feature that prevents abandonment for two pers
 - What the stage lets you learn — each stage should answer a question, since a stage that teaches nothing could have been merged into the next one
 - Why the excluded features can wait, in terms of the friction map
 
+**Evidence-only marker — check this for every stage, every run, not just the first time.**
+Look at the `Confidence` column for every persona the stage names as completing a journey
+end to end. If **every one** of them reads `assumed` — no `observed`, no `reported`, not
+even one — the stage cannot be written as plain "ready." Render the marker
+`**⚠ Evidence-only — every supporting persona is `assumed`-grade.**` immediately under the
+stage's `**Includes:**` line in `templates/prioritization.md`, not as a footnote or an aside
+buried in prose. A stage with even one `observed` or `reported` persona backing it gets no
+marker — this only fires when *nothing* behind the stage is confirmed, including the case
+where a stage cites no personas at all (that is stricter than "all assumed," not an
+exemption from it). This is a check you re-run every time this skill runs against an
+existing `prioritization.md`, not a stamp applied once: if a persona's grounding is later
+upgraded from `assumed` to `observed` or `reported`, the marker on any stage that depended
+on it is removed on the next run, without anyone having to remember to clear it by hand.
+
 **4. Define milestones.** Each milestone gets a demonstrable outcome — what you would show, and to whom. Distinguish **release milestones** (users get something) from **learning milestones** (you find something out, such as a spike or a real-research checkpoint from the backlog). Both are legitimate; conflating them is not.
 
 **5. Have the Program Manager check feasibility.** Delegate to `delivery:program-manager` for whether the stages can actually be sequenced this way, and what dependencies would force a reorder.
@@ -60,7 +83,7 @@ Load-bearing beats enhancement. A feature that prevents abandonment for two pers
 
 ## Write
 
-Write to `docs/product/prioritization.md` using `${CLAUDE_PLUGIN_ROOT}/templates/prioritization.md`.
+Write to `.delivery/prioritization.md` using `${CLAUDE_PLUGIN_ROOT}/templates/prioritization.md`.
 
 Where scores rest on `assumed`-grade personas, mark them. A prioritisation built on invented users is a plan for an invented market, and the reader is entitled to know how much of it is that.
 
@@ -77,7 +100,7 @@ Where scores rest on `assumed`-grade personas, mark them. A prioritisation built
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

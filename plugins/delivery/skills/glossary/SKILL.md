@@ -1,5 +1,5 @@
 ---
-description: Establish and curate the project's ubiquitous language — one agreed term per concept, defined in the business's own words, that every document, question and conversation must use. Run early and re-run whenever a new term appears. Produces docs/product/glossary.md.
+description: Establish and curate the project's ubiquitous language — one agreed term per concept, defined in the business's own words, that every document, question and conversation must use. Run early and re-run whenever a new term appears. Produces .delivery/glossary.md.
 ---
 
 # Ubiquitous language
@@ -7,7 +7,16 @@ description: Establish and curate the project's ubiquitous language — one agre
 Terms or area to curate: **$ARGUMENTS**
 
 Cross-cutting. Runs after `/delivery:brief`, before `/delivery:prd`, and again whenever a
-phase coins a term. Output: `docs/product/glossary.md`.
+phase coins a term. Output: `.delivery/glossary.md`.
+
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
 ## Why this exists
 
@@ -32,10 +41,10 @@ one that decays fastest without curation, which is why this is a skill and not a
 
 ## Gate check
 
-Read `docs/product/brief.md` if it exists — the originator's own words are the highest-value
+Read `.delivery/brief.md` if it exists — the originator's own words are the highest-value
 source, because they are the words the product is actually discussed in.
 
-If `docs/product/glossary.md` exists, this run **curates** it. Never regenerate: a glossary's
+If `.delivery/glossary.md` exists, this run **curates** it. Never regenerate: a glossary's
 value is that terms stay stable, and rewriting definitions silently changes what every prior
 document meant.
 
@@ -71,7 +80,7 @@ unresolved product decision wearing a noun. Flag it rather than inventing a defi
 
 ## Write
 
-Write `docs/product/glossary.md` using `${CLAUDE_PLUGIN_ROOT}/templates/glossary.md`.
+Write `.delivery/glossary.md` using `${CLAUDE_PLUGIN_ROOT}/templates/glossary.md`.
 
 Terms are stable. Changing a definition requires saying what it was, what it is now, and
 which documents were written under the old meaning.

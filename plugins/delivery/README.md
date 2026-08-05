@@ -86,7 +86,7 @@ independently, and `/delivery:realign` folds what it taught into the plan.
 lens-diverse panel against any artifact, picked by artifact type, always including the
 `feature-critic` — the only reviewer with no stake in the artifact moving forward.
 Reviewers run in parallel and cannot see each other, so independent convergence means
-something. Findings are **written to `docs/product/reviews/` with a status**, and
+something. Findings are **written to `.delivery/reviews/` with a status**, and
 `/delivery:status` keeps reporting anything `open`. A finding leaves the list by being
 fixed or rejected-with-a-reason, never by being ignored.
 
@@ -150,7 +150,7 @@ Each has an explicit *"what you push back on"* section. Invoke one directly with
 
 ## Artifacts
 
-All under `docs/product/` in the target project, all markdown in git:
+All under `.delivery/`, hidden and tracked in git, all markdown:
 
 ```
 brief.md   research.md   prd.md   prioritization.md   design-system.md
@@ -160,13 +160,31 @@ decisions/ADR-NNN-*.md      stories/<epic>-<nn>-*.md
 reviews/<artifact>-<nn>.md  sprints/<n>-*.md + -review.md
 ```
 
+**`.delivery/` is not always the repository root**, and every skill resolves it the same
+way before touching anything, in order: reuse an existing `.delivery/` if one is already
+reachable; otherwise honor an explicit path stated in the nearest `CLAUDE.md`/`AGENTS.md`;
+otherwise, if the repository holds more than one independently-releasable component
+(multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar),
+**stop and ask** which component this work belongs to rather than guessing; otherwise
+default to `.delivery/` at the repository root. In a plugin marketplace or monorepo this
+puts each component's artifacts at `plugins/<name>/.delivery/`, `packages/<name>/.delivery/`
+and so on — scoped to the thing they're actually about, findable by `find`/`grep -r` from
+anywhere, invisible to a bare `*` glob so it never gets mistaken for shipped product
+surface. A repository-wide artifact that is genuinely not about one component belongs at
+the root, and should say explicitly why it isn't component-scoped.
+
 Requirement IDs (`FR-n`, `NFR-n`) assigned in the PRD thread through prioritisation,
 architecture, roadmap, stories and tests. `/delivery:status` walks that chain to find
 requirements no story covers and documents that have drifted apart.
 
 ## Adapting it
 
-Everything is markdown. Edit `agents/*.md` to change a persona's stance, or
+Almost everything is markdown. Edit `agents/*.md` to change a persona's stance, or
 `templates/*.md` to change what an artifact must contain — skills reference the
-templates, so both stay in step. To use a path other than `docs/product/`, say so in
-your project's `CLAUDE.md`.
+templates, so both stay in step. To relocate `.delivery/` for a project, state the path
+explicitly in that project's `CLAUDE.md`/`AGENTS.md` — every skill checks there before
+falling back to the default above.
+
+The one exception: `hooks/` ships a small Node script, registered on real tool-call
+events, that records whether a phase actually ran — not something an agent can narrate
+past. See `.delivery/decisions/ADR-001-hook-based-invocation-provenance.md` for why.

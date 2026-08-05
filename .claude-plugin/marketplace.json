@@ -10,7 +10,7 @@
     {
       "name": "delivery",
       "source": "./plugins/delivery",
-      "version": "0.10.0",
+      "version": "0.11.0",
       "description": "Intent-to-implementation planning pipeline: research, evidence-graded personas, journey simulation, PRD, MVP staging, design system, architecture, roadmap, stories, sprint scoping, handoff to an external runner (e.g. superpowers), independent acceptance review and plan re-alignment. Adversarial challenge at every gate.",
       "keywords": [
         "product",

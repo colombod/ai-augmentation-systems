@@ -8,9 +8,18 @@ Sprint: **$ARGUMENTS** (defaults to the most recent sprint log)
 
 The closing gate of an implementation wave. This decides whether the sprint is **accepted**, and it feeds what it learns back into planning.
 
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
+
 ## Gate check
 
-Read the sprint log in `docs/product/sprints/`, the stories it covered, `docs/product/prd.md`, `docs/product/prioritization.md`, `docs/product/design-system.md` and `docs/product/personas/` where they exist.
+Read the sprint log in `.delivery/sprints/`, the stories it covered, `.delivery/prd.md`, `.delivery/prioritization.md`, `.delivery/design-system.md` and `.delivery/personas/` where they exist.
 
 If no sprint log exists, stop — there is nothing to review.
 
@@ -25,6 +34,13 @@ Where the runner used its own task IDs rather than `FR-n` (superpowers does), us
 ## Run
 
 **1. Verify acceptance criteria independently.** Delegate to `delivery:qa-strategist` (via the Agent tool; if subagents are unavailable, adopt the persona from `${CLAUDE_PLUGIN_ROOT}/agents/`). Read the criteria first, then check each against the current code — not against the sprint log. Every criterion gets met / not-met / partially-met with concrete evidence: the test that covers it, or the behavior observed.
+
+For any criterion describing rendered, visible behavior, this delegation applies
+`delivery:qa-strategist`'s standing rule for verifying a UI-facing claim (see that agent's
+own file — the channel must be a real capture, cross-checked against the invocation
+ledger, and a visual "met" verdict must cite a `design-system.md` `Rule ID` or state
+plainly that none exists). This is the same rule whether or not the work was checked ad
+hoc before this formal review ever ran — it does not get a lighter version here.
 
 **2. Run the test suite yourself** and report the real output. A sprint that claimed green and is now red is the single most important thing this review can catch.
 
@@ -59,11 +75,11 @@ Then capture what the wave taught, which is the part that improves the next one:
 
 ## Write
 
-Write to `docs/product/sprints/<n>-<slug>-review.md` using `${CLAUDE_PLUGIN_ROOT}/templates/sprint-review.md`. Record carried debt and invalidated assumptions as findings in `docs/product/reviews/` with status `open`, so `/delivery:status` keeps surfacing them until they are resolved or explicitly rejected.
+Write to `.delivery/sprints/<n>-<slug>-review.md` using `${CLAUDE_PLUGIN_ROOT}/templates/sprint-review.md`. Record carried debt and invalidated assumptions as findings in `.delivery/reviews/` with status `open`, so `/delivery:status` keeps surfacing them until they are resolved or explicitly rejected.
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

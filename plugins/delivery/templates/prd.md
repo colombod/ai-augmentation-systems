@@ -10,7 +10,7 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 
 > Phase 2 artifact. Owned by Product Owner, with Business Analyst and QA Strategist.
 > Status: draft | reviewed | agreed  ·  Last updated: <date>
-> Brief: `docs/product/brief.md`
+> Brief: `.delivery/brief.md`
 
 ## Summary
 

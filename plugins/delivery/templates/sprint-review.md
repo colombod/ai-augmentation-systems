@@ -26,9 +26,16 @@ A review that never returns "not accepted" is not a gate. State it plainly.
 
 Criteria read first, then checked against code. Not against the sprint log.
 
-| FR | Criterion | Met | Evidence | Log agreed? |
-| :-- | :-- | :-- | :-- | :-- |
-| FR-n | | met / not / partial | test name or observed behavior | yes / **no** |
+| FR | Criterion | Met | Evidence | Channel | Rubric rule | Log agreed? |
+| :-- | :-- | :-- | :-- | :-- | :-- | :-- |
+| FR-n | | met / not / partial | test name or observed behavior | n/a, or: screenshot / text-only | n/a, or: `RULE-ID`, or: no rubric exists | yes / **no** |
+
+`Channel` and `Rubric rule` apply only to criteria describing rendered, visible behavior —
+`n/a` for everything else. A `met` verdict for such a criterion requires `Channel` to name a
+real capture (cross-checked against the invocation ledger, per `delivery:qa-strategist`'s
+standing rule — a claimed screenshot with no matching ledger entry is `not met`, not taken
+on trust) and `Rubric rule` to cite a real `Rule ID`, or state plainly that no rubric exists
+for this project yet.
 
 **Log discrepancies:** any `no` above. This matters more than the individual
 criterion — it means the sprint's self-assessment cannot be relied on.
@@ -90,7 +97,7 @@ persona phases ever get; it decides how much to trust them next time.
 
 ## Carried debt
 
-Recorded as findings in `docs/product/reviews/` with status `open`, so
+Recorded as findings in `.delivery/reviews/` with status `open`, so
 `/delivery:status` keeps surfacing them.
 
 | ID | Debt | Why accepted | Repay by |

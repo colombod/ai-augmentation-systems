@@ -10,7 +10,7 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 
 > Phase 4 artifact. Owned by Program Manager, with QA Strategist.
 > Status: draft | agreed  ·  Last updated: <date>
-> PRD: `docs/product/prd.md` · Architecture: `docs/product/architecture.md`
+> PRD: `.delivery/prd.md` · Architecture: `.delivery/architecture.md`
 
 ## Constraints
 

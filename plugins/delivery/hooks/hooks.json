@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Skill|Agent|mcp__Claude_Browser__computer|mcp__Claude_Code_iOS_Simulator__control",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/record-invocation.js"]
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Skill|Agent|mcp__Claude_Browser__computer|mcp__Claude_Code_iOS_Simulator__control",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/record-invocation.js"]
+          }
+        ]
+      }
+    ]
+  }
+}

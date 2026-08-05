@@ -33,6 +33,9 @@ explicitly — that reasoning should not win quietly.
 ### MVP
 
 **Includes:** FR-n, FR-m
+**Evidence-only marker:** *(present only if every persona this stage names below is*
+*`assumed`-grade — omit this line entirely otherwise, do not write "none")*
+**⚠ Evidence-only — every supporting persona is `assumed`-grade.**
 **Personas who can complete a journey end to end:**
 
 | Persona | Journey completed | Evidence |
@@ -47,6 +50,9 @@ merged into the next.
 **Excluded, and why they can wait:** in friction-map terms, not vibes.
 
 ### Stage 2
+
+*(same shape as MVP above — **Includes**, evidence-only marker if it applies, personas
+served, personas not yet served, what it teaches, what's excluded and why)*
 
 ...
 

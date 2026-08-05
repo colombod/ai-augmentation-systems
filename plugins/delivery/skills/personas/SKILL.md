@@ -1,18 +1,27 @@
 ---
-description: Derive customer and end-user personas grounded in whatever evidence exists, graded by how much evidence there actually is. Use after research and before writing scenarios, so the product is specified against real user segments rather than an imagined average user. Produces docs/product/personas/.
+description: Derive customer and end-user personas grounded in whatever evidence exists, graded by how much evidence there actually is. Use after research and before writing scenarios, so the product is specified against real user segments rather than an imagined average user. Produces .delivery/personas/.
 ---
 
 # End-user personas
 
 Focus or segment hint: **$ARGUMENTS**
 
-Phase 3 of the pipeline. Inputs: `docs/product/brief.md`, `docs/product/research.md`. Output: `docs/product/personas/`.
+Phase 3 of the pipeline. Inputs: `.delivery/brief.md`, `.delivery/research.md`. Output: `.delivery/personas/`.
 
 These are **customer personas** — the people who use the product. They are a different thing from the plugin's internal role agents (Product Owner, Architect, and so on), which represent the team.
 
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
+
 ## Where personas live, and why
 
-`docs/product/personas/` **in the project being built**, versioned in git next to the code.
+`.delivery/personas/` **in the project being built**, versioned in git next to the code.
 They are project documentation, not a global asset — a persona is modelled on a specific
 product, its constraints and its market, and none of that travels. A persona set kept
 outside the repo drifts away from the product it describes and quietly becomes fiction.
@@ -80,7 +89,7 @@ Mixed grading within one persona is normal and expected. An `assumed` persona is
 
 ## Write
 
-One file per persona at `docs/product/personas/<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/persona.md`, plus an index at `docs/product/personas/README.md` listing each with its ID and grounding grade.
+One file per persona at `.delivery/personas/<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/persona.md`, plus an index at `.delivery/personas/README.md` listing each with its ID and grounding grade.
 
 Write this frontmatter literally — reproduced here because the template may not be
 readable from the working directory:
@@ -120,7 +129,7 @@ IDs are stable and never reused. A retired `P-2` stays `P-2`.
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

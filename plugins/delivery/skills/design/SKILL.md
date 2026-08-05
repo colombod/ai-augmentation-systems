@@ -1,12 +1,21 @@
 ---
-description: Turn a design seed — a brand, a feeling, a reference, a colour — into a concrete design system with tokens, component specs, states and accessibility rules that implementation can build against. Use after personas and before architecture. Produces docs/product/design-system.md.
+description: Turn a design seed — a brand, a feeling, a reference, a colour — into a concrete design system with tokens, component specs, states and accessibility rules that implementation can build against. Use after personas and before architecture. Produces .delivery/design-system.md.
 ---
 
 # Design system
 
 Design seed from the originator: **$ARGUMENTS**
 
-Phase 7 of the pipeline. Inputs: `docs/product/brief.md`, `docs/product/personas/`, plus any existing tokens in the codebase. Output: `docs/product/design-system.md`.
+Phase 7 of the pipeline. Inputs: `.delivery/brief.md`, `.delivery/personas/`, plus any existing tokens in the codebase. Output: `.delivery/design-system.md`.
+
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
 ## Gate check
 
@@ -19,7 +28,7 @@ Read the brief and the personas.
 If `$ARGUMENTS` is empty and no seed is on record, ask the originator for one before proceeding: what should this feel like, who should feel welcomed by it, is there a reference they admire, and are there fixed brand constraints such as a logo, a colour or a typeface. A design system invented with no seed will be arbitrary, and arbitrary decisions are the hardest to defend later.
 
 
-**Open blocking findings.** Read `docs/product/reviews/`. If any finding against an artifact
+**Open blocking findings.** Read `.delivery/reviews/`. If any finding against an artifact
 this phase consumes has status `open` and severity `blocking`, **stop and report them** — do
 not proceed. A blocking finding is one a reviewer said must be resolved before this point;
 building on it means every downstream artifact inherits a known, documented defect with no
@@ -45,11 +54,11 @@ Be scrupulous about the boundary between **seeded** and **inferred**. If the ori
 
 **6. Say what is deliberately unstyled**, so nobody fills the gap with an invention.
 
-**7. Challenge it.** Run `/delivery:challenge docs/product/design-system.md`, which puts `design-lead`, `user-researcher`, `qa-strategist` and `feature-critic` on it, plus the skeptic persona. Fold blocking findings in.
+**7. Challenge it.** Run `/delivery:challenge .delivery/design-system.md`, which puts `design-lead`, `user-researcher`, `qa-strategist` and `feature-critic` on it, plus the skeptic persona. Fold blocking findings in.
 
 ## Write
 
-Write to `docs/product/design-system.md` using `${CLAUDE_PLUGIN_ROOT}/templates/design-system.md`.
+Write to `.delivery/design-system.md` using `${CLAUDE_PLUGIN_ROOT}/templates/design-system.md`.
 
 ## Exit criteria
 
@@ -64,7 +73,7 @@ Write to `docs/product/design-system.md` using `${CLAUDE_PLUGIN_ROOT}/templates/
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

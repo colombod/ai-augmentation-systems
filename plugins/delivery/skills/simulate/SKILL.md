@@ -1,12 +1,21 @@
 ---
-description: Walk end-user personas step by step through a journey — an existing product, a proposed flow, or a live site — to find where they get stuck, confused, or leave. Produces a friction map and per-step value data that feeds MVP staging. Use after personas exist. Produces docs/product/simulations/.
+description: Walk end-user personas step by step through a journey — an existing product, a proposed flow, or a live site — to find where they get stuck, confused, or leave. Produces a friction map and per-step value data that feeds MVP staging. Use after personas exist. Produces .delivery/simulations/.
 ---
 
 # Journey simulation
 
 Journey to simulate: **$ARGUMENTS** (defaults to the primary scenario in the brief or PRD)
 
-Phase 4b. Inputs: `docs/product/personas/`, plus whatever describes the journey — the PRD, the running product, or the codebase. Output: `docs/product/simulations/`.
+Phase 4b. Inputs: `.delivery/personas/`, plus whatever describes the journey — the PRD, the running product, or the codebase. Output: `.delivery/simulations/`.
+
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
 ## The rule this skill exists under
 
@@ -16,12 +25,12 @@ What it is genuinely good at: catching the step nobody thought about, the assume
 
 ## Gate check
 
-Read `docs/product/personas/`. If missing, stop and run `/delivery:personas`.
+Read `.delivery/personas/`. If missing, stop and run `/delivery:personas`.
 
 Then establish what is being walked through, in this order of preference:
 
 1. **A real running product** — best. Read the actual code, pages, and copy so personas react to what exists rather than what was intended. If a dev server or a deployed URL is available and browser tooling is present, use it.
-2. **A specified flow** — the scenarios in `docs/product/prd.md`.
+2. **A specified flow** — the scenarios in `.delivery/prd.md`.
 3. **A proposed flow** — described in the brief.
 
 Say which you used. A simulation against intent rather than implementation finds different problems, and the reader needs to know which they are getting.
@@ -64,7 +73,7 @@ the template may not be readable:
 > Never turn a simulated abandonment count into a number in a business case.
 ```
 
-Write to `docs/product/simulations/<journey-slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/simulation.md`, with the synthetic label at the top. Note which basis you walked — real product, specified flow, or proposed flow.
+Write to `.delivery/simulations/<journey-slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/simulation.md`, with the synthetic label at the top. Note which basis you walked — real product, specified flow, or proposed flow.
 
 ## Exit criteria
 
@@ -79,7 +88,7 @@ Write to `docs/product/simulations/<journey-slug>.md` using `${CLAUDE_PLUGIN_ROO
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

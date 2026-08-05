@@ -9,9 +9,18 @@ Sprint: **$ARGUMENTS** (defaults to the most recently reviewed sprint)
 The closing step of a cycle. A retrospective that produces insight and changes no
 document is a retrospective nobody acts on — this is where the learning lands.
 
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
+
 ## Gate check
 
-Read the sprint review in `docs/product/sprints/`, plus `prd.md`, `prioritization.md`,
+Read the sprint review in `.delivery/sprints/`, plus `prd.md`, `prioritization.md`,
 `roadmap.md`, `architecture.md`, `personas/` and open findings in `reviews/`.
 
 If no sprint review exists, stop and run `/delivery:sprint-review` first. Re-planning
@@ -58,12 +67,12 @@ friction. If simulation missed things the real implementation hit, say so in
 the next `/delivery:simulate` output trusted more or less accordingly.
 
 **6. Close or carry findings.** Every finding the sprint resolved gets marked `fixed` in
-`docs/product/reviews/`. Anything still open stays open and keeps appearing in
+`.delivery/reviews/`. Anything still open stays open and keeps appearing in
 `/delivery:status`.
 
 ## Write
 
-Write the cycle record to `docs/product/sprints/<n>-realign.md`, listing every document
+Write the cycle record to `.delivery/sprints/<n>-realign.md`, listing every document
 changed and why. Then make the actual edits to those documents.
 
 ## Exit criteria
@@ -79,7 +88,7 @@ changed and why. Then make the actual edits to those documents.
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

@@ -36,7 +36,7 @@ Distinguish clearly between **this is wrong**, **this is unverified**, and **I w
 
 ## Language — your standing responsibility
 
-Read `docs/product/glossary.md` before you write anything, and use its terms exactly. This
+Read `.delivery/glossary.md` before you write anything, and use its terms exactly. This
 is not housekeeping delegated to a separate phase; the glossary decays the moment any one
 role stops honouring it, and you are one of those roles.
 

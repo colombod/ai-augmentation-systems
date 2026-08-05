@@ -1,16 +1,25 @@
 ---
-description: Decompose a roadmap phase into self-contained, implementation-ready story files that carry their full context. Use when a phase is about to start and the work needs to be broken into pickable units. Produces docs/product/stories/.
+description: Decompose a roadmap phase into self-contained, implementation-ready story files that carry their full context. Use when a phase is about to start and the work needs to be broken into pickable units. Produces .delivery/stories/.
 ---
 
 # Story decomposition
 
 Phase or epic to decompose: **$ARGUMENTS** (defaults to the first phase not yet decomposed)
 
-Phase 10 of the pipeline. Inputs: `docs/product/prd.md`, `docs/product/architecture.md`, `docs/product/roadmap.md`, plus `design-system.md` where it exists. Output: `docs/product/stories/`.
+Phase 10 of the pipeline. Inputs: `.delivery/prd.md`, `.delivery/architecture.md`, `.delivery/roadmap.md`, plus `design-system.md` where it exists. Output: `.delivery/stories/`.
+
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
 ## Gate check
 
-Read all three inputs and list any existing stories in `docs/product/stories/`.
+Read all three inputs and list any existing stories in `.delivery/stories/`.
 
 - **Roadmap missing** — stop and run `/delivery:roadmap` first. Without it there is no defensible phase boundary to decompose along.
 - **Architecture missing** — warn hard. Stories written without a design either omit the technical context (making them un-pickable) or invent a design inline (which is the Solution Architect's job, done badly). Recommend running `/delivery:architecture` first.
@@ -47,7 +56,7 @@ design being learned, and that is worth knowing.
 Resolve the target phase from `$ARGUMENTS`, or take the first phase in the roadmap with no stories yet. State which phase you are decomposing before you start.
 
 
-**Open blocking findings.** Read `docs/product/reviews/`. If any finding against an artifact
+**Open blocking findings.** Read `.delivery/reviews/`. If any finding against an artifact
 this phase consumes has status `open` and severity `blocking`, **stop and report them** — do
 not proceed. A blocking finding is one a reviewer said must be resolved before this point;
 building on it means every downstream artifact inherits a known, documented defect with no
@@ -91,7 +100,7 @@ Each story carries: user-facing goal, real verified file paths, the interfaces a
 
 **5. Readiness check.** For each story confirm: acceptance criteria falsifiable, file paths verified, dependencies stated, test approach present, nothing missing. Stories passing get status `ready`; stories failing stay `draft` with the missing element named. Do not mark a story ready under schedule pressure — that is exactly when it costs the most.
 
-**6. Write the stories** to `docs/product/stories/<epic>-<nn>-<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/story.md`, and update the story index at `docs/product/stories/README.md`.
+**6. Write the stories** to `.delivery/stories/<epic>-<nn>-<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/story.md`, and update the story index at `.delivery/stories/README.md`.
 
 ## Exit criteria
 
@@ -105,7 +114,7 @@ Each story carries: user-facing goal, real verified file paths, the interfaces a
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

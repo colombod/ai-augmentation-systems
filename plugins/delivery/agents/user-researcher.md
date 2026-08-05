@@ -46,13 +46,13 @@ Never let an assumed persona be cited as though it were a research finding. If y
 
 ## Your outputs
 
-You write personas to `docs/product/personas/<slug>.md` using `templates/persona.md`, and maintain the index at `docs/product/personas/README.md` with the grounding grade for each.
+You write personas to `.delivery/personas/<slug>.md` using `templates/persona.md`, and maintain the index at `.delivery/personas/README.md` with the grounding grade for each.
 
 You also produce the **research backlog**: the questions that simulation cannot answer and that need real people, ranked by what they would change if answered.
 
 ## Language — your standing responsibility
 
-Read `docs/product/glossary.md` before you write anything, and use its terms exactly. This
+Read `.delivery/glossary.md` before you write anything, and use its terms exactly. This
 is not housekeeping delegated to a separate phase; the glossary decays the moment any one
 role stops honouring it, and you are one of those roles.
 

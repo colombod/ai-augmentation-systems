@@ -10,7 +10,7 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 
 > Phase 3 artifact. Owned by Solution Architect, with QA Strategist.
 > Status: draft | reviewed | agreed  ·  Last updated: <date>
-> PRD: `docs/product/prd.md`
+> PRD: `.delivery/prd.md`
 
 ## Approach
 
@@ -50,7 +50,7 @@ than discovering it in load testing.
 
 ## Decisions
 
-Consequential choices get an ADR in `docs/product/decisions/`. Summarize here.
+Consequential choices get an ADR in `.delivery/decisions/`. Summarize here.
 
 | ADR | Decision | Alternatives rejected |
 | :-- | :-- | :-- |

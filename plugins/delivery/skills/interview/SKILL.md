@@ -1,12 +1,21 @@
 ---
-description: Run simulated interviews with end-user personas about a product, feature or concept, to surface unmet needs and objections before building. Use after personas exist. Output is labelled synthetic — hypotheses to test, never presented as research findings. Produces docs/product/interviews/.
+description: Run simulated interviews with end-user personas about a product, feature or concept, to surface unmet needs and objections before building. Use after personas exist. Output is labelled synthetic — hypotheses to test, never presented as research findings. Produces .delivery/interviews/.
 ---
 
 # Persona interviews
 
 Topic to probe: **$ARGUMENTS** (defaults to the feature in the brief)
 
-Phase 4a. Inputs: `docs/product/personas/`, `docs/product/brief.md`. Output: `docs/product/interviews/`.
+Phase 4a. Inputs: `.delivery/personas/`, `.delivery/brief.md`. Output: `.delivery/interviews/`.
+
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
 ## The rule this skill exists under
 
@@ -16,7 +25,7 @@ Every artifact this skill writes carries that label at the top, and you repeat i
 
 ## Gate check
 
-Read `docs/product/personas/`.
+Read `.delivery/personas/`.
 
 - **Missing** — stop, run `/delivery:personas` first. Interviewing a persona you invent on the spot to answer a question you are holding is a machine for confirming what you already believe.
 - Note each persona's grounding grade; it determines how the answers should be read, and you will report it.
@@ -55,11 +64,11 @@ template may not be readable:
 
 ```markdown
 > ⚠ **SIMULATED PERSONA OUTPUT — a hypothesis to test, not a research finding.**
-> Generated from `docs/product/personas/<slug>.md`, grounding: **<grade>**.
+> Generated from `.delivery/personas/<slug>.md`, grounding: **<grade>**.
 > Nothing here is something a real user said. Do not cite as "users told us".
 ```
 
-Write per-persona transcripts to `docs/product/interviews/<persona-slug>-<topic>.md` and the synthesis to `docs/product/interviews/README.md`, using `${CLAUDE_PLUGIN_ROOT}/templates/interview.md`. The synthetic-output label goes at the top of every file.
+Write per-persona transcripts to `.delivery/interviews/<persona-slug>-<topic>.md` and the synthesis to `.delivery/interviews/README.md`, using `${CLAUDE_PLUGIN_ROOT}/templates/interview.md`. The synthetic-output label goes at the top of every file.
 
 ## Exit criteria
 
@@ -72,7 +81,7 @@ Write per-persona transcripts to `docs/product/interviews/<persona-slug>-<topic>
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 

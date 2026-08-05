@@ -1,23 +1,32 @@
 ---
-description: Turn a product brief into a full PRD with user scenarios, acceptance criteria and non-functional requirements. Use once the problem and users are settled and you need a specification precise enough to design against. Produces docs/product/prd.md.
+description: Turn a product brief into a full PRD with user scenarios, acceptance criteria and non-functional requirements. Use once the problem and users are settled and you need a specification precise enough to design against. Produces .delivery/prd.md.
 ---
 
 # Product requirements document
 
 Scope note from user: **$ARGUMENTS**
 
-Phase 5 of the pipeline. Inputs: `docs/product/brief.md`, plus `research.md`, `personas/`, `interviews/` and `simulations/` where they exist. Output: `docs/product/prd.md`.
+Phase 5 of the pipeline. Inputs: `.delivery/brief.md`, plus `research.md`, `personas/`, `interviews/` and `simulations/` where they exist. Output: `.delivery/prd.md`.
+
+## Where `.delivery/` resolves to
+
+Not necessarily the repository root. Resolve before reading or writing anything below:
+
+1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
+2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
+3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
+4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
 ## Gate check
 
-Read `docs/product/brief.md`.
+Read `.delivery/brief.md`.
 
 - **Missing** — stop. Tell the user to run `/delivery:brief` first, and offer to run it now. Do not improvise a brief.
 - **Exists but thin** (no named user segment, no measurable success signal, or unresolved blocking questions) — say specifically what is weak, and ask whether to proceed anyway or strengthen the brief first. Proceeding on a weak brief is a legitimate choice, but it should be a choice.
-- If `docs/product/prd.md` already exists, read it and ask whether to revise or replace.
+- If `.delivery/prd.md` already exists, read it and ask whether to revise or replace.
 
 
-**Open blocking findings.** Read `docs/product/reviews/`. If any finding against an artifact
+**Open blocking findings.** Read `.delivery/reviews/`. If any finding against an artifact
 this phase consumes has status `open` and severity `blocking`, **stop and report them** — do
 not proceed. A blocking finding is one a reviewer said must be resolved before this point;
 building on it means every downstream artifact inherits a known, documented defect with no
@@ -37,7 +46,7 @@ Ask, and record what they chose.
 
 **4. Resolve or record.** Where the roles disagree or a number is unknown, put it to the user. Anything still unresolved goes in the open-questions register with an owner — never invent a latency target or a data volume.
 
-**5. Write the PRD** to `docs/product/prd.md` using `${CLAUDE_PLUGIN_ROOT}/templates/prd.md`. Give every requirement a stable ID (`FR-1`, `NFR-1`) — the roadmap, stories and tests will reference these, and renumbering later breaks the chain.
+**5. Write the PRD** to `.delivery/prd.md` using `${CLAUDE_PLUGIN_ROOT}/templates/prd.md`. Give every requirement a stable ID (`FR-1`, `NFR-1`) — the roadmap, stories and tests will reference these, and renumbering later breaks the chain.
 
 ## Exit criteria
 
@@ -52,7 +61,7 @@ Ask, and record what they chose.
 
 ## Language
 
-Read `docs/product/glossary.md` first and use its terms exactly. If it does not exist, run
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
 `/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
 at the end. Do not coin synonyms for concepts it already names.
 
