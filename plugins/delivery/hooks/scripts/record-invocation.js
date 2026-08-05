@@ -29,7 +29,12 @@
 const fs = require('fs');
 const path = require('path');
 
-function findDeliveryRoot(startDir) {
+const DOWNWARD_SEARCH_MAX_DEPTH = 4;
+const DOWNWARD_SEARCH_SKIP_DIRS = new Set([
+  'node_modules', '.git', '.svn', '.hg', 'dist', 'build', '.next', '.cache',
+]);
+
+function findDeliveryRootUpward(startDir) {
   let dir = startDir;
   for (;;) {
     const candidate = path.join(dir, '.delivery');
@@ -40,6 +45,54 @@ function findDeliveryRoot(startDir) {
     if (parent === dir) return null; // reached filesystem root
     dir = parent;
   }
+}
+
+// Bounded breadth-first search downward from startDir. A component's
+// .delivery/ (e.g. plugins/<name>/.delivery/ in a marketplace repo) sits
+// BELOW a session's cwd when the session runs from the repo root, not
+// above it — the upward walk alone misses this real, common shape,
+// confirmed by running this exact script against this exact repo.
+function findDeliveryRootDownward(startDir, maxDepth) {
+  const found = [];
+  let frontier = [{ dir: startDir, depth: 0 }];
+
+  while (frontier.length > 0) {
+    const next = [];
+    for (const { dir, depth } of frontier) {
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch (err) {
+        continue; // unreadable directory — skip, do not throw
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (entry.name === '.delivery') {
+          found.push(path.join(dir, entry.name));
+          continue; // do not descend into a found .delivery/ itself
+        }
+        if (DOWNWARD_SEARCH_SKIP_DIRS.has(entry.name)) continue;
+        if (entry.name.startsWith('.') && entry.name !== '.delivery') continue;
+        if (depth + 1 <= maxDepth) {
+          next.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+        }
+      }
+    }
+    frontier = next;
+  }
+
+  // Exactly one candidate is usable without guessing. Zero means nothing
+  // governed here. More than one is the same "ask, don't guess" situation
+  // the skill-level resolution algorithm names — a script can't ask, so it
+  // declines rather than picking one, and this stays a documented limit.
+  if (found.length === 1) return found[0];
+  return null;
+}
+
+function findDeliveryRoot(startDir) {
+  const upward = findDeliveryRootUpward(startDir);
+  if (upward) return upward;
+  return findDeliveryRootDownward(startDir, DOWNWARD_SEARCH_MAX_DEPTH);
 }
 
 function invokedNameFrom(toolName, toolInput) {
@@ -103,4 +156,11 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { findDeliveryRoot, invokedNameFrom, buildRecord, recordInvocation };
+module.exports = {
+  findDeliveryRoot,
+  findDeliveryRootUpward,
+  findDeliveryRootDownward,
+  invokedNameFrom,
+  buildRecord,
+  recordInvocation,
+};

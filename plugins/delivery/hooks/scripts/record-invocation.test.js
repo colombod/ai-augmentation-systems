@@ -16,6 +16,20 @@ const {
   recordInvocation,
 } = require('./record-invocation.js');
 
+// This exact test would have passed against the original (upward-only)
+// implementation while the real hook silently failed against this actual
+// repo — that gap was found only by running the real script against the
+// real repo, not by any unit test. It's added here so it can never happen
+// silently again.
+test('findDeliveryRoot: finds .delivery/ in a marketplace-style subdirectory below cwd', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, 'plugins', 'delivery', '.delivery'), { recursive: true });
+  assert.equal(
+    findDeliveryRoot(root),
+    path.join(root, 'plugins', 'delivery', '.delivery')
+  );
+});
+
 function makeScratchProject() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'record-invocation-test-'));
   return root;
@@ -38,6 +52,37 @@ test('findDeliveryRoot: finds .delivery/ by walking upward from a subdirectory',
 test('findDeliveryRoot: returns null when no .delivery/ exists anywhere reachable', () => {
   const root = makeScratchProject();
   assert.equal(findDeliveryRoot(root), null);
+});
+
+test('findDeliveryRoot: multiple .delivery/ found downward is ambiguous — declines rather than guessing', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
+  assert.equal(findDeliveryRoot(root), null);
+});
+
+test('findDeliveryRoot: downward search skips node_modules', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, 'node_modules', 'some-pkg', '.delivery'), { recursive: true });
+  assert.equal(findDeliveryRoot(root), null);
+});
+
+test('findDeliveryRoot: downward search respects a bounded depth', () => {
+  const root = makeScratchProject();
+  // 6 levels deep — beyond DOWNWARD_SEARCH_MAX_DEPTH (4)
+  fs.mkdirSync(path.join(root, 'a', 'b', 'c', 'd', 'e', 'f', '.delivery'), { recursive: true });
+  assert.equal(findDeliveryRoot(root), null);
+});
+
+test('findDeliveryRoot: upward search still wins over downward when both exist', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, '.delivery'));
+  fs.mkdirSync(path.join(root, 'sub', 'nested', '.delivery'), { recursive: true });
+  const startDir = path.join(root, 'sub');
+  fs.mkdirSync(startDir, { recursive: true });
+  // From root/sub: root/.delivery is above (upward), root/sub/nested/.delivery is below.
+  // Upward should win — it's the "reuse the enclosing one" case, cheaper and less ambiguous.
+  assert.equal(findDeliveryRoot(startDir), path.join(root, '.delivery'));
 });
 
 test('invokedNameFrom: extracts skill name from a Skill tool_input', () => {

@@ -100,15 +100,34 @@ None — this can start immediately.
 
 ## Implementation notes
 
-**Partial completion, honestly reported — not the full spike.** `hooks/scripts/probe-invocation.js`
-was built as specified. A live test was attempted: a project-level `.claude/settings.json`
-registering the probe on `PostToolUse` was created mid-session, and two real tool calls were
-made against it. **Neither fired.** Finding: hook configuration loads once at session start
-and does not hot-reload — a config file written mid-session has no effect until a restart.
-This itself is a real, useful spike result (it wasn't assumed, it was tested), but it means
-the acceptance criteria requiring ≥20 real invocations and same-session race behavior are
-**not met by this pass** — that requires a fresh session with the hook already configured
-before it starts, which this implementation session could not do without restarting.
+**Update — the fresh-session workaround worked; most of this spike is now genuinely
+answered.** The first attempt (below, kept for the record) tried registering the hook
+*mid-session*, which doesn't hot-reload — a real, correctly-diagnosed dead end. The actual
+fix: launch genuinely fresh `claude -p` (headless, non-interactive) processes from Bash,
+*after* the hook config was already written — a real new OS process reads real settings at
+its own startup, satisfying the precondition that failed before, without needing to
+restart this conversation.
+
+**Real results, not estimated:** 5 fresh sessions, each genuinely invoking the Skill tool
+(`delivery:status`) for real, all 5 correctly triggered `PostToolUse` and produced a
+correct ledger entry (see `harden-05`'s notes for full detail) — a 5-for-5 live fire rate.
+Short of the ≥20 target stated in the acceptance criteria below — a real, further sample
+is still worth running, not fabricated to look complete — but this is genuine harness-fired
+evidence, not a synthetic payload. Same-session race behavior (a status read immediately
+after a hook fires) was not separately tested this pass.
+
+A deliberately-invalid skill name was tried to test the failure path — it errored, but
+produced no hook firing at all (see `harden-05`'s notes: an invalid name appears to be
+rejected before a real tool call dispatches, which isn't the same failure mode as a tool
+call that starts and then fails). The genuine mid-run-error firing case remains untested.
+
+**Original attempt, kept for the record — not superseded, just insufficient on its own:**
+A project-level `.claude/settings.json` registering the probe on `PostToolUse` was created
+mid-session, and two real tool calls were made against it. **Neither fired.** Finding: hook
+configuration loads once at session start and does not hot-reload — a config file written
+mid-session has no effect until a restart. This itself was a real, useful spike result (it
+wasn't assumed, it was tested), and it directly motivated the fresh-subprocess approach
+that then worked.
 
 **What is answered, from authoritative current documentation rather than live-session
 testing:** exact field names (`session_id`, `tool_name`, `tool_input`, `tool_use_id`,

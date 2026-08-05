@@ -123,6 +123,32 @@ Reworded per QA review where the original phrasing wasn't checkable.
 | 4 | Enumerate the concrete capture-tool names used in the elba-dreaming session specifically (not a general taxonomy — matches the PRD's own non-goal against broadening evidence), and confirm a hook can tell a screenshot action apart from other actions on the same tool | 1 day | The matcher list for Mechanism 3; whether `FR-12`'s reproduction actually reproduces |
 | 5 | Confirm a crashing/erroring `PostToolUse` hook cannot silently block the call it observes, verified for this specific event (not assumed from the general docs table) | 0.5 day | Whether the recorder is safe to ship as pure side-channel logging |
 
+**Post-implementation update (2026-08-05):** Spikes 1, 2 and 5 were run for real against
+this repository, not just estimated. 5 fresh headless sessions each genuinely invoked the
+Skill tool; all 5 fired `PostToolUse` correctly and produced a valid ledger entry — real
+session IDs, real `tool_use_id`s, correct field extraction (answers Spike 2 empirically,
+confirming the docs-sourced field names). Spike 5 is answered both by documentation
+(`PostToolUse`/`PostToolUseFailure` structurally cannot block, since both fire only after
+the tool has already resolved) and consistent with the live runs, none of which showed any
+sign of the observed tool call being degraded. Short of the ≥20-invocation target — 5 is a
+real sample, not an exhausted one. The mid-run-error firing case (as opposed to a
+rejected-before-dispatch case, which was tried and does not exercise this path) remains
+unconfirmed. Spike 4 was not attempted (blocked on the same constraint Spike 1 hit before
+its fix — see below — but not re-attempted after). Spike 3 remains out of this MVP's scope
+per the roadmap.
+
+**A real defect was found and fixed during this live testing, not anticipated by any spike
+above:** the original `findDeliveryRoot` implementation only walked upward from the working
+directory. In this actual repository, `.delivery/` lives at `plugins/delivery/.delivery/` —
+below a session's real working directory (the repo root), not above it. The first live test
+run completed successfully but produced zero ledger entries because of this. Fixed with a
+bounded downward search (max depth 4, skips `node_modules`/build directories, declines
+rather than guesses if more than one `.delivery/` is found) — see
+`hooks/scripts/record-invocation.js` and its test file. This is now the more important
+finding of this phase's live testing than any of the five spikes originally listed: unit
+tests alone would never have caught it, because every fixture matched the implementation's
+own wrong assumption rather than testing against this repository's real shape.
+
 ## Migration and rollback
 
 **Not applicable to prior data or interfaces** — verified directly: no code, no prior hook

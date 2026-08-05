@@ -119,20 +119,49 @@ not the same claim as confirming it fires inside a real session).
 
 ## Implementation notes
 
-**Built and unit-tested; live verification still pending, deliberately not claimed as
-done.** `hooks/hooks.json`, `hooks/scripts/record-invocation.js`, and
-`hooks/scripts/record-invocation.test.js` all exist. All 15 unit tests pass, run for real
-(`node --test`, not just written) — field whitelisting, NDJSON append, `.delivery/`
-resolution, retry handling, and the exit-0-under-malformed-input guarantee are all
-genuinely exercised against synthetic payloads matching the field names current Claude
-Code docs confirm.
+**Live-verified, for real, in a genuinely fresh session — update to the earlier note
+below.** After the first partial pass (unit tests only), a real end-to-end test was run:
+a project-level hook was registered *before* launching fresh, real, non-interactive
+`claude -p` sessions (the precondition that failed mid-session earlier) against this
+actual repository. **Result: this surfaced a real bug, not a hook-registration problem.**
+The first live run completed successfully (`delivery:status` genuinely ran via the Skill
+tool) but produced no ledger entry. Root cause, confirmed by direct testing: `.delivery/`
+in this repo lives at `plugins/delivery/.delivery/` — a *subdirectory* relative to the
+session's actual working directory (the repo root) — and the original `findDeliveryRoot`
+only walked *upward*. It could never find a `.delivery/` below cwd, which is exactly this
+repo's real, live layout. Unit tests never caught it because every fixture placed
+`.delivery/` at or above the test's starting directory, matching the implementation's own
+(wrong) assumption rather than testing against it.
 
-**What is not yet verified:** `harden-02` came back partial, not passed — hook firing
-inside a real session could not be tested this pass (config doesn't hot-reload). This
-story proceeded anyway, against `ADR-001`'s dependency note, because the alternative
-(waiting indefinitely) blocks the entire epic on a session-restart this build pass
-couldn't perform, and the field names used are independently sourced from current
-documentation, not from `harden-02`'s incomplete probe run. **Before trusting this in
-production:** register `hooks.json` for real (install the plugin, or start a fresh
-session with it configured), run ≥20 real Skill invocations, and confirm the ledger
-matches what these unit tests assume. That is the one open item this build did not close.
+**Fixed:** `findDeliveryRoot` now tries the upward walk first (cheap, unambiguous), then
+falls back to a bounded-depth (4 levels) downward search, skipping `node_modules`/`.git`/
+build directories, declining (returning `null`, same as "nothing governed here") if more
+than one `.delivery/` is found downward — a script can't "ask, don't guess" the way the
+skill-level resolution algorithm does, so it stays conservative instead of picking one.
+5 new unit tests cover this (marketplace-subdirectory case, ambiguous-multiple case,
+node_modules-skipped case, depth-limit case, upward-wins-when-both-exist case) — 20/20
+passing.
+
+**Then re-verified live, for real, 5 times:** with the fix in place, 5 fresh headless
+sessions each genuinely invoked the Skill tool for `delivery:status`; all 5 produced a
+correct ledger entry (real session ID, real `tool_use_id`, correct `invoked_name`,
+`outcome: "success"`) — a 5-for-5 real fire rate on this sample, run times 7–9 seconds
+each. This is short of the story's original ≥20-invocation target — a reasonable further
+sample, not exhausted — but it is real, live, harness-triggered evidence, not a synthetic
+payload asserting the shape docs say to expect.
+
+**One thing this pass did not confirm:** the `PostToolUseFailure` / `outcome: "error"`
+path. A deliberately-invalid skill name (`delivery:this-skill-does-not-exist-xyz`) was
+used to try to trigger it — the call errored as expected, but produced **no ledger entry
+at all**, for either outcome. Reading the result: an invalid skill name appears to be
+rejected before a real tool call is ever dispatched, so no `PostToolUse`/`PostToolUseFailure`
+event fires for that specific failure mode — it's a different kind of failure than "the
+tool ran and then failed," which is what `FR-2`'s mid-run-error case actually describes.
+Confirming the true mid-run-error path needs a skill that starts running and then fails
+partway (e.g. a real permission or runtime error), which this pass didn't attempt further,
+for cost reasons — flagged as the one real remaining gap, not silently assumed to work.
+
+All test/scratch artifacts (ledger files, the temporary project-level `.claude/settings.json`
+used only for this test, `/tmp` output files) were removed after verification. Nothing from
+this testing process is left in the repo except the fix itself and this record of what was
+actually run.
