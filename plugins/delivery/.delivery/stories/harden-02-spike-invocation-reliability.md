@@ -111,10 +111,15 @@ restart this conversation.
 **Real results, not estimated:** 5 fresh sessions, each genuinely invoking the Skill tool
 (`delivery:status`) for real, all 5 correctly triggered `PostToolUse` and produced a
 correct ledger entry (see `harden-05`'s notes for full detail) — a 5-for-5 live fire rate.
-Short of the ≥20 target stated in the acceptance criteria below — a real, further sample
-is still worth running, not fabricated to look complete — but this is genuine harness-fired
-evidence, not a synthetic payload. Same-session race behavior (a status read immediately
-after a hook fires) was not separately tested this pass.
+The sample was later pushed to 21 real invocations, 21/21 correct, past the ≥20 target
+stated in the acceptance criteria below.
+
+**Same-session race behavior — since resolved, positively.** `harden-06`'s live status-report
+test (see its own notes) had a real session invoke `/delivery:status` via the Skill tool,
+and that same run's own hook-written ledger entry was read back correctly by that same
+`/delivery:status` execution, moments later, in the same process. The read did not race
+ahead of the write. This is a real, single, positive data point, not a stress test of the
+race condition under load — worth stating precisely rather than claiming it as fully closed.
 
 A deliberately-invalid skill name was tried to test the failure path — it errored, but
 produced no hook firing at all (see `harden-05`'s notes: an invalid name appears to be
