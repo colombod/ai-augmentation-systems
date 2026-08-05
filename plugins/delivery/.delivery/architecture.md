@@ -1,0 +1,169 @@
+# Architecture: delivery plugin self-hardening (MVP)
+
+> Phase 8 artifact. Owned by Solution Architect, with QA Strategist.
+> Status: draft · Last updated: 2026-08-05
+> PRD: `.delivery/prd.md` · ADR: `.delivery/decisions/ADR-001-hook-based-invocation-provenance.md`
+
+## Approach
+
+This plugin ships zero executable code today — confirmed directly, only markdown exists.
+The design adds a real, first-time packaging change: a hook (`hooks/hooks.json` + one
+script) that watches for real tool calls resolving and logs them to a per-project ledger,
+because that is the only signal inside Claude Code an agent cannot narrate around (ADR-001).
+Two of the three MVP mechanisms build on that ledger; the third needs no code at all.
+
+**A critique pass on the first draft found a real gap, not a preference, and this design
+incorporates the fix rather than deferring it:** anchoring the screenshot-and-rubric check
+only inside `sprint-review` protects against a repeat that never actually happened — the
+real elba-dreaming incident was an ad hoc mid-session exchange, not a formal `sprint-review`
+run, and `sprint-review` itself barely ran in that engagement (the Skill tool fired once in
+four days). A check that only fires when one specific, rarely-invoked skill runs does not
+protect against the incident it was built from. Fixed below by making the check apply to
+any UI-facing "renders correctly" claim, cross-referenced against the ledger regardless of
+which skill's turn it happens on — not scoped to one skill file.
+
+## Codebase context
+
+| Path | Role today | Change |
+| :-- | :-- | :-- |
+| `.claude-plugin/plugin.json` | Manifest, no `hooks` field | untouched — default `hooks/hooks.json` location needs no manifest edit |
+| `hooks/hooks.json` | does not exist | **new** |
+| `hooks/scripts/record-invocation.js` | does not exist | **new** |
+| `.delivery/invocations/<session_id>.ndjson` | does not exist | **new** convention, per target project, git-tracked |
+| `skills/status/SKILL.md` | Reads artifact existence + exit criteria | modified — cross-references the ledger |
+| `skills/prioritize/SKILL.md` | Scores requirements, cuts stages | modified — evidence-only-marker rule |
+| `templates/prioritization.md` | Already has a `Confidence` column, unenforced | modified — adds a marker slot per stage |
+| `agents/qa-strategist.md` | Owns acceptance-criteria verification, cross-skill | modified — the channel+rubric rule lives here, not in one skill file |
+| `skills/sprint-review/SKILL.md` | Independent acceptance re-check | modified — invokes the now-shared channel+rubric rule, does not own it alone |
+| `templates/sprint-review.md`, `templates/design-system.md` | Criteria/token tables | modified — add Channel, Rubric-rule-ID columns |
+| `README.md` | States "everything is markdown" | modified — one line, now inaccurate otherwise |
+| Everything else | — | untouched |
+
+## Component structure
+
+**Mechanism 1 — invocation ledger (`FR-1`–`FR-4`):** a real Skill/Agent tool call resolves →
+`hooks/hooks.json` fires `record-invocation.js` on `PostToolUse`/`PostToolUseFailure` →
+the script resolves the nearest `.delivery/` by walking upward (read-only; no-ops if none
+exists) → appends one whitelisted-field JSON line to `.delivery/invocations/<session_id>.ndjson`
+→ `/delivery:status` reads all ledger files for the project and reports each governed
+artifact as invoked, not-invoked, or untraceable, preserving history rather than overwriting
+a past gap.
+
+**Mechanism 2 — evidence-only marker (`FR-5`–`FR-8`):** no code. `skills/prioritize/SKILL.md`
+gains a check: if every persona backing a stage reads `assumed` in the existing `Confidence`
+column, render the marker directly under the stage heading — a fixed template slot, not a
+footnote, so it can't be buried. Re-evaluated on every read, not stamped once, so an
+upgraded grade clears it automatically.
+
+**Mechanism 3 — verification channel + design rubric (`FR-9`–`FR-12`), corrected scope:**
+the rule — a UI-facing "met"/"renders correctly" claim must (a) cite its channel, checked
+against the same ledger for a matching capture-tool call, and (b) cite a specific
+`design-system.md` rule ID, or state no rubric exists — now lives in `agents/qa-strategist.md`
+as a standing check that role applies whenever it verifies UI-facing criteria, in or out of
+a formal `sprint-review` run. `sprint-review/SKILL.md` invokes that same check rather than
+defining its own copy, so an ad hoc mid-session verification and a formal review apply the
+identical rule.
+
+**Honest limit:** the ledger proves a real capture *happened*. It cannot judge whether the
+agent's visual read of that capture against the cited rule was *correct* — no tool found in
+research does that automatically. This design makes the claim checkable and citation-anchored,
+not fully automated.
+
+## Interfaces and data contracts
+
+```json
+// hooks/hooks.json
+{ "hooks": { "PostToolUse": [
+    { "matcher": "Skill", "hooks": [{ "type": "command", "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/record-invocation.js"] }] } ],
+  "PostToolUseFailure": [ /* same matcher and script */ ] } }
+```
+
+```json
+// .delivery/invocations/<session_id>.ndjson — one line per event
+{"ts":"...","session_id":"...","hook_event":"PostToolUse","tool_name":"Skill",
+ "invoked_name":"delivery:prd","outcome":"success","cwd":"...","delivery_root":".delivery"}
+```
+
+Whitelisted fields only — never raw `tool_input`. Binding, not an implementation detail: a
+`Bash`/`Write` call's raw input can carry file contents or secrets, and this ledger is
+git-tracked. `record-invocation.js` exit code is always `0` — this hook only logs; it must
+never block or degrade the call it observes, that is the deferred gate's job, not this one's.
+
+Ledger location is per-session, inside `.delivery/`, not host-local cache — `NFR-5` requires
+retention tied to the artifact's own lifetime, which only holds if the record travels with
+the repo. Per-session files also make concurrent writes a non-issue by construction, for
+free, without needing `NFR-3`'s (out-of-scope) concurrency guarantees.
+
+## Meeting the non-functional requirements
+
+| NFR | Target | How the design meets it | Confidence |
+| :-- | :-- | :-- | :-- |
+| NFR-1 | One self-correction check per governed-artifact phase gate | Out of MVP scope — this ledger is the precondition the deferred gate needs | n/a this phase |
+| NFR-2 | False-positive rate on "not-invoked" | Open, unmeasured per the PRD — reduced by whitelisted fail-loud recording and one source of truth for the phase map, but a real rate needs post-ship replay | low, honestly stated |
+| NFR-3 | Concurrency | Out of scope; per-session files sidestep it structurally anyway | n/a |
+| NFR-4 | Availability | Not applicable — runs inside one session, not a hosted service | n/a |
+| NFR-5 | Retention ≥ artifact lifetime | Met by git-tracked, per-project storage; automatic pruning on artifact deletion is not implemented — accepted gap, not solved | high (location) / open (pruning) |
+
+## Decisions
+
+| ADR | Decision | Alternatives rejected |
+| :-- | :-- | :-- |
+| ADR-001 | Invocation provenance is hook-based (`PostToolUse`/`PostToolUseFailure`), not an invokable skill | An invokable verification skill (reproduces the failure it exists to catch); a `Stop`-hook that blocks session end (pulls the deferred gate's scope in without a real decision to do so) |
+
+## Spikes — what must be proven before committing
+
+Reworded per QA review where the original phrasing wasn't checkable.
+
+| # | Question to answer | Time box | Blocks |
+| :-- | :-- | :-- | :-- |
+| 1 | Across ≥20 real Skill invocations in a real session, what fraction produce a complete, correctly-timed ledger entry, with no lost writes racing a same-session `/delivery:status` read? (Reworded from "reliably fire" — that phrasing wasn't falsifiable.) | 1 day, empirical | Whether hook-based recording is trustworthy — ADR-001's load-bearing assumption |
+| 2 | Exact `tool_name`/`tool_input` field names identifying which skill or subagent was invoked | 0.5 day, same probe | The `hooks.json` matcher list and the ledger→artifact name mapping |
+| 3 | Do `TaskCreated`/`TaskCompleted` mean subagent completion, or the general task-tracking tool? (`SubagentStart`/`SubagentStop` look like the real subagent events per current docs, contradicting the PRD's own earlier assumption) | 0.5 day | Whether the deferred gate can reuse this ledger's event vocabulary unmodified |
+| 4 | Enumerate the concrete capture-tool names used in the elba-dreaming session specifically (not a general taxonomy — matches the PRD's own non-goal against broadening evidence), and confirm a hook can tell a screenshot action apart from other actions on the same tool | 1 day | The matcher list for Mechanism 3; whether `FR-12`'s reproduction actually reproduces |
+| 5 | Confirm a crashing/erroring `PostToolUse` hook cannot silently block the call it observes, verified for this specific event (not assumed from the general docs table) | 0.5 day | Whether the recorder is safe to ship as pure side-channel logging |
+
+## Migration and rollback
+
+**Not applicable to prior data or interfaces** — verified directly: no code, no prior hook
+format, no prior ledger format exists to migrate.
+
+**Forward:** ship `hooks/hooks.json` + the script; no manifest edit needed. Template field
+additions are additive — an existing document written under the old template stays valid
+and gains the new fields on its next run, matching the "refine, don't regenerate" pattern
+already used for personas.
+
+**Back:** remove `hooks/hooks.json` in a later version. Leftover `.delivery/invocations/*.ndjson`
+files are harmless; `/delivery:status` already treats a missing or empty ledger as
+untraceable ("could not check"), so rollback degrades gracefully.
+
+## Test strategy
+
+Risk-based, not uniform — testing at the wrong altitude (a unit test confirming the script
+parses JSON correctly, mistaken for confirming it actually fires inside a real session) is
+exactly this plugin's own recurring documented failure, so the two are kept explicitly separate.
+
+| Area | Risk | Test level | Notes |
+| :-- | :-- | :-- | :-- |
+| Ledger write mechanics (field whitelist, NDJSON append) | Medium | Unit | Necessary, not sufficient — canned payloads only, no session realism |
+| Hook firing reliability, timing, races (Spike 1) | High | Empirical spike, not a test | No unit/integration test substitutes for running inside a real session |
+| Hook crash isolation (Spike 5) | High — a silent block defeats `FR-1`–`FR-4` entirely | Spike, then a permanent regression check once confirmed | Deliberately throw in the script; confirm the observed call still returns normally |
+| `/delivery:status` classification (invoked/not-invoked/untraceable, retry, mid-run error) | High — this *is* the acceptance criteria | Integration, fixture-driven | Cover all edge-path rows in the PRD's S-1 table explicitly |
+| Verification-channel cross-check (`FR-9`) | High | Integration + spike | Inherits ledger risk *and* depends on Spike 4 — do not test ahead of it |
+| Rubric rule-ID citation, no-rubric statement (`FR-10`–`FR-12`) | Medium | Example-based | Rubric-present, rubric-absent, and elba-dreaming's real defect as fixtures |
+| Evidence-only marker (`FR-5`–`FR-8`) | Low–medium | Example-based | Deterministic prose rule — mixed evidence, zero-persona, elba-dreaming replay, marker-clears-on-upgrade |
+
+**Deliberately thin:** `NFR-2`'s false-positive rate is left unmeasured — no test invents a
+number the product hasn't committed to. Multi-session concurrency is untested, matching the
+out-of-scope `NFR-3`. Capture-tool discrimination is scoped to elba-dreaming's own toolset,
+not a general taxonomy, matching the PRD's non-goal against broadening evidence.
+
+## Risks
+
+| Risk | Likelihood | Impact | Mitigation | Owner |
+| :-- | :-- | :-- | :-- | :-- |
+| Hook bugs silently miss real invocations, producing false "not-invoked" on genuine work | Medium | High | Spikes 1, 5; fail loud, never silent; whitelisted extraction only | solution-architect |
+| `tool_name`/`tool_input` shapes are undocumented and can drift across Claude Code versions | Medium | High | `/delivery:status` treats zero ledger entries in an active session as a distinct warning, not a clean report; re-run Spikes 1–2 after upgrades | solution-architect |
+| Raw `tool_input` leaks file contents or secrets into a git-tracked ledger | Medium if unenforced | High | Whitelist-only extraction is a binding constraint, stated here as non-negotiable | solution-architect |
+| The channel+rubric check, even shared, still depends on `qa-strategist` actually being consulted — an ad hoc check nobody routes through it is still uncovered | Medium | Medium | Named explicitly, not solved here — `/delivery:status` should flag UI-facing criteria with no verification-channel record at all, as a weaker but real backstop | product-owner |
+| The ledger records that real actions happened; it does not prevent narration-without-invocation from occurring for phases other than this mechanism itself — visibility, not prevention | Known, already accepted | Medium | Named in the PRD's own non-goals; the deferred self-correction gate (Stage 2) is the actual prevention mechanism | — |
