@@ -128,17 +128,22 @@ per the fix this story exists to make), `skills/sprint-review/SKILL.md` now poin
 instead of duplicating it, and `templates/sprint-review.md` gained the `Channel` and
 `Rubric rule` columns.
 
-**What doesn't work yet, stated plainly:** `harden-03` (the capture-tool matcher spike)
-was not completed — it hit the same session-restart limitation as `harden-02`. `hooks.json`
-currently only registers on `Skill|Agent` tool calls; it does not yet record real
-screenshot/capture-tool invocations at all. This means the "cross-check a claimed channel
-against the ledger" half of this rule has nothing to cross-check against yet for an actual
-screenshot — the ledger will show no matching entry for *any* claimed capture, real or not,
-until `hooks.json`'s matcher is extended with real capture-tool names. The rule as written
-handles this correctly in spirit (a missing ledger entry reads as not-met, which is the
-safe direction — a real screenshot not yet trackable is treated the same as an untracked
-one, not silently passed), but it means every UI-facing verdict will currently read
-not-met on the channel check specifically, not just the ones that deserve it, until
-`harden-03` actually runs. **This is a known, named limitation, not a silent gap:**
-extending `hooks.json`'s matcher with real capture-tool names, once `harden-03` confirms
-them, is what turns this from "correctly conservative" into "correctly discriminating."
+**Update — `harden-03` closed this gap; the cross-check now has something real to check
+against.** `hooks.json`'s matcher was extended to `mcp__Claude_Browser__computer` and
+`mcp__Claude_Code_iOS_Simulator__control`, and `record-invocation.js` now records a real
+`capture_action` (`"screenshot"` or `"zoom"`) whenever one of those tools is called with a
+genuine capture action — sourced from the tools' own schemas, cross-referenced against the
+real elba-dreaming evidence (`mcp__Claude_Browser__computer` is the exact tool that
+session used). This is no longer "correctly conservative, always not-met" — a real
+screenshot, if the ledger has a matching entry, now reads as a real channel match.
+
+**What's still open, stated plainly:** `harden-03` could not be live-fire-tested at all —
+headless sessions have no access to the browser tool (confirmed empirically, not assumed),
+and this project's own hook config can't be applied to *this* interactive session
+mid-session either. So the logic is real and unit-tested (31/31 passing, 11 of them
+specific to capture-action discrimination) against the tools' documented contracts, but
+"a real screenshot in a real interactive session produces a matching ledger entry" has not
+been directly observed — only inferred from the same governance/whitelist code path
+already live-verified 21-for-21 for Skill/Agent calls. This is the one honest gap left in
+the whole epic, and it needs an interactive session with the hook already active before
+launch to close — not achievable from inside a running session, headless or not.

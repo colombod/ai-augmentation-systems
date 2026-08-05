@@ -12,6 +12,8 @@ const path = require('path');
 const {
   findDeliveryRoot,
   invokedNameFrom,
+  captureActionFrom,
+  isGovernedToolCall,
   buildRecord,
   recordInvocation,
 } = require('./record-invocation.js');
@@ -217,4 +219,121 @@ test('main(): empty stdin does not throw', () => {
   const scriptPath = path.join(__dirname, 'record-invocation.js');
   const result = execFileSync('node', [scriptPath], { input: '', encoding: 'utf8' });
   assert.equal(result, '');
+});
+
+// --- harden-03: capture-tool discrimination ---
+// Discriminator sourced from each tool's own schema (see CAPTURE_TOOL_ACTIONS'
+// comment) — headless sessions confirmed to have no access to these tools,
+// so these test the logic against the tools' documented contracts, not a
+// live capture.
+
+test('captureActionFrom: recognizes a real screenshot action on the browser tool', () => {
+  assert.equal(
+    captureActionFrom('mcp__Claude_Browser__computer', { action: 'screenshot', tabId: 'tab-2' }),
+    'screenshot'
+  );
+});
+
+test('captureActionFrom: recognizes zoom as a capture action on the browser tool', () => {
+  assert.equal(
+    captureActionFrom('mcp__Claude_Browser__computer', { action: 'zoom', region: [0, 0, 100, 100] }),
+    'zoom'
+  );
+});
+
+test('captureActionFrom: a non-capture action on the same tool is not a capture', () => {
+  assert.equal(
+    captureActionFrom('mcp__Claude_Browser__computer', { action: 'left_click', coordinate: [10, 10] }),
+    null
+  );
+  assert.equal(
+    captureActionFrom('mcp__Claude_Browser__computer', { action: 'scroll', scroll_direction: 'down' }),
+    null
+  );
+});
+
+test('captureActionFrom: recognizes a real screenshot action on the simulator tool', () => {
+  assert.equal(
+    captureActionFrom('mcp__Claude_Code_iOS_Simulator__control', { action: 'screenshot' }),
+    'screenshot'
+  );
+});
+
+test('captureActionFrom: a non-capture action on the simulator tool is not a capture', () => {
+  assert.equal(
+    captureActionFrom('mcp__Claude_Code_iOS_Simulator__control', { action: 'tap', x: 10, y: 10 }),
+    null
+  );
+});
+
+test('captureActionFrom: an unrelated tool is never a capture', () => {
+  assert.equal(captureActionFrom('Bash', { command: 'ls' }), null);
+  assert.equal(captureActionFrom('Read', { file_path: '/x' }), null);
+});
+
+test('isGovernedToolCall: true for Skill, Agent, and known capture tools; false otherwise', () => {
+  assert.equal(isGovernedToolCall('Skill'), true);
+  assert.equal(isGovernedToolCall('Agent'), true);
+  assert.equal(isGovernedToolCall('mcp__Claude_Browser__computer'), true);
+  assert.equal(isGovernedToolCall('mcp__Claude_Code_iOS_Simulator__control'), true);
+  assert.equal(isGovernedToolCall('Bash'), false);
+  assert.equal(isGovernedToolCall('Read'), false);
+});
+
+test('buildRecord: sets capture_action for a real screenshot call', () => {
+  const record = buildRecord({
+    session_id: 's1',
+    hook_event_name: 'PostToolUse',
+    tool_name: 'mcp__Claude_Browser__computer',
+    tool_input: { action: 'screenshot', tabId: 'tab-2' },
+    cwd: '/proj',
+  });
+  assert.equal(record.capture_action, 'screenshot');
+  assert.equal(record.tool_name, 'mcp__Claude_Browser__computer');
+});
+
+test('buildRecord: capture_action is null for a non-capture action, even on a capture-capable tool', () => {
+  const record = buildRecord({
+    session_id: 's1',
+    hook_event_name: 'PostToolUse',
+    tool_name: 'mcp__Claude_Browser__computer',
+    tool_input: { action: 'left_click', coordinate: [1, 1] },
+    cwd: '/proj',
+  });
+  assert.equal(record.capture_action, null);
+});
+
+test('recordInvocation: a real screenshot call is recorded, given a reachable .delivery/', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, '.delivery'));
+  const result = recordInvocation(
+    {
+      session_id: 'sess-capture',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__Claude_Browser__computer',
+      tool_input: { action: 'screenshot', tabId: 'tab-2' },
+      cwd: root,
+    },
+    { cwd: root }
+  );
+  assert.ok(result);
+  const parsed = JSON.parse(fs.readFileSync(result.ledgerPath, 'utf8').trim());
+  assert.equal(parsed.capture_action, 'screenshot');
+});
+
+test('recordInvocation: a non-capture action on the browser tool is not recorded', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, '.delivery'));
+  const result = recordInvocation(
+    {
+      session_id: 'sess-click',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__Claude_Browser__computer',
+      tool_input: { action: 'left_click', coordinate: [1, 1] },
+      cwd: root,
+    },
+    { cwd: root }
+  );
+  assert.equal(result, null);
+  assert.equal(fs.existsSync(path.join(root, '.delivery', 'invocations')), false);
 });

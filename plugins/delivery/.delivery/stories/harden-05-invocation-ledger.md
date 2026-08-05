@@ -142,12 +142,15 @@ skill-level resolution algorithm does, so it stays conservative instead of picki
 node_modules-skipped case, depth-limit case, upward-wins-when-both-exist case) — 20/20
 passing.
 
-**Then re-verified live, for real, 5 times:** with the fix in place, 5 fresh headless
-sessions each genuinely invoked the Skill tool for `delivery:status`; all 5 produced a
-correct ledger entry (real session ID, real `tool_use_id`, correct `invoked_name`,
-`outcome: "success"`) — a 5-for-5 real fire rate on this sample, run times 7–9 seconds
-each. This is short of the story's original ≥20-invocation target — a reasonable further
-sample, not exhausted — but it is real, live, harness-triggered evidence, not a synthetic
+**Then re-verified live, for real, 21 times total, across two rounds:** with the fix in
+place, fresh headless sessions each genuinely invoking the Skill tool for
+`delivery:status` — 5 in the first round (verifying the fix), 16 more in a second round
+run specifically to close the sample-size gap this note originally flagged. **All 21
+produced a correct ledger entry** (real session IDs, real `tool_use_id`s, correct
+`invoked_name`, `outcome: "success"`) — a 21-for-21 real fire rate, now past the story's
+original ≥20-invocation target. Run times ranged 7 seconds to ~116 seconds (one instance
+did more work than instructed before stopping; still logged correctly). This is real,
+live, harness-triggered evidence across 21 independent process launches, not a synthetic
 payload asserting the shape docs say to expect.
 
 **One thing this pass did not confirm:** the `PostToolUseFailure` / `outcome: "error"`

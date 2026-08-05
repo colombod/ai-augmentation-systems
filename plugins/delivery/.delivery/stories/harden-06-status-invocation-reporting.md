@@ -108,7 +108,39 @@ real attractor-orchestration incident shape). Applying the rule as written to th
 ledger correctly produced: Invoked (1 attempt), Invoked (2 attempts, retry visible, most
 recent outcome wins), and Not-invoked. Scratch files cleaned up afterward.
 
-**What this does and doesn't prove:** this confirms the *logic* is internally correct
-against realistic data shapes. It does not confirm the logic holds against a live-session
-ledger produced by the real hook firing in production — that's the same open item
-`harden-05` names, not a new gap. `status: in-progress`, not `ready`, for that reason.
+**Update — since proven against a real, live, hook-populated ledger, in a real
+`/delivery:status` run.** A mixed ledger was seeded (two real `recordInvocation()` calls
+for `delivery:brief`/`delivery:research`) and a fresh headless session was told to invoke
+`/delivery:status` for real and reproduce its output verbatim. Result, genuinely run, not
+simulated: the report correctly resolved the delivery root to
+`plugins/delivery/.delivery/`, correctly read **both** ledger files present — including
+one written by *that very session's own* real Skill-tool call, logged by the hook in real
+time and read back successfully within the same run (the exact same-session-race question
+`harden-02` left open, incidentally answered here in the affirmative for this one case) —
+and correctly classified every governed artifact: `Invoked` for the two seeded entries
+(caveated, correctly, as resting on a suspect fixture — see below), `Not-invoked` for
+every artifact with no matching line, including this project's own `prd.md`,
+`architecture.md`, `roadmap.md`, and `stories/*`.
+
+**This one real test caught four genuine problems, unprompted:**
+1. The seeded ledger file (`live-status-test.ndjson`) was flagged as a suspicious leftover
+   that didn't match what this story's *own* earlier notes claimed had been built and
+   cleaned up — correct; it was in fact a fresh, different seed for this specific test,
+   left on disk when the report ran. Removed after.
+2. `harden-03`'s frontmatter (`in-progress`) didn't match `stories/README.md`'s table and
+   prose (`draft`) — a real drift introduced when `harden-03` was updated but the index
+   wasn't. Fixed in the same pass as this note.
+3. The *installed* plugin (`~/.claude/plugins/cache/.../delivery/0.10.0/`) is stale
+   relative to this repo's working copy — real, useful operational information: none of
+   this session's fixes are live for this plugin's actual installed users yet.
+4. Most significantly: applied to this project itself, the mechanism honestly reported
+   that most of this epic's own planning artifacts — including the PRD, architecture,
+   roadmap and these stories — are **not-invoked**, because they were written directly
+   rather than through a literal per-phase Skill-tool call. Not a defect in the check; the
+   check working exactly as designed, on its own authors. Recorded plainly in
+   `stories/README.md` rather than left for a reader to notice unassisted.
+
+`status: in-progress`, not `ready` — the mechanism is now proven against real,
+live-produced data end to end, but the live-fire gap `harden-02`/`harden-03` still name for
+their own specific unconfirmed cases (mid-run-error firing, capture-tool firing in an
+interactive session) means this story inherits the same honest caveat, one level up.

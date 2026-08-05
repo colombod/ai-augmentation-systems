@@ -2,7 +2,7 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Skill|Agent",
+        "matcher": "Skill|Agent|mcp__Claude_Browser__computer|mcp__Claude_Code_iOS_Simulator__control",
         "hooks": [
           {
             "type": "command",
@@ -14,7 +14,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "Skill|Agent",
+        "matcher": "Skill|Agent|mcp__Claude_Browser__computer|mcp__Claude_Code_iOS_Simulator__control",
         "hooks": [
           {
             "type": "command",

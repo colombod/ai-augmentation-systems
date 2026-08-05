@@ -5,6 +5,10 @@
 // so an invoked/not-invoked status (harden-06, /delivery:status) never has to
 // trust the orchestrating agent's own narration.
 //
+// harden-03 — also records real capture-tool calls (e.g. a browser
+// screenshot action), so FR-9's verification-channel cross-check
+// (harden-07) has something real to check a claimed screenshot against.
+//
 // Binding constraint (do not relax): never write raw tool_input. Only the
 // whitelisted fields below. This ledger is git-tracked with the project, and
 // raw tool_input on other tool types can carry file contents or secrets.
@@ -95,6 +99,41 @@ function findDeliveryRoot(startDir) {
   return findDeliveryRootDownward(startDir, DOWNWARD_SEARCH_MAX_DEPTH);
 }
 
+// harden-03 — capture-tool discrimination (FR-9's channel cross-check).
+// Sourced from each tool's own JSON-schema `action` enum, not a live capture
+// — headless test sessions confirmed (empirically, 2026-08-05) to have no
+// access to either tool, so their real firing behavior is unverified; the
+// discriminating field/value is the tool's own documented contract, not a
+// guess. `mcp__Claude_Browser__computer` is the exact tool named in the real
+// elba-dreaming evidence this whole mechanism is built from — not a
+// coincidental match. `zoom` counts for that tool because its own
+// description is "Take a screenshot of a specific region for closer
+// inspection" — a capture, just cropped.
+//
+// Environment-dependent, stated plainly: these are the tool names this
+// environment's MCP servers use. A project with a different browser/capture
+// tool (Playwright MCP, Puppeteer, none at all) simply never matches this
+// map — harmless, not an error — but its screenshots won't be tracked until
+// its real tool names are added here the same way these were: from the
+// tool's own schema, or from real evidence of what that project actually
+// uses.
+const CAPTURE_TOOL_ACTIONS = {
+  'mcp__Claude_Browser__computer': new Set(['screenshot', 'zoom']),
+  'mcp__Claude_Code_iOS_Simulator__control': new Set(['screenshot']),
+};
+
+function captureActionFrom(toolName, toolInput) {
+  const allowedActions = CAPTURE_TOOL_ACTIONS[toolName];
+  if (!allowedActions) return null;
+  if (!toolInput || typeof toolInput !== 'object') return null;
+  const action = toolInput.action;
+  return allowedActions.has(action) ? action : null;
+}
+
+function isGovernedToolCall(toolName) {
+  return toolName === 'Skill' || toolName === 'Agent' || toolName in CAPTURE_TOOL_ACTIONS;
+}
+
 function invokedNameFrom(toolName, toolInput) {
   if (!toolInput || typeof toolInput !== 'object') return null;
   if (toolName === 'Skill') return toolInput.skill || null;
@@ -106,6 +145,7 @@ function buildRecord(payload) {
   const toolName = payload.tool_name || null;
   const hookEvent = payload.hook_event_name || null;
   const outcome = hookEvent === 'PostToolUseFailure' ? 'error' : 'success';
+  const captureAction = captureActionFrom(toolName, payload.tool_input);
 
   return {
     ts: new Date().toISOString(),
@@ -113,6 +153,10 @@ function buildRecord(payload) {
     hook_event: hookEvent,
     tool_name: toolName,
     invoked_name: invokedNameFrom(toolName, payload.tool_input),
+    // Only set for a known capture tool called with a capture-type action
+    // (e.g. "screenshot") — null for everything else, including non-capture
+    // actions on the same tool (a "scroll" or "click" is not a capture).
+    capture_action: captureAction,
     tool_use_id: payload.tool_use_id || null,
     outcome,
     cwd: payload.cwd || null,
@@ -122,9 +166,21 @@ function buildRecord(payload) {
 function recordInvocation(payload, options) {
   const cwdForResolution = (options && options.cwd) || payload.cwd || process.cwd();
 
-  // Only Skill and Agent tool calls are governed-artifact-relevant; ignore
-  // everything else even if hooks.json's matcher ever widens.
-  if (payload.tool_name !== 'Skill' && payload.tool_name !== 'Agent') return null;
+  // Governed = Skill/Agent invocations (FR-1-4) or a real capture-tool call
+  // (FR-9's channel cross-check). Everything else is ignored even if
+  // hooks.json's matcher ever widens — this is the actual filter of record.
+  if (!isGovernedToolCall(payload.tool_name)) return null;
+
+  // A non-capture action on a capture-capable tool (e.g. a plain click or
+  // scroll on the browser tool) is not itself governed — only Skill/Agent
+  // calls and genuine capture actions are.
+  if (
+    payload.tool_name !== 'Skill' &&
+    payload.tool_name !== 'Agent' &&
+    !captureActionFrom(payload.tool_name, payload.tool_input)
+  ) {
+    return null;
+  }
 
   const deliveryRoot = findDeliveryRoot(cwdForResolution);
   if (!deliveryRoot) return null; // nothing governed here yet — no-op, not an error
@@ -161,6 +217,9 @@ module.exports = {
   findDeliveryRootUpward,
   findDeliveryRootDownward,
   invokedNameFrom,
+  captureActionFrom,
+  isGovernedToolCall,
   buildRecord,
   recordInvocation,
+  CAPTURE_TOOL_ACTIONS,
 };
