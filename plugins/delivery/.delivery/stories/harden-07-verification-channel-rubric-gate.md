@@ -1,7 +1,7 @@
 ---
 id: harden-07
 title: Require a real render and an honest rubric citation for UI acceptance verdicts
-status: ready
+status: in-progress
 epic: harden
 supersedes: []
 superseded_by: []
@@ -122,4 +122,23 @@ end-to-end test this story has.
 
 ## Implementation notes
 
-*(filled in during and after implementation)*
+**The rule is written; one real gap is inherited from `harden-03`, not hidden.** The
+standing check moved into `agents/qa-strategist.md` (not `sprint-review/SKILL.md` alone,
+per the fix this story exists to make), `skills/sprint-review/SKILL.md` now points to it
+instead of duplicating it, and `templates/sprint-review.md` gained the `Channel` and
+`Rubric rule` columns.
+
+**What doesn't work yet, stated plainly:** `harden-03` (the capture-tool matcher spike)
+was not completed — it hit the same session-restart limitation as `harden-02`. `hooks.json`
+currently only registers on `Skill|Agent` tool calls; it does not yet record real
+screenshot/capture-tool invocations at all. This means the "cross-check a claimed channel
+against the ledger" half of this rule has nothing to cross-check against yet for an actual
+screenshot — the ledger will show no matching entry for *any* claimed capture, real or not,
+until `hooks.json`'s matcher is extended with real capture-tool names. The rule as written
+handles this correctly in spirit (a missing ledger entry reads as not-met, which is the
+safe direction — a real screenshot not yet trackable is treated the same as an untracked
+one, not silently passed), but it means every UI-facing verdict will currently read
+not-met on the channel check specifically, not just the ones that deserve it, until
+`harden-03` actually runs. **This is a known, named limitation, not a silent gap:**
+extending `hooks.json`'s matcher with real capture-tool names, once `harden-03` confirms
+them, is what turns this from "correctly conservative" into "correctly discriminating."

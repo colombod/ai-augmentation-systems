@@ -45,6 +45,34 @@ that phase's exit criteria, not merely on whether the file exists. A file that e
 fails its exit criteria is **in progress**; saying otherwise gives false confidence, which
 is the specific failure this skill exists to prevent.
 
+**Invocation status — was each governed artifact actually invoked, or only narrated?**
+Read every `.delivery/invocations/*.ndjson` file (one per session; read all of them, this
+project's full history, not just the current session's). For each governed artifact in the
+Gather table above, report one of three states, as a distinct, scannable marker — never a
+blank cell someone could mistake for "invoked" by skimming past it:
+
+- **Invoked** — a ledger line exists recording a real tool call that produced this artifact.
+- **Not-invoked** — the artifact's file exists (or was claimed as produced), but no matching
+  ledger line exists anywhere in this project's invocation history. This is the state that
+  catches narration standing in for a real step — report it even when the file itself looks
+  complete and passes its own exit criteria; those are different questions.
+- **Untraceable** — the check itself could not be made (no `.delivery/invocations/` directory
+  exists at all for this project, e.g. because it predates this mechanism). State this
+  explicitly, distinct from a confirmed **not-invoked** — one means "we looked and found
+  nothing," the other means "we could not look."
+
+**History is preserved, not overwritten.** An artifact once flagged not-invoked, later
+re-produced by a real invocation, reports as **Invoked** now — but the report also notes
+that an earlier gap existed and when it closed. A retried invocation (an error followed by
+a real success for the same artifact) is not a contradiction; the most recent real outcome
+is the state of record, and the retry itself is visible in the ledger, not hidden.
+
+**Keep this scannable at scale.** A long project can accumulate many governed artifacts and
+many sessions' worth of ledger files. Group or summarize (e.g. "12 of 14 artifacts invoked,
+2 not-invoked — listed below" rather than one unreadable row per artifact per session) —
+the point is a reader can tell the state at a glance, not that every raw ledger line is
+reproduced in the report.
+
 **Open findings.** Read `.delivery/reviews/`. Report every finding still `open`,
 blocking ones first, with the artifact they target. This is the highest-value section:
 an adversarial review whose findings are ignored is worse than no review, and this is

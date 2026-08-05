@@ -35,6 +35,13 @@ Where the runner used its own task IDs rather than `FR-n` (superpowers does), us
 
 **1. Verify acceptance criteria independently.** Delegate to `delivery:qa-strategist` (via the Agent tool; if subagents are unavailable, adopt the persona from `${CLAUDE_PLUGIN_ROOT}/agents/`). Read the criteria first, then check each against the current code — not against the sprint log. Every criterion gets met / not-met / partially-met with concrete evidence: the test that covers it, or the behavior observed.
 
+For any criterion describing rendered, visible behavior, this delegation applies
+`delivery:qa-strategist`'s standing rule for verifying a UI-facing claim (see that agent's
+own file — the channel must be a real capture, cross-checked against the invocation
+ledger, and a visual "met" verdict must cite a `design-system.md` `Rule ID` or state
+plainly that none exists). This is the same rule whether or not the work was checked ad
+hoc before this formal review ever ran — it does not get a lighter version here.
+
 **2. Run the test suite yourself** and report the real output. A sprint that claimed green and is now red is the single most important thing this review can catch.
 
 **3. Check design system conformance.** Where a design system exists, delegate to `delivery:design-lead`: which tokens were used, which were bypassed with hardcoded values, which component states are missing, which contrast rules fail. Report file paths, not impressions.

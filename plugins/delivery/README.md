@@ -179,8 +179,12 @@ requirements no story covers and documents that have drifted apart.
 
 ## Adapting it
 
-Everything is markdown. Edit `agents/*.md` to change a persona's stance, or
+Almost everything is markdown. Edit `agents/*.md` to change a persona's stance, or
 `templates/*.md` to change what an artifact must contain — skills reference the
 templates, so both stay in step. To relocate `.delivery/` for a project, state the path
 explicitly in that project's `CLAUDE.md`/`AGENTS.md` — every skill checks there before
 falling back to the default above.
+
+The one exception: `hooks/` ships a small Node script, registered on real tool-call
+events, that records whether a phase actually ran — not something an agent can narrate
+past. See `.delivery/decisions/ADR-001-hook-based-invocation-provenance.md` for why.

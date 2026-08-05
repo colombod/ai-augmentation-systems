@@ -1,7 +1,7 @@
 ---
 id: harden-06
 title: Report invoked, not-invoked, and untraceable per governed artifact
-status: ready
+status: in-progress
 epic: harden
 supersedes: []
 superseded_by: []
@@ -94,8 +94,21 @@ running `/delivery:status` against the fixture ledger files above (placed at
 
 ## Dependencies
 
-- `harden-05` must be `done` first — this story has nothing to read without it.
+- `harden-05` must be `done` first — this story has nothing to read without it (and
+  `harden-05` itself is `in-progress`, not `done` — see its own notes).
 
 ## Implementation notes
 
-*(filled in during and after implementation)*
+**Rule written into `skills/status/SKILL.md` (new "Invocation status" subsection under
+"Assess"), and walked through against a real, not synthetic-in-name-only, ledger** — the
+ledger for this test was produced by actually calling `harden-05`'s real
+`recordInvocation()` function with three realistic events (a clean invocation, a
+retry-after-error, and one artifact left with no matching call at all, reproducing the
+real attractor-orchestration incident shape). Applying the rule as written to that real
+ledger correctly produced: Invoked (1 attempt), Invoked (2 attempts, retry visible, most
+recent outcome wins), and Not-invoked. Scratch files cleaned up afterward.
+
+**What this does and doesn't prove:** this confirms the *logic* is internally correct
+against realistic data shapes. It does not confirm the logic holds against a live-session
+ledger produced by the real hook firing in production — that's the same open item
+`harden-05` names, not a new gap. `status: in-progress`, not `ready`, for that reason.

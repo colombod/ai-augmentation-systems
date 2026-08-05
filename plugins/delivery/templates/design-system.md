@@ -4,6 +4,15 @@ Token and state tables are data and excluded.
 Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md. Cut restatement, narration
 and hedging first; never cut findings, citations, grounding labels, open questions, or
 IDs a later phase reads. Over the cap? Say so in the document, and why.
+
+RULE ID SCHEME — every row below carries a stable `Rule ID` so a later acceptance check
+(e.g. `/delivery:sprint-review`) can cite exactly which rule a rendered capture was checked
+against, rather than paraphrasing. IDs are never reused, even if a row is removed.
+  COLOR-n     — Tokens > Colour
+  TYPE-n      — Tokens > Type scale
+  SPACING-n   — Tokens > Spacing, radii, elevation, motion
+  COMP-<name>-<state> — Components, one per component/state pair
+  A11Y-n      — Accessibility
 -->
 
 # Design system
@@ -11,6 +20,8 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 > Phase 7 artifact. Owned by Design Lead.
 > **Seed from originator:** <verbatim>
 > Everything below is marked **seeded** (given) or **inferred** (extrapolated).
+> Every row carries a `Rule ID` — see the scheme in this file's header comment — so a
+> later acceptance check can cite it directly instead of paraphrasing the rule.
 > Last updated: <date>
 
 ## Intent
@@ -34,18 +45,18 @@ Named with intent, not raw values. Map to real project token names where they ex
 
 ### Colour
 
-| Token | Value | Intent | Project name | Seeded / inferred |
-| :-- | :-- | :-- | :-- | :-- |
+| Rule ID | Token | Value | Intent | Project name | Seeded / inferred |
+| :-- | :-- | :-- | :-- | :-- | :-- |
 
 ### Type scale
 
-| Token | Size / line-height / weight | Use | Seeded / inferred |
-| :-- | :-- | :-- | :-- |
+| Rule ID | Token | Size / line-height / weight | Use | Seeded / inferred |
+| :-- | :-- | :-- | :-- | :-- |
 
 ### Spacing, radii, elevation, motion
 
-| Token | Value | Use |
-| :-- | :-- | :-- |
+| Rule ID | Token | Value | Use |
+| :-- | :-- | :-- | :-- |
 
 Cover the cases implementers will hit. A missing token is why hardcoded values appear.
 
@@ -53,16 +64,16 @@ Cover the cases implementers will hit. A missing token is why hardcoded values a
 
 ### <Component>
 
-| State | Appearance | Behavior |
-| :-- | :-- | :-- |
-| default | | |
-| hover | | |
-| focus | | |
-| active | | |
-| disabled | | |
-| loading | | |
-| **error** | | |
-| **empty** | | |
+| Rule ID | State | Appearance | Behavior |
+| :-- | :-- | :-- | :-- |
+| `COMP-<name>-default` | default | | |
+| `COMP-<name>-hover` | hover | | |
+| `COMP-<name>-focus` | focus | | |
+| `COMP-<name>-active` | active | | |
+| `COMP-<name>-disabled` | disabled | | |
+| `COMP-<name>-loading` | loading | | |
+| `COMP-<name>-error` | **error** | | |
+| `COMP-<name>-empty` | **empty** | | |
 
 Error and empty are mandatory — they are where design most often supplies nothing
 and users most need direction.
@@ -71,9 +82,9 @@ and users most need direction.
 
 Computed, not asserted.
 
-| Pairing | Ratio | WCAG | Pass |
-| :-- | :-- | :-- | :-- |
-| text on surface | 0.0:1 | AA 4.5:1 | |
+| Rule ID | Pairing | Ratio | WCAG | Pass |
+| :-- | :-- | :-- | :-- | :-- |
+| `A11Y-1` | text on surface | 0.0:1 | AA 4.5:1 | |
 
 **Focus indicator:**
 **Minimum touch target:**

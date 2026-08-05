@@ -1,7 +1,7 @@
 ---
 id: harden-02
 title: "Spike: confirm hook firing reliability, field names, and crash isolation"
-status: ready
+status: in-progress
 epic: harden
 supersedes: []
 superseded_by: []
@@ -100,4 +100,26 @@ None — this can start immediately.
 
 ## Implementation notes
 
-*(filled in during and after implementation)*
+**Partial completion, honestly reported — not the full spike.** `hooks/scripts/probe-invocation.js`
+was built as specified. A live test was attempted: a project-level `.claude/settings.json`
+registering the probe on `PostToolUse` was created mid-session, and two real tool calls were
+made against it. **Neither fired.** Finding: hook configuration loads once at session start
+and does not hot-reload — a config file written mid-session has no effect until a restart.
+This itself is a real, useful spike result (it wasn't assumed, it was tested), but it means
+the acceptance criteria requiring ≥20 real invocations and same-session race behavior are
+**not met by this pass** — that requires a fresh session with the hook already configured
+before it starts, which this implementation session could not do without restarting.
+
+**What is answered, from authoritative current documentation rather than live-session
+testing:** exact field names (`session_id`, `tool_name`, `tool_input`, `tool_use_id`,
+`tool_result`, `cwd`, `hook_event_name`) confirmed via a live fetch of
+`code.claude.com/docs/en/hooks`, dated 2026-08-05. Spike 5 (crash isolation) is answered
+directly and unambiguously by that same documentation: both `PostToolUse` and
+`PostToolUseFailure` are documented as unable to block a tool call under any exit code,
+because both fire only after the tool has already resolved — structurally, not just by
+convention. Treated as a sourced answer, not re-derived empirically.
+
+**Status:** `harden-05`/`harden-06` were built against the documented field names above.
+The ≥20-invocation firing-reliability measurement remains open — run it in a fresh session
+before trusting this mechanism at production scale, per the risk this story's own
+acceptance criteria named.

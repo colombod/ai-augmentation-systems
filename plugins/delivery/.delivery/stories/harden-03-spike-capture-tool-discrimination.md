@@ -1,7 +1,7 @@
 ---
 id: harden-03
 title: "Spike: confirm capture-tool discrimination for the real toolset in evidence"
-status: ready
+status: draft
 epic: harden
 supersedes: []
 superseded_by: []
@@ -87,4 +87,10 @@ None technically, though sharing a probe session with `harden-02` is efficient.
 
 ## Implementation notes
 
-*(filled in during and after implementation)*
+**Not attempted this pass.** `harden-02` established that hook config written mid-session
+doesn't take effect without a restart, which blocks this story's live-testing requirement
+the same way. Rather than build a capture-tool-specific probe extension that couldn't
+actually be run and tested, this was left in `draft` — building untested probe code and
+marking it `ready` would repeat exactly the failure this whole effort exists to fix.
+`harden-07` proceeds without this spike's confirmed matcher list; see its own
+Implementation Notes for how that gap was handled.

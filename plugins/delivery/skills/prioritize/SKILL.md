@@ -61,6 +61,20 @@ Load-bearing beats enhancement. A feature that prevents abandonment for two pers
 - What the stage lets you learn — each stage should answer a question, since a stage that teaches nothing could have been merged into the next one
 - Why the excluded features can wait, in terms of the friction map
 
+**Evidence-only marker — check this for every stage, every run, not just the first time.**
+Look at the `Confidence` column for every persona the stage names as completing a journey
+end to end. If **every one** of them reads `assumed` — no `observed`, no `reported`, not
+even one — the stage cannot be written as plain "ready." Render the marker
+`**⚠ Evidence-only — every supporting persona is `assumed`-grade.**` immediately under the
+stage's `**Includes:**` line in `templates/prioritization.md`, not as a footnote or an aside
+buried in prose. A stage with even one `observed` or `reported` persona backing it gets no
+marker — this only fires when *nothing* behind the stage is confirmed, including the case
+where a stage cites no personas at all (that is stricter than "all assumed," not an
+exemption from it). This is a check you re-run every time this skill runs against an
+existing `prioritization.md`, not a stamp applied once: if a persona's grounding is later
+upgraded from `assumed` to `observed` or `reported`, the marker on any stage that depended
+on it is removed on the next run, without anyone having to remember to clear it by hand.
+
 **4. Define milestones.** Each milestone gets a demonstrable outcome — what you would show, and to whom. Distinguish **release milestones** (users get something) from **learning milestones** (you find something out, such as a spike or a real-research checkpoint from the backlog). Both are legitimate; conflating them is not.
 
 **5. Have the Program Manager check feasibility.** Delegate to `delivery:program-manager` for whether the stages can actually be sequenced this way, and what dependencies would force a reorder.

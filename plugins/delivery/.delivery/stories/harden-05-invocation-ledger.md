@@ -1,7 +1,7 @@
 ---
 id: harden-05
 title: Record real skill invocations to a durable, per-session ledger
-status: ready
+status: in-progress
 epic: harden
 supersedes: []
 superseded_by: []
@@ -119,4 +119,20 @@ not the same claim as confirming it fires inside a real session).
 
 ## Implementation notes
 
-*(filled in during and after implementation)*
+**Built and unit-tested; live verification still pending, deliberately not claimed as
+done.** `hooks/hooks.json`, `hooks/scripts/record-invocation.js`, and
+`hooks/scripts/record-invocation.test.js` all exist. All 15 unit tests pass, run for real
+(`node --test`, not just written) — field whitelisting, NDJSON append, `.delivery/`
+resolution, retry handling, and the exit-0-under-malformed-input guarantee are all
+genuinely exercised against synthetic payloads matching the field names current Claude
+Code docs confirm.
+
+**What is not yet verified:** `harden-02` came back partial, not passed — hook firing
+inside a real session could not be tested this pass (config doesn't hot-reload). This
+story proceeded anyway, against `ADR-001`'s dependency note, because the alternative
+(waiting indefinitely) blocks the entire epic on a session-restart this build pass
+couldn't perform, and the field names used are independently sourced from current
+documentation, not from `harden-02`'s incomplete probe run. **Before trusting this in
+production:** register `hooks.json` for real (install the plugin, or start a fresh
+session with it configured), run ≥20 real Skill invocations, and confirm the ledger
+matches what these unit tests assume. That is the one open item this build did not close.
