@@ -78,15 +78,18 @@ gets built.** Recorded as a hard architecture constraint, not a preference, belo
 transcript evidence in either engagement studied — the honest move is to ship the
 evidenced findings first and treat her as provisional, conditional on the constraint above.
 
-**Status, post-build (sprint-review verdict: Accepted with debt).** The MVP boundary
-itself does not change — no scope was cut or added. What changed is confidence: FR-1–FR-8
-and FR-11 are proven by real, live testing (21/21 invocations logged correctly, a real
-`.delivery/`-resolution defect found and fixed in the process). FR-9/FR-10/FR-12 are built
-and unit-tested but their live-fire behavior in a real interactive session is unconfirmed
-— carried as debt **D-1** (mid-run-error firing, low risk, closes opportunistically) and
-**D-2** (capture-tool live-fire, higher risk — a false "not-met" on real correct work is
-possible until confirmed). Neither is a blocker; both are named, owned, and scheduled in
-`roadmap.md`'s new Phase 4, not silently dropped.
+**Status, post-build (sprint-review verdict: Accepted with debt; debt since closed
+2026-08-06).** The MVP boundary itself never changed — no scope was cut or added. FR-1–FR-8
+and FR-11 were proven first by real, live testing (21/21 invocations logged correctly, a
+real `.delivery/`-resolution defect found and fixed in the process). FR-9/FR-10/FR-12 were
+built and unit-tested with live-fire behavior initially unconfirmed — carried as debt
+**D-1** (mid-run-error firing) and **D-2** (capture-tool live-fire, the higher-risk item: a
+false "not-met" on real correct work was possible until confirmed). **Both are now closed**:
+a genuine browser-tool failure produced a correctly-logged `PostToolUseFailure`/
+`outcome: "error"` entry (closing D-1), and a genuine screenshot produced a correctly-logged
+`capture_action: "screenshot"` entry (closing D-2) — both observed live, in an actual
+interactive session, not synthesized. Full evidence in `roadmap.md`'s Phase 2/3 sections and
+each story's own Implementation Notes.
 
 ### Stage 2
 
@@ -116,8 +119,8 @@ used at least once by someone other than this document's own author.
 | :-- | :-- | :-- | :-- | :-- |
 | M1 | Learning | **Done** — ADR-001 resolved hooks-based (passive); Stage 2 confirmed safely deferrable | solution-architect | — |
 | M2 | Release | **Done, live-verified** — 21/21 real invocations correctly logged | The operator who insists on spec-traceable proof | FR-1–FR-4 |
-| M3 | Release | **Done with debt (D-1, D-2)** — evidence marker proven; channel/rubric logic built and unit-tested, live-fire unconfirmed | The operator who checks in periodically | FR-5–FR-12 |
-| M4 | Learning | **Now the active next milestone** — real usage data on whether anyone behaves like the operator who reads only the verdict, and the natural venue to close D-1/D-2 | product-owner | M2, M3 shipped — met; blocked only on an actual real project to run this on (see `roadmap.md` Phase 4) |
+| M3 | Release | **Done, debt closed** — evidence marker proven; channel/rubric logic built, unit-tested, and now live-fire-confirmed (D-1, D-2 both closed 2026-08-06) | The operator who checks in periodically | FR-5–FR-12 |
+| M4 | Learning | **Active, narrowed** — D-1/D-2 closed opportunistically in this project's own session, not via an external one; M4's actual question (does the reads-only-the-verdict persona show up in real, independent usage) is still open | product-owner | M2, M3 shipped — met; blocked on a real external project to run this on (see `roadmap.md` Phase 4) |
 | M5 | Release | A session cannot report "done" without a real self-correction check behind it | The operator who reads only the verdict, if M4 confirms her | Stage 2 |
 
 ## Confidence

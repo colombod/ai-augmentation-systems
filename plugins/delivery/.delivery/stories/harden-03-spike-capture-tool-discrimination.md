@@ -1,7 +1,7 @@
 ---
 id: harden-03
 title: "Spike: confirm capture-tool discrimination for the real toolset in evidence"
-status: in-progress
+status: done
 epic: harden
 supersedes: []
 superseded_by: []
@@ -112,13 +112,19 @@ extend the governance filter, and 11 new unit tests (31/31 total passing) cover 
 both capture and non-capture actions, and the full record/no-op behavior. `hooks.json`'s
 matcher was extended to include both tool names for real.
 
-**Honestly stated limit, not hidden:** this cannot be live-fire-tested from within this
-project at all right now — it needs an interactive session (not headless) with the hook
-already configured *before* that session starts, which is not something achievable from
-inside an already-running session (the same mid-session-doesn't-hot-reload constraint
-`harden-02` found, compounded by headless mode's own tool restriction). The logic is real,
-tested against the tools' own real contracts, and reused the identical governance/whitelist
-pattern already live-verified for Skill/Agent calls — but the specific claim "this fires
-correctly for a real screenshot in a real interactive session" remains unconfirmed by
-direct observation. Also environment-dependent by design: a project using a different
-capture tool (Playwright MCP, etc.) needs its own tool name added the same way.
+**D-2 closed — real live-fire, confirmed in an actual interactive session.** A real
+screenshot was taken using the actual browser tool in a live, ongoing conversation (not
+headless, not a fresh subprocess) — and it was correctly logged:
+`{"tool_name":"mcp__Claude_Browser__computer","capture_action":"screenshot",
+"outcome":"success"}`, written to `.delivery/invocations/`. A `zoom` action logged
+correctly too. This also corrected an earlier assumption from `harden-02`: that finding
+was that *project-level `.claude/settings.json`* changes don't take effect mid-session —
+true, and correctly diagnosed at the time. It does not generalize to *plugin-bundled*
+`hooks.json`: this conversation was already running when the plugin cache was synced with
+the fix, and its hook started firing correctly on real tool calls shortly after, with no
+restart. That distinction — project settings vs. plugin-bundled hooks — was not understood
+when this story was first written, and is recorded here now that it's been observed.
+
+Environment-dependent by design, unchanged: a project using a different capture tool
+(Playwright MCP, etc.) needs its own tool name added to `CAPTURE_TOOL_ACTIONS` the same way
+these two were — from the tool's own schema, not a guess.

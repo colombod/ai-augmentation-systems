@@ -1,7 +1,7 @@
 ---
 id: harden-05
 title: Record real skill invocations to a durable, per-session ledger
-status: in-progress
+status: done
 epic: harden
 supersedes: []
 superseded_by: []
@@ -153,16 +153,16 @@ did more work than instructed before stopping; still logged correctly). This is 
 live, harness-triggered evidence across 21 independent process launches, not a synthetic
 payload asserting the shape docs say to expect.
 
-**One thing this pass did not confirm:** the `PostToolUseFailure` / `outcome: "error"`
-path. A deliberately-invalid skill name (`delivery:this-skill-does-not-exist-xyz`) was
-used to try to trigger it — the call errored as expected, but produced **no ledger entry
-at all**, for either outcome. Reading the result: an invalid skill name appears to be
-rejected before a real tool call is ever dispatched, so no `PostToolUse`/`PostToolUseFailure`
-event fires for that specific failure mode — it's a different kind of failure than "the
-tool ran and then failed," which is what `FR-2`'s mid-run-error case actually describes.
-Confirming the true mid-run-error path needs a skill that starts running and then fails
-partway (e.g. a real permission or runtime error), which this pass didn't attempt further,
-for cost reasons — flagged as the one real remaining gap, not silently assumed to work.
+**Update — the `PostToolUseFailure` / `outcome: "error"` path is now closed too.** The
+attempt above (an invalid skill name) confirmed only that rejection-before-dispatch
+produces no event — a real, useful negative result, but not `FR-2`'s actual mid-run-error
+case. That case closed separately, for real: during live interactive use, a browser
+navigation to a genuinely unreachable domain left the tab in a broken state, and an
+immediate screenshot attempt in that state was denied by the tool itself — a real dispatch,
+a real failure. `PostToolUseFailure` fired correctly:
+`{"tool_name":"mcp__Claude_Browser__computer","capture_action":"screenshot",
+"outcome":"error"}`, logged with the same shape as every successful entry. `status: done`
+— every acceptance criterion in this story is now met with real, live evidence.
 
 All test/scratch artifacts (ledger files, the temporary project-level `.claude/settings.json`
 used only for this test, `/tmp` output files) were removed after verification. Nothing from

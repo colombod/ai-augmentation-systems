@@ -95,3 +95,20 @@ substituted for it throughout, which is a stronger signal, not a gap.
 | :-- | :-- | :-- | :-- |
 | D-1 | `PostToolUseFailure` mid-run-error firing unconfirmed live | Every observed failure mode already degrades to the safe "not-invoked" state; closing this doesn't change any real user's outcome | Opportunistically — log the next real mid-run failure when it naturally occurs, not manufactured |
 | D-2 | Capture-tool (`FR-9`/`FR-10`/`FR-12`) live-fire unconfirmed in a real interactive session | Higher-risk than D-1 (a false "not-met" on real correct work is possible) but can only be closed by real usage, which is the next wave's own purpose | Next wave — confirm during real-project usage, not a bespoke spike |
+
+## Addendum — both debt items closed (2026-08-06)
+
+**This does not revise the verdict above** — "Accepted with debt" was the correct call on
+2026-08-05 evidence, and stays the record of what was true then. What changed since: both
+D-1 and D-2 were closed, opportunistically as the table above anticipated, but by a
+different route than "next wave's real-project usage" — during ordinary live interactive
+use of this plugin in this same project's own session. A genuine browser-tool failure
+(navigation to an unreachable domain, followed by a screenshot attempt in the resulting
+broken state) produced a correctly-logged `PostToolUseFailure`/`outcome: "error"` entry,
+closing D-1. A genuine successful screenshot in a working state produced a correctly-logged
+`capture_action: "screenshot"`/`outcome: "success"` entry, closing D-2. Both are real,
+live-observed events, not synthesized payloads. Full evidence in `roadmap.md`'s Phase 2/3
+sections and in `harden-02`, `harden-03`, `harden-05`, `harden-06`, and `harden-07`'s own
+Implementation Notes. `roadmap.md` and `prioritization.md` have been updated to reflect
+this; this review file is left as an accurate record of the 2026-08-05 state plus this note
+of what changed after.

@@ -64,3 +64,15 @@ No end date exists to move. The MVP boundary holds. The next command is `/delive
 only if a formal handoff to an external runner is wanted for Phase 4 — otherwise Phase 4 is
 simply: point this plugin, hook active, at a real project, and let D-1/D-2 resolve through
 actual use rather than more engineering.
+
+## Addendum — D-1/D-2 resolved opportunistically, ahead of Phase 4's original plan (2026-08-06)
+
+This cycle's own realign plan for Phase 4 (above and in `roadmap.md`) expected D-1/D-2 to
+close through use of an external real project. Instead, both closed inside this same
+project's own live session, before an external project was ever identified — a genuine
+mid-run tool failure and a genuine successful screenshot both fired and logged correctly
+during ordinary interactive use. `roadmap.md` and `prioritization.md` are updated: Phase 4
+is narrowed to its remaining, unfulfilled purpose only — gathering real evidence toward
+milestone M4 (whether the reads-only-the-verdict persona shows up), which still needs an
+actual external project and cannot be answered by this same closure. This addendum records
+the plan-vs-actual gap rather than quietly rewriting the original Phase 4 scope.
