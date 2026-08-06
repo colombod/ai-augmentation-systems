@@ -1,7 +1,7 @@
 ---
 id: harden-01
 title: Add a citable rule-ID column to the design-system template
-status: ready
+status: done
 epic: harden
 supersedes: []
 superseded_by: []
