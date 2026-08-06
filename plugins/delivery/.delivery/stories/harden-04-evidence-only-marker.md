@@ -1,7 +1,7 @@
 ---
 id: harden-04
 title: Flag stages backed entirely by unconfirmed evidence
-status: ready
+status: done
 epic: harden
 supersedes: []
 superseded_by: []

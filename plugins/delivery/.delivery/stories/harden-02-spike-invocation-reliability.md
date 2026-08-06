@@ -143,7 +143,7 @@ directly and unambiguously by that same documentation: both `PostToolUse` and
 because both fire only after the tool has already resolved — structurally, not just by
 convention. Treated as a sourced answer, not re-derived empirically.
 
-**Status:** `harden-05`/`harden-06` were built against the documented field names above.
-The ≥20-invocation firing-reliability measurement remains open — run it in a fresh session
-before trusting this mechanism at production scale, per the risk this story's own
-acceptance criteria named.
+**Status:** `harden-05`/`harden-06` were built against the documented field names above,
+then live-verified — see "Real results" earlier in this file. The ≥20-invocation target is
+met (21/21). What remains open, precisely: the `PostToolUseFailure` mid-run-error firing
+case, and capture-tool firing in a real interactive session (see `harden-03`'s notes).
