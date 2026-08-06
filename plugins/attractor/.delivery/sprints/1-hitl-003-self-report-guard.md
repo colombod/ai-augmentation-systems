@@ -66,7 +66,7 @@ intentionally skipped — same shape must hold after).
 | p1-01 | FR-18 | `ADR-006` exists with the CODERGEN-only decision, citations, `## Residual risk` section, FR-12 caveat | file exists, reviewed for the four required elements |
 | p1-01 | FR-18 | `directPredecessor(graph, nodeId)` exported from `graph.ts`, in-degree-1 semantics | unit test, `graph.test.ts` or inline in `lint.test.ts` |
 | p1-01 | FR-18 | `HITL-003` fires correctly on P1–P5, does not fire on N1–N8 | 13 of the 16-case matrix in `p1-01`'s Test approach |
-| p1-01 | FR-18 | Advisory-only: `hasErrors()` stays `false` on a firing fixture (B1); co-fires cleanly with `HAND-001` (B2); message content meets the B3 bar | 3 boundary tests |
+| p1-01 | FR-18 | Advisory-only: every diagnostic `HITL-003` reports on a firing fixture is `Severity.WARNING` (B1 — not graph-wide `hasErrors()`, which is unsatisfiable on a real `Handler.HUMAN` fixture since `HAND-001` always co-fires); co-fires cleanly with `HAND-001` (B2); message content meets the B3 bar | 3 boundary tests |
 | p1-01 | FR-18 | `README.md` documents `HITL-003`, its severity, and the FR-12 gap | diff review |
 | p1-01 | FR-18 | Full suite green, zero regressions | `node --test` output |
 
@@ -102,15 +102,49 @@ Design decisions belong to the Solution Architect. Do not redesign mid-run.
 
 | Story | Outcome | Criteria met | Evidence | Commit |
 | :-- | :-- | :-- | :-- | :-- |
-| p1-01 | | | | |
+| p1-01 | done | 8 of 8 | `node --test` (full suite) green, `HITL-003`/`directPredecessor` fixtures pass, `ADR-006` and `README.md` reviewed against the four/three required elements per criterion | `b48450f` (feat: add HITL-003), `f833d59` (fix: restore Handler.HUMAN gate, correct B1, rebuild bundle); a subsequent whole-branch-review correction pass closed `directPredecessor`'s duplicate-edge/self-loop blind spot and fixed the documentation-accuracy findings recorded below |
 
 **Actual test output** (the output itself, not a claim about it):
 
 ```
+$ cd plugins/attractor/engine && node --test
+ℹ tests 507
+ℹ suites 0
+ℹ pass 506
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 6573.437167
 ```
 
 **Conflicts with the spec encountered:**
 
+The plan/spec/story all specified test B1 ("advisory only") as asserting
+`hasErrors(lint(graph)) === false` on the P1 fixture — unsatisfiable, since `HAND-001` (ERROR)
+always co-fires on any real `Handler.HUMAN` node while the handler stays in
+`UNREGISTERED_HANDLER_KINDS`. Discovered during the first implementation attempt and initially
+worked around by reshaping the test fixture rather than the assertion, which incidentally
+dropped the separate `Handler.HUMAN` gating check from the rule body (the two defects were
+connected, not independent). Both were caught and fixed in a follow-up commit: the gating
+check was restored, and B1 was corrected to its real, satisfiable shape — `HITL-003`'s own
+diagnostics are never `ERROR`-severity
+(`hitl003(src).every(d => d.severity === Severity.WARNING)`), the actual "advisory only"
+guarantee. A defect in the plan's B1 assertion, not in the implementation once corrected; see
+`p1-01`'s Implementation notes for the full account.
+
 **Design system deviations, and why:** N/A — no design system for this project.
 
 **Anything the next planning cycle should know:**
+
+`directPredecessor`'s original raw in-degree count had a blind spot: duplicate edges from the
+same source node (e.g. separate labelled success/failure branches), and self-loops, inflated
+the incoming-edge count and caused `HITL-003` to silently go quiet on graphs with really only
+one meaningful predecessor. Now fixed (dedupe by source node, exclude self-edges) without
+touching the genuinely-ambiguous case: a gate fed by edges from two or more GENUINELY
+DIFFERENT predecessor nodes — a rework/retry loop, say, where an initial review node and a
+later revision node both feed the same gate — still silently disqualifies the rule, by design,
+since lint cannot know at analysis time which branch's output actually reached the
+gate at runtime. This residual risk is now named explicitly in ADR-006 and is a candidate for a
+future `HITL-003` extension (alongside the already-tracked multi-hop and `Handler.TOOL` gaps,
+PRD Open Questions 11 and 12).

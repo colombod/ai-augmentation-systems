@@ -93,12 +93,19 @@ not new to `HITL-003`, and this slice states it rather than fixing it (Open Ques
 
 ## Error handling
 
-`HITL-003` is WARNING severity and must never affect `hasErrors()` — a firing fixture must
-still lint clean of *errors* (test B1). It coexists with `HAND-001`, which today fires as an
-ERROR on the same node whenever a real human-gate fixture is built (`Handler.HUMAN` is still
-in `UNREGISTERED_HANDLER_KINDS`) — both diagnostics must appear without suppressing each
-other (test B2). This mirrors `HITL-001`'s own already-accepted pattern of linting a
-human-gate node's attributes while the handler itself is unregistered.
+`HITL-003` is WARNING severity and must never itself report at ERROR severity — every
+diagnostic `HITL-003` produces on a firing fixture must be `Severity.WARNING` (test B1). This
+is *not* the same as asserting `hasErrors(lint(graph)) === false` on that fixture: `HAND-001`
+(ERROR) always co-fires on any real `Handler.HUMAN` node today, since the handler is still in
+`UNREGISTERED_HANDLER_KINDS`, so a graph-wide `hasErrors()` check on a P1-shaped fixture is
+unsatisfiable — it is always `true`, never `false`, on a fixture where `HITL-003` actually
+fires. B1 instead asserts the per-diagnostic form of the advisory-only guarantee: `HITL-003`'s
+own diagnostics never carry
+ERROR severity, regardless of what else co-fires on the same node. It coexists with
+`HAND-001`, which today fires as an ERROR on the same node whenever a real human-gate fixture
+is built (`Handler.HUMAN` is still in `UNREGISTERED_HANDLER_KINDS`) — both diagnostics must
+appear without suppressing each other (test B2). This mirrors `HITL-001`'s own already-accepted
+pattern of linting a human-gate node's attributes while the handler itself is unregistered.
 
 ## Testing
 
@@ -145,7 +152,7 @@ directly before writing fixtures):**
 | N6 | `CODERGEN` two hops back, through an intermediate node built to **not** itself resolve to `CODERGEN` | does not fire — multi-hop residual risk, paired with P1 |
 | N7 | Sole predecessor is `Handler.START` | does not fire — in-degree 1 but not `CODERGEN` |
 | N8 | `human.channel="agentic_reviewer"` | does not fire — substring-trap guard |
-| B1 | `hasErrors(lint(graph))` on P1 | `false` — advisory only |
+| B1 | Every diagnostic `HITL-003` reports on P1 (`hitl003(src).every(d => d.severity === Severity.WARNING)`) | `true` — advisory only, per-diagnostic (not `hasErrors()` graph-wide, which is unsatisfiable here since `HAND-001` (ERROR) always co-fires on a real `Handler.HUMAN` fixture) |
 | B2 | `HITL-003` + `HAND-001` on one unregistered-`Handler.HUMAN` fixture | both codes present |
 | B3 | Message content on P1 | names predecessor id; states advisory/non-blocking; claims no multi-hop/`TOOL` detection |
 

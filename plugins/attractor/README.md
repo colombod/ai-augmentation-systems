@@ -227,10 +227,17 @@ mechanism and belongs in its own change.
 predecessor, and only recognises `Handler.CODERGEN` as a provable source --
 not `Handler.TOOL`, whose output is written conditionally on exit code and so
 cannot be proven at lint time (ADR-006). A multi-hop chain, or a `Handler.TOOL`
-node feeding the gate, is invisible to it. It is also invisible on a direct
-`new Engine(...)` embed today: `Engine.run()` only checks `hasErrors()`
-(ERROR-only, per ADR-004), so a WARNING-severity rule reaches an embedder's
-own output only if that embedder reads `lint()`'s return value directly.
+node feeding the gate, is invisible to it. A gate fed by two or more edges
+from the same predecessor node (e.g. separate labelled success/failure
+branches) still resolves correctly, but a gate fed by edges from two or more
+*genuinely different* predecessor nodes -- a rework/retry loop, for instance,
+where both an initial review node and a later revision node feed the same
+gate -- still silently disqualifies the rule, since lint cannot know which
+branch's output actually reached the gate at runtime (see ADR-006's residual
+risk section). It is also invisible on a direct `new Engine(...)` embed
+today: `Engine.run()` only checks `hasErrors()` (ERROR-only, per ADR-004), so
+a WARNING-severity rule reaches an embedder's own output only if that
+embedder reads `lint()`'s return value directly.
 
 ## Lint rules
 

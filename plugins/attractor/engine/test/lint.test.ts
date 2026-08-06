@@ -1556,6 +1556,56 @@ test('HITL-003 does not fire when the gate has two direct predecessors', () => {
   assert.equal(hitl003(src).length, 0)
 })
 
+// directPredecessor's in-degree blind spot: raw incoming-edge count can be
+// inflated by duplicate/self-loop edges from what is really a single
+// meaningful predecessor. Exercised here through hitl003() fixtures
+// (matching this file's existing convention -- graph.ts helpers like
+// outgoingEdges have no direct unit tests either, only exercise through
+// lint rule behavior) rather than by importing directPredecessor directly.
+
+test('HITL-003 fires when two edges (e.g. labelled success/failure branches) come from the same CODERGEN predecessor', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review
+    review -> gate [label="success"]
+    review -> gate [label="failure"]
+    gate -> done
+  }`
+  const found = hitl003(src)
+  assert.equal(found.length, 1)
+  assert.match(found[0].message, /review/)
+})
+
+test('HITL-003 fires through a self-loop on the gate node, still resolving to the real predecessor', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review -> gate
+    gate -> gate
+    gate -> done
+  }`
+  const found = hitl003(src)
+  assert.equal(found.length, 1)
+  assert.match(found[0].message, /review/)
+})
+
+test('HITL-003 fires when an identical duplicate edge from the same predecessor is declared twice', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review -> gate
+    review -> gate
+    gate -> done
+  }`
+  const found = hitl003(src)
+  assert.equal(found.length, 1)
+  assert.match(found[0].message, /review/)
+})
+
 test('HITL-003 does not fire for a Handler.TOOL predecessor without outputs=', () => {
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]

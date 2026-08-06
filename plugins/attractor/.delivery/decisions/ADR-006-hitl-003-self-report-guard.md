@@ -23,15 +23,28 @@ whose declared or effective output could match, or specifically a `Handler.CODER
 `human.channel` contains the token `"agent"`, its `human.context=` is non-empty, and its
 sole direct predecessor (in-degree exactly 1) resolves to `Handler.CODERGEN`.
 
-`handlers/box.ts`'s `BoxHandler.execute` merges `outcome.contextUpdates` into context
-unconditionally, before any success/failure branch — a `CODERGEN` predecessor can be proven,
-statically, to have written *something* to context. `handlers/tool.ts`'s `ToolHandler.execute`
-(lines 139-151) writes `tool.last_line`/`tool.output` only when `result.code === 0` — a
-`TOOL` predecessor's write is conditional on a runtime exit code lint cannot see, so it
-cannot be proven the same way. Including `Handler.TOOL` as a provable kind would produce a
-false positive on the most natural topology this feature exists to catch ("tool fails →
-escalate to a human/agent gate", where the tool node by construction did *not* write its
-output).
+The `human.channel`/`human.context` attribute names this rule reads are not this ADR's to
+invent — they are defined by
+`.superpowers/specs/2026-08-05-human-gate-channels-design.md` §5 ("Graph attributes"), a
+design that converged 5/5 and is treated here as resolved, not open prose. If a future
+implementation of those attributes diverges from what is assumed here (e.g. the shape of
+`human.context`, or the meaning of the `"agent"` channel token), this ADR should be
+revisited.
+
+`handlers/box.ts`'s `BoxHandler.execute` merges `{last_stage, last_response}` into context
+unconditionally, on every execution regardless of outcome (lines 179-183) — `last_response`
+is the model's own prose (`outcome.notes`, truncated), so a `CODERGEN` predecessor can be
+proven, statically, to have written *something* to context: the exact self-report evidence
+this rule cares about. (`outcome.contextUpdates` is merged earlier in the same handler,
+lines 122-141, but only conditionally — when the backend returns `contextUpdates` at all,
+and after the `isEngineManagedKey` filter — so it is not itself a sound basis for "this
+predecessor definitely wrote something"; the unconditional `last_stage`/`last_response`
+merge is.) `handlers/tool.ts`'s `ToolHandler.execute` (lines 139-151) writes
+`tool.last_line`/`tool.output` only when `result.code === 0` — a `TOOL` predecessor's write
+is conditional on a runtime exit code lint cannot see, so it cannot be proven the same way.
+Including `Handler.TOOL` as a provable kind would produce a false positive on the most
+natural topology this feature exists to catch ("tool fails → escalate to a human/agent
+gate", where the tool node by construction did *not* write its output).
 
 The rule does not check *which* key `human.context=` names against what the predecessor
 wrote — `INFERRED_OUTPUTS_BY_HANDLER[Handler.CODERGEN]` is deliberately `[]` (`dot/graph.ts`)
@@ -69,13 +82,26 @@ being treated as closed:
   direct predecessor. Pinned by test N6.
 - **`Handler.TOOL` predecessors, declared or not.** Excluded by the decision above, with or
   without an `outputs=` declaration. Pinned by test N5.
+- **Multiple genuinely different direct predecessors — e.g. a rework/retry loop.** A gate fed
+  by two or more edges from the SAME direct-predecessor node is now correctly resolved to
+  that one predecessor (`directPredecessor` dedupes by source node and excludes self-edges);
+  a gate fed by two or more edges from GENUINELY DIFFERENT predecessor nodes still silently
+  disqualifies the rule, exactly like the two-distinct-predecessor case above. This is a
+  common, realistic topology in this engine's own worked examples, not an exotic one — a
+  rework loop where an initial review node and a later revision node both feed the same
+  human/agent gate. Intentional and deferred, not a bug: lint has no way to know at analysis
+  time which branch's output actually reached the gate at runtime, so disqualifying rather
+  than guessing is the same "no honest cross-reference at lint time" principle that governs
+  the rest of this rule. Pinned by the existing "two direct predecessors" test.
 - **Embedded-`Engine` visibility.** Per ADR-004, `Engine.run()` only checks `hasErrors()`
   (ERROR-only) — a direct `new Engine(...)` embed does not see this WARNING at all today.
   This is a pre-existing gap affecting every WARNING-severity rule, not new to `HITL-003`,
   tracked under Open Question 7 / FR-12. This rule states the gap; it does not close it.
 
 Both structural gaps and the visibility gap are tracked as Open Questions in
-`.delivery/prd.md` (owner: Product Owner / Solution Architect), not left to be rediscovered.
+`.delivery/prd.md` (owner: Product Owner / Solution Architect), not left to be rediscovered:
+the multi-hop gap is Open Question 11, the `Handler.TOOL` gap is Open Question 12, and the
+visibility gap is the pre-existing Open Question 7.
 
 ## Consequences
 

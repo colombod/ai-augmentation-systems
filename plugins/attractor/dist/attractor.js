@@ -3067,9 +3067,10 @@ function outgoingEdges(graph, nodeId) {
   return graph.edges.filter((e) => e.from === nodeId);
 }
 function directPredecessor(graph, nodeId) {
-  const incoming = graph.edges.filter((e) => e.to === nodeId);
-  if (incoming.length !== 1) return null;
-  return graph.nodes.get(incoming[0].from) ?? null;
+  const incoming = graph.edges.filter((e) => e.to === nodeId && e.from !== nodeId);
+  const distinctSources = new Set(incoming.map((e) => e.from));
+  if (distinctSources.size !== 1) return null;
+  return graph.nodes.get([...distinctSources][0]) ?? null;
 }
 function findByHandler(graph, kind) {
   return [...graph.nodes.values()].filter((n) => n.handler === kind);

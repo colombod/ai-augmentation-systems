@@ -323,14 +323,20 @@ test('HITL-003 does not fire on a channel name merely containing the substring "
   assert.equal(hitl003(src).length, 0)
 })
 
-test('HITL-003 never sets hasErrors() -- advisory only', () => {
+test('HITL-003 never reports an error-severity diagnostic -- advisory only', () => {
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     review [shape=box, prompt="summarize"]
     gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
     start -> review -> gate -> done
   }`
-  assert.equal(hasErrors(lint(parseDot(src))), false)
+  // NOT `assert.equal(hasErrors(lint(parseDot(src))), false)` -- that graph-wide
+  // form is unsatisfiable on this fixture, since `HAND-001` (ERROR) always
+  // co-fires on any real `Handler.HUMAN` node while the handler remains
+  // unregistered. The per-diagnostic form below is the satisfiable, real
+  // shape of the "advisory only" guarantee: HITL-003's OWN diagnostics are
+  // never ERROR-severity, regardless of what else co-fires on the same node.
+  assert.ok(hitl003(src).every((d) => d.severity === Severity.WARNING))
 })
 
 test('HITL-003 co-fires with HAND-001 without interference, since Handler.HUMAN is still unregistered', () => {

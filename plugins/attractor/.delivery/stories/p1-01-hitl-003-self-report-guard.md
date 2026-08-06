@@ -133,18 +133,20 @@ does not change the verdict.
 
 ## Acceptance criteria
 
-- [ ] `FR-18` — `ADR-006-hitl-003-self-report-guard.md` exists: CODERGEN-only decision with
+- [x] `FR-18` — `ADR-006-hitl-003-self-report-guard.md` exists: CODERGEN-only decision with
       citations, a `## Residual risk` section, the FR-12 visibility caveat.
-- [ ] `FR-18` — `directPredecessor` is exported from `graph.ts`: sole predecessor at in-degree 1,
+- [x] `FR-18` — `directPredecessor` is exported from `graph.ts`: sole predecessor at in-degree 1,
       `null` otherwise, condition-agnostic.
-- [ ] `FR-18` — fixture P1 produces exactly one `HITL-003` diagnostic, severity `warning`, `node`
+- [x] `FR-18` — fixture P1 produces exactly one `HITL-003` diagnostic, severity `warning`, `node`
       set to the gate id, message naming the gate, the predecessor, and `"agent"`.
-- [ ] `FR-18` — `hasErrors(lint(graph))` on P1 is `false` (B1).
-- [ ] `FR-18` — none of N1–N8 fire `HITL-003`; P2–P5 all do, per the matrix below.
-- [ ] `FR-18` — `HITL-003`/`HAND-001` both appear on one unregistered-`Handler.HUMAN` fixture (B2);
+- [x] `FR-18` — every diagnostic `HITL-003` reports on P1 is `Severity.WARNING` (B1) — not
+      graph-wide `hasErrors(lint(graph)) === false`, which is unsatisfiable on P1 since
+      `HAND-001` (ERROR) always co-fires on a real `Handler.HUMAN` fixture.
+- [x] `FR-18` — none of N1–N8 fire `HITL-003`; P2–P5 all do, per the matrix below.
+- [x] `FR-18` — `HITL-003`/`HAND-001` both appear on one unregistered-`Handler.HUMAN` fixture (B2);
       P1's message meets B3's content bar.
-- [ ] `FR-18` — `README.md` names `HITL-003`, its severity, and the FR-12 embedded-`Engine` gap.
-- [ ] `FR-18` — `node --test` (no path, from `engine/`) passes, zero regressions.
+- [x] `FR-18` — `README.md` names `HITL-003`, its severity, and the FR-12 embedded-`Engine` gap.
+- [x] `FR-18` — `node --test` (no path, from `engine/`) passes, zero regressions.
 
 ## Test approach
 
@@ -169,7 +171,7 @@ real gap):
 | N6 | `CODERGEN` two hops back, through an intermediate node that is the gate's real direct predecessor. Build the intermediate so it does **not** itself resolve to `CODERGEN` (e.g. `type="tool"` or a `diamond` shape) — a bare/`box`-shaped intermediate defaults to `CODERGEN` too (`graph.ts:79-88`) and would silently collapse this into P1 | does not fire — paired with P1, proves the rule inspects the direct predecessor only; named in ADR-006's Residual risk |
 | N7 | Sole predecessor is `Handler.START` | does not fire — in-degree 1 but not `CODERGEN` |
 | N8 | `human.channel="agentic_reviewer"` | does not fire — guards the substring trap (`CMD-001` precedent) |
-| B1 | `hasErrors(lint(graph))` on P1 | `false` — advisory only |
+| B1 | Every diagnostic `HITL-003` reports on P1 (`hitl003(src).every(d => d.severity === Severity.WARNING)`) | `true` — advisory only, per-diagnostic (graph-wide `hasErrors(lint(graph)) === false` is unsatisfiable here: `HAND-001` (ERROR) always co-fires on a real `Handler.HUMAN` fixture) |
 | B2 | `HITL-003` + `HAND-001` on one unregistered-`Handler.HUMAN` fixture | both codes present |
 | B3 | Message content on P1 | names predecessor id; states advisory/non-blocking; claims no multi-hop/`TOOL` detection |
 
@@ -202,3 +204,19 @@ and the `HAND-001` pattern, with no dependency on `Handler.HUMAN` being register
 
 Filled in during and after implementation. Record surprises, deviations from the plan and the
 reason, and follow-up work — anything a future reader would want.
+
+- **B1's original assertion was unsatisfiable — a plan defect, not an implementation
+  defect.** The plan/spec/story/sprint all described B1 as asserting
+  `hasErrors(lint(graph)) === false` on the P1 fixture. Unsatisfiable: `HAND-001` (ERROR)
+  always co-fires on a real `Handler.HUMAN` node while the handler stays in
+  `UNREGISTERED_HANDLER_KINDS`. Discovered during the first implementation attempt, and
+  initially worked around by reshaping the fixture instead of the assertion — which
+  incidentally dropped the separate `Handler.HUMAN` gating check from the rule body, since
+  the reshaped fixture no longer exercised it. The two defects were connected, not
+  independent: chasing the unsatisfiable assertion by mutating the fixture is what silently
+  broke the gating check. Both were caught and fixed together in a later commit: the
+  `Handler.HUMAN` gating check was restored, and B1 was corrected to its real, satisfiable
+  shape — `HITL-003`'s own diagnostics are never ERROR-severity
+  (`hitl003(src).every(d => d.severity === Severity.WARNING)`), the actual "advisory only"
+  guarantee, rather than a graph-wide `hasErrors()` claim. The fix was the assertion shape,
+  not the fixture.
