@@ -84,11 +84,27 @@ surface, per artifact type:
 available in this environment, `mcp__terminal__read_terminal`, returns terminal content
 "with ANSI codes stripped" per its own description — a text-level read, exactly the DOM-vs-
 screenshot trap `S-3` already exists to catch, just for a terminal instead of a webpage. It
-does **not** satisfy `FR-19` alone. A general-purpose desktop screenshot tool
-(`mcp__computer-use__screenshot`) could plausibly capture a terminal panel's real rendered
-pixels including color and layout, which would satisfy `FR-19` — but this is unconfirmed,
-not live-fire tested, exactly the same epistemic state Spike 4 started in for the browser
-tool before `harden-03` confirmed it for real. Recorded here rather than assumed either way.
+does **not** satisfy `FR-19` alone.
+
+**Update, 2026-08-06 — real candidates found, none yet confirmed integrated here.** A web
+search (not memory — this space moves fast) turned up purpose-built tools that do exactly
+what `FR-19` needs: drive a real terminal with real keystrokes and capture its real rendered
+state, not a text dump.
+
+| Candidate | What it actually does |
+| :-- | :-- |
+| [VHS](https://github.com/charmbracelet/vhs) (Charmbracelet) | Scripts a real terminal session from a `.tape` file (types commands, presses keys, waits) and captures real PNG screenshots or GIF/video of the actual rendered terminal — mature, widely used, not experimental |
+| [tui_mcp](https://github.com/Fabian2000/tui_mcp) | An MCP server: drives a TUI through a real PTY + embedded `vt100` terminal emulator, full keyboard/mouse input, screen readout as text **or PNG** |
+| `mcp-tui-test`, `tui-test-ghost`, `agent-tui`, `specter` | Same category — MCP-era tools explicitly built to let an agent drive and screenshot a TUI, "like Playwright for TUI applications" (one project's own description) |
+
+None of these are confirmed installed or wired into this Claude Code session today — that
+distinction still matters, and `mcp__computer-use__screenshot` of a visible terminal panel
+remains a fallback candidate if none of the above get integrated. What changes is the shape
+of Spike 6: it is no longer "does anything like this exist" (open, possibly negative) but
+"integrate one of these named, real candidates and confirm it actually works end to end" —
+a bounded, much more likely-to-succeed spike, the same way `harden-03` turned an unconfirmed
+capability into a confirmed one for the browser tool. `harden-08`'s story is updated to
+reflect this.
 
 ## Interfaces and data contracts
 
@@ -143,7 +159,7 @@ Reworded per QA review where the original phrasing wasn't checkable.
 | 3 | Do `TaskCreated`/`TaskCompleted` mean subagent completion, or the general task-tracking tool? (`SubagentStart`/`SubagentStop` look like the real subagent events per current docs, contradicting the PRD's own earlier assumption) | 0.5 day | Whether the deferred gate can reuse this ledger's event vocabulary unmodified |
 | 4 | Enumerate the concrete capture-tool names used in the elba-dreaming session specifically (not a general taxonomy — matches the PRD's own non-goal against broadening evidence), and confirm a hook can tell a screenshot action apart from other actions on the same tool | 1 day | The matcher list for Mechanism 3; whether `FR-12`'s reproduction actually reproduces |
 | 5 | Confirm a crashing/erroring `PostToolUse` hook cannot silently block the call it observes, verified for this specific event (not assumed from the general docs table) | 0.5 day | Whether the recorder is safe to ship as pure side-channel logging |
-| 6 (added 2026-08-06) | Is any tool in this environment confirmed able to produce a real visual capture of a rendered terminal — `mcp__computer-use__screenshot` of a terminal panel is the one plausible candidate identified so far, unconfirmed | 0.5 day, same shape as Spike 4 | `FR-19`'s Mechanism 3 extension; whether TUI verification can ever be more than "unable to be checked" |
+| 6 (added 2026-08-06, refined) | Integrate and confirm one of the real named TUI-driving/capture candidates (VHS, `tui_mcp`, or similar — see Mechanism 3 extension above) end to end in this environment, or confirm none can be integrated and the fallback (`mcp__computer-use__screenshot` of a terminal panel) is what ships instead | 0.5–1 day | `FR-19`'s Mechanism 3 extension; whether TUI verification can ever be more than "unable to be checked" |
 
 **Post-implementation update (2026-08-05):** Spikes 1, 2 and 5 were run for real against
 this repository, not just estimated. 5 fresh headless sessions each genuinely invoked the

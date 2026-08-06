@@ -31,11 +31,20 @@ invocation with observed output is already how any agent runs a command. The TUI
 different: `architecture.md`'s Mechanism 3 extension already found that
 `mcp__terminal__read_terminal`, the one terminal-reading tool confirmed present in this
 environment, explicitly strips ANSI codes — a text-level read, not a visual one, and
-therefore not sufficient by itself. `mcp__computer-use__screenshot` is named as a plausible
-candidate (a desktop screenshot that happens to include a terminal panel's real rendered
-pixels), but this is unconfirmed — the same epistemic state Spike 4 started in for the
-browser tool before `harden-03` confirmed it for real. This spike closes that gap the same
-way.
+therefore not sufficient by itself.
+
+**Update — real candidates identified, not yet confirmed integrated.** A web search (not
+memory alone — this space moves fast) found purpose-built tools that do exactly what this
+spike needs: drive a real terminal with real keystrokes and capture its real rendered
+state. See `architecture.md`'s Mechanism 3 extension for the full table. Leading
+candidates: [VHS](https://github.com/charmbracelet/vhs) (Charmbracelet — scripts a real
+terminal session, captures real PNG/GIF of the rendered result; mature, widely used) and
+[tui_mcp](https://github.com/Fabian2000/tui_mcp) (an MCP server purpose-built for this: a
+real PTY + `vt100` emulator, full keyboard/mouse input, screen readout as text **or PNG**).
+Neither is confirmed installed or wired into this Claude Code session — that's this spike's
+actual job now: not "does anything like this exist" (it does), but "get one working here,
+for real, and show a genuine capture." `mcp__computer-use__screenshot` of a visible terminal
+panel remains the fallback if integrating a dedicated tool isn't practical in this pass.
 
 ## Files and modules
 
@@ -56,15 +65,18 @@ description alone.
 
 ## Acceptance criteria
 
-- [ ] `FR-19` — a concrete determination exists: either a specific tool is confirmed able to
-  produce a real visual capture of a rendered terminal (name it, and show one real capture
-  as evidence), or no such tool is confirmed available in this environment today (state that
-  plainly, so `qa-strategist.md`'s "unable to be checked" path has something concrete to
-  point to instead of an open question).
-- [ ] If a candidate tool is confirmed, at least one real example distinguishes a genuinely
+- [ ] `FR-19` — a concrete determination exists: either a real candidate (VHS, `tui_mcp`, or
+  a fallback) is confirmed working end to end in this environment, with one genuine capture
+  as evidence, or none can be integrated in this pass — state that plainly, so
+  `qa-strategist.md`'s "unable to be checked" path has something concrete to point to
+  instead of an open question.
+- [ ] If a candidate is confirmed, at least one real example distinguishes a genuinely
   color/layout-bearing terminal capture from what `mcp__terminal__read_terminal`'s
   ANSI-stripped text would have shown for the same moment — a real side-by-side, not an
   assumption that they'd differ.
+- [ ] If a candidate requires driving real keystrokes (not just capturing a static screen),
+  at least one real example shows the capture reflecting a state reached by simulated typing
+  — not merely a screenshot of whatever was already on screen.
 - [ ] Findings are written into `architecture.md`'s Spikes table (Spike 6's row), marked
   answered, following the same evidence standard Spikes 1–5 were held to (real, not
   synthetic-in-name-only).
@@ -76,20 +88,23 @@ description alone.
 
 | Case | Expected |
 | :-- | :-- |
-| A real terminal panel with visibly non-default state (color output, a TUI-style layout) is captured with the candidate tool | Capture shows the real visual state, not just the text content |
+| A TUI is driven with real simulated keystrokes via a candidate tool, reaching a specific visible state | Capture shows that real reached state, not a default/idle screen |
 | The same moment is read with `mcp__terminal__read_terminal` for comparison | Text-only, ANSI stripped — confirms the gap this spike exists to close |
-| No candidate tool can be confirmed in the available environment | Recorded as a real negative result, not left silent or assumed positive |
+| Integrating the leading candidate (VHS or `tui_mcp`) fails or isn't practical in this pass | Recorded as a real negative result for that candidate specifically, then the next candidate or the fallback is tried — not silently given up on |
+| No candidate can be confirmed working at all | Recorded as a real negative result, not left silent or assumed positive |
 
-**Run with:** manual — this needs an interactive session with a real terminal panel visible
-and a capture tool available; a headless session cannot exercise this, per the same
-structural limit `harden-03` found for browser tools.
+**Run with:** manual — this needs an interactive session with a real terminal available and
+whichever candidate tool is being evaluated actually installed/reachable; a headless session
+cannot exercise this, per the same structural limit `harden-03` found for browser tools.
 
 ## Out of scope
 
 - Building the TUI channel enforcement itself (`harden-10`) — this story only produces the
   confirmed tool answer that depends on.
-- Any capture tool not already present in this environment — no new MCP server integration
-  work is in scope here.
+- Standardizing on a final tool for every project using this plugin, or wiring it into a
+  general per-project configuration mechanism — this spike confirms *one real example
+  works*, matching `harden-03`'s own scope discipline against building a general taxonomy
+  before the narrow case is proven.
 
 ## Dependencies
 
@@ -97,6 +112,8 @@ None — can run independently of `harden-09`.
 
 ## Implementation notes
 
-Not yet run. `architecture.md`'s current Spikes table (Spike 6 row) reflects the
-unconfirmed state as of 2026-08-06 — `mcp__computer-use__screenshot` named as the one
-plausible candidate, not yet live-fire tested.
+Not yet run. `architecture.md`'s current Spikes table (Spike 6 row) reflects the state as
+of 2026-08-06: real, named candidates identified via research (VHS, `tui_mcp`, and similar
+MCP-era tools purpose-built for driving and capturing TUIs) — none yet confirmed integrated
+or live-fire tested in this environment. `mcp__computer-use__screenshot` of a visible
+terminal panel remains the fallback if a dedicated candidate can't be integrated.
