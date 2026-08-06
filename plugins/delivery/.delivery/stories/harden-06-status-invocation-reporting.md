@@ -1,7 +1,7 @@
 ---
 id: harden-06
 title: Report invoked, not-invoked, and untraceable per governed artifact
-status: in-progress
+status: done
 epic: harden
 supersedes: []
 superseded_by: []
@@ -94,8 +94,8 @@ running `/delivery:status` against the fixture ledger files above (placed at
 
 ## Dependencies
 
-- `harden-05` must be `done` first — this story has nothing to read without it (and
-  `harden-05` itself is `in-progress`, not `done` — see its own notes).
+- `harden-05` must be `done` first — this story has nothing to read without it. (Now
+  `done`.)
 
 ## Implementation notes
 
@@ -140,7 +140,6 @@ every artifact with no matching line, including this project's own `prd.md`,
    check working exactly as designed, on its own authors. Recorded plainly in
    `stories/README.md` rather than left for a reader to notice unassisted.
 
-`status: in-progress`, not `ready` — the mechanism is now proven against real,
-live-produced data end to end, but the live-fire gap `harden-02`/`harden-03` still name for
-their own specific unconfirmed cases (mid-run-error firing, capture-tool firing in an
-interactive session) means this story inherits the same honest caveat, one level up.
+**Update — `status: done`.** `harden-02`/`harden-03`'s previously-open cases (mid-run-error
+firing, capture-tool firing in a real interactive session) are now both confirmed live —
+see their own Implementation Notes. This story's caveat is closed along with them.

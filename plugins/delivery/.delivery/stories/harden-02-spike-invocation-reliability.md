@@ -1,7 +1,7 @@
 ---
 id: harden-02
 title: "Spike: confirm hook firing reliability, field names, and crash isolation"
-status: in-progress
+status: done
 epic: harden
 supersedes: []
 superseded_by: []
@@ -122,9 +122,18 @@ ahead of the write. This is a real, single, positive data point, not a stress te
 race condition under load — worth stating precisely rather than claiming it as fully closed.
 
 A deliberately-invalid skill name was tried to test the failure path — it errored, but
-produced no hook firing at all (see `harden-05`'s notes: an invalid name appears to be
-rejected before a real tool call dispatches, which isn't the same failure mode as a tool
-call that starts and then fails). The genuine mid-run-error firing case remains untested.
+produced no hook firing at all (an invalid name is rejected before a real tool call
+dispatches, a different failure mode).
+
+**D-1 closed — real mid-run failure, confirmed live.** During real interactive use of this
+plugin (not headless), a browser navigation to a genuinely unreachable domain put the tab
+into a broken state; an immediate real screenshot attempt in that state was denied by the
+browser tool itself ("This site requires per-action approval") — a real dispatch, a real
+failure, not a rejection before the call was made. `PostToolUseFailure` fired correctly:
+`{"hook_event":"PostToolUseFailure","tool_name":"mcp__Claude_Browser__computer",
+"capture_action":"screenshot","outcome":"error"}`, logged to `.delivery/invocations/` with
+the same field shape as every successful entry. This is the exact case the story's
+acceptance criteria named as untested — closed with a real event, not manufactured.
 
 **Original attempt, kept for the record — not superseded, just insufficient on its own:**
 A project-level `.claude/settings.json` registering the probe on `PostToolUse` was created
@@ -143,7 +152,9 @@ directly and unambiguously by that same documentation: both `PostToolUse` and
 because both fire only after the tool has already resolved — structurally, not just by
 convention. Treated as a sourced answer, not re-derived empirically.
 
-**Status:** `harden-05`/`harden-06` were built against the documented field names above,
-then live-verified — see "Real results" earlier in this file. The ≥20-invocation target is
-met (21/21). What remains open, precisely: the `PostToolUseFailure` mid-run-error firing
-case, and capture-tool firing in a real interactive session (see `harden-03`'s notes).
+**Status: closed.** `harden-05`/`harden-06` were built against the documented field names
+above, then live-verified — see "Real results" earlier in this file. The ≥20-invocation
+target is met (21/21). The `PostToolUseFailure` mid-run-error case is now confirmed live
+(D-1, above). Capture-tool firing in a real interactive session is confirmed live too
+(D-2 — see `harden-03`'s notes). All acceptance criteria for this spike are now met with
+real, live evidence.

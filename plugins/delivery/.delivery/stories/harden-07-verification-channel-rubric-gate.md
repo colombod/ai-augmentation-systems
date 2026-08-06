@@ -1,7 +1,7 @@
 ---
 id: harden-07
 title: Require a real render and an honest rubric citation for UI acceptance verdicts
-status: in-progress
+status: done
 epic: harden
 supersedes: []
 superseded_by: []
@@ -137,13 +137,11 @@ real elba-dreaming evidence (`mcp__Claude_Browser__computer` is the exact tool t
 session used). This is no longer "correctly conservative, always not-met" — a real
 screenshot, if the ledger has a matching entry, now reads as a real channel match.
 
-**What's still open, stated plainly:** `harden-03` could not be live-fire-tested at all —
-headless sessions have no access to the browser tool (confirmed empirically, not assumed),
-and this project's own hook config can't be applied to *this* interactive session
-mid-session either. So the logic is real and unit-tested (31/31 passing, 11 of them
-specific to capture-action discrimination) against the tools' documented contracts, but
-"a real screenshot in a real interactive session produces a matching ledger entry" has not
-been directly observed — only inferred from the same governance/whitelist code path
-already live-verified 21-for-21 for Skill/Agent calls. This is the one honest gap left in
-the whole epic, and it needs an interactive session with the hook already active before
-launch to close — not achievable from inside a running session, headless or not.
+**Update — closed.** A real screenshot, taken with the actual browser tool in a live
+interactive session, produced a correctly-logged `capture_action: "screenshot"` ledger
+entry — the exact claim this section previously called unconfirmed. A separate real
+failure (a screenshot attempt genuinely denied by the browser tool after a broken
+navigation, not rejected before dispatch) produced a correctly-logged
+`PostToolUseFailure`/`outcome: "error"` entry too, closing the epic's other open item
+(`harden-02`'s D-1) in the same pass. `status: done`, all acceptance criteria met with
+real, live evidence — no remaining gap in this epic.
