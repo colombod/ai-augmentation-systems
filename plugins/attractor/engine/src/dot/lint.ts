@@ -8,6 +8,7 @@ import {
   RunsOn,
   runsOn,
   declaredOutputs,
+  directPredecessor,
   effectiveOutputs,
   findByHandler,
   outgoingEdges,
@@ -525,6 +526,34 @@ export function lint(graph: Graph): Diagnostic[] {
           `would abort with "no handler registered" mid-pipeline. Refused here instead, ` +
           `before anything runs.`,
       })
+    }
+
+    // HITL-003: an agent-inclusive human gate whose exposed context traces to
+    // a single, structurally-provable direct predecessor -- a self-report
+    // risk for the (not yet built) `agent` channel. WARNING, not ERROR: this
+    // is advisory, catching one authoring shape of the hazard AGENTS.md names
+    // ("verification inside the context that produced the evidence is not
+    // verification"), not a runtime guarantee. See ADR-006 for why the check
+    // is scoped to Handler.CODERGEN predecessors only, and for the residual
+    // risk (multi-hop chains, Handler.TOOL predecessors) this does not close.
+    const channelTokens = (node.attrs['human.channel'] ?? '').split(',').map((t) => t.trim())
+    const context = (node.attrs['human.context'] ?? '').trim()
+    if (channelTokens.includes('agent') && context !== '') {
+      const predecessor = directPredecessor(graph, node.id)
+      if (predecessor?.handler === Handler.CODERGEN) {
+        diags.push({
+          code: 'HITL-003',
+          severity: Severity.WARNING,
+          node: node.id,
+          message:
+            `human gate ${node.id} exposes context ("${node.attrs['human.context']}") to its ` +
+            `"agent" channel, but that context traces to its sole direct predecessor, ` +
+            `${predecessor.id}, which resolves to Handler.CODERGEN -- an LLM node whose own ` +
+            `output may be the "evidence" the agent then judges (self-report). Advisory only: ` +
+            `does not block the run, and does not detect multi-hop chains or Handler.TOOL ` +
+            `predecessors (see ADR-006).`,
+        })
+      }
     }
 
     // A goal gate is a fail-closed feature: the runtime match on `goal_gate`

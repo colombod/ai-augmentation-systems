@@ -223,6 +223,15 @@ that declares a key and succeeds without producing it is not reported. That is
 a real contract violation and a deliberate non-goal here; it is a second
 mechanism and belongs in its own change.
 
+`HITL-003` traces self-report risk through exactly one hop, to a node's direct
+predecessor, and only recognises `Handler.CODERGEN` as a provable source --
+not `Handler.TOOL`, whose output is written conditionally on exit code and so
+cannot be proven at lint time (ADR-006). A multi-hop chain, or a `Handler.TOOL`
+node feeding the gate, is invisible to it. It is also invisible on a direct
+`new Engine(...)` embed today: `Engine.run()` only checks `hasErrors()`
+(ERROR-only, per ADR-004), so a WARNING-severity rule reaches an embedder's
+own output only if that embedder reads `lint()`'s return value directly.
+
 ## Lint rules
 
 `TOPO-001` one start; `TOPO-002` one exit; `TOPO-003` edge targets exist;
@@ -239,10 +248,12 @@ sentinel; `RUNS-001` an unrecognised `runs_on` value (it would fall back to
 engine-managed or handler-owned key; `GATE-001` a failure route that reaches
 the exit without passing a goal gate; `HAND-001` a node resolves to a handler
 kind this build does not register (`hexagon`, `component`, `tripleoctagon`,
-`house` -- see [Node shapes](#node-shapes)).
+`house` -- see [Node shapes](#node-shapes)); `HITL-003` an agent-inclusive
+human gate whose exposed context traces to a single Handler.CODERGEN direct
+predecessor (self-report risk for the `agent` channel -- see ADR-006).
 
-`RUNS-002`, `DATA-001`, `GATE-001` and `CMD-001` are warnings; the rest are
-errors, and `attractor run` refuses a graph with any error.
+`RUNS-002`, `DATA-001`, `GATE-001`, `CMD-001` and `HITL-003` are warnings; the
+rest are errors, and `attractor run` refuses a graph with any error.
 
 ## Development
 

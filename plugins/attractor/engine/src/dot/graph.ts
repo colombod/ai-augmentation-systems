@@ -132,6 +132,12 @@ export function outgoingEdges(graph: Graph, nodeId: string): Edge[] {
   return graph.edges.filter((e) => e.from === nodeId)
 }
 
+export function directPredecessor(graph: Graph, nodeId: string): Node | null {
+  const incoming = graph.edges.filter((e) => e.to === nodeId)
+  if (incoming.length !== 1) return null
+  return graph.nodes.get(incoming[0].from) ?? null
+}
+
 export function findByHandler(graph: Graph, kind: HandlerKind): Node[] {
   return [...graph.nodes.values()].filter((n) => n.handler === kind)
 }
