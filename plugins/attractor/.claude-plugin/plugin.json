@@ -1,0 +1,10 @@
+{
+  "name": "attractor",
+  "version": "0.1.0",
+  "description": "DOT-graph convergence orchestration for Claude Code: nodes are computation, edges are dispatch, LLM nodes run as claude -p subprocesses.",
+  "author": { "name": "Diego Colombo", "url": "https://github.com/colombod" },
+  "homepage": "https://github.com/colombod/ai-augmentation-systems",
+  "repository": "https://github.com/colombod/ai-augmentation-systems",
+  "license": "MIT",
+  "keywords": ["orchestration", "pipeline", "dot", "graphviz"]
+}

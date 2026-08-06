@@ -1,0 +1,36 @@
+name: attractor tests
+
+# Scoped to plugins/attractor/** (plus this file) so a PR touching only one
+# plugin doesn't need the other plugin's workflow to run at all -- each
+# plugin's CI is independently green or red, easier to diagnose and fix.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/attractor/**'
+      - '.github/workflows/attractor-tests.yml'
+  pull_request:
+    paths:
+      - 'plugins/attractor/**'
+      - '.github/workflows/attractor-tests.yml'
+
+jobs:
+  test:
+    name: node --test (plugins/attractor/engine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # plugins/attractor/AGENTS.md: "Node >= 24, native TypeScript type
+          # stripping -- no build step for tests."
+          node-version: '24'
+
+      - name: Install dependencies
+        working-directory: plugins/attractor/engine
+        run: npm install
+
+      - name: Run test suite
+        working-directory: plugins/attractor/engine
+        run: node --test

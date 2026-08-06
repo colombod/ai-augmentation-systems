@@ -1,0 +1,31 @@
+name: delivery tests
+
+# Scoped to plugins/delivery/** (plus this file) so a PR touching only the
+# other plugin doesn't need this workflow to run at all -- each plugin's CI
+# is independently green or red, easier to diagnose and fix.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/delivery/**'
+      - '.github/workflows/delivery-tests.yml'
+  pull_request:
+    paths:
+      - 'plugins/delivery/**'
+      - '.github/workflows/delivery-tests.yml'
+
+jobs:
+  test:
+    name: node --test (plugins/delivery/hooks/scripts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # No package.json, no dependencies -- record-invocation.test.js uses
+      # only Node builtins (node:test, node:assert/strict, fs, os, path).
+      - name: Run test suite
+        run: node --test plugins/delivery/hooks/scripts/record-invocation.test.js

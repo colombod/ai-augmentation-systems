@@ -25,6 +25,13 @@
         "adversarial-review",
         "superpowers"
       ]
+    },
+    {
+      "name": "attractor",
+      "source": "./plugins/attractor",
+      "version": "0.1.0",
+      "description": "DOT-graph convergence orchestration for Claude Code: nodes are computation, edges are dispatch, LLM nodes run as claude -p subprocesses.",
+      "keywords": ["orchestration", "pipeline", "dot", "graphviz"]
     }
   ]
 }
