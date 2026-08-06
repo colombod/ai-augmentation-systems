@@ -5,7 +5,8 @@
 > against real cost in `roadmap.md`.
 > Evidence basis: real transcript evidence (not synthetic simulation — none was run; see
 > Confidence) for the two observed personas; zero real coverage for the assumed one.
-> Last updated: 2026-08-05
+> **Re-aligned 2026-08-05** per `.delivery/sprints/1-harden-mvp-review.md` (verdict:
+> Accepted with debt) — see the MVP section below for what changed.
 
 ## Staging rule
 
@@ -77,6 +78,16 @@ gets built.** Recorded as a hard architecture constraint, not a preference, belo
 transcript evidence in either engagement studied — the honest move is to ship the
 evidenced findings first and treat her as provisional, conditional on the constraint above.
 
+**Status, post-build (sprint-review verdict: Accepted with debt).** The MVP boundary
+itself does not change — no scope was cut or added. What changed is confidence: FR-1–FR-8
+and FR-11 are proven by real, live testing (21/21 invocations logged correctly, a real
+`.delivery/`-resolution defect found and fixed in the process). FR-9/FR-10/FR-12 are built
+and unit-tested but their live-fire behavior in a real interactive session is unconfirmed
+— carried as debt **D-1** (mid-run-error firing, low risk, closes opportunistically) and
+**D-2** (capture-tool live-fire, higher risk — a false "not-met" on real correct work is
+possible until confirmed). Neither is a blocker; both are named, owned, and scheduled in
+`roadmap.md`'s new Phase 4, not silently dropped.
+
 ### Stage 2
 
 **Includes:** FR-13–FR-16 (self-correction gate).
@@ -103,10 +114,10 @@ used at least once by someone other than this document's own author.
 
 | # | Type | Demonstrable outcome | Shown to | Depends on |
 | :-- | :-- | :-- | :-- | :-- |
-| M1 | Learning | Architecture resolves Open Question 1 (hooks vs. invokable skill) and confirms whether Stage 2 must pull forward | solution-architect | Nothing — can start immediately |
-| M2 | Release | A claimed phase invocation is verifiable after the fact, on a real session | The operator who insists on spec-traceable proof | FR-1–FR-4 |
-| M3 | Release | A staging decision and a UI acceptance verdict both carry an honest evidence/channel label | The operator who checks in periodically | FR-5–FR-12, `design-system.md` authored in parallel (design-lead, not gated on M2) |
-| M4 | Learning | Real usage data on whether anyone behaves like the operator who reads only the verdict | product-owner | M2, M3 shipped and used |
+| M1 | Learning | **Done** — ADR-001 resolved hooks-based (passive); Stage 2 confirmed safely deferrable | solution-architect | — |
+| M2 | Release | **Done, live-verified** — 21/21 real invocations correctly logged | The operator who insists on spec-traceable proof | FR-1–FR-4 |
+| M3 | Release | **Done with debt (D-1, D-2)** — evidence marker proven; channel/rubric logic built and unit-tested, live-fire unconfirmed | The operator who checks in periodically | FR-5–FR-12 |
+| M4 | Learning | **Now the active next milestone** — real usage data on whether anyone behaves like the operator who reads only the verdict, and the natural venue to close D-1/D-2 | product-owner | M2, M3 shipped — met; blocked only on an actual real project to run this on (see `roadmap.md` Phase 4) |
 | M5 | Release | A session cannot report "done" without a real self-correction check behind it | The operator who reads only the verdict, if M4 confirms her | Stage 2 |
 
 ## Confidence
@@ -121,5 +132,6 @@ it is one whose *second* stage might be, pending confirmation.
 
 | # | Question | Owner | Blocks |
 | :-- | :-- | :-- | :-- |
-| 1 | Is a hooks-based (passive) mechanism for FR-1–FR-4 acceptable even if slower or more limited than an invokable-skill approach, given it changes whether Stage 2 is safely deferrable? | solution-architect, with product-owner sign-off | Whether this staging holds or Stage 2 must pull forward |
+| 1 | **Answered** — ADR-001: hooks-based. Stage 2 confirmed safely deferrable. | solution-architect | resolved |
 | 2 | Is it acceptable to ship a design-rubric requirement (FR-9–FR-12) for a project that has never authored a `design-system.md`, effectively forcing that authorship as a prerequisite this plugin didn't previously require? | product-owner | M3's real timeline |
+| 3 | Given the sprint review's process finding — `/delivery:sprint-review`/`/delivery:realign` both gate on a formal sprint artifact this directly-implemented wave never produced — should the pipeline accept "stories built directly, no external handoff" as a valid alternate entry path? | this project | Whether future waves like this one need a retroactive sprint-review workaround again |
