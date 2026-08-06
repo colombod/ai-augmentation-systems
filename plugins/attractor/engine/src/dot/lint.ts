@@ -536,23 +536,25 @@ export function lint(graph: Graph): Diagnostic[] {
     // verification"), not a runtime guarantee. See ADR-006 for why the check
     // is scoped to Handler.CODERGEN predecessors only, and for the residual
     // risk (multi-hop chains, Handler.TOOL predecessors) this does not close.
-    const channelTokens = (node.attrs['human.channel'] ?? '').split(',').map((t) => t.trim())
-    const context = (node.attrs['human.context'] ?? '').trim()
-    if (channelTokens.includes('agent') && context !== '') {
-      const predecessor = directPredecessor(graph, node.id)
-      if (predecessor?.handler === Handler.CODERGEN) {
-        diags.push({
-          code: 'HITL-003',
-          severity: Severity.WARNING,
-          node: node.id,
-          message:
-            `human gate ${node.id} exposes context ("${node.attrs['human.context']}") to its ` +
-            `"agent" channel, but that context traces to its sole direct predecessor, ` +
-            `${predecessor.id}, which resolves to Handler.CODERGEN -- an LLM node whose own ` +
-            `output may be the "evidence" the agent then judges (self-report). Advisory only: ` +
-            `does not block the run, and does not detect multi-hop chains or Handler.TOOL ` +
-            `predecessors (see ADR-006).`,
-        })
+    if (node.handler === Handler.HUMAN) {
+      const channelTokens = (node.attrs['human.channel'] ?? '').split(',').map((t) => t.trim())
+      const context = (node.attrs['human.context'] ?? '').trim()
+      if (channelTokens.includes('agent') && context !== '') {
+        const predecessor = directPredecessor(graph, node.id)
+        if (predecessor?.handler === Handler.CODERGEN) {
+          diags.push({
+            code: 'HITL-003',
+            severity: Severity.WARNING,
+            node: node.id,
+            message:
+              `human gate ${node.id} exposes context ("${node.attrs['human.context']}") to its ` +
+              `"agent" channel, but that context traces to its sole direct predecessor, ` +
+              `${predecessor.id}, which resolves to Handler.CODERGEN -- an LLM node whose own ` +
+              `output may be the "evidence" the agent then judges (self-report). Advisory only: ` +
+              `does not block the run, and does not detect multi-hop chains or Handler.TOOL ` +
+              `predecessors (see ADR-006).`,
+          })
+        }
       }
     }
 

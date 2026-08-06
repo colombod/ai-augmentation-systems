@@ -3066,6 +3066,11 @@ function handlerForNode(attrs, id) {
 function outgoingEdges(graph, nodeId) {
   return graph.edges.filter((e) => e.from === nodeId);
 }
+function directPredecessor(graph, nodeId) {
+  const incoming = graph.edges.filter((e) => e.to === nodeId);
+  if (incoming.length !== 1) return null;
+  return graph.nodes.get(incoming[0].from) ?? null;
+}
 function findByHandler(graph, kind) {
   return [...graph.nodes.values()].filter((n) => n.handler === kind);
 }
@@ -3891,6 +3896,21 @@ function lint(graph) {
         node: node.id,
         message: `node ${node.id} resolves to handler "${node.handler}", which this build does not register (known unregistered: ${UNREGISTERED_HANDLER_KINDS.join(", ")}); the run would abort with "no handler registered" mid-pipeline. Refused here instead, before anything runs.`
       });
+    }
+    if (node.handler === Handler.HUMAN) {
+      const channelTokens = (node.attrs["human.channel"] ?? "").split(",").map((t) => t.trim());
+      const context = (node.attrs["human.context"] ?? "").trim();
+      if (channelTokens.includes("agent") && context !== "") {
+        const predecessor = directPredecessor(graph, node.id);
+        if (predecessor?.handler === Handler.CODERGEN) {
+          diags.push({
+            code: "HITL-003",
+            severity: Severity.WARNING,
+            node: node.id,
+            message: `human gate ${node.id} exposes context ("${node.attrs["human.context"]}") to its "agent" channel, but that context traces to its sole direct predecessor, ${predecessor.id}, which resolves to Handler.CODERGEN -- an LLM node whose own output may be the "evidence" the agent then judges (self-report). Advisory only: does not block the run, and does not detect multi-hop chains or Handler.TOOL predecessors (see ADR-006).`
+          });
+        }
+      }
     }
     if (node.attrs.goal_gate !== void 0 && node.attrs.goal_gate !== "false") {
       if (node.attrs.goal_gate !== "true") {
