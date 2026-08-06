@@ -1,3 +1,16 @@
 .DS_Store
 node_modules/
 *.log
+dist/
+!plugins/attractor/dist/
+.attractor/
+# Lockfile: cannot be regenerated against public registry in this environment.
+# Committing would record internal registry URLs that break installs elsewhere.
+# Project ships committed dist/ bundle, so end users never install from source.
+package-lock.json
+
+# SDD scratch workspace: briefs, reports, review packages, ledger. Repo root only --
+# anchored so it never matches a plugin's own durable plugins/<name>/.superpowers/.
+# Durable records live under plugins/<name>/.superpowers/. Three task reports were
+# committed by accident because several agents assumed this path was already ignored.
+/.superpowers/

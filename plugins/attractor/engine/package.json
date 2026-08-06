@@ -1,0 +1,17 @@
+{
+  "name": "@colombod/attractor-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test",
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=esm --outfile=../dist/attractor.js --banner:js='#!/usr/bin/env node'"
+  },
+  "dependencies": {
+    "@ts-graphviz/ast": "^3.0.6"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
