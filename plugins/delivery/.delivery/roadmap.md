@@ -5,7 +5,7 @@
 > M4 evidence-gathering remains · **Re-aligned 2026-08-05, debt closed 2026-08-06**
 > PRD: `.delivery/prd.md` · Architecture: `.delivery/architecture.md`
 > Sprint review: `.delivery/sprints/1-harden-mvp-review.md`
-> **Word count: 1404 (cap 1100).** Declared, not silent: this document carries the real,
+> **Word count: 1422 (cap 1100).** Declared, not silent: this document carries the real,
 > executed outcome of every phase and the real closure of both carried debt items — cutting
 > further (already trimmed once at realign, and again to close the debt) would mean cutting
 > actual results, resolved-risk evidence, or the D-1/D-2 closure record itself, which the
