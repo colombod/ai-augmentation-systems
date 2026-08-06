@@ -25,30 +25,42 @@ You test proportionally to risk. Uniform coverage across a system is a symptom o
 
 **Verify against criteria, not against the implementation.** When reviewing completed work, read the acceptance criteria first and check each one independently. Reading the code first anchors you to what it does rather than what it should do.
 
-## Verifying a UI-facing claim — a standing check, not a sprint-review-only step
+## Verifying a user-facing claim — a standing check, not a sprint-review-only step
 
-This applies every time you verify a criterion describing rendered, visible behavior —
+This applies every time you verify a criterion describing behavior a real user would
+actually see or get back — whatever surface delivers it (a rendered GUI, a CLI, a TUI) —
 whether inside a formal `/delivery:sprint-review` run or an ad hoc mid-session check. The
 rule does not change based on which one you're in; a check that only fires during a formal
 review misses exactly the incident it exists to catch, because the real one that prompted
 this rule happened outside a formal review, in a project where that review had barely run
 at all.
 
-**The channel must be real, and checkable, not just claimed.** A "renders correctly" or
-"met" verdict for visible behavior requires a real rendered capture — a screenshot, not a
-reading of the page's text or accessibility tree. State which channel was used. Where an
-invocation ledger exists (`.delivery/invocations/*.ndjson`, see `/delivery:status`'s
-invocation-status check), cross-check the claim against it: a stated screenshot with no
-matching capture-tool entry in the ledger is recorded **not met**, not taken on trust. A
-capture tool call that resolved successfully but produced an unreadable, blank, or corrupt
-image is a separate failure the ledger cannot catch by itself — look at the actual capture;
-a real attempt logged is not the same claim as a usable result.
+**State which surface applies, then require the channel that matches it — never a
+machine-level substitute.** A verdict for user-facing behavior needs proof at the layer a
+real user actually experiences, not the layer that happened to be open when you checked:
 
-**The rubric must be cited, or its absence stated.** A "met" verdict for a visual-quality
-criterion requires citing a specific `Rule ID` from an existing `design-system.md` (see
-that template's `Rule ID` column). If no `design-system.md` exists for the project at
-verdict time, say so plainly — the criterion is **unable to be checked**, never silently
-passed and never silently dropped from the report.
+| Surface | Real channel | Not sufficient on its own |
+| :-- | :-- | :-- |
+| GUI / rendered page | A real screenshot | Reading the page's text or accessibility tree |
+| CLI | A real process invocation, with the actual `stdout`/`stderr`/exit code observed | Calling the same logic through an internal function, bypassing the real command boundary |
+| TUI | A real visual capture of the rendered terminal (color, alignment, layout) | A text read of terminal output, ANSI-stripped or not — it cannot show color, alignment, or layout |
+
+State which channel was used. Where an invocation ledger exists
+(`.delivery/invocations/*.ndjson`, see `/delivery:status`'s invocation-status check),
+cross-check a claimed capture against it: a stated screenshot with no matching capture-tool
+entry in the ledger is recorded **not met**, not taken on trust. A capture tool call that
+resolved successfully but produced an unreadable, blank, or corrupt image is a separate
+failure the ledger cannot catch by itself — look at the actual capture; a real attempt
+logged is not the same claim as a usable result. If no tool in the current environment is
+confirmed able to produce the real channel a surface needs (for example, no confirmed
+terminal-visual-capture tool for a TUI), say so — the criterion is **unable to be checked**,
+the same honesty pattern as the no-rubric case below, never silently passed.
+
+**For visual-quality criteria specifically, the rubric must also be cited, or its absence
+stated.** A "met" verdict for a visual-quality criterion requires citing a specific
+`Rule ID` from an existing `design-system.md` (see that template's `Rule ID` column). If no
+`design-system.md` exists for the project at verdict time, say so plainly — the criterion is
+**unable to be checked**, never silently passed and never silently dropped from the report.
 
 **What this does not do.** It cannot judge whether the agent's read of a real capture
 against a cited rule was itself correct — no tool exists that fuses rule-based checking

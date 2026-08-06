@@ -2,14 +2,16 @@
 
 > Phase 9 artifact. Owned by Program Manager, with QA Strategist.
 > Status: Phases 0–3 complete, all debt closed · Phase 4's D-1/D-2 purpose fulfilled,
-> M4 evidence-gathering remains · **Re-aligned 2026-08-05, debt closed 2026-08-06**
+> M4 evidence-gathering remains · Phase 5 (CLI/TUI channel) added, not yet built
+> **Re-aligned 2026-08-05, debt closed 2026-08-06, Phase 5 added 2026-08-06**
 > PRD: `.delivery/prd.md` · Architecture: `.delivery/architecture.md`
 > Sprint review: `.delivery/sprints/1-harden-mvp-review.md`
-> **Word count: 1422 (cap 1100).** Declared, not silent: this document carries the real,
-> executed outcome of every phase and the real closure of both carried debt items — cutting
-> further (already trimmed once at realign, and again to close the debt) would mean cutting
-> actual results, resolved-risk evidence, or the D-1/D-2 closure record itself, which the
-> writing standard protects over hitting the cap.
+> **Word count: 1720 (cap 1100).** Declared, not silent, third time over this document's
+> life: it now carries the real, executed outcome of five phases, the real closure of both
+> carried debt items, and a newly-added Phase 5 — cutting further would mean cutting actual
+> results, resolved-risk evidence, or a phase's own scope, which the writing standard
+> protects over hitting the cap. A document this cumulative may be due a fresh rewrite
+> rather than another trim pass — noted, not acted on here.
 
 ## Constraints
 
@@ -182,18 +184,49 @@ answer a cross-session persona question either.
 **Cut list:** nothing — this phase's remaining cost is finding a real external project to
 point it at, not building.
 
+### Phase 5: verification channel generalization — CLI and TUI (added 2026-08-06)
+
+**Added via direct product-owner direction, this session** (not a `/delivery:realign` — no
+sprint has run against Phase 5 yet). The GUI-only scope decided in the PRD's original Goals
+section was explicitly conditional ("before that works multiplies cost against unvalidated
+need") — the GUI case now works, live-proven, so the condition that justified deferring is
+gone. `FR-17`–`FR-19`, `S-5`.
+
+**Entry criteria:** Phase 3 shipped (it is) — this extends Mechanism 3, doesn't replace it.
+**Delivers:** the same channel-honesty guarantee Phase 3 gave GUI criteria, extended to CLI
+and TUI criteria.
+**Demonstrable exit:** a CLI acceptance verdict requires a real process invocation, not an
+internal-logic call; a TUI acceptance verdict requires a real visual capture, or states
+plainly it's unable to be checked if no such capture channel is confirmed available.
+
+| Work item | Size | Confidence | Depends on |
+| :-- | :-- | :-- | :-- |
+| CLI channel rule in `qa-strategist.md` (real invocation vs. internal call) | S | high | nothing — no new tool needed, this is written already |
+| Spike 6 — confirm whether any tool in this environment produces a real visual capture of a rendered terminal | S | low (unconfirmed either way) | nothing |
+| TUI channel enforcement, contingent on Spike 6's answer | S–M | low until Spike 6 answers | Spike 6 |
+
+**Verification in this phase:** Spike 6 is empirical, same pattern as Spike 4. The CLI rule
+is example-based (real invocation present/absent, internal-call-only rejected). No incident
+to replay for `FR-12`-style reproduction — none exists in evidence for this surface, unlike
+the GUI case; graded `reported`, not `observed`, until real use confirms or corrects it.
+**Cut list:** the TUI half can slip entirely if Spike 6 comes back negative (no capture
+channel exists) — the honest "unable to be checked" state ships instead, same pattern as
+Phase 3's no-rubric fallback. The CLI half is not cuttable; it needs no unresolved dependency.
+
 ## Critical path
 
 ```
 Phase 0 → Phase 1 (spikes) → Phase 2 (ledger) → Phase 3 (channel + rubric) → Phase 4 (real use)
+                                                                            ↘ Phase 5 (CLI/TUI channel)
 ```
 
 Phase 1b runs alongside without affecting this chain. Rubric *authorship* (unscheduled,
 design-lead work) is explicitly **not** on this path — the plan's least controllable
 dependency, removed from the critical path entirely by the inversion decision above.
-Phases 0–3, and Phase 4's D-1/D-2 half, are now complete. **Phase 4's narrowed remaining
-scope (M4 evidence) is the critical path today**, with one lever left: getting a real
-external project to run this on sooner rather than later.
+Phases 0–3, and Phase 4's D-1/D-2 half, are now complete. Phase 4's narrowed remaining scope
+(M4 evidence) and Phase 5 (CLI/TUI channel) run independently of each other — neither
+blocks the other, both depend only on Phase 3 having shipped. **Both are the critical path
+today**: Phase 4's lever is a real external project; Phase 5's is Spike 6's answer.
 
 ## Dependencies outside our control
 
@@ -202,6 +235,7 @@ external project to run this on sooner rather than later.
 | Design rubric content (not the citation slot — that's Phase 0) | design-lead | Whenever it arrives | Not started, no schedule | No impact on shipping — Phase 3 ships honest either way, per the inversion decision |
 | Claude Code's hook payload shape staying stable | Anthropic | Ongoing | Verified current as of this session | Spikes 1–2 must re-run after any Claude Code upgrade |
 | A real, external project to run this plugin on, for real work over time | originator | Phase 4's remaining scope | Not yet identified | M4's persona question stays unanswered — D-1/D-2 no longer depend on this, they closed already |
+| Confirmation of a real terminal-visual-capture tool (Spike 6) | environment/tooling | Phase 5's TUI half | Not yet run | TUI verification stays honestly "unable to be checked" — not a blocker, the CLI half ships regardless |
 
 ## Requirement coverage
 
@@ -212,6 +246,7 @@ external project to run this on sooner rather than later.
 | FR-5–FR-8 | Phase 1b | Complete, no debt |
 | FR-9–FR-10, FR-12 | Phase 3 | Built, unit-tested, plus a real screenshot live-fire. Complete, no debt |
 | FR-11 | Phase 3 | Complete, no debt |
+| FR-17–FR-19 | Phase 5 | Added 2026-08-06, not yet built — CLI half needs no spike, TUI half depends on Spike 6 |
 
 **Deferred:** FR-13–FR-16 (the self-correction gate) — Stage 2 per `prioritization.md`,
 defends a persona with zero real transcript evidence. Not silently dropped: named in the
@@ -229,6 +264,7 @@ not cover.
 | ~~**D-1** — mid-run-error firing never confirmed live~~ | — | — | **Resolved:** a genuine browser-tool failure produced a correctly-logged `PostToolUseFailure`/`outcome: "error"` entry | — | closed |
 | ~~**D-2** — capture-tool live-fire never confirmed live~~ | — | — | **Resolved:** a genuine screenshot produced a correctly-logged `capture_action: "screenshot"` entry | — | closed |
 | Phase 4's remaining M4 scope never starts because no real external project gets pointed at this plugin | Medium | Medium | Named as the only thing left blocking M4 — surface it, don't let it go quiet | originator | No real external usage within a reasonable window post-merge |
+| Spike 6 finds no confirmed terminal-visual-capture tool | Medium | Low | Fails safe by design — TUI criteria state "unable to be checked" rather than silently passing; the CLI half of Phase 5 ships regardless | solution-architect | Spike 6 result, either way |
 
 ## Buffer
 

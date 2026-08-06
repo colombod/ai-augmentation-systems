@@ -6,7 +6,8 @@
 > Evidence basis: real transcript evidence (not synthetic simulation — none was run; see
 > Confidence) for the two observed personas; zero real coverage for the assumed one.
 > **Re-aligned 2026-08-05** per `.delivery/sprints/1-harden-mvp-review.md` (verdict:
-> Accepted with debt) — see the MVP section below for what changed.
+> Accepted with debt, since closed) — see the MVP section below for what changed.
+> **MVP extended 2026-08-06** with FR-17–FR-19 (CLI/TUI channel generalization).
 
 ## Staging rule
 
@@ -34,6 +35,9 @@ a project milestone, not a release.
 | FR-14 | same | unconfirmed | same | none real | S–M | assumed |
 | FR-15 | same | unconfirmed | same | replays elba-dreaming's zero-check pattern, but that's the other operator's evidence | S | assumed |
 | FR-16 | same | unconfirmed | same | none real | S | assumed |
+| FR-17 | the operator who checks in periodically | yes | same failure mode as FR-9, different surface | direct product-owner direction, this session — no transcript incident for CLI/TUI in either engagement studied | S | reported |
+| FR-18 | same | yes | same | same | S | reported |
+| FR-19 | same | yes | same, contingent on a real capture channel existing at all (Spike 6) | same | S–M | reported |
 
 Load-bearing beats enhancement. FR-5–FR-8 are marked reinforcing, not load-bearing, because
 no transcript shows evidence-grade drift alone triggering abandonment — but Stage design
@@ -91,6 +95,32 @@ a genuine browser-tool failure produced a correctly-logged `PostToolUseFailure`/
 interactive session, not synthesized. Full evidence in `roadmap.md`'s Phase 2/3 sections and
 each story's own Implementation Notes.
 
+### MVP extension: verification channel generalization (added 2026-08-06)
+
+**Includes:** FR-17–FR-19 (CLI and TUI verification channels).
+
+Not a new stage in the original numbering — this extends the MVP's already-accepted
+verification-channel mechanism (FR-9–FR-12) to surfaces beyond a rendered GUI, per direct
+product-owner direction this session, once the GUI case's own "prove it works first" gate
+(the PRD's original scope decision) was actually met. Graded `reported`, not `observed`,
+in the scoring table above — honestly: no CLI/TUI verification failure exists in either
+transcript studied, unlike the GUI case's direct elba-dreaming evidence. This is a real
+requirement, not a weaker one, but its evidence basis is different and the record should
+say so plainly.
+
+**Personas who can complete a journey end to end:** extends the operator who checks in
+periodically's journey (already served for GUI verdicts by FR-9–FR-12) to CLI and TUI
+verdicts on the same terms — trusting a verdict without personally re-running the command
+or eyeballing the terminal.
+
+**What this lets us learn:** whether a real visual-capture channel exists for a terminal at
+all (Spike 6, `harden-08`) — genuinely unknown going in, unlike the GUI case where the
+browser tool's existence was never in question.
+
+**Sequencing:** independent of Stage 2 below — neither blocks the other. The CLI half
+(`harden-09`) has no open dependency and can ship immediately; the TUI half (`harden-10`)
+is blocked on Spike 6's answer.
+
 ### Stage 2
 
 **Includes:** FR-13–FR-16 (self-correction gate).
@@ -122,14 +152,18 @@ used at least once by someone other than this document's own author.
 | M3 | Release | **Done, debt closed** — evidence marker proven; channel/rubric logic built, unit-tested, and now live-fire-confirmed (D-1, D-2 both closed 2026-08-06) | The operator who checks in periodically | FR-5–FR-12 |
 | M4 | Learning | **Active, narrowed** — D-1/D-2 closed opportunistically in this project's own session, not via an external one; M4's actual question (does the reads-only-the-verdict persona show up in real, independent usage) is still open | product-owner | M2, M3 shipped — met; blocked on a real external project to run this on (see `roadmap.md` Phase 4) |
 | M5 | Release | A session cannot report "done" without a real self-correction check behind it | The operator who reads only the verdict, if M4 confirms her | Stage 2 |
+| M6 | Learning | **New, added 2026-08-06** — Spike 6's answer: does a real terminal-visual-capture channel exist at all | solution-architect | Nothing — can run independently, any time |
 
 ## Confidence
 
 FR-1–FR-12 (the entire MVP) rest on `observed`-grade evidence — real, verbatim, repeated
 operator quotes from two long, real sessions. FR-13–FR-16 (Stage 2, all of it) rest on
 `assumed`-grade evidence — a hypothesis reasoned from the brief's Findings A and D, with no
-real instance in either transcript. This is not a plan built on invented users for its MVP;
-it is one whose *second* stage might be, pending confirmation.
+real instance in either transcript. FR-17–FR-19 (added 2026-08-06) rest on `reported`-grade
+evidence — a direct, current product-owner requirement, not a transcript incident like the
+GUI case; real, but a different kind of real than FR-1–FR-12's. This is not a plan built on
+invented users for its MVP; it is one whose later additions are graded honestly by how they
+actually arrived, not rounded up to match the MVP's strongest evidence.
 
 ## Open questions for the originator
 

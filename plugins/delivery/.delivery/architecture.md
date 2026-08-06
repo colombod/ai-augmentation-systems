@@ -1,7 +1,8 @@
 # Architecture: delivery plugin self-hardening (MVP)
 
 > Phase 8 artifact. Owned by Solution Architect, with QA Strategist.
-> Status: draft · Last updated: 2026-08-05
+> Status: Mechanisms 1–3 (GUI case) built and proven live · Mechanism 3's CLI/TUI
+> extension (`FR-17`–`FR-19`) added 2026-08-06, planning only, not yet built
 > PRD: `.delivery/prd.md` · ADR: `.delivery/decisions/ADR-001-hook-based-invocation-provenance.md`
 
 ## Approach
@@ -69,6 +70,26 @@ agent's visual read of that capture against the cited rule was *correct* — no 
 research does that automatically. This design makes the claim checkable and citation-anchored,
 not fully automated.
 
+**Mechanism 3, extended scope (`FR-17`–`FR-19`, 2026-08-06) — not yet built, planning only.**
+The rule above proved out for GUIs; the same principle now generalizes to any delivery
+surface, per artifact type:
+
+| Surface | Real channel required | Status |
+| :-- | :-- | :-- |
+| GUI / rendered webpage | A real screenshot from a browser/simulator tool, cross-checked against the ledger's capture-tool matcher | **Built, proven live** (Mechanism 3, above) |
+| CLI | A real process invocation with observed `stdout`/`stderr`/exit code — an internal function call to the same logic, bypassing the actual command boundary, does not satisfy this | **Not yet built.** No new tool needed — this is a test-discipline rule (real invocation vs. internal call), not a new capture mechanism |
+| TUI | A real visual capture of the rendered terminal (color, alignment, layout, animation) | **Not yet built — a real spike is needed first**, same shape as Spike 4 |
+
+**A real, checked finding, not an assumption:** the one terminal-reading tool confirmed
+available in this environment, `mcp__terminal__read_terminal`, returns terminal content
+"with ANSI codes stripped" per its own description — a text-level read, exactly the DOM-vs-
+screenshot trap `S-3` already exists to catch, just for a terminal instead of a webpage. It
+does **not** satisfy `FR-19` alone. A general-purpose desktop screenshot tool
+(`mcp__computer-use__screenshot`) could plausibly capture a terminal panel's real rendered
+pixels including color and layout, which would satisfy `FR-19` — but this is unconfirmed,
+not live-fire tested, exactly the same epistemic state Spike 4 started in for the browser
+tool before `harden-03` confirmed it for real. Recorded here rather than assumed either way.
+
 ## Interfaces and data contracts
 
 ```json
@@ -122,6 +143,7 @@ Reworded per QA review where the original phrasing wasn't checkable.
 | 3 | Do `TaskCreated`/`TaskCompleted` mean subagent completion, or the general task-tracking tool? (`SubagentStart`/`SubagentStop` look like the real subagent events per current docs, contradicting the PRD's own earlier assumption) | 0.5 day | Whether the deferred gate can reuse this ledger's event vocabulary unmodified |
 | 4 | Enumerate the concrete capture-tool names used in the elba-dreaming session specifically (not a general taxonomy — matches the PRD's own non-goal against broadening evidence), and confirm a hook can tell a screenshot action apart from other actions on the same tool | 1 day | The matcher list for Mechanism 3; whether `FR-12`'s reproduction actually reproduces |
 | 5 | Confirm a crashing/erroring `PostToolUse` hook cannot silently block the call it observes, verified for this specific event (not assumed from the general docs table) | 0.5 day | Whether the recorder is safe to ship as pure side-channel logging |
+| 6 (added 2026-08-06) | Is any tool in this environment confirmed able to produce a real visual capture of a rendered terminal — `mcp__computer-use__screenshot` of a terminal panel is the one plausible candidate identified so far, unconfirmed | 0.5 day, same shape as Spike 4 | `FR-19`'s Mechanism 3 extension; whether TUI verification can ever be more than "unable to be checked" |
 
 **Post-implementation update (2026-08-05):** Spikes 1, 2 and 5 were run for real against
 this repository, not just estimated. 5 fresh headless sessions each genuinely invoked the
