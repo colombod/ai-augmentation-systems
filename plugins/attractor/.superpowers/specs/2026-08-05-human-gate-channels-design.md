@@ -1,15 +1,20 @@
 # Human-gate channels — design
 
-> **UNRECONCILED, 2026-08-05:** this design was written without first reading
+> **RESOLVED 2026-08-06:** this design was written without first reading
 > `plugins/attractor/.superpowers/specs/2026-08-03-attractor-claude-code-plugin-design.md` §7-8, which
-> already specifies a materially different architecture for the identical problem — park +
+> specified a materially different, competing architecture for the identical problem — park +
 > checkpoint + cross-restart resume via `attractor resume`, answered via `/attractor approve`,
 > Discord via Anthropic's official `discord@claude-plugins-official` channel plugin and a
-> monitor session (needs `bun`), not the `Channel`/`CommandChannel` abstraction below. Full
-> comparison and candidate resolutions recorded in `plugins/attractor/.superpowers/carry-forward.md` under
-> "Plan 4". **Do not implement from this document alone until that is resolved.**
+> monitor session (needs `bun`). A multi-lens comparison (persona fit, engineering cost,
+> doctrine alignment, requirement coverage, extensibility risk — two independent judges, one
+> final synthesis) converged 5/5 on **this** design: it is the only one of the two with an
+> architectural slot for the two hard, user-stated requirements — arbitrary bespoke/pluggable
+> external channels, and an opt-in `agent`-proxy channel — that the 2026-08-03 design predates
+> and has no equivalent for. `2026-08-03-...md` §7-8 is now marked superseded by this document.
+> Full comparison and disposition recorded in `plugins/attractor/.superpowers/carry-forward.md` under
+> "Plan 4".
 
-**Status:** DRAFT, not yet implemented. Extends the already-committed ADR-002 (`plugins/attractor/.delivery/decisions/ADR-002-human-gate-blocking.md`) rather than replacing it — `StdinHumanGateWait`/`HumanGateHandler`'s TTY-based block-vs-fail-fast logic becomes this design's `human` channel implementation, unchanged in behavior. The `GateContext.legalAnswers`/edge-routing mechanics (§1) were verified directly against `core/edge-select.ts`, `core/condition.ts`, and `dot/lint.ts` on 2026-08-05, not assumed — see the "Verified against source" note in §1.
+**Status:** DRAFT, not yet implemented. **Correction, 2026-08-06:** this document's body (below) previously described `StdinHumanGateWait`/`HumanGateHandler` as "already-built" and the `human` channel as wrapping them "unchanged." That was false — confirmed by direct inspection: `engine/src/handlers/` contains no `human.ts`, `Handler.HUMAN` is still listed in `UNREGISTERED_HANDLER_KINDS` (`engine/src/dot/graph.ts`), and no TTY-check logic exists anywhere in `engine/src`. ADR-002 (`plugins/attractor/.delivery/decisions/ADR-002-human-gate-blocking.md`) is an accepted **decision**, not shipped code. The `human` channel is greenfield work that *implements* ADR-002's TTY-block-vs-fail-fast decision — it does not wrap existing code. The passages below retain their original wording for historical accuracy; read every "already-built"/"unchanged" claim about `HumanGateHandler`/`StdinHumanGateWait` in that corrected light. The `GateContext.legalAnswers`/edge-routing mechanics (§1) were verified directly against `core/edge-select.ts`, `core/condition.ts`, and `dot/lint.ts` on 2026-08-05, not assumed — see the "Verified against source" note in §1.
 **Resolves:** PRD Open Question 1 (S2 answer-delivery channel) and Open Question 2 (`--unattended` preflight refusal), `plugins/attractor/.delivery/prd.md`. Both were left blocked by the PRD's own adversarial review; this design is the follow-on that unblocks FR-8.
 **Grounded on:** live design conversation with the project owner (2026-08-05); `plugins/attractor/AGENTS.md` doctrine (human gates never time out by default, loud aborts over silent degradation, verification inside the context that produced the evidence is not verification); `plugins/attractor/.delivery/amplifier-precedent.md` §1 (amplifier's own Interviewer mechanism, and specifically what it does *not* have).
 

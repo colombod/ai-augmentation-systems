@@ -296,6 +296,25 @@ silently falling back to in-place execution.
 
 ---
 
+> **SUPERSEDED 2026-08-06.** Sections 7 (Human in the loop) and 8 (Operator
+> onboarding) below are retained for historical context only. The
+> answer-delivery architecture for human gates (FR-5–FR-8) is
+> `2026-08-05-human-gate-channels-design.md`, adopted after a multi-lens
+> comparison converged 5/5 on it: it is the only design with an
+> architectural slot for two hard, user-stated requirements (arbitrary
+> bespoke/pluggable external channels, an opt-in `agent`-proxy channel) that
+> this design predates and has no equivalent for. This design's
+> cross-restart durability (`pending-approval.json`, `attractor
+> approve`/`resume`) is a genuine capability the channels design does not
+> yet have — but it is an explicit PRD Non-Goal this slice regardless of
+> which design won, so it is future/additive work on top of the `Channel`
+> abstraction, not a reason to keep this architecture live. See
+> `.superpowers/carry-forward.md`'s Plan 4 entry for the full reconciliation
+> record and what carries over (the `checkpoint.ts`/`loadCheckpoint`
+> machinery, `reminder=`, free-form-input collection, the `attractor
+> approve` verb shape). Section 9 (Visualization) is unaffected and remains
+> live.
+
 ## 7. Human in the loop
 
 ### 7.1 The rule
