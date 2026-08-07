@@ -203,7 +203,7 @@ not a general taxonomy, matching the PRD's non-goal against broadening evidence.
 > Staff epic (S-5–S-11/`FR-17`–52) only.
 > Status: draft · Last updated: 2026-08-07
 > PRD: `.delivery/prd.md` (Chief of Staff epic) · ADRs: `ADR-002`, `ADR-003`
-> **Word count: the whole document is now 3892 prose-only words** (was 1189 before this
+> **Word count: the whole document is now 3975 prose-only words** (was 1189 before this
 > section; `grep -v '^|' .delivery/architecture.md | wc -w`). Exceeds the template's
 > 1600-word single-epic cap — same reasoning `prd.md`'s own header states: two independent
 > epics now coexist in one architecture document, each scoped and reviewed on its own terms.
@@ -320,10 +320,13 @@ this harness can. Spike CoS-1 is the check on whether checkable is enough.
 
 **1 — Chief-of-staff consultation call.** Unlike the ledger's structured JSON, the Agent
 tool's own contract is a natural-language prompt, not a schema — so the "interface" here is a
-written protocol, not a payload shape. The calling agent's prompt must state: the candidate
-question verbatim, what it already checked and why nothing settled it, and which of S-5/S-6/S-7
-it believes applies (chief of staff may reclassify). This is a convention to specify at
-story-time (`delivery-lead`), not a contract to lock here.
+written protocol, not a payload shape. The calling agent's prompt must state: **its own
+identity** (resolving a real gap `chief-of-staff-05`'s story-writer found: without this,
+`FR-22`'s "names the originating agent" and S-6's "provenance unknown" case are both
+unimplementable — closed here rather than left implicit), the candidate question verbatim,
+what it already checked and why nothing settled it, and which of S-5/S-6/S-7 it believes
+applies (chief of staff may reclassify). This is a convention to specify at story-time
+(`delivery-lead`), not a contract to lock here.
 
 **Return contract and the push trigger, resolving feature-critic finding 5 (`FR-45`/46 had no
 described invocation path):** chief of staff's Agent-tool response always states one of four
@@ -364,9 +367,13 @@ existing open item about the same output and merges into it rather than opening 
 
 **3 — Briefing queue entry**, modeled on `templates/findings.md`'s tracked-status pattern —
 `templates/chief-of-staff-queue.md` defines columns: ID, Rank, Blocking (y/n), Source
-(S-5/S-6/S-7), Item, Suggested default or "no-default-available," Status
-(open/answered/parked/pushed), Originating agent. A single project-scoped file, not
-per-session — a delegation period spans multiple sessions, unlike a ledger event.
+(S-5/S-6/S-7/**S-10**/**S-6+S-10 merged**), Item, Suggested default or "no-default-available,"
+Status (open/answered/parked/pushed), Originating agent. **Source's enum corrected here**
+(`chief-of-staff-08`'s story-writer found the original S-5/S-6/S-7-only list conflicts
+directly with S-10's own `FR-40` and this same Interface's `FR-49` merge text, both of which
+require S-10-sourced and merged-S-6+S-10 queue items) — a textual completion of what this
+document already committed to elsewhere, not a new design call. A single project-scoped
+file, not per-session — a delegation period spans multiple sessions, unlike a ledger event.
 
 **4 — Mission capture**, resolving **Open Question 10**: `.delivery/chief-of-staff/mission.md`,
 a standalone file — new `templates/mission.md`. Not `brief.md`'s frontmatter (different
