@@ -8,7 +8,7 @@ import { lint, hasErrors } from '../src/dot/lint.ts'
 import { Context, isEngineManagedKey } from '../src/core/context.ts'
 import { Status, type Outcome } from '../src/core/outcome.ts'
 import { StubBackend } from '../src/handlers/stub.ts'
-import { type Backend } from '../src/handlers/types.ts'
+import { type Backend, type HandlerCtx, type Handler as HandlerIface } from '../src/handlers/types.ts'
 import {
   Handler,
   RunsOn,
@@ -22,7 +22,8 @@ import { Engine, defaultHandlers } from '../src/core/engine.ts'
 import { BOX_CONTEXT_KEYS } from '../src/handlers/box.ts'
 import { loadCheckpoint } from '../src/core/checkpoint.ts'
 import { EventLog } from '../src/run/events.ts'
-import { LINT_FAILS_BUT_WOULD_RUN } from './fixtures.ts'
+import { LINT_FAILS_BUT_WOULD_RUN, GatedBackend } from './fixtures.ts'
+import { type BranchRunResult as BranchRunResultShape } from '../src/handlers/types.ts'
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'attractor-engine-'))
@@ -4207,4 +4208,408 @@ test('a direct Engine embed refuses to run a graph that fails lint (FR-11, F10)'
 test('a direct Engine embed still runs a clean graph normally (both-directions guard)', async () => {
   const { result } = await execute(LINEAR)
   assert.equal(result.status, Status.SUCCESS)
+})
+
+// ---------------------------------------------------------------------------
+// HandlerCtx.runBranch (p5-05). handlers/parallel.ts / ParallelHandler do not
+// exist yet (p5-08) -- every test here drives ctx.runBranch directly from a
+// hand-built test-only Handler, registered against Handler.TOOL (so it never
+// collides with Handler.CODERGEN, which stays the REAL BoxHandler wrapping a
+// GatedBackend for the branch's own nodes -- proving genuine concurrency,
+// not a same-tick stub).
+// ---------------------------------------------------------------------------
+
+/** Launches whatever the test wants when its one designated node dispatches. */
+class BranchLaunchingHandler implements HandlerIface {
+  private readonly launch: (ctx: HandlerCtx) => Promise<Outcome>
+
+  constructor(launch: (ctx: HandlerCtx) => Promise<Outcome>) {
+    this.launch = launch
+  }
+
+  async execute(ctx: HandlerCtx): Promise<Outcome> {
+    return this.launch(ctx)
+  }
+}
+
+test('a branch root routed straight to the real EXIT node is an ordinary dead end for that branch alone (mutation-checked)', async () => {
+  const backend = new GatedBackend()
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-exit')
+  const siblingRunDir = join(runDir, 'branch-sibling')
+  const handlers = defaultHandlers(backend)
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      const exitPromise = ctx.runBranch!({
+        startNodeId: 'sideEntry',
+        stopAt: new Set(),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      const siblingPromise = ctx.runBranch!({
+        startNodeId: 'sibling',
+        stopAt: new Set(),
+        context: ctx.context.clone(),
+        runDir: siblingRunDir,
+        cwd: ctx.cwd,
+      })
+      // Both branches are now gated open (their own CODERGEN dispatch is
+      // blocked inside GatedBackend.run) -- release only the EXIT one.
+      backend.release('sideEntry')
+      const exitResult = await exitPromise
+
+      // Observable proxy for "unsatisfiedGoalGates()/this.checkpoint(null)
+      // were never called during that runBranch call": this.checkpoint()
+      // always targets the OUTER run's own runDir. A mutant letting
+      // runBranch fall through to run()'s own EXIT block would flip THIS
+      // checkpoint to currentNode: null mid-detour-dispatch, before this
+      // handler ever returns -- the correct implementation leaves it
+      // exactly as `start`'s own per-node checkpoint left it.
+      const midFlightCheckpoint = loadCheckpoint(runDir)
+      assert.equal(midFlightCheckpoint?.currentNode, 'start')
+      assert.equal(exitResult.outcome.status, Status.SUCCESS, 'EXIT is a trivial passthrough SUCCESS')
+      assert.deepEqual(exitResult.path, ['sideEntry', 'done'])
+
+      assert.ok(backend.maxObserved >= 2, 'both branches were genuinely in flight at once')
+      backend.release('sibling')
+      await siblingPromise
+
+      return { status: Status.SUCCESS, notes: 'detour done' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]
+      done  [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      sideEntry [shape=box, prompt="x"]
+      sibling [shape=box, prompt="y"]
+      start -> detour -> done
+      detour -> sideEntry [condition="context.never_true=x"]
+      detour -> sibling [condition="context.never_true=x"]
+      sideEntry -> done
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    const result = await engine.run()
+    assert.equal(result.status, Status.SUCCESS)
+    assert.deepEqual(result.path, ['start', 'detour', 'done'])
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('a branch retry-target cycle with maxSteps set low ends FAIL rather than hanging (mutation-checked, NFR-1)', async () => {
+  const handlers = defaultHandlers(new StubBackend({ cyc: { status: Status.RETRY, notes: 'again' } }))
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-cyc')
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      const result = await ctx.runBranch!({
+        startNodeId: 'cyc',
+        stopAt: new Set(),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      assert.equal(result.outcome.status, Status.FAIL)
+      assert.match(result.outcome.notes ?? '', /step cap/i)
+      return { status: Status.SUCCESS, notes: 'observed the branch fail cleanly' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      cyc [shape=box, prompt="x", max_retries=0, retry_target="cyc"]
+      start -> detour -> done
+      detour -> cyc [condition="context.never_true=x"]
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers, maxSteps: 25 })
+    const result = await engine.run()
+    assert.equal(result.status, Status.SUCCESS, "the OUTER run is unaffected by its branch's own FAIL")
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('run() and runBranch produce identical path/attempts/checkpoint shape for the same fixture (proves executeNodeStep is one implementation)', async () => {
+  const script = {
+    x: { status: Status.SUCCESS, notes: 'x done', contextUpdates: { 'stage.x': 'done' } },
+    y: { status: Status.SUCCESS, notes: 'y done', contextUpdates: { 'stage.y': 'done' } },
+  }
+
+  const { result: mainResult, runDir: mainRunDir, cwd: mainCwd } = await execute(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      x [shape=box, prompt="x"]  y [shape=box, prompt="y"]
+      start -> x -> y -> done
+    }
+  `, script)
+  assert.equal(mainResult.status, Status.SUCCESS)
+
+  const { runDir: branchRunDir, cwd: branchCwd } = tempDirs()
+  const handlers = defaultHandlers(new StubBackend(script))
+  let branchResult: BranchRunResultShape | undefined
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      branchResult = await ctx.runBranch!({
+        startNodeId: 'x',
+        stopAt: new Set(['done']), // stops before dispatching the graph's natural end
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }),
+  )
+  const branchGraph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      x [shape=box, prompt="x"]  y [shape=box, prompt="y"]
+      start -> detour -> done
+      detour -> x [condition="context.never_true=x"]
+      x -> y -> done
+    }
+  `)
+  try {
+    const engine = new Engine({
+      graph: branchGraph, context: Context.from({}), runDir: branchRunDir, cwd: branchCwd, handlers,
+    })
+    const outerResult = await engine.run()
+    assert.equal(outerResult.status, Status.SUCCESS)
+
+    assert.deepEqual(mainResult.path.slice(1, -1), branchResult!.path, 'x, y in the same order')
+
+    const mainCheckpoint = loadCheckpoint(mainRunDir)
+    const branchCheckpoint = loadCheckpoint(branchRunDir)
+    assert.deepEqual(mainCheckpoint?.attempts, branchCheckpoint?.attempts)
+    assert.equal(mainCheckpoint?.context['stage.x'], branchCheckpoint?.context['stage.x'])
+    assert.equal(mainCheckpoint?.context['stage.y'], branchCheckpoint?.context['stage.y'])
+  } finally {
+    cleanup(mainRunDir, mainCwd)
+    cleanup(branchRunDir, branchCwd)
+  }
+})
+
+test('a goal-gate node inside a branch correctly blocks the outer run\'s real exit', async () => {
+  const handlers = defaultHandlers(new StubBackend({
+    gate: { status: Status.SUCCESS, notes: 'NOT CONVERGED - no verdict' },
+  }))
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-gate')
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      await ctx.runBranch!({
+        startNodeId: 'gate',
+        stopAt: new Set(),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      return { status: Status.SUCCESS, notes: 'detour done' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      gate [shape=box, goal_gate=true, prompt="judge", max_retries=0]
+      start -> detour -> done
+      detour -> gate [condition="context.never_true=x"]
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    const result = await engine.run()
+    assert.equal(result.status, Status.FAIL, "the branch's own unearned goal gate blocks the real exit")
+    assert.match(result.notes ?? '', /unsatisfied goal gates.*gate/)
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('runBranch dispatches a retry_target outside its own stopAt-truncated reachable set exactly like any other next node (named, accepted risk)', async () => {
+  const handlers = defaultHandlers(new StubBackend({
+    branchRoot: { status: Status.RETRY, notes: 'jump out' },
+    siblingRoot: { status: Status.SUCCESS, notes: 'reached' },
+  }))
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-escape')
+  let outcome: Outcome | undefined
+  let path: string[] | undefined
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      const result = await ctx.runBranch!({
+        startNodeId: 'branchRoot',
+        stopAt: new Set(['stopHere']),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      outcome = result.outcome
+      path = result.path
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      branchRoot [shape=box, prompt="x", max_retries=0, retry_target="siblingRoot"]
+      siblingRoot [shape=box, prompt="y"]
+      stopHere [shape=box, prompt="z"]
+      start -> detour -> done
+      detour -> branchRoot [condition="context.never_true=x"]
+      siblingRoot -> stopHere
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    await engine.run()
+    assert.deepEqual(path, ['branchRoot', 'siblingRoot'], "the jump to siblingRoot happened, unblocked -- not this story's gap to close")
+    assert.equal(outcome?.status, Status.SUCCESS)
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('runBranch reaches a dead end (no outgoing edge, not EXIT) with a FAIL BranchRunResult', async () => {
+  const handlers = defaultHandlers(new StubBackend({
+    lonely: { status: Status.SUCCESS, notes: 'nowhere to go' },
+  }))
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-lonely')
+  let result: BranchRunResultShape | undefined
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      result = await ctx.runBranch!({
+        startNodeId: 'lonely',
+        stopAt: new Set(),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      lonely [shape=box, prompt="x"]
+      start -> detour -> done
+      detour -> lonely [condition="context.never_true=x"]
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    await engine.run()
+    assert.equal(result?.outcome.status, Status.FAIL)
+    assert.deepEqual(result?.path, ['lonely'])
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('runBranch stops before dispatching a stopAt frontier node', async () => {
+  const handlers = defaultHandlers(new StubBackend({
+    entry: { status: Status.SUCCESS, notes: 'ok' },
+  }))
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-frontier')
+  let result: BranchRunResultShape | undefined
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      result = await ctx.runBranch!({
+        startNodeId: 'entry',
+        stopAt: new Set(['frontier']),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      entry [shape=box, prompt="x"]  frontier [shape=box, prompt="y"]
+      start -> detour -> done
+      detour -> entry [condition="context.never_true=x"]
+      entry -> frontier
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    await engine.run()
+    assert.equal(result?.outcome.status, Status.SUCCESS)
+    assert.deepEqual(result?.path, ['entry'], 'stops before dispatching frontier; frontier is not in path')
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('two concurrent ctx.runBranch calls via Promise.all over GatedBackend both resolve independently, and the outer ledgers reflect both', async () => {
+  const backend = new GatedBackend()
+  const handlers = defaultHandlers(backend)
+  const { runDir, cwd } = tempDirs()
+  const runDirA = join(runDir, 'branch-a')
+  const runDirB = join(runDir, 'branch-b')
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      const [a, b] = await Promise.allSettled([
+        (async () => {
+          const p = ctx.runBranch!({
+            startNodeId: 'a', stopAt: new Set(), context: ctx.context.clone(), runDir: runDirA, cwd: ctx.cwd,
+          })
+          backend.release('a')
+          return p
+        })(),
+        (async () => {
+          const p = ctx.runBranch!({
+            startNodeId: 'b', stopAt: new Set(), context: ctx.context.clone(), runDir: runDirB, cwd: ctx.cwd,
+          })
+          backend.reject('b', new Error('branch b exploded'))
+          return p
+        })(),
+      ])
+      assert.equal(a.status, 'fulfilled')
+      assert.equal(b.status, 'fulfilled', 'a rejected GatedBackend call is caught by executeNodeStep and turned into a FAIL outcome, not a thrown exception')
+      if (a.status === 'fulfilled') assert.equal(a.value.outcome.status, Status.SUCCESS)
+      if (b.status === 'fulfilled') assert.equal(b.value.outcome.status, Status.FAIL)
+      return { status: Status.SUCCESS, notes: 'both branches settled' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      a [shape=box, prompt="x"]  b [shape=box, prompt="y"]
+      start -> detour -> done
+      detour -> a [condition="context.never_true=x"]
+      detour -> b [condition="context.never_true=x"]
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    const result = await engine.run()
+    assert.equal(result.status, Status.SUCCESS)
+  } finally {
+    cleanup(runDir, cwd)
+  }
 })

@@ -20,7 +20,7 @@ import { selectEdge } from './edge-select.ts'
 import { resolveRetryPolicy, resolveRetryTarget, backoffMs } from './retry.ts'
 import { saveCheckpoint, type Checkpoint } from './checkpoint.ts'
 import { EventLog } from '../run/events.ts'
-import { type Backend, type Handler } from '../handlers/types.ts'
+import { type Backend, type BranchRunOptions, type BranchRunResult, type Handler } from '../handlers/types.ts'
 import { ToolHandler } from '../handlers/tool.ts'
 import { BoxHandler } from '../handlers/box.ts'
 
@@ -626,10 +626,20 @@ export class Engine {
    * EXIT/dead-end/step-cap terminal paths (ADR-012). The ONE seam both
    * `run()`'s own loop and `runBranch` (p5-05) call.
    *
-   * Node lookup, `this.path.push`, the `current_node` context write, and
-   * handler lookup all live HERE rather than in a caller's wrapper -- see
-   * this task's own Step 2: an existing test requires `path` to already
-   * contain a node by the moment its handler-lookup failure is reported.
+   * Node lookup, the `current_node` context write, and handler lookup all
+   * live HERE rather than in a caller's wrapper -- see this task's own
+   * Step 2: an existing test requires `RunResult.path` to already contain a
+   * node by the moment its handler-lookup failure is reported. `path.push`
+   * itself does NOT live here (p5-05 addendum): once runBranch (p5-05)
+   * became a second caller of this same method, an unconditional
+   * `this.path.push` here would leak every branch-internal node id into the
+   * outer run's own `this.path` -- the SAME shared, instance-level array
+   * `RunResult.path` reads directly. Each caller instead pushes to its OWN
+   * path variable immediately before calling this method: `run()`'s loop
+   * pushes to `this.path` (below); `runBranch`'s loop pushes to its own
+   * local `path` array. The pre-dispatch-failure invariant above still
+   * holds either way, since the push now happens in the caller, strictly
+   * before this method can return any `'stop'` result for that node.
    * Folded into the `'deadend'` stop reason alongside the ordinary
    * "no outgoing edge" case, since from a caller's point of view all three
    * are "this step produced no next node to continue to"; the one accepted,
@@ -671,7 +681,6 @@ export class Engine {
       }
     }
 
-    this.path.push(node.id)
     this.setManaged(context, 'current_node', node.id)
 
     const handler = this.opts.handlers.get(node.handler)
@@ -719,6 +728,7 @@ export class Engine {
           runDir: opts.runDir,
           cwd: opts.cwd,
           events: this.events,
+          runBranch: (o: BranchRunOptions) => this.runBranch(o),
         })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
@@ -819,6 +829,48 @@ export class Engine {
     return { kind: 'continue', nextId: edge.to }
   }
 
+  /**
+   * A bounded forward traversal of the SAME graph, starting at
+   * opts.startNodeId, using the exact per-node step logic executeNodeStep
+   * (Task 2) already implements -- against this Engine's own shared
+   * gateOutcomes/nodeFailures/failedOutputs/stepCount ledgers. REJECTED: one
+   * independent `new Engine(...)` per branch -- a fresh instance would own
+   * its own empty ledgers, so a goal gate inside a branch would satisfy or
+   * fail a map nothing outside that branch's own instance ever reads,
+   * silently reopening the fail-open hole those ledgers exist to close
+   * (ADR-009).
+   *
+   * Treats EVERY stop reason -- 'exit', 'frontier', 'deadend', 'stepcap' --
+   * identically: stop looping and return whatever outcome/path the branch
+   * ended with. In particular, dispatching the graph's real EXIT node is an
+   * ORDINARY DEAD END for this branch alone (ADR-007's amendment): this
+   * method never calls unsatisfiedGoalGates(), never calls
+   * this.checkpoint(null), and never returns an Engine.RunResult -- that
+   * logic lives EXCLUSIVELY in run()'s own interpretation of a
+   * `{ kind: 'stop', reason: 'exit' }` result, a branch this uniform
+   * handling structurally cannot reach.
+   */
+  private async runBranch(opts: BranchRunOptions): Promise<BranchRunResult> {
+    const maxSteps = this.opts.maxSteps ?? DEFAULT_MAX_STEPS
+    const path: string[] = []
+    let currentId = opts.startNodeId
+    for (;;) {
+      path.push(currentId)
+      const stepResult = await this.executeNodeStep(currentId, {
+        runDir: opts.runDir,
+        cwd: opts.cwd,
+        maxSteps,
+        stopAt: opts.stopAt,
+        context: opts.context,
+      })
+      if (stepResult.kind === 'continue') {
+        currentId = stepResult.nextId
+        continue
+      }
+      return { outcome: stepResult.outcome, path }
+    }
+  }
+
   async run(): Promise<RunResult> {
     const { graph, context } = this.opts
     const maxSteps = this.opts.maxSteps ?? DEFAULT_MAX_STEPS
@@ -850,6 +902,7 @@ export class Engine {
     this.events.append({ type: 'pipeline.start', node: startNode.id })
 
     while (currentId !== null) {
+      this.path.push(currentId)
       const stepResult = await this.executeNodeStep(currentId, {
         runDir: this.opts.runDir,
         cwd: this.opts.cwd,

@@ -3,6 +3,32 @@ import { type Context } from '../core/context.ts'
 import { type Outcome } from '../core/outcome.ts'
 import { type EventLog } from '../run/events.ts'
 
+/**
+ * A bounded forward traversal of the same graph a handler's dispatch is
+ * itself part of, starting at `startNodeId`, stopping at `stopAt`, the
+ * graph's real EXIT node, or a dead end -- populated by `Engine.run()` on
+ * every dispatch, via `HandlerCtx.runBranch` below. Runs against the same
+ * Engine instance's own shared ledgers (`gateOutcomes`/`nodeFailures`/
+ * `failedOutputs`/the step-cap counter), never an independent nested
+ * `Engine` -- see `core/engine.ts`'s private `runBranch` method for why.
+ */
+export interface BranchRunOptions {
+  startNodeId: string
+  /** The branch halts BEFORE dispatching any node in this set. */
+  stopAt: ReadonlySet<string>
+  /** Caller-supplied, already `Context.clone()`'d -- isolates this branch's writes. */
+  context: Context
+  /** Branch-scoped subdir -- own checkpoint.json and per-node artifacts. */
+  runDir: string
+  /** Branch worktree path, or the component node's own cwd. */
+  cwd: string
+}
+
+export interface BranchRunResult {
+  outcome: Outcome
+  path: string[]
+}
+
 export interface HandlerCtx {
   node: Node
   graph: Graph
@@ -18,6 +44,13 @@ export interface HandlerCtx {
    * interface, every handler and every test a second time to add it later.
    */
   signal?: AbortSignal
+  /**
+   * Run a bounded sub-traversal of the same graph, starting at any node id,
+   * against this run's own shared ledgers. Engine-populated on every
+   * dispatch; undefined only for a hand-built `HandlerCtx` a test constructs
+   * without going through `Engine.run()`.
+   */
+  runBranch?: (opts: BranchRunOptions) => Promise<BranchRunResult>
 }
 
 export interface Handler {
@@ -29,6 +62,5 @@ export interface Handler {
  * task. Plan 2 supplies a `claude -p` implementation; tests supply a stub.
  */
 export interface Backend {
-  run(node: Node, prompt: string, context: Context, graph: Graph, signal?: AbortSignal,
-      cwd?: string): Promise<Outcome>
+  run(node: Node, prompt: string, context: Context, graph: Graph, signal?: AbortSignal, cwd?: string): Promise<Outcome>
 }
