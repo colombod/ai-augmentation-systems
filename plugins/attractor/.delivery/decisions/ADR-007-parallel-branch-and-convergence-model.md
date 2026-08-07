@@ -328,3 +328,114 @@ would never actually double-dispatch (because the conditional edges that would c
 never both fire) is still refused at lint time. This is not a new kind of imprecision; it is the
 same "lint refuses a shape that might be fine at runtime, never lets a hazardous shape run"
 tradeoff this codebase already makes everywhere else in this feature.
+
+## Amendment (2026-08-07, sixth pass): two more escapes from the truncated-intersection check, plus EXIT is harmless
+
+**The gap, found by an independent adversarial re-verification of `p5-04`'s implementation
+(itself a faithful transcription of the fifth-pass amendment above).** Two distinct graph
+shapes reach a real double-dispatch at runtime while `findPartialReconvergence` — exactly as
+specified above — returns `[]` for them.
+
+**Gap 1 — a branch root reachable from a sibling root.** The function has always excluded every
+branch root id from its own output, on the theory that `findConvergenceNode`'s own root
+exclusion ("a root is never a valid convergence candidate") extends to the hazard check too. It
+does not: those are two different questions. `root1 -> root2` (root2 also a fan-out root in its
+own right) means branch `root2`'s `runBranch` call dispatches `root2` as its own entry point,
+*and* branch `root1`'s traversal can reach `root2` by an ordinary edge and dispatch it again — a
+plain instance of the same double-dispatch class this rule exists to refuse, on a node that
+happens to itself be a root. The `Amendment (2026-08-07)` fixture just above this one
+(`root1 -> root2`, `root2 -> shared -> done`) was written to pin `findConvergenceNode`'s
+behavior ("resolves past it, not to it") and never checked `findPartialReconvergence` against
+the same graph — it would have returned `[]`, silently blessing a shape that doubly dispatches
+`root2`.
+
+**Gap 2 — asymmetric topology around a tie.** The fifth-pass amendment's own "Consequence for
+the tie-break itself" claims: *"any graph that would have exercised `findConvergenceNode`'s
+tie-break between two full common descendants is refused by PAR-004 ... regardless of which of
+the tied nodes the tie-break happens to prefer."* That claim is false as implemented, and the
+counter-example is symmetric in the fifth-pass amendment's own fixture only by coincidence —
+`findPartialReconvergence` intersects each root's **truncated** reachable set (stopped at the
+*chosen* convergence node), not the untruncated depth maps `findConvergenceNode` itself ranks
+ties over. Those are the same set only when every root's path to the tie loser also happens to
+pass through, or avoid, the winner symmetrically. When it does not:
+
+```
+root1 -> p -> x
+root1 -> q -> y
+root2 -> x
+x -> y
+y -> done
+```
+
+`x` and `y` are both full common descendants of `{root1, root2}` at worst-case depth 2 (`x`: 2
+via `root1`, 1 via `root2`; `y`: 2 via `root1` through `q`, 2 via `root2` through `x`) — the
+first-encountered candidate wins the tie, `x`. `root2`'s truncated set stops at `x` and never
+reaches `y` — `root2`'s only path to `y` runs *through* `x`. `root1`'s truncated set reaches `y`
+directly, via `q`, without ever touching `x`. `y` is present in exactly one truncated set, so
+the intersection-based check (correctly) does not flag it — but it is not a false negative in
+the *intersection* logic; it is the intersection logic answering a narrower question than the
+hazard actually depends on. At runtime: branch `root2` stops at `x` (per `runBranch`'s own
+contract, ADR-009); branch `root1`, if its real edge selection takes `q`, dispatches `y` and
+continues past it to `done`; the main loop then resumes at `x` (the convergence node), takes
+`x -> y`, and dispatches `y` again. `y` never needed to be reachable from *both* roots' truncated
+sets to be double-dispatched — reachable from **one** root's truncated set, and *also* reachable
+from the convergence node's own downstream (where the resumed main run will walk), is already
+sufficient.
+
+**Both gaps share one blind spot.** `findPartialReconvergence` has only ever asked "is this node
+shared by two or more branches' own truncated views?" Gap 1 shows a root can be a hazard via a
+*sibling's* view without being shared by two non-root views. Gap 2 shows a node can be a hazard
+via *one* branch's view colliding with the *main run's post-convergence* view, not another
+branch's view at all. Neither is the proper-subset-of-roots shape the original F3 finding named,
+or the tied-full-common-descendant shape the fifth pass named — both prior amendments assumed
+every hazard would show up as an overlap **between branches**. These do not.
+
+**Decision.** `findPartialReconvergence` now flags the union of two independently-computed sets,
+both still over the same truncated-BFS machinery (condition-independent, stopped at
+`convergenceId` — unchanged):
+
+1. **Cross-branch reachability**, as before, but no longer excluding branch-root ids from the
+   count — a root reachable from a sibling root's truncated set now counts toward it, closing
+   Gap 1. (Roots stay excluded from *convergence-node selection* in `findConvergenceNode` — that
+   exclusion is untouched and is a different question, per the fifth-pass amendment's own
+   framing.)
+2. **Branch-into-downstream-of-convergence reachability**, new: any node present in a *single*
+   branch's truncated set that is *also* reachable (ordinary, untruncated) from `convergenceId`
+   itself. This is what the resumed main run will walk after every branch settles, so a branch
+   that already shortcut its way into that territory is a hazard on its own — no second branch
+   needs to corroborate it. Closes Gap 2.
+
+**The graph's real EXIT node (`Handler.EXIT`) is excluded from both sets.** `EXIT` resolves to
+`PassthroughHandler` — `graph.ts`'s own handler-effects table (`[Handler.EXIT]: []`) already
+documents it as "genuinely writes nothing," the same passthrough treatment as `START`. Dispatch
+it from two branches, or from a branch and the resumed main run, and the second dispatch has no
+observable effect — no subprocess, no context write, no ledger entry to race. A branch reaching
+EXIT early is a *different* hazard, one with an observable effect (that branch's own traversal
+silently stopping short of what its author intended) — that is PAR-005's WARNING-level territory
+(`p5-06`, not yet built), not this rule's ERROR-level one. Folding EXIT into PAR-004 would refuse
+graphs where nothing can actually go wrong; excluding it applies uniformly to both new rules,
+not only the second.
+
+**PAR-004 itself is unchanged again:** same ERROR severity, same call site, same "refused here
+instead of aborting mid-run" posture. Only `findPartialReconvergence`'s own definition is
+broadened, for the third time — each time because an independent adversarial pass found a
+graph shape the prior definition's own stated guarantee did not actually cover, not because the
+severity or call site were ever wrong.
+
+**Consequences (this amendment specifically).** **We gain:** PAR-004 now refuses a branch root
+reachable from a sibling root (Gap 1), and a branch shortcut into convergence's own downstream
+territory regardless of what any *other* branch's truncated set contains (Gap 2) — closing two
+real double-dispatch shapes an intersection-only reading of "shared between branches" could not
+express. Excluding EXIT also **removes** a class of refusals this amendment would otherwise add
+for no safety benefit (EXIT reachable from two branches, or from a branch and convergence's
+downstream, was never actually hazardous). **We accept:** `findPartialReconvergence` is no
+longer expressible as "the intersection of N sets" in the reader's head — it is now a union of
+two differently-shaped checks, one pairwise-across-branches and one single-branch-against-the-
+convergence-node's-own-future. This is a real increase in the function's conceptual weight,
+accepted because both checks are individually simple (still plain BFS, still condition-
+independent, still stopped at `convergenceId`) and because splitting them into two named rules
+in a future rewrite is possible later without changing what either one catches. **We still do
+not have a proof this is the last gap** — the same "closed by adversarial re-verification, not
+by a completeness proof" posture as every prior amendment to this ADR. A future independent pass
+finding a fourth shape would not be a surprise; the practice this ADR has now established three
+times running is to fix it via another amendment, not to treat any prior pass as final.
