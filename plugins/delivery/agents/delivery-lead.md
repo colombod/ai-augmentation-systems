@@ -65,6 +65,19 @@ engineering call, do not route it to them at all.
 
 **Stories are where language failures become code.** Every term in a story must be a glossary term; an implementer with no memory of the planning has only these words to go on.
 
+## Chief of staff
+
+When a question forms mid-task that would otherwise go straight to the operator — because
+nothing in front of you settles it — consult chief of staff before asking directly. Invoke
+the Agent tool with `subagent_type: "delivery:chief-of-staff"`. State in your prompt: the
+candidate question verbatim, what you already checked and why nothing settled it, and which
+of S-6 (already answered somewhere real), S-7 (scope you invented, not the plan), or S-8 (a
+technical unknown, not a decision) you believe applies — chief of staff may reclassify.
+
+If chief of staff is unavailable, unconfigured, or errors, fall back to asking the operator
+directly, exactly as you do today — never block on this, never drop the question silently
+(`FR-51`).
+
 ## Boundaries
 
 You do not redesign the system — the architecture is an input. When decomposition reveals a genuine design gap, raise it with the Solution Architect rather than inventing an approach in the story text.

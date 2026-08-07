@@ -63,6 +63,48 @@ test('findDeliveryRoot: multiple .delivery/ found downward is ambiguous — decl
   assert.equal(findDeliveryRoot(root), null);
 });
 
+test('recordInvocation: an ambiguous downward search still resolves for a session with an established ledger in one candidate', () => {
+  // Reproduces a real gap found live in the chief-of-staff epic's own spike: this repo is a
+  // multi-plugin monorepo (plugins/delivery/.delivery + plugins/attractor/.delivery, added
+  // after harden-02's own 21/21 verification ran, never re-tested against this shape). A
+  // session's first call can land with an unambiguous cwd and write successfully, then a
+  // LATER call in the exact same session arrives with an ambiguous cwd (e.g. a background
+  // subagent dispatch resolving to the repo root) and, before this fix, silently no-ops —
+  // even though the session already proved which root it belongs to.
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
+
+  const first = recordInvocation(
+    { session_id: 'sess-continuity', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } },
+    { cwd: path.join(root, 'plugins', 'a') }
+  );
+  assert.ok(first);
+  assert.equal(first.ledgerPath, path.join(root, 'plugins', 'a', '.delivery', 'invocations', 'sess-continuity.ndjson'));
+
+  const second = recordInvocation(
+    { session_id: 'sess-continuity', hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'delivery:chief-of-staff' } },
+    { cwd: root }
+  );
+  assert.ok(second, 'second call should not silently no-op — session already has an established ledger root');
+  assert.equal(second.ledgerPath, path.join(root, 'plugins', 'a', '.delivery', 'invocations', 'sess-continuity.ndjson'));
+
+  const lines = fs.readFileSync(second.ledgerPath, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 2);
+});
+
+test('recordInvocation: a genuinely new session with an ambiguous cwd still declines — no false positive from the continuity fix', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
+
+  const result = recordInvocation(
+    { session_id: 'sess-brand-new', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } },
+    { cwd: root }
+  );
+  assert.equal(result, null);
+});
+
 test('findDeliveryRoot: downward search skips node_modules', () => {
   const root = makeScratchProject();
   fs.mkdirSync(path.join(root, 'node_modules', 'some-pkg', '.delivery'), { recursive: true });
