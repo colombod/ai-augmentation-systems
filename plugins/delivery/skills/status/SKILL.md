@@ -15,22 +15,54 @@ Not necessarily the repository root. Resolve before reading or writing anything 
 3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
 4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
+## Which initiative — status reports across all of them, by design
+
+Every planning artifact lives under `.delivery/initiatives/<slug>/`, one directory per
+initiative, so independent initiatives can be planned in parallel branches without
+colliding on the same shared file (`ADR-004`; the incident that motivated it: two
+initiatives independently continued the same `S-n`/`FR-n` sequence in one shared `prd.md`,
+discovered only at merge). **This skill is the one exception to "resolve to a single
+initiative first"** every other skill follows — status's whole purpose is cross-initiative
+visibility, so defaulting it to one initiative would defeat the reason it exists in exactly
+the scenario `ADR-004` addresses:
+
+1. **Default: report on every initiative.** List `.delivery/initiatives/*/` and gather each
+   one's state (below) independently — a project with two initiatives gets two gate tables,
+   clearly separated, not merged into one.
+2. **Narrowed on request.** If the user names a specific initiative, report only that one.
+3. **Zero initiatives** (a project still on the pre-`ADR-004` root-level layout, or genuinely
+   nothing started) — say so plainly, same as today's "pipeline has not started" case.
+
+Cross-cutting, project-wide, never per-initiative: `.delivery/glossary.md`,
+`.delivery/personas/`, `.delivery/interviews/`, `.delivery/simulations/`,
+`.delivery/decisions/ADR-NNN-*.md`, `.delivery/invocations/<session_id>.ndjson`.
+`.delivery/stories/`, `.delivery/reviews/`, `.delivery/sprints/` stay flat but are prefixed
+by initiative slug, matching `stories/<slug>-NN-<name>.md`'s existing convention.
+
+**Computing the story index — replaces the old hand-maintained `stories/README.md`
+(retired, `ADR-004`).** For each initiative, list its `stories/<slug>-NN-*.md` files and
+build the ID/title/phase/requirements/status table live from each file's own frontmatter
+(`templates/story.md`'s fields: `id`, `title`, `phase`, `requirements`, `status`,
+`depends_on`) — never from a hand-maintained file, which is exactly what collided before.
+Cross-check `requirements` against the initiative's own `prd.md` FR table the same way the
+existing Consistency check already does for `FR-n` coverage.
+
 ## Gather
 
 Read whichever exist, and note which do not:
 
 | Phase | Artifact |
 | :-- | :-- |
-| 1 Brief | `.delivery/brief.md` |
-| 2 Research | `.delivery/research.md` |
+| 1 Brief | `.delivery/initiatives/<initiative>/brief.md` |
+| 2 Research | `.delivery/initiatives/<initiative>/research.md` |
 | 3 Personas | `.delivery/personas/` |
 | 4a Interviews | `.delivery/interviews/` |
 | 4b Simulation | `.delivery/simulations/` |
-| 5 PRD | `.delivery/prd.md` |
-| 6 Prioritisation | `.delivery/prioritization.md` |
-| 7 Design | `.delivery/design-system.md` |
-| 8 Architecture | `.delivery/architecture.md`, `decisions/` |
-| 9 Roadmap | `.delivery/roadmap.md` |
+| 5 PRD | `.delivery/initiatives/<initiative>/prd.md` |
+| 6 Prioritisation | `.delivery/initiatives/<initiative>/prioritization.md` |
+| 7 Design | `.delivery/initiatives/<initiative>/design-system.md` |
+| 8 Architecture | `.delivery/initiatives/<initiative>/architecture.md`, `decisions/` |
+| 9 Roadmap | `.delivery/initiatives/<initiative>/roadmap.md` |
 | 10 Stories | `.delivery/stories/` |
 | 11 Sprints | `.delivery/sprints/` |
 | — Reviews | `.delivery/reviews/` |
