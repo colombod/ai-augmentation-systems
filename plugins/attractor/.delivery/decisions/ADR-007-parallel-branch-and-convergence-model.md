@@ -783,3 +783,113 @@ not have a proof this is the last gap**, now for the seventh time. This amendmen
 first time in this ADR's revision history, an explicit correction of a PRIOR amendment's own
 stated reasoning, not only its code — a reminder that "adversarially re-verified" describes the
 process this ADR follows, not a property any single amendment is entitled to claim about itself.
+
+## Amendment (2026-08-07, eleventh pass): a residual `findConvergenceNode` gap, and an explicit statement that this whole area is now a documented extension beyond both the spec and its reference implementation
+
+**The gap.** A fifth independent adversarial review of the tenth amendment's implementation found
+one more confirmed, real, PRE-EXISTING bug (unchanged since the original Task 4 commit, not
+introduced or worsened by any of the ten prior amendments): the ninth amendment's fan-out-node
+truncation closes the asymmetric-length-rework-loop class of bug only when the retry edge routes
+back *through* the fan-out node. When a retry edge targets a branch root **directly** — bypassing
+the fan-out node entirely, a shape already present in this file's own test suite, just never
+previously exercised with a branch long enough to trigger the leak — the identical mid-branch-
+node-selected-as-convergence bug recurs. `attractor run` falsely refuses an otherwise ordinary,
+hazard-free pipeline with a PAR-004 error.
+
+**Before deciding how to close it, this ADR's own author stopped and checked something no prior
+amendment had: what does the upstream spec, and its most complete reference implementation, say
+about a rework loop interacting with a parallel fan-out at all?**
+
+**The spec (`strongdm/attractor/attractor-spec.md`) does not define this.** Section 3.8 states
+the top-level graph traversal is single-threaded and that "parallelism exists within specific
+node handlers... that manage concurrent execution internally" — the main engine loop dispatches a
+`component` node exactly like any other node and receives back one aggregate `Outcome`; it never
+resumes traversal "inside" a branch. The spec's own `ParallelHandler` pseudocode (§4.8) calls an
+`execute_subgraph(branch.to_node, ...)` helper that is never itself defined anywhere in the
+document. There is no discussion anywhere in the spec of a retry loop, or any other mechanism,
+interacting with a parallel construct's own internal branch traversal.
+
+**Amplifier — `microsoft/amplifier-bundle-attractor`, the reference implementation this ADR has
+already cited for its branch-syntax and EXIT-handling precedents — does not handle this either.**
+Its own convergence-discovery function, `PipelineEngine._find_fan_in_node`, is structurally the
+same algorithm as this file's `findConvergenceNode`: plain BFS from each branch root, earliest
+common descendant, shallowest-worst-case-depth tie-break (`min(common, key=lambda n: max(...))`).
+It has **zero cycle-awareness**. Amplifier does have real cycle-detection machinery (`_compute_sccs`,
+`_nodes_on_cycles`, used by its `TOPO-003`/`TOPO-004` lint rules) — but that machinery is never
+consulted by `_find_fan_in_node` or anywhere in the engine's own traversal. Amplifier's reference
+implementation carries the *identical* latent vulnerability this ADR has spent five rounds
+closing; it has simply never been exercised or discovered there. Separately, amplifier's own lint
+rule set has **no equivalent of PAR-004 at all** — no check for partial reconvergence / branch
+double-dispatch hazards exists in its validation module.
+
+**What this means.** `findPartialReconvergence` (PAR-004) was already, and remains, a deliberate
+extension beyond both the spec and amplifier — justified in this ADR's own original text by a
+real incident (finding F1, a silent-data-loss bug an adversarial review found), following this
+project's own AGENTS.md doctrine: supersede the spec only where a real incident justifies it, and
+record the doctrine explicitly rather than silently drifting. Everything this ADR has done since
+to make PAR-004 (and now `findConvergenceNode`'s own correctness under rework loops) robust against
+cyclic graphs is *further* extension in that same, already-justified direction — not a deviation
+from an answer the spec or amplifier already gave, because neither gives one. This amendment
+records that explicitly, so a future reader does not go looking for spec or amplifier guidance
+that does not exist, the way this amendment's own investigation did before finding that out.
+
+**The fix, and its own honestly-scoped limitation.** Several designs were tried and rejected
+before this one, each caught by writing out counter-examples and running them against the real
+implementation rather than trusting hand-derived reasoning (the same discipline this ADR has
+needed at every prior pass, restated here because it was nearly skipped twice more while
+designing this fix):
+
+- *Truncate at every branch root* (not just the fan-out node): rejected — breaks the existing,
+  legitimate "root reachable from another root via a genuine forward edge" test, which this ADR's
+  own tenth amendment already confirmed must keep working.
+- *Global back-edge classification via one DFS from the fan-out node*: rejected — the classification
+  of which edge in a convergent, multi-branch "diamond" shape counts as the "back edge" depends on
+  DFS visitation order (which branch happens to be explored first), and can misclassify a branch's
+  own ordinary, load-bearing forward edge to the shared convergence node as if it were a cycle
+  closure. Verified concretely: a 3-root fixture where the retry targets the *middle* root produced
+  a wrong answer under this design, caught only by testing it, not by re-deriving it on paper.
+- *Collapse cycles into strongly-connected components (as amplifier does for its own, unrelated
+  lint rules) and run the existing algorithm over the condensed DAG*: rejected on inspection before
+  implementation — the canonical rework-loop shape (`combine -> check -> fan/root [retry]`)
+  necessarily puts the intended convergence node (`combine`) inside the *same* SCC as the
+  retry-affected interior nodes it needs to be distinguished from. Once collapsed, they are the
+  same graph-theoretic object; SCC condensation cannot recover which one was "the" intended
+  resume point, because that distinction is semantic (evidence-routing intent), not structural.
+
+**Decision, adopted.** `findConvergenceNode`'s per-root reachability computation truncates at two
+things: the fan-out node (unchanged, ninth amendment), and any *other* declared branch root
+reached at BFS depth greater than 1 — i.e., every branch root except the current traversal's own
+immediate, direct first-hop edge from its own root. A root reached as the *first* hop is kept
+(preserving the legitimate forward-edge case); a root reached only via two or more hops — which,
+empirically, is exactly the shape every confirmed rework-loop leak takes, since a genuine retry
+edge always arrives at a branch root by way of intervening structure (`check`, `combine`, the
+fan-out node, or some other node) — is truncated the same way the fan-out node already is.
+
+**Named, accepted limitation.** This heuristic is not fully general. A pipeline author could draw
+a *legitimate*, retry-free, multi-hop forward chain between two branch roots (`root1 -> mid ->
+root2 -> shared`, no cycle anywhere) — a pattern no existing test exercises and this ADR has no
+evidence any real pipeline uses, but one the heuristic cannot distinguish from a rework-loop leak.
+Verified directly: this specific shape now returns `null` (no discoverable convergence) instead of
+the correct downstream node. The failure direction matters: `null` triggers PAR-001, a **refusal**
+— loud, visible, safe. It is not a missed hazard, not a wrongly-selected convergence node, and not
+a silently-accepted graph that later corrupts data. This is the same safe-failure-direction
+tradeoff this whole feature already accepts everywhere else (a lint rule that over-refuses a
+graph that would have been fine at runtime, never one that under-refuses a graph that would not
+have been). If a real pipeline ever needs a genuine multi-hop root-to-root forward chain, this
+heuristic will need to be revisited — named here so that need is recognized immediately rather
+than re-discovered as a fresh incident.
+
+**Consequences (this amendment specifically).** **We gain:** the asymmetric-rework-loop class of
+false PAR-004 refusal is now closed for the general case (any retry-edge target: the fan-out
+node, or any branch root, through any branch length, at any root count) — the case verified false
+in this pass alongside every fixture from all ten prior amendments, twenty-one fixtures total, all
+passing under one implementation. **We accept:** a narrow, named, safe-direction limitation
+(multi-hop retry-free root chains) in exchange for a fix simple enough to state, verify, and
+review in one pass, rather than continuing to search for a fully general graph-theoretic
+treatment this investigation twice found to be genuinely harder than it first appeared. **We
+explicitly reframe this whole line of work**: PAR-001/PAR-004's interaction with rework loops
+around a parallel fan-out is this project's own doctrine extension, built because a real,
+demonstrated incident (originally F1; now, additionally, a false-refusal class neither the spec
+nor its reference implementation would have caught) justified it — not a deviation from
+established attractor discipline, because no such established discipline exists for this
+scenario. **We still do not have a proof this is the last gap**, now for the eighth time.

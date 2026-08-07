@@ -2305,6 +2305,96 @@ test('findPartialReconvergence: a rework loop combined with a genuine multi-hop 
   assert.ok(partial.includes('d'), 'd is reachable from branch a AND directly from the rework loop -- a real hazard')
 })
 
+test('findConvergenceNode: a direct retry edge to a branch root does not select a mid-branch node (ADR-007 eleventh amendment)', () => {
+  // The gap round 5's own fix (ADR-007 ninth amendment, fan-out-node
+  // truncation) did not close: the retry edge here targets lintjob
+  // DIRECTLY, never passing through the fan-out node at all, so that
+  // truncation alone cannot help. Without this round's fix, testjob's
+  // reachability leaks into lintjob's own interior (l2/l3/l4) via
+  // check -> lintjob, and one of those wins the tie-break over combine.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    lintjob [shape=box]  l2 [shape=box]  l3 [shape=box]  l4 [shape=box]
+    testjob [shape=box]  combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> lintjob -> l2 -> l3 -> l4 -> combine
+    fan -> testjob -> combine
+    combine -> check
+    check -> done
+    check -> lintjob [label="retry"]
+  }`)
+  const convergenceId = findConvergenceNode(g, ['lintjob', 'testjob'], 'fan')
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['lintjob', 'testjob'], convergenceId, 'fan'), [])
+})
+
+test('findConvergenceNode: a direct-to-root retry closes for branches of any length (ADR-007 eleventh amendment)', () => {
+  // Same shape, longer branch (8 nodes instead of 4) -- proves the fix is
+  // not specific to one branch length, the same generality check every
+  // prior round in this saga needed and, at least once, skipped.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    a [shape=box]  a2 [shape=box]  a3 [shape=box]  a4 [shape=box]  a5 [shape=box]  a6 [shape=box]  a7 [shape=box]  a8 [shape=box]
+    b [shape=box]  combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> a2 -> a3 -> a4 -> a5 -> a6 -> a7 -> a8 -> combine
+    fan -> b -> combine
+    combine -> check
+    check -> done
+    check -> a [label="retry"]
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId, 'fan'), [])
+})
+
+test('findConvergenceNode: a direct-to-root retry, 3 branch roots, retry targets a different root than the long one (ADR-007 eleventh amendment)', () => {
+  // The retry targets 'b', not the long branch 'a' -- proves the fix does
+  // not depend on the retry targeting the SAME branch whose length exposed
+  // the bug; the leak this closes can originate from any sibling root.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    a [shape=box]  a2 [shape=box]  a3 [shape=box]  a4 [shape=box]
+    b [shape=box]  c [shape=box]  combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> a2 -> a3 -> a4 -> combine
+    fan -> b -> combine
+    fan -> c -> combine
+    combine -> check
+    check -> done
+    check -> b [label="retry"]
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a', 'b', 'c'], 'fan')
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b', 'c'], convergenceId, 'fan'), [])
+})
+
+test('findConvergenceNode: a legitimate multi-hop root-to-root forward chain is a named, accepted limitation (ADR-007 eleventh amendment)', () => {
+  // Documents, rather than hides, the one known gap this round's fix
+  // accepts: root2 is reached at BFS depth 2 (via mid), not depth 1, so it
+  // is truncated the same way a rework-loop leak would be -- there is no
+  // retry edge anywhere in this graph, but the heuristic cannot tell the
+  // difference. Result is null (PAR-001, a loud refusal), never a wrong
+  // convergence node or a missed hazard -- the safe failure direction.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    root1 [shape=box]  mid [shape=box]  root2 [shape=box]  shared [shape=box]
+    start -> fan
+    fan -> root1 -> mid -> root2
+    fan -> root2
+    root2 -> shared -> done
+  }`)
+  assert.equal(
+    findConvergenceNode(g, ['root1', 'root2'], 'fan'),
+    null,
+    'a named, ADR-documented limitation -- not a defect to fix in this round',
+  )
+})
+
 // ---------------------------------------------------------------------------
 // PAR-001 / PAR-002 / PAR-004: Handler.PARALLEL fan-out shape, reusing
 // findConvergenceNode/findPartialReconvergence above. Co-fire with HAND-001

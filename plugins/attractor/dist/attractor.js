@@ -3156,7 +3156,7 @@ function inferredOutputs(node) {
 function effectiveOutputs(node) {
   return [.../* @__PURE__ */ new Set([...inferredOutputs(node), ...declaredOutputs(node)])];
 }
-function reachableWithDepthTruncated(graph, startId, stopId) {
+function reachableWithDepthTruncated(graph, startId, stopId, otherRoots) {
   const depth = /* @__PURE__ */ new Map();
   const queue = [];
   for (const e of outgoingEdges(graph, startId)) {
@@ -3167,8 +3167,9 @@ function reachableWithDepthTruncated(graph, startId, stopId) {
   }
   while (queue.length > 0) {
     const cur = queue.shift();
-    if (cur === stopId) continue;
     const curDepth = depth.get(cur);
+    if (cur === stopId) continue;
+    if (curDepth > 1 && otherRoots.has(cur)) continue;
     for (const e of outgoingEdges(graph, cur)) {
       if (!depth.has(e.to)) {
         depth.set(e.to, curDepth + 1);
@@ -3181,7 +3182,10 @@ function reachableWithDepthTruncated(graph, startId, stopId) {
 function findConvergenceNode(graph, branchRootIds, fanOutNodeId) {
   if (branchRootIds.length === 0) return null;
   const rootSet = new Set(branchRootIds);
-  const depthMaps = branchRootIds.map((id) => reachableWithDepthTruncated(graph, id, fanOutNodeId));
+  const depthMaps = branchRootIds.map((id) => {
+    const otherRoots = new Set(branchRootIds.filter((r) => r !== id));
+    return reachableWithDepthTruncated(graph, id, fanOutNodeId, otherRoots);
+  });
   let candidates = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id) && id !== fanOutNodeId);
   for (let i = 1; i < depthMaps.length; i++) {
     candidates = candidates.filter((id) => depthMaps[i].has(id));
