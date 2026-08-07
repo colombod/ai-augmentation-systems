@@ -153,12 +153,26 @@ Each has an explicit *"what you push back on"* section. Invoke one directly with
 All under `.delivery/`, hidden and tracked in git, all markdown:
 
 ```
-brief.md   research.md   prd.md   prioritization.md   design-system.md
-architecture.md   roadmap.md
-personas/    interviews/    simulations/
-decisions/ADR-NNN-*.md      stories/<epic>-<nn>-*.md
-reviews/<artifact>-<nn>.md  sprints/<n>-*.md + -review.md
+initiatives/<slug>/
+  brief.md   research.md   prd.md   prioritization.md   design-system.md
+  architecture.md   roadmap.md   notes.md
+glossary.md   personas/    interviews/    simulations/
+decisions/ADR-NNN-*.md      stories/<slug>-<nn>-*.md
+reviews/<slug>-<artifact>-<nn>.md  sprints/<slug>-<n>-*.md + -review.md
+invocations/<session_id>.ndjson
 ```
+
+**Every planning document lives under `.delivery/initiatives/<slug>/`, one directory per
+initiative — never a single shared file per project** (`ADR-004`). This is what lets
+independent initiatives (epics, sprints, parallel workstreams) be planned in separate
+branches without colliding: two initiatives editing the same shared `prd.md` in parallel is
+exactly the incident that motivated this. `/delivery:status` resolves which initiative
+applies before touching anything — an explicit signal if given, the one existing initiative
+if there's only one (so a single-initiative project stays exactly as simple as before this
+convention existed), otherwise it asks rather than guesses. Cross-cutting content that
+genuinely doesn't fork per initiative — `glossary.md`, `personas/`, `interviews/`,
+`simulations/`, `decisions/ADR-NNN-*.md`, `invocations/<session_id>.ndjson` — stays
+project-wide, one copy, shared.
 
 **`.delivery/` is not always the repository root**, and every skill resolves it the same
 way before touching anything, in order: reuse an existing `.delivery/` if one is already

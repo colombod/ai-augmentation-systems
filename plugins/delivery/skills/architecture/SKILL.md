@@ -1,12 +1,12 @@
 ---
-description: Turn an approved PRD into a technical design grounded in the actual codebase, with decisions, spikes, migration plan and test strategy. Use once requirements are settled and before work is broken into stories. Produces .delivery/architecture.md.
+description: Turn an approved PRD into a technical design grounded in the actual codebase, with decisions, spikes, migration plan and test strategy. Use once requirements are settled and before work is broken into stories. Produces .delivery/initiatives/<initiative>/architecture.md.
 ---
 
 # Architecture and technical design
 
 Focus note from user: **$ARGUMENTS**
 
-Phase 8 of the pipeline. Inputs: `.delivery/prd.md`, plus `prioritization.md` and `design-system.md` where they exist. Output: `.delivery/architecture.md` and ADRs in `.delivery/decisions/`.
+Phase 8 of the pipeline. Inputs: `.delivery/initiatives/<initiative>/prd.md`, plus `prioritization.md` and `design-system.md` where they exist. Output: `.delivery/initiatives/<initiative>/architecture.md` and ADRs in `.delivery/decisions/`.
 
 ## Where `.delivery/` resolves to
 
@@ -17,14 +17,45 @@ Not necessarily the repository root. Resolve before reading or writing anything 
 3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
 4. **Default.** Otherwise, use `.delivery/` at the repository root.
 
+## Which initiative
+
+Every artifact below lives under `.delivery/initiatives/<slug>/`, never directly under
+`.delivery/` — this is what lets independent initiatives (epics, sprints, parallel
+workstreams) be planned in parallel branches without colliding on the same shared file
+(`ADR-004`; the incident that motivated it: two initiatives independently continued the same
+`S-n`/`FR-n` sequence in one shared `prd.md`, discovered only at merge). Resolve which
+initiative before reading or writing anything below:
+
+1. **Explicit signal.** The user names an initiative, or one is already established for this
+   conversation — use it.
+2. **Exactly one exists.** If `.delivery/initiatives/` has exactly one subdirectory, use it
+   without asking — this keeps single-initiative projects exactly as simple as before this
+   convention existed.
+3. **Ask, don't guess.** Otherwise (zero, or more than one, with no explicit signal) — ask
+   which initiative this work belongs to, or whether to start a new one. Never silently
+   default to the most recently modified one.
+4. **Starting a new initiative.** Confirm its slug (kebab-case, derived from the brief
+   subject or what the user names) before creating `.delivery/initiatives/<slug>/` — check it
+   doesn't collide with an existing initiative slug or any other top-level `.delivery/` entry.
+   A genuinely new initiative needs its own `/delivery:brief`, or an explicit
+   `extends: <existing-slug>` note (in this new initiative's own first artifact) declaring it
+   reuses an existing initiative's problem framing instead of running its own — state which,
+   don't leave it implicit.
+
+Cross-cutting, project-wide, never per-initiative: `.delivery/glossary.md`,
+`.delivery/personas/`, `.delivery/interviews/`, `.delivery/simulations/`,
+`.delivery/decisions/ADR-NNN-*.md`, `.delivery/invocations/<session_id>.ndjson`.
+`.delivery/stories/`, `.delivery/reviews/`, `.delivery/sprints/` stay flat but are prefixed
+by initiative slug, matching `stories/<slug>-NN-<name>.md`'s existing convention.
+
 ## Gate check
 
-Read `.delivery/prd.md`.
+Read `.delivery/initiatives/<initiative>/prd.md`.
 
 - **Missing** — stop. Designing against an unwritten specification produces a design for the wrong thing. Tell the user to run `/delivery:prd` and offer to run it now.
 - **Non-functional requirements are vague or absent** — flag it. The architect needs numbers to design against; without them the design cannot be checked. Ask the user for the numbers or accept explicitly that the design is unvalidated on those axes.
 
-If `.delivery/architecture.md` exists, read it and ask whether to revise or replace.
+If `.delivery/initiatives/<initiative>/architecture.md` exists, read it and ask whether to revise or replace.
 
 
 **Open blocking findings.** Read `.delivery/reviews/`. If any finding against an artifact
@@ -54,7 +85,7 @@ Ask, and record what they chose.
 
 **4. Critic passes over it.** Delegate to `delivery:feature-critic` (read-only) to find the unstated assumption. Fold the blocking findings in before writing; report the rest.
 
-**5. Write the design** to `.delivery/architecture.md` using `${CLAUDE_PLUGIN_ROOT}/templates/architecture.md`. Write each consequential decision as its own ADR in `.delivery/decisions/ADR-NNN-<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/adr.md`.
+**5. Write the design** to `.delivery/initiatives/<initiative>/architecture.md` using `${CLAUDE_PLUGIN_ROOT}/templates/architecture.md`. Write each consequential decision as its own ADR in `.delivery/decisions/ADR-NNN-<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/adr.md`.
 
 ## Exit criteria
 

@@ -90,7 +90,7 @@ checkable and citation-anchored. It does not make the underlying visual judgment
 
 ## Your outputs
 
-You contribute the test strategy section to `.delivery/architecture.md`, the risk-based coverage plan to `.delivery/roadmap.md`, and the test approach in each story file. For releases you produce a verification summary: criteria met, criteria not met, coverage gaps knowingly accepted.
+You contribute the test strategy section to `.delivery/initiatives/<initiative>/architecture.md`, the risk-based coverage plan to `.delivery/initiatives/<initiative>/roadmap.md`, and the test approach in each story file. For releases you produce a verification summary: criteria met, criteria not met, coverage gaps knowingly accepted.
 
 When reviewing rather than authoring, do not modify files. Return findings as: **unverifiable criteria** (cannot be checked as written), **coverage gaps** (real risk with no planned check), **misplaced tests** (wrong level for the risk). State the failure that would escape for each.
 

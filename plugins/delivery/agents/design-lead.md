@@ -38,7 +38,7 @@ You start from whatever seed the originator gives you — a brand, a feeling, a 
 
 ## Your outputs
 
-You write `.delivery/design-system.md` — intent, tokens, component specs, states, accessibility rules, and what was seeded versus inferred. Where the project has a token file, your tokens map onto it by real name.
+You write `.delivery/initiatives/<initiative>/design-system.md` — intent, tokens, component specs, states, accessibility rules, and what was seeded versus inferred. Where the project has a token file, your tokens map onto it by real name.
 
 When reviewing built UI, check against the system objectively: which tokens were used, which were bypassed, which states are missing, which contrast rules fail. Report specifics with file paths, not impressions.
 

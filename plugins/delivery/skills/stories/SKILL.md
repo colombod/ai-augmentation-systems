@@ -6,7 +6,7 @@ description: Decompose a roadmap phase into self-contained, implementation-ready
 
 Phase or epic to decompose: **$ARGUMENTS** (defaults to the first phase not yet decomposed)
 
-Phase 10 of the pipeline. Inputs: `.delivery/prd.md`, `.delivery/architecture.md`, `.delivery/roadmap.md`, plus `design-system.md` where it exists. Output: `.delivery/stories/`.
+Phase 10 of the pipeline. Inputs: `.delivery/initiatives/<initiative>/prd.md`, `.delivery/initiatives/<initiative>/architecture.md`, `.delivery/initiatives/<initiative>/roadmap.md`, plus `design-system.md` where it exists. Output: `.delivery/stories/`.
 
 ## Where `.delivery/` resolves to
 
@@ -16,6 +16,37 @@ Not necessarily the repository root. Resolve before reading or writing anything 
 2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
 3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
 4. **Default.** Otherwise, use `.delivery/` at the repository root.
+
+## Which initiative
+
+Every artifact below lives under `.delivery/initiatives/<slug>/`, never directly under
+`.delivery/` — this is what lets independent initiatives (epics, sprints, parallel
+workstreams) be planned in parallel branches without colliding on the same shared file
+(`ADR-004`; the incident that motivated it: two initiatives independently continued the same
+`S-n`/`FR-n` sequence in one shared `prd.md`, discovered only at merge). Resolve which
+initiative before reading or writing anything below:
+
+1. **Explicit signal.** The user names an initiative, or one is already established for this
+   conversation — use it.
+2. **Exactly one exists.** If `.delivery/initiatives/` has exactly one subdirectory, use it
+   without asking — this keeps single-initiative projects exactly as simple as before this
+   convention existed.
+3. **Ask, don't guess.** Otherwise (zero, or more than one, with no explicit signal) — ask
+   which initiative this work belongs to, or whether to start a new one. Never silently
+   default to the most recently modified one.
+4. **Starting a new initiative.** Confirm its slug (kebab-case, derived from the brief
+   subject or what the user names) before creating `.delivery/initiatives/<slug>/` — check it
+   doesn't collide with an existing initiative slug or any other top-level `.delivery/` entry.
+   A genuinely new initiative needs its own `/delivery:brief`, or an explicit
+   `extends: <existing-slug>` note (in this new initiative's own first artifact) declaring it
+   reuses an existing initiative's problem framing instead of running its own — state which,
+   don't leave it implicit.
+
+Cross-cutting, project-wide, never per-initiative: `.delivery/glossary.md`,
+`.delivery/personas/`, `.delivery/interviews/`, `.delivery/simulations/`,
+`.delivery/decisions/ADR-NNN-*.md`, `.delivery/invocations/<session_id>.ndjson`.
+`.delivery/stories/`, `.delivery/reviews/`, `.delivery/sprints/` stay flat but are prefixed
+by initiative slug, matching `stories/<slug>-NN-<name>.md`'s existing convention.
 
 ## Gate check
 
