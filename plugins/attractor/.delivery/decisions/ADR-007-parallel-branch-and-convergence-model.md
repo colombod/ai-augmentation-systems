@@ -865,19 +865,31 @@ empirically, is exactly the shape every confirmed rework-loop leak takes, since 
 edge always arrives at a branch root by way of intervening structure (`check`, `combine`, the
 fan-out node, or some other node) — is truncated the same way the fan-out node already is.
 
-**Named, accepted limitation.** This heuristic is not fully general. A pipeline author could draw
-a *legitimate*, retry-free, multi-hop forward chain between two branch roots (`root1 -> mid ->
-root2 -> shared`, no cycle anywhere) — a pattern no existing test exercises and this ADR has no
-evidence any real pipeline uses, but one the heuristic cannot distinguish from a rework-loop leak.
-Verified directly: this specific shape now returns `null` (no discoverable convergence) instead of
-the correct downstream node. The failure direction matters: `null` triggers PAR-001, a **refusal**
-— loud, visible, safe. It is not a missed hazard, not a wrongly-selected convergence node, and not
-a silently-accepted graph that later corrupts data. This is the same safe-failure-direction
-tradeoff this whole feature already accepts everywhere else (a lint rule that over-refuses a
-graph that would have been fine at runtime, never one that under-refuses a graph that would not
-have been). If a real pipeline ever needs a genuine multi-hop root-to-root forward chain, this
-heuristic will need to be revisited — named here so that need is recognized immediately rather
-than re-discovered as a fresh incident.
+**Named limitation — and, checked honestly against the code this amendment replaces, a real
+regression, not merely an untested gap.** This heuristic is not fully general. A pipeline author
+could draw a *legitimate*, retry-free, multi-hop forward chain between two branch roots
+(`root1 -> mid -> root2 -> shared`, no cycle anywhere) — a pattern no existing test exercised
+before this amendment, and this ADR has no evidence any real pipeline uses. The tenth amendment's
+own code (fan-out-node truncation only, no other-root truncation) **correctly resolved this exact
+shape to `shared`** — verified directly, by running the pre-amendment implementation against this
+fixture rather than assuming its prior behavior. This amendment's own heuristic cannot distinguish
+that shape from a rework-loop leak and now returns `null` instead. **This is a deliberate trade,
+not an oversight discovered after the fact: a heuristic precise enough to close the confirmed,
+reproducible, real bug this amendment exists to fix (a false PAR-004 refusal that can and does
+occur, verified across 21 fixtures) cannot also preserve a shape that happens to look identical to
+that bug from a pure hop-count perspective — and no version of `findConvergenceNode` across any of
+this ADR's eleven amendments has ever had a principled way to tell the two apart (the two rejected
+designs earlier in this amendment were rejected for exactly that reason).** The failure direction
+matters: `null` triggers PAR-001, a **refusal** — loud, visible, safe. It is not a missed hazard,
+not a wrongly-selected convergence node, and not a silently-accepted graph that later corrupts
+data. This is the same safe-failure-direction tradeoff this whole feature already accepts
+everywhere else (a lint rule that over-refuses a graph that would have been fine at runtime, never
+one that under-refuses a graph that would not have been) — but unlike every other instance of that
+tradeoff in this ADR, this one knowingly takes away previously-correct behavior rather than merely
+declining to add new coverage. If a real pipeline ever needs a genuine multi-hop root-to-root
+forward chain, this heuristic will need to be revisited — named here, with its true cost stated
+plainly, so that need is recognized immediately rather than re-discovered as a fresh incident, and
+so a future reader does not mistake "no test exercised it" for "nothing depended on it."
 
 **Consequences (this amendment specifically).** **We gain:** the asymmetric-rework-loop class of
 false PAR-004 refusal is now closed for the general case (any retry-edge target: the fan-out
