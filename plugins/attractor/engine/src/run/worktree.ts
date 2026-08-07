@@ -1,9 +1,12 @@
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import {
   existsSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, rmSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 /** Every worktree directory this module creates carries this prefix. */
 const WT_PREFIX = 'attractor-wt-'
@@ -13,13 +16,27 @@ export interface Worktree {
   branch: string
 }
 
-function git(cwd: string, args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+/**
+ * ADR-011: `execFile`, promisified via `node:util`'s `promisify` -- zero new
+ * dependency (AGENTS.md's "exactly two, non-tradeable" constraint preserved).
+ * `execFileSync` blocked the whole process for a child's full duration;
+ * composed into a `Promise.all`-based branch fan-out, one branch's worktree
+ * setup/teardown would freeze every sibling's already-spawned subprocess I/O
+ * and its `timeout=` abort timer (a correctness gap, not merely a
+ * performance one -- `handlers/box.ts`'s `setTimeout`-driven abort cannot
+ * fire while Node is blocked). Spike 12: `execFile`'s promisified rejection
+ * carries the same `Error` shape execFileSync's thrown Error did -- `.message`
+ * still includes the child's stderr text on a non-zero exit, so every
+ * message-matching assertion below keeps passing unmodified.
+ */
+async function git(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync('git', args, { cwd, encoding: 'utf8' })
+  return stdout
 }
 
-export function isGitRepo(dir: string): boolean {
+export async function isGitRepo(dir: string): Promise<boolean> {
   try {
-    return git(dir, ['rev-parse', '--is-inside-work-tree']).trim() === 'true'
+    return (await git(dir, ['rev-parse', '--is-inside-work-tree'])).trim() === 'true'
   } catch {
     return false
   }
@@ -33,15 +50,15 @@ export function isGitRepo(dir: string): boolean {
  * deliberate: falling back to in-place execution would silently remove the
  * isolation the caller asked for.
  */
-export function createWorktree(repoDir: string, runId: string): Worktree {
-  if (!isGitRepo(repoDir)) {
+export async function createWorktree(repoDir: string, runId: string): Promise<Worktree> {
+  if (!(await isGitRepo(repoDir))) {
     throw new Error(`not a git repository: ${repoDir} -- cannot create an isolated worktree`)
   }
   const branch = `attractor/${runId}`
   const parent = mkdtempSync(join(tmpdir(), WT_PREFIX))
   const path = join(parent, runId)
   try {
-    git(repoDir, ['worktree', 'add', '-q', '-b', branch, path])
+    await git(repoDir, ['worktree', 'add', '-q', '-b', branch, path])
   } catch (err) {
     // The temp parent already exists by now. Leaving it behind on a failed
     // add -- a branch-name collision being the likely cause -- would leak a
@@ -114,9 +131,9 @@ function isOurWorktree(target: string): boolean {
  * files? `--porcelain` lists both, so an empty result means everything the
  * run produced is safely on the branch.
  */
-function hasUncommittedWork(worktreePath: string): boolean {
+async function hasUncommittedWork(worktreePath: string): Promise<boolean> {
   try {
-    return git(worktreePath, ['status', '--porcelain']).trim() !== ''
+    return (await git(worktreePath, ['status', '--porcelain'])).trim() !== ''
   } catch {
     // If git cannot answer, assume there IS work. Guessing "nothing here"
     // would delete on exactly the reading we are least sure about.
@@ -141,9 +158,9 @@ function hasUncommittedWork(worktreePath: string): boolean {
  * `hasUncommittedWork` cannot answer for, and asking it is skipped rather
  * than guessed.
  */
-function isRegisteredWorktree(repoDir: string, target: string): boolean {
+async function isRegisteredWorktree(repoDir: string, target: string): Promise<boolean> {
   try {
-    const out = git(repoDir, ['worktree', 'list', '--porcelain'])
+    const out = await git(repoDir, ['worktree', 'list', '--porcelain'])
     for (const line of out.split('\n')) {
       if (line.startsWith('worktree ') && realOrResolved(line.slice('worktree '.length)) === target) {
         return true
@@ -181,7 +198,7 @@ function isNonEmptyDirectory(path: string): boolean {
   }
 }
 
-export function removeWorktree(repoDir: string, wt: Worktree): RemovalResult {
+export async function removeWorktree(repoDir: string, wt: Worktree): Promise<RemovalResult> {
   const target = realOrResolved(wt.path)
   const root = realOrResolved(repoDir)
 
@@ -222,9 +239,9 @@ export function removeWorktree(repoDir: string, wt: Worktree): RemovalResult {
   // gone -- there is no reliable answer, and the existing fallback below
   // (force remove, then the ownership-gated direct delete) already handles
   // those cases correctly.
-  const registered = existsSync(target) && isRegisteredWorktree(repoDir, target)
+  const registered = existsSync(target) && (await isRegisteredWorktree(repoDir, target))
 
-  if (registered && hasUncommittedWork(target)) {
+  if (registered && (await hasUncommittedWork(target))) {
     return {
       removed: false,
       warning:
@@ -254,7 +271,7 @@ export function removeWorktree(repoDir: string, wt: Worktree): RemovalResult {
 
   let gitError: string | undefined
   try {
-    git(repoDir, ['worktree', 'remove', '--force', target])
+    await git(repoDir, ['worktree', 'remove', '--force', target])
   } catch (err) {
     // Keep the whole message: git puts the actual reason ("is not a working
     // tree", "is a main working tree") on a later line, so taking only the
@@ -264,7 +281,7 @@ export function removeWorktree(repoDir: string, wt: Worktree): RemovalResult {
 
   // Reconcile git's administrative record either way.
   try {
-    git(repoDir, ['worktree', 'prune'])
+    await git(repoDir, ['worktree', 'prune'])
   } catch {
     // Metadata only; a failure here does not affect the directory.
   }

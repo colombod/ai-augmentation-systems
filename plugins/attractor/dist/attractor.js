@@ -5106,7 +5106,7 @@ var ClaudeCodeBackend = class {
 };
 
 // src/run/worktree.ts
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import {
   existsSync as existsSync3,
   mkdtempSync,
@@ -5117,26 +5117,29 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join as join5, resolve, sep } from "node:path";
+import { promisify } from "node:util";
+var execFileAsync = promisify(execFile);
 var WT_PREFIX = "attractor-wt-";
-function git(cwd, args) {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+async function git(cwd, args) {
+  const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8" });
+  return stdout;
 }
-function isGitRepo(dir) {
+async function isGitRepo(dir) {
   try {
-    return git(dir, ["rev-parse", "--is-inside-work-tree"]).trim() === "true";
+    return (await git(dir, ["rev-parse", "--is-inside-work-tree"])).trim() === "true";
   } catch {
     return false;
   }
 }
-function createWorktree(repoDir, runId) {
-  if (!isGitRepo(repoDir)) {
+async function createWorktree(repoDir, runId) {
+  if (!await isGitRepo(repoDir)) {
     throw new Error(`not a git repository: ${repoDir} -- cannot create an isolated worktree`);
   }
   const branch = `attractor/${runId}`;
   const parent = mkdtempSync(join5(tmpdir(), WT_PREFIX));
   const path = join5(parent, runId);
   try {
-    git(repoDir, ["worktree", "add", "-q", "-b", branch, path]);
+    await git(repoDir, ["worktree", "add", "-q", "-b", branch, path]);
   } catch (err) {
     rmSync(parent, { recursive: true, force: true });
     throw err;
@@ -5156,16 +5159,16 @@ function isOurWorktree(target) {
   const t = realOrResolved(target);
   return t.startsWith(`${tmpRoot}${sep}`) && basename(dirname(t)).startsWith(WT_PREFIX);
 }
-function hasUncommittedWork(worktreePath) {
+async function hasUncommittedWork(worktreePath) {
   try {
-    return git(worktreePath, ["status", "--porcelain"]).trim() !== "";
+    return (await git(worktreePath, ["status", "--porcelain"])).trim() !== "";
   } catch {
     return true;
   }
 }
-function isRegisteredWorktree(repoDir, target) {
+async function isRegisteredWorktree(repoDir, target) {
   try {
-    const out = git(repoDir, ["worktree", "list", "--porcelain"]);
+    const out = await git(repoDir, ["worktree", "list", "--porcelain"]);
     for (const line of out.split("\n")) {
       if (line.startsWith("worktree ") && realOrResolved(line.slice("worktree ".length)) === target) {
         return true;
@@ -5183,7 +5186,7 @@ function isNonEmptyDirectory(path) {
     return true;
   }
 }
-function removeWorktree(repoDir, wt) {
+async function removeWorktree(repoDir, wt) {
   const target = realOrResolved(wt.path);
   const root = realOrResolved(repoDir);
   const ours = isOurWorktree(target);
@@ -5193,8 +5196,8 @@ function removeWorktree(repoDir, wt) {
       warning: `refusing to remove ${target}: it is, or contains, the repository root`
     };
   }
-  const registered = existsSync3(target) && isRegisteredWorktree(repoDir, target);
-  if (registered && hasUncommittedWork(target)) {
+  const registered = existsSync3(target) && await isRegisteredWorktree(repoDir, target);
+  if (registered && await hasUncommittedWork(target)) {
     return {
       removed: false,
       warning: `keeping ${target}: it has uncommitted work on branch ${wt.branch}. Commit it there, or delete the directory once you have salvaged it.`
@@ -5208,12 +5211,12 @@ function removeWorktree(repoDir, wt) {
   }
   let gitError;
   try {
-    git(repoDir, ["worktree", "remove", "--force", target]);
+    await git(repoDir, ["worktree", "remove", "--force", target]);
   } catch (err) {
     gitError = (err instanceof Error ? err.message : String(err)).trim();
   }
   try {
-    git(repoDir, ["worktree", "prune"]);
+    await git(repoDir, ["worktree", "prune"]);
   } catch {
   }
   const survivedGit = existsSync3(target);
@@ -5247,10 +5250,10 @@ function removeWorktree(repoDir, wt) {
 }
 
 // src/doctor.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
+import { execFileSync } from "node:child_process";
 function probe(name, args, required) {
   try {
-    const out = execFileSync2(name, args, {
+    const out = execFileSync(name, args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
     });
@@ -5453,14 +5456,14 @@ async function main(argv) {
     let cwd = args.cwd;
     const runId = `${basename2(args.runDir)}-${randomUUID().slice(0, 8)}`;
     if (args.worktree) {
-      if (!isGitRepo(args.cwd)) {
+      if (!await isGitRepo(args.cwd)) {
         process.stderr.write(
           `--worktree requires a git repository; ${args.cwd} is not one
 `
         );
         return 1;
       }
-      worktree = createWorktree(args.cwd, runId);
+      worktree = await createWorktree(args.cwd, runId);
       cwd = worktree.path;
       process.stdout.write(`worktree: ${worktree.path} (branch ${worktree.branch})
 `);
@@ -5470,8 +5473,8 @@ async function main(argv) {
           `WARNING: --in-place was passed. This unattended run has bypassed permissions and shell/write access (Bash, Read, Write, Edit by default) directly in ${args.cwd}. Nothing isolates it from your working copy.
 `
         );
-      } else if (isGitRepo(args.cwd)) {
-        worktree = createWorktree(args.cwd, runId);
+      } else if (await isGitRepo(args.cwd)) {
+        worktree = await createWorktree(args.cwd, runId);
         cwd = worktree.path;
         process.stdout.write(`worktree: ${worktree.path} (branch ${worktree.branch})
 `);
@@ -5520,7 +5523,7 @@ async function main(argv) {
       return result.status === Status.SUCCESS ? 0 : 1;
     } finally {
       if (worktree !== void 0) {
-        const removal = removeWorktree(args.cwd, worktree);
+        const removal = await removeWorktree(args.cwd, worktree);
         if (removal.warning !== void 0) process.stderr.write(`${removal.warning}
 `);
       }
