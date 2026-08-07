@@ -2,14 +2,18 @@
 
 > Phase 9 artifact. Owned by Program Manager, with QA Strategist.
 > Status: Phases 0–3 complete, all debt closed · Phase 4's D-1/D-2 purpose fulfilled,
-> M4 evidence-gathering remains · **Re-aligned 2026-08-05, debt closed 2026-08-06**
+> M4 evidence-gathering remains · Phase 5's CLI half complete (tier-2 ledger cross-check
+> open as debt), TUI half held by product-owner decision
+> **Re-aligned 2026-08-05 · debt closed 2026-08-06 · Phase 5 added, challenged, and built
+> 2026-08-06**
 > PRD: `.delivery/prd.md` · Architecture: `.delivery/architecture.md`
 > Sprint review: `.delivery/sprints/1-harden-mvp-review.md`
-> **Word count: 1422 (cap 1100).** Declared, not silent: this document carries the real,
-> executed outcome of every phase and the real closure of both carried debt items — cutting
-> further (already trimmed once at realign, and again to close the debt) would mean cutting
-> actual results, resolved-risk evidence, or the D-1/D-2 closure record itself, which the
-> writing standard protects over hitting the cap.
+> **Word count: 1911 (cap 1100), fourth time over.** Declared, not silent: this document now
+> carries the real, executed outcome of five phases, a real adversarial review, a real
+> spike attempt with a real blocker, and two real product-owner decisions (CLI shipped in
+> tiers, TUI held) — cutting further means cutting actual results or decisions, which the
+> writing standard protects over the cap. This document is due a fresh rewrite, not another
+> trim pass — noted explicitly rather than repeating the same declaration a fifth time.
 
 ## Constraints
 
@@ -182,18 +186,69 @@ answer a cross-session persona question either.
 **Cut list:** nothing — this phase's remaining cost is finding a real external project to
 point it at, not building.
 
+### Phase 5: verification channel generalization — CLI and TUI — **CLI complete (2 tiers), TUI held**
+
+**Added via direct product-owner direction, this session** (not a `/delivery:realign` — no
+formal sprint ran against Phase 5). `FR-17`–`FR-19`, `S-5`. **Then run through
+`/delivery:challenge` before building** — a real, 5-reviewer adversarial pass
+(`.delivery/reviews/phase-5-cli-tui-01.md`), because this project's own `stories/README.md`
+already flagged that most of its planning happened by direct writing rather than real
+pipeline invocation. All 5 reviewers independently found the original plan wasn't buildable
+as scoped (`R-phase5-1`); three more blocking findings named real, separate problems with
+the TUI half.
+
+**Actual result, CLI (`FR-17`, `FR-18`):** a real spike (`harden-11`) found no safe,
+closed-enum field on `Bash` to whitelist the way capture tools have `action` — logging a
+command's content risks leaking secrets; logging nothing loses discrimination; logging a
+hash requires blanket-governing every `Bash` call, a real noise cost. Live payload
+confirmation was attempted for real and genuinely blocked (expired subprocess
+authentication, not retried around). Shipped honestly in two tiers instead of one:
+direct-observation enforcement (`harden-09`) is real and done; the durable ledger
+cross-check stays **open, named debt**, not silently dropped.
+
+**Actual result, TUI (`FR-19`):** **held**, a real product-owner decision, not a slip. The
+review found no downstream story anywhere needs this yet, a tool confirmed in this session
+wouldn't ship to other installs of this plugin (no `.mcp.json`/`mcpServers` registration
+exists), and the named fallback capture tool is confirmed — from this environment's own
+tool documentation — unable to type into a terminal at all. `harden-08`/`harden-10` stay
+written and ready, not built.
+
+**Entry criteria:** Phase 3 shipped (it is) — this extends Mechanism 3, doesn't replace it.
+**Delivers:** a real, buildable channel-honesty guarantee for CLI criteria, narrower than
+Phase 3 gave GUI criteria (direct observation, not a durable record) — stated as such, not
+claimed as parity. TUI: unchanged from Phase 3's "unable to be checked" default, by choice.
+
+| Work item | Size | Confidence | Depends on | Actual |
+| :-- | :-- | :-- | :-- | :-- |
+| CLI-discrimination spike (`harden-11`) | S | — | nothing | **Done** — real negative result: no safe ledger field exists today |
+| CLI channel rule, tier 1: direct-observation enforcement (`harden-09`) | S | high | `harden-11` | **Done** — `qa-strategist.md` and `sprint-review/SKILL.md` both updated for real |
+| CLI channel rule, tier 2: durable ledger cross-check | — | — | A resolved noise/safety tradeoff, or a new signaling mechanism | **Open debt** — not scheduled, not silently dropped |
+| Spike 6 — terminal-visual-capture tool (`harden-08`) | S | low | nothing | **Held** — product-owner decision, real candidates (VHS, `tui_mcp`) stay documented |
+| TUI channel enforcement (`harden-10`) | S–M | low | Spike 6 | **Held**, same decision |
+
+**Verification in this phase:** `/delivery:challenge`'s real adversarial review, then
+`harden-11`'s real (partially blocked) spike attempt — not synthetic fixtures asserting
+shape. The CLI rule's own test approach is example-based, per `harden-09`'s story.
+**Cut list:** TUI was the actual cut, made explicitly and named, not silently slipped. The
+CLI tier-2 ledger cross-check is the next real cut candidate if the noise/safety tradeoff
+never resolves — named as open debt now rather than promised and missed later.
+
 ## Critical path
 
 ```
 Phase 0 → Phase 1 (spikes) → Phase 2 (ledger) → Phase 3 (channel + rubric) → Phase 4 (real use)
+                                                                            ↘ Phase 5 (CLI/TUI channel)
 ```
 
 Phase 1b runs alongside without affecting this chain. Rubric *authorship* (unscheduled,
 design-lead work) is explicitly **not** on this path — the plan's least controllable
 dependency, removed from the critical path entirely by the inversion decision above.
-Phases 0–3, and Phase 4's D-1/D-2 half, are now complete. **Phase 4's narrowed remaining
-scope (M4 evidence) is the critical path today**, with one lever left: getting a real
-external project to run this on sooner rather than later.
+Phases 0–3, and Phase 4's D-1/D-2 half, are now complete. Phase 5's CLI half is also
+complete (two tiers); its TUI half is held, not on the critical path unless a real need
+surfaces. **Phase 4's narrowed remaining scope (M4 evidence) is the critical path today**,
+with one lever: getting a real external project to run this on. A second, independent item
+sits alongside it, not blocking: resolving Phase 5's open CLI tier-2 debt (the ledger
+cross-check), whenever the noise/safety tradeoff gets a real answer.
 
 ## Dependencies outside our control
 
@@ -202,6 +257,8 @@ external project to run this on sooner rather than later.
 | Design rubric content (not the citation slot — that's Phase 0) | design-lead | Whenever it arrives | Not started, no schedule | No impact on shipping — Phase 3 ships honest either way, per the inversion decision |
 | Claude Code's hook payload shape staying stable | Anthropic | Ongoing | Verified current as of this session | Spikes 1–2 must re-run after any Claude Code upgrade |
 | A real, external project to run this plugin on, for real work over time | originator | Phase 4's remaining scope | Not yet identified | M4's persona question stays unanswered — D-1/D-2 no longer depend on this, they closed already |
+| A real downstream need for TUI verification, before Spike 6 is worth spending | product-owner | Phase 5's TUI half, if ever resumed | Held, by decision, 2026-08-06 | No impact — TUI verification stays honestly "unable to be checked" indefinitely, which is the intended state while held |
+| A safe way to whitelist `Bash`-call evidence without leaking secrets, or an accepted noise cost | solution-architect / product-owner | Phase 5's CLI tier-2 (ledger cross-check) | Open, per `harden-11`'s spike | CLI verification stays at tier 1 (direct observation) indefinitely — real, but not durable across sessions |
 
 ## Requirement coverage
 
@@ -212,6 +269,8 @@ external project to run this on sooner rather than later.
 | FR-5–FR-8 | Phase 1b | Complete, no debt |
 | FR-9–FR-10, FR-12 | Phase 3 | Built, unit-tested, plus a real screenshot live-fire. Complete, no debt |
 | FR-11 | Phase 3 | Complete, no debt |
+| FR-17, FR-18 | Phase 5 | Tier 1 (direct observation) done. Tier 2 (ledger cross-check) open debt |
+| FR-19 | Phase 5 | Held by product-owner decision — `qa-strategist.md`'s honest "unable to be checked" default covers it in the interim |
 
 **Deferred:** FR-13–FR-16 (the self-correction gate) — Stage 2 per `prioritization.md`,
 defends a persona with zero real transcript evidence. Not silently dropped: named in the
@@ -229,6 +288,9 @@ not cover.
 | ~~**D-1** — mid-run-error firing never confirmed live~~ | — | — | **Resolved:** a genuine browser-tool failure produced a correctly-logged `PostToolUseFailure`/`outcome: "error"` entry | — | closed |
 | ~~**D-2** — capture-tool live-fire never confirmed live~~ | — | — | **Resolved:** a genuine screenshot produced a correctly-logged `capture_action: "screenshot"` entry | — | closed |
 | Phase 4's remaining M4 scope never starts because no real external project gets pointed at this plugin | Medium | Medium | Named as the only thing left blocking M4 — surface it, don't let it go quiet | originator | No real external usage within a reasonable window post-merge |
+| ~~Spike 6 finds no confirmed terminal-visual-capture tool~~ | — | — | **Moot for now:** Spike 6 held, not run — TUI criteria state "unable to be checked" by design while held, same effect as a negative result would have had | — | closed (as held) |
+| CLI's tier-2 ledger cross-check never gets a safe design, staying tier-1-only indefinitely | Medium | Low | Fails safe by design — tier 1 (direct observation) already covers the core claim; tier 2 only strengthens durability for reviewers who weren't present | solution-architect | A safe whitelist design is proposed, or the noise cost is explicitly accepted |
+| A `Bash`-governance fix for CLI tier 2 gets built without addressing the noise cost `harden-11` named | Medium | Medium | Named explicitly here so it can't be built silently as a "quick fix" — any fix must address both the secret-leak and noise findings, not one | solution-architect | Any future story proposing to close CLI tier 2 |
 
 ## Buffer
 

@@ -1,7 +1,7 @@
 # PRD: delivery plugin — enforcement of its own doctrine
 
 > Phase 5 artifact. Owned by Product Owner, with Business Analyst and QA Strategist.
-> Status: draft · Last updated: 2026-08-05
+> Status: `S-1`–`S-4` shipped and accepted · `S-5` added 2026-08-06, not yet built
 > Brief: `.delivery/brief.md` · Glossary: `.delivery/glossary.md`
 
 ## Summary
@@ -27,6 +27,18 @@ reads only the verdict, which is hypothesized, not observed (`.delivery/personas
 covers UI-facing acceptance criteria only. The UI case has the most direct evidence;
 generalizing further before that works multiplies cost against unvalidated need.
 
+**Amendment, 2026-08-06 — scope lifted, its own precondition now met.** The GUI case now
+works: built, unit-tested, and confirmed live (`FR-9`–`FR-12`, closed debt D-2). The reason
+generalizing was deferred — "before that works" — no longer holds. Direct product-owner
+direction, this session: a CLI or a TUI is a real user-facing surface exactly like a
+rendered page, and checking it by reading machine-level output (parsed text, an
+accessibility tree, ANSI-stripped terminal text) is the same category of mistake `FR-9`
+already exists to catch for GUIs, just in a different medium. `S-5` below extends the same
+principle. Graded honestly: this is a direct requirement from this conversation, not a
+transcript-observed incident like `S-3`'s — no CLI/TUI verification failure appears in
+either real session studied. The GUI rule stays `observed`-grade; `S-5`'s rule is
+`reported`-grade until a real incident or a real build confirms it the same way.
+
 **Non-goals** — things a reader might assume are included, but are not:
 
 - Redesigning the phase sequence — the planning half works when run; only enforcement is
@@ -34,7 +46,8 @@ generalizing further before that works multiplies cost against unvalidated need.
 - A manual approval checkbox standing in for real verification — rejected directly in the
   evidence. A lighter checkpoint is the brief's Open Question 3, not decided here.
 - Broadening the evidence base beyond the one operator studied, before scoping further.
-- Extending the channel-and-rubric requirement past UI-facing criteria this iteration.
+- ~~Extending the channel-and-rubric requirement past UI-facing criteria this iteration.~~
+  **Lifted 2026-08-06** — see the amendment above and `S-5`.
 - Why narration substitutes for invocation (Open Question 4) — this PRD scopes catching it,
   not removing the incentive.
 - A general-purpose scheduling primitive — only enough for S-4 is in scope.
@@ -210,26 +223,91 @@ projects, where zero-to-one checks ran across sessions lasting days.
 - `FR-16` — a verdict that passed a check shows that check's findings directly, not only in
   a separate artifact the reader would need to know exists.
 
+### S-5: A verdict checked the wrong layer because the surface wasn't a webpage
+
+**Actor:** the operator who checks in periodically
+**Trigger:** acceptance checking runs against a governed artifact that is a CLI or a TUI,
+not a rendered GUI.
+**Preconditions:** `S-3`'s rule already requires a real capture for rendered, visible
+behavior — but its own wording and its non-goal both assumed "rendered" means a webpage.
+This scenario is that same rule applied honestly to a different real surface. **Grade:
+`reported`, not `observed`** — unlike `S-3`, no CLI/TUI verification failure appears in
+either real transcript studied; this scenario traces to a direct product-owner instruction,
+this session, not a mined incident. Real, but a different, weaker kind of real — see
+`prioritization.md`'s Confidence section.
+
+**Main path**
+
+1. A story delivers a CLI command or a TUI screen; its acceptance criteria describe what a
+   real user would see or get back when they actually run it.
+2. The agent decides what channel proves that — and, left unguided, reaches for the layer it
+   already has open: reading the tool's own internal handler function, or reading terminal
+   text with formatting stripped, rather than what a real user actually experiences.
+3. For a CLI: the criterion is only proven by a real process invocation with real observed
+   `stdout`/`stderr`/exit code — calling the same logic as an internal function, bypassing
+   the actual command boundary, is not the same claim.
+4. For a TUI: the criterion needs a real visual capture of the rendered terminal — color,
+   alignment, layout, box-drawing, animation. A text read with ANSI codes stripped (the one
+   terminal-reading tool confirmed available in this environment does exactly this) sees
+   none of that, the same blind spot `S-3` names for a DOM read of a webpage.
+5. The verdict states which surface type applied and which channel was used — never a bare
+   "works," and never a GUI-shaped check applied to a surface that isn't one.
+
+**Observable outcome:** a CLI or TUI acceptance verdict is checked at the layer a real user
+actually experiences, not the layer that happened to be open — matching `S-3`'s standard,
+extended to the surfaces it didn't originally name.
+
+**Error and edge paths**
+
+| Case | Expected behavior |
+| :-- | :-- |
+| CLI criterion checked only by calling internal logic directly, no real process launched | Not-met — the process boundary itself is part of the claim |
+| TUI criterion checked only by a text read of terminal output (ANSI stripped or not) | Not-met — text alone cannot confirm color, alignment, or layout |
+| No tool in the current environment can produce a real visual capture of a terminal | Verdict states the criterion is unable to be checked, same honesty pattern as `FR-11` — never silently passed |
+| A surface is ambiguous (e.g., a CLI that also renders a TUI mode) | The stricter of the two applicable channel requirements governs |
+| A surface is none of GUI/CLI/TUI (e.g., a library API, a config file) | No channel is defined yet — states unable-to-be-checked by default, same honesty pattern as `FR-11`, rather than an invented ad hoc check |
+
+**Acceptance criteria**
+
+- `FR-17` — a verdict for a governed artifact states which delivery surface applies (GUI,
+  CLI, or TUI) and requires the channel matching that surface — a GUI-shaped check is never
+  applied by default to a non-GUI surface. A surface outside these three has no defined
+  channel yet and defaults to unable-to-be-checked, per `FR-11`'s honesty pattern, rather
+  than an agent inventing an ad hoc check for it.
+- `FR-18` — a CLI-surfaced "met" verdict requires the reviewer to have directly observed a
+  real process invocation, with `stdout`/`stderr`/exit code named; a call to the same logic
+  through an internal function, bypassing the actual command entry point, does not satisfy
+  this. A durable, ledger-based cross-check (the same guarantee `FR-9` gets from the
+  invocation ledger) remains an open item — `harden-11`'s spike found no safe way to
+  whitelist a `Bash` call's content without risking a leaked secret.
+- `FR-19` — a TUI-surfaced "met" verdict requires a real visual capture of the rendered
+  terminal; a text-only read (ANSI-stripped or otherwise) does not satisfy this and must be
+  recorded not-met or unable-to-be-checked, per `FR-11`'s honesty pattern, if no visual
+  capture channel is confirmed available.
+
 ## Functional requirements
 
-| ID | Requirement | Scenario | Priority |
-| :-- | :-- | :-- | :-- |
-| FR-1 | Every governed artifact gets a stated invoked/not-invoked status | S-1 | must |
-| FR-2 | Not-invoked applies regardless of file-level completeness | S-1 | must |
-| FR-3 | Reconstructed narration-without-invocation case is caught | S-1 | must |
-| FR-4 | Not-invoked is a distinct, scannable marker | S-1 | must |
-| FR-5 | Entirely-unconfirmed-backed decisions never read as plain "ready" | S-2 | must |
-| FR-6 | The marker appears in the primary scanned document | S-2 | must |
-| FR-7 | Mixed evidence does not trigger the marker | S-2 | must |
-| FR-8 | Real elba-dreaming case reproduces the marker | S-2 | should |
-| FR-9 | Rendered-behavior verdicts state their method; text-only reads are not-met | S-3 | must |
-| FR-10 | Visual "met" requires naming a specific rubric rule | S-3 | must |
-| FR-11 | No rubric means criteria stated as unable to be checked, never silently met | S-3 | must |
-| FR-12 | Real elba-dreaming defect reproduces a not-met verdict | S-3 | should |
-| FR-13 | Completion is blocked past a documented check-staleness threshold | S-4 | must |
-| FR-14 | Verdicts record the last self-correction check's timing | S-4 | must |
-| FR-15 | Real elba-dreaming zero-check pattern is caught | S-4 | should |
-| FR-16 | A passed check's findings surface directly in the verdict | S-4 | should |
+| ID | Requirement | Scenario | Priority | Grade |
+| :-- | :-- | :-- | :-- | :-- |
+| FR-1 | Every governed artifact gets a stated invoked/not-invoked status | S-1 | must | observed |
+| FR-2 | Not-invoked applies regardless of file-level completeness | S-1 | must | observed |
+| FR-3 | Reconstructed narration-without-invocation case is caught | S-1 | must | observed |
+| FR-4 | Not-invoked is a distinct, scannable marker | S-1 | must | observed |
+| FR-5 | Entirely-unconfirmed-backed decisions never read as plain "ready" | S-2 | must | observed |
+| FR-6 | The marker appears in the primary scanned document | S-2 | must | observed |
+| FR-7 | Mixed evidence does not trigger the marker | S-2 | must | observed |
+| FR-8 | Real elba-dreaming case reproduces the marker | S-2 | should | observed |
+| FR-9 | Rendered-behavior verdicts state their method; text-only reads are not-met | S-3 | must | observed |
+| FR-10 | Visual "met" requires naming a specific rubric rule | S-3 | must | observed |
+| FR-11 | No rubric means criteria stated as unable to be checked, never silently met | S-3 | must | observed |
+| FR-12 | Real elba-dreaming defect reproduces a not-met verdict | S-3 | should | observed |
+| FR-13 | Completion is blocked past a documented check-staleness threshold | S-4 | must | assumed |
+| FR-14 | Verdicts record the last self-correction check's timing | S-4 | must | assumed |
+| FR-15 | Real elba-dreaming zero-check pattern is caught | S-4 | should | assumed |
+| FR-16 | A passed check's findings surface directly in the verdict | S-4 | should | assumed |
+| FR-17 | A verdict states which delivery surface applies (GUI/CLI/TUI — anything else defaults to unable-to-be-checked) and requires the matching channel | S-5 | must | reported |
+| FR-18 | CLI "met" requires a real process invocation observed directly by the reviewer; a durable ledger cross-check remains open (`harden-11`) | S-5 | must | reported |
+| FR-19 | TUI "met" requires a real visual capture; text-only reads (ANSI-stripped or not) don't satisfy it | S-5 | must | reported |
 
 ## Non-functional requirements
 
@@ -259,12 +337,12 @@ projects, where zero-to-one checks ran across sessions lasting days.
 | 2 | Should a minimal fallback rubric exist for FR-11's no-rubric case, or should visual criteria simply stay unable-to-be-checked until one is authored? | product-owner | Scoping S-3's fallback behavior |
 | 3 | FR-13/NFR-1 sets the cadence at one check per governed-artifact phase gate. Does reaching that gate mid-task interrupt in-progress work, or only gate the next completion report? | solution-architect | Scoping S-4 |
 | 4 | Is the operator who reads only the verdict (S-4's actor) real enough to justify FR-13–FR-16's cost, given zero observed instances? | product-owner | Confidence in S-4's priority |
+| 5 | Is any tool in this environment confirmed able to produce a real visual capture of a rendered terminal (for `FR-19`), or does TUI verification stay honestly "unable to be checked" until one is confirmed? | solution-architect | Architecture's Mechanism 3 extension; a spike, the same shape as the original Spike 4 |
 
 ## Out of scope
 
 - Redesigning the phase sequence itself.
 - A manual approval checkbox in place of real verification.
-- Extending the channel-and-rubric requirement past UI-facing criteria this iteration.
 - The underlying reason narration substitutes for invocation (detection only, this round).
 - A general-purpose scheduling primitive beyond what FR-13 needs.
 - Team-based or multi-operator usage.

@@ -35,12 +35,16 @@ Where the runner used its own task IDs rather than `FR-n` (superpowers does), us
 
 **1. Verify acceptance criteria independently.** Delegate to `delivery:qa-strategist` (via the Agent tool; if subagents are unavailable, adopt the persona from `${CLAUDE_PLUGIN_ROOT}/agents/`). Read the criteria first, then check each against the current code — not against the sprint log. Every criterion gets met / not-met / partially-met with concrete evidence: the test that covers it, or the behavior observed.
 
-For any criterion describing rendered, visible behavior, this delegation applies
-`delivery:qa-strategist`'s standing rule for verifying a UI-facing claim (see that agent's
-own file — the channel must be a real capture, cross-checked against the invocation
-ledger, and a visual "met" verdict must cite a `design-system.md` `Rule ID` or state
-plainly that none exists). This is the same rule whether or not the work was checked ad
-hoc before this formal review ever ran — it does not get a lighter version here.
+For any criterion describing behavior a real user would see or get back — rendered GUI
+behavior, a CLI's real output, or a TUI's rendered state — this delegation applies
+`delivery:qa-strategist`'s standing rule for verifying a user-facing claim (see that
+agent's own file — the required channel differs by surface: a real capture for GUI,
+cross-checked against the invocation ledger; a directly-observed real invocation for CLI,
+since no ledger cross-check exists yet for it; a real visual capture for TUI, or an honest
+"unable to be checked" if none is available. A visual "met" verdict must also cite a
+`design-system.md` `Rule ID` or state plainly that none exists). This is the same rule
+whether or not the work was checked ad hoc before this formal review ever ran — it does
+not get a lighter version here.
 
 **2. Run the test suite yourself** and report the real output. A sprint that claimed green and is now red is the single most important thing this review can catch.
 
