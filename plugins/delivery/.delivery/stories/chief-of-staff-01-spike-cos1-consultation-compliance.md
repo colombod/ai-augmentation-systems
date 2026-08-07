@@ -241,5 +241,25 @@ starts. A below-bar result routes to product-owner instead of Phase 6.
 
 ## Implementation notes
 
-Filled in during and after implementation. Record surprises, deviations from the plan and the
-reason, and follow-up work — anything a future reader would want.
+**Partial progress, honestly stated — spike not yet run.** `agents/chief-of-staff.md` is
+built (real S-5 logic per `FR-17`–19, S-6/S-7/S-8 clearly labeled as stubs), the pointer
+section is live on both `delivery-lead.md` and `qa-strategist.md` at the exact specified
+locations, and the pre-registration file this story requires
+(`.delivery/chief-of-staff/cos1-pre-registration.md`) exists.
+
+**A real finding surfaced while pre-registering, not a completed spike:** the first attempt
+at the ≥10-trial list used pure-lookup tasks ("does file X get a pointer section," answerable
+by `Read`/`Grep` with no plausible human-escalation path). Every such trial would land
+`no attempt` regardless of whether the mechanism works, because the task never creates
+pressure to escalate at all — that isn't evidence, it's a null result dressed as one. This
+was caught and the trial list retracted *before* any trial ran, which is the pre-registration
+requirement doing exactly what it's for. The definition of "genuine candidate question" in
+the pre-registration file was sharpened as a direct result — this correction is a legitimate,
+real output of this pass, not a placeholder.
+
+**Not done, and not faked as done:** a valid trial list (tasks that create real
+ambiguity-driven escalation pressure, each with a source that actually settles the specific
+judgment call), the ≥10 real trial runs, the ≥3-inside-one-continuous-session subset
+specifically, and `architecture.md`'s post-implementation update. Acceptance criteria for the
+actual measurement remain unchecked. This story stays `ready` (the spec is sound and
+buildable exactly as written) rather than `done` — follow-up work, not this pass's claim.
