@@ -11,6 +11,8 @@ import {
   directPredecessor,
   effectiveOutputs,
   findByHandler,
+  findConvergenceNode,
+  findPartialReconvergence,
   outgoingEdges,
   substitutableText,
   UNREGISTERED_HANDLER_KINDS,
@@ -526,6 +528,61 @@ export function lint(graph: Graph): Diagnostic[] {
           `would abort with "no handler registered" mid-pipeline. Refused here instead, ` +
           `before anything runs.`,
       })
+    }
+
+    // PAR-001 / PAR-002 / PAR-004: a Handler.PARALLEL (`component`/
+    // `type="parallel"`) node's fan-out shape. Pure static analysis over
+    // findConvergenceNode/findPartialReconvergence (dot/graph.ts) -- the
+    // SAME functions the runtime (p5-05's runBranch, p5-08's eventual
+    // ParallelHandler) reuses, so lint and runtime cannot disagree about
+    // where branches reconverge. Fires alongside HAND-001 above
+    // (Handler.PARALLEL stays in UNREGISTERED_HANDLER_KINDS until p5-08
+    // removes it) -- this refuses the SHAPE of a fan-out regardless of
+    // whether a handler exists yet to run it.
+    if (node.handler === Handler.PARALLEL) {
+      const branchRootIds = outgoingEdges(graph, node.id).map((e) => e.to)
+      if (branchRootIds.length === 1) {
+        diags.push({
+          code: 'PAR-002',
+          severity: Severity.WARNING,
+          node: node.id,
+          message:
+            `node ${node.id} is a parallel fan-out (Handler.PARALLEL) with exactly one ` +
+            `outgoing edge, to ${branchRootIds[0]} -- a fan-out of one branch runs no ` +
+            `differently than an ordinary edge would, so this is likely not what was intended`,
+        })
+      } else if (branchRootIds.length >= 2) {
+        const convergenceId = findConvergenceNode(graph, branchRootIds)
+        if (convergenceId === null) {
+          diags.push({
+            code: 'PAR-001',
+            severity: Severity.ERROR,
+            node: node.id,
+            message:
+              `node ${node.id} fans out to ${branchRootIds.join(', ')}, but no node is ` +
+              `reachable from every branch -- there is nowhere for the pipeline to resume ` +
+              `after the fan-out. Add a node every branch's path leads to, or route two of ` +
+              `the branches back together`,
+          })
+        } else {
+          const partial = findPartialReconvergence(graph, branchRootIds, convergenceId)
+          if (partial.length > 0) {
+            diags.push({
+              code: 'PAR-004',
+              severity: Severity.ERROR,
+              node: node.id,
+              message:
+                `node ${node.id} fans out to ${branchRootIds.join(', ')}, converging on ` +
+                `${convergenceId} -- but ${partial.join(', ')} ` +
+                `${partial.length === 1 ? 'is' : 'are'} also reachable from two or more of ` +
+                `those branches before ${convergenceId}. A node reached this way could be ` +
+                `dispatched twice, once per branch that reaches it -- route every branch ` +
+                `through a single shared node before ${convergenceId}, or restructure so ` +
+                `only ${convergenceId} is shared`,
+            })
+          }
+        }
+      }
     }
 
     // HITL-003: an agent-inclusive human gate whose exposed context traces to

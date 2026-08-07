@@ -3156,6 +3156,74 @@ function inferredOutputs(node) {
 function effectiveOutputs(node) {
   return [.../* @__PURE__ */ new Set([...inferredOutputs(node), ...declaredOutputs(node)])];
 }
+function reachableWithDepth(graph, startId) {
+  const depth = /* @__PURE__ */ new Map();
+  const queue = [];
+  for (const e of outgoingEdges(graph, startId)) {
+    if (!depth.has(e.to)) {
+      depth.set(e.to, 1);
+      queue.push(e.to);
+    }
+  }
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    const curDepth = depth.get(cur);
+    for (const e of outgoingEdges(graph, cur)) {
+      if (!depth.has(e.to)) {
+        depth.set(e.to, curDepth + 1);
+        queue.push(e.to);
+      }
+    }
+  }
+  return depth;
+}
+function findConvergenceNode(graph, branchRootIds) {
+  if (branchRootIds.length === 0) return null;
+  const rootSet = new Set(branchRootIds);
+  const depthMaps = branchRootIds.map((id) => reachableWithDepth(graph, id));
+  let candidates = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id));
+  for (let i = 1; i < depthMaps.length; i++) {
+    candidates = candidates.filter((id) => depthMaps[i].has(id));
+  }
+  if (candidates.length === 0) return null;
+  let best = null;
+  let bestDepth = Infinity;
+  for (const id of candidates) {
+    const worstCase = Math.max(...depthMaps.map((dm) => dm.get(id)));
+    if (worstCase < bestDepth) {
+      bestDepth = worstCase;
+      best = id;
+    }
+  }
+  return best;
+}
+function findPartialReconvergence(graph, branchRootIds, convergenceId) {
+  if (convergenceId === null) return [];
+  const rootSet = new Set(branchRootIds);
+  const truncatedSets = branchRootIds.map((rootId) => {
+    const seen = /* @__PURE__ */ new Set([rootId]);
+    const queue = [rootId];
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      if (cur === convergenceId) continue;
+      for (const e of outgoingEdges(graph, cur)) {
+        if (!seen.has(e.to)) {
+          seen.add(e.to);
+          queue.push(e.to);
+        }
+      }
+    }
+    return seen;
+  });
+  const counts = /* @__PURE__ */ new Map();
+  for (const set of truncatedSets) {
+    for (const id of set) {
+      if (id === convergenceId || rootSet.has(id)) continue;
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()].filter(([, count]) => count >= 2).map(([id]) => id);
+}
 
 // src/dot/parse.ts
 var NODE_ID = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -3897,6 +3965,37 @@ function lint(graph) {
         node: node.id,
         message: `node ${node.id} resolves to handler "${node.handler}", which this build does not register (known unregistered: ${UNREGISTERED_HANDLER_KINDS.join(", ")}); the run would abort with "no handler registered" mid-pipeline. Refused here instead, before anything runs.`
       });
+    }
+    if (node.handler === Handler.PARALLEL) {
+      const branchRootIds = outgoingEdges(graph, node.id).map((e) => e.to);
+      if (branchRootIds.length === 1) {
+        diags.push({
+          code: "PAR-002",
+          severity: Severity.WARNING,
+          node: node.id,
+          message: `node ${node.id} is a parallel fan-out (Handler.PARALLEL) with exactly one outgoing edge, to ${branchRootIds[0]} -- a fan-out of one branch runs no differently than an ordinary edge would, so this is likely not what was intended`
+        });
+      } else if (branchRootIds.length >= 2) {
+        const convergenceId = findConvergenceNode(graph, branchRootIds);
+        if (convergenceId === null) {
+          diags.push({
+            code: "PAR-001",
+            severity: Severity.ERROR,
+            node: node.id,
+            message: `node ${node.id} fans out to ${branchRootIds.join(", ")}, but no node is reachable from every branch -- there is nowhere for the pipeline to resume after the fan-out. Add a node every branch's path leads to, or route two of the branches back together`
+          });
+        } else {
+          const partial = findPartialReconvergence(graph, branchRootIds, convergenceId);
+          if (partial.length > 0) {
+            diags.push({
+              code: "PAR-004",
+              severity: Severity.ERROR,
+              node: node.id,
+              message: `node ${node.id} fans out to ${branchRootIds.join(", ")}, converging on ${convergenceId} -- but ${partial.join(", ")} ${partial.length === 1 ? "is" : "are"} also reachable from two or more of those branches before ${convergenceId}. A node reached this way could be dispatched twice, once per branch that reaches it -- route every branch through a single shared node before ${convergenceId}, or restructure so only ${convergenceId} is shared`
+            });
+          }
+        }
+      }
     }
     if (node.handler === Handler.HUMAN) {
       const channelTokens = (node.attrs["human.channel"] ?? "").split(",").map((t) => t.trim());

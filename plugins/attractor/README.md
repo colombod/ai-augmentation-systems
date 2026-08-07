@@ -257,10 +257,16 @@ the exit without passing a goal gate; `HAND-001` a node resolves to a handler
 kind this build does not register (`hexagon`, `component`, `tripleoctagon`,
 `house` -- see [Node shapes](#node-shapes)); `HITL-003` an agent-inclusive
 human gate whose exposed context traces to a single Handler.CODERGEN direct
-predecessor (self-report risk for the `agent` channel -- see ADR-006).
+predecessor (self-report risk for the `agent` channel -- see ADR-006);
+`PAR-001` a `component`/`Handler.PARALLEL` node with no discoverable
+convergence node; `PAR-002` a `component` node whose fan-out is a
+single-edge no-op; `PAR-004` partial reconvergence -- a node other than the
+chosen convergence node (including one that merely lost a depth tie for it)
+reachable from two or more branch roots.
 
-`RUNS-002`, `DATA-001`, `GATE-001`, `CMD-001` and `HITL-003` are warnings; the
-rest are errors, and `attractor run` refuses a graph with any error.
+`RUNS-002`, `DATA-001`, `GATE-001`, `CMD-001`, `HITL-003` and `PAR-002` are
+warnings; the rest are errors, and `attractor run` refuses a graph with any
+error.
 
 ## Development
 

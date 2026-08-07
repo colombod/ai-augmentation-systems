@@ -458,3 +458,109 @@ export function inferredOutputs(node: Node): string[] {
 export function effectiveOutputs(node: Node): string[] {
   return [...new Set([...inferredOutputs(node), ...declaredOutputs(node)])]
 }
+
+/**
+ * Nodes reachable from `startId` via ONE OR MORE edges (never `startId`
+ * itself, unless a genuine cycle leads back to it), mapped to the shortest
+ * distance at which each was first reached. Condition-independent --
+ * follows every outgoing edge regardless of whether its condition would
+ * actually fire at runtime, the same conservative-lint-over-precise-runtime
+ * tradeoff `directPredecessor`/DATA-001 already accept.
+ */
+function reachableWithDepth(graph: Graph, startId: string): Map<string, number> {
+  const depth = new Map<string, number>()
+  const queue: string[] = []
+  for (const e of outgoingEdges(graph, startId)) {
+    if (!depth.has(e.to)) {
+      depth.set(e.to, 1)
+      queue.push(e.to)
+    }
+  }
+  while (queue.length > 0) {
+    const cur = queue.shift() as string
+    const curDepth = depth.get(cur) as number
+    for (const e of outgoingEdges(graph, cur)) {
+      if (!depth.has(e.to)) {
+        depth.set(e.to, curDepth + 1)
+        queue.push(e.to)
+      }
+    }
+  }
+  return depth
+}
+
+/**
+ * Earliest node reachable from EVERY branch root (excluding the roots
+ * themselves -- a root is never a valid convergence candidate, even one
+ * reachable from a sibling root), by static reachability over ALL outgoing
+ * edges regardless of condition truth. Shallowest common descendant wins
+ * ties, ranked by the FURTHEST root's distance to it (its own worst case);
+ * the exact tie-break among equally-shallow candidates is otherwise
+ * unspecified -- safe because `findPartialReconvergence` refuses every graph
+ * where a tie would matter (ADR-007's amendment). `null` if branches never
+ * reconverge.
+ */
+export function findConvergenceNode(graph: Graph, branchRootIds: readonly string[]): string | null {
+  if (branchRootIds.length === 0) return null
+  const rootSet = new Set(branchRootIds)
+  const depthMaps = branchRootIds.map((id) => reachableWithDepth(graph, id))
+
+  let candidates: string[] = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id))
+  for (let i = 1; i < depthMaps.length; i++) {
+    candidates = candidates.filter((id) => depthMaps[i].has(id))
+  }
+  if (candidates.length === 0) return null
+
+  let best: string | null = null
+  let bestDepth = Infinity
+  for (const id of candidates) {
+    const worstCase = Math.max(...depthMaps.map((dm) => dm.get(id) as number))
+    if (worstCase < bestDepth) {
+      bestDepth = worstCase
+      best = id
+    }
+  }
+  return best
+}
+
+/**
+ * Nodes reachable from two or more of the given branch roots -- of ANY
+ * count, including every root -- where reachability from each root is
+ * truncated at (does not expand past) `convergenceId`. Excludes the roots
+ * and `convergenceId` itself. Empty when `convergenceId` is `null` (PAR-001
+ * already refuses that graph) or every branch's truncated reachable set is
+ * disjoint from every other's.
+ */
+export function findPartialReconvergence(
+  graph: Graph,
+  branchRootIds: readonly string[],
+  convergenceId: string | null,
+): string[] {
+  if (convergenceId === null) return []
+  const rootSet = new Set(branchRootIds)
+
+  const truncatedSets = branchRootIds.map((rootId) => {
+    const seen = new Set<string>([rootId])
+    const queue = [rootId]
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      if (cur === convergenceId) continue // do not expand past convergence
+      for (const e of outgoingEdges(graph, cur)) {
+        if (!seen.has(e.to)) {
+          seen.add(e.to)
+          queue.push(e.to)
+        }
+      }
+    }
+    return seen
+  })
+
+  const counts = new Map<string, number>()
+  for (const set of truncatedSets) {
+    for (const id of set) {
+      if (id === convergenceId || rootSet.has(id)) continue
+      counts.set(id, (counts.get(id) ?? 0) + 1)
+    }
+  }
+  return [...counts.entries()].filter(([, count]) => count >= 2).map(([id]) => id)
+}

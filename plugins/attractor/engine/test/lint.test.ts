@@ -6,6 +6,8 @@ import {
   Handler,
   INFERRED_OUTPUTS_BY_HANDLER,
   UNREGISTERED_HANDLER_KINDS,
+  findConvergenceNode,
+  findPartialReconvergence,
   type Graph,
   type Node,
 } from '../src/dot/graph.ts'
@@ -1708,4 +1710,295 @@ test('HITL-003 message names the predecessor, states advisory-only, and disclaim
   assert.match(message, /review/)
   assert.match(message, /[Aa]dvisory/)
   assert.match(message, /does not (block|detect)/)
+})
+
+// ---------------------------------------------------------------------------
+// findConvergenceNode / findPartialReconvergence (dot/graph.ts) -- pure
+// functions, no lint() involved yet.
+// ---------------------------------------------------------------------------
+
+test('findConvergenceNode: multi-hop convergence returns the shallowest common descendant', () => {
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan  [shape=component]
+    a [shape=box]  b [shape=box]  mid [shape=box]  join [shape=box]
+    start -> fan
+    fan -> a -> mid -> join -> done
+    fan -> b -> join
+  }`)
+  assert.equal(findConvergenceNode(g, ['a', 'b']), 'join')
+})
+
+test('findConvergenceNode: branches that never reconverge return null', () => {
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done1 [shape=Msquare]
+    fan  [shape=component]
+    a [shape=box]  b [shape=box]
+    start -> fan
+    fan -> a -> done1
+    fan -> b
+  }`)
+  assert.equal(findConvergenceNode(g, ['a', 'b']), null)
+})
+
+test('findConvergenceNode: single-branch degenerate returns the one root\'s nearest descendant', () => {
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]
+    start -> fan -> a -> done
+  }`)
+  assert.equal(findConvergenceNode(g, ['a']), 'done')
+})
+
+test('findConvergenceNode: convergence at the graph\'s real EXIT node', () => {
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]  b [shape=box]
+    start -> fan
+    fan -> a -> done
+    fan -> b -> done
+  }`)
+  assert.equal(findConvergenceNode(g, ['a', 'b']), 'done')
+})
+
+test('findConvergenceNode: a root reachable from another root resolves past it, not to it', () => {
+  // root1 -> root2 is a legal DOT shape (one branch's own path happens to
+  // pass through another branch's root). Roots are never valid convergence
+  // candidates, so the function must skip over root2 and find `shared`, the
+  // real non-root common descendant -- not error, and not return root2.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    root1 [shape=box]  root2 [shape=box]  shared [shape=box]
+    start -> fan
+    fan -> root1 -> root2
+    fan -> root2
+    root2 -> shared -> done
+  }`)
+  assert.equal(findConvergenceNode(g, ['root1', 'root2']), 'shared')
+})
+
+test('findPartialReconvergence: the "normalize" shared-step shape (F3)', () => {
+  // Two of three branches share `normalize` before the real convergence
+  // node `combine` -- a node reachable from 2 of 3 roots, not all.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]  r3 [shape=box]
+    normalize [shape=box]  combine [shape=box]
+    start -> fan
+    fan -> r1 -> normalize
+    fan -> r2 -> normalize
+    fan -> r3 -> combine
+    normalize -> combine -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['r1', 'r2', 'r3'])
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['r1', 'r2', 'r3'], convergenceId), ['normalize'])
+})
+
+test('findPartialReconvergence: tied full-common-descendant shape (F3 residual, ADR-007 amendment)', () => {
+  // Both X and Y are common to EVERY root at the same depth -- the "diamond
+  // of diamonds" shape. findConvergenceNode picks one (whichever wins the
+  // unspecified tie-break); findPartialReconvergence must still flag the
+  // other, because it too is reachable from every branch root and could
+  // still be double-dispatched.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]
+    x [shape=box]  y [shape=box]  combine [shape=box]
+    start -> fan
+    fan -> r1 -> x
+    fan -> r1 -> y
+    fan -> r2 -> x
+    fan -> r2 -> y
+    x -> combine -> done
+    y -> combine
+  }`)
+  const convergenceId = findConvergenceNode(g, ['r1', 'r2'])
+  assert.ok(convergenceId === 'x' || convergenceId === 'y', 'the shallower tied node wins the tie-break')
+  const other = convergenceId === 'x' ? 'y' : 'x'
+  const partial = findPartialReconvergence(g, ['r1', 'r2'], convergenceId)
+  assert.ok(
+    partial.includes(other),
+    'the sibling that lost the tie-break must still be flagged -- a pre-amendment ' +
+      '("but not all") rule would miss it, since it is reachable from EVERY root',
+  )
+})
+
+test('findPartialReconvergence: disjoint branches produce no false positive', () => {
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]  combine [shape=box]
+    start -> fan
+    fan -> r1 -> combine
+    fan -> r2 -> combine
+  }`)
+  const convergenceId = findConvergenceNode(g, ['r1', 'r2'])
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['r1', 'r2'], convergenceId), [])
+})
+
+test('findPartialReconvergence: a node genuinely downstream of convergence is never flagged', () => {
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]  mid [shape=box]  after [shape=box]
+    start -> fan
+    fan -> r1 -> mid
+    fan -> r2 -> mid
+    mid -> after -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['r1', 'r2'])
+  assert.equal(convergenceId, 'mid')
+  assert.deepEqual(
+    findPartialReconvergence(g, ['r1', 'r2'], convergenceId), [],
+    'after is only reachable BY GOING THROUGH mid -- the truncated BFS never expands past it, so it is dead code by construction',
+  )
+})
+
+test('findPartialReconvergence: a null convergenceId returns empty, not an error', () => {
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done1 [shape=Msquare]
+    fan [shape=component]  a [shape=box]  b [shape=box]
+    start -> fan
+    fan -> a -> done1
+    fan -> b
+  }`)
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], null), [])
+})
+
+// ---------------------------------------------------------------------------
+// PAR-001 / PAR-002 / PAR-004: Handler.PARALLEL fan-out shape, reusing
+// findConvergenceNode/findPartialReconvergence above. Co-fire with HAND-001
+// -- Handler.PARALLEL stays in UNREGISTERED_HANDLER_KINDS until p5-08.
+// ---------------------------------------------------------------------------
+
+test('PAR-001 fires ERROR when a component node has no discoverable convergence node', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done1 [shape=Msquare]
+    fan [shape=component]  a [shape=box]  b [shape=box]
+    start -> fan
+    fan -> a -> done1
+    fan -> b
+  }`
+  const found = codes(src)
+  assert.ok(found.includes('PAR-001'))
+  assert.ok(found.includes('HAND-001'), 'PAR-001 co-fires with HAND-001, never suppresses it')
+  const diag = lint(parseDot(src)).find((d) => d.code === 'PAR-001')
+  assert.equal(diag?.severity, Severity.ERROR)
+})
+
+test('PAR-001 does not fire when a genuine convergence node exists; HAND-001 still fires alone', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]  b [shape=box]  join [shape=box]
+    start -> fan
+    fan -> a -> join
+    fan -> b -> join
+    join -> done
+  }`
+  const found = codes(src)
+  assert.ok(!found.includes('PAR-001'))
+  assert.ok(found.includes('HAND-001'))
+})
+
+test('PAR-002 fires WARNING only on exactly one outgoing edge, never with PAR-001/PAR-004, and co-fires with HAND-001 without either suppressing the other', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]
+    start -> fan -> a -> done
+  }`
+  const diags = lint(parseDot(src))
+  const par002 = diags.find((d) => d.code === 'PAR-002')
+  assert.ok(par002)
+  assert.equal(par002?.severity, Severity.WARNING)
+  assert.ok(!diags.some((d) => d.code === 'PAR-001'))
+  assert.ok(!diags.some((d) => d.code === 'PAR-004'))
+  assert.ok(
+    diags.some((d) => d.code === 'HAND-001'),
+    'the negative-control row: PAR-002 (WARNING) must not suppress HAND-001 (ERROR), and vice versa -- Handler.PARALLEL is still unregistered',
+  )
+})
+
+test('a component node with zero outgoing edges fires neither PAR-001 nor PAR-002 nor PAR-004', () => {
+  // TOPO-006 already refuses a non-exit node with no outgoing edge --
+  // deliberately not a PAR-* concern.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    start -> fan
+  }`
+  const found = codes(src)
+  assert.ok(!found.includes('PAR-001'))
+  assert.ok(!found.includes('PAR-002'))
+  assert.ok(!found.includes('PAR-004'))
+})
+
+test('PAR-004 fires ERROR on the exact "normalize" shared-step fixture (F3)', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]  r3 [shape=box]
+    normalize [shape=box]  combine [shape=box]
+    start -> fan
+    fan -> r1 -> normalize
+    fan -> r2 -> normalize
+    fan -> r3 -> combine
+    normalize -> combine -> done
+  }`
+  const diags = lint(parseDot(src))
+  const par004 = diags.find((d) => d.code === 'PAR-004')
+  assert.ok(par004, 'a rule that only checks findConvergenceNode() === null misses this -- convergence DOES exist (combine)')
+  assert.equal(par004?.severity, Severity.ERROR)
+  assert.ok(diags.some((d) => d.code === 'HAND-001'))
+})
+
+test('PAR-004 fires ERROR on the tied-full-common-descendant fixture (ADR-007 amendment)', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]
+    x [shape=box]  y [shape=box]  combine [shape=box]
+    start -> fan
+    fan -> r1 -> x
+    fan -> r1 -> y
+    fan -> r2 -> x
+    fan -> r2 -> y
+    x -> combine -> done
+    y -> combine
+  }`
+  const diags = lint(parseDot(src))
+  assert.ok(
+    diags.some((d) => d.code === 'PAR-004'),
+    'a pre-amendment ("but not all") rule would NOT fire here -- the sibling that lost the ' +
+      'tie-break is reachable from EVERY root, not a proper subset -- proving the broadening is real',
+  )
+})
+
+test('PAR-004 does not false-positive on disjoint branches', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]  combine [shape=box]
+    start -> fan
+    fan -> r1 -> combine
+    fan -> r2 -> combine
+  }`
+  assert.ok(!codes(src).includes('PAR-004'))
+})
+
+test('PAR-004 does not fire for a node genuinely downstream of the convergence node', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]  mid [shape=box]  after [shape=box]
+    start -> fan
+    fan -> r1 -> mid
+    fan -> r2 -> mid
+    mid -> after -> done
+  }`
+  assert.ok(!codes(src).includes('PAR-004'))
 })
