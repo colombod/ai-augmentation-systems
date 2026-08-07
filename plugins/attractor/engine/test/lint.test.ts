@@ -1870,6 +1870,146 @@ test('findPartialReconvergence: a null convergenceId returns empty, not an error
   assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], null), [])
 })
 
+test('findConvergenceNode: worst-case (not best-case) depth wins a non-trivial tie', () => {
+  // p is close to `a` (depth 1) but far from `b` (depth 5); q is at depth 3
+  // from both. The correct worst-case ranking picks q (max(3,3)=3 beats
+  // max(1,5)=5); a best-case ranking would wrongly pick p (min(1,5)=1 beats
+  // min(3,3)=3). Every fixture elsewhere in this suite happens to have max
+  // and min agree, so this is the one that actually pins the direction.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    a [shape=box]  b [shape=box]  p [shape=box]  q [shape=box]
+    a1 [shape=box]  a2 [shape=box]
+    b1 [shape=box]  b2 [shape=box]  b3 [shape=box]  b4 [shape=box]
+    combine [shape=box]
+    start -> fan
+    fan -> a
+    fan -> b
+    a -> p
+    a -> a1 -> a2 -> q
+    b -> b1 -> b2 -> q
+    b2 -> b3 -> b4 -> p
+    p -> combine
+    q -> combine
+    combine -> done
+  }`)
+  assert.equal(findConvergenceNode(g, ['a', 'b']), 'q')
+})
+
+test('findConvergenceNode: the root-exclusion filter is load-bearing under a root-to-root cycle', () => {
+  // r1 <-> r2 is a cycle, so each root is reachable from its OWN depth map
+  // (via the cycle back through the other root) -- without excluding roots
+  // from candidacy, a root itself could be picked as "the" convergence node.
+  // Every other fixture in this suite has no root-to-root edge at all, so
+  // the exclusion never actually mattered to their outcome; this one makes
+  // it load-bearing.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]  m1 [shape=box]  m2 [shape=box]  shared [shape=box]
+    start -> fan
+    fan -> r1
+    fan -> r2
+    r1 -> r2
+    r2 -> r1
+    r1 -> m1 -> shared
+    r2 -> m2 -> shared
+    shared -> done
+  }`)
+  assert.equal(findConvergenceNode(g, ['r1', 'r2']), 'm1')
+})
+
+test('findPartialReconvergence: a branch root reachable from a sibling root is flagged (ADR-007 sixth amendment, Gap 1)', () => {
+  // Same fixture as the existing 'a root reachable from another root
+  // resolves past it, not to it' test above -- that test only checked
+  // findConvergenceNode. root2 is itself a branch root AND reachable from
+  // root1's own path, so root1's branch and root2's own branch can both
+  // dispatch root2.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    root1 [shape=box]  root2 [shape=box]  shared [shape=box]
+    start -> fan
+    fan -> root1 -> root2
+    fan -> root2
+    root2 -> shared -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['root1', 'root2'])
+  assert.equal(convergenceId, 'shared')
+  assert.deepEqual(
+    findPartialReconvergence(g, ['root1', 'root2'], convergenceId),
+    ['root2'],
+    'root2 is reachable from its own branch dispatch AND from root1 -- a real double dispatch',
+  )
+})
+
+test('findPartialReconvergence: an asymmetric tie hazard the truncated-intersection check alone misses (ADR-007 sixth amendment, Gap 2)', () => {
+  // x and y tie for shallowest full common descendant (both worst-case
+  // depth 2); x wins the tie-break. root2's only path to y runs THROUGH x,
+  // so y never appears in root2's truncated set -- but root1 reaches y
+  // directly (via q), without ever touching x. y is present in exactly one
+  // branch's truncated set, so the old cross-branch-intersection check alone
+  // would miss it; it must be caught because y is also reachable from x
+  // (the chosen convergence node) itself, i.e. from where the main run
+  // resumes.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    root1 [shape=box]  root2 [shape=box]
+    p [shape=box]  q [shape=box]  x [shape=box]  y [shape=box]
+    start -> fan
+    fan -> root1
+    fan -> root2
+    root1 -> p -> x
+    root1 -> q -> y
+    root2 -> x
+    x -> y
+    y -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['root1', 'root2'])
+  assert.equal(convergenceId, 'x', 'x wins the depth-2 tie over y (first-encountered convention)')
+  assert.deepEqual(
+    findPartialReconvergence(g, ['root1', 'root2'], convergenceId),
+    ['y'],
+    'y is reachable from root1 alone (bypassing x) AND from x\'s own downstream -- flagged without needing root2 to also reach it',
+  )
+})
+
+test('findPartialReconvergence: the graph\'s real EXIT node never contributes a false hazard', () => {
+  // Both branches reach EXIT via their own shortcut (s1/s2) at the same
+  // depth EXIT is reachable from the chosen convergence node itself --
+  // without the EXIT exclusion, 'done' would be flagged by BOTH the
+  // cross-branch rule (reachable from both r1's and r2's truncated sets)
+  // and the downstream-of-convergence rule. EXIT is a PassthroughHandler
+  // (writes nothing), so a second dispatch has no observable effect --
+  // this is PAR-005's territory (a future rule), not PAR-004's.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]  s1 [shape=box]  s2 [shape=box]  combine [shape=box]
+    start -> fan
+    fan -> r1
+    fan -> r2
+    r1 -> combine
+    r1 -> s1 -> done
+    r2 -> combine
+    r2 -> s2 -> done
+    combine -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['r1', 'r2'])
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(
+    findPartialReconvergence(g, ['r1', 'r2'], convergenceId),
+    [],
+    'done (EXIT) is reachable from both branches and from combine\'s own downstream, but must never be flagged',
+  )
+  assert.ok(
+    !lint(g).some((d) => d.code === 'PAR-004'),
+    'the full lint pipeline must not refuse this graph',
+  )
+})
+
 // ---------------------------------------------------------------------------
 // PAR-001 / PAR-002 / PAR-004: Handler.PARALLEL fan-out shape, reusing
 // findConvergenceNode/findPartialReconvergence above. Co-fire with HAND-001
@@ -2001,4 +2141,46 @@ test('PAR-004 does not fire for a node genuinely downstream of the convergence n
     mid -> after -> done
   }`
   assert.ok(!codes(src).includes('PAR-004'))
+})
+
+test('PAR-004 does not false-positive on a duplicate chain-form edge to the same branch root', () => {
+  // `fan -> r1 -> p` then `fan -> r1 -> combine` is ordinary DOT chain
+  // syntax that emits TWO edges from fan to r1. Before deduping
+  // branchRootIds, this counted r1 as two branches, and p (reachable from
+  // only ONE distinct root) tripped the count>=2 check, refusing a
+  // perfectly ordinary graph -- and the ERROR message named the same root
+  // twice as if there were two.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]  p [shape=box]  combine [shape=box]
+    start -> fan
+    fan -> r1 -> p
+    fan -> r1 -> combine
+    fan -> r2 -> combine
+    p -> combine
+    combine -> done
+  }`
+  const found = codes(src)
+  assert.ok(!found.includes('PAR-004'), 'a re-spelling of the same two-branch graph must not flip PAR-004 on')
+  assert.ok(found.includes('HAND-001'))
+})
+
+test('PAR-002 fires (not PAR-004) on two differently-labelled edges to the same successor', () => {
+  // Structurally a one-branch fan-out (both edges target `a`), just spelled
+  // with two labels. Before deduping branchRootIds, this counted as two
+  // branches, silencing PAR-002 (length was 2, not 1) and could spuriously
+  // trip PAR-004 instead.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]
+    start -> fan
+    fan -> a [label="success"]
+    fan -> a [label="failure"]
+    a -> done
+  }`
+  const diags = lint(parseDot(src))
+  assert.ok(diags.some((d) => d.code === 'PAR-002'), 'a single distinct target is a one-branch fan-out regardless of edge count')
+  assert.ok(!diags.some((d) => d.code === 'PAR-001'))
+  assert.ok(!diags.some((d) => d.code === 'PAR-004'))
 })

@@ -540,7 +540,13 @@ export function lint(graph: Graph): Diagnostic[] {
     // removes it) -- this refuses the SHAPE of a fan-out regardless of
     // whether a handler exists yet to run it.
     if (node.handler === Handler.PARALLEL) {
-      const branchRootIds = outgoingEdges(graph, node.id).map((e) => e.to)
+      // Distinct targets, not raw edges -- two edges to the same node (a plain
+      // duplicate, or two differently-labelled edges to one successor) are one
+      // branch, not two. Matches directPredecessor's own "distinct sources, not
+      // raw edges" convention (graph.ts) for the identical reason: a raw-edge
+      // count would inflate PAR-004's hazard check and could suppress PAR-002
+      // on a fan-out that is structurally one branch dressed up as two edges.
+      const branchRootIds = [...new Set(outgoingEdges(graph, node.id).map((e) => e.to))]
       if (branchRootIds.length === 1) {
         diags.push({
           code: 'PAR-002',

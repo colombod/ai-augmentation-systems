@@ -524,12 +524,26 @@ export function findConvergenceNode(graph: Graph, branchRootIds: readonly string
 }
 
 /**
- * Nodes reachable from two or more of the given branch roots -- of ANY
- * count, including every root -- where reachability from each root is
- * truncated at (does not expand past) `convergenceId`. Excludes the roots
- * and `convergenceId` itself. Empty when `convergenceId` is `null` (PAR-001
- * already refuses that graph) or every branch's truncated reachable set is
- * disjoint from every other's.
+ * Nodes at risk of being dispatched more than once across a PARALLEL fan-out's branches
+ * (each `runBranch` stopping at `convergenceId`, a dead end, or EXIT) and the main run resumed
+ * at `convergenceId` afterward. Flags the union of two hazards (ADR-007's sixth amendment):
+ *
+ * (a) reachable -- via a path not crossing `convergenceId` first -- from two or more of the
+ *     given branch roots, INCLUDING a root itself if a sibling root's own path reaches it (a
+ *     root is only excluded from *convergence-node selection* in findConvergenceNode -- a
+ *     different question).
+ * (b) reachable from a SINGLE branch root without crossing `convergenceId` first, where that
+ *     same node is also reachable (ordinary, untruncated) from `convergenceId` itself -- the
+ *     resumed main run walks forward from there and can re-dispatch what a branch already
+ *     shortcut its way into. Does not require a second branch to corroborate it.
+ *
+ * The graph's real EXIT node is excluded from both: Handler.EXIT is a PassthroughHandler that
+ * genuinely writes nothing, so a second dispatch has no observable effect. A branch reaching
+ * EXIT early is PAR-005's WARNING-level concern (that branch's own traversal stopping short of
+ * intent), not this rule's ERROR-level one.
+ *
+ * Excludes `convergenceId` itself. Empty when `convergenceId` is `null` (PAR-001 already
+ * refuses that graph).
  */
 export function findPartialReconvergence(
   graph: Graph,
@@ -537,7 +551,7 @@ export function findPartialReconvergence(
   convergenceId: string | null,
 ): string[] {
   if (convergenceId === null) return []
-  const rootSet = new Set(branchRootIds)
+  const exitIds = new Set(findByHandler(graph, Handler.EXIT).map((n) => n.id))
 
   const truncatedSets = branchRootIds.map((rootId) => {
     const seen = new Set<string>([rootId])
@@ -555,12 +569,32 @@ export function findPartialReconvergence(
     return seen
   })
 
+  const hazards = new Set<string>()
+
+  // (a) shared between two or more branches' own truncated reachable sets --
+  // roots are NOT excluded here (ADR-007's sixth amendment, Gap 1): a root
+  // reachable from a sibling root's own path is exactly as hazardous as any
+  // other shared node.
   const counts = new Map<string, number>()
   for (const set of truncatedSets) {
     for (const id of set) {
-      if (id === convergenceId || rootSet.has(id)) continue
+      if (id === convergenceId || exitIds.has(id)) continue
       counts.set(id, (counts.get(id) ?? 0) + 1)
     }
   }
-  return [...counts.entries()].filter(([, count]) => count >= 2).map(([id]) => id)
+  for (const [id, count] of counts) {
+    if (count >= 2) hazards.add(id)
+  }
+
+  // (b) a single branch's shortcut into territory the resumed main run will
+  // also walk, downstream of convergenceId (ADR-007's sixth amendment, Gap 2).
+  const downstreamOfConvergence = reachableWithDepth(graph, convergenceId)
+  for (const set of truncatedSets) {
+    for (const id of set) {
+      if (id === convergenceId || exitIds.has(id)) continue
+      if (downstreamOfConvergence.has(id)) hazards.add(id)
+    }
+  }
+
+  return [...hazards]
 }

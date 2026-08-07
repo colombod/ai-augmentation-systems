@@ -3199,7 +3199,7 @@ function findConvergenceNode(graph, branchRootIds) {
 }
 function findPartialReconvergence(graph, branchRootIds, convergenceId) {
   if (convergenceId === null) return [];
-  const rootSet = new Set(branchRootIds);
+  const exitIds = new Set(findByHandler(graph, Handler.EXIT).map((n) => n.id));
   const truncatedSets = branchRootIds.map((rootId) => {
     const seen = /* @__PURE__ */ new Set([rootId]);
     const queue = [rootId];
@@ -3215,14 +3215,25 @@ function findPartialReconvergence(graph, branchRootIds, convergenceId) {
     }
     return seen;
   });
+  const hazards = /* @__PURE__ */ new Set();
   const counts = /* @__PURE__ */ new Map();
   for (const set of truncatedSets) {
     for (const id of set) {
-      if (id === convergenceId || rootSet.has(id)) continue;
+      if (id === convergenceId || exitIds.has(id)) continue;
       counts.set(id, (counts.get(id) ?? 0) + 1);
     }
   }
-  return [...counts.entries()].filter(([, count]) => count >= 2).map(([id]) => id);
+  for (const [id, count] of counts) {
+    if (count >= 2) hazards.add(id);
+  }
+  const downstreamOfConvergence = reachableWithDepth(graph, convergenceId);
+  for (const set of truncatedSets) {
+    for (const id of set) {
+      if (id === convergenceId || exitIds.has(id)) continue;
+      if (downstreamOfConvergence.has(id)) hazards.add(id);
+    }
+  }
+  return [...hazards];
 }
 
 // src/dot/parse.ts
@@ -3967,7 +3978,7 @@ function lint(graph) {
       });
     }
     if (node.handler === Handler.PARALLEL) {
-      const branchRootIds = outgoingEdges(graph, node.id).map((e) => e.to);
+      const branchRootIds = [...new Set(outgoingEdges(graph, node.id).map((e) => e.to))];
       if (branchRootIds.length === 1) {
         diags.push({
           code: "PAR-002",
