@@ -1,7 +1,8 @@
 # PRD: delivery plugin — enforcement of its own doctrine, plus the Chief of Staff epic
 
 > Phase 5 artifact. Owned by Product Owner, with Business Analyst and QA Strategist.
-> Status: draft · Last updated: 2026-08-07
+> Status: `S-1`–`S-4` shipped and accepted · `S-5` added 2026-08-06, not yet built ·
+> Chief of Staff epic (`S-6`–`S-12`) added 2026-08-07, draft · Last updated: 2026-08-07
 > Brief: `.delivery/brief.md` · Glossary: `.delivery/glossary.md`
 > **Word count: 4275 prose-only** (`grep -v '^|' | wc -w`) — declared overrun past the
 > 1600-word single-epic cap. Reason: two independent, separately-reviewed epics now share
@@ -37,6 +38,18 @@ by the **Chief of Staff** epic (S-6–S-12), specified after S-1–S-4 below.
 covers UI-facing acceptance criteria only. The UI case has the most direct evidence;
 generalizing further before that works multiplies cost against unvalidated need.
 
+**Amendment, 2026-08-06 — scope lifted, its own precondition now met.** The GUI case now
+works: built, unit-tested, and confirmed live (`FR-9`–`FR-12`, closed debt D-2). The reason
+generalizing was deferred — "before that works" — no longer holds. Direct product-owner
+direction, this session: a CLI or a TUI is a real user-facing surface exactly like a
+rendered page, and checking it by reading machine-level output (parsed text, an
+accessibility tree, ANSI-stripped terminal text) is the same category of mistake `FR-9`
+already exists to catch for GUIs, just in a different medium. `S-5` below extends the same
+principle. Graded honestly: this is a direct requirement from this conversation, not a
+transcript-observed incident like `S-3`'s — no CLI/TUI verification failure appears in
+either real session studied. The GUI rule stays `observed`-grade; `S-5`'s rule is
+`reported`-grade until a real incident or a real build confirms it the same way.
+
 **Non-goals** — things a reader might assume are included, but are not:
 
 - Redesigning the phase sequence — the planning half works when run; only enforcement is
@@ -44,7 +57,8 @@ generalizing further before that works multiplies cost against unvalidated need.
 - A manual approval checkbox standing in for real verification — rejected directly in the
   evidence. A lighter checkpoint is the brief's Open Question 3, not decided here.
 - Broadening the evidence base beyond the one operator studied, before scoping further.
-- Extending the channel-and-rubric requirement past UI-facing criteria this iteration.
+- ~~Extending the channel-and-rubric requirement past UI-facing criteria this iteration.~~
+  **Lifted 2026-08-06** — see the amendment above and `S-5`.
 - Why narration substitutes for invocation (Open Question 4) — this PRD scopes catching it,
   not removing the incentive.
 - A general-purpose scheduling primitive — only enough for S-4 is in scope.
@@ -220,7 +234,69 @@ projects, where zero-to-one checks ran across sessions lasting days.
 - `FR-16` — a verdict that passed a check shows that check's findings directly, not only in
   a separate artifact the reader would need to know exists.
 
-## Epic: Chief of Staff (new — additive, does not touch S-1–S-4/FR-1–16 above)
+### S-5: A verdict checked the wrong layer because the surface wasn't a webpage
+
+**Actor:** the operator who checks in periodically
+**Trigger:** acceptance checking runs against a governed artifact that is a CLI or a TUI,
+not a rendered GUI.
+**Preconditions:** `S-3`'s rule already requires a real capture for rendered, visible
+behavior — but its own wording and its non-goal both assumed "rendered" means a webpage.
+This scenario is that same rule applied honestly to a different real surface. **Grade:
+`reported`, not `observed`** — unlike `S-3`, no CLI/TUI verification failure appears in
+either real transcript studied; this scenario traces to a direct product-owner instruction,
+this session, not a mined incident. Real, but a different, weaker kind of real — see
+`prioritization.md`'s Confidence section.
+
+**Main path**
+
+1. A story delivers a CLI command or a TUI screen; its acceptance criteria describe what a
+   real user would see or get back when they actually run it.
+2. The agent decides what channel proves that — and, left unguided, reaches for the layer it
+   already has open: reading the tool's own internal handler function, or reading terminal
+   text with formatting stripped, rather than what a real user actually experiences.
+3. For a CLI: the criterion is only proven by a real process invocation with real observed
+   `stdout`/`stderr`/exit code — calling the same logic as an internal function, bypassing
+   the actual command boundary, is not the same claim.
+4. For a TUI: the criterion needs a real visual capture of the rendered terminal — color,
+   alignment, layout, box-drawing, animation. A text read with ANSI codes stripped (the one
+   terminal-reading tool confirmed available in this environment does exactly this) sees
+   none of that, the same blind spot `S-3` names for a DOM read of a webpage.
+5. The verdict states which surface type applied and which channel was used — never a bare
+   "works," and never a GUI-shaped check applied to a surface that isn't one.
+
+**Observable outcome:** a CLI or TUI acceptance verdict is checked at the layer a real user
+actually experiences, not the layer that happened to be open — matching `S-3`'s standard,
+extended to the surfaces it didn't originally name.
+
+**Error and edge paths**
+
+| Case | Expected behavior |
+| :-- | :-- |
+| CLI criterion checked only by calling internal logic directly, no real process launched | Not-met — the process boundary itself is part of the claim |
+| TUI criterion checked only by a text read of terminal output (ANSI stripped or not) | Not-met — text alone cannot confirm color, alignment, or layout |
+| No tool in the current environment can produce a real visual capture of a terminal | Verdict states the criterion is unable to be checked, same honesty pattern as `FR-11` — never silently passed |
+| A surface is ambiguous (e.g., a CLI that also renders a TUI mode) | The stricter of the two applicable channel requirements governs |
+| A surface is none of GUI/CLI/TUI (e.g., a library API, a config file) | No channel is defined yet — states unable-to-be-checked by default, same honesty pattern as `FR-11`, rather than an invented ad hoc check |
+
+**Acceptance criteria**
+
+- `FR-17` — a verdict for a governed artifact states which delivery surface applies (GUI,
+  CLI, or TUI) and requires the channel matching that surface — a GUI-shaped check is never
+  applied by default to a non-GUI surface. A surface outside these three has no defined
+  channel yet and defaults to unable-to-be-checked, per `FR-11`'s honesty pattern, rather
+  than an agent inventing an ad hoc check for it.
+- `FR-18` — a CLI-surfaced "met" verdict requires the reviewer to have directly observed a
+  real process invocation, with `stdout`/`stderr`/exit code named; a call to the same logic
+  through an internal function, bypassing the actual command entry point, does not satisfy
+  this. A durable, ledger-based cross-check (the same guarantee `FR-9` gets from the
+  invocation ledger) remains an open item — `harden-11`'s spike found no safe way to
+  whitelist a `Bash` call's content without risking a leaked secret.
+- `FR-19` — a TUI-surfaced "met" verdict requires a real visual capture of the rendered
+  terminal; a text-only read (ANSI-stripped or otherwise) does not satisfy this and must be
+  recorded not-met or unable-to-be-checked, per `FR-11`'s honesty pattern, if no visual
+  capture channel is confirmed available.
+
+## Epic: Chief of Staff (new — additive, does not touch S-1–S-5/FR-1–19 above)
 
 > Word-budget note: this epic's addition alone runs well past the template's 1600-word cap.
 > Declared overrun, not silent: two independent epics now coexist in one PRD, and each is
@@ -503,59 +579,62 @@ the file itself or decides the fix.
 
 ## Functional requirements
 
-| ID | Requirement | Scenario | Priority |
-| :-- | :-- | :-- | :-- |
-| FR-1 | Every governed artifact gets a stated invoked/not-invoked status | S-1 | must |
-| FR-2 | Not-invoked applies regardless of file-level completeness | S-1 | must |
-| FR-3 | Reconstructed narration-without-invocation case is caught | S-1 | must |
-| FR-4 | Not-invoked is a distinct, scannable marker | S-1 | must |
-| FR-5 | Entirely-unconfirmed-backed decisions never read as plain "ready" | S-2 | must |
-| FR-6 | The marker appears in the primary scanned document | S-2 | must |
-| FR-7 | Mixed evidence does not trigger the marker | S-2 | must |
-| FR-8 | Real elba-dreaming case reproduces the marker | S-2 | should |
-| FR-9 | Rendered-behavior verdicts state their method; text-only reads are not-met | S-3 | must |
-| FR-10 | Visual "met" requires naming a specific rubric rule | S-3 | must |
-| FR-11 | No rubric means criteria stated as unable to be checked, never silently met | S-3 | must |
-| FR-12 | Real elba-dreaming defect reproduces a not-met verdict | S-3 | should |
-| FR-13 | Completion is blocked past a documented check-staleness threshold | S-4 | must |
-| FR-14 | Verdicts record the last self-correction check's timing | S-4 | must |
-| FR-15 | Real elba-dreaming zero-check pattern is caught | S-4 | should |
-| FR-16 | A passed check's findings surface directly in the verdict | S-4 | should |
-| FR-20 | Answers directly only when it can name the exact source that settles it | S-6 | must |
-| FR-21 | Every such answer carries its citable traceback visibly alongside it | S-6 | must |
-| FR-22 | No fully-settling source means no answer — falls through, never left unrouted | S-6 | must |
-| FR-23 | Inference-based answers recorded in the decision log as a chief-of-staff failure | S-6 | should |
-| FR-24 | Agent-introduced scope classified only when no requirement traces to it | S-7 | must |
-| FR-25 | Bounce names the originating agent and the missing requirement | S-7 | must |
-| FR-27 | Twice-bounced question escalates to S-9 rather than bouncing a third time | S-7 | should |
-| FR-28 | Technical unknown classified only when answerable by real execution | S-8 | must |
-| FR-29 | Technical unknowns route to a spike story, not an ad hoc interrupt | S-8 | must |
-| FR-30 | A matching existing spike is cited instead of a duplicate | S-8 | should |
-| FR-31 | Mixed technical/decision question splits correctly; neither half dropped | S-8 | must |
-| FR-32 | S-6–S-8 survivors accumulate into one briefing per check-in | S-9 | must |
-| FR-33 | Briefing ranked, blocking first, default or explicit no-default-available | S-9 | must |
-| FR-34 | An empty briefing is stated explicitly, never silently omitted | S-9 | must |
-| FR-35 | Non-blocking item proceeds on default past a threshold; blocking never does | S-9 | must |
-| FR-36 | Learned shortcut requires a pre-committed minimum logged-instance count | S-10 | must |
-| FR-37 | Decision log contains only real, timestamped outcomes, never seeded | S-10 | must |
-| FR-38 | Below-minimum category gets unmodified S-6–S-9 behavior | S-10 | must |
-| FR-39 | Any applied shortcut names its specific backing instances on request | S-10 | should |
-| FR-40 | Captured mission is a verbatim excerpt or citable traceback, never paraphrase | S-11 | must |
-| FR-41 | New output checked against captured mission regardless of S-7's verdict | S-11 | must |
-| FR-42 | Drift flag names the mission line, the diverging output, the reason | S-11 | must |
-| FR-43 | Drift surfaces through existing routing, never unilaterally reverted | S-11 | must |
-| FR-44 | Flagged repo-doc gap names a concrete, checkable defect | S-12 | must |
-| FR-45 | Checks run as a byproduct of reliance, not only a scheduled audit | S-12 | must |
-| FR-46 | Flagged gap surfaces through S-9's briefing; never fixed by chief of staff | S-12 | must |
-| FR-47 | Same gap hit by multiple agents in one session flagged once | S-12 | must |
-| FR-48 | Never proactively surfaces a non-blocking item; narrow blocking-item push only | S-9 | must |
-| FR-49 | A pushed blocking item is delivered alone, not bundled | S-9 | must |
-| FR-50 | Mid-exchange blocking item pauses/resumes; never concurrent, never silent-queued | S-9 | must |
-| FR-51 | Chief-of-staff unavailability falls back to direct-ask, never blocks | epic-wide | must |
-| FR-52 | Output flagged by both S-7 and S-11 routes as one merged item | S-7, S-11 | must |
-| FR-53 | Unclaimed spike surfaces in S-9's briefing as unclaimed | S-8 | should |
-| FR-54 | Large briefing stays grouped/summarized, reviewer-judged | S-9 | should |
-| FR-55 | Wrong drift flag recorded in the decision log per FR-23's content | S-11 | should |
+| ID | Requirement | Scenario | Priority | Grade |
+| :-- | :-- | :-- | :-- | :-- |
+| FR-1 | Every governed artifact gets a stated invoked/not-invoked status | S-1 | must | observed |
+| FR-2 | Not-invoked applies regardless of file-level completeness | S-1 | must | observed |
+| FR-3 | Reconstructed narration-without-invocation case is caught | S-1 | must | observed |
+| FR-4 | Not-invoked is a distinct, scannable marker | S-1 | must | observed |
+| FR-5 | Entirely-unconfirmed-backed decisions never read as plain "ready" | S-2 | must | observed |
+| FR-6 | The marker appears in the primary scanned document | S-2 | must | observed |
+| FR-7 | Mixed evidence does not trigger the marker | S-2 | must | observed |
+| FR-8 | Real elba-dreaming case reproduces the marker | S-2 | should | observed |
+| FR-9 | Rendered-behavior verdicts state their method; text-only reads are not-met | S-3 | must | observed |
+| FR-10 | Visual "met" requires naming a specific rubric rule | S-3 | must | observed |
+| FR-11 | No rubric means criteria stated as unable to be checked, never silently met | S-3 | must | observed |
+| FR-12 | Real elba-dreaming defect reproduces a not-met verdict | S-3 | should | observed |
+| FR-13 | Completion is blocked past a documented check-staleness threshold | S-4 | must | assumed |
+| FR-14 | Verdicts record the last self-correction check's timing | S-4 | must | assumed |
+| FR-15 | Real elba-dreaming zero-check pattern is caught | S-4 | should | assumed |
+| FR-16 | A passed check's findings surface directly in the verdict | S-4 | should | assumed |
+| FR-17 | A verdict states which delivery surface applies (GUI/CLI/TUI — anything else defaults to unable-to-be-checked) and requires the matching channel | S-5 | must | reported |
+| FR-18 | CLI "met" requires a real process invocation observed directly by the reviewer; a durable ledger cross-check remains open (`harden-11`) | S-5 | must | reported |
+| FR-19 | TUI "met" requires a real visual capture; text-only reads (ANSI-stripped or not) don't satisfy it | S-5 | must | reported |
+| FR-20 | Answers directly only when it can name the exact source that settles it | S-6 | must | observed |
+| FR-21 | Every such answer carries its citable traceback visibly alongside it | S-6 | must | observed |
+| FR-22 | No fully-settling source means no answer — falls through, never left unrouted | S-6 | must | observed |
+| FR-23 | Inference-based answers recorded in the decision log as a chief-of-staff failure | S-6 | should | observed |
+| FR-24 | Agent-introduced scope classified only when no requirement traces to it | S-7 | must | reported |
+| FR-25 | Bounce names the originating agent and the missing requirement | S-7 | must | reported |
+| FR-27 | Twice-bounced question escalates to S-9 rather than bouncing a third time | S-7 | should | reported |
+| FR-28 | Technical unknown classified only when answerable by real execution | S-8 | must | reported |
+| FR-29 | Technical unknowns route to a spike story, not an ad hoc interrupt | S-8 | must | reported |
+| FR-30 | A matching existing spike is cited instead of a duplicate | S-8 | should | reported |
+| FR-31 | Mixed technical/decision question splits correctly; neither half dropped | S-8 | must | reported |
+| FR-32 | S-6–S-8 survivors accumulate into one briefing per check-in | S-9 | must | observed |
+| FR-33 | Briefing ranked, blocking first, default or explicit no-default-available | S-9 | must | observed |
+| FR-34 | An empty briefing is stated explicitly, never silently omitted | S-9 | must | observed |
+| FR-35 | Non-blocking item proceeds on default past a threshold; blocking never does | S-9 | must | observed |
+| FR-36 | Learned shortcut requires a pre-committed minimum logged-instance count | S-10 | must | assumed |
+| FR-37 | Decision log contains only real, timestamped outcomes, never seeded | S-10 | must | assumed |
+| FR-38 | Below-minimum category gets unmodified S-6–S-9 behavior | S-10 | must | assumed |
+| FR-39 | Any applied shortcut names its specific backing instances on request | S-10 | should | assumed |
+| FR-40 | Captured mission is a verbatim excerpt or citable traceback, never paraphrase | S-11 | must | reported |
+| FR-41 | New output checked against captured mission regardless of S-7's verdict | S-11 | must | reported |
+| FR-42 | Drift flag names the mission line, the diverging output, the reason | S-11 | must | reported |
+| FR-43 | Drift surfaces through existing routing, never unilaterally reverted | S-11 | must | reported |
+| FR-44 | Flagged repo-doc gap names a concrete, checkable defect | S-12 | must | reported |
+| FR-45 | Checks run as a byproduct of reliance, not only a scheduled audit | S-12 | must | reported |
+| FR-46 | Flagged gap surfaces through S-9's briefing; never fixed by chief of staff | S-12 | must | reported |
+| FR-47 | Same gap hit by multiple agents in one session flagged once | S-12 | must | reported |
+| FR-48 | Never proactively surfaces a non-blocking item; narrow blocking-item push only | S-9 | must | observed |
+| FR-49 | A pushed blocking item is delivered alone, not bundled | S-9 | must | observed |
+| FR-50 | Mid-exchange blocking item pauses/resumes; never concurrent, never silent-queued | S-9 | must | observed |
+| FR-51 | Chief-of-staff unavailability falls back to direct-ask, never blocks | epic-wide | must | assumed |
+| FR-52 | Output flagged by both S-7 and S-11 routes as one merged item | S-7, S-11 | must | reported |
+| FR-53 | Unclaimed spike surfaces in S-9's briefing as unclaimed | S-8 | should | reported |
+| FR-54 | Large briefing stays grouped/summarized, reviewer-judged | S-9 | should | observed |
+| FR-55 | Wrong drift flag recorded in the decision log per FR-23's content | S-11 | should | reported |
 
 ## Non-functional requirements
 
@@ -600,6 +679,7 @@ the file itself or decides the fix.
 | 2 | Should a minimal fallback rubric exist for FR-11's no-rubric case, or should visual criteria simply stay unable-to-be-checked until one is authored? | product-owner | Scoping S-3's fallback behavior |
 | 3 | FR-13/NFR-1 sets the cadence at one check per governed-artifact phase gate. Does reaching that gate mid-task interrupt in-progress work, or only gate the next completion report? | solution-architect | Scoping S-4 |
 | 4 | Is the operator who reads only the verdict (S-4's actor) real enough to justify FR-13–FR-16's cost, given zero observed instances? | product-owner | Confidence in S-4's priority |
+| 5 | Is any tool in this environment confirmed able to produce a real visual capture of a rendered terminal (for `FR-19`), or does TUI verification stay honestly "unable to be checked" until one is confirmed? | solution-architect | Architecture's Mechanism 3 extension; a spike, the same shape as the original Spike 4 |
 | 6 | Minimum logged-instance threshold before S-10 may apply a learned shortcut (`FR-36`) | qa-strategist, product-owner sign-off | Scoping S-10 |
 | 7 | Does the decision log reuse the harden epic's invocation ledger, or need its own store? | solution-architect | Architecture for `FR-23`/S-10 |
 | 8 | If/when `FR-13` ships, does chief-of-staff's shipping-speed bias carve out an exception for it, or does it narrow `FR-13`? | product-owner | Resolving the flagged tension |
@@ -616,7 +696,6 @@ the file itself or decides the fix.
 
 - Redesigning the phase sequence itself.
 - A manual approval checkbox in place of real verification.
-- Extending the channel-and-rubric requirement past UI-facing criteria this iteration.
 - The underlying reason narration substitutes for invocation (detection only, this round).
 - A general-purpose scheduling primitive beyond what FR-13 needs.
 - Team-based or multi-operator usage.

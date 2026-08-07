@@ -5,9 +5,12 @@
 
 ## Epic: harden
 
-> Decomposed from `roadmap.md`'s five MVP phases (0, 1, 1b, 2, 3).
-> All 7 stories cover `FR-1`–`FR-12` from `prd.md`. `FR-13`–`FR-16` are deferred to Stage 2,
-> out of scope for this epic — see `roadmap.md`'s "Does executing this deliver the goal?"
+> Decomposed from `roadmap.md`'s phases (0, 1, 1b, 2, 3 — the original five; Phase 5 added,
+> challenged, and built 2026-08-06). Stories `harden-01`–`07` cover `FR-1`–`FR-12` from
+> `prd.md`, all done. `harden-09`/`11` cover `FR-17`–`FR-18`'s CLI half, done in two tiers.
+> `harden-08`/`10` cover `FR-19`'s TUI half — written, held by a real product-owner decision,
+> not built. `FR-13`–`FR-16` remain deferred to Stage 2, out of scope for this epic — see
+> `roadmap.md`'s "Does executing this deliver the goal?"
 
 | ID | Title | Roadmap phase | Requirements | Depends on | Status |
 | :-- | :-- | :-- | :-- | :-- | :-- |
@@ -18,10 +21,22 @@
 | [harden-05](harden-05-invocation-ledger.md) | Record real skill invocations to a durable, per-session ledger | 2 | FR-1–FR-3 | harden-02 | **done** |
 | [harden-06](harden-06-status-invocation-reporting.md) | Report invoked, not-invoked, and untraceable per governed artifact | 2 | FR-1, FR-2, FR-4 | harden-05 | **done** |
 | [harden-07](harden-07-verification-channel-rubric-gate.md) | Require a real render and an honest rubric citation for UI verdicts | 3 | FR-9–FR-12 | harden-05, harden-03, harden-01 | **done** |
+| [harden-08](harden-08-spike-terminal-capture-tool.md) | Spike: confirm whether a real terminal-visual-capture tool exists | 5 | FR-19 | — | **held** |
+| [harden-09](harden-09-cli-channel-rule.md) | Require a real process invocation, not an internal-logic call, for CLI verdicts | 5 | FR-17, FR-18 | harden-11 | **done** (tier 1; tier 2 open debt) |
+| [harden-10](harden-10-tui-channel-rule.md) | Require a real visual capture, not an ANSI-stripped text read, for TUI verdicts | 5 | FR-17, FR-19 | harden-08 | **held** |
+| [harden-11](harden-11-spike-cli-invocation-discrimination.md) | Spike: can a real CLI invocation be safely and precisely tracked in the ledger? | 5 | FR-18 | — | **done** |
 
-All 7 stories: **done.** All 7 passed a QA-strategist readiness check before the build
-started, with two real gaps found and fixed at that stage (`harden-05`'s exit-code
-contradiction, `harden-07`'s missing corrupt-capture case).
+Stories `harden-01`–`07`: **done**, all 7 passed a QA-strategist readiness check before the
+build started, with two real gaps found and fixed at that stage (`harden-05`'s exit-code
+contradiction, `harden-07`'s missing corrupt-capture case). Stories `harden-08`–`11`: written
+2026-08-06, then run through `/delivery:challenge` before any building — a real, 5-reviewer
+adversarial review (`.delivery/reviews/phase-5-cli-tui-01.md`) found the original plan wasn't
+buildable as scoped. `harden-11` (a new spike, not in the original three) resolved the CLI
+question for real, with a genuine partial result (live confirmation blocked by an expired
+auth session, real design analysis completed anyway). `harden-09` shipped in two honest
+tiers off that result. `harden-08`/`harden-10` (TUI) are held — a real product-owner
+decision, not a slip, made after the review found no downstream need for it yet and a named
+fallback tool confirmed unable to do the one thing it was proposed for.
 
 **What "done" actually rests on, in order — nothing here was rounded up.** A genuine
 `.delivery/`-resolution bug was found live and fixed (unit tests had missed it because
@@ -57,6 +72,9 @@ harden-02 ─┼─→ harden-05 → harden-06
 harden-03 ─┤        │
            └─→ harden-07 (needs harden-05, harden-03, harden-01)
 harden-04  (independent — ships whenever)
+
+harden-11 ─→ harden-09  (CLI channel, tier 1 built; tier 2 open debt)
+harden-08 ─→ harden-10  (TUI channel — both held, not built)
 ```
 
 ## Not covered here

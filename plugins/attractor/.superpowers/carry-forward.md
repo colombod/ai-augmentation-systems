@@ -68,21 +68,35 @@ again — the same lesson this section already drew from the first numbering mis
 
 ### Plan 4 — human gates and the Discord bridge (was numbered Plan 3; that plan did not land)
 
-Re-checked 2026-08-04: all three items below are still open and still accurate. The
-plan slot they were originally filed against was taken by the spec correction; they are
-now owned by the human-gates plan, which is where they always belonged by subject.
+**RESOLVED 2026-08-06.** Adopted the channels design
+(`.superpowers/specs/2026-08-05-human-gate-channels-design.md`) in full for FR-5–FR-8.
+This document's own §7 (Human in the loop) and §8 (Operator onboarding) — park + checkpoint,
+`attractor approve`/`attractor resume`, the official `discord@claude-plugins-official` channel
+plugin + a monitor session — are marked **superseded** in place in
+`2026-08-03-attractor-claude-code-plugin-design.md` (not deleted, not ported). Decided by a
+multi-lens comparison (persona fit, engineering cost, doctrine alignment, requirement
+coverage, extensibility risk; two independent judges; one final synthesis), which converged
+5/5: the channels design is the only one of the two with an architectural slot for the user's
+two hard, explicit, non-hybrid requirements — arbitrary bespoke/pluggable external channels
+(`CommandChannel`) and an opt-in `agent`-proxy channel — that the park/checkpoint design
+predates and has no equivalent for. Park/resume's one clean advantage, cross-restart
+durability, is not in play: `.delivery/prd.md`'s Non-Goals/Out-of-scope section already
+excludes it this slice, independent of which design won. ADR-002 stands unchanged in content
+(addended, not superseded — see its own Addendum section) as the `human` channel's eventual
+implementation. `.delivery/prd.md` Open Questions 1 and 2 are resolved accordingly.
 
-**2026-08-05 — an unreconciled second design now exists for this plan's core subject, found
-by a decay-lens check while consolidating a session's work before pausing, not by anyone
-deliberately comparing the two.** The delivery-pipeline PRD phase (`plugins/attractor/.delivery/prd.md`,
-scenario S2) and a follow-on brainstorming session produced
-`plugins/attractor/.superpowers/specs/2026-08-05-human-gate-channels-design.md`, without first reading
-this document's own §7/§8 (human gates never time out by default, park + checkpoint,
-`attractor approve`/`attractor resume`, the official `discord@claude-plugins-official`
-channel plugin + a monitor session) or this file's Plan 4 entry. **The two designs answer
-the same PRD Open Question (1: how does an answer reach a blocked gate) with materially
-different architectures, and neither has been implemented yet — nothing here is a
-retroactive contradiction of shipped code, only of an unread plan:**
+**Carried forward as future/additive work on top of the `Channel` abstraction, not as a
+reason to revisit this decision:** `checkpoint.ts`/`loadCheckpoint` (already implemented,
+currently unwired — see the bullet below) as the basis for a later `attractor resume`;
+the `reminder=` re-notification attribute; §7.6's free-form-input collection for unlabelled
+edges; a first-party `CommandChannel` reference script for Discord, prioritized early since
+it delivers the same "answer from anywhere" need without depending on Anthropic's
+research-preview Channels surface or `bun`. **Required follow-up before the `agent` channel
+ships:** close the self-report evidentiary gap in `human.context=` — nothing today restricts
+an author from exposing the `agent` channel to evidence written by the very node the gate is
+meant to check; needs a lint rule or a documented authoring restriction.
+
+**Comparison table, kept for the historical record of what was weighed:**
 
 | | §7/§8 of this spec (2026-08-03) | The new channels design (2026-08-05) |
 |---|---|---|
@@ -92,21 +106,19 @@ retroactive contradiction of shipped code, only of an unread plan:**
 | Unattended preflight | Rejects the run if any reachable `hexagon` lacks `on_timeout` (E3) | Rejects the run if any reachable gate's declared channel chain has no viable hop — a related but not identical condition |
 | Not present in the other design | `reminder=` re-notification; §7.6 free-form-input collection into context for unlabelled edges | An `agent` channel (an isolated `claude -p` proxy answering on the human's behalf) and timeout-driven channel *escalation chains* — both genuinely new ideas, absent from §7/§8 |
 
-**Not reconciled. Flagged here so it cannot be missed by whoever picks this plan up next** —
-this needed "read the spec first," the standing rule `plugins/attractor/AGENTS.md` names as this
-project's costliest recurring failure, and it was skipped. Candidate resolutions, not decided:
-(a) the new design is a considered evolution and should amend §7/§8 in place, with the
-supersession written down the way F9/W1/W4 do it; (b) the two are complementary, not
-competing — the new `Channel` abstraction becomes §7/§8's *attended* fast-path, while parking
-and durable resume remain the mechanism for everything else, meaning the new design's own
-"no durable resume" framing is itself incomplete; (c) revert to §7/§8 as written and treat the
-new design as premature. Whoever resumes this plan must pick one and write down why, not
-silently build on top of either as though the other doesn't exist.
+**Resolved as candidate (a):** the new design is the considered evolution; §7/§8 are amended
+in place (marked superseded, with the supersession written down the way F9/W1/W4 do it) rather
+than kept live or reverted. Candidates (b) (complementary/hybrid) and (c) (revert to §7/§8) are
+retired — (b) was explicitly the hybrid the project owner ruled out; (c) loses on every
+dimension the comparison scored, including the two hard requirements park/resume has no
+answer for.
 
 - **`loadCheckpoint` is implemented but unreachable from the engine or CLI.**
   There is no `resumeFrom` option on `EngineOptions` and no `attractor resume`
-  command. The parked-gate model depends on resuming a run across a restart, so
-  this belongs to the human-gates plan to build, not an oversight to re-report.
+  command. This is now future/additive work on top of the `Channel` abstraction
+  (see the RESOLVED note above), not a park-model prerequisite — a later
+  `attractor resume` would checkpoint at gate-entry and re-enter the channel
+  chain, closing NFR-9's residual risk without reviving §7/§8's architecture.
 - `RunResult.path` records one entry per *attempt*, not per graph transition,
   so retries appear as repeated entries. `/attractor status` should not print
   it raw as a route summary.

@@ -88,3 +88,26 @@ since the non-interactive case no longer has a long wait to crash during.
 and the original unconditional-hang risk resurfaces for that channel; or when FR-8 is designed,
 at which point this handler's FAIL branch is replaced by whatever the chosen answer-delivery
 mechanism requires.
+
+## Addendum, 2026-08-06 — FR-8 resolved; this ADR stands, unchanged in content
+
+FR-8 (the answer-delivery channel this ADR's Context section names as undecided) is now
+resolved: `.superpowers/specs/2026-08-05-human-gate-channels-design.md` was adopted after a
+multi-lens comparison against a competing design, converging 5/5 in its favor. This ADR's
+decision — TTY-check block-vs-fail-fast — is **not** superseded; it becomes that design's
+`human` channel implementation. Two corrections to how this ADR is referenced elsewhere,
+neither changing the decision above:
+
+- **Not yet built.** The channels design's draft described this ADR's mechanism as
+  "already-built"/wrapped "unchanged." That was inaccurate, confirmed by direct inspection:
+  no `engine/src/handlers/human.ts` exists, `Handler.HUMAN` is still in
+  `UNREGISTERED_HANDLER_KINDS` (`engine/src/dot/graph.ts`), and no TTY-check logic exists
+  anywhere in `engine/src`. This ADR is an accepted design decision, not shipped code — the
+  `human` channel handler still needs to be written to implement it.
+- **Fail-fast branch caught earlier by preflight.** Once the channels design's §6 preflight
+  reachability check is implemented, an unattended run with only the `human` channel
+  configured is refused before any node executes, rather than reaching this handler's
+  no-TTY `FAIL` branch mid-run. The `FAIL` branch itself is unchanged and still fires for any
+  case preflight doesn't catch (e.g., a TTY present at launch that the operator then abandons).
+
+See `.superpowers/carry-forward.md`'s Plan 4 entry for the full reconciliation record.
