@@ -606,3 +606,82 @@ seventh amendment believed, in writing, that it had closed the class this amendm
 was wrong within the same review cycle. Future changes to this function should treat "verified
 against the fixtures on hand" as exactly that and no more, regardless of how confident the
 accompanying prose sounds — including this amendment's own.
+
+## Amendment (2026-08-07, ninth pass): `findConvergenceNode` itself has the same class of bug, predating every prior amendment — plus one more `findPartialReconvergence` gap it exposes
+
+**The gap.** An independent adversarial review of the eighth amendment's implementation
+extensively re-verified `findPartialReconvergence` (mutation testing, a 60,000-graph differential
+fuzz against the eighth amendment's own predecessor, a 40,000-graph pure-rework false-positive
+sweep) and found it sound — "I could not find a fourth bug in `findPartialReconvergence`." It then
+found a bug in a function none of the sixth, seventh, or eighth amendments ever touched:
+`findConvergenceNode` itself, confirmed by `git log -L` to be byte-identical to the original Task
+4 commit (`e3a707f`). Its tie-break ranks convergence candidates by worst-case BFS depth across
+branch roots — `reachableWithDepth`, unbounded and cycle-following, exactly like
+`downstreamOfConvergence` was before the eighth amendment. With an ordinary rework loop present
+(`combine -> check -> fan [retry]`) and branches of **asymmetric length**, the shorter branch's
+own root can reach a **mid-branch node of the longer branch** via the loop — through `check ->
+fan -> <longer branch's own root> -> ... -> <mid-branch node>` — at a worst-case depth shallower
+than the real convergence node, winning the tie-break outright (not merely tying — for a branch
+six or more nodes long, no tie is even involved). `findPartialReconvergence` then computes
+partial reconvergence against that wrong node, and PAR-004 refuses a graph with no actual hazard.
+A randomized sweep of 40,000 pure-rework pipelines hit this in 293 cases (0.73%).
+
+This is the same structural mistake the sixth, seventh and eighth amendments each made and then
+corrected in a different function or a different part of the same function: treating unbounded,
+cycle-following reachability as safe input to a computation that assumes (without stating it) an
+acyclic region downstream of a fan-out. It was invisible to every review of
+`findPartialReconvergence` specifically because `findConvergenceNode` sits **upstream** of it —
+every fixture those reviews constructed happened to produce a correct `convergenceId`, so nothing
+downstream of it was ever exercised with a wrong one.
+
+**A second gap, found while fixing the first.** Truncating `findConvergenceNode`'s reachability
+at branch roots (the eighth amendment's own choice for a different computation, `downstreamOfConvergence`)
+was tried first here too, and rejected for the same reason it would have been wrong there: it
+breaks the existing, legitimate "root reachable from another root, resolves past it" case — a
+plain forward edge `root1 -> root2` with no cycle at all, where `root1`'s reachability *must*
+pass through the sibling root `root2` to reach the real convergence node. Truncating at branch
+roots cannot distinguish that from a cycle. The correct truncation point, verified against both
+this fixture and the asymmetric-length counterexample, is **the fan-out node itself**: a rework
+loop's path back to a branch root always passes through the fan-out node first (`check -> fan ->
+root`); a genuine forward edge between two roots never touches the fan-out again. Applying this
+fix to `findConvergenceNode`'s own depth-map construction exposed a **third** gap: `findPartialReconvergence`'s
+rule (a) (`truncatedSets`, shared by rule (a) and rule (b), truncated only at `convergenceId`
+since the original Task 4 commit) is equally vulnerable — a rework loop whose retry path happens
+to route back through a *sibling* branch root falsely trips rule (a)'s Gap-1 cross-branch check
+(which deliberately *includes* roots, per the sixth amendment), mistaking an ordinary rework loop
+for a genuine sibling-root-reachability hazard.
+
+**Decision.** Both functions now truncate their reachability computations at the fan-out node —
+not at branch roots, not left unbounded:
+
+- `findConvergenceNode` gains a required `fanOutNodeId: string` parameter and a new private
+  helper, `reachableWithDepthTruncated`, used in place of `reachableWithDepth` for its own
+  per-root depth maps. `reachableWithDepth` itself is unchanged and has no remaining callers in
+  this file besides the one `downstreamOfConvergence` already replaced in the eighth amendment.
+- `findPartialReconvergence` also gains `fanOutNodeId`, used only to add one more truncation
+  condition to `truncatedSets`'s existing construction (already truncated at `convergenceId`).
+  `downstreamOfConvergence` (the eighth amendment's own root-truncated computation) is unchanged
+  — it does not need the fan-out node, since rule (b) has its own separate root exclusion that
+  already covers the equivalent case for that rule.
+
+Both are threaded through the one real call site (`lint.ts`, where the fan-out node — `node.id`
+in `Handler.PARALLEL`'s own block — is already in scope) and every existing test fixture, which
+uniformly name their `Handler.PARALLEL` node `fan`.
+
+**Consequences (this amendment specifically).** **We gain:** `findConvergenceNode` no longer
+selects a mid-branch node as "the" convergence point under a rework loop with asymmetric branch
+lengths — closing a bug three prior amendments to this ADR did not find, because none of them
+had reason to look upstream of `convergenceId`'s own selection. The related rule-(a) gap this fix
+exposed is closed the same way, by the same principle, rather than patched separately. **We
+accept:** this ADR now has three independent truncation boundaries across two functions —
+`convergenceId` (rule (a) and the per-branch sets), branch roots (rule (b)'s
+`downstreamOfConvergence`), and the fan-out node (`findConvergenceNode`'s depth maps and now
+rule (a) as well) — each justified for a different reason, tied to a different question ("where
+does this branch's own path stop," "what will the resumed main run walk," "what counts as a
+fresh iteration of this same construct"). A reader needs to hold all three to follow the function
+fully; unifying them into one named concept is a plausible future refactor, not attempted here.
+**We still do not have a proof this is the last gap**, now for the sixth time — and unlike the
+seventh amendment's own overconfident framing, this amendment does not claim the false-positive
+class is fully closed either, only that it is closed for every fixture an independent, genuinely
+adversarial pass (mutation testing plus tens of thousands of generated graphs) could construct
+against the implementation as it stood before this pass.

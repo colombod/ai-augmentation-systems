@@ -558,7 +558,7 @@ export function lint(graph: Graph): Diagnostic[] {
             `differently than an ordinary edge would, so this is likely not what was intended`,
         })
       } else if (branchRootIds.length >= 2) {
-        const convergenceId = findConvergenceNode(graph, branchRootIds)
+        const convergenceId = findConvergenceNode(graph, branchRootIds, node.id)
         if (convergenceId === null) {
           diags.push({
             code: 'PAR-001',
@@ -571,7 +571,7 @@ export function lint(graph: Graph): Diagnostic[] {
               `the branches back together`,
           })
         } else {
-          const partial = findPartialReconvergence(graph, branchRootIds, convergenceId)
+          const partial = findPartialReconvergence(graph, branchRootIds, convergenceId, node.id)
           if (partial.length > 0) {
             diags.push({
               code: 'PAR-004',

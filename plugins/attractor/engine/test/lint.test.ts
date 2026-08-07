@@ -1726,7 +1726,7 @@ test('findConvergenceNode: multi-hop convergence returns the shallowest common d
     fan -> a -> mid -> join -> done
     fan -> b -> join
   }`)
-  assert.equal(findConvergenceNode(g, ['a', 'b']), 'join')
+  assert.equal(findConvergenceNode(g, ['a', 'b'], 'fan'), 'join')
 })
 
 test('findConvergenceNode: branches that never reconverge return null', () => {
@@ -1738,7 +1738,7 @@ test('findConvergenceNode: branches that never reconverge return null', () => {
     fan -> a -> done1
     fan -> b
   }`)
-  assert.equal(findConvergenceNode(g, ['a', 'b']), null)
+  assert.equal(findConvergenceNode(g, ['a', 'b'], 'fan'), null)
 })
 
 test('findConvergenceNode: single-branch degenerate returns the one root\'s nearest descendant', () => {
@@ -1747,7 +1747,7 @@ test('findConvergenceNode: single-branch degenerate returns the one root\'s near
     fan [shape=component]  a [shape=box]
     start -> fan -> a -> done
   }`)
-  assert.equal(findConvergenceNode(g, ['a']), 'done')
+  assert.equal(findConvergenceNode(g, ['a'], 'fan'), 'done')
 })
 
 test('findConvergenceNode: convergence at the graph\'s real EXIT node', () => {
@@ -1758,7 +1758,7 @@ test('findConvergenceNode: convergence at the graph\'s real EXIT node', () => {
     fan -> a -> done
     fan -> b -> done
   }`)
-  assert.equal(findConvergenceNode(g, ['a', 'b']), 'done')
+  assert.equal(findConvergenceNode(g, ['a', 'b'], 'fan'), 'done')
 })
 
 test('findConvergenceNode: a root reachable from another root resolves past it, not to it', () => {
@@ -1775,7 +1775,7 @@ test('findConvergenceNode: a root reachable from another root resolves past it, 
     fan -> root2
     root2 -> shared -> done
   }`)
-  assert.equal(findConvergenceNode(g, ['root1', 'root2']), 'shared')
+  assert.equal(findConvergenceNode(g, ['root1', 'root2'], 'fan'), 'shared')
 })
 
 test('findPartialReconvergence: the "normalize" shared-step shape (F3)', () => {
@@ -1792,9 +1792,9 @@ test('findPartialReconvergence: the "normalize" shared-step shape (F3)', () => {
     fan -> r3 -> combine
     normalize -> combine -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['r1', 'r2', 'r3'])
+  const convergenceId = findConvergenceNode(g, ['r1', 'r2', 'r3'], 'fan')
   assert.equal(convergenceId, 'combine')
-  assert.deepEqual(findPartialReconvergence(g, ['r1', 'r2', 'r3'], convergenceId), ['normalize'])
+  assert.deepEqual(findPartialReconvergence(g, ['r1', 'r2', 'r3'], convergenceId, 'fan'), ['normalize'])
 })
 
 test('findPartialReconvergence: tied full-common-descendant shape (F3 residual, ADR-007 amendment)', () => {
@@ -1816,10 +1816,10 @@ test('findPartialReconvergence: tied full-common-descendant shape (F3 residual, 
     x -> combine -> done
     y -> combine
   }`)
-  const convergenceId = findConvergenceNode(g, ['r1', 'r2'])
+  const convergenceId = findConvergenceNode(g, ['r1', 'r2'], 'fan')
   assert.ok(convergenceId === 'x' || convergenceId === 'y', 'the shallower tied node wins the tie-break')
   const other = convergenceId === 'x' ? 'y' : 'x'
-  const partial = findPartialReconvergence(g, ['r1', 'r2'], convergenceId)
+  const partial = findPartialReconvergence(g, ['r1', 'r2'], convergenceId, 'fan')
   assert.ok(
     partial.includes(other),
     'the sibling that lost the tie-break must still be flagged -- a pre-amendment ' +
@@ -1836,9 +1836,9 @@ test('findPartialReconvergence: disjoint branches produce no false positive', ()
     fan -> r1 -> combine
     fan -> r2 -> combine
   }`)
-  const convergenceId = findConvergenceNode(g, ['r1', 'r2'])
+  const convergenceId = findConvergenceNode(g, ['r1', 'r2'], 'fan')
   assert.equal(convergenceId, 'combine')
-  assert.deepEqual(findPartialReconvergence(g, ['r1', 'r2'], convergenceId), [])
+  assert.deepEqual(findPartialReconvergence(g, ['r1', 'r2'], convergenceId, 'fan'), [])
 })
 
 test('findPartialReconvergence: a node genuinely downstream of convergence is never flagged', () => {
@@ -1851,10 +1851,10 @@ test('findPartialReconvergence: a node genuinely downstream of convergence is ne
     fan -> r2 -> mid
     mid -> after -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['r1', 'r2'])
+  const convergenceId = findConvergenceNode(g, ['r1', 'r2'], 'fan')
   assert.equal(convergenceId, 'mid')
   assert.deepEqual(
-    findPartialReconvergence(g, ['r1', 'r2'], convergenceId), [],
+    findPartialReconvergence(g, ['r1', 'r2'], convergenceId, 'fan'), [],
     'after is only reachable BY GOING THROUGH mid -- the truncated BFS never expands past it, so it is dead code by construction',
   )
 })
@@ -1867,7 +1867,7 @@ test('findPartialReconvergence: a null convergenceId returns empty, not an error
     fan -> a -> done1
     fan -> b
   }`)
-  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], null), [])
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], null, 'fan'), [])
 })
 
 test('findConvergenceNode: worst-case (not best-case) depth wins a non-trivial tie', () => {
@@ -1894,7 +1894,7 @@ test('findConvergenceNode: worst-case (not best-case) depth wins a non-trivial t
     q -> combine
     combine -> done
   }`)
-  assert.equal(findConvergenceNode(g, ['a', 'b']), 'q')
+  assert.equal(findConvergenceNode(g, ['a', 'b'], 'fan'), 'q')
 })
 
 test('findConvergenceNode: the root-exclusion filter is load-bearing under a root-to-root cycle', () => {
@@ -1917,7 +1917,7 @@ test('findConvergenceNode: the root-exclusion filter is load-bearing under a roo
     r2 -> m2 -> shared
     shared -> done
   }`)
-  assert.equal(findConvergenceNode(g, ['r1', 'r2']), 'm1')
+  assert.equal(findConvergenceNode(g, ['r1', 'r2'], 'fan'), 'm1')
 })
 
 test('findPartialReconvergence: a branch root reachable from a sibling root is flagged (ADR-007 sixth amendment, Gap 1)', () => {
@@ -1935,10 +1935,10 @@ test('findPartialReconvergence: a branch root reachable from a sibling root is f
     fan -> root2
     root2 -> shared -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['root1', 'root2'])
+  const convergenceId = findConvergenceNode(g, ['root1', 'root2'], 'fan')
   assert.equal(convergenceId, 'shared')
   assert.deepEqual(
-    findPartialReconvergence(g, ['root1', 'root2'], convergenceId),
+    findPartialReconvergence(g, ['root1', 'root2'], convergenceId, 'fan'),
     ['root2'],
     'root2 is reachable from its own branch dispatch AND from root1 -- a real double dispatch',
   )
@@ -1967,10 +1967,10 @@ test('findPartialReconvergence: an asymmetric tie hazard the truncated-intersect
     x -> y
     y -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['root1', 'root2'])
+  const convergenceId = findConvergenceNode(g, ['root1', 'root2'], 'fan')
   assert.equal(convergenceId, 'x', 'x wins the depth-2 tie over y (first-encountered convention)')
   assert.deepEqual(
-    findPartialReconvergence(g, ['root1', 'root2'], convergenceId),
+    findPartialReconvergence(g, ['root1', 'root2'], convergenceId, 'fan'),
     ['y'],
     'y is reachable from root1 alone (bypassing x) AND from x\'s own downstream -- flagged without needing root2 to also reach it',
   )
@@ -1997,10 +1997,10 @@ test('findPartialReconvergence: the graph\'s real EXIT node never contributes a 
     r2 -> s2 -> done
     combine -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['r1', 'r2'])
+  const convergenceId = findConvergenceNode(g, ['r1', 'r2'], 'fan')
   assert.equal(convergenceId, 'combine')
   assert.deepEqual(
-    findPartialReconvergence(g, ['r1', 'r2'], convergenceId),
+    findPartialReconvergence(g, ['r1', 'r2'], convergenceId, 'fan'),
     [],
     'done (EXIT) is reachable from both branches and from combine\'s own downstream, but must never be flagged',
   )
@@ -2026,9 +2026,9 @@ test('findPartialReconvergence: an ordinary rework loop back to the fan-out node
     check -> fan [label="retry"]
     check -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
   assert.equal(convergenceId, 'combine')
-  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId), [])
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId, 'fan'), [])
 })
 
 test('findPartialReconvergence: a rework loop straight back to a branch root is not a false hazard', () => {
@@ -2043,9 +2043,9 @@ test('findPartialReconvergence: a rework loop straight back to a branch root is 
     check -> a [label="retry"]
     check -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
   assert.equal(convergenceId, 'combine')
-  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId), [])
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId, 'fan'), [])
 })
 
 test('findPartialReconvergence: a rework loop back to the graph start is not a false hazard', () => {
@@ -2060,9 +2060,9 @@ test('findPartialReconvergence: a rework loop back to the graph start is not a f
     check -> start [label="retry"]
     check -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
   assert.equal(convergenceId, 'combine')
-  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId), [])
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId, 'fan'), [])
 })
 
 test('findPartialReconvergence: a rework loop into a genuinely shared non-root node is still flagged', () => {
@@ -2083,10 +2083,10 @@ test('findPartialReconvergence: a rework loop into a genuinely shared non-root n
     check -> m
     check -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
   assert.equal(convergenceId, 'combine')
   assert.deepEqual(
-    findPartialReconvergence(g, ['a', 'b'], convergenceId),
+    findPartialReconvergence(g, ['a', 'b'], convergenceId, 'fan'),
     ['m'],
     'm is reachable from branch a AND from a second, independent path through check -- a real hazard, not a rework loop',
   )
@@ -2110,10 +2110,10 @@ test('findPartialReconvergence: a rework loop stays a non-hazard even when a bra
     check -> fan [label="retry"]
     check -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
   assert.equal(convergenceId, 'combine')
   assert.deepEqual(
-    findPartialReconvergence(g, ['a', 'b'], convergenceId),
+    findPartialReconvergence(g, ['a', 'b'], convergenceId, 'fan'),
     [],
     'n is reached only by walking the rework loop back through root a -- not a real hazard',
   )
@@ -2131,9 +2131,9 @@ test('findPartialReconvergence: a rework loop straight to a root is a non-hazard
     check -> a [label="retry"]
     check -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
   assert.equal(convergenceId, 'combine')
-  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId), [])
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId, 'fan'), [])
 })
 
 test('findPartialReconvergence: a rework loop to graph start is a non-hazard with both branches multi-node', () => {
@@ -2148,9 +2148,91 @@ test('findPartialReconvergence: a rework loop to graph start is a non-hazard wit
     check -> start [label="retry"]
     check -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['a1', 'b1'])
+  const convergenceId = findConvergenceNode(g, ['a1', 'b1'], 'fan')
   assert.equal(convergenceId, 'combine')
-  assert.deepEqual(findPartialReconvergence(g, ['a1', 'b1'], convergenceId), [])
+  assert.deepEqual(findPartialReconvergence(g, ['a1', 'b1'], convergenceId, 'fan'), [])
+})
+
+test('findConvergenceNode: an asymmetric-length rework loop does not select a mid-branch node (ADR-007 ninth amendment)', () => {
+  // Branch a is 5 nodes long, branch b is 1 node long. Without truncating at
+  // the fan-out node, b's own reachability (via the rework loop
+  // combine -> check -> fan -> a1 -> a2) reaches a2 at a shallower
+  // worst-case depth than combine, wrongly winning the tie-break -- refusing
+  // an ordinary rework loop with no real hazard.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    a1 [shape=box]  a2 [shape=box]  a3 [shape=box]  a4 [shape=box]  a5 [shape=box]
+    b1 [shape=box]  combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a1 -> a2 -> a3 -> a4 -> a5 -> combine
+    fan -> b1 -> combine
+    combine -> check
+    check -> fan [label="retry"]
+    check -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a1', 'b1'], 'fan')
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['a1', 'b1'], convergenceId, 'fan'), [])
+})
+
+test('findPartialReconvergence: a rework loop through a sibling root is not a false hazard (ADR-007 ninth amendment)', () => {
+  // Same shape as the Gap-2 asymmetric-tie fixture, but the shortcut node y
+  // now leads into a rework loop (y -> check -> fan [retry]) instead of
+  // straight to done. root2 must NOT be flagged merely because the retry
+  // edge's path back to the fan-out passes through it (fan -> root2 is an
+  // ordinary branch edge, reached here only via the loop) -- but y itself,
+  // the genuine Gap-2 shortcut hazard, must still be flagged.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    root1 [shape=box]  root2 [shape=box]
+    p [shape=box]  q [shape=box]  x [shape=box]  y [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> root1
+    fan -> root2
+    root1 -> p -> x
+    root1 -> q -> y
+    root2 -> x
+    x -> y
+    y -> check
+    check -> fan [label="retry"]
+    check -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['root1', 'root2'], 'fan')
+  assert.equal(convergenceId, 'x')
+  const partial = findPartialReconvergence(g, ['root1', 'root2'], convergenceId, 'fan')
+  assert.ok(!partial.includes('root2'), 'root2 is only reachable via the rework loop -- not a hazard')
+  assert.ok(partial.includes('y'), 'y is root1\'s own shortcut past x -- still a genuine hazard')
+})
+
+test('findPartialReconvergence: a rework loop combined with a genuine multi-hop non-root hazard is still flagged (closes a coverage gap in round 2\'s own tests)', () => {
+  // Round 2's three rework-loop tests and its non-root contrast test never
+  // combined the two in one fixture, so they could not tell a correct fix
+  // apart from one that over-truncates. Branch a is multi-hop (fan -> a ->
+  // n -> combine) with a genuine second path to d (n -> d); the rework loop
+  // ALSO reaches d directly (check -> d), independent of the retry edge
+  // back to fan. d must be flagged -- a real double-dispatch hazard --
+  // while the rework loop itself (check -> fan) must not add a false one.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    a [shape=box]  n [shape=box]  d [shape=box]  b [shape=box]
+    combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> n -> combine
+    n -> d
+    fan -> b -> combine
+    combine -> check
+    check -> fan [label="retry"]
+    check -> d
+    check -> done
+    d -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
+  assert.equal(convergenceId, 'combine')
+  const partial = findPartialReconvergence(g, ['a', 'b'], convergenceId, 'fan')
+  assert.ok(partial.includes('d'), 'd is reachable from branch a AND directly from the rework loop -- a real hazard')
 })
 
 // ---------------------------------------------------------------------------
@@ -2343,9 +2425,9 @@ test('findPartialReconvergence: is defensively insensitive to a caller passing a
     p -> combine
     combine -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['r1', 'r1', 'r2'])
+  const convergenceId = findConvergenceNode(g, ['r1', 'r1', 'r2'], 'fan')
   assert.deepEqual(
-    findPartialReconvergence(g, ['r1', 'r1', 'r2'], convergenceId),
+    findPartialReconvergence(g, ['r1', 'r1', 'r2'], convergenceId, 'fan'),
     [],
     'a duplicated root id must not inflate rule (a)\'s cross-branch count against itself',
   )

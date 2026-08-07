@@ -490,21 +490,68 @@ function reachableWithDepth(graph: Graph, startId: string): Map<string, number> 
 }
 
 /**
+ * Same as `reachableWithDepth`, truncated at `stopId` -- added to the
+ * result when reached, but its own outgoing edges are never followed. Used
+ * by `findConvergenceNode` to stop a rework/retry loop from leaking a
+ * shorter branch's reachability into a longer branch's interior via the
+ * fan-out node (ADR-007's ninth amendment).
+ */
+function reachableWithDepthTruncated(graph: Graph, startId: string, stopId: string): Map<string, number> {
+  const depth = new Map<string, number>()
+  const queue: string[] = []
+  for (const e of outgoingEdges(graph, startId)) {
+    if (!depth.has(e.to)) {
+      depth.set(e.to, 1)
+      queue.push(e.to)
+    }
+  }
+  while (queue.length > 0) {
+    const cur = queue.shift() as string
+    if (cur === stopId) continue // do not expand past the fan-out node
+    const curDepth = depth.get(cur) as number
+    for (const e of outgoingEdges(graph, cur)) {
+      if (!depth.has(e.to)) {
+        depth.set(e.to, curDepth + 1)
+        queue.push(e.to)
+      }
+    }
+  }
+  return depth
+}
+
+/**
  * Earliest node reachable from EVERY branch root (excluding the roots
  * themselves -- a root is never a valid convergence candidate, even one
- * reachable from a sibling root), by static reachability over ALL outgoing
- * edges regardless of condition truth. Shallowest common descendant wins
- * ties, ranked by the FURTHEST root's distance to it (its own worst case);
- * the exact tie-break among equally-shallow candidates is otherwise
- * unspecified -- `findPartialReconvergence` is what actually closes the
- * hazard a tie could create (ADR-007's amendments; the ADR itself does not
- * claim this is proven complete, only adversarially re-verified as of its
- * most recent amendment). `null` if branches never reconverge.
+ * reachable from a sibling root via a genuine forward edge), by static
+ * reachability over ALL outgoing edges regardless of condition truth,
+ * TRUNCATED at `fanOutNodeId` -- reachability does not expand past the
+ * fan-out node itself (ADR-007's ninth amendment). Without this truncation,
+ * an ordinary rework/retry loop back to the fan-out node lets a shorter
+ * branch's root reach deep into a LONGER branch's own interior at an
+ * artificially shallow worst-case depth, winning the tie-break over the
+ * real convergence node -- refusing a hazard-free rework loop. Passing back
+ * through the fan-out node is the one unambiguous signal a path belongs to
+ * a NEW iteration of the same parallel construct, not this one; a root
+ * reached via an ordinary forward edge that never re-enters the fan-out
+ * (e.g. `root1 -> root2`, a plain DAG edge) is unaffected by this
+ * truncation and still resolves normally.
+ *
+ * Shallowest common descendant wins ties, ranked by the FURTHEST root's
+ * distance to it (its own worst case); the exact tie-break among equally-
+ * shallow candidates is otherwise unspecified -- `findPartialReconvergence`
+ * is what actually closes the hazard a tie could create (ADR-007's
+ * amendments; the ADR itself does not claim this is proven complete, only
+ * adversarially re-verified as of its most recent amendment). `null` if
+ * branches never reconverge.
  */
-export function findConvergenceNode(graph: Graph, branchRootIds: readonly string[]): string | null {
+export function findConvergenceNode(
+  graph: Graph,
+  branchRootIds: readonly string[],
+  fanOutNodeId: string,
+): string | null {
   if (branchRootIds.length === 0) return null
   const rootSet = new Set(branchRootIds)
-  const depthMaps = branchRootIds.map((id) => reachableWithDepth(graph, id))
+  const depthMaps = branchRootIds.map((id) => reachableWithDepthTruncated(graph, id, fanOutNodeId))
 
   let candidates: string[] = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id))
   for (let i = 1; i < depthMaps.length; i++) {
@@ -529,10 +576,14 @@ export function findConvergenceNode(graph: Graph, branchRootIds: readonly string
  * (each `runBranch` stopping at `convergenceId`, a dead end, or EXIT) and the main run resumed
  * at `convergenceId` afterward. Flags the union of two hazards (ADR-007's sixth amendment):
  *
- * (a) reachable -- via a path not crossing `convergenceId` first -- from two or more of the
- *     given branch roots, INCLUDING a root itself if a sibling root's own path reaches it (a
- *     root is only excluded from *convergence-node selection* in findConvergenceNode -- a
- *     different question).
+ * (a) reachable -- via a path not crossing `convergenceId` OR the fan-out node first -- from two
+ *     or more of the given branch roots, INCLUDING a root itself if a sibling root's own
+ *     FORWARD path reaches it (a root is only excluded from *convergence-node selection* in
+ *     findConvergenceNode -- a different question). The fan-out-node truncation (ADR-007's
+ *     ninth amendment) exists so a rework/retry loop's path back to the fan-out is never
+ *     mistaken for a genuine forward sibling-root reference -- it stops the traversal before it
+ *     can re-enter a DIFFERENT branch root via the loop, while a real forward edge between two
+ *     roots (never touching the fan-out again) is completely unaffected.
  * (b) reachable from a SINGLE branch root without crossing `convergenceId` first, where that
  *     same node is also reachable from `convergenceId` itself via a walk that does not expand
  *     past any branch root (ADR-007's eighth amendment -- truncated, not the plain untruncated
@@ -555,6 +606,7 @@ export function findPartialReconvergence(
   graph: Graph,
   branchRootIdsRaw: readonly string[],
   convergenceId: string | null,
+  fanOutNodeId: string,
 ): string[] {
   if (convergenceId === null) return []
   // Defensive: a caller passing a duplicate root id (lint.ts already dedupes
@@ -570,7 +622,7 @@ export function findPartialReconvergence(
     const queue = [rootId]
     while (queue.length > 0) {
       const cur = queue.shift() as string
-      if (cur === convergenceId) continue // do not expand past convergence
+      if (cur === convergenceId || cur === fanOutNodeId) continue // do not expand past convergence or the fan-out node
       for (const e of outgoingEdges(graph, cur)) {
         if (!seen.has(e.to)) {
           seen.add(e.to)

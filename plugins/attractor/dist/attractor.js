@@ -3156,7 +3156,7 @@ function inferredOutputs(node) {
 function effectiveOutputs(node) {
   return [.../* @__PURE__ */ new Set([...inferredOutputs(node), ...declaredOutputs(node)])];
 }
-function reachableWithDepth(graph, startId) {
+function reachableWithDepthTruncated(graph, startId, stopId) {
   const depth = /* @__PURE__ */ new Map();
   const queue = [];
   for (const e of outgoingEdges(graph, startId)) {
@@ -3167,6 +3167,7 @@ function reachableWithDepth(graph, startId) {
   }
   while (queue.length > 0) {
     const cur = queue.shift();
+    if (cur === stopId) continue;
     const curDepth = depth.get(cur);
     for (const e of outgoingEdges(graph, cur)) {
       if (!depth.has(e.to)) {
@@ -3177,10 +3178,10 @@ function reachableWithDepth(graph, startId) {
   }
   return depth;
 }
-function findConvergenceNode(graph, branchRootIds) {
+function findConvergenceNode(graph, branchRootIds, fanOutNodeId) {
   if (branchRootIds.length === 0) return null;
   const rootSet = new Set(branchRootIds);
-  const depthMaps = branchRootIds.map((id) => reachableWithDepth(graph, id));
+  const depthMaps = branchRootIds.map((id) => reachableWithDepthTruncated(graph, id, fanOutNodeId));
   let candidates = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id));
   for (let i = 1; i < depthMaps.length; i++) {
     candidates = candidates.filter((id) => depthMaps[i].has(id));
@@ -3197,7 +3198,7 @@ function findConvergenceNode(graph, branchRootIds) {
   }
   return best;
 }
-function findPartialReconvergence(graph, branchRootIdsRaw, convergenceId) {
+function findPartialReconvergence(graph, branchRootIdsRaw, convergenceId, fanOutNodeId) {
   if (convergenceId === null) return [];
   const branchRootIds = [...new Set(branchRootIdsRaw)];
   const rootSet = new Set(branchRootIds);
@@ -3207,7 +3208,7 @@ function findPartialReconvergence(graph, branchRootIdsRaw, convergenceId) {
     const queue = [rootId];
     while (queue.length > 0) {
       const cur = queue.shift();
-      if (cur === convergenceId) continue;
+      if (cur === convergenceId || cur === fanOutNodeId) continue;
       for (const e of outgoingEdges(graph, cur)) {
         if (!seen.has(e.to)) {
           seen.add(e.to);
@@ -4009,7 +4010,7 @@ function lint(graph) {
           message: `node ${node.id} is a parallel fan-out (Handler.PARALLEL) with exactly one distinct successor, ${branchRootIds[0]} -- a fan-out of one branch runs no differently than an ordinary edge would, so this is likely not what was intended`
         });
       } else if (branchRootIds.length >= 2) {
-        const convergenceId = findConvergenceNode(graph, branchRootIds);
+        const convergenceId = findConvergenceNode(graph, branchRootIds, node.id);
         if (convergenceId === null) {
           diags.push({
             code: "PAR-001",
@@ -4018,7 +4019,7 @@ function lint(graph) {
             message: `node ${node.id} fans out to ${branchRootIds.join(", ")}, but no node is reachable from every branch -- there is nowhere for the pipeline to resume after the fan-out. Add a node every branch's path leads to, or route two of the branches back together`
           });
         } else {
-          const partial = findPartialReconvergence(graph, branchRootIds, convergenceId);
+          const partial = findPartialReconvergence(graph, branchRootIds, convergenceId, node.id);
           if (partial.length > 0) {
             diags.push({
               code: "PAR-004",
