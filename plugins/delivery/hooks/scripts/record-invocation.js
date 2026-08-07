@@ -56,7 +56,13 @@ function findDeliveryRootUpward(startDir) {
 // BELOW a session's cwd when the session runs from the repo root, not
 // above it — the upward walk alone misses this real, common shape,
 // confirmed by running this exact script against this exact repo.
-function findDeliveryRootDownward(startDir, maxDepth) {
+//
+// Returns every .delivery/ found, not just a resolved single answer —
+// findDeliveryRootDownward (below) collapses this to one-or-null for the
+// plain case; recordInvocation's session-continuity fallback (added after
+// a real gap found live in the chief-of-staff epic's own spike — see its
+// call site) needs the full candidate list to break a tie honestly.
+function findAllDeliveryRootsDownward(startDir, maxDepth) {
   const found = [];
   let frontier = [{ dir: startDir, depth: 0 }];
 
@@ -84,11 +90,17 @@ function findDeliveryRootDownward(startDir, maxDepth) {
     }
     frontier = next;
   }
+  return found;
+}
+
+function findDeliveryRootDownward(startDir, maxDepth) {
+  const found = findAllDeliveryRootsDownward(startDir, maxDepth);
 
   // Exactly one candidate is usable without guessing. Zero means nothing
   // governed here. More than one is the same "ask, don't guess" situation
   // the skill-level resolution algorithm names — a script can't ask, so it
-  // declines rather than picking one, and this stays a documented limit.
+  // declines rather than picking one here. (recordInvocation's caller has
+  // one more real, non-guessing tiebreaker available to it — see below.)
   if (found.length === 1) return found[0];
   return null;
 }
@@ -182,10 +194,31 @@ function recordInvocation(payload, options) {
     return null;
   }
 
-  const deliveryRoot = findDeliveryRoot(cwdForResolution);
-  if (!deliveryRoot) return null; // nothing governed here yet — no-op, not an error
-
   const sessionId = payload.session_id || 'unknown-session';
+  let deliveryRoot = findDeliveryRoot(cwdForResolution);
+
+  // Session continuity — a real gap found live, not a hypothetical: a downward
+  // search ambiguous between multiple candidates (e.g. this repo's own
+  // plugins/delivery/.delivery + plugins/attractor/.delivery) isn't a dead end
+  // if THIS session already wrote a ledger entry under exactly one of them
+  // earlier — that's an established fact about where this session's governed
+  // work lives, not a guess. A brand-new session with no prior write, or one
+  // where two candidates both already have a ledger, stays correctly declined
+  // — this only resolves the case a script can settle without asking.
+  if (!deliveryRoot && !findDeliveryRootUpward(cwdForResolution)) {
+    const candidates = findAllDeliveryRootsDownward(cwdForResolution, DOWNWARD_SEARCH_MAX_DEPTH);
+    if (candidates.length > 1) {
+      const withEstablishedLedger = candidates.filter((candidate) =>
+        fs.existsSync(path.join(candidate, 'invocations', `${sessionId}.ndjson`))
+      );
+      if (withEstablishedLedger.length === 1) {
+        deliveryRoot = withEstablishedLedger[0];
+      }
+    }
+  }
+
+  if (!deliveryRoot) return null; // nothing governed here yet, or still genuinely ambiguous — no-op, not an error
+
   const ledgerDir = path.join(deliveryRoot, 'invocations');
   const ledgerPath = path.join(ledgerDir, `${sessionId}.ndjson`);
 
@@ -216,6 +249,7 @@ module.exports = {
   findDeliveryRoot,
   findDeliveryRootUpward,
   findDeliveryRootDownward,
+  findAllDeliveryRootsDownward,
   invokedNameFrom,
   captureActionFrom,
   isGovernedToolCall,

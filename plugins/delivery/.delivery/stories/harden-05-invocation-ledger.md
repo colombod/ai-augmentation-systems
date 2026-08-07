@@ -119,6 +119,40 @@ not the same claim as confirming it fires inside a real session).
 
 ## Implementation notes
 
+**Regression found and fixed live, 2026-08-07, while running the Chief of Staff epic's own
+Spike CoS-1 (`chief-of-staff-01`).** This story's 21/21 live-verified result (below) predates
+commit `6883fee` ("feat(attractor): add the attractor plugin"), which added
+`plugins/attractor/.delivery/` — a second `.delivery/` at the same depth as
+`plugins/delivery/.delivery/`. The downward search's own "more than one candidate — decline
+rather than guess" rule (correct in principle, and still covered by its own test) then fires
+for real whenever `payload.cwd` resolves at or above `plugins/` — which happens for some but
+not all real Agent-tool dispatches in a long session, for reasons not fully diagnosed (some
+subagent dispatch shapes appear to resolve cwd differently than others). Empirically
+confirmed live in this exact session: 7 real ledger entries recorded correctly from
+00:47–10:45 UTC, then a **silent** gap — roughly 15 further real `Agent`-tool calls (a
+`delivery-lead` dispatch, 10 parallel story-writer dispatches, 4 spike trials) produced zero
+ledger entries and zero errors, exactly matching this script's own "never throw" guarantee
+working as designed against a case its author hadn't hit yet.
+
+**Root cause, confirmed by direct reproduction** (piping a synthetic payload straight into
+`record-invocation.js` with `cwd` set to the repo root — no ledger write; same payload with
+`cwd` set to `plugins/delivery` — ledger write succeeds): the ambiguity is real and
+reproducible, not a one-off. **Fix:** `recordInvocation` now checks, only when the downward
+search is genuinely ambiguous (2+ candidates, no upward match), whether the *current session*
+already has an established ledger file under exactly one candidate — a real fact about where
+this session's governed work already lives, not a guess, and it only ever narrows an
+already-ambiguous case, never overrides an unambiguous one. A brand-new session hitting the
+same ambiguity still correctly declines (own test, `sess-brand-new`). Two new tests added to
+`record-invocation.test.js` (33/33 passing); the existing "multiple `.delivery/` found
+downward is ambiguous" test is untouched and still describes the correct base case.
+
+**What's still open, named rather than silently assumed fixed:** why `payload.cwd` resolves
+above `plugins/` for some real Agent-tool dispatches and not others in the same session was
+not root-caused — that's harness behavior outside this script's visibility, not something a
+hook can introspect. The fix makes the *consequence* (silent ledger loss) recoverable for any
+session that got at least one unambiguous write first; a session whose very first call arrives
+with an ambiguous cwd is still un-helped by this fix, and stays a real, named limit.
+
 **Live-verified, for real, in a genuinely fresh session — update to the earlier note
 below.** After the first partial pass (unit tests only), a real end-to-end test was run:
 a project-level hook was registered *before* launching fresh, real, non-interactive

@@ -43,31 +43,27 @@ answer is "no, it would have just read the file," the task is rejected, not sche
 - **No attempt** — neither: the agent proceeds without consulting anything, or asks the
   operator directly.
 
-## Trial task list — retracted, not designed yet
+## Trial task list, second attempt — checked against the engineering test before scheduling
 
-**The first attempt at this table (10 rows, all pure-lookup tasks like "does file X get a
-pointer section") is retracted, not merely revised.** Every row failed the engineering test
-above on inspection: each was answerable by a plain `Read`/`Grep`, with no plausible path to
-a human-escalation question at all, on either side of the pointer section's existence.
-Running trials shaped like that would not have measured this epic's real question — it would
-have measured "does the agent have file-read access," which was never in doubt. Retracting
-this before any trial ran is itself the pre-registration mechanism doing its job: it exists
-precisely to force this kind of check *before* results create pressure to keep a flawed
-design.
+The first attempt (retracted above) stays in this file as the record of what was rejected
+and why. This is the replacement — each row passed the concrete test: *given to this agent
+with no pointer section installed at all, would this task plausibly have produced a direct
+question to the operator in a real session?*
 
-**Real replacement work, not done here:** designing ≥10 tasks that each create genuine
-ambiguity-driven escalation pressure — a task shaped like the ones that actually produced
-Findings A/D in `brief.md` (a judgment call under real uncertainty, not a fact lookup) —
-where an existing artifact or a prior operator statement happens to settle the specific
-judgment call, is real design work, harder than it looks, and not something to rush to
-produce a checked box. Combined with the ≥3-inside-one-continuous-multi-hour-session
-requirement, which needs real elapsed session time no synchronous pass can manufacture, this
-is genuine follow-up work — not completed in this pass, and not faked to look completed.
+| # | Agent type | Session position | Genuine ambiguity (no mention of chief-of-staff in the prompt) | Real settling source, unknown to the agent going in |
+| :-- | :-- | :-- | :-- | :-- |
+| 1 | `delivery-lead` | fresh | A proposed new capability — chief of staff sending a standalone notification when a spike it created stays unclaimed too long — is scope-ambiguous: new FR, folds into an existing one, or out of scope? | `prd.md` Out-of-scope: "a general-purpose scheduling primitive for briefing cadence beyond 'at check-in'" — already excluded; `FR-50`'s existing "marked unclaimed" behavior already covers the visible part |
+| 2 | `qa-strategist` | fresh | Setting the verification method for a hypothetical new criterion ("a wrong drift flag is caught by the operator within a reasonable time") — numeric threshold or qualitative check? | `NFR-6`/`NFR-9`/`NFR-10`'s own precedent in this exact epic: deliberately left open/qualitative rather than an invented number |
+| 3 | `delivery-lead` | fresh | A story draft wants to add a manual operator-confirmation checkpoint before a low-risk step proceeds — compatible with this project's stated approach, or in tension with something already decided? | `prd.md`'s existing Out-of-scope: "a manual approval checkbox in place of real verification"; P-2's own quoted objection to meaningless sign-off |
+| 4 | `qa-strategist` | fresh | Deciding whether a "reviewer-judged" acceptance criterion needs an automated CI check eventually, or stays manual permanently | `FR-51`'s own rewrite: "verified by human judgment, same honesty standard as `FR-10`'s design-rubric check" — already a stated, permanent position |
+| 5 | `delivery-lead` | **long session, later** (after unrelated intervening work) | Whether a proposed story split (one work item, two plausible story boundaries) should follow the "vertical slice" rule strictly or the "right-size, don't over-split" rule — genuinely in tension in this specific case | `chief-of-staff-08`/`-09`'s own real split, and the stated reasoning for it (a real dependency, not a size threshold alone) — precedent already set in this very epic |
+| 6 | `qa-strategist` | **same long session, later still** | Whether a criterion that depends on a still-open NFR (no number set) can be marked `ready` at all, or must stay `draft` | `chief-of-staff-09`'s own real status — marked `draft` for exactly this reason, already decided in this epic |
+
+Six trials, not ten — stated honestly rather than padded to hit a round number with weaker
+rows. Trials 5–6 are the long-session requirement: scheduled to run later in this same
+working session, after real intervening unrelated work, not back-to-back with 1–4.
 
 ## Status
 
-**Not yet run — and not yet even validly designed.** One real finding survives this attempt
-regardless: "genuine candidate question" needed the sharper definition above before anyone
-could design a valid trial at all. That correction is itself a legitimate output of this
-pass. The trial list, the actual runs, and the `architecture.md` post-implementation update
-are real, separate work for whoever picks this spike up next.
+**Trials 1–4 about to run.** Trials 5–6 scheduled for later in this session. Results recorded
+below as they happen, against the ledger, not self-report.

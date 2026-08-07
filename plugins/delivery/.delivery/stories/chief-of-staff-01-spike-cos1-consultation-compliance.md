@@ -263,3 +263,19 @@ judgment call), the ≥10 real trial runs, the ≥3-inside-one-continuous-sessio
 specifically, and `architecture.md`'s post-implementation update. Acceptance criteria for the
 actual measurement remain unchecked. This story stays `ready` (the spec is sound and
 buildable exactly as written) rather than `done` — follow-up work, not this pass's claim.
+
+**Update — 4 real trials run, then found to be unverifiable, then the actual blocker fixed
+at its root.** Trials 1–4 (the redesigned, ambiguity-pressure list) ran for real and each
+returned a well-grounded answer resolved by the agent's own direct research — none showed
+any sign of a `chief-of-staff` consultation. But checking that against the real ledger
+surfaced a bigger problem first: **the ledger had silently stopped recording any Agent-tool
+call at all**, for any subagent, starting partway through this exact session — meaning
+trials 1–4's "no attempt" reading couldn't be trusted; the recorder itself was broken at the
+time they ran. Root-caused, fixed, and tested at its source: see `harden-05`'s own
+Implementation Notes for the full finding — this repo gained a second `.delivery/`
+(`plugins/attractor/.delivery/`) after `harden-05` shipped, and the downward-search
+ambiguity that creates was silently swallowing writes whenever a call's `cwd` resolved above
+`plugins/`. Fixed with a session-continuity tiebreaker (real prior fact, not a guess);
+33/33 tests pass, verified against this real repo and this real session. Trials 1–4 need to
+be re-run now that detection is trustworthy — their answers were real, but their
+classification wasn't verifiable, so they don't count toward the ≥10 yet.
