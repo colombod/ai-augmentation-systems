@@ -1,7 +1,7 @@
 ---
 id: harden-08
 title: "Spike: confirm whether a real terminal-visual-capture tool exists in this environment"
-status: draft
+status: held
 epic: harden
 supersedes: []
 superseded_by: []
@@ -112,8 +112,15 @@ None — can run independently of `harden-09`.
 
 ## Implementation notes
 
-Not yet run. `architecture.md`'s current Spikes table (Spike 6 row) reflects the state as
-of 2026-08-06: real, named candidates identified via research (VHS, `tui_mcp`, and similar
-MCP-era tools purpose-built for driving and capturing TUIs) — none yet confirmed integrated
-or live-fire tested in this environment. `mcp__computer-use__screenshot` of a visible
-terminal panel remains the fallback if a dedicated candidate can't be integrated.
+**Held, 2026-08-06 — product-owner decision, not abandoned.** `/delivery:challenge`'s review
+(`R-phase5-2`, `R-phase5-3`, `R-phase5-5`) found three real, blocking problems with running
+this now: no downstream story anywhere needs a TUI check yet; a tool confirmed in one
+session doesn't ship to other projects installing this plugin (no `.mcp.json`/`mcpServers`
+registration exists); and the named fallback (`mcp__computer-use__screenshot`) is confirmed,
+from this environment's own tool documentation, unable to type into a terminal at all
+(Terminal apps are tier "click" — keystrokes blocked), so it can't satisfy this story's own
+keystroke-driving acceptance criterion. Presented to the product owner directly: hold this
+work until a real TUI need exists, rather than spend real integration effort validating a
+channel nothing in evidence requires yet. **Decision: held.** The research (VHS, `tui_mcp`,
+and similar candidates — see `architecture.md`'s Mechanism 3 extension) stays recorded for
+whenever this is picked up again; nothing here was wasted, it just isn't being acted on now.

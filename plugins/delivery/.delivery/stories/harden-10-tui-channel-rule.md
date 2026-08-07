@@ -1,7 +1,7 @@
 ---
 id: harden-10
 title: Require a real visual capture, not an ANSI-stripped text read, for TUI acceptance verdicts
-status: draft
+status: held
 epic: harden
 supersedes: []
 superseded_by: []
@@ -112,4 +112,8 @@ honesty-path check mirroring `FR-11`'s existing test cases).
 
 ## Implementation notes
 
-Not yet built — blocked on `harden-08`.
+**Held, 2026-08-06 — same product-owner decision as `harden-08`**, whose spike this story
+depends on. Not built, not abandoned — see `harden-08`'s Implementation notes for the full
+reasoning. `qa-strategist.md`'s no-capture-tool honesty path (mirroring `FR-11`'s pattern)
+already covers TUI-visual criteria in the interim: they read **unable to be checked**, which
+is the correct, honest state for as long as this stays held.

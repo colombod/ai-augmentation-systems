@@ -16,6 +16,10 @@
 | :-- | :-- | :-- | :-- |
 | 4 | 4 | 3 | 0 |
 
+**Update, same day:** all 9 findings resolved — presented to the product owner (2 real
+decisions: CLI ledger-cross-check approach, TUI scope), then implemented. See each
+finding's own **Resolution** below. None rejected; none left open.
+
 **Independent convergence:** R-1 (the FR-18 ledger gap) was raised, unprompted, by all
 5 reviewers, each citing the actual code. R-9 (FR-17's undefined "other" surface) was
 raised independently by 2. This is the strongest signal in this review.
@@ -27,7 +31,7 @@ reviewer padded with praise or style notes alone.
 
 ### R-phase5-1 — `FR-18`'s ledger cross-check cannot be built as specified
 
-**Status:** open
+**Status:** fixed
 **Severity:** blocking
 **Raised by:** all 5 reviewers — independently: yes
 
@@ -52,11 +56,19 @@ depending on it — or drop the ledger cross-check from `FR-18`/`harden-09` and 
 honestly as "the reviewer personally re-runs the CLI," a smaller, different, ledger-free
 claim.
 
+**Resolution:** presented to the product owner as a real choice; picked "add a spike
+first." `harden-11` (new story) attempted it for real — live payload confirmation blocked
+by an expired subprocess auth session (real, not retried around); design analysis found no
+safe closed-enum field exists. `harden-09` rescoped to two tiers: direct-observation
+enforcement shipped for real (`qa-strategist.md`, `sprint-review/SKILL.md`); the ledger
+cross-check stays explicitly open, named as debt in `roadmap.md`'s Phase 5 and risk table,
+not silently dropped.
+
 ---
 
 ### R-phase5-2 — TUI capture tools confirmed in one session don't ship to other projects
 
-**Status:** open
+**Status:** fixed
 **Severity:** blocking
 **Raised by:** `solution-architect`
 
@@ -74,11 +86,17 @@ rather than a real defect.
 opt-in (separate setup docs) or scoped only to projects that separately confirm the tool
 — a product-owner/program-manager call, not something to leave implicit.
 
+**Resolution:** presented to the product owner as this finding's real weight, alongside
+R-3/R-5. Decision: hold `harden-08`/`harden-10` entirely rather than resolve the
+ship-vs-install question for work with no confirmed downstream need yet. `harden-08`'s
+Implementation notes and `architecture.md`'s new risk row both record this explicitly for
+whenever the work resumes.
+
 ---
 
 ### R-phase5-3 — The named fallback capture tool cannot drive keystrokes at all
 
-**Status:** open
+**Status:** fixed
 **Severity:** blocking
 **Raised by:** `solution-architect`
 
@@ -96,11 +114,17 @@ fallback for.
 not confirmed) becomes three: full driven capture, static-only fallback capture (with its
 narrower guarantee spelled out), no capture at all.
 
+**Resolution:** this finding was itself one of the three reasons given to the product owner
+for holding TUI work (with R-2/R-5) — the fallback's real inability to drive keystrokes was
+decisive, not incidental. `harden-08`'s AC3 (keystroke-driven capture) stays written as-is
+for whenever this resumes; the three-way branch this finding recommends is deferred with it,
+not built prematurely against work that isn't happening yet.
+
 ---
 
 ### R-phase5-4 — `harden-10`'s "capture confirmed" branch silently assumes an MCP-shaped tool
 
-**Status:** open
+**Status:** fixed
 **Severity:** blocking
 **Raised by:** `delivery-lead`, `solution-architect` — independently: yes
 
@@ -119,11 +143,16 @@ unbuildable as `harden-09`.
 confirmed candidate is MCP-shaped or CLI-binary-shaped, so `harden-10` inherits a real
 answer, not an assumed one.
 
+**Resolution:** moot for now — `harden-08`/`harden-10` are held, so this branch isn't being
+built. Recorded in `architecture.md`'s new risk row so the AC fix this finding recommends
+isn't forgotten if the work resumes; not applied to the story text itself while held, to
+avoid speculatively hardening a plan that isn't being executed.
+
 ---
 
 ### R-phase5-5 — TUI work is sized against the wrong precedent and has no downstream consumer yet
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** `product-owner`, `feature-critic`, `solution-architect` — independently: yes
 
@@ -143,11 +172,15 @@ candidate connects" from the fuller keystroke/capture/comparison work — a prog
 sizing call informed by this comparison. Separately, a product-owner call on whether to
 proceed with TUI work now versus holding it for a real downstream need.
 
+**Resolution:** the product-owner call this finding asked for was made directly: hold.
+Resizing `harden-08` is moot while held — its size only matters once it's picked up again,
+at which point this finding's comparison to `harden-03` should be re-read before re-sizing.
+
 ---
 
 ### R-phase5-6 — Evidence grade isn't disclosed where the requirement is actually read
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** `feature-critic`
 
@@ -164,11 +197,16 @@ exist to catch in *other* documents: the marker isn't in the primary-scanned doc
 `FR-17`–`19`'s row), and one sentence inside `S-5`'s own Preconditions stating this
 trigger hasn't been observed for this persona in either transcript.
 
+**Resolution:** both done. `prd.md`'s Functional Requirements table now has a Grade column
+for every FR, not just `FR-17`–`19` (consistency required grading the whole table, not just
+the new rows). `S-5`'s Preconditions now states the `reported`-grade caveat directly, where
+the requirement is actually read.
+
 ---
 
 ### R-phase5-7 — "MVP extension" reopens a stage already reported closed
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** `feature-critic`
 
@@ -184,11 +222,15 @@ to a stronger evidence base (real brief findings, not one directive).
 **What would resolve it:** give `FR-17`–`19` its own stage number, independent of the
 closed MVP, with its own persona-journey justification.
 
+**Resolution:** `prioritization.md`'s "MVP extension" section is now "Stage 1.5:
+verification channel generalization" — its own number, its own persona-journey note, its
+own status section, separate from the MVP's already-reported verdict.
+
 ---
 
 ### R-phase5-8 — `qa-strategist.md`'s enforcement prose wasn't actually generalized, and `harden-09`'s file pointer is wrong
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** `qa-strategist`, `delivery-lead` — independently: yes
 
@@ -206,11 +248,17 @@ lists. An implementer following the story as written edits the wrong file.
 **What would resolve it:** rewrite the cross-check paragraph itself for CLI/TUI, and
 correct the file pointer to `sprint-review/SKILL.md`, matching `harden-07`'s precedent.
 
+**Resolution:** both done. `qa-strategist.md`'s cross-check paragraph is now split
+per-surface (GUI/CLI/TUI), each with its own real confirmation mechanism stated.
+`sprint-review/SKILL.md`'s trigger wording now covers CLI real-output and TUI rendered-state
+criteria, not just "rendered, visible behavior." `harden-09`'s Files-and-modules table
+points at the two real files this rule actually lives in.
+
 ---
 
 ### R-phase5-9 — `FR-17`'s "or other" surface category is undefined
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** `feature-critic`, `solution-architect` — independently: yes
 
@@ -225,15 +273,24 @@ names as in scope.
 existing honest-fallback pattern ("no channel exists yet" → unable-to-be-checked) by
 default.
 
+**Resolution:** took the second option. `FR-17`'s wording, `S-5`'s edge-path table, and
+`qa-strategist.md`'s channel table all now state that any surface outside GUI/CLI/TUI
+defaults to unable-to-be-checked, matching `FR-11`'s existing honesty pattern rather than
+leaving it undefined.
+
 ## Minor
 
 - **No migration/rollback note, no Risks-register update** for the `FR-17`–`19` extension
   — `architecture.md`'s existing sections cover only the original ledger mechanism.
+  **Fixed:** both sections now have a dedicated note/rows for this extension.
 - **Bash-governance noise, if pursued for R-phase5-1's fix:** ungoverned, `Bash` runs
   hundreds of times per normal session; a blanket matcher widening would flood the
-  git-tracked ledger. Needs its own filtering design, not a blanket fix.
+  git-tracked ledger. Needs its own filtering design, not a blanket fix. **Fixed:** named
+  explicitly as its own risk row in `architecture.md`, and as the reason tier 2 wasn't built
+  blanket — tier 1 (no ledger involvement) shipped instead.
 - **Glossary gap:** "delivery surface"/"surface" (two forms, same new concept) were never
   added to `glossary.md`, unlike `Verification channel`, logged correctly the same session.
+  **Fixed:** `Delivery surface` added, with a curation-log entry.
 
 ## Assumptions worth watching
 

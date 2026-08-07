@@ -230,7 +230,11 @@ projects, where zero-to-one checks ran across sessions lasting days.
 not a rendered GUI.
 **Preconditions:** `S-3`'s rule already requires a real capture for rendered, visible
 behavior — but its own wording and its non-goal both assumed "rendered" means a webpage.
-This scenario is that same rule applied honestly to a different real surface.
+This scenario is that same rule applied honestly to a different real surface. **Grade:
+`reported`, not `observed`** — unlike `S-3`, no CLI/TUI verification failure appears in
+either real transcript studied; this scenario traces to a direct product-owner instruction,
+this session, not a mined incident. Real, but a different, weaker kind of real — see
+`prioritization.md`'s Confidence section.
 
 **Main path**
 
@@ -261,15 +265,21 @@ extended to the surfaces it didn't originally name.
 | TUI criterion checked only by a text read of terminal output (ANSI stripped or not) | Not-met — text alone cannot confirm color, alignment, or layout |
 | No tool in the current environment can produce a real visual capture of a terminal | Verdict states the criterion is unable to be checked, same honesty pattern as `FR-11` — never silently passed |
 | A surface is ambiguous (e.g., a CLI that also renders a TUI mode) | The stricter of the two applicable channel requirements governs |
+| A surface is none of GUI/CLI/TUI (e.g., a library API, a config file) | No channel is defined yet — states unable-to-be-checked by default, same honesty pattern as `FR-11`, rather than an invented ad hoc check |
 
 **Acceptance criteria**
 
 - `FR-17` — a verdict for a governed artifact states which delivery surface applies (GUI,
-  CLI, TUI, or other) and requires the channel matching that surface — a GUI-shaped check is
-  never applied by default to a non-GUI surface.
-- `FR-18` — a CLI-surfaced "met" verdict requires evidence of a real process invocation with
-  observed `stdout`/`stderr`/exit code; a call to the same logic through an internal
-  function, bypassing the actual command entry point, does not satisfy this.
+  CLI, or TUI) and requires the channel matching that surface — a GUI-shaped check is never
+  applied by default to a non-GUI surface. A surface outside these three has no defined
+  channel yet and defaults to unable-to-be-checked, per `FR-11`'s honesty pattern, rather
+  than an agent inventing an ad hoc check for it.
+- `FR-18` — a CLI-surfaced "met" verdict requires the reviewer to have directly observed a
+  real process invocation, with `stdout`/`stderr`/exit code named; a call to the same logic
+  through an internal function, bypassing the actual command entry point, does not satisfy
+  this. A durable, ledger-based cross-check (the same guarantee `FR-9` gets from the
+  invocation ledger) remains an open item — `harden-11`'s spike found no safe way to
+  whitelist a `Bash` call's content without risking a leaked secret.
 - `FR-19` — a TUI-surfaced "met" verdict requires a real visual capture of the rendered
   terminal; a text-only read (ANSI-stripped or otherwise) does not satisfy this and must be
   recorded not-met or unable-to-be-checked, per `FR-11`'s honesty pattern, if no visual
@@ -277,27 +287,27 @@ extended to the surfaces it didn't originally name.
 
 ## Functional requirements
 
-| ID | Requirement | Scenario | Priority |
-| :-- | :-- | :-- | :-- |
-| FR-1 | Every governed artifact gets a stated invoked/not-invoked status | S-1 | must |
-| FR-2 | Not-invoked applies regardless of file-level completeness | S-1 | must |
-| FR-3 | Reconstructed narration-without-invocation case is caught | S-1 | must |
-| FR-4 | Not-invoked is a distinct, scannable marker | S-1 | must |
-| FR-5 | Entirely-unconfirmed-backed decisions never read as plain "ready" | S-2 | must |
-| FR-6 | The marker appears in the primary scanned document | S-2 | must |
-| FR-7 | Mixed evidence does not trigger the marker | S-2 | must |
-| FR-8 | Real elba-dreaming case reproduces the marker | S-2 | should |
-| FR-9 | Rendered-behavior verdicts state their method; text-only reads are not-met | S-3 | must |
-| FR-10 | Visual "met" requires naming a specific rubric rule | S-3 | must |
-| FR-11 | No rubric means criteria stated as unable to be checked, never silently met | S-3 | must |
-| FR-12 | Real elba-dreaming defect reproduces a not-met verdict | S-3 | should |
-| FR-13 | Completion is blocked past a documented check-staleness threshold | S-4 | must |
-| FR-14 | Verdicts record the last self-correction check's timing | S-4 | must |
-| FR-15 | Real elba-dreaming zero-check pattern is caught | S-4 | should |
-| FR-16 | A passed check's findings surface directly in the verdict | S-4 | should |
-| FR-17 | A verdict states which delivery surface applies (GUI/CLI/TUI/other) and requires the matching channel | S-5 | must |
-| FR-18 | CLI "met" requires a real process invocation with observed output, not an internal-logic call | S-5 | must |
-| FR-19 | TUI "met" requires a real visual capture; text-only reads (ANSI-stripped or not) don't satisfy it | S-5 | must |
+| ID | Requirement | Scenario | Priority | Grade |
+| :-- | :-- | :-- | :-- | :-- |
+| FR-1 | Every governed artifact gets a stated invoked/not-invoked status | S-1 | must | observed |
+| FR-2 | Not-invoked applies regardless of file-level completeness | S-1 | must | observed |
+| FR-3 | Reconstructed narration-without-invocation case is caught | S-1 | must | observed |
+| FR-4 | Not-invoked is a distinct, scannable marker | S-1 | must | observed |
+| FR-5 | Entirely-unconfirmed-backed decisions never read as plain "ready" | S-2 | must | observed |
+| FR-6 | The marker appears in the primary scanned document | S-2 | must | observed |
+| FR-7 | Mixed evidence does not trigger the marker | S-2 | must | observed |
+| FR-8 | Real elba-dreaming case reproduces the marker | S-2 | should | observed |
+| FR-9 | Rendered-behavior verdicts state their method; text-only reads are not-met | S-3 | must | observed |
+| FR-10 | Visual "met" requires naming a specific rubric rule | S-3 | must | observed |
+| FR-11 | No rubric means criteria stated as unable to be checked, never silently met | S-3 | must | observed |
+| FR-12 | Real elba-dreaming defect reproduces a not-met verdict | S-3 | should | observed |
+| FR-13 | Completion is blocked past a documented check-staleness threshold | S-4 | must | assumed |
+| FR-14 | Verdicts record the last self-correction check's timing | S-4 | must | assumed |
+| FR-15 | Real elba-dreaming zero-check pattern is caught | S-4 | should | assumed |
+| FR-16 | A passed check's findings surface directly in the verdict | S-4 | should | assumed |
+| FR-17 | A verdict states which delivery surface applies (GUI/CLI/TUI — anything else defaults to unable-to-be-checked) and requires the matching channel | S-5 | must | reported |
+| FR-18 | CLI "met" requires a real process invocation observed directly by the reviewer; a durable ledger cross-check remains open (`harden-11`) | S-5 | must | reported |
+| FR-19 | TUI "met" requires a real visual capture; text-only reads (ANSI-stripped or not) don't satisfy it | S-5 | must | reported |
 
 ## Non-functional requirements
 

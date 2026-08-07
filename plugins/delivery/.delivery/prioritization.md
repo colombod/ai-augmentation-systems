@@ -7,7 +7,9 @@
 > Confidence) for the two observed personas; zero real coverage for the assumed one.
 > **Re-aligned 2026-08-05** per `.delivery/sprints/1-harden-mvp-review.md` (verdict:
 > Accepted with debt, since closed) — see the MVP section below for what changed.
-> **MVP extended 2026-08-06** with FR-17–FR-19 (CLI/TUI channel generalization).
+> **Stage 1.5 added 2026-08-06** (FR-17–FR-19, CLI/TUI channel generalization) — kept
+> separate from the MVP label per `/delivery:challenge`'s review; CLI shipped in two tiers,
+> TUI held. See the Stages section below.
 
 ## Staging rule
 
@@ -95,31 +97,49 @@ a genuine browser-tool failure produced a correctly-logged `PostToolUseFailure`/
 interactive session, not synthesized. Full evidence in `roadmap.md`'s Phase 2/3 sections and
 each story's own Implementation Notes.
 
-### MVP extension: verification channel generalization (added 2026-08-06)
+### Stage 1.5: verification channel generalization (added 2026-08-06)
 
 **Includes:** FR-17–FR-19 (CLI and TUI verification channels).
 
-Not a new stage in the original numbering — this extends the MVP's already-accepted
-verification-channel mechanism (FR-9–FR-12) to surfaces beyond a rendered GUI, per direct
-product-owner direction this session, once the GUI case's own "prove it works first" gate
-(the PRD's original scope decision) was actually met. Graded `reported`, not `observed`,
-in the scoring table above — honestly: no CLI/TUI verification failure exists in either
-transcript studied, unlike the GUI case's direct elba-dreaming evidence. This is a real
-requirement, not a weaker one, but its evidence basis is different and the record should
-say so plainly.
+**Given its own stage number, not folded into the MVP label — a direct fix from
+`/delivery:challenge`'s review (`R-phase5-7`).** The MVP was already reported "Accepted,
+debt closed" before this work existed; quietly extending that same label risked exactly the
+untraceable, moving-target state `S-1`/`FR-1`–`4` exist to catch elsewhere. `FR-13`–`16`
+(Stage 2) got real staging and explicit gating despite tracing to a *stronger* evidence base
+(real brief findings) — this gets the same discipline, not less.
+
+Extends the MVP's already-accepted verification-channel mechanism (`FR-9`–`FR-12`) to
+surfaces beyond a rendered GUI, per direct product-owner direction this session, once the
+GUI case's own "prove it works first" gate (the PRD's original scope decision) was actually
+met. Graded `reported`, not `observed` — honestly: no CLI/TUI verification failure exists in
+either transcript studied, unlike the GUI case's direct elba-dreaming evidence. Real, but a
+different evidence basis, stated plainly rather than rounded up to match `FR-9`–`12`.
+
+**Status, post-`/delivery:challenge` (2026-08-06).** The review found the original plan
+wasn't buildable as scoped (`R-phase5-1`, all 5 reviewers independently) and surfaced real,
+separate problems with the TUI half specifically (`R-phase5-2/3/5`). Presented to the
+product owner directly, two calls made:
+- **CLI (`FR-17`, `FR-18`):** build a spike first (`harden-11`) rather than drop tracking.
+  Result — no safe ledger-based cross-check exists yet (no closed-enum field on `Bash` the
+  way capture tools have `action`; the safe alternatives all cost either real ledger noise
+  or lose precision). **Shipped in two tiers:** direct in-turn observation is required now
+  (real, buildable, done); the durable ledger cross-check stays explicitly open, not
+  silently dropped — recorded as debt, the same pattern as `D-1`/`D-2`.
+- **TUI (`FR-19`):** held. No downstream story anywhere needs a TUI check yet, a tool
+  confirmed in this session doesn't ship to other installs of this plugin, and the named
+  fallback capture tool is confirmed unable to drive keystrokes at all. Revisit when a real
+  TUI need exists rather than spend real integration effort validating an unneeded channel.
 
 **Personas who can complete a journey end to end:** extends the operator who checks in
-periodically's journey (already served for GUI verdicts by FR-9–FR-12) to CLI and TUI
-verdicts on the same terms — trusting a verdict without personally re-running the command
-or eyeballing the terminal.
+periodically's journey (already served for GUI verdicts by `FR-9`–`FR-12`) to CLI verdicts,
+on a narrower basis (direct observation, not a durable ledger record) than the GUI case —
+stated honestly, not claimed as parity it doesn't have yet.
 
 **What this lets us learn:** whether a real visual-capture channel exists for a terminal at
-all (Spike 6, `harden-08`) — genuinely unknown going in, unlike the GUI case where the
-browser tool's existence was never in question.
+all, and whether a real downstream need for one ever appears — both genuinely open, deferred
+rather than answered under pressure to ship something.
 
-**Sequencing:** independent of Stage 2 below — neither blocks the other. The CLI half
-(`harden-09`) has no open dependency and can ship immediately; the TUI half (`harden-10`)
-is blocked on Spike 6's answer.
+**Sequencing:** independent of Stage 2 below — neither blocks the other.
 
 ### Stage 2
 
@@ -152,7 +172,7 @@ used at least once by someone other than this document's own author.
 | M3 | Release | **Done, debt closed** — evidence marker proven; channel/rubric logic built, unit-tested, and now live-fire-confirmed (D-1, D-2 both closed 2026-08-06) | The operator who checks in periodically | FR-5–FR-12 |
 | M4 | Learning | **Active, narrowed** — D-1/D-2 closed opportunistically in this project's own session, not via an external one; M4's actual question (does the reads-only-the-verdict persona show up in real, independent usage) is still open | product-owner | M2, M3 shipped — met; blocked on a real external project to run this on (see `roadmap.md` Phase 4) |
 | M5 | Release | A session cannot report "done" without a real self-correction check behind it | The operator who reads only the verdict, if M4 confirms her | Stage 2 |
-| M6 | Learning | **New, added 2026-08-06** — Spike 6's answer: does a real terminal-visual-capture channel exist at all | solution-architect | Nothing — can run independently, any time |
+| M6 | Learning | **Held, 2026-08-06** — product-owner call: no real downstream need for a TUI check exists yet, so Spike 6 (`harden-08`) isn't being spent on now. Revisit when one does | product-owner | A real project or story that actually needs TUI verification |
 
 ## Confidence
 

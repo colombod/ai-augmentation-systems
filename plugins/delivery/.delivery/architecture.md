@@ -159,7 +159,8 @@ Reworded per QA review where the original phrasing wasn't checkable.
 | 3 | Do `TaskCreated`/`TaskCompleted` mean subagent completion, or the general task-tracking tool? (`SubagentStart`/`SubagentStop` look like the real subagent events per current docs, contradicting the PRD's own earlier assumption) | 0.5 day | Whether the deferred gate can reuse this ledger's event vocabulary unmodified |
 | 4 | Enumerate the concrete capture-tool names used in the elba-dreaming session specifically (not a general taxonomy — matches the PRD's own non-goal against broadening evidence), and confirm a hook can tell a screenshot action apart from other actions on the same tool | 1 day | The matcher list for Mechanism 3; whether `FR-12`'s reproduction actually reproduces |
 | 5 | Confirm a crashing/erroring `PostToolUse` hook cannot silently block the call it observes, verified for this specific event (not assumed from the general docs table) | 0.5 day | Whether the recorder is safe to ship as pure side-channel logging |
-| 6 (added 2026-08-06, refined) | Integrate and confirm one of the real named TUI-driving/capture candidates (VHS, `tui_mcp`, or similar — see Mechanism 3 extension above) end to end in this environment, or confirm none can be integrated and the fallback (`mcp__computer-use__screenshot` of a terminal panel) is what ships instead | 0.5–1 day | `FR-19`'s Mechanism 3 extension; whether TUI verification can ever be more than "unable to be checked" |
+| 6 (added 2026-08-06, held) | Integrate and confirm one of the real named TUI-driving/capture candidates (VHS, `tui_mcp`, or similar — see Mechanism 3 extension above) end to end in this environment, or confirm none can be integrated and the fallback (`mcp__computer-use__screenshot` of a terminal panel) is what ships instead | 0.5–1 day, but `/delivery:challenge` found this likely underestimated against `harden-03`'s own harder-won precedent | `FR-19`'s Mechanism 3 extension; whether TUI verification can ever be more than "unable to be checked" — **not run**, held by product-owner decision (see `roadmap.md` Phase 5) |
+| 7 (added 2026-08-06) | Can a real `Bash`-launched CLI invocation be safely and precisely tracked in the ledger without risking secret leakage? | S, real attempt made | `FR-18`'s durable ledger cross-check — **run, real partial result:** live confirmation blocked by an expired subprocess auth session (real environment constraint, not retried around); design analysis found no safe closed-enum field exists on `Bash` the way capture tools have `action` — the two honest options (hash-and-govern-everything, or presence-only) both cost either ledger noise or discrimination precision. See `harden-11`'s story for the full attempt. `FR-18` ships on direct in-turn observation instead (tier 1); the ledger cross-check (tier 2) stays open |
 
 **Post-implementation update (2026-08-05):** Spikes 1, 2 and 5 were run for real against
 this repository, not just estimated. 5 fresh headless sessions each genuinely invoked the
@@ -201,6 +202,14 @@ already used for personas.
 files are harmless; `/delivery:status` already treats a missing or empty ledger as
 untraceable ("could not check"), so rollback degrades gracefully.
 
+**The `FR-17`–`FR-19` extension (2026-08-06), named explicitly per `/delivery:challenge`'s
+review:** no ledger schema changed and no new tool was integrated this pass, so there is
+nothing new to migrate or roll back — `qa-strategist.md`'s prose changes take effect on
+their next read, the same as any other rule update. If CLI tier 2 (the ledger cross-check)
+is ever built, it will add a new field to the ledger's whitelist; that story must state its
+own forward/back plan when it lands, not inherit this one silently. TUI stays held — no
+tool integrated, nothing to roll back.
+
 ## Test strategy
 
 Risk-based, not uniform — testing at the wrong altitude (a unit test confirming the script
@@ -231,3 +240,6 @@ not a general taxonomy, matching the PRD's non-goal against broadening evidence.
 | Raw `tool_input` leaks file contents or secrets into a git-tracked ledger | Medium if unenforced | High | Whitelist-only extraction is a binding constraint, stated here as non-negotiable | solution-architect |
 | The channel+rubric check, even shared, still depends on `qa-strategist` actually being consulted — an ad hoc check nobody routes through it is still uncovered | Medium | Medium | Named explicitly, not solved here — `/delivery:status` should flag UI-facing criteria with no verification-channel record at all, as a weaker but real backstop | product-owner |
 | The ledger records that real actions happened; it does not prevent narration-without-invocation from occurring for phases other than this mechanism itself — visibility, not prevention | Known, already accepted | Medium | Named in the PRD's own non-goals; the deferred self-correction gate (Stage 2) is the actual prevention mechanism | — |
+| CLI verification (tier 1) depends entirely on the reviewer personally being present to observe the invocation — a `/delivery:sprint-review` checking a claim from a session it wasn't part of has no independent way to confirm it, unlike GUI | Medium | Medium | Named explicitly in `qa-strategist.md`'s own prose ("cannot independently confirm, no cross-check available yet") rather than silently trusted | product-owner |
+| A future fix for CLI tier 2 governs `Bash` calls broadly to solve the discrimination problem, without addressing the noise cost `harden-11` named (hundreds of routine calls per session flooding a git-tracked ledger) | Medium | Medium | Named here so it can't be built as a "quick fix" solving only half the problem `harden-11` actually found | solution-architect |
+| A TUI capture tool, if `harden-08` is ever un-held, gets confirmed in one session but never gets a ship-vs-install answer for other projects installing this plugin (`R-phase5-2`) | Medium, if resumed | Medium | Named now, before it's forgotten by the time this is picked back up | solution-architect |

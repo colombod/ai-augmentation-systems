@@ -44,17 +44,29 @@ real user actually experiences, not the layer that happened to be open when you 
 | GUI / rendered page | A real screenshot | Reading the page's text or accessibility tree |
 | CLI | A real process invocation, with the actual `stdout`/`stderr`/exit code observed | Calling the same logic through an internal function, bypassing the real command boundary |
 | TUI | A real visual capture of the rendered terminal (color, alignment, layout) | A text read of terminal output, ANSI-stripped or not — it cannot show color, alignment, or layout |
+| Anything else (API, config file, library, …) | No channel is defined yet | Do not invent one — state **unable to be checked**, the same honesty pattern as the no-rubric case below |
 
-State which channel was used. Where an invocation ledger exists
-(`.delivery/invocations/*.ndjson`, see `/delivery:status`'s invocation-status check),
-cross-check a claimed capture against it: a stated screenshot with no matching capture-tool
-entry in the ledger is recorded **not met**, not taken on trust. A capture tool call that
-resolved successfully but produced an unreadable, blank, or corrupt image is a separate
-failure the ledger cannot catch by itself — look at the actual capture; a real attempt
-logged is not the same claim as a usable result. If no tool in the current environment is
-confirmed able to produce the real channel a surface needs (for example, no confirmed
-terminal-visual-capture tool for a TUI), say so — the criterion is **unable to be checked**,
-the same honesty pattern as the no-rubric case below, never silently passed.
+State which channel was used, and how it was confirmed — the confirmation mechanism differs
+by surface today, and that difference must be stated honestly, not papered over:
+
+- **GUI:** cross-check a claimed screenshot against the invocation ledger
+  (`.delivery/invocations/*.ndjson`, see `/delivery:status`'s invocation-status check) — a
+  stated screenshot with no matching capture-tool entry in the ledger is recorded
+  **not met**, not taken on trust. A capture tool call that resolved successfully but
+  produced an unreadable, blank, or corrupt image is a separate failure the ledger cannot
+  catch by itself — look at the actual capture; a real attempt logged is not the same claim
+  as a usable result.
+- **CLI:** no ledger cross-check exists yet — `Bash` calls are not currently tracked in the
+  invocation ledger, and a spike (`harden-11`) found no safe way to whitelist a command's
+  content there without risking secret leakage. Confirmation today means **you personally
+  observed the real invocation**, in the same conversation: name the actual tool call, and
+  quote or paraphrase its real `stdout`/`stderr`/exit code. If you are reviewing a claim from
+  a session you were not present for, say so plainly — "cannot independently confirm, no
+  cross-check available yet" — rather than silently trusting the claim or silently implying
+  a ledger check occurred that didn't.
+- **TUI:** if no tool in the current environment is confirmed able to produce a real visual
+  capture, say so — the criterion is **unable to be checked**, the same honesty pattern as
+  the no-rubric case below, never silently passed.
 
 **For visual-quality criteria specifically, the rubric must also be cited, or its absence
 stated.** A "met" verdict for a visual-quality criterion requires citing a specific
