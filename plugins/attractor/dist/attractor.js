@@ -3197,8 +3197,10 @@ function findConvergenceNode(graph, branchRootIds) {
   }
   return best;
 }
-function findPartialReconvergence(graph, branchRootIds, convergenceId) {
+function findPartialReconvergence(graph, branchRootIdsRaw, convergenceId) {
   if (convergenceId === null) return [];
+  const branchRootIds = [...new Set(branchRootIdsRaw)];
+  const rootSet = new Set(branchRootIds);
   const exitIds = new Set(findByHandler(graph, Handler.EXIT).map((n) => n.id));
   const truncatedSets = branchRootIds.map((rootId) => {
     const seen = /* @__PURE__ */ new Set([rootId]);
@@ -3229,7 +3231,7 @@ function findPartialReconvergence(graph, branchRootIds, convergenceId) {
   const downstreamOfConvergence = reachableWithDepth(graph, convergenceId);
   for (const set of truncatedSets) {
     for (const id of set) {
-      if (id === convergenceId || exitIds.has(id)) continue;
+      if (id === convergenceId || exitIds.has(id) || rootSet.has(id)) continue;
       if (downstreamOfConvergence.has(id)) hazards.add(id);
     }
   }
@@ -3984,7 +3986,7 @@ function lint(graph) {
           code: "PAR-002",
           severity: Severity.WARNING,
           node: node.id,
-          message: `node ${node.id} is a parallel fan-out (Handler.PARALLEL) with exactly one outgoing edge, to ${branchRootIds[0]} -- a fan-out of one branch runs no differently than an ordinary edge would, so this is likely not what was intended`
+          message: `node ${node.id} is a parallel fan-out (Handler.PARALLEL) with exactly one distinct successor, ${branchRootIds[0]} -- a fan-out of one branch runs no differently than an ordinary edge would, so this is likely not what was intended`
         });
       } else if (branchRootIds.length >= 2) {
         const convergenceId = findConvergenceNode(graph, branchRootIds);
@@ -4002,7 +4004,7 @@ function lint(graph) {
               code: "PAR-004",
               severity: Severity.ERROR,
               node: node.id,
-              message: `node ${node.id} fans out to ${branchRootIds.join(", ")}, converging on ${convergenceId} -- but ${partial.join(", ")} ${partial.length === 1 ? "is" : "are"} also reachable from two or more of those branches before ${convergenceId}. A node reached this way could be dispatched twice, once per branch that reaches it -- route every branch through a single shared node before ${convergenceId}, or restructure so only ${convergenceId} is shared`
+              message: `node ${node.id} fans out to ${branchRootIds.join(", ")}, converging on ${convergenceId} -- but ${partial.join(", ")} ${partial.length === 1 ? "is" : "are"} also reachable, before ${convergenceId}, either from two or more of those branches or as a shortcut from a single branch into what ${convergenceId} itself leads to. A node reached either way could be dispatched twice -- route every branch through a single shared node before ${convergenceId}, or ensure nothing reachable from ${convergenceId} is also reachable directly from a branch`
             });
           }
         }

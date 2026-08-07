@@ -554,7 +554,7 @@ export function lint(graph: Graph): Diagnostic[] {
           node: node.id,
           message:
             `node ${node.id} is a parallel fan-out (Handler.PARALLEL) with exactly one ` +
-            `outgoing edge, to ${branchRootIds[0]} -- a fan-out of one branch runs no ` +
+            `distinct successor, ${branchRootIds[0]} -- a fan-out of one branch runs no ` +
             `differently than an ordinary edge would, so this is likely not what was intended`,
         })
       } else if (branchRootIds.length >= 2) {
@@ -580,11 +580,12 @@ export function lint(graph: Graph): Diagnostic[] {
               message:
                 `node ${node.id} fans out to ${branchRootIds.join(', ')}, converging on ` +
                 `${convergenceId} -- but ${partial.join(', ')} ` +
-                `${partial.length === 1 ? 'is' : 'are'} also reachable from two or more of ` +
-                `those branches before ${convergenceId}. A node reached this way could be ` +
-                `dispatched twice, once per branch that reaches it -- route every branch ` +
-                `through a single shared node before ${convergenceId}, or restructure so ` +
-                `only ${convergenceId} is shared`,
+                `${partial.length === 1 ? 'is' : 'are'} also reachable, before ${convergenceId}, ` +
+                `either from two or more of those branches or as a shortcut from a single ` +
+                `branch into what ${convergenceId} itself leads to. A node reached either way ` +
+                `could be dispatched twice -- route every branch through a single shared node ` +
+                `before ${convergenceId}, or ensure nothing reachable from ${convergenceId} is ` +
+                `also reachable directly from a branch`,
             })
           }
         }

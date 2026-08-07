@@ -439,3 +439,86 @@ not have a proof this is the last gap** — the same "closed by adversarial re-v
 by a completeness proof" posture as every prior amendment to this ADR. A future independent pass
 finding a fourth shape would not be a surprise; the practice this ADR has now established three
 times running is to fix it via another amendment, not to treat any prior pass as final.
+
+## Amendment (2026-08-07, seventh pass): the sixth pass's own fix introduced a false-positive class — an ordinary rework loop around a fan-out now refuses to lint
+
+**The gap, found by an independent adversarial re-verification of the sixth amendment's
+implementation, within hours of that amendment landing.** Rule (b) above computes
+`downstreamOfConvergence = reachableWithDepth(graph, convergenceId)` — **unbounded**,
+condition-independent reachability, following every outgoing edge including cycles. Nothing
+about that computation stops at, or even acknowledges, the fan-out node or its own branch roots.
+An ordinary rework/retry loop — `combine -> check; check -> fan [label="retry"]` — routes
+`convergenceId`'s own downstream back into the fan-out, and from there into every branch root.
+Once a branch root is in `downstreamOfConvergence`, it is also (trivially) in its own truncated
+set — every root seeds `seen` with itself — so rule (b) flags it. The identical fixture with
+`check -> a` (skipping the fan-out node, going straight back to a root) or `check -> start`
+(looping the entire pipeline) produces the same result. In all three variants, `findPartialReconvergence`
+now returns the branch roots themselves as "partial reconvergence," and PAR-004 refuses a graph
+that has no double-dispatch hazard at all: a repair loop around a parallel stage is this
+codebase's own established, accepted pattern (`NFR-1`'s shared step cap exists precisely to
+bound routing cycles like this one; the README documents rework/retry loops as ordinary), not
+the double-dispatch class this rule exists to refuse.
+
+**Why this was not caught by the sixth amendment's own verification.** Every fixture checked
+there — including the two new hazard shapes it introduced — was acyclic: a DAG from the branch
+roots down through `convergenceId`. `downstreamOfConvergence`'s unboundedness is invisible on
+any acyclic graph, because a node genuinely downstream of `convergenceId` in a DAG can never
+also be upstream of it (a branch root or an ancestor of one). It only surfaces once a cycle
+exists — and the sixth amendment's own worked examples, reasonably, never drew one.
+
+**Why the fix is *excluding roots from rule (b)'s own candidacy*, not bounding
+`downstreamOfConvergence`'s traversal.** The instinctive fix — truncate the convergence-side BFS
+so it cannot walk back into branch territory — was tried first and rejected: truncating only at
+the fan-out node does not close the `check -> a` variant (the cycle never passes through the
+fan-out node at all), and truncating at every branch root *also* stops the BFS from reaching a
+**non-root** node reachable by a second, independent path from post-convergence territory — which
+is a **real** hazard, not a false positive: if a retry edge routes not back to a root but to some
+node `m` a branch's own path already passes through (`a -> m -> combine` and, separately,
+`check -> m`), `m` genuinely can be dispatched once via branch `a`'s own traversal and again via
+the ordinary sequential resume after the loop — `m` is not the fan-out node and re-entering it is
+not "a fresh iteration" the way re-entering the fan-out node is. Bounding the traversal to fix the
+root case would have silently reopened this case. The three confirmed false-positive fixtures
+(`check -> fan`, `check -> a`, `check -> start`) all resolve to hazards **on the branch roots
+themselves** — nothing else. So the fix targets exactly that: **rule (b) never flags a branch
+root as a hazard**, regardless of what `downstreamOfConvergence` (still unbounded, still
+unchanged) contains. This is sound only because a branch root can be reachable from
+`convergenceId` *at all* exclusively via a cycle (in an acyclic region, `convergenceId` is by
+definition downstream of every root, so a root can never also be downstream of it) — root
+membership in `downstreamOfConvergence` is a byproduct of a rework loop, never of a genuine
+same-pass hazard, so excluding it costs nothing rule (b) was ever meant to catch. Rule (a) is
+untouched and keeps catching a **sibling** root reachable from another root's own truncated
+set (Gap 1) — a different, still-real, still-acyclic-compatible hazard this exclusion does not
+touch.
+
+**Decision.** `findPartialReconvergence` deduplicates `branchRootIds` internally (closing a
+separate latent trap the sixth amendment's own review named: the function was silently sensitive
+to a caller passing a duplicate root id, with the one dedup fix living only at the lint.ts call
+site — a future caller, such as `runBranch`, deriving its own root list without repeating that
+dedup would silently disagree with lint). Rule (b)'s per-set candidate loop gains one more
+exclusion, alongside `convergenceId` and the graph's EXIT node: any id present in the (now
+deduplicated) `branchRootIds` set. Rule (a) is unchanged. `downstreamOfConvergence` itself is
+unchanged — still `reachableWithDepth(graph, convergenceId)`, still unbounded — the fix is
+narrowly in what rule (b) is willing to flag from it.
+
+**PAR-004's own diagnostic message is also corrected in this pass**, for an unrelated reason the
+same review surfaced: the message text asserted the pre-sixth-amendment, intersection-only
+explanation ("reachable from two or more of those branches") for every flagged node, which
+became flatly false for a Gap-2-only hazard (reachable from exactly one branch, via rule (b)) —
+an author reading the refusal could verify the stated reason against their own graph and find it
+untrue, and the printed remedy did not address the actual hazard. The message now states the
+disjunction accurately rather than asserting one specific mechanism.
+
+**Consequences (this amendment specifically).** **We gain:** an ordinary rework/retry loop
+around a parallel fan-out no longer trips a false PAR-004 refusal — restoring the acyclic-only
+assumption every one of this rule's own fixtures, before this pass, happened to rely on without
+stating it. Internal deduplication of `branchRootIds` also closes a call-site trap this function's
+only current caller (lint.ts) already avoided by luck of having been written carefully, not by
+the function's own contract. **We accept:** rule (b) is now stated as "a single branch's shortcut
+into `convergenceId`'s downstream, **excluding the branch's own root and every sibling root**" —
+one more qualifier than the sixth amendment's own wording, and one this ADR did not anticipate
+needing. **We still do not have a proof this is the last gap**, now for the fourth time running —
+this amendment closes the exact three variants an independent adversarial pass constructed and
+verified against the real implementation, not every conceivable cyclic topology. A pipeline
+author drawing a rework loop that reaches a **non-root** node two ways (the `m` case reasoned
+about above) is, correctly, still refused — that was checked explicitly as part of this pass, not
+assumed.

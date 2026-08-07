@@ -535,7 +535,9 @@ export function findConvergenceNode(graph: Graph, branchRootIds: readonly string
  * (b) reachable from a SINGLE branch root without crossing `convergenceId` first, where that
  *     same node is also reachable (ordinary, untruncated) from `convergenceId` itself -- the
  *     resumed main run walks forward from there and can re-dispatch what a branch already
- *     shortcut its way into. Does not require a second branch to corroborate it.
+ *     shortcut its way into. Does not require a second branch to corroborate it. Never flags a
+ *     branch root itself -- a root can only be "downstream of convergenceId" via a cycle back
+ *     through the fan-out (an ordinary rework/retry loop), never an acyclic same-pass hazard.
  *
  * The graph's real EXIT node is excluded from both: Handler.EXIT is a PassthroughHandler that
  * genuinely writes nothing, so a second dispatch has no observable effect. A branch reaching
@@ -547,10 +549,16 @@ export function findConvergenceNode(graph: Graph, branchRootIds: readonly string
  */
 export function findPartialReconvergence(
   graph: Graph,
-  branchRootIds: readonly string[],
+  branchRootIdsRaw: readonly string[],
   convergenceId: string | null,
 ): string[] {
   if (convergenceId === null) return []
+  // Defensive: a caller passing a duplicate root id (lint.ts already dedupes
+  // its own call, but this function has no way to enforce that on a future
+  // caller such as p5-05's runBranch) must not silently double-count a
+  // branch against itself in rule (a) below.
+  const branchRootIds = [...new Set(branchRootIdsRaw)]
+  const rootSet = new Set(branchRootIds)
   const exitIds = new Set(findByHandler(graph, Handler.EXIT).map((n) => n.id))
 
   const truncatedSets = branchRootIds.map((rootId) => {
@@ -588,10 +596,17 @@ export function findPartialReconvergence(
 
   // (b) a single branch's shortcut into territory the resumed main run will
   // also walk, downstream of convergenceId (ADR-007's sixth amendment, Gap 2).
+  // Branch roots are excluded here (ADR-007's seventh amendment): a root can
+  // only be "downstream of convergenceId" via a cycle back through the
+  // fan-out (an ordinary, already-accepted rework/retry loop -- NFR-1's step
+  // cap bounds it, not this rule), never via an acyclic same-pass hazard --
+  // convergenceId is by definition downstream of every root, so a root can
+  // only be downstream of IT via a loop. A non-root node reached the same
+  // way is a genuine hazard and stays flagged.
   const downstreamOfConvergence = reachableWithDepth(graph, convergenceId)
   for (const set of truncatedSets) {
     for (const id of set) {
-      if (id === convergenceId || exitIds.has(id)) continue
+      if (id === convergenceId || exitIds.has(id) || rootSet.has(id)) continue
       if (downstreamOfConvergence.has(id)) hazards.add(id)
     }
   }

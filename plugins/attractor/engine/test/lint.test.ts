@@ -2010,6 +2010,88 @@ test('findPartialReconvergence: the graph\'s real EXIT node never contributes a 
   )
 })
 
+test('findPartialReconvergence: an ordinary rework loop back to the fan-out node is not a false hazard', () => {
+  // A ...-> check -> fan (retry) loop routes convergenceId's own downstream
+  // back into the fan-out and its branch roots -- an ordinary, already-
+  // accepted repair pattern (NFR-1's step cap bounds routing cycles like
+  // this one), not a double-dispatch hazard. ADR-007's seventh amendment.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]  b [shape=box]
+    combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> combine
+    fan -> b -> combine
+    combine -> check
+    check -> fan [label="retry"]
+    check -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId), [])
+})
+
+test('findPartialReconvergence: a rework loop straight back to a branch root is not a false hazard', () => {
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]  b [shape=box]
+    combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> combine
+    fan -> b -> combine
+    combine -> check
+    check -> a [label="retry"]
+    check -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId), [])
+})
+
+test('findPartialReconvergence: a rework loop back to the graph start is not a false hazard', () => {
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]  b [shape=box]
+    combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> combine
+    fan -> b -> combine
+    combine -> check
+    check -> start [label="retry"]
+    check -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId), [])
+})
+
+test('findPartialReconvergence: a rework loop into a genuinely shared non-root node is still flagged', () => {
+  // Contrast with the three tests above: this retry edge does NOT go back to
+  // a root or the fan-out node -- it reaches `m`, a node branch `a`'s own
+  // path already passes through. `m` is not "a fresh iteration of the
+  // fan-out"; it is the same double-dispatch hazard this rule exists to
+  // catch, reached by a second, independent path. Proves the root exclusion
+  // above does not overreach into hiding a real hazard.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]  b [shape=box]  m [shape=box]
+    combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> m -> combine
+    fan -> b -> combine
+    combine -> check
+    check -> m
+    check -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(
+    findPartialReconvergence(g, ['a', 'b'], convergenceId),
+    ['m'],
+    'm is reachable from branch a AND from a second, independent path through check -- a real hazard, not a rework loop',
+  )
+})
+
 // ---------------------------------------------------------------------------
 // PAR-001 / PAR-002 / PAR-004: Handler.PARALLEL fan-out shape, reusing
 // findConvergenceNode/findPartialReconvergence above. Co-fire with HAND-001
@@ -2183,4 +2265,27 @@ test('PAR-002 fires (not PAR-004) on two differently-labelled edges to the same 
   assert.ok(diags.some((d) => d.code === 'PAR-002'), 'a single distinct target is a one-branch fan-out regardless of edge count')
   assert.ok(!diags.some((d) => d.code === 'PAR-001'))
   assert.ok(!diags.some((d) => d.code === 'PAR-004'))
+})
+
+test('findPartialReconvergence: is defensively insensitive to a caller passing a duplicate root id', () => {
+  // lint.ts already dedupes branchRootIds before calling this function --
+  // this test calls the function directly with a duplicate, bypassing that,
+  // to prove the function no longer trusts its caller to have deduped.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]  p [shape=box]  combine [shape=box]
+    start -> fan
+    fan -> r1 -> p
+    fan -> r1 -> combine
+    fan -> r2 -> combine
+    p -> combine
+    combine -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['r1', 'r1', 'r2'])
+  assert.deepEqual(
+    findPartialReconvergence(g, ['r1', 'r1', 'r2'], convergenceId),
+    [],
+    'a duplicated root id must not inflate rule (a)\'s cross-branch count against itself',
+  )
 })
