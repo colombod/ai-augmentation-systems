@@ -2092,6 +2092,67 @@ test('findPartialReconvergence: a rework loop into a genuinely shared non-root n
   )
 })
 
+test('findPartialReconvergence: a rework loop stays a non-hazard even when a branch has an intermediate node (ADR-007 eighth amendment)', () => {
+  // Round 2's own three rework-loop tests all used branches exactly one node
+  // long (fan -> a -> combine), which cannot distinguish "exclude the root"
+  // from "exclude the root and everything reachable only via the loop
+  // through it" -- both pass identically on a degenerate single-node branch.
+  // This adds one ordinary node (n) to branch a's own path -- the exact
+  // shape an independent review found round 2's fix did not actually close.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]  n [shape=box]  b [shape=box]
+    combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> n -> combine
+    fan -> b -> combine
+    combine -> check
+    check -> fan [label="retry"]
+    check -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(
+    findPartialReconvergence(g, ['a', 'b'], convergenceId),
+    [],
+    'n is reached only by walking the rework loop back through root a -- not a real hazard',
+  )
+})
+
+test('findPartialReconvergence: a rework loop straight to a root is a non-hazard even with an intermediate node past it', () => {
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]  n [shape=box]  b [shape=box]
+    combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> n -> combine
+    fan -> b -> combine
+    combine -> check
+    check -> a [label="retry"]
+    check -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a', 'b'])
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId), [])
+})
+
+test('findPartialReconvergence: a rework loop to graph start is a non-hazard with both branches multi-node', () => {
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a1 [shape=box]  a2 [shape=box]  b1 [shape=box]  b2 [shape=box]
+    combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a1 -> a2 -> combine
+    fan -> b1 -> b2 -> combine
+    combine -> check
+    check -> start [label="retry"]
+    check -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a1', 'b1'])
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['a1', 'b1'], convergenceId), [])
+})
+
 // ---------------------------------------------------------------------------
 // PAR-001 / PAR-002 / PAR-004: Handler.PARALLEL fan-out shape, reusing
 // findConvergenceNode/findPartialReconvergence above. Co-fire with HAND-001

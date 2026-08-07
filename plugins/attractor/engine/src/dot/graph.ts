@@ -496,9 +496,10 @@ function reachableWithDepth(graph: Graph, startId: string): Map<string, number> 
  * edges regardless of condition truth. Shallowest common descendant wins
  * ties, ranked by the FURTHEST root's distance to it (its own worst case);
  * the exact tie-break among equally-shallow candidates is otherwise
- * unspecified -- safe because `findPartialReconvergence` refuses every graph
- * where a tie would matter (ADR-007's amendment). `null` if branches never
- * reconverge.
+ * unspecified -- `findPartialReconvergence` is what actually closes the
+ * hazard a tie could create (ADR-007's amendments; the ADR itself does not
+ * claim this is proven complete, only adversarially re-verified as of its
+ * most recent amendment). `null` if branches never reconverge.
  */
 export function findConvergenceNode(graph: Graph, branchRootIds: readonly string[]): string | null {
   if (branchRootIds.length === 0) return null
@@ -533,11 +534,14 @@ export function findConvergenceNode(graph: Graph, branchRootIds: readonly string
  *     root is only excluded from *convergence-node selection* in findConvergenceNode -- a
  *     different question).
  * (b) reachable from a SINGLE branch root without crossing `convergenceId` first, where that
- *     same node is also reachable (ordinary, untruncated) from `convergenceId` itself -- the
- *     resumed main run walks forward from there and can re-dispatch what a branch already
- *     shortcut its way into. Does not require a second branch to corroborate it. Never flags a
- *     branch root itself -- a root can only be "downstream of convergenceId" via a cycle back
- *     through the fan-out (an ordinary rework/retry loop), never an acyclic same-pass hazard.
+ *     same node is also reachable from `convergenceId` itself via a walk that does not expand
+ *     past any branch root (ADR-007's eighth amendment -- truncated, not the plain untruncated
+ *     reachability the sixth amendment first used, which a rework loop could walk back through
+ *     the fan-out to defeat). The resumed main run walks forward from convergenceId and can
+ *     re-dispatch what a branch already shortcut its way into; does not require a second branch
+ *     to corroborate it. Never flags a branch root itself -- a root can only be "downstream of
+ *     convergenceId" via a cycle back through the fan-out (an ordinary rework/retry loop), never
+ *     an acyclic same-pass hazard.
  *
  * The graph's real EXIT node is excluded from both: Handler.EXIT is a PassthroughHandler that
  * genuinely writes nothing, so a second dispatch has no observable effect. A branch reaching
@@ -596,14 +600,37 @@ export function findPartialReconvergence(
 
   // (b) a single branch's shortcut into territory the resumed main run will
   // also walk, downstream of convergenceId (ADR-007's sixth amendment, Gap 2).
-  // Branch roots are excluded here (ADR-007's seventh amendment): a root can
-  // only be "downstream of convergenceId" via a cycle back through the
-  // fan-out (an ordinary, already-accepted rework/retry loop -- NFR-1's step
-  // cap bounds it, not this rule), never via an acyclic same-pass hazard --
-  // convergenceId is by definition downstream of every root, so a root can
-  // only be downstream of IT via a loop. A non-root node reached the same
-  // way is a genuine hazard and stays flagged.
-  const downstreamOfConvergence = reachableWithDepth(graph, convergenceId)
+  // downstreamOfConvergence is truncated at branch roots -- added to the set
+  // when reached, but not expanded past, the same "does not expand past X"
+  // convention the per-branch truncated sets already use for convergenceId
+  // itself. Without this truncation, a rework/retry loop back into the
+  // fan-out (an ordinary, already-accepted pattern -- NFR-1's step cap bounds
+  // it, not this rule) drags every node in every branch, not just the roots,
+  // into this set -- ADR-007's eighth amendment, correcting the seventh
+  // amendment's own incomplete fix. Rule (b)'s candidate-side root exclusion
+  // below is still needed for the degenerate case where a root itself ends
+  // up a (truncated, unexpanded) member of this set via the same cycle.
+  const downstreamOfConvergence = (() => {
+    const seen = new Set<string>()
+    const queue: string[] = []
+    for (const e of outgoingEdges(graph, convergenceId)) {
+      if (!seen.has(e.to)) {
+        seen.add(e.to)
+        queue.push(e.to)
+      }
+    }
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      if (rootSet.has(cur)) continue // do not expand past a branch root
+      for (const e of outgoingEdges(graph, cur)) {
+        if (!seen.has(e.to)) {
+          seen.add(e.to)
+          queue.push(e.to)
+        }
+      }
+    }
+    return seen
+  })()
   for (const set of truncatedSets) {
     for (const id of set) {
       if (id === convergenceId || exitIds.has(id) || rootSet.has(id)) continue

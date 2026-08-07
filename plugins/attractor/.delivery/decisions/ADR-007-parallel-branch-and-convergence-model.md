@@ -522,3 +522,87 @@ verified against the real implementation, not every conceivable cyclic topology.
 author drawing a rework loop that reaches a **non-root** node two ways (the `m` case reasoned
 about above) is, correctly, still refused — that was checked explicitly as part of this pass, not
 assumed.
+
+## Amendment (2026-08-07, eighth pass): the seventh pass's own fix was incomplete, and its rejection rationale was itself wrong
+
+**The gap, found within hours by an independent adversarial re-verification of the seventh
+amendment's implementation.** The seventh amendment's fix — excluding branch roots from rule
+(b)'s candidacy — only closes the false-positive class for the degenerate case where a branch
+**is** its root: `fan -> a -> combine`, nothing between `a` and `convergenceId`. All three of the
+seventh amendment's own regression fixtures happen to be exactly this shape. Give branch `a` one
+ordinary extra step — `fan -> a -> n -> combine`, adding nothing conceptually new to the graph —
+and the identical false refusal returns: `downstreamOfConvergence` (still unbounded, still
+cycle-following, exactly as the seventh amendment specified) walks `combine -> check -> fan -> a
+-> n`, and `n` is not a root, so the seventh amendment's own exclusion does not touch it. `n` is
+flagged, PAR-004 refuses the graph, and nothing about this is different in kind from what the
+seventh amendment set out to close — it is the same rework loop, on a branch one node longer.
+Confirmed by reproducing all three of the seventh amendment's own named variants (`check ->
+fan`, `check -> a`, `check -> start`) with a two-node branch substituted for the one-node branch
+in each: every one refuses the graph.
+
+**Why the seventh amendment's own tests could not have caught this — and did not even
+discriminate the fix from the bug.** Every regression fixture that amendment added uses
+single-node branches, where `{the branch root}` and `{everything in the branch's own truncated
+set except convergenceId}` are the same one-element set. Excluding roots from candidacy and
+excluding *the entire branch* from candidacy are, on those fixtures, indistinguishable — the
+tests pass identically whether the implementation is "exclude the root" (what shipped, still
+broken for longer branches) or "exclude the root and everything only reachable via a rework loop
+through it" (what was actually needed). The amendment's own added contrast test — reaching a
+shared non-root node `m` via `check -> m`, a path that never passes through any root — also could
+not have distinguished the two implementations, because `m` is unaffected by either. A regression
+test for a rework-loop false positive only has teeth once at least one branch has an intermediate
+node between its root and `convergenceId`.
+
+**The seventh amendment's own rejection rationale, re-examined, does not hold up either.** It
+rejected "truncate the convergence-side BFS at branch roots" (the fix this amendment adopts) on
+the stated ground that doing so "also stops the BFS from reaching a non-root node reachable by a
+second, independent path" — citing the `m` fixture as what would be silently reopened. That claim
+is not true of the `m` fixture as drawn: `m`'s second path is `check -> m` directly, which never
+passes through any branch root, so a BFS from `convergenceId` that stops *at* roots (without
+excluding them, exactly the same "does not expand past" convention this file's own truncated
+per-branch sets already use for `convergenceId` itself) reaches `m` completely unaffected. The
+seventh amendment's author — the same author writing this one — reasoned about the shape of the
+rejected alternative without actually tracing it against the fixture used to justify rejecting
+it. This is recorded plainly because a later reader comparing this ADR's two most recent
+amendments needs to know the earlier one's stated reason for its choice was wrong, not merely
+that the choice itself needed revising.
+
+**Decision.** `downstreamOfConvergence` is no longer `reachableWithDepth(graph, convergenceId)`
+(unbounded). It is now computed by the same truncated-BFS shape every other reachable set in this
+function already uses — seeded from `convergenceId`'s own outgoing edges, expanding normally,
+except that a node in `branchRootIds` is added to the set but **not expanded past** (the
+identical "does not expand past X" convention the per-branch truncated sets already apply to
+`convergenceId`, now applied symmetrically to `downstreamOfConvergence` and branch roots). A
+branch root can therefore still appear as a *member* of `downstreamOfConvergence` (reached via a
+rework-loop cycle) without dragging anything past it into the set — closing exactly the gap the
+seventh amendment's own rejected alternative would have closed, correctly this time, verified
+against a branch with an intermediate node rather than only against single-node branches. Rule
+(b)'s own candidate-side exclusion of branch roots (the seventh amendment's fix) is **retained**,
+not replaced — it is still needed for the degenerate case where a root itself ends up a member of
+the (now-truncated) `downstreamOfConvergence` set via the cycle, and remains sound for the
+identical reason the seventh amendment gave: a root can only be downstream of `convergenceId` via
+a cycle, never an acyclic same-pass hazard.
+
+Two more items from this same review land in this pass since they are corrections to the same
+area: `findPartialReconvergence`'s own regression suite gains fixtures with a genuine intermediate
+node in the retry-looped branch (closing the "these tests can't discriminate the fix from the
+bug" finding above), and PAR-004's README description is extended to name the root-exclusion
+qualifier explicitly, since the seventh amendment's own README rewrite described rule (b) without
+mentioning it.
+
+**Consequences (this amendment specifically).** **We gain:** the false-positive class the seventh
+amendment set out to close is now actually closed for branches of any length, not only single-node
+ones — proven against fixtures constructed specifically to distinguish the two implementations,
+not merely re-run against the prior amendment's own (structurally incapable of discriminating)
+fixtures. **We accept:** `downstreamOfConvergence` is no longer a plain, general-purpose
+"everything reachable from X" computation shared in spirit with `reachableWithDepth` — it is now
+its own bespoke truncated BFS, adding a fourth near-identical inlined BFS shape to this one
+function (the per-branch truncated sets are the other three, effectively; the two are similar
+enough to invite extracting a shared helper in a future pass, not attempted here to keep this
+amendment's diff to exactly what closes the finding). **We still do not have a proof this is the
+last gap**, now for the fifth time — and this time the practice this ADR has repeatedly stated
+("closed by adversarial re-verification, not a completeness proof") is not a formality: the
+seventh amendment believed, in writing, that it had closed the class this amendment reopens, and
+was wrong within the same review cycle. Future changes to this function should treat "verified
+against the fixtures on hand" as exactly that and no more, regardless of how confident the
+accompanying prose sounds — including this amendment's own.

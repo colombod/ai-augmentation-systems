@@ -3228,7 +3228,27 @@ function findPartialReconvergence(graph, branchRootIdsRaw, convergenceId) {
   for (const [id, count] of counts) {
     if (count >= 2) hazards.add(id);
   }
-  const downstreamOfConvergence = reachableWithDepth(graph, convergenceId);
+  const downstreamOfConvergence = (() => {
+    const seen = /* @__PURE__ */ new Set();
+    const queue = [];
+    for (const e of outgoingEdges(graph, convergenceId)) {
+      if (!seen.has(e.to)) {
+        seen.add(e.to);
+        queue.push(e.to);
+      }
+    }
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      if (rootSet.has(cur)) continue;
+      for (const e of outgoingEdges(graph, cur)) {
+        if (!seen.has(e.to)) {
+          seen.add(e.to);
+          queue.push(e.to);
+        }
+      }
+    }
+    return seen;
+  })();
   for (const set of truncatedSets) {
     for (const id of set) {
       if (id === convergenceId || exitIds.has(id) || rootSet.has(id)) continue;
