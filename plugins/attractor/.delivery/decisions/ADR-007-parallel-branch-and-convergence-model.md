@@ -865,43 +865,87 @@ empirically, is exactly the shape every confirmed rework-loop leak takes, since 
 edge always arrives at a branch root by way of intervening structure (`check`, `combine`, the
 fan-out node, or some other node) — is truncated the same way the fan-out node already is.
 
-**Named limitation — and, checked honestly against the code this amendment replaces, a real
+**Named limitation 1 — and, checked honestly against the code this amendment replaces, a real
 regression, not merely an untested gap.** This heuristic is not fully general. A pipeline author
 could draw a *legitimate*, retry-free, multi-hop forward chain between two branch roots
-(`root1 -> mid -> root2 -> shared`, no cycle anywhere) — a pattern no existing test exercised
-before this amendment, and this ADR has no evidence any real pipeline uses. The tenth amendment's
-own code (fan-out-node truncation only, no other-root truncation) **correctly resolved this exact
-shape to `shared`** — verified directly, by running the pre-amendment implementation against this
-fixture rather than assuming its prior behavior. This amendment's own heuristic cannot distinguish
-that shape from a rework-loop leak and now returns `null` instead. **This is a deliberate trade,
-not an oversight discovered after the fact: a heuristic precise enough to close the confirmed,
-reproducible, real bug this amendment exists to fix (a false PAR-004 refusal that can and does
-occur, verified across 21 fixtures) cannot also preserve a shape that happens to look identical to
-that bug from a pure hop-count perspective — and no version of `findConvergenceNode` across any of
-this ADR's eleven amendments has ever had a principled way to tell the two apart (the two rejected
-designs earlier in this amendment were rejected for exactly that reason).** The failure direction
-matters: `null` triggers PAR-001, a **refusal** — loud, visible, safe. It is not a missed hazard,
-not a wrongly-selected convergence node, and not a silently-accepted graph that later corrupts
-data. This is the same safe-failure-direction tradeoff this whole feature already accepts
-everywhere else (a lint rule that over-refuses a graph that would have been fine at runtime, never
-one that under-refuses a graph that would not have been) — but unlike every other instance of that
-tradeoff in this ADR, this one knowingly takes away previously-correct behavior rather than merely
-declining to add new coverage. If a real pipeline ever needs a genuine multi-hop root-to-root
-forward chain, this heuristic will need to be revisited — named here, with its true cost stated
-plainly, so that need is recognized immediately rather than re-discovered as a fresh incident, and
-so a future reader does not mistake "no test exercised it" for "nothing depended on it."
+(`root1 -> mid -> root2 -> shared`, no cycle anywhere — `mid` being a non-root intermediate node is
+incidental to the worked example, not a requirement: any chain two or more hops long between two
+roots hits the same truncation, with or without an intervening node) — a pattern no existing test
+exercised before this amendment, and this ADR has no evidence any real pipeline uses. The tenth
+amendment's own code (fan-out-node truncation only, no other-root truncation) **correctly resolved
+this exact shape to `shared`** — verified directly, by running the pre-amendment implementation
+against this fixture rather than assuming its prior behavior. This amendment's own heuristic cannot
+distinguish that shape from a rework-loop leak and now returns `null` instead. **This is a
+deliberate trade, not an oversight discovered after the fact: a heuristic precise enough to close
+the confirmed, reproducible, real bug this amendment exists to fix (a false PAR-004 refusal that
+can and does occur, verified across 21 fixtures) cannot also preserve a shape that happens to look
+identical to that bug from a pure hop-count perspective — and no version of `findConvergenceNode`
+across any of this ADR's eleven amendments has ever had a principled way to tell the two apart (the
+two rejected designs earlier in this amendment were rejected for exactly that reason).** The
+failure direction matters: `null` triggers PAR-001, a **refusal** — loud, visible, safe. It is not
+a missed hazard and not a silently-accepted graph that later corrupts data (verified: an
+independent adversarial pass differential-fuzzed roughly 240,000 graphs against the pre-amendment
+implementation and found zero cases where this amendment's code accepts a graph the prior code
+refused, or accepts a graph at all where a wrongly-selected node coexists with acceptance — every
+divergence is refusal-to-refusal). It *can*, however, still select a **different, non-null,
+wrongly-selected convergence node** on some other retry-free acyclic graph in this same shape
+family, rather than `null` specifically — the claim that this heuristic degrades only to `null`
+was itself an overstatement in this amendment's first draft, caught by the same review that is
+catching this correction. The graph is still refused in that case too (PAR-004 fires, naming the
+wrong node), which is why the safety property survives even though the earlier, narrower phrasing
+of it did not.
+
+**End-to-end, this regression is smaller than the function-level description makes it sound —
+today, but not permanently.** `findConvergenceNode`'s only caller is `lint.ts`'s PAR-001/PAR-004
+check. For the named fixture specifically, the pre-amendment code already refused the graph too —
+`findConvergenceNode` returned `shared`, but `findPartialReconvergence` then correctly flagged
+`root2` under the sixth amendment's own Gap-1 rule (a root reachable from a sibling root's own
+path is a hazard), so `lint()` emitted `PAR-004` before this amendment and emits `PAR-001` after
+it. Only the error code changes, not whether the graph is accepted — confirmed by the same
+240,000-graph differential: not one previously-accepted graph became refused. This makes the
+practical cost of the regression smaller than "a working pipeline now fails" would suggest. It
+does not make the regression disappear: `findConvergenceNode` itself is wrong on this input, and
+`p5-05`'s `runBranch` (not yet built) is a second, future caller — once it exists, whether this
+regression stays this cheap depends on what that caller does with a `null` or a wrong `convergenceId`,
+which is not yet decided. The function-level framing above is kept for that reason, not out of
+excess caution.
+
+**Named limitation 2 — found one review cycle after limitation 1, by the same kind of check this
+ADR keeps needing to re-apply to itself.** The truncation this amendment adds covers a retry edge
+targeting the fan-out node (ninth amendment) and a retry edge targeting a *branch root* directly
+(this amendment). It does **not** cover a retry edge targeting an ordinary **non-root, in-branch
+node** directly — a third retry-edge-target shape this codebase's own test suite has carried since
+the third amendment (`'findPartialReconvergence: a rework loop into a genuinely shared non-root
+node is still flagged'`), always with a short (2-node) branch, so the same asymmetric-length leak
+this amendment closes for roots was never exercised for this shape and was still present,
+unnoticed, when this amendment's own "closed for the general case" claim was first written below.
+Lengthening that test's branch reproduces the identical bug: `findConvergenceNode` returns a
+mid-branch node instead of the real convergence node. Verified directly (not merely asserted) that
+this, too, fails safely: `lint()` still emits `PAR-004` at `ERROR` on the reproduced fixture — the
+message names the wrong node and gives unhelpful remediation advice, but the graph is still
+refused, never silently accepted. This gap is **not closed by this amendment** and is left for a
+future pass rather than chased further here, for the same reason the earlier two rejected designs
+were abandoned: every fix attempted so far for one retry-edge-target shape has needed independent,
+from-scratch verification against the other two, and this investigation has already required six
+rounds of a five-round process to get the *root*-targeting case right. Closing all three shapes
+with one, provably general mechanism is future work, tracked here rather than attempted under
+continued time pressure.
 
 **Consequences (this amendment specifically).** **We gain:** the asymmetric-rework-loop class of
-false PAR-004 refusal is now closed for the general case (any retry-edge target: the fan-out
-node, or any branch root, through any branch length, at any root count) — the case verified false
-in this pass alongside every fixture from all ten prior amendments, twenty-one fixtures total, all
-passing under one implementation. **We accept:** a narrow, named, safe-direction limitation
-(multi-hop retry-free root chains) in exchange for a fix simple enough to state, verify, and
-review in one pass, rather than continuing to search for a fully general graph-theoretic
-treatment this investigation twice found to be genuinely harder than it first appeared. **We
-explicitly reframe this whole line of work**: PAR-001/PAR-004's interaction with rework loops
-around a parallel fan-out is this project's own doctrine extension, built because a real,
-demonstrated incident (originally F1; now, additionally, a false-refusal class neither the spec
-nor its reference implementation would have caught) justified it — not a deviation from
-established attractor discipline, because no such established discipline exists for this
-scenario. **We still do not have a proof this is the last gap**, now for the eighth time.
+false PAR-004 refusal is closed for two of its three known retry-edge-target shapes (the fan-out
+node, and any branch root — through any branch length, at any root count) — verified in this pass
+alongside every fixture from all ten prior amendments, twenty-one fixtures total, all passing under
+one implementation. **We do not yet close it for the third shape** (a retry targeting an ordinary
+non-root, in-branch node) — named limitation 2, above; the original text here claimed the class was
+closed "for the general case," which was false the moment it was written and is corrected by this
+same revision. **We accept:** two narrow, named, safe-direction limitations (multi-hop retry-free
+root chains; non-root retry targets on long branches) in exchange for a fix simple enough to state,
+verify, and review in bounded passes, rather than continuing to search for a fully general
+graph-theoretic treatment this investigation three times found to be genuinely harder than it first
+appeared. **We explicitly reframe this whole line of work**: PAR-001/PAR-004's interaction with
+rework loops around a parallel fan-out is this project's own doctrine extension, built because a
+real, demonstrated incident (originally F1; now, additionally, two false-refusal classes neither
+the spec nor its reference implementation would have caught) justified it — not a deviation from
+established attractor discipline, because no such established discipline exists for this scenario.
+**We still do not have a proof this is the last gap**, now for the ninth time, and — for the first
+time stated this plainly — we know of a specific, named, not-yet-closed one.

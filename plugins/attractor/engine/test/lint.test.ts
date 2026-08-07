@@ -2379,17 +2379,23 @@ test('findConvergenceNode: a direct-to-root retry with a 3rd, unaffected bystand
 })
 
 test('findConvergenceNode: a legitimate multi-hop root-to-root forward chain is a named, accepted regression (ADR-007 eleventh amendment)', () => {
-  // Documents, rather than hides, the one known cost this round's fix
-  // accepts: root2 is reached at BFS depth 2 (via mid), not depth 1, so it
-  // is truncated the same way a rework-loop leak would be -- there is no
+  // Documents, rather than hides, one known cost this round's fix accepts:
+  // root2 is reached at BFS depth 2 (via mid), not depth 1, so it is
+  // truncated the same way a rework-loop leak would be -- there is no
   // retry edge anywhere in this graph, but the heuristic cannot tell the
   // difference. This is a REGRESSION, not merely an untested gap: the
   // pre-eleventh-amendment algorithm correctly resolved this exact fixture
   // to 'shared' (verified directly against that code). Accepted anyway
-  // because the failure direction is safe -- null (PAR-001, a loud
-  // refusal), never a wrong convergence node or a missed hazard -- and no
-  // rejected design closed the real, confirmed bug this amendment fixes
-  // without giving up something on this shape (see the ADR).
+  // because the failure direction is safe -- this specific fixture resolves
+  // to null (PAR-001, a loud refusal); other retry-free acyclic graphs in
+  // this same shape family can instead resolve to a DIFFERENT, wrongly-
+  // selected non-null node rather than null (an earlier draft of this
+  // comment and the ADR both overstated "never a wrong convergence node" --
+  // corrected in both places by the same review that caught it) -- but
+  // never a MISSED hazard, and never a graph accepted where a wrong node
+  // was silently substituted; PAR-004 still fires and still refuses in that
+  // case too. No rejected design closed the real, confirmed bug this
+  // amendment fixes without giving up something on this shape (see the ADR).
   const g = parseDot(`digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     fan [shape=component]
@@ -2403,6 +2409,46 @@ test('findConvergenceNode: a legitimate multi-hop root-to-root forward chain is 
     findConvergenceNode(g, ['root1', 'root2'], 'fan'),
     null,
     'a named, ADR-documented limitation -- not a defect to fix in this round',
+  )
+})
+
+test('findConvergenceNode: a retry targeting an ordinary non-root node is a second named, not-yet-closed gap (ADR-007 eleventh amendment, limitation 2)', () => {
+  // The existing 'a rework loop into a genuinely shared non-root node is
+  // still flagged' test (third amendment) has always used a short (2-node)
+  // branch, so it never exercised the same asymmetric-length leak this
+  // amendment closes for retries targeting the fan-out node or a branch
+  // root. Lengthening the branch here reproduces the identical bug: 'm'
+  // (an ordinary interior node, not a declared root, not the fan-out node)
+  // wins the tie-break instead of the real convergence node 'combine'. This
+  // amendment does NOT close this shape -- pinning it here, with an
+  // explicit safety assertion, so the gap is visible rather than silently
+  // reintroduced by a future change that assumes all three retry-edge-
+  // target shapes are handled alike.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    a [shape=box]  m [shape=box]  m2 [shape=box]  m3 [shape=box]  m4 [shape=box]
+    b [shape=box]  combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> m -> m2 -> m3 -> m4 -> combine
+    fan -> b -> combine
+    combine -> check
+    check -> m
+    check -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
+  assert.notEqual(
+    convergenceId,
+    'combine',
+    'known, not-yet-closed gap: a non-root retry target still wins the tie-break over the real convergence node',
+  )
+  // The safety property that DOES hold even for this unclosed gap: the
+  // graph is still refused, never silently accepted with a wrong node
+  // substituted in.
+  const diags = lint(g)
+  assert.ok(
+    diags.some((d) => d.code === 'PAR-004' && d.severity === Severity.ERROR),
+    'PAR-004 still fires and still refuses the graph, even though it names the wrong node',
   )
 })
 
