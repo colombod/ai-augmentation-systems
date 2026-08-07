@@ -560,3 +560,42 @@ test('status.json carries failure_reason for an external reader (sections 4.5, 5
     rmSync(cwd, { recursive: true, force: true })
   }
 })
+
+test("BoxHandler passes ctx.cwd through to Backend.run's new trailing argument", async () => {
+  const received: (string | undefined)[] = []
+  class CapturingBackend implements Backend {
+    async run(
+      _node: Node, _prompt: string, _context: Context, _graph: Graph,
+      _signal?: AbortSignal, cwd?: string,
+    ): Promise<Outcome> {
+      received.push(cwd)
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }
+  }
+  const runDir = mkdtempSync(join(tmpdir(), 'attractor-box-cwdpass-run-'))
+  const cwd = mkdtempSync(join(tmpdir(), 'attractor-box-cwdpass-cwd-'))
+  try {
+    await new BoxHandler(new CapturingBackend()).execute({
+      node: G.nodes.get('plain')!,
+      graph: G,
+      context: Context.from({ goal: 'g' }),
+      runDir,
+      cwd,
+      events: new EventLog(runDir),
+    })
+    assert.equal(received[0], cwd, "Backend.run's cwd argument matches HandlerCtx.cwd")
+  } finally {
+    rmSync(runDir, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('a Backend.run() call with no cwd argument (StubBackend\'s 4-arg shape) is unaffected', async () => {
+  // StubBackend.run(node, prompt, context, graph) has no cwd parameter at
+  // all -- proves the additive change is inert for a shorter implementer,
+  // the same way the existing suite already proves it for every other
+  // StubBackend-driven box.test.ts case.
+  const backend = new StubBackend({ plain: { status: Status.SUCCESS, notes: 'ok' } })
+  const outcome = await run('plain', backend)
+  assert.equal(outcome.status, Status.SUCCESS)
+})

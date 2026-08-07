@@ -4168,7 +4168,8 @@ var BoxHandler = class {
         prompt,
         ctx.context,
         ctx.graph,
-        controller?.signal ?? ctx.signal
+        controller?.signal ?? ctx.signal,
+        ctx.cwd
       );
     } finally {
       if (timer !== void 0) clearTimeout(timer);
@@ -5152,13 +5153,13 @@ var ClaudeCodeBackend = class {
     this.opts = opts;
     this.threads = opts.threads ?? new ThreadStore();
   }
-  async run(node, prompt, _context, _graph, signal) {
+  async run(node, prompt, _context, _graph, signal, cwd) {
     const command = this.opts.command ?? "claude";
     const argv = buildArgv(node, {
       ...this.opts,
       resumeId: this.threads.resumeIdFor(node)
     });
-    const proc = await runProcess(command, argv, prompt, this.opts.cwd, signal);
+    const proc = await runProcess(command, argv, prompt, cwd ?? this.opts.cwd, signal);
     if (proc.failure !== void 0) {
       return { status: Status.FAIL, notes: proc.failure };
     }

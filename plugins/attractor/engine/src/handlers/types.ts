@@ -29,5 +29,6 @@ export interface Handler {
  * task. Plan 2 supplies a `claude -p` implementation; tests supply a stub.
  */
 export interface Backend {
-  run(node: Node, prompt: string, context: Context, graph: Graph, signal?: AbortSignal): Promise<Outcome>
+  run(node: Node, prompt: string, context: Context, graph: Graph, signal?: AbortSignal,
+      cwd?: string): Promise<Outcome>
 }
