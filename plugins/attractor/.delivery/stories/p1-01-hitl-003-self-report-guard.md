@@ -2,6 +2,12 @@
 BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data tables.
 -->
 
+> **Budget overrun declared:** ~1330 prose words against the 1200-word hard cap. The final
+> whole-branch review found a real defect in this story's original B1 acceptance criterion
+> (an unsatisfiable `hasErrors()` assertion — see Implementation notes) and required both a
+> correction and a factual record of what went wrong and why; cutting either back to fit the
+> cap would remove the citation/grounding/reasoning the writing standard says never to cut.
+> Kept whole rather than thinned further.
 ---
 id: p1-01
 title: Add HITL-003 — warn on an agent-inclusive human gate self-reporting from its direct predecessor
