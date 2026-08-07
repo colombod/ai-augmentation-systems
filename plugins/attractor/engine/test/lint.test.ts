@@ -1444,3 +1444,268 @@ test('HAND-001 reports one diagnostic per offending node, not one per graph', ()
   const found = lint(parseDot(src)).filter((d) => d.code === 'HAND-001')
   assert.equal(found.length, 2)
 })
+
+// ---------------------------------------------------------------------------
+// HITL-003: an agent-inclusive human gate whose context traces to a single,
+// structurally-provable Handler.CODERGEN predecessor. See ADR-006 for why
+// CODERGEN-only (not Handler.TOOL, whose output is written conditionally on
+// exit code and so cannot be proven at lint time).
+// ---------------------------------------------------------------------------
+
+function hitl003(src: string) {
+  return lint(parseDot(src)).filter((d) => d.code === 'HITL-003')
+}
+
+test('HITL-003 fires when an agent-inclusive gate is fed directly by a CODERGEN node', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize the work"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review -> gate -> done
+  }`
+  const found = hitl003(src)
+  assert.equal(found.length, 1)
+  assert.equal(found[0].severity, Severity.WARNING)
+  assert.equal(found[0].node, 'gate')
+  assert.match(found[0].message, /review/)
+  assert.match(found[0].message, /agent/)
+})
+
+test('HITL-003 fires when "agent" is not the first hop in human.channel', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="human,agent", human.context="review.summary"]
+    start -> review -> gate -> done
+  }`
+  assert.equal(hitl003(src).length, 1)
+})
+
+test('HITL-003 respects type= overriding shape= on the gate node', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=box, type="wait.human", human.channel="agent", human.context="review.summary"]
+    start -> review -> gate -> done
+  }`
+  assert.equal(hitl003(src).length, 1)
+})
+
+test('HITL-003 respects type= overriding shape= on the predecessor node', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=parallelogram, type="codergen", prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review -> gate -> done
+  }`
+  assert.equal(hitl003(src).length, 1)
+})
+
+test('HITL-003 reports one diagnostic per offending node, not one per graph', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    reviewA [shape=box, prompt="summarize A"]
+    gateA [shape=hexagon, human.channel="agent", human.context="reviewA.summary"]
+    reviewB [shape=box, prompt="summarize B"]
+    gateB [shape=hexagon, human.channel="agent", human.context="reviewB.summary"]
+    start -> reviewA -> gateA -> reviewB -> gateB -> done
+  }`
+  assert.equal(hitl003(src).length, 2)
+})
+
+test('HITL-003 does not fire when human.channel has no agent hop', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="human", human.context="review.summary"]
+    start -> review -> gate -> done
+  }`
+  assert.equal(hitl003(src).length, 0)
+})
+
+test('HITL-003 does not fire when human.context is absent', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent"]
+    start -> review -> gate -> done
+  }`
+  assert.equal(hitl003(src).length, 0)
+})
+
+test('HITL-003 does not fire when human.context is whitespace-only', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent", human.context="   "]
+    start -> review -> gate -> done
+  }`
+  assert.equal(hitl003(src).length, 0)
+})
+
+test('HITL-003 does not fire when the gate has two direct predecessors', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    other [shape=box, prompt="do other work"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review -> gate
+    start -> other -> gate
+    gate -> done
+  }`
+  assert.equal(hitl003(src).length, 0)
+})
+
+// directPredecessor's in-degree blind spot: raw incoming-edge count can be
+// inflated by duplicate/self-loop edges from what is really a single
+// meaningful predecessor. Exercised here through hitl003() fixtures
+// (matching this file's existing convention -- graph.ts helpers like
+// outgoingEdges have no direct unit tests either, only exercise through
+// lint rule behavior) rather than by importing directPredecessor directly.
+
+test('HITL-003 fires when two edges (e.g. labelled success/failure branches) come from the same CODERGEN predecessor', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review
+    review -> gate [label="success"]
+    review -> gate [label="failure"]
+    gate -> done
+  }`
+  const found = hitl003(src)
+  assert.equal(found.length, 1)
+  assert.match(found[0].message, /review/)
+})
+
+test('HITL-003 fires through a self-loop on the gate node, still resolving to the real predecessor', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review -> gate
+    gate -> gate
+    gate -> done
+  }`
+  const found = hitl003(src)
+  assert.equal(found.length, 1)
+  assert.match(found[0].message, /review/)
+})
+
+test('HITL-003 fires when an identical duplicate edge from the same predecessor is declared twice', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review -> gate
+    review -> gate
+    gate -> done
+  }`
+  const found = hitl003(src)
+  assert.equal(found.length, 1)
+  assert.match(found[0].message, /review/)
+})
+
+test('HITL-003 does not fire for a Handler.TOOL predecessor without outputs=', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    check [shape=parallelogram, tool_command="printf ok"]
+    gate [shape=hexagon, human.channel="agent", human.context="check.output"]
+    start -> check -> gate -> done
+  }`
+  assert.equal(hitl003(src).length, 0)
+})
+
+test('HITL-003 does not fire for a Handler.TOOL predecessor with outputs= declared', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    check [shape=parallelogram, tool_command="printf ok", outputs="check.output"]
+    gate [shape=hexagon, human.channel="agent", human.context="check.output"]
+    start -> check -> gate -> done
+  }`
+  assert.equal(hitl003(src).length, 0)
+})
+
+test('HITL-003 does not fire when the CODERGEN node is two hops back, not the direct predecessor', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    notify [shape=parallelogram, tool_command="printf notified"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review -> notify -> gate -> done
+  }`
+  assert.equal(hitl003(src).length, 0)
+})
+
+test('HITL-003 does not fire when the sole direct predecessor is Handler.START', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    gate [shape=hexagon, human.channel="agent", human.context="start.anything"]
+    start -> gate -> done
+  }`
+  assert.equal(hitl003(src).length, 0)
+})
+
+test('HITL-003 does not fire on a channel name merely containing the substring "agent"', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agentic_reviewer", human.context="review.summary"]
+    start -> review -> gate -> done
+  }`
+  assert.equal(hitl003(src).length, 0)
+})
+
+test('HITL-003 never reports an error-severity diagnostic -- advisory only', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review -> gate -> done
+  }`
+  const found = hitl003(src)
+  assert.equal(found.length, 1)
+  assert.ok(found.every((d) => d.severity === Severity.WARNING))
+})
+
+// Regression pin: an earlier implementation attempt of this rule silently
+// dropped the `node.handler === Handler.HUMAN` outer gate, and no fixture
+// in this file's other 19 cases would have caught it -- every one of them
+// that sets human.channel/human.context also happens to already be a
+// hexagon/Handler.HUMAN node, so the gate was never independently
+// exercised. This fixture puts the two attributes on a plain box
+// (Handler.CODERGEN) node instead, which is not any kind of human gate.
+test('HITL-003 does not fire on a non-Handler.HUMAN node carrying human.channel/human.context', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    notagate [shape=box, prompt="do something else", human.channel="agent", human.context="review.summary"]
+    start -> review -> notagate -> done
+  }`
+  assert.equal(hitl003(src).length, 0)
+})
+
+test('HITL-003 co-fires with HAND-001 without interference, since Handler.HUMAN is still unregistered', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review -> gate -> done
+  }`
+  const found = codes(src)
+  assert.ok(found.includes('HITL-003'))
+  assert.ok(found.includes('HAND-001'))
+})
+
+test('HITL-003 message names the predecessor, states advisory-only, and disclaims multi-hop/TOOL detection', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
+    start -> review -> gate -> done
+  }`
+  const message = hitl003(src)[0].message
+  assert.match(message, /review/)
+  assert.match(message, /[Aa]dvisory/)
+  assert.match(message, /does not (block|detect)/)
+})

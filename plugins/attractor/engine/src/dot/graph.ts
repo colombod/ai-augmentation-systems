@@ -132,6 +132,29 @@ export function outgoingEdges(graph: Graph, nodeId: string): Edge[] {
   return graph.edges.filter((e) => e.from === nodeId)
 }
 
+/**
+ * The node's sole direct predecessor, if it has exactly one distinct
+ * incoming source -- null otherwise.
+ *
+ * Counts distinct source nodes, not raw incoming edges: two edges from the
+ * same node (e.g. separate labelled "success"/"failure" branches) are one
+ * predecessor, not two, and a self-loop (`from === to`) is excluded
+ * entirely rather than counted as a predecessor of itself. This closes
+ * false negatives where duplicate/self-loop edges inflated the incoming
+ * count even though there was really only one meaningful predecessor.
+ *
+ * Two or more edges from genuinely DIFFERENT source nodes still correctly
+ * returns null -- that case stays disqualified by design, since lint has
+ * no way to know at analysis time which branch's output actually reached
+ * this node at runtime.
+ */
+export function directPredecessor(graph: Graph, nodeId: string): Node | null {
+  const incoming = graph.edges.filter((e) => e.to === nodeId && e.from !== nodeId)
+  const distinctSources = new Set(incoming.map((e) => e.from))
+  if (distinctSources.size !== 1) return null
+  return graph.nodes.get([...distinctSources][0]) ?? null
+}
+
 export function findByHandler(graph: Graph, kind: HandlerKind): Node[] {
   return [...graph.nodes.values()].filter((n) => n.handler === kind)
 }
