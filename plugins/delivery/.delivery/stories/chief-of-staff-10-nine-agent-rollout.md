@@ -18,7 +18,7 @@ supersedes: []
 superseded_by: []
 superseded_reason:
 phase: "Phase 9 — full 9-agent pointer-section rollout"
-requirements: [FR-48]
+requirements: [FR-51]
 depends_on: [chief-of-staff-08, chief-of-staff-09]
 size: M
 ---
@@ -47,9 +47,9 @@ inside its own turn. This is what actually exposes the mechanism epic-wide, per
 `ADR-002`/`architecture.md`'s Component structure add one short standing-instruction section —
 "in the same location and register as the existing '## Language' section every agent already
 carries" — to each of the 9 consulting-agent files, "stating only the trigger condition, the
-exact call to make, and the `FR-48` fallback, never the triage logic itself." Story
+exact call to make, and the `FR-51` fallback, never the triage logic itself." Story
 `chief-of-staff-01` built this for real but deliberately thin: a walking-skeleton
-`agents/chief-of-staff.md` (real S-5 citation logic, stubbed S-6/S-7/S-8) plus the pointer
+`agents/chief-of-staff.md` (real S-6 citation logic, stubbed S-7/S-8/S-9) plus the pointer
 section on exactly `delivery-lead.md` and `qa-strategist.md` — the 2 files CoS-1's own "≥2
 different consulting-agent types" bar required, chosen because neither carries a pre-existing
 escalation habit to reconcile. That story's own Files-and-modules note reserves the remaining
@@ -59,9 +59,9 @@ not be improvised here."* This story is that reservation, fulfilled.
 
 **Entry criteria, stated plainly because getting this wrong is worse than not rolling out at
 all:** `roadmap.md`'s Phase 9 entry criteria require Phase 8 complete — "the whole
-S-5–S-8+S-10 mechanism is real, not just Phase 5's own 2-agent thin rollout." Extending the
+S-6–S-9+S-11 mechanism is real, not just Phase 5's own 2-agent thin rollout." Extending the
 pointer to 7 more agents while `agents/chief-of-staff.md` still returns CoS-1's labeled-stub
-S-6/S-7/S-8 responses would mean seven more agents trusting a plausible-looking but fake
+S-7/S-8/S-9 responses would mean seven more agents trusting a plausible-looking but fake
 bounce/spike/queue outcome — CoS-1's own stub carried an explicit "this is a stub" disclaimer
 for spike-grading purposes only; a wider rollout has no such safety net. This is exactly why
 `chief-of-staff-08`/`chief-of-staff-09` (Phase 8) are hard dependencies, not soft ones.
@@ -110,12 +110,12 @@ When a question forms mid-task that would otherwise go straight to the operator 
 nothing in front of you settles it — consult chief of staff before asking directly. Invoke
 the Agent tool with `subagent_type: "delivery:chief-of-staff"`. State in your prompt: the
 candidate question verbatim, what you already checked and why nothing settled it, and which
-of S-5 (already answered somewhere real), S-6 (scope you invented, not the plan), or S-7 (a
+of S-6 (already answered somewhere real), S-7 (scope you invented, not the plan), or S-8 (a
 technical unknown, not a decision) you believe applies — chief of staff may reclassify.
 
 If chief of staff is unavailable, unconfigured, or errors, fall back to asking the operator
 directly, exactly as you do today — never block on this, never drop the question silently
-(`FR-48`).
+(`FR-51`).
 ```
 
 **`business-analyst.md` delta — append this paragraph inside the same section, after the two
@@ -134,7 +134,7 @@ paragraphs above:**
 
 ```
 **This does not duplicate your own spike-flagging habit.** Your existing "Flag these as
-spikes with a specific question and a time box" convention already *is* S-7's own mechanism,
+spikes with a specific question and a time box" convention already *is* S-8's own mechanism,
 natively — you already do this. Consult chief of staff only when a technical unknown surfaces
 outside your own spike-authoring context, e.g. while reviewing another role's output, not as
 a second, redundant routing step for the same event you would already flag as a spike
@@ -149,7 +149,7 @@ rather than paraphrased, per this story's own instruction.
 
 - **`ADR-002`** — "Every consulting agent's persona file gets a short new section, in the same
   location as its existing '## Language' section, stating the trigger condition, the exact
-  call to make, and the `FR-48` fallback — never the triage logic itself." This story is the
+  call to make, and the `FR-51` fallback — never the triage logic itself." This story is the
   7-file completion of that decision; nothing here reopens it.
 - **`architecture.md`'s Component structure — the reconciliation paragraph, quoted verbatim
   because it is the authority for both deltas above, not paraphrased:**
@@ -160,14 +160,14 @@ rather than paraphrased, per this story's own instruction.
   > `solution-architect.md`'s "Flag [unproven assumptions] as spikes with a specific question
   > and a time box" both predate this epic and already route their own findings to a written
   > artifact — never to a mid-work operator interruption. Neither is the failure mode
-  > S-5/S-6/S-7 exist to intercept, so neither instruction is edited or superseded. The
+  > S-6/S-7/S-8 exist to intercept, so neither instruction is edited or superseded. The
   > per-file pointer section states this explicitly rather than leaving it to be inferred:
   > for `business-analyst.md`, its existing Open Questions convention stays exactly as-is —
   > that mechanism is for a role's own deliverable output (feeding `prd.md`'s Open Questions
-  > table via a reviewed phase, not an ad hoc mid-task interrupt), a different case from S-5's
+  > table via a reviewed phase, not an ad hoc mid-task interrupt), a different case from S-6's
   > "candidate question that would otherwise surface directly to the operator." Chief-of-staff
   > consultation applies only to the latter. For `solution-architect.md`, its existing
-  > spike-flagging habit already *is* S-7's own mechanism natively — the pointer section says
+  > spike-flagging habit already *is* S-8's own mechanism natively — the pointer section says
   > so directly ("you already do this; consult chief of staff only when a technical unknown
   > surfaces outside your own spike-authoring context, e.g. while reviewing another role's
   > output") rather than instructing a second, redundant routing step for the same event.
@@ -177,7 +177,7 @@ rather than paraphrased, per this story's own instruction.
 
 ## Acceptance criteria
 
-- [ ] `FR-48` — all 7 files' new sections state the fallback verbatim: if chief of staff is
+- [ ] `FR-51` — all 7 files' new sections state the fallback verbatim: if chief of staff is
       unavailable, unconfigured, or errors, the agent asks the operator directly, exactly as
       it does today — never blocks, never silently drops the candidate question.
 - [ ] Each of the 7 files gains a "## Chief of staff" section inserted immediately after its
@@ -186,8 +186,8 @@ rather than paraphrased, per this story's own instruction.
 - [ ] `design-lead.md`, `feature-critic.md`, `product-owner.md`, `program-manager.md`, and
       `user-researcher.md` each contain the plain block byte-identical to `chief-of-staff-01`'s
       own text for `delivery-lead.md`/`qa-strategist.md` — states the trigger condition, the
-      exact call (`subagent_type: "delivery:chief-of-staff"`), and the `FR-48` fallback; does
-      not restate S-5/S-6/S-7's triage logic itself.
+      exact call (`subagent_type: "delivery:chief-of-staff"`), and the `FR-51` fallback; does
+      not restate S-6/S-7/S-8's triage logic itself.
 - [ ] `business-analyst.md`'s section carries the plain block plus its reconciliation
       paragraph, stating explicitly that its Open Questions convention is not superseded or
       duplicated.
@@ -252,7 +252,7 @@ spike already established and ran (`harden-05`/`harden-06`'s ledger, live-verifi
 - Building or upgrading `agents/chief-of-staff.md` itself, or `skills/chief-of-staff/SKILL.md`
   — Phase 6–8's job (stories `chief-of-staff-03` through `chief-of-staff-09`), which this
   story depends on rather than duplicates.
-- Testing `FR-48`'s fallback behavior itself (the unavailable/unconfigured/erroring case) —
+- Testing `FR-51`'s fallback behavior itself (the unavailable/unconfigured/erroring case) —
   stated verbatim in each section's text, but exercising it is a fixture-based test named as
   separate work in `architecture.md`'s Test strategy table, same exclusion `chief-of-staff-01`
   already stated for its own 2 files.
@@ -265,12 +265,12 @@ spike already established and ran (`harden-05`/`harden-06`'s ledger, live-verifi
 
 ## Dependencies
 
-- **`chief-of-staff-08`, `chief-of-staff-09`** (Phase 8 — S-8 briefing assembly + `FR-49`
+- **`chief-of-staff-08`, `chief-of-staff-09`** (Phase 8 — S-9 briefing assembly + `FR-52`
   merge check) must be `done` first. `roadmap.md`'s Phase 9 entry criteria require "Phase 8
-  complete — the whole S-5–S-8+S-10 mechanism is real, not just Phase 5's own 2-agent thin
+  complete — the whole S-6–S-9+S-11 mechanism is real, not just Phase 5's own 2-agent thin
   rollout." See Context above for why this is a hard, not soft, dependency: the pointer
   section this story writes tells 7 more agents to trust chief of staff's response, and that
-  response is only trustworthy once S-6/S-7/S-8 are real logic, not CoS-1's labeled stub.
+  response is only trustworthy once S-7/S-8/S-9 are real logic, not CoS-1's labeled stub.
 - **Honestly stated, not guessed:** as of this writing, `.delivery/stories/` contains
   `chief-of-staff-01` through `chief-of-staff-05` and `chief-of-staff-07` (Phases 5, 6, 7,
   7b) — `chief-of-staff-06` (the remaining Phase 7 scenario) and `chief-of-staff-08`/`-09`

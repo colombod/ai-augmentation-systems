@@ -19,7 +19,7 @@ supersedes: []
 superseded_by: []
 superseded_reason:
 phase: "Phase 5 — foundational spikes: CoS-1 (walking skeleton) + CoS-2"
-requirements: [FR-17, FR-18, FR-19]
+requirements: [FR-20, FR-21, FR-22]
 depends_on: []
 size: L
 ---
@@ -39,13 +39,13 @@ epic, before Phase 6 onward is built on top of it.
 
 ## Context
 
-`.delivery/prd.md`'s Chief of Staff epic (S-5–S-11) triages an agent's **candidate
+`.delivery/prd.md`'s Chief of Staff epic (S-6–S-12) triages an agent's **candidate
 question** — one it has formed mid-task and would otherwise surface straight to the operator
 — before it reaches the operator. Per `architecture.md`'s Approach section, the pipeline's
 three senior roles each anchor a distinct invariant: Business Analyst protects the business
-proposition, Solution Architect protects technical soundness (unchanged by this epic — S-7
+proposition, Solution Architect protects technical soundness (unchanged by this epic — S-8
 defers to it), and **Chief of staff** protects the third, previously-unowned invariant: the
-human principal's attention and stated mission. This story covers only S-5 (`FR-17`–19): a
+human principal's attention and stated mission. This story covers only S-6 (`FR-20`–22): a
 candidate question chief of staff answers directly because an exact, nameable source already
 settles it, stated with its **citable traceback** alongside the answer. No fully-settling
 source means no answer — it falls through.
@@ -61,13 +61,13 @@ ledger 21/21 for real `Agent`-tool calls. Compliance uplift — whether a consul
 actually *chooses* the real call over narrating one — is not. This spike is that
 measurement, and it is the epic's own Phase 0-equivalent (`roadmap.md`'s Phase 5): it needs
 only "the standing-instruction-block + direct-subagent-call design in place," not the
-finished epic, so it runs before S-6/S-7/S-8's real logic exists.
+finished epic, so it runs before S-7/S-8/S-9's real logic exists.
 
 **Not throwaway.** Unlike `harden-02`'s own probe script (built to be discarded and later
 replaced by `record-invocation.js`), the `agents/chief-of-staff.md` this story creates is a
 deliberately thin **walking skeleton**, not a throwaway. Story `chief-of-staff-03` upgrades
-it in place — adding real S-6/S-7/S-8 logic to the same file — it does not replace it. Write
-the S-5 logic as production-quality, not disposable scaffolding.
+it in place — adding real S-7/S-8/S-9 logic to the same file — it does not replace it. Write
+the S-6 logic as production-quality, not disposable scaffolding.
 
 **Spike CoS-2 is separate.** `roadmap.md`'s Phase 5 also names CoS-2 (confirming parallel
 Agent-tool dispatches return batched, feeding `NFR-8`). Different question, own 0.5-day
@@ -77,7 +77,7 @@ timebox, own story. Nothing here depends on it.
 
 | Path | What to do |
 | :-- | :-- |
-| `plugins/delivery/agents/chief-of-staff.md` | **create** — YAML frontmatter (`name: chief-of-staff`, `description:` stating S-5–S-8 triage), real S-5 citation-check logic per `FR-17`–19; stubbed, clearly-labeled-as-stub responses for S-6/S-7/S-8, since that logic isn't built yet (Phases 6–8) |
+| `plugins/delivery/agents/chief-of-staff.md` | **create** — YAML frontmatter (`name: chief-of-staff`, `description:` stating S-6–S-9 triage), real S-6 citation-check logic per `FR-20`–22; stubbed, clearly-labeled-as-stub responses for S-7/S-8/S-9, since that logic isn't built yet (Phases 6–8) |
 | `plugins/delivery/agents/delivery-lead.md` | **modify** — insert a new `## Chief of staff` section immediately after `## Language — your standing responsibility` (line 43) and before `## Boundaries` (line 68) — same location/register, per `ADR-002` |
 | `plugins/delivery/agents/qa-strategist.md` | **modify** — same section, immediately after `## Language — your standing responsibility` (line 73) and before `## Boundaries` (line 98) |
 | `plugins/delivery/.delivery/architecture.md` | **modify** — after the Spikes table in the Chief of Staff section (CoS-1/CoS-2 rows, ~line 415–424), add a `**Post-implementation update (<real date>):**` paragraph with the real trial results — the pattern the harden epic used for its own Spike 1/2/5 update (lines 126–138): prose after the table, not a status-column edit |
@@ -95,14 +95,14 @@ that reconciliation text is reserved for story `chief-of-staff-10`, not improvis
 
 **Consultation call (`architecture.md` Interface 1).** No JSON schema — the Agent tool's
 "interface" is a written protocol. The calling agent's prompt states: the candidate question
-verbatim, what it already checked and why nothing settled it, and which of S-5/S-6/S-7 it
+verbatim, what it already checked and why nothing settled it, and which of S-6/S-7/S-8 it
 believes applies (chief of staff may reclassify). `subagent_type: "delivery:chief-of-staff"`
 — same `delivery:<agent-file-name>` convention every other agent already uses; no manifest
 change needed (`plugin.json` carries no agent list; Claude Code discovers `agents/*.md` by
 directory convention).
 
 **Return contract (Interface 2).** Every response states exactly one outcome: `answered`
-(S-5, with citable traceback), `bounced` (S-6), `spiked` (S-7), or `queued` (S-8). Any
+(S-6, with citable traceback), `bounced` (S-7), `spiked` (S-8), or `queued` (S-9). Any
 non-`answered` stub outcome must say plainly it is a stub for CoS-1, not real triage — a
 trial's classification (below) depends only on whether the real Agent-tool call happened,
 never on whether the stub's content was correct.
@@ -124,12 +124,12 @@ When a question forms mid-task that would otherwise go straight to the operator 
 nothing in front of you settles it — consult chief of staff before asking directly. Invoke
 the Agent tool with `subagent_type: "delivery:chief-of-staff"`. State in your prompt: the
 candidate question verbatim, what you already checked and why nothing settled it, and which
-of S-5 (already answered somewhere real), S-6 (scope you invented, not the plan), or S-7 (a
+of S-6 (already answered somewhere real), S-7 (scope you invented, not the plan), or S-8 (a
 technical unknown, not a decision) you believe applies — chief of staff may reclassify.
 
 If chief of staff is unavailable, unconfigured, or errors, fall back to asking the operator
 directly, exactly as you do today — never block on this, never drop the question silently
-(`FR-48`).
+(`FR-51`).
 ```
 
 ## Relevant design decisions
@@ -146,10 +146,10 @@ directly, exactly as you do today — never block on this, never drop the questi
 
 ## Acceptance criteria
 
-- [ ] `FR-17` — `agents/chief-of-staff.md`'s S-5 logic answers directly only when it can
+- [ ] `FR-20` — `agents/chief-of-staff.md`'s S-6 logic answers directly only when it can
       name an exact, nameable source — never on interpretation or extrapolation.
-- [ ] `FR-18` — every such answer states its citable traceback visibly alongside it.
-- [ ] `FR-19` — no fully-settling source falls through to a clearly-labeled stub outcome,
+- [ ] `FR-21` — every such answer states its citable traceback visibly alongside it.
+- [ ] `FR-22` — no fully-settling source falls through to a clearly-labeled stub outcome,
       never silently nothing.
 - [ ] Before any trial runs: the trial task list and a written definition of "genuine
       candidate question" are pre-registered — committed to a file — blind to what outcome
@@ -211,15 +211,15 @@ one command; inherent to a real-session spike.
 
 ## Out of scope
 
-- Full S-6/S-7/S-8 triage logic — stubbed here; real logic ships Phases 6–8
+- Full S-7/S-8/S-9 triage logic — stubbed here; real logic ships Phases 6–8
   (`chief-of-staff-03` onward), upgrading this same file, not replacing it.
 - The full 9-agent pointer-section rollout — only `delivery-lead.md`/`qa-strategist.md` here;
   the remaining 7, including the `business-analyst.md`/`solution-architect.md`
   reconciliation text, are Phase 9's job.
 - Spike CoS-2 (parallel-dispatch batching, `NFR-8`) — separate story, separate question.
-- Grading a stubbed S-6/S-7/S-8 response's content — this spike measures only whether the
+- Grading a stubbed S-7/S-8/S-9 response's content — this spike measures only whether the
   real call happened, per architecture's own framing.
-- `FR-48`'s fallback-on-unavailability behavior — stated in the pointer text, not exercised
+- `FR-51`'s fallback-on-unavailability behavior — stated in the pointer text, not exercised
   by these trials; a fixture-based test for it is named as separate, later work.
 
 ## Dependencies
@@ -242,7 +242,7 @@ starts. A below-bar result routes to product-owner instead of Phase 6.
 ## Implementation notes
 
 **Partial progress, honestly stated — spike not yet run.** `agents/chief-of-staff.md` is
-built (real S-5 logic per `FR-17`–19, S-6/S-7/S-8 clearly labeled as stubs), the pointer
+built (real S-6 logic per `FR-20`–22, S-7/S-8/S-9 clearly labeled as stubs), the pointer
 section is live on both `delivery-lead.md` and `qa-strategist.md` at the exact specified
 locations, and the pre-registration file this story requires
 (`.delivery/chief-of-staff/cos1-pre-registration.md`) exists.

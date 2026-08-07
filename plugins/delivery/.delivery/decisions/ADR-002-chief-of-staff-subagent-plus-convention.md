@@ -10,7 +10,7 @@ the template itself protects.
 
 ## Context
 
-`prd.md`'s Open Question 8 asks whether chief of staff (S-5–S-8) is a subagent other agents
+`prd.md`'s Open Question 9 asks whether chief of staff (S-6–S-9) is a subagent other agents
 call, a shared convention document, or something else. The epic's own stated boundary: `harden-02`
 already proved `PostToolUse`/`PostToolUseFailure` fire only after a tool call resolves — no
 hook can force consultation. Every "routes/bounces/redirects" verb in the epic is *by
@@ -35,10 +35,10 @@ infrastructure, not a proposal.
 Chief of staff is a real subagent, `agents/chief-of-staff.md`, invoked directly via the Agent
 tool (`subagent_type: "delivery:chief-of-staff"`) by whichever consulting agent forms a
 candidate question — no skill layer in between. A thin skill wrapper,
-`skills/chief-of-staff/SKILL.md`, is the operator-facing entry point for S-8's pull-based
+`skills/chief-of-staff/SKILL.md`, is the operator-facing entry point for S-9's pull-based
 briefing, mirroring `/delivery:status`/`/delivery:challenge`. Every consulting agent's persona
 file gets a short new section, in the same location as its existing "## Language" section,
-stating the trigger condition, the exact call to make, and the `FR-48` fallback — never the
+stating the trigger condition, the exact call to make, and the `FR-51` fallback — never the
 triage logic itself, which lives once, in the chief-of-staff agent.
 
 ## Alternatives considered
@@ -48,7 +48,7 @@ triage logic itself, which lives once, in the chief-of-staff agent.
 **Why it was attractive:** zero new mechanism; matches the existing "## Language" pattern; no
 new file to register.
 **Why rejected:** the same failure Finding A diagnosed, built into the epic meant to reduce it.
-Reasoning through S-5/S-6/S-7 inline produces no real tool call and no ledger entry — "I
+Reasoning through S-6/S-7/S-8 inline produces no real tool call and no ledger entry — "I
 checked" and "I skipped it" are textually indistinguishable after the fact. It forfeits the one
 thing this harness gives for free: ledger-verified evidence of a real consultation.
 

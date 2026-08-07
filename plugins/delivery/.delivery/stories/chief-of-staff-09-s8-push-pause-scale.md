@@ -2,9 +2,9 @@
 BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data tables.
 Word-budget note: declared overrun, not silent, same precedent every chief-of-staff-epic
 sibling story has already set (chief-of-staff-03/04/05/07 all exceed 1200 prose-only words
-for the same reason). This story reproduces FR-45/46/47/51's exact text, the Return-contract
+for the same reason). This story reproduces FR-48/49/50/54's exact text, the Return-contract
 mechanism verbatim (the load-bearing design decision it implements), Interface 3's queue
-columns, and an honest, non-hand-waved explanation of exactly which half of FR-47 is and is
+columns, and an honest, non-hand-waved explanation of exactly which half of FR-50 is and is
 not testable today, plus why. Cutting any of it to fit the cap would re-hide context an
 implementer with no memory of planning needs — the same "never cut findings/citations/open
 questions" rule the writing standard states. Prose-only count exceeds 1200; kept anyway.
@@ -12,19 +12,19 @@ questions" rule the writing standard states. Prose-only count exceeds 1200; kept
 
 ---
 id: chief-of-staff-09
-title: "S-8: push exception, pause/resume, concurrent-arrival ordering, briefing at scale"
+title: "S-9: push exception, pause/resume, concurrent-arrival ordering, briefing at scale"
 status: draft
 epic: chief-of-staff
 supersedes: []
 superseded_by: []
 superseded_reason:
-phase: "Phase 8 — S-8 briefing assembly + FR-49 merge"
-requirements: [FR-45, FR-46, FR-47, FR-51]
+phase: "Phase 8 — S-9 briefing assembly + FR-52 merge"
+requirements: [FR-48, FR-49, FR-50, FR-54]
 depends_on: [chief-of-staff-08, chief-of-staff-02]
 size: M
 ---
 
-# S-8: push exception, pause/resume, concurrent-arrival ordering, briefing at scale
+# S-9: push exception, pause/resume, concurrent-arrival ordering, briefing at scale
 
 > This file is the complete context. Someone opening only this file — a teammate who missed
 > the planning, or an agent with no memory of it — must be able to finish the work.
@@ -41,16 +41,16 @@ individual rows — however large a delegation stretch has made it.
 
 ## Context
 
-`chief-of-staff-08` builds S-8's core: `agents/chief-of-staff.md`/`skills/chief-of-staff/
-SKILL.md` accumulate every S-5–S-7 survivor into one ranked, pull-delivered briefing —
+`chief-of-staff-08` builds S-9's core: `agents/chief-of-staff.md`/`skills/chief-of-staff/
+SKILL.md` accumulate every S-6–S-8 survivor into one ranked, pull-delivered briefing —
 blocking items first, each carrying a suggested default or an explicit no-default-available
-marker (`FR-29`–32). This story is Phase 8's other half: the narrow exception to pull-only
-delivery (`FR-45`/`46`), the interruption policy for a blocking item arriving mid-exchange
-(`FR-47`), and the scannability rule so accumulation doesn't collapse into an unreadable list
-(`FR-51`).
+marker (`FR-32`–35). This story is Phase 8's other half: the narrow exception to pull-only
+delivery (`FR-48`/`49`), the interruption policy for a blocking item arriving mid-exchange
+(`FR-50`), and the scannability rule so accumulation doesn't collapse into an unreadable list
+(`FR-54`).
 
 **The push mechanism is not a new capability chief of staff invents — it is
-`architecture.md`'s own resolution of feature-critic finding 5 ("`FR-45`/46 had no described
+`architecture.md`'s own resolution of feature-critic finding 5 ("`FR-48`/49 had no described
 invocation path"), and it is the load-bearing design decision this story implements: there is
 no daemon in this harness, and nothing proactively messages the operator outside a running
 session** (`harden-02`'s own finding). So "push" cannot mean an out-of-band interrupt. It
@@ -64,15 +64,15 @@ live exchange chooses to). A `queued` outcome inside a session where the calling
 again addresses the operator has no way to surface until an explicit pull — a named, accepted
 limit, not hidden.
 
-Two Case-table rows from `prd.md`'s S-8 scenario land here rather than in `chief-of-staff-08`:
-a large briefing staying scannable (`FR-51`), and "blocking item's operator never returns at
+Two Case-table rows from `prd.md`'s S-9 scenario land here rather than in `chief-of-staff-08`:
+a large briefing staying scannable (`FR-54`), and "blocking item's operator never returns at
 all" — **no stated ceiling: intentional**, because proceeding on a fabricated default for a
-genuinely blocking decision is exactly what `FR-32` forbids. That row interacts directly with
+genuinely blocking decision is exactly what `FR-35` forbids. That row interacts directly with
 the push exception: a pushed blocking item with no response is never converted to a default,
 never dropped from the queue, and never re-pushed as a duplicate once delivered — it stays
 open, indefinitely, until the operator answers.
 
-**`FR-47` splits into two halves this story treats differently.** The pause/marker/resume
+**`FR-50` splits into two halves this story treats differently.** The pause/marker/resume
 behavior is fixture-testable now — nothing about it depends on anything unresolved. The
 **concurrent-arrival ordering** half — what happens when more than one blocking item arrives
 at once — depends on `NFR-8`, which `prd.md`'s own NFR table still lists **open, owner:
@@ -93,7 +93,7 @@ Mechanism-3 row."
 | Path | What to do |
 | :-- | :-- |
 | `agents/chief-of-staff.md` | modify — add the push-exception check to the return contract: before returning a `queued` outcome with `Blocking: y`, check `.delivery/chief-of-staff/queue.md` for an existing item about the same output already delivered and still `Status: open` (its "open counterpart"); if none exists, the response explicitly instructs the calling agent that this item must lead its very next reply, per the Return-contract mechanism above. Add mid-exchange pause/resume: when a new blocking item arrives while a consultation exchange is already active, the current exchange is explicitly marked paused, the new blocking item is surfaced, and the original exchange resumes once addressed — never two simultaneous threads, never a silent queue |
-| `skills/chief-of-staff/SKILL.md` | modify — built on `chief-of-staff-08`'s base pull-assembly logic: when assembling the briefing, exclude items already delivered by push and still open from being re-surfaced as new (reported once, not duplicated); add `FR-51`'s grouped/summarized display for a briefing with many survivors, reusing `skills/status/SKILL.md`'s existing "Keep this scannable at scale" convention rather than inventing a new one |
+| `skills/chief-of-staff/SKILL.md` | modify — built on `chief-of-staff-08`'s base pull-assembly logic: when assembling the briefing, exclude items already delivered by push and still open from being re-surfaced as new (reported once, not duplicated); add `FR-54`'s grouped/summarized display for a briefing with many survivors, reusing `skills/status/SKILL.md`'s existing "Keep this scannable at scale" convention rather than inventing a new one |
 
 ## Interfaces and contracts to honor
 
@@ -104,10 +104,10 @@ epic) and `chief-of-staff-03`'s Interface 3, not linked.
 one of:
 
 ```
-answered  — S-5, with citable traceback
-bounced   — S-6, with originating agent + missing requirement
-spiked    — S-7, with the spike story's path
-queued    — S-8, with the queue-entry ID and its Blocking flag (y/n)
+answered  — S-6, with citable traceback
+bounced   — S-7, with originating agent + missing requirement
+spiked    — S-8, with the spike story's path
+queued    — S-9, with the queue-entry ID and its Blocking flag (y/n)
 ```
 
 The push mechanic this story builds: a `queued` outcome with `Blocking: y` and no open
@@ -125,7 +125,7 @@ A single project-scoped file (`.delivery/chief-of-staff/queue.md`), not per-sess
 an item sets `Status: pushed`; it stays `pushed` (and open, in the sense of unanswered) until
 the operator responds — never silently reverted, never auto-resolved.
 
-**`NFR-8` (concurrent-arrival ordering, `FR-47`)** — `architecture.md`'s reasoned, unconfirmed
+**`NFR-8` (concurrent-arrival ordering, `FR-50`)** — `architecture.md`'s reasoned, unconfirmed
 proposal: "rank by priority, then arrival order," medium confidence, "confirmed by spike
 before shipping." Not committed until `chief-of-staff-02`'s real result lands. Do not
 implement this rule as final in this story.
@@ -138,27 +138,27 @@ implement this rule as final in this story.
   operator's session directly — nothing in this harness lets it.
 - **Architecture's Risks table** — "two subagents dispatched in parallel both resolve a
   blocking item and both attempt to update `queue.md` near-simultaneously," mitigated by
-  Spike CoS-2 confirming batching and by the same read-before-write discipline `FR-49`'s merge
+  Spike CoS-2 confirming batching and by the same read-before-write discipline `FR-52`'s merge
   check uses. This story's open-counterpart check (read `queue.md` before returning `queued`
   with a push instruction) is a second consumer of that identical discipline, not a new one.
 
 ## Acceptance criteria
 
-- [ ] `FR-45` — "never proactively surfaces a non-blocking item; only a blocking item with no
+- [ ] `FR-48` — "never proactively surfaces a non-blocking item; only a blocking item with no
   open counterpart already delivered may be pushed outside a pull." A non-blocking item is
   never pushed under any circumstance, no matter how long it has sat unanswered.
-- [ ] `FR-46` — "a pushed blocking item is delivered alone, not bundled — the one exception to
-  `FR-29`, reported as such." A push never bundles a second item, blocking or not, even if
+- [ ] `FR-49` — "a pushed blocking item is delivered alone, not bundled — the one exception to
+  `FR-32`, reported as such." A push never bundles a second item, blocking or not, even if
   both became push-eligible in the same turn.
-- [ ] `FR-47`, pause/resume half (falsifiable now) — "a new blocking item mid-exchange pauses
+- [ ] `FR-50`, pause/resume half (falsifiable now) — "a new blocking item mid-exchange pauses
   it with an explicit marker and resumes after; never a second concurrent exchange, never a
   silent queue." A new blocking item arriving while an earlier consultation exchange is active
   produces an explicit, human-readable pause marker naming what is paused and why, surfaces
   the new item, and resumes the original exchange afterward.
-- [ ] `FR-47`, concurrent-arrival ordering half — **not falsifiable yet, explicitly gated.**
+- [ ] `FR-50`, concurrent-arrival ordering half — **not falsifiable yet, explicitly gated.**
   Same FR text applies; verification is blocked on `chief-of-staff-02`'s real spike result
   (see Dependencies). This criterion cannot be marked ready until that result lands.
-- [ ] `FR-51` (priority: **should**, not must, per `prd.md`'s own FR table — the first thing
+- [ ] `FR-54` (priority: **should**, not must, per `prd.md`'s own FR table — the first thing
   to drop under schedule pressure, same precedent `chief-of-staff-08`'s own cut list and the
   harden epic's "a working plain report ships before a well-formatted one" both set) — "a
   briefing with many survivors is grouped/summarized so it stays scannable — the same
@@ -168,14 +168,14 @@ implement this rule as final in this story.
   of individual rows.
 - [ ] Edge case (Case table, not covered by `chief-of-staff-08`) — a pushed blocking item whose
   operator never returns stays open indefinitely: never silently converted to a default
-  (`FR-32`), never dropped from the queue, never re-pushed as a duplicate once delivered.
+  (`FR-35`), never dropped from the queue, never re-pushed as a duplicate once delivered.
 
 ## Test approach
 
 **Level:** per `architecture.md`'s Test-strategy table — Example-based for the push exception
-(`FR-45`/46); Integration for `FR-47`'s pause/resume half; empirical spike, inherited from
-`chief-of-staff-02`, for `FR-47`'s concurrent-ordering half (not tested in this story);
-Example-based, qualitative/reviewer-judged for `FR-51`, mirroring S-1's own precedent. No
+(`FR-48`/49); Integration for `FR-50`'s pause/resume half; empirical spike, inherited from
+`chief-of-staff-02`, for `FR-50`'s concurrent-ordering half (not tested in this story);
+Example-based, qualitative/reviewer-judged for `FR-54`, mirroring S-1's own precedent. No
 fixture substitutes for the concurrent-ordering half — the same reasoning `chief-of-staff-02`
 itself applies.
 
@@ -189,7 +189,7 @@ itself applies.
 | New blocking item arrives mid-exchange | Active exchange pauses with an explicit marker; new item surfaces; original exchange resumes after — never a second concurrent thread, never a silent queue |
 | Pushed blocking item, operator never responds | Stays open indefinitely — no ceiling, never a fabricated default, never dropped |
 | Large briefing (many accumulated survivors) | Reviewer confirms it reads as grouped/scannable — reuses `skills/status/SKILL.md`'s grouping convention (e.g. "N of M items open, grouped by source" rather than one row per item) |
-| Two blocking items arriving "simultaneously" (`FR-47` concurrent-ordering half) | **Gated on `chief-of-staff-02`** — not tested in this story; do not build or test ahead of the spike result |
+| Two blocking items arriving "simultaneously" (`FR-50` concurrent-ordering half) | **Gated on `chief-of-staff-02`** — not tested in this story; do not build or test ahead of the spike result |
 
 **Run with:** no automated test runner exists for this epic's markdown-only surface
 (`agents/chief-of-staff.md`, `skills/chief-of-staff/SKILL.md` — no executable code, per
@@ -203,9 +203,9 @@ each hand-authored fixture above and inspecting the actual reply text, briefing 
   `prd.md`'s own NFR table. `architecture.md`'s rank-by-priority-then-arrival-order rule is
   reasoned, not confirmed; this story does not implement or test it ahead of
   `chief-of-staff-02`'s real result.
-- `NFR-10` / `FR-51`'s exact volume threshold number — open, product-owner's call, same class
+- `NFR-10` / `FR-54`'s exact volume threshold number — open, product-owner's call, same class
   as `NFR-6`/7/9. This story ships the qualitative, reviewer-judged path only.
-- `FR-49`'s queue-merge check (S-6 + S-10 same-output dedup) — a distinct Phase 8 work item, a
+- `FR-52`'s queue-merge check (S-7 + S-11 same-output dedup) — a distinct Phase 8 work item, a
   different story, not this one.
 - The 9-agent pointer-section rollout that wires "lead your next reply with this item" into
   each consulting agent's own persona file — Phase 9 (`chief-of-staff-10`), which consumes
@@ -215,17 +215,17 @@ each hand-authored fixture above and inspecting the actual reply text, briefing 
 
 ## Dependencies
 
-- **`chief-of-staff-08`** (S-8 briefing assembly, Phase 8) — must be `done` first. It builds
-  `agents/chief-of-staff.md`'s core accumulation/ranking/default-marking logic (`FR-29`–32)
+- **`chief-of-staff-08`** (S-9 briefing assembly, Phase 8) — must be `done` first. It builds
+  `agents/chief-of-staff.md`'s core accumulation/ranking/default-marking logic (`FR-32`–35)
   and creates `skills/chief-of-staff/SKILL.md`'s pull-based briefing assembly that this story's
-  push path and grouped display extend, plus the shared queue-insertion routine's `FR-49`
+  push path and grouped display extend, plus the shared queue-insertion routine's `FR-52`
   merge-on-insert check this story's push-exception open-counterpart read reuses. As of this
   story's writing, `chief-of-staff-08` exists and is `status: ready` — specified, not yet
-  built. Its own Out of scope section names the push exception, `FR-47`'s pause/resume and
-  concurrent-ordering halves, and `FR-51`'s grouped display as explicitly this story's scope,
+  built. Its own Out of scope section names the push exception, `FR-50`'s pause/resume and
+  concurrent-ordering halves, and `FR-54`'s grouped display as explicitly this story's scope,
   confirming the split matches on both sides.
 - **`chief-of-staff-02`** (Spike CoS-2, Phase 5) — must confirm parallel-dispatch batching
-  before `FR-47`'s concurrent-arrival ordering half can be tested. As of this story's writing,
+  before `FR-50`'s concurrent-arrival ordering half can be tested. As of this story's writing,
   `chief-of-staff-02` is `status: ready`, not `done` — the empirical result this story's
   concurrent-ordering acceptance criterion depends on does not exist yet. This is the specific
   reason this story's own status is `draft`, not `ready`.
@@ -233,22 +233,22 @@ each hand-authored fixture above and inspecting the actual reply text, briefing 
 ## Implementation notes
 
 **Status set to `draft`, not `ready`, for one specific, named reason — not a general
-hedge.** `FR-47`'s concurrent-arrival ordering acceptance criterion is not falsifiable yet:
+hedge.** `FR-50`'s concurrent-arrival ordering acceptance criterion is not falsifiable yet:
 `NFR-8`'s exact mechanism is genuinely open in `prd.md` (owner: solution-architect),
 `architecture.md`'s proposed rule is reasoned but unconfirmed, and its confirming spike
 (`chief-of-staff-02`) is `ready` but has not run. Forcing a `ready` status on that one
 criterion would mean writing a pass/fail test against a mechanism nobody has committed to yet.
 
-Every other acceptance criterion here — the push exception (`FR-45`/46), the pause/marker/
-resume half of `FR-47`, the operator-never-returns edge case, and `FR-51`'s qualitative scale
+Every other acceptance criterion here — the push exception (`FR-48`/49), the pause/marker/
+resume half of `FR-50`, the operator-never-returns edge case, and `FR-54`'s qualitative scale
 check — is falsifiable now, has real file paths, a stated test approach, and a stated
 dependency (`chief-of-staff-08`, itself specified and `status: ready` but not yet built — a
 known, named blocker, not a hidden one).
 
 Promote to `ready` once `chief-of-staff-02`'s real result lands and is folded back into the
-`FR-47` concurrent-ordering criterion above, replacing "gated" with a concrete pass/fail test
+`FR-50` concurrent-ordering criterion above, replacing "gated" with a concrete pass/fail test
 (or, if CoS-2 finds dispatch is not genuinely batched, a note that `NFR-8` needs
 solution-architect's follow-up decision before this criterion can be written at all).
-Recommend not shipping this story's `FR-47` concurrent-ordering half under schedule pressure —
+Recommend not shipping this story's `FR-50` concurrent-ordering half under schedule pressure —
 `architecture.md`'s own discipline against testing it ahead of the spike applies to building
 it too.

@@ -6,7 +6,7 @@
 
 ## Context
 
-`prd.md`'s Open Question 6 asks whether `FR-20`/`FR-33`–`36`/`FR-52`'s decision log reuses
+`prd.md`'s Open Question 7 asks whether `FR-23`/`FR-36`–`39`/`FR-55`'s decision log reuses
 `harden`'s invocation ledger or needs its own store. The ledger's real, shipped schema
 (`harden-05`, `.delivery/invocations/<session_id>.ndjson`) is:
 
@@ -23,7 +23,7 @@ produced only when `PostToolUse`/`PostToolUseFailure` fires on a call that just 
 The glossary's own minimum content for the decision log — "a category distinguishing entry
 types, the specific answer/citable traceback involved, and a timestamp" — is a
 **triage-outcome** record: free-form judgment content (an excerpted answer, a diverging-output
-description for S-10), written whenever someone — a different agent, the operator, a later
+description for S-11), written whenever someone — a different agent, the operator, a later
 self-correction check — identifies a past chief-of-staff answer or flag was wrong. No hook
 fires on "noticed wrong three turns later"; there is no tool-call resolution to hang it on.
 
@@ -61,8 +61,8 @@ in one pass; the same approach reads every decision-log file the same way.
 
 ## Consequences
 
-**We gain:** schema honesty — the decision log carries the semantic content `FR-20`/`FR-33`–36/
-`FR-52` actually require without diluting the ledger's binding whitelist guarantee, and with
+**We gain:** schema honesty — the decision log carries the semantic content `FR-23`/`FR-36`–39/
+`FR-55` actually require without diluting the ledger's binding whitelist guarantee, and with
 zero change to `hooks/hooks.json` or `hooks/scripts/record-invocation.js`; this decision touches
 neither.
 
@@ -71,7 +71,7 @@ risk, stated explicitly: `.delivery/decisions/` already holds ADR files (`ADR-00
 `ADR-002`); the decision log lives at `.delivery/chief-of-staff/decision-log/`, nested and
 distinctly named so the two are never confused by an implementer skimming the tree.
 
-**We will need to revisit this if:** S-9's Stage-2 pattern-detection needs query patterns
+**We will need to revisit this if:** S-10's Stage-2 pattern-detection needs query patterns
 (count real logged outcomes of one category, most-recent-first, across many sessions) that flat
 per-session NDJSON files cannot serve at real volume — at which point a lightweight index or
 consolidated read path is added on top, not a schema merge with the invocation ledger.

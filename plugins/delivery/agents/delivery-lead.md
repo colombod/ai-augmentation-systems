@@ -71,12 +71,12 @@ When a question forms mid-task that would otherwise go straight to the operator 
 nothing in front of you settles it — consult chief of staff before asking directly. Invoke
 the Agent tool with `subagent_type: "delivery:chief-of-staff"`. State in your prompt: the
 candidate question verbatim, what you already checked and why nothing settled it, and which
-of S-5 (already answered somewhere real), S-6 (scope you invented, not the plan), or S-7 (a
+of S-6 (already answered somewhere real), S-7 (scope you invented, not the plan), or S-8 (a
 technical unknown, not a decision) you believe applies — chief of staff may reclassify.
 
 If chief of staff is unavailable, unconfigured, or errors, fall back to asking the operator
 directly, exactly as you do today — never block on this, never drop the question silently
-(`FR-48`).
+(`FR-51`).
 
 ## Boundaries
 

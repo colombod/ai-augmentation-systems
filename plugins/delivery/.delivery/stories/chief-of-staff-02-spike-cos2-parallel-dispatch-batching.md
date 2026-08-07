@@ -26,7 +26,7 @@ together — complete and unmangled, not interleaved or silently dropped. This i
 
 ## Context
 
-`architecture.md`'s `NFR-8` row (Concurrent-arrival ordering, `FR-47`) currently reads
+`architecture.md`'s `NFR-8` row (Concurrent-arrival ordering, `FR-50`) currently reads
 "resolved, not left open": Claude Code is assumed to deliver a batch of parallel Agent-tool
 dispatches back to the orchestrator together, not asynchronously mid-conversation, so there
 is no true race at the interaction layer — only a deterministic-merge rule chief of staff
@@ -39,12 +39,12 @@ primitive is needed instead."
 
 Two later designs assume the batching holds:
 
-- **`FR-47`** (S-8 mid-exchange pause/resume) — "a new blocking item mid-exchange pauses it
+- **`FR-50`** (S-9 mid-exchange pause/resume) — "a new blocking item mid-exchange pauses it
   with an explicit marker and resumes after; never a second concurrent exchange, never a
   silent queue." A "pause once, resume once" design only covers real behavior if arrivals
   genuinely land as one batch, not as a true interleaving the orchestrator has to juggle
   mid-turn.
-- **`FR-49`** (queue merge on insert, Interface 2) — "an output flagged by both S-6 and S-10
+- **`FR-52`** (queue merge on insert, Interface 2) — "an output flagged by both S-7 and S-11
   routes as one merged item citing both reasons — never two separate routings," enforced by:
   "before inserting a queue item, chief of staff checks
   `.delivery/chief-of-staff/queue.md` for an existing open item about the same output and
@@ -54,12 +54,12 @@ Two later designs assume the batching holds:
   Architecture's own Risks table names this exact failure — two subagents both resolving a
   blocking item and both attempting to update `queue.md` near-simultaneously — likelihood
   "Low, single-session turn-taking mostly serializes this," impact "Medium if it happens, a
-  lost update," mitigation "Spike CoS-2 confirms batching; the `FR-49` merge check
+  lost update," mitigation "Spike CoS-2 confirms batching; the `FR-52` merge check
   (read-before-insert) is the same read-modify-write this risk depends on."
 
 `roadmap.md`'s Phase 5 lists CoS-2 as its own work item, sized S, depending on the walking
 skeleton (`chief-of-staff-01`), not on CoS-1's trial results. Phase 8's own work-item table
-(`FR-47`'s concurrent-arrival ordering half) states it "inherits Spike CoS-2's confirmed
+(`FR-50`'s concurrent-arrival ordering half) states it "inherits Spike CoS-2's confirmed
 batching assumption; not tested ahead of it" — this spike is what that later phase inherits
 from. It needs a real, invokable `chief-of-staff` `subagent_type` to dispatch against, which
 is exactly what `chief-of-staff-01` builds; it does not need CoS-1's own ≥10-trial compliance
@@ -144,7 +144,7 @@ command; this is the nature of a real-session spike, same as `harden-02`.
 - The full consultation-compliance question (Spike CoS-1, `chief-of-staff-01`'s job) —
   whether a consulting agent actually chooses to call chief of staff at all, a different,
   harder question from whether dispatched results come back batched once the call is made.
-- Building the real `FR-47` pause/resume mechanism or the real `FR-49` merge check — future
+- Building the real `FR-50` pause/resume mechanism or the real `FR-52` merge check — future
   stories `chief-of-staff-08`/`chief-of-staff-09` (Phase 8), which this spike only de-risks,
   not implements.
 - A stress test of `queue.md` under sustained concurrent load — this spike confirms the

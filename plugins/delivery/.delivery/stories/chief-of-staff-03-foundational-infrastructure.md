@@ -7,14 +7,14 @@ a later story reads as input.
 
 ---
 id: chief-of-staff-03
-title: Build the chief-of-staff foundational substrate — decision log, mission/queue scaffolding, FR-48 fallback
+title: Build the chief-of-staff foundational substrate — decision log, mission/queue scaffolding, FR-51 fallback
 status: ready
 epic: chief-of-staff
 supersedes: []
 superseded_by: []
 superseded_reason:
 phase: "Phase 6 — foundational infrastructure"
-requirements: [FR-48, FR-20, FR-52]
+requirements: [FR-51, FR-23, FR-55]
 depends_on: [chief-of-staff-01]
 size: L
 ---
@@ -35,20 +35,20 @@ size: L
 
 ## Goal
 
-Turn `chief-of-staff-01`'s thin walking skeleton — a real S-5 citation check, everything else
+Turn `chief-of-staff-01`'s thin walking skeleton — a real S-6 citation check, everything else
 stubbed, per `roadmap.md`'s Phase 5 — into the real foundational substrate every later
 chief-of-staff story reads or writes: the full four-outcome return contract
 (`answered`/`bounced`/`spiked`/`queued`), the decision log, `mission.md`/`queue.md`
-scaffolding, and the `FR-48` unavailability fallback made concretely testable. Nothing here is
-end-user-visible triage behavior yet — it is the substrate S-5–S-8/S-10's real logic (stories
+scaffolding, and the `FR-51` unavailability fallback made concretely testable. Nothing here is
+end-user-visible triage behavior yet — it is the substrate S-6–S-9/S-11's real logic (stories
 04–08) gets built on top of, per `roadmap.md`'s own Phase 6 entry: "the shared substrate every
 later scenario reads or writes."
 
 ## Context
 
 `roadmap.md`'s dependency map is explicit: `Phase 5 (CoS-1, CoS-2) → Phase 6 (subagent +
-decision log + mission.md + queue.md + FR-48) → Phase 7 (S-5/S-6/S-7) / Phase 7b (S-10) →
-Phase 8 (S-8)`. S-5's `FR-20`, S-10 entirely, and S-8's queue-reading all read or write what
+decision log + mission.md + queue.md + FR-51) → Phase 7 (S-6/S-7/S-8) / Phase 7b (S-11) →
+Phase 8 (S-9)`. S-6's `FR-23`, S-11 entirely, and S-9's queue-reading all read or write what
 this story builds — none of Phase 7/7b/8's real logic can start without it.
 
 **Why `chief-of-staff-01` is a hard gate, not a soft preference:** `roadmap.md`'s Phase 6 entry
@@ -74,15 +74,15 @@ or a paraphrase.
 
 | Path | What to do |
 | :-- | :-- |
-| `plugins/delivery/agents/chief-of-staff.md` | modify — upgrade `chief-of-staff-01`'s walking-skeleton return shape to the full four-outcome contract (Interface 1 below); everything else in this file (S-5/S-6/S-7 classification logic itself) is out of scope — stories 04–08 |
+| `plugins/delivery/agents/chief-of-staff.md` | modify — upgrade `chief-of-staff-01`'s walking-skeleton return shape to the full four-outcome contract (Interface 1 below); everything else in this file (S-6/S-7/S-8 classification logic itself) is out of scope — stories 04–08 |
 | `.delivery/chief-of-staff/decision-log/<session_id>.ndjson` | new, runtime-created, one file per session, git-tracked with the consuming project (in this repo, that resolves to `plugins/delivery/.delivery/chief-of-staff/decision-log/`, mirroring how `plugins/delivery/.delivery/invocations/` already exists from `harden-05`'s own dogfooding) — schema per Interface 2 |
 | `plugins/delivery/templates/mission.md` | create — the template `.delivery/chief-of-staff/mission.md` is instantiated from; schema per Interface 4 |
 | `.delivery/chief-of-staff/mission.md` | new, runtime-created — current captured mission + revision-history table |
 | `plugins/delivery/templates/chief-of-staff-queue.md` | create — modeled on `templates/findings.md`'s tracked-status pattern (verified: `plugins/delivery/templates/findings.md` exists — ID/Status/Severity per-row tracking, a summary table, items that leave the list only by being resolved or explicitly rejected, never by silent omission); columns per Interface 3 |
 | `.delivery/chief-of-staff/queue.md` | new, runtime-created — instantiated from the template above |
 
-**Not in this story's file list, and why that matters for `FR-48`:** the `FR-48` fallback
-*text* — "the trigger condition, the exact call to make, and the `FR-48` fallback" — was
+**Not in this story's file list, and why that matters for `FR-51`:** the `FR-51` fallback
+*text* — "the trigger condition, the exact call to make, and the `FR-51` fallback" — was
 already written by `chief-of-staff-01` into the pointer sections of the ≥2 consulting-agent
 files CoS-1's own bar required (per `architecture.md`'s Component structure: every
 per-file pointer section states the fallback from the start, not added later). This story
@@ -98,30 +98,30 @@ Reproduced from `architecture.md`'s Interfaces and data contracts section (Chief
 epic), not linked.
 
 **Interface 1 — consultation return contract**, resolving feature-critic finding 5
-(`FR-45`/46 had no described invocation path). The Agent tool's own contract is a
+(`FR-48`/49 had no described invocation path). The Agent tool's own contract is a
 natural-language prompt, not a schema — chief of staff's response always states exactly one
 of four outcomes:
 
 ```
-answered  — S-5, with citable traceback
-bounced   — S-6, with originating agent + missing requirement
-spiked    — S-7, with the spike story's path
-queued    — S-8, with the queue-entry ID and its Blocking flag (y/n)
+answered  — S-6, with citable traceback
+bounced   — S-7, with originating agent + missing requirement
+spiked    — S-8, with the spike story's path
+queued    — S-9, with the queue-entry ID and its Blocking flag (y/n)
 ```
 
-The push mechanic this return contract feeds (`FR-45`/46: a `queued` outcome with `Blocking:
+The push mechanic this return contract feeds (`FR-48`/49: a `queued` outcome with `Blocking:
 y` and no open counterpart leads the calling agent's own next reply) is Phase 8's job, not
 this story's — this story only needs the outcome shape to exist and be stable, since Phase
 7/7b/8's real classification logic writes into it.
 
-**Interface 2 — decision-log entry**, resolving Open Question 6 (own store — `ADR-003`):
+**Interface 2 — decision-log entry**, resolving Open Question 7 (own store — `ADR-003`):
 
 ```json
 // .delivery/chief-of-staff/decision-log/<session_id>.ndjson — one line per event
 {"ts":"2026-08-07T10:00:00Z","session_id":"...","category":"inference-not-citation",
- "fr":"FR-20","scenario":"S-5",
+ "fr":"FR-23","scenario":"S-6",
  "citable_traceback":"none — inferred from a general pattern, not a cited line",
- "summary":"answered a scope question by inference instead of falling through to S-6",
+ "summary":"answered a scope question by inference instead of falling through to S-7",
  "raised_by":"qa-strategist","resolution":"open"}
 ```
 
@@ -142,7 +142,7 @@ pattern:
 | ID | stable identifier |
 | Rank | ordering within the briefing |
 | Blocking | y / n |
-| Source | S-5 / S-6 / S-7 |
+| Source | S-6 / S-7 / S-8 |
 | Item | the candidate question or flagged output |
 | Suggested default | text, or `no-default-available` — never a fabricated default |
 | Status | open / answered / parked / pushed |
@@ -151,16 +151,16 @@ pattern:
 A single project-scoped file, not per-session — a delegation period spans multiple sessions,
 unlike a ledger event.
 
-**Interface 4 — mission capture**, resolving Open Question 10: `.delivery/chief-of-staff/
+**Interface 4 — mission capture**, resolving Open Question 11: `.delivery/chief-of-staff/
 mission.md`, a standalone file, not `brief.md`'s frontmatter (different mutation lifecycle)
 and not the decision log (a current-value lookup needs one stable location, not a per-session
 append log to scan). Contains the current captured mission (verbatim excerpt or citable
-pointer, never chief of staff's own paraphrase — `FR-37`, enforced starting Phase 7b; this
+pointer, never chief of staff's own paraphrase — `FR-40`, enforced starting Phase 7b; this
 story ships only the container) and a revision-history table: prior text, replaced-on
 timestamp, `requested_by`, and a `status` column (`pending` / `confirmed`) this story adds to
 carry the mechanism below.
 
-**Open Question 9 is a product-owner call, not an architecture one** (who has standing to
+**Open Question 10 is a product-owner call, not an architecture one** (who has standing to
 recapture the mission) — this story does not resolve it. What it commits to, so the answer has
 somewhere to land either way: the revision-history table always records `requested_by`,
 regardless of policy. If product-owner's eventual answer is "operator only," an agent-proposed
@@ -172,7 +172,7 @@ until confirmed; if the answer is broader, `status: confirmed` applies immediate
 ## Relevant design decisions
 
 - **`ADR-002`** — chief of staff is a real subagent, invoked directly via the Agent tool. This
-  is why `chief-of-staff.md`'s return contract (Interface 1) matters for `FR-48`: a failed or
+  is why `chief-of-staff.md`'s return contract (Interface 1) matters for `FR-51`: a failed or
   erroring call is a real, ledger-visible Agent-tool failure the calling agent's fallback text
   can detect — not a swallowed exception inside another agent's own reasoning. `ADR-002`'s
   revisit clause is this story's hard gate (see Context and Dependencies).
@@ -188,11 +188,11 @@ until confirmed; if the answer is broader, `status: confirmed` applies immediate
 
 ## Acceptance criteria
 
-- [ ] `FR-48` — a fixture simulates the chief-of-staff Agent-tool call failing, erroring, or
+- [ ] `FR-51` — a fixture simulates the chief-of-staff Agent-tool call failing, erroring, or
   being unconfigured, run against the ≥2 consulting-agent pointer-section files
   `chief-of-staff-01` authored; the calling agent's stated behavior is to ask the operator
   directly — never blocks indefinitely, never silently drops the candidate question.
-- [ ] `FR-20`/`FR-52` (schema only — trigger logic is Phase 7/7b's job, not this story's) — a
+- [ ] `FR-23`/`FR-55` (schema only — trigger logic is Phase 7/7b's job, not this story's) — a
   hand-authored decision-log entry validates as well-formed NDJSON carrying at minimum
   `category`, `citable_traceback`, `ts`, at the path `.delivery/chief-of-staff/decision-log/
   <session_id>.ndjson`, structurally distinct from `.delivery/invocations/<session_id>.ndjson`
@@ -205,7 +205,7 @@ until confirmed; if the answer is broader, `status: confirmed` applies immediate
   revision-history table with `requested_by` and `status` (`pending`/`confirmed`) columns. A
   hand-fired fixture captures a verbatim mission excerpt, then records one recapture, and the
   resulting `.delivery/chief-of-staff/mission.md` shows `requested_by` populated regardless of
-  who proposed it — the mechanism does not hardcode Open Question 9's unresolved answer.
+  who proposed it — the mechanism does not hardcode Open Question 10's unresolved answer.
 - [ ] `templates/chief-of-staff-queue.md` defines the 8 columns in Interface 3. A hand-fired
   fixture appends one real entry to `.delivery/chief-of-staff/queue.md` with all 8 columns
   populated (or `no-default-available` where that's the honest value).
@@ -214,7 +214,7 @@ until confirmed; if the answer is broader, `status: confirmed` applies immediate
 
 **No vertical slice is possible yet.** Every demonstrable-exit bullet in this story is a
 hand-fired fixture — a canned decision-log write, a canned mission.md recapture, a canned
-queue append, a simulated chief-of-staff-unavailable case — not real S-5/S-6/S-7 triage
+queue append, a simulated chief-of-staff-unavailable case — not real S-6/S-7/S-8 triage
 behavior, because that classification logic does not exist until stories 04–07 (Phase 7/7b)
 run against it. This is the same posture `harden-05` took before `harden-02` gave the
 invocation ledger real live traffic: unit/fixture coverage on the mechanism's own logic and
@@ -249,18 +249,18 @@ test command that doesn't correspond to real code.
 
 ## Out of scope
 
-- S-5/S-6/S-7's actual triage logic (citation classification, bounce classification, technical-
+- S-6/S-7/S-8's actual triage logic (citation classification, bounce classification, technical-
   unknown routing) — stories 04–07, Phase 7.
-- S-8's briefing assembly, the push mechanic (`FR-45`/46), and `skills/chief-of-staff/
+- S-9's briefing assembly, the push mechanic (`FR-48`/49), and `skills/chief-of-staff/
   SKILL.md` (the operator-facing pull entry point) — story 08, Phase 8.
-- S-10's drift-check logic (checking new output against the captured mission, the Case-table
-  behaviors, `FR-37`–40 in full) — Phase 7b, a separate story. This story ships only the
-  storage container `FR-37` will later write correctness rules against.
-- The 9-agent pointer-section rollout — story 10, Phase 9. This story's `FR-48` fixture tests
+- S-11's drift-check logic (checking new output against the captured mission, the Case-table
+  behaviors, `FR-40`–43 in full) — Phase 7b, a separate story. This story ships only the
+  storage container `FR-40` will later write correctness rules against.
+- The 9-agent pointer-section rollout — story 10, Phase 9. This story's `FR-51` fixture tests
   only the ≥2 files `chief-of-staff-01` already touched.
 - `NFR-6`'s non-blocking-default threshold number, `NFR-11`'s decision-log retention policy —
   both open numbers/policy calls owned by qa-strategist/product-owner, mechanism-only here.
-- Re-authoring the `FR-48` fallback text itself — already written by `chief-of-staff-01`; see
+- Re-authoring the `FR-51` fallback text itself — already written by `chief-of-staff-01`; see
   Files and modules.
 
 ## Dependencies
@@ -273,7 +273,7 @@ test command that doesn't correspond to real code.
   at the measured rate?), not to solution-architect as an engineering problem to solve harder.
   Do not begin this story's build against an unresolved or failing CoS-1 result.
 - This story also needs to know which ≥2 consulting-agent files `chief-of-staff-01` added a
-  pointer section to, for the `FR-48` fixture's target — read that from `chief-of-staff-01`'s
+  pointer section to, for the `FR-51` fixture's target — read that from `chief-of-staff-01`'s
   own Implementation Notes once it exists.
 
 ## Implementation notes
