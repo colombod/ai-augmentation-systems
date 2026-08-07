@@ -5,7 +5,7 @@
 > dialect gives way.
 >
 > **Owned by:** Product Owner (arbitrates) · **Curated by:** Business Analyst
-> Last curated: 2026-08-05
+> Last curated: 2026-08-07
 
 ## How to use this
 
@@ -38,6 +38,16 @@ written and everything still to come.
 | Self-correction check | A `/delivery:status` or `/delivery:challenge` run — an independent look at the work, separate from the person doing it. | Finding D | — | "status/challenge-equivalent check", "independent check" (both used in the PRD draft — replace with this term there) |
 | Governed artifact | A file this plugin's phases produce and track — the ones `/delivery:status`'s phase table already lists (`brief.md`, `research.md`, each persona file, `prd.md`, and so on). | `plugins/delivery/skills/status/SKILL.md`'s phase table | — | none yet — first use was in the PRD without a definition; recorded here to close that gap |
 | The operator | The one person who actually runs this plugin, whichever working mode they're in. Referred to by their chosen plain name (below), never by a bare ID, in any sentence meant for a human to read. | — | `persona.slug` in frontmatter | "the user" (ambiguous — could mean this plugin's operator or the end-customer of whatever they're building) |
+| Chief of staff | The mechanism that triages an agent's candidate questions before they reach the operator — answers directly when a real source settles it, bounces invented scope back to the originating agent, routes technical unknowns to spikes, and combines everything else into one ranked briefing. | `prd.md` S-5–S-11 | — | — |
+| Candidate question | A question an agent has formed, mid-work, that it would otherwise surface directly to the operator, before chief of staff has triaged it. | `prd.md` S-5's Trigger | — | bare "question" — keep distinct from S-7's "technical unknown" |
+| Citable traceback | A pointer to an exact, nameable source — a specific artifact line or a specific thing the operator actually said — that an answer or flag can be checked against; never an inferred or summarized judgment. | `prd.md` S-5's hard constraint; `FR-18` | — | "citation" |
+| Briefing | The single, ranked report chief of staff delivers at check-in, containing everything that survived S-5/S-6/S-7 triage. | `prd.md` S-8; `FR-29`/`FR-30` | — | a solo `FR-45` push item is explicitly not a briefing |
+| Decision pattern | A repeated, traceable regularity in what the operator actually did with past briefed/answered items — grounded only in a stated minimum number of real logged instances of that exact category. | `prd.md` S-9; `FR-33`/`FR-34` | — | — |
+| Decision log | The persisted, timestamped record chief-of-staff failures (`FR-20`, `FR-52`) and S-9's learning substrate are written to. Minimum record content: a category distinguishing entry types, the specific answer/citable traceback involved, and a timestamp. Storage location/format is Open Question 6, decided at architecture time. | `prd.md` `FR-20`, `FR-33`–`36`, `FR-52` | — | — |
+| Park-over-polish | The stated bias that, given this pipeline's premise of fast incremental delivery corrected by real usage data, an ambiguous triage case defaults to parking a non-blocking decision and continuing, rather than exhaustively resolving upfront. | The operator's direct statement while scoping the Chief of Staff epic, and a real, unprompted instance of the operator applying it themselves in the `attractor-orchestration-claude` session (`prd.md` S-8) | — | — |
+| Mission | The verbatim excerpt or citable pointer capturing why an effort exists, checked continuously against new output so a requirement met on paper doesn't silently drift from the reason the work started. | `prd.md` S-10/`FR-37`–`40` | `.delivery/chief-of-staff/mission.md` | — |
+| Pull | The operator (or the agent acting on their behalf) explicitly asks chief of staff for the current briefing — the default way S-8's briefing reaches them. | `prd.md` S-8; `architecture.md`'s Component structure | — | — |
+| Push | The one narrow exception to pull: a blocking queue item with no open counterpart already delivered surfaces at the front of the calling agent's very next reply to the operator in a live session, rather than waiting for an explicit pull. Not an out-of-band interrupt — this harness has no mechanism for one. | `prd.md` `FR-45`/`46`; `architecture.md`'s Interface 1 return-contract | — | "interrupt", "notification" (implies a capability this design doesn't have) |
 
 ## Persona reference convention
 
