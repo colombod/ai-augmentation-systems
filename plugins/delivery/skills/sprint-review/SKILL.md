@@ -77,17 +77,32 @@ since no ledger cross-check exists yet for it; a real visual capture for TUI, or
 whether or not the work was checked ad hoc before this formal review ever ran — it does
 not get a lighter version here.
 
-**2. Run the test suite yourself** and report the real output. A sprint that claimed green and is now red is the single most important thing this review can catch.
+**2. If this sprint touched the plugin's own skills, hooks, agents, or templates — verify
+ship readiness independently, not from the sprint log's word.** This is a distinct failure
+class from a functional acceptance criterion: a change can be functionally correct and still
+fail to actually reach anyone. Re-check, yourself, against the real current state — do not
+trust a story's own "Ship readiness" checkboxes as sufficient, the same "verify against
+criteria, not the builder's report" rule this whole review runs under:
+- `git fetch origin main && git log --oneline main..origin/main` — empty output confirms the
+  merged branch really was current with `main`, not assumed so after time passed.
+- The plugin's version was actually bumped in the merged commit, if this project's own
+  convention requires one (check its real history, don't assume).
+- Any claim that a fix "works" is either backed by verification this session could actually
+  perform, or explicitly flagged as unverified pending a fresh session/environment this one
+  doesn't have — a claim resting on an environment nobody actually has access to is not
+  evidence, and gets the same **not accepted** treatment as an untested functional claim.
 
-**3. Check design system conformance.** Where a design system exists, delegate to `delivery:design-lead`: which tokens were used, which were bypassed with hardcoded values, which component states are missing, which contrast rules fail. Report file paths, not impressions.
+**3. Run the test suite yourself** and report the real output. A sprint that claimed green and is now red is the single most important thing this review can catch.
 
-**4. Check the persona journeys.** This is the question that matters most and the one story-level criteria cannot answer: *can a persona now complete a journey end to end and get value?* Delegate to `delivery:persona-simulator` for each persona whose journey this sprint was meant to enable, walking the **now-real** implementation. Label the output synthetic, as always.
+**4. Check design system conformance.** Where a design system exists, delegate to `delivery:design-lead`: which tokens were used, which were bypassed with hardcoded values, which component states are missing, which contrast rules fail. Report file paths, not impressions.
+
+**5. Check the persona journeys.** This is the question that matters most and the one story-level criteria cannot answer: *can a persona now complete a journey end to end and get value?* Delegate to `delivery:persona-simulator` for each persona whose journey this sprint was meant to enable, walking the **now-real** implementation. Label the output synthetic, as always.
 
 A sprint where every story passed but no persona can complete a journey has delivered nothing usable, and only this check will tell you.
 
-**5. Reconcile against the stage promise.** `prioritization.md` said what this stage would deliver and which personas it would serve. Compare what was promised to what is now true. Name any silent scope drop.
+**6. Reconcile against the stage promise.** `prioritization.md` said what this stage would deliver and which personas it would serve. Compare what was promised to what is now true. Name any silent scope drop.
 
-**6. Challenge the result.** Delegate to `delivery:feature-critic` (read-only) with the question: *what would make this acceptance verdict wrong?* Missing evidence, criteria passing on a technicality, tests asserting implementation rather than behavior.
+**7. Challenge the result.** Delegate to `delivery:feature-critic` (read-only) with the question: *what would make this acceptance verdict wrong?* Missing evidence, criteria passing on a technicality, tests asserting implementation rather than behavior.
 
 ## Verdict
 
@@ -95,7 +110,7 @@ State one of:
 
 - **Accepted** — all criteria met with evidence, tests green, persona journeys work
 - **Accepted with debt** — criteria met, but named issues are being carried forward, each recorded as a finding
-- **Not accepted** — criteria unmet or journeys broken; state exactly what and what it would take
+- **Not accepted** — criteria unmet, journeys broken, or ship-readiness failed (stale branch merged, a required version bump missing, a claim resting on unverifiable-from-here evidence); state exactly what and what it would take
 
 Do not soften this. A sprint review that never returns "not accepted" is not a gate, and everything downstream will be planned on a false baseline.
 

@@ -83,6 +83,21 @@ Traced to the PRD. Each falsifiable by someone who did not write it.
 
 **Run with:** `<the actual command in this repo>`
 
+## Ship readiness
+
+**Only applies when this story changes the plugin's own skills, hooks, agents, or
+templates** — code/config other sessions load, not an ordinary product feature. Delete this
+section entirely if it doesn't apply; do not leave it blank.
+
+- [ ] Branch was fetched and compared against the real current `main` immediately before
+      merge — not assumed current after time has passed. State the check, not just the result:
+      `git fetch origin main && git log --oneline main..origin/main` (empty output = current).
+- [ ] The plugin's version is bumped, if the host tool needs a version change to pick this up
+      (check this project's own convention/history rather than assuming).
+- [ ] If full behavioral verification needs an environment this session doesn't have (a fresh
+      session, a reinstalled plugin, a hot-reload this harness doesn't support mid-session) —
+      that gap is named explicitly as a real open item, never silently claimed as passing.
+
 ## Out of scope
 
 Deliberate boundaries. These were decided, not forgotten.
