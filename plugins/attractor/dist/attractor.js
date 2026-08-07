@@ -3182,7 +3182,7 @@ function findConvergenceNode(graph, branchRootIds, fanOutNodeId) {
   if (branchRootIds.length === 0) return null;
   const rootSet = new Set(branchRootIds);
   const depthMaps = branchRootIds.map((id) => reachableWithDepthTruncated(graph, id, fanOutNodeId));
-  let candidates = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id));
+  let candidates = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id) && id !== fanOutNodeId);
   for (let i = 1; i < depthMaps.length; i++) {
     candidates = candidates.filter((id) => depthMaps[i].has(id));
   }
@@ -3208,7 +3208,7 @@ function findPartialReconvergence(graph, branchRootIdsRaw, convergenceId, fanOut
     const queue = [rootId];
     while (queue.length > 0) {
       const cur = queue.shift();
-      if (cur === convergenceId || cur === fanOutNodeId) continue;
+      if (cur === convergenceId) continue;
       for (const e of outgoingEdges(graph, cur)) {
         if (!seen.has(e.to)) {
           seen.add(e.to);
@@ -3222,7 +3222,7 @@ function findPartialReconvergence(graph, branchRootIdsRaw, convergenceId, fanOut
   const counts = /* @__PURE__ */ new Map();
   for (const set of truncatedSets) {
     for (const id of set) {
-      if (id === convergenceId || exitIds.has(id)) continue;
+      if (id === convergenceId || id === fanOutNodeId || exitIds.has(id)) continue;
       counts.set(id, (counts.get(id) ?? 0) + 1);
     }
   }
@@ -3252,7 +3252,7 @@ function findPartialReconvergence(graph, branchRootIdsRaw, convergenceId, fanOut
   })();
   for (const set of truncatedSets) {
     for (const id of set) {
-      if (id === convergenceId || exitIds.has(id) || rootSet.has(id)) continue;
+      if (id === convergenceId || id === fanOutNodeId || exitIds.has(id) || rootSet.has(id)) continue;
       if (downstreamOfConvergence.has(id)) hazards.add(id);
     }
   }

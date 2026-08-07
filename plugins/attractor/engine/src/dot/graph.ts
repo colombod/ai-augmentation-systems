@@ -521,8 +521,10 @@ function reachableWithDepthTruncated(graph: Graph, startId: string, stopId: stri
 
 /**
  * Earliest node reachable from EVERY branch root (excluding the roots
- * themselves -- a root is never a valid convergence candidate, even one
- * reachable from a sibling root via a genuine forward edge), by static
+ * themselves, and excluding the fan-out node itself -- ADR-007's tenth
+ * amendment: `reachableWithDepthTruncated` necessarily records reaching the
+ * fan-out node as part of truncating past it, but the fan-out node is never
+ * itself a valid "resume point"), by static
  * reachability over ALL outgoing edges regardless of condition truth,
  * TRUNCATED at `fanOutNodeId` -- reachability does not expand past the
  * fan-out node itself (ADR-007's ninth amendment). Without this truncation,
@@ -553,7 +555,7 @@ export function findConvergenceNode(
   const rootSet = new Set(branchRootIds)
   const depthMaps = branchRootIds.map((id) => reachableWithDepthTruncated(graph, id, fanOutNodeId))
 
-  let candidates: string[] = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id))
+  let candidates: string[] = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id) && id !== fanOutNodeId)
   for (let i = 1; i < depthMaps.length; i++) {
     candidates = candidates.filter((id) => depthMaps[i].has(id))
   }
@@ -576,14 +578,14 @@ export function findConvergenceNode(
  * (each `runBranch` stopping at `convergenceId`, a dead end, or EXIT) and the main run resumed
  * at `convergenceId` afterward. Flags the union of two hazards (ADR-007's sixth amendment):
  *
- * (a) reachable -- via a path not crossing `convergenceId` OR the fan-out node first -- from two
- *     or more of the given branch roots, INCLUDING a root itself if a sibling root's own
- *     FORWARD path reaches it (a root is only excluded from *convergence-node selection* in
- *     findConvergenceNode -- a different question). The fan-out-node truncation (ADR-007's
- *     ninth amendment) exists so a rework/retry loop's path back to the fan-out is never
- *     mistaken for a genuine forward sibling-root reference -- it stops the traversal before it
- *     can re-enter a DIFFERENT branch root via the loop, while a real forward edge between two
- *     roots (never touching the fan-out again) is completely unaffected.
+ * (a) reachable -- via a path not crossing `convergenceId` first -- from two or more of the given
+ *     branch roots, INCLUDING a root itself if a sibling root's own path reaches it, WHETHER that
+ *     path is an ordinary forward edge or a branch's own in-branch retry back through the fan-out
+ *     (ADR-007's tenth amendment: `runBranch`'s own contract only stops a branch's traversal at
+ *     `convergenceId` -- a branch that loops back through the fan-out before ever reaching
+ *     convergence can genuinely re-enter a sibling's territory, so this is not truncated at the
+ *     fan-out node; only the fan-out node ITSELF is excluded from being named as the hazard,
+ *     below).
  * (b) reachable from a SINGLE branch root without crossing `convergenceId` first, where that
  *     same node is also reachable from `convergenceId` itself via a walk that does not expand
  *     past any branch root (ADR-007's eighth amendment -- truncated, not the plain untruncated
@@ -622,7 +624,7 @@ export function findPartialReconvergence(
     const queue = [rootId]
     while (queue.length > 0) {
       const cur = queue.shift() as string
-      if (cur === convergenceId || cur === fanOutNodeId) continue // do not expand past convergence or the fan-out node
+      if (cur === convergenceId) continue // do not expand past convergence
       for (const e of outgoingEdges(graph, cur)) {
         if (!seen.has(e.to)) {
           seen.add(e.to)
@@ -642,7 +644,7 @@ export function findPartialReconvergence(
   const counts = new Map<string, number>()
   for (const set of truncatedSets) {
     for (const id of set) {
-      if (id === convergenceId || exitIds.has(id)) continue
+      if (id === convergenceId || id === fanOutNodeId || exitIds.has(id)) continue
       counts.set(id, (counts.get(id) ?? 0) + 1)
     }
   }
@@ -685,7 +687,7 @@ export function findPartialReconvergence(
   })()
   for (const set of truncatedSets) {
     for (const id of set) {
-      if (id === convergenceId || exitIds.has(id) || rootSet.has(id)) continue
+      if (id === convergenceId || id === fanOutNodeId || exitIds.has(id) || rootSet.has(id)) continue
       if (downstreamOfConvergence.has(id)) hazards.add(id)
     }
   }

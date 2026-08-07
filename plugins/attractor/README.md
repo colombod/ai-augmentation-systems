@@ -265,8 +265,10 @@ convergence node reachable, before it, from two or more branches (including
 a branch root reachable from a sibling root's own forward path, or one that
 merely lost a depth tie for it), or -- if it is not itself a branch root --
 reachable from a single branch's own shortcut into the convergence node's
-own downstream territory. A rework/retry loop back to the fan-out node never
-triggers this rule on its own.
+own downstream territory. The fan-out node itself is never named as a
+hazard, but a branch that loops back through it before reaching the chosen
+convergence node -- re-entering a sibling branch's own territory -- is
+exactly the cross-branch case this rule already refuses.
 
 `RUNS-002`, `DATA-001`, `GATE-001`, `CMD-001`, `HITL-003` and `PAR-002` are
 warnings; the rest are errors, and `attractor run` refuses a graph with any

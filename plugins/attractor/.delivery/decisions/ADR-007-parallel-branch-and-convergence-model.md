@@ -685,3 +685,101 @@ seventh amendment's own overconfident framing, this amendment does not claim the
 class is fully closed either, only that it is closed for every fixture an independent, genuinely
 adversarial pass (mutation testing plus tens of thousands of generated graphs) could construct
 against the implementation as it stood before this pass.
+
+## Amendment (2026-08-07, tenth pass): the ninth pass's own rule-(a) fix was built on a misdiagnosis — it traded a real hazard for a non-hazard, plus `findConvergenceNode` can select the fan-out node itself
+
+**This is a correction, not merely another gap.** The ninth amendment's rule-(a) change (`truncatedSets`
+also stops at `fanOutNodeId`) was motivated by a fixture where a rework loop's retry path
+happened to route through a *sibling* branch root, which the ninth amendment characterized as an
+"ordinary rework loop" false positive. Re-derivation under adversarial review, tracing the same
+reasoning `runBranch`'s own contract already establishes (`stopAt = {convergenceId}` only, ADR-009
+and ADR-012 — a branch's traversal does not stop merely because it reaches the fan-out node again),
+shows that fixture was never a false positive at all. **The node it flagged was a genuine hazard**,
+structurally identical to the tenth amendment's own newly-constructed counterexample below — the
+ninth amendment's own justification for the fix was wrong, not merely its scope.
+
+**The gap this reopens.** Consider a branch whose OWN path — before it ever reaches
+`convergenceId` — has a second edge leading to a retry back to the fan-out:
+
+```
+fan -> a1 -> combine
+fan -> b1 -> combine
+a1 -> ra
+ra -> fan  [a retry edge]
+combine -> done
+```
+
+Before the ninth amendment (eighth-amendment code): `truncatedSets(a1)` reaches `combine` (stops,
+per the existing convergence truncation) via one edge, but ALSO reaches `ra -> fan -> b1` via the
+other — `b1` lands in both `a1`'s truncated set and its own, correctly triggering rule (a)
+(`b1`, count 2). This is not a rework-loop false positive: `a1`'s own traversal, per `runBranch`'s
+actual contract, does not stop at `fan` (only `convergenceId` stops it) — so this branch really
+can wander back through the fan-out and re-enter `b1`'s territory while `b1`'s own independent
+branch dispatch may still be running. That is exactly the double-dispatch class PAR-004 exists to
+refuse. The ninth amendment's truncation at `fanOutNodeId` makes `truncatedSets(a1)` stop
+expanding the moment it reaches `fan` via `ra` — `b1` is never reached that way anymore, and the
+hazard silently disappears. **Traded a false positive that was never really false for a false
+negative on an ERROR-level rule.**
+
+The canonical, actually-hazard-free rework loop this whole investigation has been chasing since
+the seventh amendment — retry originating from a *shared, post-convergence* node
+(`combine -> check -> fan`) — was **never affected by this bug**, before or after the ninth
+amendment: `truncatedSets`'s existing truncation at `convergenceId` already stops every branch's
+own traversal before it can reach that shared retry logic at all. The ninth amendment's rule-(a)
+change bought nothing for the pattern it was written to fix, and cost a real detection.
+
+**A second, independent bug, found in the same review: `findConvergenceNode` can select the
+fan-out node itself as "the" convergence node.** `reachableWithDepthTruncated` (the ninth
+amendment's own helper) adds `fanOutNodeId` to each root's depth map before refusing to expand
+past it — by design, since a truncation point must be recorded as reached. But
+`findConvergenceNode`'s candidate filter excludes branch roots (`!rootSet.has(id)`) and never
+excluded `fanOutNodeId`. In any rework-loop graph where the fan-out is reachable from every root
+at a shallow depth — which, given the truncation, is now *every* rework-loop graph — `fan` becomes
+an eligible, often-winning candidate. `convergenceId` then resolves to the `Handler.PARALLEL` node
+itself: nonsensical, and it silently defeats both PAR-001 (a graph with genuinely no resume point
+now "finds" one — the fan-out node) and PAR-004 (every downstream computation runs relative to a
+broken `convergenceId`). A pre-existing, degenerate instance of this (a root looping straight back
+to `fan` with no other structure at all) already existed before the ninth amendment and was not
+introduced by it, but the ninth amendment's own truncation made the general case — any ordinary
+multi-branch pipeline with independent per-branch retry edges — hit it far more often (confirmed:
+a 20,000-graph cyclic sweep found `fan`-as-convergence roughly 35% more frequent after the ninth
+amendment's change than before, with zero cases removed).
+
+**Decision.**
+
+- `findConvergenceNode`'s candidate filter gains one more exclusion:
+  `id !== fanOutNodeId`, alongside the existing `!rootSet.has(id)`. The fan-out node can be
+  *reached* (it must be, for the truncation to work) but is never itself eligible to be "the"
+  convergence node. This closes both the newly-frequent and the pre-existing degenerate case with
+  one change.
+- `findPartialReconvergence`'s rule (a) (`truncatedSets`) **reverts** to truncating only at
+  `convergenceId` — the ninth amendment's `|| cur === fanOutNodeId` addition is removed entirely.
+  Rule (a) was never actually broken by rework loops; it was broken by a misreading of one
+  fixture.
+- `findPartialReconvergence` keeps its `fanOutNodeId` parameter, but repurposes it: both rule (a)'s
+  counting loop and rule (b)'s downstream-check loop now exclude `id === fanOutNodeId` from being
+  **named** as a hazard (alongside the existing `convergenceId`/EXIT exclusions) — the fan-out node
+  itself is never a meaningful "partial reconvergence" target to report, even though paths through
+  it still correctly contribute to *other* nodes' reachability and can still trigger the rule via
+  those other nodes (see the symmetric-mutual-retry case below).
+- The ninth amendment's own regression test asserting a sibling root reached via a rework loop is
+  "not a false hazard" is replaced with one asserting the opposite, with the corrected reasoning —
+  the prior test's premise is now understood to be wrong, not merely superseded.
+
+**Consequences (this amendment specifically).** **We gain:** a real double-dispatch hazard
+(a branch's own in-branch retry re-entering a sibling's territory before reaching convergence) is
+detected again, closing a false negative the ninth amendment introduced on an ERROR-level safety
+rule; `findConvergenceNode` can no longer resolve to the fan-out node itself, closing both a
+pre-existing degenerate case and a class the ninth amendment made substantially more common.
+**We accept:** a rework loop where *both* branches independently retry back to the fan-out (a
+symmetric case) now correctly flags the branch roots themselves as hazards via rule (a) — the
+fan-out node is excluded from being *named*, but the roots reaching each other through it are not,
+and are a genuine instance of the sixth amendment's own Gap-1 principle (a root reachable from
+another root is exactly as hazardous as any other shared node), applied via a retry edge instead
+of a plain forward one. This is more restrictive than an author might expect from a "simple"
+mutual-retry pipeline, but it is not a new kind of imprecision — it is Gap-1's existing, accepted
+rule firing on a graph shape nothing before this amendment happened to construct. **We still do
+not have a proof this is the last gap**, now for the seventh time. This amendment is also, for the
+first time in this ADR's revision history, an explicit correction of a PRIOR amendment's own
+stated reasoning, not only its code — a reminder that "adversarially re-verified" describes the
+process this ADR follows, not a property any single amendment is entitled to claim about itself.

@@ -2176,13 +2176,15 @@ test('findConvergenceNode: an asymmetric-length rework loop does not select a mi
   assert.deepEqual(findPartialReconvergence(g, ['a1', 'b1'], convergenceId, 'fan'), [])
 })
 
-test('findPartialReconvergence: a rework loop through a sibling root is not a false hazard (ADR-007 ninth amendment)', () => {
-  // Same shape as the Gap-2 asymmetric-tie fixture, but the shortcut node y
-  // now leads into a rework loop (y -> check -> fan [retry]) instead of
-  // straight to done. root2 must NOT be flagged merely because the retry
-  // edge's path back to the fan-out passes through it (fan -> root2 is an
-  // ordinary branch edge, reached here only via the loop) -- but y itself,
-  // the genuine Gap-2 shortcut hazard, must still be flagged.
+test('findPartialReconvergence: a branch\'s own in-branch retry re-entering a sibling root IS a real hazard (ADR-007 tenth amendment)', () => {
+  // Same fixture round 4 mistakenly believed was a false-positive case.
+  // root1's own path (root1 -> q -> y) never reaches x (the real
+  // convergence node) before looping back through the fan-out into
+  // root2's own territory. runBranch's contract only stops a branch's
+  // traversal AT convergenceId (ADR-009/ADR-012) -- root1's traversal does
+  // not stop just because it re-reaches the fan-out -- so this is a
+  // genuine same-pass double-dispatch of root2, not a rework-loop artifact.
+  // y (root1's own Gap-2 shortcut past x) is also still a hazard.
   const g = parseDot(`digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     fan [shape=component]
@@ -2202,8 +2204,76 @@ test('findPartialReconvergence: a rework loop through a sibling root is not a fa
   const convergenceId = findConvergenceNode(g, ['root1', 'root2'], 'fan')
   assert.equal(convergenceId, 'x')
   const partial = findPartialReconvergence(g, ['root1', 'root2'], convergenceId, 'fan')
-  assert.ok(!partial.includes('root2'), 'root2 is only reachable via the rework loop -- not a hazard')
+  assert.ok(partial.includes('root2'), 'root1\'s in-branch retry re-enters root2\'s own territory before ever reaching x -- a real hazard')
   assert.ok(partial.includes('y'), 'y is root1\'s own shortcut past x -- still a genuine hazard')
+})
+
+test('findConvergenceNode: the fan-out node itself is never a valid convergence candidate (ADR-007 tenth amendment)', () => {
+  // Both branches independently retry back to the fan-out with no shared
+  // downstream node besides the graph's real EXIT -- reachableWithDepthTruncated
+  // necessarily records reaching 'fan' as part of truncating past it, so
+  // without excluding it explicitly, 'fan' becomes a shallow, wrongly-winning
+  // candidate instead of the real answer, 'done'.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    lintjob [shape=box]  testjob [shape=box]  lintcheck [shape=diamond]  testcheck [shape=diamond]
+    start -> fan
+    fan -> lintjob -> lintcheck
+    fan -> testjob -> testcheck
+    lintcheck -> fan [label="retry"]
+    testcheck -> fan [label="retry"]
+    lintcheck -> done
+    testcheck -> done
+  }`)
+  assert.equal(findConvergenceNode(g, ['lintjob', 'testjob'], 'fan'), 'done')
+})
+
+test('findPartialReconvergence: the fan-out node is excluded from being named as a hazard, even under a symmetric mutual retry', () => {
+  // Both branches retry back to the fan-out AND reach each other's roots
+  // that way -- a1 and b1 are genuine hazards (Gap-1's own principle, via a
+  // retry edge instead of a plain forward one -- see the test above), but
+  // the fan-out node itself must never be named, regardless of how many
+  // branches' paths happen to pass through it.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    a1 [shape=box]  ra [shape=diamond]  b1 [shape=box]  rb [shape=diamond]  combine [shape=box]
+    start -> fan
+    fan -> a1 -> combine
+    fan -> b1 -> combine
+    a1 -> ra
+    ra -> fan [label="retry"]
+    b1 -> rb
+    rb -> fan [label="retry"]
+    combine -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a1', 'b1'], 'fan')
+  assert.equal(convergenceId, 'combine')
+  const partial = findPartialReconvergence(g, ['a1', 'b1'], convergenceId, 'fan')
+  assert.ok(!partial.includes('fan'), 'the fan-out node itself is never a meaningful hazard to name')
+})
+
+test('findPartialReconvergence: the canonical post-convergence rework loop is still hazard-free (ADR-007 tenth amendment regression)', () => {
+  // The pattern this whole investigation (rounds 2-5) has chased: retry
+  // originates from a SHARED node strictly after convergence. Rule (a)'s
+  // truncation at convergenceId alone (reverted to round 3's behavior in
+  // this round) already stops every branch before it can reach this
+  // shared retry logic -- confirming round 4's rule-(a) truncation at the
+  // fan-out node was never needed for this shape in the first place.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]  b [shape=box]  combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> combine
+    fan -> b -> combine
+    combine -> check
+    check -> fan [label="retry"]
+    check -> done
+  }`)
+  const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
+  assert.equal(convergenceId, 'combine')
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId, 'fan'), [])
 })
 
 test('findPartialReconvergence: a rework loop combined with a genuine multi-hop non-root hazard is still flagged (closes a coverage gap in round 2\'s own tests)', () => {
