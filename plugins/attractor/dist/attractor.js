@@ -4398,6 +4398,16 @@ var Engine = class {
    * the only way out is `outputsOwedByFailedNodes`, which hands back a copy.
    */
   failedOutputs = /* @__PURE__ */ new Map();
+  /**
+   * Steps taken across the WHOLE run, main loop and every branch (p5-05)
+   * alike -- one shared instance field, not a loop-local variable. Without
+   * this, a branch containing a routing cycle that never reaches its stop
+   * frontier has no bound of its own, and `max_parallel` branches each
+   * independently capped at maxSteps would multiply the run-wide ceiling
+   * NFR-1 exists to hold. Incremented once per `executeNodeStep` call,
+   * whether that call continues to a new node or retries the same one.
+   */
+  stepCount = 0;
   constructor(opts) {
     this.opts = opts;
     this.events = new EventLog(opts.runDir);
@@ -4684,7 +4694,7 @@ var Engine = class {
    * `context.outcome` saying "retry" while the edge being selected sees
    * "fail".
    */
-  recordOutcome(nodeId, outcome) {
+  recordOutcome(nodeId, outcome, context) {
     const node = this.opts.graph.nodes.get(nodeId);
     if (node !== void 0 && wantsVerdict(node)) {
       this.gateOutcomes.set(nodeId, outcome.status);
@@ -4696,9 +4706,9 @@ var Engine = class {
       if (this.nodeFailures.has(nodeId)) this.nodeFailures.set(nodeId, false);
       this.clearFailedOutputs(nodeId);
     }
-    this.setManaged("outcome", outcome.status);
+    this.setManaged(context, "outcome", outcome.status);
     if (outcome.preferredLabel !== void 0 && outcome.preferredLabel !== "") {
-      this.setManaged("preferred_label", outcome.preferredLabel);
+      this.setManaged(context, "preferred_label", outcome.preferredLabel);
     }
   }
   /**
@@ -4714,13 +4724,187 @@ var Engine = class {
    * where the control plane has caught itself, and any test touching the new
    * key will surface it immediately.
    */
-  setManaged(key, value) {
+  setManaged(context, key, value) {
     if (!isEngineManagedKey(key)) {
       throw new Error(
         `engine built-in context key ${key} is not covered by isEngineManagedKey; register it there so a backend cannot forge it`
       );
     }
-    this.opts.context.set(key, value);
+    context.set(key, value);
+  }
+  /**
+   * Runs exactly one node's step: dispatch (eager-input-check, `runs_on`
+   * skip logic, handler call or skip, the RETRY ladder with its two
+   * `recordOutcome` calls), then a per-node checkpoint via the exported
+   * `saveCheckpoint` directly -- never the private `this.checkpoint()`
+   * wrapper, which after this refactor is called only by `run()`'s own
+   * EXIT/dead-end/step-cap terminal paths (ADR-012). The ONE seam both
+   * `run()`'s own loop and `runBranch` (p5-05) call.
+   *
+   * Node lookup, `this.path.push`, the `current_node` context write, and
+   * handler lookup all live HERE rather than in a caller's wrapper -- see
+   * this task's own Step 2: an existing test requires `path` to already
+   * contain a node by the moment its handler-lookup failure is reported.
+   * Folded into the `'deadend'` stop reason alongside the ordinary
+   * "no outgoing edge" case, since from a caller's point of view all three
+   * are "this step produced no next node to continue to"; the one accepted,
+   * documented behavioural delta is that `run()`'s uniform handling of
+   * `'deadend'` always calls `this.checkpoint(null)`, where today's
+   * unknown-node/no-handler-registered paths did not -- an extra, harmless
+   * checkpoint write on an already-terminal FAIL that no existing test
+   * observes.
+   */
+  async executeNodeStep(currentId, opts) {
+    const { graph } = this.opts;
+    const context = opts.context;
+    if (++this.stepCount > opts.maxSteps) {
+      const capped = `step cap of ${opts.maxSteps} reached without terminating`;
+      return {
+        kind: "stop",
+        reason: "stepcap",
+        nodeId: currentId,
+        outcome: { status: Status.FAIL, notes: capped, failureReason: capped }
+      };
+    }
+    const node = graph.nodes.get(currentId);
+    if (!node) {
+      const msg = `unknown node ${currentId}`;
+      return {
+        kind: "stop",
+        reason: "deadend",
+        nodeId: currentId,
+        outcome: { status: Status.FAIL, notes: msg, failureReason: msg }
+      };
+    }
+    this.path.push(node.id);
+    this.setManaged(context, "current_node", node.id);
+    const handler = this.opts.handlers.get(node.handler);
+    if (!handler) {
+      const msg = `no handler registered for ${node.handler} (node ${node.id})`;
+      return {
+        kind: "stop",
+        reason: "deadend",
+        nodeId: node.id,
+        outcome: { status: Status.FAIL, notes: msg, failureReason: msg }
+      };
+    }
+    const attempt = this.attempts.get(node.id) ?? 0;
+    this.events.append({ type: "node.start", node: node.id });
+    context.takeWritten();
+    let outcome;
+    const mode = runsOn(node);
+    const checksInputs = mode === RunsOn.SUCCESS || wantsVerdict(node);
+    const unavailable = checksInputs ? this.unavailableInput(node) : void 0;
+    if (unavailable) {
+      this.events.append({
+        type: "node.input_unavailable",
+        node: node.id,
+        key: unavailable.key,
+        owedBy: unavailable.owedBy
+      });
+      outcome = {
+        status: Status.FAIL,
+        notes: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`,
+        failureReason: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`
+      };
+    } else if (mode === RunsOn.FAILURE && !wantsVerdict(node) && !this.holdsUnresolvedFailure()) {
+      this.events.append({ type: "node.runs_on.skipped", node: node.id, runsOn: mode });
+      outcome = {
+        status: Status.SUCCESS,
+        notes: `${node.id} did not run: runs_on=failure and no failure is outstanding`
+      };
+    } else {
+      try {
+        outcome = await handler.execute({
+          node,
+          graph,
+          context,
+          runDir: opts.runDir,
+          cwd: opts.cwd,
+          events: this.events
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.events.append({ type: "node.error", node: node.id, message });
+        outcome = { status: Status.FAIL, notes: message, failureReason: message };
+      }
+    }
+    for (const key of context.takeWritten()) this.failedOutputs.delete(key);
+    this.events.append({ type: "node.end", node: node.id, status: outcome.status });
+    this.recordOutcome(node.id, outcome, context);
+    if (outcome.status === Status.RETRY) {
+      const policy = resolveRetryPolicy(node, graph);
+      if (attempt < policy.maxRetries) {
+        this.attempts.set(node.id, attempt + 1);
+        const delay = backoffMs(policy, attempt);
+        this.events.append({
+          type: "node.retry",
+          node: node.id,
+          attempt: attempt + 1,
+          delayMs: delay
+        });
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+        return { kind: "continue", nextId: node.id };
+      }
+      const target = resolveRetryTarget(node, graph, { includeGraphLevel: false });
+      this.events.append({ type: "node.retry.exhausted", node: node.id, target });
+      if (target) {
+        this.recordAbandoned(node.id);
+        this.attempts.set(node.id, 0);
+        return { kind: "continue", nextId: target };
+      }
+      outcome = {
+        ...outcome,
+        status: Status.FAIL,
+        notes: `retries exhausted for ${node.id} with no retry target`,
+        failureReason: "max retries exceeded"
+      };
+    }
+    this.recordOutcome(node.id, outcome, context);
+    this.attempts.set(node.id, 0);
+    if (!this.completed.includes(node.id)) this.completed.push(node.id);
+    const cp = {
+      runId: this.opts.runId ?? "run",
+      currentNode: node.id,
+      completed: [...this.completed],
+      attempts: Object.fromEntries(this.attempts),
+      context: context.snapshot(),
+      goalGatesSatisfied: [...this.gateOutcomes].filter(([, s]) => s === Status.SUCCESS || s === Status.PARTIAL).map(([id]) => id)
+    };
+    saveCheckpoint(opts.runDir, cp);
+    if (node.handler === Handler.EXIT) {
+      return { kind: "stop", reason: "exit", nodeId: node.id, outcome };
+    }
+    const edge = selectEdge(graph, node.id, context, outcome);
+    if (!edge && outcome.status === Status.FAIL) {
+      const target = resolveRetryTarget(node, graph, { includeGraphLevel: false });
+      if (target) {
+        this.events.append({ type: "node.fail.retry_target", node: node.id, target });
+        return { kind: "continue", nextId: target };
+      }
+    }
+    if (!edge) {
+      const notes = outcome.status === Status.FAIL ? `no matching edge from ${node.id} after failure: ${outcome.notes ?? ""}` : `run terminated at ${node.id}, which has no outgoing edges and is not the exit`;
+      return {
+        kind: "stop",
+        reason: "deadend",
+        nodeId: node.id,
+        // status is forced to FAIL here (even when the dispatch's own
+        // outcome was SUCCESS/PARTIAL with simply no matching edge) --
+        // run()'s own interpretation of 'deadend' never reads
+        // outcome.status (it hardcodes Status.FAIL onto its own RunResult
+        // regardless), so this is inert for run(); it matters for
+        // runBranch (Task 5), whose BranchRunResult.outcome is this object
+        // verbatim and whose own contract requires status === FAIL for a
+        // true dead end unconditionally.
+        outcome: { ...outcome, status: Status.FAIL, notes, failureReason: outcome.failureReason ?? notes }
+      };
+    }
+    if (opts.stopAt?.has(edge.to)) {
+      return { kind: "stop", reason: "frontier", nodeId: node.id, outcome };
+    }
+    this.events.append({ type: "edge.taken", node: node.id, to: edge.to });
+    return { kind: "continue", nextId: edge.to };
   }
   async run() {
     const { graph, context } = this.opts;
@@ -4740,122 +4924,30 @@ var Engine = class {
     for (const [k, v] of Object.entries(graph.attrs)) {
       if (!context.has(k)) context.set(k, v);
       const qualified = `graph.${k}`;
-      if (!context.has(qualified)) this.setManaged(qualified, v);
+      if (!context.has(qualified)) this.setManaged(context, qualified, v);
     }
     let currentId = startNode.id;
     this.events.append({ type: "pipeline.start", node: startNode.id });
-    for (let step = 0; step < maxSteps; step++) {
-      if (currentId === null) break;
-      const node = graph.nodes.get(currentId);
-      if (!node) {
-        this.events.append({ type: "pipeline.end", node: currentId, status: Status.FAIL });
-        return this.result(Status.FAIL, `unknown node ${currentId}`, `unknown node ${currentId}`);
+    while (currentId !== null) {
+      const stepResult = await this.executeNodeStep(currentId, {
+        runDir: this.opts.runDir,
+        cwd: this.opts.cwd,
+        maxSteps,
+        stopAt: void 0,
+        context
+      });
+      if (stepResult.kind === "continue") {
+        currentId = stepResult.nextId;
+        continue;
       }
-      this.path.push(node.id);
-      this.setManaged("current_node", node.id);
-      const handler = this.opts.handlers.get(node.handler);
-      if (!handler) {
-        this.events.append({ type: "pipeline.end", node: node.id, status: Status.FAIL });
-        const noHandler = `no handler registered for ${node.handler} (node ${node.id})`;
-        return this.result(Status.FAIL, noHandler, noHandler);
-      }
-      const attempt = this.attempts.get(node.id) ?? 0;
-      this.events.append({ type: "node.start", node: node.id });
-      context.takeWritten();
-      let outcome;
-      const mode = runsOn(node);
-      const checksInputs = mode === RunsOn.SUCCESS || wantsVerdict(node);
-      const unavailable = checksInputs ? this.unavailableInput(node) : void 0;
-      if (unavailable) {
-        this.events.append({
-          type: "node.input_unavailable",
-          node: node.id,
-          key: unavailable.key,
-          owedBy: unavailable.owedBy
-        });
-        outcome = {
-          status: Status.FAIL,
-          // Section 3.5's `failure_reason` is carried by `notes` throughout
-          // this engine -- see the retry-exhaustion rewrite below, which
-          // writes that same spec field here. The reason therefore lands
-          // where every existing consumer already reads it (the terminal
-          // `notes` string, the CLI's message, the event log) instead of in a
-          // second field only this path writes.
-          notes: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`,
-          // Section 5.2's field, now that it exists. The comment above
-          // described `notes` as carrying section 3.5's `failure_reason`
-          // "throughout this engine" because there was nowhere else to put
-          // it; both are written now, so a consumer no longer has to parse
-          // the sentence a SUCCESS also writes to.
-          failureReason: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`
-        };
-      } else if (mode === RunsOn.FAILURE && !wantsVerdict(node) && !this.holdsUnresolvedFailure()) {
-        this.events.append({ type: "node.runs_on.skipped", node: node.id, runsOn: mode });
-        outcome = {
-          status: Status.SUCCESS,
-          notes: `${node.id} did not run: runs_on=failure and no failure is outstanding`
-        };
-      } else {
-        try {
-          outcome = await handler.execute({
-            node,
-            graph,
-            context,
-            runDir: this.opts.runDir,
-            cwd: this.opts.cwd,
-            events: this.events
-          });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this.events.append({ type: "node.error", node: node.id, message });
-          outcome = { status: Status.FAIL, notes: message, failureReason: message };
-        }
-      }
-      for (const key of context.takeWritten()) this.failedOutputs.delete(key);
-      this.events.append({ type: "node.end", node: node.id, status: outcome.status });
-      this.recordOutcome(node.id, outcome);
-      if (outcome.status === Status.RETRY) {
-        const policy = resolveRetryPolicy(node, graph);
-        if (attempt < policy.maxRetries) {
-          this.attempts.set(node.id, attempt + 1);
-          const delay = backoffMs(policy, attempt);
-          this.events.append({
-            type: "node.retry",
-            node: node.id,
-            attempt: attempt + 1,
-            delayMs: delay
-          });
-          if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-          continue;
-        }
-        const target = resolveRetryTarget(node, graph, { includeGraphLevel: false });
-        this.events.append({ type: "node.retry.exhausted", node: node.id, target });
-        if (target) {
-          this.recordAbandoned(node.id);
-          this.attempts.set(node.id, 0);
-          currentId = target;
-          continue;
-        }
-        outcome = {
-          ...outcome,
-          status: Status.FAIL,
-          notes: `retries exhausted for ${node.id} with no retry target`,
-          // Section 3.5's own string for this case: "RETURN
-          // Outcome(status=FAIL, failure_reason='max retries exceeded')".
-          failureReason: "max retries exceeded"
-        };
-      }
-      this.recordOutcome(node.id, outcome);
-      this.attempts.set(node.id, 0);
-      if (!this.completed.includes(node.id)) this.completed.push(node.id);
-      this.checkpoint(node.id);
-      if (node.handler === Handler.EXIT) {
+      const { reason, nodeId, outcome } = stepResult;
+      if (reason === "exit") {
         const unsatisfied = this.unsatisfiedGoalGates();
         if (unsatisfied.length > 0) {
           const target = this.gateRetryTarget(unsatisfied);
           this.events.append({
             type: "pipeline.goal_gate_block",
-            node: node.id,
+            node: nodeId,
             unsatisfied,
             target
           });
@@ -4863,55 +4955,34 @@ var Engine = class {
             currentId = target;
             continue;
           }
-          this.events.append({ type: "pipeline.end", node: node.id, status: Status.FAIL });
+          this.events.append({ type: "pipeline.end", node: nodeId, status: Status.FAIL });
           this.checkpoint(null);
           return this.result(
             Status.FAIL,
             `exit reached with unsatisfied goal gates: ${unsatisfied.join(", ")}`,
-            // Section 3.4 step 4's own wording for this terminal case:
-            // "RETURN Outcome(status=FAIL, failure_reason='Goal gate
-            // unsatisfied and no retry target')". `notes` keeps naming the
-            // gates, which the spec's string does not.
             "Goal gate unsatisfied and no retry target"
           );
         }
         const failed = this.unresolvedFailures();
         if (failed.length > 0) {
-          this.events.append({
-            type: "pipeline.unresolved_failure",
-            node: node.id,
-            failed
-          });
+          this.events.append({ type: "pipeline.unresolved_failure", node: nodeId, failed });
         }
-        this.events.append({ type: "pipeline.end", node: node.id, status: Status.SUCCESS });
+        this.events.append({ type: "pipeline.end", node: nodeId, status: Status.SUCCESS });
         this.checkpoint(null);
         return this.result(
           Status.SUCCESS,
           failed.length > 0 ? `exit reached with unresolved node failures: ${failed.join(", ")}` : outcome.notes
         );
       }
-      const edge = selectEdge(graph, node.id, context, outcome);
-      if (!edge && outcome.status === Status.FAIL) {
-        const target = resolveRetryTarget(node, graph, { includeGraphLevel: false });
-        if (target) {
-          this.events.append({ type: "node.fail.retry_target", node: node.id, target });
-          currentId = target;
-          continue;
-        }
-      }
-      if (!edge) {
-        const notes = outcome.status === Status.FAIL ? `no matching edge from ${node.id} after failure: ${outcome.notes ?? ""}` : `run terminated at ${node.id}, which has no outgoing edges and is not the exit`;
-        this.events.append({ type: "pipeline.end", node: node.id, status: Status.FAIL });
-        this.checkpoint(null);
-        return this.result(Status.FAIL, notes, outcome.failureReason ?? notes);
-      }
-      this.events.append({ type: "edge.taken", node: node.id, to: edge.to });
-      currentId = edge.to;
+      this.events.append({ type: "pipeline.end", node: nodeId, status: Status.FAIL });
+      this.checkpoint(reason === "stepcap" ? nodeId : null);
+      return this.result(Status.FAIL, outcome.notes, outcome.failureReason);
     }
-    this.checkpoint(currentId);
-    this.events.append({ type: "pipeline.end", node: currentId ?? void 0, status: Status.FAIL });
-    const capped = `step cap of ${maxSteps} reached without terminating`;
-    return this.result(Status.FAIL, capped, capped);
+    return this.result(
+      Status.FAIL,
+      "run terminated with no current node",
+      "run terminated with no current node"
+    );
   }
 };
 

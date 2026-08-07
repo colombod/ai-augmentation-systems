@@ -1738,15 +1738,15 @@ test('setManaged refuses a built-in key isEngineManagedKey does not cover', asyn
       cwd,
       handlers: defaultHandlers(new StubBackend({})),
     })
-    const managed = engine as unknown as { setManaged(key: string, value: string): void }
+    const managed = engine as unknown as { setManaged(context: Context, key: string, value: string): void }
     assert.throws(
-      () => managed.setManaged('last_verdict', 'ship'),
+      () => managed.setManaged(Context.from({}), 'last_verdict', 'ship'),
       /not covered by isEngineManagedKey/,
       'a routing-visible built-in that is not reserved is forgeable by a backend',
     )
     // And the permitting direction, so this is not a one-way test: a key the
     // predicate does cover must go through.
-    managed.setManaged('current_node', 'a')
+    managed.setManaged(Context.from({}), 'current_node', 'a')
   } finally {
     cleanup(runDir, cwd)
   }
