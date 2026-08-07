@@ -1663,7 +1663,26 @@ test('HITL-003 never reports an error-severity diagnostic -- advisory only', () 
     gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
     start -> review -> gate -> done
   }`
-  assert.ok(hitl003(src).every((d) => d.severity === Severity.WARNING))
+  const found = hitl003(src)
+  assert.equal(found.length, 1)
+  assert.ok(found.every((d) => d.severity === Severity.WARNING))
+})
+
+// Regression pin: an earlier implementation attempt of this rule silently
+// dropped the `node.handler === Handler.HUMAN` outer gate, and no fixture
+// in this file's other 19 cases would have caught it -- every one of them
+// that sets human.channel/human.context also happens to already be a
+// hexagon/Handler.HUMAN node, so the gate was never independently
+// exercised. This fixture puts the two attributes on a plain box
+// (Handler.CODERGEN) node instead, which is not any kind of human gate.
+test('HITL-003 does not fire on a non-Handler.HUMAN node carrying human.channel/human.context', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    review [shape=box, prompt="summarize"]
+    notagate [shape=box, prompt="do something else", human.channel="agent", human.context="review.summary"]
+    start -> review -> notagate -> done
+  }`
+  assert.equal(hitl003(src).length, 0)
 })
 
 test('HITL-003 co-fires with HAND-001 without interference, since Handler.HUMAN is still unregistered', () => {

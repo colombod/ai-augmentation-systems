@@ -90,9 +90,14 @@ export function outgoingEdges(graph: Graph, nodeId: string): Edge[]
 export function declaredOutputs(node: Node): string[]      // from outputs= attribute
 export function effectiveOutputs(node: Node): string[]     // inferred ∪ declared
 
-// dot/graph.ts — NEW, this story
+// dot/graph.ts — NEW, this story. Corrected during implementation (see
+// Implementation notes): dedupes incoming edges by source node and excludes
+// self-edges, so two edges from the SAME predecessor (or a self-loop plus
+// one real predecessor) still resolve correctly. Two edges from GENUINELY
+// DIFFERENT predecessor nodes still return null (Open Question 13).
 export function directPredecessor(graph: Graph, nodeId: string): Node | null
-// The node with the single edge into nodeId, or null for in-degree 0 or ≥2.
+// The node with the sole DISTINCT source node among edges into nodeId
+// (self-edges excluded), or null for zero or ≥2 distinct sources.
 // Condition-agnostic: counts every edge into nodeId regardless of its own
 // `condition` attribute — unlike GATE-001's routes, do not filter by isFailureRoute.
 ```

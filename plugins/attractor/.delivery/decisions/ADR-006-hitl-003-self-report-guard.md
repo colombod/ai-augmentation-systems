@@ -98,10 +98,11 @@ being treated as closed:
   This is a pre-existing gap affecting every WARNING-severity rule, not new to `HITL-003`,
   tracked under Open Question 7 / FR-12. This rule states the gap; it does not close it.
 
-Both structural gaps and the visibility gap are tracked as Open Questions in
+All three structural gaps and the visibility gap are tracked as Open Questions in
 `.delivery/prd.md` (owner: Product Owner / Solution Architect), not left to be rediscovered:
-the multi-hop gap is Open Question 11, the `Handler.TOOL` gap is Open Question 12, and the
-visibility gap is the pre-existing Open Question 7.
+the multi-hop gap is Open Question 11, the `Handler.TOOL` gap is Open Question 12, the
+distinct-predecessors/rework-loop gap is Open Question 13, and the visibility gap is the
+pre-existing Open Question 7.
 
 ## Consequences
 
