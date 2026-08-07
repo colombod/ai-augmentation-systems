@@ -107,7 +107,36 @@ test('--worktree in a real repository isolates the run and cleans up after itsel
 })
 
 /**
- * Run `main` while capturing everything written to stdout, so the test can
+ * Whether a chunk written to a captured stream is plausibly this process's
+ * own text output, as opposed to node:test's own internal reporter framing.
+ *
+ * Under `node --test`, each test file's lifecycle events (test:start,
+ * test:pass, test:complete, test:dequeue, ...) are relayed to the
+ * coordinating process as a length/type-prefixed binary encoding, written
+ * through this SAME process.stdout -- independently of which test is
+ * currently executing. main()'s worktree-creation path is genuinely async
+ * and yields the event loop many times per run (more so since worktree.ts's
+ * git() calls became execFile-based -- commit 318ab73), giving that framing
+ * many chances to interleave a write into a capture mid-test.
+ *
+ * The distinction below is structural, not a guess: every
+ * process.stdout.write call cli.ts itself makes is a literal template
+ * string of printable text ending in a newline (see cli.ts's own call
+ * sites) -- it can never contain a raw control byte. node:test's reporter
+ * framing, observed directly by provoking this exact race, is always a
+ * binary encoding containing such bytes (confirmed: 0x00-0x10-range type
+ * and length-prefix bytes alongside its own field names like "type" and
+ * "test:complete"). A chunk containing anything outside printable ASCII
+ * plus \n/\r/\t is therefore never this process's own CLI output, and is
+ * excluded from the captured buffer -- but still forwarded to the real
+ * stream, so node:test's own reporting is unaffected either way.
+ */
+function isOwnTextOutput(text: string): boolean {
+  return /^[\x09\x0A\x0D\x20-\x7E]*$/.test(text)
+}
+
+/**
+ * Run `main` while capturing everything it writes to stdout, so the test can
  * recover the worktree path the CLI reports without scanning the shared OS
  * temp directory -- other test FILES (worktree.test.ts in particular) create
  * their own attractor-wt-* directories there and run concurrently under
@@ -117,7 +146,8 @@ async function captureStdout(fn: () => Promise<unknown>): Promise<string> {
   let captured = ''
   const original = process.stdout.write.bind(process.stdout)
   const spy = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-    captured += chunk.toString()
+    const text = chunk.toString()
+    if (isOwnTextOutput(text)) captured += text
     return (original as (...a: unknown[]) => boolean)(chunk, ...rest)
   }
   process.stdout.write = spy as typeof process.stdout.write
@@ -134,7 +164,8 @@ async function captureStderr(fn: () => Promise<unknown>): Promise<string> {
   let captured = ''
   const original = process.stderr.write.bind(process.stderr)
   const spy = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-    captured += chunk.toString()
+    const text = chunk.toString()
+    if (isOwnTextOutput(text)) captured += text
     return (original as (...a: unknown[]) => boolean)(chunk, ...rest)
   }
   process.stderr.write = spy as typeof process.stderr.write
