@@ -117,16 +117,47 @@ Design decisions belong to the Solution Architect. Do not redesign mid-run.
 
 `/delivery:sprint-review` needs all of this. Return it verbatim rather than summarised.
 
+> **Filled in retroactively during `/delivery:sprint-review`** (this table was left
+> empty when the runner closed the sprint — see finding R-sprint2-5). Sourced from
+> `.superpowers/sdd/2026-08-07-parallel-fanin/progress.md`'s own commit-by-commit
+> ledger, cross-checked against `git log` directly, not copied from prose summary.
+
 | Story | Outcome | Criteria met | Evidence | Commit |
 | :-- | :-- | :-- | :-- | :-- |
+| p5-01 | Done, 1 debt carried (R-sprint2-1) | Async conversion + non-blocking: yes. "Never a race that corrupts state": no — reproducible git-level race, tracked issue #15 | `test/worktree.test.ts` mutation-checked non-blocking test; race reproduced independently during sprint-review | `318ab73` |
+| p5-02 | Done | Yes | `test/engine.test.ts`, full suite regression | `b485b9d` |
+| p5-03 | Done | Yes | `test/box.test.ts`, `test/claude-backend.test.ts` | `c5459f7` |
+| p5-04 | Done, 1 debt carried (R-sprint2-7) | Yes, within tested fixtures; 2 narrow false-refusal gaps named, safe-direction-only, tracked issue #14 | `test/lint.test.ts`; 6 fix-loop rounds, 11 ADR-007 amendments | `e3a707f`..`c86753f` |
+| p5-05 | Done | Yes | `test/engine.test.ts` mutation-checked EXIT/step-cap tests | `9625c13`..`98d9261` |
+| p5-06 | Done | Yes | `test/lint.test.ts`, integration test | `2cf9e0b`..`f18e6cd` |
+| p5-07 | Done | Yes | `test/parallel.test.ts` exact F1 reproduction | `5cf1074` |
+| (whole-branch) | Done, 1 debt carried (R-sprint2-2) | 1 CRITICAL cross-task regression found and fixed; process gap named | `test/engine.test.ts` mutation-checked step-cap-path test | `a8f3e30`, `2690ed8` |
 
 **Actual test output** (the output itself, not a claim about it):
 
 ```
+ℹ tests 584
+ℹ pass 583
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
 ```
 
-**Conflicts with the spec encountered:**
+(Representative run at `2690ed8`. Not universally reproducible — see R-sprint2-1: an
+independent re-run during this same review reproduced a real failure in
+`test/worktree.test.ts`'s concurrent-creation test, a known, tracked, low-frequency
+git-level race unrelated to the 6 other stories.)
+
+**Conflicts with the spec encountered:** none requiring a story rewrite. p5-04's
+`findConvergenceNode`/`findPartialReconvergence` needed a signature the story didn't
+originally specify (a third `fanOutNodeId` parameter), discovered through 6 fix-loop
+rounds — an estimate miss (`M` sized, `L`/`XL` actual effort), not a spec conflict.
 
 **Design system deviations, and why:** N/A — no design system for this project.
 
-**Anything the next planning cycle should know:**
+**Anything the next planning cycle should know:** see `2-parallel-fanin-review.md`'s
+own "What the wave taught" and "Carried debt" sections — in short: `p5-08` inherits a
+convergence-detection algorithm with 2 named-but-open gaps and a worktree layer with
+1 named-but-open race, both safely-failing/low-frequency, not silent; and this
+project's own sprint process should make the whole-branch adversarial review pass
+mandatory rather than optional, since it caught this sprint's only CRITICAL bug.
