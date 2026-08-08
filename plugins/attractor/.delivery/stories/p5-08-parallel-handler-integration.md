@@ -5,7 +5,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p5-08
 title: Register Handler.PARALLEL — ParallelHandler fans out, bounds, joins, and merges branches
-status: draft
+status: done
 epic: Phase 5 — FR-17b (parallel fan-out)
 supersedes: []
 superseded_by: []
@@ -23,41 +23,29 @@ size: L
 > finish the work. Extract what is needed from the PRD and architecture into
 > this document rather than linking out.
 
-## Why this story is `draft`, not `ready`
+## Roadmap item A — resolved
 
-This is Phase 5's true integration point — the only work item that composes nearly every other
-one (p5-01, p5-03, p5-04, p5-05, p5-07 all feed it) — and it is deliberately last. It cannot be
-marked `ready` because **two narrow Solution Architect decisions, named explicitly in
-`roadmap.md`'s own work-item A, are still unresolved**, and this handler's own observable behavior
-differs depending on which way each one goes. Writing falsifiable acceptance criteria for the
-parts that depend on them would mean this Delivery Lead inventing the answer in the story text —
-exactly the boundary this role does not cross ("raise it with the Solution Architect rather than
-inventing an approach"). Everything else below — the parts of `ParallelHandler` that do **not**
-depend on either decision — is fully specified and could be built today; only two acceptance
-criteria (marked **BLOCKED** below) are missing.
+This is Phase 5's true integration point, deliberately last, and was drafted rather than ready
+because two narrow Solution Architect decisions (roadmap's work-item A) were open. Both are now
+resolved in
+[ADR-013](../decisions/ADR-013-parallelhandler-fail-routing-and-branch-rejection.md) (accepted
+2026-08-08), authoritative here — not re-derived:
 
-**What is blocking, stated for the Solution Architect to answer, one paragraph each, same shape as
-ADR-006(b):**
+- **A(a).** On a SUCCESS or PARTIAL join outcome, the engine jumps unconditionally to the
+  statically-computed **convergence node** (`findConvergenceNode`'s own result). On FAIL, no jump
+  — the ordinary §3.7 `retry_target`/`fallback_retry_target`/dead-end ladder runs, exactly as for
+  any other node.
+- **A(b).** Each branch's entire dispatch — worktree creation (if isolated), the `ctx.runBranch`
+  call, and worktree removal — is wrapped in one try/catch/finally converting any thrown
+  exception into that branch's own FAIL `Outcome`, before it can reach `Promise.all`.
+  `Promise.all` stays the aggregation primitive; nothing switches to `Promise.allSettled`.
 
-- **A(a) — component-node FAIL routing.** When `ParallelHandler.execute()`'s join policy returns
-  FAIL, does the outcome route via the ordinary fail-edge/`retry_target` ladder (§3.7, the same
-  ladder every other node's FAIL uses), or via an unconditional jump that mutates the main loop's
-  `currentId` straight to the convergence node regardless of status? The design's own text gives
-  both answers in different places and they cannot both be true for the same run (architecture's
-  Risks table, "QA finding, blocking"). **Note for whoever resolves this:** if the answer is the
-  unconditional-jump reading, it also reopens p5-02's "closed, refactor-only" status, since that
-  jump can only be implemented inside `core/engine.ts`'s own `run()` loop, not this handler.
-- **A(b) — branch rejection handling.** `ParallelHandler.execute()`'s branch dispatch is
-  `Promise.all`-awaited (Spike 8's own wording). If one branch's `runBranch` call *rejects*
-  (as opposed to resolving with a FAIL `Outcome`) — e.g. `createWorktree` throwing on a name
-  collision, or a backend crash — `Promise.all` rejects immediately and does not cancel or
-  continue awaiting the still-pending sibling branches; their worktree cleanup and checkpoint
-  become orphaned, and the rejection propagates out of `Engine.run()` itself, a public surface
-  `cli.ts` does not handle as anything but a FAIL `RunResult` today. Resolve by either wrapping
-  each branch call so nothing thrown escapes uncaught (converted to that branch's own FAIL
-  `Outcome`), or switching to `Promise.allSettled` with an explicit reject-to-FAIL mapping.
+**Not optional scope, corrected by the ADR:** A(a) needs an additive branch inside the *shared*
+`executeNodeStep` (`core/engine.ts`), not something `ParallelHandler.execute()` can do alone —
+`selectEdge` (`edge-select.ts:75`), called on the component node's own outgoing edges, can never
+select the convergence node, since those edges are the branch roots. Reflected below.
 
-## Goal (once A(a)/A(b) resolve)
+## Goal
 
 `ParallelHandler` — a new, dependency-free `Handler` — fans out to every **branch** root bounded
 by `max_parallel` (default 4), creates one **branch worktree** per branch unless the edge's
@@ -72,9 +60,10 @@ refusing `PARALLEL` nodes until a real handler exists to run them (HAND-001's ow
 
 | Path | What to do |
 | :-- | :-- |
-| `plugins/attractor/engine/src/handlers/parallel.ts` | modify — add `ParallelHandler` class to the file p5-07 already created (`mergeBranchContext` lives there) |
-| `plugins/attractor/engine/src/core/engine.ts` | modify — `defaultHandlers()` gains the `PARALLEL` entry |
+| `plugins/attractor/engine/src/handlers/parallel.ts` | modify — add `ParallelHandler` class to the file p5-07 already created (`mergeBranchContext` lives there); each branch's dispatch function wraps `createWorktree` → `ctx.runBranch` → `removeWorktree` in one try/catch/finally converting any thrown exception to that branch's own FAIL `Outcome` (ADR-013 A(b)) before the per-branch promises reach `Promise.all` |
+| `plugins/attractor/engine/src/core/engine.ts` | modify — `defaultHandlers()` gains the `PARALLEL` entry; `executeNodeStep` (private method, `engine.ts:656-853` today) gains one additive branch (ADR-013 A(a)): on a `Handler.PARALLEL` node's SUCCESS/PARTIAL outcome, bypass `selectEdge` and continue at `findConvergenceNode(graph, branchRootIds, node.id)`'s own result instead — placed after the existing `Kind.EXIT` check (`engine.ts:812-814`), before the existing `selectEdge` call (`engine.ts:816`); FAIL is unchanged — the existing ladder at `engine.ts:816-824` already does the right thing |
 | `plugins/attractor/engine/src/dot/graph.ts` | modify — remove `Handler.PARALLEL` from `UNREGISTERED_HANDLER_KINDS`, **last line of this story** |
+| `plugins/attractor/engine/test/parallel.test.ts` | modify — add `ParallelHandler`-level tests, including the two rows ADR-013 unblocks |
 
 ## Interfaces and contracts to honor
 
@@ -97,61 +86,123 @@ export function applyDefaultJoinPolicy(results: readonly BranchRunResult[]): Out
 
 - **ADR-007, ADR-008, ADR-009, ADR-010, ADR-011** all converge here — this handler is the sole
   consumer of every seam the other Phase 5 stories built.
-- **Not resolved here:** roadmap item A. This story's remaining acceptance criteria are written
-  against the parts of `ParallelHandler.execute()` that do not depend on A(a)/A(b).
+- **ADR-013** (roadmap item A) — see "Roadmap item A — resolved" above; full reasoning,
+  alternatives considered and residual risks live in the ADR, not repeated here.
 
 ## Acceptance criteria
 
-- [ ] `FR-17b`/`NFR-7` — a semaphore bounded by `max_parallel` (default 4) admits at most that
+- [x] `FR-17b`/`NFR-7` — a semaphore bounded by `max_parallel` (default 4) admits at most that
       many concurrent `runBranch` calls; verified with `GatedBackend` at `max_parallel=1`,
       `=branch count`, `=branch count - 1` (one branch queues and picks up the freed slot).
-- [ ] `FR-17b` — one `createWorktree` per branch unless the edge's `isolate="false"`; `removeWorktree`
+- [x] `FR-17b` — one `createWorktree` per branch unless the edge's `isolate="false"`; `removeWorktree`
       runs per-branch immediately after that branch's own `runBranch` resolves, not deferred to a
       top-level `finally`.
-- [ ] `FR-17b` — `applyDefaultJoinPolicy` returns FAIL iff zero branches SUCCEED/PARTIAL, SUCCESS
+- [x] `FR-17b` — `applyDefaultJoinPolicy` returns FAIL iff zero branches SUCCEED/PARTIAL, SUCCESS
       iff zero FAIL, PARTIAL otherwise — all-fail/all-success/mixed/one-branch/zero-branch cases.
-- [ ] `FR-17b` — `mergeBranchContext` is called exactly once per dispatch, after every branch has
+- [x] `FR-17b` — `mergeBranchContext` is called exactly once per dispatch, after every branch has
       settled, regardless of the join verdict — not gated on the component node's own outcome.
-- [ ] `FR-17b` — `defaultHandlers()` registers `ParallelHandler` for `Kind.PARALLEL`;
+- [x] `FR-17b` — `defaultHandlers()` registers `ParallelHandler` for `Kind.PARALLEL`;
       `UNREGISTERED_HANDLER_KINDS` no longer includes it (this story's last line).
-- [ ] `FR-17b` — **retry/partial-completion interacting with convergence** (not blocked on A — a
+- [x] `FR-17b` — **retry/partial-completion interacting with convergence** (not blocked on A — a
       join-policy/merge-back interaction, not a FAIL-routing one): three branches, one exhausts
       retries and fails a node with a declared `outputs=` key the convergence node consumes;
       assert the convergence node is correctly blocked by the existing `failedOutputs`
       eager-input-check (exercised under branch partiality for the first time here), not silently
       fed a stale or empty value by `mergeBranchContext`'s own FAIL-branch exclusion (p5-07).
-- [ ] **BLOCKED on A(a)** — a join-FAIL outcome's routing behavior (fail-edge/`retry_target` ladder
-      vs. unconditional convergence-node jump) — cannot be written until resolved.
-- [ ] **BLOCKED on A(b)** — a rejecting (not FAIL-resolving) branch's effect on `Engine.run()`'s
-      public contract and sibling-branch cleanup — cannot be written until resolved.
+- [x] `FR-17b` — **A(a):** join outcome SUCCESS or PARTIAL (one branch fails, others succeed) —
+      `executeNodeStep` bypasses `selectEdge` for the component node and continues at
+      `findConvergenceNode(graph, branchRootIds, node.id)`'s own result, appearing in `path`
+      exactly once, immediately after the component node. Join outcome FAIL (every branch
+      fails) — the convergence node is never dispatched; with a `retry_target` on the component
+      node the run continues there (`engine.ts:816-824`, unmodified); without one it dead-ends
+      FAIL, same as any other node.
+- [x] `FR-17b` — **A(b):** a real `createWorktree` throw on one isolated branch (forced via a
+      non-git-repo `cwd`) does not reject `Promise.all`; that branch's `BranchRunResult` is FAIL
+      with the caught error's message in `failureReason`, and an `isolate="false"` sibling
+      completes normally, unorphaned. Separately: a hand-built `HandlerCtx` whose `runBranch`
+      rejects for one branch root — `ParallelHandler.execute()` still resolves (never rejects),
+      folding the rejected branch into the join policy as FAIL.
 
 ## Test approach
 
 **Level:** integration, `GatedBackend`-driven (p5-01) — concurrency ceiling, worktree lifecycle,
-join-policy verdicts, merge-back-after-join-regardless-of-verdict. **Two rows cannot be written at
-all** until A resolves: "Component-node FAIL routing" and "branch throws mid-flight" — the
-architecture's own Test-strategy table marks both this way today, not as an oversight.
+join-policy verdicts, merge-back-after-join-regardless-of-verdict, plus the two rows ADR-013
+unblocks (architecture's own Test-strategy table marked both "cannot be written until A resolves"
+— not an oversight). One 3-branch fixture, reused across three join outcomes (all SUCCEED; one
+FAILs + two SUCCEED; all FAIL), covers A(a). A(b)'s real-throw row needs one branch's `cwd`
+pointed at a non-git-repo temp dir (isolated, forces a real `createWorktree` throw) beside an
+`isolate="false"` sibling completing via `GatedBackend.release`; its rejecting-`runBranch` row
+needs a hand-built `HandlerCtx` (no real `Engine`) with a stub `runBranch` — the real
+`Engine.runBranch` cannot currently be made to reject (`executeNodeStep` already catches a
+handler-level throw; `engine.test.ts:4644`), so this is the only way to exercise
+`ParallelHandler`'s own catch. `removeWorktree` cannot itself throw (`worktree.ts:201` returns a
+`RemovalResult`) — its `finally` coverage there is defensive, not independently testable, the
+same reasoning ADR-013 gives against switching to `Promise.allSettled`.
 
 **Run with (from `plugins/attractor/engine`):** `node --test test/parallel.test.ts` (targeted,
 once it exists) or `node --test` (full).
 
 ## Out of scope
 
-- Resolving A(a)/A(b) — Solution Architect's decision, one paragraph each, same shape as
-  ADR-006(b); this story consumes the answer, does not produce it.
-- Item J (concurrency test infrastructure beyond what this story's own acceptance criteria list)
-  — not yet decomposed into a story; it depends on this item existing, which depends on A. Once
-  A resolves and this story moves to `ready`/`in-progress`, item J becomes story-able and should
-  be decomposed then, not guessed at now.
+- **Re-deriving A(a)/A(b).** Already resolved — ADR-013 is authoritative; this story consumes
+  the answer.
+- **Item J's remaining rows, spun into `p5-09`.** Most of item J is already covered elsewhere:
+  `GatedBackend` and the worktree-name-collision test shipped in p5-01; the shared-ledger race
+  property is substantively demonstrated by p5-05's own test; concurrency-ceiling enforcement and
+  branch-throws mid-flight are this story's own acceptance criteria above. Two rows still need a
+  real `ParallelHandler` to be non-decorative and don't fit this story's own vertical slice
+  (registration/fan-out/join/merge-back): checkpoint isolation under a real fan-out, and the
+  opt-in `ATTRACTOR_LIVE=1` real-subprocess ceiling test. `p5-09` covers exactly those two.
+- **PAR-005/A(a) authoring guidance** (a component node's outgoing edge cannot be a
+  distinguishable fail edge — ADR-013's own residual risk) — doc-only, roadmap cut-list item 3,
+  not this story.
 
 ## Dependencies
 
-p5-01, p5-03, p5-04, p5-05, p5-07 — all must be `done` first; this handler is their sole
-integration point. **Additionally blocked on roadmap item A** (not a story; a Solution Architect
-decision) — this story cannot move to `ready` until both A(a) and A(b) are answered and recorded
-(new ADR paragraphs, or amendments to ADR-007).
+p5-01, p5-03, p5-04, p5-05, p5-07 must be `done` first; this handler is their sole integration
+point. Roadmap item A (the two Solution Architect decisions above) is resolved via ADR-013 and no
+longer a blocker.
 
 ## Implementation notes
 
-Filled in during and after implementation. Record surprises, deviations from the plan and the
-reason, and follow-up work — anything a future reader would want.
+Shipped across three sequential commits on `worktree-attractor-parallel-fanin`, each independently
+tested and reviewed before the next began:
+
+- `030c927` — `applyDefaultJoinPolicy` + a minimal counting `Semaphore`, both in `handlers/parallel.ts`.
+- `03b0d8b` — `ParallelHandler` itself (fan-out, worktree lifecycle with ADR-013 A(b) catch/convert,
+  join policy, merge-back). Tested end-to-end via the established `Handler.TOOL`-override workaround
+  (registering `ParallelHandler` against an already-lint-clean handler kind), since `Handler.PARALLEL`
+  was still unregistered at this point.
+- `0951929` — two review-fix commits' worth of fixes in one: **(1)** `max_parallel="0"` (or negative)
+  previously deadlocked `Promise.all` forever — a non-positive value survived `intAttr(...) ??
+  DEFAULT_MAX_PARALLEL` unchanged, starting the semaphore with zero permits; fixed with a
+  `Math.max(1, ...)` floor. **(2)** an `EventLog.append` failure while logging a worktree-removal
+  warning, or inside `mergeBranchContext`'s own collision logging, could escape `execute()` entirely
+  and reject the whole dispatch — violating "one branch's failure never escapes the dispatch," ADR-013's
+  entire point. Fixed by locally swallowing the worktree-warning append and converting a merge-back
+  throw into a `FAIL` `Outcome` instead of letting it propagate. Both were found by an independent
+  adversarial review agent with concrete, reproduced failure scenarios (not merely suspected), and
+  both are now permanently pinned by regression tests.
+- `6391286` — registration (`defaultHandlers()` gains `[Kind.PARALLEL, new ParallelHandler()]`) and the
+  ADR-013 A(a) convergence-jump inside `executeNodeStep`, together in one commit (registration without
+  the jump would let a SUCCESS/PARTIAL outcome fall through to `selectEdge`, which can never select the
+  convergence node). `UNREGISTERED_HANDLER_KINDS` loses `Handler.PARALLEL` last, as specified. This
+  commit also fixed nine existing tests whose premise ("`Handler.PARALLEL` is unregistered, so HAND-001
+  co-fires") became false, plus two more the same run surfaced that weren't in the original list, and
+  added a real `Engine.run()` end-to-end test over a genuine `shape=component` node.
+
+**Two adversarial review passes ran against this story**, matching the discipline established across
+sprint 2: one after `03b0d8b` (which is what found the two bugs above), and one after `6391286`
+(spec-compliance + a dedicated bug hunt, including a concrete reproduction of a nested-PARALLEL
+double-dispatch scenario against the real engine — no defects found there). Both passes are recorded
+in this session's own history; no separate written findings file was produced, since every finding
+that survived scrutiny was fixed immediately, not deferred.
+
+**No deviations from ADR-013.** All 8 acceptance criteria verified met by direct code reading and test
+execution, not merely by trusting the implementer's own report.
+
+**Follow-up, out of this story's scope by design:** `p5-09` (concurrency verification under this now-real
+`ParallelHandler` — checkpoint isolation under real fan-out, the opt-in `ATTRACTOR_LIVE=1` ceiling test),
+still `status: draft`, needs its own readiness pass before it can be scoped into a sprint.
+
+**Final state:** 608 tests, 607 passing, 1 pre-existing environment-gated skip, 0 failing.

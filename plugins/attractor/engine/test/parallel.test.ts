@@ -1256,3 +1256,75 @@ test(
     }
   },
 )
+
+// ---------------------------------------------------------------------------
+// Story's own acceptance criterion: retry/partial-completion interacting
+// with convergence. Not covered by any task above -- exercised here for the
+// first time, now that Handler.PARALLEL is genuinely registered (a real
+// shape=component node, no Handler.TOOL workaround needed).
+// ---------------------------------------------------------------------------
+
+test(
+  "retry/partial-completion interacting with convergence: a branch's exhausted-retry FAIL with a " +
+  "declared outputs= key correctly blocks the convergence node via the existing eager-input check, " +
+  "not silently fed a stale or empty value by mergeBranchContext's own FAIL-branch exclusion",
+  async () => {
+    const backend = new StubBackend({
+      // RETRY, not a bare FAIL -- max_retries="0" means attempt(0) <
+      // maxRetries(0) is false, so this exhausts on the very first dispatch,
+      // converting to FAIL internally (engine.ts's own RETRY-handling
+      // ladder) and recording shared.artifact into failedOutputs, owed by
+      // r1 -- exactly the "exhausted-retry FAIL" this criterion names.
+      r1: { status: Status.RETRY, notes: 'r1 needs another pass' },
+      r2: { status: Status.SUCCESS },
+    })
+    const handlers = defaultHandlers(backend)
+    const runDir = tempDir()
+    const cwd = tempDir()
+    try {
+      const graph = parseDot(`
+        digraph G {
+          start [shape=Mdiamond]  done [shape=Msquare]
+          fan [shape=component]
+          r1 [shape=box, prompt="x", outputs="shared.artifact", max_retries="0"]
+          r2 [shape=box, prompt="x"]
+          join [shape=box, prompt="use \${shared.artifact}"]
+          start -> fan
+          fan -> r1 [isolate="false"]
+          fan -> r2 [isolate="false"]
+          r1 -> join
+          r2 -> join
+          join -> done
+        }
+      `)
+      const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+      const result = await engine.run()
+
+      // r1's FAIL (no condition-matched edge, no retry_target) dead-ends
+      // inside its own branch -- selectEdge's fail-fast rule refuses the
+      // plain unconditional r1->join edge on a FAIL outcome, so r1's branch
+      // never itself dispatches join. r2 succeeds. applyDefaultJoinPolicy
+      // therefore returns PARTIAL (1 of 2 branches settled), so the A(a)
+      // jump fires and the OUTER run continues at join directly.
+      const events = new EventLog(runDir).all()
+      const unavailable = events.find((e) => e.type === 'node.input_unavailable')
+      assert.ok(unavailable, 'join is blocked by the eager-input check before its own handler ever runs')
+      assert.equal(unavailable?.node, 'join')
+      assert.equal(unavailable?.key, 'shared.artifact')
+      assert.equal(
+        unavailable?.owedBy, 'r1',
+        "the check correctly attributes the missing key to r1 -- the failure happened INSIDE a branch, " +
+        "not the main run, and this is the first time that distinction is exercised end-to-end",
+      )
+      assert.equal(result.status, Status.FAIL, "join's own dispatch fails on the unavailable input")
+      assert.deepEqual(
+        result.path, ['start', 'fan', 'join'],
+        'the A(a) jump still fired -- join immediately follows fan in the OUTER path -- this is a ' +
+        'join-node-level failure (blocked input), not a routing failure',
+      )
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  },
+)
