@@ -4430,6 +4430,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join as join5, resolve, sep } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 var execFileAsync = promisify(execFile);
 var WT_PREFIX = "attractor-wt-";
@@ -4444,6 +4445,24 @@ async function isGitRepo(dir) {
     return false;
   }
 }
+var RACE_ERROR_PATTERN = /failed to read .*commondir/i;
+var RACE_RETRY_MAX_ATTEMPTS = 4;
+function raceRetryDelayMs(attempt) {
+  return Math.min(10 * 2 ** attempt, 80) + Math.floor(Math.random() * 10);
+}
+async function addWorktreeWithRaceRetry(repoDir, branch, path) {
+  for (let attempt = 0; ; attempt++) {
+    const flag = attempt === 0 ? "-b" : "-B";
+    try {
+      await git(repoDir, ["worktree", "add", "-q", flag, branch, path]);
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (attempt + 1 >= RACE_RETRY_MAX_ATTEMPTS || !RACE_ERROR_PATTERN.test(message)) throw err;
+      await sleep(raceRetryDelayMs(attempt));
+    }
+  }
+}
 async function createWorktree(repoDir, runId) {
   if (!await isGitRepo(repoDir)) {
     throw new Error(`not a git repository: ${repoDir} -- cannot create an isolated worktree`);
@@ -4452,7 +4471,7 @@ async function createWorktree(repoDir, runId) {
   const parent = mkdtempSync(join5(tmpdir(), WT_PREFIX));
   const path = join5(parent, runId);
   try {
-    await git(repoDir, ["worktree", "add", "-q", "-b", branch, path]);
+    await addWorktreeWithRaceRetry(repoDir, branch, path);
   } catch (err) {
     rmSync(parent, { recursive: true, force: true });
     throw err;
