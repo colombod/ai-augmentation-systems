@@ -239,6 +239,17 @@ today: `Engine.run()` only checks `hasErrors()` (ERROR-only, per ADR-004), so
 a WARNING-severity rule reaches an embedder's own output only if that
 embedder reads `lint()`'s return value directly.
 
+`PAR-005` warns when a branch can shortcut straight to the graph's real exit
+node before the fan-out's own convergence node. **A branch reaching the exit
+node never stops the whole pipeline** -- it is an ordinary dead end for that
+one branch alone; every sibling branch proceeds normally, and the run
+resumes at the real convergence node once every branch (early-exiting or
+not) has settled. Drawing an edge straight to the exit node to mean "stop
+everything from inside a branch" is a common intuition and does not do
+that in this build -- there is no such capability today. `PAR-005`'s WARNING
+says "probably not what you meant, but nothing downstream breaks if it is
+fine," never "this is how you stop the whole run."
+
 ## Lint rules
 
 `TOPO-001` one start; `TOPO-002` one exit; `TOPO-003` edge targets exist;
@@ -268,11 +279,13 @@ reachable from a single branch's own shortcut into the convergence node's
 own downstream territory. The fan-out node itself is never named as a
 hazard, but a branch that loops back through it before reaching the chosen
 convergence node -- re-entering a sibling branch's own territory -- is
-exactly the cross-branch case this rule already refuses.
+exactly the cross-branch case this rule already refuses. `PAR-005` a branch
+root that can reach the graph's real exit node without first passing through
+the fan-out's own convergence node.
 
-`RUNS-002`, `DATA-001`, `GATE-001`, `CMD-001`, `HITL-003` and `PAR-002` are
-warnings; the rest are errors, and `attractor run` refuses a graph with any
-error.
+`RUNS-002`, `DATA-001`, `GATE-001`, `CMD-001`, `HITL-003`, `PAR-002` and
+`PAR-005` are warnings; the rest are errors, and `attractor run` refuses a
+graph with any error.
 
 ## Development
 

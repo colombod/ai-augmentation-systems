@@ -2649,3 +2649,73 @@ test('findPartialReconvergence: is defensively insensitive to a caller passing a
     'a duplicated root id must not inflate rule (a)\'s cross-branch count against itself',
   )
 })
+
+// ---------------------------------------------------------------------------
+// PAR-005: a branch root that can reach the graph's real EXIT node without
+// first passing through the component node's own convergence node.
+// ---------------------------------------------------------------------------
+
+test('PAR-005 fires WARNING when a branch root has a direct edge to EXIT that no other branch shares', () => {
+  // `early` has TWO outgoing edges: one straight to `done` (the shortcut this
+  // rule exists to catch), and one to `join` (so `join` -- reachable from
+  // BOTH branches -- is the real convergence node findConvergenceNode picks,
+  // not `done`; a fixture where `early` only reaches `done` makes `done`
+  // itself the computed convergence node, and this rule correctly does NOT
+  // fire on reaching the convergence node -- see the 4th test below).
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    early [shape=box]  other [shape=box]  join [shape=box]
+    start -> fan
+    fan -> early
+    early -> done
+    early -> join
+    fan -> other -> join
+    join -> done
+  }`
+  const diags = lint(parseDot(src))
+  const par005 = diags.find((d) => d.code === 'PAR-005')
+  assert.ok(par005)
+  assert.equal(par005?.severity, Severity.WARNING)
+  assert.ok(!diags.some((d) => d.code === 'PAR-001'), 'join, reachable from both branches, is a genuine convergence node')
+})
+
+test('PAR-005 does not fire when a branch reaches EXIT only after its own convergence node', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    a [shape=box]  b [shape=box]  join [shape=box]
+    start -> fan
+    fan -> a -> join
+    fan -> b -> join
+    join -> done
+  }`
+  assert.ok(!codes(src).includes('PAR-005'), 'reaching EXIT via join, the real convergence node, is ordinary post-convergence routing')
+})
+
+test('PAR-005 does not fire when no branch reaches EXIT at all', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    a [shape=box]  b [shape=box]  join [shape=box]  rest [shape=box]
+    start -> fan
+    fan -> a -> join
+    fan -> b -> join
+    join -> rest -> done
+  }`
+  assert.ok(!codes(src).includes('PAR-005'))
+})
+
+test('PAR-005 does not fire when the convergence node IS the exit node itself', () => {
+  // findConvergenceNode: convergence at the graph's real EXIT node (Task 4's
+  // own test case). Reaching `done` here is reaching convergence, not
+  // shortcutting past it -- PAR-005 must not fire on ordinary convergence.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]  b [shape=box]
+    start -> fan
+    fan -> a -> done
+    fan -> b -> done
+  }`
+  assert.ok(!codes(src).includes('PAR-005'))
+})

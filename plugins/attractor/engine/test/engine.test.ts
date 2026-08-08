@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseDot } from '../src/dot/parse.ts'
-import { lint, hasErrors } from '../src/dot/lint.ts'
+import { lint, hasErrors, Severity } from '../src/dot/lint.ts'
 import { Context, isEngineManagedKey } from '../src/core/context.ts'
 import { Status, type Outcome } from '../src/core/outcome.ts'
 import { StubBackend } from '../src/handlers/stub.ts'
@@ -4678,6 +4678,81 @@ test('two concurrent ctx.runBranch calls retrying the SAME node id do not lose a
     // timing-dependent: both branches' reads happen in their own synchronous
     // prefix, strictly before either branch's write, every run).
     assert.equal(backend.calls().length, 6, 'no attempts-increment lost update across the two concurrent branches')
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('PAR-005 integration: an early-exit branch neither halts the run nor lets lint block it, and a sibling proceeds normally', async () => {
+  const src = `
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      fan [shape=component]
+      early [shape=box]  other [shape=box]  join [shape=box]
+      start -> fan
+      fan -> early
+      early -> done
+      early -> join
+      fan -> other -> join
+      join -> done
+    }
+  `
+  const diags = lint(parseDot(src))
+  assert.ok(diags.some((d) => d.code === 'PAR-005'), 'the fixture is the one PAR-005 exists to catch')
+  assert.ok(
+    !diags.some((d) => d.severity === Severity.ERROR && d.code !== 'HAND-001'),
+    'PAR-005 is advisory -- it must not block the run (HAND-001 is expected and unrelated: Handler.PARALLEL stays unregistered until p5-08)',
+  )
+
+  const backend = new GatedBackend()
+  const handlers = defaultHandlers(backend)
+  const { runDir, cwd } = tempDirs()
+  const earlyRunDir = join(runDir, 'branch-early')
+  const otherRunDir = join(runDir, 'branch-other')
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      const [earlySettled, otherSettled] = await Promise.allSettled([
+        (async () => {
+          const p = ctx.runBranch!({
+            startNodeId: 'early', stopAt: new Set(), context: ctx.context.clone(), runDir: earlyRunDir, cwd: ctx.cwd,
+          })
+          backend.release('early')
+          return p
+        })(),
+        (async () => {
+          const p = ctx.runBranch!({
+            startNodeId: 'other', stopAt: new Set(['join']), context: ctx.context.clone(), runDir: otherRunDir, cwd: ctx.cwd,
+          })
+          backend.release('other')
+          return p
+        })(),
+      ])
+      assert.equal(earlySettled.status, 'fulfilled', 'early branch completes')
+      assert.equal(otherSettled.status, 'fulfilled', 'other branch completes')
+      if (earlySettled.status === 'fulfilled') {
+        const earlyResult = earlySettled.value
+        assert.equal(earlyResult.outcome.status, Status.SUCCESS, "the early branch's own EXIT dispatch is a trivial SUCCESS")
+        // `early` has two unconditional outgoing edges (-> done, -> join); with
+        // no condition/preferred-label/suggestion in play, selectEdge's own
+        // weight-then-lexical tie-break picks `done` ('done' < 'join'
+        // lexically) -- verified directly against the real selectEdge, not
+        // assumed.
+        assert.deepEqual(earlyResult.path, ['early', 'done'])
+      }
+      if (otherSettled.status === 'fulfilled') {
+        const otherResult = otherSettled.value
+        assert.equal(otherResult.outcome.status, Status.SUCCESS, "the sibling proceeds to its own stop point, unaffected by the other branch's early exit")
+        assert.deepEqual(otherResult.path, ['other'], 'stops before dispatching the join frontier')
+      }
+      return { status: Status.SUCCESS, notes: 'detour done' }
+    }),
+  )
+  const runnableGraph = parseDot(src.replace('fan [shape=component]', 'fan [shape=parallelogram, tool_command="unused"]'))
+  try {
+    const engine = new Engine({ graph: runnableGraph, context: Context.from({}), runDir, cwd, handlers, maxSteps: 500 })
+    const result = await engine.run()
+    assert.equal(result.status, Status.SUCCESS, 'the whole pipeline is never halted by the early-exit branch')
   } finally {
     cleanup(runDir, cwd)
   }

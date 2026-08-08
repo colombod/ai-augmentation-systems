@@ -262,6 +262,32 @@ function bypassesGates(graph: Graph, entry: string, gates: Set<string>, exits: S
   return null
 }
 
+/**
+ * Can `fromId` reach any node in `targets` without expanding past `avoid`?
+ * `avoid` itself is reached but never expanded further, so reaching `avoid`
+ * alone -- e.g. when the convergence node IS the exit node -- does not
+ * count as "reaching an exit before convergence": that is ordinary
+ * post-convergence routing, not the shortcut this check exists to catch.
+ */
+function canReachWithoutPassing(
+  graph: Graph, fromId: string, targets: ReadonlySet<string>, avoid: string,
+): boolean {
+  if (targets.has(fromId) && fromId !== avoid) return true
+  const seen = new Set<string>([fromId])
+  const queue = [fromId]
+  while (queue.length > 0) {
+    const cur = queue.shift() as string
+    if (cur === avoid) continue
+    for (const e of outgoingEdges(graph, cur)) {
+      if (seen.has(e.to)) continue
+      if (targets.has(e.to) && e.to !== avoid) return true
+      seen.add(e.to)
+      queue.push(e.to)
+    }
+  }
+  return false
+}
+
 export function lint(graph: Graph): Diagnostic[] {
   const diags: Diagnostic[] = []
 
@@ -587,6 +613,25 @@ export function lint(graph: Graph): Diagnostic[] {
                 `before ${convergenceId}, or ensure nothing reachable from ${convergenceId} is ` +
                 `also reachable directly from a branch`,
             })
+          }
+
+          // PAR-005: reuses the SAME convergenceId this block already computed.
+          const exitIds = new Set(findByHandler(graph, Handler.EXIT).map((n) => n.id))
+          for (const rootId of branchRootIds) {
+            if (canReachWithoutPassing(graph, rootId, exitIds, convergenceId)) {
+              diags.push({
+                code: 'PAR-005',
+                severity: Severity.WARNING,
+                node: node.id,
+                message:
+                  `node ${node.id}'s branch root ${rootId} can reach the graph's real exit ` +
+                  `node without first passing through the fan-out's own convergence node ` +
+                  `${convergenceId}. This branch alone stops there -- it does NOT stop the ` +
+                  `whole pipeline, and sibling branches proceed normally; there is no way to ` +
+                  `stop the whole run from inside a branch in this build. If an early stop for ` +
+                  `just this branch is intended, this warning can be ignored`,
+              })
+            }
           }
         }
       }
