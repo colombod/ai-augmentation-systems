@@ -4302,7 +4302,7 @@ test('a branch root routed straight to the real EXIT node is an ordinary dead en
   }
 })
 
-test('a branch retry-target cycle with maxSteps set low ends FAIL rather than hanging (mutation-checked, NFR-1)', async () => {
+test('a branch retry-target cycle exhausts the run-wide step cap and the OUTER run reports it too (mutation-checked, NFR-1)', async () => {
   const handlers = defaultHandlers(new StubBackend({ cyc: { status: Status.RETRY, notes: 'again' } }))
   const { runDir, cwd } = tempDirs()
   const branchRunDir = join(runDir, 'branch-cyc')
@@ -4333,7 +4333,15 @@ test('a branch retry-target cycle with maxSteps set low ends FAIL rather than ha
   try {
     const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers, maxSteps: 25 })
     const result = await engine.run()
-    assert.equal(result.status, Status.SUCCESS, "the OUTER run is unaffected by its branch's own FAIL")
+    // stepCount is shared across run() and every branch (NFR-1, engine.ts's own
+    // stepCount doc) precisely so a branch's own runaway retry loop cannot exceed
+    // the run-wide ceiling by running "off the books" -- so exhausting it INSIDE
+    // the branch necessarily leaves the OUTER run with nothing left to dispatch
+    // `done` with either. The outer run correctly reports that shared exhaustion
+    // (loud FAIL, never a hang and never a silent SUCCESS) rather than being
+    // unaffected by it -- there is no separate budget for it to be unaffected in.
+    assert.equal(result.status, Status.FAIL, 'the OUTER run shares the exhausted step budget, not a separate one')
+    assert.match(result.notes ?? '', /step cap/i)
   } finally {
     cleanup(runDir, cwd)
   }
@@ -4354,7 +4362,15 @@ test('run() and runBranch produce identical path/attempts/checkpoint shape for t
   `, script)
   assert.equal(mainResult.status, Status.SUCCESS)
 
-  const { runDir: branchRunDir, cwd: branchCwd } = tempDirs()
+  const { runDir: outerRunDir, cwd: branchCwd } = tempDirs()
+  // A directory OF ITS OWN for the branch's own internal dispatch -- distinct
+  // from outerRunDir (the "branch engine" instance's own runDir), matching
+  // every other test in this section. Reusing outerRunDir for both (as an
+  // earlier version of this test did) makes 'detour' and 'done''s own later
+  // checkpoint writes -- which use the OUTER, non-cloned context -- overwrite
+  // x/y's own earlier checkpoint write to the SAME file, silently erasing the
+  // very stage.x/stage.y evidence this test reads back below.
+  const innerBranchRunDir = join(outerRunDir, 'branch-inner')
   const handlers = defaultHandlers(new StubBackend(script))
   let branchResult: BranchRunResultShape | undefined
   handlers.set(
@@ -4364,7 +4380,7 @@ test('run() and runBranch produce identical path/attempts/checkpoint shape for t
         startNodeId: 'x',
         stopAt: new Set(['done']), // stops before dispatching the graph's natural end
         context: ctx.context.clone(),
-        runDir: branchRunDir,
+        runDir: innerBranchRunDir,
         cwd: ctx.cwd,
       })
       return { status: Status.SUCCESS, notes: 'ok' }
@@ -4382,7 +4398,7 @@ test('run() and runBranch produce identical path/attempts/checkpoint shape for t
   `)
   try {
     const engine = new Engine({
-      graph: branchGraph, context: Context.from({}), runDir: branchRunDir, cwd: branchCwd, handlers,
+      graph: branchGraph, context: Context.from({}), runDir: outerRunDir, cwd: branchCwd, handlers,
     })
     const outerResult = await engine.run()
     assert.equal(outerResult.status, Status.SUCCESS)
@@ -4390,13 +4406,22 @@ test('run() and runBranch produce identical path/attempts/checkpoint shape for t
     assert.deepEqual(mainResult.path.slice(1, -1), branchResult!.path, 'x, y in the same order')
 
     const mainCheckpoint = loadCheckpoint(mainRunDir)
-    const branchCheckpoint = loadCheckpoint(branchRunDir)
-    assert.deepEqual(mainCheckpoint?.attempts, branchCheckpoint?.attempts)
+    const branchCheckpoint = loadCheckpoint(innerBranchRunDir)
+    // Compare only x/y -- the two graphs are NOT the same topology (the branch
+    // graph adds its own detour hub so runBranch has somewhere to be launched
+    // from), so their full attempts maps can never be equal: outerRunDir's own
+    // checkpoint would also carry start/detour/done, which mainCheckpoint's
+    // does not. x and y are the only nodes both callers actually dispatch
+    // through the shared executeNodeStep, which is the property this test
+    // exists to prove -- comparing the full maps was asserting graph-topology
+    // equality this fixture was never designed to have.
+    assert.equal(mainCheckpoint?.attempts?.x, branchCheckpoint?.attempts?.x)
+    assert.equal(mainCheckpoint?.attempts?.y, branchCheckpoint?.attempts?.y)
     assert.equal(mainCheckpoint?.context['stage.x'], branchCheckpoint?.context['stage.x'])
     assert.equal(mainCheckpoint?.context['stage.y'], branchCheckpoint?.context['stage.y'])
   } finally {
     cleanup(mainRunDir, mainCwd)
-    cleanup(branchRunDir, branchCwd)
+    cleanup(outerRunDir, branchCwd)
   }
 })
 
@@ -4603,6 +4628,7 @@ test('two concurrent ctx.runBranch calls via Promise.all over GatedBackend both 
       start -> detour -> done
       detour -> a [condition="context.never_true=x"]
       detour -> b [condition="context.never_true=x"]
+      a -> done
     }
   `)
   try {
