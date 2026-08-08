@@ -3870,6 +3870,22 @@ function bypassesGates(graph, entry, gates, exits) {
   }
   return null;
 }
+function canReachWithoutPassing(graph, fromId, targets, avoid) {
+  if (targets.has(fromId) && fromId !== avoid) return true;
+  const seen = /* @__PURE__ */ new Set([fromId]);
+  const queue = [fromId];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    if (cur === avoid) continue;
+    for (const e of outgoingEdges(graph, cur)) {
+      if (seen.has(e.to)) continue;
+      if (targets.has(e.to) && e.to !== avoid) return true;
+      seen.add(e.to);
+      queue.push(e.to);
+    }
+  }
+  return false;
+}
 function lint(graph) {
   const diags = [];
   const starts = findByHandler(graph, Handler.START);
@@ -4031,6 +4047,17 @@ function lint(graph) {
               node: node.id,
               message: `node ${node.id} fans out to ${branchRootIds.join(", ")}, converging on ${convergenceId} -- but ${partial.join(", ")} ${partial.length === 1 ? "is" : "are"} also reachable, before ${convergenceId}, either from two or more of those branches or as a shortcut from a single branch into what ${convergenceId} itself leads to. A node reached either way could be dispatched twice -- route every branch through a single shared node before ${convergenceId}, or ensure nothing reachable from ${convergenceId} is also reachable directly from a branch`
             });
+          }
+          const exitIds2 = new Set(findByHandler(graph, Handler.EXIT).map((n) => n.id));
+          for (const rootId of branchRootIds) {
+            if (canReachWithoutPassing(graph, rootId, exitIds2, convergenceId)) {
+              diags.push({
+                code: "PAR-005",
+                severity: Severity.WARNING,
+                node: node.id,
+                message: `node ${node.id}'s branch root ${rootId} can reach the graph's real exit node without first passing through the fan-out's own convergence node ${convergenceId}. This branch alone stops there -- it does NOT stop the whole pipeline, and sibling branches proceed normally; there is no way to stop the whole run from inside a branch in this build. If an early stop for just this branch is intended, this warning can be ignored`
+              });
+            }
           }
         }
       }

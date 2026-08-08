@@ -4748,7 +4748,30 @@ test('PAR-005 integration: an early-exit branch neither halts the run nor lets l
       return { status: Status.SUCCESS, notes: 'detour done' }
     }),
   )
-  const runnableGraph = parseDot(src.replace('fan [shape=component]', 'fan [shape=parallelogram, tool_command="unused"]'))
+  // A SEPARATE runnable graph -- NOT the lint-checked graph with its shape
+  // swapped. `fan` is Handler.TOOL from the start, with its own unconditional
+  // bypass straight to `done` (the same "detour" pattern every Task 5 test
+  // already uses) and never-true CONDITIONAL edges to `early`/`other` so they
+  // stay graph-reachable (TOPO-004) without ever being dispatched by normal
+  // edge routing -- only by ctx.runBranch above. Reusing the lint-checked
+  // graph's own UNCONDITIONAL fan->early/fan->other edges here would make
+  // run()'s own edge-selection ALSO dispatch `early` a second time once `fan`
+  // completes, hanging on an already-consumed GatedBackend gate -- confirmed
+  // by tracing the real event log.
+  const runnableGraph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      fan [shape=parallelogram, tool_command="unused"]
+      early [shape=box]  other [shape=box]  join [shape=box]
+      start -> fan -> done
+      fan -> early [condition="context.never_true=x"]
+      fan -> other [condition="context.never_true=x"]
+      early -> done
+      early -> join
+      other -> join
+      join -> done
+    }
+  `)
   try {
     const engine = new Engine({ graph: runnableGraph, context: Context.from({}), runDir, cwd, handlers, maxSteps: 500 })
     const result = await engine.run()
