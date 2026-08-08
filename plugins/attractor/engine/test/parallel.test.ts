@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseDot } from '../src/dot/parse.ts'
 import { Context } from '../src/core/context.ts'
+import { loadCheckpoint } from '../src/core/checkpoint.ts'
 import { Status, type Outcome } from '../src/core/outcome.ts'
 import { type Graph, type Node, Handler } from '../src/dot/graph.ts'
 import {
@@ -1452,6 +1453,153 @@ test(
         'the run continues at retry_target, never at the convergence node',
       )
       assert.equal(result.status, Status.SUCCESS, 'recover succeeds via StubBackend\'s default entry')
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  },
+)
+
+// ---------------------------------------------------------------------------
+// p5-09: checkpoint isolation through the REAL dispatch path. The property
+// itself (distinct runDir per branch/run -- closed by construction, per
+// architecture.md's own Component structure item 6) was already proven once,
+// in test/engine.test.ts ("a branch root routed straight to the real EXIT
+// node is an ordinary dead end for that branch alone (mutation-checked)"),
+// but that test predates Handler.PARALLEL's own registration and had to
+// drive ctx.runBranch! by hand through a Handler.TOOL-registered
+// BranchLaunchingHandler. Now that Kind.PARALLEL is genuinely wired into
+// defaultHandlers() (p5-08), this is the same property proven through a real
+// shape=component node dispatching a real ParallelHandler end to end -- no
+// test double standing in for it.
+// ---------------------------------------------------------------------------
+
+test(
+  "checkpoint isolation under a real fan-out (NFR-7): while a real ParallelHandler's branches are " +
+  "still gated open, the OUTER run's own checkpoint.json never names a branch-interior node, and " +
+  "each branch's own checkpoint.json is a distinct, uncontaminated file",
+  async () => {
+    const backend = new TrackingBackend()
+    const handlers = defaultHandlers(backend)
+    const runDir = tempDir()
+    const cwd = tempDir()
+    try {
+      // Each branch is TWO nodes deep (root -> hold -> join) rather than one,
+      // deliberately: the checkpoint write for a node only happens AFTER its
+      // own handler.execute() resolves (engine.ts's executeNodeStep), so a
+      // one-node branch whose only node is the one TrackingBackend gates open
+      // would have no checkpoint file to read yet -- there would be nothing
+      // written mid-flight to prove isolation against. Releasing the root
+      // lets each branch advance one hop further, into its OWN second node,
+      // which then stays gated open -- giving each branch's own
+      // checkpoint.json a real, already-written entry to read back while its
+      // sibling and the outer run are still in flight.
+      const graph = parseDot(`
+        digraph G {
+          start [shape=Mdiamond]  done [shape=Msquare]
+          fan [shape=component]
+          r1 [shape=box, prompt="x"]
+          r1hold [shape=box, prompt="x"]
+          r2 [shape=box, prompt="x"]
+          r2hold [shape=box, prompt="x"]
+          join [shape=box, prompt="x"]
+          start -> fan
+          fan -> r1 [isolate="false"]
+          fan -> r2 [isolate="false"]
+          r1 -> r1hold -> join
+          r2 -> r2hold -> join
+          join -> done
+        }
+      `)
+      const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+      const runPromise = engine.run()
+
+      await waitFor(() => backend.started.size === 2)
+      assert.ok(
+        backend.started.has('r1') && backend.started.has('r2'),
+        'both branch roots genuinely reached the real backend at once',
+      )
+      backend.release('r1')
+      backend.release('r2')
+
+      await waitFor(() => backend.started.size === 4)
+      assert.ok(
+        backend.started.has('r1hold') && backend.started.has('r2hold'),
+        "both branches advanced one hop further, into their OWN second node, still gated open",
+      )
+
+      // The OUTER run's own checkpoint.json: fan's own handler
+      // (ParallelHandler.execute()) is still awaiting both branches inside
+      // its own Promise.all -- the checkpoint write for fan's OWN dispatch
+      // (engine.ts's executeNodeStep, immediately after handler.execute()
+      // resolves) has therefore not happened yet, so the outer run's
+      // checkpoint.json is still whatever 'start' (the node immediately
+      // before fan) left it as.
+      const outerMidFlight = loadCheckpoint(runDir)
+      assert.equal(
+        outerMidFlight?.currentNode, 'start',
+        "the outer run's own checkpoint stays at 'start' throughout -- never 'fan' and never a branch-interior node id",
+      )
+
+      // Each branch's own checkpoint.json, at its own branch-scoped runDir.
+      // src/handlers/parallel.ts's ParallelHandler.execute() (dispatchBranch)
+      // passes `runDir: join(runDir, rootId)` into ctx.runBranch! per branch
+      // -- so r1's own file lives at join(runDir, 'r1'), r2's at
+      // join(runDir, 'r2'), each distinct from the outer run's own runDir
+      // and from its sibling's.
+      const r1RunDir = join(runDir, 'r1')
+      const r2RunDir = join(runDir, 'r2')
+      assert.notEqual(r1RunDir, r2RunDir)
+      assert.notEqual(r1RunDir, runDir)
+      assert.notEqual(r2RunDir, runDir)
+
+      const r1MidFlight = loadCheckpoint(r1RunDir)
+      const r2MidFlight = loadCheckpoint(r2RunDir)
+      assert.ok(r1MidFlight, "r1's own checkpoint.json exists independently, mid-flight")
+      assert.ok(r2MidFlight, "r2's own checkpoint.json exists independently, mid-flight")
+      assert.equal(
+        r1MidFlight?.currentNode, 'r1',
+        "r1's own checkpoint reflects only r1's own interior progress (its root node, already settled) -- " +
+        "not r2's, and not the outer run's",
+      )
+      assert.equal(
+        r2MidFlight?.currentNode, 'r2',
+        "r2's own checkpoint reflects only r2's own interior progress -- not r1's, and not the outer run's",
+      )
+
+      backend.release('r1hold')
+      backend.release('r2hold')
+
+      // Both branches have now fully settled inside ParallelHandler's own
+      // Promise.all -- fan's own dispatch resolves, its OWN checkpoint write
+      // happens (currentNode: 'fan'), and the A(a) convergence jump dispatches
+      // 'join' next (still through the same gated backend). Caught here,
+      // gated open, before 'join' itself resolves: exactly the window where
+      // the outer run's own checkpoint has advanced past 'start' to 'fan',
+      // and each branch's own final checkpoint is already settled and
+      // stable, unaffected by anything happening at 'join' or the outer run.
+      await waitFor(() => backend.started.has('join'))
+
+      const r1Final = loadCheckpoint(r1RunDir)
+      const r2Final = loadCheckpoint(r2RunDir)
+      assert.equal(
+        r1Final?.currentNode, 'r1hold',
+        "r1's own FINAL checkpoint reflects only r1's own interior progress ('r1hold', its last dispatched " +
+        "node before the join frontier) -- never r2's",
+      )
+      assert.equal(
+        r2Final?.currentNode, 'r2hold',
+        "r2's own FINAL checkpoint reflects only r2's own interior progress -- never r1's",
+      )
+      assert.equal(
+        loadCheckpoint(runDir)?.currentNode, 'fan',
+        "the outer run's own checkpoint only advances to 'fan' AFTER ParallelHandler.execute() -- and " +
+        "therefore both branches -- have fully resolved",
+      )
+
+      backend.release('join')
+      const result = await runPromise
+      assert.equal(result.status, Status.SUCCESS, 'both branches settle, the join succeeds, the run completes normally')
     } finally {
       rmSync(runDir, { recursive: true, force: true })
       rmSync(cwd, { recursive: true, force: true })
