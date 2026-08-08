@@ -1328,3 +1328,113 @@ test(
     }
   },
 )
+
+// ---------------------------------------------------------------------------
+// ADR-013 A(a), the FAIL side. The SUCCESS/PARTIAL jump is well covered above
+// (the end-to-end test and the retry/convergence test both assert `path`),
+// but nothing yet proves the OTHER half: a component node's all-FAIL join
+// outcome must never jump to the convergence node -- it must fall through to
+// the ordinary retry_target/dead-end ladder, completely unmodified, exactly
+// like any other node. Sprint 3's own review found this gap: the pre-existing
+// "all branches FAIL -> the fan-out node's own join outcome is FAIL" test
+// (above) only checks the node.end event's status field, never routing, and
+// predates real Handler.PARALLEL registration. Both rows below use a real
+// shape=component node -- no Handler.TOOL workaround needed.
+// ---------------------------------------------------------------------------
+
+test(
+  'ADR-013 A(a) FAIL side: all branches FAIL, no retry_target -- the convergence node is never ' +
+  'dispatched; the run dead-ends FAIL at the component node itself, exactly like any other node',
+  async () => {
+    const backend = new StubBackend({
+      r1: { status: Status.FAIL, notes: 'x', failureReason: 'x' },
+      r2: { status: Status.FAIL, notes: 'x', failureReason: 'x' },
+    })
+    const handlers = defaultHandlers(backend)
+    const runDir = tempDir()
+    const cwd = tempDir()
+    try {
+      const graph = parseDot(`
+        digraph G {
+          start [shape=Mdiamond]  done [shape=Msquare]
+          fan [shape=component]
+          r1 [shape=box, prompt="x"]  r2 [shape=box, prompt="x"]  join [shape=box, prompt="x"]
+          start -> fan
+          fan -> r1 [isolate="false"]
+          fan -> r2 [isolate="false"]
+          r1 -> join
+          r2 -> join
+          join -> done
+        }
+      `)
+      const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+      const result = await engine.run()
+
+      const events = new EventLog(runDir).all()
+      assert.ok(
+        !events.some((e) => e.type === 'node.start' && e.node === 'join'),
+        'the convergence node is NEVER dispatched on an all-FAIL join outcome -- no jump fired',
+      )
+      assert.equal(result.status, Status.FAIL)
+      assert.deepEqual(
+        result.path, ['start', 'fan'],
+        'fan dead-ends on its own FAIL outcome -- selectEdge refuses the plain unconditional fan->* ' +
+        'edges (there are none here, fan only has branch-root edges) and there is no retry_target',
+      )
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  'ADR-013 A(a) FAIL side: all branches FAIL, WITH a retry_target on the component node -- the run ' +
+  'continues there, not at the convergence node -- the ordinary ladder is completely unmodified',
+  async () => {
+    const backend = new StubBackend({
+      r1: { status: Status.FAIL, notes: 'x', failureReason: 'x' },
+      r2: { status: Status.FAIL, notes: 'x', failureReason: 'x' },
+    })
+    const handlers = defaultHandlers(backend)
+    const runDir = tempDir()
+    const cwd = tempDir()
+    try {
+      const graph = parseDot(`
+        digraph G {
+          start [shape=Mdiamond]  done [shape=Msquare]
+          fan [shape=component, retry_target="recover"]
+          r1 [shape=box, prompt="x"]  r2 [shape=box, prompt="x"]  join [shape=box, prompt="x"]
+          recover [shape=box, prompt="x"]
+          start -> fan
+          fan -> r1 [isolate="false"]
+          fan -> r2 [isolate="false"]
+          r1 -> join
+          r2 -> join
+          join -> done
+          recover -> done
+        }
+      `)
+      const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+      const result = await engine.run()
+
+      const events = new EventLog(runDir).all()
+      assert.ok(
+        !events.some((e) => e.type === 'node.start' && e.node === 'join'),
+        'the convergence node is still never dispatched -- retry_target wins, not the A(a) jump',
+      )
+      assert.ok(
+        events.some((e) => e.type === 'node.fail.retry_target' && e.node === 'fan' && e.target === 'recover'),
+        "engine.ts's own pre-existing retry_target ladder fired for fan, completely unmodified by this story",
+      )
+      assert.deepEqual(
+        result.path, ['start', 'fan', 'recover', 'done'],
+        'the run continues at retry_target, never at the convergence node',
+      )
+      assert.equal(result.status, Status.SUCCESS, 'recover succeeds via StubBackend\'s default entry')
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  },
+)
