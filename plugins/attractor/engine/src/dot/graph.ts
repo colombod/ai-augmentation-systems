@@ -204,7 +204,8 @@ export const INFERRED_OUTPUTS_BY_HANDLER: Record<HandlerKind, readonly string[]>
   [Handler.TOOL]: TOOL_OUTPUT_KEYS,
   [Handler.CONDITIONAL]: [], // PassthroughHandler, same as START.
   [Handler.HUMAN]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
-  [Handler.PARALLEL]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
+  [Handler.PARALLEL]: [], // ParallelHandler (p5-08) writes context via mergeBranchContext's direct
+  // Context.set() calls, not via Outcome.contextUpdates -- nothing for this table to infer.
   [Handler.FAN_IN]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
   [Handler.MANAGER_LOOP]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
 }
@@ -397,7 +398,8 @@ export const SUBSTITUTABLE_ATTRS: Record<HandlerKind, readonly string[]> = {
   [Handler.TOOL]: ['tool_command'], // ToolHandler: `attrs.tool_command`.
   [Handler.CONDITIONAL]: [], // PassthroughHandler, same as START.
   [Handler.HUMAN]: [], // Not registered in defaultHandlers() -- cannot execute.
-  [Handler.PARALLEL]: [], // Not registered in defaultHandlers() -- cannot execute.
+  [Handler.PARALLEL]: [], // ParallelHandler (p5-08) reads max_parallel (a plain int) and edges'
+  // isolate attribute -- neither is substitutable text; nothing passes through substitute().
   [Handler.FAN_IN]: [], // Not registered in defaultHandlers() -- cannot execute.
   [Handler.MANAGER_LOOP]: [], // Not registered in defaultHandlers() -- cannot execute.
 }

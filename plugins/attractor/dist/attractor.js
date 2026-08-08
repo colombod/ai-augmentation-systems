@@ -3088,7 +3088,8 @@ var INFERRED_OUTPUTS_BY_HANDLER = {
   [Handler.HUMAN]: [],
   // Not registered in defaultHandlers() -- cannot execute, let alone write.
   [Handler.PARALLEL]: [],
-  // Not registered in defaultHandlers() -- cannot execute, let alone write.
+  // ParallelHandler (p5-08) writes context via mergeBranchContext's direct
+  // Context.set() calls, not via Outcome.contextUpdates -- nothing for this table to infer.
   [Handler.FAN_IN]: [],
   // Not registered in defaultHandlers() -- cannot execute, let alone write.
   [Handler.MANAGER_LOOP]: []
@@ -3131,7 +3132,8 @@ var SUBSTITUTABLE_ATTRS = {
   [Handler.HUMAN]: [],
   // Not registered in defaultHandlers() -- cannot execute.
   [Handler.PARALLEL]: [],
-  // Not registered in defaultHandlers() -- cannot execute.
+  // ParallelHandler (p5-08) reads max_parallel (a plain int) and edges'
+  // isolate attribute -- neither is substitutable text; nothing passes through substitute().
   [Handler.FAN_IN]: [],
   // Not registered in defaultHandlers() -- cannot execute.
   [Handler.MANAGER_LOOP]: []
