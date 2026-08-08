@@ -12,7 +12,7 @@ import {
   type Backend, type BranchRunResult, type HandlerCtx, type Handler as HandlerIface,
 } from '../src/handlers/types.ts'
 import { mergeBranchContext, applyDefaultJoinPolicy, ParallelHandler, Semaphore } from '../src/handlers/parallel.ts'
-import { EventLog } from '../src/run/events.ts'
+import { EventLog, type RunEvent } from '../src/run/events.ts'
 import { Engine, defaultHandlers } from '../src/core/engine.ts'
 import { StubBackend } from '../src/handlers/stub.ts'
 import { createWorktree } from '../src/run/worktree.ts'
@@ -613,6 +613,79 @@ test('ParallelHandler: max_parallel=2 (branch count - 1) admits two concurrently
   }
 })
 
+test(
+  'ParallelHandler: max_parallel="0" is clamped to 1 -- branches run one at a time and the dispatch genuinely completes, rather than deadlocking forever',
+  async () => {
+    const backend = new TrackingBackend()
+    const handlers = defaultHandlers(backend)
+    handlers.set(Handler.TOOL, new ParallelHandler())
+    const runDir = tempDir()
+    const cwd = tempDir()
+    try {
+      const graph = parseDot(concurrencyGraph(0))
+      const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+      const runPromise = engine.run()
+
+      await waitFor(() => backend.started.size === 1)
+      assert.equal(backend.maxObserved, 1, 'max_parallel="0" behaves like max_parallel=1, not zero permits')
+      backend.release('r1')
+
+      await waitFor(() => backend.started.size === 2)
+      assert.equal(backend.maxObserved, 1)
+      backend.release('r2')
+
+      await waitFor(() => backend.started.size === 3)
+      assert.equal(backend.maxObserved, 1)
+      backend.release('r3')
+
+      // The whole point of the regression: pre-fix, this Promise never
+      // settles (a zero-permit Semaphore admits nothing, so Promise.all
+      // inside execute() hangs forever). waitFor above is only a bounded
+      // backstop against a true hang -- this await is the real assertion
+      // that the run genuinely completes.
+      await runPromise
+      assert.equal(backend.maxObserved, 1, 'never more than one branch ran concurrently')
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  'ParallelHandler: max_parallel="-1" is clamped to 1 -- branches run one at a time and the dispatch genuinely completes, rather than deadlocking forever',
+  async () => {
+    const backend = new TrackingBackend()
+    const handlers = defaultHandlers(backend)
+    handlers.set(Handler.TOOL, new ParallelHandler())
+    const runDir = tempDir()
+    const cwd = tempDir()
+    try {
+      const graph = parseDot(concurrencyGraph(-1))
+      const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+      const runPromise = engine.run()
+
+      await waitFor(() => backend.started.size === 1)
+      assert.equal(backend.maxObserved, 1, 'max_parallel="-1" behaves like max_parallel=1, not a negative/zero permit count')
+      backend.release('r1')
+
+      await waitFor(() => backend.started.size === 2)
+      assert.equal(backend.maxObserved, 1)
+      backend.release('r2')
+
+      await waitFor(() => backend.started.size === 3)
+      assert.equal(backend.maxObserved, 1)
+      backend.release('r3')
+
+      await runPromise
+      assert.equal(backend.maxObserved, 1, 'never more than one branch ran concurrently')
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  },
+)
+
 // ---------------------------------------------------------------------------
 // Row 2 -- FR-17b worktree lifecycle: isolate default true creates and
 // removes a real branch worktree; isolate="false" runs directly in the
@@ -973,6 +1046,152 @@ test(
       assert.equal(outcome.status, Status.FAIL)
       assert.equal(outcome.failureReason, 'all 0 branch(es) failed')
       assert.equal(runBranchCalled, false, 'zero branches means dispatchBranch is never even constructed, let alone called')
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  },
+)
+
+// ---------------------------------------------------------------------------
+// Row 8 -- a real EventLog.append failure must never escape execute() and
+// turn a genuinely-settled branch's own outcome into an unhandled rejection
+// for every sibling in the same Promise.all.
+//
+// Both rows below subclass the REAL EventLog (src/run/events.ts) and override
+// only `append`, exercising ParallelHandler's actual try/catch guards rather
+// than a reimplementation of them.
+// ---------------------------------------------------------------------------
+
+/** Throws only for the specific event type finally-block worktree cleanup appends; every other event is logged normally. */
+class ThrowsOnWorktreeWarningEventLog extends EventLog {
+  append(event: RunEvent): void {
+    if (event.type === 'node.parallel.worktree_warning') {
+      throw new Error('disk full -- cannot write worktree_warning event')
+    }
+    super.append(event)
+  }
+}
+
+test(
+  'ParallelHandler regression: an events.append throw inside the finally-block worktree_warning write is ' +
+  "swallowed -- the branch's own already-computed SUCCESS outcome survives, and execute() still resolves " +
+  '(not reject) with the correct join verdict',
+  async () => {
+    const repoDir = repo()
+    const runDir = tempDir()
+    try {
+      // Two branch roots off one fan-out: `dirtyRoot` is isolated (gets its
+      // own real worktree via the real createWorktree/removeWorktree) and
+      // deliberately leaves an uncommitted file behind, so the real
+      // removeWorktree genuinely returns `removed: false` and the
+      // worktree_warning append path is actually reached -- not simulated.
+      // `cleanRoot` runs isolate="false", directly in repoDir, and is a
+      // plain control to prove the sibling and the overall join verdict are
+      // unaffected by the swallowed throw.
+      const graph: Graph = {
+        name: 'G',
+        attrs: {},
+        nodes: new Map<string, Node>([
+          ['fanout', { id: 'fanout', attrs: {}, handler: Handler.PARALLEL }],
+          ['dirtyRoot', { id: 'dirtyRoot', attrs: {}, handler: Handler.CODERGEN }],
+          ['cleanRoot', { id: 'cleanRoot', attrs: {}, handler: Handler.CODERGEN }],
+        ]),
+        edges: [
+          { from: 'fanout', to: 'dirtyRoot', attrs: {} },
+          { from: 'fanout', to: 'cleanRoot', attrs: { isolate: 'false' } },
+        ],
+      }
+      const ctx: HandlerCtx = {
+        node: graph.nodes.get('fanout') as Node,
+        graph,
+        context: Context.from({}),
+        runDir,
+        cwd: repoDir,
+        events: new ThrowsOnWorktreeWarningEventLog(runDir),
+        runBranch: async (opts) => {
+          if (opts.startNodeId === 'dirtyRoot') {
+            writeFileSync(join(opts.cwd, 'uncommitted.txt'), 'never committed', 'utf8')
+          }
+          return { outcome: { status: Status.SUCCESS, notes: 'ok' }, path: [opts.startNodeId], context: {} }
+        },
+      }
+
+      // Not asserted via assert.rejects -- the point IS that this resolves.
+      const outcome = await new ParallelHandler().execute(ctx)
+
+      assert.equal(
+        outcome.status, Status.SUCCESS,
+        "both branches' own real outcomes were SUCCESS -- the swallowed worktree_warning append throw " +
+        'must not have overridden dirtyRoot\'s own already-computed result',
+      )
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(repoDir, { recursive: true, force: true })
+    }
+  },
+)
+
+/** Throws for every event, unconditionally -- the "even best-effort logging is completely unavailable" case. */
+class AlwaysThrowingEventLog extends EventLog {
+  append(_event: RunEvent): void {
+    throw new Error('disk full -- cannot write any event')
+  }
+}
+
+test(
+  'ParallelHandler regression: an events.append throw during mergeBranchContext\'s own collision logging is ' +
+  'converted to a FAIL Outcome mentioning the thrown message, rather than rejecting execute()',
+  async () => {
+    const graph: Graph = {
+      name: 'G',
+      attrs: {},
+      nodes: new Map<string, Node>([
+        ['fanout', { id: 'fanout', attrs: {}, handler: Handler.PARALLEL }],
+        ['r1', { id: 'r1', attrs: {}, handler: Handler.CODERGEN }],
+        ['r2', { id: 'r2', attrs: {}, handler: Handler.CODERGEN }],
+      ]),
+      edges: [
+        // isolate="false" on both -- no worktree involved, so the ONLY
+        // events.append call either branch's own dispatch could trigger is
+        // mergeBranchContext's own node.parallel.context_collision write
+        // below, isolating this test to fix (2) specifically.
+        { from: 'fanout', to: 'r1', attrs: { isolate: 'false' } },
+        { from: 'fanout', to: 'r2', attrs: { isolate: 'false' } },
+      ],
+    }
+    const runDir = tempDir()
+    const cwd = tempDir()
+    try {
+      const ctx: HandlerCtx = {
+        node: graph.nodes.get('fanout') as Node,
+        graph,
+        context: Context.from({}),
+        runDir,
+        cwd,
+        events: new AlwaysThrowingEventLog(runDir),
+        runBranch: async (opts) => ({
+          outcome: { status: Status.SUCCESS, notes: 'ok' },
+          path: [opts.startNodeId],
+          // Both branches write the SAME key with DIFFERENT values -- r2
+          // (declared last) collides with r1, forcing mergeBranchContext to
+          // call events.append(node.parallel.context_collision), which this
+          // fake EventLog throws on unconditionally.
+          context: { 'shared.key': `from-${opts.startNodeId}` },
+        }),
+      }
+
+      const outcome = await new ParallelHandler().execute(ctx)
+
+      assert.equal(
+        outcome.status, Status.FAIL,
+        'a merge-back bookkeeping failure folds into FAIL rather than rejecting execute(), even though both ' +
+        'branches themselves genuinely succeeded',
+      )
+      assert.match(
+        outcome.failureReason ?? '', /disk full -- cannot write any event/,
+        'the thrown message is preserved in failureReason, matching the fix\'s own shape',
+      )
     } finally {
       rmSync(runDir, { recursive: true, force: true })
       rmSync(cwd, { recursive: true, force: true })

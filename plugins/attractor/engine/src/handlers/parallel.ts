@@ -177,7 +177,13 @@ export class ParallelHandler implements Handler {
       return applyDefaultJoinPolicy([])
     }
 
-    const maxParallel = intAttr(node.attrs.max_parallel) ?? DEFAULT_MAX_PARALLEL
+    // A non-positive value (explicit "0"/"-1", or anything else intAttr lets
+    // through) must never reach Semaphore: it would start with zero permits,
+    // every branch's acquire() would queue forever, nothing would ever call
+    // release(), and Promise.all below would never settle -- a permanent
+    // deadlock reachable straight from graph authoring (max_parallel="0" in
+    // a .dot file), since no lint rule validates this attribute's value.
+    const maxParallel = Math.max(1, intAttr(node.attrs.max_parallel) ?? DEFAULT_MAX_PARALLEL)
     const semaphore = new Semaphore(maxParallel)
     const preforkSnapshot = context.snapshot()
     const convergenceId = findConvergenceNode(graph, branchRootIds, node.id)
@@ -213,12 +219,19 @@ export class ParallelHandler implements Handler {
         if (worktree) {
           const removal = await removeWorktree(cwd, worktree)
           if (!removal.removed) {
-            events.append({
-              type: 'node.parallel.worktree_warning',
-              node: node.id,
-              branch: rootId,
-              warning: removal.warning,
-            })
+            try {
+              events.append({
+                type: 'node.parallel.worktree_warning',
+                node: node.id,
+                branch: rootId,
+                warning: removal.warning,
+              })
+            } catch {
+              // Best-effort observability only -- a failure to WRITE this warning
+              // must never override this branch's own already-computed outcome
+              // (ADR-013 A(b): nothing about worktree cleanup may escape this
+              // branch's own dispatch).
+            }
           }
         }
       }
@@ -235,7 +248,17 @@ export class ParallelHandler implements Handler {
       }),
     )
 
-    mergeBranchContext(context, preforkSnapshot, branchRootIds, results, events)
+    try {
+      mergeBranchContext(context, preforkSnapshot, branchRootIds, results, events)
+    } catch (err) {
+      // Every branch has already genuinely settled by this point -- an
+      // unexpected throw here (e.g. EventLog.append failing on a collision-
+      // log write) is a bookkeeping failure, not a branch failure, but
+      // execute() must still never reject (the same contract this class's
+      // own ADR-013 A(b) tests already prove for the per-branch path).
+      const message = err instanceof Error ? err.message : String(err)
+      return { status: Status.FAIL, notes: `merge-back failed: ${message}`, failureReason: message }
+    }
     return applyDefaultJoinPolicy(results)
   }
 }
