@@ -4639,3 +4639,46 @@ test('two concurrent ctx.runBranch calls via Promise.all over GatedBackend both 
     cleanup(runDir, cwd)
   }
 })
+
+test('two concurrent ctx.runBranch calls retrying the SAME node id do not lose an attempts increment (mutation-checked)', async () => {
+  const backend = new StubBackend({ shared: { status: Status.RETRY, notes: 'again' } })
+  const handlers = defaultHandlers(backend)
+  const { runDir, cwd } = tempDirs()
+  const runDirA = join(runDir, 'branch-a')
+  const runDirB = join(runDir, 'branch-b')
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      await Promise.allSettled([
+        ctx.runBranch!({
+          startNodeId: 'shared', stopAt: new Set(), context: ctx.context.clone(), runDir: runDirA, cwd: ctx.cwd,
+        }),
+        ctx.runBranch!({
+          startNodeId: 'shared', stopAt: new Set(), context: ctx.context.clone(), runDir: runDirB, cwd: ctx.cwd,
+        }),
+      ])
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      shared [shape=box, prompt="x", max_retries=2]
+      start -> detour -> done
+      detour -> shared [condition="context.never_true=x"]
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers, maxSteps: 500 })
+    await engine.run()
+    // Each branch should dispatch 'shared' exactly 3 times (1 initial + 2 retries,
+    // max_retries=2) -- 6 total across both branches. The pre-fix lost-update bug
+    // reliably produced 7 (deterministic, not flaky -- the race is structural, not
+    // timing-dependent: both branches' reads happen in their own synchronous
+    // prefix, strictly before either branch's write, every run).
+    assert.equal(backend.calls().length, 6, 'no attempts-increment lost update across the two concurrent branches')
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})

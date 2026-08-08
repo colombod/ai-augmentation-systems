@@ -103,3 +103,35 @@ ADR says `runBranch` reuses is, as of ADR-012, a single shared private method
 This ADR's own reasoning for sharing state (a second, independent implementation drifting from
 the first without anyone noticing) is exactly why ADR-012 makes that decision too; see it for
 the seam and the rejected alternative (a parity-tested reimplementation).
+
+**Attempts-ledger race, added 2026-08-08 (Task 5's own first fix-loop round):**
+Spike 8 (this ADR's own Consequences section) asked whether the shared-ledger
+ordering guarantees this ADR assumes hold up under real concurrency rather than
+being merely assumed. The first empirical answer: `attempts` did NOT hold up.
+`executeNodeStep` read `this.attempts.get(node.id)` before the handler dispatch's
+own `await`, then wrote `attempt + 1` only after -- two branches concurrently
+dispatching the SAME node id both read the same stale count and both wrote
+the same incremented value, losing an update (reproduced: 7 real backend dispatches
+where exactly 6 should occur, for two branches racing a `max_retries=2` node).
+Fixed by moving the write to be synchronous, immediately after the read, closing
+the lost-update. `gateOutcomes`/`nodeFailures`/`failedOutputs` were checked and
+are NOT vulnerable to this same pattern -- every write to them is an unconditional
+`.set()`/`.delete()` driven by the freshly-resolved post-await outcome, never a
+stale pre-await read. `stepCount` (NFR-1's own ceiling) is a single synchronous
+statement with no read-before-await gap either.
+
+A narrower piece of Spike 8 remains open, deliberately not closed by this round:
+the retries-exhausted paths unconditionally reset `this.attempts` to 0 for a node
+id, which can clobber a DIFFERENT, concurrently in-flight branch's own reserved
+count on that SAME node id. This is not a data race in the read/write sense above
+(no lost update, no torn state) -- it is a semantic question of what "attempts for
+this node" means when two independent branches concurrently and repeatedly
+dispatch the identical node id, which is exactly the double-dispatch shape PAR-004
+(ADR-007) already exists to refuse at the graph-lint level. Not reachable today:
+`HAND-001` blanket-refuses every `Handler.PARALLEL` node, and any graph that did
+enable it would need to independently defeat PAR-004's own detection (which has 2
+narrower, already-tracked gaps, GitHub issue #14) before two branches could even
+reach the same node id concurrently. Tracked as a named, accepted limitation
+rather than closed here; revisit alongside p5-08 (`ParallelHandler` itself) if
+PAR-004's own remaining gaps are ever closed and this stops being purely
+theoretical.

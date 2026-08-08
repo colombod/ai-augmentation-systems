@@ -695,6 +695,19 @@ export class Engine {
     }
 
     const attempt = this.attempts.get(node.id) ?? 0
+    // Reserved SYNCHRONOUSLY, before the handler dispatch's own await below --
+    // NOT deferred to the post-await write the RETRY branch used to do. Two
+    // concurrent branches (Promise.all/allSettled) dispatching the SAME node id
+    // both used to read this identical value here, then both write the identical
+    // attempt+1 after their own await resolved, silently losing one increment.
+    // A read immediately followed by a write, with no await between them, is
+    // atomic under JS's single-threaded run-to-completion semantics -- whichever
+    // call's synchronous prefix runs first reserves the correct count before
+    // yielding, so the next concurrent call's own read (in ITS synchronous
+    // prefix) always sees the up-to-date value. If this dispatch turns out not
+    // to need it (no RETRY, or retries exhausted), the unconditional resets
+    // below (`this.attempts.set(node.id, 0)`) overwrite it harmlessly either way.
+    this.attempts.set(node.id, attempt + 1)
     this.events.append({ type: 'node.start', node: node.id })
     context.takeWritten()
     let outcome: Outcome
@@ -744,7 +757,6 @@ export class Engine {
     if (outcome.status === Status.RETRY) {
       const policy = resolveRetryPolicy(node, graph)
       if (attempt < policy.maxRetries) {
-        this.attempts.set(node.id, attempt + 1)
         const delay = backoffMs(policy, attempt)
         this.events.append({
           type: 'node.retry',
