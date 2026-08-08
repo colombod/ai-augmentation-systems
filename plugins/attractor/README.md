@@ -250,6 +250,31 @@ that in this build -- there is no such capability today. `PAR-005`'s WARNING
 says "probably not what you meant, but nothing downstream breaks if it is
 fine," never "this is how you stop the whole run."
 
+`PAR-003` sees only each branch root's own DECLARED `outputs=` -- not keys a
+handler infers on its own (`tool.last_line`, `tool.output`) even though those
+collide at runtime exactly the same way. Two `Handler.TOOL` branch roots that
+never declare `outputs=` at all can still silently overwrite each other's
+`tool.*` keys once their writes merge back after the fan-out; `PAR-003`
+cannot see it, because there is nothing declared to compare. The runtime
+merge (`mergeBranchContext`) still catches every real collision, declared or
+inferred, and logs it via `node.parallel.context_collision` -- `PAR-003` is a
+design-time hint for the subset a lint pass can actually see, not the full
+safety net.
+
+`PAR-004` has two narrower, honestly-tracked gaps (GitHub issue #14): a
+legitimate multi-hop, retry-free chain from one branch root to another can
+make the convergence search return nothing, refusing a hazard-free graph
+(`PAR-001` fires instead of a clean pass); and a rework/retry loop that
+targets an ordinary non-root node deep in a branch, rather than the fan-out
+node or a declared root, can make the search select the wrong node as
+"convergence," naming the wrong culprit in the diagnostic. Both are
+extensively fuzzed and proven **safe in the direction that matters**: neither
+ever lets a genuinely hazardous fan-out through silently -- the graph is
+always refused (loudly, at `ERROR`), just sometimes with the wrong node named
+or a `PAR-001` where a `PAR-004` would have been more precise. Not reachable
+by any pipeline that can run today, since `HAND-001` still refuses every
+`Handler.PARALLEL` node unconditionally.
+
 ## Lint rules
 
 `TOPO-001` one start; `TOPO-002` one exit; `TOPO-003` edge targets exist;
@@ -271,19 +296,18 @@ human gate whose exposed context traces to a single Handler.CODERGEN direct
 predecessor (self-report risk for the `agent` channel -- see ADR-006);
 `PAR-001` a `component`/`Handler.PARALLEL` node that fans out to two or more
 branches with no discoverable convergence node; `PAR-002` a `component` node
-whose fan-out is a single-edge no-op; `PAR-004` a node other than the chosen
-convergence node reachable, before it, from two or more branches (including
-a branch root reachable from a sibling root's own forward path, or one that
-merely lost a depth tie for it), or -- if it is not itself a branch root --
-reachable from a single branch's own shortcut into the convergence node's
-own downstream territory. The fan-out node itself is never named as a
-hazard, but a branch that loops back through it before reaching the chosen
-convergence node -- re-entering a sibling branch's own territory -- is
-exactly the cross-branch case this rule already refuses. `PAR-005` a branch
-root that can reach the graph's real exit node without first passing through
-the fan-out's own convergence node;
-`PAR-003` two or more of a component node's branch-root nodes declaring the
-same `outputs=` key.
+whose fan-out is a single-edge no-op; `PAR-003` two or more of a component
+node's branch-root nodes declaring the same `outputs=` key; `PAR-004` a node
+other than the chosen convergence node reachable, before it, from two or more
+branches (including a branch root reachable from a sibling root's own forward
+path, or one that merely lost a depth tie for it), or -- if it is not itself a
+branch root -- reachable from a single branch's own shortcut into the
+convergence node's own downstream territory. The fan-out node itself is never
+named as a hazard, but a branch that loops back through it before reaching
+the chosen convergence node -- re-entering a sibling branch's own territory --
+is exactly the cross-branch case this rule already refuses. `PAR-005` a
+branch root that can reach the graph's real exit node without first passing
+through the fan-out's own convergence node.
 
 `RUNS-002`, `DATA-001`, `GATE-001`, `CMD-001`, `HITL-003`, `PAR-002`,
 `PAR-003` and `PAR-005` are warnings; the rest are errors, and `attractor

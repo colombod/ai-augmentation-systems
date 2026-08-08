@@ -4928,16 +4928,20 @@ var Engine = class {
    * live HERE rather than in a caller's wrapper -- see this task's own
    * Step 2: an existing test requires `RunResult.path` to already contain a
    * node by the moment its handler-lookup failure is reported. `path.push`
-   * itself does NOT live here (p5-05 addendum): once runBranch (p5-05)
-   * became a second caller of this same method, an unconditional
-   * `this.path.push` here would leak every branch-internal node id into the
-   * outer run's own `this.path` -- the SAME shared, instance-level array
-   * `RunResult.path` reads directly. Each caller instead pushes to its OWN
-   * path variable immediately before calling this method: `run()`'s loop
-   * pushes to `this.path` (below); `runBranch`'s loop pushes to its own
-   * local `path` array. The pre-dispatch-failure invariant above still
-   * holds either way, since the push now happens in the caller, strictly
-   * before this method can return any `'stop'` result for that node.
+   * lives HERE too (final-review correction, p5-05 addendum's own bug):
+   * each caller passes its OWN `path` array via `opts.path` -- `run()`'s
+   * loop passes `this.path`; `runBranch`'s loop passes its own local
+   * `path` -- so a branch's internal node ids still cannot leak into the
+   * outer run's own `this.path` (the original addendum's own concern,
+   * still closed). But the push itself happens HERE, immediately after the
+   * step-cap check above, not in the caller before this method is even
+   * entered: the addendum's own relocation pushed unconditionally BEFORE
+   * calling this method, meaning a dispatch the step-cap check went on to
+   * block still left its id in `path` -- a phantom, never-actually-executed
+   * hop (no `node.start`, no handler call) on every step-cap termination,
+   * on ANY graph, not just ones with a branch. Pushing after the step-cap
+   * check and before node/handler lookup keeps the pre-dispatch-failure
+   * invariant above intact while closing that regression.
    * Folded into the `'deadend'` stop reason alongside the ordinary
    * "no outgoing edge" case, since from a caller's point of view all three
    * are "this step produced no next node to continue to"; the one accepted,
@@ -4959,6 +4963,7 @@ var Engine = class {
         outcome: { status: Status.FAIL, notes: capped, failureReason: capped }
       };
     }
+    opts.path.push(currentId);
     const node = graph.nodes.get(currentId);
     if (!node) {
       const msg = `unknown node ${currentId}`;
@@ -5123,21 +5128,22 @@ var Engine = class {
   async runBranch(opts) {
     const maxSteps = this.opts.maxSteps ?? DEFAULT_MAX_STEPS;
     const path = [];
+    const context = opts.context.clone();
     let currentId = opts.startNodeId;
     for (; ; ) {
-      path.push(currentId);
       const stepResult = await this.executeNodeStep(currentId, {
         runDir: opts.runDir,
         cwd: opts.cwd,
         maxSteps,
         stopAt: opts.stopAt,
-        context: opts.context
+        context,
+        path
       });
       if (stepResult.kind === "continue") {
         currentId = stepResult.nextId;
         continue;
       }
-      return { outcome: stepResult.outcome, path, context: opts.context.snapshot() };
+      return { outcome: stepResult.outcome, path, context: context.snapshot() };
     }
   }
   async run() {
@@ -5163,13 +5169,13 @@ var Engine = class {
     let currentId = startNode.id;
     this.events.append({ type: "pipeline.start", node: startNode.id });
     while (currentId !== null) {
-      this.path.push(currentId);
       const stepResult = await this.executeNodeStep(currentId, {
         runDir: this.opts.runDir,
         cwd: this.opts.cwd,
         maxSteps,
         stopAt: void 0,
-        context
+        context,
+        path: this.path
       });
       if (stepResult.kind === "continue") {
         currentId = stepResult.nextId;

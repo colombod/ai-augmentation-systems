@@ -124,3 +124,28 @@ for a reason unrelated to the feature being tested.
 **Not applicable to:** the git-level behavior itself — `git worktree add`/`remove`/`status`/
 `prune`'s own semantics, exit codes, and `--porcelain` output are unchanged; only how Node waits
 for them changes.
+
+**Named limitation, added at the parallel-fanin sprint's own final whole-branch review:** "the
+git-level behavior itself is unchanged" is true of each individual call, but async `git()`
+becoming genuinely concurrent-capable is exactly what makes a NEW scenario reachable that
+`execFileSync`'s serial, blocking calls never could: several `git worktree add` invocations
+racing against the SAME repository's `.git/worktrees/` administrative state at once. Reproduced:
+`test/worktree.test.ts`'s own "several concurrent createWorktree calls" proof-of-concept
+(5 concurrent calls against one repo) intermittently fails with `fatal: failed to read
+.git/worktrees/<name>/commondir: Undefined error: 0` — roughly 1 in 15-25 runs in stress
+testing, a genuine git-level race, not test-harness flakiness. `createWorktree` has no locking,
+retry, or serialization around this call.
+
+Not reachable by any pipeline that can run today (`HAND-001` still refuses every
+`Handler.PARALLEL` node unconditionally, so nothing production-facing yet launches several
+`git worktree add` calls against one repo concurrently) — but it is real, in the one piece of
+delivered code whose whole job is proving concurrent worktree creation is safe, and it is
+exactly the scenario `p5-08`'s own `max_parallel` branches will need once `ParallelHandler`
+lands. Deliberately NOT fixed as part of this sprint's own final-review pass: a real fix (retry-
+with-backoff on this specific error, or a repo-scoped queue/lock around `git worktree add`)
+touches `createWorktree`, code the CLI's own existing, non-parallel worktree-isolation feature
+already depends on today, and deserves its own focused design and adversarial verification
+rather than being folded into an already-large batch of unrelated fixes. Tracked as a named,
+accepted risk (GitHub issue #15, `plugin: attractor` label) for `p5-08` or a dedicated
+follow-up to close before `max_parallel` branches against one repository is a real, shipped
+capability.

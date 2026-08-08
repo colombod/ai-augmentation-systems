@@ -33,6 +33,21 @@ import { type BranchRunResult } from './types.ts'
  * `executeNodeStep` necessarily wrote, and the outer run overwrites all
  * three immediately after a real ParallelHandler returns regardless (p5-08,
  * not this task).
+ *
+ * `results[i]` MUST be the `BranchRunResult` for `branchRootIds[i]` -- pure
+ * positional pairing, not carried by any id inside `BranchRunResult` itself.
+ * A caller that builds `results` out of order (e.g. `Promise.allSettled`
+ * with a rejected branch filtered out before the results array reaches
+ * here, rather than mapped to a FAIL outcome and kept in place) would
+ * silently misattribute a collision to the wrong branch id, or merge the
+ * wrong branch's value, with no error until the arrays' lengths happen to
+ * diverge. The length check below turns the length-mismatch half of that
+ * into a loud failure; it cannot catch a same-length reorder, which is why
+ * this stays a documented calling contract, not something this function can
+ * fully self-defend -- p5-08's own ParallelHandler must build `results` by
+ * mapping over `branchRootIds` (e.g. `branchRootIds.map((id, i) =>
+ * settled[i].status === 'fulfilled' ? settled[i].value : failResultFor(id))`),
+ * never by filtering.
  */
 export function mergeBranchContext(
   parentContext: Context,
@@ -41,6 +56,13 @@ export function mergeBranchContext(
   results: readonly BranchRunResult[],
   events: EventLog,
 ): void {
+  if (branchRootIds.length !== results.length) {
+    throw new Error(
+      `mergeBranchContext: branchRootIds.length (${branchRootIds.length}) !== ` +
+        `results.length (${results.length}) -- results must be positionally paired ` +
+        `with branchRootIds, one BranchRunResult per branch root, in the same order`,
+    )
+  }
   const mergedBy = new Map<string, string>()
   for (let i = 0; i < branchRootIds.length; i++) {
     const rootId = branchRootIds[i]

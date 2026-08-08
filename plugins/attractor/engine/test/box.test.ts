@@ -589,13 +589,3 @@ test("BoxHandler passes ctx.cwd through to Backend.run's new trailing argument",
     rmSync(cwd, { recursive: true, force: true })
   }
 })
-
-test('a Backend.run() call with no cwd argument (StubBackend\'s 4-arg shape) is unaffected', async () => {
-  // StubBackend.run(node, prompt, context, graph) has no cwd parameter at
-  // all -- proves the additive change is inert for a shorter implementer,
-  // the same way the existing suite already proves it for every other
-  // StubBackend-driven box.test.ts case.
-  const backend = new StubBackend({ plain: { status: Status.SUCCESS, notes: 'ok' } })
-  const outcome = await run('plain', backend)
-  assert.equal(outcome.status, Status.SUCCESS)
-})

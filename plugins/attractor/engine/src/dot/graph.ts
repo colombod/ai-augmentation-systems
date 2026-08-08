@@ -462,37 +462,9 @@ export function effectiveOutputs(node: Node): string[] {
 /**
  * Nodes reachable from `startId` via ONE OR MORE edges (never `startId`
  * itself, unless a genuine cycle leads back to it), mapped to the shortest
- * distance at which each was first reached. Condition-independent --
- * follows every outgoing edge regardless of whether its condition would
- * actually fire at runtime, the same conservative-lint-over-precise-runtime
- * tradeoff `directPredecessor`/DATA-001 already accept.
- */
-function reachableWithDepth(graph: Graph, startId: string): Map<string, number> {
-  const depth = new Map<string, number>()
-  const queue: string[] = []
-  for (const e of outgoingEdges(graph, startId)) {
-    if (!depth.has(e.to)) {
-      depth.set(e.to, 1)
-      queue.push(e.to)
-    }
-  }
-  while (queue.length > 0) {
-    const cur = queue.shift() as string
-    const curDepth = depth.get(cur) as number
-    for (const e of outgoingEdges(graph, cur)) {
-      if (!depth.has(e.to)) {
-        depth.set(e.to, curDepth + 1)
-        queue.push(e.to)
-      }
-    }
-  }
-  return depth
-}
-
-/**
- * Same as `reachableWithDepth`, truncated at `stopId` (added to the result
- * when reached, but its own outgoing edges are never followed -- used for
- * the fan-out node) AND at any id in `otherRoots` reached at BFS depth
+ * distance at which each was first reached, TRUNCATED at `stopId` (added to
+ * the result when reached, but its own outgoing edges are never followed --
+ * used for the fan-out node) AND at any id in `otherRoots` reached at BFS depth
  * greater than 1 (added when reached, not expanded past -- ADR-007's
  * eleventh amendment). A branch root reached as the immediate, direct first
  * hop from the root this call is computing FROM is never truncated -- that
@@ -503,7 +475,10 @@ function reachableWithDepth(graph: Graph, startId: string): Map<string, number> 
  * way of intervening structure (a shared check/combine node, or the fan-out
  * node itself) -- never as a direct first hop -- so this distinguishes the
  * two without needing to detect cycles directly (see the ADR for the two
- * cycle-detection designs that were tried and rejected first).
+ * cycle-detection designs that were tried and rejected first). Condition-
+ * independent -- follows every outgoing edge regardless of whether its
+ * condition would actually fire at runtime, the same conservative-lint-
+ * over-precise-runtime tradeoff `directPredecessor`/DATA-001 already accept.
  */
 function reachableWithDepthTruncated(
   graph: Graph,

@@ -2776,3 +2776,34 @@ test('PAR-003 is blind to inferred (not declared) key collisions -- named, not a
   // DECLARES outputs=, so PAR-003 (declared-only) does not see it.
   assert.ok(!codes(src).includes('PAR-003'))
 })
+
+// ---------------------------------------------------------------------------
+// Cross-task regression: 3+ PAR-* rules co-firing on the SAME fan-out node.
+// Every rule above this point was individually pinned against HAND-001, but
+// nothing pinned multiple PAR-* rules firing TOGETHER -- a future edit to
+// the if/else-if control flow around PAR-001/PAR-004/PAR-005 could silently
+// suppress PAR-003's separate loop, or vice versa, without any existing test
+// noticing (final-review finding).
+// ---------------------------------------------------------------------------
+
+test('PAR-003, PAR-004 and PAR-005 all fire together on one fan-out node, alongside HAND-001, with none suppressing another', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box, outputs="x.path"]  r2 [shape=box, outputs="x.path"]  r3 [shape=box]
+    shared [shape=box]  combine [shape=box]
+    start -> fan
+    fan -> r1 -> shared -> combine
+    fan -> r2 -> shared
+    fan -> r3 -> combine
+    fan -> r3
+    r3 -> done
+    combine -> done
+  }`
+  const diags = lint(parseDot(src))
+  const codesFound = diags.map((d) => d.code)
+  assert.ok(codesFound.includes('HAND-001'), 'Handler.PARALLEL stays unregistered and still refuses the graph')
+  assert.ok(codesFound.includes('PAR-003'), 'r1/r2 both declare outputs="x.path"')
+  assert.ok(codesFound.includes('PAR-004'), 'shared is reachable from both r1 and r2 before combine')
+  assert.ok(codesFound.includes('PAR-005'), 'r3 shortcuts to done, bypassing combine')
+})

@@ -16,9 +16,26 @@ export interface BranchRunOptions {
   startNodeId: string
   /** The branch halts BEFORE dispatching any node in this set. */
   stopAt: ReadonlySet<string>
-  /** Caller-supplied, already `Context.clone()`'d -- isolates this branch's writes. */
+  /**
+   * Convention: caller-supplied, already `Context.clone()`'d. Not load-bearing
+   * for isolation any more -- `Engine.runBranch` clones this defensively on
+   * entry regardless (final-review fix: an unenforced version of this same
+   * contract let two branches sharing a live Context corrupt each other's
+   * writes in place, with no error). Still clone before calling: passing the
+   * SAME clone to two concurrent `runBranch` calls is harmless (each gets its
+   * own internal copy), but passing the run's own live Context signals intent
+   * this interface exists specifically to rule out.
+   */
   context: Context
-  /** Branch-scoped subdir -- own checkpoint.json and per-node artifacts. */
+  /**
+   * Branch-scoped subdir -- own checkpoint.json and per-node artifacts.
+   * MUST be distinct across every concurrently-running branch (e.g.
+   * `join(ctx.runDir, branchRootId)`, the pattern this codebase's own tests
+   * already use) -- unlike `context`, nothing defends this one internally.
+   * Two branches given the same runDir silently clobber each other's
+   * checkpoint.json (whichever branch's step runs last wins, no exception,
+   * no event); only bites --resume correctness after a mid-branch crash.
+   */
   runDir: string
   /** Branch worktree path, or the component node's own cwd. */
   cwd: string

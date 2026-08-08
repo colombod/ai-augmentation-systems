@@ -268,6 +268,16 @@ function bypassesGates(graph: Graph, entry: string, gates: Set<string>, exits: S
  * alone -- e.g. when the convergence node IS the exit node -- does not
  * count as "reaching an exit before convergence": that is ordinary
  * post-convergence routing, not the shortcut this check exists to catch.
+ *
+ * The `fromId !== avoid` half of the guard below is unreachable at this
+ * function's one current call site (PAR-005): `findConvergenceNode`'s own
+ * candidate filter already excludes every branch root from convergence
+ * eligibility, so `avoid` (the computed convergence id) can never equal
+ * `fromId` (a branch root) there. Kept anyway, deliberately: this is a
+ * general-purpose reachability primitive, not private to PAR-005, and a
+ * future caller passing a `fromId` that COULD equal `avoid` should get the
+ * same "reaching avoid itself doesn't count" answer this function's own doc
+ * comment promises, not a silently different one for that specific input.
  */
 function canReachWithoutPassing(
   graph: Graph, fromId: string, targets: ReadonlySet<string>, avoid: string,
