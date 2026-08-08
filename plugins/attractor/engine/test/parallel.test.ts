@@ -10,7 +10,7 @@ import { type Graph, type Node, Handler } from '../src/dot/graph.ts'
 import {
   type Backend, type BranchRunResult, type HandlerCtx, type Handler as HandlerIface,
 } from '../src/handlers/types.ts'
-import { mergeBranchContext } from '../src/handlers/parallel.ts'
+import { mergeBranchContext, applyDefaultJoinPolicy, Semaphore } from '../src/handlers/parallel.ts'
 import { EventLog } from '../src/run/events.ts'
 import { Engine, defaultHandlers } from '../src/core/engine.ts'
 
@@ -277,4 +277,121 @@ test('mergeBranchContext: a key unchanged from the pre-fork snapshot is not re-m
     events.all().filter((e) => e.type === 'node.parallel.context_collision').length, 1,
     'only new.key collides -- stable.key, unchanged from prefork in both branches, is never even considered',
   )
+})
+
+test('applyDefaultJoinPolicy: all branches SUCCEED -> SUCCESS', () => {
+  const results = [
+    branchResult(Status.SUCCESS, {}),
+    branchResult(Status.SUCCESS, {}),
+    branchResult(Status.SUCCESS, {}),
+  ]
+  const outcome = applyDefaultJoinPolicy(results)
+  assert.equal(outcome.status, Status.SUCCESS)
+  assert.equal(outcome.failureReason, undefined)
+})
+
+test('applyDefaultJoinPolicy: all branches FAIL -> FAIL', () => {
+  const results = [
+    branchResult(Status.FAIL, {}),
+    branchResult(Status.FAIL, {}),
+  ]
+  const outcome = applyDefaultJoinPolicy(results)
+  assert.equal(outcome.status, Status.FAIL)
+  assert.equal(outcome.failureReason, 'all 2 branch(es) failed')
+})
+
+test('applyDefaultJoinPolicy: mixed SUCCESS + FAIL -> PARTIAL', () => {
+  const results = [
+    branchResult(Status.SUCCESS, {}),
+    branchResult(Status.FAIL, {}),
+    branchResult(Status.SUCCESS, {}),
+  ]
+  const outcome = applyDefaultJoinPolicy(results)
+  assert.equal(outcome.status, Status.PARTIAL)
+  assert.equal(outcome.notes, '2/3 branch(es) succeeded or partially succeeded')
+})
+
+test('applyDefaultJoinPolicy: mixed PARTIAL + FAIL -> PARTIAL (PARTIAL counts as settled)', () => {
+  const results = [
+    branchResult(Status.PARTIAL, {}),
+    branchResult(Status.FAIL, {}),
+  ]
+  const outcome = applyDefaultJoinPolicy(results)
+  assert.equal(outcome.status, Status.PARTIAL)
+  assert.equal(outcome.notes, '1/2 branch(es) succeeded or partially succeeded')
+})
+
+test('applyDefaultJoinPolicy: single branch SUCCEEDS -> SUCCESS', () => {
+  const outcome = applyDefaultJoinPolicy([branchResult(Status.SUCCESS, {})])
+  assert.equal(outcome.status, Status.SUCCESS)
+})
+
+test('applyDefaultJoinPolicy: single branch FAILS -> FAIL', () => {
+  const outcome = applyDefaultJoinPolicy([branchResult(Status.FAIL, {})])
+  assert.equal(outcome.status, Status.FAIL)
+  assert.equal(outcome.failureReason, 'all 1 branch(es) failed')
+})
+
+test('applyDefaultJoinPolicy: zero branches -> FAIL (vacuously zero SUCCEED/PARTIAL)', () => {
+  const outcome = applyDefaultJoinPolicy([])
+  assert.equal(outcome.status, Status.FAIL)
+  assert.equal(outcome.failureReason, 'all 0 branch(es) failed')
+})
+
+test('Semaphore: permits are granted immediately up to the permit count, then block', async () => {
+  const sem = new Semaphore(2)
+  const order: string[] = []
+
+  await sem.acquire()
+  order.push('a1-acquired')
+  await sem.acquire()
+  order.push('a2-acquired')
+
+  let a3Acquired = false
+  const p3 = sem.acquire().then(() => {
+    a3Acquired = true
+    order.push('a3-acquired')
+  })
+
+  // Flush pending microtasks -- if acquire() incorrectly granted a permit
+  // it hadn't earned, a3Acquired would already be true here. Nothing in
+  // Semaphore ever resolves a waiter's promise except release(), which we
+  // have not called yet, so this is deterministic, not a timing race.
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(a3Acquired, false, 'a third acquire() must block when only 2 permits exist and both are held')
+
+  sem.release()
+  await p3
+  assert.equal(a3Acquired, true, 'release() must wake the blocked acquire()')
+  assert.deepEqual(order, ['a1-acquired', 'a2-acquired', 'a3-acquired'])
+})
+
+test('Semaphore: release() wakes exactly one waiter, in FIFO order', async () => {
+  const sem = new Semaphore(1)
+  await sem.acquire() // consumes the only permit
+
+  const order: string[] = []
+  const p1 = sem.acquire().then(() => order.push('w1'))
+  const p2 = sem.acquire().then(() => order.push('w2'))
+
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.deepEqual(order, [], 'neither waiter can run before any release()')
+
+  sem.release()
+  await p1
+  assert.deepEqual(order, ['w1'], 'exactly the FIRST-queued waiter woke, not both')
+
+  // w2 must still be blocked -- only one permit was released, and w1 just
+  // reclaimed it via its own post-wake decrement.
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.deepEqual(order, ['w1'], 'second waiter is still blocked after only one release()')
+
+  sem.release()
+  await p2
+  assert.deepEqual(order, ['w1', 'w2'], 'second release() wakes the second-queued waiter')
 })

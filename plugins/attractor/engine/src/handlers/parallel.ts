@@ -1,5 +1,5 @@
 import { ENGINE_MANAGED_KEYS, type Context } from '../core/context.ts'
-import { Status } from '../core/outcome.ts'
+import { Status, type Outcome } from '../core/outcome.ts'
 import { type EventLog } from '../run/events.ts'
 import { type BranchRunResult } from './types.ts'
 
@@ -83,5 +83,58 @@ export function mergeBranchContext(
       mergedBy.set(key, rootId)
       parentContext.set(key, value)
     }
+  }
+}
+
+/**
+ * FR-17b's default join policy: FAIL iff zero branches SUCCEED/PARTIAL,
+ * SUCCESS iff every branch SUCCEED/PARTIAL (zero FAIL), PARTIAL otherwise.
+ * A zero-branch dispatch is FAIL -- vacuously zero branches SUCCEED/PARTIAL.
+ */
+export function applyDefaultJoinPolicy(results: readonly BranchRunResult[]): Outcome {
+  const settled = results.filter(
+    (r) => r.outcome.status === Status.SUCCESS || r.outcome.status === Status.PARTIAL,
+  )
+  if (settled.length === 0) {
+    const notes = `all ${results.length} branch(es) failed`
+    return { status: Status.FAIL, notes, failureReason: notes }
+  }
+  if (settled.length === results.length) {
+    return { status: Status.SUCCESS, notes: `all ${results.length} branch(es) succeeded` }
+  }
+  return {
+    status: Status.PARTIAL,
+    notes: `${settled.length}/${results.length} branch(es) succeeded or partially succeeded`,
+  }
+}
+
+/**
+ * A minimal counting semaphore -- bounds how many of a fixed batch of async
+ * tasks run concurrently. JS's single-threaded run-to-completion semantics
+ * make acquire/release race-free without any lock: release() always
+ * finishes its own synchronous increment-then-wake before a woken acquire()
+ * gets to run its decrement.
+ */
+export class Semaphore {
+  private available: number
+  private readonly waiters: Array<() => void> = []
+
+  constructor(permits: number) {
+    this.available = permits
+  }
+
+  async acquire(): Promise<void> {
+    if (this.available > 0) {
+      this.available--
+      return
+    }
+    await new Promise<void>((resolve) => this.waiters.push(resolve))
+    this.available--
+  }
+
+  release(): void {
+    this.available++
+    const next = this.waiters.shift()
+    if (next) next()
   }
 }
