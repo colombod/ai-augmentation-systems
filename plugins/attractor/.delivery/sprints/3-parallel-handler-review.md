@@ -4,19 +4,19 @@
 > **against the code as it now exists**. Where the log and the code disagree, the
 > code wins — and the discrepancy is itself a finding.
 
-**Sprint:** 3 (`parallel-handler`) · **Reviewed:** 2026-08-08 · **Branch / SHA:** `worktree-attractor-parallel-fanin` @ `d0c1e80`
+**Sprint:** 3 (`parallel-handler`) · **Reviewed:** 2026-08-08 · **Branch / SHA:** `worktree-attractor-parallel-fanin` @ `29241d3`
 
 ## Verdict
 
-**Accepted with debt**
+**Accepted**
 
 **Because:** all 8 acceptance criteria are met with real, independently-verified evidence, the test
-suite is green (612 tests, 611 passing, 1 pre-existing skip, 0 failing), and a persona genuinely
+suite is green (613 tests, 612 passing, 1 pre-existing skip, 0 failing), and a persona genuinely
 completes the journey this story exists to enable — a real `shape=component` node fans out, isolates,
-joins and converges correctly through the actual CLI. But this review itself found and had to fix one
-significant, previously-flagged correctness bug before it could accept the sprint, and a real persona
-walk surfaced four documentation/observability gaps that are real but not blocking. Debt carried, not
-silently absorbed — see Carried debt below.
+joins and converges correctly through the actual CLI. This review found and fixed one significant,
+previously-flagged correctness bug (a git worktree race made production-reachable by this sprint's own
+defaults) and four documentation/observability gaps a real persona walk surfaced — all five fixed
+directly during the review, not carried forward. See Carried debt below: it is empty by design.
 
 ## Acceptance criteria — verified independently
 
@@ -105,14 +105,15 @@ surface, not only ones explicitly framed as UX work.
 
 ## Carried debt
 
-| ID | Debt | Why accepted | Repay by |
-| :-- | :-- | :-- | :-- |
-| R-sprint3-1 | All-branches-FAIL join outcome discards each branch's own `failureReason`/`notes` — `applyDefaultJoinPolicy` only reports a count, and nothing in the CLI or event log surfaces the real per-branch cause | Not a correctness bug — the aggregate outcome is honestly FAIL — but a real operator-trust gap the persona walk found directly; fixing it well needs a design call (truncate? aggregate? cap at N?) better made deliberately than folded into this review | Next story touching `handlers/parallel.ts` or a dedicated small follow-up |
-| R-sprint3-2 | The new `isolate` edge attribute and its git-repo requirement for isolated branches are undocumented in `README.md` | Discoverable from source/tests, but the persona hit a real, avoidable failure (a non-git scratch dir) with no doc pointing at the cause | A README pass alongside `p5-09` or standalone, low effort |
-| R-sprint3-3 | `README.md`'s shape-pairing table (`component`/`tripleoctagon`) leads a first-time author straight to `HAND-001` on the join node, since `Handler.FAN_IN` is still unregistered | Pre-existing gap, not a regression from this sprint, but concretely confirmed harmful for the first time here | Same README pass as R-sprint3-2 |
-| R-sprint3-4 | Isolated-branch worktree *branches* (not directories, which are cleaned up correctly) are kept forever with no CLI mention — a deliberate design choice (`worktree.ts`: "the branch IS the deliverable") but one the persona found by accident, not by being told | Working as designed; the gap is purely that nothing tells an operator to expect or prune the accumulation | A CLI-output or README note; no code change implied |
+**None carried.** All four findings below were fixed the same day, directly, rather than
+deferred — full detail and resolution in `.delivery/reviews/sprint-3-01.md`.
 
-All four are new findings from this sprint's own review, written here rather than to a separate
-`.delivery/reviews/` file — none existed before this sprint to append to, and `/delivery:status` reads
-this table's own IDs going forward. `R-sprint2-1` (git worktree race) is **not** carried — it was found
-and fixed within this same review; see `.delivery/reviews/sprint-2-01.md`, now `status: fixed`.
+| ID | Debt | Resolution |
+| :-- | :-- | :-- |
+| R-sprint3-1 | All-branches-FAIL join outcome discarded each branch's own `failureReason`/`notes` — `applyDefaultJoinPolicy` only reported a count | **Fixed** — now names each failed branch by its real node id and its own reason |
+| R-sprint3-2 | The `isolate` edge attribute and its git-repo requirement for isolated branches were undocumented | **Fixed** — documented in `README.md`'s new "Parallel fan-out" section |
+| R-sprint3-3 | `README.md`'s shape-pairing table (`component`/`tripleoctagon`) led a first-time author straight to `HAND-001` on the join node | **Fixed** — table row split, each shape's real status stated |
+| R-sprint3-4 | Isolated-branch git branches (not directories, which are cleaned up correctly) are kept forever with no mention anywhere | **Fixed** — documented as intentional, with the prune command an operator needs |
+
+`R-sprint2-1` (git worktree race) was also found and fixed within this same review; see
+`.delivery/reviews/sprint-2-01.md`, now `status: fixed`.

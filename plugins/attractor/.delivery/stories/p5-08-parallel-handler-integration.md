@@ -226,4 +226,8 @@ independently re-verified by a dedicated QA Strategist pass during the formal sp
 `ParallelHandler` — checkpoint isolation under real fan-out, the opt-in `ATTRACTOR_LIVE=1` ceiling test),
 still `status: draft`, needs its own readiness pass before it can be scoped into a sprint.
 
-**Final state:** 612 tests, 611 passing, 1 pre-existing environment-gated skip, 0 failing.
+**Final state:** 613 tests, 612 passing, 1 pre-existing environment-gated skip, 0 failing. Sprint
+review verdict: **accepted**, not "with debt" — the four documentation gaps a real persona walk
+found (`reviews/sprint-3-01.md`, R-sprint3-1 through 4) were fixed directly, same day, not
+carried. `applyDefaultJoinPolicy` now names each failed branch by its own id and reason instead
+of a bare count.

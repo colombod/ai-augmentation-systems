@@ -103,6 +103,19 @@ owns no stage at all. Everything else below is table detail, not further narrati
 
 ### Phase 5: FR-17b — parallel fan-out (`Handler.PARALLEL`)
 
+**2026-08-08: Phase 5 is done.** Every work item (A through J) is either shipped or explicitly
+tracked in a follow-on story. In plain terms: a pipeline author can now write a step that fans
+out to several branches running at once, each optionally isolated in its own git worktree, with
+the results joined back together correctly whether all branches succeed, some fail, or all fail
+— and this was proven by actually running one through the real command-line tool, not just by
+tests. Item I (`ParallelHandler`, the piece that makes this real) shipped in sprint 3, story
+`p5-08`. Its review found and fixed one significant bug (a git-worktree race made
+production-reachable by this story's own defaults) and four documentation gaps, all fixed before
+this note was written — see `sprints/3-parallel-handler-review.md` and `reviews/sprint-3-01.md`
+for what was found and how each was closed; nothing from that review is still open. Item J's two remaining rows
+(checkpoint isolation and an opt-in real-subprocess ceiling test) live in story `p5-09`, now
+unblocked and ready for its own readiness pass.
+
 **Entry criteria:** none beyond Phase 0 for FR-17a (already shipped separately). For FR-17b:
 Open Questions 3, 4, 5 (branch-declaration syntax, worktree isolation default, fan-in-on-all-fail
 semantics) — all **resolved 2026-08-07**, Product Owner, no dissent recorded. The architecture
@@ -467,6 +480,10 @@ No `FR-n` lands in no phase.
 | **Phase 5.** `this.stepCount` (item C, ADR-012) is one counter shared across the main path and every concurrently-running branch, by design — a legitimately large, correctly-terminating fan-out now competes for the same 500-step budget a sequential pipeline would have had entirely to itself | high — this is the ordinary, intended shape of a busy fan-out, not an edge case | medium — not a correctness bug (the FAIL-on-stepcap path is well-formed), but a real behavior change with no corresponding operator-facing warning | `EngineOptions.maxSteps` is already a caller-supplied override, not new code; document in skill/authoring guidance that a `PARALLEL` graph should size `maxSteps` to its total node-visit volume summed across every branch | Solution Architect / skill author |
 | **Phase 5.** A custom embedder-supplied `Backend` (item D, ADR-008) ignores the new `cwd` parameter and silently keeps using its own bound cwd for every branch | medium | medium — isolated branches share a filesystem after all, quietly reopening the exact race Open Question 4 exists to prevent | `ClaudeCodeBackend` (the only shipped implementation) is fixed; the contract change for third-party backends is documented explicitly, not only in a type signature | implementer |
 | **Phase 5.** `execFile`'s promisified rejection shape (item B, ADR-011) is expected, not yet confirmed, to match `execFileSync`'s thrown-`Error` shape closely enough that `worktree.test.ts`'s existing message-matching assertions keep passing after the async conversion | medium — Node generally keeps these shapes close, but "generally" is not "confirmed" | medium — if it doesn't match, a batch of existing tests goes red for a reason unrelated to the feature under test, costing triage time | Spike 12 closes this as part of item B itself, not assumed before it starts | implementer |
+| **Phase 5, sprint 3 review finding (R-sprint3-1), RESOLVED 2026-08-08.** When every branch of a fan-out fails, the combined result only reported a count ("all N failed"), not any branch's own reason why — found by a real persona walking the actual CLI, not a test | was medium | was medium — an operator had to go read internal logs to find out what actually went wrong | **Fixed:** the failed-branch join outcome now names each failed branch by its real node id and its own failure reason (`handlers/parallel.ts`, `applyDefaultJoinPolicy`) | Solution Architect (implemented directly, no design call needed — appending each branch's own reason was the obviously correct shape) |
+| **Phase 5, sprint 3 review finding (R-sprint3-2), RESOLVED 2026-08-08.** The per-branch on/off isolation setting (`isolate="false"`) and its git-repository requirement were undocumented | was high | was medium | **Fixed:** documented in `README.md`'s new "Parallel fan-out" section | skill/doc author |
+| **Phase 5, sprint 3 review finding (R-sprint3-3), RESOLVED 2026-08-08, pre-existing.** README's shape table paired the fan-out shape with a still-unusable fan-in shape (`tripleoctagon`) | was high | was low-medium | **Fixed:** table split into two rows with each shape's real, current status | skill/doc author |
+| **Phase 5, sprint 3 review finding (R-sprint3-4), RESOLVED 2026-08-08.** An isolated branch's git branch (not its working files, which are cleaned up correctly) is kept forever, undocumented | was high | was low | **Fixed:** documented as intentional in `README.md`, with the prune command an operator needs | skill/doc author |
 
 **Carried forward, not separately tracked (low × low) — three architecture.md risks.** Omitted
 from the table above by deliberate roadmap-altitude judgment, not oversight; none changes any
