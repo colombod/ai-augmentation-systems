@@ -4061,6 +4061,24 @@ function lint(graph) {
           }
         }
       }
+      const declaredBy = /* @__PURE__ */ new Map();
+      for (const rootId of branchRootIds) {
+        const rootNode = graph.nodes.get(rootId);
+        if (!rootNode) continue;
+        for (const key of declaredOutputs(rootNode)) {
+          const owner = declaredBy.get(key);
+          if (owner !== void 0 && owner !== rootId) {
+            diags.push({
+              code: "PAR-003",
+              severity: Severity.WARNING,
+              node: node.id,
+              message: `node ${node.id}'s branches ${owner} and ${rootId} both declare outputs="${key}" -- whichever branch is declared LAST wins when their writes merge back after the fan-out (branch declaration order, not completion order). This rule only sees each branch root's own declared outputs=, not inferred keys like tool.last_line -- a collision on those is caught only at runtime, logged as node.parallel.context_collision`
+            });
+          } else if (owner === void 0) {
+            declaredBy.set(key, rootId);
+          }
+        }
+      }
     }
     if (node.handler === Handler.HUMAN) {
       const channelTokens = (node.attrs["human.channel"] ?? "").split(",").map((t) => t.trim());
@@ -5119,7 +5137,7 @@ var Engine = class {
         currentId = stepResult.nextId;
         continue;
       }
-      return { outcome: stepResult.outcome, path };
+      return { outcome: stepResult.outcome, path, context: opts.context.snapshot() };
     }
   }
   async run() {

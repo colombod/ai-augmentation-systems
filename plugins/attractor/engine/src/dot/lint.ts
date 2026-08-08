@@ -635,6 +635,37 @@ export function lint(graph: Graph): Diagnostic[] {
           }
         }
       }
+
+      // PAR-003: two or more branch ROOTS declaring the same outputs= key.
+      // Design-time complement to mergeBranchContext's own runtime
+      // node.parallel.context_collision log (handlers/parallel.ts, p5-07) --
+      // sees only each branch root's own DECLARED outputs=, not the whole
+      // branch sub-path and not inferred keys like tool.last_line (a future
+      // PAR-006, not this rule).
+      const declaredBy = new Map<string, string>()
+      for (const rootId of branchRootIds) {
+        const rootNode = graph.nodes.get(rootId)
+        if (!rootNode) continue
+        for (const key of declaredOutputs(rootNode)) {
+          const owner = declaredBy.get(key)
+          if (owner !== undefined && owner !== rootId) {
+            diags.push({
+              code: 'PAR-003',
+              severity: Severity.WARNING,
+              node: node.id,
+              message:
+                `node ${node.id}'s branches ${owner} and ${rootId} both declare ` +
+                `outputs="${key}" -- whichever branch is declared LAST wins when their ` +
+                `writes merge back after the fan-out (branch declaration order, not ` +
+                `completion order). This rule only sees each branch root's own declared ` +
+                `outputs=, not inferred keys like tool.last_line -- a collision on those is ` +
+                `caught only at runtime, logged as node.parallel.context_collision`,
+            })
+          } else if (owner === undefined) {
+            declaredBy.set(key, rootId)
+          }
+        }
+      }
     }
 
     // HITL-003: an agent-inclusive human gate whose exposed context traces to

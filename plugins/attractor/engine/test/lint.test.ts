@@ -2719,3 +2719,60 @@ test('PAR-005 does not fire when the convergence node IS the exit node itself', 
   }`
   assert.ok(!codes(src).includes('PAR-005'))
 })
+
+// ---------------------------------------------------------------------------
+// PAR-003: two or more of a component node's branch-ROOT nodes declaring the
+// same outputs= key -- design-time complement to the runtime
+// node.parallel.context_collision log (mergeBranchContext, above).
+// ---------------------------------------------------------------------------
+
+test('PAR-003 fires WARNING when two branch roots declare the same outputs= key', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box, outputs="implementation.path"]
+    r2 [shape=box, outputs="implementation.path"]
+    join [shape=box]
+    start -> fan
+    fan -> r1 -> join
+    fan -> r2 -> join
+    join -> done
+  }`
+  const diags = lint(parseDot(src))
+  const par003 = diags.find((d) => d.code === 'PAR-003')
+  assert.ok(par003)
+  assert.equal(par003?.severity, Severity.WARNING)
+})
+
+test('PAR-003 does not fire when branch roots declare distinct keys', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box, outputs="a.path"]
+    r2 [shape=box, outputs="b.path"]
+    join [shape=box]
+    start -> fan
+    fan -> r1 -> join
+    fan -> r2 -> join
+    join -> done
+  }`
+  assert.ok(!codes(src).includes('PAR-003'))
+})
+
+test('PAR-003 is blind to inferred (not declared) key collisions -- named, not a defect', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=parallelogram, tool_command="printf a"]
+    r2 [shape=parallelogram, tool_command="printf b"]
+    join [shape=box]
+    start -> fan
+    fan -> r1 -> join
+    fan -> r2 -> join
+    join -> done
+  }`
+  // Both r1 and r2 infer tool.last_line/tool.output on success
+  // (TOOL_OUTPUT_KEYS) -- a real collision at runtime -- but neither
+  // DECLARES outputs=, so PAR-003 (declared-only) does not see it.
+  assert.ok(!codes(src).includes('PAR-003'))
+})

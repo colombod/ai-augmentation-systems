@@ -27,6 +27,8 @@ export interface BranchRunOptions {
 export interface BranchRunResult {
   outcome: Outcome
   path: string[]
+  /** Context.snapshot() taken from the branch's own (cloned) context at the moment it stopped. */
+  context: Record<string, string>
 }
 
 export interface HandlerCtx {

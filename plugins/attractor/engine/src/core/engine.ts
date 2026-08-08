@@ -879,7 +879,7 @@ export class Engine {
         currentId = stepResult.nextId
         continue
       }
-      return { outcome: stepResult.outcome, path }
+      return { outcome: stepResult.outcome, path, context: opts.context.snapshot() }
     }
   }
 

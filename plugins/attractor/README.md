@@ -281,11 +281,13 @@ hazard, but a branch that loops back through it before reaching the chosen
 convergence node -- re-entering a sibling branch's own territory -- is
 exactly the cross-branch case this rule already refuses. `PAR-005` a branch
 root that can reach the graph's real exit node without first passing through
-the fan-out's own convergence node.
+the fan-out's own convergence node;
+`PAR-003` two or more of a component node's branch-root nodes declaring the
+same `outputs=` key.
 
-`RUNS-002`, `DATA-001`, `GATE-001`, `CMD-001`, `HITL-003`, `PAR-002` and
-`PAR-005` are warnings; the rest are errors, and `attractor run` refuses a
-graph with any error.
+`RUNS-002`, `DATA-001`, `GATE-001`, `CMD-001`, `HITL-003`, `PAR-002`,
+`PAR-003` and `PAR-005` are warnings; the rest are errors, and `attractor
+run` refuses a graph with any error.
 
 ## Development
 
