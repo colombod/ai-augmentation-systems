@@ -26,7 +26,7 @@ BUDGET — target 120 words per finding, hard cap 200. Excludes code, YAML and d
 
 ### R-sprint2-1 — p5-01's "never a race that corrupts state" AC is not reliably true
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** feature-critic — independently: yes (reproduced live, not from the ledger)
 
@@ -35,6 +35,8 @@ BUDGET — target 120 words per finding, hard cap 200. Excludes code, YAML and d
 **Concrete failure scenario:** `node --test` on `test/worktree.test.ts`, ~1-in-15 to 1-in-25 runs, real concurrent `git worktree add` against one repo.
 
 **What would resolve it:** retry-with-backoff on this error pattern, or a repo-scoped lock around `git worktree add` in `createWorktree`, before `p5-08`'s `max_parallel` branches makes this reachable in production.
+
+**Resolution (2026-08-08, sprint 3 review):** this finding's own stated pre-condition ("before `p5-08`... makes this reachable in production") arrived and was caught by that sprint's own `feature-critic` review pass before acceptance — `ParallelHandler` ships concurrent, isolated worktree creation as its *default*, unconfigured behavior. Fixed in `src/run/worktree.ts` (`engine` commit `8a50506`): `createWorktree` now retries exactly this error pattern, bounded (4 attempts, short flat-scale backoff), switching from `-b` to `-B` on retry since inspection showed the failed attempt already creates the branch ref before crashing (a genuine name collision still fails loudly, unretried, on the first attempt only). Verified empirically, not merely reasoned: an amplified repro (30-way concurrency across 10 repos hammered at once) measured ~15% trial failure / ~0.6% per-call pre-fix, 0 failures across 6300+ calls post-fix. A permanent regression test at this same amplification ships in `test/worktree.test.ts`.
 
 ---
 

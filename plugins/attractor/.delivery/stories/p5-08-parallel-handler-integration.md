@@ -191,18 +191,39 @@ tested and reviewed before the next began:
   co-fires") became false, plus two more the same run surfaced that weren't in the original list, and
   added a real `Engine.run()` end-to-end test over a genuine `shape=component` node.
 
-**Two adversarial review passes ran against this story**, matching the discipline established across
-sprint 2: one after `03b0d8b` (which is what found the two bugs above), and one after `6391286`
-(spec-compliance + a dedicated bug hunt, including a concrete reproduction of a nested-PARALLEL
-double-dispatch scenario against the real engine — no defects found there). Both passes are recorded
-in this session's own history; no separate written findings file was produced, since every finding
-that survived scrutiny was fixed immediately, not deferred.
+**Two adversarial review passes ran against `handlers/parallel.ts`/`engine.ts`**, matching the discipline
+established across sprint 2: one after `03b0d8b` (which is what found the two bugs above), and one after
+`6391286` (spec-compliance + a dedicated bug hunt). The second pass's report claimed a "concrete
+reproduction of a nested-PARALLEL double-dispatch scenario against the real engine" with no defects
+found — this sprint's own formal `/delivery:sprint-review` later found that claim left no test artifact
+and could not be independently confirmed from it alone (`nested`/`double-dispatch` greps across the test
+suite find nothing). The review's own `feature-critic` pass built three independent nested-component-node
+graphs and reproduced "no double dispatch" itself, directly — so the underlying claim holds, but the
+lesson is process, not code: an adversarial review that reports a reproduction should leave the
+reproduction as an artifact, not merely a narrative, even for a negative result.
+
+**One coverage gap and one real, previously-flagged bug were caught during the formal sprint review, both closed before acceptance — not carried as debt:**
+
+- **ADR-013 A(a)'s FAIL side was untested for routing**, not merely under-tested — the only all-FAIL
+  fixture predated real registration, used the `Handler.TOOL` workaround, and checked only a status
+  field, never `result.path` or a `retry_target` scenario. Found by the review's own independent QA
+  pass; closed with two new tests against the real registered handler (`9887e0f`) — both passed
+  immediately against the existing implementation, so this was a coverage gap, not a bug.
+- **R-sprint2-1** (`.delivery/reviews/sprint-2-01.md`) — a concurrent-`git worktree add` race,
+  `open`/`significant` since sprint 2, whose own resolution note said it had to be fixed "before p5-08's
+  `max_parallel` branches makes this reachable in production." It arrived, unfixed, in this story's own
+  first four commits — `ParallelHandler` ships concurrent, isolated worktree creation as its *default*.
+  Found by the sprint review's own `feature-critic` pass, fixed in `src/run/worktree.ts` (`8a50506`):
+  a bounded, short-backoff retry on the exact race pattern, `-b`→`-B` on retry (the failed attempt
+  already creates the branch ref). Verified empirically at amplified concurrency: ~15% trial failure
+  pre-fix, 0 failures across 6300+ calls post-fix. Finding marked `fixed`.
 
 **No deviations from ADR-013.** All 8 acceptance criteria verified met by direct code reading and test
-execution, not merely by trusting the implementer's own report.
+execution, not merely by trusting the implementer's own report — first by the controller, then
+independently re-verified by a dedicated QA Strategist pass during the formal sprint review.
 
 **Follow-up, out of this story's scope by design:** `p5-09` (concurrency verification under this now-real
 `ParallelHandler` — checkpoint isolation under real fan-out, the opt-in `ATTRACTOR_LIVE=1` ceiling test),
 still `status: draft`, needs its own readiness pass before it can be scoped into a sprint.
 
-**Final state:** 608 tests, 607 passing, 1 pre-existing environment-gated skip, 0 failing.
+**Final state:** 612 tests, 611 passing, 1 pre-existing environment-gated skip, 0 failing.
