@@ -1,7 +1,11 @@
+import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { ENGINE_MANAGED_KEYS, type Context } from '../core/context.ts'
 import { Status, type Outcome } from '../core/outcome.ts'
+import { outgoingEdges, findConvergenceNode } from '../dot/graph.ts'
 import { type EventLog } from '../run/events.ts'
-import { type BranchRunResult } from './types.ts'
+import { createWorktree, removeWorktree, type Worktree } from '../run/worktree.ts'
+import { type BranchRunResult, type Handler, type HandlerCtx } from './types.ts'
 
 /**
  * Called once per PARALLEL dispatch (by a future ParallelHandler, p5-08 --
@@ -136,5 +140,102 @@ export class Semaphore {
     this.available++
     const next = this.waiters.shift()
     if (next) next()
+  }
+}
+
+/** Duplicated from `core/retry.ts`'s identical private helper -- that file is outside this story's declared scope. */
+function intAttr(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  const n = Number.parseInt(value, 10)
+  return Number.isNaN(n) ? undefined : n
+}
+
+const DEFAULT_MAX_PARALLEL = 4
+
+/**
+ * FR-17b: fans out to every branch root (one per outgoing edge of the
+ * component node), bounded by `max_parallel` (default 4), creates one branch
+ * worktree per branch unless the edge's own `isolate` attribute is the
+ * literal string `"false"`, applies the default join policy, merges every
+ * settled branch's context back regardless of the join verdict, and returns
+ * the aggregate `Outcome`.
+ *
+ * The convergence-jump (ADR-013 A(a)) and registration under `Kind.PARALLEL`
+ * are NOT this class's concern -- both live in `core/engine.ts` and are a
+ * separate, later task (p5-08's own scope note). This handler only ever
+ * reads `ctx.node`/`ctx.graph`/`outgoingEdges(graph, node.id)`, so it does
+ * not care what handler kind actually dispatched it -- see this file's own
+ * test suite for the established `Handler.TOOL` override workaround that
+ * exercises this class through a real `Engine` before that registration
+ * exists.
+ */
+export class ParallelHandler implements Handler {
+  async execute(ctx: HandlerCtx): Promise<Outcome> {
+    const { node, graph, context, runDir, cwd, events } = ctx
+    const branchRootIds = [...new Set(outgoingEdges(graph, node.id).map((e) => e.to))]
+    if (branchRootIds.length === 0) {
+      return applyDefaultJoinPolicy([])
+    }
+
+    const maxParallel = intAttr(node.attrs.max_parallel) ?? DEFAULT_MAX_PARALLEL
+    const semaphore = new Semaphore(maxParallel)
+    const preforkSnapshot = context.snapshot()
+    const convergenceId = findConvergenceNode(graph, branchRootIds, node.id)
+    const stopAt = convergenceId ? new Set([convergenceId]) : new Set<string>()
+
+    const edgeFor = (rootId: string) => outgoingEdges(graph, node.id).find((e) => e.to === rootId)
+
+    const dispatchBranch = async (rootId: string): Promise<BranchRunResult> => {
+      const edge = edgeFor(rootId)
+      const isolate = edge?.attrs.isolate !== 'false'
+      let worktree: Worktree | undefined
+      try {
+        let branchCwd = cwd
+        if (isolate) {
+          worktree = await createWorktree(cwd, `${node.id}-${rootId}-${randomUUID().slice(0, 8)}`)
+          branchCwd = worktree.path
+        }
+        return await ctx.runBranch!({
+          startNodeId: rootId,
+          stopAt,
+          context: context.clone(),
+          runDir: join(runDir, rootId),
+          cwd: branchCwd,
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return {
+          outcome: { status: Status.FAIL, notes: message, failureReason: message },
+          path: [],
+          context: preforkSnapshot,
+        }
+      } finally {
+        if (worktree) {
+          const removal = await removeWorktree(cwd, worktree)
+          if (!removal.removed) {
+            events.append({
+              type: 'node.parallel.worktree_warning',
+              node: node.id,
+              branch: rootId,
+              warning: removal.warning,
+            })
+          }
+        }
+      }
+    }
+
+    const results = await Promise.all(
+      branchRootIds.map(async (rootId) => {
+        await semaphore.acquire()
+        try {
+          return await dispatchBranch(rootId)
+        } finally {
+          semaphore.release()
+        }
+      }),
+    )
+
+    mergeBranchContext(context, preforkSnapshot, branchRootIds, results, events)
+    return applyDefaultJoinPolicy(results)
   }
 }

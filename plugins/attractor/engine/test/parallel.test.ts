@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseDot } from '../src/dot/parse.ts'
@@ -10,9 +11,12 @@ import { type Graph, type Node, Handler } from '../src/dot/graph.ts'
 import {
   type Backend, type BranchRunResult, type HandlerCtx, type Handler as HandlerIface,
 } from '../src/handlers/types.ts'
-import { mergeBranchContext, applyDefaultJoinPolicy, Semaphore } from '../src/handlers/parallel.ts'
+import { mergeBranchContext, applyDefaultJoinPolicy, ParallelHandler, Semaphore } from '../src/handlers/parallel.ts'
 import { EventLog } from '../src/run/events.ts'
 import { Engine, defaultHandlers } from '../src/core/engine.ts'
+import { StubBackend } from '../src/handlers/stub.ts'
+import { createWorktree } from '../src/run/worktree.ts'
+import { GatedBackend } from './fixtures.ts'
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'attractor-parallel-'))
@@ -395,3 +399,583 @@ test('Semaphore: release() wakes exactly one waiter, in FIFO order', async () =>
   await p2
   assert.deepEqual(order, ['w1', 'w2'], 'second release() wakes the second-queued waiter')
 })
+
+// ---------------------------------------------------------------------------
+// ParallelHandler (p5-08 part 2). Registered against Handler.TOOL, exactly
+// like every BranchLaunchingHandler test above and in engine.test.ts --
+// Handler.PARALLEL stays in UNREGISTERED_HANDLER_KINDS until a later story
+// registers the real handler kind and adds the engine-side convergence-jump
+// (out of THIS story's scope, per ADR-013). ParallelHandler itself only ever
+// reads ctx.node/ctx.graph/outgoingEdges(graph, node.id), so it does not
+// care which handler kind actually dispatched it.
+//
+// Every branch-root edge below carries condition="context.never_true=x" and
+// the fan-out node has NO other outgoing edge. ParallelHandler computes
+// branchRootIds from EVERY outgoing edge of the fan-out node, condition-
+// independent (ADR-013's own model: a branch root is an edge, not a
+// condition match) -- so a spurious extra edge would become a spurious
+// extra branch. The never-true condition keeps selectEdge (engine.ts:816,
+// unmodified by this story) from ALSO picking a branch-root edge as the
+// ordinary next node once ParallelHandler returns -- the convergence-jump a
+// SUCCESS/PARTIAL outcome would otherwise need is core/engine.ts's own
+// separate, later task. With no edge ever selectable, the OUTER run
+// predictably dead-ends at the fan-out node every time, whatever
+// ParallelHandler itself returned -- irrelevant to every assertion below,
+// which all inspect ParallelHandler's own effects (events, context,
+// GatedBackend, the filesystem) directly, never engine.run()'s own overall
+// RunResult.status.
+// ---------------------------------------------------------------------------
+
+/**
+ * Poll a real condition with real time between checks (setTimeout, not a
+ * fixed count of microtask flushes). ParallelHandler's dispatch chain runs
+ * through several real async layers (Engine.runBranch -> executeNodeStep ->
+ * BoxHandler -> Backend.run), so a microtask-count-based flush (fine for the
+ * Semaphore's own unit tests above, which have no such chain) would be
+ * guessing how many ticks are enough and would break the moment any layer
+ * gains or loses an intervening await. A real setTimeout only returns once
+ * the whole synchronous-plus-microtask backlog up to that point has
+ * genuinely drained, so this is robust to the exact shape of that chain.
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const start = Date.now()
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('waitFor: condition was not met within the timeout')
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 1))
+  }
+}
+
+/** A real git repository, for the worktree-lifecycle row -- same setup test/worktree.test.ts already uses. */
+function repo(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'attractor-parallel-repo-'))
+  execFileSync('git', ['init', '-q'], { cwd: dir })
+  execFileSync('git', ['config', 'user.email', 't@example.com'], { cwd: dir })
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir })
+  writeFileSync(join(dir, 'seed.txt'), 'seed', 'utf8')
+  execFileSync('git', ['add', '-A'], { cwd: dir })
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir })
+  return dir
+}
+
+function concurrencyGraph(maxParallel: number): string {
+  return `
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      fanout [shape=parallelogram, tool_command="unused", max_parallel="${maxParallel}"]
+      r1 [shape=box, prompt="x"]
+      r2 [shape=box, prompt="x"]
+      r3 [shape=box, prompt="x"]
+      start -> fanout
+      fanout -> r1 [condition="context.never_true=x", isolate="false"]
+      fanout -> r2 [condition="context.never_true=x", isolate="false"]
+      fanout -> r3 [condition="context.never_true=x", isolate="false"]
+      r1 -> done
+      r2 -> done
+      r3 -> done
+    }
+  `
+}
+
+// ---------------------------------------------------------------------------
+// Row 1 -- FR-17b/NFR-7 concurrency ceiling.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps GatedBackend with a monotonically-growing set of node ids that have
+ * actually reached run() (and therefore have a live gate that release() can
+ * act on). Needed because GatedBackend.inFlight alone is a bare NUMBER that
+ * cannot distinguish "still counting the branch we just released, mid
+ * decrement" from "a NEW branch has started" when both states read the
+ * identical value -- true whenever max_parallel is small enough that inFlight
+ * only ever toggles between the same one or two numbers (e.g. max_parallel=1,
+ * where it is always 0 or 1). Polling `inFlight === N` a second time for the
+ * SAME N is therefore a real race, not a hypothetical one: release() called
+ * before the next branch's own gate exists is a silent no-op
+ * (test/fixtures.ts's own documented contract), which was observed to hang a
+ * whole test run -- the very first version of these three tests used
+ * `inFlight === N` for every wait and deadlocked on the second branch every
+ * time, confirmed with a standalone repro before switching to this. `started`
+ * only ever grows, so waiting for its SIZE to advance has no such ambiguity.
+ */
+class TrackingBackend implements Backend {
+  private readonly inner = new GatedBackend()
+  readonly started = new Set<string>()
+
+  get inFlight(): number {
+    return this.inner.inFlight
+  }
+
+  get maxObserved(): number {
+    return this.inner.maxObserved
+  }
+
+  async run(
+    node: Node, prompt: string, context: Context, graph: Graph, signal?: AbortSignal, cwd?: string,
+  ): Promise<Outcome> {
+    this.started.add(node.id)
+    return this.inner.run(node, prompt, context, graph, signal, cwd)
+  }
+
+  release(nodeId: string): void {
+    this.inner.release(nodeId)
+  }
+}
+
+test('ParallelHandler: max_parallel=1 admits exactly one concurrent branch at a time', async () => {
+  const backend = new TrackingBackend()
+  const handlers = defaultHandlers(backend)
+  handlers.set(Handler.TOOL, new ParallelHandler())
+  const runDir = tempDir()
+  const cwd = tempDir()
+  try {
+    const graph = parseDot(concurrencyGraph(1))
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    const runPromise = engine.run()
+
+    await waitFor(() => backend.started.size === 1)
+    assert.equal(backend.maxObserved, 1)
+    backend.release('r1')
+
+    await waitFor(() => backend.started.size === 2)
+    assert.equal(backend.maxObserved, 1, 'r2 only started once r1 fully released its slot')
+    backend.release('r2')
+
+    await waitFor(() => backend.started.size === 3)
+    assert.equal(backend.maxObserved, 1, 'r3 only started once r2 fully released its slot')
+    backend.release('r3')
+
+    await runPromise
+    assert.equal(backend.maxObserved, 1, 'never more than one branch ran concurrently')
+  } finally {
+    rmSync(runDir, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('ParallelHandler: max_parallel=3 (branch count) admits all three branches concurrently', async () => {
+  const backend = new TrackingBackend()
+  const handlers = defaultHandlers(backend)
+  handlers.set(Handler.TOOL, new ParallelHandler())
+  const runDir = tempDir()
+  const cwd = tempDir()
+  try {
+    const graph = parseDot(concurrencyGraph(3))
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    const runPromise = engine.run()
+
+    await waitFor(() => backend.started.size === 3)
+    assert.equal(backend.maxObserved, 3, 'all three branches were genuinely in flight at once')
+    backend.release('r1')
+    backend.release('r2')
+    backend.release('r3')
+
+    await runPromise
+    assert.equal(backend.maxObserved, 3)
+  } finally {
+    rmSync(runDir, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('ParallelHandler: max_parallel=2 (branch count - 1) admits two concurrently; the third queues and backfills the freed slot', async () => {
+  const backend = new TrackingBackend()
+  const handlers = defaultHandlers(backend)
+  handlers.set(Handler.TOOL, new ParallelHandler())
+  const runDir = tempDir()
+  const cwd = tempDir()
+  try {
+    const graph = parseDot(concurrencyGraph(2))
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    const runPromise = engine.run()
+
+    await waitFor(() => backend.started.size === 2)
+    assert.equal(
+      backend.maxObserved, 2,
+      'only two of the three branches got a permit -- the third is queued behind the semaphore',
+    )
+
+    backend.release('r1')
+    await waitFor(() => backend.started.size === 3)
+    assert.equal(
+      backend.maxObserved, 2,
+      'the queued branch backfilled the slot r1 freed -- concurrency never exceeded 2',
+    )
+
+    backend.release('r2')
+    backend.release('r3')
+    await runPromise
+    assert.equal(backend.maxObserved, 2)
+  } finally {
+    rmSync(runDir, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Row 2 -- FR-17b worktree lifecycle: isolate default true creates and
+// removes a real branch worktree; isolate="false" runs directly in the
+// parent cwd and is never touched.
+// ---------------------------------------------------------------------------
+
+/** Records the cwd each branch-root node actually dispatched in, and whether that cwd existed at that moment. */
+class CwdCapturingBackend implements Backend {
+  readonly cwdByNode = new Map<string, string>()
+  readonly existedDuringDispatch = new Map<string, boolean>()
+
+  async run(
+    node: Node, _prompt: string, _context: Context, _graph: Graph, _signal?: AbortSignal, cwd?: string,
+  ): Promise<Outcome> {
+    this.cwdByNode.set(node.id, cwd ?? '')
+    this.existedDuringDispatch.set(node.id, cwd !== undefined && existsSync(cwd))
+    return { status: Status.SUCCESS }
+  }
+}
+
+test(
+  'ParallelHandler: an isolated branch gets its own worktree, removed after it settles; ' +
+  'an isolate="false" sibling runs directly in the parent cwd and is never touched',
+  async () => {
+    const repoDir = repo()
+    const backend = new CwdCapturingBackend()
+    const handlers = defaultHandlers(backend)
+    handlers.set(Handler.TOOL, new ParallelHandler())
+    const runDir = tempDir()
+    try {
+      const graph = parseDot(`
+        digraph G {
+          start [shape=Mdiamond]  done [shape=Msquare]
+          fanout [shape=parallelogram, tool_command="unused"]
+          iso [shape=box, prompt="x"]
+          plain [shape=box, prompt="x"]
+          start -> fanout
+          fanout -> iso [condition="context.never_true=x"]
+          fanout -> plain [condition="context.never_true=x", isolate="false"]
+          iso -> done
+          plain -> done
+        }
+      `)
+      const engine = new Engine({ graph, context: Context.from({}), runDir, cwd: repoDir, handlers })
+      await engine.run()
+
+      const isoCwd = backend.cwdByNode.get('iso')
+      assert.ok(isoCwd, 'iso dispatched with a cwd')
+      assert.notEqual(isoCwd, repoDir, "the isolated branch ran in its OWN worktree, not the parent's cwd")
+      assert.equal(
+        backend.existedDuringDispatch.get('iso'), true,
+        'the worktree existed on disk while iso was actually running in it',
+      )
+      assert.equal(existsSync(isoCwd as string), false, 'removeWorktree ran after iso settled -- the worktree is gone')
+
+      assert.equal(backend.cwdByNode.get('plain'), repoDir, 'the isolate="false" sibling ran directly in the parent cwd')
+      assert.equal(existsSync(repoDir), true, 'the parent repo itself was never touched by any cleanup')
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(repoDir, { recursive: true, force: true })
+    }
+  },
+)
+
+// ---------------------------------------------------------------------------
+// Rows 3 and 4 -- join-policy integration and merge-back-regardless-of-verdict.
+// One 3-branch fixture, driven by StubBackend (no gating needed -- these rows
+// are about the join VERDICT and the context MERGE, not concurrency).
+// ---------------------------------------------------------------------------
+
+function joinGraph(): string {
+  return `
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      fanout [shape=parallelogram, tool_command="unused"]
+      r1 [shape=box, prompt="x"]
+      r2 [shape=box, prompt="x"]
+      r3 [shape=box, prompt="x"]
+      start -> fanout
+      fanout -> r1 [condition="context.never_true=x", isolate="false"]
+      fanout -> r2 [condition="context.never_true=x", isolate="false"]
+      fanout -> r3 [condition="context.never_true=x", isolate="false"]
+      r1 -> done
+      r2 -> done
+      r3 -> done
+    }
+  `
+}
+
+/**
+ * executeNodeStep (engine.ts:765) appends a node.end event with the
+ * dispatched handler's own outcome.status immediately after handler.execute()
+ * resolves, unconditionally -- so this reads ParallelHandler's own join
+ * outcome back out, proving applyDefaultJoinPolicy's result is what actually
+ * came back from execute(), not merely what applyDefaultJoinPolicy returns in
+ * isolation (already covered above).
+ */
+function joinOutcomeFor(runDir: string): unknown {
+  const events = new EventLog(runDir)
+  return events.all().find((e) => e.type === 'node.end' && e.node === 'fanout')?.status
+}
+
+test("ParallelHandler: all branches SUCCEED -> the fan-out node's own join outcome is SUCCESS", async () => {
+  const backend = new StubBackend({
+    r1: { status: Status.SUCCESS }, r2: { status: Status.SUCCESS }, r3: { status: Status.SUCCESS },
+  })
+  const handlers = defaultHandlers(backend)
+  handlers.set(Handler.TOOL, new ParallelHandler())
+  const runDir = tempDir()
+  const cwd = tempDir()
+  try {
+    const graph = parseDot(joinGraph())
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    await engine.run()
+    assert.equal(joinOutcomeFor(runDir), Status.SUCCESS)
+  } finally {
+    rmSync(runDir, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test("ParallelHandler: one branch FAILs, two SUCCEED -> the fan-out node's own join outcome is PARTIAL", async () => {
+  const backend = new StubBackend({
+    r1: { status: Status.FAIL, notes: 'boom', failureReason: 'boom' },
+    r2: { status: Status.SUCCESS },
+    r3: { status: Status.SUCCESS },
+  })
+  const handlers = defaultHandlers(backend)
+  handlers.set(Handler.TOOL, new ParallelHandler())
+  const runDir = tempDir()
+  const cwd = tempDir()
+  try {
+    const graph = parseDot(joinGraph())
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    await engine.run()
+    assert.equal(joinOutcomeFor(runDir), Status.PARTIAL)
+  } finally {
+    rmSync(runDir, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test("ParallelHandler: all branches FAIL -> the fan-out node's own join outcome is FAIL", async () => {
+  const backend = new StubBackend({
+    r1: { status: Status.FAIL, notes: 'x', failureReason: 'x' },
+    r2: { status: Status.FAIL, notes: 'x', failureReason: 'x' },
+    r3: { status: Status.FAIL, notes: 'x', failureReason: 'x' },
+  })
+  const handlers = defaultHandlers(backend)
+  handlers.set(Handler.TOOL, new ParallelHandler())
+  const runDir = tempDir()
+  const cwd = tempDir()
+  try {
+    const graph = parseDot(joinGraph())
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    await engine.run()
+    assert.equal(joinOutcomeFor(runDir), Status.FAIL)
+  } finally {
+    rmSync(runDir, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test(
+  "ParallelHandler: merge-back happens regardless of the join verdict -- a succeeding branch's " +
+  'context reaches the parent even when the join outcome is not SUCCESS',
+  async () => {
+    const backend = new StubBackend({
+      r1: { status: Status.FAIL, notes: 'boom', failureReason: 'boom' },
+      r2: { status: Status.SUCCESS, contextUpdates: { 'r2.result': 'from-r2' } },
+      r3: { status: Status.SUCCESS, contextUpdates: { 'r3.result': 'from-r3' } },
+    })
+    const handlers = defaultHandlers(backend)
+    handlers.set(Handler.TOOL, new ParallelHandler())
+    const runDir = tempDir()
+    const cwd = tempDir()
+    try {
+      const graph = parseDot(joinGraph())
+      const context = Context.from({})
+      const engine = new Engine({ graph, context, runDir, cwd, handlers })
+      await engine.run()
+
+      assert.equal(joinOutcomeFor(runDir), Status.PARTIAL, 'the overall join verdict is NOT success')
+      assert.equal(
+        context.get('r2.result'), 'from-r2',
+        "r2's context reached the parent even though the join verdict is PARTIAL, not SUCCESS",
+      )
+      assert.equal(context.get('r3.result'), 'from-r3')
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  },
+)
+
+// ---------------------------------------------------------------------------
+// Row 5 -- ADR-013 A(b), row 1: a real createWorktree throw (forced via a
+// non-git-repo cwd) does not reject Promise.all; an isolate="false" sibling
+// in the same dispatch completes unaffected.
+// ---------------------------------------------------------------------------
+
+test(
+  'ParallelHandler ADR-013 A(b) row 1: a real createWorktree throw on an isolated branch is caught ' +
+  'and folded into FAIL; an isolate="false" sibling in the same dispatch completes unaffected',
+  async () => {
+    const backend = new GatedBackend()
+    const handlers = defaultHandlers(backend)
+    handlers.set(Handler.TOOL, new ParallelHandler())
+    // Deliberately NOT a git repository -- createWorktree's own isGitRepo
+    // check fails for real, and createWorktree throws for real
+    // (run/worktree.ts:53-56), before ctx.runBranch is ever called for this
+    // branch.
+    const notAGitRepo = mkdtempSync(join(tmpdir(), 'attractor-parallel-notgit-'))
+    const runDir = tempDir()
+    try {
+      const graph = parseDot(`
+        digraph G {
+          start [shape=Mdiamond]  done [shape=Msquare]
+          fanout [shape=parallelogram, tool_command="unused"]
+          isoFail [shape=box, prompt="x"]
+          plainOk [shape=box, prompt="x"]
+          start -> fanout
+          fanout -> isoFail [condition="context.never_true=x"]
+          fanout -> plainOk [condition="context.never_true=x", isolate="false"]
+          isoFail -> done
+          plainOk -> done
+        }
+      `)
+      const engine = new Engine({ graph, context: Context.from({}), runDir, cwd: notAGitRepo, handlers })
+      const runPromise = engine.run()
+
+      // isoFail never reaches the backend at all (its createWorktree call
+      // throws before ctx.runBranch is ever invoked) -- only plainOk gates.
+      await waitFor(() => backend.inFlight === 1)
+      backend.release('plainOk')
+
+      // The whole point of ADR-013 A(b): Promise.all inside
+      // ParallelHandler.execute() must still resolve here, never reject or
+      // hang, even though one branch's own dispatch genuinely threw.
+      await runPromise
+
+      assert.equal(
+        joinOutcomeFor(runDir), Status.PARTIAL,
+        'exactly one of two branches failed (the caught createWorktree throw), the other succeeded',
+      )
+
+      // ParallelHandler exposes no per-branch BranchRunResult externally, by
+      // design -- ADR-013's own residual-risk note: the failureReason string
+      // is lost at the BranchRunResult boundary, same as every other caught
+      // failure in this engine. The join outcome's own text is generic
+      // ("1/2 branch(es) succeeded...") and not branch-specific, so it
+      // cannot be read back through applyDefaultJoinPolicy either -- there is
+      // no hook (no event; the finally guard in the handler's dispatchBranch
+      // only runs removeWorktree, and thus only appends an event, when a
+      // worktree was actually created, which never happened here) that
+      // surfaces the exact string this branch's own catch block put into
+      // failureReason. The strongest corroboration available from OUTSIDE
+      // ParallelHandler.execute() is that the SAME createWorktree call this
+      // handler makes internally, against the SAME non-git cwd, throws for
+      // real with exactly the message run/worktree.ts's own catch block
+      // would have captured verbatim (err.message) into that branch's own
+      // failureReason.
+      await assert.rejects(
+        () => createWorktree(notAGitRepo, 'corroboration-only'),
+        /cannot create an isolated worktree/,
+        "the exact error text isoFail's own catch block received as err.message",
+      )
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(notAGitRepo, { recursive: true, force: true })
+    }
+  },
+)
+
+// ---------------------------------------------------------------------------
+// Row 6 -- ADR-013 A(b), row 2: a hand-built HandlerCtx (no real Engine) whose
+// runBranch rejects for one branch root. The real Engine.runBranch cannot
+// currently be made to reject (executeNodeStep already catches a
+// handler-level throw), so this is the only way to exercise ParallelHandler's
+// own catch around ctx.runBranch! itself, independent of createWorktree.
+// ---------------------------------------------------------------------------
+
+test(
+  'ParallelHandler ADR-013 A(b) row 2: a hand-built HandlerCtx whose runBranch rejects for one branch ' +
+  'root still resolves; that branch folds into the join policy as FAIL, the resolving sibling is honored normally',
+  async () => {
+    const graph: Graph = {
+      name: 'G',
+      attrs: {},
+      nodes: new Map<string, Node>([
+        ['fanout', { id: 'fanout', attrs: {}, handler: Handler.PARALLEL }],
+        ['boomRoot', { id: 'boomRoot', attrs: {}, handler: Handler.CODERGEN }],
+        ['okRoot', { id: 'okRoot', attrs: {}, handler: Handler.CODERGEN }],
+      ]),
+      edges: [
+        { from: 'fanout', to: 'boomRoot', attrs: { isolate: 'false' } },
+        { from: 'fanout', to: 'okRoot', attrs: { isolate: 'false' } },
+      ],
+    }
+    const runDir = tempDir()
+    const cwd = tempDir()
+    try {
+      const ctx: HandlerCtx = {
+        node: graph.nodes.get('fanout') as Node,
+        graph,
+        context: Context.from({}),
+        runDir,
+        cwd,
+        events: new EventLog(runDir),
+        runBranch: async (opts) => {
+          if (opts.startNodeId === 'boomRoot') throw new Error('boom')
+          return { outcome: { status: Status.SUCCESS, notes: 'ok' }, path: [opts.startNodeId], context: {} }
+        },
+      }
+      const outcome = await new ParallelHandler().execute(ctx)
+      assert.equal(
+        outcome.status, Status.PARTIAL,
+        'the rejecting branch folds in as FAIL, the resolving sibling as SUCCESS -- 1/2 settled',
+      )
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  },
+)
+
+// ---------------------------------------------------------------------------
+// Row 7 -- a fan-out node with zero outgoing edges short-circuits to FAIL
+// without ever touching runBranch or worktree code.
+// ---------------------------------------------------------------------------
+
+test(
+  'ParallelHandler: a fan-out node with zero outgoing edges short-circuits to FAIL without touching runBranch or worktree code',
+  async () => {
+    const graph: Graph = {
+      name: 'G',
+      attrs: {},
+      nodes: new Map<string, Node>([['fanout', { id: 'fanout', attrs: {}, handler: Handler.PARALLEL }]]),
+      edges: [],
+    }
+    const runDir = tempDir()
+    const cwd = tempDir()
+    try {
+      let runBranchCalled = false
+      const ctx: HandlerCtx = {
+        node: graph.nodes.get('fanout') as Node,
+        graph,
+        context: Context.from({}),
+        runDir,
+        cwd,
+        events: new EventLog(runDir),
+        runBranch: async () => {
+          runBranchCalled = true
+          throw new Error('must never be called for a zero-branch dispatch')
+        },
+      }
+      const outcome = await new ParallelHandler().execute(ctx)
+      assert.equal(outcome.status, Status.FAIL)
+      assert.equal(outcome.failureReason, 'all 0 branch(es) failed')
+      assert.equal(runBranchCalled, false, 'zero branches means dispatchBranch is never even constructed, let alone called')
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  },
+)
