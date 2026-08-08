@@ -42,8 +42,10 @@ No draft stories this phase — nothing is missing an element required for readi
 
 ## Phase 5 — FR-17b (parallel fan-out, `Handler.PARALLEL`)
 
-Roadmap's Phase 5 decomposes into ten dependency-ordered work items, A–J. Two are not
-represented by a story below, deliberately — see **Not decomposed** at the end of this section.
+Roadmap's Phase 5 decomposes into ten dependency-ordered work items, A–J. Item A is not
+represented by a story below (a decision, not implementation work); item J is split across p5-08
+(the rows that fit its own vertical slice) and p5-09 (the two verification-only rows that don't)
+— see **Not decomposed** at the end of this section.
 
 | ID | Title | Status | Work item | Requirements | Depends on | Size |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
@@ -54,7 +56,8 @@ represented by a story below, deliberately — see **Not decomposed** at the end
 | [p5-05](p5-05-runbranch-seam.md) | `HandlerCtx.runBranch` seam + `Engine#runBranch` | ready | F | FR-17b, NFR-1, NFR-4 | p5-02, p5-01 | M |
 | [p5-06](p5-06-par-005-branch-exit-warning.md) | PAR-005 — branch reaches EXIT before its convergence node | ready | G | FR-17b | p5-04, p5-05 | S |
 | [p5-07](p5-07-context-merge-back.md) | `mergeBranchContext` + PAR-003 | ready | H | FR-17b | p5-05, p5-01 | M |
-| [p5-08](p5-08-parallel-handler-integration.md) | `ParallelHandler` registration — the integration point | **draft** | I | FR-17b, NFR-7 | p5-01, p5-03, p5-04, p5-05, p5-07 | L |
+| [p5-08](p5-08-parallel-handler-integration.md) | `ParallelHandler` registration — the integration point | **done** | I | FR-17b, NFR-7 | p5-01, p5-03, p5-04, p5-05, p5-07 | L |
+| [p5-09](p5-09-concurrency-verification-real-parallelhandler.md) | Checkpoint isolation + opt-in live-subprocess ceiling, proven against the real `ParallelHandler` | **draft, now unblocked** | J (remainder) | NFR-7 | p5-08 | S |
 
 **Decomposition note.** The roadmap's own dependency analysis (Critical path, Second
 prioritization pass) already establishes that seven of the ten work items (B–H) do not depend
@@ -70,56 +73,57 @@ behind item I.
 **Not decomposed:**
 
 - **Item A** (two Solution Architect decisions: component-node FAIL routing; `Promise.all` vs.
-  `allSettled` for branch rejection) is not implementation work — it is a design ruling this
-  role does not have standing to make (`AGENTS.md`/this role's own boundary: raise a design gap
-  to the Solution Architect rather than inventing an approach in the story text). It is named
-  explicitly as the blocker inside p5-08's own frontmatter and "Why this story is `draft`"
-  section, in the same one-paragraph-each shape ADR-006(b) used for a comparable prior decision.
-- **Item J** (concurrency test infrastructure) is not decomposed into its own story because most
-  of it needs a real `ParallelHandler` to exercise — depends on item I, which depends on item A.
-  Its five originally-listed rows land across three places rather than staying one block: (1)
-  `GatedBackend` itself and the worktree-name-collision test already shipped inside p5-01, per
-  the roadmap's own correction; (2) ceiling enforcement (the ADR's own Layer 1) is stated as a
-  p5-08 acceptance criterion directly, since it needs only `ParallelHandler`'s own semaphore, not
-  a fuller integration harness; the shared-ledger race property is substantively demonstrated
-  ahead of schedule by p5-05's own "goal-gate inside a branch blocks the real exit" test (two
-  concurrent `ctx.runBranch` calls racing the outer engine's real ledgers via `GatedBackend`,
-  with no `ParallelHandler` needed) — a full re-proof through `ParallelHandler` itself is cheap
-  once p5-08 lands, not a gap; (3) real-subprocess ceiling (Layer 3, opt-in `ATTRACTOR_LIVE=1`,
-  never CI), checkpoint isolation under real `ParallelHandler` dispatch, and branch-throws
-  mid-flight (blocked on item A(b) directly) are the rows still needing a dedicated story, once
-  p5-08 moves off `draft`.
+  `allSettled` for branch rejection) was not implementation work — it was a design ruling this
+  role does not have standing to make. **Resolved 2026-08-08**, [ADR-013](../decisions/ADR-013-parallelhandler-fail-routing-and-branch-rejection.md); p5-08 consumed the answer and moved to
+  `ready` (see Readiness below). Still not its own story — a decision was never story-shaped.
+- **Item J** is now split. Three of its five originally-listed rows are covered elsewhere:
+  `GatedBackend` and the worktree-name-collision test shipped inside p5-01; the shared-ledger
+  race property is substantively demonstrated by p5-05's own "goal-gate inside a branch blocks
+  the real exit" test; ceiling enforcement and branch-throws mid-flight (unblocked by ADR-013)
+  are p5-08's own acceptance criteria. The remaining two rows — checkpoint isolation under a
+  real `ParallelHandler` dispatch, and the opt-in `ATTRACTOR_LIVE=1` real-subprocess ceiling —
+  need the real handler p5-08 ships and don't fit p5-08's own vertical slice
+  (register/fan-out/join/merge-back is capability; these two are verification), so they got
+  their own story, **p5-09**, `depends_on: [p5-08]`.
 
 **Coverage check.** FR-17b is Phase 5's only requirement (roadmap's Requirement coverage table).
 Every Test-strategy row the roadmap's own verification mapping assigns to items B–H is covered
 by the corresponding story's acceptance criteria, including the five mutation-checked rows, the
 exact-F1-reproduction row, and the two "newly mapped" gap rows (retry-target-outside-branch →
-p5-05; retry/partial-completion-at-convergence, which needs a real join-policy verdict and is
-therefore item I's own row, not yet coverable by a ready story). The two rows the architecture
-itself marks "cannot be written yet" (component-node FAIL routing; branch-throws mid-flight) are
-named as explicitly **BLOCKED** acceptance criteria inside p5-08, not silently dropped.
+p5-05; retry/partial-completion-at-convergence → p5-08). The two rows the architecture once
+marked "cannot be written yet" (component-node FAIL routing; branch-throws mid-flight) are now
+real, falsifiable acceptance criteria inside p5-08, unblocked by ADR-013 — not silently dropped,
+and no longer `BLOCKED`.
 
 ## Readiness — Phase 5
 
 **p5-01 through p5-07 — ready.** Each has falsifiable acceptance criteria (exact diagnostic
 codes/severities, exact interface shapes, named mutation checks), file paths and line numbers
 verified live against this repo today (not trusted from the roadmap/architecture's own citations
-— `engine.ts`, `worktree.ts`, `cli.ts`, `graph.ts`, `lint.ts`, `handlers/{types,box,tool,stub}.ts`,
-`backend/claude.ts`, `checkpoint.ts`, `context.ts` were all re-read directly), dependencies
-stated and cross-checked against each other's frontmatter, and a full test approach with the
-real command (`cd plugins/attractor/engine && node --test`, baseline re-verified today: 508
-tests, 507 passing, 1 skipped, 0 failing).
+— `engine.ts`, `edge-select.ts`, `worktree.ts`, `cli.ts`, `graph.ts`, `lint.ts`,
+`handlers/{types,box,tool,stub,parallel}.ts`, `backend/claude.ts`, `checkpoint.ts`, `context.ts`
+were all re-read directly), dependencies stated and cross-checked against each other's
+frontmatter, and a full test approach with the real command (`cd plugins/attractor/engine &&
+node --test`).
 
-**p5-08 — draft, not ready.** Missing element: two Solution Architect decisions (roadmap item A),
-named exactly inside the story. Everything else about it — files, interfaces, the acceptance
-criteria that do not depend on A — is fully specified; only the FAIL-routing and
-branch-rejection-handling criteria are blocked, and both are marked `BLOCKED` rather than guessed.
+**p5-08 — done**, shipped in sprint 3 (`.delivery/sprints/3-parallel-handler.md`). All 8
+acceptance criteria verified met by direct code reading and test execution, not merely the
+implementer's own report — including two independent adversarial review passes, one of which
+found and led to fixing two real bugs (a `max_parallel="0"` deadlock; an `EventLog.append`
+failure escaping `ParallelHandler.execute()` and rejecting the whole dispatch). See the story's
+own "Implementation notes" for the full account.
+
+**p5-09 — draft, now unblocked.** `p5-08` is `done` and a real `ParallelHandler` exists to test
+against — no longer blocked on anything. Needs its own readiness pass (per `/delivery:stories`)
+before it can be scoped into a sprint; not done as part of sprint 3 by design (see that sprint's
+own "Deliberately excluded" table).
 
 ## Next
 
-`/delivery:sprint` to scope p1-01 (Phase 1) and/or p5-01 through p5-07 (Phase 5) into an
+`/delivery:sprint` to scope p1-01 (Phase 1) and/or p5-01 through p5-08 (Phase 5) into an
 implementation wave — p5-01 through p5-04 have no dependency on each other and can be sprinted
-in parallel; p5-05 needs p5-01/p5-02 done first; p5-06/p5-07 need p5-05 done first. p5-08 cannot
-be sprinted until the Solution Architect resolves roadmap item A and this index is updated to
-move it to `ready`. Phases 2–4 and 6 remain "named, not planned" per the roadmap; do not run
+in parallel; p5-05 needs p5-01/p5-02 done first; p5-06/p5-07 need p5-05 done first; p5-08 needs
+p5-01, p5-03, p5-04, p5-05, p5-07 done first. p5-09 cannot be sprinted until p5-08 is `done` and
+this index is updated to move it to `ready`. Phases 2–4 and 6 remain "named, not planned" per
+the roadmap; do not run
 `/delivery:stories` against them until their roadmap entries carry a real work-item table.
