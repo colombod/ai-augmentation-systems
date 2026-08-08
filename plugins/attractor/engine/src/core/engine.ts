@@ -11,6 +11,8 @@ import {
   runsOn,
   declaredOutputs,
   substitutableText,
+  outgoingEdges,
+  findConvergenceNode,
 } from '../dot/graph.ts'
 import { Context, isEngineManagedKey } from './context.ts'
 import { referencedKeys } from './substitute.ts'
@@ -23,6 +25,7 @@ import { EventLog } from '../run/events.ts'
 import { type Backend, type BranchRunOptions, type BranchRunResult, type Handler } from '../handlers/types.ts'
 import { ToolHandler } from '../handlers/tool.ts'
 import { BoxHandler } from '../handlers/box.ts'
+import { ParallelHandler } from '../handlers/parallel.ts'
 
 export { PASSTHROUGH_KINDS, RunsOn, RUNS_ON_MODES, runsOn }
 export type { RunsOnMode }
@@ -80,6 +83,7 @@ export function defaultHandlers(backend: Backend): Map<HandlerKind, Handler> {
     ...PASSTHROUGH_KINDS.map((kind) => [kind, passthrough] as [HandlerKind, Handler]),
     [Kind.TOOL, new ToolHandler()],
     [Kind.CODERGEN, new BoxHandler(backend)],
+    [Kind.PARALLEL, new ParallelHandler()],
   ])
 }
 
@@ -811,6 +815,27 @@ export class Engine {
 
     if (node.handler === Kind.EXIT) {
       return { kind: 'stop', reason: 'exit', nodeId: node.id, outcome }
+    }
+
+    // ADR-013 A(a): a Handler.PARALLEL node's SUCCESS/PARTIAL join outcome
+    // jumps unconditionally to the statically-computed convergence node,
+    // bypassing selectEdge entirely -- selectEdge, called on this node's own
+    // outgoing edges, can never select it: those edges ARE the branch roots,
+    // not the convergence node. FAIL is unmodified -- the ordinary ladder
+    // below (retry_target / dead-end) already does the right thing for a
+    // component node, exactly like any other node.
+    if (node.handler === Kind.PARALLEL && (outcome.status === Status.SUCCESS || outcome.status === Status.PARTIAL)) {
+      const branchRootIds = [...new Set(outgoingEdges(graph, node.id).map((e) => e.to))]
+      const convergenceId = findConvergenceNode(graph, branchRootIds, node.id)
+      if (convergenceId) {
+        if (opts.stopAt?.has(convergenceId)) {
+          return { kind: 'stop', reason: 'frontier', nodeId: node.id, outcome }
+        }
+        return { kind: 'continue', nextId: convergenceId }
+      }
+      // No convergence node found -- fall through to the ordinary ladder
+      // below, which will most likely dead-end (PAR-001 already flags this
+      // condition at lint time).
     }
 
     const edge = selectEdge(graph, node.id, context, outcome)

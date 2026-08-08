@@ -2,7 +2,7 @@
 
 // src/cli.ts
 import { readFileSync as readFileSync3 } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import { basename as basename2, resolve as resolve2 } from "node:path";
 
 // node_modules/@ts-graphviz/common/lib/common.js
@@ -3096,7 +3096,6 @@ var INFERRED_OUTPUTS_BY_HANDLER = {
 };
 var UNREGISTERED_HANDLER_KINDS = [
   Handler.HUMAN,
-  Handler.PARALLEL,
   Handler.FAN_IN,
   Handler.MANAGER_LOOP
 ];
@@ -4415,6 +4414,299 @@ var BoxHandler = class {
   }
 };
 
+// src/handlers/parallel.ts
+import { randomUUID } from "node:crypto";
+import { join as join6 } from "node:path";
+
+// src/run/worktree.ts
+import { execFile } from "node:child_process";
+import {
+  existsSync as existsSync3,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmdirSync,
+  rmSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join as join5, resolve, sep } from "node:path";
+import { promisify } from "node:util";
+var execFileAsync = promisify(execFile);
+var WT_PREFIX = "attractor-wt-";
+async function git(cwd, args) {
+  const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8" });
+  return stdout;
+}
+async function isGitRepo(dir) {
+  try {
+    return (await git(dir, ["rev-parse", "--is-inside-work-tree"])).trim() === "true";
+  } catch {
+    return false;
+  }
+}
+async function createWorktree(repoDir, runId) {
+  if (!await isGitRepo(repoDir)) {
+    throw new Error(`not a git repository: ${repoDir} -- cannot create an isolated worktree`);
+  }
+  const branch = `attractor/${runId}`;
+  const parent = mkdtempSync(join5(tmpdir(), WT_PREFIX));
+  const path = join5(parent, runId);
+  try {
+    await git(repoDir, ["worktree", "add", "-q", "-b", branch, path]);
+  } catch (err) {
+    rmSync(parent, { recursive: true, force: true });
+    throw err;
+  }
+  return { path, branch };
+}
+function realOrResolved(p) {
+  const abs = resolve(p);
+  try {
+    return realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+function isOurWorktree(target) {
+  const tmpRoot = realOrResolved(tmpdir());
+  const t = realOrResolved(target);
+  return t.startsWith(`${tmpRoot}${sep}`) && basename(dirname(t)).startsWith(WT_PREFIX);
+}
+async function hasUncommittedWork(worktreePath) {
+  try {
+    return (await git(worktreePath, ["status", "--porcelain"])).trim() !== "";
+  } catch {
+    return true;
+  }
+}
+async function isRegisteredWorktree(repoDir, target) {
+  try {
+    const out = await git(repoDir, ["worktree", "list", "--porcelain"]);
+    for (const line of out.split("\n")) {
+      if (line.startsWith("worktree ") && realOrResolved(line.slice("worktree ".length)) === target) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+function isNonEmptyDirectory(path) {
+  try {
+    return readdirSync(path).length > 0;
+  } catch {
+    return true;
+  }
+}
+async function removeWorktree(repoDir, wt) {
+  const target = realOrResolved(wt.path);
+  const root = realOrResolved(repoDir);
+  const ours = isOurWorktree(target);
+  if (target === root || root.startsWith(`${target}${sep}`)) {
+    return {
+      removed: false,
+      warning: `refusing to remove ${target}: it is, or contains, the repository root`
+    };
+  }
+  const registered = existsSync3(target) && await isRegisteredWorktree(repoDir, target);
+  if (registered && await hasUncommittedWork(target)) {
+    return {
+      removed: false,
+      warning: `keeping ${target}: it has uncommitted work on branch ${wt.branch}. Commit it there, or delete the directory once you have salvaged it.`
+    };
+  }
+  if (existsSync3(target) && ours && !registered && isNonEmptyDirectory(target)) {
+    return {
+      removed: false,
+      warning: `keeping ${target}: git's administrative record for this worktree is gone, so its status cannot be verified, and the directory is not empty. Treating it as uncommitted work on branch ${wt.branch} rather than guessing it is safe to delete.`
+    };
+  }
+  let gitError;
+  try {
+    await git(repoDir, ["worktree", "remove", "--force", target]);
+  } catch (err) {
+    gitError = (err instanceof Error ? err.message : String(err)).trim();
+  }
+  try {
+    await git(repoDir, ["worktree", "prune"]);
+  } catch {
+  }
+  const survivedGit = existsSync3(target);
+  if (survivedGit) {
+    if (!ours) {
+      return {
+        removed: false,
+        warning: `refusing to delete ${target}: it is not a worktree this module created (expected a ${WT_PREFIX}* directory under the system temp directory)`
+      };
+    }
+    try {
+      rmSync(target, { recursive: true, force: true });
+    } catch (err) {
+      return { removed: false, warning: `could not remove worktree ${target}: ${String(err)}` };
+    }
+  }
+  if (ours) {
+    const parent = dirname(target);
+    try {
+      if (existsSync3(parent) && readdirSync(parent).length === 0) rmdirSync(parent);
+    } catch {
+    }
+  }
+  if (survivedGit && gitError !== void 0) {
+    return {
+      removed: true,
+      warning: `git could not remove the worktree cleanly, directory was deleted directly: ${gitError}`
+    };
+  }
+  return { removed: true };
+}
+
+// src/handlers/parallel.ts
+function mergeBranchContext(parentContext, preforkSnapshot, branchRootIds, results, events) {
+  if (branchRootIds.length !== results.length) {
+    throw new Error(
+      `mergeBranchContext: branchRootIds.length (${branchRootIds.length}) !== results.length (${results.length}) -- results must be positionally paired with branchRootIds, one BranchRunResult per branch root, in the same order`
+    );
+  }
+  const mergedBy = /* @__PURE__ */ new Map();
+  for (let i = 0; i < branchRootIds.length; i++) {
+    const rootId = branchRootIds[i];
+    const result = results[i];
+    if (result.outcome.status !== Status.SUCCESS && result.outcome.status !== Status.PARTIAL) continue;
+    for (const [key, value] of Object.entries(result.context)) {
+      if (ENGINE_MANAGED_KEYS.includes(key)) continue;
+      if (preforkSnapshot[key] === value) continue;
+      const previousOwner = mergedBy.get(key);
+      if (previousOwner !== void 0) {
+        events.append({
+          type: "node.parallel.context_collision",
+          key,
+          previousBranch: previousOwner,
+          winningBranch: rootId
+        });
+      }
+      mergedBy.set(key, rootId);
+      parentContext.set(key, value);
+    }
+  }
+}
+function applyDefaultJoinPolicy(results) {
+  const settled = results.filter(
+    (r) => r.outcome.status === Status.SUCCESS || r.outcome.status === Status.PARTIAL
+  );
+  if (settled.length === 0) {
+    const notes = `all ${results.length} branch(es) failed`;
+    return { status: Status.FAIL, notes, failureReason: notes };
+  }
+  if (settled.length === results.length) {
+    return { status: Status.SUCCESS, notes: `all ${results.length} branch(es) succeeded` };
+  }
+  return {
+    status: Status.PARTIAL,
+    notes: `${settled.length}/${results.length} branch(es) succeeded or partially succeeded`
+  };
+}
+var Semaphore = class {
+  available;
+  waiters = [];
+  constructor(permits) {
+    this.available = permits;
+  }
+  async acquire() {
+    if (this.available > 0) {
+      this.available--;
+      return;
+    }
+    await new Promise((resolve3) => this.waiters.push(resolve3));
+    this.available--;
+  }
+  release() {
+    this.available++;
+    const next = this.waiters.shift();
+    if (next) next();
+  }
+};
+function intAttr2(value) {
+  if (value === void 0) return void 0;
+  const n = Number.parseInt(value, 10);
+  return Number.isNaN(n) ? void 0 : n;
+}
+var DEFAULT_MAX_PARALLEL = 4;
+var ParallelHandler = class {
+  async execute(ctx) {
+    const { node, graph, context, runDir, cwd, events } = ctx;
+    const branchRootIds = [...new Set(outgoingEdges(graph, node.id).map((e) => e.to))];
+    if (branchRootIds.length === 0) {
+      return applyDefaultJoinPolicy([]);
+    }
+    const maxParallel = Math.max(1, intAttr2(node.attrs.max_parallel) ?? DEFAULT_MAX_PARALLEL);
+    const semaphore = new Semaphore(maxParallel);
+    const preforkSnapshot = context.snapshot();
+    const convergenceId = findConvergenceNode(graph, branchRootIds, node.id);
+    const stopAt = convergenceId ? /* @__PURE__ */ new Set([convergenceId]) : /* @__PURE__ */ new Set();
+    const edgeFor = (rootId) => outgoingEdges(graph, node.id).find((e) => e.to === rootId);
+    const dispatchBranch = async (rootId) => {
+      const edge = edgeFor(rootId);
+      const isolate = edge?.attrs.isolate !== "false";
+      let worktree;
+      try {
+        let branchCwd = cwd;
+        if (isolate) {
+          worktree = await createWorktree(cwd, `${node.id}-${rootId}-${randomUUID().slice(0, 8)}`);
+          branchCwd = worktree.path;
+        }
+        return await ctx.runBranch({
+          startNodeId: rootId,
+          stopAt,
+          context: context.clone(),
+          runDir: join6(runDir, rootId),
+          cwd: branchCwd
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          outcome: { status: Status.FAIL, notes: message, failureReason: message },
+          path: [],
+          context: preforkSnapshot
+        };
+      } finally {
+        if (worktree) {
+          const removal = await removeWorktree(cwd, worktree);
+          if (!removal.removed) {
+            try {
+              events.append({
+                type: "node.parallel.worktree_warning",
+                node: node.id,
+                branch: rootId,
+                warning: removal.warning
+              });
+            } catch {
+            }
+          }
+        }
+      }
+    };
+    const results = await Promise.all(
+      branchRootIds.map(async (rootId) => {
+        await semaphore.acquire();
+        try {
+          return await dispatchBranch(rootId);
+        } finally {
+          semaphore.release();
+        }
+      })
+    );
+    try {
+      mergeBranchContext(context, preforkSnapshot, branchRootIds, results, events);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { status: Status.FAIL, notes: `merge-back failed: ${message}`, failureReason: message };
+    }
+    return applyDefaultJoinPolicy(results);
+  }
+};
+
 // src/core/engine.ts
 var PassthroughHandler = class {
   async execute() {
@@ -4426,7 +4718,8 @@ function defaultHandlers(backend) {
   return new Map([
     ...PASSTHROUGH_KINDS.map((kind) => [kind, passthrough]),
     [Handler.TOOL, new ToolHandler()],
-    [Handler.CODERGEN, new BoxHandler(backend)]
+    [Handler.CODERGEN, new BoxHandler(backend)],
+    [Handler.PARALLEL, new ParallelHandler()]
   ]);
 }
 var DEFAULT_MAX_STEPS = 500;
@@ -5073,6 +5366,16 @@ var Engine = class {
     if (node.handler === Handler.EXIT) {
       return { kind: "stop", reason: "exit", nodeId: node.id, outcome };
     }
+    if (node.handler === Handler.PARALLEL && (outcome.status === Status.SUCCESS || outcome.status === Status.PARTIAL)) {
+      const branchRootIds = [...new Set(outgoingEdges(graph, node.id).map((e) => e.to))];
+      const convergenceId = findConvergenceNode(graph, branchRootIds, node.id);
+      if (convergenceId) {
+        if (opts.stopAt?.has(convergenceId)) {
+          return { kind: "stop", reason: "frontier", nodeId: node.id, outcome };
+        }
+        return { kind: "continue", nextId: convergenceId };
+      }
+    }
     const edge = selectEdge(graph, node.id, context, outcome);
     if (!edge && outcome.status === Status.FAIL) {
       const target = resolveRetryTarget(node, graph, { includeGraphLevel: false });
@@ -5417,150 +5720,6 @@ var ClaudeCodeBackend = class {
   }
 };
 
-// src/run/worktree.ts
-import { execFile } from "node:child_process";
-import {
-  existsSync as existsSync3,
-  mkdtempSync,
-  readdirSync,
-  realpathSync,
-  rmdirSync,
-  rmSync
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join as join5, resolve, sep } from "node:path";
-import { promisify } from "node:util";
-var execFileAsync = promisify(execFile);
-var WT_PREFIX = "attractor-wt-";
-async function git(cwd, args) {
-  const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8" });
-  return stdout;
-}
-async function isGitRepo(dir) {
-  try {
-    return (await git(dir, ["rev-parse", "--is-inside-work-tree"])).trim() === "true";
-  } catch {
-    return false;
-  }
-}
-async function createWorktree(repoDir, runId) {
-  if (!await isGitRepo(repoDir)) {
-    throw new Error(`not a git repository: ${repoDir} -- cannot create an isolated worktree`);
-  }
-  const branch = `attractor/${runId}`;
-  const parent = mkdtempSync(join5(tmpdir(), WT_PREFIX));
-  const path = join5(parent, runId);
-  try {
-    await git(repoDir, ["worktree", "add", "-q", "-b", branch, path]);
-  } catch (err) {
-    rmSync(parent, { recursive: true, force: true });
-    throw err;
-  }
-  return { path, branch };
-}
-function realOrResolved(p) {
-  const abs = resolve(p);
-  try {
-    return realpathSync(abs);
-  } catch {
-    return abs;
-  }
-}
-function isOurWorktree(target) {
-  const tmpRoot = realOrResolved(tmpdir());
-  const t = realOrResolved(target);
-  return t.startsWith(`${tmpRoot}${sep}`) && basename(dirname(t)).startsWith(WT_PREFIX);
-}
-async function hasUncommittedWork(worktreePath) {
-  try {
-    return (await git(worktreePath, ["status", "--porcelain"])).trim() !== "";
-  } catch {
-    return true;
-  }
-}
-async function isRegisteredWorktree(repoDir, target) {
-  try {
-    const out = await git(repoDir, ["worktree", "list", "--porcelain"]);
-    for (const line of out.split("\n")) {
-      if (line.startsWith("worktree ") && realOrResolved(line.slice("worktree ".length)) === target) {
-        return true;
-      }
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-function isNonEmptyDirectory(path) {
-  try {
-    return readdirSync(path).length > 0;
-  } catch {
-    return true;
-  }
-}
-async function removeWorktree(repoDir, wt) {
-  const target = realOrResolved(wt.path);
-  const root = realOrResolved(repoDir);
-  const ours = isOurWorktree(target);
-  if (target === root || root.startsWith(`${target}${sep}`)) {
-    return {
-      removed: false,
-      warning: `refusing to remove ${target}: it is, or contains, the repository root`
-    };
-  }
-  const registered = existsSync3(target) && await isRegisteredWorktree(repoDir, target);
-  if (registered && await hasUncommittedWork(target)) {
-    return {
-      removed: false,
-      warning: `keeping ${target}: it has uncommitted work on branch ${wt.branch}. Commit it there, or delete the directory once you have salvaged it.`
-    };
-  }
-  if (existsSync3(target) && ours && !registered && isNonEmptyDirectory(target)) {
-    return {
-      removed: false,
-      warning: `keeping ${target}: git's administrative record for this worktree is gone, so its status cannot be verified, and the directory is not empty. Treating it as uncommitted work on branch ${wt.branch} rather than guessing it is safe to delete.`
-    };
-  }
-  let gitError;
-  try {
-    await git(repoDir, ["worktree", "remove", "--force", target]);
-  } catch (err) {
-    gitError = (err instanceof Error ? err.message : String(err)).trim();
-  }
-  try {
-    await git(repoDir, ["worktree", "prune"]);
-  } catch {
-  }
-  const survivedGit = existsSync3(target);
-  if (survivedGit) {
-    if (!ours) {
-      return {
-        removed: false,
-        warning: `refusing to delete ${target}: it is not a worktree this module created (expected a ${WT_PREFIX}* directory under the system temp directory)`
-      };
-    }
-    try {
-      rmSync(target, { recursive: true, force: true });
-    } catch (err) {
-      return { removed: false, warning: `could not remove worktree ${target}: ${String(err)}` };
-    }
-  }
-  if (ours) {
-    const parent = dirname(target);
-    try {
-      if (existsSync3(parent) && readdirSync(parent).length === 0) rmdirSync(parent);
-    } catch {
-    }
-  }
-  if (survivedGit && gitError !== void 0) {
-    return {
-      removed: true,
-      warning: `git could not remove the worktree cleanly, directory was deleted directly: ${gitError}`
-    };
-  }
-  return { removed: true };
-}
-
 // src/doctor.ts
 import { execFileSync } from "node:child_process";
 function probe(name, args, required) {
@@ -5766,7 +5925,7 @@ async function main(argv) {
     warnOnManagedParams(args.params);
     let worktree;
     let cwd = args.cwd;
-    const runId = `${basename2(args.runDir)}-${randomUUID().slice(0, 8)}`;
+    const runId = `${basename2(args.runDir)}-${randomUUID2().slice(0, 8)}`;
     if (args.worktree) {
       if (!await isGitRepo(args.cwd)) {
         process.stderr.write(

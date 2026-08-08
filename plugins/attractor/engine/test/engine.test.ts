@@ -4728,7 +4728,7 @@ test('PAR-005 integration: an early-exit branch neither halts the run nor lets l
   assert.ok(diags.some((d) => d.code === 'PAR-005'), 'the fixture is the one PAR-005 exists to catch')
   assert.ok(
     !diags.some((d) => d.severity === Severity.ERROR && d.code !== 'HAND-001'),
-    'PAR-005 is advisory -- it must not block the run (HAND-001 is expected and unrelated: Handler.PARALLEL stays unregistered until p5-08)',
+    'PAR-005 is advisory -- it must not block the run',
   )
 
   const backend = new GatedBackend()

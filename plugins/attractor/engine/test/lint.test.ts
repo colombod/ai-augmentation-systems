@@ -1378,16 +1378,6 @@ test('UNREGISTERED_HANDLER_KINDS matches what defaultHandlers() actually registe
   assert.deepEqual(new Set(UNREGISTERED_HANDLER_KINDS), new Set(expected))
 })
 
-test('HAND-001 fires for a node resolving to Handler.PARALLEL', () => {
-  const src = `digraph G {
-    start [shape=Mdiamond]  done [shape=Msquare]
-    fanout [shape=component]
-    start -> fanout -> done
-  }`
-  const found = codes(src)
-  assert.ok(found.includes('HAND-001'))
-})
-
 test('HAND-001 fires for a node resolving to Handler.FAN_IN', () => {
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
@@ -1416,9 +1406,12 @@ test('HAND-001 fires for Handler.HUMAN too, since it is unregistered in this bui
 })
 
 test('HAND-001 respects type= overriding shape=', () => {
+  // type="parallel.fan_in" (not "parallel" -- Handler.PARALLEL is registered
+  // as of p5-08, so it would no longer trip HAND-001, defeating the point of
+  // this test) resolves to Handler.FAN_IN, still unregistered.
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
-    node1 [shape=box, type="parallel"]
+    node1 [shape=box, type="parallel.fan_in"]
     start -> node1 -> done
   }`
   assert.ok(codes(src).includes('HAND-001'))
@@ -1437,9 +1430,11 @@ test('HAND-001 does not fire for any registered handler kind', () => {
 })
 
 test('HAND-001 reports one diagnostic per offending node, not one per graph', () => {
+  // Two still-unregistered shapes (Handler.PARALLEL is registered as of
+  // p5-08, so `component` no longer offends here).
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
-    a [shape=component]
+    a [shape=house]
     b [shape=tripleoctagon]
     start -> a -> b -> done
   }`
@@ -2454,8 +2449,8 @@ test('findConvergenceNode: a retry targeting an ordinary non-root node is a seco
 
 // ---------------------------------------------------------------------------
 // PAR-001 / PAR-002 / PAR-004: Handler.PARALLEL fan-out shape, reusing
-// findConvergenceNode/findPartialReconvergence above. Co-fire with HAND-001
-// -- Handler.PARALLEL stays in UNREGISTERED_HANDLER_KINDS until p5-08.
+// findConvergenceNode/findPartialReconvergence above. Handler.PARALLEL is
+// registered as of p5-08; these fixtures no longer co-fire HAND-001.
 // ---------------------------------------------------------------------------
 
 test('PAR-001 fires ERROR when a component node has no discoverable convergence node', () => {
@@ -2468,12 +2463,11 @@ test('PAR-001 fires ERROR when a component node has no discoverable convergence 
   }`
   const found = codes(src)
   assert.ok(found.includes('PAR-001'))
-  assert.ok(found.includes('HAND-001'), 'PAR-001 co-fires with HAND-001, never suppresses it')
   const diag = lint(parseDot(src)).find((d) => d.code === 'PAR-001')
   assert.equal(diag?.severity, Severity.ERROR)
 })
 
-test('PAR-001 does not fire when a genuine convergence node exists; HAND-001 still fires alone', () => {
+test('PAR-001 does not fire when a genuine convergence node exists', () => {
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     fan [shape=component]  a [shape=box]  b [shape=box]  join [shape=box]
@@ -2484,10 +2478,9 @@ test('PAR-001 does not fire when a genuine convergence node exists; HAND-001 sti
   }`
   const found = codes(src)
   assert.ok(!found.includes('PAR-001'))
-  assert.ok(found.includes('HAND-001'))
 })
 
-test('PAR-002 fires WARNING only on exactly one outgoing edge, never with PAR-001/PAR-004, and co-fires with HAND-001 without either suppressing the other', () => {
+test('PAR-002 fires WARNING only on exactly one outgoing edge, never with PAR-001/PAR-004', () => {
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     fan [shape=component]  a [shape=box]
@@ -2499,10 +2492,6 @@ test('PAR-002 fires WARNING only on exactly one outgoing edge, never with PAR-00
   assert.equal(par002?.severity, Severity.WARNING)
   assert.ok(!diags.some((d) => d.code === 'PAR-001'))
   assert.ok(!diags.some((d) => d.code === 'PAR-004'))
-  assert.ok(
-    diags.some((d) => d.code === 'HAND-001'),
-    'the negative-control row: PAR-002 (WARNING) must not suppress HAND-001 (ERROR), and vice versa -- Handler.PARALLEL is still unregistered',
-  )
 })
 
 test('a component node with zero outgoing edges fires neither PAR-001 nor PAR-002 nor PAR-004', () => {
@@ -2535,7 +2524,6 @@ test('PAR-004 fires ERROR on the exact "normalize" shared-step fixture (F3)', ()
   const par004 = diags.find((d) => d.code === 'PAR-004')
   assert.ok(par004, 'a rule that only checks findConvergenceNode() === null misses this -- convergence DOES exist (combine)')
   assert.equal(par004?.severity, Severity.ERROR)
-  assert.ok(diags.some((d) => d.code === 'HAND-001'))
 })
 
 test('PAR-004 fires ERROR on the tied-full-common-descendant fixture (ADR-007 amendment)', () => {
@@ -2605,7 +2593,6 @@ test('PAR-004 does not false-positive on a duplicate chain-form edge to the same
   }`
   const found = codes(src)
   assert.ok(!found.includes('PAR-004'), 'a re-spelling of the same two-branch graph must not flip PAR-004 on')
-  assert.ok(found.includes('HAND-001'))
 })
 
 test('PAR-002 fires (not PAR-004) on two differently-labelled edges to the same successor', () => {
@@ -2786,7 +2773,7 @@ test('PAR-003 is blind to inferred (not declared) key collisions -- named, not a
 // noticing (final-review finding).
 // ---------------------------------------------------------------------------
 
-test('PAR-003, PAR-004 and PAR-005 all fire together on one fan-out node, alongside HAND-001, with none suppressing another', () => {
+test('PAR-003, PAR-004 and PAR-005 all fire together on one fan-out node, with none suppressing another', () => {
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     fan [shape=component]
@@ -2802,7 +2789,6 @@ test('PAR-003, PAR-004 and PAR-005 all fire together on one fan-out node, alongs
   }`
   const diags = lint(parseDot(src))
   const codesFound = diags.map((d) => d.code)
-  assert.ok(codesFound.includes('HAND-001'), 'Handler.PARALLEL stays unregistered and still refuses the graph')
   assert.ok(codesFound.includes('PAR-003'), 'r1/r2 both declare outputs="x.path"')
   assert.ok(codesFound.includes('PAR-004'), 'shared is reachable from both r1 and r2 before combine')
   assert.ok(codesFound.includes('PAR-005'), 'r3 shortcuts to done, bypassing combine')

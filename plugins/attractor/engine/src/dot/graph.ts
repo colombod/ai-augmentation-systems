@@ -223,7 +223,6 @@ export const INFERRED_OUTPUTS_BY_HANDLER: Record<HandlerKind, readonly string[]>
  */
 export const UNREGISTERED_HANDLER_KINDS: readonly HandlerKind[] = [
   Handler.HUMAN,
-  Handler.PARALLEL,
   Handler.FAN_IN,
   Handler.MANAGER_LOOP,
 ]

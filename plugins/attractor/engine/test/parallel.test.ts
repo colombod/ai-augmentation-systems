@@ -882,6 +882,64 @@ test(
 )
 
 // ---------------------------------------------------------------------------
+// End-to-end (p5-08 whole story): a REAL Engine.run() over a graph with a
+// genuine shape=component node -- not the Handler.TOOL-registered-as-
+// ParallelHandler workaround every fixture above this point uses (necessary
+// while Handler.PARALLEL was still in UNREGISTERED_HANDLER_KINDS and the
+// engine had no convergence-jump). Now that both have landed, this proves
+// core/engine.ts's defaultHandlers() registration and the ADR-013 A(a)
+// convergence-jump work TOGETHER, the way a real graph author would actually
+// trigger them: fan out to three branch roots, converge on a real join node,
+// continue to done.
+// ---------------------------------------------------------------------------
+
+test(
+  'end-to-end: a real shape=component node fans out to three branch roots, converges on a real ' +
+  'join node, and the run completes (p5-08 registration + ADR-013 A(a))',
+  async () => {
+    const backend = new StubBackend({})
+    const handlers = defaultHandlers(backend)
+    const runDir = tempDir()
+    const cwd = tempDir()
+    try {
+      const graph = parseDot(`
+        digraph G {
+          start [shape=Mdiamond]  done [shape=Msquare]
+          fan [shape=component]
+          r1 [shape=box, prompt="x"]
+          r2 [shape=box, prompt="x"]
+          r3 [shape=box, prompt="x"]
+          join [shape=box, prompt="x"]
+          start -> fan
+          fan -> r1 [isolate="false"]
+          fan -> r2 [isolate="false"]
+          fan -> r3 [isolate="false"]
+          r1 -> join
+          r2 -> join
+          r3 -> join
+          join -> done
+        }
+      `)
+      const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+      const result = await engine.run()
+
+      assert.equal(
+        result.status, Status.SUCCESS,
+        'all three branches succeed -> applyDefaultJoinPolicy -> SUCCESS -> the run continues past fan',
+      )
+      assert.deepEqual(
+        result.path, ['start', 'fan', 'join', 'done'],
+        'join immediately follows fan (the A(a) jump, not selectEdge) exactly once, with no branch-internal ' +
+        'node (r1/r2/r3 -- dispatched only inside runBranch, never the outer path) and no phantom re-dispatch',
+      )
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  },
+)
+
+// ---------------------------------------------------------------------------
 // Row 5 -- ADR-013 A(b), row 1: a real createWorktree throw (forced via a
 // non-git-repo cwd) does not reject Promise.all; an isolate="false" sibling
 // in the same dispatch completes unaffected.
