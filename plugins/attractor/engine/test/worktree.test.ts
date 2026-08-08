@@ -343,3 +343,75 @@ test('two concurrent createWorktree calls sharing one runId: one succeeds, the o
     rmSync(r, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------------------
+// R-sprint2-1 (`.delivery/reviews/sprint-2-01.md`): concurrent createWorktree
+// calls against the SAME repo occasionally corrupted git's own administrative
+// state instead of refusing cleanly -- `fatal: failed to read
+// .git/worktrees/<sibling>/commondir: Undefined error: 0`, reproduced live at
+// roughly 1-in-15 to 1-in-25 FULL-SUITE runs by the 5-way test above. That
+// finding's own resolution note said this had to be fixed "before p5-08's
+// `max_parallel` branches makes this reachable in production" -- p5-08's
+// `ParallelHandler` (`src/handlers/parallel.ts`) has since shipped with
+// concurrent worktree creation as the DEFAULT, unconfigured path, so this is
+// no longer theoretical. `createWorktree` now retries this specific error
+// pattern (see the block comment above `RACE_ERROR_PATTERN` in
+// `src/run/worktree.ts`); the test below is the permanent regression guard.
+//
+// A single repo at even 30-way concurrency only occasionally reproduced the
+// race pre-fix (measured ~2.5% per test run against the pre-fix code, via a
+// scratch repro script, not committed) -- what actually raised the odds was
+// TOTAL system-wide `git` process contention, not the call count against one
+// repo alone. Ten repos hammered concurrently, 30 concurrent createWorktree
+// calls against EACH -- still "several concurrent createWorktree calls
+// against one repo", ten times over, all at once -- reliably reproduced the
+// race pre-fix in this environment (individual repo batches failed often
+// enough that a single test invocation had a strong, non-coin-flip chance of
+// catching it: multiple batches of ten such repo-groups averaged more than
+// one failure per group). Post-fix, thousands of calls at this exact
+// amplification produced zero failures in the verification that shipped this
+// fix. This is a genuine race, so a clean run here is evidence, not proof --
+// but a red run is real signal that the retry has regressed.
+test('ten repos hammered concurrently, 30-way createWorktree each: the race stays fixed under heavy load (R-sprint2-1)', async () => {
+  const REPO_COUNT = 10
+  const CONCURRENCY = 30
+  const repos = Array.from({ length: REPO_COUNT }, () => repo())
+  try {
+    const perRepoResults = await Promise.all(
+      repos.map((r, ri) => Promise.all(
+        Array.from({ length: CONCURRENCY }, (_, i) => createWorktree(r, `stress-${ri}-${i}`)),
+      )),
+    )
+    for (const [ri, results] of perRepoResults.entries()) {
+      const paths = new Set(results.map((wt) => wt.path))
+      const branches = new Set(results.map((wt) => wt.branch))
+      assert.equal(paths.size, CONCURRENCY, `repo ${ri}: every worktree got a distinct path`)
+      assert.equal(branches.size, CONCURRENCY, `repo ${ri}: every worktree got a distinct branch`)
+      for (const wt of results) assert.ok(existsSync(wt.path), `${wt.path} exists`)
+    }
+    await Promise.all(
+      perRepoResults.flatMap((results, ri) => results.map((wt) => removeWorktree(repos[ri], wt))),
+    )
+  } finally {
+    for (const r of repos) rmSync(r, { recursive: true, force: true })
+  }
+})
+
+// A second, DETERMINISTIC test alongside the amplified stress test above was
+// considered and deliberately not added. `GatedBackend` (`test/fixtures.ts`)
+// can force deterministic interleaving because `Backend` is a pluggable
+// interface `Engine` already depends on through injection -- there is
+// somewhere to put a test double. `worktree.ts`'s `git()` helper has no such
+// seam: it is a private, unexported function, and `createWorktree` calls it
+// directly rather than through an injectable dependency. The one built-in
+// mechanism that could substitute a builtin module without changing
+// `worktree.ts`'s shape, `node:test`'s `mock.module`, is unavailable in this
+// runtime without `--experimental-test-module-mocks` -- confirmed directly:
+// `mock.module` is `undefined` under a plain `node --test` invocation, which
+// is what this suite's own verification command uses, so a test relying on
+// it would silently not do what it claims under the command that actually
+// runs it. Exporting `git()` (or the whole retry helper) purely so a test
+// could inject a fake failure would widen this module's public surface for
+// no reason a real caller needs -- exactly the "awkward test double" this
+// module's own existing tests avoid elsewhere. The amplified stress test
+// above is the regression guard.

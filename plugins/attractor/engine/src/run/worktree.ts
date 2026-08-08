@@ -4,6 +4,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -43,6 +44,104 @@ export async function isGitRepo(dir: string): Promise<boolean> {
 }
 
 /**
+ * R-sprint2-1 (`.delivery/reviews/sprint-2-01.md`): concurrent `git worktree
+ * add` calls against the SAME repo, different branches, occasionally corrupt
+ * git's own administrative bookkeeping instead of refusing cleanly. Live
+ * repro (a scratch script, not committed -- the permanent regression guard
+ * is the amplified test below): 30 concurrent `createWorktree` calls per
+ * trial, many trials, some run concurrently with each other to raise total
+ * system-wide git-process contention. Every observed failure was this exact
+ * shape, git's own message, unmodified:
+ *
+ *   fatal: failed to read .git/worktrees/<some-OTHER-branch>/commondir: Undefined error: 0
+ *
+ * Two things nail this down as transient rather than a real failure. First,
+ * the admin dir named in the message is always a SIBLING's, never our own --
+ * one process's `worktree add` enumerates every existing
+ * `.git/worktrees/<id>/commondir` file as part of validating the new
+ * worktree against the existing set, and reads a sibling's file mid-write by
+ * that sibling's own concurrent `worktree add`. "Undefined error: 0" is not
+ * a real errno; it is what git's error path prints when that read fails in a
+ * way it has no strerror for. Second, repeated direct inspection at the
+ * exact moment of failure (git invoked by hand, state examined before any
+ * cleanup ran) showed the SAME partial state every time: our own branch ref
+ * had already been created, the target PATH had not, and our own
+ * `.git/worktrees/<id>` admin dir had not either. That ordering is what
+ * makes the retry below safe rather than a guess: git validates "does this
+ * branch already exist" and creates the ref BEFORE the worktree-enumeration
+ * step that can race, so a REAL collision (someone else already holds this
+ * branch name) is caught earlier, with no branch side effect, and fails on
+ * the very first attempt with a different message ("a branch named '...'
+ * already exists") -- it never reaches this retry path at all. Whenever
+ * `RACE_ERROR_PATTERN` matches, the dangling ref left behind is therefore
+ * provably ours: git's ref creation is atomic (already relied on by the
+ * "one succeeds, other fails loudly" collision test below), so only one
+ * process's `-b` could have succeeded in creating that ref, and it did not
+ * fail with "already exists" -- it failed later, on the enumeration step, so
+ * it must have been us.
+ *
+ * That is also why the retry uses `-B` (force) instead of `-b` again: `-B`
+ * cleanly resets the dangling ref to the same commit `-b` would have created
+ * it at -- nothing could have been committed onto it, since the working-tree
+ * checkout that would let anyone touch it never happened (the target path is
+ * never left on disk by the failure either, confirmed by the same
+ * inspection). Retrying with `-b` again would instead spuriously fail with
+ * "already exists" against our OWN previous attempt's leftover ref, turning
+ * a transient race into a fake permanent failure. `-B` is scoped to retries
+ * ONLY -- the first attempt keeps `-b`'s strict collision semantics
+ * unmodified, so two calls that genuinely share a branch name still resolve
+ * with one loud failure, never a silent overwrite.
+ *
+ * Bounded to a handful of attempts with a short, flat-scale backoff (tens of
+ * milliseconds, not `core/retry.ts`'s node-level, seconds-scale policy --
+ * this race clears almost immediately, and the overwhelmingly common
+ * non-racing call must not become perceptibly slower for this existing).
+ * Any OTHER failure -- the genuine collision case above, a permissions
+ * error, a cwd that stopped being a repository -- does not match
+ * `RACE_ERROR_PATTERN` and is thrown immediately on the first attempt,
+ * unretried and unchanged.
+ */
+const RACE_ERROR_PATTERN = /failed to read .*commondir/i
+const RACE_RETRY_MAX_ATTEMPTS = 4
+
+/**
+ * 10ms, 20ms, 40ms, capped at 80ms, plus up to 10ms of jitter so sibling
+ * calls retrying at the same moment do not re-collide in lockstep. This is
+ * NOT `core/retry.ts`'s `backoffMs` -- that policy's 200ms initial delay
+ * alone would make a raced `createWorktree` call visibly slower than the
+ * race itself typically takes to clear.
+ */
+function raceRetryDelayMs(attempt: number): number {
+  return Math.min(10 * 2 ** attempt, 80) + Math.floor(Math.random() * 10)
+}
+
+/**
+ * `git worktree add`, retried on exactly the R-sprint2-1 race pattern
+ * documented above. Kept as its own function, rather than inlined into
+ * `createWorktree`, so the attempt-numbering (`-b` once, `-B` thereafter) and
+ * the bounded loop stay in one place, next to the doc comment that explains
+ * why each piece is shaped the way it is.
+ */
+async function addWorktreeWithRaceRetry(repoDir: string, branch: string, path: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    // Only the FIRST attempt uses `-b`: see the block comment above the
+    // pattern/constants for why that is the attempt that must keep failing
+    // loudly, unmodified, on a genuine collision. Every attempt after it is
+    // only reached because THIS attempt failed with the specific race
+    // pattern, which proves the ref it left behind is our own.
+    const flag = attempt === 0 ? '-b' : '-B'
+    try {
+      await git(repoDir, ['worktree', 'add', '-q', flag, branch, path])
+      return
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (attempt + 1 >= RACE_RETRY_MAX_ATTEMPTS || !RACE_ERROR_PATTERN.test(message)) throw err
+      await sleep(raceRetryDelayMs(attempt))
+    }
+  }
+}
+
+/**
  * Create a dedicated worktree for a run.
  *
  * Unattended work runs with permissions bypassed, so it must not execute in
@@ -58,7 +157,7 @@ export async function createWorktree(repoDir: string, runId: string): Promise<Wo
   const parent = mkdtempSync(join(tmpdir(), WT_PREFIX))
   const path = join(parent, runId)
   try {
-    await git(repoDir, ['worktree', 'add', '-q', '-b', branch, path])
+    await addWorktreeWithRaceRetry(repoDir, branch, path)
   } catch (err) {
     // The temp parent already exists by now. Leaving it behind on a failed
     // add -- a branch-name collision being the likely cause -- would leak a
