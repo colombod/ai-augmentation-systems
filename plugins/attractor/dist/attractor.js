@@ -4612,12 +4612,16 @@ function mergeBranchContext(parentContext, preforkSnapshot, branchRootIds, resul
     }
   }
 }
-function applyDefaultJoinPolicy(results) {
+function describeFailures(results, branchRootIds) {
+  return results.map((r, i) => ({ r, id: branchRootIds?.[i] ?? `branch ${i}` })).filter(({ r }) => r.outcome.status !== Status.SUCCESS && r.outcome.status !== Status.PARTIAL).map(({ r, id }) => `${id}: ${r.outcome.failureReason ?? r.outcome.notes ?? "no reason given"}`).join("; ");
+}
+function applyDefaultJoinPolicy(results, branchRootIds) {
   const settled = results.filter(
     (r) => r.outcome.status === Status.SUCCESS || r.outcome.status === Status.PARTIAL
   );
   if (settled.length === 0) {
-    const notes = `all ${results.length} branch(es) failed`;
+    const failures = describeFailures(results, branchRootIds);
+    const notes = `all ${results.length} branch(es) failed` + (failures ? ` -- ${failures}` : "");
     return { status: Status.FAIL, notes, failureReason: notes };
   }
   if (settled.length === results.length) {
@@ -4625,7 +4629,7 @@ function applyDefaultJoinPolicy(results) {
   }
   return {
     status: Status.PARTIAL,
-    notes: `${settled.length}/${results.length} branch(es) succeeded or partially succeeded`
+    notes: `${settled.length}/${results.length} branch(es) succeeded or partially succeeded -- failed: ${describeFailures(results, branchRootIds)}`
   };
 }
 var Semaphore = class {
@@ -4724,7 +4728,7 @@ var ParallelHandler = class {
       const message = err instanceof Error ? err.message : String(err);
       return { status: Status.FAIL, notes: `merge-back failed: ${message}`, failureReason: message };
     }
-    return applyDefaultJoinPolicy(results);
+    return applyDefaultJoinPolicy(results, branchRootIds);
   }
 };
 

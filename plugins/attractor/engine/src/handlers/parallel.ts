@@ -91,16 +91,47 @@ export function mergeBranchContext(
 }
 
 /**
+ * One line per failed branch: its id (when known -- see `branchRootIds` below)
+ * and its own outcome's `failureReason`, falling back to `notes`, falling back
+ * to a plain "no reason given" rather than an empty string. R-sprint3-1
+ * (sprint 3 review): a real user running this tool found that an all-FAIL
+ * join outcome used to report only a count, discarding every branch's own
+ * reason -- exactly the "silently misreport" failure this project's own
+ * doctrine forbids elsewhere. `results[i]` is paired with `branchRootIds[i]`
+ * by the same positional contract `mergeBranchContext` already uses.
+ */
+function describeFailures(
+  results: readonly BranchRunResult[],
+  branchRootIds: readonly string[] | undefined,
+): string {
+  return results
+    .map((r, i) => ({ r, id: branchRootIds?.[i] ?? `branch ${i}` }))
+    .filter(({ r }) => r.outcome.status !== Status.SUCCESS && r.outcome.status !== Status.PARTIAL)
+    .map(({ r, id }) => `${id}: ${r.outcome.failureReason ?? r.outcome.notes ?? 'no reason given'}`)
+    .join('; ')
+}
+
+/**
  * FR-17b's default join policy: FAIL iff zero branches SUCCEED/PARTIAL,
  * SUCCESS iff every branch SUCCEED/PARTIAL (zero FAIL), PARTIAL otherwise.
  * A zero-branch dispatch is FAIL -- vacuously zero branches SUCCEED/PARTIAL.
+ *
+ * `branchRootIds`, positionally paired with `results` (same contract as
+ * `mergeBranchContext`), is optional so every existing direct unit test
+ * calling this with only `results` keeps working unchanged; the real caller,
+ * `ParallelHandler.execute()`, always supplies it so a failure message names
+ * real node ids instead of bare indices.
  */
-export function applyDefaultJoinPolicy(results: readonly BranchRunResult[]): Outcome {
+export function applyDefaultJoinPolicy(
+  results: readonly BranchRunResult[],
+  branchRootIds?: readonly string[],
+): Outcome {
   const settled = results.filter(
     (r) => r.outcome.status === Status.SUCCESS || r.outcome.status === Status.PARTIAL,
   )
   if (settled.length === 0) {
-    const notes = `all ${results.length} branch(es) failed`
+    const failures = describeFailures(results, branchRootIds)
+    const notes = `all ${results.length} branch(es) failed` + (failures ? ` -- ${failures}` : '')
     return { status: Status.FAIL, notes, failureReason: notes }
   }
   if (settled.length === results.length) {
@@ -108,7 +139,9 @@ export function applyDefaultJoinPolicy(results: readonly BranchRunResult[]): Out
   }
   return {
     status: Status.PARTIAL,
-    notes: `${settled.length}/${results.length} branch(es) succeeded or partially succeeded`,
+    notes:
+      `${settled.length}/${results.length} branch(es) succeeded or partially succeeded -- ` +
+      `failed: ${describeFailures(results, branchRootIds)}`,
   }
 }
 
@@ -259,6 +292,6 @@ export class ParallelHandler implements Handler {
       const message = err instanceof Error ? err.message : String(err)
       return { status: Status.FAIL, notes: `merge-back failed: ${message}`, failureReason: message }
     }
-    return applyDefaultJoinPolicy(results)
+    return applyDefaultJoinPolicy(results, branchRootIds)
   }
 }

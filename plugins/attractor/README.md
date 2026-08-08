@@ -60,21 +60,48 @@ needed by later milestones).
 | `parallelogram` | shell command; routes on exit code and last stdout line | works |
 | `diamond` | conditional routing point | works |
 | `hexagon` | human gate | parsed; **refused by lint (`HAND-001`)** |
-| `component` / `tripleoctagon` | parallel fan-out / fan-in | parsed; **refused by lint (`HAND-001`)** |
+| `component` | parallel fan-out -- runs branches at once, each optionally in its own git worktree; see [Parallel fan-out](#parallel-fan-out) below | **works** |
+| `tripleoctagon` | dedicated fan-in/join node | parsed; **refused by lint (`HAND-001`)** -- use an ordinary `box` or `parallelogram` node as the join point instead (see below) |
 | `house` | manager loop | parsed; **refused by lint (`HAND-001`)** |
 
 Shapes marked "refused by lint" are recognised by the parser but resolve to a
-handler kind this build does not register (`Handler.HUMAN`, `Handler.PARALLEL`,
-`Handler.FAN_IN`, `Handler.MANAGER_LOOP` -- `dot/graph.ts`'s
-`UNREGISTERED_HANDLER_KINDS`). Dispatching one would abort the run partway
-through with `no handler registered for <kind> (node <id>)`, after any earlier
-nodes had already spent tokens or made changes -- so `HAND-001` catches it at
-**lint time instead**, before a run ever starts:
+handler kind this build does not register (`Handler.HUMAN`, `Handler.FAN_IN`,
+`Handler.MANAGER_LOOP` -- `dot/graph.ts`'s `UNREGISTERED_HANDLER_KINDS`).
+Dispatching one would abort the run partway through with `no handler
+registered for <kind> (node <id>)`, after any earlier nodes had already spent
+tokens or made changes -- so `HAND-001` catches it at **lint time instead**,
+before a run ever starts:
 
     ERROR HAND-001 pipeline.dot:gate: node gate resolves to handler "human",
-    which this build does not register (known unregistered: human, parallel,
-    fan_in, manager_loop); the run would abort with "no handler registered"
+    which this build does not register (known unregistered: human, fan_in,
+    manager_loop); the run would abort with "no handler registered"
     mid-pipeline. Refused here instead, before anything runs.
+
+### Parallel fan-out
+
+A `component`-shaped node fans out to every node its outgoing edges point at
+("branch roots"), runs them at once (bounded by `max_parallel`, an integer
+node attribute, default 4), and once every branch finishes, continues at
+whichever node is reachable from all of them (the "convergence node" --
+`lint` refuses the graph up front, via `PAR-001`, if no such node exists).
+Use an ordinary `box` or `parallelogram` node as that convergence node, not
+`tripleoctagon` (see the shape table above).
+
+Each branch runs in its own isolated git worktree by default, so concurrent
+branches can never step on each other's files -- this means **the directory
+you run in (`--cwd`) must be inside a git repository** for a fan-out node's
+default behavior to work; a branch's own edge can opt out with
+`isolate="false"`, which runs that one branch directly in the shared
+directory instead (no git repository needed for that branch, but no
+isolation either). Isolation cleans up each branch's temporary working
+directory when it finishes; it deliberately does **not** delete the git
+branch that directory was checked out from, so the finished branch's own
+work is never silently thrown away -- expect one leftover git branch
+(`attractor/<node>-<root>-<hex>`) per isolated branch dispatch, and prune
+them yourself (`git branch -D`) when you no longer need them.
+
+If every branch fails, the fan-out node's own outcome names each one by its
+node id and its own failure reason, not just a count.
 
 `HAND-001` is an error, so both `attractor lint` and `attractor run` refuse a
 graph containing one of these shapes; `run` refuses it at the same lint gate
@@ -271,9 +298,10 @@ node or a declared root, can make the search select the wrong node as
 extensively fuzzed and proven **safe in the direction that matters**: neither
 ever lets a genuinely hazardous fan-out through silently -- the graph is
 always refused (loudly, at `ERROR`), just sometimes with the wrong node named
-or a `PAR-001` where a `PAR-004` would have been more precise. Not reachable
-by any pipeline that can run today, since `HAND-001` still refuses every
-`Handler.PARALLEL` node unconditionally.
+or a `PAR-001` where a `PAR-004` would have been more precise. Both gaps are
+about which diagnostic fires and how precisely it's worded, not about a
+hazard slipping through unrefused -- the graph is always refused loudly,
+never silently allowed to run with an undetected fan-out risk.
 
 ## Lint rules
 
@@ -290,7 +318,7 @@ sentinel; `RUNS-001` an unrecognised `runs_on` value (it would fall back to
 `DATA-001` a `${key}` no node declares; `DATA-002` an `outputs=` naming an
 engine-managed or handler-owned key; `GATE-001` a failure route that reaches
 the exit without passing a goal gate; `HAND-001` a node resolves to a handler
-kind this build does not register (`hexagon`, `component`, `tripleoctagon`,
+kind this build does not register (`hexagon`, `tripleoctagon`,
 `house` -- see [Node shapes](#node-shapes)); `HITL-003` an agent-inclusive
 human gate whose exposed context traces to a single Handler.CODERGEN direct
 predecessor (self-report risk for the `agent` channel -- see ADR-006);

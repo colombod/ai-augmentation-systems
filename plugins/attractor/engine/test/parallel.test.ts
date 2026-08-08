@@ -301,7 +301,7 @@ test('applyDefaultJoinPolicy: all branches FAIL -> FAIL', () => {
   ]
   const outcome = applyDefaultJoinPolicy(results)
   assert.equal(outcome.status, Status.FAIL)
-  assert.equal(outcome.failureReason, 'all 2 branch(es) failed')
+  assert.equal(outcome.failureReason, 'all 2 branch(es) failed -- branch 0: no reason given; branch 1: no reason given')
 })
 
 test('applyDefaultJoinPolicy: mixed SUCCESS + FAIL -> PARTIAL', () => {
@@ -312,7 +312,7 @@ test('applyDefaultJoinPolicy: mixed SUCCESS + FAIL -> PARTIAL', () => {
   ]
   const outcome = applyDefaultJoinPolicy(results)
   assert.equal(outcome.status, Status.PARTIAL)
-  assert.equal(outcome.notes, '2/3 branch(es) succeeded or partially succeeded')
+  assert.equal(outcome.notes, '2/3 branch(es) succeeded or partially succeeded -- failed: branch 1: no reason given')
 })
 
 test('applyDefaultJoinPolicy: mixed PARTIAL + FAIL -> PARTIAL (PARTIAL counts as settled)', () => {
@@ -322,7 +322,7 @@ test('applyDefaultJoinPolicy: mixed PARTIAL + FAIL -> PARTIAL (PARTIAL counts as
   ]
   const outcome = applyDefaultJoinPolicy(results)
   assert.equal(outcome.status, Status.PARTIAL)
-  assert.equal(outcome.notes, '1/2 branch(es) succeeded or partially succeeded')
+  assert.equal(outcome.notes, '1/2 branch(es) succeeded or partially succeeded -- failed: branch 1: no reason given')
 })
 
 test('applyDefaultJoinPolicy: single branch SUCCEEDS -> SUCCESS', () => {
@@ -333,8 +333,28 @@ test('applyDefaultJoinPolicy: single branch SUCCEEDS -> SUCCESS', () => {
 test('applyDefaultJoinPolicy: single branch FAILS -> FAIL', () => {
   const outcome = applyDefaultJoinPolicy([branchResult(Status.FAIL, {})])
   assert.equal(outcome.status, Status.FAIL)
-  assert.equal(outcome.failureReason, 'all 1 branch(es) failed')
+  assert.equal(outcome.failureReason, 'all 1 branch(es) failed -- branch 0: no reason given')
 })
+
+test(
+  'applyDefaultJoinPolicy: R-sprint3-1 -- failed branches are named by their real id, with their ' +
+  'own failureReason, not swallowed into a bare count',
+  () => {
+    const results = [
+      { outcome: { status: Status.FAIL, failureReason: 'timeout after 30s' }, path: ['x'], context: {} },
+      { outcome: { status: Status.SUCCESS }, path: ['x'], context: {} },
+      { outcome: { status: Status.FAIL, notes: 'no notes-only fallback needed here' }, path: ['x'], context: {} },
+    ]
+    const outcome = applyDefaultJoinPolicy(results, ['security-review', 'style-review', 'perf-review'])
+    assert.equal(outcome.status, Status.PARTIAL)
+    assert.equal(
+      outcome.notes,
+      '1/3 branch(es) succeeded or partially succeeded -- failed: security-review: timeout after 30s; ' +
+        'perf-review: no notes-only fallback needed here',
+      'each failed branch is named by its own id and its own reason, not a bare index or a count',
+    )
+  },
+)
 
 test('applyDefaultJoinPolicy: zero branches -> FAIL (vacuously zero SUCCEED/PARTIAL)', () => {
   const outcome = applyDefaultJoinPolicy([])
