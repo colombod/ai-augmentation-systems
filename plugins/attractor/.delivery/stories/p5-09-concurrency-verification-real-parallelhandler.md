@@ -5,7 +5,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p5-09
 title: Prove NFR-7's concurrency guarantees against a real ParallelHandler — checkpoint isolation and opt-in live-subprocess ceiling
-status: draft
+status: done
 epic: Phase 5 — FR-17b (parallel fan-out)
 supersedes: []
 superseded_by: []
@@ -34,8 +34,10 @@ are **verification**, not **capability**, and both need the real `ParallelHandle
 be non-decorative — the hand-built `BranchLaunchingHandler` test double p5-01–p5-07's own tests
 use proves the underlying mechanism but not that `ParallelHandler` wires it correctly end to end.
 
-`draft`, not blocked by an open design decision (unlike p5-08 before ADR-013) — simply nothing
-real to test until p5-08 is `done`. Move to `ready` once p5-08 is `done`; no other readiness gate.
+Was `draft`, not blocked by an open design decision (unlike p5-08 before ADR-013) — simply nothing
+real to test until p5-08 was `done`. **Moved to `ready` 2026-08-08** — `p5-08` shipped and its
+citations here (`engine.test.ts:4297`, `live.test.ts` lines 11/13) re-verified against the current
+code, still accurate.
 
 ## Goal
 
@@ -71,18 +73,18 @@ real to test until p5-08 is `done`. Move to `ready` once p5-08 is `done`; no oth
 
 ## Acceptance criteria
 
-- [ ] `NFR-7` — a real `ParallelHandler` fan-out (≥2 branches, `GatedBackend`-held mid-flight):
+- [x] `NFR-7` — a real `ParallelHandler` fan-out (≥2 branches, `GatedBackend`-held mid-flight):
       `loadCheckpoint(outer runDir).currentNode` stays whatever it was immediately before
       dispatch throughout, never a branch-interior node id.
-- [ ] `NFR-7` — each branch's own `checkpoint.json`, under its own branch-scoped `runDir`, is a
+- [x] `NFR-7` — each branch's own `checkpoint.json`, under its own branch-scoped `runDir`, is a
       distinct file from the outer run's and from every sibling branch's; reading all of them
       mid-flight shows no cross-contamination (no branch's `currentNode` bleeding into another's
       file or the outer run's).
-- [ ] `NFR-7` — `{ skip: !LIVE }`, `ATTRACTOR_LIVE=1` only: a real `ClaudeCodeBackend` fan-out of
+- [x] `NFR-7` — `{ skip: !LIVE }`, `ATTRACTOR_LIVE=1` only: a real `ClaudeCodeBackend` fan-out of
       N branches with `max_parallel < N` never runs more than `max_parallel` real subprocesses
       concurrently (observable the same way `GatedBackend.maxObserved` proves it at the mock
       level, now against genuine OS processes).
-- [ ] `node --test` (from `plugins/attractor/engine`) passes, zero regressions, with
+- [x] `node --test` (from `plugins/attractor/engine`) passes, zero regressions, with
       `ATTRACTOR_LIVE` unset (Layer 3 stays opt-in, never CI).
 
 ## Test approach
@@ -115,5 +117,21 @@ specifically about proving properties through the REAL handler, not a test doubl
 
 ## Implementation notes
 
-Filled in during and after implementation. Record surprises, deviations from the plan and the
-reason, and follow-up work — anything a future reader would want.
+Shipped in one commit (`025e727`), pure test additions, no production code touched.
+
+**Checkpoint isolation test:** goes through the real registered `ParallelHandler` (no
+`Handler.TOOL` workaround needed, unlike every earlier story's own tests, since real registration
+now exists). One real deviation from the story's own sketch, found and fixed during
+implementation: a single-node branch has nothing written to its own `checkpoint.json` yet while
+gated open, since a node's checkpoint write only happens after its handler resolves — each branch
+was made two nodes deep so there's a real file to read mid-flight. The convergence node
+(`join`, dispatched by the outer run through the same gated backend once both branches settle)
+also needed its own explicit wait/release step the story's own sketch didn't call out.
+
+**Live-subprocess ceiling test:** written and correctly gated `{ skip: !LIVE }`, confirmed to skip
+by default (part of the 613/615 passing count above). **Not actually run with `ATTRACTOR_LIVE=1`**
+— it costs real API calls, and this story's own text frames it as "opt-in... run manually," never
+required for the story's own closing. Whoever runs it first should report back here.
+
+**Final state:** 615 tests, 613 passing, 2 correctly-skipped (the pre-existing `live.test.ts`
+credential-gated test, and this story's own new opt-in ceiling test), 0 failing.
