@@ -1312,6 +1312,33 @@ test('the step cap terminates a non-terminating graph', async () => {
   }
 })
 
+// Final-review regression (mutation-checked): executeNodeStep's own path.push
+// used to live in each of its two callers, BEFORE calling the method -- so a
+// dispatch the step-cap check went on to block still left its id in path,
+// even though it was never actually executed (no node.start, no handler
+// call). Reachable on ANY graph, no branch/component node required. Reverting
+// the fix (path.push moved back into each caller, before executeNodeStep) on
+// this exact fixture reproduces the phantom trailing 'a': path.length 6, not
+// 5, with no matching node.start event for the extra entry.
+test('the step cap never leaves a phantom, never-dispatched node in RunResult.path', async () => {
+  const { runDir, cwd } = tempDirs()
+  try {
+    const engine = new Engine({
+      graph: parseDot(STEP_CAP),
+      context: Context.from({}),
+      runDir,
+      cwd,
+      handlers: defaultHandlers(new StubBackend({})),
+      maxSteps: 5,
+    })
+    const result = await engine.run()
+    assert.equal(result.status, Status.FAIL)
+    assert.deepEqual(result.path, ['start', 'a', 'b', 'a', 'b'], 'exactly the 5 nodes actually dispatched -- no extra hop for the one the cap blocked')
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
 // ---------------------------------------------------------------------------
 // FINDINGS I1 AND I2 of the whole-branch review. Both are settled now, and the
 // two settlements are DIFFERENT IN KIND -- which is the point of keeping them
