@@ -106,10 +106,11 @@ node id and its own failure reason, not just a count.
 `HAND-001` is an error, so both `attractor lint` and `attractor run` refuse a
 graph containing one of these shapes; `run` refuses it at the same lint gate
 every error-severity finding goes through, not with a special case of its own.
-Human gates and parallel execution are on their way in later milestones --
-landing them means registering the corresponding handler in `defaultHandlers()`
-and removing that kind from `UNREGISTERED_HANDLER_KINDS`, at which point the
-shape moves out of this table.
+Parallel execution has landed (see [Parallel fan-out](#parallel-fan-out) above)
+and is out of this table already. Human gates are still on the way -- landing
+that means registering `Handler.HUMAN` in `defaultHandlers()` and removing it
+from `UNREGISTERED_HANDLER_KINDS`, at which point `hexagon` moves out of this
+table too.
 
 ## Dataflow: `outputs=` and `runs_on=`
 
