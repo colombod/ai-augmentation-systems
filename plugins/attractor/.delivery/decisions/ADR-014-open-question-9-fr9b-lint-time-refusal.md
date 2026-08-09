@@ -373,7 +373,57 @@ this ADR introduces — the same, already-accepted risk, now stated for edge con
   — the same "arbitrary runtime behavior, unknowable at design time" problem the `CODERGEN`
   exclusion already accepts, not a new one). Recorded here as a named, un-closed gap rather than
   silently shipped as if `retry_target` parity had been genuinely considered and found safe to
-  skip — it was considered, and the specific reasoning used to skip it does not hold.
+  skip — it was considered, and the specific reasoning used to skip it does not hold. **Closed by
+  Amendment 3 below (Product Owner decision: extend, accepting the resulting narrower coverage
+  the same way Decision 2 already accepts it for `CODERGEN`).**
+
+## Amendment 3 (2026-08-09): `GATE-002` also examines `retry_target`/`fallback_retry_target`
+
+**Product Owner decision, not an engineering default:** extend `GATE-002` to cover this route
+too, resolving the residual risk above in the "close it" direction rather than leaving it as a
+permanent gap. The reasoning that makes this safe to do, unlike the rejected "flag every
+`retry_target`" alternative first considered in Decision 2 (before the false-positive analysis
+existed): **this is not "does a `retry_target` exist," it is the identical question `GATE-002`
+already asks for edge conditions — can a real failure reach the exit node with nothing anywhere
+in the graph able to verify it was actually resolved.** A `retry_target` used for genuine,
+meaningful recovery is not penalised by this rule any differently than a genuine
+`condition="outcome=fail"` recovery route is — both are fine, *if the graph has a goal gate
+somewhere on that path, or anywhere at all* (`gates.size === 0` is this rule's own entire
+precondition). What is not fine, in a graph that declares no verification mechanism whatsoever,
+is a failure reaching an unverified exit *at all* — by construction, in that graph, nothing ever
+checks whether recovery genuinely happened, whichever mechanism reached the exit.
+
+**Exact extension, mirroring `GATE-001`'s own existing retry-route detection
+(`lint.ts:1069-1084`) for the zero-gate case instead of the has-gates-but-bypassed case:** for
+every node `n` not in `NEVER_FAILS`, `resolveRetryTarget(n, graph, { includeGraphLevel: false })`
+(`core/retry.ts:107`) — the same call, same `includeGraphLevel: false` scoping `GATE-001` already
+uses, for the identical reason (section 3.7's ladder, which this mirrors, does not consult a
+graph-level fallback for a plain node's own failure route). If it resolves to a real target, and
+that target reaches `exits` via `bypassesGates(graph, target, gates, exitIds)` (the SAME shared
+traversal `GATE-002`'s edge-condition check already reuses — with `gates` empty by construction in
+this branch, it degenerates to a plain reachability check, exactly as before), `GATE-002` fires.
+
+**No `Handler.CODERGEN` exclusion here, and none is needed.** The `CODERGEN` exclusion exists
+because a referenced *context key*'s value is unpredictable at lint time when a box node might
+write it dynamically. `retry_target`/`fallback_retry_target` are static node *attributes*,
+declared verbatim in the DOT source — always fully visible to lint, regardless of what handler
+kind the node resolves to. There is nothing here for a `CODERGEN` node to make unpredictable.
+
+**Why this doesn't reopen "Legitimate shape 2" (an explicit `outcome=fail`/`outcome=success`
+recovery-route pair).** That shape uses an ordinary conditional edge, not a `retry_target`
+attribute — a structurally different mechanism this extension does not examine at all. The two
+are deliberately treated differently, not by oversight: an edge condition is the engine's general
+routing primitive, used for many purposes including deliberate, visible failure acknowledgment;
+`retry_target` exists specifically for spec section 3.7's retry semantics — an attempt to actually
+redo the failed work, not a general-purpose "catch and continue." An author who wants to
+acknowledge a failure and move on without a goal gate still has Legitimate shape 2 available,
+unaffected by this amendment. An author who wants retry-based recovery to be trusted needs a goal
+gate to verify it, exactly as this whole rule already requires for every other route.
+
+**Cost accepted:** any graph using `retry_target`/`fallback_retry_target` with zero goal gates
+anywhere now requires either adding a goal gate or restructuring to an explicit recovery edge —
+this is real, deliberate friction for what was previously silent, unverified behavior, and it is
+the Product Owner's own considered choice to impose it rather than leave the gap named and open.
 - **Residual R6 (condition-only reference invisible to `DATA-001`) is closed only within
   `GATE-002`'s own zero-goal-gate scope**, not generally. A graph that *does* declare a
   `goal_gate` node elsewhere, with an unrelated condition-only vacuous reference on a path that
