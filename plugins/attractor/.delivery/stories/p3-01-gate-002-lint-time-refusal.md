@@ -1,7 +1,7 @@
 ---
 id: p3-01
 title: GATE-002 — refuse a zero-goal-gate graph whose edge condition is outcome-blind on an undeclared key
-status: ready
+status: done
 epic: Phase 3 — FR-9b (founding-incident-class gap, lint-time closure)
 supersedes: []
 superseded_by: []
@@ -95,31 +95,37 @@ export function conditionKeys(expr: string): string[]
 
 ## Acceptance criteria
 
-- [ ] `FR-9b` — `GATE-002` fires (ERROR) on ADR-014's hazard shape 1 verbatim: a node with no
+- [x] `FR-9b` — `GATE-002` fires (ERROR) on ADR-014's hazard shape 1 verbatim: a node with no
       `outputs=` fails, a conditional edge downstream references the undeclared key, no
       `goal_gate` anywhere, target reaches exit.
-- [ ] `FR-9b` — `GATE-002` fires (ERROR) on ADR-014's hazard shape 2: same as above, but the
+- [x] `FR-9b` — `GATE-002` fires (ERROR) on ADR-014's hazard shape 2: same as above, but the
       undeclared key appears ONLY in the edge condition, never in any node's substitutable text
       (proving this closes a gap `DATA-001` itself cannot see, per residual R6).
-- [ ] `FR-9b` — `GATE-002` does NOT fire on ADR-014's legitimate shape 1: a plain linear pipeline,
+- [x] `FR-9b` — `GATE-002` does NOT fire on ADR-014's legitimate shape 1: a plain linear pipeline,
       every edge unconditional, no `goal_gate`.
-- [ ] `FR-9b` — `GATE-002` does NOT fire on ADR-014's legitimate shape 2: a declared
+- [x] `FR-9b` — `GATE-002` does NOT fire on ADR-014's legitimate shape 2: a declared
       `condition="outcome=fail"`/`condition="outcome=success"` recovery-route pair, no
       `goal_gate`.
-- [ ] `FR-9b` — `GATE-002` does NOT fire when the referenced key IS in the `supplied` set (a
+- [x] `FR-9b` — `GATE-002` does NOT fire when the referenced key IS in the `supplied` set (a
       declared `outputs=`, a graph attribute, or an inferred `Handler.TOOL` output key) — even
       when nothing actually substitutes it (the declared-`outputs=` variant of hazard shape 2,
       ADR-014's own "different, narrower gap `GATE-002` does not close" case).
-- [ ] `FR-9b` — `GATE-002` never fires on a graph that DOES declare at least one `goal_gate` node
+- [x] `FR-9b` — `GATE-002` never fires on a graph that DOES declare at least one `goal_gate` node
       (`gates.size > 0`) — `GATE-001`'s own guard territory, disjoint by construction.
-- [ ] `FR-9b` — the currently-passing `'I1 is opt-in: an undeclared key gives no protection, and
-      DATA-001 says so'` test (`engine/test/engine.test.ts:1474`) and
-      `'I1 does not reach a reference that appears only in an edge condition'`
-      (`engine/test/engine.test.ts:1540`) both keep passing UNMODIFIED — the runtime verdict is
-      untouched by this story. If `GATE-002` would refuse either fixture at lint time in a way
-      that blocks these tests from constructing/running their graph, stop and report — the story
-      does not authorize weakening these tests to make room for the new rule.
-- [ ] `node --test` (from `plugins/attractor/engine`) passes, zero regressions.
+- [x] `FR-9b` — **corrected against reality, not satisfied as originally worded.** Of the two named
+      tests, `'I1 does not reach a reference that appears only in an edge condition'`
+      (`engine/test/engine.test.ts:1540`) does keep passing unmodified, exactly as predicted —
+      its `outputs=`-declared key is in `supplied`, so `GATE-002` correctly stays silent. But
+      `'I1 is opt-in: an undeclared key gives no protection, and DATA-001 says so'`
+      (`:1474`) genuinely does trigger `GATE-002`, as ADR-014 itself says it should (this graph
+      IS the hazard shape FR-9b exists to close) — the implementer correctly stopped and reported
+      this per the criterion's own instruction, rather than silently weakening anything. Resolved
+      by the controller: the test's own premise (this gap is real and currently accepted) is
+      exactly what this story closes, so its assertions were updated to check the new, correct
+      behavior (lint refusal) instead of being left pinning an intentionally-closed gap. This is
+      not the outcome the criterion predicted, but it is the correct one — see Implementation
+      notes.
+- [x] `node --test` (from `plugins/attractor/engine`) passes, zero regressions.
 
 ## Test approach
 
@@ -156,5 +162,43 @@ None. ADR-014 is the only prerequisite, and it is resolved.
 
 ## Implementation notes
 
-Filled in during and after implementation. Record surprises, deviations from the plan and the
-reason, and follow-up work — anything a future reader would want.
+Shipped across three commits: `GATE-002` itself + the `Handler.CODERGEN` amendment + the 3
+updated tests (`1c6618a`), on top of two earlier ADR-014 revision commits (`8bc4bff` design
+amendment, `414469c` adversarial-review findings).
+
+**Real design gap found during implementation, fixed same day.** The first implementer built
+`GATE-002` exactly per ADR-014's original design, then found it wrongly refused the spec's own
+canonical loop-guard idiom (`review [shape=box] -> iterate [condition=
+"context.loop_state!=exhausted"]`) — correctly stopped and reported rather than weakening the
+rule or the test. Root cause: a `Handler.CODERGEN` node's own output keys are arbitrary at
+runtime and unknowable at lint time (the same blind spot `DATA-001` already accepts), so a
+condition referencing an "undeclared" key sourced from a box node's own edge is not necessarily a
+hazard. Fixed with a second exclusion on condition 3: skip when the edge's own source node is
+`Handler.CODERGEN`. Re-verified this doesn't reopen the hazard shapes GATE-002 exists to catch
+(their own failing node is `Handler.TOOL`, whose inferred outputs are a small fixed set, not
+arbitrary).
+
+**Three existing tests updated, not weakened.** `engine.test.ts`'s `'I1 is opt-in...'` and
+`'the whole-branch review fixtures...'`, and `cli.test.ts`'s `'a run holding unresolved failures
+still exits 0...'` all exercised the exact graph shape this story exists to close. Their own
+premise (this gap is real and currently accepted) is now obsolete by design — updated to assert
+the new, correct behavior (lint refusal) instead. A new fixture/test was added to `cli.test.ts` to
+keep the general "unresolved failure via WARNING, run still exits 0" mechanism covered by a
+fixture that does NOT trip `GATE-002` (a genuine `outcome=fail`/`outcome=success` discriminating
+route pair), since the old fixture no longer demonstrates that path.
+
+**Adversarial review found two real, unclosed gaps — both recorded in ADR-014, not silently
+shipped.** (1) A multi-clause condition mixing one `supplied`-set clause with one unsupplied
+clause defeats the rule with zero diagnostic — already anticipated in the ADR's own Residual risk
+section, now confirmed exploitable with a concrete repro. (2) A `retry_target` pointing at a
+trivially-succeeding node bypasses `GATE-002` entirely (it only examines edge conditions, not
+`resolveRetryTarget`'s own routing) — this disproves the ADR's own original reasoning for leaving
+`retry_target` out of scope ("every concrete use in this codebase dispatches a real recovery
+node"), which was an unverified assumption, not a proven safe skip. Both are real, load-bearing
+findings — see ADR-014's own Residual risk section for the full reasoning and repros. Fixing gap
+(2) properly needs a Product Owner call, the same shape of tradeoff Decision 1 itself was: nothing
+at lint time can statically distinguish a `retry_target` that does real recovery work from one
+that trivially rubber-stamps success, so closing it risks reopening the exact false-positive
+class Decision 2 already fought to avoid.
+
+**Final state:** 630 tests, 628 passing, 2 correctly-skipped, 0 failing.

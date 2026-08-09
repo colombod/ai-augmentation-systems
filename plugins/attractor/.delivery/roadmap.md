@@ -449,7 +449,7 @@ resolved (ADR-013) — both were the same shape of risk, and both are now closed
 | FR-7 | 2 | Named, not planned — same gap |
 | FR-8 | 2 | Named, not planned — `agent` sub-slice also depends on Phase 1 |
 | FR-9a | 3 | **Rejected 2026-08-09** — ADR-014, Open Question 9 |
-| FR-9b | 3 | **Resolved 2026-08-09, ready to story** — ADR-014 (`GATE-002`) |
+| FR-9b | 3 | **Done 2026-08-09** — ADR-014 (`GATE-002`), story `p3-01` |
 | FR-10 | 0 | Shipped |
 | FR-11 | 0 | Shipped |
 | FR-12 | 4 | Named, not planned — Open Question 7 |
