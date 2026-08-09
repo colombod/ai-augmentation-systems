@@ -11,7 +11,7 @@
 
 | ID | Title | Status | Requirements | Depends on | Size |
 | :-- | :-- | :-- | :-- | :-- | :-- |
-| [p1-01](p1-01-hitl-003-self-report-guard.md) | Add HITL-003 — warn on an agent-inclusive human gate self-reporting from its direct predecessor | ready | FR-18 | none | S |
+| [p1-01](p1-01-hitl-003-self-report-guard.md) | Add HITL-003 — warn on an agent-inclusive human gate self-reporting from its direct predecessor | **done** | FR-18 | none | S |
 
 **Decomposition note:** the roadmap's Phase 1 work-item table lists five items (ADR-006, a
 `graph.ts` predecessor helper, the `lint.ts` rule, fixtures/tests, a README caveat) bound by a
@@ -28,17 +28,12 @@ table) and is fully covered by p1-01. No acceptance criterion in Phase 1 is left
 
 ## Readiness
 
-**p1-01 — ready.** Acceptance criteria are falsifiable (each names an exact diagnostic shape,
-severity, node, or file-content check); every file path was verified against this repo's actual
-tree (`graph.ts`, `lint.ts`, `lint.test.ts`, `README.md`, `ADR-004`/`ADR-005`, the channels-design
-spec) rather than taken from the roadmap's citations blindly; dependencies are stated (none — this
-is the first story in this directory, and Phase 0 already ships everything it touches
-unconditionally); a full test approach is present, including the QA Strategist's 16-case coverage
-matrix and TDD sequencing, with the exact commands (`cd plugins/attractor/engine && node --test
-test/lint.test.ts` and `node --test`) re-verified live against this repo today (88/88 and
-486/487-passing-1-skipped respectively, before any change).
+**p1-01 — done.** Shipped: `directPredecessor` (`graph.ts`), the `HITL-003` lint rule
+(`lint.ts`), ADR-006, and 24 test references in `lint.test.ts` — confirmed directly against the
+current code, not merely the story's own checked acceptance criteria. This status field was
+stale (`ready`) for a time after implementation actually shipped; corrected 2026-08-09.
 
-No draft stories this phase — nothing is missing an element required for readiness.
+No draft stories this phase.
 
 ## Phase 5 — FR-17b (parallel fan-out, `Handler.PARALLEL`)
 
@@ -49,15 +44,15 @@ represented by a story below (a decision, not implementation work); item J is sp
 
 | ID | Title | Status | Work item | Requirements | Depends on | Size |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
-| [p5-01](p5-01-worktree-async-conversion.md) | Convert `run/worktree.ts` to async and prove branches no longer block each other | ready | B | FR-17b, NFR-7 | none | M |
-| [p5-02](p5-02-execute-node-step-extraction.md) | Extract `Engine#executeNodeStep` as the one shared per-node step implementation | ready | C | FR-17b, NFR-1 | none | L |
-| [p5-03](p5-03-backend-cwd-plumbing.md) | Plumb a per-call `cwd` through `Backend.run()` | ready | D | FR-17b, NFR-4 | none | S |
-| [p5-04](p5-04-convergence-lint-rules.md) | `findConvergenceNode`/`findPartialReconvergence` + PAR-001/PAR-002/PAR-004 | ready | E | FR-17b | none | M |
-| [p5-05](p5-05-runbranch-seam.md) | `HandlerCtx.runBranch` seam + `Engine#runBranch` | ready | F | FR-17b, NFR-1, NFR-4 | p5-02, p5-01 | M |
-| [p5-06](p5-06-par-005-branch-exit-warning.md) | PAR-005 — branch reaches EXIT before its convergence node | ready | G | FR-17b | p5-04, p5-05 | S |
-| [p5-07](p5-07-context-merge-back.md) | `mergeBranchContext` + PAR-003 | ready | H | FR-17b | p5-05, p5-01 | M |
+| [p5-01](p5-01-worktree-async-conversion.md) | Convert `run/worktree.ts` to async and prove branches no longer block each other | **done** | B | FR-17b, NFR-7 | none | M |
+| [p5-02](p5-02-execute-node-step-extraction.md) | Extract `Engine#executeNodeStep` as the one shared per-node step implementation | **done** | C | FR-17b, NFR-1 | none | L |
+| [p5-03](p5-03-backend-cwd-plumbing.md) | Plumb a per-call `cwd` through `Backend.run()` | **done** | D | FR-17b, NFR-4 | none | S |
+| [p5-04](p5-04-convergence-lint-rules.md) | `findConvergenceNode`/`findPartialReconvergence` + PAR-001/PAR-002/PAR-004 | **done** | E | FR-17b | none | M |
+| [p5-05](p5-05-runbranch-seam.md) | `HandlerCtx.runBranch` seam + `Engine#runBranch` | **done** | F | FR-17b, NFR-1, NFR-4 | p5-02, p5-01 | M |
+| [p5-06](p5-06-par-005-branch-exit-warning.md) | PAR-005 — branch reaches EXIT before its convergence node | **done** | G | FR-17b | p5-04, p5-05 | S |
+| [p5-07](p5-07-context-merge-back.md) | `mergeBranchContext` + PAR-003 | **done** | H | FR-17b | p5-05, p5-01 | M |
 | [p5-08](p5-08-parallel-handler-integration.md) | `ParallelHandler` registration — the integration point | **done** | I | FR-17b, NFR-7 | p5-01, p5-03, p5-04, p5-05, p5-07 | L |
-| [p5-09](p5-09-concurrency-verification-real-parallelhandler.md) | Checkpoint isolation + opt-in live-subprocess ceiling, proven against the real `ParallelHandler` | **draft, now unblocked** | J (remainder) | NFR-7 | p5-08 | S |
+| [p5-09](p5-09-concurrency-verification-real-parallelhandler.md) | Checkpoint isolation + opt-in live-subprocess ceiling, proven against the real `ParallelHandler` | **done** | J (remainder) | NFR-7 | p5-08 | S |
 
 **Decomposition note.** The roadmap's own dependency analysis (Critical path, Second
 prioritization pass) already establishes that seven of the ten work items (B–H) do not depend
@@ -97,33 +92,33 @@ and no longer `BLOCKED`.
 
 ## Readiness — Phase 5
 
-**p5-01 through p5-07 — ready.** Each has falsifiable acceptance criteria (exact diagnostic
-codes/severities, exact interface shapes, named mutation checks), file paths and line numbers
-verified live against this repo today (not trusted from the roadmap/architecture's own citations
-— `engine.ts`, `edge-select.ts`, `worktree.ts`, `cli.ts`, `graph.ts`, `lint.ts`,
-`handlers/{types,box,tool,stub,parallel}.ts`, `backend/claude.ts`, `checkpoint.ts`, `context.ts`
-were all re-read directly), dependencies stated and cross-checked against each other's
-frontmatter, and a full test approach with the real command (`cd plugins/attractor/engine &&
-node --test`).
+**p5-01 through p5-09 — all done. Phase 5 is complete.** p5-01 through p5-07 shipped in sprint 2
+(`.delivery/sprints/2-parallel-fanin.md`); p5-08 and p5-09 shipped in sprint 3
+(`.delivery/sprints/3-parallel-handler.md`). Every status field below was re-verified directly
+against the current code (not trusted from any story's own checked-off acceptance criteria) on
+2026-08-09: `createWorktree`, `executeNodeStep`, per-call `cwd`, `findConvergenceNode`, `runBranch`,
+`PAR-005`, `mergeBranchContext`, `ParallelHandler` (registered), and the checkpoint-isolation and
+opt-in live-ceiling tests are all present and passing. Several of these files' own `status:`
+frontmatter had drifted to stale `ready` labels after implementation actually shipped — a real
+bug in this project's own tracking, not just a formality, since a reader trusting the label alone
+would wrongly conclude work remained. Corrected across all seven files this same pass.
 
-**p5-08 — done**, shipped in sprint 3 (`.delivery/sprints/3-parallel-handler.md`). All 8
-acceptance criteria verified met by direct code reading and test execution, not merely the
-implementer's own report — including two independent adversarial review passes, one of which
-found and led to fixing two real bugs (a `max_parallel="0"` deadlock; an `EventLog.append`
-failure escaping `ParallelHandler.execute()` and rejecting the whole dispatch). See the story's
-own "Implementation notes" for the full account.
+**p5-08 — done**, shipped in sprint 3. All 8 acceptance criteria verified met by direct code
+reading and test execution, not merely the implementer's own report — including two independent
+adversarial review passes, one of which found and led to fixing two real bugs (a
+`max_parallel="0"` deadlock; an `EventLog.append` failure escaping `ParallelHandler.execute()`
+and rejecting the whole dispatch). See the story's own "Implementation notes" for the full
+account.
 
-**p5-09 — draft, now unblocked.** `p5-08` is `done` and a real `ParallelHandler` exists to test
-against — no longer blocked on anything. Needs its own readiness pass (per `/delivery:stories`)
-before it can be scoped into a sprint; not done as part of sprint 3 by design (see that sprint's
-own "Deliberately excluded" table).
+**p5-09 — done**, shipped in sprint 3. Checkpoint isolation proven against the real
+`ParallelHandler`; the opt-in live-subprocess ceiling test is written and correctly gated but not
+yet actually run (costs real API calls) — see the story's own "Implementation notes."
 
 ## Next
 
-`/delivery:sprint` to scope p1-01 (Phase 1) and/or p5-01 through p5-08 (Phase 5) into an
-implementation wave — p5-01 through p5-04 have no dependency on each other and can be sprinted
-in parallel; p5-05 needs p5-01/p5-02 done first; p5-06/p5-07 need p5-05 done first; p5-08 needs
-p5-01, p5-03, p5-04, p5-05, p5-07 done first. p5-09 cannot be sprinted until p5-08 is `done` and
-this index is updated to move it to `ready`. Phases 2–4 and 6 remain "named, not planned" per
-the roadmap; do not run
-`/delivery:stories` against them until their roadmap entries carry a real work-item table.
+Phase 5 is closed. `/delivery:sprint` to scope the next ready work — see `roadmap.md` for what's
+next: Phase 1 is also done (see above); Phases 2 and 4 need an architecture pass or a scope call
+before they're story-able; Phase 3 needs a Product Owner + Solution Architect decision; Phase 6 is
+deliberately deprioritized. Nothing in this project is currently `ready` and unscoped. Do not run
+`/delivery:stories` against Phases 2, 3, 4 or 6 until their roadmap entries carry a real
+work-item table.

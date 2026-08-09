@@ -5,7 +5,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p5-06
 title: Warn (PAR-005) when a branch can reach the graph's real EXIT before its convergence node
-status: ready
+status: done
 epic: Phase 5 — FR-17b (parallel fan-out)
 supersedes: []
 superseded_by: []

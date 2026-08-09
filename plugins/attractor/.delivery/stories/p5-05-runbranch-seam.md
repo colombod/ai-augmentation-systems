@@ -5,7 +5,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p5-05
 title: Give handlers a runBranch seam that runs a bounded sub-traversal on the run's own ledgers
-status: ready
+status: done
 epic: Phase 5 — FR-17b (parallel fan-out)
 supersedes: []
 superseded_by: []

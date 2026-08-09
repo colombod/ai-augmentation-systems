@@ -5,7 +5,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p5-04
 title: Add findConvergenceNode/findPartialReconvergence and lint rules PAR-001/PAR-002/PAR-004
-status: ready
+status: done
 epic: Phase 5 — FR-17b (parallel fan-out)
 supersedes: []
 superseded_by: []
