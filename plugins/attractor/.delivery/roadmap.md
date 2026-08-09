@@ -91,14 +91,17 @@ Deciding this now beats deciding it under pressure.
 Two corrections worth stating in prose because missing either mis-routes an owner: **Phase 2
 is not blocked by an open product question** — Open Questions 1/2 (which blocked FR-8) were
 **resolved 2026-08-06**; what actually blocks it is an unstarted architecture pass, nobody's
-been asked to schedule. **Phase 3 (Open Question 9) is the single highest-leverage open
-decision on this whole board** — this project's own founding-incident class — and currently
-owns no stage at all. Everything else below is table detail, not further narrative.
+been asked to schedule. Real design work for the `agent`/`CommandChannel` wiring already exists
+(`.superpowers/specs/2026-08-05-human-gate-channels-design.md`) — what's missing is carrying it
+into `architecture.md`/an ADR and implementing it, not designing from nothing. **Phase 3 (Open
+Question 9) is RESOLVED 2026-08-09** — see [ADR-014](decisions/ADR-014-open-question-9-fr9b-lint-time-refusal.md)
+— no longer this board's highest-leverage open decision; now a story ready to be scoped.
+Everything else below is table detail, not further narrative.
 
 | Phase | FRs | Blocked by | Owner | Depends on | Effort |
 | :-- | :-- | :-- | :-- | :-- | :-- |
 | 2 — Human-gate core | FR-5, FR-6, FR-7, FR-8 | **Not** Q1/Q2 (resolved 2026-08-06, channels design, 5/5 convergence) — an unstarted architecture pass: no ADR covers the `agent`/`CommandChannel` hops or `GateContext`/`selectEdge` wiring; `architecture.md` predates the resolution and says so in its own Scope line; `Handler.HUMAN` still unregistered | Solution Architect — schedule the pass | `agent` sub-slice depends on Phase 1; the `human`-channel path does not and could be architected in parallel | Unscoped — no estimate until the architecture pass exists |
-| 3 — Founding-incident verdict | FR-9a / FR-9b (mutually exclusive) | Open Question 9 — runtime-verdict change (FR-9a, reverses a previously-withdrawn fix) vs. lint-time-only refusal (FR-9b) | Product Owner + Solution Architect jointly — `AGENTS.md:157`'s "if a change appears to require deleting one of these, stop and ask" applies to FR-9a specifically | None | Unscoped |
+| 3 — Founding-incident verdict | FR-9a (rejected) / FR-9b (accepted) | **RESOLVED 2026-08-09** — see [ADR-014](decisions/ADR-014-open-question-9-fr9b-lint-time-refusal.md): lint-time-only refusal (`GATE-002`, ERROR), runtime verdict unchanged | Product Owner + Solution Architect jointly — decided | None | S (one new lint rule, two small exports, per ADR-014's own Consequences) |
 | 4 — Embedder diagnostic visibility | FR-12 | Open Question 7 — should an embedder observe WARNING-severity diagnostics at all; a scope call, not an engineering unknown | Solution Architect | Also closes Phase 1's own FR-12 caveat (embedded-`Engine` WARNING visibility) — scope with that in view, not purely as S6 ergonomics | Unscoped |
 
 ### Phase 5: FR-17b — parallel fan-out (`Handler.PARALLEL`)
@@ -418,18 +421,16 @@ of which (item A) is a decision rather than code. As a dependency list, not a bo
   `ParallelHandler`). Only J's other four rows (ceiling enforcement, real-subprocess ceiling,
   shared-ledger race, checkpoint isolation) actually need I.
 
-**The program's actual critical path still runs through decision-making, not code — this is true within Phase 5 as
-much as across the whole board:** Open Question 9 (FR-9a/FR-9b, Phase 3) has no stage and no
-scheduled decision date, and item A's two decisions inside Phase 5 are the same shape of
-risk at smaller scale — both should be scheduled now, in parallel with items B–E, not queued
-behind them; nothing about resolving either requires the code in B–E to exist first, and
-delaying item A only pushes item I's start date without shortening it.
+**The program's actual critical path ran through decision-making, not code — this was true within
+Phase 5 as much as across the whole board.** Open Question 9 (FR-9a/FR-9b, Phase 3) is now
+**RESOLVED 2026-08-09** (ADR-014), the same way item A's two decisions inside Phase 5 were
+resolved (ADR-013) — both were the same shape of risk, and both are now closed.
 
 ## Dependencies outside our control
 
 | Dependency | Owner | Needed by | Status | If it slips |
 | :-- | :-- | :-- | :-- | :-- |
-| Open Question 9 decision (FR-9a vs FR-9b) | Product Owner + Solution Architect | Before Phase 3 can be sized; recommended in parallel with Phase 1, not after | Open | Founding-incident-class gap stays unowned and unstaged indefinitely |
+| Open Question 9 decision (FR-9a vs FR-9b) | Product Owner + Solution Architect | Before Phase 3 can be sized | **Resolved 2026-08-09** — [ADR-014](decisions/ADR-014-open-question-9-fr9b-lint-time-refusal.md), FR-9b (`GATE-002`) | N/A |
 | Open Question 7 decision (embedder WARNING visibility) | Solution Architect | Before Phase 4, and before Phase 1's FR-12 caveat can be closed | Open | Phase 1's WARNING stays invisible on the embedded-`Engine` path with no committed date |
 | Two Solution Architect decisions inside the FR-17b architecture itself — component-node FAIL routing and branch-rejection handling | Solution Architect | Before Phase 5's item I (`ParallelHandler`) can be implemented, and before the "Component-node FAIL routing" and "Branch throws mid-flight" test rows can be written | **Resolved 2026-08-08 — [ADR-013](decisions/ADR-013-parallelhandler-fail-routing-and-branch-rejection.md).** A(a): convergence-node jump unconditional on SUCCESS/PARTIAL (structurally forced), ordinary §3.7 retry-target/dead-end ladder on FAIL. A(b): per-branch try/catch/finally converting any thrown exception to that branch's own FAIL `Outcome`, covering worktree creation through removal, not just the `runBranch` call; `Promise.all` unchanged | Items B–H (7 of Phase 5's 10 work items) were unaffected either way; item I and its two dependent test rows ("Component-node FAIL routing", "Branch throws mid-flight") can now be implemented and written against a settled contract. Item C's exit criteria also need a small correction — see item C's own row |
 | Architecture pass for the resolved channels design (`agent`/`CommandChannel`, `GateContext`/`selectEdge`) | Solution Architect | Before Phase 2 can be sized | Not scheduled | Phase 2 stays "named, not planned" indefinitely even though its product question is resolved |
@@ -447,8 +448,8 @@ delaying item A only pushes item I's start date without shortening it.
 | FR-6 | 2 | Named, not planned — same gap |
 | FR-7 | 2 | Named, not planned — same gap |
 | FR-8 | 2 | Named, not planned — `agent` sub-slice also depends on Phase 1 |
-| FR-9a | 3 | Named, not planned — Open Question 9 |
-| FR-9b | 3 | Named, not planned — mutually exclusive alternative to FR-9a, same question |
+| FR-9a | 3 | **Rejected 2026-08-09** — ADR-014, Open Question 9 |
+| FR-9b | 3 | **Resolved 2026-08-09, ready to story** — ADR-014 (`GATE-002`) |
 | FR-10 | 0 | Shipped |
 | FR-11 | 0 | Shipped |
 | FR-12 | 4 | Named, not planned — Open Question 7 |
@@ -470,7 +471,7 @@ No `FR-n` lands in no phase.
 | CODERGEN-scope reading picked implicitly, overturned mid-phase | medium | low-medium — rework of fixtures, not of the rule's core logic | Resolve as ADR-006's opening decision, before fixtures | implementer |
 | Named residual gaps (multi-hop, `Handler.TOOL`-without-`outputs=`) never revisited | high if untracked | medium — the self-report gap is treated as closed on paper when it isn't | Open Questions row added in ADR-006, owner assigned | Product Owner / Solution Architect |
 | HITL-003's WARNING invisible on embedded-`Engine` path, read as uniformly mitigating | medium | medium — false confidence for the `agent` channel's likeliest unattended usage | State the FR-12 dependency explicitly in the rule's doc and in this roadmap (done above); do not close Phase 1 as if it were resolved | implementer / Solution Architect |
-| Open Question 9 stays unowned by any stage indefinitely | high without action | critical — this project's own founding-incident class | Schedule the PO+SA decision session in parallel with Phase 1 | Product Owner |
+| Open Question 9 stays unowned by any stage indefinitely | **Resolved 2026-08-09** — ADR-014, no longer a risk | N/A | N/A | Product Owner |
 | Phase 2 mislabeled as "blocked on open questions" when it is really an unstarted architecture pass | medium | low-medium — the wrong owner gets pinged, or nobody schedules the actual missing step | Corrected explicitly in this document's Sequencing rationale and Phase 2 entry | Program Manager (this document) |
 | Locked attribute names (`human.channel`, `human.context`, design doc §5) diverge once Phase 2's implementation actually lands | low — names are a resolved 5/5-converged decision, not open prose | medium — Phase 1's fixtures would need updating | ADR-006 cites design doc §5 explicitly with a note to revisit if Phase 2 diverges | implementer |
 | **Phase 5, RESOLVED 2026-08-08.** Component-node FAIL routing: the architecture's own text gave two different answers for what happens when a `PARALLEL` node's join outcome is FAIL | was confirmed present in the design as written | was high — whichever is right, the first author whose fan-out actually fails hits the untested path, and a fan-out failing is the entire reason a zero-success-checking join policy exists | **Resolved by [ADR-013](decisions/ADR-013-parallelhandler-fail-routing-and-branch-rejection.md):** the convergence-node jump is unconditional only on SUCCESS/PARTIAL — the only structurally reachable continuation; FAIL routes through the ordinary §3.7 `retry_target`/`fallback_retry_target`/dead-end ladder, matching `AGENTS.md`'s non-tradeable Fail-fast-on-FAIL doctrine. Item I and the "Component-node FAIL routing" test row can now be implemented against a settled contract; item C's exit criteria gained a small correction as a consequence (see item C's own row in the work-item table) | Solution Architect (resolved) — implementer for item I/C |
