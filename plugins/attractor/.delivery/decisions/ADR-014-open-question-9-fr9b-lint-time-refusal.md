@@ -338,23 +338,42 @@ this ADR introduces — the same, already-accepted risk, now stated for edge con
 
 ## Residual risk
 
-- **Partial-context evaluation is imprecise on multi-clause conditions.** `GATE-002` evaluates
-  the *whole* condition against `EMPTY_CONTEXT`. A condition mixing a legitimate,
-  `supplied`-set clause (e.g. `context.goal!=urgent`, a real graph attribute) with a vacuous
-  clause (`context.build.error!=fatal`, undeclared) would have its legitimate clause evaluate
-  against emptiness too, which can make the conjunction evaluate `false` against `EMPTY_CONTEXT`
-  even though the vacuous half would still let a real run through once the legitimate clause is
-  satisfied. This is a **false negative** (under-detection), not a false positive, and it is
-  scoped narrowly: only multi-clause conditions mixing a supplied and an unsupplied key. Closing
-  it precisely requires a partial-context evaluator (substitute only `supplied` keys, leave the
-  rest symbolic) — real added complexity, not undertaken here; flagged for a future pass if this
-  shape turns out to matter in practice.
-- **`retry_target`/`fallback_retry_target`-based continuation is out of scope**, per the rejected
-  alternative above — a `retry_target` pointing at a node that itself has no goal gate and
-  reaches an unguarded exit is not examined by either `GATE-001` or `GATE-002`. Narrower than the
-  founding-incident class in principle, but every concrete `retry_target` use in this codebase's
-  fixtures dispatches a real recovery node, matching Legitimate shape 2's reasoning; worth a line
-  in skill/authoring guidance rather than a lint rule, unless a real incident says otherwise.
+- **Partial-context evaluation is imprecise on multi-clause conditions — CONFIRMED exploitable,
+  not merely theoretical.** Adversarial review (2026-08-09) reproduced this directly against the
+  real, shipped rule: `build [tool_command="exit 1"] -> publish [condition="context.goal=urgent
+  && context.build.error!=fatal"]`, graph attribute `goal="urgent"`. `lint()` returns `[]` —
+  zero diagnostics, not even `DATA-001`. A real run: `build` fails for real, the pipeline still
+  reports `status: success`. The failure mode is exactly as originally described (`GATE-002`
+  evaluates the *whole* condition against `EMPTY_CONTEXT`, so a supplied-key clause makes the
+  whole conjunction read as "properly discriminating" even though the vacuous half still lets a
+  real failure through once the supplied clause is legitimately satisfied) — but "a completely
+  ordinary graph-attribute value in one clause, an undeclared key in the other" is a natural
+  phrasing, not a contrived one. Still not fixed here: closing it precisely needs a
+  partial-context evaluator (substitute only `supplied` keys, leave the rest symbolic), which is
+  real added complexity. Raised in severity from "flag for a future pass if it matters" to
+  **"confirmed live, worth scheduling."**
+- **`retry_target`/`fallback_retry_target`-based continuation is out of scope, and the original
+  reasoning for that was WRONG — corrected 2026-08-09.** The rejected-alternative text above
+  claimed "every concrete `retry_target` use in this codebase's fixtures dispatches a real
+  recovery node." Adversarial review disproved that with a direct counter-example: `A
+  [tool_command="exit 1", retry_target="B"] -> (nothing)`, `B [tool_command="exit 0"] -> done`,
+  no goal gate. `lint()` returns only a `TOPO-006` WARNING — `hasErrors()` is `false`. A real run:
+  `A` fails, `resolveRetryTarget` dispatches `B`, `B` trivially "succeeds" via an unconditional
+  edge to `done`. `status: success`, `A`'s real failure fully absorbed. `GATE-002`'s own edge loop
+  never examines this path at all — it only inspects `isConditional` edges, and `A -> B`'s own
+  dispatch isn't even a graph edge (it's `resolveRetryTarget`'s own routing, invisible to `lint()`
+  entirely). Unlike the multi-clause case, this produces **zero diagnostic of any kind**, and the
+  attack requires no cleverness — a trivial always-succeeds fallback node is exactly what an
+  under-specified retry target looks like by accident, not only on purpose. **This is not
+  resolved by this story and needs the same kind of Product Owner call Decision 1 itself was**:
+  extending `GATE-002` to examine `retry_target` continuation the way `GATE-001` already does
+  reopens the exact false-positive tension this ADR spent its own Decision 2 resolving (a
+  `retry_target` pointing at a node that does real, meaningful recovery work is legitimate and
+  common; nothing at lint time can statically distinguish that from `B`'s trivial `exit 0` above
+  — the same "arbitrary runtime behavior, unknowable at design time" problem the `CODERGEN`
+  exclusion already accepts, not a new one). Recorded here as a named, un-closed gap rather than
+  silently shipped as if `retry_target` parity had been genuinely considered and found safe to
+  skip — it was considered, and the specific reasoning used to skip it does not hold.
 - **Residual R6 (condition-only reference invisible to `DATA-001`) is closed only within
   `GATE-002`'s own zero-goal-gate scope**, not generally. A graph that *does* declare a
   `goal_gate` node elsewhere, with an unrelated condition-only vacuous reference on a path that
