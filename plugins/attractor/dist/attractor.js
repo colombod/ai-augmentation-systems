@@ -4255,6 +4255,20 @@ function lint(graph) {
         message: `node ${e.from}'s outgoing edge to ${e.to} (condition="${condition}") is satisfied whether ${e.from} succeeds or fails, because it depends on ${unsuppliedKey}, which nothing in this graph declares, infers, or seeds -- and ${e.to} can reach the exit node ${reachedExit} with no goal gate anywhere to catch the resulting unearned success. Declare ${unsuppliedKey} from a real producer, rewrite the condition to discriminate on outcome, or add a goal_gate="true" node on this path.`
       });
     }
+    for (const n of graph.nodes.values()) {
+      if (NEVER_FAILS.includes(n.handler)) continue;
+      const target = resolveRetryTarget(n, graph, { includeGraphLevel: false });
+      if (target === null) continue;
+      const reachedExit = bypassesGates(graph, target, gates, exitIds);
+      if (reachedExit === null) continue;
+      const attr = n.attrs.retry_target && graph.nodes.has(n.attrs.retry_target) ? "retry_target" : "fallback_retry_target";
+      diags.push({
+        code: "GATE-002",
+        severity: Severity.ERROR,
+        node: n.id,
+        message: `node ${n.id}'s ${attr}="${target}" can reach the exit node ${reachedExit} with no goal gate anywhere in this graph to verify the recovery actually resolved ${n.id}'s original failure -- section 11.3's quantifier is vacuously true with zero gates, so nothing ever checks whether the retry route's own success was a real, earned recovery rather than the original failure passing through unverified. Add a goal_gate="true" node on this path, or replace the retry target with an explicit condition="outcome=fail" recovery edge if acknowledging the failure without gated verification is what you intend.`
+      });
+    }
   }
   return diags;
 }

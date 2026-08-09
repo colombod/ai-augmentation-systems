@@ -1203,6 +1203,61 @@ export function lint(graph: Graph): Diagnostic[] {
           `goal_gate="true" node on this path.`,
       })
     }
+
+    // GATE-002 continued (ADR-014 Amendment 3): a node's own
+    // retry_target/fallback_retry_target reaching the exit with no goal gate
+    // anywhere in this (zero-gate, by construction of this whole branch)
+    // graph. Mirrors GATE-001's own retry-route detection above
+    // (lint.ts:1069-1084) for the complementary case: GATE-001 asks whether a
+    // DECLARED gate is bypassed; this asks whether NO gate exists at all to
+    // ever verify the recovery genuinely resolved the failure. Section
+    // 11.3's quantifier is vacuously true with zero gates, so a
+    // `retry_target` that dispatches a trivially-succeeding node is
+    // indistinguishable, at exit time, from a real, meaningful recovery --
+    // both report SUCCESS, and nothing ever checks which one actually
+    // happened.
+    //
+    // No Handler.CODERGEN exclusion here, unlike the edge-condition loop
+    // above: that exclusion exists because a referenced CONTEXT KEY's value
+    // is unpredictable at lint time when a box node might write it
+    // dynamically via contextUpdates. retry_target/fallback_retry_target are
+    // static node ATTRIBUTES, declared verbatim in the DOT source -- always
+    // fully visible to lint regardless of handler kind. There is nothing
+    // here for a CODERGEN node to make unpredictable.
+    for (const n of graph.nodes.values()) {
+      if (NEVER_FAILS.includes(n.handler)) continue
+      // includeGraphLevel: false -- same scoping GATE-001's own retry-route
+      // loop uses, for the identical reason: section 3.7's ladder for a
+      // plain node's own failure route never consults the graph-level
+      // rungs; only section 3.4's goal-gate-exit ladder does.
+      const target = resolveRetryTarget(n, graph, { includeGraphLevel: false })
+      if (target === null) continue
+
+      const reachedExit = bypassesGates(graph, target, gates, exitIds)
+      if (reachedExit === null) continue
+
+      // resolveRetryTarget doesn't say which of the two attributes it used;
+      // recover that from its own documented precedence (node-level
+      // retry_target first, fallback_retry_target second) so the message
+      // names the one that actually resolved.
+      const attr: 'retry_target' | 'fallback_retry_target' =
+        n.attrs.retry_target && graph.nodes.has(n.attrs.retry_target) ? 'retry_target' : 'fallback_retry_target'
+
+      diags.push({
+        code: 'GATE-002',
+        severity: Severity.ERROR,
+        node: n.id,
+        message:
+          `node ${n.id}'s ${attr}="${target}" can reach the exit node ${reachedExit} with ` +
+          `no goal gate anywhere in this graph to verify the recovery actually resolved ` +
+          `${n.id}'s original failure -- section 11.3's quantifier is vacuously true with ` +
+          `zero gates, so nothing ever checks whether the retry route's own success was a ` +
+          `real, earned recovery rather than the original failure passing through ` +
+          `unverified. Add a goal_gate="true" node on this path, or replace the retry ` +
+          `target with an explicit condition="outcome=fail" recovery edge if acknowledging ` +
+          `the failure without gated verification is what you intend.`,
+      })
+    }
   }
 
   return diags

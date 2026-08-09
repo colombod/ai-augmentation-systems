@@ -1221,6 +1221,104 @@ test('GATE-002 message names the offending key, the condition, and the remedy', 
   assert.match(msg, /outcome/i, 'suggests discriminating on outcome as another remedy')
 })
 
+// ---------------------------------------------------------------------------
+// GATE-002 continued (ADR-014 Amendment 3) -- a node's own
+// retry_target/fallback_retry_target reaching the exit in a zero-goal-gate
+// graph, with nothing anywhere to verify the recovery actually resolved the
+// original failure. Mirrors GATE-001's own retry-route detection, for the
+// complementary (no gate exists at all, rather than a gate is bypassed) case.
+// ---------------------------------------------------------------------------
+
+test('GATE-002 fires on ADR-014 residual-risk repro: a retry_target reaching the exit, no goal gate', () => {
+  // ADR-014's own counter-example (Residual risk / Amendment 3): `A` fails,
+  // its retry_target dispatches `B`, `B` trivially "succeeds" via an
+  // unconditional edge to the exit. No goal gate anywhere ever checks
+  // whether `A`'s original failure was genuinely resolved.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    A [shape=parallelogram, tool_command="exit 1", retry_target="B"]
+    B [shape=parallelogram, tool_command="exit 0"]
+    start -> A
+    B -> done
+  }`
+  const found = gate002(src)
+  assert.equal(found.length, 1)
+  assert.equal(found[0].severity, Severity.ERROR)
+  assert.equal(found[0].node, 'A')
+  assert.match(found[0].message, /retry_target="B"/, 'names the resolved attribute and target')
+  assert.match(found[0].message, /goal_gate/i, 'suggests a goal gate as the remedy')
+})
+
+test('GATE-002 fires identically for fallback_retry_target', () => {
+  // Same shape, but the node declares fallback_retry_target instead of
+  // retry_target -- resolveRetryTarget's own precedence means this is the
+  // one that actually resolves, and the message must name it correctly
+  // rather than always assuming retry_target.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    A [shape=parallelogram, tool_command="exit 1", fallback_retry_target="B"]
+    B [shape=parallelogram, tool_command="exit 0"]
+    start -> A
+    B -> done
+  }`
+  const found = gate002(src)
+  assert.equal(found.length, 1)
+  assert.equal(found[0].severity, Severity.ERROR)
+  assert.equal(found[0].node, 'A')
+  assert.match(found[0].message, /fallback_retry_target="B"/, 'names the resolved attribute and target')
+})
+
+test('GATE-002 does not fire when a goal gate sits on the retry recovery path', () => {
+  // Same shape as the residual-risk repro, but `B` now routes through a
+  // goal_gate node before the exit -- the recovery IS verifiable. gates.size
+  // > 0 also routes this whole graph to GATE-001's own guard instead, which
+  // is the mechanism that makes this legitimate: GATE-002's own precondition
+  // (zero goal gates) no longer holds.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    A    [shape=parallelogram, tool_command="exit 1", retry_target="B"]
+    B    [shape=parallelogram, tool_command="exit 0"]
+    gate [shape=box, goal_gate=true, prompt="judge"]
+    start -> A
+    B -> gate
+    gate -> done [condition="outcome=success"]
+  }`
+  assert.deepEqual(gate002(src), [])
+})
+
+test('GATE-002 does not fire when the retry target never reaches an exit', () => {
+  // `B` is a dead end -- no outgoing edge at all, so it can never reach
+  // `done`. `bypassesGates` returns null for an unreachable target, exactly
+  // as the edge-condition loop above already handles; nothing is bypassed
+  // because nothing is ever escaped to.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    A [shape=parallelogram, tool_command="exit 1", retry_target="B"]
+    B [shape=parallelogram, tool_command="exit 0"]
+    start -> A
+  }`
+  assert.deepEqual(gate002(src), [])
+})
+
+test('GATE-002 does not fire on legitimate shape 2 (explicit outcome=fail edge, no retry_target attribute)', () => {
+  // Confirms the new retry_target loop does not somehow interact with, or
+  // fire on, a plain conditional edge: it only ever examines
+  // retry_target/fallback_retry_target attributes, and this fixture declares
+  // neither. Same fixture as the "ADR-014 legitimate shape 2" test above.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    build           [shape=parallelogram, tool_command="exit 1"]
+    notify_failure  [shape=box, prompt="notify"]
+    deploy          [shape=parallelogram, tool_command="make deploy"]
+    start -> build
+    build -> notify_failure [condition="outcome=fail"]
+    build -> deploy         [condition="outcome=success"]
+    notify_failure -> done
+    deploy -> done
+  }`
+  assert.deepEqual(gate002(src), [])
+})
+
 test('COND-001 rejects a hyphenated bare key, which is a real producible key shape', () => {
   // Hyphenated context keys are genuinely reachable: `--param feature-flag=on`
   // splits on the first "=" with no key-format validation, and LLM
