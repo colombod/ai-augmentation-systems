@@ -56,6 +56,12 @@ Read the brief and the personas.
 - **Personas missing** — warn. Look and feel is a claim about who the product is for; without personas you are designing for an imagined average user and no choice can be justified. Offer to run `/delivery:personas` first.
 - **Existing design system in the codebase** — find it before proposing anything. Look for token files, theme configuration, a component library, established conventions. Read them and cite real paths. Extending an existing system beats introducing a second, parallel one, even when the existing one is imperfect.
 
+If `.delivery/initiatives/<initiative>/design-system.md` already exists, read it and ask
+whether to **revise**, **replace**, or **start new version**. See
+`${CLAUDE_PLUGIN_ROOT}/templates/version-history.md` for what each means, the same-problem
+test that chooses between revise and start new version, and the Version-history table and
+Corrections log it writes. Never silently overwrite.
+
 If `$ARGUMENTS` is empty and no seed is on record, ask the originator for one before proceeding: what should this feel like, who should feel welcomed by it, is there a reference they admire, and are there fixed brand constraints such as a logo, a colour or a typeface. A design system invented with no seed will be arbitrary, and arbitrary decisions are the hardest to defend later.
 
 

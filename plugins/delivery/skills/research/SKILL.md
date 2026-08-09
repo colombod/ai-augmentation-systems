@@ -52,7 +52,11 @@ by initiative slug, matching `stories/<slug>-NN-<name>.md`'s existing convention
 
 Read `.delivery/initiatives/<initiative>/brief.md`. If it is missing, stop and point at `/delivery:brief` — research without a framed problem produces a literature review nobody uses.
 
-If `.delivery/initiatives/<initiative>/research.md` exists, read it and ask whether to extend or replace.
+If `.delivery/initiatives/<initiative>/research.md` already exists, read it and ask whether
+to **revise**, **replace**, or **start new version**. See
+`${CLAUDE_PLUGIN_ROOT}/templates/version-history.md` for what each means, the same-problem
+test that chooses between revise and start new version, and the Version-history table and
+Corrections log it writes. Never silently overwrite.
 
 ## Run
 

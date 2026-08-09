@@ -10,6 +10,7 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 
 > Adversarial review. Read-only — findings are recorded here, not applied.
 > Panel: <reviewers> · Reviewed: <date> · Artifact version: <git sha or date>
+> Version targeted: <N> (<Status-cell value at review time>) | n/a — no Version-history table
 >
 > A finding leaves this list by being **fixed** or **rejected with a stated reason**.
 > Never by being ignored. `/delivery:status` reports anything still `open`.

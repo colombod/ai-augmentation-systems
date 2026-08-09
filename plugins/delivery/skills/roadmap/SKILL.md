@@ -55,6 +55,12 @@ Read both inputs.
 - **PRD missing** — stop. Sequencing unknown requirements is fiction. Run `/delivery:prd` first.
 - **Architecture missing** — warn clearly. You can sequence without it, but the dependency map and effort sizing will be guesses, and the spike list — the most valuable input to sequencing — will not exist. Ask whether to proceed anyway or run `/delivery:architecture` first.
 
+If `.delivery/initiatives/<initiative>/roadmap.md` already exists, read it and ask whether
+to **revise**, **replace**, or **start new version**. See
+`${CLAUDE_PLUGIN_ROOT}/templates/version-history.md` for what each means, the same-problem
+test that chooses between revise and start new version, and the Version-history table and
+Corrections log it writes. Never silently overwrite.
+
 Ask the user for any constraints not given in `$ARGUMENTS`: team size and composition, fixed external dates, and whether scope or date is the fixed variable. A roadmap built without knowing which one is fixed will optimize for the wrong thing.
 
 

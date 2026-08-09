@@ -63,8 +63,11 @@ not the subject.
 
 ## Gate check
 
-No prerequisites — this is the entry point. If `.delivery/initiatives/<initiative>/brief.md` exists, read it, say
-so, and ask whether to revise or start fresh. Never silently overwrite.
+No prerequisites — this is the entry point. If `.delivery/initiatives/<initiative>/brief.md`
+already exists, read it and ask whether to **revise**, **replace**, or **start new version**.
+See `${CLAUDE_PLUGIN_ROOT}/templates/version-history.md` for what each means, the
+same-problem test that chooses between revise and start new version, and the
+Version-history table and Corrections log it writes. Never silently overwrite.
 
 ## Run
 

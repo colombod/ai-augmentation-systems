@@ -54,7 +54,11 @@ Read `.delivery/initiatives/<initiative>/brief.md`.
 
 - **Missing** — stop. Tell the user to run `/delivery:brief` first, and offer to run it now. Do not improvise a brief.
 - **Exists but thin** (no named user segment, no measurable success signal, or unresolved blocking questions) — say specifically what is weak, and ask whether to proceed anyway or strengthen the brief first. Proceeding on a weak brief is a legitimate choice, but it should be a choice.
-- If `.delivery/initiatives/<initiative>/prd.md` already exists, read it and ask whether to revise or replace.
+- If `.delivery/initiatives/<initiative>/prd.md` already exists, read it and ask whether to
+  **revise**, **replace**, or **start new version**. See
+  `${CLAUDE_PLUGIN_ROOT}/templates/version-history.md` for what each means, the
+  same-problem test that chooses between revise and start new version, and the
+  Version-history table and Corrections log it writes. Never silently overwrite.
 
 
 **Open blocking findings.** Read `.delivery/reviews/`. If any finding against an artifact
