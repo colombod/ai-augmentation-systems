@@ -71,7 +71,7 @@ Ask, and record what they chose.
 ## Run
 
 **1. Program Manager builds the plan.** Delegate to `delivery:program-manager` (via the Agent tool; if subagents are unavailable, read `${CLAUDE_PLUGIN_ROOT}/agents/program-manager.md` and adopt the persona). It must deliver:
-- **Phases** with entry and exit criteria, each producing something demonstrable — describe what you would show
+- **Phases** with entry and exit criteria, each producing something demonstrable — describe what you would show. Setup never becomes its own phase: fold `architecture.md`'s Setup section into Phase 1's entry criteria — a phase needs a persona-facing demonstrable exit and an `FR-n` it delivers, and setup work has neither.
 - **Risk-first sequencing**: the spikes from the architecture and the least-understood work go early. State the sequencing rationale; a plan that front-loads the easy work should have to justify itself.
 - **Dependency map**, including dependencies outside the team's control, each with an owner and needed-by date
 - **Critical path** identified explicitly, with what would have to change to shorten it

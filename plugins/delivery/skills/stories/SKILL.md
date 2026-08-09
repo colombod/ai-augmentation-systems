@@ -54,6 +54,7 @@ Read all three inputs and list any existing stories in `.delivery/stories/`.
 
 - **Roadmap missing** — stop and run `/delivery:roadmap` first. Without it there is no defensible phase boundary to decompose along.
 - **Architecture missing** — warn hard. Stories written without a design either omit the technical context (making them un-pickable) or invent a design inline (which is the Solution Architect's job, done badly). Recommend running `/delivery:architecture` first.
+- **Setup, not a feature** — if the item is pure environment/repo/framework/build-system setup (no persona completes a journey through it), refuse to write it as a story; point back to `architecture.md`'s Setup section, where it belongs as a Phase-1-gating prerequisite, not a phase deliverable.
 - Never overwrite a story whose status is `in-progress` or `done` — supersede it instead, per the protocol below.
 
 ## When a ruling invalidates existing stories

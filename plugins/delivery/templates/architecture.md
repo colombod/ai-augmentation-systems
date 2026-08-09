@@ -24,6 +24,17 @@ What exists today in the areas this touches. Real paths, checked.
 | :-- | :-- | :-- |
 | `src/...` | | new / modified / extended / untouched |
 
+## Setup — prerequisite, not a feature or a phase
+
+Environment, repository, framework and build-system work this design needs before Phase 1
+can start. Never assigned an `FR-n`, never its own roadmap phase — no persona completes a
+journey through "npm init ran." Gates Phase 1's entry criteria in roadmap.md.
+
+| Setup item | Establishes | Blocks (component / spike) |
+| :-- | :-- | :-- |
+
+**None needed because:** (if so — state why, don't omit the section)
+
 ## Component structure
 
 How the pieces fit. Name the seams — module boundaries, dependency direction.
