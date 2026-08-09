@@ -424,6 +424,23 @@ gate to verify it, exactly as this whole rule already requires for every other r
 anywhere now requires either adding a goal gate or restructuring to an explicit recovery edge —
 this is real, deliberate friction for what was previously silent, unverified behavior, and it is
 the Product Owner's own considered choice to impose it rather than leave the gap named and open.
+
+**Adversarially reviewed 2026-08-09, two minor findings, neither a soundness gap — both leave the
+graph correctly refused, only affect message precision or an unasserted side effect:**
+
+- **Multi-hop retry chains attribute the diagnostic to the wrong link.** `A.retry_target=B`,
+  `B` itself a dead end whose only escape is `B.retry_target=C` reaching exit: the graph is still
+  correctly refused (this loop independently re-checks every node's own one-hop target, so `B`'s
+  own check fires), but the message names `B`, not `A`, as the node whose failure goes
+  unverified — an author debugging `A`'s real problem is pointed one link down the chain. Not
+  fixed here; `GATE-001`'s own equivalent check has the identical one-hop scope, so this matches
+  existing rule-family behavior rather than introducing a new inconsistency.
+- **The 8 decoy-gate fixture fixes (commit `45c235c`) are runtime-inert as documented, but each
+  one flips its own graph from `GATE-002`'s branch to `GATE-001`'s** (`gates.size` goes from 0 to
+  1), introducing a new `GATE-001` WARNING on all 8 that no test asserts against. Confirmed
+  harmless — `WARNING` never blocks `hasErrors()`, no test checks these constants' own diagnostic
+  set — but worth recording so a future reader investigating "why does this fixture now warn"
+  finds an answer here rather than rediscovering it.
 - **Residual R6 (condition-only reference invisible to `DATA-001`) is closed only within
   `GATE-002`'s own zero-goal-gate scope**, not generally. A graph that *does* declare a
   `goal_gate` node elsewhere, with an unrelated condition-only vacuous reference on a path that
