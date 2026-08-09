@@ -318,7 +318,11 @@ sentinel; `RUNS-001` an unrecognised `runs_on` value (it would fall back to
 `success`); `RUNS-002` a `goal_gate` node whose `runs_on` cannot be honoured;
 `DATA-001` a `${key}` no node declares; `DATA-002` an `outputs=` naming an
 engine-managed or handler-owned key; `GATE-001` a failure route that reaches
-the exit without passing a goal gate; `HAND-001` a node resolves to a handler
+the exit without passing a goal gate; `GATE-002` a graph declaring no
+`goal_gate` node at all, with a conditional edge that is satisfied whether its
+source succeeds or fails because it depends on a key nothing in the graph
+declares, infers, or seeds -- see [ADR-014](.delivery/decisions/ADR-014-open-question-9-fr9b-lint-time-refusal.md);
+`HAND-001` a node resolves to a handler
 kind this build does not register (`hexagon`, `tripleoctagon`,
 `house` -- see [Node shapes](#node-shapes)); `HITL-003` an agent-inclusive
 human gate whose exposed context traces to a single Handler.CODERGEN direct

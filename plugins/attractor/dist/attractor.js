@@ -3572,6 +3572,16 @@ function splitClauses(expr) {
 function isValidConditionSyntax(expr) {
   return splitClauses(expr).every((raw) => CLAUSE.test(raw) || BARE_IDENTIFIER.test(raw.trim()));
 }
+function conditionKeys(expr) {
+  const keys = [];
+  for (const raw of splitClauses(expr)) {
+    if (raw.trim() === "") continue;
+    const m = CLAUSE.exec(raw);
+    const key = m === null ? raw.trim() : m[1];
+    keys.push(key.startsWith("context.") ? key.slice("context.".length) : key);
+  }
+  return keys;
+}
 function evaluateCondition(expr, ctx, outcome) {
   for (const raw of splitClauses(expr)) {
     const m = CLAUSE.exec(raw);
@@ -4222,6 +4232,28 @@ function lint(graph) {
       };
       if (route.origin !== void 0) diag.node = route.origin;
       diags.push(diag);
+    }
+  } else {
+    for (const e of graph.edges) {
+      if (!isConditional(e)) continue;
+      const from = graph.nodes.get(e.from);
+      if (from === void 0 || NEVER_FAILS.includes(from.handler)) continue;
+      const condition = e.attrs.condition;
+      const unsuppliedKey = from.handler === Handler.CODERGEN ? void 0 : conditionKeys(condition).find(
+        (k) => k !== "outcome" && k !== "preferred_label" && !isEngineManagedKey(k) && !supplied.has(k)
+      );
+      if (unsuppliedKey === void 0) continue;
+      if (!evaluateCondition(condition, EMPTY_CONTEXT, FAILED) || !evaluateCondition(condition, EMPTY_CONTEXT, SUCCEEDED)) {
+        continue;
+      }
+      const reachedExit = bypassesGates(graph, e.to, gates, exitIds);
+      if (reachedExit === null) continue;
+      diags.push({
+        code: "GATE-002",
+        severity: Severity.ERROR,
+        node: e.from,
+        message: `node ${e.from}'s outgoing edge to ${e.to} (condition="${condition}") is satisfied whether ${e.from} succeeds or fails, because it depends on ${unsuppliedKey}, which nothing in this graph declares, infers, or seeds -- and ${e.to} can reach the exit node ${reachedExit} with no goal gate anywhere to catch the resulting unearned success. Declare ${unsuppliedKey} from a real producer, rewrite the condition to discriminate on outcome, or add a goal_gate="true" node on this path.`
+      });
     }
   }
   return diags;

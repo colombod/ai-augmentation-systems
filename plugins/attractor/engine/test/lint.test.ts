@@ -1074,6 +1074,153 @@ test('GATE-001 does not treat an unconditional edge as a failure route', () => {
   assert.deepEqual(gate001(src), [])
 })
 
+// ---------------------------------------------------------------------------
+// GATE-002 -- a zero-goal-gate graph whose edge condition is outcome-blind
+// on an undeclared key. See ADR-014 (.delivery/decisions) for the full
+// design; the fixtures below are its own four analysis shapes (two
+// legitimate, two hazard) plus the supplied-key exclusion and the
+// gates.size > 0 disjointness cases.
+// ---------------------------------------------------------------------------
+
+function gate002(src: string) {
+  return lint(parseDot(src)).filter((d) => d.code === 'GATE-002')
+}
+
+test('GATE-002 fires on ADR-014 hazard shape 1: an undeclared key referenced by both prompt and condition', () => {
+  // `build` declares no outputs=, `publish`'s condition depends on
+  // `build.error`, which nothing in the graph supplies. No goal gate
+  // anywhere. `publish` reaches the exit.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    build   [shape=parallelogram, tool_command="exit 1"]
+    publish [shape=box, prompt="publish \${build.error}"]
+    start -> build
+    build -> publish [condition="context.build.error!=fatal"]
+    publish -> done
+  }`
+  const found = gate002(src)
+  assert.equal(found.length, 1)
+  assert.equal(found[0].severity, Severity.ERROR)
+  assert.equal(found[0].node, 'build')
+  assert.match(found[0].message, /build\.error/)
+  assert.match(found[0].message, /goal_gate/)
+})
+
+test('GATE-002 fires on ADR-014 hazard shape 2: the condition-only reference DATA-001 itself cannot see', () => {
+  // Same shape as hazard shape 1, but `publish`'s prompt carries no ${}
+  // reference anywhere -- DATA-001 has nothing to scan (residual R6), yet
+  // GATE-002 reads the condition directly and still fires.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    build   [shape=parallelogram, tool_command="exit 1"]
+    publish [shape=box, prompt="publish the artifact"]
+    start -> build
+    build -> publish [condition="context.build.error!=fatal"]
+    publish -> done
+  }`
+  // DATA-001 is silent -- proving this really is a gap only GATE-002 closes.
+  assert.deepEqual(
+    lint(parseDot(src)).filter((d) => d.code === 'DATA-001'),
+    [],
+  )
+  const found = gate002(src)
+  assert.equal(found.length, 1)
+  assert.equal(found[0].severity, Severity.ERROR)
+  assert.equal(found[0].node, 'build')
+})
+
+test('GATE-002 does not fire on ADR-014 legitimate shape 1: a plain linear pipeline, no conditions, no gate', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    build  [shape=parallelogram, tool_command="make build"]
+    test   [shape=parallelogram, tool_command="make test"]
+    deploy [shape=parallelogram, tool_command="make deploy"]
+    start -> build -> test -> deploy -> done
+  }`
+  assert.deepEqual(gate002(src), [])
+})
+
+test('GATE-002 does not fire on ADR-014 legitimate shape 2: a declared, discriminating failure-recovery route pair, no gate', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    build           [shape=parallelogram, tool_command="exit 1"]
+    notify_failure  [shape=box, prompt="notify"]
+    deploy          [shape=parallelogram, tool_command="make deploy"]
+    start -> build
+    build -> notify_failure [condition="outcome=fail"]
+    build -> deploy         [condition="outcome=success"]
+    notify_failure -> done
+    deploy -> done
+  }`
+  assert.deepEqual(gate002(src), [])
+})
+
+test('GATE-002 does not fire when the referenced key is in the supplied set (a declared outputs=)', () => {
+  // The declared-outputs= variant of hazard shape 2: `build.error` now has a
+  // real, declared producer, so condition 3 excludes it -- even though
+  // nothing actually substitutes it. A different, narrower gap (ADR-014's
+  // own "residual R6, declared-producer variant"), not this rule's to close.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    build   [shape=parallelogram, tool_command="exit 1", outputs="build.error"]
+    publish [shape=box, prompt="publish the artifact"]
+    start -> build
+    build -> publish [condition="context.build.error!=fatal"]
+    publish -> done
+  }`
+  assert.deepEqual(gate002(src), [])
+})
+
+test('GATE-002 does not fire when the referenced key is a graph attribute', () => {
+  const src = `digraph G {
+    goal="ship"
+    start [shape=Mdiamond]  done [shape=Msquare]
+    build   [shape=parallelogram, tool_command="exit 1"]
+    publish [shape=box, prompt="publish"]
+    start -> build
+    build -> publish [condition="context.goal!=urgent"]
+    publish -> done
+  }`
+  assert.deepEqual(gate002(src), [])
+})
+
+test('GATE-002 never fires on a graph that declares at least one goal_gate node -- GATE-001 territory, disjoint by construction', () => {
+  // The exact hazard shape 1 edge, but with an (unrelated) goal_gate node
+  // declared elsewhere in the graph. gates.size > 0 routes this graph to
+  // GATE-001's own guard instead, and GATE-002 must stay completely silent
+  // regardless of what the vacuous edge does.
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    build   [shape=parallelogram, tool_command="exit 1"]
+    publish [shape=box, prompt="publish \${build.error}"]
+    gate    [shape=box, goal_gate=true, prompt="judge"]
+    start -> build
+    build -> publish [condition="context.build.error!=fatal"]
+    publish -> gate
+    gate -> done [condition="outcome=success"]
+  }`
+  assert.deepEqual(gate002(src), [])
+})
+
+test('GATE-002 message names the offending key, the condition, and the remedy', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    build   [shape=parallelogram, tool_command="exit 1"]
+    publish [shape=box, prompt="publish \${build.error}"]
+    start -> build
+    build -> publish [condition="context.build.error!=fatal"]
+    publish -> done
+  }`
+  const found = gate002(src)
+  assert.equal(found.length, 1)
+  const msg = found[0].message
+  assert.match(msg, /\bbuild\b.*\bpublish\b/, 'names both edge endpoints')
+  assert.match(msg, /context\.build\.error!=fatal/, 'quotes the condition')
+  assert.match(msg, /build\.error/, 'names the undeclared key')
+  assert.match(msg, /goal_gate/i, 'suggests a goal gate as one remedy')
+  assert.match(msg, /outcome/i, 'suggests discriminating on outcome as another remedy')
+})
+
 test('COND-001 rejects a hyphenated bare key, which is a real producible key shape', () => {
   // Hyphenated context keys are genuinely reachable: `--param feature-flag=on`
   // splits on the first "=" with no key-format validation, and LLM

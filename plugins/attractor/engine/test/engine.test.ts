@@ -1471,34 +1471,42 @@ digraph G {
 }
 `
 
+// p3-01/ADR-014 update: this fixture is exactly GATE-002's own hazard shape 1
+// (an undeclared key referenced by a conditional edge, no goal_gate anywhere,
+// target reaches exit) -- the shape this story exists to refuse. I1's
+// opt-in scope, described above, has not changed: a key nobody declared is
+// still not a debt anybody owes at the DATA-001/eager-check level. What
+// changed is that FR-9b now refuses this exact graph shape at design time
+// (see ADR-014, .delivery/decisions/), so the runtime walk-past this test
+// used to pin no longer happens -- the run never starts.
 test('I1 is opt-in: an undeclared key gives no protection, and DATA-001 says so', async () => {
+  // The design-time half, now load-bearing rather than supplementary: GATE-002
+  // fires ERROR on this exact graph, naming the node that owed the key and the
+  // key itself.
+  const diags = lint(parseDot(VACUOUS_GUARD_CARRIES_FAILURE))
+  const gate002Diags = diags.filter((d) => d.code === 'GATE-002')
+  assert.equal(gate002Diags.length, 1)
+  assert.equal(gate002Diags[0].severity, Severity.ERROR)
+  assert.equal(gate002Diags[0].node, 'build')
+  assert.match(gate002Diags[0].message, /build\.error/)
+
+  // DATA-001 still fires too -- GATE-002 does not replace it, it closes the
+  // gap DATA-001 alone left open (see ADR-014's "Interaction with existing
+  // rules").
+  const dataDiags = diags.filter((d) => d.code === 'DATA-001')
+  assert.equal(dataDiags.length, 1)
+  assert.equal(dataDiags[0].node, 'publish')
+  assert.match(dataDiags[0].message, /outputs="build\.error"/)
+
+  // The runtime half: `Engine.run()` now refuses this graph at the lint gate,
+  // before dispatching anything -- matching the established HAND-001-refusal
+  // shape ('the embedded Engine refuses a HAND-001-dirty graph before
+  // dispatching anything (FR-11 x FR-17a)', above).
   const { result, runDir, cwd } = await execute(VACUOUS_GUARD_CARRIES_FAILURE)
   try {
-    // The walk-past, unchanged. This is what a graph that declares nothing
-    // gets.
-    assert.deepEqual(result.path, ['start', 'build', 'publish', 'done'])
-    // Conformant per section 11.3: this graph declares no goal gates, so the
-    // gate condition is vacuously satisfied and SUCCESS is correct. The verdict
-    // was never the defect.
-    assert.equal(result.status, Status.SUCCESS)
-    // The record is the only thing that makes the failure visible above the
-    // event log, and it must never regress.
-    assert.deepEqual(result.unresolvedFailures, ['build'])
-    assert.match(result.notes ?? '', /unresolved node failures/i)
-    const events = new EventLog(runDir).all()
-    assert.ok(
-      events.some((e) => e.type === 'node.end' && e.node === 'build' && e.status === 'fail'),
-    )
-    assert.ok(events.some((e) => e.type === 'pipeline.unresolved_failure'))
-
-    // The design-time half. An author running `attractor lint` is told before
-    // the pipeline ever starts, and told what to do about it.
-    const dataDiags = lint(parseDot(VACUOUS_GUARD_CARRIES_FAILURE)).filter(
-      (d) => d.code === 'DATA-001',
-    )
-    assert.equal(dataDiags.length, 1)
-    assert.equal(dataDiags[0].node, 'publish')
-    assert.match(dataDiags[0].message, /outputs="build\.error"/)
+    assert.equal(result.status, Status.FAIL)
+    assert.match(result.notes ?? '', /GATE-002/, 'the refusal names the rule that fired')
+    assert.equal(result.path.length, 0, 'lint refusal happens before any node is dispatched')
   } finally {
     cleanup(runDir, cwd)
   }
@@ -1787,7 +1795,11 @@ test('setManaged refuses a built-in key isEngineManagedKey does not cover', asyn
 test('the whole-branch review fixtures are graphs the CLI would accept', () => {
   for (const src of [
     VACUOUS_GUARD_HALTS_WHEN_DECLARED,
-    VACUOUS_GUARD_CARRIES_FAILURE,
+    // VACUOUS_GUARD_CARRIES_FAILURE removed (p3-01/ADR-014): it is GATE-002's
+    // own hazard shape 1, now correctly refused with a lint ERROR -- it no
+    // longer belongs in a "graphs the CLI would accept" set. See its own test,
+    // 'I1 is opt-in: an undeclared key gives no protection, and DATA-001 says
+    // so', above.
     FAIL_TARGET_ROUTES_AROUND_UNVISITED_GATE,
     REPAIR_LOOP,
     OTHER_NODE_SUCCEEDS,
