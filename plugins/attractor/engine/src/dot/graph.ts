@@ -155,6 +155,55 @@ export function directPredecessor(graph: Graph, nodeId: string): Node | null {
   return graph.nodes.get([...distinctSources][0]) ?? null
 }
 
+/**
+ * FR-17b: the plural sibling of `directPredecessor` above. Every DISTINCT
+ * source node with an edge into `nodeId`, self-loops excluded, with NO
+ * cardinality restriction -- `directPredecessor` returns null past one
+ * distinct source; this returns however many there are. `FanInHandler`
+ * (`handlers/fan-in.ts`) is the reason this exists: a `Handler.FAN_IN`
+ * node's normal case is MORE than one predecessor (one per converging
+ * branch), which is exactly the shape `directPredecessor` was built to
+ * refuse to disambiguate.
+ *
+ * Order is DOT source order (the order `graph.edges` was parsed in, the same
+ * order `outgoingEdges` and `selectEdge`'s tie-break already rely on for
+ * determinism), deduplicated by first occurrence.
+ */
+export function directPredecessors(graph: Graph, nodeId: string): Node[] {
+  const incoming = graph.edges.filter((e) => e.to === nodeId && e.from !== nodeId)
+  const seen = new Set<string>()
+  const result: Node[] = []
+  for (const e of incoming) {
+    if (seen.has(e.from)) continue
+    seen.add(e.from)
+    const node = graph.nodes.get(e.from)
+    if (node) result.push(node)
+  }
+  return result
+}
+
+/**
+ * FR-17b, OQ3's resolved default: `node.attrs.max_parallel`, parsed as a
+ * positive integer; missing, unparseable or `<= 0` falls back to 4.
+ *
+ * Same "fallback-not-ERROR" shape as `parseDuration` (`core/duration.ts`),
+ * deliberately -- NOT the `runsOn`/`type` shape (a closed, fully-known value
+ * set validated at lint time by RUNS-001/TYPE-001). `max_parallel` is an
+ * open numeric range: no lint rule can enumerate every legitimate value the
+ * way it can enumerate `runs_on`'s three strings, so there is nothing for an
+ * ERROR-severity rule to validate against, and a fallback that keeps the run
+ * going (at a conservative concurrency) is the right default direction here,
+ * matching `parseDuration`'s own precedent rather than inventing a new one.
+ */
+export function resolveMaxParallel(node: Node): number {
+  const DEFAULT_MAX_PARALLEL = 4
+  const raw = node.attrs.max_parallel
+  if (raw === undefined) return DEFAULT_MAX_PARALLEL
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_MAX_PARALLEL
+  return n
+}
+
 export function findByHandler(graph: Graph, kind: HandlerKind): Node[] {
   return [...graph.nodes.values()].filter((n) => n.handler === kind)
 }
@@ -204,8 +253,27 @@ export const INFERRED_OUTPUTS_BY_HANDLER: Record<HandlerKind, readonly string[]>
   [Handler.TOOL]: TOOL_OUTPUT_KEYS,
   [Handler.CONDITIONAL]: [], // PassthroughHandler, same as START.
   [Handler.HUMAN]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
-  [Handler.PARALLEL]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
-  [Handler.FAN_IN]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
+  // FR-17b: PARALLEL is registered (ParallelHandler) but still infers
+  // nothing FIXED, for the SAME reason CODERGEN does -- a branch's own
+  // contribution back to context is dynamic (whatever its nodes declared or
+  // inferred), not a constant set ParallelHandler itself always writes. See
+  // ADR-007's "effectiveOutputs()-scoped merge-back" for the actual
+  // mechanism; this table has nothing fixed to name for it.
+  [Handler.PARALLEL]: [],
+  // FR-17b: FAN_IN is registered (FanInHandler), and DOES write a fixed set
+  // on every dispatch -- FAN_IN_OUTPUT_KEYS in handlers/fan-in.ts, mirroring
+  // TOOL_OUTPUT_KEYS's shape exactly. It is NOT imported here the way
+  // TOOL_OUTPUT_KEYS is, though: handlers/fan-in.ts itself imports
+  // directPredecessors from THIS module, so importing FAN_IN_OUTPUT_KEYS
+  // back into graph.ts would recreate the exact graph.ts<->handler circular
+  // import ADR-004 already relocated four exports to prevent (see that
+  // ADR). `[]` here is therefore a deliberate, cycle-avoiding gap, not an
+  // oversight: DATA-001 will warn (harmlessly, at WARNING severity) on a
+  // downstream `${fan_in.success_count}`-style reference, since this table
+  // cannot see it, but the eager input check is unaffected -- it is driven
+  // by `declaredOutputs`, not this table (see `recordFailedOutputs`'s own
+  // comment in core/engine.ts), so nothing here can block a run at runtime.
+  [Handler.FAN_IN]: [],
   [Handler.MANAGER_LOOP]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
 }
 
@@ -220,13 +288,15 @@ export const INFERRED_OUTPUTS_BY_HANDLER: Record<HandlerKind, readonly string[]>
  * against defaultHandlers()'s actual keys, so drift fails loudly instead of
  * silently -- including when a future plan registers one of these kinds and
  * this list is not updated to match.
+ *
+ * FR-17b: PARALLEL and FAN_IN are REMOVED from this list -- `defaultHandlers()`
+ * now registers `ParallelHandler`/`FanInHandler` for both (core/engine.ts).
+ * HAND-001 (dot/lint.ts) reads this constant directly, so it narrows
+ * automatically: a `component`/`tripleoctagon`-shaped node now lints clean
+ * instead of refusing at ERROR. HUMAN and MANAGER_LOOP are untouched --
+ * neither is part of this change, and both remain refused exactly as today.
  */
-export const UNREGISTERED_HANDLER_KINDS: readonly HandlerKind[] = [
-  Handler.HUMAN,
-  Handler.PARALLEL,
-  Handler.FAN_IN,
-  Handler.MANAGER_LOOP,
-]
+export const UNREGISTERED_HANDLER_KINDS: readonly HandlerKind[] = [Handler.HUMAN, Handler.MANAGER_LOOP]
 
 /**
  * The handler kinds `defaultHandlers` maps to `PassthroughHandler`, and
@@ -398,8 +468,15 @@ export const SUBSTITUTABLE_ATTRS: Record<HandlerKind, readonly string[]> = {
   [Handler.TOOL]: ['tool_command'], // ToolHandler: `attrs.tool_command`.
   [Handler.CONDITIONAL]: [], // PassthroughHandler, same as START.
   [Handler.HUMAN]: [], // Not registered in defaultHandlers() -- cannot execute.
-  [Handler.PARALLEL]: [], // Not registered in defaultHandlers() -- cannot execute.
-  [Handler.FAN_IN]: [], // Not registered in defaultHandlers() -- cannot execute.
+  // FR-17b: PARALLEL is registered now, but ParallelHandler substitutes no
+  // node attribute text of its own -- a component node's outgoing edges are
+  // branch membership, not a prompt or command, so there is nothing here for
+  // `substitute()` to expand.
+  [Handler.PARALLEL]: [],
+  // FR-17b: FAN_IN is registered now, but FanInHandler substitutes no node
+  // attribute text either -- it computes its verdict from directPredecessors
+  // and the nodeStatus ledger, not from anything on the node itself.
+  [Handler.FAN_IN]: [],
   [Handler.MANAGER_LOOP]: [], // Not registered in defaultHandlers() -- cannot execute.
 }
 

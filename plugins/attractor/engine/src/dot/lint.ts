@@ -528,6 +528,56 @@ export function lint(graph: Graph): Diagnostic[] {
       })
     }
 
+    // PAR-001: a Handler.PARALLEL node with nothing to fan out to.
+    //
+    // FR-17b. A `component`-shaped node's outgoing edges ARE its branches
+    // (OQ3's resolved design: "every outgoing DOT edge from a
+    // component-shaped node is a branch, structurally") -- zero outgoing
+    // edges means zero branches, which `ParallelHandler` itself already
+    // refuses at runtime (see handlers/parallel.ts). Refused here too,
+    // before anything runs, matching HAND-001's own reasoning: catching an
+    // orchestration-level defect at design time is cheaper than mid-run.
+    if (node.handler === Handler.PARALLEL && outgoingEdges(graph, node.id).length === 0) {
+      diags.push({
+        code: 'PAR-001',
+        severity: Severity.ERROR,
+        node: node.id,
+        message:
+          `node ${node.id} resolves to Handler.PARALLEL but has no outgoing edges -- a ` +
+          `component node's outgoing edges ARE its branches, so this node has nothing to ` +
+          `fan out to`,
+      })
+    }
+
+    // PAR-002: a malformed branch_worktree value.
+    //
+    // FR-17b, ADR-008. Same shape and severity as HITL-002's goal_gate check
+    // above, and the same reasoning: the runtime match on
+    // `attrs.branch_worktree` is an exact string comparison against 'true'
+    // (see handlers/parallel.ts's "switch on first sight" logic), so a
+    // near-miss ("TRUE", "1") silently disables the isolation an author
+    // believed was armed. Unlike goal_gate this is not merely a routing
+    // mistake: getting it wrong means two concurrent branches write into the
+    // SAME shared worktree, each unaware of the other, which is exactly the
+    // corruption ADR-008's per-repo mutex and the branch_worktree opt-in both
+    // exist to prevent -- a safety-relevant boolean, not a cosmetic one.
+    if (
+      node.attrs.branch_worktree !== undefined &&
+      node.attrs.branch_worktree !== 'true' &&
+      node.attrs.branch_worktree !== 'false'
+    ) {
+      diags.push({
+        code: 'PAR-002',
+        severity: Severity.ERROR,
+        node: node.id,
+        message:
+          `node ${node.id} sets branch_worktree="${node.attrs.branch_worktree}"; the engine ` +
+          `only recognises the exact strings "true" and "false" -- any other value (including ` +
+          `"TRUE" or "1") silently disables isolation, and two concurrent branches can then ` +
+          `corrupt each other's uncommitted work in the shared worktree`,
+      })
+    }
+
     // HITL-003: an agent-inclusive human gate whose exposed context traces to
     // a single, structurally-provable direct predecessor -- a self-report
     // risk for the (not yet built) `agent` channel. WARNING, not ERROR: this

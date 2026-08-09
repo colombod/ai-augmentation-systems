@@ -1731,22 +1731,27 @@ test('the bare preferred_label spelling routes identically to the qualified one'
 test('setManaged refuses a built-in key isEngineManagedKey does not cover', async () => {
   const { runDir, cwd } = tempDirs()
   try {
+    const context = Context.from({})
     const engine = new Engine({
       graph: parseDot(LINEAR),
-      context: Context.from({}),
+      context,
       runDir,
       cwd,
       handlers: defaultHandlers(new StubBackend({})),
     })
-    const managed = engine as unknown as { setManaged(key: string, value: string): void }
+    // FR-17b: `setManaged` now takes the target Context as its first
+    // parameter, so a branch's own cloned Context (not always the run's
+    // shared one) is what gets written -- see core/engine.ts's own doc
+    // comment on this method for why.
+    const managed = engine as unknown as { setManaged(context: Context, key: string, value: string): void }
     assert.throws(
-      () => managed.setManaged('last_verdict', 'ship'),
+      () => managed.setManaged(context, 'last_verdict', 'ship'),
       /not covered by isEngineManagedKey/,
       'a routing-visible built-in that is not reserved is forgeable by a backend',
     )
     // And the permitting direction, so this is not a one-way test: a key the
     // predicate does cover must go through.
-    managed.setManaged('current_node', 'a')
+    managed.setManaged(context, 'current_node', 'a')
   } finally {
     cleanup(runDir, cwd)
   }

@@ -3,7 +3,7 @@
 // src/cli.ts
 import { readFileSync as readFileSync3 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { basename as basename2, resolve as resolve2 } from "node:path";
+import { basename as basename2, resolve as resolve3 } from "node:path";
 
 // node_modules/@ts-graphviz/common/lib/common.js
 var RootModelsContext = Object.seal({
@@ -2914,7 +2914,7 @@ function referencedKeys(text) {
 
 // src/handlers/tool.ts
 function runShell(command, cwd, timeoutMs) {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     const child = spawn("sh", ["-c", command], { cwd });
     let stdout = "";
     let stderr = "";
@@ -2930,11 +2930,11 @@ function runShell(command, cwd, timeoutMs) {
     });
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
-      resolve3({ code: code ?? 1, stdout, stderr });
+      resolve4({ code: code ?? 1, stdout, stderr });
     });
     child.on("error", (err) => {
       if (timer) clearTimeout(timer);
-      resolve3({ code: 1, stdout, stderr: `${stderr}${String(err)}` });
+      resolve4({ code: 1, stdout, stderr: `${stderr}${String(err)}` });
     });
   });
 }
@@ -3072,6 +3072,26 @@ function directPredecessor(graph, nodeId) {
   if (distinctSources.size !== 1) return null;
   return graph.nodes.get([...distinctSources][0]) ?? null;
 }
+function directPredecessors(graph, nodeId) {
+  const incoming = graph.edges.filter((e) => e.to === nodeId && e.from !== nodeId);
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const e of incoming) {
+    if (seen.has(e.from)) continue;
+    seen.add(e.from);
+    const node = graph.nodes.get(e.from);
+    if (node) result.push(node);
+  }
+  return result;
+}
+function resolveMaxParallel(node) {
+  const DEFAULT_MAX_PARALLEL = 4;
+  const raw = node.attrs.max_parallel;
+  if (raw === void 0) return DEFAULT_MAX_PARALLEL;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_MAX_PARALLEL;
+  return n;
+}
 function findByHandler(graph, kind) {
   return [...graph.nodes.values()].filter((n) => n.handler === kind);
 }
@@ -3087,19 +3107,31 @@ var INFERRED_OUTPUTS_BY_HANDLER = {
   // PassthroughHandler, same as START.
   [Handler.HUMAN]: [],
   // Not registered in defaultHandlers() -- cannot execute, let alone write.
+  // FR-17b: PARALLEL is registered (ParallelHandler) but still infers
+  // nothing FIXED, for the SAME reason CODERGEN does -- a branch's own
+  // contribution back to context is dynamic (whatever its nodes declared or
+  // inferred), not a constant set ParallelHandler itself always writes. See
+  // ADR-007's "effectiveOutputs()-scoped merge-back" for the actual
+  // mechanism; this table has nothing fixed to name for it.
   [Handler.PARALLEL]: [],
-  // Not registered in defaultHandlers() -- cannot execute, let alone write.
+  // FR-17b: FAN_IN is registered (FanInHandler), and DOES write a fixed set
+  // on every dispatch -- FAN_IN_OUTPUT_KEYS in handlers/fan-in.ts, mirroring
+  // TOOL_OUTPUT_KEYS's shape exactly. It is NOT imported here the way
+  // TOOL_OUTPUT_KEYS is, though: handlers/fan-in.ts itself imports
+  // directPredecessors from THIS module, so importing FAN_IN_OUTPUT_KEYS
+  // back into graph.ts would recreate the exact graph.ts<->handler circular
+  // import ADR-004 already relocated four exports to prevent (see that
+  // ADR). `[]` here is therefore a deliberate, cycle-avoiding gap, not an
+  // oversight: DATA-001 will warn (harmlessly, at WARNING severity) on a
+  // downstream `${fan_in.success_count}`-style reference, since this table
+  // cannot see it, but the eager input check is unaffected -- it is driven
+  // by `declaredOutputs`, not this table (see `recordFailedOutputs`'s own
+  // comment in core/engine.ts), so nothing here can block a run at runtime.
   [Handler.FAN_IN]: [],
-  // Not registered in defaultHandlers() -- cannot execute, let alone write.
   [Handler.MANAGER_LOOP]: []
   // Not registered in defaultHandlers() -- cannot execute, let alone write.
 };
-var UNREGISTERED_HANDLER_KINDS = [
-  Handler.HUMAN,
-  Handler.PARALLEL,
-  Handler.FAN_IN,
-  Handler.MANAGER_LOOP
-];
+var UNREGISTERED_HANDLER_KINDS = [Handler.HUMAN, Handler.MANAGER_LOOP];
 var PASSTHROUGH_KINDS = [Handler.START, Handler.EXIT, Handler.CONDITIONAL];
 var RunsOn = {
   SUCCESS: "success",
@@ -3131,10 +3163,15 @@ var SUBSTITUTABLE_ATTRS = {
   // PassthroughHandler, same as START.
   [Handler.HUMAN]: [],
   // Not registered in defaultHandlers() -- cannot execute.
+  // FR-17b: PARALLEL is registered now, but ParallelHandler substitutes no
+  // node attribute text of its own -- a component node's outgoing edges are
+  // branch membership, not a prompt or command, so there is nothing here for
+  // `substitute()` to expand.
   [Handler.PARALLEL]: [],
-  // Not registered in defaultHandlers() -- cannot execute.
+  // FR-17b: FAN_IN is registered now, but FanInHandler substitutes no node
+  // attribute text either -- it computes its verdict from directPredecessors
+  // and the nodeStatus ledger, not from anything on the node itself.
   [Handler.FAN_IN]: [],
-  // Not registered in defaultHandlers() -- cannot execute.
   [Handler.MANAGER_LOOP]: []
   // Not registered in defaultHandlers() -- cannot execute.
 };
@@ -3898,6 +3935,22 @@ function lint(graph) {
         message: `node ${node.id} resolves to handler "${node.handler}", which this build does not register (known unregistered: ${UNREGISTERED_HANDLER_KINDS.join(", ")}); the run would abort with "no handler registered" mid-pipeline. Refused here instead, before anything runs.`
       });
     }
+    if (node.handler === Handler.PARALLEL && outgoingEdges(graph, node.id).length === 0) {
+      diags.push({
+        code: "PAR-001",
+        severity: Severity.ERROR,
+        node: node.id,
+        message: `node ${node.id} resolves to Handler.PARALLEL but has no outgoing edges -- a component node's outgoing edges ARE its branches, so this node has nothing to fan out to`
+      });
+    }
+    if (node.attrs.branch_worktree !== void 0 && node.attrs.branch_worktree !== "true" && node.attrs.branch_worktree !== "false") {
+      diags.push({
+        code: "PAR-002",
+        severity: Severity.ERROR,
+        node: node.id,
+        message: `node ${node.id} sets branch_worktree="${node.attrs.branch_worktree}"; the engine only recognises the exact strings "true" and "false" -- any other value (including "TRUE" or "1") silently disables isolation, and two concurrent branches can then corrupt each other's uncommitted work in the shared worktree`
+      });
+    }
     if (node.handler === Handler.HUMAN) {
       const channelTokens = (node.attrs["human.channel"] ?? "").split(",").map((t) => t.trim());
       const context = (node.attrs["human.context"] ?? "").trim();
@@ -4232,6 +4285,397 @@ var BoxHandler = class {
   }
 };
 
+// src/handlers/parallel.ts
+import { resolve as resolve2 } from "node:path";
+
+// src/run/worktree.ts
+import { execFileSync } from "node:child_process";
+import {
+  existsSync as existsSync3,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmdirSync,
+  rmSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join as join5, resolve, sep } from "node:path";
+var WT_PREFIX = "attractor-wt-";
+function git(cwd, args) {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+function isGitRepo(dir) {
+  try {
+    return git(dir, ["rev-parse", "--is-inside-work-tree"]).trim() === "true";
+  } catch {
+    return false;
+  }
+}
+function createWorktree(repoDir, runId) {
+  if (!isGitRepo(repoDir)) {
+    throw new Error(`not a git repository: ${repoDir} -- cannot create an isolated worktree`);
+  }
+  const branch = `attractor/${runId}`;
+  const parent = mkdtempSync(join5(tmpdir(), WT_PREFIX));
+  const path = join5(parent, runId);
+  try {
+    git(repoDir, ["worktree", "add", "-q", "-b", branch, path]);
+  } catch (err) {
+    rmSync(parent, { recursive: true, force: true });
+    throw err;
+  }
+  return { path, branch };
+}
+function realOrResolved(p) {
+  const abs = resolve(p);
+  try {
+    return realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+function isOurWorktree(target) {
+  const tmpRoot = realOrResolved(tmpdir());
+  const t = realOrResolved(target);
+  return t.startsWith(`${tmpRoot}${sep}`) && basename(dirname(t)).startsWith(WT_PREFIX);
+}
+function hasUncommittedWork(worktreePath) {
+  try {
+    return git(worktreePath, ["status", "--porcelain"]).trim() !== "";
+  } catch {
+    return true;
+  }
+}
+function isRegisteredWorktree(repoDir, target) {
+  try {
+    const out = git(repoDir, ["worktree", "list", "--porcelain"]);
+    for (const line of out.split("\n")) {
+      if (line.startsWith("worktree ") && realOrResolved(line.slice("worktree ".length)) === target) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+function isNonEmptyDirectory(path) {
+  try {
+    return readdirSync(path).length > 0;
+  } catch {
+    return true;
+  }
+}
+function removeWorktree(repoDir, wt) {
+  const target = realOrResolved(wt.path);
+  const root = realOrResolved(repoDir);
+  const ours = isOurWorktree(target);
+  if (target === root || root.startsWith(`${target}${sep}`)) {
+    return {
+      removed: false,
+      warning: `refusing to remove ${target}: it is, or contains, the repository root`
+    };
+  }
+  const registered = existsSync3(target) && isRegisteredWorktree(repoDir, target);
+  if (registered && hasUncommittedWork(target)) {
+    return {
+      removed: false,
+      warning: `keeping ${target}: it has uncommitted work on branch ${wt.branch}. Commit it there, or delete the directory once you have salvaged it.`
+    };
+  }
+  if (existsSync3(target) && ours && !registered && isNonEmptyDirectory(target)) {
+    return {
+      removed: false,
+      warning: `keeping ${target}: git's administrative record for this worktree is gone, so its status cannot be verified, and the directory is not empty. Treating it as uncommitted work on branch ${wt.branch} rather than guessing it is safe to delete.`
+    };
+  }
+  let gitError;
+  try {
+    git(repoDir, ["worktree", "remove", "--force", target]);
+  } catch (err) {
+    gitError = (err instanceof Error ? err.message : String(err)).trim();
+  }
+  try {
+    git(repoDir, ["worktree", "prune"]);
+  } catch {
+  }
+  const survivedGit = existsSync3(target);
+  if (survivedGit) {
+    if (!ours) {
+      return {
+        removed: false,
+        warning: `refusing to delete ${target}: it is not a worktree this module created (expected a ${WT_PREFIX}* directory under the system temp directory)`
+      };
+    }
+    try {
+      rmSync(target, { recursive: true, force: true });
+    } catch (err) {
+      return { removed: false, warning: `could not remove worktree ${target}: ${String(err)}` };
+    }
+  }
+  if (ours) {
+    const parent = dirname(target);
+    try {
+      if (existsSync3(parent) && readdirSync(parent).length === 0) rmdirSync(parent);
+    } catch {
+    }
+  }
+  if (survivedGit && gitError !== void 0) {
+    return {
+      removed: true,
+      warning: `git could not remove the worktree cleanly, directory was deleted directly: ${gitError}`
+    };
+  }
+  return { removed: true };
+}
+
+// src/handlers/parallel.ts
+var ParallelHandler = class {
+  /**
+   * ADR-008: the ONLY fix for GitHub issue #15 (`createWorktree` racing on
+   * `.git/worktrees/` administrative state under concurrent calls) this
+   * change set makes -- at this call site, not inside `createWorktree`
+   * itself, which stays untouched. Keyed by the resolved absolute repo path
+   * so two different repositories never serialize against each other.
+   */
+  repoLocks = /* @__PURE__ */ new Map();
+  withRepoLock(repoDir, fn) {
+    const key = resolve2(repoDir);
+    const prior = this.repoLocks.get(key) ?? Promise.resolve();
+    const next = prior.then(fn, fn);
+    this.repoLocks.set(
+      key,
+      next.then(
+        () => void 0,
+        () => void 0
+      )
+    );
+    return next;
+  }
+  async runPool(items, limit, fn) {
+    const results = new Array(items.length);
+    let next = 0;
+    const worker = async () => {
+      for (; ; ) {
+        const i = next++;
+        if (i >= items.length) return;
+        results[i] = await fn(items[i]);
+      }
+    };
+    const workerCount = Math.max(1, Math.min(limit, items.length));
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return results;
+  }
+  /**
+   * ADR-007, "Per-branch context isolation": walk one branch from its edge
+   * target through to (but not including) the shared join node, using a
+   * `Context.clone()` no other branch ever touches.
+   *
+   * ADR-008, "switch on first sight": the branch starts in the run's shared
+   * `cwd`. The first node in its walk whose `attrs.branch_worktree ===
+   * 'true'` is seen, ParallelHandler creates (under the per-repo mutex) an
+   * isolated worktree and every remaining node in THIS branch dispatches
+   * there instead. The worktree is removed in a `finally`, exactly once,
+   * whether the branch converged, dead-ended, or threw.
+   */
+  async walkBranch(ctx, edge) {
+    const runBranchNode = ctx.runBranchNode;
+    if (runBranchNode === void 0) {
+      throw new Error(
+        "ParallelHandler requires HandlerCtx.runBranchNode; only Engine.run() populates it"
+      );
+    }
+    const branchContext = ctx.context.clone();
+    const visited = [];
+    let currentId = edge.to;
+    let branchCwd = ctx.cwd;
+    let usingIsolatedWorktree = false;
+    let worktree;
+    try {
+      while (currentId !== null) {
+        const node = ctx.graph.nodes.get(currentId);
+        if (node === void 0) {
+          return { edge, convergedTo: null, visited, finalContext: branchContext };
+        }
+        if (node.handler === Handler.FAN_IN || node.handler === Handler.EXIT) {
+          return { edge, convergedTo: currentId, visited, finalContext: branchContext };
+        }
+        if (!usingIsolatedWorktree && node.attrs.branch_worktree === "true") {
+          usingIsolatedWorktree = true;
+          const repoDir = ctx.repoDir ?? ctx.cwd;
+          worktree = await this.withRepoLock(repoDir, () => createWorktree(repoDir, `${ctx.node.id}-${edge.to}`));
+          branchCwd = worktree.path;
+          ctx.events.append({
+            type: "node.parallel.branch_worktree",
+            node: ctx.node.id,
+            branch: edge.to,
+            at: node.id,
+            path: worktree.path
+          });
+        }
+        const step = await runBranchNode(currentId, branchContext, branchCwd);
+        visited.push(currentId);
+        currentId = step.nextId;
+      }
+      return { edge, convergedTo: null, visited, finalContext: branchContext };
+    } finally {
+      if (worktree !== void 0) {
+        const repoDir = ctx.repoDir ?? ctx.cwd;
+        const removal = removeWorktree(repoDir, worktree);
+        if (removal.warning !== void 0) {
+          ctx.events.append({
+            type: "node.parallel.worktree_warning",
+            node: ctx.node.id,
+            branch: edge.to,
+            warning: removal.warning
+          });
+        }
+      }
+    }
+  }
+  /**
+   * ADR-007, "Why scoped to effectiveOutputs(), not every written key": the
+   * union of `effectiveOutputs(n)` over every node `n` this branch actually
+   * visited, intersected with the keys whose value in the branch's own final
+   * context differs from the shared pre-branch baseline. Bare engine-managed
+   * keys are excluded entirely -- they are per-node-visit routing signals,
+   * about to be overwritten by FanInHandler's own dispatch regardless.
+   */
+  contribution(graph, baseline, visited, finalContext) {
+    const declaredKeys = /* @__PURE__ */ new Set();
+    for (const nodeId of visited) {
+      const node = graph.nodes.get(nodeId);
+      if (node === void 0) continue;
+      for (const key of effectiveOutputs(node)) {
+        if (ENGINE_MANAGED_KEYS.includes(key)) continue;
+        declaredKeys.add(key);
+      }
+    }
+    const result = /* @__PURE__ */ new Map();
+    for (const key of declaredKeys) {
+      const value = finalContext.get(key);
+      if (value === void 0) continue;
+      if (value !== baseline[key]) result.set(key, value);
+    }
+    return result;
+  }
+  async execute(ctx) {
+    const branches = outgoingEdges(ctx.graph, ctx.node.id);
+    if (branches.length === 0) {
+      const msg = `node ${ctx.node.id} resolves to Handler.PARALLEL but has no outgoing edges to fan out to`;
+      return { status: Status.FAIL, notes: msg, failureReason: msg };
+    }
+    const maxParallel = resolveMaxParallel(ctx.node);
+    ctx.events.append({
+      type: "node.parallel.start",
+      node: ctx.node.id,
+      branches: branches.length,
+      maxParallel
+    });
+    const baseline = ctx.context.snapshot();
+    const results = await this.runPool(branches, maxParallel, (edge) => this.walkBranch(ctx, edge));
+    const survived = results.filter((r) => r.convergedTo !== null);
+    const targets = new Set(survived.map((r) => r.convergedTo));
+    if (targets.size !== 1) {
+      const msg = targets.size === 0 ? `no branch of node ${ctx.node.id} reached a convergence target` : `branches of node ${ctx.node.id} converged on ${targets.size} distinct nodes: ${[...targets].join(", ")}`;
+      ctx.events.append({ type: "node.parallel.end", node: ctx.node.id, status: Status.FAIL });
+      return { status: Status.FAIL, notes: msg, failureReason: msg };
+    }
+    const fanInId = [...targets][0];
+    const fanInNode = ctx.graph.nodes.get(fanInId);
+    if (fanInNode === void 0 || fanInNode.handler !== Handler.FAN_IN) {
+      const msg = `branches of node ${ctx.node.id} converge on ${fanInId}, which does not resolve to Handler.FAN_IN`;
+      ctx.events.append({ type: "node.parallel.end", node: ctx.node.id, status: Status.FAIL });
+      return { status: Status.FAIL, notes: msg, failureReason: msg };
+    }
+    const contextUpdates = {};
+    const winningBranch = {};
+    for (const r of results) {
+      const contribution = this.contribution(ctx.graph, baseline, r.visited, r.finalContext);
+      for (const [key, value] of contribution) {
+        if (Object.hasOwn(contextUpdates, key)) {
+          if (contextUpdates[key] !== value) {
+            ctx.events.append({
+              type: "node.parallel.context_conflict",
+              node: ctx.node.id,
+              key,
+              winningBranch: winningBranch[key],
+              losingBranch: r.edge.to,
+              losingValue: value
+            });
+          }
+          continue;
+        }
+        contextUpdates[key] = value;
+        winningBranch[key] = r.edge.to;
+      }
+    }
+    if (Object.keys(contextUpdates).length > 0) ctx.context.merge(contextUpdates);
+    ctx.events.append({
+      type: "node.parallel.end",
+      node: ctx.node.id,
+      status: Status.SUCCESS,
+      fanIn: fanInId
+    });
+    return {
+      status: Status.SUCCESS,
+      suggestedNextIds: [fanInId],
+      contextUpdates,
+      notes: `${branches.length} branch(es) converged on ${fanInId}`
+    };
+  }
+};
+
+// src/handlers/fan-in.ts
+import { mkdirSync as mkdirSync5, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join6 } from "node:path";
+var FanInHandler = class {
+  writeStatus(ctx, outcome) {
+    const nodeDir = join6(ctx.runDir, ctx.node.id);
+    mkdirSync5(nodeDir, { recursive: true });
+    const statusFile = {
+      outcome: outcome.status,
+      preferred_label: outcome.preferredLabel,
+      suggested_next_ids: outcome.suggestedNextIds,
+      context_updates: outcome.contextUpdates,
+      notes: outcome.notes,
+      failure_reason: outcome.failureReason
+    };
+    writeFileSync4(join6(nodeDir, "status.json"), JSON.stringify(statusFile, null, 2), "utf8");
+  }
+  async execute(ctx) {
+    const predecessors = directPredecessors(ctx.graph, ctx.node.id);
+    const statuses = predecessors.map((p) => ctx.nodeStatus?.(p.id));
+    const successCount = statuses.filter((s) => s === Status.SUCCESS || s === Status.PARTIAL).length;
+    const failCount = statuses.filter((s) => s === Status.FAIL).length;
+    const total = predecessors.length;
+    const status = successCount === 0 ? Status.FAIL : failCount === 0 ? Status.SUCCESS : Status.PARTIAL;
+    const updates = {
+      "fan_in.success_count": String(successCount),
+      "fan_in.fail_count": String(failCount),
+      "fan_in.total": String(total)
+    };
+    ctx.context.merge(updates);
+    const notes = `${successCount}/${total} branches succeeded (${failCount} failed)`;
+    const outcome = {
+      status,
+      contextUpdates: updates,
+      notes,
+      ...status === Status.FAIL ? { failureReason: notes } : {}
+    };
+    ctx.events.append({
+      type: "node.fan_in.end",
+      node: ctx.node.id,
+      status,
+      successCount,
+      failCount,
+      total
+    });
+    this.writeStatus(ctx, outcome);
+    return outcome;
+  }
+};
+
 // src/core/engine.ts
 var PassthroughHandler = class {
   async execute() {
@@ -4243,7 +4687,12 @@ function defaultHandlers(backend) {
   return new Map([
     ...PASSTHROUGH_KINDS.map((kind) => [kind, passthrough]),
     [Handler.TOOL, new ToolHandler()],
-    [Handler.CODERGEN, new BoxHandler(backend)]
+    [Handler.CODERGEN, new BoxHandler(backend)],
+    // FR-17b: the two new handler kinds this addendum registers.
+    // UNREGISTERED_HANDLER_KINDS (dot/graph.ts) has been narrowed to match --
+    // the anchor test in lint.test.ts cross-checks the two stay in step.
+    [Handler.PARALLEL, new ParallelHandler()],
+    [Handler.FAN_IN, new FanInHandler()]
   ]);
 }
 var DEFAULT_MAX_STEPS = 500;
@@ -4398,6 +4847,34 @@ var Engine = class {
    * the only way out is `outputsOwedByFailedNodes`, which hands back a copy.
    */
   failedOutputs = /* @__PURE__ */ new Map();
+  /**
+   * FR-17b, ADR-007 point 4: the most recently recorded TERMINAL Outcome
+   * status of every node the run has dispatched, main path or any branch --
+   * `Handler.FAN_IN`'s only source of truth about what happened upstream of
+   * it, via `HandlerCtx.nodeStatus`.
+   *
+   * Populated at the SAME two call sites that already maintain
+   * `nodeFailures`/`failedOutputs` -- `recordOutcome`, `recordAbandoned` --
+   * so it can never disagree with those ledgers about what counts as a
+   * node's terminal outcome. "Terminal" is why RETRY and SKIPPED update
+   * neither this map nor those two: an in-place retry attempt is not yet a
+   * verdict on the node, exactly the same reasoning `nodeFailures` already
+   * rests on.
+   */
+  lastOutcomeByNode = /* @__PURE__ */ new Map();
+  /**
+   * FR-17b, ADR-007 point 1: NFR-1's 500-node-visit cap, promoted from a
+   * `run()`-local loop variable to a private instance field so a fan-out's
+   * branches draw from the SAME run-wide budget the main path does, rather
+   * than each getting an independent allowance a sufficiently wide fan-out
+   * could use to blow past the cap in aggregate. Incremented once per
+   * `visitNode()` attempt -- including in-place retries, matching today's
+   * exact per-attempt accounting (a `continue` inside the old `for` loop
+   * still ran the increment clause).
+   */
+  stepCount = 0;
+  /** Set once, at the top of `run()`, from `opts.maxSteps ?? DEFAULT_MAX_STEPS`. */
+  maxSteps = DEFAULT_MAX_STEPS;
   constructor(opts) {
     this.opts = opts;
     this.events = new EventLog(opts.runDir);
@@ -4651,6 +5128,7 @@ var Engine = class {
   recordAbandoned(nodeId) {
     this.nodeFailures.set(nodeId, true);
     this.recordFailedOutputs(nodeId);
+    this.lastOutcomeByNode.set(nodeId, Status.FAIL);
   }
   /**
    * Build every terminal RunResult through one place, so the unresolved-FAIL
@@ -4684,7 +5162,17 @@ var Engine = class {
    * `context.outcome` saying "retry" while the edge being selected sees
    * "fail".
    */
-  recordOutcome(nodeId, outcome) {
+  /**
+   * `context` is now a PARAMETER, not always `this.opts.context` -- FR-17b's
+   * whole reason. A node dispatched inside a branch walk carries its own
+   * cloned `Context` (ADR-007, "clone, don't share"), and the engine-managed
+   * keys this method writes (`outcome`, `preferred_label`) must land in THAT
+   * clone, not leak into the run's shared context while the branch is still
+   * in flight. The main path is unaffected: `run()` still passes its own
+   * `this.opts.context` through unchanged, so every existing call site's
+   * behaviour is identical to before this parameter existed.
+   */
+  recordOutcome(context, nodeId, outcome) {
     const node = this.opts.graph.nodes.get(nodeId);
     if (node !== void 0 && wantsVerdict(node)) {
       this.gateOutcomes.set(nodeId, outcome.status);
@@ -4692,13 +5180,15 @@ var Engine = class {
     if (outcome.status === Status.FAIL) {
       this.nodeFailures.set(nodeId, true);
       this.recordFailedOutputs(nodeId);
+      this.lastOutcomeByNode.set(nodeId, outcome.status);
     } else if (outcome.status === Status.SUCCESS || outcome.status === Status.PARTIAL) {
       if (this.nodeFailures.has(nodeId)) this.nodeFailures.set(nodeId, false);
       this.clearFailedOutputs(nodeId);
+      this.lastOutcomeByNode.set(nodeId, outcome.status);
     }
-    this.setManaged("outcome", outcome.status);
+    this.setManaged(context, "outcome", outcome.status);
     if (outcome.preferredLabel !== void 0 && outcome.preferredLabel !== "") {
-      this.setManaged("preferred_label", outcome.preferredLabel);
+      this.setManaged(context, "preferred_label", outcome.preferredLabel);
     }
   }
   /**
@@ -4713,56 +5203,82 @@ var Engine = class {
    * mistake, never on run data -- a loud abort is right for the one case
    * where the control plane has caught itself, and any test touching the new
    * key will surface it immediately.
+   *
+   * `context` is a parameter for the same FR-17b reason `recordOutcome`'s is.
    */
-  setManaged(key, value) {
+  setManaged(context, key, value) {
     if (!isEngineManagedKey(key)) {
       throw new Error(
         `engine built-in context key ${key} is not covered by isEngineManagedKey; register it there so a backend cannot forge it`
       );
     }
-    this.opts.context.set(key, value);
+    context.set(key, value);
   }
-  async run() {
-    const { graph, context } = this.opts;
-    const maxSteps = this.opts.maxSteps ?? DEFAULT_MAX_STEPS;
-    const diagnostics = lint(graph);
-    if (hasErrors(diagnostics)) {
-      const detail = diagnostics.filter((d) => d.severity === Severity.ERROR).map((d) => `${d.code}${d.node ? ` (${d.node})` : ""}: ${d.message}`).join("; ");
-      const msg = `graph carries error-severity lint diagnostics and will not run: ${detail}`;
-      this.events.append({ type: "pipeline.end", status: Status.FAIL });
-      return this.result(Status.FAIL, msg, msg);
+  /**
+   * FR-17b, ADR-007 point 4: `HandlerCtx.nodeStatus`'s implementation.
+   * Exposed as a bound closure, populated only by `run()`, consumed only by
+   * `FanInHandler`.
+   */
+  nodeStatus(nodeId) {
+    return this.lastOutcomeByNode.get(nodeId);
+  }
+  /**
+   * FR-17b, ADR-007 point 1: `Engine.run()`'s per-node loop body, extracted
+   * so `ParallelHandler` can walk a branch's chain of nodes through the
+   * EXACT same eager-input-check/retry-ladder/ledger-update machinery the
+   * main path already gets, instead of a second, parallel implementation of
+   * it (see ADR-007's "Alternatives considered" for why that was rejected).
+   *
+   * Covers everything the old loop body did from `this.path.push(node.id)`
+   * through resolving what comes next: handler lookup, attempt tracking,
+   * `node.start`, `context.takeWritten()` drain, the eager input check, the
+   * `runs_on` skip, dispatch (try/catch to FAIL), clearing `failedOutputs`
+   * for written keys, `node.end`, both `recordOutcome` calls, the retry
+   * ladder (in-place retries loop internally BELOW; an exhausted retry with
+   * a target returns that target as `nextId` directly, bypassing edge
+   * selection -- today's `continue`-driven jump, now expressed as a return),
+   * `attempts` reset, `completed` push, and a conditional `checkpoint()`
+   * call gated by `opts.checkpoint`.
+   *
+   * It does NOT special-case `Handler.EXIT`'s goal-gate check -- that stays
+   * in `run()`, which still does its own `graph.nodes.get(currentId)` lookup
+   * and its own EXIT branch, calling this method for the ordinary per-node
+   * work only.
+   *
+   * `context`/`cwd` are PARAMETERS, not always `this.opts.context`/
+   * `this.opts.cwd`: `run()` passes its own run-wide values for the main
+   * path; `ParallelHandler` (via `HandlerCtx.runBranchNode`, populated
+   * below) passes a per-branch `Context.clone()` and possibly a per-branch
+   * worktree `cwd`. Every OTHER piece of state this method touches --
+   * `this.attempts`, `this.nodeFailures`, `this.failedOutputs`,
+   * `this.gateOutcomes`, `this.lastOutcomeByNode`, `this.path`,
+   * `this.completed`, `this.stepCount` -- is deliberately the run's ONE
+   * shared instance state, main path or any branch: only `Context` is
+   * cloned per branch (ADR-007), nothing else is.
+   */
+  async visitNode(nodeId, context, cwd, opts) {
+    const graph = this.opts.graph;
+    const node = graph.nodes.get(nodeId);
+    if (node === void 0) {
+      throw new Error(`visitNode: unknown node ${nodeId}`);
     }
-    const startNode = [...graph.nodes.values()].find((n) => n.handler === Handler.START);
-    if (!startNode) {
-      this.events.append({ type: "pipeline.end", status: Status.FAIL });
-      return this.result(Status.FAIL, "graph has no start node", "graph has no start node");
-    }
-    for (const [k, v] of Object.entries(graph.attrs)) {
-      if (!context.has(k)) context.set(k, v);
-      const qualified = `graph.${k}`;
-      if (!context.has(qualified)) this.setManaged(qualified, v);
-    }
-    let currentId = startNode.id;
-    this.events.append({ type: "pipeline.start", node: startNode.id });
-    for (let step = 0; step < maxSteps; step++) {
-      if (currentId === null) break;
-      const node = graph.nodes.get(currentId);
-      if (!node) {
-        this.events.append({ type: "pipeline.end", node: currentId, status: Status.FAIL });
-        return this.result(Status.FAIL, `unknown node ${currentId}`, `unknown node ${currentId}`);
+    let outcome;
+    for (; ; ) {
+      if (this.stepCount >= this.maxSteps) {
+        const capped = `step cap of ${this.maxSteps} reached without terminating`;
+        return { node, outcome: { status: Status.FAIL, notes: capped, failureReason: capped }, nextId: null };
       }
+      this.stepCount++;
       this.path.push(node.id);
-      this.setManaged("current_node", node.id);
+      this.setManaged(context, "current_node", node.id);
       const handler = this.opts.handlers.get(node.handler);
       if (!handler) {
-        this.events.append({ type: "pipeline.end", node: node.id, status: Status.FAIL });
         const noHandler = `no handler registered for ${node.handler} (node ${node.id})`;
-        return this.result(Status.FAIL, noHandler, noHandler);
+        return { node, outcome: { status: Status.FAIL, notes: noHandler, failureReason: noHandler }, nextId: null };
       }
       const attempt = this.attempts.get(node.id) ?? 0;
       this.events.append({ type: "node.start", node: node.id });
       context.takeWritten();
-      let outcome;
       const mode = runsOn(node);
       const checksInputs = mode === RunsOn.SUCCESS || wantsVerdict(node);
       const unavailable = checksInputs ? this.unavailableInput(node) : void 0;
@@ -4802,8 +5318,14 @@ var Engine = class {
             graph,
             context,
             runDir: this.opts.runDir,
-            cwd: this.opts.cwd,
-            events: this.events
+            cwd,
+            events: this.events,
+            // FR-17b: every dispatch gets these three, unused by every
+            // existing handler -- the same "seam exists for later, unused
+            // today" shape HandlerCtx.signal already has.
+            repoDir: this.opts.repoDir ?? this.opts.cwd,
+            runBranchNode: (branchNodeId, branchContext, branchCwd) => this.visitNode(branchNodeId, branchContext, branchCwd, { checkpoint: false }),
+            nodeStatus: (id) => this.nodeStatus(id)
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -4813,7 +5335,7 @@ var Engine = class {
       }
       for (const key of context.takeWritten()) this.failedOutputs.delete(key);
       this.events.append({ type: "node.end", node: node.id, status: outcome.status });
-      this.recordOutcome(node.id, outcome);
+      this.recordOutcome(context, node.id, outcome);
       if (outcome.status === Status.RETRY) {
         const policy = resolveRetryPolicy(node, graph);
         if (attempt < policy.maxRetries) {
@@ -4833,8 +5355,7 @@ var Engine = class {
         if (target) {
           this.recordAbandoned(node.id);
           this.attempts.set(node.id, 0);
-          currentId = target;
-          continue;
+          return { node, outcome, nextId: target };
         }
         outcome = {
           ...outcome,
@@ -4845,11 +5366,70 @@ var Engine = class {
           failureReason: "max retries exceeded"
         };
       }
-      this.recordOutcome(node.id, outcome);
-      this.attempts.set(node.id, 0);
-      if (!this.completed.includes(node.id)) this.completed.push(node.id);
-      this.checkpoint(node.id);
+      break;
+    }
+    this.recordOutcome(context, node.id, outcome);
+    this.attempts.set(node.id, 0);
+    if (!this.completed.includes(node.id)) this.completed.push(node.id);
+    if (opts.checkpoint) this.checkpoint(node.id);
+    if (node.handler === Handler.EXIT) {
+      return { node, outcome, nextId: null };
+    }
+    let nextId = null;
+    if (node.handler === Handler.PARALLEL) {
+      nextId = outcome.suggestedNextIds?.[0] ?? null;
+    } else {
+      const edge = selectEdge(graph, node.id, context, outcome);
+      if (edge) {
+        this.events.append({ type: "edge.taken", node: node.id, to: edge.to });
+        nextId = edge.to;
+      }
+    }
+    if (nextId === null && outcome.status === Status.FAIL) {
+      const target = resolveRetryTarget(node, graph, { includeGraphLevel: false });
+      if (target) {
+        this.events.append({ type: "node.fail.retry_target", node: node.id, target });
+        nextId = target;
+      }
+    }
+    if (nextId === null) {
+      const notes = outcome.status === Status.FAIL ? `no matching edge from ${node.id} after failure: ${outcome.notes ?? ""}` : `run terminated at ${node.id}, which has no outgoing edges and is not the exit`;
+      outcome = { ...outcome, notes, failureReason: outcome.failureReason ?? notes };
+    }
+    return { node, outcome, nextId };
+  }
+  async run() {
+    const { graph, context } = this.opts;
+    this.maxSteps = this.opts.maxSteps ?? DEFAULT_MAX_STEPS;
+    const diagnostics = lint(graph);
+    if (hasErrors(diagnostics)) {
+      const detail = diagnostics.filter((d) => d.severity === Severity.ERROR).map((d) => `${d.code}${d.node ? ` (${d.node})` : ""}: ${d.message}`).join("; ");
+      const msg = `graph carries error-severity lint diagnostics and will not run: ${detail}`;
+      this.events.append({ type: "pipeline.end", status: Status.FAIL });
+      return this.result(Status.FAIL, msg, msg);
+    }
+    const startNode = [...graph.nodes.values()].find((n) => n.handler === Handler.START);
+    if (!startNode) {
+      this.events.append({ type: "pipeline.end", status: Status.FAIL });
+      return this.result(Status.FAIL, "graph has no start node", "graph has no start node");
+    }
+    for (const [k, v] of Object.entries(graph.attrs)) {
+      if (!context.has(k)) context.set(k, v);
+      const qualified = `graph.${k}`;
+      if (!context.has(qualified)) this.setManaged(context, qualified, v);
+    }
+    let currentId = startNode.id;
+    this.events.append({ type: "pipeline.start", node: startNode.id });
+    for (; ; ) {
+      if (currentId === null) break;
+      const node = graph.nodes.get(currentId);
+      if (!node) {
+        this.events.append({ type: "pipeline.end", node: currentId, status: Status.FAIL });
+        return this.result(Status.FAIL, `unknown node ${currentId}`, `unknown node ${currentId}`);
+      }
+      const step = await this.visitNode(currentId, context, this.opts.cwd, { checkpoint: true });
       if (node.handler === Handler.EXIT) {
+        const outcome = step.outcome;
         const unsatisfied = this.unsatisfiedGoalGates();
         if (unsatisfied.length > 0) {
           const target = this.gateRetryTarget(unsatisfied);
@@ -4890,28 +5470,14 @@ var Engine = class {
           failed.length > 0 ? `exit reached with unresolved node failures: ${failed.join(", ")}` : outcome.notes
         );
       }
-      const edge = selectEdge(graph, node.id, context, outcome);
-      if (!edge && outcome.status === Status.FAIL) {
-        const target = resolveRetryTarget(node, graph, { includeGraphLevel: false });
-        if (target) {
-          this.events.append({ type: "node.fail.retry_target", node: node.id, target });
-          currentId = target;
-          continue;
-        }
-      }
-      if (!edge) {
-        const notes = outcome.status === Status.FAIL ? `no matching edge from ${node.id} after failure: ${outcome.notes ?? ""}` : `run terminated at ${node.id}, which has no outgoing edges and is not the exit`;
+      if (step.nextId === null) {
         this.events.append({ type: "pipeline.end", node: node.id, status: Status.FAIL });
         this.checkpoint(null);
-        return this.result(Status.FAIL, notes, outcome.failureReason ?? notes);
+        return this.result(Status.FAIL, step.outcome.notes, step.outcome.failureReason ?? step.outcome.notes);
       }
-      this.events.append({ type: "edge.taken", node: node.id, to: edge.to });
-      currentId = edge.to;
+      currentId = step.nextId;
     }
-    this.checkpoint(currentId);
-    this.events.append({ type: "pipeline.end", node: currentId ?? void 0, status: Status.FAIL });
-    const capped = `step cap of ${maxSteps} reached without terminating`;
-    return this.result(Status.FAIL, capped, capped);
+    return this.result(Status.FAIL, "run terminated with no current node", "run terminated with no current node");
   }
 };
 
@@ -5037,7 +5603,7 @@ var ThreadStore = class _ThreadStore {
 
 // src/backend/claude.ts
 function runProcess(command, argv, prompt, cwd, signal) {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     const child = spawn2(command, argv, { cwd });
     let stdout = "";
     let stderr = "";
@@ -5045,7 +5611,7 @@ function runProcess(command, argv, prompt, cwd, signal) {
     const finish = (r) => {
       if (settled) return;
       settled = true;
-      resolve3(r);
+      resolve4(r);
     };
     const onAbort = () => {
       if (child.pid !== void 0) child.kill("SIGKILL");
@@ -5104,147 +5670,6 @@ var ClaudeCodeBackend = class {
     return outcome;
   }
 };
-
-// src/run/worktree.ts
-import { execFileSync } from "node:child_process";
-import {
-  existsSync as existsSync3,
-  mkdtempSync,
-  readdirSync,
-  realpathSync,
-  rmdirSync,
-  rmSync
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join as join5, resolve, sep } from "node:path";
-var WT_PREFIX = "attractor-wt-";
-function git(cwd, args) {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-}
-function isGitRepo(dir) {
-  try {
-    return git(dir, ["rev-parse", "--is-inside-work-tree"]).trim() === "true";
-  } catch {
-    return false;
-  }
-}
-function createWorktree(repoDir, runId) {
-  if (!isGitRepo(repoDir)) {
-    throw new Error(`not a git repository: ${repoDir} -- cannot create an isolated worktree`);
-  }
-  const branch = `attractor/${runId}`;
-  const parent = mkdtempSync(join5(tmpdir(), WT_PREFIX));
-  const path = join5(parent, runId);
-  try {
-    git(repoDir, ["worktree", "add", "-q", "-b", branch, path]);
-  } catch (err) {
-    rmSync(parent, { recursive: true, force: true });
-    throw err;
-  }
-  return { path, branch };
-}
-function realOrResolved(p) {
-  const abs = resolve(p);
-  try {
-    return realpathSync(abs);
-  } catch {
-    return abs;
-  }
-}
-function isOurWorktree(target) {
-  const tmpRoot = realOrResolved(tmpdir());
-  const t = realOrResolved(target);
-  return t.startsWith(`${tmpRoot}${sep}`) && basename(dirname(t)).startsWith(WT_PREFIX);
-}
-function hasUncommittedWork(worktreePath) {
-  try {
-    return git(worktreePath, ["status", "--porcelain"]).trim() !== "";
-  } catch {
-    return true;
-  }
-}
-function isRegisteredWorktree(repoDir, target) {
-  try {
-    const out = git(repoDir, ["worktree", "list", "--porcelain"]);
-    for (const line of out.split("\n")) {
-      if (line.startsWith("worktree ") && realOrResolved(line.slice("worktree ".length)) === target) {
-        return true;
-      }
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-function isNonEmptyDirectory(path) {
-  try {
-    return readdirSync(path).length > 0;
-  } catch {
-    return true;
-  }
-}
-function removeWorktree(repoDir, wt) {
-  const target = realOrResolved(wt.path);
-  const root = realOrResolved(repoDir);
-  const ours = isOurWorktree(target);
-  if (target === root || root.startsWith(`${target}${sep}`)) {
-    return {
-      removed: false,
-      warning: `refusing to remove ${target}: it is, or contains, the repository root`
-    };
-  }
-  const registered = existsSync3(target) && isRegisteredWorktree(repoDir, target);
-  if (registered && hasUncommittedWork(target)) {
-    return {
-      removed: false,
-      warning: `keeping ${target}: it has uncommitted work on branch ${wt.branch}. Commit it there, or delete the directory once you have salvaged it.`
-    };
-  }
-  if (existsSync3(target) && ours && !registered && isNonEmptyDirectory(target)) {
-    return {
-      removed: false,
-      warning: `keeping ${target}: git's administrative record for this worktree is gone, so its status cannot be verified, and the directory is not empty. Treating it as uncommitted work on branch ${wt.branch} rather than guessing it is safe to delete.`
-    };
-  }
-  let gitError;
-  try {
-    git(repoDir, ["worktree", "remove", "--force", target]);
-  } catch (err) {
-    gitError = (err instanceof Error ? err.message : String(err)).trim();
-  }
-  try {
-    git(repoDir, ["worktree", "prune"]);
-  } catch {
-  }
-  const survivedGit = existsSync3(target);
-  if (survivedGit) {
-    if (!ours) {
-      return {
-        removed: false,
-        warning: `refusing to delete ${target}: it is not a worktree this module created (expected a ${WT_PREFIX}* directory under the system temp directory)`
-      };
-    }
-    try {
-      rmSync(target, { recursive: true, force: true });
-    } catch (err) {
-      return { removed: false, warning: `could not remove worktree ${target}: ${String(err)}` };
-    }
-  }
-  if (ours) {
-    const parent = dirname(target);
-    try {
-      if (existsSync3(parent) && readdirSync(parent).length === 0) rmdirSync(parent);
-    } catch {
-    }
-  }
-  if (survivedGit && gitError !== void 0) {
-    return {
-      removed: true,
-      warning: `git could not remove the worktree cleanly, directory was deleted directly: ${gitError}`
-    };
-  }
-  return { removed: true };
-}
 
 // src/doctor.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -5349,9 +5774,9 @@ function parseRunArgs(argv) {
       }
       params[pair.slice(0, eq)] = pair.slice(eq + 1);
     } else if (arg === "--cwd") {
-      cwd = resolve2(argv[++i] ?? ".");
+      cwd = resolve3(argv[++i] ?? ".");
     } else if (arg === "--run-dir") {
-      runDir = resolve2(argv[++i] ?? ".");
+      runDir = resolve3(argv[++i] ?? ".");
     } else if (arg === "--stub") {
       stub = true;
     } else if (arg === "--model") {
@@ -5383,9 +5808,9 @@ function parseRunArgs(argv) {
   }
   if (runDir === "") {
     const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    runDir = resolve2(cwd, ".attractor", "runs", stamp);
+    runDir = resolve3(cwd, ".attractor", "runs", stamp);
   }
-  return { file: resolve2(file), params, cwd, runDir, stub, model, maxBudgetUsd, allowedTools, worktree, inPlace };
+  return { file: resolve3(file), params, cwd, runDir, stub, model, maxBudgetUsd, allowedTools, worktree, inPlace };
 }
 function warnOnManagedParams(params) {
   for (const key of Object.keys(params)) {
@@ -5423,7 +5848,7 @@ async function main(argv) {
       process.stderr.write(USAGE);
       return 2;
     }
-    const resolved = resolve2(file);
+    const resolved = resolve3(file);
     const source = readPipeline(resolved);
     if (source === null) return 2;
     if (reportDiagnostics(resolved, source)) return 1;
@@ -5496,7 +5921,14 @@ async function main(argv) {
         runDir: args.runDir,
         cwd,
         handlers: defaultHandlers(backend),
-        runId
+        runId,
+        // FR-17b, ADR-008: the PRE-worktree-substitution repo path.
+        // `cwd` above may already be `worktree.path` by this point; this
+        // stays the real repository ParallelHandler's branch_worktree=true
+        // isolation should target, matching what createWorktree/
+        // removeWorktree already receive for the run's own top-level
+        // worktree above.
+        repoDir: args.cwd
       });
       const result = await engine.run();
       if (result.unresolvedFailures !== void 0 && result.unresolvedFailures.length > 0) {

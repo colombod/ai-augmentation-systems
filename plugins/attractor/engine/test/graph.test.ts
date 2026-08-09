@@ -2,12 +2,15 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   declaredOutputs,
+  directPredecessors,
   effectiveOutputs,
   Handler,
   handlerForNode,
   handlerForShape,
   INFERRED_OUTPUTS_BY_HANDLER,
   inferredOutputs,
+  resolveMaxParallel,
+  UNREGISTERED_HANDLER_KINDS,
   type Node,
 } from '../src/dot/graph.ts'
 import { Status, type Outcome } from '../src/core/outcome.ts'
@@ -270,4 +273,87 @@ test('a graph written with Start and end resolves both terminals', () => {
   const g = parseDot('digraph G { Start end Start -> end }')
   assert.equal(g.nodes.get('Start')?.handler, Handler.START)
   assert.equal(g.nodes.get('end')?.handler, Handler.EXIT)
+})
+
+// ---------------------------------------------------------------------------
+// FR-17b: UNREGISTERED_HANDLER_KINDS narrows to HUMAN/MANAGER_LOOP once
+// PARALLEL/FAN_IN are registered.
+// ---------------------------------------------------------------------------
+
+test('UNREGISTERED_HANDLER_KINDS no longer names PARALLEL or FAN_IN', () => {
+  assert.deepEqual(new Set(UNREGISTERED_HANDLER_KINDS), new Set([Handler.HUMAN, Handler.MANAGER_LOOP]))
+})
+
+// ---------------------------------------------------------------------------
+// FR-17b: directPredecessors, the plural sibling of directPredecessor.
+// ---------------------------------------------------------------------------
+
+test('directPredecessors returns every distinct source node with an edge in, self-loops excluded', () => {
+  const g = parseDot(`
+    digraph G {
+      a [shape=box] b [shape=box] c [shape=box] join [shape=tripleoctagon]
+      a -> join
+      b -> join
+      c -> join
+      join -> join
+    }
+  `)
+  const preds = directPredecessors(g, 'join').map((n) => n.id).sort()
+  assert.deepEqual(preds, ['a', 'b', 'c'])
+})
+
+test('directPredecessors deduplicates two edges from the same source', () => {
+  const g = parseDot(`
+    digraph G {
+      a [shape=box] join [shape=tripleoctagon]
+      a -> join [label="x"]
+      a -> join [label="y"]
+    }
+  `)
+  assert.deepEqual(directPredecessors(g, 'join').map((n) => n.id), ['a'])
+})
+
+test('directPredecessors returns an empty array for a node with no incoming edges', () => {
+  const g = parseDot('digraph G { a [shape=box] }')
+  assert.deepEqual(directPredecessors(g, 'a'), [])
+})
+
+test('directPredecessors has no cardinality cap, unlike directPredecessor', () => {
+  // The whole reason this exists: FAN_IN's normal case is MORE than one
+  // predecessor, which directPredecessor (singular) is built to refuse to
+  // disambiguate (it returns null past exactly one distinct source).
+  const g = parseDot(`
+    digraph G {
+      a [shape=box] b [shape=box] c [shape=box] d [shape=box] join [shape=tripleoctagon]
+      a -> join
+      b -> join
+      c -> join
+      d -> join
+    }
+  `)
+  assert.equal(directPredecessors(g, 'join').length, 4)
+})
+
+// ---------------------------------------------------------------------------
+// FR-17b: resolveMaxParallel, OQ3's resolved default.
+// ---------------------------------------------------------------------------
+
+function parallelNode(attrs: Record<string, string>): Node {
+  return { id: 'n', attrs, handler: Handler.PARALLEL }
+}
+
+test('resolveMaxParallel defaults to 4 when max_parallel is not set', () => {
+  assert.equal(resolveMaxParallel(parallelNode({})), 4)
+})
+
+test('resolveMaxParallel parses a positive integer', () => {
+  assert.equal(resolveMaxParallel(parallelNode({ max_parallel: '7' })), 7)
+})
+
+test('resolveMaxParallel falls back to 4 for zero, negative or unparseable values -- never an ERROR', () => {
+  // Same "fallback-not-ERROR" shape as parseDuration -- an open numeric
+  // range has nothing for a lint rule to enumerate against.
+  for (const raw of ['0', '-3', 'many', '', 'NaN']) {
+    assert.equal(resolveMaxParallel(parallelNode({ max_parallel: raw })), 4, `max_parallel="${raw}"`)
+  }
 })

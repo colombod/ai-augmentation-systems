@@ -292,6 +292,13 @@ export async function main(argv: string[]): Promise<number> {
         cwd,
         handlers: defaultHandlers(backend),
         runId,
+        // FR-17b, ADR-008: the PRE-worktree-substitution repo path.
+        // `cwd` above may already be `worktree.path` by this point; this
+        // stays the real repository ParallelHandler's branch_worktree=true
+        // isolation should target, matching what createWorktree/
+        // removeWorktree already receive for the run's own top-level
+        // worktree above.
+        repoDir: args.cwd,
       })
       const result = await engine.run()
       // Loud, because the alternative is silence and silence is the thing the

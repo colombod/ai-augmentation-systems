@@ -1376,24 +1376,12 @@ test('UNREGISTERED_HANDLER_KINDS matches what defaultHandlers() actually registe
   assert.deepEqual(new Set(UNREGISTERED_HANDLER_KINDS), new Set(expected))
 })
 
-test('HAND-001 fires for a node resolving to Handler.PARALLEL', () => {
-  const src = `digraph G {
-    start [shape=Mdiamond]  done [shape=Msquare]
-    fanout [shape=component]
-    start -> fanout -> done
-  }`
-  const found = codes(src)
-  assert.ok(found.includes('HAND-001'))
-})
-
-test('HAND-001 fires for a node resolving to Handler.FAN_IN', () => {
-  const src = `digraph G {
-    start [shape=Mdiamond]  done [shape=Msquare]
-    join [shape=tripleoctagon]
-    start -> join -> done
-  }`
-  assert.ok(codes(src).includes('HAND-001'))
-})
+// FR-17b: PARALLEL and FAN_IN are now registered (ParallelHandler,
+// FanInHandler), so HAND-001 no longer fires for either -- the two tests
+// that used to pin the opposite are deleted. See "HAND-001 does not fire for
+// any registered handler kind" below, which now also covers component/
+// tripleoctagon, and "HAND-001 reports one diagnostic per offending node",
+// repointed to two kinds that remain unregistered.
 
 test('HAND-001 fires for a node resolving to Handler.MANAGER_LOOP', () => {
   const src = `digraph G {
@@ -1414,31 +1402,50 @@ test('HAND-001 fires for Handler.HUMAN too, since it is unregistered in this bui
 })
 
 test('HAND-001 respects type= overriding shape=', () => {
+  // FR-17b: was type="parallel" (now registered, so HAND-001 stopped firing
+  // for it -- exactly the drift this test exists to catch, just from the
+  // OTHER direction than the day it was written). Repointed to
+  // type="wait.human", which stays unregistered, so the test keeps pinning
+  // its actual point: that HAND-001 consults the RESOLVED handler (type
+  // overriding shape), not the raw shape string.
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
-    node1 [shape=box, type="parallel"]
+    node1 [shape=box, type="wait.human"]
     start -> node1 -> done
   }`
   assert.ok(codes(src).includes('HAND-001'))
 })
 
 test('HAND-001 does not fire for any registered handler kind', () => {
+  // FR-17b: component/tripleoctagon (Handler.PARALLEL/Handler.FAN_IN) added
+  // to this fixture, proving HAND-001 stays silent on them now that
+  // ParallelHandler/FanInHandler are registered -- the direct replacement
+  // for the two deleted "HAND-001 fires for ..." tests above.
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     work [shape=box, prompt="do it"]
     tool [shape=parallelogram, tool_command="printf ok"]
     cond [shape=diamond]
+    fanout [shape=component]
+    join [shape=tripleoctagon]
     start -> work -> tool -> cond -> done [condition="outcome=success"]
     cond -> done [condition="outcome=fail"]
+    cond -> fanout
+    fanout -> join
+    join -> done
   }`
   assert.ok(!codes(src).includes('HAND-001'))
 })
 
 test('HAND-001 reports one diagnostic per offending node, not one per graph', () => {
+  // FR-17b: was shape=component / shape=tripleoctagon, both now registered.
+  // Repointed to two nodes from the remaining unregistered set (hexagon =
+  // Handler.HUMAN, house = Handler.MANAGER_LOOP) per the addendum's own Test
+  // strategy.
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
-    a [shape=component]
-    b [shape=tripleoctagon]
+    a [shape=hexagon]
+    b [shape=house]
     start -> a -> b -> done
   }`
   const found = lint(parseDot(src)).filter((d) => d.code === 'HAND-001')
@@ -1708,4 +1715,75 @@ test('HITL-003 message names the predecessor, states advisory-only, and disclaim
   assert.match(message, /review/)
   assert.match(message, /[Aa]dvisory/)
   assert.match(message, /does not (block|detect)/)
+})
+
+// ---------------------------------------------------------------------------
+// PAR-001: a Handler.PARALLEL node with nothing to fan out to.
+// PAR-002: a malformed branch_worktree value.
+// ---------------------------------------------------------------------------
+
+test('PAR-001 fires for a component node with no outgoing edges', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fanout [shape=component]
+    start -> fanout
+  }`
+  const diags = lint(parseDot(src))
+  const par001 = diags.find((d) => d.code === 'PAR-001')
+  assert.ok(par001, 'PAR-001 present')
+  assert.equal(par001?.severity, Severity.ERROR)
+  assert.equal(par001?.node, 'fanout')
+})
+
+test('PAR-001 does not fire for a component node with at least one branch', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fanout [shape=component]
+    a [shape=box, prompt="a"]
+    join [shape=tripleoctagon]
+    start -> fanout -> a -> join -> done
+  }`
+  assert.ok(!codes(src).includes('PAR-001'))
+})
+
+test('PAR-002 fires for a branch_worktree value that is neither "true" nor "false"', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    a [shape=parallelogram, tool_command="printf ok", branch_worktree="TRUE"]
+    start -> a -> done
+  }`
+  const diags = lint(parseDot(src))
+  const par002 = diags.find((d) => d.code === 'PAR-002')
+  assert.ok(par002, 'PAR-002 present')
+  assert.equal(par002?.severity, Severity.ERROR)
+  assert.equal(par002?.node, 'a')
+  assert.match(par002?.message ?? '', /"true"|"false"/)
+})
+
+test('PAR-002 accepts exactly "true" and exactly "false", nothing else', () => {
+  for (const value of ['true', 'false']) {
+    const src = `digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      a [shape=parallelogram, tool_command="printf ok", branch_worktree="${value}"]
+      start -> a -> done
+    }`
+    assert.ok(!codes(src).includes('PAR-002'), `branch_worktree="${value}" must not fire PAR-002`)
+  }
+  for (const value of ['1', 'yes', '']) {
+    const src = `digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      a [shape=parallelogram, tool_command="printf ok", branch_worktree="${value}"]
+      start -> a -> done
+    }`
+    assert.ok(codes(src).includes('PAR-002'), `branch_worktree="${value}" must fire PAR-002`)
+  }
+})
+
+test('PAR-002 is silent when branch_worktree is not set at all', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    a [shape=parallelogram, tool_command="printf ok"]
+    start -> a -> done
+  }`
+  assert.ok(!codes(src).includes('PAR-002'))
 })
