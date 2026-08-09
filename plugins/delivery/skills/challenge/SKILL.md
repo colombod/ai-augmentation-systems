@@ -56,6 +56,11 @@ An adversarial review that produces a list nobody acts on is theatre, and it is 
 
 Resolve the target. If given a phase name, map it to its artifact. If nothing is given, take the most recently modified artifact under `.delivery/`. If the target does not exist, say so and stop.
 
+If the target carries a Version-history table (per
+`${CLAUDE_PLUGIN_ROOT}/templates/version-history.md`), record which version is current and
+its Status cell — this review is against that version specifically, not the whole
+document's history. A target with no table has no version to record.
+
 ## Choose the panel
 
 Reviewer lenses are chosen by artifact type. Diversity of lens matters more than number of reviewers — three reviewers asking different questions beat five asking the same one.
@@ -98,7 +103,7 @@ For each surviving finding: the specific claim or omission, the concrete failure
 
 ## Write
 
-Append to `.delivery/reviews/<artifact>-<nn>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/findings.md`. Every finding gets an ID (`R-<artifact>-<n>`) and status `open`.
+Append to `.delivery/reviews/<artifact>-<nn>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/findings.md` — or `.delivery/reviews/<artifact>-v<N>-<nn>.md` (e.g. `prd-v2-01.md`) when the target carries a Version-history table at review time, recording which version the review actually covered. Unversioned targets (`stories/`, tableless documents) keep the plain `<artifact>-<nn>.md` form; pre-existing review files are not renamed retroactively. Every finding gets an ID (`R-<artifact>-<n>`) and status `open`.
 
 Do not edit the target artifact in this skill. Present the findings and let the user decide; then apply agreed changes and mark those findings `fixed`. A finding the user declines is marked `rejected` **with their stated reason recorded** — the reason is the valuable part, because it is the assumption you will want to revisit when something goes wrong.
 

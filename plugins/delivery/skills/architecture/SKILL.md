@@ -55,7 +55,11 @@ Read `.delivery/initiatives/<initiative>/prd.md`.
 - **Missing** — stop. Designing against an unwritten specification produces a design for the wrong thing. Tell the user to run `/delivery:prd` and offer to run it now.
 - **Non-functional requirements are vague or absent** — flag it. The architect needs numbers to design against; without them the design cannot be checked. Ask the user for the numbers or accept explicitly that the design is unvalidated on those axes.
 
-If `.delivery/initiatives/<initiative>/architecture.md` exists, read it and ask whether to revise or replace.
+If `.delivery/initiatives/<initiative>/architecture.md` already exists, read it and ask
+whether to **revise**, **replace**, or **start new version**. See
+`${CLAUDE_PLUGIN_ROOT}/templates/version-history.md` for what each means, the same-problem
+test that chooses between revise and start new version, and the Version-history table and
+Corrections log it writes. Never silently overwrite.
 
 
 **Open blocking findings.** Read `.delivery/reviews/`. If any finding against an artifact

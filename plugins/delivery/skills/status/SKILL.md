@@ -136,7 +136,24 @@ falls through. Check specifically:
 - ADRs superseded but still cited in stories
 - Hardcoded values where the design system defines a token
 - Documents whose modification time is newer than the ones downstream of them — a PRD
-  edited after the architecture was written means the architecture may be stale
+  edited after the architecture was written means the architecture may be stale. For an
+  artifact carrying a Version-history table, key this off its current-version Date cell
+  instead of raw file mtime (per `${CLAUDE_PLUGIN_ROOT}/templates/version-history.md`) —
+  a file can be touched with no new version starting, which mtime alone can't tell apart
+- A governed artifact's Version-history table row count doesn't match its `## Version N`
+  heading count — the table and the document body disagree about how many versions exist
+
+**Version boundaries.** For each governed artifact carrying a Version-history table (per
+`${CLAUDE_PLUGIN_ROOT}/templates/version-history.md`), one row — no cross-document join:
+
+| Artifact | Current version | Status | Scope | Table/heading check |
+| :-- | :-- | :-- | :-- | :-- |
+| brief.md | 2 | in progress | Document-lifecycle versioning... | OK (2/2) |
+
+A tableless artifact reports "1 (implicit, no table)" rather than an empty row — it has
+exactly one version, just not yet a table recording that. A Status cell outside the closed
+vocabulary reports as unable-to-be-applied, not guessed. Six or more rows in one table is
+flagged for reconsideration, not blocked.
 
 **Language drift.** Read `.delivery/glossary.md`. Report: domain terms used in documents
 that have no glossary entry; aliases the glossary bans that are still in use, and where; and

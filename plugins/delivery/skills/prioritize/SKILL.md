@@ -54,6 +54,12 @@ Read the PRD. If it is missing, stop — you cannot prioritise requirements that
 
 Read the simulation and interview outputs if they exist. If they do not, warn clearly: **prioritisation without persona data is prioritisation by opinion.** It is a legitimate choice, but the resulting stages rest on the team's beliefs about value rather than on any model of user behavior, and the document must say so. Offer to run `/delivery:simulate` first.
 
+If `.delivery/initiatives/<initiative>/prioritization.md` already exists, read it and ask
+whether to **revise**, **replace**, or **start new version**. See
+`${CLAUDE_PLUGIN_ROOT}/templates/version-history.md` for what each means, the same-problem
+test that chooses between revise and start new version, and the Version-history table and
+Corrections log it writes. Never silently overwrite.
+
 
 **Open blocking findings.** Read `.delivery/reviews/`. If any finding against an artifact
 this phase consumes has status `open` and severity `blocking`, **stop and report them** — do

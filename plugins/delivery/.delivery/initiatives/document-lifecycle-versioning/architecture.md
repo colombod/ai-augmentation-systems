@@ -3,7 +3,7 @@
 > Initiative: `document-lifecycle-versioning` (`.delivery/initiatives/document-lifecycle-versioning/`), per `ADR-004`.
 > Phase 8 artifact. Owned by Product Owner, with Business Analyst and Feature Critic (a
 > 3-lens convergent analysis, per the original issue).
-> Status: in progress · Started: 2026-08-09
+> Status: shipped · Started: 2026-08-09 · Shipped: 2026-08-09
 > Brief: `brief.md` (this directory) · PRD: `prd.md` (this directory) ·
 > Glossary: `../../glossary.md` (project-wide, per `ADR-004`) · ADRs:
 > `../../decisions/ADR-006-version-lifecycle-is-prose-not-code.md`,
