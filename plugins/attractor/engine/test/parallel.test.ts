@@ -1421,18 +1421,27 @@ test(
     const runDir = tempDir()
     const cwd = tempDir()
     try {
+      // `gate`/its edge exist only for GATE-002 (ADR-014 Amendment 3): `fan`'s
+      // own retry_target reaches `done` with no goal gate anywhere, which is
+      // now a lint-time ERROR. `join` is never dispatched in this test (both
+      // branches FAIL, so the run never converges -- asserted below), so the
+      // added edge off it never matches and nothing else about this fixture
+      // changes.
       const graph = parseDot(`
         digraph G {
           start [shape=Mdiamond]  done [shape=Msquare]
           fan [shape=component, retry_target="recover"]
           r1 [shape=box, prompt="x"]  r2 [shape=box, prompt="x"]  join [shape=box, prompt="x"]
           recover [shape=box, prompt="x"]
+          gate [shape=box, goal_gate=true, prompt="judge"]
           start -> fan
           fan -> r1 [isolate="false"]
           fan -> r2 [isolate="false"]
           r1 -> join
           r2 -> join
           join -> done
+          join -> gate [condition="outcome=fail"]
+          gate -> done
           recover -> done
         }
       `)

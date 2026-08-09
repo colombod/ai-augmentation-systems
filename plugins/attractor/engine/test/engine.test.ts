@@ -557,12 +557,21 @@ test('a goal gate that retries away and never returns still blocks the exit', as
 // resolveRetryTarget was consulted only when a RETRY status exhausted its
 // attempts, never on a FAIL outcome -- so this run ended at `failing` instead
 // of jumping to `recover`.
+// `gate`/the `outcome=success` edge into it exist ONLY to keep this graph
+// lint-clean under GATE-002 (ADR-014 Amendment 3: a retry_target reaching the
+// exit with zero goal gates anywhere is now a lint-time ERROR). `failing` is
+// scripted FAIL on every call below, so this edge never matches and `gate` is
+// never dispatched -- the C6 mechanism this fixture exists to pin (a FAIL
+// outcome consulting the node retry target) is otherwise unchanged.
 const FAIL_TO_RETRY_TARGET = `
 digraph F {
   start [shape=Mdiamond]  done [shape=Msquare]
   recover [shape=box, prompt="recover"]
+  gate    [shape=box, goal_gate=true, prompt="judge"]
   failing [shape=box, prompt="x", retry_target="recover", max_retries=0]
   start -> failing
+  failing -> gate [condition="outcome=success"]
+  gate -> done
   recover -> done
 }
 `
@@ -590,15 +599,22 @@ test('a FAIL outcome consults the node retry target (C6)', async () => {
 // both an explicit `outcome=fail` edge and a retry_target must take the edge.
 // Without this, correcting C6 could have quietly promoted the retry target
 // over a route the graph author wrote explicitly.
+// `gate` exists only for the same GATE-002 (ADR-014 Amendment 3) reason as
+// FAIL_TO_RETRY_TARGET above: `failing` is scripted FAIL below, so its
+// `outcome=success` edge into `gate` never matches and `gate` is never
+// dispatched.
 const FAIL_EDGE_BEATS_RETRY_TARGET = `
 digraph FE {
   start [shape=Mdiamond]  done [shape=Msquare]
   recover [shape=box, prompt="recover"]
   handled [shape=box, prompt="handled"]
+  gate    [shape=box, goal_gate=true, prompt="judge"]
   failing [shape=box, prompt="x", retry_target="recover", max_retries=0]
   start -> failing
   failing -> handled [condition="outcome=fail"]
+  failing -> gate    [condition="outcome=success"]
   handled -> done
+  gate -> done
   recover -> done
 }
 `
@@ -632,7 +648,7 @@ test('an explicit fail edge still outranks the retry target (C6, section 3.7 ste
 // terminates and never reports SUCCESS. maxSteps=40 keeps a broken step
 // counter from hanging the suite instead of failing it.
 //
-// `failing -> done [condition="outcome=success"]` is dead in this specific
+// `failing -> gate [condition="outcome=success"]` is dead in this specific
 // script -- `failing` is scripted to FAIL every time, so the condition never
 // matches and the loop through `recover` behaves exactly as before. It exists
 // so `done` is genuinely reachable (TOPO-004, F14): a real graph author
@@ -641,14 +657,20 @@ test('an explicit fail edge still outranks the retry target (C6, section 3.7 ste
 // would actually ship. Without it `done` has no route in at all -- not
 // through an edge, not through any retry_target -- so F14's reachability fix
 // correctly leaves it flagged; this is the fixture catching up to that, not a
-// workaround for it.
+// workaround for it. `gate` itself (rather than a direct edge to `done`) is
+// ADDITIONALLY required by GATE-002 (ADR-014 Amendment 3): `failing`'s own
+// retry_target reaches `done` with no goal gate anywhere in this graph, which
+// is now a lint-time ERROR -- and since `gate` sits behind a condition that
+// never matches here, it changes nothing about what this test exercises.
 const FAIL_RETRY_TARGET_LOOP = `
 digraph FRL {
   start [shape=Mdiamond]  done [shape=Msquare]
   failing [shape=box, prompt="x", retry_target="recover", max_retries=0]
   recover [shape=box, prompt="recover"]
+  gate    [shape=box, goal_gate=true, prompt="judge"]
   start -> failing
-  failing -> done [condition="outcome=success"]
+  failing -> gate [condition="outcome=success"]
+  gate -> done
   recover -> failing
 }
 `
@@ -1958,13 +1980,23 @@ test('declaring a retry target does not erase the node from the record', async (
 // already has. `build` crashes once, exhausts, is abandoned to `fix`, and the
 // graph routes back so `build` re-runs green. Abandonment must be resolvable
 // by re-execution exactly like a FAIL.
+//
+// `gate`/the `outcome=fail` edge into it exist only for GATE-002 (ADR-014
+// Amendment 3): `build`'s own retry_target reaches `done` with no goal gate
+// anywhere, which is now a lint-time ERROR. `build` never actually returns
+// FAIL here (the retry-exhaustion ladder routes it to `fix` via RETRY, and
+// its second attempt returns SUCCESS -- see RetryingBackend), so this edge
+// never matches and `gate` is never dispatched.
 const ABANDONED_THEN_REPAIRED = `
 digraph ATR {
   start [shape=Mdiamond]  done [shape=Msquare]
   build [shape=box, retry_target="fix"]
   fix   [shape=box]
+  gate  [shape=box, goal_gate=true, prompt="judge"]
   start -> build
   build -> done [condition="outcome=success"]
+  build -> gate [condition="outcome=fail"]
+  gate -> done
   fix -> build
 }
 `
@@ -2285,16 +2317,26 @@ test('an inferred key never enters the ledger, even when nothing later writes it
 // retry-exhaustion (section 3.7's ladder) no longer consults the graph-level
 // rungs, so the target is declared on `build` itself. See
 // ABANDONED_VIA_RETRY_TARGET above for the same change with fuller rationale.
+//
+// `gate`/the `outcome=success` edge into it exist only for GATE-002 (ADR-014
+// Amendment 3): `build`'s own fallback_retry_target reaches `done` with no
+// goal gate anywhere, which is now a lint-time ERROR. Both tests below drive
+// `build` with `RetryingBackend('build')` (unbounded RETRY), so `build` never
+// reaches edge selection at all -- it is abandoned to `report` by the retry
+// ladder every time -- and this edge never matches.
 const LEDGER_ABANDONED = `
 digraph LAB {
   start [shape=Mdiamond]  done [shape=Msquare]
   plan   [shape=box]
   build  [shape=box, outputs="plan.md,review.md", fallback_retry_target="report"]
   report [shape=box]
+  gate   [shape=box, goal_gate=true, prompt="judge"]
   start -> plan
   plan -> report [condition="context.mode=report_only"]
   plan -> build
   build -> done
+  build -> gate [condition="outcome=success"]
+  gate -> done
   report -> done
 }
 `
@@ -3319,15 +3361,22 @@ test('runs_on=always: cleanup runs, with the owed reference LITERAL, when the wo
 // retry-target jump happens before edge selection ever runs -- and is present
 // because a node reachable only through a `retry_target` is a TOPO-004 lint
 // error, and a fixture the CLI would refuse pins nothing an operator can reach.
+// `gate`/its edge are inert for the same reason (`work` never reaches edge
+// selection here), and exist only for GATE-002 (ADR-014 Amendment 3): `work`'s
+// own retry_target reaches `done` (via `cleanup`) with no goal gate anywhere,
+// which is now a lint-time ERROR.
 const CLEANUP_RUNS_ON_ALWAYS_ABANDONED = `
 digraph CRAA {
   start [shape=Mdiamond]  done [shape=Msquare]
   work    [shape=box, prompt="do the work", retry_target="cleanup", outputs="resource.handle"]
   cleanup [shape=parallelogram, runs_on=always, tool_command="printf 'release [\${resource.handle}]' > released"]
+  gate    [shape=box, goal_gate=true, prompt="judge"]
   start -> work
   work -> done [condition="outcome=success"]
   work -> cleanup [condition="outcome=fail"]
+  work -> gate [condition="preferred_label=never"]
   cleanup -> done
+  gate -> done
 }
 `
 
@@ -3870,6 +3919,13 @@ test('a subgraph goal does not hijack $goal or context.graph.goal (section 2.10)
 // the class of test this repository has shipped too many of. Declared after,
 // only scoping stands between the subgraph's `node [...]` block and a node
 // that has nothing to do with it.
+//
+// `gate`/its edge exist only for GATE-002 (ADR-014 Amendment 3): `inside`'s
+// own (correctly scoped) retry_target reaches `done` via `patch` with no goal
+// gate anywhere, which is now a lint-time ERROR. `inside` is never actually
+// dispatched in this test -- `failing` dead-ends before ever reaching it --
+// so the added edge never matches and nothing about the assertions below
+// changes.
 const SUBGRAPH_RETRY_TARGET_LEAK = `
 digraph RTL {
   start [shape=Mdiamond]
@@ -3880,10 +3936,13 @@ digraph RTL {
   }
   failing [shape=box, prompt="x", max_retries=0]
   patch [shape=box, prompt="patch"]
+  gate  [shape=box, goal_gate=true, prompt="judge"]
   start -> failing
   failing -> inside
   inside -> done
+  inside -> gate [condition="outcome=fail"]
   patch -> done
+  gate -> done
 }
 `
 
