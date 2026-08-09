@@ -195,10 +195,25 @@ trivially-succeeding node bypasses `GATE-002` entirely (it only examines edge co
 `resolveRetryTarget`'s own routing) — this disproves the ADR's own original reasoning for leaving
 `retry_target` out of scope ("every concrete use in this codebase dispatches a real recovery
 node"), which was an unverified assumption, not a proven safe skip. Both are real, load-bearing
-findings — see ADR-014's own Residual risk section for the full reasoning and repros. Fixing gap
-(2) properly needs a Product Owner call, the same shape of tradeoff Decision 1 itself was: nothing
-at lint time can statically distinguish a `retry_target` that does real recovery work from one
-that trivially rubber-stamps success, so closing it risks reopening the exact false-positive
-class Decision 2 already fought to avoid.
+findings — see ADR-014's own Residual risk section for the full reasoning and repros.
 
-**Final state:** 630 tests, 628 passing, 2 correctly-skipped, 0 failing.
+**Gap (2) was then closed, same day, by explicit Product Owner decision ("go ahead") — ADR-014
+Amendment 3.** `GATE-002` now also examines `retry_target`/`fallback_retry_target` continuation,
+mirroring `GATE-001`'s own existing detection for the complementary (zero-gate) case, with no
+`Handler.CODERGEN` exclusion needed (a retry target is a static DOT attribute, always visible to
+lint, unlike a dynamically-written context key). Closing this newly refused 8 pre-existing
+fixtures across `engine.test.ts`/`parallel.test.ts` — none about `GATE-002` itself; each pinned
+unrelated mechanics (retry-target ordering, the abandonment ledger, `runs_on=always`,
+subgraph-scoped `retry_target`, ADR-013's parallel fail-side) that happened to use this exact
+graph shape. Each got one decoy `goal_gate=true` node wired behind a condition verified never to
+match given that specific test's own stubbed backend — satisfies the rule without changing any
+test's real behavior. A third adversarial pass on this extension specifically found two minor,
+non-blocking issues (a multi-hop retry chain attributes its diagnostic to the wrong link in the
+chain; the 8 decoy fixtures each introduce a new, unasserted `GATE-001` WARNING) — both recorded
+in ADR-014, neither a soundness gap, neither fixed (message-precision nicety and a harmless side
+effect, not worth further scope on a rule already reviewed three times).
+
+Gap (1) (multi-clause false negative) remains open, named, and accepted — closing it precisely
+needs a partial-context evaluator, real added complexity not undertaken in this story.
+
+**Final state:** 635 tests, 633 passing, 2 correctly-skipped, 0 failing.
