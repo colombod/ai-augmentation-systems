@@ -287,6 +287,55 @@ Folding it into `GATE-002` would reintroduce the same false-positive class Legit
 demonstrates, for a mechanism this rule's own severity argument (no legitimate use survives
 condition 3+4) does not hold for. Left out of scope; named in Residual risk instead.
 
+## Amendment 2026-08-09: condition 3 needs a `Handler.CODERGEN`-source exclusion
+
+Implementation surfaced a real false positive this ADR's own analysis did not consider: spec
+section 10.6's own canonical loop-guard idiom —
+
+```
+review  [shape=box, prompt="review"]
+iterate [shape=parallelogram, tool_command="printf ok"]
+finish  [shape=parallelogram, tool_command="printf ok"]
+review -> iterate [condition="context.loop_state!=exhausted"]
+review -> finish  [condition="context.loop_state=exhausted"]
+```
+
+— pinned by `engine.test.ts`'s own `'the spec loop-guard idiom routes before the key is set'` and
+its unqualified-key sibling (`C3`). No `goal_gate`. `loop_state` is in nobody's `supplied` set.
+`context.loop_state!=exhausted` is outcome-blind (does not reference `outcome`). By the letter of
+Decision 2's five conditions, `GATE-002` fires — refusing a spec-canonical idiom this project's own
+test suite already pins as correct, load-bearing behavior. This is exactly the false-positive cost
+this ADR's own severity argument claimed did not exist ("there is no legitimate way to write this
+exact shape on purpose") — that claim was wrong for this one case.
+
+**Why this case is different from hazard shape 1/2, and how to tell them apart at lint time.**
+`review` is `Handler.CODERGEN`. `INFERRED_OUTPUTS_BY_HANDLER[Handler.CODERGEN]` is deliberately `[]`
+(`dot/graph.ts`) — a box node's real output keys are arbitrary strings the model decides at
+runtime, and ADR-006 already names the consequence directly: *"there is nothing honest to
+cross-reference at lint time."* `DATA-001` already accepts this exact blind spot and stays WARNING
+because of it. `loop_state` is not undeclared by authoring mistake — it is a key a box node
+plausibly writes dynamically via `contextUpdates`, which lint cannot rule out. Hazard shape 1's own
+`build` node, by contrast, is `Handler.TOOL` — `INFERRED_OUTPUTS_BY_HANDLER[Handler.TOOL]` is the
+small, fixed `TOOL_OUTPUT_KEYS` set, which does not and structurally cannot include an arbitrary
+key like `build.error`. A tool node's failure cannot have produced that key by any mechanism this
+engine has; a box node's success or failure might have produced any key at all. The distinction is
+not ad hoc — it is the same one `DATA-001` already draws, applied here for the first time to an
+edge condition instead of a substitution reference.
+
+**Fix: condition 3 gains a second exclusion.** `GATE-002` does not fire when the edge's own SOURCE
+node `n.handler === Handler.CODERGEN` — in addition to the existing `supplied`-set exclusion. This
+is scoped to `n` specifically (the node whose outcome the condition is nominally gating), not "any
+`CODERGEN` node anywhere in the graph": a box node's own unpredictable output is only a plausible
+explanation for a key referenced on an edge leaving *that* node, not license to excuse an edge
+leaving an unrelated `TOOL` node elsewhere in the same graph. Re-verified against hazard shape
+1/2: `build` is `TOOL` in both, so this exclusion does not silence either — `GATE-002` still fires
+on the graph it exists to catch.
+
+**Cost accepted, not hidden.** This narrows `GATE-002`'s coverage: a `CODERGEN` node that fails
+silently with a downstream outcome-blind condition on an undeclared key is no longer caught by this
+rule, mirroring the exact gap `DATA-001` already carries for substitution references. Not new risk
+this ADR introduces — the same, already-accepted risk, now stated for edge conditions too.
+
 ## Residual risk
 
 - **Partial-context evaluation is imprecise on multi-clause conditions.** `GATE-002` evaluates
