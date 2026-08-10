@@ -74,6 +74,18 @@ More than one session may be working here at once. Therefore:
   rewrite the file, never reorder existing entries.
 - A plugin owns everything under `plugins/<name>/` and nothing outside it, except that
   one appended marketplace entry.
+- **Before starting implementation on a tracked requirement or roadmap item, check
+  whether another session already has.** `git branch -a` / `git worktree list` for a
+  branch already named after it, `gh pr list --state all --search "<id>"` and
+  `gh issue list --search "<id>"` for a PR or issue already touching it. This is not
+  optional diligence — it is the check that was missing when `attractor`'s FR-17b got
+  implemented twice, independently, by two sessions with no shared coordination: a
+  multi-sprint effort with a full `.delivery/` decision trail, and a one-commit PR built
+  from a `main` that predated that trail entirely and never saw any of it. Neither
+  session did anything wrong in isolation — nothing forced either to check first. See
+  `colombod/ai-augmentation-systems#28` and `#29` for the full account. Finding the
+  collision after both sides are built costs a reconciliation; finding it before either
+  starts costs one `git branch -a`.
 
 ## Conventions that bind every plugin
 
