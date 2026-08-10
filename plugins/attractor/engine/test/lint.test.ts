@@ -2190,6 +2190,22 @@ test('findConvergenceNode: the root-exclusion filter is load-bearing under a roo
   // Every other fixture in this suite has no root-to-root edge at all, so
   // the exclusion never actually mattered to their outcome; this one makes
   // it load-bearing.
+  //
+  // ADR-007 twelfth amendment: this fixture's own expected WINNER changed
+  // from 'm1' to 'shared'. Both directions of the r1<->r2 cycle are now
+  // correctly classified as retry back edges (each target is a declared
+  // root the source can also reach, this project's own established meaning
+  // of "retry" -- see the twelfth amendment) and removed, so r1's and r2's
+  // reachability no longer cross-contaminate each other. 'm1' was never a
+  // deliberately-reasoned answer -- it was upstream of the pre-twelfth-
+  // amendment heuristic's incomplete cycle-breaking on this specific shape
+  // (m1 is r1's OWN branch node; the only reason r2 could "reach" it at all
+  // was the unbroken cycle). 'shared' is the node BOTH branches' own
+  // forward-only paths (r1 -> m1 -> shared; r2 -> m2 -> shared) genuinely
+  // agree on, without depending on the cycle -- what this test's own name
+  // was always meant to prove (a root cannot self-select) still holds,
+  // exercised more precisely now that the cycle is actually resolved rather
+  // than only partially broken.
   const g = parseDot(`digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     fan [shape=component]
@@ -2203,7 +2219,7 @@ test('findConvergenceNode: the root-exclusion filter is load-bearing under a roo
     r2 -> m2 -> shared
     shared -> done
   }`)
-  assert.equal(findConvergenceNode(g, ['r1', 'r2'], 'fan'), 'm1')
+  assert.equal(findConvergenceNode(g, ['r1', 'r2'], 'fan'), 'shared')
 })
 
 test('findPartialReconvergence: a branch root reachable from a sibling root is flagged (ADR-007 sixth amendment, Gap 1)', () => {
@@ -2358,6 +2374,21 @@ test('findPartialReconvergence: a rework loop into a genuinely shared non-root n
   // fan-out"; it is the same double-dispatch hazard this rule exists to
   // catch, reached by a second, independent path. Proves the root exclusion
   // above does not overreach into hiding a real hazard.
+  //
+  // ADR-007 twelfth amendment: this is the SHORT-branch sibling of the
+  // "retry targeting an ordinary non-root node" limitation-2 fixture -- the
+  // same two-independent-entries-into-one-cycle shape (branch a enters at
+  // m; branch b enters at combine via check -> m), genuinely irreducible
+  // regardless of how long branch a is. The pre-twelfth-amendment hop-count
+  // heuristic happened to still pick 'combine' correctly HERE only because
+  // this branch is short enough that the depth arithmetic did not yet flip
+  // in m's favor (limitation 2's whole point was that a longer branch DOES
+  // flip it) -- an accident of branch length, not a structural difference
+  // from limitation 2. findConvergenceNode now treats both identically:
+  // null, a clean refusal, rather than a length-dependent guess. With
+  // convergenceId null, findPartialReconvergence's own contract is to
+  // return [] immediately (PAR-001 has already refused the graph by then;
+  // there is nothing left for PAR-004 to add).
   const g = parseDot(`digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     fan [shape=component]  a [shape=box]  b [shape=box]  m [shape=box]
@@ -2370,11 +2401,12 @@ test('findPartialReconvergence: a rework loop into a genuinely shared non-root n
     check -> done
   }`)
   const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
-  assert.equal(convergenceId, 'combine')
-  assert.deepEqual(
-    findPartialReconvergence(g, ['a', 'b'], convergenceId, 'fan'),
-    ['m'],
-    'm is reachable from branch a AND from a second, independent path through check -- a real hazard, not a rework loop',
+  assert.equal(convergenceId, null)
+  assert.deepEqual(findPartialReconvergence(g, ['a', 'b'], convergenceId, 'fan'), [])
+  const diags = lint(g)
+  assert.ok(
+    diags.some((d) => d.code === 'PAR-001' && d.severity === Severity.ERROR),
+    'PAR-001 refuses the graph directly -- no discoverable convergence',
   )
 })
 
@@ -2664,24 +2696,18 @@ test('findConvergenceNode: a direct-to-root retry with a 3rd, unaffected bystand
   assert.deepEqual(findPartialReconvergence(g, ['lintjob', 'testjob', 'c'], convergenceId, 'fan'), [])
 })
 
-test('findConvergenceNode: a legitimate multi-hop root-to-root forward chain is a named, accepted regression (ADR-007 eleventh amendment)', () => {
-  // Documents, rather than hides, one known cost this round's fix accepts:
-  // root2 is reached at BFS depth 2 (via mid), not depth 1, so it is
-  // truncated the same way a rework-loop leak would be -- there is no
-  // retry edge anywhere in this graph, but the heuristic cannot tell the
-  // difference. This is a REGRESSION, not merely an untested gap: the
-  // pre-eleventh-amendment algorithm correctly resolved this exact fixture
-  // to 'shared' (verified directly against that code). Accepted anyway
-  // because the failure direction is safe -- this specific fixture resolves
-  // to null (PAR-001, a loud refusal); other retry-free acyclic graphs in
-  // this same shape family can instead resolve to a DIFFERENT, wrongly-
-  // selected non-null node rather than null (an earlier draft of this
-  // comment and the ADR both overstated "never a wrong convergence node" --
-  // corrected in both places by the same review that caught it) -- but
-  // never a MISSED hazard, and never a graph accepted where a wrong node
-  // was silently substituted; PAR-004 still fires and still refuses in that
-  // case too. No rejected design closed the real, confirmed bug this
-  // amendment fixes without giving up something on this shape (see the ADR).
+test('findConvergenceNode: a legitimate multi-hop root-to-root forward chain now resolves correctly (ADR-007 twelfth amendment, closes limitation 1)', () => {
+  // Was a named, accepted regression under the eleventh amendment's
+  // hop-count heuristic (resolved to null -- root2 reached at depth 2 via
+  // mid looked identical to a rework-loop leak, which the heuristic had no
+  // principled way to rule out). The dominance-based rewrite closes it:
+  // there is no retry edge anywhere in this graph, so dominance finds no
+  // back edges to prune at all, and the shape resolves the way the
+  // pre-eleventh-amendment code always could -- 'shared' -- without
+  // reopening the false-refusal bug that amendment existed to fix (see the
+  // dedicated middle-root and SCC-shape regression tests below, which pin
+  // exactly the two counter-examples that killed the two designs rejected
+  // before this one).
   const g = parseDot(`digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     fan [shape=component]
@@ -2691,25 +2717,23 @@ test('findConvergenceNode: a legitimate multi-hop root-to-root forward chain is 
     fan -> root2
     root2 -> shared -> done
   }`)
-  assert.equal(
-    findConvergenceNode(g, ['root1', 'root2'], 'fan'),
-    null,
-    'a named, ADR-documented limitation -- not a defect to fix in this round',
-  )
+  assert.equal(findConvergenceNode(g, ['root1', 'root2'], 'fan'), 'shared')
 })
 
-test('findConvergenceNode: a retry targeting an ordinary non-root node is a second named, not-yet-closed gap (ADR-007 eleventh amendment, limitation 2)', () => {
-  // The existing 'a rework loop into a genuinely shared non-root node is
-  // still flagged' test (third amendment) has always used a short (2-node)
-  // branch, so it never exercised the same asymmetric-length leak this
-  // amendment closes for retries targeting the fan-out node or a branch
-  // root. Lengthening the branch here reproduces the identical bug: 'm'
-  // (an ordinary interior node, not a declared root, not the fan-out node)
-  // wins the tie-break instead of the real convergence node 'combine'. This
-  // amendment does NOT close this shape -- pinning it here, with an
-  // explicit safety assertion, so the gap is visible rather than silently
-  // reintroduced by a future change that assumes all three retry-edge-
-  // target shapes are handled alike.
+test('findConvergenceNode: a retry targeting an ordinary non-root node is now a clean null refusal, not a wrong-node selection (ADR-007 twelfth amendment, limitation 2)', () => {
+  // This shape is genuinely IRREDUCIBLE, not merely hard: the cycle
+  // m -> m2 -> m3 -> m4 -> combine -> check -> m has TWO independent external
+  // entries (branch a enters at m; branch b enters at combine, via
+  // fan -> b -> combine -> check -> m) -- no single node dominates entry
+  // into it, so no dominance-based back-edge removal can linearize it (this
+  // is exactly the "dominator-based method cannot see irreducible loops"
+  // limitation compiler theory names for natural-loop detection). Rather
+  // than guess, findConvergenceNode now detects that the residual cycle
+  // survives pruning and includes a non-root node, and refuses to resolve
+  // at all -- trading the eleventh amendment's silently-wrong node name for
+  // an honest null. This is a real improvement even though it does not
+  // recover 'combine': the graph is still refused (now via PAR-001, "no
+  // discoverable convergence", not a PAR-004 naming the wrong node).
   const g = parseDot(`digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     fan [shape=component]
@@ -2722,20 +2746,59 @@ test('findConvergenceNode: a retry targeting an ordinary non-root node is a seco
     check -> m
     check -> done
   }`)
-  const convergenceId = findConvergenceNode(g, ['a', 'b'], 'fan')
-  assert.notEqual(
-    convergenceId,
-    'combine',
-    'known, not-yet-closed gap: a non-root retry target still wins the tie-break over the real convergence node',
-  )
-  // The safety property that DOES hold even for this unclosed gap: the
-  // graph is still refused, never silently accepted with a wrong node
-  // substituted in.
+  assert.equal(findConvergenceNode(g, ['a', 'b'], 'fan'), null)
   const diags = lint(g)
   assert.ok(
-    diags.some((d) => d.code === 'PAR-004' && d.severity === Severity.ERROR),
-    'PAR-004 still fires and still refuses the graph, even though it names the wrong node',
+    diags.some((d) => d.code === 'PAR-001' && d.severity === Severity.ERROR),
+    'PAR-001 fires -- no discoverable convergence -- a cleaner refusal than a PAR-004 naming the wrong node',
   )
+})
+
+test('findConvergenceNode: order-independence -- a retry targeting the MIDDLE of three declared roots resolves identically regardless of declaration order (ADR-007 twelfth amendment)', () => {
+  // Pins the exact counter-example that killed the first rejected design
+  // (global back-edge classification via one DFS from the fan-out node):
+  // "a 3-root fixture where the retry targets the middle root produced a
+  // wrong answer under [DFS-order-dependent] classification." Dominance is
+  // structural, not traversal-order-dependent, so this must resolve
+  // correctly regardless of which root the retry targets or where it falls
+  // in the declared root order.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]
+    r1 [shape=box]  r2 [shape=box]  r3 [shape=box]
+    check [shape=diamond]  combine [shape=box]
+    start -> fan
+    fan -> r1 -> combine
+    fan -> r2 -> check -> combine
+    check -> r2
+    fan -> r3 -> combine
+    combine -> done
+  }`)
+  assert.equal(findConvergenceNode(g, ['r1', 'r2', 'r3'], 'fan'), 'combine')
+  // Same shape, roots declared in the opposite order -- must not matter.
+  assert.equal(findConvergenceNode(g, ['r3', 'r2', 'r1'], 'fan'), 'combine')
+})
+
+test('findConvergenceNode: the canonical rework-loop shape resolves correctly even though the retry-affected node and the real convergence node share one SCC (ADR-007 twelfth amendment)', () => {
+  // Pins the exact counter-example that killed the second rejected design
+  // (collapsing cycles into SCCs): "the canonical rework-loop shape...
+  // necessarily puts the intended convergence node (combine) inside the
+  // SAME SCC as the retry-affected interior nodes it needs to be
+  // distinguished from." Dominance-based back-edge removal never merges
+  // nodes -- it removes exactly one edge (check -> fan, correctly proven a
+  // back edge because fan, the entry, dominates every reachable node) and
+  // leaves combine and check fully distinguishable.
+  const g = parseDot(`digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    fan [shape=component]  a [shape=box]  b [shape=box]  combine [shape=box]  check [shape=diamond]
+    start -> fan
+    fan -> a -> combine
+    fan -> b -> combine
+    combine -> check
+    check -> fan
+    check -> done
+  }`)
+  assert.equal(findConvergenceNode(g, ['a', 'b'], 'fan'), 'combine')
 })
 
 // ---------------------------------------------------------------------------

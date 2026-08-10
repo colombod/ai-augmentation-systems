@@ -3157,24 +3157,124 @@ function inferredOutputs(node) {
 function effectiveOutputs(node) {
   return [.../* @__PURE__ */ new Set([...inferredOutputs(node), ...declaredOutputs(node)])];
 }
-function reachableWithDepthTruncated(graph, startId, stopId, otherRoots) {
+function computeDominators(graph, entryId) {
+  const rpo = [];
+  const seen = /* @__PURE__ */ new Set([entryId]);
+  const postorder = [];
+  const frames = [
+    { id: entryId, children: outgoingEdges(graph, entryId).map((e) => e.to), next: 0 }
+  ];
+  while (frames.length > 0) {
+    const top = frames[frames.length - 1];
+    if (top.next >= top.children.length) {
+      postorder.push(top.id);
+      frames.pop();
+      continue;
+    }
+    const child = top.children[top.next];
+    top.next += 1;
+    if (!seen.has(child)) {
+      seen.add(child);
+      frames.push({ id: child, children: outgoingEdges(graph, child).map((e) => e.to), next: 0 });
+    }
+  }
+  for (let i = postorder.length - 1; i >= 0; i--) rpo.push(postorder[i]);
+  const rpoNumber = new Map(rpo.map((id, i) => [id, i]));
+  const predecessors = /* @__PURE__ */ new Map();
+  for (const e of graph.edges) {
+    if (!rpoNumber.has(e.from) || !rpoNumber.has(e.to)) continue;
+    const list = predecessors.get(e.to);
+    if (list === void 0) predecessors.set(e.to, [e.from]);
+    else list.push(e.from);
+  }
+  const idom = /* @__PURE__ */ new Map([[entryId, entryId]]);
+  const intersect = (a, b) => {
+    let f1 = a;
+    let f2 = b;
+    while (f1 !== f2) {
+      while (rpoNumber.get(f1) > rpoNumber.get(f2)) f1 = idom.get(f1);
+      while (rpoNumber.get(f2) > rpoNumber.get(f1)) f2 = idom.get(f2);
+    }
+    return f1;
+  };
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of rpo) {
+      if (node === entryId) continue;
+      let newIdom;
+      for (const p of predecessors.get(node) ?? []) {
+        if (!idom.has(p)) continue;
+        newIdom = newIdom === void 0 ? p : intersect(newIdom, p);
+      }
+      if (newIdom !== void 0 && idom.get(node) !== newIdom) {
+        idom.set(node, newIdom);
+        changed = true;
+      }
+    }
+  }
+  return idom;
+}
+function dominates(idom, v, u) {
+  if (!idom.has(u)) return false;
+  let cur = u;
+  for (; ; ) {
+    if (cur === v) return true;
+    const parent = idom.get(cur);
+    if (parent === cur) return false;
+    cur = parent;
+  }
+}
+function canReach(graph, fromId, toId) {
+  if (fromId === toId) return true;
+  const seen = /* @__PURE__ */ new Set([fromId]);
+  const queue = [fromId];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    for (const e of outgoingEdges(graph, cur)) {
+      if (e.to === toId) return true;
+      if (!seen.has(e.to)) {
+        seen.add(e.to);
+        queue.push(e.to);
+      }
+    }
+  }
+  return false;
+}
+function nodesOnACycle(adjacency, nodes) {
+  const result = /* @__PURE__ */ new Set();
+  for (const n of nodes) {
+    const seen = /* @__PURE__ */ new Set();
+    const queue = [...adjacency.get(n) ?? []];
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      if (cur === n) {
+        result.add(n);
+        break;
+      }
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      for (const next of adjacency.get(cur) ?? []) queue.push(next);
+    }
+  }
+  return result;
+}
+function bfsDepths(adjacency, startId) {
   const depth = /* @__PURE__ */ new Map();
   const queue = [];
-  for (const e of outgoingEdges(graph, startId)) {
-    if (!depth.has(e.to)) {
-      depth.set(e.to, 1);
-      queue.push(e.to);
+  for (const next of adjacency.get(startId) ?? []) {
+    if (!depth.has(next)) {
+      depth.set(next, 1);
+      queue.push(next);
     }
   }
   while (queue.length > 0) {
     const cur = queue.shift();
     const curDepth = depth.get(cur);
-    if (cur === stopId) continue;
-    if (curDepth > 1 && otherRoots.has(cur)) continue;
-    for (const e of outgoingEdges(graph, cur)) {
-      if (!depth.has(e.to)) {
-        depth.set(e.to, curDepth + 1);
-        queue.push(e.to);
+    for (const next of adjacency.get(cur) ?? []) {
+      if (!depth.has(next)) {
+        depth.set(next, curDepth + 1);
+        queue.push(next);
       }
     }
   }
@@ -3183,10 +3283,19 @@ function reachableWithDepthTruncated(graph, startId, stopId, otherRoots) {
 function findConvergenceNode(graph, branchRootIds, fanOutNodeId) {
   if (branchRootIds.length === 0) return null;
   const rootSet = new Set(branchRootIds);
-  const depthMaps = branchRootIds.map((id) => {
-    const otherRoots = new Set(branchRootIds.filter((r) => r !== id));
-    return reachableWithDepthTruncated(graph, id, fanOutNodeId, otherRoots);
-  });
+  const idom = computeDominators(graph, fanOutNodeId);
+  const forward = /* @__PURE__ */ new Map();
+  for (const id of idom.keys()) forward.set(id, []);
+  for (const e of graph.edges) {
+    if (!idom.has(e.from) || !idom.has(e.to)) continue;
+    if (dominates(idom, e.to, e.from)) continue;
+    if (rootSet.has(e.to) && canReach(graph, e.to, e.from)) continue;
+    forward.get(e.from).push(e.to);
+  }
+  for (const id of nodesOnACycle(forward, idom.keys())) {
+    if (!rootSet.has(id)) return null;
+  }
+  const depthMaps = branchRootIds.map((id) => bfsDepths(forward, id));
   let candidates = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id) && id !== fanOutNodeId);
   for (let i = 1; i < depthMaps.length; i++) {
     candidates = candidates.filter((id) => depthMaps[i].has(id));

@@ -461,49 +461,166 @@ export function effectiveOutputs(node: Node): string[] {
 }
 
 /**
- * Nodes reachable from `startId` via ONE OR MORE edges (never `startId`
- * itself, unless a genuine cycle leads back to it), mapped to the shortest
- * distance at which each was first reached, TRUNCATED at `stopId` (added to
- * the result when reached, but its own outgoing edges are never followed --
- * used for the fan-out node) AND at any id in `otherRoots` reached at BFS depth
- * greater than 1 (added when reached, not expanded past -- ADR-007's
- * eleventh amendment). A branch root reached as the immediate, direct first
- * hop from the root this call is computing FROM is never truncated -- that
- * preserves a genuine forward edge between two branch roots (e.g.
- * `root1 -> root2`, a real, legal DOT shape). A branch root reached only via
- * two or more hops is truncated the same way the fan-out node already is,
- * because a rework/retry loop's path back to another root always arrives by
- * way of intervening structure (a shared check/combine node, or the fan-out
- * node itself) -- never as a direct first hop -- so this distinguishes the
- * two without needing to detect cycles directly (see the ADR for the two
- * cycle-detection designs that were tried and rejected first). Condition-
- * independent -- follows every outgoing edge regardless of whether its
- * condition would actually fire at runtime, the same conservative-lint-
- * over-precise-runtime tradeoff `directPredecessor`/DATA-001 already accept.
+ * Immediate dominators of every node reachable from `entryId`, via the
+ * Cooper/Harvey/Kennedy iterative algorithm ("A Simple, Fast Dominance
+ * Algorithm", 2001) -- ample at this graph's scale (pipelines run to tens
+ * of nodes, not the thousands Lengauer-Tarjan exists to make fast).
+ *
+ * `idom.get(entryId) === entryId` by definition (the standard convention:
+ * the entry is its own immediate dominator, terminating every walk up the
+ * dominator tree). A node NOT in the returned map is unreachable from
+ * `entryId` and has no defined dominator.
+ *
+ * Predecessors are read from ALL of `graph.edges` -- including edges that
+ * `dominates` will later classify as back edges -- because the dominance
+ * relation is a property of the WHOLE graph's structure; classification
+ * happens only after this is computed, never as an input to it.
  */
-function reachableWithDepthTruncated(
-  graph: Graph,
-  startId: string,
-  stopId: string,
-  otherRoots: ReadonlySet<string>,
-): Map<string, number> {
+function computeDominators(graph: Graph, entryId: string): Map<string, string> {
+  // Reverse postorder via an explicit-stack DFS from the entry -- gives the
+  // iterative algorithm a numbering under which most nodes converge in very
+  // few passes; correctness does not depend on which child is visited
+  // first, only speed of convergence to the same, unique fixed point.
+  const rpo: string[] = []
+  const seen = new Set<string>([entryId])
+  const postorder: string[] = []
+  const frames: Array<{ id: string; children: string[]; next: number }> = [
+    { id: entryId, children: outgoingEdges(graph, entryId).map((e) => e.to), next: 0 },
+  ]
+  while (frames.length > 0) {
+    const top = frames[frames.length - 1]
+    if (top.next >= top.children.length) {
+      postorder.push(top.id)
+      frames.pop()
+      continue
+    }
+    const child = top.children[top.next]
+    top.next += 1
+    if (!seen.has(child)) {
+      seen.add(child)
+      frames.push({ id: child, children: outgoingEdges(graph, child).map((e) => e.to), next: 0 })
+    }
+  }
+  for (let i = postorder.length - 1; i >= 0; i--) rpo.push(postorder[i])
+  const rpoNumber = new Map(rpo.map((id, i) => [id, i]))
+
+  const predecessors = new Map<string, string[]>()
+  for (const e of graph.edges) {
+    if (!rpoNumber.has(e.from) || !rpoNumber.has(e.to)) continue
+    const list = predecessors.get(e.to)
+    if (list === undefined) predecessors.set(e.to, [e.from])
+    else list.push(e.from)
+  }
+
+  const idom = new Map<string, string>([[entryId, entryId]])
+  const intersect = (a: string, b: string): string => {
+    let f1 = a
+    let f2 = b
+    while (f1 !== f2) {
+      while ((rpoNumber.get(f1) as number) > (rpoNumber.get(f2) as number)) f1 = idom.get(f1) as string
+      while ((rpoNumber.get(f2) as number) > (rpoNumber.get(f1) as number)) f2 = idom.get(f2) as string
+    }
+    return f1
+  }
+
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const node of rpo) {
+      if (node === entryId) continue
+      let newIdom: string | undefined
+      for (const p of predecessors.get(node) ?? []) {
+        if (!idom.has(p)) continue
+        newIdom = newIdom === undefined ? p : intersect(newIdom, p)
+      }
+      if (newIdom !== undefined && idom.get(node) !== newIdom) {
+        idom.set(node, newIdom)
+        changed = true
+      }
+    }
+  }
+  return idom
+}
+
+/**
+ * `v` dominates `u`: every path from the dominance computation's entry to
+ * `u` passes through `v` (a node trivially dominates itself). Walks the
+ * dominator-tree ancestor chain from `u` (`u`, `idom[u]`, `idom[idom[u]]`,
+ * ... up to the entry, whose own `idom` maps to itself) looking for `v`.
+ * `false` if `u` is not in `idom` at all (unreachable from the entry).
+ */
+function dominates(idom: ReadonlyMap<string, string>, v: string, u: string): boolean {
+  if (!idom.has(u)) return false
+  let cur = u
+  for (;;) {
+    if (cur === v) return true
+    const parent = idom.get(cur) as string
+    if (parent === cur) return false // reached the entry without finding v
+    cur = parent
+  }
+}
+
+/** Plain reachability: is there a path `fromId -> ... -> toId` in `graph` (`fromId === toId` counts)? */
+function canReach(graph: Graph, fromId: string, toId: string): boolean {
+  if (fromId === toId) return true
+  const seen = new Set<string>([fromId])
+  const queue = [fromId]
+  while (queue.length > 0) {
+    const cur = queue.shift() as string
+    for (const e of outgoingEdges(graph, cur)) {
+      if (e.to === toId) return true
+      if (!seen.has(e.to)) {
+        seen.add(e.to)
+        queue.push(e.to)
+      }
+    }
+  }
+  return false
+}
+
+/**
+ * Nodes participating in at least one cycle within `adjacency` (a node `n`
+ * such that following edges from `n` can return to `n`), restricted to
+ * `nodes`. Deliberately the simple O(V*(V+E)) "can n reach itself" check,
+ * not Tarjan's SCC algorithm -- these graphs run to tens of nodes, and
+ * clarity matters more than asymptotic elegance nothing here needs.
+ */
+function nodesOnACycle(adjacency: ReadonlyMap<string, readonly string[]>, nodes: Iterable<string>): Set<string> {
+  const result = new Set<string>()
+  for (const n of nodes) {
+    const seen = new Set<string>()
+    const queue = [...(adjacency.get(n) ?? [])]
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      if (cur === n) {
+        result.add(n)
+        break
+      }
+      if (seen.has(cur)) continue
+      seen.add(cur)
+      for (const next of adjacency.get(cur) ?? []) queue.push(next)
+    }
+  }
+  return result
+}
+
+/** Plain BFS depths over `adjacency` from `startId` (never includes `startId` itself). */
+function bfsDepths(adjacency: ReadonlyMap<string, readonly string[]>, startId: string): Map<string, number> {
   const depth = new Map<string, number>()
   const queue: string[] = []
-  for (const e of outgoingEdges(graph, startId)) {
-    if (!depth.has(e.to)) {
-      depth.set(e.to, 1)
-      queue.push(e.to)
+  for (const next of adjacency.get(startId) ?? []) {
+    if (!depth.has(next)) {
+      depth.set(next, 1)
+      queue.push(next)
     }
   }
   while (queue.length > 0) {
     const cur = queue.shift() as string
     const curDepth = depth.get(cur) as number
-    if (cur === stopId) continue // do not expand past the fan-out node
-    if (curDepth > 1 && otherRoots.has(cur)) continue // do not expand past another root reached beyond the direct first hop
-    for (const e of outgoingEdges(graph, cur)) {
-      if (!depth.has(e.to)) {
-        depth.set(e.to, curDepth + 1)
-        queue.push(e.to)
+    for (const next of adjacency.get(cur) ?? []) {
+      if (!depth.has(next)) {
+        depth.set(next, curDepth + 1)
+        queue.push(next)
       }
     }
   }
@@ -512,36 +629,60 @@ function reachableWithDepthTruncated(
 
 /**
  * Earliest node reachable from EVERY branch root (excluding the roots
- * themselves, and excluding the fan-out node itself -- ADR-007's tenth
- * amendment: `reachableWithDepthTruncated` necessarily records reaching the
- * fan-out node as part of truncating past it, but the fan-out node is never
- * itself a valid "resume point"), by static
- * reachability over ALL outgoing edges regardless of condition truth,
- * TRUNCATED at `fanOutNodeId` (ADR-007's ninth amendment) AND at any other
- * branch root reached beyond the direct first hop (ADR-007's eleventh
- * amendment) -- reachability does not expand past either. Without this, an
- * ordinary rework/retry loop -- whether it routes back through the fan-out
- * node or targets a branch root directly -- lets one branch's reachability
- * leak deep into a DIFFERENT branch's own interior at an artificially
- * shallow worst-case depth, winning the tie-break over the real convergence
- * node and refusing a hazard-free rework loop. A root reached via an
- * ordinary forward edge that is the immediate, direct first hop from the
- * root being computed FROM (e.g. `root1 -> root2`, a plain DAG edge) is
- * unaffected and still resolves normally -- only a root reached via two or
- * more hops is treated as a rework-loop artifact. Known, accepted
- * limitation: a genuine multi-hop forward chain between two branch roots
- * with no retry loop present would also be truncated, which can turn a
- * discoverable convergence into `null` (a PAR-001 refusal) -- a safe-
- * direction failure (loud refusal, never a missed hazard), named explicitly
- * in the eleventh amendment rather than silently accepted.
+ * themselves, and excluding the fan-out node itself), by reachability over
+ * a graph with every RETRY BACK EDGE removed -- ADR-007's twelfth amendment,
+ * replacing the ninth/eleventh amendments' hop-count truncation heuristics
+ * with dominator-based back-edge classification, the standard compiler-
+ * theory technique for distinguishing a loop's back edge from ordinary
+ * forward structure (natural loop detection; see Aho/Sethi/Ullman, Cooper &
+ * Torczon).
+ *
+ * An edge `u -> v` is a back edge iff `v` DOMINATES `u` (every path from
+ * `fanOutNodeId`, the analysis's entry, to `u` passes through `v`) --
+ * `computeDominators`/`dominates` above. This is provably ORDER-INDEPENDENT,
+ * unlike the first design tried and rejected for this problem (a single DFS
+ * from the fan-out node, classifying retreating tree edges as back edges):
+ * that classification depends on which branch a DFS happens to visit first,
+ * and a 3-root fixture whose retry targets the MIDDLE declared root produced
+ * a wrong answer under it. Dominance is a structural property of the whole
+ * graph, computed by an iterative fixed-point (`computeDominators`), and
+ * does not depend on any traversal's visitation order.
+ *
+ * This also does not collapse any node into another -- the second rejected
+ * design (condensing cycles into strongly-connected components) failed
+ * because the canonical rework-loop shape (`combine -> check -> retry back to
+ * an entry`) puts the intended convergence node in the SAME SCC as the
+ * retry-affected interior node it must be distinguished from, so collapsing
+ * destroys the distinction. Removing one classified-back-edge, rather than
+ * merging nodes, keeps every node individually addressable.
+ *
+ * `fanOutNodeId` itself needs no special-case truncation (the ninth
+ * amendment's own fix): it dominates every node reachable from it by
+ * definition, so ANY edge landing back on it is always classified as a back
+ * edge and removed.
+ *
+ * IRREDUCIBLE LOOPS -- named limitation, not silently mishandled. A cycle
+ * with two or more independent external entries has no single dominating
+ * header, so no dominance-based classification can remove its closing edge
+ * (compiler theory's own limitation for natural-loop detection: "the
+ * dominator-based method cannot see [irreducible loops]"). Rather than trust
+ * a residual, un-pruned cycle's reachability (which is exactly how the
+ * eleventh amendment's own heuristic went wrong), `nodesOnACycle` checks the
+ * back-edge-pruned graph for any surviving cycle; if one exists AND involves
+ * a node that is not itself a declared branch root, this function refuses to
+ * guess and returns `null` (PAR-001 then refuses the graph cleanly). A
+ * residual cycle among branch roots ALONE (an ordinary `root1 <-> root2`
+ * cross-edge, ADR-007's tenth amendment) is not dangerous and does not
+ * trigger this -- those are already excluded from candidacy below, and no
+ * dominance concern attaches to a root, which by construction can only be
+ * reached from `fanOutNodeId` itself.
  *
  * Shallowest common descendant wins ties, ranked by the FURTHEST root's
  * distance to it (its own worst case); the exact tie-break among equally-
  * shallow candidates is otherwise unspecified -- `findPartialReconvergence`
- * is what actually closes the hazard a tie could create (ADR-007's
- * amendments; the ADR itself does not claim this is proven complete, only
- * adversarially re-verified as of its most recent amendment). `null` if
- * branches never reconverge.
+ * is what actually closes the hazard a tie could create. `null` if branches
+ * never reconverge, or if a dangerous residual cycle makes the answer
+ * unsafe to trust.
  */
 export function findConvergenceNode(
   graph: Graph,
@@ -550,11 +691,37 @@ export function findConvergenceNode(
 ): string | null {
   if (branchRootIds.length === 0) return null
   const rootSet = new Set(branchRootIds)
-  const depthMaps = branchRootIds.map((id) => {
-    const otherRoots = new Set(branchRootIds.filter((r) => r !== id))
-    return reachableWithDepthTruncated(graph, id, fanOutNodeId, otherRoots)
-  })
 
+  const idom = computeDominators(graph, fanOutNodeId)
+  const forward = new Map<string, string[]>()
+  for (const id of idom.keys()) forward.set(id, [])
+  for (const e of graph.edges) {
+    if (!idom.has(e.from) || !idom.has(e.to)) continue
+    if (dominates(idom, e.to, e.from)) continue // back edge -- a genuine retry/loop closure
+    // A branch root is a declared, semantically special reset point (unlike
+    // an arbitrary interior node): an edge landing on one, from anywhere,
+    // that can also reach back to where it came from is this project's own
+    // already-established, already-adversarially-verified meaning of "this
+    // is a retry" (ADR-007's ninth/eleventh amendments) -- codified here as
+    // a second back-edge test alongside pure dominance, not a replacement
+    // for it. Global dominance alone says NO for this shape whenever a
+    // SIBLING branch can also reach the retry's own source without passing
+    // through the target root (an irreducible loop by the strict
+    // graph-theoretic definition -- confirmed empirically, not assumed: see
+    // the "direct retry edge to a branch root" regression below) -- but this
+    // project already decided, and tested, that such an edge means "restart
+    // this branch" regardless. `mid -> root2`, a genuine forward edge in a
+    // multi-hop root-to-root chain with no cycle back to root2 anywhere, is
+    // NOT caught by this: `canReach(graph, root2, mid)` is false there.
+    if (rootSet.has(e.to) && canReach(graph, e.to, e.from)) continue
+    ;(forward.get(e.from) as string[]).push(e.to)
+  }
+
+  for (const id of nodesOnACycle(forward, idom.keys())) {
+    if (!rootSet.has(id)) return null // irreducible loop through non-root territory -- refuse rather than guess
+  }
+
+  const depthMaps = branchRootIds.map((id) => bfsDepths(forward, id))
   let candidates: string[] = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id) && id !== fanOutNodeId)
   for (let i = 1; i < depthMaps.length; i++) {
     candidates = candidates.filter((id) => depthMaps[i].has(id))
