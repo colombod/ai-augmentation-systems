@@ -5,7 +5,7 @@ import { readFileSync as readFileSync3 } from "node:fs";
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { basename as basename2, resolve as resolve2 } from "node:path";
 
-// ../../../../../../plugins/attractor/engine/node_modules/@ts-graphviz/common/lib/common.js
+// node_modules/@ts-graphviz/common/lib/common.js
 var RootModelsContext = Object.seal({
   // NOTE: RootModelsContext is also initialized after the model class is declared in the '@ts-graphviz/core/register-default' module.
   Graph: null,
@@ -15,7 +15,7 @@ var RootModelsContext = Object.seal({
   Edge: null
 });
 
-// ../../../../../../plugins/attractor/engine/node_modules/@ts-graphviz/ast/lib/ast.js
+// node_modules/@ts-graphviz/ast/lib/ast.js
 var ASTNodeCountExceededError = class extends Error {
   /**
    * Constructor
