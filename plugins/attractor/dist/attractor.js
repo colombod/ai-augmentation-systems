@@ -4849,6 +4849,16 @@ var Engine = class {
    */
   gateOutcomes = /* @__PURE__ */ new Map();
   /**
+   * WARNING-severity diagnostics from `run()`'s own `lint(graph)` call, set
+   * once at the top of `run()` and read by every `result()` call site
+   * (`RunResult.lintWarnings`, FR-12 / issue #16). A plain field rather than
+   * re-deriving it inside `result()` itself, because `result()` has no
+   * access to the graph's diagnostics beyond what `run()` already computed
+   * once -- re-linting there would be a second, redundant `lint()` call for
+   * data already in hand.
+   */
+  lintWarnings = [];
+  /**
    * Nodes holding an UNRESOLVED failure: they ended FAIL and have not since
    * been re-executed to SUCCESS or PARTIAL.
    *
@@ -5247,6 +5257,7 @@ var Engine = class {
     }
     const unresolved = this.unresolvedFailures();
     if (unresolved.length > 0) result.unresolvedFailures = unresolved;
+    if (this.lintWarnings.length > 0) result.lintWarnings = this.lintWarnings;
     return result;
   }
   /**
@@ -5548,6 +5559,7 @@ var Engine = class {
     const { graph, context } = this.opts;
     const maxSteps = this.opts.maxSteps ?? DEFAULT_MAX_STEPS;
     const diagnostics = lint(graph);
+    this.lintWarnings = diagnostics.filter((d) => d.severity === Severity.WARNING);
     if (hasErrors(diagnostics)) {
       const detail = diagnostics.filter((d) => d.severity === Severity.ERROR).map((d) => `${d.code}${d.node ? ` (${d.node})` : ""}: ${d.message}`).join("; ");
       const msg = `graph carries error-severity lint diagnostics and will not run: ${detail}`;

@@ -262,10 +262,12 @@ branches) still resolves correctly, but a gate fed by edges from two or more
 where both an initial review node and a later revision node feed the same
 gate -- still silently disqualifies the rule, since lint cannot know which
 branch's output actually reached the gate at runtime (see ADR-006's residual
-risk section). It is also invisible on a direct `new Engine(...)` embed
-today: `Engine.run()` only checks `hasErrors()` (ERROR-only, per ADR-004), so
-a WARNING-severity rule reaches an embedder's own output only if that
-embedder reads `lint()`'s return value directly.
+risk section). A direct `new Engine(...)` embed sees it via
+`RunResult.lintWarnings`, present whenever the run's graph carries at least
+one WARNING-severity diagnostic (FR-12, issue #16) -- `Engine.run()` still
+only *refuses* the run on `hasErrors()` (ERROR-only, per ADR-004), but no
+longer discards the WARNING-severity diagnostics that same internal
+`lint()` call already computes.
 
 `PAR-005` warns when a branch can shortcut straight to the graph's real exit
 node before the fan-out's own convergence node. **A branch reaching the exit
