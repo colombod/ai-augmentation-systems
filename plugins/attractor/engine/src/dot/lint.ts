@@ -11,13 +11,20 @@ import {
   directPredecessor,
   effectiveOutputs,
   findByHandler,
+  findConvergenceNode,
+  findPartialReconvergence,
   outgoingEdges,
   substitutableText,
   UNREGISTERED_HANDLER_KINDS,
 } from './graph.ts'
 import { wantsVerdict } from '../backend/argv.ts'
-import { evaluateCondition, isValidConditionSyntax } from '../core/condition.ts'
-import { normaliseLabel } from '../core/edge-select.ts'
+import {
+  buildSatisfyingContext,
+  conditionKeys,
+  evaluateCondition,
+  isValidConditionSyntax,
+} from '../core/condition.ts'
+import { isConditional, normaliseLabel } from '../core/edge-select.ts'
 import {
   Context,
   ENGINE_MANAGED_KEYS,
@@ -258,6 +265,42 @@ function bypassesGates(graph: Graph, entry: string, gates: Set<string>, exits: S
     }
   }
   return null
+}
+
+/**
+ * Can `fromId` reach any node in `targets` without expanding past `avoid`?
+ * `avoid` itself is reached but never expanded further, so reaching `avoid`
+ * alone -- e.g. when the convergence node IS the exit node -- does not
+ * count as "reaching an exit before convergence": that is ordinary
+ * post-convergence routing, not the shortcut this check exists to catch.
+ *
+ * The `fromId !== avoid` half of the guard below is unreachable at this
+ * function's one current call site (PAR-005): `findConvergenceNode`'s own
+ * candidate filter already excludes every branch root from convergence
+ * eligibility, so `avoid` (the computed convergence id) can never equal
+ * `fromId` (a branch root) there. Kept anyway, deliberately: this is a
+ * general-purpose reachability primitive, not private to PAR-005, and a
+ * future caller passing a `fromId` that COULD equal `avoid` should get the
+ * same "reaching avoid itself doesn't count" answer this function's own doc
+ * comment promises, not a silently different one for that specific input.
+ */
+function canReachWithoutPassing(
+  graph: Graph, fromId: string, targets: ReadonlySet<string>, avoid: string,
+): boolean {
+  if (targets.has(fromId) && fromId !== avoid) return true
+  const seen = new Set<string>([fromId])
+  const queue = [fromId]
+  while (queue.length > 0) {
+    const cur = queue.shift() as string
+    if (cur === avoid) continue
+    for (const e of outgoingEdges(graph, cur)) {
+      if (seen.has(e.to)) continue
+      if (targets.has(e.to) && e.to !== avoid) return true
+      seen.add(e.to)
+      queue.push(e.to)
+    }
+  }
+  return false
 }
 
 export function lint(graph: Graph): Diagnostic[] {
@@ -526,6 +569,118 @@ export function lint(graph: Graph): Diagnostic[] {
           `would abort with "no handler registered" mid-pipeline. Refused here instead, ` +
           `before anything runs.`,
       })
+    }
+
+    // PAR-001 / PAR-002 / PAR-004: a Handler.PARALLEL (`component`/
+    // `type="parallel"`) node's fan-out shape. Pure static analysis over
+    // findConvergenceNode/findPartialReconvergence (dot/graph.ts) -- the
+    // SAME functions the runtime (p5-05's runBranch, p5-08's eventual
+    // ParallelHandler) reuses, so lint and runtime cannot disagree about
+    // where branches reconverge. Fires alongside HAND-001 above
+    // (Handler.PARALLEL stays in UNREGISTERED_HANDLER_KINDS until p5-08
+    // removes it) -- this refuses the SHAPE of a fan-out regardless of
+    // whether a handler exists yet to run it.
+    if (node.handler === Handler.PARALLEL) {
+      // Distinct targets, not raw edges -- two edges to the same node (a plain
+      // duplicate, or two differently-labelled edges to one successor) are one
+      // branch, not two. Matches directPredecessor's own "distinct sources, not
+      // raw edges" convention (graph.ts) for the identical reason: a raw-edge
+      // count would inflate PAR-004's hazard check and could suppress PAR-002
+      // on a fan-out that is structurally one branch dressed up as two edges.
+      const branchRootIds = [...new Set(outgoingEdges(graph, node.id).map((e) => e.to))]
+      if (branchRootIds.length === 1) {
+        diags.push({
+          code: 'PAR-002',
+          severity: Severity.WARNING,
+          node: node.id,
+          message:
+            `node ${node.id} is a parallel fan-out (Handler.PARALLEL) with exactly one ` +
+            `distinct successor, ${branchRootIds[0]} -- a fan-out of one branch runs no ` +
+            `differently than an ordinary edge would, so this is likely not what was intended`,
+        })
+      } else if (branchRootIds.length >= 2) {
+        const convergenceId = findConvergenceNode(graph, branchRootIds, node.id)
+        if (convergenceId === null) {
+          diags.push({
+            code: 'PAR-001',
+            severity: Severity.ERROR,
+            node: node.id,
+            message:
+              `node ${node.id} fans out to ${branchRootIds.join(', ')}, but no node is ` +
+              `reachable from every branch -- there is nowhere for the pipeline to resume ` +
+              `after the fan-out. Add a node every branch's path leads to, or route two of ` +
+              `the branches back together`,
+          })
+        } else {
+          const partial = findPartialReconvergence(graph, branchRootIds, convergenceId, node.id)
+          if (partial.length > 0) {
+            diags.push({
+              code: 'PAR-004',
+              severity: Severity.ERROR,
+              node: node.id,
+              message:
+                `node ${node.id} fans out to ${branchRootIds.join(', ')}, converging on ` +
+                `${convergenceId} -- but ${partial.join(', ')} ` +
+                `${partial.length === 1 ? 'is' : 'are'} also reachable, before ${convergenceId}, ` +
+                `either from two or more of those branches or as a shortcut from a single ` +
+                `branch into what ${convergenceId} itself leads to. A node reached either way ` +
+                `could be dispatched twice -- route every branch through a single shared node ` +
+                `before ${convergenceId}, or ensure nothing reachable from ${convergenceId} is ` +
+                `also reachable directly from a branch`,
+            })
+          }
+
+          // PAR-005: reuses the SAME convergenceId this block already computed.
+          const exitIds = new Set(findByHandler(graph, Handler.EXIT).map((n) => n.id))
+          for (const rootId of branchRootIds) {
+            if (canReachWithoutPassing(graph, rootId, exitIds, convergenceId)) {
+              diags.push({
+                code: 'PAR-005',
+                severity: Severity.WARNING,
+                node: node.id,
+                message:
+                  `node ${node.id}'s branch root ${rootId} can reach the graph's real exit ` +
+                  `node without first passing through the fan-out's own convergence node ` +
+                  `${convergenceId}. This branch alone stops there -- it does NOT stop the ` +
+                  `whole pipeline, and sibling branches proceed normally; there is no way to ` +
+                  `stop the whole run from inside a branch in this build. If an early stop for ` +
+                  `just this branch is intended, this warning can be ignored`,
+              })
+            }
+          }
+        }
+      }
+
+      // PAR-003: two or more branch ROOTS declaring the same outputs= key.
+      // Design-time complement to mergeBranchContext's own runtime
+      // node.parallel.context_collision log (handlers/parallel.ts, p5-07) --
+      // sees only each branch root's own DECLARED outputs=, not the whole
+      // branch sub-path and not inferred keys like tool.last_line (a future
+      // PAR-006, not this rule).
+      const declaredBy = new Map<string, string>()
+      for (const rootId of branchRootIds) {
+        const rootNode = graph.nodes.get(rootId)
+        if (!rootNode) continue
+        for (const key of declaredOutputs(rootNode)) {
+          const owner = declaredBy.get(key)
+          if (owner !== undefined && owner !== rootId) {
+            diags.push({
+              code: 'PAR-003',
+              severity: Severity.WARNING,
+              node: node.id,
+              message:
+                `node ${node.id}'s branches ${owner} and ${rootId} both declare ` +
+                `outputs="${key}" -- whichever branch is declared LAST wins when their ` +
+                `writes merge back after the fan-out (branch declaration order, not ` +
+                `completion order). This rule only sees each branch root's own declared ` +
+                `outputs=, not inferred keys like tool.last_line -- a collision on those is ` +
+                `caught only at runtime, logged as node.parallel.context_collision`,
+            })
+          } else if (owner === undefined) {
+            declaredBy.set(key, rootId)
+          }
+        }
+      }
     }
 
     // HITL-003: an agent-inclusive human gate whose exposed context traces to
@@ -950,6 +1105,178 @@ export function lint(graph: Graph): Diagnostic[] {
       }
       if (route.origin !== undefined) diag.node = route.origin
       diags.push(diag)
+    }
+  } else {
+    // GATE-002: a zero-goal-gate graph whose edge condition is outcome-blind
+    // on an undeclared key. See ADR-014 (.delivery/decisions) for the full
+    // reasoning and false-positive analysis; this is the implementation of
+    // its Decision 2, verbatim.
+    //
+    // `GATE-001` examines graphs that DECLARE a gate and asks whether a
+    // genuine, author-declared failure route bypasses it. This is the
+    // complementary case -- graphs that declare NO gate at all -- and asks a
+    // narrower, symmetrical question: does an edge condition only LOOK like
+    // it discriminates on outcome, while actually being satisfiable on
+    // success and failure alike because it depends on a key nothing in the
+    // graph produces? Section 11.3's quantifier ("all goal_gate nodes
+    // reached SUCCESS") is vacuously true with zero gates, so nothing else
+    // -- no gate, no eager input check (DATA-001 stays WARNING and can miss
+    // a condition-only reference entirely, see residual R6) -- ever catches
+    // this shape at runtime.
+    //
+    // ERROR, not WARNING, because after excluding every key a `--param`, a
+    // graph attribute, or a declared `outputs=` could legitimately supply,
+    // what remains can only be a typo or an accidental reliance on spec
+    // section 10.3's empty-string default standing in for real routing
+    // logic -- never a pattern worth protecting. See ADR-014's severity
+    // argument for the full case against WARNING here.
+    //
+    // Deliberately NOT the broad "any zero-goal-gate graph" reading: an
+    // ordinary linear pipeline with no conditional edges at all is already
+    // safe by construction (selectEdge's own fail-fast rule means no
+    // unconditional edge ever carries a FAIL forward), so only a
+    // CONDITIONAL edge is examined at all (`isConditional`, shared with
+    // `selectEdge` itself).
+    for (const e of graph.edges) {
+      if (!isConditional(e)) continue
+      const from = graph.nodes.get(e.from)
+      if (from === undefined || NEVER_FAILS.includes(from.handler)) continue
+
+      const condition = e.attrs.condition as string
+      // The one clause key that makes this edge a hazard: not the two live,
+      // outcome-derived keys, not an engine built-in, and not a member of
+      // `supplied` -- the identical "nothing owes this" set DATA-001 already
+      // builds (graph attrs union every node's effectiveOutputs), reused
+      // rather than restated. A key excluded here is, by construction,
+      // something a real producer in this graph already accounts for.
+      //
+      // Amendment 2026-08-09 (ADR-014): a second exclusion, scoped to this
+      // edge's own SOURCE node `from` specifically -- not any Handler.CODERGEN
+      // node anywhere in the graph. `INFERRED_OUTPUTS_BY_HANDLER[Handler.CODERGEN]`
+      // is deliberately `[]` (a box node's real output keys are arbitrary
+      // strings the model decides at runtime -- "there is nothing honest to
+      // cross-reference at lint time", ADR-006); `DATA-001` already accepts
+      // this exact blind spot and stays WARNING because of it. An undeclared
+      // key referenced on an edge leaving a CODERGEN node is not undeclared by
+      // authoring mistake -- it is plausibly written dynamically via
+      // contextUpdates, which lint cannot rule out. This is precisely the spec
+      // §10.6 loop-guard idiom (`review [shape=box] -> ... [condition=
+      // "context.loop_state!=exhausted"]`), which the unamended rule wrongly
+      // refused. Hazard shape 1/2's own `build` node is Handler.TOOL, whose
+      // INFERRED_OUTPUTS_BY_HANDLER is the small, fixed TOOL_OUTPUT_KEYS set
+      // that cannot include an arbitrary key like `build.error` -- so this
+      // exclusion does not silence either hazard shape.
+      // Amendment 4 (2026-08-10, issue #27): the FULL set of undeclared
+      // keys, not just the first. A `&&`-joined multi-clause condition can
+      // reference more than one; the partial-context evaluator below needs
+      // to know every one of them so it leaves ALL of them empty and
+      // satisfies everything else, rather than accidentally satisfying a
+      // second undeclared key too (which would hide the same hazard).
+      const unsuppliedKeys =
+        from.handler === Handler.CODERGEN
+          ? new Set<string>()
+          : new Set(
+              conditionKeys(condition).filter(
+                (k) => k !== 'outcome' && k !== 'preferred_label' && !isEngineManagedKey(k) && !supplied.has(k),
+              ),
+            )
+      if (unsuppliedKeys.size === 0) continue
+      // First in source order, for the diagnostic message only -- detection
+      // itself (below) already accounts for the whole set.
+      const unsuppliedKey = conditionKeys(condition).find((k) => unsuppliedKeys.has(k))!
+
+      // Outcome-blind: true on FAIL *and* true on SUCCESS against a context
+      // built to SATISFY every clause except the genuinely undeclared ones
+      // (`buildSatisfyingContext`, ADR-014 Amendment 4). Evaluating against
+      // one single ALL-empty context here would make a legitimate clause on
+      // a real supplied key (a graph attribute, a declared `outputs=`)
+      // spuriously false too, hiding a hazard riding alongside it in the
+      // same `&&`-joined condition -- issue #27's exact repro. This is the
+      // mirror image of `isFailureRoute` (true on FAIL, false on SUCCESS --
+      // a genuine, author-declared failure route); this rule wants the
+      // opposite, the shape `isFailureRoute`'s own doc comment names and
+      // explicitly defers to "the eager input check['s] business" -- which
+      // cannot see a condition-only reference at all.
+      const partialCtx = buildSatisfyingContext(condition, unsuppliedKeys)
+      if (!evaluateCondition(condition, partialCtx, FAILED) || !evaluateCondition(condition, partialCtx, SUCCEEDED)) {
+        continue
+      }
+
+      // Degenerate case of `bypassesGates` with an empty `gates` set: every
+      // `gates.has` check is always false, so this is a plain "can `e.to`
+      // reach an exit" BFS -- exactly what condition 6 asks for, reusing the
+      // shared traversal rather than re-deriving it.
+      const reachedExit = bypassesGates(graph, e.to, gates, exitIds)
+      if (reachedExit === null) continue
+
+      diags.push({
+        code: 'GATE-002',
+        severity: Severity.ERROR,
+        node: e.from,
+        message:
+          `node ${e.from}'s outgoing edge to ${e.to} (condition="${condition}") is ` +
+          `satisfied whether ${e.from} succeeds or fails, because it depends on ` +
+          `${unsuppliedKey}, which nothing in this graph declares, infers, or seeds -- ` +
+          `and ${e.to} can reach the exit node ${reachedExit} with no goal gate anywhere ` +
+          `to catch the resulting unearned success. Declare ${unsuppliedKey} from a real ` +
+          `producer, rewrite the condition to discriminate on outcome, or add a ` +
+          `goal_gate="true" node on this path.`,
+      })
+    }
+
+    // GATE-002 continued (ADR-014 Amendment 3): a node's own
+    // retry_target/fallback_retry_target reaching the exit with no goal gate
+    // anywhere in this (zero-gate, by construction of this whole branch)
+    // graph. Mirrors GATE-001's own retry-route detection above
+    // (lint.ts:1069-1084) for the complementary case: GATE-001 asks whether a
+    // DECLARED gate is bypassed; this asks whether NO gate exists at all to
+    // ever verify the recovery genuinely resolved the failure. Section
+    // 11.3's quantifier is vacuously true with zero gates, so a
+    // `retry_target` that dispatches a trivially-succeeding node is
+    // indistinguishable, at exit time, from a real, meaningful recovery --
+    // both report SUCCESS, and nothing ever checks which one actually
+    // happened.
+    //
+    // No Handler.CODERGEN exclusion here, unlike the edge-condition loop
+    // above: that exclusion exists because a referenced CONTEXT KEY's value
+    // is unpredictable at lint time when a box node might write it
+    // dynamically via contextUpdates. retry_target/fallback_retry_target are
+    // static node ATTRIBUTES, declared verbatim in the DOT source -- always
+    // fully visible to lint regardless of handler kind. There is nothing
+    // here for a CODERGEN node to make unpredictable.
+    for (const n of graph.nodes.values()) {
+      if (NEVER_FAILS.includes(n.handler)) continue
+      // includeGraphLevel: false -- same scoping GATE-001's own retry-route
+      // loop uses, for the identical reason: section 3.7's ladder for a
+      // plain node's own failure route never consults the graph-level
+      // rungs; only section 3.4's goal-gate-exit ladder does.
+      const target = resolveRetryTarget(n, graph, { includeGraphLevel: false })
+      if (target === null) continue
+
+      const reachedExit = bypassesGates(graph, target, gates, exitIds)
+      if (reachedExit === null) continue
+
+      // resolveRetryTarget doesn't say which of the two attributes it used;
+      // recover that from its own documented precedence (node-level
+      // retry_target first, fallback_retry_target second) so the message
+      // names the one that actually resolved.
+      const attr: 'retry_target' | 'fallback_retry_target' =
+        n.attrs.retry_target && graph.nodes.has(n.attrs.retry_target) ? 'retry_target' : 'fallback_retry_target'
+
+      diags.push({
+        code: 'GATE-002',
+        severity: Severity.ERROR,
+        node: n.id,
+        message:
+          `node ${n.id}'s ${attr}="${target}" can reach the exit node ${reachedExit} with ` +
+          `no goal gate anywhere in this graph to verify the recovery actually resolved ` +
+          `${n.id}'s original failure -- section 11.3's quantifier is vacuously true with ` +
+          `zero gates, so nothing ever checks whether the retry route's own success was a ` +
+          `real, earned recovery rather than the original failure passing through ` +
+          `unverified. Add a goal_gate="true" node on this path, or replace the retry ` +
+          `target with an explicit condition="outcome=fail" recovery edge if acknowledging ` +
+          `the failure without gated verification is what you intend.`,
+      })
     }
   }
 

@@ -181,6 +181,10 @@ state would, on its own, have caught this plugin's most serious Critical finding
 
 ## Plugin-specific conventions
 
+- **Before picking up an FR or roadmap phase, check for parallel work first** — the
+  repo-wide rule in the root `AGENTS.md`'s "Working in a shared repository" section.
+  FR-17b is the incident that put the rule there: implemented twice, independently
+  (`colombod/ai-augmentation-systems#28`, `#29`).
 - **Node >= 24**, native TypeScript type stripping — no build step for tests. Therefore
   **no `enum`, `namespace`, `declare`, or constructor parameter properties.** Use `const`
   objects with `as const` plus a derived union.

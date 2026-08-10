@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '../src/core/context.ts'
 import { Status, type Outcome } from '../src/core/outcome.ts'
-import { evaluateCondition } from '../src/core/condition.ts'
+import { evaluateCondition, conditionKeys } from '../src/core/condition.ts'
 
 const ok: Outcome = { status: Status.SUCCESS, preferredLabel: 'green' }
 const bad: Outcome = { status: Status.FAIL }
@@ -163,4 +163,38 @@ test('outcome agrees across spellings because the engine writes it unconditional
   for (const spelling of ['outcome', 'context.outcome']) {
     assert.equal(evaluateCondition(`${spelling}=fail`, ctx, failed), true)
   }
+})
+
+// conditionKeys -- GATE-002's own building block. Extracts left-hand keys
+// without evaluating anything, `context.`-prefix stripped to match the
+// canonical, unprefixed spelling used by `effectiveOutputs`/`graph.attrs`.
+test('conditionKeys extracts a single bare key', () => {
+  assert.deepEqual(conditionKeys('context.ready'), ['ready'])
+})
+
+test('conditionKeys strips the context. prefix from a comparison clause', () => {
+  assert.deepEqual(conditionKeys('context.build.error!=fatal'), ['build.error'])
+})
+
+test('conditionKeys leaves an unprefixed key untouched', () => {
+  assert.deepEqual(conditionKeys('outcome=success'), ['outcome'])
+  assert.deepEqual(conditionKeys('tests_passed=true'), ['tests_passed'])
+})
+
+test('conditionKeys returns one key per &&-joined clause', () => {
+  assert.deepEqual(
+    conditionKeys('context.tool.last_line=green && outcome=success'),
+    ['tool.last_line', 'outcome'],
+  )
+})
+
+test('conditionKeys on an empty condition returns no keys', () => {
+  assert.deepEqual(conditionKeys(''), [])
+  assert.deepEqual(conditionKeys('   '), [])
+})
+
+test('conditionKeys treats an unparseable clause as a bare key, matching evaluateCondition', () => {
+  // evaluateCondition resolves 'garbage' as a literal key lookup via
+  // resolveKey(bare, ...) -- conditionKeys must report the same key.
+  assert.deepEqual(conditionKeys('garbage'), ['garbage'])
 })

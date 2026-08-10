@@ -6,7 +6,7 @@ The scope, verification and report-back tables are data.
 ---
 sprint: 1
 slug: hitl-003-self-report-guard
-scope: Phase 1 (plugins/attractor/.delivery/roadmap.md)
+scope: Phase 1 (plugins/attractor/.delivery/initiatives/spec-conformance-mvp/roadmap.md)
 status: scoped
 runner: superpowers (subagent-driven-development)
 branch: worktree-attractor-hitl-003-selfreport

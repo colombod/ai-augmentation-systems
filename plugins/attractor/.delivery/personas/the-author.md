@@ -17,7 +17,7 @@ source: derived
 > detail beyond that (frequency, stakes, alternatives weighed) is **assumed**, reasoned
 > from the amplifier comparison and the existing engine, and marked so per attribute.
 > No observed evidence exists for this persona or any other — confirmed by a dedicated
-> evidence hunt (`plugins/attractor/.delivery/research.md`'s Gaps section): zero telemetry, zero issue
+> evidence hunt (`plugins/attractor/.delivery/initiatives/spec-conformance-mvp/research.md`'s Gaps section): zero telemetry, zero issue
 > reports, and the closest comparable product's own issue tracker contains no issues at
 > all, only internal team PRs.
 

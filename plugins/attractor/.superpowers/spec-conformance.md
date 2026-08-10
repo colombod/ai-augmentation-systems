@@ -1816,7 +1816,7 @@ The port-plan research pass that produced most of this section's port-classifica
 work stated, of four `microsoft/amplifier-bundle-attractor` example pipelines: "Checked
 each `.dot` node-by-node against `SHAPE_TO_HANDLER`/`TYPE_TO_HANDLER`... and ran the lint
 rules... **mentally** against each graph's structure" — a paper trace, not an execution.
-The product brief this document feeds (`plugins/attractor/.delivery/brief.md`) then stated the result
+The product brief this document feeds (`plugins/attractor/.delivery/initiatives/spec-conformance-mvp/brief.md`) then stated the result
 with execution-level confidence and no caveat. A challenge review of that brief caught
 the gap: the claim had no corroborating record anywhere in this repository. Rather than
 add the mental trace as though it were verified, the four files were fetched verbatim

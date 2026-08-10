@@ -1,4 +1,4 @@
-# Challenge findings: plugins/attractor/.delivery/brief.md
+# Challenge findings: plugins/attractor/.delivery/initiatives/spec-conformance-mvp/brief.md
 
 > Adversarial review. Read-only — findings are recorded here, not applied.
 > Panel: product-owner, business-analyst, feature-critic · Reviewed: 2026-08-05 · Artifact version: `a9acf77`
@@ -16,7 +16,7 @@
 
 **Reviewer quality note:** all three did their job — every finding below carries a concrete failure scenario, none is style-only or praise-only.
 
-All 15 findings resolved by direct edit to `plugins/attractor/.delivery/brief.md`, applied without a separate user approval round given a standing directive to act autonomously on clear-cut factual/citation corrections. One fix (R-brief-3) surfaced a live, previously-unknown discrepancy — corrected in `spec-conformance.md`'s "Four amplifier example pipelines, actually executed" section with real execution evidence, not just a citation patch.
+All 15 findings resolved by direct edit to `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/brief.md`, applied without a separate user approval round given a standing directive to act autonomously on clear-cut factual/citation corrections. One fix (R-brief-3) surfaced a live, previously-unknown discrepancy — corrected in `spec-conformance.md`'s "Four amplifier example pipelines, actually executed" section with real execution evidence, not just a citation patch.
 
 ## Findings
 

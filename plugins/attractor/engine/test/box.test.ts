@@ -560,3 +560,32 @@ test('status.json carries failure_reason for an external reader (sections 4.5, 5
     rmSync(cwd, { recursive: true, force: true })
   }
 })
+
+test("BoxHandler passes ctx.cwd through to Backend.run's new trailing argument", async () => {
+  const received: (string | undefined)[] = []
+  class CapturingBackend implements Backend {
+    async run(
+      _node: Node, _prompt: string, _context: Context, _graph: Graph,
+      _signal?: AbortSignal, cwd?: string,
+    ): Promise<Outcome> {
+      received.push(cwd)
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }
+  }
+  const runDir = mkdtempSync(join(tmpdir(), 'attractor-box-cwdpass-run-'))
+  const cwd = mkdtempSync(join(tmpdir(), 'attractor-box-cwdpass-cwd-'))
+  try {
+    await new BoxHandler(new CapturingBackend()).execute({
+      node: G.nodes.get('plain')!,
+      graph: G,
+      context: Context.from({ goal: 'g' }),
+      runDir,
+      cwd,
+      events: new EventLog(runDir),
+    })
+    assert.equal(received[0], cwd, "Backend.run's cwd argument matches HandlerCtx.cwd")
+  } finally {
+    rmSync(runDir, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
