@@ -130,6 +130,37 @@ for (const file of FILES) {
   }
 }
 
+// Every relative markdown link ([text](path)) in a checked file must resolve
+// to a real path in this repo. Skips absolute URLs (http(s)://, github.com
+// citations written as bare text) and anchors (#foo). Links into ../examples/
+// are checked separately and only reported as a warning, not a failure --
+// p6-02/p6-03 (reference material) intentionally cite example filenames
+// p6-07 (worked examples) has not created yet; ADR-019's table is the
+// authority on which filenames are the right ones to cite in advance.
+const MD_LINK = /\]\(([^)]+)\)/g
+const pendingExampleRefs = []
+for (const file of FILES) {
+  const text = readFileSync(file, 'utf8')
+  const dir = dirname(file)
+  for (const m of text.matchAll(MD_LINK)) {
+    const target = m[1].split('#')[0]
+    if (target === '' || /^https?:\/\//.test(target)) continue
+    const resolved = resolve(dir, target)
+    if (existsSync(resolved)) continue
+    if (target.startsWith('../examples/')) {
+      pendingExampleRefs.push(`${file} -> ${target}`)
+      continue
+    }
+    fail(`${file}: relative link target does not exist: ${target} (resolved ${resolved})`)
+  }
+}
+if (pendingExampleRefs.length > 0) {
+  console.log(
+    `NOTE: ${pendingExampleRefs.length} reference-material link(s) point at example files not yet shipped (p6-07's job, tracked against ADR-019's table, not a failure here):`,
+  )
+  for (const r of pendingExampleRefs) console.log(`  - ${r}`)
+}
+
 if (failures > 0) {
   console.error(`\n${failures} consistency check(s) failed.`)
   process.exit(1)

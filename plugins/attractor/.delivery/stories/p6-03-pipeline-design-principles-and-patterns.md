@@ -1,7 +1,7 @@
 ---
 id: p6-03
 title: Reference material — pipeline-design-principles.md, pipeline-patterns.md (ported near-verbatim)
-status: ready
+status: done
 epic: Phase 6 — FR-13-16 (S7 authoring skill / TS-library packaging)
 supersedes: []
 superseded_by: []
@@ -79,19 +79,46 @@ if the cited amplifier file/example was excluded per
 
 ## Acceptance criteria
 
-- [ ] Both files exist and their section structure matches amplifier's source
+- [x] Both files exist and their section structure matches amplifier's source
       (same headings, same order) — confirms "near-verbatim," not a rewrite.
-- [ ] Neither file contains `model_stylesheet`, `llm_model`, or a `class=` DOT attribute
+- [x] Neither file contains `model_stylesheet`, `llm_model`, or a `class=` DOT attribute
       anywhere (`grep -c` both terms across both files returns 0).
-- [ ] Neither file links to `examples/gates/` or any other amplifier path that was not
+- [x] Neither file links to `examples/gates/` or any other amplifier path that was not
       ported into this project (spot-check every relative link in both files resolves to
       a real path in this repo, or was deliberately removed).
-- [ ] Every `examples/pipelines/NN-*.dot` or `examples/patterns/*.dot` citation in both
+- [x] Every `examples/pipelines/NN-*.dot` or `examples/patterns/*.dot` citation in both
       files resolves to a file this project actually ships (post-p6-07) — cross-check
       against [ADR-019](../decisions/ADR-019-example-portability-policy.md)'s table; a
       citation to an excluded example is a bug, not a stylistic nit.
-- [ ] The doc-consistency script from p6-02 (extend it, don't duplicate it) also checks
+- [x] The doc-consistency script from p6-02 (extend it, don't duplicate it) also checks
       these two files for stray `model_stylesheet`/`class=` references.
+
+## Implementation notes
+
+Extended `check-consistency.mjs` with a relative-markdown-link resolver. Links into
+`../examples/` are reported as a NOTE, not a failure, since p6-02/p6-03 (reference
+material) are sequenced before p6-07 (worked examples) by design — the script confirmed
+exactly two forward references (`04-retry-with-fallback.dot` from both new files,
+`03-conditional-routing.dot` from `pipeline-patterns.md`), both present in
+[ADR-019](../decisions/ADR-019-example-portability-policy.md)'s portable-examples table,
+so no citation needed correcting. All other relative links (to `dot-reference.md`,
+`routing-reference.md`, `engine-semantics.md`) resolve today.
+
+`task-runner.dot` (excluded per ADR-019 — uses `hexagon`/`model_stylesheet`) was cited
+five times in the amplifier source across both files: repointed to
+`../examples/00-convergence-loop.dot` where it illustrated the general control-plane
+skeleton point, or replaced with a generic description where the citation depended on
+`task-runner.dot`'s own specific node names (`pm_gate`, orient/attempt/verify/critique/
+triage/postmortem/package) that have no equivalent in this project's smaller example set
+— never left as a claim this project's own examples demonstrate something they don't.
+
+§6 (AP-2)'s `goal_gate` note is the one section that needed more than a citation swap:
+amplifier's original describes `goal_gate` as one routing option among several available
+to every node via `report_outcome`; this engine's `goal_gate=true` is the *only* path any
+node's LLM response becomes a routing signal at all (see `routing-reference.md`, FR-15).
+Rewrote the note's framing accordingly rather than just correcting individual sentences,
+since the original's overall shape ("one option among several") was itself the wrong
+model for this engine, not merely one wrong fact inside a correct model.
 
 ## Test approach
 
