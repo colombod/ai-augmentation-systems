@@ -5,7 +5,7 @@ import { readFileSync as readFileSync3 } from "node:fs";
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { basename as basename2, resolve as resolve2 } from "node:path";
 
-// node_modules/@ts-graphviz/common/lib/common.js
+// ../../../../../../plugins/attractor/engine/node_modules/@ts-graphviz/common/lib/common.js
 var RootModelsContext = Object.seal({
   // NOTE: RootModelsContext is also initialized after the model class is declared in the '@ts-graphviz/core/register-default' module.
   Graph: null,
@@ -15,7 +15,7 @@ var RootModelsContext = Object.seal({
   Edge: null
 });
 
-// node_modules/@ts-graphviz/ast/lib/ast.js
+// ../../../../../../plugins/attractor/engine/node_modules/@ts-graphviz/ast/lib/ast.js
 var ASTNodeCountExceededError = class extends Error {
   /**
    * Constructor
@@ -3546,106 +3546,6 @@ function buildArgv(node, opts) {
   return argv;
 }
 
-// src/core/condition.ts
-var CLAUSE = /^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(!=|=)\s*(.*?)\s*$/;
-var BARE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_.]*$/;
-function resolveKey(key, ctx, outcome) {
-  if (key === "outcome") return outcome.status;
-  if (key === "preferred_label") {
-    const live = outcome.preferredLabel;
-    return live !== void 0 && live !== "" ? live : ctx.get("preferred_label") ?? "";
-  }
-  if (key.startsWith("context.")) {
-    return ctx.get(key) ?? ctx.get(key.slice("context.".length)) ?? "";
-  }
-  return ctx.get(key) ?? "";
-}
-function parseLiteral(raw) {
-  const v = raw.trim();
-  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1);
-  return v;
-}
-function splitClauses(expr) {
-  const trimmed = expr.trim();
-  return trimmed === "" ? [] : trimmed.split("&&");
-}
-function isValidConditionSyntax(expr) {
-  return splitClauses(expr).every((raw) => CLAUSE.test(raw) || BARE_IDENTIFIER.test(raw.trim()));
-}
-function conditionKeys(expr) {
-  const keys = [];
-  for (const raw of splitClauses(expr)) {
-    if (raw.trim() === "") continue;
-    const m = CLAUSE.exec(raw);
-    const key = m === null ? raw.trim() : m[1];
-    keys.push(key.startsWith("context.") ? key.slice("context.".length) : key);
-  }
-  return keys;
-}
-function evaluateCondition(expr, ctx, outcome) {
-  for (const raw of splitClauses(expr)) {
-    const m = CLAUSE.exec(raw);
-    if (m === null) {
-      const bare = raw.trim();
-      if (bare === "") return false;
-      if (resolveKey(bare, ctx, outcome) === "") return false;
-      continue;
-    }
-    const [, key, op, expected] = m;
-    const actual = resolveKey(key, ctx, outcome);
-    const equal = actual === parseLiteral(expected);
-    if (op === "=" ? !equal : equal) return false;
-  }
-  return true;
-}
-
-// src/core/edge-select.ts
-function normaliseLabel(label) {
-  return label.replace(/^\s*(?:\[[A-Za-z0-9]\]|[A-Za-z0-9]\)|[A-Za-z0-9]\s+-)\s+/, "").trim().toLowerCase();
-}
-function weightOf(edge) {
-  const raw = edge.attrs.weight;
-  if (raw === void 0) return 0;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : 0;
-}
-function byWeightThenTarget(a, b) {
-  const wa = weightOf(a);
-  const wb = weightOf(b);
-  if (wa !== wb) return wb - wa;
-  return a.to.localeCompare(b.to);
-}
-function isConditional(edge) {
-  return edge.attrs.condition !== void 0 && edge.attrs.condition.trim() !== "";
-}
-function selectEdge(graph, fromId, ctx, outcome) {
-  const edges = outgoingEdges(graph, fromId);
-  if (edges.length === 0) return null;
-  const matched = edges.filter(
-    (e) => isConditional(e) && evaluateCondition(e.attrs.condition, ctx, outcome)
-  );
-  if (matched.length > 0) return matched.sort(byWeightThenTarget)[0];
-  if (outcome.status === Status.FAIL) {
-    return null;
-  }
-  const unconditional = edges.filter((e) => !isConditional(e));
-  if (unconditional.length === 0) return null;
-  if (outcome.preferredLabel) {
-    const want = normaliseLabel(outcome.preferredLabel);
-    const byLabel = unconditional.find(
-      (e) => e.attrs.label !== void 0 && normaliseLabel(e.attrs.label) === want
-    );
-    if (byLabel) return byLabel;
-  }
-  if (outcome.suggestedNextIds && outcome.suggestedNextIds.length > 0) {
-    for (const id of outcome.suggestedNextIds) {
-      const bySuggestion = unconditional.find((e) => e.to === id);
-      if (bySuggestion) return bySuggestion;
-    }
-  }
-  return unconditional.sort(byWeightThenTarget)[0];
-}
-
 // src/core/context.ts
 var ENGINE_MANAGED_KEYS = ["outcome", "preferred_label", "current_node"];
 var ENGINE_MANAGED_PREFIXES = ["tool.", "graph.", "internal."];
@@ -3732,6 +3632,126 @@ var Context = class _Context {
     return new _Context(this.snapshot());
   }
 };
+
+// src/core/condition.ts
+var CLAUSE = /^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(!=|=)\s*(.*?)\s*$/;
+var BARE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_.]*$/;
+function resolveKey(key, ctx, outcome) {
+  if (key === "outcome") return outcome.status;
+  if (key === "preferred_label") {
+    const live = outcome.preferredLabel;
+    return live !== void 0 && live !== "" ? live : ctx.get("preferred_label") ?? "";
+  }
+  if (key.startsWith("context.")) {
+    return ctx.get(key) ?? ctx.get(key.slice("context.".length)) ?? "";
+  }
+  return ctx.get(key) ?? "";
+}
+function parseLiteral(raw) {
+  const v = raw.trim();
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1);
+  return v;
+}
+function splitClauses(expr) {
+  const trimmed = expr.trim();
+  return trimmed === "" ? [] : trimmed.split("&&");
+}
+function isValidConditionSyntax(expr) {
+  return splitClauses(expr).every((raw) => CLAUSE.test(raw) || BARE_IDENTIFIER.test(raw.trim()));
+}
+function conditionKeys(expr) {
+  const keys = [];
+  for (const raw of splitClauses(expr)) {
+    if (raw.trim() === "") continue;
+    const m = CLAUSE.exec(raw);
+    const key = m === null ? raw.trim() : m[1];
+    keys.push(key.startsWith("context.") ? key.slice("context.".length) : key);
+  }
+  return keys;
+}
+function buildSatisfyingContext(expr, unknownKeys) {
+  const values = {};
+  for (const raw of splitClauses(expr)) {
+    if (raw.trim() === "") continue;
+    const m = CLAUSE.exec(raw);
+    if (m === null) {
+      const key2 = raw.trim();
+      const resolved2 = key2.startsWith("context.") ? key2.slice("context.".length) : key2;
+      if (resolved2 === "outcome" || resolved2 === "preferred_label" || unknownKeys.has(resolved2)) continue;
+      values[resolved2] = "1";
+      continue;
+    }
+    const [, key, op, expected] = m;
+    const resolved = key.startsWith("context.") ? key.slice("context.".length) : key;
+    if (resolved === "outcome" || resolved === "preferred_label" || unknownKeys.has(resolved)) continue;
+    const literal = parseLiteral(expected);
+    values[resolved] = op === "=" ? literal : `${literal}\0gate002-ne`;
+  }
+  return new Context(values);
+}
+function evaluateCondition(expr, ctx, outcome) {
+  for (const raw of splitClauses(expr)) {
+    const m = CLAUSE.exec(raw);
+    if (m === null) {
+      const bare = raw.trim();
+      if (bare === "") return false;
+      if (resolveKey(bare, ctx, outcome) === "") return false;
+      continue;
+    }
+    const [, key, op, expected] = m;
+    const actual = resolveKey(key, ctx, outcome);
+    const equal = actual === parseLiteral(expected);
+    if (op === "=" ? !equal : equal) return false;
+  }
+  return true;
+}
+
+// src/core/edge-select.ts
+function normaliseLabel(label) {
+  return label.replace(/^\s*(?:\[[A-Za-z0-9]\]|[A-Za-z0-9]\)|[A-Za-z0-9]\s+-)\s+/, "").trim().toLowerCase();
+}
+function weightOf(edge) {
+  const raw = edge.attrs.weight;
+  if (raw === void 0) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+function byWeightThenTarget(a, b) {
+  const wa = weightOf(a);
+  const wb = weightOf(b);
+  if (wa !== wb) return wb - wa;
+  return a.to.localeCompare(b.to);
+}
+function isConditional(edge) {
+  return edge.attrs.condition !== void 0 && edge.attrs.condition.trim() !== "";
+}
+function selectEdge(graph, fromId, ctx, outcome) {
+  const edges = outgoingEdges(graph, fromId);
+  if (edges.length === 0) return null;
+  const matched = edges.filter(
+    (e) => isConditional(e) && evaluateCondition(e.attrs.condition, ctx, outcome)
+  );
+  if (matched.length > 0) return matched.sort(byWeightThenTarget)[0];
+  if (outcome.status === Status.FAIL) {
+    return null;
+  }
+  const unconditional = edges.filter((e) => !isConditional(e));
+  if (unconditional.length === 0) return null;
+  if (outcome.preferredLabel) {
+    const want = normaliseLabel(outcome.preferredLabel);
+    const byLabel = unconditional.find(
+      (e) => e.attrs.label !== void 0 && normaliseLabel(e.attrs.label) === want
+    );
+    if (byLabel) return byLabel;
+  }
+  if (outcome.suggestedNextIds && outcome.suggestedNextIds.length > 0) {
+    for (const id of outcome.suggestedNextIds) {
+      const bySuggestion = unconditional.find((e) => e.to === id);
+      if (bySuggestion) return bySuggestion;
+    }
+  }
+  return unconditional.sort(byWeightThenTarget)[0];
+}
 
 // src/core/retry.ts
 var DEFAULT_POLICY = {
@@ -4239,11 +4259,15 @@ function lint(graph) {
       const from = graph.nodes.get(e.from);
       if (from === void 0 || NEVER_FAILS.includes(from.handler)) continue;
       const condition = e.attrs.condition;
-      const unsuppliedKey = from.handler === Handler.CODERGEN ? void 0 : conditionKeys(condition).find(
-        (k) => k !== "outcome" && k !== "preferred_label" && !isEngineManagedKey(k) && !supplied.has(k)
+      const unsuppliedKeys = from.handler === Handler.CODERGEN ? /* @__PURE__ */ new Set() : new Set(
+        conditionKeys(condition).filter(
+          (k) => k !== "outcome" && k !== "preferred_label" && !isEngineManagedKey(k) && !supplied.has(k)
+        )
       );
-      if (unsuppliedKey === void 0) continue;
-      if (!evaluateCondition(condition, EMPTY_CONTEXT, FAILED) || !evaluateCondition(condition, EMPTY_CONTEXT, SUCCEEDED)) {
+      if (unsuppliedKeys.size === 0) continue;
+      const unsuppliedKey = conditionKeys(condition).find((k) => unsuppliedKeys.has(k));
+      const partialCtx = buildSatisfyingContext(condition, unsuppliedKeys);
+      if (!evaluateCondition(condition, partialCtx, FAILED) || !evaluateCondition(condition, partialCtx, SUCCEEDED)) {
         continue;
       }
       const reachedExit = bypassesGates(graph, e.to, gates, exitIds);

@@ -1,4 +1,4 @@
-import { type Context } from './context.ts'
+import { Context } from './context.ts'
 import { type Outcome } from './outcome.ts'
 
 const CLAUSE = /^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(!=|=)\s*(.*?)\s*$/
@@ -173,6 +173,75 @@ export function conditionKeys(expr: string): string[] {
     keys.push(key.startsWith('context.') ? key.slice('context.'.length) : key)
   }
   return keys
+}
+
+/**
+ * GATE-002's partial-context evaluator (`dot/lint.ts`, ADR-014 Amendment 4;
+ * see `colombod/ai-augmentation-systems#27` for the reproduction this
+ * closes).
+ *
+ * `evaluateCondition(expr, EMPTY_CONTEXT, outcome)` tests one single
+ * all-empty context for outcome-blindness. That is correct for a
+ * SINGLE-clause condition, but a `&&`-joined MULTI-clause condition mixing
+ * one legitimately-supplied key with one genuinely undeclared key defeats
+ * it: the empty context makes the SUPPLIED clause spuriously false too
+ * (`context.goal=urgent` reads false when `goal` is simply missing from the
+ * probe context, never mind that it is "urgent" in every real run, being a
+ * graph attribute), which makes the whole conjunction read as "properly
+ * discriminating" -- hiding the hazard the undeclared clause still carries
+ * whenever the supplied clause's real condition actually holds.
+ *
+ * The fix is not full symbolic evaluation. It is the same empty-context
+ * idea, scoped correctly: build a context that SATISFIES every clause whose
+ * key is not in `unknownKeys` (the caller's already-computed "genuinely
+ * undeclared" set), and leaves every clause in `unknownKeys` at its natural
+ * empty default (spec section 10.3: a key nothing produced compares as
+ * empty). Re-running the existing outcome-blindness check against THIS
+ * context asks the right question: is there a real-world combination of
+ * supplied-key values under which the condition is satisfied regardless of
+ * outcome, driven entirely by an undeclared key nothing will ever supply?
+ *
+ * Satisfying a clause depends on its operator:
+ * - `key=LITERAL` -- assign `key := LITERAL` (the one value that makes an
+ *   equality clause true).
+ * - `key!=LITERAL` -- assign `key` to `LITERAL` plus a NUL-prefixed suffix,
+ *   which can never equal `LITERAL` (a longer string cannot equal a
+ *   shorter prefix of itself), so the inequality holds regardless of what
+ *   `LITERAL` itself is -- including the empty string.
+ * - a bare clause (truthiness, spec section 10.5) -- assign any non-empty
+ *   value.
+ * `outcome`/`preferred_label` are skipped: `resolveKey` resolves both from
+ * the live `Outcome` parameter, never from `Context`, so a context entry
+ * for either would be dead weight.
+ *
+ * A key referenced by more than one clause with conflicting requirements
+ * (`context.x=a && context.x=b`) takes the LAST clause's assignment -- a
+ * plain object literal, not a conflict-detecting structure. Deliberate:
+ * such a condition is self-contradictory and already unreachable in every
+ * real run (spec section 10.7's conjunction can never satisfy both), so it
+ * is not a hazard this evaluator needs to protect against, and detecting
+ * the contradiction itself is a separate, unrelated authoring-mistake
+ * check nothing here claims to make.
+ */
+export function buildSatisfyingContext(expr: string, unknownKeys: ReadonlySet<string>): Context {
+  const values: Record<string, string> = {}
+  for (const raw of splitClauses(expr)) {
+    if (raw.trim() === '') continue
+    const m = CLAUSE.exec(raw)
+    if (m === null) {
+      const key = raw.trim()
+      const resolved = key.startsWith('context.') ? key.slice('context.'.length) : key
+      if (resolved === 'outcome' || resolved === 'preferred_label' || unknownKeys.has(resolved)) continue
+      values[resolved] = '1'
+      continue
+    }
+    const [, key, op, expected] = m
+    const resolved = key.startsWith('context.') ? key.slice('context.'.length) : key
+    if (resolved === 'outcome' || resolved === 'preferred_label' || unknownKeys.has(resolved)) continue
+    const literal = parseLiteral(expected)
+    values[resolved] = op === '=' ? literal : `${literal} gate002-ne`
+  }
+  return new Context(values)
 }
 
 /**

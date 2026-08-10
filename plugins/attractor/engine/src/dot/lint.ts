@@ -18,7 +18,12 @@ import {
   UNREGISTERED_HANDLER_KINDS,
 } from './graph.ts'
 import { wantsVerdict } from '../backend/argv.ts'
-import { conditionKeys, evaluateCondition, isValidConditionSyntax } from '../core/condition.ts'
+import {
+  buildSatisfyingContext,
+  conditionKeys,
+  evaluateCondition,
+  isValidConditionSyntax,
+} from '../core/condition.ts'
 import { isConditional, normaliseLabel } from '../core/edge-select.ts'
 import {
   Context,
@@ -1161,24 +1166,39 @@ export function lint(graph: Graph): Diagnostic[] {
       // INFERRED_OUTPUTS_BY_HANDLER is the small, fixed TOOL_OUTPUT_KEYS set
       // that cannot include an arbitrary key like `build.error` -- so this
       // exclusion does not silence either hazard shape.
-      const unsuppliedKey =
+      // Amendment 4 (2026-08-10, issue #27): the FULL set of undeclared
+      // keys, not just the first. A `&&`-joined multi-clause condition can
+      // reference more than one; the partial-context evaluator below needs
+      // to know every one of them so it leaves ALL of them empty and
+      // satisfies everything else, rather than accidentally satisfying a
+      // second undeclared key too (which would hide the same hazard).
+      const unsuppliedKeys =
         from.handler === Handler.CODERGEN
-          ? undefined
-          : conditionKeys(condition).find(
-              (k) => k !== 'outcome' && k !== 'preferred_label' && !isEngineManagedKey(k) && !supplied.has(k),
+          ? new Set<string>()
+          : new Set(
+              conditionKeys(condition).filter(
+                (k) => k !== 'outcome' && k !== 'preferred_label' && !isEngineManagedKey(k) && !supplied.has(k),
+              ),
             )
-      if (unsuppliedKey === undefined) continue
+      if (unsuppliedKeys.size === 0) continue
+      // First in source order, for the diagnostic message only -- detection
+      // itself (below) already accounts for the whole set.
+      const unsuppliedKey = conditionKeys(condition).find((k) => unsuppliedKeys.has(k))!
 
-      // Outcome-blind: true on FAIL *and* true on SUCCESS against an empty
-      // context. This is the mirror image of `isFailureRoute` (true on FAIL,
-      // false on SUCCESS -- a genuine, author-declared failure route); this
-      // rule wants the opposite, the shape `isFailureRoute`'s own doc
-      // comment names and explicitly defers to "the eager input check['s]
-      // business" -- which cannot see a condition-only reference at all.
-      if (
-        !evaluateCondition(condition, EMPTY_CONTEXT, FAILED) ||
-        !evaluateCondition(condition, EMPTY_CONTEXT, SUCCEEDED)
-      ) {
+      // Outcome-blind: true on FAIL *and* true on SUCCESS against a context
+      // built to SATISFY every clause except the genuinely undeclared ones
+      // (`buildSatisfyingContext`, ADR-014 Amendment 4). Evaluating against
+      // one single ALL-empty context here would make a legitimate clause on
+      // a real supplied key (a graph attribute, a declared `outputs=`)
+      // spuriously false too, hiding a hazard riding alongside it in the
+      // same `&&`-joined condition -- issue #27's exact repro. This is the
+      // mirror image of `isFailureRoute` (true on FAIL, false on SUCCESS --
+      // a genuine, author-declared failure route); this rule wants the
+      // opposite, the shape `isFailureRoute`'s own doc comment names and
+      // explicitly defers to "the eager input check['s] business" -- which
+      // cannot see a condition-only reference at all.
+      const partialCtx = buildSatisfyingContext(condition, unsuppliedKeys)
+      if (!evaluateCondition(condition, partialCtx, FAILED) || !evaluateCondition(condition, partialCtx, SUCCEEDED)) {
         continue
       }
 
