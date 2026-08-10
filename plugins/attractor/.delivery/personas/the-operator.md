@@ -15,7 +15,7 @@ source: derived
 > is both the owner's stated intent and the explicit lesson of this project's own
 > founding incident (`AGENTS.md:60-64`, a real, dated event, not a hypothesis). Frequency
 > and cost tolerance below are **assumed**. No observed usage exists for this product;
-> see `plugins/attractor/.delivery/research.md`'s Gaps.
+> see `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/research.md`'s Gaps.
 
 ## In one line
 
@@ -27,7 +27,7 @@ about whether it worked.
 
 | Attribute | Value | Grounding |
 | :-- | :-- | :-- |
-| Segment | runs an existing pipeline, does not need to author one | reported (owner's operator/author split, `plugins/attractor/.delivery/brief.md`) |
+| Segment | runs an existing pipeline, does not need to author one | reported (owner's operator/author split, `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/brief.md`) |
 | Motivation | correctness of the verdict, not correctness of the DOT syntax | reported, from the founding incident |
 | Constraints | wants both an in-session and a standalone invocation path | reported (owner, verbatim) |
 | Expertise | comfortable running a CLI; not necessarily a DOT author | assumed |

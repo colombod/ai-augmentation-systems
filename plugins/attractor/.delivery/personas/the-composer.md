@@ -14,7 +14,7 @@ source: derived
 > compound value making flows deterministic and use the generative power of ai where
 > needed." This is the least-supported persona of the four by the current product —
 > almost every specific mechanism it needs is confirmed absent, not merely difficult.
-> No observed evidence exists; see `plugins/attractor/.delivery/research.md`'s Gaps.
+> No observed evidence exists; see `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/research.md`'s Gaps.
 
 ## In one line
 

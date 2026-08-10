@@ -1,4 +1,4 @@
-# Challenge findings: plugins/attractor/.delivery/prd.md
+# Challenge findings: plugins/attractor/.delivery/initiatives/spec-conformance-mvp/prd.md
 
 > Adversarial review. Read-only — findings are recorded here, not applied.
 > Panel: product-owner, business-analyst, qa-strategist, feature-critic, persona-simulator (skeptic: P-4 The Amplifier Veteran) · Reviewed: 2026-08-05 · Artifact version: `a04ad83`
@@ -23,7 +23,7 @@ document's citations line-by-line and reported the ones that checked out, not on
 that didn't — that positive-verification work is why R-prd-6 and R-prd-8 can be trusted as
 real discrepancies rather than noise.
 
-All 11 findings resolved by direct edit to `plugins/attractor/.delivery/prd.md`, applied
+All 11 findings resolved by direct edit to `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/prd.md`, applied
 without a separate approval round, consistent with the standing autonomy directive already
 used for `brief-01.md`'s fixes. FR-9 and FR-17 were each split into two IDs (`FR-9a`/`FR-9b`,
 `FR-17a`/`FR-17b`) to separate their unblocked and blocked halves; all downstream references

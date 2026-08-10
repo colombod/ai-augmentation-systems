@@ -12,7 +12,7 @@ source: derived
 > **Grounding: assumed.** Not stated by the owner directly — constructed by reasoning
 > from a verified technical fact: `microsoft/amplifier-bundle-attractor` implements the
 > same specification with materially different engine semantics (documented in full in
-> `plugins/attractor/.delivery/research.md`'s Prior Art section, itself verified by direct source
+> `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/research.md`'s Prior Art section, itself verified by direct source
 > reading and execution, not inference). Anyone who has used or read about that project
 > and then tries this one is a predictable, evidence-grounded failure mode, even though
 > no such person has been observed yet. This is deliberately the skeptic/wrong-priors
@@ -68,4 +68,4 @@ The only persona whose problem is **wrong confidence**, not lack of knowledge (P
 
 ## Quotes
 
-None — this persona has no direct owner statement behind it, unlike P-1 through P-3. Constructed entirely from the verified engine-divergence findings in `plugins/attractor/.delivery/research.md`.
+None — this persona has no direct owner statement behind it, unlike P-1 through P-3. Constructed entirely from the verified engine-divergence findings in `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/research.md`.

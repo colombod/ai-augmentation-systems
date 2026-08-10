@@ -158,13 +158,13 @@ directly before writing fixtures):**
 
 ## Requirements
 
-`FR-18` (`plugins/attractor/.delivery/prd.md`) — the sole requirement this slice delivers.
+`FR-18` (`plugins/attractor/.delivery/initiatives/spec-conformance-mvp/prd.md`) — the sole requirement this slice delivers.
 Acceptance criteria (falsifiable, traced to `FR-18`) live in story `p1-01`'s Acceptance
 criteria section — read it directly rather than duplicating here; it is the governing list.
 
 ## Scope boundary
 
-This stage only (`.delivery/prioritization.md` Stage 2). Explicitly excluded, do not add:
+This stage only (`.delivery/initiatives/spec-conformance-mvp/prioritization.md` Stage 2). Explicitly excluded, do not add:
 
 - Registering `Handler.HUMAN` or building the `human`/`agent` channels themselves (FR-5–8,
   roadmap Phase 2 — blocked on an unstarted architecture pass)

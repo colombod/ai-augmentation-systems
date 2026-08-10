@@ -2,7 +2,7 @@
 
 > Phase 8 artifact. Owned by Solution Architect, with QA Strategist. Reviewed by Feature Critic.
 > Status: reviewed · Last updated: 2026-08-05
-> PRD: `plugins/attractor/.delivery/prd.md` · Reviews: `plugins/attractor/.delivery/reviews/prd-01.md`
+> PRD: `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/prd.md` · Reviews: `plugins/attractor/.delivery/reviews/prd-01.md`
 >
 > **Path note** (same convention as the PRD): this repo's actual paths are
 > `plugins/attractor/.delivery/` and `plugins/attractor/.superpowers/`, not the

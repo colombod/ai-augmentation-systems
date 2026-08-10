@@ -2,8 +2,8 @@
 
 > Phase 9 artifact. Owned by Program Manager, with QA Strategist.
 > Status: draft · Last updated: 2026-08-06
-> PRD: `plugins/attractor/.delivery/prd.md` · Architecture: `plugins/attractor/.delivery/architecture.md`
-> No `.delivery/prioritization.md` file exists; the Product Owner's scoring/staging and this
+> PRD: `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/prd.md` · Architecture: `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/architecture.md`
+> No `.delivery/initiatives/spec-conformance-mvp/prioritization.md` file exists; the Product Owner's scoring/staging and this
 > Program Manager's feasibility check, both supplied inline, stand in for it. No
 > `.delivery/glossary.md` exists either — terms below match the PRD's; new ones proposed at
 > the end, not coined silently.

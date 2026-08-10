@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship the four PRD-unblocked requirement groups from `plugins/attractor/.delivery/architecture.md`: plugin installability (FR-1–4), the D7 retry-target scoping bug (FR-10), the F10 embedded-`Engine` lint refusal (FR-11), and the HAND-001 lint rule for unregistered handler kinds (FR-17a).
+**Goal:** Ship the four PRD-unblocked requirement groups from `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/architecture.md`: plugin installability (FR-1–4), the D7 retry-target scoping bug (FR-10), the F10 embedded-`Engine` lint refusal (FR-11), and the HAND-001 lint rule for unregistered handler kinds (FR-17a).
 
-**Architecture:** Four independent, sequential tasks. Task 1 creates the plugin manifest pair and skill (net-new files, zero engine changes). Task 2 fixes `resolveRetryTarget`'s scope with a required third argument. Task 3 relocates four exports to break a circular import, then adds a lint-refusal check to `Engine.run()`. Task 4 adds a new lint rule built on a hand-authored constant closed by an anchor test. Full design in `plugins/attractor/.delivery/architecture.md` and ADR-001, ADR-003, ADR-004, ADR-005 (`plugins/attractor/.delivery/decisions/`).
+**Architecture:** Four independent, sequential tasks. Task 1 creates the plugin manifest pair and skill (net-new files, zero engine changes). Task 2 fixes `resolveRetryTarget`'s scope with a required third argument. Task 3 relocates four exports to break a circular import, then adds a lint-refusal check to `Engine.run()`. Task 4 adds a new lint rule built on a hand-authored constant closed by an anchor test. Full design in `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/architecture.md` and ADR-001, ADR-003, ADR-004, ADR-005 (`plugins/attractor/.delivery/decisions/`).
 
 **Tech Stack:** TypeScript (native type stripping, Node >= 24), `node:test`, esbuild.
 

@@ -1,6 +1,6 @@
 # Story index — plugins/attractor
 
-> Produced by `/delivery:stories`, decomposing `plugins/attractor/.delivery/roadmap.md`'s
+> Produced by `/delivery:stories`, decomposing `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/roadmap.md`'s
 > Phase 1. Roadmap: `../roadmap.md` · PRD: `../prd.md` · Architecture: `../architecture.md`
 > No `.delivery/glossary.md` exists yet for this project; stories below reuse the two terms
 > the roadmap already proposed (**self-report gap**, **direct predecessor**) rather than
