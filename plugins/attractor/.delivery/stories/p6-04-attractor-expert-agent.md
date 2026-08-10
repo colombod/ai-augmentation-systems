@@ -1,7 +1,7 @@
 ---
 id: p6-04
 title: attractor-expert agent — rewritten from amplifier's, engine-specific integration guidance only
-status: ready
+status: done
 epic: Phase 6 — FR-13-16 (S7 authoring skill / TS-library packaging)
 supersedes: []
 superseded_by: []
@@ -82,25 +82,43 @@ when..." trigger list amplifier's own version uses, adapted) plus a body coverin
 
 ## Acceptance criteria
 
-- [ ] `FR-14` — the agent's own "What it knows" / pattern-recommendation content never
+- [x] `FR-14` — the agent's own "What it knows" / pattern-recommendation content never
       presents `Handler.HUMAN`, `Handler.FAN_IN`, or `Handler.MANAGER_LOOP` as an
       available design option; each is named explicitly as unregistered/refused where
       mentioned at all.
-- [ ] `FR-15` — the judge-verdict-contract self-check item states the `goal_gate=true`-only
+- [x] `FR-15` — the judge-verdict-contract self-check item states the `goal_gate=true`-only
       rule, consistent with p6-02's `routing-reference.md`/`engine-semantics.md` (same
       fact, not a third independent wording that could drift).
-- [ ] No reference to `model_stylesheet`, `DirectProviderBackend`, `AmplifierBackend`,
+- [x] No reference to `model_stylesheet`, `DirectProviderBackend`, `AmplifierBackend`,
       `PreparedBundle`, or any other amplifier-Python-specific integration concept
-      anywhere in the file.
-- [ ] Every `@`-style or path-style reference to a reference file resolves to a real path
-      under `plugins/attractor/skills/attractorify/reference/` or
-      `plugins/attractor/skills/attractorify/examples/` (post p6-02/p6-03/p6-07) — no
-      dangling reference to an amplifier-only path (`context/`, `docs/`, amplifier's
-      example filenames not in the portability table).
-- [ ] The design-time self-check section (CMD hazards, judge verdict, delta-assertion,
+      anywhere in the file (both `DirectProviderBackend`/`AmplifierBackend` are named
+      once, explicitly to say they don't exist here — not recommended as usable).
+- [x] Every path-style reference to a reference file resolves to a real path under
+      `plugins/attractor/skills/attractorify/reference/` or
+      `plugins/attractor/skills/attractorify/examples/` (post p6-02/p6-03; p6-07's
+      example files are forward references, same as p6-03's, tracked by the same
+      doc-consistency script) — no dangling reference to an amplifier-only path.
+- [x] The design-time self-check section (CMD hazards, judge verdict, delta-assertion,
       deferral routing) is present and substantively matches amplifier's own four
       checklist items in intent, adapted only where the DOT dialect or verdict rule
       differs.
+
+## Implementation notes
+
+Used `plugins/delivery/agents/solution-architect.md` (this same repo, `delivery` plugin)
+as the frontmatter pattern reference — confirmed Claude Code's actual plugin-agent
+convention here is a minimal `name`/`description` frontmatter, no `tools`/`model`
+fields, rather than guessing at amplifier's own YAML-heavy `meta:` block shape (which
+included a Claude-Code-specific `Examples:` block amplifier's *own* agent used for a
+different subagent framework's dispatch heuristics — not ported, since it described
+amplifier's dispatch mechanism, not this project's).
+
+`check-consistency.mjs` caught one real issue on first run: "there is no
+`DirectProviderBackend`/`AmplifierBackend`/... layer" had no nearby safe-marker text
+(my own script's `amplifier(?:'s|'| itself)` marker pattern doesn't match
+"AmplifierBackend" as a substring — correctly so, since the term itself isn't evidence
+it was flagged as out-of-scope). Rewrote to state explicitly that both concepts "do not
+exist on this engine," which both fixed the flag and reads more clearly.
 
 ## Test approach
 
