@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseDot } from '../src/dot/parse.ts'
-import { lint, hasErrors } from '../src/dot/lint.ts'
+import { lint, hasErrors, Severity } from '../src/dot/lint.ts'
 import { Context, isEngineManagedKey } from '../src/core/context.ts'
 import { Status, type Outcome } from '../src/core/outcome.ts'
 import { StubBackend } from '../src/handlers/stub.ts'
@@ -4207,4 +4207,40 @@ test('a direct Engine embed refuses to run a graph that fails lint (FR-11, F10)'
 test('a direct Engine embed still runs a clean graph normally (both-directions guard)', async () => {
   const { result } = await execute(LINEAR)
   assert.equal(result.status, Status.SUCCESS)
+})
+
+// FR-12 / Open Question 7 (issue #16): a direct `new Engine(...)` embed had
+// zero visibility into WARNING-severity lint diagnostics -- `run()` already
+// computes `lint(graph)` internally but only ever consulted `hasErrors()`,
+// discarding every WARNING it found. `RunResult.lintWarnings` surfaces the
+// same diagnostics `lint()` itself would return, no new I/O, no new public
+// method -- data already computed inside `run()`, no longer thrown away.
+
+const DATA_001_HAZARD = `
+digraph W {
+  start [shape=Mdiamond]  done [shape=Msquare]
+  a [shape=box, prompt="use \${missing.key}"]
+  start -> a -> done
+}
+`
+
+test('RunResult.lintWarnings carries a WARNING-severity diagnostic a direct embed could not see before', async () => {
+  const { result } = await execute(DATA_001_HAZARD)
+  assert.equal(result.status, Status.SUCCESS, 'a WARNING never blocks the run -- only hasErrors() does')
+  assert.ok(result.lintWarnings, 'lintWarnings is present when the graph carries any')
+  assert.equal(result.lintWarnings?.length, 1)
+  assert.equal(result.lintWarnings?.[0].code, 'DATA-001')
+  assert.equal(result.lintWarnings?.[0].severity, Severity.WARNING)
+})
+
+test('RunResult.lintWarnings is absent, not an empty array, on a graph with no diagnostics at all', async () => {
+  const { result } = await execute(LINEAR)
+  assert.equal(result.lintWarnings, undefined, 'matches unresolvedFailures\' own absent-when-empty convention')
+})
+
+test('RunResult.lintWarnings is present even when the run also fails for an unrelated reason', async () => {
+  const { result } = await execute(DATA_001_HAZARD, { a: { status: Status.FAIL, notes: 'boom' } })
+  assert.equal(result.status, Status.FAIL)
+  assert.equal(result.lintWarnings?.length, 1)
+  assert.equal(result.lintWarnings?.[0].code, 'DATA-001')
 })

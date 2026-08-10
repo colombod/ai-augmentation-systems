@@ -1,4 +1,4 @@
-import { lint, hasErrors, Severity } from '../dot/lint.ts'
+import { lint, hasErrors, Severity, type Diagnostic } from '../dot/lint.ts'
 import {
   type Graph,
   type HandlerKind,
@@ -65,6 +65,31 @@ export interface RunResult {
    * writes.
    */
   failureReason?: string
+  /**
+   * WARNING-severity lint diagnostics `run()` already computes internally
+   * (the same `lint(graph)` call `hasErrors()` checks to decide whether to
+   * refuse the run) but, before this field existed, threw away once that
+   * check passed.
+   *
+   * FR-12 / Open Question 7 (`colombod/ai-augmentation-systems#16`): a
+   * direct `new Engine(...)` embed had no way to observe a WARNING-severity
+   * rule like `HITL-003` at all -- `Engine` writes nothing to stdout/stderr
+   * (that stays true; this field adds no I/O), and only the CLI's own
+   * `reportDiagnostics` called `lint()` a second time to print warnings a
+   * human could read. An embedder not already calling `lint(graph)`
+   * independently -- which nothing forces it to know to do -- got silent
+   * parity with an unattended run, not with the CLI's own attended one.
+   *
+   * Present only when the run's graph carries at least one WARNING,
+   * matching `unresolvedFailures`' own absent-when-empty convention.
+   * ERROR-severity diagnostics are deliberately excluded: those already
+   * have a channel (`hasErrors()` refuses the run and `failureReason` names
+   * them), and duplicating them here would be two representations of the
+   * same fact drifting apart, the exact failure mode `AGENTS.md`'s shared
+   * `condition.ts` grammar comments warn against for a different pair of
+   * functions.
+   */
+  lintWarnings?: Diagnostic[]
 }
 
 /** A no-op handler: start, exit and diamond nodes exist to shape routing. */
@@ -115,6 +140,17 @@ export class Engine {
    * fail-closed downgrade of an unearned verdict to RETRY is untouched.
    */
   private gateOutcomes: Map<string, Status> = new Map()
+
+  /**
+   * WARNING-severity diagnostics from `run()`'s own `lint(graph)` call, set
+   * once at the top of `run()` and read by every `result()` call site
+   * (`RunResult.lintWarnings`, FR-12 / issue #16). A plain field rather than
+   * re-deriving it inside `result()` itself, because `result()` has no
+   * access to the graph's diagnostics beyond what `run()` already computed
+   * once -- re-linting there would be a second, redundant `lint()` call for
+   * data already in hand.
+   */
+  private lintWarnings: Diagnostic[] = []
 
   /**
    * Nodes holding an UNRESOLVED failure: they ended FAIL and have not since
@@ -527,6 +563,7 @@ export class Engine {
     }
     const unresolved = this.unresolvedFailures()
     if (unresolved.length > 0) result.unresolvedFailures = unresolved
+    if (this.lintWarnings.length > 0) result.lintWarnings = this.lintWarnings
     return result
   }
 
@@ -607,6 +644,7 @@ export class Engine {
     const maxSteps = this.opts.maxSteps ?? DEFAULT_MAX_STEPS
 
     const diagnostics = lint(graph)
+    this.lintWarnings = diagnostics.filter((d) => d.severity === Severity.WARNING)
     if (hasErrors(diagnostics)) {
       const detail = diagnostics
         .filter((d) => d.severity === Severity.ERROR)
