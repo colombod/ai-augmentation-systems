@@ -11,7 +11,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p1-01
 title: Add HITL-003 — warn on an agent-inclusive human gate self-reporting from its direct predecessor
-status: ready
+status: done
 epic: Phase 1 — FR-18 (HITL-003 self-report guard)
 supersedes: []
 superseded_by: []

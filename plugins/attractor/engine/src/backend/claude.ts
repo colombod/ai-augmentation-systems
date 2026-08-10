@@ -105,6 +105,7 @@ export class ClaudeCodeBackend implements Backend {
     _context: Context,
     _graph: Graph,
     signal?: AbortSignal,
+    cwd?: string,
   ): Promise<Outcome> {
     const command = this.opts.command ?? 'claude'
     const argv = buildArgv(node, {
@@ -112,7 +113,7 @@ export class ClaudeCodeBackend implements Backend {
       resumeId: this.threads.resumeIdFor(node),
     })
 
-    const proc = await runProcess(command, argv, prompt, this.opts.cwd, signal)
+    const proc = await runProcess(command, argv, prompt, cwd ?? this.opts.cwd, signal)
 
     if (proc.failure !== undefined) {
       return { status: Status.FAIL, notes: proc.failure }

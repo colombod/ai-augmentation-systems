@@ -204,7 +204,8 @@ export const INFERRED_OUTPUTS_BY_HANDLER: Record<HandlerKind, readonly string[]>
   [Handler.TOOL]: TOOL_OUTPUT_KEYS,
   [Handler.CONDITIONAL]: [], // PassthroughHandler, same as START.
   [Handler.HUMAN]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
-  [Handler.PARALLEL]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
+  [Handler.PARALLEL]: [], // ParallelHandler (p5-08) writes context via mergeBranchContext's direct
+  // Context.set() calls, not via Outcome.contextUpdates -- nothing for this table to infer.
   [Handler.FAN_IN]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
   [Handler.MANAGER_LOOP]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
 }
@@ -223,7 +224,6 @@ export const INFERRED_OUTPUTS_BY_HANDLER: Record<HandlerKind, readonly string[]>
  */
 export const UNREGISTERED_HANDLER_KINDS: readonly HandlerKind[] = [
   Handler.HUMAN,
-  Handler.PARALLEL,
   Handler.FAN_IN,
   Handler.MANAGER_LOOP,
 ]
@@ -398,7 +398,8 @@ export const SUBSTITUTABLE_ATTRS: Record<HandlerKind, readonly string[]> = {
   [Handler.TOOL]: ['tool_command'], // ToolHandler: `attrs.tool_command`.
   [Handler.CONDITIONAL]: [], // PassthroughHandler, same as START.
   [Handler.HUMAN]: [], // Not registered in defaultHandlers() -- cannot execute.
-  [Handler.PARALLEL]: [], // Not registered in defaultHandlers() -- cannot execute.
+  [Handler.PARALLEL]: [], // ParallelHandler (p5-08) reads max_parallel (a plain int) and edges'
+  // isolate attribute -- neither is substitutable text; nothing passes through substitute().
   [Handler.FAN_IN]: [], // Not registered in defaultHandlers() -- cannot execute.
   [Handler.MANAGER_LOOP]: [], // Not registered in defaultHandlers() -- cannot execute.
 }
@@ -457,4 +458,239 @@ export function inferredOutputs(node: Node): string[] {
  */
 export function effectiveOutputs(node: Node): string[] {
   return [...new Set([...inferredOutputs(node), ...declaredOutputs(node)])]
+}
+
+/**
+ * Nodes reachable from `startId` via ONE OR MORE edges (never `startId`
+ * itself, unless a genuine cycle leads back to it), mapped to the shortest
+ * distance at which each was first reached, TRUNCATED at `stopId` (added to
+ * the result when reached, but its own outgoing edges are never followed --
+ * used for the fan-out node) AND at any id in `otherRoots` reached at BFS depth
+ * greater than 1 (added when reached, not expanded past -- ADR-007's
+ * eleventh amendment). A branch root reached as the immediate, direct first
+ * hop from the root this call is computing FROM is never truncated -- that
+ * preserves a genuine forward edge between two branch roots (e.g.
+ * `root1 -> root2`, a real, legal DOT shape). A branch root reached only via
+ * two or more hops is truncated the same way the fan-out node already is,
+ * because a rework/retry loop's path back to another root always arrives by
+ * way of intervening structure (a shared check/combine node, or the fan-out
+ * node itself) -- never as a direct first hop -- so this distinguishes the
+ * two without needing to detect cycles directly (see the ADR for the two
+ * cycle-detection designs that were tried and rejected first). Condition-
+ * independent -- follows every outgoing edge regardless of whether its
+ * condition would actually fire at runtime, the same conservative-lint-
+ * over-precise-runtime tradeoff `directPredecessor`/DATA-001 already accept.
+ */
+function reachableWithDepthTruncated(
+  graph: Graph,
+  startId: string,
+  stopId: string,
+  otherRoots: ReadonlySet<string>,
+): Map<string, number> {
+  const depth = new Map<string, number>()
+  const queue: string[] = []
+  for (const e of outgoingEdges(graph, startId)) {
+    if (!depth.has(e.to)) {
+      depth.set(e.to, 1)
+      queue.push(e.to)
+    }
+  }
+  while (queue.length > 0) {
+    const cur = queue.shift() as string
+    const curDepth = depth.get(cur) as number
+    if (cur === stopId) continue // do not expand past the fan-out node
+    if (curDepth > 1 && otherRoots.has(cur)) continue // do not expand past another root reached beyond the direct first hop
+    for (const e of outgoingEdges(graph, cur)) {
+      if (!depth.has(e.to)) {
+        depth.set(e.to, curDepth + 1)
+        queue.push(e.to)
+      }
+    }
+  }
+  return depth
+}
+
+/**
+ * Earliest node reachable from EVERY branch root (excluding the roots
+ * themselves, and excluding the fan-out node itself -- ADR-007's tenth
+ * amendment: `reachableWithDepthTruncated` necessarily records reaching the
+ * fan-out node as part of truncating past it, but the fan-out node is never
+ * itself a valid "resume point"), by static
+ * reachability over ALL outgoing edges regardless of condition truth,
+ * TRUNCATED at `fanOutNodeId` (ADR-007's ninth amendment) AND at any other
+ * branch root reached beyond the direct first hop (ADR-007's eleventh
+ * amendment) -- reachability does not expand past either. Without this, an
+ * ordinary rework/retry loop -- whether it routes back through the fan-out
+ * node or targets a branch root directly -- lets one branch's reachability
+ * leak deep into a DIFFERENT branch's own interior at an artificially
+ * shallow worst-case depth, winning the tie-break over the real convergence
+ * node and refusing a hazard-free rework loop. A root reached via an
+ * ordinary forward edge that is the immediate, direct first hop from the
+ * root being computed FROM (e.g. `root1 -> root2`, a plain DAG edge) is
+ * unaffected and still resolves normally -- only a root reached via two or
+ * more hops is treated as a rework-loop artifact. Known, accepted
+ * limitation: a genuine multi-hop forward chain between two branch roots
+ * with no retry loop present would also be truncated, which can turn a
+ * discoverable convergence into `null` (a PAR-001 refusal) -- a safe-
+ * direction failure (loud refusal, never a missed hazard), named explicitly
+ * in the eleventh amendment rather than silently accepted.
+ *
+ * Shallowest common descendant wins ties, ranked by the FURTHEST root's
+ * distance to it (its own worst case); the exact tie-break among equally-
+ * shallow candidates is otherwise unspecified -- `findPartialReconvergence`
+ * is what actually closes the hazard a tie could create (ADR-007's
+ * amendments; the ADR itself does not claim this is proven complete, only
+ * adversarially re-verified as of its most recent amendment). `null` if
+ * branches never reconverge.
+ */
+export function findConvergenceNode(
+  graph: Graph,
+  branchRootIds: readonly string[],
+  fanOutNodeId: string,
+): string | null {
+  if (branchRootIds.length === 0) return null
+  const rootSet = new Set(branchRootIds)
+  const depthMaps = branchRootIds.map((id) => {
+    const otherRoots = new Set(branchRootIds.filter((r) => r !== id))
+    return reachableWithDepthTruncated(graph, id, fanOutNodeId, otherRoots)
+  })
+
+  let candidates: string[] = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id) && id !== fanOutNodeId)
+  for (let i = 1; i < depthMaps.length; i++) {
+    candidates = candidates.filter((id) => depthMaps[i].has(id))
+  }
+  if (candidates.length === 0) return null
+
+  let best: string | null = null
+  let bestDepth = Infinity
+  for (const id of candidates) {
+    const worstCase = Math.max(...depthMaps.map((dm) => dm.get(id) as number))
+    if (worstCase < bestDepth) {
+      bestDepth = worstCase
+      best = id
+    }
+  }
+  return best
+}
+
+/**
+ * Nodes at risk of being dispatched more than once across a PARALLEL fan-out's branches
+ * (each `runBranch` stopping at `convergenceId`, a dead end, or EXIT) and the main run resumed
+ * at `convergenceId` afterward. Flags the union of two hazards (ADR-007's sixth amendment):
+ *
+ * (a) reachable -- via a path not crossing `convergenceId` first -- from two or more of the given
+ *     branch roots, INCLUDING a root itself if a sibling root's own path reaches it, WHETHER that
+ *     path is an ordinary forward edge or a branch's own in-branch retry back through the fan-out
+ *     (ADR-007's tenth amendment: `runBranch`'s own contract only stops a branch's traversal at
+ *     `convergenceId` -- a branch that loops back through the fan-out before ever reaching
+ *     convergence can genuinely re-enter a sibling's territory, so this is not truncated at the
+ *     fan-out node; only the fan-out node ITSELF is excluded from being named as the hazard,
+ *     below).
+ * (b) reachable from a SINGLE branch root without crossing `convergenceId` first, where that
+ *     same node is also reachable from `convergenceId` itself via a walk that does not expand
+ *     past any branch root (ADR-007's eighth amendment -- truncated, not the plain untruncated
+ *     reachability the sixth amendment first used, which a rework loop could walk back through
+ *     the fan-out to defeat). The resumed main run walks forward from convergenceId and can
+ *     re-dispatch what a branch already shortcut its way into; does not require a second branch
+ *     to corroborate it. Never flags a branch root itself -- a root can only be "downstream of
+ *     convergenceId" via a cycle back through the fan-out (an ordinary rework/retry loop), never
+ *     an acyclic same-pass hazard.
+ *
+ * The graph's real EXIT node is excluded from both: Handler.EXIT is a PassthroughHandler that
+ * genuinely writes nothing, so a second dispatch has no observable effect. A branch reaching
+ * EXIT early is PAR-005's WARNING-level concern (that branch's own traversal stopping short of
+ * intent), not this rule's ERROR-level one.
+ *
+ * Excludes `convergenceId` itself. Empty when `convergenceId` is `null` (PAR-001 already
+ * refuses that graph).
+ */
+export function findPartialReconvergence(
+  graph: Graph,
+  branchRootIdsRaw: readonly string[],
+  convergenceId: string | null,
+  fanOutNodeId: string,
+): string[] {
+  if (convergenceId === null) return []
+  // Defensive: a caller passing a duplicate root id (lint.ts already dedupes
+  // its own call, but this function has no way to enforce that on a future
+  // caller such as p5-05's runBranch) must not silently double-count a
+  // branch against itself in rule (a) below.
+  const branchRootIds = [...new Set(branchRootIdsRaw)]
+  const rootSet = new Set(branchRootIds)
+  const exitIds = new Set(findByHandler(graph, Handler.EXIT).map((n) => n.id))
+
+  const truncatedSets = branchRootIds.map((rootId) => {
+    const seen = new Set<string>([rootId])
+    const queue = [rootId]
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      if (cur === convergenceId) continue // do not expand past convergence
+      for (const e of outgoingEdges(graph, cur)) {
+        if (!seen.has(e.to)) {
+          seen.add(e.to)
+          queue.push(e.to)
+        }
+      }
+    }
+    return seen
+  })
+
+  const hazards = new Set<string>()
+
+  // (a) shared between two or more branches' own truncated reachable sets --
+  // roots are NOT excluded here (ADR-007's sixth amendment, Gap 1): a root
+  // reachable from a sibling root's own path is exactly as hazardous as any
+  // other shared node.
+  const counts = new Map<string, number>()
+  for (const set of truncatedSets) {
+    for (const id of set) {
+      if (id === convergenceId || id === fanOutNodeId || exitIds.has(id)) continue
+      counts.set(id, (counts.get(id) ?? 0) + 1)
+    }
+  }
+  for (const [id, count] of counts) {
+    if (count >= 2) hazards.add(id)
+  }
+
+  // (b) a single branch's shortcut into territory the resumed main run will
+  // also walk, downstream of convergenceId (ADR-007's sixth amendment, Gap 2).
+  // downstreamOfConvergence is truncated at branch roots -- added to the set
+  // when reached, but not expanded past, the same "does not expand past X"
+  // convention the per-branch truncated sets already use for convergenceId
+  // itself. Without this truncation, a rework/retry loop back into the
+  // fan-out (an ordinary, already-accepted pattern -- NFR-1's step cap bounds
+  // it, not this rule) drags every node in every branch, not just the roots,
+  // into this set -- ADR-007's eighth amendment, correcting the seventh
+  // amendment's own incomplete fix. Rule (b)'s candidate-side root exclusion
+  // below is still needed for the degenerate case where a root itself ends
+  // up a (truncated, unexpanded) member of this set via the same cycle.
+  const downstreamOfConvergence = (() => {
+    const seen = new Set<string>()
+    const queue: string[] = []
+    for (const e of outgoingEdges(graph, convergenceId)) {
+      if (!seen.has(e.to)) {
+        seen.add(e.to)
+        queue.push(e.to)
+      }
+    }
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      if (rootSet.has(cur)) continue // do not expand past a branch root
+      for (const e of outgoingEdges(graph, cur)) {
+        if (!seen.has(e.to)) {
+          seen.add(e.to)
+          queue.push(e.to)
+        }
+      }
+    }
+    return seen
+  })()
+  for (const set of truncatedSets) {
+    for (const id of set) {
+      if (id === convergenceId || id === fanOutNodeId || exitIds.has(id) || rootSet.has(id)) continue
+      if (downstreamOfConvergence.has(id)) hazards.add(id)
+    }
+  }
+
+  return [...hazards]
 }

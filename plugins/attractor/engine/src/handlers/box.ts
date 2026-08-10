@@ -99,6 +99,7 @@ export class BoxHandler implements Handler {
         ctx.context,
         ctx.graph,
         controller?.signal ?? ctx.signal,
+        ctx.cwd,
       )
     } finally {
       if (timer !== undefined) clearTimeout(timer)

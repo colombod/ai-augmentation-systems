@@ -155,3 +155,38 @@ test('an aborted call fails rather than hanging', async () => {
     assert.match(outcome.notes ?? '', /abort/i)
   })
 })
+
+test('a per-call cwd overrides the constructor-bound cwd', async () => {
+  await withDir(async (dir) => {
+    const other = mkdtempSync(join(tmpdir(), 'attractor-claude-other-'))
+    try {
+      const cmd = fakeClaude(
+        dir,
+        `pwd > "${join(dir, 'cwd-used.txt')}"\nprintf '{"is_error":false,"result":"ok"}'`,
+      )
+      const backend = new ClaudeCodeBackend({ command: cmd, cwd: dir })
+      await backend.run(node(), 'p', Context.from({}), GRAPH, undefined, other)
+
+      const { readFileSync, realpathSync } = await import('node:fs')
+      const used = readFileSync(join(dir, 'cwd-used.txt'), 'utf8').trim()
+      assert.equal(used, realpathSync(other), 'the subprocess ran in the per-call cwd, not the constructor one')
+    } finally {
+      rmSync(other, { recursive: true, force: true })
+    }
+  })
+})
+
+test('ClaudeCodeBackend falls back to the constructor-bound cwd when no per-call cwd is given', async () => {
+  await withDir(async (dir) => {
+    const cmd = fakeClaude(
+      dir,
+      `pwd > "${join(dir, 'cwd-used.txt')}"\nprintf '{"is_error":false,"result":"ok"}'`,
+    )
+    const backend = new ClaudeCodeBackend({ command: cmd, cwd: dir })
+    await backend.run(node(), 'p', Context.from({}), GRAPH)
+
+    const { readFileSync, realpathSync } = await import('node:fs')
+    const used = readFileSync(join(dir, 'cwd-used.txt'), 'utf8').trim()
+    assert.equal(used, realpathSync(dir), 'the existing 4-arg call shape is unchanged')
+  })
+})

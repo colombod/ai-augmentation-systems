@@ -2,10 +2,10 @@
 
 // src/cli.ts
 import { readFileSync as readFileSync3 } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import { basename as basename2, resolve as resolve2 } from "node:path";
 
-// node_modules/@ts-graphviz/common/lib/common.js
+// ../../../../../../plugins/attractor/engine/node_modules/@ts-graphviz/common/lib/common.js
 var RootModelsContext = Object.seal({
   // NOTE: RootModelsContext is also initialized after the model class is declared in the '@ts-graphviz/core/register-default' module.
   Graph: null,
@@ -15,7 +15,7 @@ var RootModelsContext = Object.seal({
   Edge: null
 });
 
-// node_modules/@ts-graphviz/ast/lib/ast.js
+// ../../../../../../plugins/attractor/engine/node_modules/@ts-graphviz/ast/lib/ast.js
 var ASTNodeCountExceededError = class extends Error {
   /**
    * Constructor
@@ -3088,7 +3088,8 @@ var INFERRED_OUTPUTS_BY_HANDLER = {
   [Handler.HUMAN]: [],
   // Not registered in defaultHandlers() -- cannot execute, let alone write.
   [Handler.PARALLEL]: [],
-  // Not registered in defaultHandlers() -- cannot execute, let alone write.
+  // ParallelHandler (p5-08) writes context via mergeBranchContext's direct
+  // Context.set() calls, not via Outcome.contextUpdates -- nothing for this table to infer.
   [Handler.FAN_IN]: [],
   // Not registered in defaultHandlers() -- cannot execute, let alone write.
   [Handler.MANAGER_LOOP]: []
@@ -3096,7 +3097,6 @@ var INFERRED_OUTPUTS_BY_HANDLER = {
 };
 var UNREGISTERED_HANDLER_KINDS = [
   Handler.HUMAN,
-  Handler.PARALLEL,
   Handler.FAN_IN,
   Handler.MANAGER_LOOP
 ];
@@ -3132,7 +3132,8 @@ var SUBSTITUTABLE_ATTRS = {
   [Handler.HUMAN]: [],
   // Not registered in defaultHandlers() -- cannot execute.
   [Handler.PARALLEL]: [],
-  // Not registered in defaultHandlers() -- cannot execute.
+  // ParallelHandler (p5-08) reads max_parallel (a plain int) and edges'
+  // isolate attribute -- neither is substitutable text; nothing passes through substitute().
   [Handler.FAN_IN]: [],
   // Not registered in defaultHandlers() -- cannot execute.
   [Handler.MANAGER_LOOP]: []
@@ -3155,6 +3156,112 @@ function inferredOutputs(node) {
 }
 function effectiveOutputs(node) {
   return [.../* @__PURE__ */ new Set([...inferredOutputs(node), ...declaredOutputs(node)])];
+}
+function reachableWithDepthTruncated(graph, startId, stopId, otherRoots) {
+  const depth = /* @__PURE__ */ new Map();
+  const queue = [];
+  for (const e of outgoingEdges(graph, startId)) {
+    if (!depth.has(e.to)) {
+      depth.set(e.to, 1);
+      queue.push(e.to);
+    }
+  }
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    const curDepth = depth.get(cur);
+    if (cur === stopId) continue;
+    if (curDepth > 1 && otherRoots.has(cur)) continue;
+    for (const e of outgoingEdges(graph, cur)) {
+      if (!depth.has(e.to)) {
+        depth.set(e.to, curDepth + 1);
+        queue.push(e.to);
+      }
+    }
+  }
+  return depth;
+}
+function findConvergenceNode(graph, branchRootIds, fanOutNodeId) {
+  if (branchRootIds.length === 0) return null;
+  const rootSet = new Set(branchRootIds);
+  const depthMaps = branchRootIds.map((id) => {
+    const otherRoots = new Set(branchRootIds.filter((r) => r !== id));
+    return reachableWithDepthTruncated(graph, id, fanOutNodeId, otherRoots);
+  });
+  let candidates = [...depthMaps[0].keys()].filter((id) => !rootSet.has(id) && id !== fanOutNodeId);
+  for (let i = 1; i < depthMaps.length; i++) {
+    candidates = candidates.filter((id) => depthMaps[i].has(id));
+  }
+  if (candidates.length === 0) return null;
+  let best = null;
+  let bestDepth = Infinity;
+  for (const id of candidates) {
+    const worstCase = Math.max(...depthMaps.map((dm) => dm.get(id)));
+    if (worstCase < bestDepth) {
+      bestDepth = worstCase;
+      best = id;
+    }
+  }
+  return best;
+}
+function findPartialReconvergence(graph, branchRootIdsRaw, convergenceId, fanOutNodeId) {
+  if (convergenceId === null) return [];
+  const branchRootIds = [...new Set(branchRootIdsRaw)];
+  const rootSet = new Set(branchRootIds);
+  const exitIds = new Set(findByHandler(graph, Handler.EXIT).map((n) => n.id));
+  const truncatedSets = branchRootIds.map((rootId) => {
+    const seen = /* @__PURE__ */ new Set([rootId]);
+    const queue = [rootId];
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      if (cur === convergenceId) continue;
+      for (const e of outgoingEdges(graph, cur)) {
+        if (!seen.has(e.to)) {
+          seen.add(e.to);
+          queue.push(e.to);
+        }
+      }
+    }
+    return seen;
+  });
+  const hazards = /* @__PURE__ */ new Set();
+  const counts = /* @__PURE__ */ new Map();
+  for (const set of truncatedSets) {
+    for (const id of set) {
+      if (id === convergenceId || id === fanOutNodeId || exitIds.has(id)) continue;
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+  }
+  for (const [id, count] of counts) {
+    if (count >= 2) hazards.add(id);
+  }
+  const downstreamOfConvergence = (() => {
+    const seen = /* @__PURE__ */ new Set();
+    const queue = [];
+    for (const e of outgoingEdges(graph, convergenceId)) {
+      if (!seen.has(e.to)) {
+        seen.add(e.to);
+        queue.push(e.to);
+      }
+    }
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      if (rootSet.has(cur)) continue;
+      for (const e of outgoingEdges(graph, cur)) {
+        if (!seen.has(e.to)) {
+          seen.add(e.to);
+          queue.push(e.to);
+        }
+      }
+    }
+    return seen;
+  })();
+  for (const set of truncatedSets) {
+    for (const id of set) {
+      if (id === convergenceId || id === fanOutNodeId || exitIds.has(id) || rootSet.has(id)) continue;
+      if (downstreamOfConvergence.has(id)) hazards.add(id);
+    }
+  }
+  return [...hazards];
 }
 
 // src/dot/parse.ts
@@ -3465,6 +3572,16 @@ function splitClauses(expr) {
 function isValidConditionSyntax(expr) {
   return splitClauses(expr).every((raw) => CLAUSE.test(raw) || BARE_IDENTIFIER.test(raw.trim()));
 }
+function conditionKeys(expr) {
+  const keys = [];
+  for (const raw of splitClauses(expr)) {
+    if (raw.trim() === "") continue;
+    const m = CLAUSE.exec(raw);
+    const key = m === null ? raw.trim() : m[1];
+    keys.push(key.startsWith("context.") ? key.slice("context.".length) : key);
+  }
+  return keys;
+}
 function evaluateCondition(expr, ctx, outcome) {
   for (const raw of splitClauses(expr)) {
     const m = CLAUSE.exec(raw);
@@ -3764,6 +3881,22 @@ function bypassesGates(graph, entry, gates, exits) {
   }
   return null;
 }
+function canReachWithoutPassing(graph, fromId, targets, avoid) {
+  if (targets.has(fromId) && fromId !== avoid) return true;
+  const seen = /* @__PURE__ */ new Set([fromId]);
+  const queue = [fromId];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    if (cur === avoid) continue;
+    for (const e of outgoingEdges(graph, cur)) {
+      if (seen.has(e.to)) continue;
+      if (targets.has(e.to) && e.to !== avoid) return true;
+      seen.add(e.to);
+      queue.push(e.to);
+    }
+  }
+  return false;
+}
 function lint(graph) {
   const diags = [];
   const starts = findByHandler(graph, Handler.START);
@@ -3897,6 +4030,66 @@ function lint(graph) {
         node: node.id,
         message: `node ${node.id} resolves to handler "${node.handler}", which this build does not register (known unregistered: ${UNREGISTERED_HANDLER_KINDS.join(", ")}); the run would abort with "no handler registered" mid-pipeline. Refused here instead, before anything runs.`
       });
+    }
+    if (node.handler === Handler.PARALLEL) {
+      const branchRootIds = [...new Set(outgoingEdges(graph, node.id).map((e) => e.to))];
+      if (branchRootIds.length === 1) {
+        diags.push({
+          code: "PAR-002",
+          severity: Severity.WARNING,
+          node: node.id,
+          message: `node ${node.id} is a parallel fan-out (Handler.PARALLEL) with exactly one distinct successor, ${branchRootIds[0]} -- a fan-out of one branch runs no differently than an ordinary edge would, so this is likely not what was intended`
+        });
+      } else if (branchRootIds.length >= 2) {
+        const convergenceId = findConvergenceNode(graph, branchRootIds, node.id);
+        if (convergenceId === null) {
+          diags.push({
+            code: "PAR-001",
+            severity: Severity.ERROR,
+            node: node.id,
+            message: `node ${node.id} fans out to ${branchRootIds.join(", ")}, but no node is reachable from every branch -- there is nowhere for the pipeline to resume after the fan-out. Add a node every branch's path leads to, or route two of the branches back together`
+          });
+        } else {
+          const partial = findPartialReconvergence(graph, branchRootIds, convergenceId, node.id);
+          if (partial.length > 0) {
+            diags.push({
+              code: "PAR-004",
+              severity: Severity.ERROR,
+              node: node.id,
+              message: `node ${node.id} fans out to ${branchRootIds.join(", ")}, converging on ${convergenceId} -- but ${partial.join(", ")} ${partial.length === 1 ? "is" : "are"} also reachable, before ${convergenceId}, either from two or more of those branches or as a shortcut from a single branch into what ${convergenceId} itself leads to. A node reached either way could be dispatched twice -- route every branch through a single shared node before ${convergenceId}, or ensure nothing reachable from ${convergenceId} is also reachable directly from a branch`
+            });
+          }
+          const exitIds2 = new Set(findByHandler(graph, Handler.EXIT).map((n) => n.id));
+          for (const rootId of branchRootIds) {
+            if (canReachWithoutPassing(graph, rootId, exitIds2, convergenceId)) {
+              diags.push({
+                code: "PAR-005",
+                severity: Severity.WARNING,
+                node: node.id,
+                message: `node ${node.id}'s branch root ${rootId} can reach the graph's real exit node without first passing through the fan-out's own convergence node ${convergenceId}. This branch alone stops there -- it does NOT stop the whole pipeline, and sibling branches proceed normally; there is no way to stop the whole run from inside a branch in this build. If an early stop for just this branch is intended, this warning can be ignored`
+              });
+            }
+          }
+        }
+      }
+      const declaredBy = /* @__PURE__ */ new Map();
+      for (const rootId of branchRootIds) {
+        const rootNode = graph.nodes.get(rootId);
+        if (!rootNode) continue;
+        for (const key of declaredOutputs(rootNode)) {
+          const owner = declaredBy.get(key);
+          if (owner !== void 0 && owner !== rootId) {
+            diags.push({
+              code: "PAR-003",
+              severity: Severity.WARNING,
+              node: node.id,
+              message: `node ${node.id}'s branches ${owner} and ${rootId} both declare outputs="${key}" -- whichever branch is declared LAST wins when their writes merge back after the fan-out (branch declaration order, not completion order). This rule only sees each branch root's own declared outputs=, not inferred keys like tool.last_line -- a collision on those is caught only at runtime, logged as node.parallel.context_collision`
+            });
+          } else if (owner === void 0) {
+            declaredBy.set(key, rootId);
+          }
+        }
+      }
     }
     if (node.handler === Handler.HUMAN) {
       const channelTokens = (node.attrs["human.channel"] ?? "").split(",").map((t) => t.trim());
@@ -4040,6 +4233,42 @@ function lint(graph) {
       if (route.origin !== void 0) diag.node = route.origin;
       diags.push(diag);
     }
+  } else {
+    for (const e of graph.edges) {
+      if (!isConditional(e)) continue;
+      const from = graph.nodes.get(e.from);
+      if (from === void 0 || NEVER_FAILS.includes(from.handler)) continue;
+      const condition = e.attrs.condition;
+      const unsuppliedKey = from.handler === Handler.CODERGEN ? void 0 : conditionKeys(condition).find(
+        (k) => k !== "outcome" && k !== "preferred_label" && !isEngineManagedKey(k) && !supplied.has(k)
+      );
+      if (unsuppliedKey === void 0) continue;
+      if (!evaluateCondition(condition, EMPTY_CONTEXT, FAILED) || !evaluateCondition(condition, EMPTY_CONTEXT, SUCCEEDED)) {
+        continue;
+      }
+      const reachedExit = bypassesGates(graph, e.to, gates, exitIds);
+      if (reachedExit === null) continue;
+      diags.push({
+        code: "GATE-002",
+        severity: Severity.ERROR,
+        node: e.from,
+        message: `node ${e.from}'s outgoing edge to ${e.to} (condition="${condition}") is satisfied whether ${e.from} succeeds or fails, because it depends on ${unsuppliedKey}, which nothing in this graph declares, infers, or seeds -- and ${e.to} can reach the exit node ${reachedExit} with no goal gate anywhere to catch the resulting unearned success. Declare ${unsuppliedKey} from a real producer, rewrite the condition to discriminate on outcome, or add a goal_gate="true" node on this path.`
+      });
+    }
+    for (const n of graph.nodes.values()) {
+      if (NEVER_FAILS.includes(n.handler)) continue;
+      const target = resolveRetryTarget(n, graph, { includeGraphLevel: false });
+      if (target === null) continue;
+      const reachedExit = bypassesGates(graph, target, gates, exitIds);
+      if (reachedExit === null) continue;
+      const attr = n.attrs.retry_target && graph.nodes.has(n.attrs.retry_target) ? "retry_target" : "fallback_retry_target";
+      diags.push({
+        code: "GATE-002",
+        severity: Severity.ERROR,
+        node: n.id,
+        message: `node ${n.id}'s ${attr}="${target}" can reach the exit node ${reachedExit} with no goal gate anywhere in this graph to verify the recovery actually resolved ${n.id}'s original failure -- section 11.3's quantifier is vacuously true with zero gates, so nothing ever checks whether the retry route's own success was a real, earned recovery rather than the original failure passing through unverified. Add a goal_gate="true" node on this path, or replace the retry target with an explicit condition="outcome=fail" recovery edge if acknowledging the failure without gated verification is what you intend.`
+      });
+    }
   }
   return diags;
 }
@@ -4168,7 +4397,8 @@ var BoxHandler = class {
         prompt,
         ctx.context,
         ctx.graph,
-        controller?.signal ?? ctx.signal
+        controller?.signal ?? ctx.signal,
+        ctx.cwd
       );
     } finally {
       if (timer !== void 0) clearTimeout(timer);
@@ -4232,6 +4462,322 @@ var BoxHandler = class {
   }
 };
 
+// src/handlers/parallel.ts
+import { randomUUID } from "node:crypto";
+import { join as join6 } from "node:path";
+
+// src/run/worktree.ts
+import { execFile } from "node:child_process";
+import {
+  existsSync as existsSync3,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmdirSync,
+  rmSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join as join5, resolve, sep } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
+var execFileAsync = promisify(execFile);
+var WT_PREFIX = "attractor-wt-";
+async function git(cwd, args) {
+  const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8" });
+  return stdout;
+}
+async function isGitRepo(dir) {
+  try {
+    return (await git(dir, ["rev-parse", "--is-inside-work-tree"])).trim() === "true";
+  } catch {
+    return false;
+  }
+}
+var RACE_ERROR_PATTERN = /failed to read .*commondir/i;
+var RACE_RETRY_MAX_ATTEMPTS = 4;
+function raceRetryDelayMs(attempt) {
+  return Math.min(10 * 2 ** attempt, 80) + Math.floor(Math.random() * 10);
+}
+async function addWorktreeWithRaceRetry(repoDir, branch, path) {
+  for (let attempt = 0; ; attempt++) {
+    const flag = attempt === 0 ? "-b" : "-B";
+    try {
+      await git(repoDir, ["worktree", "add", "-q", flag, branch, path]);
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (attempt + 1 >= RACE_RETRY_MAX_ATTEMPTS || !RACE_ERROR_PATTERN.test(message)) throw err;
+      await sleep(raceRetryDelayMs(attempt));
+    }
+  }
+}
+async function createWorktree(repoDir, runId) {
+  if (!await isGitRepo(repoDir)) {
+    throw new Error(`not a git repository: ${repoDir} -- cannot create an isolated worktree`);
+  }
+  const branch = `attractor/${runId}`;
+  const parent = mkdtempSync(join5(tmpdir(), WT_PREFIX));
+  const path = join5(parent, runId);
+  try {
+    await addWorktreeWithRaceRetry(repoDir, branch, path);
+  } catch (err) {
+    rmSync(parent, { recursive: true, force: true });
+    throw err;
+  }
+  return { path, branch };
+}
+function realOrResolved(p) {
+  const abs = resolve(p);
+  try {
+    return realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+function isOurWorktree(target) {
+  const tmpRoot = realOrResolved(tmpdir());
+  const t = realOrResolved(target);
+  return t.startsWith(`${tmpRoot}${sep}`) && basename(dirname(t)).startsWith(WT_PREFIX);
+}
+async function hasUncommittedWork(worktreePath) {
+  try {
+    return (await git(worktreePath, ["status", "--porcelain"])).trim() !== "";
+  } catch {
+    return true;
+  }
+}
+async function isRegisteredWorktree(repoDir, target) {
+  try {
+    const out = await git(repoDir, ["worktree", "list", "--porcelain"]);
+    for (const line of out.split("\n")) {
+      if (line.startsWith("worktree ") && realOrResolved(line.slice("worktree ".length)) === target) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+function isNonEmptyDirectory(path) {
+  try {
+    return readdirSync(path).length > 0;
+  } catch {
+    return true;
+  }
+}
+async function removeWorktree(repoDir, wt) {
+  const target = realOrResolved(wt.path);
+  const root = realOrResolved(repoDir);
+  const ours = isOurWorktree(target);
+  if (target === root || root.startsWith(`${target}${sep}`)) {
+    return {
+      removed: false,
+      warning: `refusing to remove ${target}: it is, or contains, the repository root`
+    };
+  }
+  const registered = existsSync3(target) && await isRegisteredWorktree(repoDir, target);
+  if (registered && await hasUncommittedWork(target)) {
+    return {
+      removed: false,
+      warning: `keeping ${target}: it has uncommitted work on branch ${wt.branch}. Commit it there, or delete the directory once you have salvaged it.`
+    };
+  }
+  if (existsSync3(target) && ours && !registered && isNonEmptyDirectory(target)) {
+    return {
+      removed: false,
+      warning: `keeping ${target}: git's administrative record for this worktree is gone, so its status cannot be verified, and the directory is not empty. Treating it as uncommitted work on branch ${wt.branch} rather than guessing it is safe to delete.`
+    };
+  }
+  let gitError;
+  try {
+    await git(repoDir, ["worktree", "remove", "--force", target]);
+  } catch (err) {
+    gitError = (err instanceof Error ? err.message : String(err)).trim();
+  }
+  try {
+    await git(repoDir, ["worktree", "prune"]);
+  } catch {
+  }
+  const survivedGit = existsSync3(target);
+  if (survivedGit) {
+    if (!ours) {
+      return {
+        removed: false,
+        warning: `refusing to delete ${target}: it is not a worktree this module created (expected a ${WT_PREFIX}* directory under the system temp directory)`
+      };
+    }
+    try {
+      rmSync(target, { recursive: true, force: true });
+    } catch (err) {
+      return { removed: false, warning: `could not remove worktree ${target}: ${String(err)}` };
+    }
+  }
+  if (ours) {
+    const parent = dirname(target);
+    try {
+      if (existsSync3(parent) && readdirSync(parent).length === 0) rmdirSync(parent);
+    } catch {
+    }
+  }
+  if (survivedGit && gitError !== void 0) {
+    return {
+      removed: true,
+      warning: `git could not remove the worktree cleanly, directory was deleted directly: ${gitError}`
+    };
+  }
+  return { removed: true };
+}
+
+// src/handlers/parallel.ts
+function mergeBranchContext(parentContext, preforkSnapshot, branchRootIds, results, events) {
+  if (branchRootIds.length !== results.length) {
+    throw new Error(
+      `mergeBranchContext: branchRootIds.length (${branchRootIds.length}) !== results.length (${results.length}) -- results must be positionally paired with branchRootIds, one BranchRunResult per branch root, in the same order`
+    );
+  }
+  const mergedBy = /* @__PURE__ */ new Map();
+  for (let i = 0; i < branchRootIds.length; i++) {
+    const rootId = branchRootIds[i];
+    const result = results[i];
+    if (result.outcome.status !== Status.SUCCESS && result.outcome.status !== Status.PARTIAL) continue;
+    for (const [key, value] of Object.entries(result.context)) {
+      if (ENGINE_MANAGED_KEYS.includes(key)) continue;
+      if (preforkSnapshot[key] === value) continue;
+      const previousOwner = mergedBy.get(key);
+      if (previousOwner !== void 0) {
+        events.append({
+          type: "node.parallel.context_collision",
+          key,
+          previousBranch: previousOwner,
+          winningBranch: rootId
+        });
+      }
+      mergedBy.set(key, rootId);
+      parentContext.set(key, value);
+    }
+  }
+}
+function describeFailures(results, branchRootIds) {
+  return results.map((r, i) => ({ r, id: branchRootIds?.[i] ?? `branch ${i}` })).filter(({ r }) => r.outcome.status !== Status.SUCCESS && r.outcome.status !== Status.PARTIAL).map(({ r, id }) => `${id}: ${r.outcome.failureReason ?? r.outcome.notes ?? "no reason given"}`).join("; ");
+}
+function applyDefaultJoinPolicy(results, branchRootIds) {
+  const settled = results.filter(
+    (r) => r.outcome.status === Status.SUCCESS || r.outcome.status === Status.PARTIAL
+  );
+  if (settled.length === 0) {
+    const failures = describeFailures(results, branchRootIds);
+    const notes = `all ${results.length} branch(es) failed` + (failures ? ` -- ${failures}` : "");
+    return { status: Status.FAIL, notes, failureReason: notes };
+  }
+  if (settled.length === results.length) {
+    return { status: Status.SUCCESS, notes: `all ${results.length} branch(es) succeeded` };
+  }
+  return {
+    status: Status.PARTIAL,
+    notes: `${settled.length}/${results.length} branch(es) succeeded or partially succeeded -- failed: ${describeFailures(results, branchRootIds)}`
+  };
+}
+var Semaphore = class {
+  available;
+  waiters = [];
+  constructor(permits) {
+    this.available = permits;
+  }
+  async acquire() {
+    if (this.available > 0) {
+      this.available--;
+      return;
+    }
+    await new Promise((resolve3) => this.waiters.push(resolve3));
+    this.available--;
+  }
+  release() {
+    this.available++;
+    const next = this.waiters.shift();
+    if (next) next();
+  }
+};
+function intAttr2(value) {
+  if (value === void 0) return void 0;
+  const n = Number.parseInt(value, 10);
+  return Number.isNaN(n) ? void 0 : n;
+}
+var DEFAULT_MAX_PARALLEL = 4;
+var ParallelHandler = class {
+  async execute(ctx) {
+    const { node, graph, context, runDir, cwd, events } = ctx;
+    const branchRootIds = [...new Set(outgoingEdges(graph, node.id).map((e) => e.to))];
+    if (branchRootIds.length === 0) {
+      return applyDefaultJoinPolicy([]);
+    }
+    const maxParallel = Math.max(1, intAttr2(node.attrs.max_parallel) ?? DEFAULT_MAX_PARALLEL);
+    const semaphore = new Semaphore(maxParallel);
+    const preforkSnapshot = context.snapshot();
+    const convergenceId = findConvergenceNode(graph, branchRootIds, node.id);
+    const stopAt = convergenceId ? /* @__PURE__ */ new Set([convergenceId]) : /* @__PURE__ */ new Set();
+    const edgeFor = (rootId) => outgoingEdges(graph, node.id).find((e) => e.to === rootId);
+    const dispatchBranch = async (rootId) => {
+      const edge = edgeFor(rootId);
+      const isolate = edge?.attrs.isolate !== "false";
+      let worktree;
+      try {
+        let branchCwd = cwd;
+        if (isolate) {
+          worktree = await createWorktree(cwd, `${node.id}-${rootId}-${randomUUID().slice(0, 8)}`);
+          branchCwd = worktree.path;
+        }
+        return await ctx.runBranch({
+          startNodeId: rootId,
+          stopAt,
+          context: context.clone(),
+          runDir: join6(runDir, rootId),
+          cwd: branchCwd
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          outcome: { status: Status.FAIL, notes: message, failureReason: message },
+          path: [],
+          context: preforkSnapshot
+        };
+      } finally {
+        if (worktree) {
+          const removal = await removeWorktree(cwd, worktree);
+          if (!removal.removed) {
+            try {
+              events.append({
+                type: "node.parallel.worktree_warning",
+                node: node.id,
+                branch: rootId,
+                warning: removal.warning
+              });
+            } catch {
+            }
+          }
+        }
+      }
+    };
+    const results = await Promise.all(
+      branchRootIds.map(async (rootId) => {
+        await semaphore.acquire();
+        try {
+          return await dispatchBranch(rootId);
+        } finally {
+          semaphore.release();
+        }
+      })
+    );
+    try {
+      mergeBranchContext(context, preforkSnapshot, branchRootIds, results, events);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { status: Status.FAIL, notes: `merge-back failed: ${message}`, failureReason: message };
+    }
+    return applyDefaultJoinPolicy(results, branchRootIds);
+  }
+};
+
 // src/core/engine.ts
 var PassthroughHandler = class {
   async execute() {
@@ -4243,7 +4789,8 @@ function defaultHandlers(backend) {
   return new Map([
     ...PASSTHROUGH_KINDS.map((kind) => [kind, passthrough]),
     [Handler.TOOL, new ToolHandler()],
-    [Handler.CODERGEN, new BoxHandler(backend)]
+    [Handler.CODERGEN, new BoxHandler(backend)],
+    [Handler.PARALLEL, new ParallelHandler()]
   ]);
 }
 var DEFAULT_MAX_STEPS = 500;
@@ -4398,6 +4945,16 @@ var Engine = class {
    * the only way out is `outputsOwedByFailedNodes`, which hands back a copy.
    */
   failedOutputs = /* @__PURE__ */ new Map();
+  /**
+   * Steps taken across the WHOLE run, main loop and every branch (p5-05)
+   * alike -- one shared instance field, not a loop-local variable. Without
+   * this, a branch containing a routing cycle that never reaches its stop
+   * frontier has no bound of its own, and `max_parallel` branches each
+   * independently capped at maxSteps would multiply the run-wide ceiling
+   * NFR-1 exists to hold. Incremented once per `executeNodeStep` call,
+   * whether that call continues to a new node or retries the same one.
+   */
+  stepCount = 0;
   constructor(opts) {
     this.opts = opts;
     this.events = new EventLog(opts.runDir);
@@ -4684,7 +5241,7 @@ var Engine = class {
    * `context.outcome` saying "retry" while the edge being selected sees
    * "fail".
    */
-  recordOutcome(nodeId, outcome) {
+  recordOutcome(nodeId, outcome, context) {
     const node = this.opts.graph.nodes.get(nodeId);
     if (node !== void 0 && wantsVerdict(node)) {
       this.gateOutcomes.set(nodeId, outcome.status);
@@ -4696,9 +5253,9 @@ var Engine = class {
       if (this.nodeFailures.has(nodeId)) this.nodeFailures.set(nodeId, false);
       this.clearFailedOutputs(nodeId);
     }
-    this.setManaged("outcome", outcome.status);
+    this.setManaged(context, "outcome", outcome.status);
     if (outcome.preferredLabel !== void 0 && outcome.preferredLabel !== "") {
-      this.setManaged("preferred_label", outcome.preferredLabel);
+      this.setManaged(context, "preferred_label", outcome.preferredLabel);
     }
   }
   /**
@@ -4714,13 +5271,254 @@ var Engine = class {
    * where the control plane has caught itself, and any test touching the new
    * key will surface it immediately.
    */
-  setManaged(key, value) {
+  setManaged(context, key, value) {
     if (!isEngineManagedKey(key)) {
       throw new Error(
         `engine built-in context key ${key} is not covered by isEngineManagedKey; register it there so a backend cannot forge it`
       );
     }
-    this.opts.context.set(key, value);
+    context.set(key, value);
+  }
+  /**
+   * Runs exactly one node's step: dispatch (eager-input-check, `runs_on`
+   * skip logic, handler call or skip, the RETRY ladder with its two
+   * `recordOutcome` calls), then a per-node checkpoint via the exported
+   * `saveCheckpoint` directly -- never the private `this.checkpoint()`
+   * wrapper, which after this refactor is called only by `run()`'s own
+   * EXIT/dead-end/step-cap terminal paths (ADR-012). The ONE seam both
+   * `run()`'s own loop and `runBranch` (p5-05) call.
+   *
+   * Node lookup, the `current_node` context write, and handler lookup all
+   * live HERE rather than in a caller's wrapper -- see this task's own
+   * Step 2: an existing test requires `RunResult.path` to already contain a
+   * node by the moment its handler-lookup failure is reported. `path.push`
+   * lives HERE too (final-review correction, p5-05 addendum's own bug):
+   * each caller passes its OWN `path` array via `opts.path` -- `run()`'s
+   * loop passes `this.path`; `runBranch`'s loop passes its own local
+   * `path` -- so a branch's internal node ids still cannot leak into the
+   * outer run's own `this.path` (the original addendum's own concern,
+   * still closed). But the push itself happens HERE, immediately after the
+   * step-cap check above, not in the caller before this method is even
+   * entered: the addendum's own relocation pushed unconditionally BEFORE
+   * calling this method, meaning a dispatch the step-cap check went on to
+   * block still left its id in `path` -- a phantom, never-actually-executed
+   * hop (no `node.start`, no handler call) on every step-cap termination,
+   * on ANY graph, not just ones with a branch. Pushing after the step-cap
+   * check and before node/handler lookup keeps the pre-dispatch-failure
+   * invariant above intact while closing that regression.
+   * Folded into the `'deadend'` stop reason alongside the ordinary
+   * "no outgoing edge" case, since from a caller's point of view all three
+   * are "this step produced no next node to continue to"; the one accepted,
+   * documented behavioural delta is that `run()`'s uniform handling of
+   * `'deadend'` always calls `this.checkpoint(null)`, where today's
+   * unknown-node/no-handler-registered paths did not -- an extra, harmless
+   * checkpoint write on an already-terminal FAIL that no existing test
+   * observes.
+   */
+  async executeNodeStep(currentId, opts) {
+    const { graph } = this.opts;
+    const context = opts.context;
+    if (++this.stepCount > opts.maxSteps) {
+      const capped = `step cap of ${opts.maxSteps} reached without terminating`;
+      return {
+        kind: "stop",
+        reason: "stepcap",
+        nodeId: currentId,
+        outcome: { status: Status.FAIL, notes: capped, failureReason: capped }
+      };
+    }
+    opts.path.push(currentId);
+    const node = graph.nodes.get(currentId);
+    if (!node) {
+      const msg = `unknown node ${currentId}`;
+      return {
+        kind: "stop",
+        reason: "deadend",
+        nodeId: currentId,
+        outcome: { status: Status.FAIL, notes: msg, failureReason: msg }
+      };
+    }
+    this.setManaged(context, "current_node", node.id);
+    const handler = this.opts.handlers.get(node.handler);
+    if (!handler) {
+      const msg = `no handler registered for ${node.handler} (node ${node.id})`;
+      return {
+        kind: "stop",
+        reason: "deadend",
+        nodeId: node.id,
+        outcome: { status: Status.FAIL, notes: msg, failureReason: msg }
+      };
+    }
+    const attempt = this.attempts.get(node.id) ?? 0;
+    this.attempts.set(node.id, attempt + 1);
+    this.events.append({ type: "node.start", node: node.id });
+    context.takeWritten();
+    let outcome;
+    const mode = runsOn(node);
+    const checksInputs = mode === RunsOn.SUCCESS || wantsVerdict(node);
+    const unavailable = checksInputs ? this.unavailableInput(node) : void 0;
+    if (unavailable) {
+      this.events.append({
+        type: "node.input_unavailable",
+        node: node.id,
+        key: unavailable.key,
+        owedBy: unavailable.owedBy
+      });
+      outcome = {
+        status: Status.FAIL,
+        notes: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`,
+        failureReason: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`
+      };
+    } else if (mode === RunsOn.FAILURE && !wantsVerdict(node) && !this.holdsUnresolvedFailure()) {
+      this.events.append({ type: "node.runs_on.skipped", node: node.id, runsOn: mode });
+      outcome = {
+        status: Status.SUCCESS,
+        notes: `${node.id} did not run: runs_on=failure and no failure is outstanding`
+      };
+    } else {
+      try {
+        outcome = await handler.execute({
+          node,
+          graph,
+          context,
+          runDir: opts.runDir,
+          cwd: opts.cwd,
+          events: this.events,
+          runBranch: (o) => this.runBranch(o)
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.events.append({ type: "node.error", node: node.id, message });
+        outcome = { status: Status.FAIL, notes: message, failureReason: message };
+      }
+    }
+    for (const key of context.takeWritten()) this.failedOutputs.delete(key);
+    this.events.append({ type: "node.end", node: node.id, status: outcome.status });
+    this.recordOutcome(node.id, outcome, context);
+    if (outcome.status === Status.RETRY) {
+      const policy = resolveRetryPolicy(node, graph);
+      if (attempt < policy.maxRetries) {
+        const delay = backoffMs(policy, attempt);
+        this.events.append({
+          type: "node.retry",
+          node: node.id,
+          attempt: attempt + 1,
+          delayMs: delay
+        });
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+        return { kind: "continue", nextId: node.id };
+      }
+      const target = resolveRetryTarget(node, graph, { includeGraphLevel: false });
+      this.events.append({ type: "node.retry.exhausted", node: node.id, target });
+      if (target) {
+        this.recordAbandoned(node.id);
+        this.attempts.set(node.id, 0);
+        return { kind: "continue", nextId: target };
+      }
+      outcome = {
+        ...outcome,
+        status: Status.FAIL,
+        notes: `retries exhausted for ${node.id} with no retry target`,
+        failureReason: "max retries exceeded"
+      };
+    }
+    this.recordOutcome(node.id, outcome, context);
+    this.attempts.set(node.id, 0);
+    if (!this.completed.includes(node.id)) this.completed.push(node.id);
+    const cp = {
+      runId: this.opts.runId ?? "run",
+      currentNode: node.id,
+      completed: [...this.completed],
+      attempts: Object.fromEntries(this.attempts),
+      context: context.snapshot(),
+      goalGatesSatisfied: [...this.gateOutcomes].filter(([, s]) => s === Status.SUCCESS || s === Status.PARTIAL).map(([id]) => id)
+    };
+    saveCheckpoint(opts.runDir, cp);
+    if (node.handler === Handler.EXIT) {
+      return { kind: "stop", reason: "exit", nodeId: node.id, outcome };
+    }
+    if (node.handler === Handler.PARALLEL && (outcome.status === Status.SUCCESS || outcome.status === Status.PARTIAL)) {
+      const branchRootIds = [...new Set(outgoingEdges(graph, node.id).map((e) => e.to))];
+      const convergenceId = findConvergenceNode(graph, branchRootIds, node.id);
+      if (convergenceId) {
+        if (opts.stopAt?.has(convergenceId)) {
+          return { kind: "stop", reason: "frontier", nodeId: node.id, outcome };
+        }
+        return { kind: "continue", nextId: convergenceId };
+      }
+    }
+    const edge = selectEdge(graph, node.id, context, outcome);
+    if (!edge && outcome.status === Status.FAIL) {
+      const target = resolveRetryTarget(node, graph, { includeGraphLevel: false });
+      if (target) {
+        this.events.append({ type: "node.fail.retry_target", node: node.id, target });
+        return { kind: "continue", nextId: target };
+      }
+    }
+    if (!edge) {
+      const notes = outcome.status === Status.FAIL ? `no matching edge from ${node.id} after failure: ${outcome.notes ?? ""}` : `run terminated at ${node.id}, which has no outgoing edges and is not the exit`;
+      return {
+        kind: "stop",
+        reason: "deadend",
+        nodeId: node.id,
+        // status is forced to FAIL here (even when the dispatch's own
+        // outcome was SUCCESS/PARTIAL with simply no matching edge) --
+        // run()'s own interpretation of 'deadend' never reads
+        // outcome.status (it hardcodes Status.FAIL onto its own RunResult
+        // regardless), so this is inert for run(); it matters for
+        // runBranch (Task 5), whose BranchRunResult.outcome is this object
+        // verbatim and whose own contract requires status === FAIL for a
+        // true dead end unconditionally.
+        outcome: { ...outcome, status: Status.FAIL, notes, failureReason: outcome.failureReason ?? notes }
+      };
+    }
+    if (opts.stopAt?.has(edge.to)) {
+      return { kind: "stop", reason: "frontier", nodeId: node.id, outcome };
+    }
+    this.events.append({ type: "edge.taken", node: node.id, to: edge.to });
+    return { kind: "continue", nextId: edge.to };
+  }
+  /**
+   * A bounded forward traversal of the SAME graph, starting at
+   * opts.startNodeId, using the exact per-node step logic executeNodeStep
+   * (Task 2) already implements -- against this Engine's own shared
+   * gateOutcomes/nodeFailures/failedOutputs/stepCount ledgers. REJECTED: one
+   * independent `new Engine(...)` per branch -- a fresh instance would own
+   * its own empty ledgers, so a goal gate inside a branch would satisfy or
+   * fail a map nothing outside that branch's own instance ever reads,
+   * silently reopening the fail-open hole those ledgers exist to close
+   * (ADR-009).
+   *
+   * Treats EVERY stop reason -- 'exit', 'frontier', 'deadend', 'stepcap' --
+   * identically: stop looping and return whatever outcome/path the branch
+   * ended with. In particular, dispatching the graph's real EXIT node is an
+   * ORDINARY DEAD END for this branch alone (ADR-007's amendment): this
+   * method never calls unsatisfiedGoalGates(), never calls
+   * this.checkpoint(null), and never returns an Engine.RunResult -- that
+   * logic lives EXCLUSIVELY in run()'s own interpretation of a
+   * `{ kind: 'stop', reason: 'exit' }` result, a branch this uniform
+   * handling structurally cannot reach.
+   */
+  async runBranch(opts) {
+    const maxSteps = this.opts.maxSteps ?? DEFAULT_MAX_STEPS;
+    const path = [];
+    const context = opts.context.clone();
+    let currentId = opts.startNodeId;
+    for (; ; ) {
+      const stepResult = await this.executeNodeStep(currentId, {
+        runDir: opts.runDir,
+        cwd: opts.cwd,
+        maxSteps,
+        stopAt: opts.stopAt,
+        context,
+        path
+      });
+      if (stepResult.kind === "continue") {
+        currentId = stepResult.nextId;
+        continue;
+      }
+      return { outcome: stepResult.outcome, path, context: context.snapshot() };
+    }
   }
   async run() {
     const { graph, context } = this.opts;
@@ -4740,122 +5538,31 @@ var Engine = class {
     for (const [k, v] of Object.entries(graph.attrs)) {
       if (!context.has(k)) context.set(k, v);
       const qualified = `graph.${k}`;
-      if (!context.has(qualified)) this.setManaged(qualified, v);
+      if (!context.has(qualified)) this.setManaged(context, qualified, v);
     }
     let currentId = startNode.id;
     this.events.append({ type: "pipeline.start", node: startNode.id });
-    for (let step = 0; step < maxSteps; step++) {
-      if (currentId === null) break;
-      const node = graph.nodes.get(currentId);
-      if (!node) {
-        this.events.append({ type: "pipeline.end", node: currentId, status: Status.FAIL });
-        return this.result(Status.FAIL, `unknown node ${currentId}`, `unknown node ${currentId}`);
+    while (currentId !== null) {
+      const stepResult = await this.executeNodeStep(currentId, {
+        runDir: this.opts.runDir,
+        cwd: this.opts.cwd,
+        maxSteps,
+        stopAt: void 0,
+        context,
+        path: this.path
+      });
+      if (stepResult.kind === "continue") {
+        currentId = stepResult.nextId;
+        continue;
       }
-      this.path.push(node.id);
-      this.setManaged("current_node", node.id);
-      const handler = this.opts.handlers.get(node.handler);
-      if (!handler) {
-        this.events.append({ type: "pipeline.end", node: node.id, status: Status.FAIL });
-        const noHandler = `no handler registered for ${node.handler} (node ${node.id})`;
-        return this.result(Status.FAIL, noHandler, noHandler);
-      }
-      const attempt = this.attempts.get(node.id) ?? 0;
-      this.events.append({ type: "node.start", node: node.id });
-      context.takeWritten();
-      let outcome;
-      const mode = runsOn(node);
-      const checksInputs = mode === RunsOn.SUCCESS || wantsVerdict(node);
-      const unavailable = checksInputs ? this.unavailableInput(node) : void 0;
-      if (unavailable) {
-        this.events.append({
-          type: "node.input_unavailable",
-          node: node.id,
-          key: unavailable.key,
-          owedBy: unavailable.owedBy
-        });
-        outcome = {
-          status: Status.FAIL,
-          // Section 3.5's `failure_reason` is carried by `notes` throughout
-          // this engine -- see the retry-exhaustion rewrite below, which
-          // writes that same spec field here. The reason therefore lands
-          // where every existing consumer already reads it (the terminal
-          // `notes` string, the CLI's message, the event log) instead of in a
-          // second field only this path writes.
-          notes: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`,
-          // Section 5.2's field, now that it exists. The comment above
-          // described `notes` as carrying section 3.5's `failure_reason`
-          // "throughout this engine" because there was nowhere else to put
-          // it; both are written now, so a consumer no longer has to parse
-          // the sentence a SUCCESS also writes to.
-          failureReason: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`
-        };
-      } else if (mode === RunsOn.FAILURE && !wantsVerdict(node) && !this.holdsUnresolvedFailure()) {
-        this.events.append({ type: "node.runs_on.skipped", node: node.id, runsOn: mode });
-        outcome = {
-          status: Status.SUCCESS,
-          notes: `${node.id} did not run: runs_on=failure and no failure is outstanding`
-        };
-      } else {
-        try {
-          outcome = await handler.execute({
-            node,
-            graph,
-            context,
-            runDir: this.opts.runDir,
-            cwd: this.opts.cwd,
-            events: this.events
-          });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this.events.append({ type: "node.error", node: node.id, message });
-          outcome = { status: Status.FAIL, notes: message, failureReason: message };
-        }
-      }
-      for (const key of context.takeWritten()) this.failedOutputs.delete(key);
-      this.events.append({ type: "node.end", node: node.id, status: outcome.status });
-      this.recordOutcome(node.id, outcome);
-      if (outcome.status === Status.RETRY) {
-        const policy = resolveRetryPolicy(node, graph);
-        if (attempt < policy.maxRetries) {
-          this.attempts.set(node.id, attempt + 1);
-          const delay = backoffMs(policy, attempt);
-          this.events.append({
-            type: "node.retry",
-            node: node.id,
-            attempt: attempt + 1,
-            delayMs: delay
-          });
-          if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-          continue;
-        }
-        const target = resolveRetryTarget(node, graph, { includeGraphLevel: false });
-        this.events.append({ type: "node.retry.exhausted", node: node.id, target });
-        if (target) {
-          this.recordAbandoned(node.id);
-          this.attempts.set(node.id, 0);
-          currentId = target;
-          continue;
-        }
-        outcome = {
-          ...outcome,
-          status: Status.FAIL,
-          notes: `retries exhausted for ${node.id} with no retry target`,
-          // Section 3.5's own string for this case: "RETURN
-          // Outcome(status=FAIL, failure_reason='max retries exceeded')".
-          failureReason: "max retries exceeded"
-        };
-      }
-      this.recordOutcome(node.id, outcome);
-      this.attempts.set(node.id, 0);
-      if (!this.completed.includes(node.id)) this.completed.push(node.id);
-      this.checkpoint(node.id);
-      if (node.handler === Handler.EXIT) {
+      const { reason, nodeId, outcome } = stepResult;
+      if (reason === "exit") {
         const unsatisfied = this.unsatisfiedGoalGates();
         if (unsatisfied.length > 0) {
           const target = this.gateRetryTarget(unsatisfied);
           this.events.append({
             type: "pipeline.goal_gate_block",
-            node: node.id,
+            node: nodeId,
             unsatisfied,
             target
           });
@@ -4863,55 +5570,34 @@ var Engine = class {
             currentId = target;
             continue;
           }
-          this.events.append({ type: "pipeline.end", node: node.id, status: Status.FAIL });
+          this.events.append({ type: "pipeline.end", node: nodeId, status: Status.FAIL });
           this.checkpoint(null);
           return this.result(
             Status.FAIL,
             `exit reached with unsatisfied goal gates: ${unsatisfied.join(", ")}`,
-            // Section 3.4 step 4's own wording for this terminal case:
-            // "RETURN Outcome(status=FAIL, failure_reason='Goal gate
-            // unsatisfied and no retry target')". `notes` keeps naming the
-            // gates, which the spec's string does not.
             "Goal gate unsatisfied and no retry target"
           );
         }
         const failed = this.unresolvedFailures();
         if (failed.length > 0) {
-          this.events.append({
-            type: "pipeline.unresolved_failure",
-            node: node.id,
-            failed
-          });
+          this.events.append({ type: "pipeline.unresolved_failure", node: nodeId, failed });
         }
-        this.events.append({ type: "pipeline.end", node: node.id, status: Status.SUCCESS });
+        this.events.append({ type: "pipeline.end", node: nodeId, status: Status.SUCCESS });
         this.checkpoint(null);
         return this.result(
           Status.SUCCESS,
           failed.length > 0 ? `exit reached with unresolved node failures: ${failed.join(", ")}` : outcome.notes
         );
       }
-      const edge = selectEdge(graph, node.id, context, outcome);
-      if (!edge && outcome.status === Status.FAIL) {
-        const target = resolveRetryTarget(node, graph, { includeGraphLevel: false });
-        if (target) {
-          this.events.append({ type: "node.fail.retry_target", node: node.id, target });
-          currentId = target;
-          continue;
-        }
-      }
-      if (!edge) {
-        const notes = outcome.status === Status.FAIL ? `no matching edge from ${node.id} after failure: ${outcome.notes ?? ""}` : `run terminated at ${node.id}, which has no outgoing edges and is not the exit`;
-        this.events.append({ type: "pipeline.end", node: node.id, status: Status.FAIL });
-        this.checkpoint(null);
-        return this.result(Status.FAIL, notes, outcome.failureReason ?? notes);
-      }
-      this.events.append({ type: "edge.taken", node: node.id, to: edge.to });
-      currentId = edge.to;
+      this.events.append({ type: "pipeline.end", node: nodeId, status: Status.FAIL });
+      this.checkpoint(reason === "stepcap" ? nodeId : null);
+      return this.result(Status.FAIL, outcome.notes, outcome.failureReason);
     }
-    this.checkpoint(currentId);
-    this.events.append({ type: "pipeline.end", node: currentId ?? void 0, status: Status.FAIL });
-    const capped = `step cap of ${maxSteps} reached without terminating`;
-    return this.result(Status.FAIL, capped, capped);
+    return this.result(
+      Status.FAIL,
+      "run terminated with no current node",
+      "run terminated with no current node"
+    );
   }
 };
 
@@ -5081,13 +5767,13 @@ var ClaudeCodeBackend = class {
     this.opts = opts;
     this.threads = opts.threads ?? new ThreadStore();
   }
-  async run(node, prompt, _context, _graph, signal) {
+  async run(node, prompt, _context, _graph, signal, cwd) {
     const command = this.opts.command ?? "claude";
     const argv = buildArgv(node, {
       ...this.opts,
       resumeId: this.threads.resumeIdFor(node)
     });
-    const proc = await runProcess(command, argv, prompt, this.opts.cwd, signal);
+    const proc = await runProcess(command, argv, prompt, cwd ?? this.opts.cwd, signal);
     if (proc.failure !== void 0) {
       return { status: Status.FAIL, notes: proc.failure };
     }
@@ -5105,152 +5791,11 @@ var ClaudeCodeBackend = class {
   }
 };
 
-// src/run/worktree.ts
-import { execFileSync } from "node:child_process";
-import {
-  existsSync as existsSync3,
-  mkdtempSync,
-  readdirSync,
-  realpathSync,
-  rmdirSync,
-  rmSync
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join as join5, resolve, sep } from "node:path";
-var WT_PREFIX = "attractor-wt-";
-function git(cwd, args) {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-}
-function isGitRepo(dir) {
-  try {
-    return git(dir, ["rev-parse", "--is-inside-work-tree"]).trim() === "true";
-  } catch {
-    return false;
-  }
-}
-function createWorktree(repoDir, runId) {
-  if (!isGitRepo(repoDir)) {
-    throw new Error(`not a git repository: ${repoDir} -- cannot create an isolated worktree`);
-  }
-  const branch = `attractor/${runId}`;
-  const parent = mkdtempSync(join5(tmpdir(), WT_PREFIX));
-  const path = join5(parent, runId);
-  try {
-    git(repoDir, ["worktree", "add", "-q", "-b", branch, path]);
-  } catch (err) {
-    rmSync(parent, { recursive: true, force: true });
-    throw err;
-  }
-  return { path, branch };
-}
-function realOrResolved(p) {
-  const abs = resolve(p);
-  try {
-    return realpathSync(abs);
-  } catch {
-    return abs;
-  }
-}
-function isOurWorktree(target) {
-  const tmpRoot = realOrResolved(tmpdir());
-  const t = realOrResolved(target);
-  return t.startsWith(`${tmpRoot}${sep}`) && basename(dirname(t)).startsWith(WT_PREFIX);
-}
-function hasUncommittedWork(worktreePath) {
-  try {
-    return git(worktreePath, ["status", "--porcelain"]).trim() !== "";
-  } catch {
-    return true;
-  }
-}
-function isRegisteredWorktree(repoDir, target) {
-  try {
-    const out = git(repoDir, ["worktree", "list", "--porcelain"]);
-    for (const line of out.split("\n")) {
-      if (line.startsWith("worktree ") && realOrResolved(line.slice("worktree ".length)) === target) {
-        return true;
-      }
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-function isNonEmptyDirectory(path) {
-  try {
-    return readdirSync(path).length > 0;
-  } catch {
-    return true;
-  }
-}
-function removeWorktree(repoDir, wt) {
-  const target = realOrResolved(wt.path);
-  const root = realOrResolved(repoDir);
-  const ours = isOurWorktree(target);
-  if (target === root || root.startsWith(`${target}${sep}`)) {
-    return {
-      removed: false,
-      warning: `refusing to remove ${target}: it is, or contains, the repository root`
-    };
-  }
-  const registered = existsSync3(target) && isRegisteredWorktree(repoDir, target);
-  if (registered && hasUncommittedWork(target)) {
-    return {
-      removed: false,
-      warning: `keeping ${target}: it has uncommitted work on branch ${wt.branch}. Commit it there, or delete the directory once you have salvaged it.`
-    };
-  }
-  if (existsSync3(target) && ours && !registered && isNonEmptyDirectory(target)) {
-    return {
-      removed: false,
-      warning: `keeping ${target}: git's administrative record for this worktree is gone, so its status cannot be verified, and the directory is not empty. Treating it as uncommitted work on branch ${wt.branch} rather than guessing it is safe to delete.`
-    };
-  }
-  let gitError;
-  try {
-    git(repoDir, ["worktree", "remove", "--force", target]);
-  } catch (err) {
-    gitError = (err instanceof Error ? err.message : String(err)).trim();
-  }
-  try {
-    git(repoDir, ["worktree", "prune"]);
-  } catch {
-  }
-  const survivedGit = existsSync3(target);
-  if (survivedGit) {
-    if (!ours) {
-      return {
-        removed: false,
-        warning: `refusing to delete ${target}: it is not a worktree this module created (expected a ${WT_PREFIX}* directory under the system temp directory)`
-      };
-    }
-    try {
-      rmSync(target, { recursive: true, force: true });
-    } catch (err) {
-      return { removed: false, warning: `could not remove worktree ${target}: ${String(err)}` };
-    }
-  }
-  if (ours) {
-    const parent = dirname(target);
-    try {
-      if (existsSync3(parent) && readdirSync(parent).length === 0) rmdirSync(parent);
-    } catch {
-    }
-  }
-  if (survivedGit && gitError !== void 0) {
-    return {
-      removed: true,
-      warning: `git could not remove the worktree cleanly, directory was deleted directly: ${gitError}`
-    };
-  }
-  return { removed: true };
-}
-
 // src/doctor.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
+import { execFileSync } from "node:child_process";
 function probe(name, args, required) {
   try {
-    const out = execFileSync2(name, args, {
+    const out = execFileSync(name, args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
     });
@@ -5451,16 +5996,16 @@ async function main(argv) {
     warnOnManagedParams(args.params);
     let worktree;
     let cwd = args.cwd;
-    const runId = `${basename2(args.runDir)}-${randomUUID().slice(0, 8)}`;
+    const runId = `${basename2(args.runDir)}-${randomUUID2().slice(0, 8)}`;
     if (args.worktree) {
-      if (!isGitRepo(args.cwd)) {
+      if (!await isGitRepo(args.cwd)) {
         process.stderr.write(
           `--worktree requires a git repository; ${args.cwd} is not one
 `
         );
         return 1;
       }
-      worktree = createWorktree(args.cwd, runId);
+      worktree = await createWorktree(args.cwd, runId);
       cwd = worktree.path;
       process.stdout.write(`worktree: ${worktree.path} (branch ${worktree.branch})
 `);
@@ -5470,8 +6015,8 @@ async function main(argv) {
           `WARNING: --in-place was passed. This unattended run has bypassed permissions and shell/write access (Bash, Read, Write, Edit by default) directly in ${args.cwd}. Nothing isolates it from your working copy.
 `
         );
-      } else if (isGitRepo(args.cwd)) {
-        worktree = createWorktree(args.cwd, runId);
+      } else if (await isGitRepo(args.cwd)) {
+        worktree = await createWorktree(args.cwd, runId);
         cwd = worktree.path;
         process.stdout.write(`worktree: ${worktree.path} (branch ${worktree.branch})
 `);
@@ -5520,7 +6065,7 @@ async function main(argv) {
       return result.status === Status.SUCCESS ? 0 : 1;
     } finally {
       if (worktree !== void 0) {
-        const removal = removeWorktree(args.cwd, worktree);
+        const removal = await removeWorktree(args.cwd, worktree);
         if (removal.warning !== void 0) process.stderr.write(`${removal.warning}
 `);
       }

@@ -139,6 +139,43 @@ export function isValidConditionSyntax(expr: string): boolean {
 }
 
 /**
+ * Extract the left-hand key of every `&&`-joined clause in a condition,
+ * exactly as `resolveKey` would resolve it -- the `context.`-prefix stripped
+ * -- WITHOUT evaluating anything. `GATE-002` (`dot/lint.ts`) is the caller:
+ * it needs to ask "does the graph supply this key" for each clause, which
+ * requires the key alone, not a true/false verdict against some `Context`.
+ *
+ * Shares `splitClauses` and `CLAUSE` with `evaluateCondition` above rather
+ * than re-tokenizing, for the same reason `isValidConditionSyntax` does: two
+ * independent parses of the same grammar drift, one shared parse cannot.
+ *
+ * A clause that fails to match `CLAUSE` is a bare identifier (or garbage) --
+ * `evaluateCondition` resolves it as a literal key via `resolveKey(bare, ...)`
+ * (see the bare-clause branch below), so this function takes the same trimmed
+ * text as the key, matching that behaviour rather than silently dropping it.
+ *
+ * `context.`-prefix stripping matches `resolveKey`'s own fallback
+ * (`ctx.get(key) ?? ctx.get(key.slice('context.'.length)) ?? ''`): the
+ * canonical, unprefixed spelling is what appears in `effectiveOutputs`,
+ * `graph.attrs`, and every other "who supplies this key" set in the
+ * codebase, so returning the stripped form is what lets a caller compare
+ * against those sets directly.
+ *
+ * Order and duplicates are not meaningful to any current caller -- a `Set`
+ * at the call site is the idiomatic way to consume this.
+ */
+export function conditionKeys(expr: string): string[] {
+  const keys: string[] = []
+  for (const raw of splitClauses(expr)) {
+    if (raw.trim() === '') continue
+    const m = CLAUSE.exec(raw)
+    const key = m === null ? raw.trim() : m[1]
+    keys.push(key.startsWith('context.') ? key.slice('context.'.length) : key)
+  }
+  return keys
+}
+
+/**
  * Evaluate an edge condition. The grammar is a conjunction of comparisons
  * joined by `&&`; there is deliberately no disjunction, so routing stays
  * readable in the graph rather than hidden in expressions (spec section
