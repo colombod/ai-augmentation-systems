@@ -351,7 +351,7 @@ this ADR introduces — the same, already-accepted risk, now stated for edge con
   phrasing, not a contrived one. Still not fixed here: closing it precisely needs a
   partial-context evaluator (substitute only `supplied` keys, leave the rest symbolic), which is
   real added complexity. Raised in severity from "flag for a future pass if it matters" to
-  **"confirmed live, worth scheduling."**
+  **"confirmed live, worth scheduling." Closed by Amendment 4 below.**
 - **`retry_target`/`fallback_retry_target`-based continuation is out of scope, and the original
   reasoning for that was WRONG — corrected 2026-08-09.** The rejected-alternative text above
   claimed "every concrete `retry_target` use in this codebase's fixtures dispatches a real
@@ -466,6 +466,48 @@ graph correctly refused, only affect message precision or an unasserted side eff
   undeclared pairing instead, because that is the graph shape `GATE-002` actually refuses. Stated
   explicitly so a reader checking this ADR against `engine.test.ts:1540` directly does not expect
   `GATE-002` to fire there and conclude the rule is broken when it correctly does not.
+
+## Amendment 4 (2026-08-10): the partial-context evaluator, closing the Residual risk's first bullet
+
+**Closes `colombod/ai-augmentation-systems#27`**, the confirmed-exploitable gap the Residual risk
+section above named and left open: a `&&`-joined multi-clause condition mixing one legitimately
+`supplied` key with one genuinely undeclared key defeated the single-all-empty-context check,
+because the supplied clause read spuriously false against `EMPTY_CONTEXT` too, making the whole
+conjunction look "properly discriminating" when a real run would satisfy it regardless of outcome.
+
+**Not full symbolic evaluation — the Residual risk section's own "substitute only `supplied` keys,
+leave the rest symbolic" framing, made concrete.** `condition.ts` gains `buildSatisfyingContext(expr,
+unknownKeys)`: it builds a `Context` that SATISFIES every clause whose key is not in `unknownKeys`
+(assign the compared literal for `=`, a guaranteed-different value for `!=`, any non-empty value for
+a bare truthiness clause) and leaves every clause in `unknownKeys` unset, at spec section 10.3's
+empty default. `GATE-002`'s edge-condition loop now computes the FULL set of undeclared keys in a
+condition (not just the first, via `.find()` — a multi-clause condition can reference more than
+one), and evaluates outcome-blindness against this constructed context instead of `EMPTY_CONTEXT`.
+
+**Why this is sound and not just a patch for the one reported shape.** The question `GATE-002`'s
+edge-condition check asks is existential — "is there a real-world context, consistent with what
+this graph actually supplies, under which this edge's condition is satisfied regardless of
+outcome, driven by a key nothing will ever produce." Testing against `EMPTY_CONTEXT` alone answers
+a DIFFERENT, narrower question ("is it outcome-blind when everything is absent"), which happens to
+coincide with the right answer only when every referenced key is either outcome-derived or
+genuinely unsupplied. `buildSatisfyingContext` constructs the context that makes the existential
+question answerable directly: the most permissive assignment consistent with "every supplied key
+took the value its own clause demands," which is the assignment most likely to expose a hazard if
+one exists, and the correct one to test against.
+
+**Scope: only the edge-condition check (this ADR's condition 3) needed this.** The `retry_target`
+continuation check (Amendment 3) and `isFailureRoute`'s own single-context check (`lint.ts`, unrelated
+rule) do not evaluate a condition expression against a probe context the same way, so neither needed
+a matching change and neither was touched.
+
+**Verified:** the exact repro from the Residual risk bullet and issue #27
+(`context.goal=urgent && context.build.error!=fatal`, graph attribute `goal="urgent"`) now fires
+`GATE-002`. A companion negative test (two supplied-key clauses, no undeclared key at all) confirms
+the fix does not over-correct into flagging every multi-clause condition. Full suite: 637 tests, 635
+passing, 0 failing (2 correctly-skipped, pre-existing).
+
+**Cost accepted:** one new exported function (`buildSatisfyingContext`), sized similarly to
+`conditionKeys` itself. No change to `GATE-002`'s severity, message shape, or any other rule.
 
 ## Consequences
 

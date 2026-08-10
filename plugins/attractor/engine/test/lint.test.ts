@@ -1184,6 +1184,52 @@ test('GATE-002 does not fire when the referenced key is a graph attribute', () =
   assert.deepEqual(gate002(src), [])
 })
 
+test('GATE-002 fires on issue #27 repro: a multi-clause condition mixing one supplied key and one undeclared key', () => {
+  // The bug: the old single-context check evaluated the WHOLE condition
+  // against one all-empty context. `context.goal=urgent` is a real graph
+  // attribute -- but EMPTY_CONTEXT has no `goal` key either, so that
+  // legitimate clause reads false against the all-empty probe, which makes
+  // the whole `&&` conjunction read false for BOTH outcomes -- "not
+  // outcome-blind" -- even though in every REAL run `goal` genuinely does
+  // equal "urgent" (it's a graph attribute, constant for the whole run),
+  // and `build.error` genuinely is absent (nothing produces it), letting an
+  // unrecovered failure straight through. A partial-context evaluator must
+  // satisfy the supplied clause (goal=urgent) and leave only the truly
+  // undeclared key (build.error) empty to see the real hazard.
+  const src = `digraph G {
+    goal="urgent"
+    start [shape=Mdiamond]  done [shape=Msquare]
+    build   [shape=parallelogram, tool_command="exit 1"]
+    publish [shape=box, prompt="publish"]
+    start -> build
+    build -> publish [condition="context.goal=urgent && context.build.error!=fatal"]
+    publish -> done
+  }`
+  const found = gate002(src)
+  assert.equal(found.length, 1)
+  assert.equal(found[0].severity, Severity.ERROR)
+  assert.equal(found[0].node, 'build')
+  assert.match(found[0].message, /build\.error/)
+})
+
+test('GATE-002 still does not fire when EVERY clause in a multi-clause condition is a supplied key (no undeclared key at all)', () => {
+  // Companion negative case: two supplied-key clauses, no undeclared key --
+  // must stay silent. Guards against a fix that over-corrects into flagging
+  // every multi-clause condition regardless of whether an undeclared key is
+  // actually present.
+  const src = `digraph G {
+    goal="urgent"
+    priority="high"
+    start [shape=Mdiamond]  done [shape=Msquare]
+    build   [shape=parallelogram, tool_command="exit 1"]
+    publish [shape=box, prompt="publish"]
+    start -> build
+    build -> publish [condition="context.goal=urgent && context.priority=high"]
+    publish -> done
+  }`
+  assert.deepEqual(gate002(src), [])
+})
+
 test('GATE-002 never fires on a graph that declares at least one goal_gate node -- GATE-001 territory, disjoint by construction', () => {
   // The exact hazard shape 1 edge, but with an (unrelated) goal_gate node
   // declared elsewhere in the graph. gates.size > 0 routes this graph to
