@@ -861,16 +861,21 @@ machinery for a one-line `attractor lint foo.dot` invocation.
 ## Interfaces and data contracts (FR-13–16 additions)
 
 ```ts
-// engine/src/index.ts — the new library surface. Re-exports only, no new logic:
+// engine/src/index.ts — the new library surface. Re-exports only, no new logic.
+// Shipped in p6-01 (matches the actual committed file, corrected from this
+// section's original draft, which omitted `Context` — required to construct
+// a valid `EngineOptions`, confirmed against `test/engine.test.ts`'s own
+// `Context.from({})` usage):
 export { Engine, defaultHandlers, type EngineOptions, type RunResult } from './core/engine.ts'
+export { Context, isEngineManagedKey } from './core/context.ts'
+export { Status, isTerminalFailure, type Outcome } from './core/outcome.ts'
 export { lint, hasErrors, Severity, type Diagnostic } from './dot/lint.ts'
 export { parseDot } from './dot/parse.ts'
 export { Handler, type HandlerKind, type Graph, type Node, type Edge } from './dot/graph.ts'
-export { EventLog } from './run/events.ts'
-export type { Backend } from './handlers/types.ts'
-export { ClaudeCodeBackend } from './backend/claude.ts'
+export { EventLog, type RunEvent } from './run/events.ts'
+export type { Backend, Handler as HandlerImpl, HandlerCtx } from './handlers/types.ts'
+export { ClaudeCodeBackend, type ClaudeBackendOptions } from './backend/claude.ts'
 export { StubBackend } from './handlers/stub.ts'
-export { Status } from './core/outcome.ts'
 ```
 
 `engine/package.json` gains `"main": "./src/index.ts"`, `"types": "./src/index.ts"`,

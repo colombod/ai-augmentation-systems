@@ -1,7 +1,7 @@
 ---
 id: p6-01
 title: TS-library packaging — index.ts entry point and package.json exports
-status: ready
+status: done
 epic: Phase 6 — FR-13-16 (S7 authoring skill / TS-library packaging)
 supersedes: []
 superseded_by: []
@@ -83,21 +83,35 @@ files during architecture, not guaranteed letter-perfect.
 
 ## Acceptance criteria
 
-- [ ] `FR-13` (enabling) — `engine/src/index.ts` exists and re-exports `Engine`,
+- [x] `FR-13` (enabling) — `engine/src/index.ts` exists and re-exports `Engine`,
       `defaultHandlers`, `EngineOptions`, `RunResult`, `lint`, `hasErrors`, `Severity`,
       `Diagnostic`, `parseDot`, `Handler`, `HandlerKind`, `Graph`, `Node`, `Edge`,
-      `EventLog`, `Backend`, `ClaudeCodeBackend`, `StubBackend`, `Status`.
-- [ ] A new test (`index.test.ts`) imports **only** from `../src/index.ts` — no import
+      `EventLog`, `Backend`, `ClaudeCodeBackend`, `StubBackend`, `Status` — plus
+      `Context` (see Implementation notes).
+- [x] A new test (`index.test.ts`) imports **only** from `../src/index.ts` — no import
       statement anywhere in the file reaches into `core/`, `dot/`, `handlers/`, `backend/`,
       or `run/` directly — and: (a) parses a small fixture graph with `parseDot`, (b)
       lints it and asserts `hasErrors(...)` is `false`, (c) constructs an `Engine` with
       `defaultHandlers(new StubBackend())` and runs it to a terminal `RunResult`, (d)
       asserts the `RunResult.status` is the expected value for that fixture.
-- [ ] `engine/package.json` has `main`, `types`, and `exports` fields all pointing at
+- [x] `engine/package.json` has `main`, `types`, and `exports` fields all pointing at
       `./src/index.ts`; `"private": true` is unchanged; no other field in the file
       changes (diff review, not just a passing test).
-- [ ] `node --test` (from `plugins/attractor/engine`) passes, zero regressions — the
-      new file, plus the full existing suite.
+- [x] `node --test` (from `plugins/attractor/engine`) passes, zero regressions — the
+      new file, plus the full existing suite (645 tests, 643 pass, 2 skipped, 0 fail).
+
+## Implementation notes
+
+The planned export list (this story's own Interfaces section, copied from
+`architecture.md`) omitted `Context` (`core/context.ts`) — confirmed missing by writing
+the red test first: constructing a valid `EngineOptions` needs `context: Context.from({})`
+(matching `test/engine.test.ts`'s own construction idiom), which no export in the
+original list provides. Added `Context`, `isEngineManagedKey`, `isTerminalFailure`, and
+the `Outcome`/`RunEvent`/`HandlerCtx` types alongside it, all confirmed already exported
+by their source modules before adding the re-export line, per this story's own
+instruction. `architecture.md`'s Interfaces block was corrected to match the shipped
+file, with a note explaining the correction rather than silently editing it to look
+right in hindsight.
 
 ## Test approach
 

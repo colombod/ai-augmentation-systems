@@ -128,7 +128,7 @@ yet actually run (costs real API calls) — see the story's own "Implementation 
 
 | ID | Title | Status | Requirements | Depends on | Size |
 | :-- | :-- | :-- | :-- | :-- | :-- |
-| [p6-01](p6-01-ts-library-packaging.md) | TS-library packaging — `index.ts` entry point and `package.json` exports | **ready** | FR-13 (enabling) | none | S |
+| [p6-01](p6-01-ts-library-packaging.md) | TS-library packaging — `index.ts` entry point and `package.json` exports | **done** | FR-13 (enabling) | none | S |
 | [p6-02](p6-02-dot-and-routing-reference-plus-engine-semantics.md) | Reference material — `dot-reference.md`, `routing-reference.md` (ported+corrected), `engine-semantics.md` (from scratch) | **ready** | FR-14, FR-15 | none | M |
 | [p6-03](p6-03-pipeline-design-principles-and-patterns.md) | Reference material — `pipeline-design-principles.md`, `pipeline-patterns.md` (ported near-verbatim) | **ready** | none (supports FR-13/16) | none | S |
 | [p6-04](p6-04-attractor-expert-agent.md) | `attractor-expert` agent — rewritten, engine-specific integration guidance only | **ready** | FR-14, FR-15 | p6-02 | M |
