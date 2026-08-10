@@ -11,7 +11,9 @@
 
 | Blocking | Significant | Minor | Dropped as preference |
 | :-- | :-- | :-- | :-- |
-| 3 | 4 | 5 | 0 |
+| 3 (1 open, 2 fixed) | 4 (3 open, 1 fixed) | 5 (4 open, 1 fixed) | 0 |
+
+**Update, 2026-08-10:** the product owner directly clarified the "reality check" precedent as a *workflow* — acceptance criteria compiled into a checkable validation, run as a gate, a failure looping back to a fix step, the gate re-running — and confirmed this as the MVP mechanism. That single clarification resolves R-brief-1 and, as a direct consequence, R-brief-5 and R-brief-8. R-brief-3 was fixed mechanically (coverage-table arithmetic and the three orphaned single-lens findings). R-brief-2 remains open, put to the product owner directly; awaiting their answer.
 
 **Independent convergence:** R-brief-1 was found by all four reviewers independently — the strongest signal this panel produced. R-brief-2, R-brief-4 by three. R-brief-3 (product-owner half), R-brief-5, R-brief-6, R-brief-7 by two.
 
@@ -21,7 +23,7 @@
 
 ### R-brief-1 — The amplifier precedent implies commitments the MVP boundary never adopts
 
-**Status:** open
+**Status:** fixed
 **Severity:** blocking
 **Raised by:** product-owner, business-analyst, feature-critic, persona-simulator — independently: yes (all four)
 
@@ -30,6 +32,8 @@
 **Concrete failure scenario:** A PRD or architecture reader anchors on the vivid, well-cited precedent paragraph and assumes isolation/evidence-capture are adopted requirements, inflating v1 scope past what MVP boundary actually committed to — or the opposite: the precedent is read as background color and the discipline's most load-bearing idea (evidence over bare pass/fail, the thing `harden`'s Finding C already flagged as this plugin's live weakness) quietly never makes it into scope.
 
 **What would resolve it:** State explicitly, in MVP boundary or a dedicated line, whether isolation and mandatory evidence are Phase-1 commitments or deferred — don't leave the reader to infer scope from tone.
+
+**Resolution:** Fixed. Product owner stated directly what to adopt: the loop shape (criteria → structured check → gate → fail routes to fix → re-check), not amplifier's session-isolation. `brief.md`'s MVP boundary now states this as the mechanism; the amplifier paragraph is scoped to say only the loop shape is adopted, isolation is left to architecture.
 
 ---
 
@@ -49,7 +53,7 @@
 
 ### R-brief-3 — Coverage table names findings never written up in the document, and its convergence count is wrong
 
-**Status:** open
+**Status:** fixed
 **Severity:** blocking
 **Raised by:** business-analyst, product-owner (smaller-MVP-alternative half) — independently: yes
 
@@ -58,6 +62,8 @@
 **Concrete failure scenario:** This directly contradicts `delivery:brief`'s own rule ("never quietly drop a question because it is inconvenient") and its exit criterion that convergence be recorded per finding. A reader trusts the Coverage table as evidence of rigor while three real findings and all convergence detail are actually unrecoverable from the document.
 
 **What would resolve it:** Either state each orphaned finding (even one sentence) or remove it from Coverage. Name which specific findings back the "1 of three" / "2 of two" tallies.
+
+**Resolution:** Fixed. Recount corrected (1 found by all three · 0 by two · 7 by one — the prior "2 by two" was itself part of the arithmetic error). All three orphaned items now stated in a Coverage revision note: the smaller-MVP alternative is superseded (not dropped) by R-brief-1's resolution; the "deterministic" senses are disambiguated (see R-brief-8); the "feature" collision is flagged for Business Analyst curation rather than silently left.
 
 ---
 
@@ -77,7 +83,7 @@
 
 ### R-brief-5 — The MVP's own gating rule would have caught almost none of the incidents cited to justify it
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** product-owner, persona-simulator — independently: yes (different angles, same underlying number)
 
@@ -86,6 +92,8 @@
 **Concrete failure scenario:** On this plugin's own history, the shipped feature would gate almost none of the stories that produced Findings A/C/D — the urgency argument borrows gravity the scope doesn't back up, and if OQ1 resolves toward "marked judgment," real coverage for the common case is "same as today, plus a label."
 
 **What would resolve it:** Either narrow the urgency claim to the ~5% case it actually addresses, or treat OQ1's resolution as itself the measure of whether this feature does anything beyond that slice.
+
+**Resolution:** Fixed by R-brief-1's resolution. The gate no longer requires a pre-existing command — it's criteria-derived. Cost-of-status-quo and Success signal 1 now frame the 1-of-21 baseline as exactly the gap this workflow targets (the other 20), not a ceiling on what the feature can reach.
 
 ---
 
@@ -119,7 +127,7 @@
 
 ### R-brief-8 — "Deterministic" carries at least three non-equivalent senses, and Open Question 1 conflates two of them
 
-**Status:** open
+**Status:** fixed
 **Severity:** minor
 **Raised by:** business-analyst
 
@@ -128,6 +136,8 @@
 **Concrete failure scenario:** A PRD author can't tell whether attractor's baseline routing determinism already qualifies a story for "gating," or only the real-command sense counts.
 
 **What would resolve it:** Pick one definition for "deterministic" wherever it gates something, and name the other senses explicitly where they appear.
+
+**Resolution:** Fixed. Coverage revision note now distinguishes attractor's routing determinism (unconditional engine property, out of this brief's scope per its own out-of-scope line) from this feature's gate determinism (a criteria-derived check, looped) — MVP boundary and Open Question 1 use only the latter sense.
 
 ---
 

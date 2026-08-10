@@ -3,7 +3,7 @@
 > Phase 1 artifact. Owned by Product Owner and Business Analyst.
 > Status: draft · Last updated: 2026-08-10
 
-**Mode:** frame · **Word count:** 867 (cap 900)
+**Mode:** frame · **Word count:** 893 (cap 900)
 
 ## Coverage
 
@@ -13,9 +13,9 @@
 | precision | yes | no — unique: multiple unstated senses of "deterministic," a "feature" vocabulary collision, missing NFR numbers |
 | absence | yes | no — unique: `/delivery:sprint-review` re-entry point, attractor-availability pre-flight |
 
-**Findings by convergence:** 1 found by all three lenses · 2 found by two lenses · 6 found by one lens only
+**Findings by convergence:** 1 found by all three lenses (the acceptance-criteria-to-gate translation gap, since resolved — see Open Question 1) · 0 found by exactly two · 7 found by one lens only
 
-Each lens surfaced material the other two missed. The space is **not exhausted** — three independent passes diverged more than they overlapped. **Revision note:** an earlier pass of this brief included two "convergent" findings about attractor's own engine status (parallel-fan-out merge state, human-gate lint support) — removed on direct product-owner correction: attractor's own capability and roadmap are out of scope for a delivery-plugin-side handoff contract, full stop, not a hedge to design around.
+Each lens surfaced material the other two missed — not exhausted. **Revision note (1):** an earlier pass included two "convergent" findings about attractor's own engine status (parallel-fan-out merge state, human-gate support) — removed; that status is out of scope for a delivery-plugin-side contract, full stop. **Revision note (2), from `/delivery:challenge` (`R-brief-3`):** three single-lens items named above went unelaborated below — fixed here, not dropped. The smaller-MVP alternative is superseded, not rejected, by the product owner's criteria-derived-gate clarification. "Deterministic" now means gate determinism (a criteria-derived check, looped) throughout, not attractor's separate routing determinism. The "feature" vocabulary collision is flagged for Business Analyst curation.
 
 ## Problem
 
@@ -27,26 +27,26 @@ Each lens surfaced material the other two missed. The space is **not exhausted**
 
 ## Cost of the status quo
 
-In-line, deterministic correctness checking does not exist for any runner mode today. Of this plugin's own 21 delivery-plugin story files, only 1 (`harden-05`) carries a real automated test command; the rest are manual, N/A, or state plainly that no automated runner exists. That is not a gap this feature alone caused — it is the gap this feature can close where a real command already exists, and must flag honestly where one doesn't.
+In-line, deterministic correctness checking does not exist for any runner mode today. Of this plugin's own 21 delivery-plugin story files, only 1 (`harden-05`) carries a real, pre-written automated test command; the rest are manual, N/A, or state plainly that no automated runner exists. Today's checking only reaches that 1 story. This brief's workflow (MVP boundary, below) targets exactly that gap — the other 20.
 
 ## What changes if we solve it
 
-A sprint scope package can hand off to an attractor pipeline instead of a hand-worked plan. Stories whose acceptance criteria already reduce to a real, deterministic check get one; stories that don't are flagged as such rather than silently backed by an unmarked LLM judgment standing in for a gate.
+A sprint scope package can hand off to an attractor pipeline instead of a hand-worked plan, and the pipeline itself becomes the *workflow* that forces acceptance — a loop, not a single yes/no check. Direct product-owner framing, adopted verbatim as this MVP's mechanism; the exact shape is stated once, in MVP boundary below, not repeated here.
 
-**Real precedent for this exact discipline exists:** [`microsoft/amplifier-bundle-reality-check`](https://github.com/microsoft/amplifier-bundle-reality-check) — the actual "reality check" repo the scenario referenced, confirmed by reading its source directly (a prior research pass searched the wrong, unrelated local repo and found nothing — corrected here). Its discipline: user intent compiles into a strict, schema-validated acceptance-test suite (`id`/`description`/`type`/`steps`, `type` ∈ `browser|cli|other` selecting which specialized tester runs it), written by an `intent-analyzer` agent and checked structurally by a deterministic CLI validator in a bounded retry loop — agent writes, CLI validates, up to 3 attempts, hard fail rather than silent acceptance. Execution then runs a *separate* tester agent against a *really deployed* instance in an isolated environment, never the session that built the software, and every verdict requires concrete evidence — a screenshot, or matched command output — never a bare pass/fail. The report goes through the same agent-writes/CLI-validates loop before it counts as done. Agent judgment isn't eliminated — deriving tests, driving a UI, reading a screen all stay agent work. What's deterministic is the schema around it, the isolation from the builder's own session, and mandatory evidence per verdict.
+**Real precedent for this exact discipline exists:** [`microsoft/amplifier-bundle-reality-check`](https://github.com/microsoft/amplifier-bundle-reality-check) — the actual "reality check" repo the scenario referenced, confirmed by reading its source directly (corrected here after an earlier local-only search missed it). Its discipline: user intent compiles into a strict, schema-validated acceptance-test suite (`id`/`description`/`type`/`steps`) via an `intent-analyzer` agent, checked structurally by a deterministic CLI validator in a bounded retry loop — agent writes, CLI validates, up to 3 attempts, hard fail rather than silent acceptance. Execution then runs a tester agent that produces a pass/fail verdict with concrete evidence, never a bare claim. This MVP adopts amplifier's loop shape. Whether it also needs amplifier's session-isolation — a separately deployed instance, never the builder's own session — is narrower than the loop itself and is left to architecture, not assumed here.
 
 ## Success signals
 
 | Signal | How measured | Current | Target |
 | :-- | :-- | :-- | :-- |
-| Share of a sprint's stories reaching a real, deterministic gate without inventing or weakening a criterion | Count against the sprint scope package's verification contract | ~1 of 21 stories, this plugin's own history (~5%) | TBD at PRD stage |
+| Share of a sprint's stories reaching a real, checkable gate (derived from criteria, not requiring a pre-existing command) without inventing or weakening a criterion | Count against the sprint scope package's verification contract | 1 of 21 had a pre-existing command; 0 of 21 have been run through criteria-compilation yet | TBD at PRD stage |
 | "Accepted with debt" verdicts traced to unverified self-report | `/delivery:sprint-review` outcomes, stories run through this mode vs. not | Not measured | TBD at PRD stage |
 
-No signal above has a collected baseline today — stated here rather than implied as existing.
+No signal above has a collected baseline today.
 
 ## MVP boundary
 
-A handoff artifact — same spirit as the existing `superpowers` Mode A spec handoff, not a new templating engine — that packages a sprint scope package for attractor's own agents to consume: the story dependency graph expressed faithfully (sequential and independent work both named as such, from each story's `depends_on`), gating only stories whose Test approach is already a real deterministic command, and explicitly naming every story that isn't rather than silently substituting an unmarked LLM judgment for one. What attractor's own engine can currently execute is attractor's concern at run time, not a constraint this artifact should hedge around.
+A handoff artifact — same spirit as the existing `superpowers` Mode A spec handoff, not a new templating engine — that packages a sprint scope package for attractor's own agents to consume: the story dependency graph expressed faithfully (sequential and independent work both named as such, from each story's `depends_on`), and, per story, its acceptance criteria compiled into a structured, checkable validation rather than assumed to require a pre-existing automated command. The gate is the loop — check runs, a failure routes back to a fix step, the check re-runs — not a one-shot pass/fail. A criterion genuinely not reducible to any checkable form — rare once compilation replaces "must already have a command" as the bar — is named as such, not silently backed by an unmarked judgment. What attractor's own engine can currently execute is attractor's concern at run time, not a constraint this artifact should hedge around.
 
 ## Explicitly out of scope
 
@@ -62,7 +62,7 @@ Today: `/delivery:sprint` produces a scope package. `/delivery:handoff` converts
 
 | # | Question | Owner | Blocks |
 | :-- | :-- | :-- | :-- |
-| 1 | What does a deterministic gate do for a criterion that can't reduce to a real command — the common case in this plugin's own history? Refuse to gate it, or flag it and fall back to a marked agent judgment (amplifier's tester-agent pattern, with mandatory evidence)? | Product Owner + QA Strategist | PRD acceptance-criteria-to-gate translation |
+| 1 | **Resolved at brief stage, 2026-08-10 (direct product-owner statement — see MVP boundary):** the gate is a loop, not a one-shot check. Residual, narrower question for PRD: for a criterion genuinely irreducible to any checkable form, does the loop still apply with a marked-judgment step standing in, or does that case fall outside this mode? | Product Owner + QA Strategist | PRD acceptance-criteria-to-gate translation |
 | 2 | Who or what translates a completed attractor run's output into the report-back shape `/delivery:sprint-review` requires? Does a re-entry point exist at all? | Solution Architect | Architecture |
 | 3 | "Select or create the right pipeline machinery" — select from what catalog (none exists today), created by which agent, using what handoff payload? | Product Owner + Solution Architect | PRD scope, architecture |
 | 4 | Do "the attractor agents" that create pipelines already exist as an addressable component, or is this feature expected to define that contract for something not yet built? | Product Owner | PRD scope boundary |
