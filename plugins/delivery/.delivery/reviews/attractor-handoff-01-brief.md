@@ -11,9 +11,9 @@
 
 | Blocking | Significant | Minor | Dropped as preference |
 | :-- | :-- | :-- | :-- |
-| 3 (1 open, 2 fixed) | 4 (3 open, 1 fixed) | 5 (4 open, 1 fixed) | 0 |
+| 3 (0 open, 3 fixed) | 4 (3 open, 1 fixed) | 5 (4 open, 1 fixed) | 0 |
 
-**Update, 2026-08-10:** the product owner directly clarified the "reality check" precedent as a *workflow* — acceptance criteria compiled into a checkable validation, run as a gate, a failure looping back to a fix step, the gate re-running — and confirmed this as the MVP mechanism. That single clarification resolves R-brief-1 and, as a direct consequence, R-brief-5 and R-brief-8. R-brief-3 was fixed mechanically (coverage-table arithmetic and the three orphaned single-lens findings). R-brief-2 remains open, put to the product owner directly; awaiting their answer.
+**Update, 2026-08-10:** the product owner directly clarified the "reality check" precedent as a *workflow* — acceptance criteria compiled into a checkable validation, run as a gate, a failure looping back to a fix step, the gate re-running — and confirmed this as the MVP mechanism. That single clarification resolves R-brief-1 and, as a direct consequence, R-brief-5 and R-brief-8. R-brief-3 fixed mechanically (coverage-table arithmetic and the three orphaned single-lens findings). R-brief-2 fixed by recognizing it was the wrong question: whether attractor's consuming agent exists is immaterial to delivery-plugin scope, the same standing principle already applied to attractor's engine capability — now stated once, generally, so it stops recurring per question. All three blocking findings closed.
 
 **Independent convergence:** R-brief-1 was found by all four reviewers independently — the strongest signal this panel produced. R-brief-2, R-brief-4 by three. R-brief-3 (product-owner half), R-brief-5, R-brief-6, R-brief-7 by two.
 
@@ -39,7 +39,7 @@
 
 ### R-brief-2 — MVP boundary assumes a consumer that Open Question 4 says may not exist
 
-**Status:** open
+**Status:** fixed
 **Severity:** blocking
 **Raised by:** product-owner, business-analyst, feature-critic — independently: yes
 
@@ -48,6 +48,8 @@
 **Concrete failure scenario:** PRD is written against MVP boundary's confident framing; architecture then discovers no addressable consumer exists, and defining one is barred by "Explicitly out of scope"'s "authoring or fixing anything inside the attractor plugin" — forcing a scope renegotiation after sign-off instead of before it.
 
 **What would resolve it:** Answer Open Question 4 before MVP boundary's wording is treated as settled, or make MVP boundary's language conditional on the answer. OQ4's "Blocks" column should read "MVP boundary," not only "PRD scope boundary."
+
+**Resolution:** Fixed — but not by answering the question, by recognizing it was the wrong question. Product owner, directly: whether attractor's consuming agent exists yet is immaterial to delivery-plugin scope. Delivery's job (a well-specified handoff artifact) is unchanged either way — the same stance the `superpowers` mode already takes toward `writing-plans`. OQ4 struck as resolved rather than answered; the general principle (attractor's build state never governs this design) added once to "Explicitly out of scope" so it isn't re-litigated per question. OQ3 trimmed to its delivery-side-only remainder.
 
 ---
 

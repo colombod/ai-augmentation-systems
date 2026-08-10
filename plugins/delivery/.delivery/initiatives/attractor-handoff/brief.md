@@ -3,7 +3,7 @@
 > Phase 1 artifact. Owned by Product Owner and Business Analyst.
 > Status: draft · Last updated: 2026-08-10
 
-**Mode:** frame · **Word count:** 893 (cap 900)
+**Mode:** frame · **Word count:** 899 (cap 900)
 
 ## Coverage
 
@@ -23,7 +23,7 @@ Each lens surfaced material the other two missed — not exhausted. **Revision n
 
 ## Who has it
 
-**The operator** (governed term), at the point they already choose a runner today in `/delivery:handoff` — someone who has taken a product or a story through this plugin to the shipping stage and wants attractor as the construction-and-validation engine, instead of `superpowers` or a plain Claude agent working the plan by hand. Same population as the existing two runner modes; this is a third choice at an existing decision point, not a new user segment.
+**The operator** (governed term), at today's `/delivery:handoff` choice point — someone who has brought work through this plugin to shipping and wants attractor as the construction-and-validation engine, instead of `superpowers` or a plain Claude agent working the plan by hand. Same population as the existing two runner modes; a third choice at an existing decision point, not a new segment.
 
 ## Cost of the status quo
 
@@ -50,7 +50,7 @@ A handoff artifact — same spirit as the existing `superpowers` Mode A spec han
 
 ## Explicitly out of scope
 
-- Attractor's own engine implementation, capabilities, or roadmap — this is a delivery-plugin-side handoff contract only
+- Any fact about attractor's current build state — engine capability, roadmap, or whether a specific consuming component exists — governing this design. Delivery's artifact targets attractor's documented contract, never its build status (see Open Question 4).
 - A reusable pipeline template catalog — none exists today; premature before real usage data exists
 - Authoring or fixing anything inside the `attractor` plugin
 
@@ -64,8 +64,8 @@ Today: `/delivery:sprint` produces a scope package. `/delivery:handoff` converts
 | :-- | :-- | :-- | :-- |
 | 1 | **Resolved at brief stage, 2026-08-10 (direct product-owner statement — see MVP boundary):** the gate is a loop, not a one-shot check. Residual, narrower question for PRD: for a criterion genuinely irreducible to any checkable form, does the loop still apply with a marked-judgment step standing in, or does that case fall outside this mode? | Product Owner + QA Strategist | PRD acceptance-criteria-to-gate translation |
 | 2 | Who or what translates a completed attractor run's output into the report-back shape `/delivery:sprint-review` requires? Does a re-entry point exist at all? | Solution Architect | Architecture |
-| 3 | "Select or create the right pipeline machinery" — select from what catalog (none exists today), created by which agent, using what handoff payload? | Product Owner + Solution Architect | PRD scope, architecture |
-| 4 | Do "the attractor agents" that create pipelines already exist as an addressable component, or is this feature expected to define that contract for something not yet built? | Product Owner | PRD scope boundary |
+| 3 | "Select or create the right pipeline machinery" — from delivery's side only, what handoff payload does the artifact carry so *either* selection or creation is possible on the receiving end? (Which catalog, which agent, and whether either exists: immaterial to delivery scope, per Open Question 4's resolution.) | Product Owner | PRD scope |
+| 4 | **Resolved at brief stage, 2026-08-10 (direct product-owner statement):** immaterial to delivery-plugin scope. Whether attractor's consuming agent already exists or is built later, delivery's job is unchanged — produce a well-specified handoff artifact in a documented shape, the same stance the `superpowers` mode already takes toward `writing-plans`. Struck as a blocking question. | — | — |
 | 5 | What does "reused" mean for a pipeline — across later sprints of one initiative, across initiatives, or across repos — and what makes one eligible for reuse vs. staying bespoke? | Product Owner | PRD scope |
 | 6 | What should `/delivery:handoff` do if the attractor plugin isn't installed when this runner mode is chosen — same shape as the existing gate check for `superpowers`/`generic`? | Business Analyst | PRD gate check |
 | 7 | Does the bootstrap/setup subgraph bind explicitly to the existing "setup is a prerequisite, not a feature" doctrine (`ADR-008`), or does this mode need its own restatement? | Solution Architect | Architecture (low severity) |
