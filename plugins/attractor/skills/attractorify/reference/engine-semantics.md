@@ -119,7 +119,7 @@ oversight in this document:
 | `report_outcome` tool available to every node | Only `goal_gate=true` nodes get a structured verdict (§ above) |
 | `context_updates` from a live model response | Not populated on `ClaudeCodeBackend`'s path at all |
 | `model_stylesheet` / `llm_provider` / `llm_model` | Does not exist — PRD non-goal, architecturally out of scope |
-| `fidelity` modes | Open Question 10, unresolved status — not usable |
+| `fidelity` modes (`full`/`compact`/`summary:high`/`summary:low`, five-level content differentiation) | Only the binary `fidelity="full"` + `thread_id=` combination is real — session continuity via `--resume` (`backend/threads.ts`), node-level only, no graph-level `default_fidelity=`. Every other value/combination starts fresh; content-differentiation itself is Open Question 10, unresolved |
 | `folder` shape (nested sub-pipeline) | Does not exist |
 | `stack.steer`/`stack.observe` pseudo-types | Does not exist — an unrecognized `type=` is a lint ERROR (`TYPE-001`), not a WARNING |
 | Silent alphabetical fallback on any unmatched outcome | Only applies to non-FAIL outcomes here — a FAIL halts instead (§ above) |

@@ -59,8 +59,21 @@ node_id [
 ]
 ```
 
-**Not supported on this engine — do not put these in an authored graph:**
-`fidelity`, `llm_provider`, `llm_model`, `reasoning_effort`, `auto_status`, `thread_id`,
+**`fidelity="full"` + `thread_id="<name>"` — narrower than amplifier's own fidelity
+system, and node-level only.** Together, these two node attributes make this node
+resume the same underlying `claude` session as any earlier node sharing the same
+`thread_id` — see `engine/src/backend/threads.ts`'s `isFullFidelity`/`ThreadStore`. Any
+other combination (no `thread_id`, or `fidelity` absent/anything but `full`) starts a
+fresh session — the conservative default. This is session continuity, not amplifier's
+broader five-level content-differentiation fidelity system (`full`/`compact`/
+`summary:high`/`summary:low`); the spec defines that broader system but this engine
+currently treats every non-`full` value identically (Open Question 10, unresolved
+status — do not rely on `fidelity="compact"` truncating or summarizing anything).
+**Graph-level `default_fidelity=`/`default_thread_id=` (amplifier's own graph-attribute
+convention) are not read by this engine at all** — only the node-level attributes matter.
+
+**Not supported on this engine at all — do not put these in an authored graph:**
+`llm_provider`, `llm_model`, `reasoning_effort`, `auto_status`, `loop_restart`,
 `class` (for `model_stylesheet` selection). Multi-provider model routing
 (`model_stylesheet`) is an explicit PRD non-goal, not merely unimplemented — see
 `architecture.md`'s Example-portability policy.
