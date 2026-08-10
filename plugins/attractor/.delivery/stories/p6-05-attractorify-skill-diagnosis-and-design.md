@@ -1,7 +1,7 @@
 ---
 id: p6-05
 title: attractorify skill — diagnosis gate, ask-before-designing, conversational design (ported near-verbatim, FR-14-constrained)
-status: ready
+status: done
 epic: Phase 6 — FR-13-16 (S7 authoring skill / TS-library packaging)
 supersedes: []
 superseded_by: []
@@ -98,28 +98,46 @@ suspenders, not reliance on the reference doc alone.
 
 ## Acceptance criteria
 
-- [ ] `SKILL.md` exists with valid Claude Code plugin skill frontmatter (`name`,
+- [x] `SKILL.md` exists with valid Claude Code plugin skill frontmatter (`name`,
       `description` naming the trigger phrases, matching the pattern the existing
       `skills/attractor/SKILL.md` uses).
-- [ ] Steps 1–3, the diagnosis artifact shape, the fail-closed bash gate, and the
+- [x] Steps 1–3, the diagnosis artifact shape, the fail-closed bash gate, and the
       diagnosis-verifier delegation instruction are present and match amplifier's own
       mechanism in substance (three questions, quote-integrity rules, counter-test
       rules, one-round cap) — a side-by-side read against the fetched upstream source
       confirms no accidental mechanism drift.
-- [ ] The bash gate's verbatim check block uses Claude Code tool names (`Task`, `Bash`,
+- [x] The bash gate's verbatim check block uses Claude Code tool names (`Task`, `Bash`,
       `Read`, `Write`), not amplifier's `delegate`/`allowed-tools` bundle-tool
       vocabulary.
-- [ ] `FR-14` — Step 3 states inline that only the six registered handlers may be used,
+- [x] `FR-14` — Step 3 states inline that only the six registered handlers may be used,
       and names `HAND-001`/`attractor lint` as the backstop.
-- [ ] `FR-15` — nowhere in the file does design guidance suggest a non-`goal_gate=true`
+- [x] `FR-15` — nowhere in the file does design guidance suggest a non-`goal_gate=true`
       node can carry a structured routing verdict.
-- [ ] Every reference-surface link resolves to a real path in this repo (p6-02/03/04's
-      files, and only confirmed-portable example filenames per ADR-019).
-- [ ] The lint invocation shown (`node dist/attractor.js lint <path>` or equivalent) is
-      this project's actual CLI syntax, confirmed by comparing against
-      `skills/attractor/SKILL.md`'s own documented commands, not amplifier's `attractor
-      lint` shorthand (which assumes a global `attractor` binary this project doesn't
-      install).
+- [x] Every reference-surface link resolves to a real path in this repo (p6-02/03/04's
+      files; example-file links are forward references to p6-07, tracked as NOTEs by
+      `check-consistency.mjs`, matching ADR-019's table).
+- [x] The lint invocation shown (`node "${CLAUDE_PLUGIN_ROOT}/dist/attractor.js" lint
+      <path>`) is this project's actual CLI syntax, matching
+      `skills/attractor/SKILL.md`'s own documented invocation pattern exactly (not
+      amplifier's `attractor lint` shorthand, which assumes a global binary this project
+      doesn't install).
+
+## Implementation notes
+
+Restructured the verification story slightly from the ADR-017/story's original "Step 4"
+framing once the actual amplifier source was ported: amplifier's own diagnosis-verifier
+lives inside **Step 1** (before design starts), not a separate numbered step. The new
+execution-verification gate (p6-06's job — this story only writes the insertion point
+and the Step 3 numbering for it, item 6/7) is placed at the natural point instead: after
+the `.dot` is drafted and lint-clean (item 6), before handback (now item 8, renumbered).
+Both gates are explicitly cross-referenced to each other ("a different gate from the
+execution-verification step later in this skill... Neither substitutes for the other")
+so an implementer skimming the file can't conflate them — the exact risk ADR-017 names.
+
+`check-consistency.mjs` needed one fix: its example-link exemption only matched
+`../examples/...` (correct for files under `reference/`), but `SKILL.md` lives directly
+in `skills/attractorify/` and links to examples as `examples/...` (no `../`) — extended
+the exemption to match both forms rather than special-case this one file.
 
 ## Test approach
 

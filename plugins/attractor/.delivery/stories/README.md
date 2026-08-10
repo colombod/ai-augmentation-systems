@@ -132,7 +132,7 @@ yet actually run (costs real API calls) — see the story's own "Implementation 
 | [p6-02](p6-02-dot-and-routing-reference-plus-engine-semantics.md) | Reference material — `dot-reference.md`, `routing-reference.md` (ported+corrected), `engine-semantics.md` (from scratch) | **done** | FR-14, FR-15 | none | M |
 | [p6-03](p6-03-pipeline-design-principles-and-patterns.md) | Reference material — `pipeline-design-principles.md`, `pipeline-patterns.md` (ported near-verbatim) | **done** | none (supports FR-13/16) | none | S |
 | [p6-04](p6-04-attractor-expert-agent.md) | `attractor-expert` agent — rewritten, engine-specific integration guidance only | **done** | FR-14, FR-15 | p6-02 | M |
-| [p6-05](p6-05-attractorify-skill-diagnosis-and-design.md) | `attractorify` skill — diagnosis gate, ask-before-designing, conversational design | **ready** | FR-14, FR-15 | p6-02, p6-03, p6-04 | L |
+| [p6-05](p6-05-attractorify-skill-diagnosis-and-design.md) | `attractorify` skill — diagnosis gate, ask-before-designing, conversational design | **done** | FR-14, FR-15 | p6-02, p6-03, p6-04 | L |
 | [p6-06](p6-06-delegated-execution-verification.md) | Delegated execution-verification gate (FR-13) — `verify-run.ts` + Step 4 wiring | **ready** | FR-13 | p6-01, p6-05 | M |
 | [p6-07](p6-07-worked-examples-executed.md) | Worked examples — ported/adapted, each actually executed on this engine | **ready** | FR-16 | p6-01, p6-02, p6-03 | M |
 

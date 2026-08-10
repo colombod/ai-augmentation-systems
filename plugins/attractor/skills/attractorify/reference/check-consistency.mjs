@@ -147,7 +147,7 @@ for (const file of FILES) {
     if (target === '' || /^https?:\/\//.test(target)) continue
     const resolved = resolve(dir, target)
     if (existsSync(resolved)) continue
-    if (target.startsWith('../examples/')) {
+    if (target.startsWith('../examples/') || target.startsWith('examples/')) {
       pendingExampleRefs.push(`${file} -> ${target}`)
       continue
     }
