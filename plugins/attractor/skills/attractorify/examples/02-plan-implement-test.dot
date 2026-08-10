@@ -1,0 +1,49 @@
+// 02-plan-implement-test.dot -- staged pipeline with a convergence loop.
+//
+// Adapted from microsoft/amplifier-bundle-attractor's own
+// examples/pipelines/02-plan-implement-test.dot (fetched 2026-08-10) -- see
+// ../../.delivery/decisions/ADR-019-example-portability-policy.md. THE SHAPE
+// is unchanged: plan -> implement -> test_gate (evidence) -> done, with a
+// gate_fail back-edge to implement. The illustrative pytest task is replaced
+// with a deterministic counter (see 00-convergence-loop.dot's own note for
+// why) so this example is provably convergent under `--stub`.
+//
+// Teaching purpose (same as the original): staging + goal_gate + gate-vs-exit
+// interaction, and the goal_gate+retry_target pairing that makes the gate
+// meaningful (see reference/pipeline-design-principles.md §0's warning about
+// encoding the recipe plane into the control plane -- staged nodes are
+// acceptable here specifically because the convergence skeleton around them
+// is load-bearing).
+//
+// Run it: node <plugin-root>/dist/attractor.js run 02-plan-implement-test.dot \
+//           --cwd /tmp/some-dir --stub --param goal="build a small feature"
+
+digraph PlanImplementTest {
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+
+    plan [
+        label="Plan",
+        prompt="List 3 brief steps toward: ${goal}"
+    ]
+
+    implement [
+        label="Implement",
+        prompt="Advance the work toward: ${goal}. (Informational -- the gate below is authoritative and does not depend on this node's output.)"
+    ]
+
+    test_gate [
+        shape=parallelogram,
+        label="Evidence gate",
+        goal_gate=true,
+        retry_target=implement,
+        tool_command="mkdir -p .attractor-demo; c=$(( $(cat .attractor-demo/count-02 2>/dev/null || echo 0) + 1 )); echo $c > .attractor-demo/count-02; [ \"$c\" -ge 3 ] && printf gate_pass || printf gate_fail"
+    ]
+
+    done [shape=Msquare, label="Done"]
+
+    start -> plan -> implement -> test_gate
+    test_gate -> done       [label="tests pass",   condition="context.tool.last_line=gate_pass"]
+    test_gate -> implement  [label="fix and retry", condition="context.tool.last_line=gate_fail"]
+}

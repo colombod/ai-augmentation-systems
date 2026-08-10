@@ -787,3 +787,232 @@ while the document reads as if it were covered — exactly the gap this role exi
 | **New 2026-08-07, fifth pass (F3 residual, second gap — distinct from the row directly above).** A *tied* full common descendant — two or more nodes each independently reachable from every branch root at the same shallowest depth `findConvergenceNode` searches — was invisible to PAR-001 (existence-only check) and to the original PAR-004 wording ("reachable from 2+ but not all roots" explicitly excluded a node reachable from *all* of them). The node that lost the tie-break was a legal, unrefused double-dispatch hazard identical in kind to the original F3 finding, on a shape ("diamond of diamonds": two nodes each hanging off every branch root) that is ordinary, not exotic | **was medium** (any fan-out that reconverges more than once at the same depth) | **was high** — identical failure mode to the original F3 (a real subprocess run twice, a real ledger entry racily overwritten), just on a node the original PAR-004 wording did not cover | **Resolved by construction**, ADR-007's second amendment: `findPartialReconvergence`'s definition drops the "but not all" qualifier — a node fully reachable from every root but not selected as convergence now satisfies "reachable from 2+ roots" by construction, so PAR-004 (unchanged ERROR severity) refuses it exactly as it already refused the subset case. Closed by a **lint extension**, not a proof that ties are impossible — the worked example in ADR-007 shows they are not | Solution Architect |
 | **New 2026-08-07, fifth pass (F2 residual).** `runBranch` treats a branch reaching the graph's real EXIT node as an ordinary dead end for that branch alone (ADR-007's Decision) — the main run is never stopped and sibling branches are unaffected. An author who draws `component -> exit` on one branch specifically *intending* "if this branch alone satisfies the goal, stop the whole pipeline here" gets none of that: PAR-005 fires only a WARNING (the graph lints clean if the author reads past it or ignores it), and at runtime the branch simply stops; the join policy folds it in as an ordinary leaf outcome, and the run proceeds to the convergence node exactly as if the branch had dead-ended on a node with no outgoing edge. No crash, no error, no visible sign the author's actual intent (stop everything) was not honored | medium — "stop the whole pipeline from inside a branch" is a plausible, even obvious, thing an author reaching for a shared EXIT node would expect to work, and nothing in the graph text distinguishes that intent from an ordinary early dead end | high — this is the silent-degradation class `AGENTS.md`'s own doctrine exists to catch: a WARNING an author can ignore, followed by quiet non-effect at runtime, not a loud failure | This design does not implement "stop the whole pipeline from inside a branch" at all this slice — PAR-005's WARNING severity is correct because *ending one branch's own traversal early without affecting siblings* is an independently legitimate, unrelated pattern (see ADR-007's corrected rationale), not because the stop-everything reading is supported. Whether "stop the whole pipeline from inside a branch" should become a real, separate feature — new cancellation plumbing through `ParallelHandler`'s `Promise.all`-based dispatch, not free — is a scope question for Product Owner, not decided here; until/unless it is prioritized, the skill/authoring guidance must say explicitly that a branch reaching EXIT never stops the run | Product Owner (scope call) / Solution Architect (skill copy) |
 | **New 2026-08-07, fifth pass (F5 residual).** `this.stepCount` (ADR-012) is one counter shared across the main path and every concurrently-running branch, by design — this is what closes F5's original "a branch can multiply the ceiling" gap. The flip side, not previously named: a legitimately large, correctly-terminating fan-out (e.g. `max_parallel=4`, each branch doing real multi-step work) now competes for the SAME 500-step budget an equivalent sequential pipeline would have had entirely to itself. NFR-1's "500 node-visit cap" framing, read by an operator as a per-run ceiling, behaves in practice closer to "500 divided by however many branches are concurrently active," for any graph that uses `PARALLEL` at all | high — this is the ordinary, intended shape of a busy fan-out, not an edge case | medium — not a correctness bug (the FAIL-on-stepcap path is well-formed, per ADR-012, and every branch that hits it is handled exactly like a dead end), but a real, user-facing behavior change with no corresponding operator-facing warning; a graph that ran to completion sequentially can start hitting the step cap purely because it now fans out | `EngineOptions.maxSteps` (`engine.ts:36`, default `DEFAULT_MAX_STEPS = 500` at `engine.ts:86`) is already a caller-supplied override, not new code needed — document in the skill/authoring guidance that a graph using `PARALLEL` should size `maxSteps` to its actual total node-visit volume summed across every branch, not assume 500 means "500 per branch" or "500 for the main path alone" | Solution Architect / skill author |
+
+# FR-13–16: S7 authoring skill / TS-library packaging
+
+> Appended 2026-08-10, not a rewrite of the sections above. **Scope override, recorded
+> explicitly:** `prioritization.md` deferred S7 behind Stage 3 (human-gate core,
+> `Handler.HUMAN` registration) — confirmed still true at the time this section was
+> written (`grep -rn "Handler.HUMAN" engine/src/` returns zero hits in `defaultHandlers()`).
+> The project owner directed building S7 now anyway, in this session
+> ([issue #17](https://github.com/colombod/ai-augmentation-systems/issues/17)); this is not
+> a claim that Stage 3's blocking reasoning was wrong, only that it was knowingly overridden.
+> See ADR-015 for the full record. Every design decision below treats Stage 3 as still
+> unbuilt: nothing here assumes `Handler.HUMAN`, `Handler.FAN_IN`, or `Handler.MANAGER_LOOP`
+> exist, because `defaultHandlers()` (`core/engine.ts:105-112`) still registers only
+> `Handler.START`, `Handler.EXIT`, `Handler.CONDITIONAL` (passthrough,
+> `dot/graph.ts:248`), `Handler.TOOL`, `Handler.CODERGEN`, `Handler.PARALLEL`.
+
+## Approach (FR-13–16 additions)
+
+No engine runtime behavior changes. Four independent additions, each grounded in a real
+file/line citation against the current code (642 tests, 640 pass, 2 skipped) or against
+`microsoft/amplifier-bundle-attractor`'s actual source at `main`, 2026-08-10, not invented:
+a library entry point so the engine is importable, not only shellable (ADR-016); a delegated
+execution-verification step this project adds on top of amplifier's own diagnosis-verification
+convention, because FR-13 asks for proof the *graph* runs, not proof the *reasoning to build
+one* was sound (ADR-017); a reference-material set split into five files, four ported from
+amplifier and corrected against this engine, one written from scratch (ADR-018); and an
+explicit example-portability policy, since most of amplifier's 13 canonical example pipelines
+use a handler this build does not register (ADR-019).
+
+## Codebase context (FR-13–16 additions)
+
+| Path | Role today | Change |
+| :-- | :-- | :-- |
+| `engine/src/index.ts` | does not exist — `cli.ts` is the only consumer of `core/engine.ts` | new |
+| `engine/package.json` | `"private": true`, no `main`/`types`/`exports` field | modified |
+| `plugins/attractor/agents/attractor-expert.md` | does not exist | new |
+| `plugins/attractor/skills/attractorify/SKILL.md` | does not exist (the existing `skills/attractor/SKILL.md` is the operator run/lint/doctor skill — untouched) | new |
+| `plugins/attractor/skills/attractorify/reference/*.md` | does not exist | new (5 files, see Decisions) |
+| `plugins/attractor/skills/attractorify/examples/*` | does not exist | new — executed worked examples + transcripts |
+| `plugins/attractor/skills/attractorify/verify-run.ts` | does not exist | new — the execution-verification harness (ADR-017), imports `engine/src/index.ts` |
+| `plugins/attractor/README.md` | `## Lint rules` (line ~309) is the canonical, accurate lint-code reference | **untouched, cited not restated** — `engine-semantics.md` links here rather than duplicating |
+
+## Component structure (FR-13–16 additions)
+
+```
+plugins/attractor/
+  agents/
+    attractor-expert.md          rewritten from amplifier's agents/attractor-expert.md
+  skills/
+    attractor/SKILL.md           existing, operator-facing (run/lint/doctor) — untouched
+    attractorify/
+      SKILL.md                   ported near-verbatim from amplifier's skills/attractorify/SKILL.md
+      verify-run.ts              NEW — delegated execution-verification harness (FR-13)
+      reference/
+        pipeline-design-principles.md   ported near-verbatim (engine-independent doctrine)
+        pipeline-patterns.md            ported near-verbatim (engine-independent doctrine)
+        dot-reference.md                ported, corrected against this engine's shapes/attrs
+        routing-reference.md            ported, corrected — FR-15's home
+        engine-semantics.md             written from scratch, from this engine's own tests
+      examples/
+        <N>-<name>.dot + .md + events.jsonl   only ones actually executed here (FR-16)
+  engine/src/index.ts             NEW library entry point
+```
+
+`attractorify` is a separate skill directory from the existing `attractor` skill, not a
+merge — the two are used differently. `skills/attractor` is a stateless CLI-command
+reference an operator reaches for once a `.dot` file already exists. `attractorify` is a
+multi-step, stateful design conversation ending in a lint-clean, execution-verified `.dot`.
+Merging them would make the CLI reference load the whole diagnosis/design/verification
+machinery for a one-line `attractor lint foo.dot` invocation.
+
+## Interfaces and data contracts (FR-13–16 additions)
+
+```ts
+// engine/src/index.ts — the new library surface. Re-exports only, no new logic.
+// Shipped in p6-01 (matches the actual committed file, corrected from this
+// section's original draft, which omitted `Context` — required to construct
+// a valid `EngineOptions`, confirmed against `test/engine.test.ts`'s own
+// `Context.from({})` usage):
+export { Engine, defaultHandlers, type EngineOptions, type RunResult } from './core/engine.ts'
+export { Context, isEngineManagedKey } from './core/context.ts'
+export { Status, isTerminalFailure, type Outcome } from './core/outcome.ts'
+export { lint, hasErrors, Severity, type Diagnostic } from './dot/lint.ts'
+export { parseDot } from './dot/parse.ts'
+export { Handler, type HandlerKind, type Graph, type Node, type Edge } from './dot/graph.ts'
+export { EventLog, type RunEvent } from './run/events.ts'
+export type { Backend, Handler as HandlerImpl, HandlerCtx } from './handlers/types.ts'
+export { ClaudeCodeBackend, type ClaudeBackendOptions } from './backend/claude.ts'
+export { StubBackend } from './handlers/stub.ts'
+```
+
+`engine/package.json` gains `"main": "./src/index.ts"`, `"types": "./src/index.ts"`,
+`"exports": { ".": "./src/index.ts" }`. Stays `"private": true` — the registry-proxy
+constraint (root `AGENTS.md`, "Environment facts") and the two-dependency doctrine are
+unchanged; this is a module-resolution surface for code inside this monorepo (`verify-run.ts`,
+and any future consumer) and for anyone who clones the repo directly, not an `npm publish`
+target. No build step: consistent with the existing "Node ≥ 24 native TS stripping, no build
+step for tests" convention (`AGENTS.md`, Plugin-specific conventions) — `dist/attractor.js`
+remains the separately-built, separately-committed CLI bundle for the `attractor` skill's own
+use; `index.ts` is source-only, imported directly.
+
+```
+verify-run.ts <graph-path> [--run-dir dir] [--stub | --live]
+# imports Engine/defaultHandlers/lint from ../../../engine/src/index.ts (relative,
+# no package resolution needed inside this monorepo), refuses to run a lint-ERROR
+# graph (matches FR-11's existing embedder guarantee), runs it, and prints exactly:
+#   VERIFIED: status=<RunResult.status> path=<final node path, comma-joined>
+#   events: <run-dir>/events.jsonl
+# on stdout. Nothing else. This is the entire contract the delegated verification
+# step (ADR-017) depends on — a single, greppable, un-ambiguous line.
+```
+
+## Decisions (FR-13–16 additions)
+
+- **ADR-015 — deprioritization override, recorded not silently acted on.** See the section
+  header note above; full reasoning, the confirmation evidence, and the three options
+  presented to the project owner live in ADR-015.
+- **ADR-016 — TS-library packaging.** `index.ts` re-exports only; no new runtime logic, no
+  new dependency. Directly serves two things: the-author persona's (P-1) own stated
+  requirement — "use it from a claude session or as a standalone program"
+  (`.delivery/personas/the-author.md:49`) — and `verify-run.ts`'s need to read a
+  `RunResult`/`events.jsonl` programmatically rather than parse CLI stdout text.
+- **ADR-017 — delegated execution-verification (FR-13), an extension of amplifier's
+  diagnosis-verification convention, not a copy of it.** Amplifier's `skills/attractorify/SKILL.md`
+  independent verifier re-derives and checks the *three-question diagnosis* (should a
+  pipeline be built at all) — it never runs the resulting graph. FR-13 is a different, and in
+  this project's own terms stronger, claim: *"every graph the authoring skill hands back as
+  ready is accompanied by a real execution transcript... produced by a delegated, independent
+  verification step"* — i.e. proof the artifact runs, not proof the decision to build it was
+  sound. Both are real and both are kept, as two separate gates in Step 4 (see the ported
+  `attractorify/SKILL.md`'s own Step 4): the ported diagnosis-verifier gate (unchanged from
+  amplifier, "not the same judgment that authored the diagnosis"), then, after a `.dot` is
+  drafted and lint-clean, a NEW execution-verification gate — the authoring session invokes
+  the Task tool to launch a fresh-context subagent whose entire instruction is: run
+  `verify-run.ts <path> --stub`, and report its exact stdout verbatim, nothing interpreted or
+  summarized. The authoring session cannot mark a graph `ready` without pasting that literal
+  `VERIFIED: status=... path=...` line plus the `events.jsonl` path into the handback — matching
+  `AGENTS.md`'s rule ("verification inside the context that produced the evidence is not
+  verification") the same way the diagnosis-verifier already does, applied to a second artifact.
+  **`--stub` by default, not `--live`.** `--stub` (existing CLI flag, `skills/attractor/SKILL.md`)
+  proves the *control-plane* claim FR-13 actually needs — every node reachable, every edge
+  condition evaluable, retries/parallel dispatch/goal-gates all resolve to a real terminal
+  `status`/`path` — without spending real `claude -p` budget or introducing model-output
+  variance into a gate that is supposed to be deterministic. A `--live` transcript is strictly
+  more expensive and proves a different, narrower thing (these specific prompts, this run); the
+  skill may offer it as an explicit operator option but the "ready" bar is `--stub`, stated
+  honestly in every handback rather than implied to be a full live proof.
+- **ADR-018 — reference material: what ports near-verbatim, what's corrected, what's
+  written from scratch.** Exactly matches `AGENTS.md`'s own porting table (root AGENTS.md,
+  "What we take from the amplifier bundle"), applied to the five files:
+  `pipeline-design-principles.md` and `pipeline-patterns.md` port near-verbatim (engine-independent
+  design doctrine — control-plane/recipe-plane line, three-question test, tier discipline, SF/MLE/V+R
+  strategies — confirmed by direct read, `docs/PIPELINE_DESIGN_PRINCIPLES.md` and
+  `docs/PIPELINE_PATTERNS.md`, `microsoft/amplifier-bundle-attractor@main`), with two corrections
+  applied uniformly: strip every `model_stylesheet`/`llm_model`/`class=` reference (PRD non-goal,
+  "architecturally out of scope, not merely deferred") and repoint the `examples/gates/` cross-reference
+  (amplifier's gate-primitive library, not ported this slice) to this project's own portable examples.
+  `dot-reference.md` and `routing-reference.md` port then get corrected against this engine's real
+  behavior — most consequentially, **lint code renumbering**: the-amplifier-veteran persona (P-4)
+  names this exact landmine — "`TOPO-001`..`005` lint codes... this engine's `TOPO-001`..`006`
+  check entirely different things under overlapping numbers" (`.delivery/personas/the-amplifier-veteran.md:52`)
+  — so neither file states a lint code's meaning; both link to `README.md`'s own `## Lint rules`
+  section, the single already-correct source of truth, per the ported skill's own "Reference
+  surfaces (link, don't restate)" discipline. `routing-reference.md` is FR-15's home: it must state,
+  and only state, that a routing verdict is requested for `goal_gate=true` nodes and no others,
+  matching `wantsVerdict` (`backend/argv.ts:42-43`) exactly — not amplifier's broader
+  `report_outcome`-for-any-node model, the amplifier-veteran's other named wrong belief
+  (`the-amplifier-veteran.md:50`). `engine-semantics.md` is written from scratch, from this
+  engine's own tests, per `AGENTS.md`'s explicit instruction ("it is the expert agent's declared
+  source of truth, and a ported one would describe Amplifier's engine") — it is not a port of
+  amplifier's own `context/engine-semantics.md` at all, only same-named by convention.
+- **ADR-019 — example-portability policy.** See the dedicated subsection below; the short
+  version: of amplifier's 13 canonical `examples/pipelines/*.dot` plus `examples/patterns/task-runner.dot`,
+  4 use only handlers this build registers and are ported + executed; 1 more
+  (`05-parallel-fan-out.dot`) is adapted, not ported verbatim, because its fan-in node uses
+  `Handler.FAN_IN` (unregistered) — replaced with reliance on this engine's own default
+  zero-success-checking join policy (Open Question 5's resolution, already shipped); 1 practical
+  exemplar (`examples/pipelines/practical/bug-fix.dot`) ports cleanly (parallelogram/Mdiamond/Msquare
+  only); the remaining 7, plus `task-runner.dot` itself, are named and excluded, not silently
+  dropped — each for a specific unregistered-handler or out-of-scope-feature reason.
+
+## Example-portability policy (ADR-019, detail)
+
+Checked directly against `microsoft/amplifier-bundle-attractor@main`'s actual `shape=` usage
+per file (`grep -o 'shape=[a-zA-Z]*'`), not assumed from filenames:
+
+| Example | Shapes used | Portable? | Why |
+| :-- | :-- | :-- | :-- |
+| `00-convergence-loop.dot` | Mdiamond, Msquare, parallelogram | **yes — ported + executed** | only registered handlers |
+| `01-simple-linear.dot` | Mdiamond, Msquare, box | **yes — ported + executed** | only registered handlers |
+| `02-plan-implement-test.dot` | Mdiamond, Msquare, parallelogram | **yes — ported + executed** | only registered handlers |
+| `03-conditional-routing.dot` | Mdiamond, Msquare, diamond, parallelogram | **yes — ported + executed** | only registered handlers |
+| `04-retry-with-fallback.dot` | Mdiamond, Msquare, parallelogram | **yes — ported + executed** | only registered handlers |
+| `practical/bug-fix.dot` | Mdiamond, Msquare, parallelogram | **yes — ported + executed** (stretch, if budget allows) | only registered handlers; the SKILL's own cited `existing-attractor` exemplar |
+| `05-parallel-fan-out.dot` | Mdiamond, Msquare, component, tripleoctagon | **adapted, not verbatim** | `tripleoctagon`=`Handler.FAN_IN`, unregistered (`HAND-001`); fan-in node dropped, default join policy relied on instead |
+| `task-runner.dot` (patterns/) | Mdiamond, Msquare, box, hexagon, parallelogram | **excluded** | `hexagon`=`Handler.HUMAN`, unregistered; also uses `model_stylesheet`/`class=` (out of scope). `00-convergence-loop.dot` is the canonical skeleton exemplar instead |
+| `06-model-stylesheet.dot` | Mdiamond, Msquare | **excluded** | the feature it demonstrates (`model_stylesheet`) is a PRD non-goal, not merely an unregistered handler |
+| `07-fidelity-modes.dot` | Mdiamond, Msquare | **excluded** | fidelity-mode differentiation status is Open Question 10, unresolved — cannot honestly claim it "works" either way |
+| `08-human-gate.dot` | Mdiamond, Msquare, hexagon | **excluded** | `Handler.HUMAN` unregistered |
+| `09-manager-supervisor.dot` | Mdiamond, Msquare, house, parallelogram | **excluded** | `Handler.MANAGER_LOOP` unregistered |
+| `10-full-attractor.dot` | Mdiamond, Msquare, component, hexagon, parallelogram, tripleoctagon | **excluded** | combines two unregistered handlers |
+| `12-graph-resume.dot` | Mdiamond, Msquare, parallelogram | **excluded** | depends on cross-restart resume — PRD non-goal ("General checkpoint-based crash recovery... no read-back mechanism exists") |
+
+This table itself is the FR-16 artifact — it must be re-verified, not copied forward, the
+next time any of these rows changes (a handler gets registered, a non-goal gets reopened).
+It follows the same discipline `spec-conformance.md`'s "1 of 4, not 2 of 4" table set: name
+what was actually run, name what wasn't and why, and do not let a later reader assume
+coverage a table doesn't show.
+
+## Test strategy (FR-13–16 additions)
+
+| What | Level | Where |
+| :-- | :-- | :-- |
+| `index.ts` exports a working `Engine`/`lint`/`parseDot` surface, importable with no relative reach into `core/`/`dot/` internals | integration | new `engine/test/index.test.ts` — lints and runs a fixture graph via `index.ts` imports only |
+| `verify-run.ts` refuses a lint-ERROR graph without attempting to run it (mirrors FR-11) | integration | new `engine/test/verify-run.test.ts` (or a `skills/attractorify/` test, colocated with the harness) |
+| `verify-run.ts` prints the exact `VERIFIED: status=... path=...` / `events: ...` contract on a valid `--stub` graph | integration | same file |
+| Every ported example `.dot` file lints clean (`attractor lint`) | integration | one test per example, or table-driven over `examples/*.dot` |
+| Every ported example `.dot` file actually runs to a terminal `status` under `--stub`, and its committed `events.jsonl` is the real output of that run, not hand-written | integration | same — this is FR-16's own falsifiability requirement; a test that only checks the file *exists* would not catch a stale or fabricated transcript |
+| The reference material's node-shape table lists only the six registered handlers (no `hexagon`/`tripleoctagon`/`house` presented as usable) | doc-consistency check | a small grep-based test/lint script rather than a manual review, so it survives future edits |
+| `routing-reference.md`'s verdict-contract statement matches `wantsVerdict` (`argv.ts:42-43`) exactly | doc-consistency check | same script — greps `routing-reference.md` for `goal_gate` framing, fails if it also implies verdicts on non-gate nodes |
+
+## Risks (FR-13–16 additions)
+
+| Risk | Likelihood | Impact | Mitigation | Owner |
+| :-- | :-- | :-- | :-- | :-- |
+| A future PR registers a new handler (e.g. `Handler.HUMAN`, closing Stage 3) and the example-portability table above silently goes stale, understating what's now portable | medium — Stage 3 is the very next planned phase | low — understating portability is a missed-opportunity gap, not a hazard; nothing unsafe ships | The table cites its own generation method (`grep -o 'shape='`) so it's mechanically re-derivable, not just editable prose | skill/doc author, next session that registers a handler |
+| `--stub` execution-verification proves control-plane reachability, not that a *live* `claude -p` node would behave as the graph's prompt assumes — a handback could read as "fully proven" to a reader who doesn't notice the word `--stub` | medium — the distinction is easy to skim past | medium — false confidence in a specific prompt's real-world behavior, though not in the graph's routing correctness | ADR-017's own text states the `--stub`/`--live` distinction plainly in the handback contract; the skill's handback template repeats `status=... (stub)` inline, not only in a linked doc | skill author |
+| The independent execution-verification subagent (Task-tool delegation) and the independent diagnosis-verification subagent (ported from amplifier) could be conflated into one delegation by an implementer skimming the ported `SKILL.md`, defeating the "two separate gates" design in ADR-017 | low — ADR-017 states this explicitly, and the ported `SKILL.md`'s own Step numbering keeps them apart | medium if conflated — a "ready" graph could ship having only had its diagnosis re-derived, never actually run | `verify-run.ts`'s narrow, single-purpose contract (nothing else it could be mistaken for) plus the explicit two-gate language in Step 4 of the ported skill | skill author |
+| `engine/package.json` gaining `"exports"` could be read as a signal this package is now meant for `npm publish`, contradicting the registry-proxy constraint | low | low — no CI or release automation currently acts on `package.json`'s publishability | `"private": true` stays set; ADR-016 states the intent (in-monorepo + direct-clone consumption only) explicitly, not left to be inferred from the fields alone | implementer |

@@ -43,10 +43,10 @@ No interviews exist, so Objection-answered is `—` for every row and omitted be
 | FR-10 | S5 | Shipped | P-2 | Yes | Critical | S (done) | reported |
 | FR-11 | S6 | Shipped | P-2 (see finding below) | Yes | Critical | S (done) | reported |
 | FR-12 | S6 | Blocked — Open Q7 | P-2 | No — FR-11 alone closes the safety gap | Minor | S | reported |
-| FR-13 | S7 | Not started (could) | P-1, P-4 | Yes, within S7 | Major | M | P-1 reported / P-4 assumed |
-| FR-14 | S7 | Not started (could) | P-1, P-4 | Yes, within S7 | Major | S | P-1 reported / P-4 assumed |
-| FR-15 | S7 | Not started — P-4's named abandonment trigger | P-1, P-4 | Yes for P-4, No for P-1 | Major (P-4) / Minor (P-1) | S | P-1 reported / P-4 assumed |
-| FR-16 | S7 | Not started (could) | P-1, P-4 | Yes, within S7 | Major | M | P-1 reported / P-4 assumed |
+| FR-13 | S7 | **Shipped 2026-08-10** (overridden, ADR-015) | P-1, P-4 | Yes, within S7 | Major | M | P-1 reported / P-4 assumed |
+| FR-14 | S7 | **Shipped 2026-08-10** (overridden, ADR-015) | P-1, P-4 | Yes, within S7 | Major | S | P-1 reported / P-4 assumed |
+| FR-15 | S7 | **Shipped 2026-08-10** (overridden, ADR-015) — P-4's named abandonment trigger, now closed | P-1, P-4 | Yes for P-4, No for P-1 | Major (P-4) / Minor (P-1) | S | P-1 reported / P-4 assumed |
+| FR-16 | S7 | **Shipped 2026-08-10** (overridden, ADR-015) | P-1, P-4 | Yes, within S7 | Major | M | P-1 reported / P-4 assumed |
 | FR-17a | S3 | Shipped | P-2 | Yes — clean refusal replaces a mid-run crash | Major | S (done) | reported |
 | FR-17b | S3 | Blocked — Open Q3/4/5 | P-2 | Yes, eventually — no live friction yet, S3 unattemptable today | Critical (potential) | L (floor, not ceiling) | reported |
 | FR-18 | S2 | Not started — fully speced, adversarially reviewed | P-2 directly; gates the future `agent`-channel sub-slice of FR-8 | Conditional — precondition for `agent`, not for `human` | Critical for the hazard closed; advisory-only mechanism | S | reported |
@@ -114,6 +114,15 @@ now would optimize for P-1/P-4 before Stage 3 proves the channels design for the
 already in production.
 **Not served, no date:** P-1, P-4. FR-15 rests entirely on P-4's `assumed`-grade belief —
 worth remembering if S7 is ever prioritized.
+
+**Overridden 2026-08-10 — this reasoning stands, the deferral does not.** Confirmed still
+true (Stage 3/`Handler.HUMAN` still unbuilt) before acting, not assumed stale; the project
+owner directed building S7 now anyway. See
+[ADR-015](../../decisions/ADR-015-s7-deprioritization-override.md). This section's own
+analysis is not retracted — P-2 genuinely needs none of S7, and it remains the honest
+account of why this stage would otherwise wait. It is recorded here as the historical
+reasoning an explicit override was made against, not corrected to read as if S7 had always
+been in-cycle.
 
 ## Milestones
 
