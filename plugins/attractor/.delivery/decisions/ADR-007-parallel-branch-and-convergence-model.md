@@ -949,3 +949,130 @@ the spec nor its reference implementation would have caught) justified it — no
 established attractor discipline, because no such established discipline exists for this scenario.
 **We still do not have a proof this is the last gap**, now for the ninth time, and — for the first
 time stated this plainly — we know of a specific, named, not-yet-closed one.
+
+## Amendment (2026-08-10, twelfth pass): dominator-based back-edge classification, closing limitation 1 and converting limitation 2 into a clean refusal — resolves `colombod/ai-augmentation-systems#14`
+
+**Before writing any code, this amendment did what its own predecessor's closing line asked for:
+checked whether a principled technique existed that neither of the two designs rejected in the
+eleventh amendment had actually tried.** Both rejections were of home-grown, ad hoc constructions
+(a single DFS's own back-edge classification; SCC condensation). Neither was the established
+compiler-theory technique for exactly this class of problem — distinguishing a loop's back edge
+from ordinary forward control flow — which is **dominator analysis**: an edge `u -> v` is a back
+edge if and only if `v` DOMINATES `u` (every path from the entry to `u` passes through `v`). This
+is textbook natural-loop detection (Aho/Sethi/Ullman; Cooper & Torczon), confirmed against current
+compiler-theory sources before implementation, not assumed from memory.
+
+**Why this directly answers the eleventh amendment's own rejection reasons, not just a different
+guess:**
+
+- *The first rejected design (DFS back-edge classification) failed because classification depended
+  on DFS visitation order* — confirmed concretely: "a 3-root fixture where the retry targets the
+  middle root produced a wrong answer." Dominance is **not** computed from any one traversal; it is
+  the unique fixed point of an iterative dataflow computation (`computeDominators`, the
+  Cooper/Harvey/Kennedy algorithm) over the whole graph's structure. A back-edge test built on
+  dominance cannot depend on which branch a DFS happens to visit first, because no DFS is
+  performed to classify edges — only to number nodes for the dominance computation itself to
+  converge quickly, and that numbering's specific tie-breaking has no bearing on the fixed point it
+  converges to. Verified, not merely argued: a dedicated regression test reproduces the exact
+  "retry targets the middle of three declared roots" shape and asserts the SAME answer regardless
+  of root declaration order.
+- *The second rejected design (SCC condensation) failed because the canonical rework-loop shape
+  puts the intended convergence node in the same SCC as the retry-affected interior node it needs
+  to be distinguished from* — dominator-based back-edge removal never merges nodes. It removes
+  exactly the one edge dominance proves closes the loop (`check -> fan`, since the fan-out node, the
+  analysis's entry, dominates every node reachable from it by construction) and leaves every other
+  node — including the real convergence node — individually addressable. Verified: a dedicated
+  regression test reproduces the ADR's own canonical shape (`combine -> check -> fan[retry]`) and
+  confirms `combine` and `check` resolve as the distinct nodes they are.
+
+**The fan-out-node truncation (ninth amendment) is now a free consequence, not a special case.**
+`fanOutNodeId` dominates every node reachable from it trivially (it is the analysis's entry), so
+ANY edge landing back on it is always classified as a back edge. The explicit "truncate at
+`stopId`" parameter the ninth amendment added is gone; nothing replaces it, because nothing needs
+to.
+
+**A branch root needed one more rule beyond pure dominance, discovered the same way every prior
+amendment's own mistakes were caught here: by running a concrete counter-example against the real
+implementation, not by trusting the design on paper.** Pure dominance alone REGRESSED the already-
+shipped "retry targets a branch root directly" closures (eleventh amendment): `check -> lintjob` in
+the existing `lintjob`/`testjob` fixture is not a dominance back edge, because a SIBLING branch
+(`testjob -> combine -> check`) can reach `check` without passing through `lintjob` at all — by the
+strict graph-theoretic definition, this shape is genuinely IRREDUCIBLE (two independent external
+entries into one cycle), and "the dominator-based method cannot see [irreducible loops]" is a
+documented, expected limitation of the technique, not a bug in this implementation of it. But this
+project already made, and adversarially verified, a deliberate product decision that such an edge
+means "retry this branch" regardless (the ninth/eleventh amendments). Codifying that decision as a
+second, explicit back-edge test — an edge into a declared branch root that the root can also reach
+back from (`canReach`) is always a retry — restores those closures without reopening the
+"legitimate multi-hop root-to-root forward chain" case the eleventh amendment's own truncation
+heuristic broke: `mid -> root2` in that fixture is not caught by this second test, because `root2`
+cannot reach back to `mid` (there is no cycle there at all).
+
+**Irreducible loops through NON-root territory are the one shape this amendment does not, and
+structurally cannot, resolve to the "right" node — and it says so by refusing cleanly instead of
+guessing.** Limitation 2's own shape (`check -> m`, `m` an ordinary interior node, not a declared
+root) has the identical two-independent-entries structure as the now-closed root-targeting case,
+but nothing in this project has ever decided that an edge into an ARBITRARY interior node means
+"retry," the way it has for branch roots — and inventing that decision now, un-reviewed, under this
+same amendment, would repeat the exact mistake this ADR's doctrine exists to prevent (asserting a
+reading instead of checking one). `nodesOnACycle` detects when the back-edge-pruned graph still
+contains a cycle; if that residual cycle includes any node that is not a declared branch root,
+`findConvergenceNode` returns `null` rather than trust a reachability computation a genuinely
+ambiguous shape could have corrupted — the same "loud refusal over silent wrong answer" doctrine
+this whole line of work has followed since finding F1. A residual cycle among branch roots ALONE
+(an ordinary `root1 <-> root2` cross-edge) does not trigger this: those are already excluded from
+candidacy by the pre-existing root-exclusion filter, and dominance never treats a root itself as
+suspect.
+
+**This closes limitation 1 completely and improves limitation 2 without fully closing it — stated
+exactly, not rounded up:**
+
+- **Limitation 1 (legitimate multi-hop root-to-root forward chains) is CLOSED.** No cycle, no
+  retry, nothing for dominance or the root-cycle-closure test to remove — the shape resolves
+  correctly to the real convergence node (`shared` in the eleventh amendment's own named fixture),
+  every time, not merely in the cases a hop-count heuristic happened to get right.
+- **Limitation 2 (retry targeting an ordinary non-root node) is NOT closed to "resolve to the right
+  node."** It IS improved: the eleventh amendment's own silent wrong-node selection (`m` winning
+  the tie-break over `combine`, with no signal anything was wrong beyond the message naming the
+  wrong node) is replaced by `findConvergenceNode` itself correctly recognizing it cannot safely
+  resolve this shape and returning `null` — `PAR-001` then fires directly ("no discoverable
+  convergence"), a more honest refusal than a `PAR-004` that names the wrong node. **The
+  eleventh amendment's own SHORT-branch sibling test for this same shape (`third amendment`,
+  predating even the ninth) needed the identical correction**, found only by checking it against
+  this amendment's own new code rather than assuming a passing test meant an unrelated shape: the
+  hop-count heuristic had been getting that one right only because the branch was short enough that
+  the depth arithmetic had not yet flipped in the interior node's favor — an accident of branch
+  length, not a structural difference from limitation 2, and this amendment now treats both
+  identically (`null`) regardless of branch length.
+
+**A true general fix for limitation 2 remains future work, and this amendment does not claim
+otherwise.** Closing it for real needs either resolving the genuine semantic ambiguity of what an
+edge into a shared interior node from a shared downstream node is supposed to mean (a product
+decision this codebase has never made, unlike the root-targeting case), or a real technique for
+irreducible loops (node splitting; Havlak's loop-nesting-forest generalization) — both real
+scoped-down future work, not attempted here under the same time-pressure discipline the eleventh
+amendment named for its own unclosed gap.
+
+**Verified, not merely reasoned about, per this ADR's own standing discipline:** the two
+counter-examples that killed the two designs rejected in the eleventh amendment (order-dependence
+under a 3-root middle-target retry; the SCC-shared-node shape) are now pinned as dedicated
+regression tests, both passing under this implementation. All twenty-nine prior `findConvergenceNode`/
+`findPartialReconvergence`/`PAR-001`/`PAR-004` fixtures from every earlier amendment were re-run
+against this rewrite; two needed their own expected answers corrected (the root-to-root-cycle
+fixture, whose old answer `m1` was itself an artifact of the old heuristic's incomplete
+cycle-breaking rather than a deliberately-reasoned answer — `shared`, the node both branches'
+own forward-only paths genuinely agree on, replaces it; and the short-branch sibling of limitation 2,
+above) — both corrections explained in place, not silently changed. Full engine suite: 642 tests,
+640 passing, 0 failing, 2 correctly-skipped (opt-in live-backend, pre-existing).
+
+**Consequences (this amendment specifically).** **We gain:** a provably order-independent
+back-edge classification that closes limitation 1 completely and, for limitation 2, replaces a
+silent wrong-node selection with an honest refusal — real, verified improvements over the
+eleventh amendment's hop-count heuristic, not merely a different set of named gaps. **We accept:**
+limitation 2 is improved, not closed; a true general fix (resolving what a shared-interior-node
+retry target is even supposed to mean, or a real irreducible-loop technique) is still future work.
+**We reaffirm the eleventh amendment's own framing**: this is this project's own doctrine
+extension, justified by real, demonstrated incidents, not a deviation from spec or amplifier
+guidance that does not exist for this scenario. **We still do not have a proof this is the last
+gap** — now for the tenth time — but the one gap we do know of is narrower, and more honestly
+reported, than it was before this amendment.
