@@ -58,7 +58,7 @@ key written by the very node the gate exists to check, so a fresh, session-isola
 channel can still end up rubber-stamping a self-report. `AGENTS.md`'s doctrine names this
 directly: "verification inside the context that produced the evidence is not verification."
 
-FR-18 (`.delivery/prd.md`) asks for a lint-time guard. The open question this ADR resolves:
+FR-18 (`.delivery/initiatives/spec-conformance-mvp/prd.md`) asks for a lint-time guard. The open question this ADR resolves:
 does "traced to a single, structurally-provable direct predecessor" mean *any* predecessor
 whose declared or effective output could match, or specifically a `Handler.CODERGEN`
 (box/LLM) predecessor?
@@ -121,7 +121,7 @@ being treated as closed:
   tracked under Open Question 7 / FR-12. This rule states the gap; it does not close it.
 
 Both structural gaps and the visibility gap are tracked as Open Questions in
-`.delivery/prd.md` (owner: Product Owner / Solution Architect), not left to be rediscovered.
+`.delivery/initiatives/spec-conformance-mvp/prd.md` (owner: Product Owner / Solution Architect), not left to be rediscovered.
 
 ## Consequences
 

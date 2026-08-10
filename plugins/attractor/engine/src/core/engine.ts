@@ -11,6 +11,8 @@ import {
   runsOn,
   declaredOutputs,
   substitutableText,
+  outgoingEdges,
+  findConvergenceNode,
 } from '../dot/graph.ts'
 import { Context, isEngineManagedKey } from './context.ts'
 import { referencedKeys } from './substitute.ts'
@@ -20,9 +22,10 @@ import { selectEdge } from './edge-select.ts'
 import { resolveRetryPolicy, resolveRetryTarget, backoffMs } from './retry.ts'
 import { saveCheckpoint, type Checkpoint } from './checkpoint.ts'
 import { EventLog } from '../run/events.ts'
-import { type Backend, type Handler } from '../handlers/types.ts'
+import { type Backend, type BranchRunOptions, type BranchRunResult, type Handler } from '../handlers/types.ts'
 import { ToolHandler } from '../handlers/tool.ts'
 import { BoxHandler } from '../handlers/box.ts'
+import { ParallelHandler } from '../handlers/parallel.ts'
 
 export { PASSTHROUGH_KINDS, RunsOn, RUNS_ON_MODES, runsOn }
 export type { RunsOnMode }
@@ -80,10 +83,15 @@ export function defaultHandlers(backend: Backend): Map<HandlerKind, Handler> {
     ...PASSTHROUGH_KINDS.map((kind) => [kind, passthrough] as [HandlerKind, Handler]),
     [Kind.TOOL, new ToolHandler()],
     [Kind.CODERGEN, new BoxHandler(backend)],
+    [Kind.PARALLEL, new ParallelHandler()],
   ])
 }
 
 const DEFAULT_MAX_STEPS = 500
+
+type StepResult =
+  | { kind: 'continue'; nextId: string }
+  | { kind: 'stop'; reason: 'exit' | 'frontier' | 'deadend' | 'stepcap'; nodeId: string; outcome: Outcome }
 
 export class Engine {
   private opts: EngineOptions
@@ -238,6 +246,17 @@ export class Engine {
    * the only way out is `outputsOwedByFailedNodes`, which hands back a copy.
    */
   private failedOutputs: Map<string, string> = new Map()
+
+  /**
+   * Steps taken across the WHOLE run, main loop and every branch (p5-05)
+   * alike -- one shared instance field, not a loop-local variable. Without
+   * this, a branch containing a routing cycle that never reaches its stop
+   * frontier has no bound of its own, and `max_parallel` branches each
+   * independently capped at maxSteps would multiply the run-wide ceiling
+   * NFR-1 exists to hold. Incremented once per `executeNodeStep` call,
+   * whether that call continues to a new node or retries the same one.
+   */
+  private stepCount = 0
 
   constructor(opts: EngineOptions) {
     this.opts = opts
@@ -546,7 +565,7 @@ export class Engine {
    * `context.outcome` saying "retry" while the edge being selected sees
    * "fail".
    */
-  private recordOutcome(nodeId: string, outcome: Outcome): void {
+  private recordOutcome(nodeId: string, outcome: Outcome, context: Context): void {
     const node = this.opts.graph.nodes.get(nodeId)
     // `wantsVerdict`, not a second hand-kept `attrs.goal_gate === 'true'`.
     // That predicate was extracted into one place for exactly this reason,
@@ -573,9 +592,9 @@ export class Engine {
       // gone. RETRY and SKIPPED neither add nor clear, in both records.
       this.clearFailedOutputs(nodeId)
     }
-    this.setManaged('outcome', outcome.status)
+    this.setManaged(context, 'outcome', outcome.status)
     if (outcome.preferredLabel !== undefined && outcome.preferredLabel !== '') {
-      this.setManaged('preferred_label', outcome.preferredLabel)
+      this.setManaged(context, 'preferred_label', outcome.preferredLabel)
     }
   }
 
@@ -592,14 +611,324 @@ export class Engine {
    * where the control plane has caught itself, and any test touching the new
    * key will surface it immediately.
    */
-  private setManaged(key: string, value: string): void {
+  private setManaged(context: Context, key: string, value: string): void {
     if (!isEngineManagedKey(key)) {
       throw new Error(
         `engine built-in context key ${key} is not covered by isEngineManagedKey; ` +
           'register it there so a backend cannot forge it',
       )
     }
-    this.opts.context.set(key, value)
+    context.set(key, value)
+  }
+
+  /**
+   * Runs exactly one node's step: dispatch (eager-input-check, `runs_on`
+   * skip logic, handler call or skip, the RETRY ladder with its two
+   * `recordOutcome` calls), then a per-node checkpoint via the exported
+   * `saveCheckpoint` directly -- never the private `this.checkpoint()`
+   * wrapper, which after this refactor is called only by `run()`'s own
+   * EXIT/dead-end/step-cap terminal paths (ADR-012). The ONE seam both
+   * `run()`'s own loop and `runBranch` (p5-05) call.
+   *
+   * Node lookup, the `current_node` context write, and handler lookup all
+   * live HERE rather than in a caller's wrapper -- see this task's own
+   * Step 2: an existing test requires `RunResult.path` to already contain a
+   * node by the moment its handler-lookup failure is reported. `path.push`
+   * lives HERE too (final-review correction, p5-05 addendum's own bug):
+   * each caller passes its OWN `path` array via `opts.path` -- `run()`'s
+   * loop passes `this.path`; `runBranch`'s loop passes its own local
+   * `path` -- so a branch's internal node ids still cannot leak into the
+   * outer run's own `this.path` (the original addendum's own concern,
+   * still closed). But the push itself happens HERE, immediately after the
+   * step-cap check above, not in the caller before this method is even
+   * entered: the addendum's own relocation pushed unconditionally BEFORE
+   * calling this method, meaning a dispatch the step-cap check went on to
+   * block still left its id in `path` -- a phantom, never-actually-executed
+   * hop (no `node.start`, no handler call) on every step-cap termination,
+   * on ANY graph, not just ones with a branch. Pushing after the step-cap
+   * check and before node/handler lookup keeps the pre-dispatch-failure
+   * invariant above intact while closing that regression.
+   * Folded into the `'deadend'` stop reason alongside the ordinary
+   * "no outgoing edge" case, since from a caller's point of view all three
+   * are "this step produced no next node to continue to"; the one accepted,
+   * documented behavioural delta is that `run()`'s uniform handling of
+   * `'deadend'` always calls `this.checkpoint(null)`, where today's
+   * unknown-node/no-handler-registered paths did not -- an extra, harmless
+   * checkpoint write on an already-terminal FAIL that no existing test
+   * observes.
+   */
+  private async executeNodeStep(
+    currentId: string,
+    opts: { runDir: string; cwd: string; maxSteps: number; stopAt?: ReadonlySet<string>; context: Context; path: string[] },
+  ): Promise<StepResult> {
+    const { graph } = this.opts
+    const context = opts.context
+
+    // Checked FIRST, before ANY work for this node -- matches today's
+    // `for (let step = 0; step < maxSteps; step++)` loop condition, which
+    // skipped the whole iteration body (no path push, no dispatch, nothing)
+    // the instant the cap was reached.
+    if (++this.stepCount > opts.maxSteps) {
+      const capped = `step cap of ${opts.maxSteps} reached without terminating`
+      return {
+        kind: 'stop',
+        reason: 'stepcap',
+        nodeId: currentId,
+        outcome: { status: Status.FAIL, notes: capped, failureReason: capped },
+      }
+    }
+
+    // Pushed HERE, after the step-cap check, not by the caller before this
+    // method is even entered -- a step-cap-blocked id must never appear in
+    // path, since this dispatch never actually happened (no node.start, no
+    // handler call). Still strictly before node lookup/handler lookup, so
+    // the pre-dispatch-failure invariant below is unaffected.
+    opts.path.push(currentId)
+
+    const node = graph.nodes.get(currentId)
+    if (!node) {
+      const msg = `unknown node ${currentId}`
+      return {
+        kind: 'stop',
+        reason: 'deadend',
+        nodeId: currentId,
+        outcome: { status: Status.FAIL, notes: msg, failureReason: msg },
+      }
+    }
+
+    this.setManaged(context, 'current_node', node.id)
+
+    const handler = this.opts.handlers.get(node.handler)
+    if (!handler) {
+      const msg = `no handler registered for ${node.handler} (node ${node.id})`
+      return {
+        kind: 'stop',
+        reason: 'deadend',
+        nodeId: node.id,
+        outcome: { status: Status.FAIL, notes: msg, failureReason: msg },
+      }
+    }
+
+    const attempt = this.attempts.get(node.id) ?? 0
+    // Reserved SYNCHRONOUSLY, before the handler dispatch's own await below --
+    // NOT deferred to the post-await write the RETRY branch used to do. Two
+    // concurrent branches (Promise.all/allSettled) dispatching the SAME node id
+    // both used to read this identical value here, then both write the identical
+    // attempt+1 after their own await resolved, silently losing one increment.
+    // A read immediately followed by a write, with no await between them, is
+    // atomic under JS's single-threaded run-to-completion semantics -- whichever
+    // call's synchronous prefix runs first reserves the correct count before
+    // yielding, so the next concurrent call's own read (in ITS synchronous
+    // prefix) always sees the up-to-date value. If this dispatch turns out not
+    // to need it (no RETRY, or retries exhausted), the unconditional resets
+    // below (`this.attempts.set(node.id, 0)`) overwrite it harmlessly either way.
+    this.attempts.set(node.id, attempt + 1)
+    this.events.append({ type: 'node.start', node: node.id })
+    context.takeWritten()
+    let outcome: Outcome
+    const mode = runsOn(node)
+    const checksInputs = mode === RunsOn.SUCCESS || wantsVerdict(node)
+    const unavailable = checksInputs ? this.unavailableInput(node) : undefined
+    if (unavailable) {
+      this.events.append({
+        type: 'node.input_unavailable',
+        node: node.id,
+        key: unavailable.key,
+        owedBy: unavailable.owedBy,
+      })
+      outcome = {
+        status: Status.FAIL,
+        notes: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`,
+        failureReason: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`,
+      }
+    } else if (mode === RunsOn.FAILURE && !wantsVerdict(node) && !this.holdsUnresolvedFailure()) {
+      this.events.append({ type: 'node.runs_on.skipped', node: node.id, runsOn: mode })
+      outcome = {
+        status: Status.SUCCESS,
+        notes: `${node.id} did not run: runs_on=failure and no failure is outstanding`,
+      }
+    } else {
+      try {
+        outcome = await handler.execute({
+          node,
+          graph,
+          context,
+          runDir: opts.runDir,
+          cwd: opts.cwd,
+          events: this.events,
+          runBranch: (o: BranchRunOptions) => this.runBranch(o),
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        this.events.append({ type: 'node.error', node: node.id, message })
+        outcome = { status: Status.FAIL, notes: message, failureReason: message }
+      }
+    }
+
+    for (const key of context.takeWritten()) this.failedOutputs.delete(key)
+    this.events.append({ type: 'node.end', node: node.id, status: outcome.status })
+    this.recordOutcome(node.id, outcome, context)
+
+    if (outcome.status === Status.RETRY) {
+      const policy = resolveRetryPolicy(node, graph)
+      if (attempt < policy.maxRetries) {
+        const delay = backoffMs(policy, attempt)
+        this.events.append({
+          type: 'node.retry',
+          node: node.id,
+          attempt: attempt + 1,
+          delayMs: delay,
+        })
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay))
+        return { kind: 'continue', nextId: node.id }
+      }
+      const target = resolveRetryTarget(node, graph, { includeGraphLevel: false })
+      this.events.append({ type: 'node.retry.exhausted', node: node.id, target })
+      if (target) {
+        this.recordAbandoned(node.id)
+        this.attempts.set(node.id, 0)
+        return { kind: 'continue', nextId: target }
+      }
+      outcome = {
+        ...outcome,
+        status: Status.FAIL,
+        notes: `retries exhausted for ${node.id} with no retry target`,
+        failureReason: 'max retries exceeded',
+      }
+    }
+
+    this.recordOutcome(node.id, outcome, context)
+    this.attempts.set(node.id, 0)
+    if (!this.completed.includes(node.id)) this.completed.push(node.id)
+
+    const cp: Checkpoint = {
+      runId: this.opts.runId ?? 'run',
+      currentNode: node.id,
+      completed: [...this.completed],
+      attempts: Object.fromEntries(this.attempts),
+      context: context.snapshot(),
+      goalGatesSatisfied: [...this.gateOutcomes]
+        .filter(([, s]) => s === Status.SUCCESS || s === Status.PARTIAL)
+        .map(([id]) => id),
+    }
+    saveCheckpoint(opts.runDir, cp)
+
+    if (node.handler === Kind.EXIT) {
+      return { kind: 'stop', reason: 'exit', nodeId: node.id, outcome }
+    }
+
+    // ADR-013 A(a): a Handler.PARALLEL node's SUCCESS/PARTIAL join outcome
+    // jumps unconditionally to the statically-computed convergence node,
+    // bypassing selectEdge entirely -- selectEdge, called on this node's own
+    // outgoing edges, can never select it: those edges ARE the branch roots,
+    // not the convergence node. FAIL is unmodified -- the ordinary ladder
+    // below (retry_target / dead-end) already does the right thing for a
+    // component node, exactly like any other node.
+    if (node.handler === Kind.PARALLEL && (outcome.status === Status.SUCCESS || outcome.status === Status.PARTIAL)) {
+      const branchRootIds = [...new Set(outgoingEdges(graph, node.id).map((e) => e.to))]
+      const convergenceId = findConvergenceNode(graph, branchRootIds, node.id)
+      if (convergenceId) {
+        if (opts.stopAt?.has(convergenceId)) {
+          return { kind: 'stop', reason: 'frontier', nodeId: node.id, outcome }
+        }
+        return { kind: 'continue', nextId: convergenceId }
+      }
+      // No convergence node found -- fall through to the ordinary ladder
+      // below, which will most likely dead-end (PAR-001 already flags this
+      // condition at lint time).
+    }
+
+    const edge = selectEdge(graph, node.id, context, outcome)
+
+    if (!edge && outcome.status === Status.FAIL) {
+      const target = resolveRetryTarget(node, graph, { includeGraphLevel: false })
+      if (target) {
+        this.events.append({ type: 'node.fail.retry_target', node: node.id, target })
+        return { kind: 'continue', nextId: target }
+      }
+    }
+
+    if (!edge) {
+      const notes =
+        outcome.status === Status.FAIL
+          ? `no matching edge from ${node.id} after failure: ${outcome.notes ?? ''}`
+          : `run terminated at ${node.id}, which has no outgoing edges and is not the exit`
+      return {
+        kind: 'stop',
+        reason: 'deadend',
+        nodeId: node.id,
+        // status is forced to FAIL here (even when the dispatch's own
+        // outcome was SUCCESS/PARTIAL with simply no matching edge) --
+        // run()'s own interpretation of 'deadend' never reads
+        // outcome.status (it hardcodes Status.FAIL onto its own RunResult
+        // regardless), so this is inert for run(); it matters for
+        // runBranch (Task 5), whose BranchRunResult.outcome is this object
+        // verbatim and whose own contract requires status === FAIL for a
+        // true dead end unconditionally.
+        outcome: { ...outcome, status: Status.FAIL, notes, failureReason: outcome.failureReason ?? notes },
+      }
+    }
+
+    if (opts.stopAt?.has(edge.to)) {
+      return { kind: 'stop', reason: 'frontier', nodeId: node.id, outcome }
+    }
+
+    this.events.append({ type: 'edge.taken', node: node.id, to: edge.to })
+    return { kind: 'continue', nextId: edge.to }
+  }
+
+  /**
+   * A bounded forward traversal of the SAME graph, starting at
+   * opts.startNodeId, using the exact per-node step logic executeNodeStep
+   * (Task 2) already implements -- against this Engine's own shared
+   * gateOutcomes/nodeFailures/failedOutputs/stepCount ledgers. REJECTED: one
+   * independent `new Engine(...)` per branch -- a fresh instance would own
+   * its own empty ledgers, so a goal gate inside a branch would satisfy or
+   * fail a map nothing outside that branch's own instance ever reads,
+   * silently reopening the fail-open hole those ledgers exist to close
+   * (ADR-009).
+   *
+   * Treats EVERY stop reason -- 'exit', 'frontier', 'deadend', 'stepcap' --
+   * identically: stop looping and return whatever outcome/path the branch
+   * ended with. In particular, dispatching the graph's real EXIT node is an
+   * ORDINARY DEAD END for this branch alone (ADR-007's amendment): this
+   * method never calls unsatisfiedGoalGates(), never calls
+   * this.checkpoint(null), and never returns an Engine.RunResult -- that
+   * logic lives EXCLUSIVELY in run()'s own interpretation of a
+   * `{ kind: 'stop', reason: 'exit' }` result, a branch this uniform
+   * handling structurally cannot reach.
+   */
+  private async runBranch(opts: BranchRunOptions): Promise<BranchRunResult> {
+    const maxSteps = this.opts.maxSteps ?? DEFAULT_MAX_STEPS
+    const path: string[] = []
+    // Defensively cloned HERE, not merely trusted from the caller (whose own
+    // contract, BranchRunOptions.context's doc comment, says "already
+    // Context.clone()'d"). A future caller passing the run's own live
+    // Context by mistake -- a one-line error with nothing in the type
+    // system to catch it -- would otherwise corrupt production state in
+    // place across concurrent branches, silently: no exception, no warning
+    // event. Context.clone() is a cheap, pure copy (new
+    // Context(this.snapshot())), so cloning an already-cloned Context here
+    // is harmless -- this makes isolation a property runBranch itself
+    // guarantees, not a discipline every future caller must independently
+    // uphold.
+    const context = opts.context.clone()
+    let currentId = opts.startNodeId
+    for (;;) {
+      const stepResult = await this.executeNodeStep(currentId, {
+        runDir: opts.runDir,
+        cwd: opts.cwd,
+        maxSteps,
+        stopAt: opts.stopAt,
+        context,
+        path,
+      })
+      if (stepResult.kind === 'continue') {
+        currentId = stepResult.nextId
+        continue
+      }
+      return { outcome: stepResult.outcome, path, context: context.snapshot() }
+    }
   }
 
   async run(): Promise<RunResult> {
@@ -623,359 +952,43 @@ export class Engine {
       return this.result(Status.FAIL, 'graph has no start node', 'graph has no start node')
     }
 
-    // Seed context with graph-level values so $goal expands everywhere.
-    //
-    // Both spellings, deliberately. Section 5.1 names the built-in key
-    // `graph.goal`, so `condition="context.graph.goal=..."` must resolve; the
-    // bare name is what `$goal` substitution and every pipeline written
-    // against this engine already read, and it is a documented superset we do
-    // not retreat from. Mirroring ADDS a name, it does not move one. Neither
-    // spelling overwrites a value the caller passed in as a run parameter.
     for (const [k, v] of Object.entries(graph.attrs)) {
       if (!context.has(k)) context.set(k, v)
       const qualified = `graph.${k}`
-      if (!context.has(qualified)) this.setManaged(qualified, v)
+      if (!context.has(qualified)) this.setManaged(context, qualified, v)
     }
 
     let currentId: string | null = startNode.id
     this.events.append({ type: 'pipeline.start', node: startNode.id })
 
-    for (let step = 0; step < maxSteps; step++) {
-      if (currentId === null) break
-      const node = graph.nodes.get(currentId)
-      if (!node) {
-        this.events.append({ type: 'pipeline.end', node: currentId, status: Status.FAIL })
-        return this.result(Status.FAIL, `unknown node ${currentId}`, `unknown node ${currentId}`)
+    while (currentId !== null) {
+      const stepResult = await this.executeNodeStep(currentId, {
+        runDir: this.opts.runDir,
+        cwd: this.opts.cwd,
+        maxSteps,
+        stopAt: undefined,
+        context,
+        path: this.path,
+      })
+
+      if (stepResult.kind === 'continue') {
+        currentId = stepResult.nextId
+        continue
       }
 
-      this.path.push(node.id)
-      // Section 5.1: `current_node` is the id of the currently executing
-      // node. This is the CONTEXT key, and it is a different thing from the
-      // checkpoint's `current_node` FIELD, which section 5.3 defines as the
-      // last COMPLETED node. Both spellings are correct at the moment the
-      // checkpoint is now written -- step 5, after this node has completed --
-      // because the context key still names the node that just finished and
-      // has not yet been advanced.
-      this.setManaged('current_node', node.id)
+      // 'stop'. 'frontier' never occurs here: run() never supplies stopAt,
+      // so executeNodeStep can never produce it for this caller -- the same
+      // "additive, inert for every current call site" pattern ADR-008/
+      // ADR-009 established elsewhere in this codebase.
+      const { reason, nodeId, outcome } = stepResult
 
-      const handler = this.opts.handlers.get(node.handler)
-      if (!handler) {
-        this.events.append({ type: 'pipeline.end', node: node.id, status: Status.FAIL })
-        const noHandler = `no handler registered for ${node.handler} (node ${node.id})`
-        return this.result(Status.FAIL, noHandler, noHandler)
-      }
-
-      const attempt = this.attempts.get(node.id) ?? 0
-      // The generic node lifecycle lives here, not in individual handlers, so
-      // every node -- including PassthroughHandler ones (start, exit,
-      // diamond) that emit no detail events of their own -- leaves a
-      // node.start/node.end pair in the log. Handler-specific events such as
-      // node.box.end remain supplementary detail, not the record itself.
-      this.events.append({ type: 'node.start', node: node.id })
-      // Drain the write record so what comes back after the dispatch is THIS
-      // node's writes and nothing else. What is discarded here is the engine's
-      // own bookkeeping -- `current_node` just above, and the graph-attribute
-      // mirroring on the first iteration -- which is not a node producing an
-      // output and must not settle anyone's debt.
-      context.takeWritten()
-      let outcome: Outcome
-      // The eager input check, BEFORE dispatch. A node whose declared input a
-      // failed node owed cannot do its work, so it does not get to try: no
-      // subprocess, no model call, no side effects on the operator's tree.
-      //
-      // FAIL and not SKIPPED. Section 5.2 defines SKIPPED as "Proceed without
-      // recording an outcome", which cannot also mean "stop", so amplifier's
-      // R12 M3 SKIPPED-propagation is a contradiction we do not port. FAIL is
-      // both honest -- the node cannot do its work, for a precise and
-      // reportable reason -- and spec-defined, so it routes through section
-      // 3.7's ladder unchanged and the fail-fast doctrine is what actually
-      // halts the run. No new status, no new routing rule.
-      //
-      // The node is still VISITED: it is on the path, it is checkpointed, it
-      // gets an outcome and it routes. That is what keeps section 3.4's
-      // visited-scoped goal-gate check applicable to it, so a goal gate
-      // blocked this way blocks the exit instead of quietly not counting.
-      //
-      // `recordOutcome` below then puts this node's OWN DECLARED outputs into
-      // the ledger, keyed to itself, which is what makes the propagation
-      // transitive: the next node referencing what this one was contracted to
-      // produce is blocked by the same check, one hop further on.
-      //
-      // A blocked node DOES still re-record, and that survived fix round 2 on
-      // purpose. The objection was that a node which never executed recorded a
-      // debt -- but for a DECLARED key that is exactly right: the author said
-      // this node produces that key, and it did not, whether it declined to run
-      // or ran and failed. A successor cannot tell the difference and should
-      // not have to. What was wrong was re-recording INFERRED keys, which put
-      // `tool.last_line` in the ledger against a node that never ran and
-      // poisoned it downstream; with inference gone, a node that declares
-      // nothing now records nothing here.
-      // Only the DISPATCH is skipped. Everything after this block -- the
-      // node.end event, both `recordOutcome` calls, the retry machine (a FAIL
-      // is not a RETRY, so it passes straight through), edge selection and
-      // section 3.7's ladder -- runs exactly as it does for any other FAIL. A
-      // separate routing tail for this case would be a second copy of the
-      // failure ladder, and the two would eventually disagree.
-      //
-      // `runs_on` gates this check rather than sitting beside it. The check IS
-      // the `success` contract -- "my inputs must be there" -- so an ordinary
-      // cleanup or failure-handler node is not asking for it, and its
-      // unresolved references stay literal, exactly as an unknown key's do.
-      //
-      // A GOAL GATE IS CHECKED WHATEVER ITS `runs_on` SAYS, and that exemption
-      // is not symmetry-breaking tidiness -- it is the fail-closed doctrine.
-      // Task 5 stopped `runs_on` from SKIPPING a gate; the whole-branch review
-      // then showed the same attribute switching off the EAGER CHECK on one, and
-      // demonstrated the consequence on identical A/B graphs. Without `runs_on`:
-      // the gate is blocked, the run halts, `status: fail`. With
-      // `runs_on="failure"`: the check was skipped, the owed `${artifact.path}`
-      // blanked, the gate printed `verified ` and returned SUCCESS, SATISFIED
-      // ITSELF, and the run reached `done` at exit 0. A gate earning its verdict
-      // against an input the engine itself recorded as unavailable is precisely
-      // the unearned false-success the doctrine exists to prevent -- the entry
-      // in plugins/attractor/AGENTS.md cites a real run that claimed victory
-      // with zero work product. A gate is a claim about evidence, so it is never
-      // earned on inputs known to be missing, and `runs_on` gets no vote.
-      //
-      // Consequence, stated so nobody reads it as a bug later: `runs_on` is now
-      // wholly INERT on a goal gate -- it cannot skip one and it cannot relax
-      // one. RUNS-002 in `dot/lint.ts` is what says so at design time.
-      const mode = runsOn(node)
-      const checksInputs = mode === RunsOn.SUCCESS || wantsVerdict(node)
-      const unavailable = checksInputs ? this.unavailableInput(node) : undefined
-      if (unavailable) {
-        this.events.append({
-          type: 'node.input_unavailable',
-          node: node.id,
-          key: unavailable.key,
-          owedBy: unavailable.owedBy,
-        })
-        outcome = {
-          status: Status.FAIL,
-          // Section 3.5's `failure_reason` is carried by `notes` throughout
-          // this engine -- see the retry-exhaustion rewrite below, which
-          // writes that same spec field here. The reason therefore lands
-          // where every existing consumer already reads it (the terminal
-          // `notes` string, the CLI's message, the event log) instead of in a
-          // second field only this path writes.
-          notes: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`,
-          // Section 5.2's field, now that it exists. The comment above
-          // described `notes` as carrying section 3.5's `failure_reason`
-          // "throughout this engine" because there was nowhere else to put
-          // it; both are written now, so a consumer no longer has to parse
-          // the sentence a SUCCESS also writes to.
-          failureReason: `required input '${unavailable.key}' unavailable: node '${unavailable.owedBy}' failed`,
-        }
-      } else if (mode === RunsOn.FAILURE && !wantsVerdict(node) && !this.holdsUnresolvedFailure()) {
-        // A failure handler on a healthy run. The dispatch is skipped and
-        // NOTHING ELSE is: the node is on the path, it is checkpointed, it gets
-        // an outcome and it routes, exactly as the blocked-input case above.
-        //
-        // SUCCESS, and not SKIPPED. Section 5.2 defines SKIPPED as "Proceed
-        // without recording an outcome", so it cannot be the status of a node
-        // that must then route; the same reading that made the eager check
-        // return FAIL rather than port amplifier's M3. This node did not fail
-        // -- there was simply nothing for it to do -- so SUCCESS is the honest
-        // remaining status, and the event below is what distinguishes "ran and
-        // succeeded" from "did not run" for anyone reading the log.
-        //
-        // A GOAL GATE IS NEVER SKIPPED, which is why `wantsVerdict` is in the
-        // condition. Skipping one would put a SUCCESS in `gateOutcomes` for a
-        // node that produced no evidence at all, and a gate satisfied by not
-        // running is precisely the unearned false-success the fail-closed
-        // doctrine exists to stop -- a new bypass, opened by a node attribute,
-        // for the guard that cost this project a 2.4-hour run reporting
-        // victory with no work product. The combination is an authorial
-        // contradiction ("this gate only runs when things are broken"), and the
-        // engine resolves it in the FAIL-CLOSED direction: the gate runs and has
-        // to earn its verdict, exactly as it does without `runs_on`. RUNS-002 in
-        // `dot/lint.ts` is what names it out loud at design time.
-        //
-        // THIS LINE IS HALF OF THAT RESOLUTION, NOT ALL OF IT, and the earlier
-        // comment here claimed otherwise -- "this line is what makes the
-        // combination safe rather than dangerous". It was not: `runs_on` also
-        // switched off the eager input check above, so a gate could still earn a
-        // verdict against an input the engine had recorded as unavailable. The
-        // other half now lives in `checksInputs`. WARNING remains the right
-        // severity for RUNS-002, but it rests on both halves being present.
-        //
-        // `recordOutcome` also treats this SUCCESS as a re-execution and would
-        // clear this node's own debts. Unreachable by construction: a node
-        // holding an unresolved failure of its own makes
-        // `holdsUnresolvedFailure()` true, so it takes the dispatch branch.
-        this.events.append({ type: 'node.runs_on.skipped', node: node.id, runsOn: mode })
-        outcome = {
-          status: Status.SUCCESS,
-          notes: `${node.id} did not run: runs_on=failure and no failure is outstanding`,
-        }
-      } else {
-        try {
-          outcome = await handler.execute({
-            node,
-            graph,
-            context,
-            runDir: this.opts.runDir,
-            cwd: this.opts.cwd,
-            events: this.events,
-          })
-        } catch (err) {
-          // Section 4.12, handler contract: "Handler panics/exceptions MUST be
-          // caught by the engine and converted to FAIL outcomes." Section 3.5's
-          // CATCH block says the same thing in code: "ELSE: RETURN
-          // Outcome(status=FAIL, failure_reason=str(exception))".
-          //
-          // Catching at all is still the first requirement, and unchanged: an
-          // uncaught throw rejects Engine.run() outright, skipping the terminal
-          // event, the final checkpoint and everything below.
-          //
-          // WHAT CHANGED is the status. This produced RETRY, which cost two
-          // things. The exception text was overwritten by "retries exhausted
-          // for <node> with no retry target" and survived only in
-          // events.jsonl, so an operator reading the run result learned nothing
-          // about what actually broke. And a node with retries re-ran a handler
-          // that had already thrown, once per retry, with a backoff between --
-          // pure latency for a configuration or validation error, which is what
-          // a throw here almost always is.
-          //
-          // NO `should_retry` PREDICATE, and that is a recorded decision rather
-          // than an omission. Section 3.5 only retries an exception when
-          // `retry_policy.should_retry(exception)` is true, and section 3.6
-          // scopes that to "network errors, rate limit errors (HTTP 429),
-          // server errors (HTTP 5xx), and provider-reported transient
-          // failures". OUR BACKEND CANNOT PRODUCE ONE. `ClaudeCodeBackend`
-          // converts its whole transport surface -- spawn failure, abort,
-          // non-zero exit, unparseable output -- into a FAIL Outcome before it
-          // can throw (`runProcess` resolves, never rejects; `interpretResult`
-          // catches its own throw). So everything that reaches this catch is a
-          // handler bug or a filesystem error, all of which are on section
-          // 3.6's `false` list. A predicate matching guessed HTTP shapes would
-          // be dead code that could only ever fire on a string coincidence, and
-          // the doctrine's own rule is that guessed error shapes are worse than
-          // none. Section 4.12's MUST is unconditional and this is its ELSE
-          // branch; if a future backend throws transient errors, the predicate
-          // goes in `retry.ts` and is derived from what that backend throws.
-          const message = err instanceof Error ? err.message : String(err)
-          this.events.append({ type: 'node.error', node: node.id, message })
-          outcome = { status: Status.FAIL, notes: message, failureReason: message }
-        }
-      }
-      // A key some node has actually PRODUCED is available, so it is no longer
-      // owed -- whoever owed it. Keyed on the key, not on the owner, and this
-      // is a bug fix rather than a refinement: `tool.last_line` is in EVERY
-      // tool node's inferred output set, so owner-only clearing left an
-      // ordinary graph (`build` fails onto a routed failure edge, `note` later
-      // succeeds and writes `tool.last_line`) reporting that key as owed by
-      // `build` forever. The eager check above then refused every downstream
-      // node substituting `${tool.last_line}` -- a FALSE HALT on an input that
-      // was demonstrably present, which is worse than the walk-past behaviour
-      // this whole change replaces.
-      //
-      // What is cleared is what REACHED CONTEXT, taken from `Context` itself.
-      // Not `effectiveOutputs`, which is a contract rather than evidence and
-      // would mark keys available that nobody wrote; not the presence of a
-      // value, which the stale-label doctrine deliberately leaves behind on a
-      // failed tool node; and not the Outcome's `contextUpdates`, which
-      // `handlers/box.ts` returns UNFILTERED while merging only the allowed
-      // subset -- so reading those would let a model forge a clear with a key
-      // the namespace guard had just thrown away. See `Context.written`.
-      //
-      // Before `recordOutcome`, deliberately: a node that wrote a key and then
-      // FAILED clears it here, and then `recordFailedOutputs` re-records the
-      // keys THIS node was contracted to produce. So a partial write does not
-      // let a failing node declare its own contract fulfilled, while a key it
-      // genuinely produced for someone else still counts.
-      //
-      // This does NOT replace the owner-level clearing in `recordOutcome`. The
-      // two answer different questions and the ledger needs both: a tool node
-      // declaring `outputs="artifact.path"` can never write that key itself,
-      // so only "the node that owed it re-executed green" can settle that
-      // debt. Dropping owner-level clearing would break the repair loop the
-      // ledger was built around.
-      for (const key of context.takeWritten()) this.failedOutputs.delete(key)
-      this.events.append({ type: 'node.end', node: node.id, status: outcome.status })
-      // Recorded here, before the retry machine, so the paths that `continue`
-      // out of this iteration -- an in-place retry and a retry-target jump --
-      // still leave the gate's latest outcome behind them. A gate that
-      // RETRYs away to a retry target and never returns must keep blocking
-      // the exit; recording only on fall-through would silently reopen the
-      // fail-open hole C4 exists to close.
-      this.recordOutcome(node.id, outcome)
-
-      // RETRY re-executes this node until the policy is exhausted.
-      if (outcome.status === Status.RETRY) {
-        const policy = resolveRetryPolicy(node, graph)
-        if (attempt < policy.maxRetries) {
-          this.attempts.set(node.id, attempt + 1)
-          const delay = backoffMs(policy, attempt)
-          this.events.append({
-            type: 'node.retry',
-            node: node.id,
-            attempt: attempt + 1,
-            delayMs: delay,
-          })
-          if (delay > 0) await new Promise((r) => setTimeout(r, delay))
-          continue
-        }
-        const target = resolveRetryTarget(node, graph, { includeGraphLevel: false })
-        this.events.append({ type: 'node.retry.exhausted', node: node.id, target })
-        if (target) {
-          // The run has given up on this node's work. It never reaches a FAIL
-          // status -- the rewrite below is skipped by this `continue` -- so
-          // the ledger has to be told here or the abandonment is invisible to
-          // the verdict, which is how a backend crash on a node with a
-          // fallback route reported SUCCESS at exit 0.
-          this.recordAbandoned(node.id)
-          this.attempts.set(node.id, 0)
-          currentId = target
-          continue
-        }
-        outcome = {
-          ...outcome,
-          status: Status.FAIL,
-          notes: `retries exhausted for ${node.id} with no retry target`,
-          // Section 3.5's own string for this case: "RETURN
-          // Outcome(status=FAIL, failure_reason='max retries exceeded')".
-          failureReason: 'max retries exceeded',
-        }
-      }
-
-      // Second call: an exhausted RETRY with no target was just rewritten to
-      // FAIL above, and that rewritten status is what edge selection and the
-      // goal-gate check both see.
-      this.recordOutcome(node.id, outcome)
-
-      this.attempts.set(node.id, 0)
-      if (!this.completed.includes(node.id)) this.completed.push(node.id)
-
-      // Section 3.2, "-- Step 5: Save checkpoint", which sits AFTER step 3
-      // appends to `completed_nodes` and step 4 applies the outcome. Section
-      // 5.3 then defines the field it writes: "`current_node : String` -- ID
-      // of the LAST COMPLETED node", and its resume rule reads it that way --
-      // "Determine the next node to execute (the one AFTER `current_node`)".
-      //
-      // This used to run at the TOP of the iteration with the node about to
-      // execute, which broke both halves at once. The file said
-      // `current_node: "b"` while `b` was still running, so it never held the
-      // value section 5.3 describes at any instant of the run, and a
-      // conformant resume would start after `b` and SKIP IT -- the node whose
-      // crash caused the resume. The context snapshot was taken pre-dispatch
-      // too, so a resumed run also lost every key the node produced.
-      //
-      // The paths that `continue` above this line -- an in-place retry, and a
-      // retry-target jump after exhaustion -- deliberately write no
-      // checkpoint. Neither completed the node, so under section 5.3 the
-      // previous checkpoint, naming the last node that genuinely did complete,
-      // is still the correct answer. The old placement asserted the opposite
-      // for both.
-      this.checkpoint(node.id)
-
-      if (node.handler === Kind.EXIT) {
+      if (reason === 'exit') {
         const unsatisfied = this.unsatisfiedGoalGates()
         if (unsatisfied.length > 0) {
           const target = this.gateRetryTarget(unsatisfied)
           this.events.append({
             type: 'pipeline.goal_gate_block',
-            node: node.id,
+            node: nodeId,
             unsatisfied,
             target,
           })
@@ -983,56 +996,21 @@ export class Engine {
             currentId = target
             continue
           }
-          this.events.append({ type: 'pipeline.end', node: node.id, status: Status.FAIL })
+          this.events.append({ type: 'pipeline.end', node: nodeId, status: Status.FAIL })
           this.checkpoint(null)
           return this.result(
             Status.FAIL,
             `exit reached with unsatisfied goal gates: ${unsatisfied.join(', ')}`,
-            // Section 3.4 step 4's own wording for this terminal case:
-            // "RETURN Outcome(status=FAIL, failure_reason='Goal gate
-            // unsatisfied and no retry target')". `notes` keeps naming the
-            // gates, which the spec's string does not.
             'Goal gate unsatisfied and no retry target',
           )
         }
 
-        // A run can reach the exit holding a node failure that nothing
-        // recovered, and the spec says that run is still a SUCCESS.
-        //
-        // Section 11.3: "Pipeline outcome is 'success' if all goal_gate nodes
-        // reached SUCCESS or PARTIAL_SUCCESS, 'fail' otherwise." That is the
-        // ONLY normative statement of the run verdict, and it decides it
-        // purely by goal gates. Section 3.7 agrees by omission: only step 4,
-        // "no failure route found", terminates the pipeline -- a failure the
-        // author DID route is carried onward by design. And section 3.5's
-        // `allow_partial` is per-node on retry exhaustion, never run-level,
-        // so there is no run-level knob the spec expects here either.
-        //
-        // An earlier version of this branch returned FAIL instead, on the
-        // reasoning that a run holding an unrecovered failure should not
-        // claim success. That reasoning is defensible and it is not ours to
-        // apply: it reports FAIL where section 11.3 reports SUCCESS, which is
-        // a CONTRADICTION, and this plugin extends the spec and never
-        // contradicts it. It was withdrawn, and the real fix turned out to be
-        // one level down: findings I1 and I2 in
-        // docs/superpowers/spec-conformance.md were settled by the eager input
-        // check and by a lint rule respectively, with this branch untouched.
-        //
-        // What stays is purely additive, and is the whole reason the failure
-        // is visible at all: the event below, the `notes` string, and
-        // `RunResult.unresolvedFailures`. Silence is what the doctrine
-        // forbids; a spec-conformant `status` beside a loud record is an
-        // extension that contradicts nothing.
         const failed = this.unresolvedFailures()
         if (failed.length > 0) {
-          this.events.append({
-            type: 'pipeline.unresolved_failure',
-            node: node.id,
-            failed,
-          })
+          this.events.append({ type: 'pipeline.unresolved_failure', node: nodeId, failed })
         }
 
-        this.events.append({ type: 'pipeline.end', node: node.id, status: Status.SUCCESS })
+        this.events.append({ type: 'pipeline.end', node: nodeId, status: Status.SUCCESS })
         this.checkpoint(null)
         return this.result(
           Status.SUCCESS,
@@ -1042,54 +1020,26 @@ export class Engine {
         )
       }
 
-      const edge = selectEdge(graph, node.id, context, outcome)
-
-      // Spec section 3.7's failure ladder: 1. fail edge, 2. node retry
-      // target, 3. fallback retry target, 4. pipeline termination.
-      //
-      // Step 1 is `edge` above: on a FAIL outcome selectEdge returns an edge
-      // only when a condition explicitly matched the failure, so a non-null
-      // edge here IS the fail edge and it wins -- an author's explicit
-      // failure route is never pre-empted by a retry target. Steps 2 and 3
-      // were previously unreachable: resolveRetryTarget was consulted only
-      // when a RETRY status exhausted its attempts, so a node with a
-      // retry_target that returned FAIL ended the run instead of jumping.
-      //
-      // Fail-fast is unchanged. It is a statement about *edges* -- no
-      // unconditional edge may carry a failure forward -- and section 3.7
-      // puts the retry target below the fail edge precisely because the
-      // graph author declared it as the failure route.
-      if (!edge && outcome.status === Status.FAIL) {
-        const target = resolveRetryTarget(node, graph, { includeGraphLevel: false })
-        if (target) {
-          this.events.append({ type: 'node.fail.retry_target', node: node.id, target })
-          currentId = target
-          continue
-        }
-      }
-
-      if (!edge) {
-        // A non-exit node with no route forward is a dead end, not a success:
-        // the run stops here and unsatisfiedGoalGates() is never consulted,
-        // so silently reporting SUCCESS would let a graph route around its
-        // own goal gates just by lacking an outgoing edge. Only a genuine
-        // FAIL outcome with no matching failure route keeps its own message.
-        const notes =
-          outcome.status === Status.FAIL
-            ? `no matching edge from ${node.id} after failure: ${outcome.notes ?? ''}`
-            : `run terminated at ${node.id}, which has no outgoing edges and is not the exit`
-        this.events.append({ type: 'pipeline.end', node: node.id, status: Status.FAIL })
-        this.checkpoint(null)
-        return this.result(Status.FAIL, notes, outcome.failureReason ?? notes)
-      }
-
-      this.events.append({ type: 'edge.taken', node: node.id, to: edge.to })
-      currentId = edge.to
+      // 'deadend' and 'stepcap' both carry a fully-formatted
+      // outcome.notes/failureReason from executeNodeStep -- 'deadend'
+      // pre-formats the exact text the old inline `!edge` block built
+      // locally (including the two pre-dispatch pathological cases); the
+      // checkpoint argument is the one place the two still differ, matching
+      // engine.ts's own pre-refactor behaviour exactly (a step-cap
+      // checkpoint names the not-yet-dispatched node; a dead-end checkpoints
+      // null).
+      this.events.append({ type: 'pipeline.end', node: nodeId, status: Status.FAIL })
+      this.checkpoint(reason === 'stepcap' ? nodeId : null)
+      return this.result(Status.FAIL, outcome.notes, outcome.failureReason)
     }
 
-    this.checkpoint(currentId)
-    this.events.append({ type: 'pipeline.end', node: currentId ?? undefined, status: Status.FAIL })
-    const capped = `step cap of ${maxSteps} reached without terminating`
-    return this.result(Status.FAIL, capped, capped)
+    // currentId === null: dead code today (nothing in this method ever
+    // assigns it), kept only because the type allows it and a defensive
+    // guard costs nothing.
+    return this.result(
+      Status.FAIL,
+      'run terminated with no current node',
+      'run terminated with no current node',
+    )
   }
 }

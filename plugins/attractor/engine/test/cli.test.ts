@@ -194,10 +194,57 @@ digraph UF {
 }
 `
 
+// p3-01/ADR-014 update: this fixture is exactly GATE-002's own hazard shape
+// (an undeclared key -- `build_error` -- referenced by an outcome-blind
+// conditional edge, no goal_gate anywhere, `publish` reaches exit), so
+// `attractor run` now refuses it at the lint gate before dispatching
+// anything, matching the established lint-refusal shape asserted by 'run
+// refuses to execute a graph that fails lint' above. See ADR-014
+// (.delivery/decisions/) for the full reasoning.
 test('a run holding unresolved failures still exits 0, and says so loudly', async () => {
   await withTemp(async (cwd, runDir) => {
     const file = join(cwd, 'uf.dot')
     writeFileSync(file, UNRESOLVED_FAILURE, 'utf8')
+    const { code, err } = await captureStderr(() =>
+      main(['run', file, '--cwd', cwd, '--run-dir', runDir, '--stub']),
+    )
+    assert.equal(code, 1, 'GATE-002 now refuses this exact graph shape at the lint gate')
+    assert.match(err, /ERROR GATE-002/)
+    assert.match(err, /refusing to run a graph with lint errors/)
+    assert.equal(
+      existsSync(runDir),
+      false,
+      'refusing must happen before any run state is created',
+    )
+  })
+})
+
+// The general "unresolved failure reported via WARNING, run still exits 0"
+// mechanism (spec section 11.3: status is decided by goal gates alone) still
+// needs coverage now that UNRESOLVED_FAILURE above is refused at lint time.
+// This fixture keeps a real unresolved failure -- `build` fails and is never
+// re-run -- but the downstream edge discriminates genuinely on `outcome`
+// (ADR-014's "legitimate shape 2": `condition="outcome=fail"` is never
+// vacuous, since `outcome` resolves live from the Outcome object, never from
+// context), so GATE-002's condition 4 (outcome-blind) fails and it does not
+// fire, leaving this path's WARNING behaviour exercised the way it would be
+// in the wild.
+const UNRESOLVED_FAILURE_WITH_DISCRIMINATING_ROUTE = `
+digraph UF2 {
+  start [shape=Mdiamond]
+  done  [shape=Msquare]
+  build          [shape=parallelogram, tool_command="exit 1"]
+  notify_failure [shape=box, prompt="notify"]
+  start -> build
+  build -> notify_failure [condition="outcome=fail"]
+  notify_failure -> done
+}
+`
+
+test('a run holding an unresolved failure behind a genuinely discriminating route still exits 0, and says so loudly', async () => {
+  await withTemp(async (cwd, runDir) => {
+    const file = join(cwd, 'uf2.dot')
+    writeFileSync(file, UNRESOLVED_FAILURE_WITH_DISCRIMINATING_ROUTE, 'utf8')
     const { code, err } = await captureStderr(() =>
       main(['run', file, '--cwd', cwd, '--run-dir', runDir, '--stub']),
     )

@@ -50,7 +50,7 @@ function byWeightThenTarget(a: Edge, b: Edge): number {
  * short-circuit step 1 exactly like a real match -- and, on a FAIL outcome,
  * silently carry the failure forward where `condition=""` correctly does not.
  */
-function isConditional(edge: Edge): boolean {
+export function isConditional(edge: Edge): boolean {
   return edge.attrs.condition !== undefined && edge.attrs.condition.trim() !== ''
 }
 

@@ -234,13 +234,13 @@ export async function main(argv: string[]): Promise<number> {
       // An explicit request. Honoured regardless of --stub -- an operator
       // who asked for isolation gets it, or an explicit, loud refusal, never
       // a silent downgrade to running in place.
-      if (!isGitRepo(args.cwd)) {
+      if (!(await isGitRepo(args.cwd))) {
         process.stderr.write(
           `--worktree requires a git repository; ${args.cwd} is not one\n`,
         )
         return 1
       }
-      worktree = createWorktree(args.cwd, runId)
+      worktree = await createWorktree(args.cwd, runId)
       cwd = worktree.path
       process.stdout.write(`worktree: ${worktree.path} (branch ${worktree.branch})\n`)
     } else if (!args.stub) {
@@ -257,8 +257,8 @@ export async function main(argv: string[]): Promise<number> {
             `shell/write access (Bash, Read, Write, Edit by default) directly in ${args.cwd}. ` +
             `Nothing isolates it from your working copy.\n`,
         )
-      } else if (isGitRepo(args.cwd)) {
-        worktree = createWorktree(args.cwd, runId)
+      } else if (await isGitRepo(args.cwd)) {
+        worktree = await createWorktree(args.cwd, runId)
         cwd = worktree.path
         process.stdout.write(`worktree: ${worktree.path} (branch ${worktree.branch})\n`)
       } else {
@@ -335,7 +335,7 @@ export async function main(argv: string[]): Promise<number> {
       return result.status === Status.SUCCESS ? 0 : 1
     } finally {
       if (worktree !== undefined) {
-        const removal = removeWorktree(args.cwd, worktree)
+        const removal = await removeWorktree(args.cwd, worktree)
         // Surface a cleanup problem rather than leaving a stale worktree
         // behind silently; the run's own exit code is unaffected.
         if (removal.warning !== undefined) process.stderr.write(`${removal.warning}\n`)

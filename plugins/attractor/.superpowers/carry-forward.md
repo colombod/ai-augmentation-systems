@@ -80,10 +80,10 @@ coverage, extensibility risk; two independent judges; one final synthesis), whic
 two hard, explicit, non-hybrid requirements — arbitrary bespoke/pluggable external channels
 (`CommandChannel`) and an opt-in `agent`-proxy channel — that the park/checkpoint design
 predates and has no equivalent for. Park/resume's one clean advantage, cross-restart
-durability, is not in play: `.delivery/prd.md`'s Non-Goals/Out-of-scope section already
+durability, is not in play: `.delivery/initiatives/spec-conformance-mvp/prd.md`'s Non-Goals/Out-of-scope section already
 excludes it this slice, independent of which design won. ADR-002 stands unchanged in content
 (addended, not superseded — see its own Addendum section) as the `human` channel's eventual
-implementation. `.delivery/prd.md` Open Questions 1 and 2 are resolved accordingly.
+implementation. `.delivery/initiatives/spec-conformance-mvp/prd.md` Open Questions 1 and 2 are resolved accordingly.
 
 **Carried forward as future/additive work on top of the `Channel` abstraction, not as a
 reason to revisit this decision:** `checkpoint.ts`/`loadCheckpoint` (already implemented,

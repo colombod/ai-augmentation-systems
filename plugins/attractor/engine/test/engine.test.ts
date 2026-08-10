@@ -4,11 +4,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseDot } from '../src/dot/parse.ts'
-import { lint, hasErrors } from '../src/dot/lint.ts'
+import { lint, hasErrors, Severity } from '../src/dot/lint.ts'
 import { Context, isEngineManagedKey } from '../src/core/context.ts'
 import { Status, type Outcome } from '../src/core/outcome.ts'
 import { StubBackend } from '../src/handlers/stub.ts'
-import { type Backend } from '../src/handlers/types.ts'
+import { type Backend, type HandlerCtx, type Handler as HandlerIface } from '../src/handlers/types.ts'
 import {
   Handler,
   RunsOn,
@@ -22,7 +22,8 @@ import { Engine, defaultHandlers } from '../src/core/engine.ts'
 import { BOX_CONTEXT_KEYS } from '../src/handlers/box.ts'
 import { loadCheckpoint } from '../src/core/checkpoint.ts'
 import { EventLog } from '../src/run/events.ts'
-import { LINT_FAILS_BUT_WOULD_RUN } from './fixtures.ts'
+import { LINT_FAILS_BUT_WOULD_RUN, GatedBackend } from './fixtures.ts'
+import { type BranchRunResult as BranchRunResultShape } from '../src/handlers/types.ts'
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'attractor-engine-'))
@@ -556,12 +557,21 @@ test('a goal gate that retries away and never returns still blocks the exit', as
 // resolveRetryTarget was consulted only when a RETRY status exhausted its
 // attempts, never on a FAIL outcome -- so this run ended at `failing` instead
 // of jumping to `recover`.
+// `gate`/the `outcome=success` edge into it exist ONLY to keep this graph
+// lint-clean under GATE-002 (ADR-014 Amendment 3: a retry_target reaching the
+// exit with zero goal gates anywhere is now a lint-time ERROR). `failing` is
+// scripted FAIL on every call below, so this edge never matches and `gate` is
+// never dispatched -- the C6 mechanism this fixture exists to pin (a FAIL
+// outcome consulting the node retry target) is otherwise unchanged.
 const FAIL_TO_RETRY_TARGET = `
 digraph F {
   start [shape=Mdiamond]  done [shape=Msquare]
   recover [shape=box, prompt="recover"]
+  gate    [shape=box, goal_gate=true, prompt="judge"]
   failing [shape=box, prompt="x", retry_target="recover", max_retries=0]
   start -> failing
+  failing -> gate [condition="outcome=success"]
+  gate -> done
   recover -> done
 }
 `
@@ -589,15 +599,22 @@ test('a FAIL outcome consults the node retry target (C6)', async () => {
 // both an explicit `outcome=fail` edge and a retry_target must take the edge.
 // Without this, correcting C6 could have quietly promoted the retry target
 // over a route the graph author wrote explicitly.
+// `gate` exists only for the same GATE-002 (ADR-014 Amendment 3) reason as
+// FAIL_TO_RETRY_TARGET above: `failing` is scripted FAIL below, so its
+// `outcome=success` edge into `gate` never matches and `gate` is never
+// dispatched.
 const FAIL_EDGE_BEATS_RETRY_TARGET = `
 digraph FE {
   start [shape=Mdiamond]  done [shape=Msquare]
   recover [shape=box, prompt="recover"]
   handled [shape=box, prompt="handled"]
+  gate    [shape=box, goal_gate=true, prompt="judge"]
   failing [shape=box, prompt="x", retry_target="recover", max_retries=0]
   start -> failing
   failing -> handled [condition="outcome=fail"]
+  failing -> gate    [condition="outcome=success"]
   handled -> done
+  gate -> done
   recover -> done
 }
 `
@@ -631,7 +648,7 @@ test('an explicit fail edge still outranks the retry target (C6, section 3.7 ste
 // terminates and never reports SUCCESS. maxSteps=40 keeps a broken step
 // counter from hanging the suite instead of failing it.
 //
-// `failing -> done [condition="outcome=success"]` is dead in this specific
+// `failing -> gate [condition="outcome=success"]` is dead in this specific
 // script -- `failing` is scripted to FAIL every time, so the condition never
 // matches and the loop through `recover` behaves exactly as before. It exists
 // so `done` is genuinely reachable (TOPO-004, F14): a real graph author
@@ -640,14 +657,20 @@ test('an explicit fail edge still outranks the retry target (C6, section 3.7 ste
 // would actually ship. Without it `done` has no route in at all -- not
 // through an edge, not through any retry_target -- so F14's reachability fix
 // correctly leaves it flagged; this is the fixture catching up to that, not a
-// workaround for it.
+// workaround for it. `gate` itself (rather than a direct edge to `done`) is
+// ADDITIONALLY required by GATE-002 (ADR-014 Amendment 3): `failing`'s own
+// retry_target reaches `done` with no goal gate anywhere in this graph, which
+// is now a lint-time ERROR -- and since `gate` sits behind a condition that
+// never matches here, it changes nothing about what this test exercises.
 const FAIL_RETRY_TARGET_LOOP = `
 digraph FRL {
   start [shape=Mdiamond]  done [shape=Msquare]
   failing [shape=box, prompt="x", retry_target="recover", max_retries=0]
   recover [shape=box, prompt="recover"]
+  gate    [shape=box, goal_gate=true, prompt="judge"]
   start -> failing
-  failing -> done [condition="outcome=success"]
+  failing -> gate [condition="outcome=success"]
+  gate -> done
   recover -> failing
 }
 `
@@ -1311,6 +1334,33 @@ test('the step cap terminates a non-terminating graph', async () => {
   }
 })
 
+// Final-review regression (mutation-checked): executeNodeStep's own path.push
+// used to live in each of its two callers, BEFORE calling the method -- so a
+// dispatch the step-cap check went on to block still left its id in path,
+// even though it was never actually executed (no node.start, no handler
+// call). Reachable on ANY graph, no branch/component node required. Reverting
+// the fix (path.push moved back into each caller, before executeNodeStep) on
+// this exact fixture reproduces the phantom trailing 'a': path.length 6, not
+// 5, with no matching node.start event for the extra entry.
+test('the step cap never leaves a phantom, never-dispatched node in RunResult.path', async () => {
+  const { runDir, cwd } = tempDirs()
+  try {
+    const engine = new Engine({
+      graph: parseDot(STEP_CAP),
+      context: Context.from({}),
+      runDir,
+      cwd,
+      handlers: defaultHandlers(new StubBackend({})),
+      maxSteps: 5,
+    })
+    const result = await engine.run()
+    assert.equal(result.status, Status.FAIL)
+    assert.deepEqual(result.path, ['start', 'a', 'b', 'a', 'b'], 'exactly the 5 nodes actually dispatched -- no extra hop for the one the cap blocked')
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
 // ---------------------------------------------------------------------------
 // FINDINGS I1 AND I2 of the whole-branch review. Both are settled now, and the
 // two settlements are DIFFERENT IN KIND -- which is the point of keeping them
@@ -1443,34 +1493,42 @@ digraph G {
 }
 `
 
+// p3-01/ADR-014 update: this fixture is exactly GATE-002's own hazard shape 1
+// (an undeclared key referenced by a conditional edge, no goal_gate anywhere,
+// target reaches exit) -- the shape this story exists to refuse. I1's
+// opt-in scope, described above, has not changed: a key nobody declared is
+// still not a debt anybody owes at the DATA-001/eager-check level. What
+// changed is that FR-9b now refuses this exact graph shape at design time
+// (see ADR-014, .delivery/decisions/), so the runtime walk-past this test
+// used to pin no longer happens -- the run never starts.
 test('I1 is opt-in: an undeclared key gives no protection, and DATA-001 says so', async () => {
+  // The design-time half, now load-bearing rather than supplementary: GATE-002
+  // fires ERROR on this exact graph, naming the node that owed the key and the
+  // key itself.
+  const diags = lint(parseDot(VACUOUS_GUARD_CARRIES_FAILURE))
+  const gate002Diags = diags.filter((d) => d.code === 'GATE-002')
+  assert.equal(gate002Diags.length, 1)
+  assert.equal(gate002Diags[0].severity, Severity.ERROR)
+  assert.equal(gate002Diags[0].node, 'build')
+  assert.match(gate002Diags[0].message, /build\.error/)
+
+  // DATA-001 still fires too -- GATE-002 does not replace it, it closes the
+  // gap DATA-001 alone left open (see ADR-014's "Interaction with existing
+  // rules").
+  const dataDiags = diags.filter((d) => d.code === 'DATA-001')
+  assert.equal(dataDiags.length, 1)
+  assert.equal(dataDiags[0].node, 'publish')
+  assert.match(dataDiags[0].message, /outputs="build\.error"/)
+
+  // The runtime half: `Engine.run()` now refuses this graph at the lint gate,
+  // before dispatching anything -- matching the established HAND-001-refusal
+  // shape ('the embedded Engine refuses a HAND-001-dirty graph before
+  // dispatching anything (FR-11 x FR-17a)', above).
   const { result, runDir, cwd } = await execute(VACUOUS_GUARD_CARRIES_FAILURE)
   try {
-    // The walk-past, unchanged. This is what a graph that declares nothing
-    // gets.
-    assert.deepEqual(result.path, ['start', 'build', 'publish', 'done'])
-    // Conformant per section 11.3: this graph declares no goal gates, so the
-    // gate condition is vacuously satisfied and SUCCESS is correct. The verdict
-    // was never the defect.
-    assert.equal(result.status, Status.SUCCESS)
-    // The record is the only thing that makes the failure visible above the
-    // event log, and it must never regress.
-    assert.deepEqual(result.unresolvedFailures, ['build'])
-    assert.match(result.notes ?? '', /unresolved node failures/i)
-    const events = new EventLog(runDir).all()
-    assert.ok(
-      events.some((e) => e.type === 'node.end' && e.node === 'build' && e.status === 'fail'),
-    )
-    assert.ok(events.some((e) => e.type === 'pipeline.unresolved_failure'))
-
-    // The design-time half. An author running `attractor lint` is told before
-    // the pipeline ever starts, and told what to do about it.
-    const dataDiags = lint(parseDot(VACUOUS_GUARD_CARRIES_FAILURE)).filter(
-      (d) => d.code === 'DATA-001',
-    )
-    assert.equal(dataDiags.length, 1)
-    assert.equal(dataDiags[0].node, 'publish')
-    assert.match(dataDiags[0].message, /outputs="build\.error"/)
+    assert.equal(result.status, Status.FAIL)
+    assert.match(result.notes ?? '', /GATE-002/, 'the refusal names the rule that fired')
+    assert.equal(result.path.length, 0, 'lint refusal happens before any node is dispatched')
   } finally {
     cleanup(runDir, cwd)
   }
@@ -1738,15 +1796,15 @@ test('setManaged refuses a built-in key isEngineManagedKey does not cover', asyn
       cwd,
       handlers: defaultHandlers(new StubBackend({})),
     })
-    const managed = engine as unknown as { setManaged(key: string, value: string): void }
+    const managed = engine as unknown as { setManaged(context: Context, key: string, value: string): void }
     assert.throws(
-      () => managed.setManaged('last_verdict', 'ship'),
+      () => managed.setManaged(Context.from({}), 'last_verdict', 'ship'),
       /not covered by isEngineManagedKey/,
       'a routing-visible built-in that is not reserved is forgeable by a backend',
     )
     // And the permitting direction, so this is not a one-way test: a key the
     // predicate does cover must go through.
-    managed.setManaged('current_node', 'a')
+    managed.setManaged(Context.from({}), 'current_node', 'a')
   } finally {
     cleanup(runDir, cwd)
   }
@@ -1759,7 +1817,11 @@ test('setManaged refuses a built-in key isEngineManagedKey does not cover', asyn
 test('the whole-branch review fixtures are graphs the CLI would accept', () => {
   for (const src of [
     VACUOUS_GUARD_HALTS_WHEN_DECLARED,
-    VACUOUS_GUARD_CARRIES_FAILURE,
+    // VACUOUS_GUARD_CARRIES_FAILURE removed (p3-01/ADR-014): it is GATE-002's
+    // own hazard shape 1, now correctly refused with a lint ERROR -- it no
+    // longer belongs in a "graphs the CLI would accept" set. See its own test,
+    // 'I1 is opt-in: an undeclared key gives no protection, and DATA-001 says
+    // so', above.
     FAIL_TARGET_ROUTES_AROUND_UNVISITED_GATE,
     REPAIR_LOOP,
     OTHER_NODE_SUCCEEDS,
@@ -1918,13 +1980,23 @@ test('declaring a retry target does not erase the node from the record', async (
 // already has. `build` crashes once, exhausts, is abandoned to `fix`, and the
 // graph routes back so `build` re-runs green. Abandonment must be resolvable
 // by re-execution exactly like a FAIL.
+//
+// `gate`/the `outcome=fail` edge into it exist only for GATE-002 (ADR-014
+// Amendment 3): `build`'s own retry_target reaches `done` with no goal gate
+// anywhere, which is now a lint-time ERROR. `build` never actually returns
+// FAIL here (the retry-exhaustion ladder routes it to `fix` via RETRY, and
+// its second attempt returns SUCCESS -- see RetryingBackend), so this edge
+// never matches and `gate` is never dispatched.
 const ABANDONED_THEN_REPAIRED = `
 digraph ATR {
   start [shape=Mdiamond]  done [shape=Msquare]
   build [shape=box, retry_target="fix"]
   fix   [shape=box]
+  gate  [shape=box, goal_gate=true, prompt="judge"]
   start -> build
   build -> done [condition="outcome=success"]
+  build -> gate [condition="outcome=fail"]
+  gate -> done
   fix -> build
 }
 `
@@ -2245,16 +2317,26 @@ test('an inferred key never enters the ledger, even when nothing later writes it
 // retry-exhaustion (section 3.7's ladder) no longer consults the graph-level
 // rungs, so the target is declared on `build` itself. See
 // ABANDONED_VIA_RETRY_TARGET above for the same change with fuller rationale.
+//
+// `gate`/the `outcome=success` edge into it exist only for GATE-002 (ADR-014
+// Amendment 3): `build`'s own fallback_retry_target reaches `done` with no
+// goal gate anywhere, which is now a lint-time ERROR. Both tests below drive
+// `build` with `RetryingBackend('build')` (unbounded RETRY), so `build` never
+// reaches edge selection at all -- it is abandoned to `report` by the retry
+// ladder every time -- and this edge never matches.
 const LEDGER_ABANDONED = `
 digraph LAB {
   start [shape=Mdiamond]  done [shape=Msquare]
   plan   [shape=box]
   build  [shape=box, outputs="plan.md,review.md", fallback_retry_target="report"]
   report [shape=box]
+  gate   [shape=box, goal_gate=true, prompt="judge"]
   start -> plan
   plan -> report [condition="context.mode=report_only"]
   plan -> build
   build -> done
+  build -> gate [condition="outcome=success"]
+  gate -> done
   report -> done
 }
 `
@@ -3279,15 +3361,22 @@ test('runs_on=always: cleanup runs, with the owed reference LITERAL, when the wo
 // retry-target jump happens before edge selection ever runs -- and is present
 // because a node reachable only through a `retry_target` is a TOPO-004 lint
 // error, and a fixture the CLI would refuse pins nothing an operator can reach.
+// `gate`/its edge are inert for the same reason (`work` never reaches edge
+// selection here), and exist only for GATE-002 (ADR-014 Amendment 3): `work`'s
+// own retry_target reaches `done` (via `cleanup`) with no goal gate anywhere,
+// which is now a lint-time ERROR.
 const CLEANUP_RUNS_ON_ALWAYS_ABANDONED = `
 digraph CRAA {
   start [shape=Mdiamond]  done [shape=Msquare]
   work    [shape=box, prompt="do the work", retry_target="cleanup", outputs="resource.handle"]
   cleanup [shape=parallelogram, runs_on=always, tool_command="printf 'release [\${resource.handle}]' > released"]
+  gate    [shape=box, goal_gate=true, prompt="judge"]
   start -> work
   work -> done [condition="outcome=success"]
   work -> cleanup [condition="outcome=fail"]
+  work -> gate [condition="preferred_label=never"]
   cleanup -> done
+  gate -> done
 }
 `
 
@@ -3830,6 +3919,13 @@ test('a subgraph goal does not hijack $goal or context.graph.goal (section 2.10)
 // the class of test this repository has shipped too many of. Declared after,
 // only scoping stands between the subgraph's `node [...]` block and a node
 // that has nothing to do with it.
+//
+// `gate`/its edge exist only for GATE-002 (ADR-014 Amendment 3): `inside`'s
+// own (correctly scoped) retry_target reaches `done` via `patch` with no goal
+// gate anywhere, which is now a lint-time ERROR. `inside` is never actually
+// dispatched in this test -- `failing` dead-ends before ever reaching it --
+// so the added edge never matches and nothing about the assertions below
+// changes.
 const SUBGRAPH_RETRY_TARGET_LEAK = `
 digraph RTL {
   start [shape=Mdiamond]
@@ -3840,10 +3936,13 @@ digraph RTL {
   }
   failing [shape=box, prompt="x", max_retries=0]
   patch [shape=box, prompt="patch"]
+  gate  [shape=box, goal_gate=true, prompt="judge"]
   start -> failing
   failing -> inside
   inside -> done
+  inside -> gate [condition="outcome=fail"]
   patch -> done
+  gate -> done
 }
 `
 
@@ -4207,4 +4306,575 @@ test('a direct Engine embed refuses to run a graph that fails lint (FR-11, F10)'
 test('a direct Engine embed still runs a clean graph normally (both-directions guard)', async () => {
   const { result } = await execute(LINEAR)
   assert.equal(result.status, Status.SUCCESS)
+})
+
+// ---------------------------------------------------------------------------
+// HandlerCtx.runBranch (p5-05). handlers/parallel.ts / ParallelHandler do not
+// exist yet (p5-08) -- every test here drives ctx.runBranch directly from a
+// hand-built test-only Handler, registered against Handler.TOOL (so it never
+// collides with Handler.CODERGEN, which stays the REAL BoxHandler wrapping a
+// GatedBackend for the branch's own nodes -- proving genuine concurrency,
+// not a same-tick stub).
+// ---------------------------------------------------------------------------
+
+/** Launches whatever the test wants when its one designated node dispatches. */
+class BranchLaunchingHandler implements HandlerIface {
+  private readonly launch: (ctx: HandlerCtx) => Promise<Outcome>
+
+  constructor(launch: (ctx: HandlerCtx) => Promise<Outcome>) {
+    this.launch = launch
+  }
+
+  async execute(ctx: HandlerCtx): Promise<Outcome> {
+    return this.launch(ctx)
+  }
+}
+
+test('a branch root routed straight to the real EXIT node is an ordinary dead end for that branch alone (mutation-checked)', async () => {
+  const backend = new GatedBackend()
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-exit')
+  const siblingRunDir = join(runDir, 'branch-sibling')
+  const handlers = defaultHandlers(backend)
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      const exitPromise = ctx.runBranch!({
+        startNodeId: 'sideEntry',
+        stopAt: new Set(),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      const siblingPromise = ctx.runBranch!({
+        startNodeId: 'sibling',
+        stopAt: new Set(),
+        context: ctx.context.clone(),
+        runDir: siblingRunDir,
+        cwd: ctx.cwd,
+      })
+      // Both branches are now gated open (their own CODERGEN dispatch is
+      // blocked inside GatedBackend.run) -- release only the EXIT one.
+      backend.release('sideEntry')
+      const exitResult = await exitPromise
+
+      // Observable proxy for "unsatisfiedGoalGates()/this.checkpoint(null)
+      // were never called during that runBranch call": this.checkpoint()
+      // always targets the OUTER run's own runDir. A mutant letting
+      // runBranch fall through to run()'s own EXIT block would flip THIS
+      // checkpoint to currentNode: null mid-detour-dispatch, before this
+      // handler ever returns -- the correct implementation leaves it
+      // exactly as `start`'s own per-node checkpoint left it.
+      const midFlightCheckpoint = loadCheckpoint(runDir)
+      assert.equal(midFlightCheckpoint?.currentNode, 'start')
+      assert.equal(exitResult.outcome.status, Status.SUCCESS, 'EXIT is a trivial passthrough SUCCESS')
+      assert.deepEqual(exitResult.path, ['sideEntry', 'done'])
+
+      assert.ok(backend.maxObserved >= 2, 'both branches were genuinely in flight at once')
+      backend.release('sibling')
+      await siblingPromise
+
+      return { status: Status.SUCCESS, notes: 'detour done' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]
+      done  [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      sideEntry [shape=box, prompt="x"]
+      sibling [shape=box, prompt="y"]
+      start -> detour -> done
+      detour -> sideEntry [condition="context.never_true=x"]
+      detour -> sibling [condition="context.never_true=x"]
+      sideEntry -> done
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    const result = await engine.run()
+    assert.equal(result.status, Status.SUCCESS)
+    assert.deepEqual(result.path, ['start', 'detour', 'done'])
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('a branch retry-target cycle exhausts the run-wide step cap and the OUTER run reports it too (mutation-checked, NFR-1)', async () => {
+  const handlers = defaultHandlers(new StubBackend({ cyc: { status: Status.RETRY, notes: 'again' } }))
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-cyc')
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      const result = await ctx.runBranch!({
+        startNodeId: 'cyc',
+        stopAt: new Set(),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      assert.equal(result.outcome.status, Status.FAIL)
+      assert.match(result.outcome.notes ?? '', /step cap/i)
+      return { status: Status.SUCCESS, notes: 'observed the branch fail cleanly' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      cyc [shape=box, prompt="x", max_retries=0, retry_target="cyc"]
+      start -> detour -> done
+      detour -> cyc [condition="context.never_true=x"]
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers, maxSteps: 25 })
+    const result = await engine.run()
+    // stepCount is shared across run() and every branch (NFR-1, engine.ts's own
+    // stepCount doc) precisely so a branch's own runaway retry loop cannot exceed
+    // the run-wide ceiling by running "off the books" -- so exhausting it INSIDE
+    // the branch necessarily leaves the OUTER run with nothing left to dispatch
+    // `done` with either. The outer run correctly reports that shared exhaustion
+    // (loud FAIL, never a hang and never a silent SUCCESS) rather than being
+    // unaffected by it -- there is no separate budget for it to be unaffected in.
+    assert.equal(result.status, Status.FAIL, 'the OUTER run shares the exhausted step budget, not a separate one')
+    assert.match(result.notes ?? '', /step cap/i)
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('run() and runBranch produce identical path/attempts/checkpoint shape for the same fixture (proves executeNodeStep is one implementation)', async () => {
+  const script = {
+    x: { status: Status.SUCCESS, notes: 'x done', contextUpdates: { 'stage.x': 'done' } },
+    y: { status: Status.SUCCESS, notes: 'y done', contextUpdates: { 'stage.y': 'done' } },
+  }
+
+  const { result: mainResult, runDir: mainRunDir, cwd: mainCwd } = await execute(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      x [shape=box, prompt="x"]  y [shape=box, prompt="y"]
+      start -> x -> y -> done
+    }
+  `, script)
+  assert.equal(mainResult.status, Status.SUCCESS)
+
+  const { runDir: outerRunDir, cwd: branchCwd } = tempDirs()
+  // A directory OF ITS OWN for the branch's own internal dispatch -- distinct
+  // from outerRunDir (the "branch engine" instance's own runDir), matching
+  // every other test in this section. Reusing outerRunDir for both (as an
+  // earlier version of this test did) makes 'detour' and 'done''s own later
+  // checkpoint writes -- which use the OUTER, non-cloned context -- overwrite
+  // x/y's own earlier checkpoint write to the SAME file, silently erasing the
+  // very stage.x/stage.y evidence this test reads back below.
+  const innerBranchRunDir = join(outerRunDir, 'branch-inner')
+  const handlers = defaultHandlers(new StubBackend(script))
+  let branchResult: BranchRunResultShape | undefined
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      branchResult = await ctx.runBranch!({
+        startNodeId: 'x',
+        stopAt: new Set(['done']), // stops before dispatching the graph's natural end
+        context: ctx.context.clone(),
+        runDir: innerBranchRunDir,
+        cwd: ctx.cwd,
+      })
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }),
+  )
+  const branchGraph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      x [shape=box, prompt="x"]  y [shape=box, prompt="y"]
+      start -> detour -> done
+      detour -> x [condition="context.never_true=x"]
+      x -> y -> done
+    }
+  `)
+  try {
+    const engine = new Engine({
+      graph: branchGraph, context: Context.from({}), runDir: outerRunDir, cwd: branchCwd, handlers,
+    })
+    const outerResult = await engine.run()
+    assert.equal(outerResult.status, Status.SUCCESS)
+
+    assert.deepEqual(mainResult.path.slice(1, -1), branchResult!.path, 'x, y in the same order')
+
+    const mainCheckpoint = loadCheckpoint(mainRunDir)
+    const branchCheckpoint = loadCheckpoint(innerBranchRunDir)
+    // Compare only x/y -- the two graphs are NOT the same topology (the branch
+    // graph adds its own detour hub so runBranch has somewhere to be launched
+    // from), so their full attempts maps can never be equal: outerRunDir's own
+    // checkpoint would also carry start/detour/done, which mainCheckpoint's
+    // does not. x and y are the only nodes both callers actually dispatch
+    // through the shared executeNodeStep, which is the property this test
+    // exists to prove -- comparing the full maps was asserting graph-topology
+    // equality this fixture was never designed to have.
+    assert.equal(mainCheckpoint?.attempts?.x, branchCheckpoint?.attempts?.x)
+    assert.equal(mainCheckpoint?.attempts?.y, branchCheckpoint?.attempts?.y)
+    assert.equal(mainCheckpoint?.context['stage.x'], branchCheckpoint?.context['stage.x'])
+    assert.equal(mainCheckpoint?.context['stage.y'], branchCheckpoint?.context['stage.y'])
+  } finally {
+    cleanup(mainRunDir, mainCwd)
+    cleanup(outerRunDir, branchCwd)
+  }
+})
+
+test('a goal-gate node inside a branch correctly blocks the outer run\'s real exit', async () => {
+  const handlers = defaultHandlers(new StubBackend({
+    gate: { status: Status.SUCCESS, notes: 'NOT CONVERGED - no verdict' },
+  }))
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-gate')
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      await ctx.runBranch!({
+        startNodeId: 'gate',
+        stopAt: new Set(),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      return { status: Status.SUCCESS, notes: 'detour done' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      gate [shape=box, goal_gate=true, prompt="judge", max_retries=0]
+      start -> detour -> done
+      detour -> gate [condition="context.never_true=x"]
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    const result = await engine.run()
+    assert.equal(result.status, Status.FAIL, "the branch's own unearned goal gate blocks the real exit")
+    assert.match(result.notes ?? '', /unsatisfied goal gates.*gate/)
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('runBranch dispatches a retry_target outside its own stopAt-truncated reachable set exactly like any other next node (named, accepted risk)', async () => {
+  const handlers = defaultHandlers(new StubBackend({
+    branchRoot: { status: Status.RETRY, notes: 'jump out' },
+    siblingRoot: { status: Status.SUCCESS, notes: 'reached' },
+  }))
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-escape')
+  let outcome: Outcome | undefined
+  let path: string[] | undefined
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      const result = await ctx.runBranch!({
+        startNodeId: 'branchRoot',
+        stopAt: new Set(['stopHere']),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      outcome = result.outcome
+      path = result.path
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      branchRoot [shape=box, prompt="x", max_retries=0, retry_target="siblingRoot"]
+      siblingRoot [shape=box, prompt="y"]
+      stopHere [shape=box, prompt="z"]
+      start -> detour -> done
+      detour -> branchRoot [condition="context.never_true=x"]
+      siblingRoot -> stopHere
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    await engine.run()
+    assert.deepEqual(path, ['branchRoot', 'siblingRoot'], "the jump to siblingRoot happened, unblocked -- not this story's gap to close")
+    assert.equal(outcome?.status, Status.SUCCESS)
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('runBranch reaches a dead end (no outgoing edge, not EXIT) with a FAIL BranchRunResult', async () => {
+  const handlers = defaultHandlers(new StubBackend({
+    lonely: { status: Status.SUCCESS, notes: 'nowhere to go' },
+  }))
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-lonely')
+  let result: BranchRunResultShape | undefined
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      result = await ctx.runBranch!({
+        startNodeId: 'lonely',
+        stopAt: new Set(),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      lonely [shape=box, prompt="x"]
+      start -> detour -> done
+      detour -> lonely [condition="context.never_true=x"]
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    await engine.run()
+    assert.equal(result?.outcome.status, Status.FAIL)
+    assert.deepEqual(result?.path, ['lonely'])
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('runBranch stops before dispatching a stopAt frontier node', async () => {
+  const handlers = defaultHandlers(new StubBackend({
+    entry: { status: Status.SUCCESS, notes: 'ok' },
+  }))
+  const { runDir, cwd } = tempDirs()
+  const branchRunDir = join(runDir, 'branch-frontier')
+  let result: BranchRunResultShape | undefined
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      result = await ctx.runBranch!({
+        startNodeId: 'entry',
+        stopAt: new Set(['frontier']),
+        context: ctx.context.clone(),
+        runDir: branchRunDir,
+        cwd: ctx.cwd,
+      })
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      entry [shape=box, prompt="x"]  frontier [shape=box, prompt="y"]
+      start -> detour -> done
+      detour -> entry [condition="context.never_true=x"]
+      entry -> frontier
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    await engine.run()
+    assert.equal(result?.outcome.status, Status.SUCCESS)
+    assert.deepEqual(result?.path, ['entry'], 'stops before dispatching frontier; frontier is not in path')
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('two concurrent ctx.runBranch calls via Promise.all over GatedBackend both resolve independently, and the outer ledgers reflect both', async () => {
+  const backend = new GatedBackend()
+  const handlers = defaultHandlers(backend)
+  const { runDir, cwd } = tempDirs()
+  const runDirA = join(runDir, 'branch-a')
+  const runDirB = join(runDir, 'branch-b')
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      const [a, b] = await Promise.allSettled([
+        (async () => {
+          const p = ctx.runBranch!({
+            startNodeId: 'a', stopAt: new Set(), context: ctx.context.clone(), runDir: runDirA, cwd: ctx.cwd,
+          })
+          backend.release('a')
+          return p
+        })(),
+        (async () => {
+          const p = ctx.runBranch!({
+            startNodeId: 'b', stopAt: new Set(), context: ctx.context.clone(), runDir: runDirB, cwd: ctx.cwd,
+          })
+          backend.reject('b', new Error('branch b exploded'))
+          return p
+        })(),
+      ])
+      assert.equal(a.status, 'fulfilled')
+      assert.equal(b.status, 'fulfilled', 'a rejected GatedBackend call is caught by executeNodeStep and turned into a FAIL outcome, not a thrown exception')
+      if (a.status === 'fulfilled') assert.equal(a.value.outcome.status, Status.SUCCESS)
+      if (b.status === 'fulfilled') assert.equal(b.value.outcome.status, Status.FAIL)
+      return { status: Status.SUCCESS, notes: 'both branches settled' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      a [shape=box, prompt="x"]  b [shape=box, prompt="y"]
+      start -> detour -> done
+      detour -> a [condition="context.never_true=x"]
+      detour -> b [condition="context.never_true=x"]
+      a -> done
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers })
+    const result = await engine.run()
+    assert.equal(result.status, Status.SUCCESS)
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('two concurrent ctx.runBranch calls retrying the SAME node id do not lose an attempts increment (mutation-checked)', async () => {
+  const backend = new StubBackend({ shared: { status: Status.RETRY, notes: 'again' } })
+  const handlers = defaultHandlers(backend)
+  const { runDir, cwd } = tempDirs()
+  const runDirA = join(runDir, 'branch-a')
+  const runDirB = join(runDir, 'branch-b')
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      await Promise.allSettled([
+        ctx.runBranch!({
+          startNodeId: 'shared', stopAt: new Set(), context: ctx.context.clone(), runDir: runDirA, cwd: ctx.cwd,
+        }),
+        ctx.runBranch!({
+          startNodeId: 'shared', stopAt: new Set(), context: ctx.context.clone(), runDir: runDirB, cwd: ctx.cwd,
+        }),
+      ])
+      return { status: Status.SUCCESS, notes: 'ok' }
+    }),
+  )
+  const graph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      detour [shape=parallelogram, tool_command="unused"]
+      shared [shape=box, prompt="x", max_retries=2]
+      start -> detour -> done
+      detour -> shared [condition="context.never_true=x"]
+    }
+  `)
+  try {
+    const engine = new Engine({ graph, context: Context.from({}), runDir, cwd, handlers, maxSteps: 500 })
+    await engine.run()
+    // Each branch should dispatch 'shared' exactly 3 times (1 initial + 2 retries,
+    // max_retries=2) -- 6 total across both branches. The pre-fix lost-update bug
+    // reliably produced 7 (deterministic, not flaky -- the race is structural, not
+    // timing-dependent: both branches' reads happen in their own synchronous
+    // prefix, strictly before either branch's write, every run).
+    assert.equal(backend.calls().length, 6, 'no attempts-increment lost update across the two concurrent branches')
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('PAR-005 integration: an early-exit branch neither halts the run nor lets lint block it, and a sibling proceeds normally', async () => {
+  const src = `
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      fan [shape=component]
+      early [shape=box]  other [shape=box]  join [shape=box]
+      start -> fan
+      fan -> early
+      early -> done
+      early -> join
+      fan -> other -> join
+      join -> done
+    }
+  `
+  const diags = lint(parseDot(src))
+  assert.ok(diags.some((d) => d.code === 'PAR-005'), 'the fixture is the one PAR-005 exists to catch')
+  assert.ok(
+    !diags.some((d) => d.severity === Severity.ERROR && d.code !== 'HAND-001'),
+    'PAR-005 is advisory -- it must not block the run',
+  )
+
+  const backend = new GatedBackend()
+  const handlers = defaultHandlers(backend)
+  const { runDir, cwd } = tempDirs()
+  const earlyRunDir = join(runDir, 'branch-early')
+  const otherRunDir = join(runDir, 'branch-other')
+  handlers.set(
+    Handler.TOOL,
+    new BranchLaunchingHandler(async (ctx) => {
+      const [earlySettled, otherSettled] = await Promise.allSettled([
+        (async () => {
+          const p = ctx.runBranch!({
+            startNodeId: 'early', stopAt: new Set(), context: ctx.context.clone(), runDir: earlyRunDir, cwd: ctx.cwd,
+          })
+          backend.release('early')
+          return p
+        })(),
+        (async () => {
+          const p = ctx.runBranch!({
+            startNodeId: 'other', stopAt: new Set(['join']), context: ctx.context.clone(), runDir: otherRunDir, cwd: ctx.cwd,
+          })
+          backend.release('other')
+          return p
+        })(),
+      ])
+      assert.equal(earlySettled.status, 'fulfilled', 'early branch completes')
+      assert.equal(otherSettled.status, 'fulfilled', 'other branch completes')
+      if (earlySettled.status === 'fulfilled') {
+        const earlyResult = earlySettled.value
+        assert.equal(earlyResult.outcome.status, Status.SUCCESS, "the early branch's own EXIT dispatch is a trivial SUCCESS")
+        // `early` has two unconditional outgoing edges (-> done, -> join); with
+        // no condition/preferred-label/suggestion in play, selectEdge's own
+        // weight-then-lexical tie-break picks `done` ('done' < 'join'
+        // lexically) -- verified directly against the real selectEdge, not
+        // assumed.
+        assert.deepEqual(earlyResult.path, ['early', 'done'])
+      }
+      if (otherSettled.status === 'fulfilled') {
+        const otherResult = otherSettled.value
+        assert.equal(otherResult.outcome.status, Status.SUCCESS, "the sibling proceeds to its own stop point, unaffected by the other branch's early exit")
+        assert.deepEqual(otherResult.path, ['other'], 'stops before dispatching the join frontier')
+      }
+      return { status: Status.SUCCESS, notes: 'detour done' }
+    }),
+  )
+  // A SEPARATE runnable graph -- NOT the lint-checked graph with its shape
+  // swapped. `fan` is Handler.TOOL from the start, with its own unconditional
+  // bypass straight to `done` (the same "detour" pattern every Task 5 test
+  // already uses) and never-true CONDITIONAL edges to `early`/`other` so they
+  // stay graph-reachable (TOPO-004) without ever being dispatched by normal
+  // edge routing -- only by ctx.runBranch above. Reusing the lint-checked
+  // graph's own UNCONDITIONAL fan->early/fan->other edges here would make
+  // run()'s own edge-selection ALSO dispatch `early` a second time once `fan`
+  // completes, hanging on an already-consumed GatedBackend gate -- confirmed
+  // by tracing the real event log.
+  const runnableGraph = parseDot(`
+    digraph G {
+      start [shape=Mdiamond]  done [shape=Msquare]
+      fan [shape=parallelogram, tool_command="unused"]
+      early [shape=box]  other [shape=box]  join [shape=box]
+      start -> fan -> done
+      fan -> early [condition="context.never_true=x"]
+      fan -> other [condition="context.never_true=x"]
+      early -> done
+      early -> join
+      other -> join
+      join -> done
+    }
+  `)
+  try {
+    const engine = new Engine({ graph: runnableGraph, context: Context.from({}), runDir, cwd, handlers, maxSteps: 500 })
+    const result = await engine.run()
+    assert.equal(result.status, Status.SUCCESS, 'the whole pipeline is never halted by the early-exit branch')
+  } finally {
+    cleanup(runDir, cwd)
+  }
 })
