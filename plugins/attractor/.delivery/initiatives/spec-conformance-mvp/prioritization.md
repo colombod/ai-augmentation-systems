@@ -115,6 +115,15 @@ already in production.
 **Not served, no date:** P-1, P-4. FR-15 rests entirely on P-4's `assumed`-grade belief —
 worth remembering if S7 is ever prioritized.
 
+**Overridden 2026-08-10 — this reasoning stands, the deferral does not.** Confirmed still
+true (Stage 3/`Handler.HUMAN` still unbuilt) before acting, not assumed stale; the project
+owner directed building S7 now anyway. See
+[ADR-015](../../decisions/ADR-015-s7-deprioritization-override.md). This section's own
+analysis is not retracted — P-2 genuinely needs none of S7, and it remains the honest
+account of why this stage would otherwise wait. It is recorded here as the historical
+reasoning an explicit override was made against, not corrected to read as if S7 had always
+been in-cycle.
+
 ## Milestones
 
 | # | Type | Demonstrable outcome | Shown to | Depends on |

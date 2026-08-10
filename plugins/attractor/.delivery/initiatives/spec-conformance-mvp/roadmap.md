@@ -367,11 +367,26 @@ load-bearing correctness guarantees four rounds of adversarial review (feature-c
 then an independent fifth-pass re-verification) exist to close; cutting any of them ships a
 known, already-named hazard, not an unproven one.
 
-### Phase 6: named, not planned in detail
+### Phase 6: FR-13-16 — S7 authoring skill / TS-library packaging
+
+**2026-08-10: Phase 6 is planned and scoped, deprioritization explicitly overridden.**
+The "Blocked by" reason in the table below (the Product Owner deprioritization,
+contingent on Phase 2 proving the channels design) was **confirmed still true**, not
+assumed stale, before this phase was picked up — `Handler.HUMAN` is still unregistered
+(`grep -rn "Handler.HUMAN" engine/src/` returns zero hits in `defaultHandlers()`), so
+Phase 2 has not, in fact, proven the channels design yet. The project owner directed
+building Phase 6 anyway, in this session — see
+[ADR-015](decisions/ADR-015-s7-deprioritization-override.md) for the full record. This
+is an explicit, recorded override, not new evidence that the original deprioritization
+reasoning was wrong: P-2 still needs none of this, and Phase 2 is still the
+higher-value next slice for that persona. Architecture:
+`architecture.md`'s "FR-13–16: S7 authoring skill / TS-library packaging" section.
+Stories: `../../stories/README.md`'s Phase 6 section, `p6-01` through `p6-07`, all
+`ready`.
 
 | Phase | FRs | Blocked by | Owner | Depends on | Effort |
 | :-- | :-- | :-- | :-- | :-- | :-- |
-| 6 — Authoring skill | FR-13, FR-14, FR-15, FR-16 | Not an open question — explicit Product Owner deprioritization: P-2 (MVP's only fully-served persona) needs none of it | Product Owner | Contingent on Phase 2 proving the channels design, and on P-1/P-4 becoming a committed priority — P-4 is this project's weakest-grounded persona (`assumed`, not `reported`) and FR-15 rests on that one belief | Unscoped |
+| 6 — Authoring skill | FR-13, FR-14, FR-15, FR-16 | **Overridden 2026-08-10** — was an explicit Product Owner deprioritization (P-2, MVP's only fully-served persona, needs none of it); confirmed still technically true (Phase 2/`Handler.HUMAN` still not shipped) but no longer blocking, per [ADR-015](decisions/ADR-015-s7-deprioritization-override.md) | Solution Architect (planned), Product Owner (override) | No technical dependency on Phase 2 — S7 and the human-gate channel are independent surfaces; the prior "contingent on Phase 2" language described a value-sequencing choice, not a build-order requirement | 7 stories, S/M/M/M/L/M/M — see `stories/README.md` Phase 6 |
 
 ## Second prioritization pass — inversion check
 

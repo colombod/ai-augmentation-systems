@@ -115,11 +115,58 @@ account.
 `ParallelHandler`; the opt-in live-subprocess ceiling test is written and correctly gated but not
 yet actually run (costs real API calls) — see the story's own "Implementation notes."
 
+## Phase 6 — FR-13-16 (S7 authoring skill / TS-library packaging)
+
+> **Deprioritization override, recorded not silently acted on.** `prioritization.md`
+> deferred this phase behind Stage 3 (human-gate core) — confirmed still unbuilt
+> (`Handler.HUMAN` unregistered) at the time this phase was picked up anyway, by
+> explicit project-owner direction. See
+> [ADR-015](../decisions/ADR-015-s7-deprioritization-override.md) for the full record.
+> Architecture: `../initiatives/spec-conformance-mvp/architecture.md`'s
+> "FR-13–16: S7 authoring skill / TS-library packaging" section (appended, not a
+> rewrite of the sections above it).
+
+| ID | Title | Status | Requirements | Depends on | Size |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| [p6-01](p6-01-ts-library-packaging.md) | TS-library packaging — `index.ts` entry point and `package.json` exports | **ready** | FR-13 (enabling) | none | S |
+| [p6-02](p6-02-dot-and-routing-reference-plus-engine-semantics.md) | Reference material — `dot-reference.md`, `routing-reference.md` (ported+corrected), `engine-semantics.md` (from scratch) | **ready** | FR-14, FR-15 | none | M |
+| [p6-03](p6-03-pipeline-design-principles-and-patterns.md) | Reference material — `pipeline-design-principles.md`, `pipeline-patterns.md` (ported near-verbatim) | **ready** | none (supports FR-13/16) | none | S |
+| [p6-04](p6-04-attractor-expert-agent.md) | `attractor-expert` agent — rewritten, engine-specific integration guidance only | **ready** | FR-14, FR-15 | p6-02 | M |
+| [p6-05](p6-05-attractorify-skill-diagnosis-and-design.md) | `attractorify` skill — diagnosis gate, ask-before-designing, conversational design | **ready** | FR-14, FR-15 | p6-02, p6-03, p6-04 | L |
+| [p6-06](p6-06-delegated-execution-verification.md) | Delegated execution-verification gate (FR-13) — `verify-run.ts` + Step 4 wiring | **ready** | FR-13 | p6-01, p6-05 | M |
+| [p6-07](p6-07-worked-examples-executed.md) | Worked examples — ported/adapted, each actually executed on this engine | **ready** | FR-16 | p6-01, p6-02, p6-03 | M |
+
+**Decomposition note.** Seven stories, not one: unlike Phase 1's five inseparable
+sub-items, each of these maps to independently testable, independently shippable
+output — a library entry point, three groups of reference docs with different porting
+treatments (ADR-018), an agent definition, a skill definition, a new verification
+mechanism, and a set of executed examples. p6-02/p6-03 have no story-level dependency on
+each other and can proceed in parallel; p6-04/p6-05/p6-06/p6-07 have a real dependency
+chain (an agent/skill can't cite reference material that doesn't exist yet; the
+execution-verification gate extends the skill's own Step 4).
+
+**Coverage check.** FR-13 is covered by p6-01 (enabling) and p6-06 (the actual
+delegated-verification mechanism). FR-14 is covered by p6-02 (reference material scope),
+p6-04 (agent), and p6-05 (skill design guidance) — three places by design, since FR-14
+is a constraint on every surface that could recommend a handler, not one piece of code.
+FR-15 is covered by p6-02 (routing-reference.md, the FR's primary home), p6-04, and
+p6-05, for the same reason. FR-16 is covered by p6-07. No FR in this phase is left
+uncovered by any story.
+
+## Readiness — Phase 6
+
+All seven stories are `ready` — none blocked on an open question, all grounded in
+[ADR-015](../decisions/ADR-015-s7-deprioritization-override.md) through
+[ADR-019](../decisions/ADR-019-example-portability-policy.md) and the architecture
+addendum. Suggested implementation order: p6-01 and p6-02/p6-03 first (no dependencies,
+unblock everything downstream), then p6-04, then p6-05, then p6-06 and p6-07 (both only
+need p6-01 plus the reference material).
+
 ## Next
 
-Phase 5 is closed. `/delivery:sprint` to scope the next ready work — see `roadmap.md` for what's
-next: Phase 1 is also done (see above); Phases 2 and 4 need an architecture pass or a scope call
-before they're story-able; Phase 3 needs a Product Owner + Solution Architect decision; Phase 6 is
-deliberately deprioritized. Nothing in this project is currently `ready` and unscoped. Do not run
-`/delivery:stories` against Phases 2, 3, 4 or 6 until their roadmap entries carry a real
-work-item table.
+Phase 5 is closed. Phase 6 is now scoped and `ready` (see above) — this is the current
+next work. Phase 1 is also done; Phases 2 and 4 need an architecture pass or a scope
+call before they're story-able; Phase 3 (GATE-002/FR-9b) shipped 2026-08-09 (see p3-01
+above — this section previously read "needs a Product Owner + Solution Architect
+decision," stale since that date, corrected here). Do not run `/delivery:stories`
+against Phases 2 or 4 until their roadmap entries carry a real work-item table.
