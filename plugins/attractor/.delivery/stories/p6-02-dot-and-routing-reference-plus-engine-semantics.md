@@ -1,7 +1,7 @@
 ---
 id: p6-02
 title: Reference material — dot-reference.md, routing-reference.md (ported+corrected), engine-semantics.md (from scratch)
-status: ready
+status: done
 epic: Phase 6 — FR-13-16 (S7 authoring skill / TS-library packaging)
 supersedes: []
 superseded_by: []
@@ -102,26 +102,47 @@ with no citation does not go in this file.
 
 ## Acceptance criteria
 
-- [ ] `FR-14` — `dot-reference.md` lists exactly the six registered handlers as usable,
+- [x] `FR-14` — `dot-reference.md` lists exactly the six registered handlers as usable,
       and separately names the three unregistered ones as refused (not silently omitted,
       not presented as usable).
-- [ ] `FR-15` — `routing-reference.md`'s verdict-contract section states the
+- [x] `FR-15` — `routing-reference.md`'s verdict-contract section states the
       `goal_gate=true`-only rule, citing `argv.ts:42-43`'s `wantsVerdict` by exact
       function name and file path.
-- [ ] `FR-15` (consistency) — `engine-semantics.md`'s own verdict-contract statement
+- [x] `FR-15` (consistency) — `engine-semantics.md`'s own verdict-contract statement
       matches `routing-reference.md`'s wording (not necessarily character-identical, but
       no contradiction — both must say `goal_gate=true`-only, neither may imply any
       broader verdict-eligible node set).
-- [ ] Neither `dot-reference.md` nor `routing-reference.md` states what any `TOPO-`/`COND-`/
+- [x] Neither `dot-reference.md` nor `routing-reference.md` states what any `TOPO-`/`COND-`/
       `TYPE-`/`HITL-`/`CMD-`/`RUNS-`/`DATA-`/`GATE-`/`HAND-`/`PAR-` code means; both link to
       `README.md#lint-rules` (or the equivalent anchor) instead.
-- [ ] Every factual claim in `engine-semantics.md` about this engine's behavior cites a
+- [x] Every factual claim in `engine-semantics.md` about this engine's behavior cites a
       real file path (and line number or test name) in `plugins/attractor/engine/` —
       spot-checked by re-opening each citation and confirming it says what the doc claims.
-- [ ] The doc-consistency check from `architecture.md`'s Test strategy table (grep-based,
+- [x] The doc-consistency check from `architecture.md`'s Test strategy table (grep-based,
       not manual) exists and passes: no reference file names `hexagon`/`tripleoctagon`/
       `house` as usable, and `routing-reference.md` does not contain language implying a
       non-gate node receives a structured verdict.
+
+## Implementation notes
+
+Wrote `check-consistency.mjs` (the doc-consistency script, shared with p6-03/04/05) and
+mutation-checked it before trusting it: injected an unmarked `hexagon` mention into
+`dot-reference.md`, confirmed the script failed (exit 1, named the exact file and term),
+reverted, confirmed it passed again (exit 0) — per `AGENTS.md`'s "mutation-check every
+new test" convention, applied to a doc-consistency script the same way it would apply
+to a code test.
+
+Grounded every engine-specific claim by reading the actual source before writing it,
+not from the amplifier-precedent research alone: `backend/argv.ts:42` (`wantsVerdict`),
+`backend/result.ts` (`interpretResult`, confirms `preferredLabel`/`contextUpdates` are
+never populated from a live model response for a non-gate node), `core/edge-select.ts`
+(`selectEdge`'s fail-fast-on-FAIL behavior, which is the one place this engine's
+algorithm diverges hardest from amplifier's own five-step cascade — amplifier's own
+"silent alphabetical fallback" pitfall does not reproduce on a FAIL outcome here),
+`core/retry.ts:107-121` (`resolveRetryTarget`'s node-vs-graph-level scoping),
+`core/substitute.ts` (unresolved references left literal, never blanked).
+`README.md`'s own `## Dataflow`/`## Lint rules` sections are cited, not restated, per
+ADR-018.
 
 ## Test approach
 
