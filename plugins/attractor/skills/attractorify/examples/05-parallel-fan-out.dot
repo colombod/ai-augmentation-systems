@@ -1,0 +1,58 @@
+// 05-parallel-fan-out.dot -- parallel execution, converging without a
+// separate fan-in node.
+//
+// Adapted from microsoft/amplifier-bundle-attractor's own
+// examples/pipelines/05-parallel-fan-out.dot (fetched 2026-08-10) -- see
+// ../../.delivery/decisions/ADR-019-example-portability-policy.md. The
+// original's `collect_results` node is `shape=tripleoctagon`
+// (`Handler.FAN_IN`), which this build does not register (`HAND-001`
+// refuses it). Adapted here to an ordinary `box` node as the convergence
+// point instead -- this engine's own default join policy already fails the
+// whole fan-out when every branch fails (Open Question 5's resolution,
+// shipped with FR-17b), so no separate fan-in node is needed for that
+// property. Everything else (the fan-out structure, `max_parallel`) is
+// unchanged from the original.
+//
+// Run it: node <plugin-root>/dist/attractor.js run 05-parallel-fan-out.dot \
+//           --cwd /tmp/some-git-repo --stub --param goal="a calculator module"
+// (a real, non---stub run needs --cwd inside a git repository -- branches
+// are isolated in their own git worktree by default; see README.md's
+// "Parallel fan-out" section.)
+
+digraph ParallelFanOut {
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    done  [shape=Msquare, label="Done"]
+
+    plan [
+        label="Plan Test Suite",
+        prompt="Plan a test suite for: ${goal}, covering three modules: arithmetic, formatting, and validation."
+    ]
+
+    parallel_tests [
+        shape=component,
+        label="Write Tests in Parallel",
+        max_parallel=3
+    ]
+
+    test_arithmetic [label="Test Arithmetic", prompt="Write tests for the arithmetic module."]
+    test_formatting [label="Test Formatting", prompt="Write tests for the formatting module."]
+    test_validation [label="Test Validation", prompt="Write tests for the validation module."]
+
+    // Convergence node -- an ordinary box node, not tripleoctagon. Reachable
+    // from all three branches (PAR-001's requirement).
+    collect_results [
+        label="Collect Results",
+        prompt="Review the test results from all three modules and create a unified test report."
+    ]
+
+    start -> plan -> parallel_tests
+    parallel_tests -> test_arithmetic
+    parallel_tests -> test_formatting
+    parallel_tests -> test_validation
+    test_arithmetic -> collect_results
+    test_formatting -> collect_results
+    test_validation -> collect_results
+    collect_results -> done
+}

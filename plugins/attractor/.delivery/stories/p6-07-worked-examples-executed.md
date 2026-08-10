@@ -1,7 +1,7 @@
 ---
 id: p6-07
 title: Worked examples — ported/adapted from amplifier, each actually executed on this engine (FR-16)
-status: ready
+status: done
 epic: Phase 6 — FR-13-16 (S7 authoring skill / TS-library packaging)
 supersedes: []
 superseded_by: []
@@ -96,22 +96,56 @@ behavior.
 
 ## Acceptance criteria
 
-- [ ] `FR-16` — every `.dot` file under `examples/` lints clean (`hasErrors` false).
-- [ ] `FR-16` — every `.dot` file under `examples/` has a real, committed `events.jsonl`
+- [x] `FR-16` — every `.dot` file under `examples/` lints clean (`hasErrors` false).
+- [x] `FR-16` — every `.dot` file under `examples/` has a real, committed `events.jsonl`
       that is the actual output of a `--stub` run of that exact file — verified by a test
       that re-runs each example fresh (in a temp run dir) and asserts the terminal
-      `RunResult.status` matches what the committed `events.jsonl`'s last event records
-      (catches a stale or hand-edited transcript, not just a missing one).
-- [ ] `FR-16` — `examples/README.md` names every excluded amplifier example and why
+      status matches what the committed `events.jsonl`'s last `pipeline.end` event
+      records (catches a stale or hand-edited transcript, not just a missing one) —
+      mutation-checked by corrupting a committed transcript and confirming the test fails.
+- [x] `FR-16` — `examples/README.md` names every excluded amplifier example and why
       (mirrors `architecture.md`'s table — this is the reader-facing copy of it, one
       level closer to where an author actually looks).
-- [ ] `05-parallel-fan-out.dot`'s `.md` guide explicitly states the fan-in adaptation and
+- [x] `05-parallel-fan-out.dot`'s `.md` guide explicitly states the fan-in adaptation and
       why (does not present itself as an unmodified port).
-- [ ] No example `.dot` file uses `hexagon`, `tripleoctagon`, or `house` — self-check
-      against the very portability policy this story executes (`grep -o 'shape='` over
-      every committed example, zero hits for the three unregistered shapes).
-- [ ] `node --test` passes, zero regressions, including the new table-driven examples
-      test.
+- [x] No example `.dot` file uses `hexagon`, `tripleoctagon`, or `house` — confirmed both
+      by `attractor lint` (which would refuse via `HAND-001` if one did) and by the
+      doc-consistency script now covering the examples directory's own `.md` files too.
+- [x] `node --test` passes, zero regressions, including the new table-driven examples
+      test (663 tests, 661 pass, 2 skipped, 0 fail).
+
+## Implementation notes
+
+**Scope note, recorded rather than silently narrowed.** `practical/bug-fix.dot` (the
+stretch item, "if budget allows") was not shipped this pass — `examples/README.md`
+names this explicitly as a legitimate, un-attempted stretch item, not a silent drop.
+
+**A real bug in p6-06's own harness was found by actually running these examples, not
+by inspection** — matching this project's own doctrine ("the worst bug in this project
+... was found by executing a real pipeline"). `05-parallel-fan-out.dot` needs a
+git-repository `--cwd` (branch-worktree isolation), but `verify-run.ts`'s CLI wrapper
+had no `--cwd` flag at all — only the library-level `VerifyRunOptions.cwd` existed,
+unreachable by the one caller (a delegated subagent) that only ever sees the CLI. Fixed
+with a red test first (`cliMain` wasn't even exported), then `--cwd` parsing added; the
+fix and its test are attributed to this story in the commit, with a cross-reference
+added to p6-06's own Implementation notes so the story that shipped the original gap and
+the story that found it both point at each other.
+
+**Content adaptation, not just handler adaptation.** Four of the five directly-portable
+examples (00/02/03/05) needed more than a shape swap to be honestly executable: their
+amplifier originals gate on real `pytest`/file-existence checks that only a live LLM
+writing real files can satisfy, which is a `--live` claim this pass does not make.
+Adapted each to a self-contained deterministic gate (a counter file) that preserves the
+exact DOT structure and routing pattern being taught while being provably convergent
+under `--stub` — recorded explicitly in each example's own `.md` guide, not left for a
+reader to discover by diffing against the amplifier original themselves. `04` required
+the largest adaptation (amplifier's original is a ~250-line explicit-renegotiation
+pattern) and is labeled as substantially simplified, not merely content-swapped, with an
+explicit pointer to the original for the full pattern.
+
+**Every `VERIFIED: status=...` line quoted in an example's `.md` guide is the literal
+output of the actual run that produced its committed transcript** — not retyped from
+memory or hand-formatted to look right.
 
 ## Test approach
 

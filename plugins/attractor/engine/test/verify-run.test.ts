@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { verifyRun } from '../../skills/attractorify/verify-run.ts'
+import { verifyRun, cliMain } from '../../skills/attractorify/verify-run.ts'
 import { Status } from '../src/index.ts'
 
 // p6-06 (FR-13): verify-run.ts is the harness a fresh-context, independent
@@ -95,4 +95,21 @@ test('defaults to --stub when neither --stub nor --live is specified', () =>
 
     assert.equal(result.harnessOk, true)
     assert.match(result.output, /^VERIFIED: status=/)
+  }))
+
+// A component/PARALLEL node needs its cwd to be a real git repository (branch
+// worktree isolation). Found by actually running the parallel-fan-out example
+// (p6-07) against verify-run.ts's own default cwd (tmpdir(), not a git repo)
+// -- the CLI wrapper had no way to pass a different one through. Fixed here,
+// not silently patched: the delegated subagent's ENTIRE interface to this
+// harness is the CLI, so a library-level `cwd` option nothing on the CLI
+// side can reach is not actually usable by the one caller that matters.
+test('the CLI wrapper accepts --cwd and passes it through', () =>
+  withTemp(async (runDir, cwd) => {
+    const graphPath = join(cwd, 'valid.dot')
+    writeFileSync(graphPath, VALID, 'utf8')
+
+    const code = await cliMain([graphPath, '--run-dir', runDir, '--cwd', cwd, '--stub'])
+
+    assert.equal(code, 0)
   }))

@@ -11,7 +11,10 @@
 // separate claim -- see SKILL.md, Step 3 item 7).
 //
 // Usage (delegation instruction the authoring session gives the subagent):
-//   node verify-run.ts <graph-path> [--run-dir <dir>] [--stub | --live]
+//   node verify-run.ts <graph-path> [--run-dir <dir>] [--cwd <dir>] [--stub | --live]
+// --cwd matters for any graph using a `component` (PARALLEL) node: branch
+// worktree isolation needs a real git repository, and this harness's own
+// default cwd (the OS temp dir) is not one.
 // Default: --stub. Prints exactly two lines on success:
 //   VERIFIED: status=<RunResult.status> path=<comma-joined final node path>
 //   events: <run-dir>/events.jsonl
@@ -89,24 +92,27 @@ export async function verifyRun(graphPath: string, opts: VerifyRunOptions = {}):
   }
 }
 
-async function cliMain(argv: string[]): Promise<number> {
+export async function cliMain(argv: string[]): Promise<number> {
   const [graphPath, ...rest] = argv
   if (!graphPath) {
-    console.error('usage: verify-run.ts <graph-path> [--run-dir <dir>] [--stub | --live]')
+    console.error('usage: verify-run.ts <graph-path> [--run-dir <dir>] [--cwd <dir>] [--stub | --live]')
     return 2
   }
   let runDir: string | undefined
+  let cwd: string | undefined
   let stub = true
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === '--run-dir') {
       runDir = rest[++i]
+    } else if (rest[i] === '--cwd') {
+      cwd = rest[++i]
     } else if (rest[i] === '--stub') {
       stub = true
     } else if (rest[i] === '--live') {
       stub = false
     }
   }
-  const result = await verifyRun(graphPath, { runDir, stub })
+  const result = await verifyRun(graphPath, { runDir, cwd, stub })
   console.log(result.output)
   return result.harnessOk ? 0 : 1
 }

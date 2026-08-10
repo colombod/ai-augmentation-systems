@@ -134,7 +134,7 @@ yet actually run (costs real API calls) — see the story's own "Implementation 
 | [p6-04](p6-04-attractor-expert-agent.md) | `attractor-expert` agent — rewritten, engine-specific integration guidance only | **done** | FR-14, FR-15 | p6-02 | M |
 | [p6-05](p6-05-attractorify-skill-diagnosis-and-design.md) | `attractorify` skill — diagnosis gate, ask-before-designing, conversational design | **done** | FR-14, FR-15 | p6-02, p6-03, p6-04 | L |
 | [p6-06](p6-06-delegated-execution-verification.md) | Delegated execution-verification gate (FR-13) — `verify-run.ts` + Step 4 wiring | **done** | FR-13 | p6-01, p6-05 | M |
-| [p6-07](p6-07-worked-examples-executed.md) | Worked examples — ported/adapted, each actually executed on this engine | **ready** | FR-16 | p6-01, p6-02, p6-03 | M |
+| [p6-07](p6-07-worked-examples-executed.md) | Worked examples — ported/adapted, each actually executed on this engine | **done** | FR-16 | p6-01, p6-02, p6-03 | M |
 
 **Decomposition note.** Seven stories, not one: unlike Phase 1's five inseparable
 sub-items, each of these maps to independently testable, independently shippable
@@ -155,18 +155,23 @@ uncovered by any story.
 
 ## Readiness — Phase 6
 
-All seven stories are `ready` — none blocked on an open question, all grounded in
-[ADR-015](../decisions/ADR-015-s7-deprioritization-override.md) through
-[ADR-019](../decisions/ADR-019-example-portability-policy.md) and the architecture
-addendum. Suggested implementation order: p6-01 and p6-02/p6-03 first (no dependencies,
-unblock everything downstream), then p6-04, then p6-05, then p6-06 and p6-07 (both only
-need p6-01 plus the reference material).
+**p6-01 through p6-07 — all done. Phase 6 is complete.** Shipped in implementation
+order (p6-01, p6-02, p6-03, p6-04, p6-05, p6-06, p6-07), each with its own commit,
+TDD red-then-green where code was involved, and a mutation check for every new
+test/doc-consistency script (per `AGENTS.md`'s "mutation-check every new test"
+convention, applied to `check-consistency.mjs` and the FR-16 examples test the same way
+it applies to engine tests). 663 tests, 661 pass, 2 skipped, 0 fail as of the final
+commit. One real gap was found and fixed by actually running the worked examples (not
+by inspection): `verify-run.ts`'s CLI wrapper had no `--cwd` flag, unreachable by the
+one caller (a delegated subagent) that only sees the CLI — see p6-06 and p6-07's own
+Implementation notes for the cross-referenced account.
 
 ## Next
 
-Phase 5 is closed. Phase 6 is now scoped and `ready` (see above) — this is the current
-next work. Phase 1 is also done; Phases 2 and 4 need an architecture pass or a scope
-call before they're story-able; Phase 3 (GATE-002/FR-9b) shipped 2026-08-09 (see p3-01
-above — this section previously read "needs a Product Owner + Solution Architect
-decision," stale since that date, corrected here). Do not run `/delivery:stories`
-against Phases 2 or 4 until their roadmap entries carry a real work-item table.
+Phases 1, 3, 5, and 6 are all done. Phases 2 and 4 need an architecture pass or a scope
+call before they're story-able (Phase 2, the human-gate core / Stage 3 that S7's own
+[ADR-015](../decisions/ADR-015-s7-deprioritization-override.md) override was checked
+against, is the natural next candidate — S7's landing does not change Phase 2's own
+status, which was never technically blocked on S7 either). Do not run
+`/delivery:stories` against Phases 2 or 4 until their roadmap entries carry a real
+work-item table.

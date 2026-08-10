@@ -9,13 +9,20 @@
 // a stray amplifier-only concept left in ported material), grep-cheap enough
 // to run on every edit rather than trusted to a one-time manual review.
 
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SKILL_DIR = resolve(HERE, '..')
 const REPO_ROOT = resolve(SKILL_DIR, '..', '..', '..', '..')
+const EXAMPLES_DIR = join(SKILL_DIR, 'examples')
+
+const exampleMdFiles = existsSync(EXAMPLES_DIR)
+  ? readdirSync(EXAMPLES_DIR)
+      .filter((f) => f.endsWith('.md'))
+      .map((f) => join(EXAMPLES_DIR, f))
+  : []
 
 const FILES = [
   join(HERE, 'dot-reference.md'),
@@ -25,6 +32,7 @@ const FILES = [
   join(HERE, 'pipeline-patterns.md'),
   join(SKILL_DIR, 'SKILL.md'),
   join(SKILL_DIR, '..', '..', 'agents', 'attractor-expert.md'),
+  ...exampleMdFiles,
 ].filter(existsSync)
 
 let failures = 0

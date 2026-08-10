@@ -1,0 +1,40 @@
+// 00-convergence-loop.dot -- the canonical convergence-loop skeleton.
+//
+// Adapted from microsoft/amplifier-bundle-attractor's own
+// examples/pipelines/00-convergence-loop.dot (fetched 2026-08-10) -- see
+// ../../.delivery/decisions/ADR-019-example-portability-policy.md. THE SHAPE
+// is unchanged from the original: attempt -> evidence gate -> corrective
+// back-edge -> done. The illustrative task is replaced with a self-contained
+// deterministic counter, so this example is provably convergent under
+// `--stub`: the original's pytest-based gate needs a real LLM to actually
+// write real files before it can ever pass, which the deterministic --stub
+// backend never does.
+//
+// Run it: node <plugin-root>/dist/attractor.js run 00-convergence-loop.dot \
+//           --cwd /tmp/some-dir --stub --param goal="a small task"
+
+digraph convergence_loop {
+    start [shape=Mdiamond, label="Start"]
+
+    attempt [
+        label="Attempt",
+        prompt="Advance the work toward: ${goal}. (Informational only -- the gate below is authoritative and does not depend on this node's output.)"
+    ]
+
+    // Evidence gate: a deterministic counter standing in for a real check
+    // (amplifier's original ran pytest). Fails the first two visits, passes
+    // the third -- demonstrating the corrective loop actually correcting,
+    // not just a single always-pass gate.
+    gate [
+        shape=parallelogram,
+        label="Evidence gate",
+        goal_gate=true,
+        tool_command="mkdir -p .attractor-demo; c=$(( $(cat .attractor-demo/count-00 2>/dev/null || echo 0) + 1 )); echo $c > .attractor-demo/count-00; [ \"$c\" -ge 3 ] && printf gate_pass || printf gate_fail"
+    ]
+
+    done [shape=Msquare, label="Done"]
+
+    start -> attempt -> gate
+    gate -> done    [label="pass",  condition="context.tool.last_line=gate_pass"]
+    gate -> attempt [label="retry", condition="context.tool.last_line=gate_fail"]
+}

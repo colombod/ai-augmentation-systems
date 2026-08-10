@@ -1,0 +1,29 @@
+// 01-simple-linear.dot -- the "hello world" of attractor pipelines.
+//
+// Ported near-verbatim from microsoft/amplifier-bundle-attractor's own
+// examples/pipelines/01-simple-linear.dot (fetched 2026-08-10) -- see
+// ../../.delivery/decisions/ADR-019-example-portability-policy.md. Only
+// change: this engine does not read a graph-level `goal=` attribute into
+// `${goal}` (see ../reference/dot-reference.md) -- pass it with `--param`
+// instead.
+//
+// A minimal linear pipeline: start -> implement -> done. No gate, no loop --
+// this is the deliberate one-pass shape (see reference/pipeline-design-
+// principles.md §0): not every pipeline needs a cycle.
+//
+// Run it: node <plugin-root>/dist/attractor.js run 01-simple-linear.dot \
+//           --cwd /tmp/some-dir --stub --param goal="print hello world"
+
+digraph SimpleLinear {
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    done  [shape=Msquare, label="Done"]
+
+    implement [
+        label="Implement",
+        prompt="Write a Python script that accomplishes the following goal: ${goal}"
+    ]
+
+    start -> implement -> done
+}

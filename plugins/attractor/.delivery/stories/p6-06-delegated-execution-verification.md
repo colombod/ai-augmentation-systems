@@ -129,6 +129,14 @@ manually verified end-to-end as a real script (not just via the test's function 
 against both a valid graph (`exit 0`, correct two-line output) and a lint-dirty one
 (`exit 1`, names the actual `TOPO-001` diagnostic).
 
+**Follow-up fix landed under p6-07, cross-referenced here.** Running the worked examples
+(p6-07) found that this harness had no way to verify a graph using a `component`
+(PARALLEL) node: `verifyRun`'s `VerifyRunOptions.cwd` existed at the library level, but
+`cliMain`'s argv parser never exposed a `--cwd` flag, and the CLI is the *only* interface
+a delegated subagent ever sees. Fixed in p6-07's own commit (red test first, `cliMain`
+exported and given `--cwd` parsing) rather than silently patched here after the fact —
+see p6-07's Implementation notes for the full account.
+
 ## Test approach
 
 **Level:** integration — `verify-run.ts` is a small CLI-shaped script; test it the way
