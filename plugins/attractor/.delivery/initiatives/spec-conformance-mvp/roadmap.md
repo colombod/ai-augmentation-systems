@@ -369,7 +369,22 @@ known, already-named hazard, not an unproven one.
 
 ### Phase 6: FR-13-16 — S7 authoring skill / TS-library packaging
 
-**2026-08-10: Phase 6 is planned and scoped, deprioritization explicitly overridden.**
+**2026-08-10: Phase 6 is done.** All seven stories (p6-01 through p6-07) shipped: a
+library entry point (`engine/src/index.ts`); five reference-material files under
+`skills/attractorify/reference/` (three ported+corrected against this engine, two
+ported near-verbatim, one written from scratch); the `attractor-expert` agent,
+rewritten; the `attractorify` skill itself (diagnosis gate, ask-before-designing,
+conversational design, ported near-verbatim from amplifier); a new delegated
+execution-verification gate (`verify-run.ts`, this project's own extension, not
+ported — FR-13); and six worked examples under `skills/attractorify/examples/`, each
+actually executed on this engine with a committed transcript (FR-16). 663 tests, 661
+pass, 2 skipped, 0 fail. See `stories/README.md`'s Phase 6 section for the full
+per-story account, including one real bug found and fixed by actually running the
+worked examples (`verify-run.ts` had no `--cwd` flag, needed by the parallel-fan-out
+example).
+
+**2026-08-10: Phase 6 was planned and scoped, deprioritization explicitly overridden,
+before any of the above was built.**
 The "Blocked by" reason in the table below (the Product Owner deprioritization,
 contingent on Phase 2 proving the channels design) was **confirmed still true**, not
 assumed stale, before this phase was picked up — `Handler.HUMAN` is still unregistered
@@ -469,10 +484,10 @@ resolved (ADR-013) — both were the same shape of risk, and both are now closed
 | FR-10 | 0 | Shipped |
 | FR-11 | 0 | Shipped |
 | FR-12 | 4 | Named, not planned — Open Question 7 |
-| FR-13 | 6 | Named, deprioritized — no open question, PO scope call |
-| FR-14 | 6 | Named, deprioritized |
-| FR-15 | 6 | Named, deprioritized — rests on `assumed`-grade P-4 evidence |
-| FR-16 | 6 | Named, deprioritized |
+| FR-13 | 6 | **Done 2026-08-10** — ADR-017 (delegated execution-verification), stories `p6-01`/`p6-06`. Deprioritization overridden, ADR-015 |
+| FR-14 | 6 | **Done 2026-08-10** — six-registered-handlers constraint, stories `p6-02`/`p6-04`/`p6-05` |
+| FR-15 | 6 | **Done 2026-08-10** — `routing-reference.md`, story `p6-02`. Still rests on `assumed`-grade P-4 evidence (unchanged by shipping) |
+| FR-16 | 6 | **Done 2026-08-10** — six worked examples, each actually executed, story `p6-07` |
 | FR-17a | 0 | Shipped |
 | FR-17b | 5 | Fully planned this phase |
 | FR-18 | 1 | Fully planned this phase |

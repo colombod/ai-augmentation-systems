@@ -14,6 +14,24 @@ as `claude -p` subprocesses, using the operator's existing Claude Code login
 deterministic stand-in instead, for tests and dry runs that must not spend
 money.
 
+## Claude Code surface
+
+Two skills, for two different jobs:
+
+- **`skills/attractor`** -- stateless CLI reference (lint/run/doctor) for when a
+  `.dot` file already exists.
+- **`skills/attractorify`** -- a conversational authoring skill (`/attractorify`) that
+  diagnoses whether a plain-language request even warrants a pipeline, designs one when
+  it does, and hands it back only after an independent, delegated process has actually
+  run it and confirmed a real terminal status -- not merely lint-clean. Its own reference
+  material (`skills/attractorify/reference/`) and worked, executed examples
+  (`skills/attractorify/examples/`) are corrected against this engine specifically, not
+  ported from `microsoft/amplifier-bundle-attractor` unread -- see
+  `.delivery/initiatives/spec-conformance-mvp/architecture.md`'s "FR-13-16" section.
+
+`agents/attractor-expert.md` is the consultable design/debugging expert both skills (and
+an operator) can delegate to.
+
 ## Usage
 
     node dist/attractor.js lint pipeline.dot
