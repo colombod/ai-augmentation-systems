@@ -5,7 +5,7 @@ BUDGET — target 600 words, hard cap 900 words. Excludes code, YAML and data ta
 ---
 sprint: 3
 slug: parallel-handler
-scope: Phase 5 remainder (plugins/attractor/.delivery/roadmap.md)
+scope: Phase 5 remainder (plugins/attractor/.delivery/initiatives/spec-conformance-mvp/roadmap.md)
 status: completed
 runner: superpowers (subagent-driven-development)
 branch: worktree-attractor-parallel-fanin

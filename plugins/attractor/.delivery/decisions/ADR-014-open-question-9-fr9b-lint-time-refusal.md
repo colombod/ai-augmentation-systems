@@ -6,7 +6,7 @@
 
 ## Context
 
-`.delivery/prd.md`'s Open question 9 (`prd.md:120`) asks whether closing "the `outputs=`-opt-in
+`.delivery/initiatives/spec-conformance-mvp/prd.md`'s Open question 9 (`prd.md:120`) asks whether closing "the `outputs=`-opt-in
 gap" (S4 — a graph missing `outputs=` must not silently report success) requires overturning
 `engine.test.ts`'s currently-passing `'I1 is opt-in...'` test, and if so, whether the mechanism is
 a runtime-verdict change (FR-9a, `prd.md:69`) or a lint-time-only refusal (FR-9b, `prd.md:70`).

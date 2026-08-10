@@ -6,7 +6,7 @@ The scope, verification and report-back tables are data.
 ---
 sprint: 2
 slug: parallel-fanin
-scope: Phase 5 (plugins/attractor/.delivery/roadmap.md)
+scope: Phase 5 (plugins/attractor/.delivery/initiatives/spec-conformance-mvp/roadmap.md)
 status: scoped
 runner: superpowers (subagent-driven-development)
 branch: worktree-attractor-parallel-fanin

@@ -1,8 +1,9 @@
 # Story index — plugins/attractor
 
-> Produced by `/delivery:stories`, decomposing `plugins/attractor/.delivery/roadmap.md`.
-> Roadmap: `../roadmap.md` · PRD: `../prd.md` · Architecture: `../architecture.md` · Glossary:
-> `../glossary.md`. Phase 1 stories below reuse the two terms the roadmap proposed
+> Produced by `/delivery:stories`, decomposing `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/roadmap.md`.
+> Roadmap: `../initiatives/spec-conformance-mvp/roadmap.md` · PRD: `../initiatives/spec-conformance-mvp/prd.md` ·
+> Architecture: `../initiatives/spec-conformance-mvp/architecture.md` · Glossary: `../glossary.md`.
+> Phase 1 stories below reuse the two terms the roadmap proposed
 > (**self-report gap**, **direct predecessor**); Phase 5 stories use `../glossary.md`'s five
 > terms (**branch**, **branch worktree**, **convergence node**, **join policy**, **context
 > merge-back**) exactly, coining nothing new.

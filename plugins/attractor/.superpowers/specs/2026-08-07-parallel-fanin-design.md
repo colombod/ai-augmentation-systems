@@ -4,7 +4,7 @@
 **Status:** Approved design, handed off from `.delivery/sprints/2-parallel-fanin.md` (7 stories: `p5-01` through `p5-07`)
 **Source of truth:** `plugins/attractor/.delivery/stories/p5-0{1..7}-*.md` — each is independently self-contained (real file paths, real interfaces, real acceptance criteria, real test commands, already verified live against the repo by the Delivery Lead). This document restructures their shared architecture into `writing-plans`' expected shape and sequences them into one plan. Where this document and a story disagree, **the story governs** — read the story before implementing its task, this document is orientation, not the source of truth for exact code.
 
-**Full architecture record:** `plugins/attractor/.delivery/architecture.md`'s `## FR-17b` section (component structure, all interfaces, two rounds of adversarial review) and ADR-007 through ADR-012 in `.delivery/decisions/`. Read these if a story's own citation needs more context — do not re-derive the design from first principles.
+**Full architecture record:** `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/architecture.md`'s `## FR-17b` section (component structure, all interfaces, two rounds of adversarial review) and ADR-007 through ADR-012 in `.delivery/decisions/`. Read these if a story's own citation needs more context — do not re-derive the design from first principles.
 
 ---
 
@@ -60,7 +60,7 @@ Each story names its own exact test command and fixture matrix — read the stor
 
 ## Requirements
 
-FR-17b (`plugins/attractor/.delivery/prd.md`) — this sprint's sole requirement, delivered incrementally across 7 stories (full delivery, including `Handler.PARALLEL` itself, needs `p5-08` in a later sprint). NFR-1 (step cap), NFR-4 (worktree isolation), NFR-7 (concurrency ceiling) each touched by specific stories per the Components table above.
+FR-17b (`plugins/attractor/.delivery/initiatives/spec-conformance-mvp/prd.md`) — this sprint's sole requirement, delivered incrementally across 7 stories (full delivery, including `Handler.PARALLEL` itself, needs `p5-08` in a later sprint). NFR-1 (step cap), NFR-4 (worktree isolation), NFR-7 (concurrency ceiling) each touched by specific stories per the Components table above.
 
 ## Scope boundary
 

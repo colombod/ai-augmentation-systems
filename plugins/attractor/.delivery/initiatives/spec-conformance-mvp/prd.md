@@ -2,7 +2,7 @@
 
 > Phase 5 artifact. Owned by Product Owner, with Business Analyst and QA Strategist.
 > Status: draft · Last updated: 2026-08-05
-> Brief: `plugins/attractor/.delivery/brief.md`
+> Brief: `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/brief.md`
 >
 > **Path note:** the `delivery` skill's own template defaults to `docs/product/...`
 > throughout, including its glossary reference. This project's actual paths are
@@ -105,7 +105,7 @@ Every value below is cited against the running code, not invented; see the brief
 ## Open questions
 
 Questions 1, 3, 4, 5, 7, 9 now have prior art to read alongside them — see
-`plugins/attractor/.delivery/amplifier-precedent.md` (§1-4), not a decision on its own.
+`plugins/attractor/.delivery/initiatives/spec-conformance-mvp/amplifier-precedent.md` (§1-4), not a decision on its own.
 
 | # | Question | Owner | Blocks |
 | :-- | :-- | :-- | :-- |

@@ -2,9 +2,10 @@
 
 > Phase 9 artifact. Owned by Program Manager, with QA Strategist.
 > Status: draft · Last updated: 2026-08-07
-> PRD: `plugins/attractor/.delivery/prd.md` · Architecture: `plugins/attractor/.delivery/architecture.md`
-> No `.delivery/prioritization.md` file exists; the Product Owner's scoring/staging and this
-> Program Manager's feasibility check, both supplied inline, stand in for it.
+> PRD: `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/prd.md` · Architecture: `plugins/attractor/.delivery/initiatives/spec-conformance-mvp/architecture.md`
+> `.delivery/initiatives/spec-conformance-mvp/prioritization.md` predates this roadmap and does not
+> itself carry FR-17b/FR-18/FR-9b staging; the Product Owner's scoring/staging and this
+> Program Manager's feasibility check for those, both supplied inline, stand in for it.
 > `.delivery/glossary.md` now exists (seeded 2026-08-07, resolving the FR-17b adversarial-critic
 > findings) and Phase 5 below uses its terms — *branch*, *branch worktree*, *convergence node*,
 > *join policy*, *context merge-back* — exactly as defined there. Two terms this document still
