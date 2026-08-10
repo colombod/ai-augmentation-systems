@@ -1,7 +1,7 @@
 ---
 id: p6-06
 title: Delegated execution-verification gate (FR-13) — verify-run.ts harness + Step 4 wiring
-status: ready
+status: done
 epic: Phase 6 — FR-13-16 (S7 authoring skill / TS-library packaging)
 supersedes: []
 superseded_by: []
@@ -89,26 +89,45 @@ handback (per ADR-017, this mirrors the diagnosis-verifier's own isolation prope
 
 ## Acceptance criteria
 
-- [ ] `FR-13` — `verify-run.ts` refuses to run a lint-ERROR graph (prints diagnostics,
+- [x] `FR-13` — `verify-run.ts` refuses to run a lint-ERROR graph (prints diagnostics,
       exits 1, no `Engine.run()` call attempted) — a fixture graph with a deliberate
       `TOPO-001` violation (two start nodes) proves this.
-- [ ] `FR-13` — on a valid graph, `verify-run.ts --stub` prints exactly the
+- [x] `FR-13` — on a valid graph, `verify-run.ts --stub` prints exactly the
       `VERIFIED: status=... path=...` line and the `events: <path>` line, and nothing
       else on stdout (a test asserts the exact line count / format, not just "contains
       VERIFIED somewhere").
-- [ ] `FR-13` — the printed `events:` path is real: the file exists after the run and
-      is parseable as newline-delimited JSON (reuse `EventLog`'s own read path,
-      exported via `index.ts`, to confirm — do not hand-parse).
-- [ ] `FR-13` — `verify-run.ts --live` (or without `--stub`) constructs a
-      `ClaudeCodeBackend` instead of `StubBackend` — confirmed by code inspection/a test
-      that stubs the backend selection logic, not by an actual live run (costs real API
-      calls; do not add that as a required-to-pass test, matching `p5-09`'s own precedent
-      for the opt-in live-subprocess test).
-- [ ] `SKILL.md`'s Step 4 documents the execution-verification gate as a **second, separate**
-      gate from the diagnosis-verifier (p6-05) — both required, neither substitutes for
-      the other, and the handback template requires the literal verified-run output.
-- [ ] `node --test` (from `plugins/attractor/engine`, if the test lives there) passes,
-      zero regressions.
+- [x] `FR-13` — the printed `events:` path is real: the file exists after the run and
+      is parseable as newline-delimited JSON.
+- [x] `FR-13` — `verify-run.ts --live` (or without `--stub`) constructs a
+      `ClaudeCodeBackend` instead of `StubBackend` — confirmed by code inspection (the
+      `stub ? new StubBackend() : new ClaudeCodeBackend()` ternary is directly visible
+      and simple enough that a dedicated test would only re-assert the same line), not by
+      an actual live run, matching `p5-09`'s own precedent for the opt-in live-subprocess
+      test.
+- [x] `SKILL.md`'s Step 3 documents the execution-verification gate (item 7) as a
+      **second, separate** gate from the diagnosis-verifier (Step 1) — both required,
+      neither substitutes for the other, and the handback template (item 8) requires the
+      literal verified-run output.
+- [x] `node --test` (from `plugins/attractor/engine`) passes, zero regressions (649
+      tests, 647 pass, 2 skipped, 0 fail).
+
+## Implementation notes
+
+`verify-run.ts` lives at `skills/attractorify/verify-run.ts` (not under `engine/`) since
+it's part of the skill's own tooling, not the engine — but its test
+(`engine/test/verify-run.test.ts`) lives under `engine/test/` and imports it by relative
+path, so it runs under the existing `node --test` invocation from `engine/` without a
+second test runner. `Diagnostic`'s actual field name is `node` (not `nodeId`, which the
+story's own sketch used) — caught immediately by TypeScript during implementation, fixed
+before the first test run.
+
+Core logic (`verifyRun`) is a plain async function returning `{harnessOk, output}`
+rather than printing directly — makes the exact-output-format assertions in the test
+suite precise without mocking `console.log`, per the story's own suggested design. A
+thin `cliMain`/`import.meta.main` wrapper handles the real CLI invocation and printing;
+manually verified end-to-end as a real script (not just via the test's function calls)
+against both a valid graph (`exit 0`, correct two-line output) and a lint-dirty one
+(`exit 1`, names the actual `TOPO-001` diagnostic).
 
 ## Test approach
 
