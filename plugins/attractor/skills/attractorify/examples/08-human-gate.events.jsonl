@@ -1,0 +1,15 @@
+{"ts":"2026-08-11T14:06:36.113Z","type":"pipeline.start","node":"start"}
+{"ts":"2026-08-11T14:06:36.114Z","type":"node.start","node":"start"}
+{"ts":"2026-08-11T14:06:36.114Z","type":"node.end","node":"start","status":"success"}
+{"ts":"2026-08-11T14:06:36.126Z","type":"edge.taken","node":"start","to":"prepare"}
+{"ts":"2026-08-11T14:06:36.126Z","type":"node.start","node":"prepare"}
+{"ts":"2026-08-11T14:06:36.126Z","type":"node.box.start","node":"prepare"}
+{"ts":"2026-08-11T14:06:36.126Z","type":"node.box.end","node":"prepare","status":"success"}
+{"ts":"2026-08-11T14:06:36.126Z","type":"node.end","node":"prepare","status":"success"}
+{"ts":"2026-08-11T14:06:36.136Z","type":"edge.taken","node":"prepare","to":"gate"}
+{"ts":"2026-08-11T14:06:36.136Z","type":"node.start","node":"gate"}
+{"ts":"2026-08-11T14:06:36.413Z","type":"node.end","node":"gate","status":"success"}
+{"ts":"2026-08-11T14:06:36.422Z","type":"edge.taken","node":"gate","to":"ship"}
+{"ts":"2026-08-11T14:06:36.422Z","type":"node.start","node":"ship"}
+{"ts":"2026-08-11T14:06:36.422Z","type":"node.end","node":"ship","status":"success"}
+{"ts":"2026-08-11T14:06:36.429Z","type":"pipeline.end","node":"ship","status":"success"}

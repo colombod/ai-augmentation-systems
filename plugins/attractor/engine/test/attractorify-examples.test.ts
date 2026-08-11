@@ -41,6 +41,21 @@ function needsGitRepoCwd(dotPath: string): boolean {
   return false
 }
 
+// Phase 2 (FR-5-8): a Handler.HUMAN node's channel chain is unconditionally non-viable
+// under verifyRun's own default ChannelRunContext (no --channel support unless asked
+// for) -- an example using one needs its channel(s) wired here, the same way
+// needsGitRepoCwd above wires what a `component` node needs. Named per-example, not
+// derived from the .dot file's own human.channel= value, since the mapping from a
+// channel NAME to the SCRIPT that answers it is a per-example authoring choice, not
+// something inferable from the graph alone.
+const CHANNEL_COMMANDS_BY_EXAMPLE: Record<string, Record<string, string>> = {
+  '08-human-gate': { mock_approval: join(EXAMPLES_DIR, '08-human-gate.mock-approval.sh') },
+}
+
+function channelCommandsFor(name: string): Record<string, string> {
+  return CHANNEL_COMMANDS_BY_EXAMPLE[name] ?? {}
+}
+
 for (const file of dotFiles) {
   const name = basename(file, '.dot')
   const dotPath = join(EXAMPLES_DIR, file)
@@ -66,7 +81,7 @@ for (const file of dotFiles) {
           cwd,
         })
       }
-      const result = await verifyRun(dotPath, { runDir, cwd, stub: true })
+      const result = await verifyRun(dotPath, { runDir, cwd, stub: true, channelCommands: channelCommandsFor(name) })
       assert.equal(result.harnessOk, true, `verify-run itself failed: ${result.output}`)
 
       const expected = committedTerminalStatus(name)

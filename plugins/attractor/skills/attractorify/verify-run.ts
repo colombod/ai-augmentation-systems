@@ -12,9 +12,17 @@
 //
 // Usage (delegation instruction the authoring session gives the subagent):
 //   node verify-run.ts <graph-path> [--run-dir <dir>] [--cwd <dir>] [--stub | --live]
+//                       [--allow-agent-gates] [--channel name=command]...
 // --cwd matters for any graph using a `component` (PARALLEL) node: branch
 // worktree isolation needs a real git repository, and this harness's own
 // default cwd (the OS temp dir) is not one.
+// --channel/--allow-agent-gates matter for any graph using a `hexagon`
+// (Handler.HUMAN) node: without them, every human gate's channel chain is
+// unconditionally non-viable under this harness's own default
+// ChannelRunContext (non-interactive, no agent-gate opt-in, no named
+// channels), and preflight refuses the graph before anything dispatches --
+// found by actually trying to verify 08-human-gate.dot through this harness,
+// the same way p6-07 found the --cwd gap.
 // Default: --stub. Prints exactly two lines on success:
 //   VERIFIED: status=<RunResult.status> path=<comma-joined final node path>
 //   events: <run-dir>/events.jsonl
@@ -36,6 +44,10 @@ import {
   parseDot,
   StubBackend,
   ClaudeCodeBackend,
+  defaultChannels,
+  CommandChannel,
+  type Channel,
+  type ChannelRunContext,
 } from '../../engine/src/index.ts'
 
 export interface VerifyRunOptions {
@@ -43,6 +55,10 @@ export interface VerifyRunOptions {
   cwd?: string
   /** Defaults to true -- --stub is the "ready" bar (ADR-017); --live is opt-in. */
   stub?: boolean
+  /** Mirrors cli.ts's --allow-agent-gates. Default false. */
+  allowAgentGates?: boolean
+  /** Mirrors cli.ts's --channel name=command, pre-parsed. Default {}. */
+  channelCommands?: Record<string, string>
 }
 
 export interface VerifyRunResult {
@@ -72,12 +88,32 @@ export async function verifyRun(graphPath: string, opts: VerifyRunOptions = {}):
   const cwd = opts.cwd ?? tmpdir()
   const stub = opts.stub ?? true
 
+  // claudeAvailable is deliberately hardcoded false, not probed -- this harness has no
+  // doctor.ts import today, and --stub (the "ready" bar, ADR-017) never needs the agent
+  // channel anyway. A graph relying on --allow-agent-gates gets an honest, named
+  // limitation (agent stays non-viable here even with the flag set), not a silent gap.
+  const channels: Map<string, Channel> = defaultChannels({
+    allowAgentGates: opts.allowAgentGates ?? false,
+    claudeAvailable: false,
+  })
+  for (const [name, command] of Object.entries(opts.channelCommands ?? {})) {
+    channels.set(name, new CommandChannel(command))
+  }
+  const channelRunContext: ChannelRunContext = {
+    isInteractive: Boolean(process.stdin.isTTY),
+    allowAgentGates: opts.allowAgentGates ?? false,
+    claudeAvailable: false,
+    configuredNames: new Set(channels.keys()),
+  }
+
   const engine = new Engine({
     graph,
     context: Context.from({}),
     runDir,
     cwd,
-    handlers: defaultHandlers(stub ? new StubBackend() : new ClaudeCodeBackend()),
+    handlers: defaultHandlers(stub ? new StubBackend() : new ClaudeCodeBackend(), channels, channelRunContext),
+    channels,
+    channelRunContext,
   })
   const result = await engine.run()
 
@@ -95,12 +131,17 @@ export async function verifyRun(graphPath: string, opts: VerifyRunOptions = {}):
 export async function cliMain(argv: string[]): Promise<number> {
   const [graphPath, ...rest] = argv
   if (!graphPath) {
-    console.error('usage: verify-run.ts <graph-path> [--run-dir <dir>] [--cwd <dir>] [--stub | --live]')
+    console.error(
+      'usage: verify-run.ts <graph-path> [--run-dir <dir>] [--cwd <dir>] [--stub | --live] ' +
+        '[--allow-agent-gates] [--channel name=command]...',
+    )
     return 2
   }
   let runDir: string | undefined
   let cwd: string | undefined
   let stub = true
+  let allowAgentGates = false
+  const channelCommands: Record<string, string> = {}
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === '--run-dir') {
       runDir = rest[++i]
@@ -110,9 +151,15 @@ export async function cliMain(argv: string[]): Promise<number> {
       stub = true
     } else if (rest[i] === '--live') {
       stub = false
+    } else if (rest[i] === '--allow-agent-gates') {
+      allowAgentGates = true
+    } else if (rest[i] === '--channel') {
+      const pair = rest[++i] ?? ''
+      const eq = pair.indexOf('=')
+      if (eq > 0) channelCommands[pair.slice(0, eq)] = pair.slice(eq + 1)
     }
   }
-  const result = await verifyRun(graphPath, { runDir, cwd, stub })
+  const result = await verifyRun(graphPath, { runDir, cwd, stub, allowAgentGates, channelCommands })
   console.log(result.output)
   return result.harnessOk ? 0 : 1
 }

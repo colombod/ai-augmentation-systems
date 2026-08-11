@@ -10,7 +10,8 @@ Ported near-verbatim from `microsoft/amplifier-bundle-attractor@main`'s
 evidence-quoting diagnosis artifact, the fail-closed bash gate, the independent-verifier
 delegation, and the anti-self-dealing rule are engine-independent and kept as-is, per
 [ADR-018](../../.delivery/decisions/ADR-018-reference-material-porting-split.md). Two
-things are new, not ported: the six-registered-handlers constraint in Step 3 (FR-14),
+things are new, not ported: the registered-handlers constraint in Step 5 (FR-14; six at
+S7, seven since Phase 2 registered `Handler.HUMAN`, 2026-08-11),
 and a second, independent **execution**-verification gate after the artifact is drafted
 (FR-13 — see [ADR-017](../../.delivery/decisions/ADR-017-delegated-execution-verification.md)),
 which does not exist in amplifier's own flow at all.
@@ -342,16 +343,21 @@ the objection's disposition recorded (`caveats:` line if unresolved). Then:
    artifact first — naming the evidence gate that justifies the extra
    machinery — re-run the gate, and only then grow the graph.
 
-5. **Use only the six registered handlers (FR-14).** `Mdiamond`/`start`,
+5. **Use only the seven registered handlers (FR-14).** `Mdiamond`/`start`,
    `Msquare`/`exit`, `diamond`/`conditional`, `parallelogram`/`tool`,
-   `box`/`codergen` (the default), `component`/`parallel`. **Never** design a node using
-   `hexagon` (human gate), `tripleoctagon` (fan-in), or `house` (manager loop) — this
-   build does not register a handler for any of the three, and `attractor lint` will
-   refuse the graph (`HAND-001`) if one appears. See
+   `box`/`codergen` (the default), `component`/`parallel`, `hexagon`/`human` (Phase 2,
+   2026-08-11 — see `08-human-gate.dot`). **Never** design a node using `tripleoctagon`
+   (fan-in) or `house` (manager loop) — this build does not register a handler for
+   either, and `attractor lint` will refuse the graph (`HAND-001`) if one appears. See
    [`reference/dot-reference.md`](reference/dot-reference.md) for the full shape table.
    A `component` node's convergence point is an ordinary `box`/`parallelogram` node, not
    the unregistered `tripleoctagon` shape — this engine's default join policy already
-   fails the fan-out when every branch fails, with no separate fan-in node needed.
+   fails the fan-out when every branch fails, with no separate fan-in node needed. A
+   `hexagon` (human-gate) node needs a viable answer channel for the invocation it will
+   actually run under — `human` alone can never answer one in this build (ADR-023); if
+   you design one, its `human.channel=` and the operator's own `--channel`/
+   `--allow-agent-gates` flags must agree, or the run refuses at preflight before
+   anything dispatches. Say this explicitly in the handback, don't leave it implicit.
 
 6. **Write the artifact and lint it.** Write the `.dot` file to a named path in
    the target repo (e.g. `<task-id>.dot`), then run:
@@ -372,7 +378,12 @@ the objection's disposition recorded (`caveats:` line if unresolved). Then:
    subagent with the single instruction "run `node
    ${CLAUDE_PLUGIN_ROOT}/skills/attractorify/verify-run.ts <path> --stub` and report its
    exact stdout verbatim," and do not proceed to handback without that subagent's
-   literal `VERIFIED: status=... path=...` line and `events:` path.
+   literal `VERIFIED: status=... path=...` line and `events:` path. **A graph with a
+   `hexagon` (human-gate) node needs `--channel name=command` (and/or
+   `--allow-agent-gates`) appended to that same invocation**, matching whatever
+   `human.channel=` the graph declares — otherwise the delegated run correctly, honestly
+   reports `status=fail` (preflight refusal, no viable channel), which is not the same
+   claim as the graph being broken.
 
 8. **Hand back:** the `.dot` file path, the exact invocation command, the literal
    execution-verification output from step 7 (including whether it was `--stub` or
@@ -388,7 +399,7 @@ the objection's disposition recorded (`caveats:` line if unresolved). Then:
 
 - [`reference/pipeline-design-principles.md`](reference/pipeline-design-principles.md) §0 —
   one-sentence rule, control-plane vs recipe-plane line, **three-question test**, design order
-- [`reference/dot-reference.md`](reference/dot-reference.md) — node shapes (six registered
+- [`reference/dot-reference.md`](reference/dot-reference.md) — node shapes (seven registered
   handlers only), attributes, `outputs=`/`runs_on=` dataflow contract
 - [`reference/routing-reference.md`](reference/routing-reference.md) — edge selection,
   the `goal_gate=true`-only verdict contract (FR-15)
