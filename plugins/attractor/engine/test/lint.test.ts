@@ -707,6 +707,19 @@ test('DATA-001 fires for a dotted reference no node declares', () => {
   assert.equal(hasErrors(lint(parseDot(src))), false, 'a WARNING must not make the graph unrunnable')
 })
 
+test('DATA-001 fires for a human gate whose prompt references an undeclared key (p2-08: SUBSTITUTABLE_ATTRS[Handler.HUMAN] wiring)', () => {
+  const src = `digraph G {
+    start [shape=Mdiamond]  done [shape=Msquare]
+    gate  [shape=hexagon, human.prompt="approve \${owed.value}?"]
+    gate -> done [label="ok"]
+    start -> gate
+  }`
+  const found = data001(src)
+  assert.equal(found.length, 1, 'exactly one DATA-001')
+  assert.equal(found[0].node, 'gate')
+  assert.match(found[0].message, /owed\.value/)
+})
+
 test('DATA-001 names the box-node rule, which authors will hit constantly', () => {
   // A box (LLM) node infers NO outputs: a model's contextUpdates keys are
   // arbitrary and are filtered by the engine-managed guard, so there is
@@ -1687,15 +1700,6 @@ test('HAND-001 fires for a node resolving to Handler.MANAGER_LOOP', () => {
   assert.ok(codes(src).includes('HAND-001'))
 })
 
-test('HAND-001 fires for Handler.HUMAN too, since it is unregistered in this build', () => {
-  const src = `digraph G {
-    start [shape=Mdiamond]  done [shape=Msquare]
-    gate [shape=hexagon, prompt="approve?"]
-    start -> gate -> done
-  }`
-  assert.ok(codes(src).includes('HAND-001'))
-})
-
 test('HAND-001 respects type= overriding shape=', () => {
   // type="parallel.fan_in" (not "parallel" -- Handler.PARALLEL is registered
   // as of p5-08, so it would no longer trip HAND-001, defeating the point of
@@ -1714,9 +1718,14 @@ test('HAND-001 does not fire for any registered handler kind', () => {
     work [shape=box, prompt="do it"]
     tool [shape=parallelogram, tool_command="printf ok"]
     cond [shape=diamond]
+    gate [shape=hexagon, prompt="approve?"]
     start -> work -> tool -> cond -> done [condition="outcome=success"]
     cond -> done [condition="outcome=fail"]
+    cond -> gate [condition="outcome=retry"]
+    gate -> done [label="ok"]
   }`
+  // Handler.HUMAN is registered as of p2-08 (was the "HAND-001 fires for Handler.HUMAN
+  // too" test's premise, now stale -- deleted, its flip side covered here instead).
   assert.ok(!codes(src).includes('HAND-001'))
 })
 
@@ -1973,16 +1982,19 @@ test('HITL-003 does not fire on a non-Handler.HUMAN node carrying human.channel/
   assert.equal(hitl003(src).length, 0)
 })
 
-test('HITL-003 co-fires with HAND-001 without interference, since Handler.HUMAN is still unregistered', () => {
+test('HITL-003 fires on its own, with no other diagnostic suppressing it', () => {
+  // Previously also asserted HAND-001 co-fired here, on the strength of
+  // Handler.HUMAN being unregistered -- that premise ended with p2-08
+  // (Handler.HUMAN is now registered, so this hexagon node no longer trips
+  // HAND-001). HITL-003's own firing, the property this test actually exists
+  // to check, is unaffected either way.
   const src = `digraph G {
     start [shape=Mdiamond]  done [shape=Msquare]
     review [shape=box, prompt="summarize"]
     gate [shape=hexagon, human.channel="agent", human.context="review.summary"]
     start -> review -> gate -> done
   }`
-  const found = codes(src)
-  assert.ok(found.includes('HITL-003'))
-  assert.ok(found.includes('HAND-001'))
+  assert.ok(codes(src).includes('HITL-003'))
 })
 
 test('HITL-003 message names the predecessor, states advisory-only, and disclaims multi-hop/TOOL detection', () => {

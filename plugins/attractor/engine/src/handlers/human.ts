@@ -1,6 +1,7 @@
 import { isConditional } from '../core/edge-select.ts'
 import { parseDuration } from '../core/duration.ts'
 import { Status, type Outcome } from '../core/outcome.ts'
+import { substitute } from '../core/substitute.ts'
 import { outgoingEdges } from '../dot/graph.ts'
 import {
   isChannelViable,
@@ -39,7 +40,11 @@ function exposedContext(ctx: HandlerCtx): Record<string, string> {
 
 function buildGateContext(ctx: HandlerCtx): HumanGateContext {
   const attrs = ctx.node.attrs
-  const label = attrs['human.prompt'] || attrs['human.label'] || attrs.prompt || attrs.label || ctx.node.id
+  const rawLabel = attrs['human.prompt'] || attrs['human.label'] || attrs.prompt || attrs.label || ctx.node.id
+  // Matches SUBSTITUTABLE_ATTRS[Handler.HUMAN] (dot/graph.ts) -- the same fallback
+  // chain substitutableText() reads, so DATA-001's eager-input-check statically
+  // predicts exactly what this handler substitutes at runtime, not just a claim.
+  const label = substitute(rawLabel, ctx.context)
   return {
     nodeId: ctx.node.id,
     label,

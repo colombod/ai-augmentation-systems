@@ -24,6 +24,7 @@ import { loadCheckpoint } from '../src/core/checkpoint.ts'
 import { EventLog } from '../src/run/events.ts'
 import { LINT_FAILS_BUT_WOULD_RUN, GatedBackend } from './fixtures.ts'
 import { type BranchRunResult as BranchRunResultShape } from '../src/handlers/types.ts'
+import { type Channel, type ChannelAnswer, type ChannelRunContext, type HumanGateContext } from '../src/channels/types.ts'
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'attractor-engine-'))
@@ -1211,11 +1212,16 @@ test('a handler that throws terminates the run cleanly instead of rejecting', as
 // one test pins the NEW lint-refusal behaviour on this exact fixture, the
 // other restores real coverage of engine.ts's own internal abort using a
 // fixture and handlers map built specifically to reach it.
+// Handler.FAN_IN (tripleoctagon), not Handler.HUMAN (hexagon): Handler.HUMAN is
+// registered as of p2-08, so a bare hexagon node no longer trips HAND-001 -- it
+// lints clean and is instead refused by the NEW preflight-refusal step (see the
+// hexagon-fixture test below), an unrelated reason. tripleoctagon stays genuinely
+// unregistered, preserving this test's original FR-11 x FR-17a intent unchanged.
 const NO_HANDLER = `
 digraph H {
   start [shape=Mdiamond]
   done  [shape=Msquare]
-  gate  [shape=hexagon]
+  gate  [shape=tripleoctagon]
   start -> gate -> done
 }
 `
@@ -1239,6 +1245,138 @@ test('the embedded Engine refuses a HAND-001-dirty graph before dispatching anyt
     const terminal = events.find((e) => e.type === 'pipeline.end')
     assert.ok(terminal, 'a lint refusal still leaves a terminal event')
     assert.equal(terminal?.status, Status.FAIL)
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+// p2-08: a bare hexagon (Handler.HUMAN) node lints clean now that it's registered
+// (HAND-001 no longer fires), but the NEW preflightHumanGates step refuses it
+// instead -- its only chain hop, the attribute-absent default "human", isn't
+// viable under a non-interactive stdin, which is exactly this test's own default
+// ChannelRunContext via defaultHandlers()'s own safe default (ADR-024).
+const HEXAGON_NO_VIABLE_CHANNEL = `
+digraph H {
+  start [shape=Mdiamond]
+  done  [shape=Msquare]
+  gate  [shape=hexagon, prompt="approve?"]
+  start -> gate -> done
+}
+`
+
+test('the embedded Engine refuses via preflight, not HAND-001, when a human gate has no viable channel', async () => {
+  const { runDir, cwd } = tempDirs()
+  try {
+    const engine = new Engine({
+      graph: parseDot(HEXAGON_NO_VIABLE_CHANNEL),
+      context: Context.from({}),
+      runDir,
+      cwd,
+      handlers: defaultHandlers(new StubBackend({})),
+    })
+    const result = await engine.run()
+    assert.equal(result.status, Status.FAIL)
+    assert.equal(result.path.length, 0, 'preflight refusal happens before any node is dispatched')
+    assert.doesNotMatch(result.notes ?? '', /HAND-001/, 'this refusal is not HAND-001 -- the graph lints clean')
+    assert.match(result.notes ?? '', /human gate/i)
+    assert.match(result.notes ?? '', /gate/)
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+class OneShotFakeChannel implements Channel {
+  calls = 0
+  private readonly label: string
+
+  constructor(label: string) {
+    this.label = label
+  }
+
+  async answer(_ctx: HumanGateContext, _timeoutMs: number | null): Promise<ChannelAnswer> {
+    this.calls++
+    return { label: this.label }
+  }
+}
+
+test('preflight + dispatch agreement: a chain preflight approves is the chain HumanGateHandler actually dispatches to', async () => {
+  const { runDir, cwd } = tempDirs()
+  try {
+    const src = `digraph H {
+      start [shape=Mdiamond]
+      done  [shape=Msquare]
+      gate  [shape=hexagon, human.channel="fake", prompt="approve?"]
+      gate -> done [label="ok"]
+      start -> gate
+    }`
+    const fakeChannel = new OneShotFakeChannel('ok')
+    const channels: ReadonlyMap<string, Channel> = new Map([['fake', fakeChannel]])
+    const channelRunContext: ChannelRunContext = {
+      isInteractive: false,
+      allowAgentGates: false,
+      claudeAvailable: false,
+      configuredNames: new Set(['fake']),
+    }
+    const engine = new Engine({
+      graph: parseDot(src),
+      context: Context.from({}),
+      runDir,
+      cwd,
+      handlers: defaultHandlers(new StubBackend({}), channels, channelRunContext),
+      channels,
+      channelRunContext,
+    })
+    const result = await engine.run()
+    assert.equal(result.status, Status.SUCCESS)
+    assert.equal(
+      fakeChannel.calls,
+      1,
+      'preflight approved this chain (same isChannelViable call, same ChannelRunContext), and dispatch actually used it',
+    )
+  } finally {
+    cleanup(runDir, cwd)
+  }
+})
+
+test('a human gate answer matching no edge label falls through to selectEdge\'s weight/lexical fallback, not an error', async () => {
+  const { runDir, cwd } = tempDirs()
+  try {
+    const src = `digraph H {
+      start [shape=Mdiamond]
+      done  [shape=Msquare]
+      aaa_target [shape=box, prompt="x"]
+      zzz_target [shape=box, prompt="x"]
+      gate  [shape=hexagon, human.channel="fake", prompt="approve?"]
+      gate -> aaa_target [label="one"]
+      gate -> zzz_target [label="two"]
+      aaa_target -> done
+      zzz_target -> done
+      start -> gate
+    }`
+    // Answers with a label that matches NEITHER "one" nor "two" -- the design's own
+    // accepted "not an error" behavior (human-gate-channels-design.md's Error handling
+    // section): selectEdge's steps 3-5 decide the edge exactly as for any other node's
+    // unmatched preferredLabel, here landing on the lexically smallest target id.
+    const fakeChannel = new OneShotFakeChannel('no-such-label')
+    const channels: ReadonlyMap<string, Channel> = new Map([['fake', fakeChannel]])
+    const channelRunContext: ChannelRunContext = {
+      isInteractive: false,
+      allowAgentGates: false,
+      claudeAvailable: false,
+      configuredNames: new Set(['fake']),
+    }
+    const engine = new Engine({
+      graph: parseDot(src),
+      context: Context.from({}),
+      runDir,
+      cwd,
+      handlers: defaultHandlers(new StubBackend({}), channels, channelRunContext),
+      channels,
+      channelRunContext,
+    })
+    const result = await engine.run()
+    assert.equal(result.status, Status.SUCCESS, 'an unmatched label must not error the run')
+    assert.ok(result.path.includes('aaa_target'), 'weight/lexical fallback picks the lexically smallest target id')
   } finally {
     cleanup(runDir, cwd)
   }
