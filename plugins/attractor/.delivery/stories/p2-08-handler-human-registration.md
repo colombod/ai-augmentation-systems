@@ -5,7 +5,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p2-08
 title: Register Handler.HUMAN — dot/graph.ts + core/engine.ts, migration repoints
-status: ready
+status: done
 epic: Phase 2 — FR-5-8 (human-gate channels)
 supersedes: []
 superseded_by: []
@@ -176,5 +176,22 @@ either a new section in `engine.test.ts` (matching `p5-05`'s own precedent) or a
 
 ## Implementation notes
 
-Filled in during and after implementation. Record surprises, deviations from the plan and the
-reason, and follow-up work — anything a future reader would want.
+**A third test broke, not just the two the architecture named.** `lint.test.ts`'s "HITL-003
+co-fires with HAND-001 without interference, since Handler.HUMAN is still unregistered" had the
+same stale premise as the two documented breaks — its own name said why. Repointed: dropped the
+now-false `HAND-001` assertion, kept the real one (HITL-003 fires), renamed the test. A reminder
+that even a thorough architecture/QA/critic pass can miss an incidental co-firing assertion buried
+in an unrelated rule's test; implementation is where the last of these actually surface.
+
+Also fixed p2-07's `buildGateContext` to call `substitute()` on the resolved label (see p2-07's
+own Implementation notes) — required for the new `SUBSTITUTABLE_ATTRS[Handler.HUMAN]` wiring to
+be true, not just declared.
+
+Two new integration tests added beyond the architecture's named rows: "preflight + dispatch
+agreement" and "unmatched channel answer falls through to selectEdge's fallback" — both explicitly
+named in the architecture's Test-strategy table but not pre-assigned to a specific story; landed
+here since this is the first story with a real, dispatchable `Handler.HUMAN` to exercise them
+against.
+
+Final state: `lint.test.ts` (177 tests), `engine.test.ts`, `graph.test.ts`, `handlers-human.test.ts`
+(345 combined) all green; full suite 722/720/0/2 (pass/fail/skip accounting: 720 pass, 2 skipped).

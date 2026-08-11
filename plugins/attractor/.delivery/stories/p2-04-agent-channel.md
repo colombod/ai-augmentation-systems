@@ -5,7 +5,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p2-04
 title: AgentChannel — self-enforcing two-key claude -p proxy channel
-status: ready
+status: done
 epic: Phase 2 — FR-5-8 (human-gate channels)
 supersedes: []
 superseded_by: []

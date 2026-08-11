@@ -5,7 +5,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p2-09
 title: --allow-agent-gates / --channel flags; channels wired into Engine; index.ts exports
-status: ready
+status: done
 epic: Phase 2 — FR-5-8 (human-gate channels)
 supersedes: []
 superseded_by: []

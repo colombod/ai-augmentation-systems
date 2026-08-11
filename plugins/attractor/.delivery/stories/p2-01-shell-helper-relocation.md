@@ -5,7 +5,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p2-01
 title: Relocate runShell/lastNonEmptyLine from handlers/tool.ts to core/shell.ts
-status: ready
+status: done
 epic: Phase 2 — FR-5-8 (human-gate channels)
 supersedes: []
 superseded_by: []

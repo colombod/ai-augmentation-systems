@@ -5,7 +5,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p2-10
 title: Real-subprocess non-TTY fail-fast test (FR-5); full HITL-001 regression re-run (FR-7)
-status: ready
+status: done
 epic: Phase 2 — FR-5-8 (human-gate channels)
 supersedes: []
 superseded_by: []
@@ -112,5 +112,22 @@ then full `node --test`.
 
 ## Implementation notes
 
-Filled in during and after implementation. Record surprises, deviations from the plan and the
-reason, and follow-up work — anything a future reader would want.
+Extended `bundle.test.ts` (did not add a new file) — its existing `execFileSync`/`mkdtempSync`/
+`rmSync` pattern needed no adaptation beyond catching the expected non-zero-exit throw.
+
+Confirmed the refusal path directly: the `hexagon` gate fixture with default `human.channel` and
+no CLI flags is caught by the CLI's own fast-path preflight (p2-09), asserted via the exact stderr
+text (`refusing to run: a reachable human gate...`) that string literal is unique to `cli.ts`'s
+own preflight block, distinct from `Engine.run()`'s copy (`graph has a reachable human gate...`)
+and from `HumanGateHandler`'s own FAIL notes — confirming which of the three copies actually fired,
+not merely that refusal happened somewhere.
+
+**One real, unanticipated technical snag:** the FR-7 nested `node --test test/lint.test.ts`
+invocation silently produced empty output the first time — Node's own test-runner recursion guard
+("run() is being called recursively within a test file. skipping running files.") fired because
+this test file is itself spawned as a `node --test` child (isolation mode sets
+`NODE_TEST_CONTEXT`/`NODE_TEST_WORKER_ID` in its env), and those two vars leaked into the nested
+child via inherited `process.env`. Fixed by stripping both before spawning. Not named in any prior
+document — a pure implementation-time discovery.
+
+Final: Phase 2 (FR-5-8) complete. 731 tests, 729 pass, 2 skipped, 0 fail.

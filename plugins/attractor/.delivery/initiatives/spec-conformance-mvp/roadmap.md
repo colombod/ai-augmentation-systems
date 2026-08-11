@@ -106,7 +106,7 @@ safe answer. **Decomposed into ten `ready` stories, `p2-01` through `p2-10`** �
 
 | Phase | FRs | Blocked by | Owner | Depends on | Effort |
 | :-- | :-- | :-- | :-- | :-- | :-- |
-| 2 — Human-gate core | FR-5, FR-6, FR-7, FR-8 | **Not blocked.** Architecture done 2026-08-11 (`architecture.md`'s FR-5–8 section, `ADR-020`–`ADR-026`); stories `ready` (`stories/README.md`) | Solution Architect (done) — implementer next | `agent` sub-slice (`p2-04`) has no runtime dependency on Phase 1 despite `HITL-003`'s own self-report-guard rationale referencing the `agent` channel — `HITL-003` is an already-shipped, unaffected lint-time WARNING | 10 stories, S/S/S/M/M/M/L/M/M/S — see `stories/README.md` Phase 2 |
+| 2 — Human-gate core | FR-5, FR-6, FR-7, FR-8 | **Done 2026-08-11.** Architecture, 10 stories, sprint 4, and full TDD implementation all landed this session; `Handler.HUMAN` registered and live (`architecture.md`'s FR-5–8 section, `ADR-020`–`ADR-026`, `stories/README.md` Phase 2) | Solution Architect + implementer — done | `agent` sub-slice (`p2-04`) has no runtime dependency on Phase 1 despite `HITL-003`'s own self-report-guard rationale referencing the `agent` channel — `HITL-003` is an already-shipped, unaffected lint-time WARNING | 731 tests, 729 pass, 2 skipped, 0 fail — see `stories/README.md` Phase 2 |
 
 **Phase 2 work items** (mirrors Phase 5's own A–J decomposition format):
 
@@ -513,10 +513,10 @@ resolved (ADR-013) — both were the same shape of risk, and both are now closed
 | FR-2 | 0 | Shipped |
 | FR-3 | 0 | Shipped |
 | FR-4 | 0 | Shipped |
-| FR-5 | 2 | **Fully planned 2026-08-11** — stories `p2-03`, `p2-06`, `p2-07`, `p2-08`, `p2-10` |
-| FR-6 | 2 | **Fully planned 2026-08-11** — same stories as FR-5 |
-| FR-7 | 2 | **Fully planned 2026-08-11** — stories `p2-08` (migration repoints), `p2-10` (final regression confirmation) |
-| FR-8 | 2 | **Fully planned 2026-08-11** — every Phase 2 story; satisfiable only via `agent` (`p2-04`) or `CommandChannel` (`p2-05`), never `human` alone (ADR-023) |
+| FR-5 | 2 | **Done 2026-08-11** — stories `p2-03`, `p2-06`, `p2-07`, `p2-08`, `p2-10` |
+| FR-6 | 2 | **Done 2026-08-11** — same stories as FR-5 |
+| FR-7 | 2 | **Done 2026-08-11** — stories `p2-08` (migration repoints), `p2-10` (final regression confirmation, full HITL-001 suite green) |
+| FR-8 | 2 | **Done 2026-08-11** — every Phase 2 story; satisfiable only via `agent` (`p2-04`) or `CommandChannel` (`p2-05`), never `human` alone (ADR-023) |
 | FR-9a | 3 | **Rejected 2026-08-09** — ADR-014, Open Question 9 |
 | FR-9b | 3 | **Done 2026-08-09** — ADR-014 (`GATE-002`), story `p3-01` |
 | FR-10 | 0 | Shipped |

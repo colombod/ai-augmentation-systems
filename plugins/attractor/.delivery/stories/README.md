@@ -49,16 +49,16 @@ No draft stories this phase.
 
 | ID | Title | Status | Requirements | Depends on | Size |
 | :-- | :-- | :-- | :-- | :-- | :-- |
-| [p2-01](p2-01-shell-helper-relocation.md) | Relocate `runShell`/`lastNonEmptyLine` to `core/shell.ts` (ADR-020) | ready | FR-8 (enabling) | none | S |
-| [p2-02](p2-02-channel-core-contracts.md) | `Channel`, `HumanGateContext`, `ChannelAnswer`, `ChannelRunContext`, `isChannelViable`/`whyNotViable` | ready | FR-8 | none | S |
-| [p2-03](p2-03-human-channel.md) | `HumanChannel` — realizes ADR-002 (ADR-023: no real-answer path this slice) | ready | FR-5, FR-6 | p2-02 | S |
-| [p2-04](p2-04-agent-channel.md) | `AgentChannel` — self-enforcing two-key `claude -p` proxy (ADR-022) | ready | FR-8 | p2-02 | M |
-| [p2-05](p2-05-command-channel.md) | `CommandChannel` — shell-quoted substitution (ADR-026) | ready | FR-8 | p2-01, p2-02 | M |
-| [p2-06](p2-06-channel-registry-preflight.md) | `defaultChannels()` + `preflightHumanGates()` (ADR-021) | ready | FR-5, FR-6, FR-8 | p2-03, p2-04 | M |
-| [p2-07](p2-07-human-gate-handler.md) | `HumanGateHandler` chain-walk logic (ADR-025) | ready | FR-5, FR-6, FR-8 | p2-02 | L |
-| [p2-08](p2-08-handler-human-registration.md) | Register `Handler.HUMAN` — `dot/graph.ts` + `core/engine.ts`, migration repoints (ADR-024) | ready | FR-5, FR-6, FR-7, FR-8 | p2-06, p2-07 | M |
-| [p2-09](p2-09-cli-wiring-exports.md) | CLI wiring (`--allow-agent-gates`, `--channel`) + `index.ts` exports | ready | FR-8 | p2-08 | M |
-| [p2-10](p2-10-fr5-real-subprocess-verification.md) | Real-subprocess non-TTY fail-fast test (FR-5); full HITL-001 regression re-run (FR-7) | ready | FR-5, FR-7 | p2-09 | S |
+| [p2-01](p2-01-shell-helper-relocation.md) | Relocate `runShell`/`lastNonEmptyLine` to `core/shell.ts` (ADR-020) | **done** | FR-8 (enabling) | none | S |
+| [p2-02](p2-02-channel-core-contracts.md) | `Channel`, `HumanGateContext`, `ChannelAnswer`, `ChannelRunContext`, `isChannelViable`/`whyNotViable` | **done** | FR-8 | none | S |
+| [p2-03](p2-03-human-channel.md) | `HumanChannel` — realizes ADR-002 (ADR-023: no real-answer path this slice) | **done** | FR-5, FR-6 | p2-02 | S |
+| [p2-04](p2-04-agent-channel.md) | `AgentChannel` — self-enforcing two-key `claude -p` proxy (ADR-022) | **done** | FR-8 | p2-02 | M |
+| [p2-05](p2-05-command-channel.md) | `CommandChannel` — shell-quoted substitution (ADR-026) | **done** | FR-8 | p2-01, p2-02 | M |
+| [p2-06](p2-06-channel-registry-preflight.md) | `defaultChannels()` + `preflightHumanGates()` (ADR-021) | **done** | FR-5, FR-6, FR-8 | p2-03, p2-04 | M |
+| [p2-07](p2-07-human-gate-handler.md) | `HumanGateHandler` chain-walk logic (ADR-025) | **done** | FR-5, FR-6, FR-8 | p2-02 | L |
+| [p2-08](p2-08-handler-human-registration.md) | Register `Handler.HUMAN` — `dot/graph.ts` + `core/engine.ts`, migration repoints (ADR-024) | **done** | FR-5, FR-6, FR-7, FR-8 | p2-06, p2-07 | M |
+| [p2-09](p2-09-cli-wiring-exports.md) | CLI wiring (`--allow-agent-gates`, `--channel`) + `index.ts` exports | **done** | FR-8 | p2-08 | M |
+| [p2-10](p2-10-fr5-real-subprocess-verification.md) | Real-subprocess non-TTY fail-fast test (FR-5); full HITL-001 regression re-run (FR-7) | **done** | FR-5, FR-7 | p2-09 | S |
 
 **Decomposition note.** Ten dependency-ordered stories, following this phase's own natural
 shape: build three independent channel implementations against one shared contract, then
@@ -100,10 +100,24 @@ of scope for Phase 2 — already shipped in Phase 1.
 
 ## Readiness — Phase 2
 
-**p2-01 through p2-10 — all `ready`.** Every story: acceptance criteria falsifiable, file paths
-verified against the repo (existing files and line citations spot-checked directly, not trusted
-from the architecture alone), dependencies stated, test approach present with the real `node
---test` command for this repo. None held back to `draft`.
+**p2-01 through p2-10 — all `done`. Phase 2 (FR-5-8, human-gate core) is complete,** implemented
+with TDD (red test first, watched fail, then implemented) in dependency order, one commit per
+story. 731 tests, 729 pass, 2 skipped, 0 fail as of the final commit. `Handler.HUMAN` registration
+(p2-08) was the load-bearing piece the roadmap named — it's live: `dot/graph.ts`'s
+`UNREGISTERED_HANDLER_KINDS` no longer includes it, `core/engine.ts`'s `defaultHandlers()` returns
+a working `HumanGateHandler`. Real findings surfaced during implementation, not just planning: a
+third pre-existing test (beyond the two the architecture named) turned out to share the same
+"Handler.HUMAN is unregistered" stale premise (p2-08); p2-07's `HumanGateHandler` didn't actually
+call `substitute()` on its resolved label until p2-08's own `SUBSTITUTABLE_ATTRS` wiring exposed
+the gap; p2-10's nested `node --test` needed `NODE_TEST_CONTEXT`/`NODE_TEST_WORKER_ID` stripped
+from its child env to avoid Node's own recursion guard. See each story's own Implementation notes
+for the full account.
+
+**Pre-implementation readiness (unchanged from when stories were written):** every story's
+acceptance criteria were falsifiable, file paths verified against the repo (existing files and
+line citations spot-checked directly, not trusted from the architecture alone), dependencies
+stated, test approach present with the real `node --test` command for this repo. None held back
+to `draft`.
 
 ## Phase 5 — FR-17b (parallel fan-out, `Handler.PARALLEL`)
 
@@ -237,12 +251,12 @@ Implementation notes for the cross-referenced account.
 
 ## Next
 
-Phases 1, 3, 5, and 6 are done; **Phase 2 is now decomposed and `ready` (p2-01 through p2-10,
-2026-08-11)** — its architecture pass landed the same session, closing the gap the previous
-version of this section named. `Handler.HUMAN` registration (p2-08) is this phase's own
-load-bearing piece; once it ships, S7's own example-portability exclusions
-(`08-human-gate.dot`, `10-full-attractor.dot`, `task-runner.dot` — see `architecture.md`'s
-Example-portability policy and `skills/attractorify/examples/README.md`) should be revisited to
-check whether any can now be ported. Phase 4 still needs a scope call before it's story-able
-(Open Question 7 — should an embedder observe WARNING-severity diagnostics at all). Run
-`/delivery:sprint` next to scope Phase 2's implementation handoff.
+Phases 1, 2, 3, 5, and 6 are all done. **Phase 2 (human-gate core, FR-5-8) shipped 2026-08-11** —
+architecture, ten stories, sprint 4, and full TDD implementation all landed the same session;
+`Handler.HUMAN` is registered and live. Per this phase's own load-bearing consequence: S7's
+example-portability exclusions (`08-human-gate.dot`, `10-full-attractor.dot`, `task-runner.dot` —
+see `architecture.md`'s Example-portability policy and `skills/attractorify/examples/README.md`)
+and FR-14's "six registered handlers" constraint (now seven — `dot-reference.md`, the
+`attractor-expert` agent, `attractorify/SKILL.md`) both need a follow-up revisit; neither is
+fixed by this phase itself. Phase 4 still needs a scope call before it's story-able (Open
+Question 7 — should an embedder observe WARNING-severity diagnostics at all).

@@ -5,7 +5,7 @@ BUDGET — target 700 words, hard cap 1200 words. Excludes code, YAML and data t
 ---
 id: p2-07
 title: HumanGateHandler — per-hop dispatch, escalation, timeout parsing, fallback
-status: ready
+status: done
 epic: Phase 2 — FR-5-8 (human-gate channels)
 supersedes: []
 superseded_by: []
@@ -182,5 +182,13 @@ story's tests.
 
 ## Implementation notes
 
-Filled in during and after implementation. Record surprises, deviations from the plan and the
-reason, and follow-up work — anything a future reader would want.
+Shipped as designed; all 16 acceptance criteria green on the first implementation attempt.
+
+**One gap found and fixed one story later (p2-08), not here.** This story's original
+`buildGateContext` read the label directly off `node.attrs` without ever calling `substitute()`
+on it — a real omission this story's own tests didn't catch, since none of them exercised
+`${...}`-referencing labels. It surfaced only when p2-08 populated
+`SUBSTITUTABLE_ATTRS[Handler.HUMAN]` and needed `substitutableText()`'s static claim ("this
+handler substitutes this text") to match runtime behavior for DATA-001 to mean anything. Fixed by
+adding a `substitute(rawLabel, ctx.context)` call to `buildGateContext`, landed in p2-08's commit
+(the story responsible for wiring and proving that integration), not amended back into this one.
