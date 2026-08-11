@@ -11,7 +11,9 @@
 
 | Blocking | Significant | Minor | Dropped as preference |
 | :-- | :-- | :-- | :-- |
-| 4 | 7 | 4 | 0 |
+| 4 (2 open, 2 fixed) | 7 (0 open, 7 fixed) | 4 (0 open, 4 fixed) | 0 |
+
+**Update, 2026-08-11:** mechanical findings resolved directly. Two blocking findings (`R-prd-3`, `R-prd-9`) required consulting `delivery:chief-of-staff` first, per direct product-owner correction — both declined to answer (no citable source settles either), and both were properly routed to a Solution Architect spike/open-question rather than resolved by inference. Two blocking findings (`R-prd-1`, `R-prd-2`) and two others (`R-prd-4`, `R-prd-12`) are genuine product/architecture decisions with no citable source — held for the operator, not resolved here.
 
 **Independent convergence:** R-prd-1 found by 4 of 5 reviewers independently — the strongest signal any pass this initiative has produced. R-prd-2, R-prd-5 found by 3. R-prd-3, R-prd-4, R-prd-6, R-prd-7, R-prd-8, R-prd-11 found by 2.
 
@@ -49,7 +51,7 @@
 
 ### R-prd-3 — FR-6's "documented engine substitution list" does not exist
 
-**Status:** open
+**Status:** fixed
 **Severity:** blocking
 **Raised by:** qa-strategist, feature-critic — independently: yes (both via repo-wide grep, zero other hits)
 
@@ -58,6 +60,8 @@
 **Concrete failure scenario:** A `must`-priority acceptance criterion at the heart of the traceability mechanism (FR-5/6/7) is unverifiable as written — any key can be waved through by pointing at "the substitution list," which quietly reopens the exact self-report risk FR-5/6 exist to close.
 
 **What would resolve it:** Name where the list lives and who owns it (even as an open question blocking S-2), or drop the substitution-list clause until one exists.
+
+**Resolution:** Fixed via `OQ-12`. `delivery:chief-of-staff` consulted first (per direct product-owner correction, not asked to the operator directly): checked whether attractor's own `DATA-002` engine-managed-key rule already settles this — declined to answer, correctly, since that rule governs `outputs=` ownership validation, a different mechanism than a check's permitted reference terms, and asserting equivalence would require interpretation it won't do. Routed to Solution Architect as a spike; `OQ-12` added with that owner.
 
 ---
 
@@ -77,7 +81,7 @@
 
 ### R-prd-5 — Goals claims the "who's grading the gate" objection is closed while the PRD's own open-questions table says it isn't
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** product-owner, feature-critic, persona-simulator — independently: yes (3 of 5)
 
@@ -87,11 +91,13 @@
 
 **What would resolve it:** Soften the Goals claim to match what's actually closed, and make an explicit, stated choice about P-4's trust-signal need (even if the choice is "deferred, and here's why") rather than leaving FR-15-18's data-only framing to stand in for it silently.
 
+**Resolution:** Fixed. Goals bullet now points to this finding directly rather than asserting the objection is fully closed; P-4's trust-signal need remains explicitly deferred via `OQ-1`, not silently implied as answered.
+
 ---
 
 ### R-prd-6 — S-1's "duplicate criteria" edge-case row cites FR-5 for a disambiguation mechanism FR-5 doesn't contain
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** business-analyst, qa-strategist — independently: yes, identical finding
 
@@ -101,11 +107,13 @@
 
 **What would resolve it:** Either add the missing disambiguation requirement to FR-5 explicitly, or correct the edge-case row to state this is unresolved, not confirmed.
 
+**Resolution:** Fixed. FR-5 now explicitly names story ID as a co-located field alongside criterion text/`FR-n`/derived check, and states it disambiguates duplicate criterion text — matching what the edge-case row already claimed.
+
 ---
 
 ### R-prd-7 — Bare "gate" is used throughout, violating the glossary's own same-session ruling
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** business-analyst, feature-critic — independently: yes, both via direct grep
 
@@ -115,11 +123,13 @@
 
 **What would resolve it:** A find-and-replace pass to "acceptance gate" on first use per section; correct the curation log's false claim.
 
+**Resolution:** Fixed. All bare "gate"/"gates" occurrences in `prd.md` replaced with "acceptance gate" (one exception: line 17's direct quote of the interview's own original phrasing, left verbatim as a citation). Glossary curation log's false claim also corrected in place, not silently.
+
 ---
 
 ### R-prd-8 — The brief's promised Success signals were never carried into the PRD
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** product-owner, business-analyst — independently: yes
 
@@ -129,11 +139,13 @@
 
 **What would resolve it:** Add an explicit success-metric section or open-question row carrying the brief's signals forward, with a stated compile-rate threshold or an owner to set one.
 
+**Resolution:** Fixed. `OQ-18` added carrying the brief's signals forward with Product Owner as owner; Assumptions section now marks the underlying compile-rate assumption explicitly load-bearing rather than background. The actual threshold number remains for the operator, not invented here.
+
 ---
 
 ### R-prd-9 — The compiled artifact's own write location is unspecified
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** feature-critic
 
@@ -143,11 +155,13 @@
 
 **What would resolve it:** One line giving the compiled artifact an explicit write-path convention, matching Mode A/B.
 
+**Resolution:** Fixed via `OQ-13`. `delivery:chief-of-staff` consulted first: checked whether either existing runner's convention is assertable as the pattern to follow — declined to answer, correctly, since `generic`'s and `superpowers`'s conventions differ and neither is asserted anywhere as the one `attractor` inherits. Routed to Solution Architect as a spike; `OQ-13` added with that owner.
+
 ---
 
 ### R-prd-10 — FR-19 silently extends to `superpowers`/`generic`, inconsistent with a Non-goal that explicitly declines the same move
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** product-owner
 
@@ -157,11 +171,13 @@
 
 **What would resolve it:** Either scope FR-19 to `attractor` only (matching the Out-of-scope precedent), or state explicitly why this particular shared-infrastructure change is in scope when the comparable one isn't.
 
+**Resolution:** Fixed. FR-19 rescoped to fire "when `attractor` is the selected runner"; a matching Out-of-scope bullet added for retrofitting it onto `superpowers`/`generic`, consistent with the existing install-check precedent.
+
 ---
 
 ### R-prd-11 — FR-8's per-gate bound and NFR-1's per-story bound are never reconciled
 
-**Status:** open
+**Status:** fixed
 **Severity:** significant
 **Raised by:** business-analyst, persona-simulator — independently: yes, related angles
 
@@ -170,6 +186,8 @@
 **Concrete failure scenario:** NFR-1's own sizing method ("max attempts/story") silently under-counts for any multi-criterion story, surviving even once OQ-2 supplies a real number — a unit mismatch, not a missing value.
 
 **What would resolve it:** State whether the bound is per-gate or per-story-shared, and adjust NFR-1's sizing formula accordingly.
+
+**Resolution:** Fixed. NFR-1 rewritten to size across every acceptance gate in a sprint explicitly, with the formula multiplied by criteria-per-story rather than treating each story as one gate.
 
 ---
 
@@ -189,7 +207,7 @@
 
 ### R-prd-13 — Cross-plugin `ADR-008` collision, cited by bare ID
 
-**Status:** open
+**Status:** fixed
 **Severity:** minor
 **Raised by:** business-analyst
 
@@ -199,11 +217,13 @@
 
 **What would resolve it:** Cite the full path (`plugins/delivery/.delivery/decisions/ADR-008-setup-is-a-prerequisite-not-a-feature.md`) in OQ-7.
 
+**Resolution:** Fixed. OQ-7 now cites the full path and names the collision explicitly so a future reader isn't the one who has to discover it.
+
 ---
 
 ### R-prd-14 — Newly-coined glossary terms aren't used in the PRD text they were coined for
 
-**Status:** open
+**Status:** fixed
 **Severity:** minor
 **Raised by:** business-analyst
 
@@ -213,11 +233,13 @@
 
 **What would resolve it:** Use the governed term at least once in S-5/FR-13/14.
 
+**Resolution:** Fixed. S-5's heading and FR-13 now name "the Runner availability check" explicitly.
+
 ---
 
 ### R-prd-15 — S-1's "zero stories" edge-case row's claimed backing doesn't clearly hold
 
-**Status:** open
+**Status:** fixed
 **Severity:** minor
 **Raised by:** qa-strategist
 
@@ -226,6 +248,8 @@
 **Concrete failure scenario:** A genuinely empty sprint scope package reaches handoff unrefused.
 
 **What would resolve it:** Verify whether `skills/sprint/SKILL.md`'s "no stories ready" check actually catches a zero-story scope table, or add an explicit bullet.
+
+**Resolution:** Fixed. Verified directly — it doesn't (the check is phrased for draft-but-not-ready stories, vacuously satisfied by zero stories). Edge-case row corrected to state this as a real, uncovered gap rather than a false "handled" claim; tracked as `OQ-11`, owner Solution Architect.
 
 ## Assumptions worth watching
 
