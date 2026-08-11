@@ -2868,7 +2868,6 @@ var escapeMap = {
 };
 
 // src/handlers/tool.ts
-import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -2912,7 +2911,8 @@ function referencedKeys(text) {
   return [...keys];
 }
 
-// src/handlers/tool.ts
+// src/core/shell.ts
+import { spawn } from "node:child_process";
 function runShell(command, cwd, timeoutMs) {
   return new Promise((resolve3) => {
     const child = spawn("sh", ["-c", command], { cwd });
@@ -2938,11 +2938,13 @@ function runShell(command, cwd, timeoutMs) {
     });
   });
 }
-var TOOL_OUTPUT_KEYS = ["tool.last_line", "tool.output"];
 function lastNonEmptyLine(text) {
   const lines = text.split("\n").filter((l) => l.trim() !== "");
   return lines.length > 0 ? lines[lines.length - 1].trim() : "";
 }
+
+// src/handlers/tool.ts
+var TOOL_OUTPUT_KEYS = ["tool.last_line", "tool.output"];
 var ToolHandler = class {
   /**
    * Section 5.6's run directory structure gives every `{node_id}/` a
