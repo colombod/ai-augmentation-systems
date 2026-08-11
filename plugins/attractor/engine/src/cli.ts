@@ -9,7 +9,11 @@ import { StubBackend } from './handlers/stub.ts'
 import { Status } from './core/outcome.ts'
 import { ClaudeCodeBackend } from './backend/claude.ts'
 import { createWorktree, removeWorktree, isGitRepo, type Worktree } from './run/worktree.ts'
-import { runChecks, formatChecks, checksPass } from './doctor.ts'
+import { runChecks, formatChecks, checksPass, probeTool } from './doctor.ts'
+import { defaultChannels } from './channels/defaults.ts'
+import { CommandChannel } from './channels/command.ts'
+import { preflightHumanGates } from './channels/preflight.ts'
+import { type Channel, type ChannelRunContext } from './channels/types.ts'
 
 const USAGE = `attractor - DOT pipeline runner
 
@@ -18,6 +22,7 @@ Usage:
   attractor run    <file.dot> [--param key=value]... [--cwd dir] [--run-dir dir]
                     [--stub] [--model name] [--max-budget-usd n]
                     [--allow-tools tool,tool,...] [--worktree] [--in-place]
+                    [--allow-agent-gates] [--channel name=command]...
   attractor doctor
 
 Options:
@@ -39,6 +44,14 @@ Options:
                         bypassed permissions and shell/write access (Bash,
                         Read, Write, Edit by default) to that directory --
                         only pass this if you mean it.
+  --allow-agent-gates   Opt-in: a human gate whose human.channel names "agent"
+                        may be answered by a fresh claude -p subprocess. Two
+                        keys are required -- this flag AND the graph's own
+                        opt-in -- absent by default.
+  --channel name=command
+                        Register a bespoke channel for human gates. name must
+                        not be "human" or "agent" (reserved); repeatable, but
+                        a given name may only be registered once.
 
 Isolation is the default for a real (non --stub) run: when --cwd is inside a
 git repository, a dedicated worktree is created automatically, exactly as
@@ -59,6 +72,8 @@ interface RunArgs {
   allowedTools?: string[]
   worktree: boolean
   inPlace: boolean
+  allowAgentGates: boolean
+  channelCommands: Record<string, string>
 }
 
 function parseRunArgs(argv: string[]): RunArgs | null {
@@ -73,6 +88,8 @@ function parseRunArgs(argv: string[]): RunArgs | null {
   let allowedTools: string[] | undefined
   let worktree = false
   let inPlace = false
+  let allowAgentGates = false
+  const channelCommands: Record<string, string> = {}
 
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]
@@ -108,6 +125,30 @@ function parseRunArgs(argv: string[]): RunArgs | null {
       worktree = true
     } else if (arg === '--in-place') {
       inPlace = true
+    } else if (arg === '--allow-agent-gates') {
+      allowAgentGates = true
+    } else if (arg === '--channel') {
+      const pair = argv[++i] ?? ''
+      const eq = pair.indexOf('=')
+      if (eq <= 0) {
+        process.stderr.write(`invalid --channel "${pair}": expected name=command\n`)
+        return null
+      }
+      const name = pair.slice(0, eq)
+      const command = pair.slice(eq + 1)
+      if (name === 'human' || name === 'agent') {
+        // A --channel named "human"/"agent" would silently shadow the real
+        // built-in under a name that looks like it -- refused outright,
+        // mirroring --worktree/--in-place's own mutual-exclusivity refusal
+        // rather than silently picking a winner.
+        process.stderr.write(`--channel name "${name}" is reserved for the built-in "${name}" channel\n`)
+        return null
+      }
+      if (Object.hasOwn(channelCommands, name)) {
+        process.stderr.write(`--channel "${name}" was already given a command; duplicate names are not allowed\n`)
+        return null
+      }
+      channelCommands[name] = command
     } else if (arg.startsWith('--')) {
       // Ignoring an unrecognised flag would let a typo change what runs.
       process.stderr.write(`unknown option ${arg}\n`)
@@ -127,7 +168,20 @@ function parseRunArgs(argv: string[]): RunArgs | null {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     runDir = resolve(cwd, '.attractor', 'runs', stamp)
   }
-  return { file: resolve(file), params, cwd, runDir, stub, model, maxBudgetUsd, allowedTools, worktree, inPlace }
+  return {
+    file: resolve(file),
+    params,
+    cwd,
+    runDir,
+    stub,
+    model,
+    maxBudgetUsd,
+    allowedTools,
+    worktree,
+    inPlace,
+    allowAgentGates,
+    channelCommands,
+  }
 }
 
 /**
@@ -221,6 +275,35 @@ export async function main(argv: string[]): Promise<number> {
     }
     warnOnManagedParams(args.params)
 
+    // Fast-path preflight: a duplicate of Engine.run()'s own preflight check
+    // (core/engine.ts), which is what actually protects every caller, including a
+    // direct embed that skips cli.ts entirely. This copy exists purely so a run
+    // that's going to be refused anyway doesn't first pay the cost of creating and
+    // tearing down a git worktree -- placed after the existing lint refusal, before
+    // any worktree logic begins, mirroring reportDiagnostics's own placement.
+    const claudeAvailable = probeTool('claude', ['--version'], true).ok
+    const channels: Map<string, Channel> = defaultChannels({
+      allowAgentGates: args.allowAgentGates,
+      claudeAvailable,
+    })
+    for (const [name, command] of Object.entries(args.channelCommands)) {
+      channels.set(name, new CommandChannel(command))
+    }
+    const channelRunContext: ChannelRunContext = {
+      isInteractive: Boolean(process.stdin.isTTY),
+      allowAgentGates: args.allowAgentGates,
+      claudeAvailable,
+      configuredNames: new Set(channels.keys()),
+    }
+    const gateDiagnostics = preflightHumanGates(parseDot(source), channels, channelRunContext)
+    if (gateDiagnostics.length > 0) {
+      const detail = gateDiagnostics
+        .map((d) => `${d.node} (chain: ${d.chain.join(',')}) -- ${d.reasons.join('; ')}`)
+        .join(' | ')
+      process.stderr.write(`refusing to run: a reachable human gate has no viable channel this run: ${detail}\n`)
+      return 1
+    }
+
     let worktree: Worktree | undefined
     let cwd = args.cwd
     // The suffix is not decoration. removeWorktree deliberately preserves
@@ -290,8 +373,10 @@ export async function main(argv: string[]): Promise<number> {
         context: Context.from(args.params),
         runDir: args.runDir,
         cwd,
-        handlers: defaultHandlers(backend),
+        handlers: defaultHandlers(backend, channels, channelRunContext),
         runId,
+        channels,
+        channelRunContext,
       })
       const result = await engine.run()
       // Loud, because the alternative is silence and silence is the thing the

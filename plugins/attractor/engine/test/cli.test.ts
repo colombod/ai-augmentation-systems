@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { main } from '../src/cli.ts'
@@ -266,5 +267,127 @@ test('a clean run produces no unresolved-failure warning', async () => {
     )
     assert.equal(code, 0)
     assert.doesNotMatch(err, /unresolved node failures/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// p2-09: --allow-agent-gates, --channel, and the fast-path preflight refusal.
+// ---------------------------------------------------------------------------
+
+const HUMAN_GATE_GRAPH = `
+digraph HG {
+  start [shape=Mdiamond]
+  done  [shape=Msquare]
+  gate  [shape=hexagon, prompt="approve?"]
+  gate -> done [label="ok"]
+  start -> gate
+}
+`
+
+function initGitRepo(dir: string): void {
+  execFileSync('git', ['init', '-q'], { cwd: dir })
+  execFileSync('git', ['config', 'user.email', 't@example.com'], { cwd: dir })
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir })
+}
+
+test('--allow-agent-gates absent defaults to false (no observable effect on a non-agent graph)', async () => {
+  await withTemp(async (cwd, runDir) => {
+    const file = join(cwd, 'good.dot')
+    writeFileSync(file, GOOD, 'utf8')
+    const code = await main(['run', file, '--cwd', cwd, '--run-dir', runDir, '--stub'])
+    assert.equal(code, 0)
+  })
+})
+
+test('--channel human=... and --channel agent=... are refused as reserved names', async () => {
+  await withTemp(async (cwd, runDir) => {
+    const file = join(cwd, 'good.dot')
+    writeFileSync(file, GOOD, 'utf8')
+    for (const reserved of ['human', 'agent']) {
+      const { code, err } = await captureStderr(() =>
+        main(['run', file, '--channel', `${reserved}=/bin/true`, '--cwd', cwd, '--run-dir', runDir, '--stub']),
+      )
+      assert.equal(code, 2, `--channel ${reserved}=... must be a usage error`)
+      assert.match(err, new RegExp(reserved))
+    }
+  })
+})
+
+test('a duplicate --channel name is refused, not silently overwritten', async () => {
+  await withTemp(async (cwd, runDir) => {
+    const file = join(cwd, 'good.dot')
+    writeFileSync(file, GOOD, 'utf8')
+    const { code, err } = await captureStderr(() =>
+      main([
+        'run', file,
+        '--channel', 'discord=/bin/true',
+        '--channel', 'discord=/bin/false',
+        '--cwd', cwd, '--run-dir', runDir, '--stub',
+      ]),
+    )
+    assert.equal(code, 2)
+    assert.match(err, /discord/)
+  })
+})
+
+test('a malformed --channel value is a usage error', async () => {
+  await withTemp(async (cwd, runDir) => {
+    const file = join(cwd, 'good.dot')
+    writeFileSync(file, GOOD, 'utf8')
+    const { code } = await captureStderr(() =>
+      main(['run', file, '--channel', 'no-equals-sign', '--cwd', cwd, '--run-dir', runDir, '--stub']),
+    )
+    assert.equal(code, 2)
+  })
+})
+
+test('a repeated --channel with distinct names both accumulate', async () => {
+  await withTemp(async (cwd, runDir) => {
+    const scriptA = join(cwd, 'a.sh')
+    const scriptB = join(cwd, 'b.sh')
+    writeFileSync(scriptA, '#!/bin/sh\nprintf ok\n', 'utf8')
+    writeFileSync(scriptB, '#!/bin/sh\nprintf ok\n', 'utf8')
+    execFileSync('chmod', ['+x', scriptA, scriptB])
+    const src = `
+      digraph HG {
+        start [shape=Mdiamond]
+        done  [shape=Msquare]
+        gate  [shape=hexagon, human.channel="a_chan,b_chan", prompt="approve?"]
+        gate -> done [label="ok"]
+        start -> gate
+      }
+    `
+    const file = join(cwd, 'gate.dot')
+    writeFileSync(file, src, 'utf8')
+    const code = await main([
+      'run', file,
+      '--channel', `a_chan=${scriptA}`,
+      '--channel', `b_chan=${scriptB}`,
+      '--cwd', cwd, '--run-dir', runDir, '--stub',
+    ])
+    assert.equal(code, 0, 'both --channel entries must be usable -- neither refused nor ignored')
+  })
+})
+
+test('a graph whose only reachable gate has no viable channel is refused before any worktree is created', async () => {
+  await withTemp(async (cwd, runDir) => {
+    initGitRepo(cwd)
+    const file = join(cwd, 'gate.dot')
+    writeFileSync(file, HUMAN_GATE_GRAPH, 'utf8')
+    // Deliberately NOT --stub: --stub bypasses the real backend but preflight
+    // runs regardless of --stub, and omitting it exercises the exact code path
+    // (worktree creation) this test asserts never ran.
+    const { code, err } = await captureStderr(() =>
+      main(['run', file, '--cwd', cwd, '--run-dir', runDir]),
+    )
+    assert.equal(code, 1)
+    assert.match(err, /human gate/i)
+    assert.doesNotMatch(err, /^worktree:/m, 'no worktree line means createWorktree was never reached')
+    const worktrees = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd, encoding: 'utf8' })
+    assert.equal(
+      worktrees.trim().split('\n\n').length,
+      1,
+      'only the main working tree should be listed -- no worktree was created for this run',
+    )
   })
 })

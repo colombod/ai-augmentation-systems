@@ -6270,6 +6270,9 @@ function probe(name, args, required) {
     return { name, ok: false, required, detail: `present but failing: ${reason}` };
   }
 }
+function probeTool(name, args, required) {
+  return probe(name, args, required);
+}
 function runChecks() {
   return [
     probe("claude", ["--version"], true),
@@ -6295,6 +6298,33 @@ ${lines.join("\n")}
 `;
 }
 
+// src/channels/command.ts
+function shellQuote(value) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+var CommandChannel = class {
+  command;
+  constructor(command) {
+    this.command = command;
+  }
+  async answer(ctx, timeoutMs) {
+    const record = {
+      nodeId: ctx.nodeId,
+      label: ctx.label,
+      legal_answers: ctx.legalAnswers.join(","),
+      ...ctx.exposedContext,
+      agent_instructions: ctx.agentInstructions ?? ""
+    };
+    const quoted = {};
+    for (const [key, value] of Object.entries(record)) quoted[key] = shellQuote(value);
+    const command = substitute(this.command, Context.from(quoted));
+    const result = await runShell(command, process.cwd(), timeoutMs ?? 0);
+    if (result.code !== 0) return { label: null };
+    const label = lastNonEmptyLine(result.stdout);
+    return { label: label === "" ? null : label };
+  }
+};
+
 // src/cli.ts
 var USAGE = `attractor - DOT pipeline runner
 
@@ -6303,6 +6333,7 @@ Usage:
   attractor run    <file.dot> [--param key=value]... [--cwd dir] [--run-dir dir]
                     [--stub] [--model name] [--max-budget-usd n]
                     [--allow-tools tool,tool,...] [--worktree] [--in-place]
+                    [--allow-agent-gates] [--channel name=command]...
   attractor doctor
 
 Options:
@@ -6324,6 +6355,14 @@ Options:
                         bypassed permissions and shell/write access (Bash,
                         Read, Write, Edit by default) to that directory --
                         only pass this if you mean it.
+  --allow-agent-gates   Opt-in: a human gate whose human.channel names "agent"
+                        may be answered by a fresh claude -p subprocess. Two
+                        keys are required -- this flag AND the graph's own
+                        opt-in -- absent by default.
+  --channel name=command
+                        Register a bespoke channel for human gates. name must
+                        not be "human" or "agent" (reserved); repeatable, but
+                        a given name may only be registered once.
 
 Isolation is the default for a real (non --stub) run: when --cwd is inside a
 git repository, a dedicated worktree is created automatically, exactly as
@@ -6344,6 +6383,8 @@ function parseRunArgs(argv) {
   let allowedTools;
   let worktree = false;
   let inPlace = false;
+  let allowAgentGates = false;
+  const channelCommands = {};
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--param") {
@@ -6378,6 +6419,29 @@ function parseRunArgs(argv) {
       worktree = true;
     } else if (arg === "--in-place") {
       inPlace = true;
+    } else if (arg === "--allow-agent-gates") {
+      allowAgentGates = true;
+    } else if (arg === "--channel") {
+      const pair = argv[++i] ?? "";
+      const eq = pair.indexOf("=");
+      if (eq <= 0) {
+        process.stderr.write(`invalid --channel "${pair}": expected name=command
+`);
+        return null;
+      }
+      const name = pair.slice(0, eq);
+      const command = pair.slice(eq + 1);
+      if (name === "human" || name === "agent") {
+        process.stderr.write(`--channel name "${name}" is reserved for the built-in "${name}" channel
+`);
+        return null;
+      }
+      if (Object.hasOwn(channelCommands, name)) {
+        process.stderr.write(`--channel "${name}" was already given a command; duplicate names are not allowed
+`);
+        return null;
+      }
+      channelCommands[name] = command;
     } else if (arg.startsWith("--")) {
       process.stderr.write(`unknown option ${arg}
 `);
@@ -6392,7 +6456,20 @@ function parseRunArgs(argv) {
     const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
     runDir = resolve2(cwd, ".attractor", "runs", stamp);
   }
-  return { file: resolve2(file), params, cwd, runDir, stub, model, maxBudgetUsd, allowedTools, worktree, inPlace };
+  return {
+    file: resolve2(file),
+    params,
+    cwd,
+    runDir,
+    stub,
+    model,
+    maxBudgetUsd,
+    allowedTools,
+    worktree,
+    inPlace,
+    allowAgentGates,
+    channelCommands
+  };
 }
 function warnOnManagedParams(params) {
   for (const key of Object.keys(params)) {
@@ -6456,6 +6533,27 @@ async function main(argv) {
       return 1;
     }
     warnOnManagedParams(args.params);
+    const claudeAvailable = probeTool("claude", ["--version"], true).ok;
+    const channels = defaultChannels({
+      allowAgentGates: args.allowAgentGates,
+      claudeAvailable
+    });
+    for (const [name, command2] of Object.entries(args.channelCommands)) {
+      channels.set(name, new CommandChannel(command2));
+    }
+    const channelRunContext = {
+      isInteractive: Boolean(process.stdin.isTTY),
+      allowAgentGates: args.allowAgentGates,
+      claudeAvailable,
+      configuredNames: new Set(channels.keys())
+    };
+    const gateDiagnostics = preflightHumanGates(parseDot(source), channels, channelRunContext);
+    if (gateDiagnostics.length > 0) {
+      const detail = gateDiagnostics.map((d) => `${d.node} (chain: ${d.chain.join(",")}) -- ${d.reasons.join("; ")}`).join(" | ");
+      process.stderr.write(`refusing to run: a reachable human gate has no viable channel this run: ${detail}
+`);
+      return 1;
+    }
     let worktree;
     let cwd = args.cwd;
     const runId = `${basename2(args.runDir)}-${randomUUID2().slice(0, 8)}`;
@@ -6502,8 +6600,10 @@ async function main(argv) {
         context: Context.from(args.params),
         runDir: args.runDir,
         cwd,
-        handlers: defaultHandlers(backend),
-        runId
+        handlers: defaultHandlers(backend, channels, channelRunContext),
+        runId,
+        channels,
+        channelRunContext
       });
       const result = await engine.run();
       if (result.unresolvedFailures !== void 0 && result.unresolvedFailures.length > 0) {

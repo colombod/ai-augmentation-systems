@@ -16,3 +16,12 @@ export { EventLog, type RunEvent } from './run/events.ts'
 export type { Backend, Handler as HandlerImpl, HandlerCtx } from './handlers/types.ts'
 export { ClaudeCodeBackend, type ClaudeBackendOptions } from './backend/claude.ts'
 export { StubBackend } from './handlers/stub.ts'
+export {
+  type Channel,
+  type HumanGateContext,
+  type ChannelAnswer,
+  type ChannelRunContext,
+} from './channels/types.ts'
+export { defaultChannels } from './channels/defaults.ts'
+export { CommandChannel } from './channels/command.ts'
+export { HumanGateHandler } from './handlers/human.ts'
