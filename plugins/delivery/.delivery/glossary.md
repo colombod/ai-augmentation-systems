@@ -49,6 +49,13 @@ written and everything still to come.
 | Mission | The verbatim excerpt or citable pointer capturing why an effort exists, checked continuously against new output so a requirement met on paper doesn't silently drift from the reason the work started. | `prd.md` S-11/`FR-40`–`43` | `.delivery/chief-of-staff/mission.md` | — |
 | Pull | The operator (or the agent acting on their behalf) explicitly asks chief of staff for the current briefing — the default way S-9's briefing reaches them. | `prd.md` S-9; `architecture.md`'s Component structure | — | — |
 | Push | The one narrow exception to pull: a blocking queue item with no open counterpart already delivered surfaces at the front of the calling agent's very next reply to the operator in a live session, rather than waiting for an explicit pull. Not an out-of-band interrupt — this harness has no mechanism for one. | `prd.md` `FR-48`/`49`; `architecture.md`'s Interface 1 return-contract | — | "interrupt", "notification" (implies a capability this design doesn't have) |
+| Acceptance gate | A compiled, checkable validation for one acceptance criterion inside an attractor-handoff pipeline; passes or loops through a fix step. | `attractor-handoff/prd.md` `FR-5`–`FR-7`; attractor's own `goal_gate="true"` DOT attribute (`plugins/attractor/README.md`) is the code identifier for the pass/fail node itself | `goal_gate` (on the pass/fail node only — a gate's fix loop likely spans more than one graph node) | bare "gate" alone — collides with `Handoff readiness check` and attractor's own `goal_gate` attribute; always say "acceptance gate" in full |
+| Non-convergent | A story or criterion outcome: its gate/fix loop exhausted its declared attempt bound without passing. | `attractor-handoff/prd.md` `FR-9`, `FR-17` | `Outcome = non-convergent` | "timed out" — a different axis (attempt count vs. wall-clock; see `NFR-2`) |
+| Irreducible criterion | An acceptance criterion the compilation step cannot reduce to any checkable gate; flagged explicitly, never silently dropped or silently backed by unmarked judgment. | `attractor-handoff/brief.md` MVP boundary; `prd.md` `FR-11`/`FR-12` | `irreducible` | — |
+| Handoff readiness check | The pre-flight verification `/delivery:handoff` runs on a sprint scope package's own content before producing any runner-specific artifact. | `skills/handoff/SKILL.md` (renamed from "Gate check" to stop colliding with `Acceptance gate`) | — | "gate check" (the old name — retained only as a historical alias, not for new use) |
+| Runner availability check | Whether the chosen runner's own tooling is present and usable, checked before compiling anything for it — distinct from `Handoff readiness check`, which verifies the package's content, not the runner's presence. | `attractor-handoff/prd.md` `FR-13`/`FR-14` | — | — |
+| Handoff artifact | The file(s) a `delivery:handoff` runner mode writes for one sprint — for `attractor`, the dependency graph plus compiled acceptance gates and irreducible-criterion flags. Format-agnostic. | `attractor-handoff/brief.md` MVP boundary; `prd.md` scenarios S-1–S-6 | — | bare "the artifact" where `Governed artifact` (a different, broader concept) is also in play nearby |
+| Dataflow ledger | Attractor's own `outputs=`-driven record of which node owes a declared context key and hasn't delivered it — governs whether one story's non-convergence blocks another's. Delivery-plugin vocabulary reusing attractor's own documented term, not a new invention. | `plugins/attractor/README.md` "Dataflow: `outputs=`"; `attractor-handoff/prd.md` `FR-10`, `FR-18` | `outputs=` | the "two consecutive stories block" stop condition (`templates/sprint.md`) — a different, human/agent-facing mechanism, mis-cited for this purpose in an earlier PRD draft, corrected in `prd.md` `FR-10` |
 
 ## Persona reference convention
 
@@ -74,6 +81,13 @@ None found this pass. "Confidence" was checked for double meaning (evidence grad
 new evidence-only marker) and kept separate by giving the marker its own term above rather
 than reusing the word.
 
+**2026-08-11:** "Gate"/"gate check" was found carrying three distinct meanings across the
+`attractor-handoff` initiative — `skills/handoff/SKILL.md`'s pre-flight package-readiness
+check, attractor's own `goal_gate` DOT attribute, and this feature's new per-story
+execution-time check. Resolved by renaming the first to `Handoff readiness check` and
+reserving "gate," always spoken in full as `Acceptance gate`, for the third. See the new
+terms above.
+
 ## Terms nobody could define
 
 None — every term above has a concrete referent in an existing artifact or transcript
@@ -94,3 +108,4 @@ incident.
 | 2026-08-05 | Added `Governed artifact`; added "independent check" as a banned alias of `Self-correction check` | The PRD's business-analyst/QA stress-test pass found both drifted from the glossary within the same session it was written | `prd.md` draft — fixed on the same pass that found the drift |
 | 2026-08-06 | `Verification channel` broadened from "real screenshot for a rendered webpage" to cover any user-facing surface (GUI/CLI/TUI), each with its own real, checkable channel | Product-owner direction, this session: a CLI/TUI is a real user-facing surface exactly like a GUI, and checking it at the machine level (internal calls, ANSI-stripped text) is the same mistake the original definition existed to catch, just narrower than it needed to be | `prd.md` (`S-3`, `FR-9`–`FR-12`) was written under the old, GUI-only meaning — still correct for GUI, now one case of the broader term rather than the whole of it |
 | 2026-08-06 | Added `Delivery surface` | `/delivery:challenge`'s review of the `S-5` addition (minor finding) found "surface" used in `prd.md`/`qa-strategist.md` without a glossary entry, unlike `Verification channel`, added correctly the same session | `prd.md` (`FR-17`), `agents/qa-strategist.md` predate this entry — no fix needed, they already use the term consistently |
+| 2026-08-11 | Added `Acceptance gate`, `Non-convergent`, `Irreducible criterion`, `Handoff readiness check` (rename of "Gate check"), `Runner availability check`, `Handoff artifact`, `Dataflow ledger` | `attractor-handoff` PRD phase (business-analyst stress-test + QA-strategist verifiability pass) surfaced a real "gate" homonym and several load-bearing terms used across `brief.md`/`prd.md` with no governed definition | `attractor-handoff/brief.md`, `attractor-handoff/prd.md` written under these terms from the start — no retroactive fix needed |
