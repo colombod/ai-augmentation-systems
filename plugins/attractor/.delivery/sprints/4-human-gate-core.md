@@ -1,13 +1,22 @@
 <!--
 BUDGET — target 600 words, hard cap 900 words. Excludes code, YAML and data tables.
 The scope, verification and report-back tables are data.
+
+BUDGET OVERRUN, declared: ~1040 prose words, over the 900 cap. The Required report-back
+section's own instruction ("return it verbatim rather than summarised") is in direct
+tension with the word cap once real findings exist to report -- three implementation-time
+discoveries (a third stale test, a substitute() gap, a Node test-runner recursion-guard
+fix) plus one post-sprint follow-up, each with the concrete detail a reviewer needs to
+judge whether it was handled correctly. Cutting them to fit would satisfy the budget by
+violating the section's own instruction. Kept whole rather than thinned, matching this
+project's own established practice (see ADR-002's identical declared overrun).
 -->
 
 ---
 sprint: 4
 slug: human-gate-core
 scope: Phase 2 — FR-5-8 (human-gate channels, S2)
-status: handed-off
+status: reviewed
 runner: same session, in-process TDD implementation (not an external handoff)
 branch: claude/attractor-phase-2-human-gate-227212
 ---
@@ -136,25 +145,56 @@ against `architecture.md`/the ADRs as a stop condition, not a silent deviation.
 
 | Story | Outcome | Criteria met | Evidence | Commit |
 | :-- | :-- | :-- | :-- | :-- |
-| p2-01 | | | | |
-| p2-02 | | | | |
-| p2-03 | | | | |
-| p2-04 | | | | |
-| p2-05 | | | | |
-| p2-06 | | | | |
-| p2-07 | | | | |
-| p2-08 | | | | |
-| p2-09 | | | | |
-| p2-10 | | | | |
+| p2-01 | done | 4/4 | `test/shell.test.ts` (5 new tests), `tool.test.ts` unmodified-and-green | `9e5d3d6` |
+| p2-02 | done | 6/6 | `test/channels-types.test.ts` (4 new tests) | `49f2b8e` |
+| p2-03 | done | 5/5 | `test/channels-human.test.ts` (4 new tests) | `4d1ebc3` |
+| p2-04 | done | 7/7 | `test/channels-agent.test.ts` (11 new tests), `argv.test.ts`/`claude-backend.test.ts` unmodified-and-green | `4a1203c` |
+| p2-05 | done | 6/6 | `test/channels-command.test.ts` (7 new tests), mutation-checked by hand (reverting quoting turns 5/7 red) | `6e9069b` |
+| p2-06 | done | 9/9 | `test/channels-preflight.test.ts` (9 new tests), `lint.test.ts` unmodified-and-green | `5ea31c0` |
+| p2-07 | done | 10/10 | `test/handlers-human.test.ts` (16 new tests) | `41a6959` |
+| p2-08 | done | 10/10 | `lint.test.ts`/`engine.test.ts` (repoints + 2 new integration tests); full 8-test HITL-001 suite unmodified-and-green (FR-7) | `87fced4` |
+| p2-09 | done | 7/7 | `test/cli.test.ts` (7 new tests), `test/index.test.ts` (2 new tests) | `fa459db` |
+| p2-10 | done | 5/5 | `test/bundle.test.ts` (2 new tests, real subprocess against `dist/attractor.js`) | `35146d3` |
 
 **Actual test output** (the output itself, not a claim about it):
 
 ```
-(filled in per story during implementation, and once at the end for the full suite)
+$ node --test   (from plugins/attractor/engine, after the final commit)
+ℹ tests 736
+ℹ suites 0
+ℹ pass 734
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 2
+ℹ todo 0
+ℹ duration_ms 15173.86275
 ```
 
-**Conflicts with the spec encountered:**
+Baseline was 663/661/0/2 before this sprint started; every story's own commit added tests and
+kept the suite at 0 fail throughout (verified after every commit, not only at the end).
+
+**Conflicts with the spec encountered:** none that blocked a story. Three findings emerged during
+implementation that the architecture/stories passes didn't name — none required a stop, each
+resolved inside the story that found it (or, in one case, folded into p2-08 rather than amending
+p2-07's already-landed commit):
+
+1. A third pre-existing test (beyond the two architecture.md named) shared the same "Handler.HUMAN
+   is unregistered" stale premise once registration landed (`p2-08`).
+2. `p2-07`'s `HumanGateHandler` didn't call `substitute()` on its resolved label — a real gap
+   `p2-08`'s `SUBSTITUTABLE_ATTRS[Handler.HUMAN]` wiring exposed; fixed in `p2-08`'s commit.
+3. `p2-10`'s nested `node --test` invocation needed `NODE_TEST_CONTEXT`/`NODE_TEST_WORKER_ID`
+   stripped from the child env to avoid Node's own test-runner recursion guard.
+
+A fourth, post-sprint finding (not part of the ten scoped stories, done as a same-session
+follow-up per the issue's own explicit instruction): `verify-run.ts` had no `--channel`/
+`--allow-agent-gates` support, so the delegated execution-verification harness (FR-13) could never
+actually verify a human-gate graph — found by trying to verify the newly-ported `08-human-gate.dot`
+example through it. Extended with TDD, same pattern as `cli.ts`'s own flags.
 
 **Design system deviations, and why:** n/a — no design system for this initiative.
 
-**Anything the next planning cycle should know:**
+**Anything the next planning cycle should know:** Phase 2 (FR-5-8) is fully shipped. Two related,
+narrower follow-ups are named but not done: Spike 14 (nested `claude -p` spawning from inside an
+`agent`-channel call) remains unresolved, non-blocking; and `10-full-attractor.dot`/
+`task-runner.dot` remain correctly excluded from the worked-examples set (`Handler.FAN_IN`
+unregistered; `model_stylesheet` out of scope, respectively) — re-verified, not stale.
