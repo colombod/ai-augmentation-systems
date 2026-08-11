@@ -50,7 +50,12 @@ export interface Diagnostic {
   message: string
 }
 
-function reachableFrom(graph: Graph, startId: string): Set<string> {
+/**
+ * Exported (was module-private) so channels/preflight.ts (ADR-021) can reuse this exact
+ * reachability walk for its own viability check, rather than writing a second,
+ * independently-maintained traversal that answers the same question. Zero body change.
+ */
+export function reachableFrom(graph: Graph, startId: string): Set<string> {
   const seen = new Set<string>([startId])
   const queue = [startId]
   // Graph-level retry_target/fallback_retry_target is a legitimate jump
