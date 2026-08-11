@@ -36,6 +36,75 @@ stale (`ready`) for a time after implementation actually shipped; corrected 2026
 
 No draft stories this phase.
 
+## Phase 2 — FR-5-8 (human-gate core, S2)
+
+> Architecture: `../initiatives/spec-conformance-mvp/architecture.md`'s "FR-5–8: human-gate
+> channels (S2)" section (appended, not a rewrite of the sections above it). Decisions:
+> [ADR-020](../decisions/ADR-020-channel-module-placement.md) through
+> [ADR-026](../decisions/ADR-026-command-channel-shell-quoting.md). Not blocked by an open
+> product question — Open Questions 1/2 were resolved 2026-08-06; what blocked this phase was
+> an unstarted architecture pass, now done. Glossary terms used exactly as defined
+> (`../glossary.md`): **human gate** (never interchangeable with **goal gate**), **channel**,
+> **channel chain**, **hop**, **viable**.
+
+| ID | Title | Status | Requirements | Depends on | Size |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| [p2-01](p2-01-shell-helper-relocation.md) | Relocate `runShell`/`lastNonEmptyLine` to `core/shell.ts` (ADR-020) | ready | FR-8 (enabling) | none | S |
+| [p2-02](p2-02-channel-core-contracts.md) | `Channel`, `HumanGateContext`, `ChannelAnswer`, `ChannelRunContext`, `isChannelViable`/`whyNotViable` | ready | FR-8 | none | S |
+| [p2-03](p2-03-human-channel.md) | `HumanChannel` — realizes ADR-002 (ADR-023: no real-answer path this slice) | ready | FR-5, FR-6 | p2-02 | S |
+| [p2-04](p2-04-agent-channel.md) | `AgentChannel` — self-enforcing two-key `claude -p` proxy (ADR-022) | ready | FR-8 | p2-02 | M |
+| [p2-05](p2-05-command-channel.md) | `CommandChannel` — shell-quoted substitution (ADR-026) | ready | FR-8 | p2-01, p2-02 | M |
+| [p2-06](p2-06-channel-registry-preflight.md) | `defaultChannels()` + `preflightHumanGates()` (ADR-021) | ready | FR-5, FR-6, FR-8 | p2-03, p2-04 | M |
+| [p2-07](p2-07-human-gate-handler.md) | `HumanGateHandler` chain-walk logic (ADR-025) | ready | FR-5, FR-6, FR-8 | p2-02 | L |
+| [p2-08](p2-08-handler-human-registration.md) | Register `Handler.HUMAN` — `dot/graph.ts` + `core/engine.ts`, migration repoints (ADR-024) | ready | FR-5, FR-6, FR-7, FR-8 | p2-06, p2-07 | M |
+| [p2-09](p2-09-cli-wiring-exports.md) | CLI wiring (`--allow-agent-gates`, `--channel`) + `index.ts` exports | ready | FR-8 | p2-08 | M |
+| [p2-10](p2-10-fr5-real-subprocess-verification.md) | Real-subprocess non-TTY fail-fast test (FR-5); full HITL-001 regression re-run (FR-7) | ready | FR-5, FR-7 | p2-09 | S |
+
+**Decomposition note.** Ten dependency-ordered stories, following this phase's own natural
+shape: build three independent channel implementations against one shared contract, then
+integrate — directly analogous to Phase 5's "two independent prerequisite refactors, three
+independent additive pieces, then one integration point." p2-01 and p2-02 are the two roots and
+are mutually independent (disjoint files: `core/shell.ts` vs. new `channels/`) — both start
+immediately, in parallel. p2-02 fans out to three genuinely parallel consumers: p2-03, p2-04,
+and p2-07 all depend only on p2-02, not on each other. p2-05 depends on both p2-01 (needs
+`core/shell.ts`'s spawn primitive) and p2-02. p2-06 depends on p2-03 and p2-04 (it composes real
+`HumanChannel`+`AgentChannel` instances) but **not** p2-05 — `CommandChannel` is never
+constructed inside `defaultChannels()`; it is layered on by `cli.ts` (p2-09) directly, so p2-05
+and p2-06 proceed in full parallel once p2-01/p2-02 land. p2-08 is the true integration point —
+the only story that makes the phase's behavior live and reachable — and is deliberately last
+among the implementation stories, gated on both p2-06 (needs `defaultChannels`/
+`preflightHumanGates` as `core/engine.ts`'s new default values) and p2-07 (needs the handler
+class itself); it also carries the two migration test repoints, landing in the same commit as
+the registration edit that necessitates them, so the suite never sits red between stories. p2-09
+depends on p2-08 (`EngineOptions.channels`/`channelRunContext` must exist). p2-10 depends on
+p2-09 specifically (needs the built CLI to reflect the real flag wiring, not just the earlier
+registration).
+
+No dependency on Phases 1, 5, or 6 — `HITL-003` (Phase 1) and `Handler.PARALLEL` (Phase 5) are
+both already shipped, and ADR-021's own analysis confirms `reachableFrom` needs no
+`Handler.PARALLEL`-specific logic to already be reachability-correct across a parallel branch (a
+`component` node's branches are ordinary outgoing edges). Phase 2's `agent`-channel sub-slice has
+no dependency on Phase 1 either, despite `HITL-003`'s own self-report-guard rationale
+referencing the `agent` channel — `HITL-003` is a lint-time WARNING already shipped and
+unaffected by whether `Handler.HUMAN` is registered.
+
+**Coverage check.** FR-5, FR-6, FR-7, FR-8 (Phase 2's full requirement set per the PRD) are each
+covered by at least one story: FR-5/FR-6 primarily by p2-03, p2-06, p2-07, p2-08, p2-10; FR-7 by
+p2-08 (repoints) and p2-10 (final confirmation); FR-8 by every story — it is this phase's
+overarching requirement, satisfiable only via `agent` (p2-04) or `CommandChannel` (p2-05), never
+`human` alone (ADR-023, stated explicitly in p2-03/p2-10's own text so no story or reader
+mistakes the default `human.channel="human"` for a complete answer-delivery path). Every
+Test-strategy row in the architecture's FR-5–8 section is owned by exactly one story — see the
+architecture's own section for the full mapping. `FR-18`/`HITL-003` (self-report guard) is out
+of scope for Phase 2 — already shipped in Phase 1.
+
+## Readiness — Phase 2
+
+**p2-01 through p2-10 — all `ready`.** Every story: acceptance criteria falsifiable, file paths
+verified against the repo (existing files and line citations spot-checked directly, not trusted
+from the architecture alone), dependencies stated, test approach present with the real `node
+--test` command for this repo. None held back to `draft`.
+
 ## Phase 5 — FR-17b (parallel fan-out, `Handler.PARALLEL`)
 
 Roadmap's Phase 5 decomposes into ten dependency-ordered work items, A–J. Item A is not
@@ -168,10 +237,12 @@ Implementation notes for the cross-referenced account.
 
 ## Next
 
-Phases 1, 3, 5, and 6 are all done. Phases 2 and 4 need an architecture pass or a scope
-call before they're story-able (Phase 2, the human-gate core / Stage 3 that S7's own
-[ADR-015](../decisions/ADR-015-s7-deprioritization-override.md) override was checked
-against, is the natural next candidate — S7's landing does not change Phase 2's own
-status, which was never technically blocked on S7 either). Do not run
-`/delivery:stories` against Phases 2 or 4 until their roadmap entries carry a real
-work-item table.
+Phases 1, 3, 5, and 6 are done; **Phase 2 is now decomposed and `ready` (p2-01 through p2-10,
+2026-08-11)** — its architecture pass landed the same session, closing the gap the previous
+version of this section named. `Handler.HUMAN` registration (p2-08) is this phase's own
+load-bearing piece; once it ships, S7's own example-portability exclusions
+(`08-human-gate.dot`, `10-full-attractor.dot`, `task-runner.dot` — see `architecture.md`'s
+Example-portability policy and `skills/attractorify/examples/README.md`) should be revisited to
+check whether any can now be ported. Phase 4 still needs a scope call before it's story-able
+(Open Question 7 — should an embedder observe WARNING-severity diagnostics at all). Run
+`/delivery:sprint` next to scope Phase 2's implementation handoff.

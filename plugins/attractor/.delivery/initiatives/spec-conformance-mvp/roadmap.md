@@ -87,21 +87,59 @@ attributes yet).
 
 Deciding this now beats deciding it under pressure.
 
-### Phases 2–4: named, not planned in detail
+### Phase 2: human-gate core — architected and story-ready
 
-Two corrections worth stating in prose because missing either mis-routes an owner: **Phase 2
-is not blocked by an open product question** — Open Questions 1/2 (which blocked FR-8) were
-**resolved 2026-08-06**; what actually blocks it is an unstarted architecture pass, nobody's
-been asked to schedule. Real design work for the `agent`/`CommandChannel` wiring already exists
-(`.superpowers/specs/2026-08-05-human-gate-channels-design.md`) — what's missing is carrying it
-into `architecture.md`/an ADR and implementing it, not designing from nothing. **Phase 3 (Open
-Question 9) is RESOLVED 2026-08-09** — see [ADR-014](decisions/ADR-014-open-question-9-fr9b-lint-time-refusal.md)
-— no longer this board's highest-leverage open decision; now a story ready to be scoped.
-Everything else below is table detail, not further narrative.
+**2026-08-11: Phase 2's architecture pass is done.** The gap the previous version of this
+section named — "an unstarted architecture pass, nobody's been asked to schedule" — is closed:
+the resolved channels design (`.superpowers/specs/2026-08-05-human-gate-channels-design.md`,
+re-verified still current against post-FR-17b/post-S7 source before this pass started) is now
+carried into `architecture.md`'s own "FR-5–8: human-gate channels (S2)" section and seven new
+ADRs (`ADR-020`–`ADR-026`). Two adversarial-review findings were resolved in the design itself,
+not deferred: the `agent` channel now self-enforces its own two-key opt-in rather than relying
+solely on an external caller (`ADR-022`, the same bug class `ADR-004` already fixed once for
+embedded-engine lint refusal), and `CommandChannel` shell-quotes substituted values rather than
+inheriting `tool_command`'s unescaped reuse across a new trust boundary (`ADR-026`). Spike 13
+(carried forward, unrun, from this document's original "Spike 6" — does a Bash-tool-spawned
+child see a TTY on stdin) was finally run during this pass: confirmed `undefined` (no TTY), the
+safe answer. **Decomposed into ten `ready` stories, `p2-01` through `p2-10`** — see
+`stories/README.md`'s Phase 2 section for the full dependency graph and coverage check.
 
 | Phase | FRs | Blocked by | Owner | Depends on | Effort |
 | :-- | :-- | :-- | :-- | :-- | :-- |
-| 2 — Human-gate core | FR-5, FR-6, FR-7, FR-8 | **Not** Q1/Q2 (resolved 2026-08-06, channels design, 5/5 convergence) — an unstarted architecture pass: no ADR covers the `agent`/`CommandChannel` hops or `GateContext`/`selectEdge` wiring; `architecture.md` predates the resolution and says so in its own Scope line; `Handler.HUMAN` still unregistered | Solution Architect — schedule the pass | `agent` sub-slice depends on Phase 1; the `human`-channel path does not and could be architected in parallel | Unscoped — no estimate until the architecture pass exists |
+| 2 — Human-gate core | FR-5, FR-6, FR-7, FR-8 | **Not blocked.** Architecture done 2026-08-11 (`architecture.md`'s FR-5–8 section, `ADR-020`–`ADR-026`); stories `ready` (`stories/README.md`) | Solution Architect (done) — implementer next | `agent` sub-slice (`p2-04`) has no runtime dependency on Phase 1 despite `HITL-003`'s own self-report-guard rationale referencing the `agent` channel — `HITL-003` is an already-shipped, unaffected lint-time WARNING | 10 stories, S/S/S/M/M/M/L/M/M/S — see `stories/README.md` Phase 2 |
+
+**Phase 2 work items** (mirrors Phase 5's own A–J decomposition format):
+
+| Work item | Story | Size | Confidence | Depends on |
+| :-- | :-- | :-- | :-- | :-- |
+| **A** — shell helper relocation (`core/shell.ts`, ADR-020) | `p2-01` | S | high | none |
+| **B** — channel core contracts (`channels/types.ts`) | `p2-02` | S | high | none |
+| **C** — `HumanChannel` (ADR-002/ADR-023) | `p2-03` | S | high | B |
+| **D** — `AgentChannel` (ADR-022) | `p2-04` | M | medium | B |
+| **E** — `CommandChannel` (ADR-026) | `p2-05` | M | medium | A, B |
+| **F** — channel registry + preflight (ADR-021, ADR-022's agreement guarantee) | `p2-06` | M | medium | C, D |
+| **G** — `HumanGateHandler` chain-walk logic (ADR-025) | `p2-07` | L | medium | B |
+| **H** — `Handler.HUMAN` registration wiring + migration repoints (ADR-024) | `p2-08` | M | medium-low | F, G |
+| **I** — CLI wiring + library exports | `p2-09` | M | medium | H |
+| **J** — FR-5 real-subprocess verification + FR-7 acceptance confirmation | `p2-10` | S | high | I |
+
+A and B are the two roots and mutually independent (disjoint files) — both start immediately, in
+parallel. B fans out to three genuinely parallel consumers: C, D, and G all depend only on B, not
+on each other. E depends on both A and B. F depends on C and D but **not** E — `CommandChannel`
+is never constructed inside `defaultChannels()`; it's layered on by `cli.ts` (item I) directly,
+so E and F proceed in full parallel once A/B land. H is the true integration point — the only
+item that makes the phase's behavior live and reachable — gated on both F and G, and carries the
+two migration test repoints in the same commit as the registration edit that necessitates them,
+so the suite never sits red between items. I depends on H; J depends on I specifically (needs the
+built CLI to reflect the real flag wiring, not just the earlier registration).
+
+### Phases 3–4: named, not planned in detail
+
+**Phase 3 (Open Question 9) is RESOLVED 2026-08-09** — see [ADR-014](decisions/ADR-014-open-question-9-fr9b-lint-time-refusal.md)
+— no longer this board's highest-leverage open decision; now a story ready to be scoped.
+
+| Phase | FRs | Blocked by | Owner | Depends on | Effort |
+| :-- | :-- | :-- | :-- | :-- | :-- |
 | 3 — Founding-incident verdict | FR-9a (rejected) / FR-9b (accepted) | **RESOLVED 2026-08-09** — see [ADR-014](decisions/ADR-014-open-question-9-fr9b-lint-time-refusal.md): lint-time-only refusal (`GATE-002`, ERROR), runtime verdict unchanged | Product Owner + Solution Architect jointly — decided | None | S (one new lint rule, two small exports, per ADR-014's own Consequences) |
 | 4 — Embedder diagnostic visibility | FR-12 | Open Question 7 — should an embedder observe WARNING-severity diagnostics at all; a scope call, not an engineering unknown | Solution Architect | Also closes Phase 1's own FR-12 caveat (embedded-`Engine` WARNING visibility) — scope with that in view, not purely as S6 ergonomics | Unscoped |
 
@@ -464,7 +502,7 @@ resolved (ADR-013) — both were the same shape of risk, and both are now closed
 | Open Question 9 decision (FR-9a vs FR-9b) | Product Owner + Solution Architect | Before Phase 3 can be sized | **Resolved 2026-08-09** — [ADR-014](decisions/ADR-014-open-question-9-fr9b-lint-time-refusal.md), FR-9b (`GATE-002`) | N/A |
 | Open Question 7 decision (embedder WARNING visibility) | Solution Architect | Before Phase 4, and before Phase 1's FR-12 caveat can be closed | Open | Phase 1's WARNING stays invisible on the embedded-`Engine` path with no committed date |
 | Two Solution Architect decisions inside the FR-17b architecture itself — component-node FAIL routing and branch-rejection handling | Solution Architect | Before Phase 5's item I (`ParallelHandler`) can be implemented, and before the "Component-node FAIL routing" and "Branch throws mid-flight" test rows can be written | **Resolved 2026-08-08 — [ADR-013](decisions/ADR-013-parallelhandler-fail-routing-and-branch-rejection.md).** A(a): convergence-node jump unconditional on SUCCESS/PARTIAL (structurally forced), ordinary §3.7 retry-target/dead-end ladder on FAIL. A(b): per-branch try/catch/finally converting any thrown exception to that branch's own FAIL `Outcome`, covering worktree creation through removal, not just the `runBranch` call; `Promise.all` unchanged | Items B–H (7 of Phase 5's 10 work items) were unaffected either way; item I and its two dependent test rows ("Component-node FAIL routing", "Branch throws mid-flight") can now be implemented and written against a settled contract. Item C's exit criteria also need a small correction — see item C's own row |
-| Architecture pass for the resolved channels design (`agent`/`CommandChannel`, `GateContext`/`selectEdge`) | Solution Architect | Before Phase 2 can be sized | Not scheduled | Phase 2 stays "named, not planned" indefinitely even though its product question is resolved |
+| Architecture pass for the resolved channels design (`agent`/`CommandChannel`, `HumanGateContext`/`selectEdge`) | Solution Architect | Before Phase 2 can be sized | **Resolved 2026-08-11** — `architecture.md`'s FR-5–8 section, `ADR-020`–`ADR-026`; stories `p2-01`–`p2-10` `ready` | N/A |
 | **Phase 5, F2-residual scope call** — should "stop the whole pipeline from inside a branch" become a real feature (new cancellation plumbing through `ParallelHandler`'s dispatch), or does a branch reaching EXIT stay an ordinary per-branch dead end permanently, as it ships this slice | Product Owner | Not a blocker to Phase 5 shipping — item G ships either way, with the must-ship skill caveat as its guardrail — but stays open indefinitely until scheduled | Open — architecture.md's own words: "a scope question for Product Owner, not decided here" | No functional slip; the risk is silent misunderstanding, not a missed date — an author keeps expecting EXIT-from-a-branch to halt the run until the caveat is written and read, or the feature is built |
 
 ## Requirement coverage
@@ -475,10 +513,10 @@ resolved (ADR-013) — both were the same shape of risk, and both are now closed
 | FR-2 | 0 | Shipped |
 | FR-3 | 0 | Shipped |
 | FR-4 | 0 | Shipped |
-| FR-5 | 2 | Named, not planned — architecture-pass gap, not an open question |
-| FR-6 | 2 | Named, not planned — same gap |
-| FR-7 | 2 | Named, not planned — same gap |
-| FR-8 | 2 | Named, not planned — `agent` sub-slice also depends on Phase 1 |
+| FR-5 | 2 | **Fully planned 2026-08-11** — stories `p2-03`, `p2-06`, `p2-07`, `p2-08`, `p2-10` |
+| FR-6 | 2 | **Fully planned 2026-08-11** — same stories as FR-5 |
+| FR-7 | 2 | **Fully planned 2026-08-11** — stories `p2-08` (migration repoints), `p2-10` (final regression confirmation) |
+| FR-8 | 2 | **Fully planned 2026-08-11** — every Phase 2 story; satisfiable only via `agent` (`p2-04`) or `CommandChannel` (`p2-05`), never `human` alone (ADR-023) |
 | FR-9a | 3 | **Rejected 2026-08-09** — ADR-014, Open Question 9 |
 | FR-9b | 3 | **Done 2026-08-09** — ADR-014 (`GATE-002`), story `p3-01` |
 | FR-10 | 0 | Shipped |
@@ -503,8 +541,9 @@ No `FR-n` lands in no phase.
 | Named residual gaps (multi-hop, `Handler.TOOL`-without-`outputs=`) never revisited | high if untracked | medium — the self-report gap is treated as closed on paper when it isn't | Open Questions row added in ADR-006, owner assigned | Product Owner / Solution Architect |
 | HITL-003's WARNING invisible on embedded-`Engine` path, read as uniformly mitigating | medium | medium — false confidence for the `agent` channel's likeliest unattended usage | State the FR-12 dependency explicitly in the rule's doc and in this roadmap (done above); do not close Phase 1 as if it were resolved | implementer / Solution Architect |
 | Open Question 9 stays unowned by any stage indefinitely | **Resolved 2026-08-09** — ADR-014, no longer a risk | N/A | N/A | Product Owner |
-| Phase 2 mislabeled as "blocked on open questions" when it is really an unstarted architecture pass | medium | low-medium — the wrong owner gets pinged, or nobody schedules the actual missing step | Corrected explicitly in this document's Sequencing rationale and Phase 2 entry | Program Manager (this document) |
-| Locked attribute names (`human.channel`, `human.context`, design doc §5) diverge once Phase 2's implementation actually lands | low — names are a resolved 5/5-converged decision, not open prose | medium — Phase 1's fixtures would need updating | ADR-006 cites design doc §5 explicitly with a note to revisit if Phase 2 diverges | implementer |
+| Phase 2 mislabeled as "blocked on open questions" when it was really an unstarted architecture pass | **Resolved 2026-08-11** — architecture pass done, no longer a risk | N/A | N/A | Program Manager (this document) |
+| Locked attribute names (`human.channel`, `human.context`, design doc §5) diverge once Phase 2's implementation actually lands | low — the architecture pass (2026-08-11) carried the names forward unchanged (`human.channel`, `human.channel_timeout`, `human.context`, `human.agent_instructions`) | medium — Phase 1's fixtures would need updating if they ever did diverge | ADR-006 cites design doc §5 explicitly; confirmed non-divergent as of the FR-5–8 architecture pass | implementer |
+| **Phase 2, new.** `AgentChannel`'s prompt assembly has no defense against prompt injection via `exposedContext`/`human.agent_instructions=` — distinct from `HITL-003`'s provenance check (who produced the evidence, not whether the evidence can control the checker) | medium — `exposedContext` can carry upstream `TOOL` output, and `HITL-003` explicitly excludes `Handler.TOOL` predecessors as unprovable at lint time | high if it fires — defeats the `agent` channel's purpose as an authorization mechanism entirely | Explicit prompt delimiting built into `AgentChannel`'s prompt template (architecture's FR-5–8 Risks table); accepted residual, not a solved problem — a content-provenance-through-TOOL lint rule is a real future extension, not scoped this slice | Solution Architect (mitigation designed) / implementer (residual accepted) |
 | **Phase 5, RESOLVED 2026-08-08.** Component-node FAIL routing: the architecture's own text gave two different answers for what happens when a `PARALLEL` node's join outcome is FAIL | was confirmed present in the design as written | was high — whichever is right, the first author whose fan-out actually fails hits the untested path, and a fan-out failing is the entire reason a zero-success-checking join policy exists | **Resolved by [ADR-013](decisions/ADR-013-parallelhandler-fail-routing-and-branch-rejection.md):** the convergence-node jump is unconditional only on SUCCESS/PARTIAL — the only structurally reachable continuation; FAIL routes through the ordinary §3.7 `retry_target`/`fallback_retry_target`/dead-end ladder, matching `AGENTS.md`'s non-tradeable Fail-fast-on-FAIL doctrine. Item I and the "Component-node FAIL routing" test row can now be implemented against a settled contract; item C's exit criteria gained a small correction as a consequence (see item C's own row in the work-item table) | Solution Architect (resolved) — implementer for item I/C |
 | **Phase 5, RESOLVED 2026-08-08.** `ParallelHandler`'s branch dispatch is `Promise.all`-based; if one branch's `runBranch` call rejected (not a FAIL `Outcome` — an actual throw, e.g. a worktree name collision) rather than resolving, `Promise.all` would abandon the still-pending siblings — their settlement, worktree removal, and branch checkpoint all orphaned, and the rejection escaping `Engine.run()`'s public API uncaught | was medium — worktree creation failing on a name collision, or a backend crash, are both plausible sources | was high — orphaned worktrees and an engine that can throw instead of returning a `RunResult` are the "silent degradation" class `AGENTS.md`'s doctrine forbids elsewhere in this design | **Resolved by [ADR-013](decisions/ADR-013-parallelhandler-fail-routing-and-branch-rejection.md):** each branch's entire dispatch (worktree creation through removal, not just the `runBranch` call) is wrapped in one try/catch/finally converting any thrown exception to that branch's own FAIL `Outcome`, before it can reach `Promise.all`; the aggregation primitive itself stays `Promise.all` — nothing switches to `Promise.allSettled`, since nothing can reject once the catch is in place. Implemented in item I, verified by item J's branch-throws test | implementer (item I/J) |
 | **Phase 5.** A pipeline stage before a `PARALLEL` node produces a *file* (not a context key) that isolated branches then can't see, because a branch worktree sees only the parent's last commit, not its uncommitted work (empirically verified during architecture, Spike 7) | medium — nothing stops a file-producing `TOOL` node upstream of a fan-out | medium — silent wrong-input, not a crash; a branch's own work is based on stale/absent state | Skill/authoring guidance (cut-list item 3): a graph author must commit before fanning out, or set `isolate="false"`; a future WARNING lint rule is a natural extension, not required this slice | Solution Architect / skill author |
