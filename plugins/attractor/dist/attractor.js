@@ -3637,8 +3637,15 @@ var OUTCOME_SCHEMA = {
 function wantsVerdict(node) {
   return node.attrs.goal_gate === "true";
 }
+var NON_INTERACTIVE_SAFETY_ARGV = [
+  "-p",
+  "--output-format",
+  "json",
+  "--permission-mode",
+  "bypassPermissions"
+];
 function buildArgv(node, opts) {
-  const argv = ["-p", "--output-format", "json", "--permission-mode", "bypassPermissions"];
+  const argv = [...NON_INTERACTIVE_SAFETY_ARGV];
   const model = node.attrs.llm_model ?? opts.model;
   if (model !== void 0) argv.push("--model", model);
   if (opts.addDir !== void 0) argv.push("--add-dir", opts.addDir);
