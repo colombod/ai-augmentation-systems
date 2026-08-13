@@ -11,9 +11,11 @@
 
 | Blocking | Significant | Minor | Dropped as preference |
 | :-- | :-- | :-- | :-- |
-| 4 (2 open, 2 fixed) | 7 (0 open, 7 fixed) | 4 (0 open, 4 fixed) | 0 |
+| 4 (0 open, 4 fixed) | 7 (0 open, 7 fixed) | 4 (0 open, 4 fixed) | 0 |
 
-**Update, 2026-08-11:** mechanical findings resolved directly. Two blocking findings (`R-prd-3`, `R-prd-9`) required consulting `delivery:chief-of-staff` first, per direct product-owner correction — both declined to answer (no citable source settles either), and both were properly routed to a Solution Architect spike/open-question rather than resolved by inference. Two blocking findings (`R-prd-1`, `R-prd-2`) and two others (`R-prd-4`, `R-prd-12`) are genuine product/architecture decisions with no citable source — held for the operator, not resolved here.
+**Update, 2026-08-11:** mechanical findings resolved directly. Two blocking findings (`R-prd-3`, `R-prd-9`) required consulting `delivery:chief-of-staff` first, per direct product-owner correction — both declined to answer (no citable source settles either), and both were properly routed to a Solution Architect spike/open-question rather than resolved by inference.
+
+**Update, 2026-08-13:** the remaining four findings (`R-prd-1`, `R-prd-2`, `R-prd-4`, `R-prd-12`) had no citable source and were genuine product/architecture decisions — presented to the operator as one consolidated batch rather than one at a time, then resolved on direct instruction to proceed. All 15 findings now closed.
 
 **Independent convergence:** R-prd-1 found by 4 of 5 reviewers independently — the strongest signal any pass this initiative has produced. R-prd-2, R-prd-5 found by 3. R-prd-3, R-prd-4, R-prd-6, R-prd-7, R-prd-8, R-prd-11 found by 2.
 
@@ -23,7 +25,7 @@
 
 ### R-prd-1 — FR-16's "unmodified" promise is contradicted by FR-17's own new Outcome value
 
-**Status:** open
+**Status:** fixed
 **Severity:** blocking
 **Raised by:** product-owner, business-analyst, qa-strategist, feature-critic — independently: yes (4 of 5)
 
@@ -33,11 +35,13 @@
 
 **What would resolve it:** State explicitly that `sprint.md`'s Outcome enum is extended by this feature (and drop "without modification"), or specify how `non-convergent` maps onto the existing three values for sprint-review's actual procedure.
 
+**Resolution:** Fixed. Decided: `sprint.md`'s Outcome enum is formally extended to four values — collapsing `non-convergent` into an existing value would defeat `FR-9`'s whole purpose. FR-16 now names this as the one explicit shared-template change, rather than claiming zero modification.
+
 ---
 
 ### R-prd-2 — FR-17's "explicitly signed-off irreducible" names an approval mechanism that exists nowhere else
 
-**Status:** open
+**Status:** fixed
 **Severity:** blocking
 **Raised by:** product-owner, qa-strategist, feature-critic — independently: yes
 
@@ -46,6 +50,8 @@
 **Concrete failure scenario (qa-strategist's worked example):** A story with 3 criteria — 2 `met`, 1 `irreducible` and never signed off — has no non-convergent criterion, so FR-17's flip rule never fires. By elimination the only Outcome value left is `done`, even though one criterion is an unresolved judgment call. This directly contradicts S-4's stated intent ("a reader who reads only the top of the report cannot miss that part of the sprint rested on a marked judgment call") — the exact self-report failure this feature exists to prevent, reproduced by its own rollup rule.
 
 **What would resolve it:** Define the sign-off mechanism (who, when, what interface) as part of S-4, or remove "signed-off" from the `n` formula and let any unresolved `irreducible` criterion permanently exclude a story from `done`.
+
+**Resolution:** Fixed by taking the second option. Removed the sign-off exception entirely rather than designing a new approval mechanism at PRD stage — the interview record itself was uncertain sign-off should exist, and the feature's whole purpose argues against letting anything uncertain quietly read as done. An `irreducible` criterion never counts toward `n`.
 
 ---
 
@@ -67,7 +73,7 @@
 
 ### R-prd-4 — FR-18's verdict-mapping logic is underspecified on direction and the empty-ledger case
 
-**Status:** open
+**Status:** fixed
 **Severity:** blocking
 **Raised by:** qa-strategist, persona-simulator — independently: yes, different specific angles
 
@@ -76,6 +82,8 @@
 **Concrete failure scenario:** Two implementers reading FR-18 in isolation build the direction rule oppositely; a leaf story's non-convergent gate with no ledger entry gets no defined verdict at all.
 
 **What would resolve it:** State the mapping direction explicitly; define the empty-ledger case; reconcile FR-18's ledger-only test against FR-2's broader `depends_on` graph or state why the narrower edge is the correct one.
+
+**Resolution:** Fixed, confirmed with the operator. Direction: **Not accepted** if a `done` story's correctness depends via the `outputs=` ledger on a `non-convergent`/`irreducible` story (its claim is unproven, matching the existing rubric's "criteria unmet" definition); **Accepted with debt** otherwise, including the no-`outputs=`-declared case (isolated by construction).
 
 ---
 
@@ -193,7 +201,7 @@
 
 ### R-prd-12 — FR-7's fixture requirement is ungrounded and uncosted
 
-**Status:** open
+**Status:** fixed
 **Severity:** minor
 **Raised by:** product-owner
 
@@ -202,6 +210,8 @@
 **Concrete failure scenario:** A 15-story sprint now needs ~45 fixtures alongside ~45 checks, uncosted and unbudgeted, marked as load-bearing as the traceability requirements beside it.
 
 **What would resolve it:** Either cite the grounding for this requirement or downgrade it to `should` pending a cost/benefit note.
+
+**Resolution:** Fixed, confirmed with the operator. Downgraded to `should` — preserves the intent without blocking MVP shipping on 100% fixture coverage.
 
 ---
 
@@ -250,6 +260,10 @@
 **What would resolve it:** Verify whether `skills/sprint/SKILL.md`'s "no stories ready" check actually catches a zero-story scope table, or add an explicit bullet.
 
 **Resolution:** Fixed. Verified directly — it doesn't (the check is phrased for draft-but-not-ready stories, vacuously satisfied by zero stories). Edge-case row corrected to state this as a real, uncovered gap rather than a false "handled" claim; tracked as `OQ-11`, owner Solution Architect.
+
+## Addendum, 2026-08-13
+
+Walking R-prd-1 with the operator surfaced a gap none of the five reviewers caught: nothing required each acceptance gate's own individual result to be recorded and surfaced — only the story-level `Outcome` and an aggregate `n of m` count. Added `FR-20` to close it: per-criterion results attached to their citation, visible in the report-back, not just rolled into the count.
 
 ## Assumptions worth watching
 

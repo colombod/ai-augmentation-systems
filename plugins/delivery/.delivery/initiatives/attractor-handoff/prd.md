@@ -131,7 +131,7 @@ A third `delivery:handoff` runner mode: hands a scoped sprint to `attractor` ins
 
 **Observable outcome:** Open Question 2 is answered — the re-entry point is the existing report-back contract every runner already targets.
 
-**Acceptance criteria:** `FR-15`, `FR-16`, `FR-17`, `FR-18`.
+**Acceptance criteria:** `FR-15`, `FR-16`, `FR-17`, `FR-18`, `FR-20`.
 
 ## Functional requirements
 
@@ -143,7 +143,7 @@ A third `delivery:handoff` runner mode: hands a scoped sprint to `attractor` ins
 | FR-4 | A sprint where every acceptance gate converges still requires the existing sprint-review rubric (test suite, persona journeys) for Accepted — convergence is necessary, not sufficient | S-1 | must |
 | FR-5 | Every acceptance gate co-locates its story ID, source criterion text, `FR-n` reference, and derived check — no external lookup needed; story ID + criterion identifier together disambiguate two stories sharing identical criterion text | S-2 | must |
 | FR-6 | A compiled check references only terms from the criterion text or a documented engine substitution list — no unaccounted key | S-2 | must |
-| FR-7 | Every compiled check ships a deliberately-failing fixture proving it can fail | S-2 | must |
+| FR-7 | Every compiled check ships a deliberately-failing fixture proving it can fail | S-2 | should (decided 2026-08-13: downgraded from `must` — real, uncosted per-criterion authoring tax with no cited grounding in the brief/research/interview record; preserves the intent without blocking MVP shipping on 100% fixture coverage) |
 | FR-8 | Every acceptance gate has a declared, artifact-visible attempt bound; halts exactly there, not before or past | S-3 | must |
 | FR-9 | Exhausting the bound produces `Outcome = non-convergent`, distinct from `blocked`/`not attempted`/`done` | S-3 | must |
 | FR-10 | A non-convergent story blocks a dependent only if the dependent consumes its declared `outputs=` key (attractor's dataflow ledger) | S-3 | must |
@@ -152,10 +152,11 @@ A third `delivery:handoff` runner mode: hands a scoped sprint to `attractor` ins
 | FR-13 | The Runner availability check: if `attractor` isn't installed, handoff refuses before writing any artifact; no silent fallback | S-5 | must |
 | FR-14 | The refusal message states the literal install step; this is new behavior, not a copy of an existing check | S-5 | must |
 | FR-15 | Report-back populates every `sprint.md` column for every attempted story; no blank cells | S-6 | must |
-| FR-16 | `/delivery:sprint-review`'s existing procedure runs against an attractor-sourced report-back without modification | S-6 | must |
-| FR-17 | Story `Outcome` ∈ {`done`, `non-convergent`, `blocked`, `not attempted`}; any `non-convergent` criterion flips the whole story's Outcome; `m` includes `irreducible` criteria, `n` counts `met` plus explicitly signed-off `irreducible` | S-6 | must |
-| FR-18 | Sprint verdict maps to the existing three-way rubric (Accepted / Accepted with debt / Not accepted) using the `outputs=` ledger as the deciding test between the middle and bottom category — no fourth verdict | S-6 | must |
+| FR-16 | `/delivery:sprint-review`'s existing procedure runs against an attractor-sourced report-back with exactly one shared-template change: `templates/sprint.md`'s Outcome column gains a fourth value (`FR-17`) — otherwise unmodified | S-6 | must |
+| FR-17 | Story `Outcome` ∈ {`done`, `non-convergent`, `blocked`, `not attempted`}; any `non-convergent` criterion flips the whole story's Outcome; `m` includes `irreducible` criteria; `n` counts only `met` criteria — an `irreducible` criterion never counts toward `n`, and a story carrying one never reaches `done` (decided 2026-08-13: removes the undefined "signed-off" exception rather than designing a sign-off mechanism at PRD stage; matches the interview record's own uncertainty about whether sign-off should exist at all, and the feature's own purpose — don't let anything uncertain quietly read as done) | S-6 | must |
+| FR-18 | Sprint verdict maps to the existing three-way rubric — no fourth verdict. **Not accepted** if any `done` story's correctness depends, via the `outputs=` ledger, on a `non-convergent` or `irreducible` story's declared output. **Accepted with debt** if a `non-convergent`/`irreducible` story exists but nothing consumes its output (including the case where it declared no `outputs=` at all — by construction nothing can be silently relying on it) (decided 2026-08-13: the ledger-consumed case means a "done" story's own claim is unproven, which the existing rubric's "Not accepted" definition — criteria unmet — already covers; the unconsumed case is isolated debt, matching the existing "Accepted with debt" definition) | S-6 | must |
 | FR-19 | A story with zero declared acceptance criteria is refused at the Handoff readiness check before any artifact is written, when `attractor` is the selected runner | S-1 | must |
+| FR-20 | Each acceptance gate's own result (`met` / `non-convergent` / `irreducible`) is recorded against its citation (`FR-n`, criterion text, `FR-5`) and surfaced in the report-back, not only rolled up into the story's `n of m` count — a reader can see which specific criterion produced which result, not just that some did | S-6 | must |
 
 ## Non-functional requirements
 
@@ -191,11 +192,9 @@ Per direct product-owner ruling: retry/resume are sized to the problem at design
 | OQ-11 | Does a genuinely empty sprint scope package (zero stories, not zero-`ready` stories) get refused anywhere upstream of handoff? Verified gap, not confirmed covered (`R-prd-15`) — `skills/sprint/SKILL.md`'s existing check is phrased for the wrong case. | Solution Architect | S-1 completeness |
 | OQ-12 | Where does `FR-6`'s "documented engine substitution list" live, and who owns it? Checked directly — no existing artifact settles this (`R-prd-3`; `delivery:chief-of-staff` consulted, declined to answer, routed here as a spike — attractor's `DATA-002` rule governs a different mechanism, not a citable equivalent) | Solution Architect | S-2 completeness, `FR-6` |
 | OQ-13 | Where does the compiled handoff artifact get written? Checked directly — neither existing runner's path convention is asserted as the pattern to follow (`R-prd-9`; `delivery:chief-of-staff` consulted, declined to answer, routed here as a spike — the two existing modes have two different, non-obviously-transferable conventions) | Solution Architect | S-1/S-2 completeness |
-| OQ-14 | Does `templates/sprint.md`'s Outcome column get formally extended to a fourth value (`non-convergent`), or does that outcome map onto one of the existing three for sprint-review's purposes? A shared-template decision affecting `superpowers`/`generic` too, not attractor-only (`R-prd-1`) | Product Owner + Solution Architect | `FR-16`/`FR-17` consistency, blocking |
-| OQ-15 | Who signs off on an `irreducible` criterion counting toward `n`, through what interface, and is that the one legitimate exception to "don't ask for sign-off the agent could check itself" — or should an unsigned irreducible criterion just permanently exclude a story from `done`? (`R-prd-2`) | Product Owner | `FR-17`, blocking |
-| OQ-16 | FR-18's `outputs=`-ledger verdict test: which direction does it point (ledger-consumed → which verdict), and what's the ruling for a non-convergent story with no ledger entry at all (opt-in mechanism, can be legitimately empty)? (`R-prd-4`) | Solution Architect | `FR-18`, blocking |
-| OQ-17 | Is FR-7's deliberately-failing-fixture requirement worth its uncosted per-criterion authoring tax as a `must`, or should it be `should` pending a real cost estimate? (`R-prd-12`) | Product Owner | S-2 scope |
 | OQ-18 | Carrying forward `brief.md`'s two Success signals, both explicitly "TBD at PRD stage" and never resolved here (`R-prd-8`) — at minimum, a compile-rate threshold for "most criteria are mechanically compilable" (the load-bearing assumption underneath S-1/S-2) | Product Owner | Whether the pilot sprint counts as success |
+
+**Resolved 2026-08-13** (were OQ-14–OQ-17; decisions recorded directly in `FR-16`/`FR-17`/`FR-18`/`FR-7` above, not restated here): the `sprint.md` schema-extension question, the irreducible sign-off mechanism, FR-18's verdict direction and empty-ledger case, and FR-7's must-vs-should call.
 
 ## Out of scope
 
