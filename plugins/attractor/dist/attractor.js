@@ -2915,12 +2915,19 @@ function referencedKeys(text) {
 import { spawn } from "node:child_process";
 function runShell(command, cwd, timeoutMs) {
   return new Promise((resolve3) => {
-    const child = spawn("sh", ["-c", command], { cwd });
+    const child = spawn("sh", ["-c", command], { cwd, detached: true });
     let stdout = "";
     let stderr = "";
     let timer;
+    const killTree = (signal) => {
+      if (child.pid === void 0) return;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+      }
+    };
     if (timeoutMs > 0) {
-      timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+      timer = setTimeout(() => killTree("SIGKILL"), timeoutMs);
     }
     child.stdout.on("data", (d) => {
       stdout += d.toString();
