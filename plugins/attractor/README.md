@@ -77,21 +77,21 @@ needed by later milestones).
 | `box` | LLM task (default when no shape is given) | works |
 | `parallelogram` | shell command; routes on exit code and last stdout line | works |
 | `diamond` | conditional routing point | works |
-| `hexagon` | human gate | parsed; **refused by lint (`HAND-001`)** |
+| `hexagon` | human-approval gate -- blocks (real TTY) or delegates to an `agent`/bespoke `CommandChannel` per `human.channel=`, routing on the answered label; see [Human gates](#human-gates) below | **works** |
 | `component` | parallel fan-out -- runs branches at once, each optionally in its own git worktree; see [Parallel fan-out](#parallel-fan-out) below | **works** |
 | `tripleoctagon` | dedicated fan-in/join node | parsed; **refused by lint (`HAND-001`)** -- use an ordinary `box` or `parallelogram` node as the join point instead (see below) |
 | `house` | manager loop | parsed; **refused by lint (`HAND-001`)** |
 
 Shapes marked "refused by lint" are recognised by the parser but resolve to a
-handler kind this build does not register (`Handler.HUMAN`, `Handler.FAN_IN`,
+handler kind this build does not register (`Handler.FAN_IN`,
 `Handler.MANAGER_LOOP` -- `dot/graph.ts`'s `UNREGISTERED_HANDLER_KINDS`).
 Dispatching one would abort the run partway through with `no handler
 registered for <kind> (node <id>)`, after any earlier nodes had already spent
 tokens or made changes -- so `HAND-001` catches it at **lint time instead**,
 before a run ever starts:
 
-    ERROR HAND-001 pipeline.dot:gate: node gate resolves to handler "human",
-    which this build does not register (known unregistered: human, fan_in,
+    ERROR HAND-001 pipeline.dot:join: node join resolves to handler "fan_in",
+    which this build does not register (known unregistered: fan_in,
     manager_loop); the run would abort with "no handler registered"
     mid-pipeline. Refused here instead, before anything runs.
 
@@ -124,11 +124,57 @@ node id and its own failure reason, not just a count.
 `HAND-001` is an error, so both `attractor lint` and `attractor run` refuse a
 graph containing one of these shapes; `run` refuses it at the same lint gate
 every error-severity finding goes through, not with a special case of its own.
-Parallel execution has landed (see [Parallel fan-out](#parallel-fan-out) above)
-and is out of this table already. Human gates are still on the way -- landing
-that means registering `Handler.HUMAN` in `defaultHandlers()` and removing it
-from `UNREGISTERED_HANDLER_KINDS`, at which point `hexagon` moves out of this
-table too.
+Parallel execution (see [Parallel fan-out](#parallel-fan-out) above) and human
+gates (see [Human gates](#human-gates) below) have both landed and are out of
+this table already -- only `tripleoctagon` and `house` remain unregistered.
+
+### Human gates
+
+A `hexagon`-shaped node is a human-approval checkpoint. It walks a configured
+chain of channels in order and routes on whichever one answers first, exactly
+like any other node's `preferred_label`:
+
+    gate [
+        shape=hexagon,
+        prompt="Approve this change?",
+        human.channel="human,agent",
+        human.channel_timeout="30s",
+        human.context="tool.last_line",
+        human.agent_instructions="be strict about test coverage"
+    ]
+    gate -> ship   [label="approve"]
+    gate -> revise [label="reject"]
+
+- `human.channel="human,agent"` -- comma-separated chain of channel names, tried
+  in order until one returns a non-null label; defaults to `"human"` alone if
+  omitted. The built-in `human` channel blocks on a real TTY and **has no code
+  path in this build that ever produces a real answer** (`channels/human.ts`) --
+  an unattended run needs `agent` or a bespoke channel to ever get past a gate.
+- `human.channel_timeout="30s"` -- per-hop duration (`parseDuration` syntax,
+  e.g. `30s`, `5m`), comma-list position-matched against the chain; a shorter
+  list repeats its last value for the remaining hops, and omitting the
+  attribute entirely means no timeout on any hop (waits on it exactly as
+  today).
+- `human.context="tool.last_line"` -- comma-separated context key names to
+  expose to whichever channel answers; a key is included only if actually
+  present in the running context, never the whole context.
+- `human.agent_instructions="..."` -- author guidance text, consumed only by
+  the `agent` channel.
+
+Two more pieces make a gate answerable outside a real terminal:
+
+| Flag | Meaning |
+|---|---|
+| `--allow-agent-gates` | Opt-in: a human gate whose `human.channel` names `agent` may be answered by a fresh `claude -p` subprocess. Two keys are required together -- this flag *and* the graph's own `human.channel="...,agent,..."` -- absent by default. |
+| `--channel name=command` | Register a bespoke channel for human gates. `name` must not be `human` or `agent` (reserved); repeatable, but a given name may only be registered once. |
+
+A reachable gate with no viable channel for the current invocation is refused
+**before any node dispatches** (preflight), not discovered by hanging partway
+through a run. See `skills/attractorify/examples/08-human-gate.dot` for a
+worked, executed example that answers a gate via a `--channel`-registered
+script, and `skills/attractorify/reference/dot-reference.md`'s own
+"Human-gate node attributes" section for the fuller reference-card version of
+this.
 
 ## Dataflow: `outputs=` and `runs_on=`
 
@@ -411,7 +457,7 @@ the exit without passing a goal gate; `GATE-002` a graph declaring no
 source succeeds or fails because it depends on a key nothing in the graph
 declares, infers, or seeds -- see [ADR-014](.delivery/decisions/ADR-014-open-question-9-fr9b-lint-time-refusal.md);
 `HAND-001` a node resolves to a handler
-kind this build does not register (`hexagon`, `tripleoctagon`,
+kind this build does not register (`tripleoctagon`,
 `house` -- see [Node shapes](#node-shapes)); `HITL-003` an agent-inclusive
 human gate whose exposed context traces to a single Handler.CODERGEN direct
 predecessor (self-report risk for the `agent` channel -- see ADR-006);
