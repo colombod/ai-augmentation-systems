@@ -324,6 +324,74 @@ about which diagnostic fires and how precisely it's worded, not about a
 hazard slipping through unrefused -- the graph is always refused loudly,
 never silently allowed to run with an undetected fan-out risk.
 
+## Retries, fallback routing, and timeouts
+
+Node-level attributes that bound how long a node keeps working and where the run goes when
+it doesn't converge -- real, tested mechanisms (`engine/test/engine.test.ts` has 10+ passing
+uses), not covered above with `outputs=`/`runs_on=` even though they're just as load-bearing.
+
+### `max_retries=N` / `default_max_retries=N` -- bounding same-node `RETRY` re-dispatch
+
+    judge   [shape=box, goal_gate=true, max_retries=3, retry_target="give_up",
+             prompt="Check the work. Reply retry if it needs another pass."]
+    give_up [shape=box, prompt="report the failure"]
+
+`max_retries` only matters for a **`RETRY`-status outcome**, and only a `goal_gate=true`
+node's structured verdict (`"status": "retry"`) ever produces one -- an ordinary
+`box`/`parallelogram` node's outcome is always `SUCCESS` or `FAIL`, never `RETRY`
+(the status mapping is gated on `wantsVerdict`, `backend/argv.ts:42`). When a node returns
+`RETRY`, the engine re-dispatches the **same node**, with exponential backoff between
+attempts (`initial_delay_ms=200`, `factor=2`, `max_delay_ms=60000`, jitter on by default --
+`core/retry.ts`), until `attempt >= max_retries`. The node's own `max_retries` wins;
+`default_max_retries` on the graph is the fallback when the node declares neither; the
+built-in default is `0` -- one attempt, no retries.
+
+Once retries are exhausted, the node's own `retry_target=` (below) decides whether the run
+jumps elsewhere or fails outright.
+
+### `retry_target=` / `fallback_retry_target=` (node-level) -- where to go instead of failing
+
+Two distinct jobs, both node-level only:
+
+1. **After `max_retries` is exhausted** on a `RETRY`-status node, the run jumps to
+   `retry_target` (or `fallback_retry_target` if `retry_target` doesn't name a real node)
+   instead of failing -- a one-time jump; the attempt counter resets for whatever runs next.
+2. **On an ordinary `FAIL`** -- any node, not just a `goal_gate` one -- if no edge matches
+   (no `condition="outcome=fail"` and nothing else fires), the run consults the same two
+   attributes before giving up, one time, instead of dead-ending.
+
+A `retry_target`/`fallback_retry_target` naming a node id that doesn't exist in the graph is
+silently treated as absent, not a lint error -- there is no dedicated rule catching that typo.
+
+**Graph-level `retry_target=`/`fallback_retry_target=` are a different mechanism, not a
+bigger version of the node-level one.** They're consulted only when the run reaches the
+*exit* node with an **unsatisfied goal gate** (spec section 3.4's ladder) -- never for an
+ordinary node's plain `FAIL` (that split is deliberate: a fix for a real bug, D7, where a
+plain node's failure was wrongly consulting the graph-level fallback). This ladder is **not
+bounded by `max_retries` at all** -- the run keeps bouncing back to the graph-level target
+until the gate is satisfied or the shared 500-node-visit step cap is hit. If you need a
+bounded number of gate-retry cycles, build your own counter into the graph -- see
+[`skills/attractorify/examples/00-convergence-loop.dot`](skills/attractorify/examples/00-convergence-loop.dot)
+for a real, executed worked example of exactly that pattern.
+
+### `timeout="30s"` -- per-node duration limit
+
+    slow [shape=box, timeout="5m", prompt="do something that might hang"]
+
+Bare integer = seconds; `ms`/`s`/`m`/`h` suffix accepted (`core/duration.ts`). Enforced
+in-process for both `box` and `parallelogram` nodes -- the in-flight `claude -p` subprocess
+or shell command is aborted and the node's outcome becomes `FAIL` once the timeout fires.
+Absent, empty, or unparseable means no timeout, not a default one.
+
+### Why not `condition=`?
+
+`condition=`'s grammar (`core/condition.ts`) is `key=value` / `key!=value` / a bare
+truthiness check, `&&`-joined -- no `<`/`>`/`<=`/`>=`. `condition="context.count<3"` is a
+**malformed condition** (`COND-001`, error-severity): `attractor lint` refuses the graph
+before a run ever starts, not a silent no-op. `max_retries=`/`retry_target=` above is the
+real mechanism for bounding a retry count; a numeric-comparison counter is not achievable
+at all with this engine's condition grammar.
+
 ## Lint rules
 
 `TOPO-001` one start; `TOPO-002` one exit; `TOPO-003` edge targets exist;
