@@ -203,7 +203,9 @@ export const INFERRED_OUTPUTS_BY_HANDLER: Record<HandlerKind, readonly string[]>
   [Handler.CODERGEN]: [], // Deliberate -- see the box-handler note above.
   [Handler.TOOL]: TOOL_OUTPUT_KEYS,
   [Handler.CONDITIONAL]: [], // PassthroughHandler, same as START.
-  [Handler.HUMAN]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
+  [Handler.HUMAN]: [], // Registered (p2-08); writes no context beyond the generic
+  // outcome/preferred_label every handler dispatch gets for free -- HumanGateHandler
+  // infers nothing.
   [Handler.PARALLEL]: [], // ParallelHandler (p5-08) writes context via mergeBranchContext's direct
   // Context.set() calls, not via Outcome.contextUpdates -- nothing for this table to infer.
   [Handler.FAN_IN]: [], // Not registered in defaultHandlers() -- cannot execute, let alone write.
@@ -223,7 +225,6 @@ export const INFERRED_OUTPUTS_BY_HANDLER: Record<HandlerKind, readonly string[]>
  * this list is not updated to match.
  */
 export const UNREGISTERED_HANDLER_KINDS: readonly HandlerKind[] = [
-  Handler.HUMAN,
   Handler.FAN_IN,
   Handler.MANAGER_LOOP,
 ]
@@ -397,7 +398,10 @@ export const SUBSTITUTABLE_ATTRS: Record<HandlerKind, readonly string[]> = {
   [Handler.CODERGEN]: ['prompt', 'label'], // BoxHandler: `attrs.prompt || attrs.label`.
   [Handler.TOOL]: ['tool_command'], // ToolHandler: `attrs.tool_command`.
   [Handler.CONDITIONAL]: [], // PassthroughHandler, same as START.
-  [Handler.HUMAN]: [], // Not registered in defaultHandlers() -- cannot execute.
+  [Handler.HUMAN]: ['human.prompt', 'human.label', 'prompt', 'label'], // HumanGateHandler
+  // (p2-08): human.*-namespaced attrs take priority over the generic prompt||label
+  // pair, mirroring BoxHandler's own fallback chain but letting an author write a
+  // human-gate-specific prompt without colliding with a generic node's attrs.
   [Handler.PARALLEL]: [], // ParallelHandler (p5-08) reads max_parallel (a plain int) and edges'
   // isolate attribute -- neither is substitutable text; nothing passes through substitute().
   [Handler.FAN_IN]: [], // Not registered in defaultHandlers() -- cannot execute.

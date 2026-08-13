@@ -1,0 +1,49 @@
+// 08-human-gate.dot -- a human-approval checkpoint before shipping.
+//
+// Portability re-verified 2026-08-11 against architecture.md's Example-portability
+// policy (ADR-019): this example's shapes (Mdiamond, Msquare, hexagon) are now ALL
+// registered handlers -- Handler.HUMAN registered this same session (Phase 2, FR-5-8,
+// stories p2-01..p2-10) -- so the "excluded, Handler.HUMAN unregistered" verdict this
+// row carried since S7 no longer holds. Adapted, not ported verbatim, matching this
+// set's own established convention (00/02/03/05): amplifier's illustrative human
+// checkpoint has no committed source in this repo to port from directly, so this is a
+// self-contained example teaching the same routing pattern -- a deterministic worker
+// step, then a human-gate node whose answer decides the edge taken -- built fresh
+// against this engine's actual Channel/HumanGateHandler machinery (channels/*.ts,
+// handlers/human.ts), not a hypothetical one.
+//
+// The gate's human.channel="mock_approval" names a channel that does not exist by
+// default; it must be supplied via --channel at run time (see the .md guide's actual
+// command). That, not --stub, is what makes this example's human gate answerable at
+// all -- --stub only ever affects the box/tool backend (see ADR-023: the built-in
+// "human" channel itself can never answer a gate in this build).
+//
+// Run it: node <plugin-root>/dist/attractor.js run 08-human-gate.dot \
+//           --cwd /tmp/some-dir --stub --param goal="add a health check endpoint" \
+//           --channel mock_approval=<plugin-root>/skills/attractorify/examples/08-human-gate.mock-approval.sh
+
+digraph human_gate_checkpoint {
+    start [shape=Mdiamond, label="Start"]
+
+    prepare [
+        label="Prepare change",
+        prompt="Draft the change for: ${goal}. (Informational only -- the gate below is authoritative and does not depend on this node's output.)"
+    ]
+
+    // Human-approval checkpoint. human.context exposes the worker's own last output
+    // to whichever channel answers this gate -- here, the mock_approval script, which
+    // deterministically approves, demonstrating the channel chain -> preferredLabel ->
+    // selectEdge routing path end to end without spending a real claude -p call.
+    gate [
+        shape=hexagon,
+        label="Human approval checkpoint",
+        prompt="Approve this change before it ships?",
+        human.channel="mock_approval",
+        human.context="tool.last_line"
+    ]
+
+    ship [shape=Msquare, label="Shipped"]
+
+    start -> prepare -> gate
+    gate -> ship [label="approve"]
+}

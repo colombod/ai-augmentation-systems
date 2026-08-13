@@ -49,9 +49,13 @@ function fail(msg) {
 const SAFE_MARKERS =
   /refus|unregist|HAND-001|not (?:regist|support)|does not exist|out of scope|amplifier(?:'s|'| itself)|adapted|instead|no equivalent|non-goal/i
 
+// 'hexagon' (Handler.HUMAN) is deliberately NOT in this list any more -- it registered
+// in Phase 2 (FR-5-8, 2026-08-11) and is now a legitimately usable shape; requiring a
+// refusal marker near every mention would flag correct documentation as a failure.
+// 'tripleoctagon'/'house' (Handler.FAN_IN/Handler.MANAGER_LOOP) remain unregistered.
 for (const file of FILES) {
   const text = readFileSync(file, 'utf8')
-  for (const shape of ['hexagon', 'tripleoctagon', 'house']) {
+  for (const shape of ['tripleoctagon', 'house']) {
     const idx = text.toLowerCase().indexOf(shape)
     if (idx === -1) continue
     // Check a window around every occurrence, not just the first.

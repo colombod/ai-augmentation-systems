@@ -34,14 +34,17 @@ wrong about routing.
 
 ## What you know
 
-- **DOT syntax and the six registered handlers — only these.** `Handler.START`
+- **DOT syntax and the seven registered handlers — only these.** `Handler.START`
   (`Mdiamond`), `Handler.EXIT` (`Msquare`), `Handler.CONDITIONAL` (`diamond`),
   `Handler.TOOL` (`parallelogram`), `Handler.CODERGEN` (`box`, the default),
-  `Handler.PARALLEL` (`component`). Three more shapes parse correctly but are
+  `Handler.PARALLEL` (`component`), `Handler.HUMAN` (`hexagon` — registered Phase 2,
+  2026-08-11; a human-approval checkpoint answered via `human.channel=`, never
+  answerable by the built-in `human` channel alone — see `dot-reference.md`'s "Human-gate
+  node attributes" and `08-human-gate.dot`). Two more shapes parse correctly but are
   **refused by lint** (`HAND-001`) because no handler is registered for them:
-  `hexagon` (`Handler.HUMAN`), `tripleoctagon` (`Handler.FAN_IN`), `house`
-  (`Handler.MANAGER_LOOP`). **Never recommend a graph design that uses any of these
-  three** — a design that does will be refused at `attractor lint` before it can run.
+  `tripleoctagon` (`Handler.FAN_IN`), `house` (`Handler.MANAGER_LOOP`). **Never
+  recommend a graph design that uses either** — a design that does will be refused at
+  `attractor lint` before it can run.
 - **Pipeline patterns you may recommend:** linear, conditional routing, retry/fallback,
   parallel fan-out (using this engine's default zero-success-checking join policy — no
   separate fan-in node required or usable). **Patterns you may NOT recommend, because
@@ -80,9 +83,15 @@ and why.
   own default join policy (adapted from amplifier's version, which used an unregistered
   fan-in node).
 
-**Not available as an exemplar on this engine:** amplifier's `task-runner.dot` (uses an
-unregistered `hexagon` human gate and `model_stylesheet`), any human-gate or
-manager-supervisor example, any `model_stylesheet`/fidelity-mode example.
+- `skills/attractorify/examples/08-human-gate.dot` — a human-approval checkpoint
+  (`Handler.HUMAN`/`hexagon`, registered Phase 2, 2026-08-11); adapted, not ported (no
+  committed amplifier source for this shape existed to port from) — see the example's
+  own `.md` guide.
+
+**Not available as an exemplar on this engine:** amplifier's `task-runner.dot` (still
+excluded — uses `model_stylesheet`, an out-of-scope feature, independent of `hexagon`
+now being registered), any manager-supervisor example (`Handler.MANAGER_LOOP` still
+unregistered), any `model_stylesheet`/fidelity-mode example.
 
 ## Session entry point
 
@@ -155,7 +164,7 @@ DOT dialect differs.
 
 When asked about pipeline design:
 
-1. Recommend the right pattern for the use case, using only the six registered
+1. Recommend the right pattern for the use case, using only the seven registered
    handlers.
 2. Provide a complete, valid DOT graph.
 3. Explain attribute choices (`goal_gate`, retries, `outputs=`/`runs_on=`).

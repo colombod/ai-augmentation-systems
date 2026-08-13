@@ -982,12 +982,12 @@ per file (`grep -o 'shape=[a-zA-Z]*'`), not assumed from filenames:
 | `04-retry-with-fallback.dot` | Mdiamond, Msquare, parallelogram | **yes — ported + executed** | only registered handlers |
 | `practical/bug-fix.dot` | Mdiamond, Msquare, parallelogram | **yes — ported + executed** (stretch, if budget allows) | only registered handlers; the SKILL's own cited `existing-attractor` exemplar |
 | `05-parallel-fan-out.dot` | Mdiamond, Msquare, component, tripleoctagon | **adapted, not verbatim** | `tripleoctagon`=`Handler.FAN_IN`, unregistered (`HAND-001`); fan-in node dropped, default join policy relied on instead |
-| `task-runner.dot` (patterns/) | Mdiamond, Msquare, box, hexagon, parallelogram | **excluded** | `hexagon`=`Handler.HUMAN`, unregistered; also uses `model_stylesheet`/`class=` (out of scope). `00-convergence-loop.dot` is the canonical skeleton exemplar instead |
+| `task-runner.dot` (patterns/) | Mdiamond, Msquare, box, hexagon, parallelogram | **still excluded — re-verified 2026-08-11** | `hexagon`=`Handler.HUMAN` registered Phase 2, no longer a reason; `model_stylesheet`/`class=` (out of scope) still is. `00-convergence-loop.dot` is the canonical skeleton exemplar instead, `08-human-gate.dot` the human-gate one |
 | `06-model-stylesheet.dot` | Mdiamond, Msquare | **excluded** | the feature it demonstrates (`model_stylesheet`) is a PRD non-goal, not merely an unregistered handler |
 | `07-fidelity-modes.dot` | Mdiamond, Msquare | **excluded** | fidelity-mode differentiation status is Open Question 10, unresolved — cannot honestly claim it "works" either way |
-| `08-human-gate.dot` | Mdiamond, Msquare, hexagon | **excluded** | `Handler.HUMAN` unregistered |
+| `08-human-gate.dot` | Mdiamond, Msquare, hexagon | **yes — re-verified 2026-08-11, ported (adapted) + executed** | `Handler.HUMAN` registered Phase 2 (FR-5-8); no committed amplifier source existed to port from, so this is a fresh example, not a literal port — see `skills/attractorify/examples/08-human-gate.md` |
 | `09-manager-supervisor.dot` | Mdiamond, Msquare, house, parallelogram | **excluded** | `Handler.MANAGER_LOOP` unregistered |
-| `10-full-attractor.dot` | Mdiamond, Msquare, component, hexagon, parallelogram, tripleoctagon | **excluded** | combines two unregistered handlers |
+| `10-full-attractor.dot` | Mdiamond, Msquare, component, hexagon, parallelogram, tripleoctagon | **excluded** | `Handler.FAN_IN` (`tripleoctagon`) still unregistered — re-verified 2026-08-11: only one of its two originally-unregistered handlers (`hexagon`) is now registered, `tripleoctagon` alone still excludes it |
 | `12-graph-resume.dot` | Mdiamond, Msquare, parallelogram | **excluded** | depends on cross-restart resume — PRD non-goal ("General checkpoint-based crash recovery... no read-back mechanism exists") |
 
 This table itself is the FR-16 artifact — it must be re-verified, not copied forward, the
@@ -1005,14 +1005,438 @@ coverage a table doesn't show.
 | `verify-run.ts` prints the exact `VERIFIED: status=... path=...` / `events: ...` contract on a valid `--stub` graph | integration | same file |
 | Every ported example `.dot` file lints clean (`attractor lint`) | integration | one test per example, or table-driven over `examples/*.dot` |
 | Every ported example `.dot` file actually runs to a terminal `status` under `--stub`, and its committed `events.jsonl` is the real output of that run, not hand-written | integration | same — this is FR-16's own falsifiability requirement; a test that only checks the file *exists* would not catch a stale or fabricated transcript |
-| The reference material's node-shape table lists only the six registered handlers (no `hexagon`/`tripleoctagon`/`house` presented as usable) | doc-consistency check | a small grep-based test/lint script rather than a manual review, so it survives future edits |
+| The reference material's node-shape table lists only registered handlers as usable (`tripleoctagon`/`house` never presented as usable; `hexagon` legitimately IS as of Phase 2/2026-08-11 — the check's own shape list was updated, not disabled) | doc-consistency check | a small grep-based test/lint script rather than a manual review, so it survives future edits |
 | `routing-reference.md`'s verdict-contract statement matches `wantsVerdict` (`argv.ts:42-43`) exactly | doc-consistency check | same script — greps `routing-reference.md` for `goal_gate` framing, fails if it also implies verdicts on non-gate nodes |
 
 ## Risks (FR-13–16 additions)
 
 | Risk | Likelihood | Impact | Mitigation | Owner |
 | :-- | :-- | :-- | :-- | :-- |
-| A future PR registers a new handler (e.g. `Handler.HUMAN`, closing Stage 3) and the example-portability table above silently goes stale, understating what's now portable | medium — Stage 3 is the very next planned phase | low — understating portability is a missed-opportunity gap, not a hazard; nothing unsafe ships | The table cites its own generation method (`grep -o 'shape='`) so it's mechanically re-derivable, not just editable prose | skill/doc author, next session that registers a handler |
+| **RESOLVED 2026-08-11.** A future PR registers a new handler (`Handler.HUMAN`, Phase 2) and the example-portability table above silently goes stale, understating what's now portable | was medium — Stage 3/Phase 2 was the very next planned phase | was low — understating portability is a missed-opportunity gap, not a hazard | Re-derived per the table's own stated method: `08-human-gate.dot` ported (adapted) and executed, `10-full-attractor.dot`/`task-runner.dot` re-verified and correctly still excluded for their OTHER reasons (`Handler.FAN_IN` unregistered; `model_stylesheet` out of scope). `dot-reference.md`, `SKILL.md`, `attractor-expert.md`, and `check-consistency.mjs`'s own hard-coded shape list also updated — the risk's original scope (the portability table alone) undersold how many places "six registered handlers" was hard-coded | skill/doc author (done) |
 | `--stub` execution-verification proves control-plane reachability, not that a *live* `claude -p` node would behave as the graph's prompt assumes — a handback could read as "fully proven" to a reader who doesn't notice the word `--stub` | medium — the distinction is easy to skim past | medium — false confidence in a specific prompt's real-world behavior, though not in the graph's routing correctness | ADR-017's own text states the `--stub`/`--live` distinction plainly in the handback contract; the skill's handback template repeats `status=... (stub)` inline, not only in a linked doc | skill author |
 | The independent execution-verification subagent (Task-tool delegation) and the independent diagnosis-verification subagent (ported from amplifier) could be conflated into one delegation by an implementer skimming the ported `SKILL.md`, defeating the "two separate gates" design in ADR-017 | low — ADR-017 states this explicitly, and the ported `SKILL.md`'s own Step numbering keeps them apart | medium if conflated — a "ready" graph could ship having only had its diagnosis re-derived, never actually run | `verify-run.ts`'s narrow, single-purpose contract (nothing else it could be mistaken for) plus the explicit two-gate language in Step 4 of the ported skill | skill author |
 | `engine/package.json` gaining `"exports"` could be read as a signal this package is now meant for `npm publish`, contradicting the registry-proxy constraint | low | low — no CI or release automation currently acts on `package.json`'s publishability | `"private": true` stays set; ADR-016 states the intent (in-monorepo + direct-clone consumption only) explicitly, not left to be inferred from the fields alone | implementer |
+
+# FR-5–8: human-gate channels (S2)
+
+> Appended to `architecture.md`, not a rewrite of the sections above — same convention as the
+> `FR-17b`/`FR-13–16` additions. Grounded in `.superpowers/specs/2026-08-05-human-gate-channels-design.md`
+> (the adopted, 5/5-converged design; carried forward and detailed here, not re-derived) and
+> `.delivery/decisions/ADR-002-human-gate-blocking.md` (accepted, not yet implemented), both
+> re-verified against current source (post-FR-17b, post-S7) before this pass started, plus a
+> Solution Architect draft, a QA Strategist test-strategy pass, and a Feature Critic adversarial
+> review, all folded in below rather than left as separate unread reports. Two of the critic's
+> five findings were blocking and are resolved in the Decisions below (ADR-022, ADR-026); one
+> (prompt-injection exposure via the `agent` channel) is recorded as an accepted, mitigated risk,
+> not fully closable this slice. Spike 13 (TTY presence under a Bash-tool-spawned child — carried
+> forward, unrun, from this document's original "Spike 6") was run during this pass:
+> `node -e "console.log(process.stdin.isTTY)"`, invoked the same way, printed `undefined` —
+> resolved, safe answer, no longer open.
+
+## Approach
+
+Six new files in a new `engine/src/channels/` directory register `Handler.HUMAN` as a thin leaf
+handler (architecturally identical to `BoxHandler`/`ToolHandler` — dispatch, call out, return one
+`Outcome`; no `ctx.runBranch`, no fan-out, `handlers/types.ts` untouched) that delegates
+answer-collection to an ordered chain of `Channel` implementations, plus a new preflight step that
+refuses a run before any node dispatches if a reachable human gate has no viable hop. `human`
+realizes ADR-002's already-accepted TTY-check decision; `agent` is a two-key-gated `claude -p`
+proxy; `CommandChannel` is the no-code external-script extension point. Nothing here touches
+`Backend`, `core/checkpoint.ts`, `core/retry.ts`, or `run/worktree.ts` — human gates need none of
+the branch-execution, subprocess-backend, or worktree machinery FR-17b built.
+
+## Codebase context (additions)
+
+| Path | Role today | Change |
+| :-- | :-- | :-- |
+| `engine/src/channels/types.ts` | does not exist | new — `Channel`, `HumanGateContext`, `ChannelAnswer`, `ChannelRunContext`, `isChannelViable`, `whyNotViable` |
+| `engine/src/channels/human.ts` | does not exist | new — `HumanGateWait`, `StdinHumanGateWait`, `HumanChannel` (realizes ADR-002) |
+| `engine/src/channels/agent.ts` | does not exist | new — `AgentChannel` (self-enforces the two-key gate; see ADR-022) |
+| `engine/src/channels/command.ts` | does not exist | new — `CommandChannel` (shell-quotes substituted values; see ADR-026) |
+| `engine/src/channels/defaults.ts` | does not exist | new — `defaultChannels()` |
+| `engine/src/channels/preflight.ts` | does not exist | new — `preflightHumanGates()`, `GateViabilityDiagnostic` |
+| `engine/src/core/shell.ts` | does not exist | new — `runShell`/`lastNonEmptyLine`, relocated from `handlers/tool.ts` (ADR-020) |
+| `engine/src/handlers/human.ts` | does not exist; `Handler.HUMAN` unregistered, aborts mid-run with "no handler registered" | new — `HumanGateHandler` (leaf handler, `box.ts`/`tool.ts`-shaped) |
+| `engine/src/dot/graph.ts` | `UNREGISTERED_HANDLER_KINDS` includes `Handler.HUMAN` (line 226); `SUBSTITUTABLE_ATTRS[Handler.HUMAN] = []` (line 400, commented "not registered... cannot execute") | modified — `HUMAN` removed from `UNREGISTERED_HANDLER_KINDS`; `SUBSTITUTABLE_ATTRS[Handler.HUMAN]` populated; comment corrected |
+| `engine/src/dot/lint.ts` | `reachableFrom` (line 53) is module-private, used once internally (line 373); HITL-001 (line 505) and HITL-003 (already shipped) already read `human.*` attrs off raw `node.attrs`, both unaffected by this phase | modified — `reachableFrom` gains `export`; zero logic change |
+| `engine/src/core/engine.ts` | `defaultHandlers(backend)` (line 105) builds a `Map` with no `HUMAN` entry; `run()` (line 971) refuses a lint-dirty graph first (lines 975-977); start-node lookup follows | modified — `defaultHandlers` gains two optional parameters; `run()` gains a preflight-refusal block immediately after the existing lint-refusal block |
+| `engine/src/backend/claude.ts` | `runProcess` is module-private, `ClaudeCodeBackend` its only caller | modified — gains `export`, zero body change |
+| `engine/src/backend/argv.ts` | `buildArgv` (line 54) unconditionally includes `--permission-mode bypassPermissions` (line 55) | modified — that argument list's non-interactive-safety prefix is extracted into an exported constant both `buildArgv` and `AgentChannel` build from (ADR-022) |
+| `engine/src/cli.ts` | `parseRunArgs` (line 64) has no `--allow-agent-gates`/`--channel`; `run` command builds `defaultHandlers(backend)` (line 293) | modified — two new flags (one boolean, one accumulating map — new parsing shape, no prior flag repeats-to-map); fast-path preflight check before worktree creation; `channels`/`channelRunContext` threaded into `new Engine({...})` |
+| `engine/src/index.ts` | re-exports `Engine`, `defaultHandlers`, `Context`, `lint`, `parseDot`, `Handler`, `EventLog`, `Backend`/`HandlerCtx` types, `ClaudeCodeBackend`, `StubBackend` | modified — gains `Channel`, `HumanGateContext`, `ChannelAnswer`, `defaultChannels`, `CommandChannel`, `HumanGateHandler` |
+| `engine/src/handlers/types.ts`, `core/context.ts`, `core/checkpoint.ts`, `core/retry.ts`, `core/edge-select.ts`, `run/worktree.ts`, `backend/result.ts` | — | **untouched** — see Interfaces below for why each is sufficient as-is |
+| `engine/src/doctor.ts` | `probeTool` already exported, `claude` already a required check | **untouched** — reused as-is for the `agent` channel's availability check |
+
+## Component structure
+
+```
+channels/types.ts     -- Channel, HumanGateContext, ChannelAnswer, ChannelRunContext,
+                          isChannelViable(), whyNotViable()
+                          (pure contracts + pure predicate; no I/O, no dependency on
+                          engine.ts, cli.ts, or dot/lint.ts)
+      |
+      | implemented by
+      v
+channels/human.ts      -- HumanGateWait / StdinHumanGateWait / HumanChannel
+channels/agent.ts      -- AgentChannel (imports runProcess from backend/claude.ts;
+                          self-enforces allowAgentGates, does not trust the caller alone)
+channels/command.ts    -- CommandChannel (imports substitute from core/substitute.ts,
+                          shell-quotes each substituted value before splicing)
+      |
+      | composed by
+      v
+channels/defaults.ts   -- defaultChannels(opts): Map<string, Channel>
+channels/preflight.ts  -- preflightHumanGates(graph, channels, runContext):
+                          GateViabilityDiagnostic[] (imports reachableFrom from dot/lint.ts,
+                          isChannelViable from channels/types.ts)
+      |
+      | consumed by
+      v
+handlers/human.ts       -- HumanGateHandler implements Handler (leaf handler; constructor-
+                          injected channels + runContext, exactly like BoxHandler(backend) --
+                          NOT via HandlerCtx)
+      |
+      | registered by
+      v
+core/engine.ts          -- defaultHandlers(backend, channels?, channelRunContext?) gains
+                          [Handler.HUMAN, new HumanGateHandler(channels, channelRunContext)];
+                          run() calls preflightHumanGates(...) immediately after the existing
+                          lint-refusal block (engine.ts:975-977), before the start-node lookup
+      |
+      | wired by
+      v
+cli.ts                  -- --allow-agent-gates, --channel name=command; constructs
+                          defaultChannels()+CommandChannels and a ChannelRunContext BEFORE
+                          worktree creation (fast-path preflight); passes both into new Engine({...})
+```
+
+`dot/graph.ts` gains no new function — its role (attribute-to-handler resolution,
+`SUBSTITUTABLE_ATTRS`, `UNREGISTERED_HANDLER_KINDS`) is edited in place. The four new node
+attributes (`human.channel`, `human.channel_timeout`, `human.context`, `human.agent_instructions`)
+need no new constant table: `Node.attrs: Record<string, string>` already accepts arbitrary dotted
+attribute names generically, proven by HITL-003 (already shipped) reading `human.channel`/
+`human.context` with zero parser changes. The one load-bearing table edit is
+`SUBSTITUTABLE_ATTRS[Handler.HUMAN]` — that one feeds `substitutableText()`/DATA-001/the eager
+input check, unlike the other three attributes, which are read once by the handler and never
+routed through `substitute()`.
+
+## Interfaces and data contracts
+
+```ts
+// channels/types.ts
+export interface HumanGateContext {   // named to avoid colliding with goal_gate/GATE-002's
+                                       // unrelated "gate" vocabulary -- see glossary
+  nodeId: string
+  label: string                       // human.prompt || human.label || prompt || label || node.id
+  legalAnswers: readonly string[]     // UNCONDITIONAL outgoing edges' label= only -- see ADR-025;
+                                       // NOT the same set HITL-001's own enumeration uses
+  exposedContext: Readonly<Record<string, string>>   // only PRESENT keys named by human.context=
+  agentInstructions?: string          // human.agent_instructions=, verbatim; agent channel only
+}
+
+export interface ChannelAnswer { label: string | null }   // null = no answer this hop, escalate
+
+export interface Channel {
+  answer(ctx: HumanGateContext, timeoutMs: number | null): Promise<ChannelAnswer>
+}
+
+/** Facts fixed for the whole run, computed once by the caller -- never re-probed per gate. */
+export interface ChannelRunContext {
+  isInteractive: boolean          // process.stdin.isTTY, computed once
+  allowAgentGates: boolean        // --allow-agent-gates
+  claudeAvailable: boolean        // probeTool('claude', ['--version'], true).ok, computed once
+  configuredNames: ReadonlySet<string>   // keys of the channel map this run was built with
+}
+
+/** ONE viability predicate, consulted by BOTH preflight and HumanGateHandler's per-hop
+ *  dispatch loop -- never two independently-maintained copies of "what makes a channel
+ *  usable this run." Advisory only -- see AgentChannel below for why this predicate is
+ *  NOT the sole enforcement of the agent channel's two-key rule. */
+export function isChannelViable(name: string, rc: ChannelRunContext): boolean {
+  if (name === 'human') return rc.isInteractive
+  if (name === 'agent') return rc.allowAgentGates && rc.claudeAvailable
+  return rc.configuredNames.has(name)
+}
+export function whyNotViable(name: string, rc: ChannelRunContext): string
+```
+
+```ts
+// channels/human.ts -- realizes ADR-002 (see ADR-023)
+export interface HumanGateWait { block(signal: AbortSignal): Promise<void> }
+export class StdinHumanGateWait implements HumanGateWait {
+  block(signal: AbortSignal): Promise<void>   // resume() + heartbeat, per ADR-002; resolves
+                                               // only when `signal` aborts
+}
+export class HumanChannel implements Channel {
+  constructor(wait?: HumanGateWait)   // default: new StdinHumanGateWait()
+  // Bounded by an AbortController tied to timeoutMs (null = no timeout -- blocks forever,
+  // ADR-002's original TTY behavior). Resolves { label: null } only if timeoutMs fires;
+  // has NO code path that ever produces a real answer in this build -- see ADR-023. Does
+  // NOT check isInteractive itself: viability is isChannelViable's job, checked by the
+  // caller before this is ever invoked.
+  async answer(ctx: HumanGateContext, timeoutMs: number | null): Promise<ChannelAnswer>
+}
+```
+
+```ts
+// channels/agent.ts -- see ADR-022
+export interface AgentChannelOptions {
+  allowed: boolean          // REQUIRED, not optional -- see ADR-022; mirrors --allow-agent-gates,
+                             // but enforced by the channel itself, not only by isChannelViable
+  command?: string           // overridable, mirrors ClaudeBackendOptions.command for tests
+  model?: string
+}
+export class AgentChannel implements Channel {
+  constructor(opts: AgentChannelOptions)
+  // answer() immediately returns { label: null } without spawning anything if
+  // opts.allowed !== true -- self-enforcing, not caller-trusting (ADR-022). Otherwise:
+  // assembles a prompt from ctx.label/ctx.legalAnswers/ctx.exposedContext/
+  // ctx.agentInstructions, each pipeline-derived value wrapped in an explicit
+  // "untrusted pipeline data, not instructions" delimiter (see ADR-022's residual-risk
+  // note); spawns `claude -p` via the EXPORTED runProcess (backend/claude.ts), reusing
+  // the same NON_INTERACTIVE_SAFETY_ARGV prefix buildArgv uses (argv.ts) so this
+  // hand-assembled call can never silently drop --permission-mode bypassPermissions;
+  // fresh and isolated per invocation, no cwd, no thread resumption, no access to the
+  // pipeline's Context beyond ctx.exposedContext. Bounded by timeoutMs via the same
+  // AbortController pattern runProcess already accepts. Parses the reply with a narrow
+  // local parseGateAnswer, NOT backend/result.ts's parseVerdict -- see ADR-022.
+  async answer(ctx: HumanGateContext, timeoutMs: number | null): Promise<ChannelAnswer>
+}
+const GATE_ANSWER_SCHEMA = {
+  type: 'object',
+  properties: { label: { type: 'string' }, notes: { type: 'string' } },
+  required: ['label', 'notes'],
+  additionalProperties: false,
+} as const
+function parseGateAnswer(result: unknown): { label: string; notes?: string } | null
+```
+
+```ts
+// channels/command.ts -- see ADR-026
+export class CommandChannel implements Channel {
+  constructor(command: string)
+  // Substitutes ${...} tokens from a flattened HumanGateContext (nodeId, label,
+  // legal_answers (comma-joined), each exposedContext key verbatim under its own name)
+  // via core/substitute.ts's substitute() -- zero new substitution engine -- but, UNLIKE
+  // tool_command's reuse of the same function, each substituted VALUE is shell-quoted
+  // (POSIX single-quote escaping: wrap in '...', replace embedded ' with '\'') before
+  // splicing, closing the shell-injection exposure ADR-026 names. Spawns via
+  // runShell/lastNonEmptyLine (core/shell.ts, relocated from handlers/tool.ts -- ADR-020),
+  // cwd = process.cwd() (the operator's own invocation directory, not ctx.cwd -- "fresh
+  // and isolated", matching the agent channel's own framing). Non-zero exit or an empty
+  // last stdout line -> { label: null }.
+  async answer(ctx: HumanGateContext, timeoutMs: number | null): Promise<ChannelAnswer>
+}
+```
+
+```ts
+// channels/defaults.ts
+export function defaultChannels(opts?: { agent?: Omit<AgentChannelOptions, 'allowed'> }): Map<string, Channel>
+// Seeds { human: new HumanChannel(), agent: new AgentChannel({ ...opts?.agent, allowed:
+// <computed from the SAME allowAgentGates+claudeAvailable inputs isChannelViable uses> }) }
+// -- defaultChannels() is the one place the two independent checks (self-enforcement in
+// AgentChannel, advisory filtering in isChannelViable) are guaranteed to agree, because
+// both are derived from the same two booleans at construction time, not asserted equal
+// separately. cli.ts adds CommandChannels on top via channels.set(name, new
+// CommandChannel(command)) for each --channel name=command.
+
+// channels/preflight.ts
+export interface GateViabilityDiagnostic {
+  node: string
+  chain: readonly string[]
+  reasons: readonly string[]   // one per hop, from whyNotViable()
+}
+export function preflightHumanGates(
+  graph: Graph,
+  channels: ReadonlyMap<string, Channel>,
+  runContext: ChannelRunContext,
+): GateViabilityDiagnostic[]
+// Full static reachability from the graph's start node (reachableFrom, dot/lint.ts,
+// EXPORTED not relocated -- ADR-021), filtered to Handler.HUMAN nodes, each hop of each
+// gate's human.channel chain (default ["human"]) checked via isChannelViable. Condition-
+// blind by design, same over-approximation every TOPO-family rule already accepts.
+```
+
+```ts
+// handlers/human.ts
+export class HumanGateHandler implements Handler {
+  constructor(channels: ReadonlyMap<string, Channel>, runContext: ChannelRunContext)
+  // For each name in human.channel's chain (default ["human"]), in order:
+  //   - not isChannelViable(name, runContext) -> skip, emit node.human.hop_skipped
+  //   - resolve human.channel_timeout for this hop position (parseDuration, comma-split,
+  //     last value repeats if the list is shorter than the chain; entirely absent = null
+  //     for every hop)
+  //   - channel.answer(ctx, hopTimeoutMs), wrapped in try/catch -- a THROW from a channel
+  //     is treated identically to { label: null } (escalate to the next hop), logged via a
+  //     node.human.hop_error event naming the channel and the caught message, never left to
+  //     propagate as an unhandled rejection
+  //   - non-null label -> return { status: Status.SUCCESS, preferredLabel: label } immediately
+  //   - null (or caught throw) -> emit node.human.hop_timeout / node.human.hop_error, continue
+  // Chain exhausted (every hop skipped, timed out, or errored):
+  //   - on_timeout or human.default_choice present -> SUCCESS with that preferredLabel
+  //     (selectEdge routes it, exactly as the pre-existing, UNCHANGED HITL-001 doctrine
+  //     already requires)
+  //   - neither present -> Status.FAIL -- ADR-002's original loud-failure semantics, now
+  //     reached via chain exhaustion rather than a direct TTY check (ADR-023)
+  // Writes NO context beyond the generic outcome/preferred_label every dispatch gets for
+  // free -- INFERRED_OUTPUTS_BY_HANDLER[Handler.HUMAN] stays []. Never returns RETRY/PARTIAL.
+  async execute(ctx: HandlerCtx): Promise<Outcome>
+}
+```
+
+```ts
+// dot/graph.ts -- edited constants
+export const UNREGISTERED_HANDLER_KINDS: readonly HandlerKind[] =
+  [Handler.FAN_IN, Handler.MANAGER_LOOP]   // HUMAN removed
+
+// SUBSTITUTABLE_ATTRS[Handler.HUMAN]: ['human.prompt', 'human.label', 'prompt', 'label']
+// -- mirrors BoxHandler's own prompt||label fallback, human.*-namespaced attrs taking
+// priority. Feeds substitutableText() (unchanged) and therefore DATA-001/the eager input
+// check for free: a human.prompt referencing an owed/failed key now gets the same
+// design-time and runtime protection a box node's prompt already gets.
+// INFERRED_OUTPUTS_BY_HANDLER[Handler.HUMAN] stays [] -- comment corrected from "not
+// registered, cannot execute" to "registered; writes no context beyond the generic
+// outcome/preferred_label every handler gets for free."
+```
+
+```ts
+// core/engine.ts
+export function defaultHandlers(
+  backend: Backend,
+  channels: ReadonlyMap<string, Channel> = defaultChannels(),
+  channelRunContext: ChannelRunContext = {
+    isInteractive: Boolean(process.stdin.isTTY),
+    allowAgentGates: false,
+    claudeAvailable: false,
+    configuredNames: new Set(['human', 'agent']),
+  },
+): Map<HandlerKind, Handler>   // gains [Kind.HUMAN, new HumanGateHandler(channels, channelRunContext)]
+```
+`run()` gains, between the existing lint-refusal block (`engine.ts:975-977`) and the start-node
+lookup that follows it:
+```ts
+const gateDiagnostics = preflightHumanGates(graph, this.opts.channels, this.opts.channelRunContext)
+if (gateDiagnostics.length > 0) { /* same result()/events shape as the lint-refusal block above */ }
+```
+`EngineOptions` gains `channels?: ReadonlyMap<string, Channel>` and `channelRunContext?:
+ChannelRunContext`, both optional with the same defaults `defaultHandlers` uses — an
+`EngineOptions` built without them behaves exactly as today, with `Handler.HUMAN` registered but
+every gate refused at preflight under a non-interactive, `--allow-agent-gates`-absent default
+(the existing 47 call sites across the test suite and `verify-run.ts` are unaffected — none
+exercises `Handler.HUMAN`, confirmed by grep).
+
+## Meeting the non-functional requirements (additions)
+
+| NFR | Target | How the design meets it | Confidence |
+| :-- | :-- | :-- | :-- |
+| NFR-1 | 500-step cap | Unaffected — a gate's entire multi-hop chain resolves inside ONE `executeNodeStep` dispatch, one step, matching every other handler | high |
+| NFR-2 | Retry defaults unchanged | Untouched — `HumanGateHandler` FAIL flows through the existing, fully generic §3.7 ladder with zero special-casing, like `ToolHandler`'s FAIL today | high |
+| NFR-3 | `parseDuration` rules | Now genuinely exercised (`human.channel_timeout`). One inherited, not new, ambiguity: `parseDuration` collapses absent and literal `"0"` to the same sentinel `0` ("no timeout"), matching every existing consumer — an author cannot express "time out this hop immediately" via `=0`; they omit that hop instead | high |
+| NFR-4 | Checkpoint write safety | Unaffected — no channel, including a mid-wait block, ever reaches `saveCheckpoint`; an unresolved gate hasn't completed a step | high |
+| NFR-5 / NFR-6 | Doctor checks / exactly 2 runtime deps | Zero new dependencies — `AgentChannel` reuses `runProcess` (`node:child_process`, already a `backend/claude.ts` dependency); `CommandChannel` reuses `runShell` (`node:child_process`, relocated). `doctor.ts` needs no new entry: `claude` is already required | high |
+| NFR-7 | Parallel concurrency ceiling | n/a — human gates do not fan out | n/a |
+| NFR-9 | Crash exposure during an unanswered gate, accepted risk | Unchanged in kind, now precisely scoped: only `HumanChannel`'s block (`StdinHumanGateWait`) holds unbounded process-resident wait time, and it never resolves with a real answer in this build regardless (ADR-023) — matches PRD NFR-9's own text ("narrows this to the `human` hop only") exactly | high |
+
+## Decisions
+
+Seven new ADRs, `ADR-020` through `ADR-026` (`ADR-019` is the last one in use).
+
+| ADR | Decision | Why (alternatives in the ADR itself) |
+| :-- | :-- | :-- |
+| **ADR-020** | New `engine/src/channels/` directory; `runShell`/`lastNonEmptyLine` relocated `handlers/tool.ts` → new `core/shell.ts` | `Channel` must be visible to non-handler code (preflight, `cli.ts`), so it can't live in `handlers/types.ts` beside `Backend` |
+| **ADR-021** | `reachableFrom` (`dot/lint.ts:53`) gains `export`, stays where it is; `channels/preflight.ts` imports it directly | Relocating it into `dot/graph.ts` (mirroring `findConvergenceNode`) would create a `graph.ts`↔`argv.ts` import cycle, since `reachableFrom` calls `wantsVerdict` |
+| **ADR-022** | `AgentChannel` self-enforces the two-key rule (`allowed: boolean`, required constructor field, checked at the top of `answer()`) — NOT enforced only by the external `isChannelViable` predicate; also does not reuse `buildArgv`/`wantsVerdict`/`parseVerdict` (a narrow `parseGateAnswer`/`GATE_ANSWER_SCHEMA` instead), and reuses `buildArgv`'s non-interactive-safety argv prefix via a shared exported constant, not hand-duplicated literals | **Blocking finding, resolved.** The Feature Critic found the design-doc-level "`isChannelViable` gates it" framing repeats the exact bug class ADR-004 already fixed once (F10: a safety property enforced only by an external caller, bypassable by any code constructing the dangerous object directly — `channels.set('agent', new AgentChannel())`, the same override pattern this codebase's own tests use dozens of times for `Handler` entries). ADR-004's fix moved the check inside `Engine.run()` itself so it holds regardless of construction path; this ADR applies the identical fix to `AgentChannel`. Reusing `buildArgv` wholesale was rejected because its schema request gates on `wantsVerdict(node)`, a property of a real dispatching `Node`'s `goal_gate` attribute — irrelevant to "should this subprocess call return a routing label," and risky via a synthetic `Node` (accidental `goal_gate` residue, `ThreadStore` key collision) |
+| **ADR-023** | `HumanChannel.answer()` blocks via `StdinHumanGateWait`, bounded only by an optional `human.channel_timeout`; it has NO code path that ever resolves with a real, human-typed label | This is what the adopted design doc's own §2 already specifies ("unchanged... it never resolves in this build"), stated explicitly rather than left to be discovered by whoever writes the first end-to-end `human`-only test. FR-8 is satisfiable this slice only via `agent` or `CommandChannel` |
+| **ADR-024** | `Handler.HUMAN` registration is unconditional; `defaultHandlers()`'s two new parameters are optional with safe, zero-I/O defaults (`isInteractive` live-computed, `allowAgentGates`/`claudeAvailable` both `false`) | Requiring them (mirroring `handlers`'s own required status) would force a mechanical edit across 47 existing call sites for zero behavioral benefit. Spike 15 confirmed `process.stdin.isTTY` reads `undefined` under `node --test`, so the live default is provably inert for the existing suite |
+| **ADR-025** | `HumanGateContext.legalAnswers` = unconditional outgoing edges' `label=` values only, matching `selectEdge`'s actual step-2 scope | **Correction to the adopted design doc.** Its §1 claims this "is the same enumeration HITL-001's existing rule already does." Re-verified against current source and found FALSE: HITL-001's own enumeration (`lint.ts:508`) has no `isConditional` filter — it includes every outgoing edge's label. Literally reusing it would advertise a conditional edge's label as answerable when `selectEdge` can never route a `preferredLabel` to it |
+| **ADR-026** | `CommandChannel` shell-quotes each substituted `HumanGateContext` value (POSIX single-quote escaping) before splicing into the command string — diverging deliberately from `tool_command`'s existing, unescaped `substitute()` reuse | **Blocking finding, resolved.** The Feature Critic found `core/substitute.ts` does zero shell-escaping (verified: single-pass raw token replacement, `substitute.ts:43-58`), and `tool_command`'s existing trust model (graph-author-written command, same-trust-domain context values) doesn't transfer to `CommandChannel`: its command is operator-supplied but its substituted values (`exposedContext`, explicitly meant to carry upstream `TOOL`/`CODERGEN` output — see HITL-003/ADR-006) can be pipeline-computed from external, untrusted input the operator never reviewed. Shell-quoting closes the injection path while keeping the `${...}` authoring UX intact |
+
+## Spikes — what must be proven before committing
+
+| # | Question | Time box | Status |
+| :-- | :-- | :-- | :-- |
+| 13 (carried forward as this document's original, never-run "Spike 6") | Does a Claude-Code-Bash-tool-spawned child present a TTY on stdin? | 5 min | **RESOLVED, this pass** — `node -e "console.log(process.stdin.isTTY)"` via the same Bash-tool path printed `undefined`. The `human` channel is correctly non-viable for FR-2's own sanctioned invocation path; preflight refuses rather than hangs. Environment-specific (a real interactive dev terminal would see `true`), noted in Test strategy's TTY-injection policy below |
+| 14 | Does spawning `claude -p` from `AgentChannel.answer()` — itself potentially running inside a pipeline that is itself a `claude -p` subprocess — work, or hit a session/auth/rate-limit conflict single-level `BoxHandler`→`claude -p` never exercises? | 30 min | Open, non-blocking — bounded blast radius (opt-in twice over: `--allow-agent-gates` AND the graph's own `human.channel`), and the negative-path test (ADR-022's throw-becomes-escalate contract) covers the failure mode regardless of the spike's outcome |
+| 15 | Empirically confirm `process.stdin.isTTY` reads falsy under `node --test`, so `defaultHandlers()`'s live-computed default is provably inert | 5 min | **RESOLVED** — confirmed `undefined` in this sandbox; written into Test strategy as a standing policy (inject, never read ambiently), not merely a one-time fact-check |
+
+## Migration and rollback
+
+**Forward.** Every change is additive at the type/module level or a small, unconditional constant
+edit. No persisted-data-format changes. `runProcess`/`reachableFrom` change from private to
+exported with zero body edits.
+
+**FR-7's explicit requirement — verified directly, count corrected.** HITL-001's existing fixtures
+(`lint.test.ts:305-421`, **8** tests, not 7) assert only `codes(src)` membership; none reference
+`HAND-001`/`UNREGISTERED_HANDLER_KINDS`, and `preflightHumanGates` is explicitly `Engine.run()`-time,
+not `lint()`-time — these fixtures call `lint(parseDot(src))` only, structurally incapable of
+observing the new step. All 8 pass unmodified, structurally guaranteed by where the step is placed,
+not merely likely.
+
+**Two tests need repointing — not a regression, the "loud trap" `carry-forward.md` already named:**
+1. `lint.test.ts:1666-1669` (`UNREGISTERED_HANDLER_KINDS matches what defaultHandlers() actually
+   registers`) — self-updating, derives both sides from `defaultHandlers()`'s own keys at test-run
+   time. Needs no edit.
+2. `lint.test.ts:1690-1697` (`HAND-001 fires for Handler.HUMAN too`) — premise breaks once
+   registered. Merge into the adjacent `HAND-001 does not fire for any registered handler kind`
+   fixture (`lint.test.ts:1711-1721`) by adding a bare `gate [shape=hexagon]` line, rather than a
+   bare deletion — tests the flip side directly.
+3. `engine.test.ts:1214-1245` (FR-11×FR-17a's `NO_HANDLER` fixture, a bare `hexagon` node used as a
+   convenient always-unregistered example) — once `Handler.HUMAN` registers, this fixture lints
+   clean and instead gets refused by the NEW preflight step (its only chain hop, the attribute-
+   absent default `human`, isn't viable under `node --test`'s non-TTY stdin). `result.status===FAIL`
+   and `result.path.length===0` (lines 1234, 1236) still hold, but `assert.match(result.notes,
+   /HAND-001/)` (line 1235) breaks — the refusal now names the preflight diagnostic instead. Fix:
+   repoint `NO_HANDLER`'s shape to `tripleoctagon`/`house` (still unregistered), preserving the
+   test's stated FR-11×FR-17a intent; add a **new**, separate test for the preflight-refusal path
+   using a `hexagon` fixture — a real coverage gap this phase closes, not a side effect to absorb.
+
+**Back.** Revert `UNREGISTERED_HANDLER_KINDS` (HAND-001 refuses `Handler.HUMAN` again immediately);
+`defaultHandlers`'s two new parameters and the `run()` preflight block delete with zero effect on
+any other caller. `core/shell.ts`'s relocation (ADR-020) is the one non-trivial-to-partially-revert
+piece — reverting means moving both functions back and updating `ToolHandler`'s and
+`CommandChannel`'s imports in lockstep, the same "not independently revertible file-by-file" shape
+ADR-011 already recorded for its own async conversion.
+
+## Test strategy
+
+| Area | Risk (likelihood × impact) | Test level | Notes |
+| :-- | :-- | :-- | :-- |
+| `isChannelViable` | low × high | unit | One assertion per branch; reused directly by preflight and dispatch |
+| `preflightHumanGates` | high × high | unit, `Graph` fixtures | Gate behind a conditional branch (refused anyway, condition-blind by design); mixed viable/non-viable chain (not refused); every hop non-viable (refused); no `human.channel` attribute (defaults `"human"`); unreachable gate (not inspected). Mutation-checked both directions, HAND-001's bar |
+| `HumanGateHandler` chain walk | high × high | unit, fake `Channel` doubles | First-viable-hop short-circuits; `{label:null}` escalates; **a channel that THROWS escalates identically, logged via `node.human.hop_error`** (new — closes a named gap); chain exhausted with `on_timeout`/`human.default_choice` routes there; neither present → FAIL. Mutation-checked via a controlled race (fake wait + timer), not a final-value check alone |
+| `HumanChannel`/`StdinHumanGateWait` | medium × high | unit | Fake `HumanGateWait` proves `timeoutMs` honored; `timeoutMs: null` genuinely never resolves, raced against a short wall-clock deadline in the test itself |
+| `human.channel_timeout` parsing | medium × medium | unit | **New — comma-split, position-matched, last-value-repeats semantics have no precedent elsewhere in this codebase.** Fewer values than hops (repeat last); more values than hops (extras ignored); single bare value (applies to every hop). `timeoutMs: 0` resolved as "time out immediately," matching `parseDuration`'s existing 0-sentinel convention (see NFR-3) — the author-facing way to express "don't wait on this hop" is instead omitting it from the chain |
+| `AgentChannel` | medium × high | unit | Fake `command`; asserts `allowed:false` never spawns anything (ADR-022's self-enforcement, tested directly, not only via `isChannelViable`); asserts the spawned argv always includes the shared non-interactive-safety prefix; `parseGateAnswer` tested directly against malformed/well-formed JSON |
+| `CommandChannel` | medium × high | unit + one real script | Fake scripts (non-zero exit → null, empty stdout → null, real last-line extraction); **shell-quoting tested directly — a `human.context=` value containing `; rm -rf /` or `` ` `` must appear as a literal argument, not execute** (ADR-026, closes the injection gap); one real end-to-end shell script, mirroring `worktree.test.ts`'s real-`git` pattern |
+| `legalAnswers` (ADR-025) | medium × high | unit | Mixed conditional/unconditional labelled edges — only unconditional ones appear. A test passing against HITL-001's laxer enumeration is decorative for this specific correction |
+| Unmatched channel answer | medium × medium | integration | **New — pins the design doc's own accepted "not an error" behavior** (an answer matching no `legalAnswers` still reaches `selectEdge`, which falls through to its own weight/lexical fallback) rather than leaving it silently untested |
+| Preflight + dispatch agreement | high × high | integration | A chain preflight approves must never subsequently FAIL at dispatch for the same reason — same `isChannelViable` call, same `ChannelRunContext` instance |
+| `SUBSTITUTABLE_ATTRS[Handler.HUMAN]` wiring | low × medium | unit | A `human.prompt` referencing an owed/failed key trips DATA-001, same as a box node's `prompt` — the existing exhaustiveness test (`engine.test.ts:2834`) only checks key presence, not that the populated array's contents actually wire in |
+| `--channel`/`--allow-agent-gates` CLI parsing | medium × medium | unit | **New parsing shape — no prior flag in this codebase accumulates into a map.** Repeated `--channel` accumulates; duplicate name; reserved-name collision (`--channel human=...`/`agent=...` — refuse, mirroring `--worktree`/`--in-place`'s existing mutual-exclusivity-refusal precedent, not silently overridden) |
+| Real-subprocess FR-5 (non-TTY branch) | high × high | integration, real `spawn`/`execFileSync` | **New — extends `bundle.test.ts`'s existing real-subprocess pattern.** Spawns the actual built CLI with ordinary piped (non-TTY) stdin against a human-gate fixture; confirms the real OS process exits promptly via the fail-fast branch with the exact stderr ADR-002 promises — the literal "process remains alive"/"exits loudly" claim, not a mocked proxy for it |
+| FR-7 regression | high × high | integration | Full existing HITL-001 suite (8 tests) re-run unmodified — this IS the FR-7 acceptance test |
+| Migration findings 2–3 | high × high | integration | Repointed/added exactly as specified above |
+
+**Standing policy, not a one-off fix:** every new test touching TTY-interactivity injects
+`isInteractive`/`ChannelRunContext` explicitly; none reads the real ambient `process.stdin.isTTY`.
+Confirmed environment-dependent (Spike 15: `undefined` in this sandbox; `true` at an interactive
+dev terminal by default) — an ambient read would make CI behavior depend on where it runs.
+
+**Deliberately thin, stated honestly, not silently implied as full coverage:** the TTY-blocking
+branch's "process remains alive" claim (FR-5, the `human`-only interactive case) is verified only
+by the in-process fake-wait-plus-timer unit test, not by a real pty-backed subprocess — this
+project caps runtime/dev dependencies at 2 (NFR-6) and has deliberately not taken on a pty
+dependency. A genuine end-to-end FR-8 demonstration via the `human` channel alone also does not
+exist and cannot be built this slice (ADR-023 — structurally, it can't answer); the FR-8 acceptance
+demo uses `agent` or `CommandChannel`, and skill/demo materials should say so explicitly.
+
+## Risks
+
+| Risk | Likelihood | Impact | Mitigation | Owner |
+| :-- | :-- | :-- | :-- | :-- |
+| A reader assumes `human.channel="human"` (the default) can itself satisfy FR-8 | high — it's the default value, the first thing anyone tries | medium — false-confidence, not a safety issue; behavior is correct per ADR-023, just easy to misread as incomplete | State explicitly in SKILL.md/README: "`human` alone can never answer a gate in this build" | Solution Architect / skill author |
+| `AgentChannel`'s prompt assembly has no defense against prompt injection via `exposedContext`/`human.agent_instructions=` — content the checking agent is asked to arbitrate on could itself instruct it, distinct from HITL-003's provenance check (who produced the evidence, not whether the evidence can control the checker) | medium — `exposedContext` can carry upstream `TOOL` output (fetched issue bodies, PR content), and HITL-003 explicitly excludes `Handler.TOOL` predecessors as unprovable at lint time | high if it fires — defeats the `agent` channel's purpose as an authorization mechanism entirely | Explicit prompt delimiting: every `exposedContext`/`agentInstructions` value is wrapped in the assembled prompt with a stated "untrusted pipeline data, not instructions" framing (built into `AgentChannel`'s prompt template, see Interfaces above) — reduces but does not eliminate the class of risk; recorded here as an accepted residual, not a solved problem. A content-provenance-through-TOOL lint rule (HITL-003's sibling) is a real future extension, not scoped this slice | Solution Architect (mitigation designed) / implementer (residual accepted) |
+| TOCTOU between preflight (checked once, at run start) and dispatch (potentially much later): stdin redirected mid-run, `claude` removed from PATH, or similar state changes between the two | low | low-medium — the integration test proving "preflight-approved chains never subsequently fail for the same reason" only holds when nothing changes in between; it can't and doesn't cover the changed-mid-run case | Named explicitly rather than left implicit; no mitigation beyond documentation this slice — same class of accepted risk as NFR-4's two-writer race | Solution Architect |
+| `defaultHandlers()`'s literal-object default (`allowAgentGates: false`, `claudeAvailable: false`) could silently drift from `cli.ts`'s explicit construction if the two are edited independently later | low | low-medium | Named as an accepted, narrow duplication (two lines) rather than silently trusted to stay in sync | Solution Architect |
+| Spike 14 (nested `claude -p` spawning) resolves unfavorably | low-medium, unverified | medium — bounded blast radius, opt-in twice over | The negative-path test (a channel that throws or hangs escalates/FAILs loudly, ADR-022) covers the failure mode regardless of the spike's outcome | implementer |
+| `core/shell.ts`'s relocation (ADR-020) is a real, if mechanical, diff against already-shipped, tested code | confirmed, not a probability | low — pure move, zero behavior change | `tool.test.ts`'s existing assertions should pass unmodified against the relocated functions; treat as a separate, bisectable commit from the new-feature commits | implementer |

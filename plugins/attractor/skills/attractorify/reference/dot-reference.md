@@ -10,8 +10,11 @@ Quick reference for authoring `attractor` DOT pipelines on **this engine** — n
 
 ## Node shapes → handlers
 
-Six handlers this build registers (`core/engine.ts`'s `defaultHandlers()`) — these are
-the only shapes an authored graph may use:
+Seven handlers this build registers (`core/engine.ts`'s `defaultHandlers()`) — these are
+the only shapes an authored graph may use. `hexagon`/`human` was unregistered when this
+file was first ported (S7); it registered in Phase 2 (FR-5-8, 2026-08-11) and is now a
+real, usable node kind — see `08-human-gate.dot` for a worked example and
+`.superpowers/specs/2026-08-05-human-gate-channels-design.md` for the full channel design.
 
 | Shape | Handler | Purpose |
 | :-- | :-- | :-- |
@@ -21,20 +24,44 @@ the only shapes an authored graph may use:
 | `parallelogram` | `tool` | Shell command; routes on exit code and last stdout line (`tool.last_line`) |
 | `diamond` | `conditional` | No-op handler — routing is done entirely by edge `condition=`, same mechanism as any other node |
 | `component` | `parallel` | Fan-out — every outgoing edge is a branch, run concurrently (see `pipeline-patterns.md` and the ported `05-parallel-fan-out.dot` example) |
+| `hexagon` | `human` | A human-approval checkpoint. Blocks (real TTY) or delegates to an `agent`/`CommandChannel` per `human.channel=`; routes on the answered label exactly like any other node's `preferredLabel`. See "Human-gate node attributes" below and `08-human-gate.dot` |
 
-Three more shapes exist in the DOT vocabulary and are correctly **parsed**, but resolve
+Two more shapes exist in the DOT vocabulary and are correctly **parsed**, but resolve
 to a handler this build does not register — `attractor lint` refuses any graph using one
 of them (`HAND-001`, ERROR), before a run ever starts:
 
 | Shape | Would-be handler | Status |
 | :-- | :-- | :-- |
-| `hexagon` | `human` | refused — `Handler.HUMAN` unregistered |
 | `tripleoctagon` | `fan_in` | refused — `Handler.FAN_IN` unregistered. Use an ordinary `box` or `parallelogram` node as a `component` node's convergence point instead — this engine's default join policy already fails the fan-out when every branch fails, no separate fan-in node required |
 | `house` | `manager_loop` | refused — `Handler.MANAGER_LOOP` unregistered |
 
-**Do not design a graph around any of the three refused shapes.** Source of truth:
+**Do not design a graph around either refused shape.** Source of truth:
 `SHAPE_TO_HANDLER` in `engine/src/dot/graph.ts`, cross-checked against
 `defaultHandlers()` in `engine/src/core/engine.ts`.
+
+## Human-gate node attributes (`hexagon`/`Handler.HUMAN`)
+
+```dot
+gate [
+    shape=hexagon,
+    prompt="Approve this change?",       // or human.prompt=/human.label= -- same
+                                           // fallback chain box nodes use (prompt||label)
+    human.channel="human,agent",          // comma-separated chain, tried in order. Default: "human"
+    human.channel_timeout="30s",          // per-hop duration (parseDuration syntax); comma-list
+                                           // position-matches the chain, last value repeats
+    human.context="tool.last_line",       // context keys exposed to the channel (only if present)
+    human.agent_instructions="be strict"  // agent channel only -- author guidance text
+]
+gate -> ship   [label="approve"]          // unconditional edges are this gate's legalAnswers
+gate -> revise [label="reject"]
+```
+
+**The `human` channel alone can never answer a gate in this build** — it blocks on a real
+TTY and has no code path that produces a real label (see the channels design doc's own
+§2). Answering a gate needs `agent` (`--allow-agent-gates`, two-key opt-in: the flag AND
+`human.channel` naming `agent`) or an operator-supplied `--channel name=command`. A
+reachable gate with no viable channel for the current invocation is refused before any
+node dispatches (preflight), not discovered by hanging.
 
 **Amplifier also has a `folder`/`pipeline` shape (nested sub-pipeline via `dot_file=`)
 and `stack.steer`/`stack.observe` pseudo-types.** Neither exists on this engine at all —

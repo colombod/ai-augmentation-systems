@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { verifyRun, cliMain } from '../../skills/attractorify/verify-run.ts'
@@ -110,6 +110,76 @@ test('the CLI wrapper accepts --cwd and passes it through', () =>
     writeFileSync(graphPath, VALID, 'utf8')
 
     const code = await cliMain([graphPath, '--run-dir', runDir, '--cwd', cwd, '--stub'])
+
+    assert.equal(code, 0)
+  }))
+
+// Phase 2 (FR-5-8) registered Handler.HUMAN, and 08-human-gate.dot exercises it via a
+// CommandChannel -- verify-run.ts's own default ChannelRunContext (no --channel support
+// at all) made every human gate's chain unconditionally non-viable, so the delegated
+// execution-verification harness (FR-13, this file's whole reason to exist) could
+// never actually verify a human-gate graph. Found the same way p6-07's cwd gap was:
+// by actually trying to verify the new example through this harness, not by inspection.
+const HUMAN_GATE = `
+digraph HG {
+  start [shape=Mdiamond]
+  done  [shape=Msquare]
+  gate  [shape=hexagon, human.channel="mock_approval", prompt="approve?"]
+  gate -> done [label="ok"]
+  start -> gate
+}
+`
+
+function mockApprovalScript(cwd: string): string {
+  const path = join(cwd, 'mock-approval.sh')
+  writeFileSync(path, '#!/bin/sh\nprintf ok\n', 'utf8')
+  chmodSync(path, 0o755)
+  return path
+}
+
+test('verifyRun with no channel configured correctly resolves a human-gate graph to status=fail, not a crash or a false success', () =>
+  withTemp(async (runDir, cwd) => {
+    const graphPath = join(cwd, 'gate.dot')
+    writeFileSync(graphPath, HUMAN_GATE, 'utf8')
+
+    const result = await verifyRun(graphPath, { runDir, cwd, stub: true })
+
+    // Preflight refusal is a real RunResult (status=fail), not a "never ran" case like
+    // a lint refusal -- harnessOk stays true (verification itself completed correctly;
+    // see this file's own doc comment on what harnessOk means), matching every other
+    // FAIL RunResult this harness already treats as a successful verification of a
+    // graph that fails.
+    assert.equal(result.harnessOk, true)
+    assert.match(result.output, /^VERIFIED: status=fail path=/m)
+  }))
+
+test('verifyRun accepts channelCommands and can verify a human-gate graph end to end', () =>
+  withTemp(async (runDir, cwd) => {
+    const graphPath = join(cwd, 'gate.dot')
+    writeFileSync(graphPath, HUMAN_GATE, 'utf8')
+    const script = mockApprovalScript(cwd)
+
+    const result = await verifyRun(graphPath, {
+      runDir,
+      cwd,
+      stub: true,
+      channelCommands: { mock_approval: script },
+    })
+
+    assert.equal(result.harnessOk, true)
+    assert.match(result.output, /^VERIFIED: status=success path=start,gate,done/m)
+  }))
+
+test('the CLI wrapper accepts --channel and --allow-agent-gates', () =>
+  withTemp(async (runDir, cwd) => {
+    const graphPath = join(cwd, 'gate.dot')
+    writeFileSync(graphPath, HUMAN_GATE, 'utf8')
+    const script = mockApprovalScript(cwd)
+
+    const code = await cliMain([
+      graphPath, '--run-dir', runDir, '--cwd', cwd, '--stub',
+      '--channel', `mock_approval=${script}`,
+    ])
 
     assert.equal(code, 0)
   }))

@@ -26,6 +26,10 @@ import { type Backend, type BranchRunOptions, type BranchRunResult, type Handler
 import { ToolHandler } from '../handlers/tool.ts'
 import { BoxHandler } from '../handlers/box.ts'
 import { ParallelHandler } from '../handlers/parallel.ts'
+import { HumanGateHandler } from '../handlers/human.ts'
+import { type Channel, type ChannelRunContext } from '../channels/types.ts'
+import { defaultChannels } from '../channels/defaults.ts'
+import { preflightHumanGates } from '../channels/preflight.ts'
 
 export { PASSTHROUGH_KINDS, RunsOn, RUNS_ON_MODES, runsOn }
 export type { RunsOnMode }
@@ -38,6 +42,10 @@ export interface EngineOptions {
   handlers: Map<HandlerKind, Handler>
   maxSteps?: number
   runId?: string
+  /** Optional -- defaults to defaultChannels() if omitted (ADR-024). */
+  channels?: ReadonlyMap<string, Channel>
+  /** Optional -- defaults to a safe, non-interactive, non-agent-gate context (ADR-024). */
+  channelRunContext?: ChannelRunContext
 }
 
 export interface RunResult {
@@ -102,13 +110,32 @@ class PassthroughHandler implements Handler {
   }
 }
 
-export function defaultHandlers(backend: Backend): Map<HandlerKind, Handler> {
+/**
+ * channels/channelRunContext are optional, defaulting to defaultChannels() and a
+ * literal, zero-I/O-by-default ChannelRunContext (ADR-024) -- 47 existing call sites
+ * across the test suite and verify-run.ts, none exercising Handler.HUMAN, would
+ * otherwise need a mechanical edit for zero behavioral benefit. Handler.HUMAN is
+ * always present in the returned Map regardless of these arguments -- only a given
+ * gate's runtime VIABILITY varies by configuration, never whether the kind exists at
+ * all, matching Handler.PARALLEL's own unconditional-registration precedent.
+ */
+export function defaultHandlers(
+  backend: Backend,
+  channels: ReadonlyMap<string, Channel> = defaultChannels(),
+  channelRunContext: ChannelRunContext = {
+    isInteractive: Boolean(process.stdin.isTTY),
+    allowAgentGates: false,
+    claudeAvailable: false,
+    configuredNames: new Set(['human', 'agent']),
+  },
+): Map<HandlerKind, Handler> {
   const passthrough = new PassthroughHandler()
   return new Map<HandlerKind, Handler>([
     ...PASSTHROUGH_KINDS.map((kind) => [kind, passthrough] as [HandlerKind, Handler]),
     [Kind.TOOL, new ToolHandler()],
     [Kind.CODERGEN, new BoxHandler(backend)],
     [Kind.PARALLEL, new ParallelHandler()],
+    [Kind.HUMAN, new HumanGateHandler(channels, channelRunContext)],
   ])
 }
 
@@ -980,6 +1007,27 @@ export class Engine {
         .map((d) => `${d.code}${d.node ? ` (${d.node})` : ''}: ${d.message}`)
         .join('; ')
       const msg = `graph carries error-severity lint diagnostics and will not run: ${detail}`
+      this.events.append({ type: 'pipeline.end', status: Status.FAIL })
+      return this.result(Status.FAIL, msg, msg)
+    }
+
+    // Not a lint()-time check -- whether a gate's chain is viable depends on THIS
+    // run's actual attendance (TTY, --allow-agent-gates, --channel), which pure
+    // static lint() has no access to. Same "refuse before anything executes"
+    // principle as the block above, applied with run-time context lint doesn't have.
+    const channels = this.opts.channels ?? defaultChannels()
+    const channelRunContext = this.opts.channelRunContext ?? {
+      isInteractive: Boolean(process.stdin.isTTY),
+      allowAgentGates: false,
+      claudeAvailable: false,
+      configuredNames: new Set(['human', 'agent']),
+    }
+    const gateDiagnostics = preflightHumanGates(graph, channels, channelRunContext)
+    if (gateDiagnostics.length > 0) {
+      const detail = gateDiagnostics
+        .map((d) => `${d.node} (chain: ${d.chain.join(',')}) -- ${d.reasons.join('; ')}`)
+        .join(' | ')
+      const msg = `graph has a reachable human gate with no viable channel this run: ${detail}`
       this.events.append({ type: 'pipeline.end', status: Status.FAIL })
       return this.result(Status.FAIL, msg, msg)
     }

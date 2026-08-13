@@ -14,14 +14,20 @@ export interface ClaudeBackendOptions extends ArgvOptions {
   threads?: ThreadStore
 }
 
-interface SpawnResult {
+export interface SpawnResult {
   code: number
   stdout: string
   stderr: string
   failure?: string
 }
 
-function runProcess(
+/**
+ * Exported (was module-private) so channels/agent.ts (ADR-022) can reuse this exact
+ * subprocess-spawning machinery for its own claude -p invocation, rather than
+ * re-implementing it a third time (handlers/box.ts's ClaudeCodeBackend is the second).
+ * Zero body change.
+ */
+export function runProcess(
   command: string,
   argv: string[],
   prompt: string,

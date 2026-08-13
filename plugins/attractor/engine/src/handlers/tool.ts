@@ -1,43 +1,10 @@
-import { spawn } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseDuration } from '../core/duration.ts'
 import { Status, type Outcome } from '../core/outcome.ts'
 import { substitute } from '../core/substitute.ts'
+import { runShell, lastNonEmptyLine } from '../core/shell.ts'
 import { type Handler, type HandlerCtx } from './types.ts'
-
-interface ShellResult {
-  code: number
-  stdout: string
-  stderr: string
-}
-
-function runShell(command: string, cwd: string, timeoutMs: number): Promise<ShellResult> {
-  return new Promise((resolve) => {
-    const child = spawn('sh', ['-c', command], { cwd })
-    let stdout = ''
-    let stderr = ''
-    let timer: NodeJS.Timeout | undefined
-
-    if (timeoutMs > 0) {
-      timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
-    }
-    child.stdout.on('data', (d: Buffer) => {
-      stdout += d.toString()
-    })
-    child.stderr.on('data', (d: Buffer) => {
-      stderr += d.toString()
-    })
-    child.on('close', (code) => {
-      if (timer) clearTimeout(timer)
-      resolve({ code: code ?? 1, stdout, stderr })
-    })
-    child.on('error', (err) => {
-      if (timer) clearTimeout(timer)
-      resolve({ code: 1, stdout, stderr: `${stderr}${String(err)}` })
-    })
-  })
-}
 
 /**
  * Context keys this handler writes on SUCCESS. Exported so `dot/graph.ts`'s
@@ -65,11 +32,6 @@ function runShell(command: string, cwd: string, timeoutMs: number): Promise<Shel
  * branch to FAIL and goes no further. The spec defines no such key.
  */
 export const TOOL_OUTPUT_KEYS: readonly string[] = ['tool.last_line', 'tool.output']
-
-function lastNonEmptyLine(text: string): string {
-  const lines = text.split('\n').filter((l) => l.trim() !== '')
-  return lines.length > 0 ? lines[lines.length - 1].trim() : ''
-}
 
 /**
  * Executes a `parallelogram` node: a deterministic shell command whose exit

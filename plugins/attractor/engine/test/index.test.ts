@@ -14,6 +14,13 @@ import {
   StubBackend,
   EventLog,
   Status,
+  defaultChannels,
+  CommandChannel,
+  HumanGateHandler,
+  type Channel,
+  type HumanGateContext,
+  type ChannelAnswer,
+  type ChannelRunContext,
 } from '../src/index.ts'
 
 // p6-01: the library entry point must be sufficient on its own -- no import in this
@@ -56,13 +63,40 @@ test('index.ts exports a lint-and-run surface sufficient to execute a graph end 
   }
 })
 
-test('index.ts exports Handler with the six registered kinds available for graph authoring', () => {
+test('index.ts exports Handler with the seven registered kinds available for graph authoring', () => {
+  // Was "the six registered kinds" before p2-08 registered Handler.HUMAN --
+  // FR-14's "six-registered-handlers constraint" (S7's dot-reference.md,
+  // attractor-expert agent, attractorify/SKILL.md) needs revisiting to match;
+  // tracked separately, not fixed here (this test only pins index.ts's own
+  // exports).
   assert.equal(Handler.START, 'start')
   assert.equal(Handler.EXIT, 'exit')
   assert.equal(Handler.CONDITIONAL, 'conditional')
   assert.equal(Handler.TOOL, 'tool')
   assert.equal(Handler.CODERGEN, 'codergen')
   assert.equal(Handler.PARALLEL, 'parallel')
+  assert.equal(Handler.HUMAN, 'human')
+})
+
+test('index.ts exports the human-gate channel surface: Channel, HumanGateContext, ChannelAnswer, ChannelRunContext, defaultChannels, CommandChannel, HumanGateHandler', async () => {
+  const channels = defaultChannels()
+  assert.ok(channels.get('human') !== undefined)
+  assert.ok(channels.get('agent') !== undefined)
+
+  const command = new CommandChannel('printf ok')
+  const ctx: HumanGateContext = { nodeId: 'g', label: 'x', legalAnswers: [], exposedContext: {} }
+  const answer: ChannelAnswer = await command.answer(ctx, null)
+  assert.equal(answer.label, 'ok')
+
+  const runContext: ChannelRunContext = {
+    isInteractive: false,
+    allowAgentGates: false,
+    claudeAvailable: false,
+    configuredNames: new Set(['human', 'agent']),
+  }
+  const fakeChannels: ReadonlyMap<string, Channel> = new Map([['human', channels.get('human') as Channel]])
+  const handler = new HumanGateHandler(fakeChannels, runContext)
+  assert.ok(handler instanceof HumanGateHandler)
 })
 
 test('a lint-dirty graph is reported by the same lint() this index re-exports', () => {
