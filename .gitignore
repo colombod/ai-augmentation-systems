@@ -14,3 +14,8 @@ package-lock.json
 # Durable records live under plugins/<name>/.superpowers/. Three task reports were
 # committed by accident because several agents assumed this path was already ignored.
 /.superpowers/
+
+# bd (beads) local issue-tracker state: embedded Dolt database, hooks, local config.
+# Never committed as regular files -- issue data syncs via `bd dolt push`/`pull`
+# against a separate refs/dolt/data ref on this same remote, not normal git commits.
+.beads/
