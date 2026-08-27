@@ -394,6 +394,87 @@ function enforceEvidenceRules(
   return null;
 }
 
+// ---------------------------------------------------------------- record_lens_error
+// A broken verification attempt must be distinguishable from a claim nobody
+// looked at yet. Never a verdict; never touches aggregate/adverse_state_test.
+
+export function opRecordLensError(input: {
+  run_id?: string;
+  claim_id?: string;
+  lens?: string;
+  error?: string;
+}): OpResult {
+  const found = requireRun(input.run_id);
+  if (!isRun(found)) return found;
+  const claim = requireClaim(found, input.claim_id);
+  if (!isClaim(claim)) return claim;
+  if (typeof input.lens !== "string" || input.lens === "") {
+    return err("invalid_input", "lens is required");
+  }
+  if (typeof input.error !== "string" || input.error === "") {
+    return err("invalid_input", "error is required");
+  }
+  const lensError = { lens: input.lens, error: input.error, recorded_at: now() };
+  claim.lens_errors.push(lensError);
+  saveRun(found);
+  return { ok: true, claim_id: claim.claim_id, run_id: found.run_id, lens: input.lens, lens_error: lensError };
+}
+
+// ---------------------------------------------------------------- record_debate
+
+export function opRecordDebate(input: {
+  run_id?: string;
+  round?: unknown;
+  to_lens?: string;
+  relayed_payload?: string;
+  from_lenses?: unknown;
+}): OpResult {
+  const found = requireRun(input.run_id);
+  if (!isRun(found)) return found;
+  if (typeof input.round !== "number") return err("invalid_input", "round must be a number");
+  if (typeof input.to_lens !== "string" || input.to_lens === "") {
+    return err("invalid_input", "to_lens is required");
+  }
+  if (typeof input.relayed_payload !== "string" || input.relayed_payload === "") {
+    return err("invalid_input", "relayed_payload is required");
+  }
+  const fromLenses = Array.isArray(input.from_lenses)
+    ? (input.from_lenses as string[]).filter((l) => typeof l === "string")
+    : [];
+  found.debate.push({
+    round: input.round,
+    to_lens: input.to_lens,
+    relayed_payload: input.relayed_payload,
+    from_lenses: fromLenses,
+    recorded_at: now(),
+  });
+  saveRun(found);
+  return { ok: true, round: input.round, to_lens: input.to_lens };
+}
+
+// ---------------------------------------------------------------- waive
+
+export function opWaive(input: {
+  run_id?: string;
+  claim_id?: string;
+  by?: string;
+  reason?: string;
+}): OpResult {
+  const found = requireRun(input.run_id);
+  if (!isRun(found)) return found;
+  const claim = requireClaim(found, input.claim_id);
+  if (!isClaim(claim)) return claim;
+  if (typeof input.by !== "string" || input.by === "") {
+    return err("invalid_input", "by is required — a waiver is a named human decision");
+  }
+  if (typeof input.reason !== "string" || input.reason === "") {
+    return err("invalid_input", "reason is required");
+  }
+  claim.waiver = { by: input.by, reason: input.reason, at: now() };
+  saveRun(found);
+  return { ok: true, claim_id: claim.claim_id, waiver: claim.waiver };
+}
+
 // ---------------------------------------------------------------- guard marker
 
 export function opActivateGuard(_input: Record<string, never>): OpResult {
