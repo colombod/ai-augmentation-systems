@@ -110,7 +110,11 @@ blank cell someone could mistake for "invoked" by skimming past it:
   different from **Not-invoked**: something real happened and was seen. It is also the
   observer's own health signal — a run of ambiguous lines means sessions are being launched
   from a cwd the resolver cannot settle, which is how the 2026-08-10..14 blackout happened
-  before these records existed; say so and name the cwd fix.
+  before these records existed; say so and name the cwd fix. **One call, one identity:**
+  an ambiguous record is deliberately duplicated into every candidate ledger, so
+  `tool_use_id` is the identity of a governed call — never count the same `tool_use_id`
+  twice across ledgers, and never let one ambiguous line upgrade artifacts in more than
+  one project as if it were two calls.
 
 **History is preserved, not overwritten.** An artifact once flagged not-invoked, later
 re-produced by a real invocation, reports as **Invoked** now — but the report also notes
