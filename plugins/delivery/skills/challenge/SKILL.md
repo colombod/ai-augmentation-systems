@@ -1,8 +1,16 @@
 ---
 description: Run an adversarial review panel against any pipeline artifact — brief, research, personas, PRD, prioritisation, design, architecture, roadmap or stories — and record ranked findings with tracked status. Use before committing to any artifact. Read-only; findings must be resolved or explicitly rejected, not silently dropped.
+argument-hint: "[artifact-path]"
 ---
 
 # Adversarial challenge
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Target: **$ARGUMENTS** (an artifact path, or a phase name; defaults to the most recently written artifact)
 

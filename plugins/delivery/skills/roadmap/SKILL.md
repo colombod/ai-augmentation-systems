@@ -1,8 +1,16 @@
 ---
 description: Build a phased delivery roadmap with sequencing, dependencies, critical path, risks and per-phase cut lists. Use once the PRD and architecture exist and you need to know what lands when and in what order. Produces .delivery/initiatives/<initiative>/roadmap.md.
+argument-hint: "[initiative]"
 ---
 
 # Delivery roadmap
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Constraints from user (deadlines, team size, fixed dates): **$ARGUMENTS**
 

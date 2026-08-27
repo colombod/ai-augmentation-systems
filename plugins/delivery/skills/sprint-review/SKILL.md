@@ -1,8 +1,16 @@
 ---
 description: Assess acceptance of a completed sprint — criteria actually met, design system conformance, persona journeys now possible, and what the wave taught. Use after /delivery:sprint. Produces an acceptance verdict and feeds the next planning cycle.
+argument-hint: "[sprint-or-initiative]"
 ---
 
 # Sprint acceptance review
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Sprint: **$ARGUMENTS** (defaults to the most recent sprint log)
 

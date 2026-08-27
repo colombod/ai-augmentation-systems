@@ -1,8 +1,16 @@
 ---
 description: Walk end-user personas step by step through a journey — an existing product, a proposed flow, or a live site — to find where they get stuck, confused, or leave. Produces a friction map and per-step value data that feeds MVP staging. Use after personas exist. Produces .delivery/simulations/.
+argument-hint: "[journey-or-initiative]"
 ---
 
 # Journey simulation
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Journey to simulate: **$ARGUMENTS** (defaults to the primary scenario in the brief or PRD)
 

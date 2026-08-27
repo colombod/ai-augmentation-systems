@@ -2,6 +2,8 @@
 
 This file provides instructions and context for AI coding agents working on this project.
 
+@AGENTS.md
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
 ## Beads Issue Tracker
 
@@ -60,18 +62,11 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 ## Build & Test
 
-_Add your build and test commands here_
-
 ```bash
-# Example:
-# npm install
-# npm test
+node --test plugins/delivery/hooks/scripts/*.test.js
 ```
 
-## Architecture Overview
+## Architecture & Conventions
 
-_Add a brief overview of your project architecture_
-
-## Conventions & Patterns
-
-_Add your project-specific conventions here_
+Both live in `AGENTS.md`, imported above — repository doctrine, per-plugin structure, and
+the engineering invariants every change must hold. Do not restate them here.

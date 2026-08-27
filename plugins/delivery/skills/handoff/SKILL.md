@@ -1,8 +1,16 @@
 ---
 description: Convert a sprint scope package into the native format of an external implementation runner — superpowers, or a generic self-contained brief. Use after /delivery:sprint to hand work to the system that will actually build it. Writes no source code.
+argument-hint: "[runner]"
 ---
 
 # Hand off to an implementation runner
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Runner: **$ARGUMENTS** (`superpowers` | `generic`; defaults to asking)
 
