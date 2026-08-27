@@ -124,6 +124,20 @@ blank cell someone could mistake for "invoked" by skimming past it:
   twice across ledgers, and never let one ambiguous line upgrade artifacts in more than
   one project as if it were two calls.
 
+**Observer liveness — the canary is you (gy5.6).** This status run was itself invoked
+through the Skill tool, so if the observer is alive, the current session's own ledger
+file (`invocations/<this session_id>.ndjson`, in the resolved root or — ambiguous —
+in every candidate) must contain a line for this very invocation by the time you read
+it. Check it every run: no line and no ambiguous record anywhere means the hook is
+**dead in this session** — unregistered, version-skewed, or broken by a harness upgrade
+(the re-verify-after-upgrade obligation in `record-invocation.js`'s header, exercised
+here on every status run). Report **OBSERVER DOWN** as the first line of the whole
+report — every Invoked/Not-invoked judgment below it is then unreliable and must say so.
+A recording race is possible on the first check; re-read once before concluding. As a
+second, cheaper signal: if the newest ledger line in the project is much older than the
+newest governed artifact's last observed write, say so — that gap is how the
+2026-08-10..14 blackout looked from the outside.
+
 **History is preserved, not overwritten.** An artifact once flagged not-invoked, later
 re-produced by a real invocation, reports as **Invoked** now — but the report also notes
 that an earlier gap existed and when it closed. A retried invocation (an error followed by
