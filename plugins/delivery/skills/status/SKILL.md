@@ -92,7 +92,15 @@ Gather table above, report one of four states, as a distinct, scannable marker �
 blank cell someone could mistake for "invoked" by skimming past it:
 
 - **Invoked** — a ledger line exists recording a real tool call that produced this artifact.
-  A line carrying `"attribution": "ambiguous"` does **not** qualify — see the fourth state.
+  The strongest form is an `artifact_write` line (ADR-015) whose `artifact` path matches
+  this file exactly — that is per-version provenance: if the file's current sha256 equals
+  the latest such line's `content_hash`, the artifact is **version-traceable**; if it
+  differs and no later line exists, report **modified after last observed write** (a real
+  edit happened outside observation — say so, don't round it to Invoked or Not-invoked).
+  Skill/Agent lines are phase-level evidence only. A `record_type: "backfill"` line counts
+  as **Invoked (backfilled)** — cite its `evidence` field, never report it as plain
+  Invoked. A line carrying `"attribution": "ambiguous"` does **not** qualify — see the
+  fourth state.
 - **Not-invoked** — the artifact's file exists (or was claimed as produced), but no matching
   ledger line exists anywhere in this project's invocation history. This is the state that
   catches narration standing in for a real step — report it even when the file itself looks

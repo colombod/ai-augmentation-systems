@@ -32,6 +32,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const DOWNWARD_SEARCH_MAX_DEPTH = 4;
 const DOWNWARD_SEARCH_SKIP_DIRS = new Set([
@@ -199,8 +200,72 @@ function sessionLedgerHasAttributedLine(deliveryRoot, sessionId) {
   return false;
 }
 
+
+// gy5.3 — per-artifact-version provenance. A Skill/Agent line proves a phase
+// ran; it cannot say which artifact version it produced. An observed Write/Edit
+// into a .delivery/ tree can: the artifact's own path picks its root by walking
+// upward (no cwd ambiguity exists for this class, by construction), and a
+// sha256 of the file as it exists after the successful write binds the ledger
+// line to one version. Edits after an invocation are therefore not a provenance
+// hole: an in-session edit appends a new version line; an out-of-session edit
+// leaves the file's hash matching no line, which /delivery:status reports as
+// modified-after-observation (OQ-6, context-management brief r2).
+//
+// Deliberate exclusions: writes outside any .delivery tree (not governed),
+// writes into invocations/ itself (the ledger must not observe itself), and
+// PostToolUseFailure (a failed write changed no version). Only file_path is
+// read from tool_input — the whitelist constraint above holds; the hash is
+// computed from the file on disk, never from tool_input content.
+const ARTIFACT_WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
+
+function recordArtifactWrite(payload) {
+  if (payload.hook_event_name !== 'PostToolUse') return null;
+  const input = payload.tool_input;
+  const filePath = input && typeof input === 'object' ? input.file_path : null;
+  if (!filePath || typeof filePath !== 'string') return null;
+
+  const deliveryRoot = findDeliveryRootUpward(path.dirname(filePath));
+  if (!deliveryRoot) return null;
+  const rel = path.relative(deliveryRoot, filePath);
+  if (rel.startsWith('..') || rel.split(path.sep)[0] === 'invocations') return null;
+
+  let contentHash = null;
+  try {
+    contentHash = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  } catch (err) {
+    return null; // file not readable after a "successful" write — nothing truthful to record
+  }
+
+  const sessionId = payload.session_id || 'unknown-session';
+  const record = {
+    ts: new Date().toISOString(),
+    session_id: payload.session_id || null,
+    hook_event: payload.hook_event_name || null,
+    record_type: 'artifact_write',
+    tool_name: payload.tool_name || null,
+    artifact: rel,
+    content_hash: contentHash,
+    tool_use_id: payload.tool_use_id || null,
+    outcome: 'success',
+    cwd: payload.cwd || null,
+  };
+
+  const ledgerDir = path.join(deliveryRoot, 'invocations');
+  const ledgerPath = path.join(ledgerDir, `${sessionId}.ndjson`);
+  fs.mkdirSync(ledgerDir, { recursive: true });
+  fs.appendFileSync(ledgerPath, JSON.stringify(record) + '\n');
+  return { ledgerPath, record };
+}
+
 function recordInvocation(payload, options) {
   const cwdForResolution = (options && options.cwd) || payload.cwd || process.cwd();
+
+  // Artifact writes are their own governed class (gy5.3) — resolved by the
+  // artifact's path, not the session cwd, so they short-circuit before the
+  // cwd-resolution logic below.
+  if (ARTIFACT_WRITE_TOOLS.has(payload.tool_name)) {
+    return recordArtifactWrite(payload);
+  }
 
   // Governed = Skill/Agent invocations (FR-1-4) or a real capture-tool call
   // (FR-9's channel cross-check). Everything else is ignored even if
@@ -297,6 +362,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  recordArtifactWrite,
   findDeliveryRoot,
   findDeliveryRootUpward,
   findDeliveryRootDownward,

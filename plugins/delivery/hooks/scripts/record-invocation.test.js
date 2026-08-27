@@ -482,3 +482,67 @@ test('recordInvocation: zero candidates anywhere is still a no-op (nothing gover
   );
   assert.equal(result, null);
 });
+
+// --- gy5.3: per-artifact-version provenance via observed artifact writes ---
+// The Skill/Agent lines prove a phase ran; they cannot say which artifact
+// version it produced. Write/Edit calls into a .delivery/ tree can: the
+// artifact's own path picks its root (no cwd ambiguity by construction), and
+// a content hash of the file after the write binds the line to a version.
+
+const crypto = require('node:crypto');
+
+test('recordInvocation: a Write into a .delivery tree records an artifact_write with relative path and content hash', () => {
+  const root = makeScratchProject();
+  const dRoot = path.join(root, 'plugins', 'a', '.delivery');
+  const artifact = path.join(dRoot, 'initiatives', 'x', 'brief.md');
+  fs.mkdirSync(path.dirname(artifact), { recursive: true });
+  fs.writeFileSync(artifact, 'brief body\n');
+
+  const result = recordInvocation(
+    { session_id: 'sess-aw', hook_event_name: 'PostToolUse', tool_name: 'Write',
+      tool_input: { file_path: artifact, content: 'SECRET raw input must not be stored' } },
+    { cwd: root } // ambiguous or irrelevant cwd — the artifact path decides
+  );
+
+  assert.ok(result && result.ledgerPath.includes(path.join('plugins', 'a', '.delivery', 'invocations')));
+  const line = JSON.parse(fs.readFileSync(result.ledgerPath, 'utf8').trim().split('\n').pop());
+  assert.equal(line.record_type, 'artifact_write');
+  assert.equal(line.artifact, path.join('initiatives', 'x', 'brief.md'));
+  assert.equal(line.content_hash, crypto.createHash('sha256').update(fs.readFileSync(artifact)).digest('hex'));
+  assert.ok(!JSON.stringify(line).includes('SECRET'), 'raw tool_input must never be stored');
+});
+
+test('recordInvocation: an Edit to the same artifact appends a second line with the new hash — provenance follows versions', () => {
+  const root = makeScratchProject();
+  const dRoot = path.join(root, '.delivery');
+  const artifact = path.join(dRoot, 'prd.md');
+  fs.mkdirSync(dRoot, { recursive: true });
+
+  fs.writeFileSync(artifact, 'v1\n');
+  recordInvocation({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: artifact } }, { cwd: root });
+  fs.writeFileSync(artifact, 'v2\n');
+  recordInvocation({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: artifact } }, { cwd: root });
+
+  const lines = fs.readFileSync(path.join(dRoot, 'invocations', 's.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(lines.length, 2);
+  assert.notEqual(lines[0].content_hash, lines[1].content_hash);
+  assert.equal(lines[1].content_hash, crypto.createHash('sha256').update('v2\n').digest('hex'));
+});
+
+test('recordInvocation: writes outside any .delivery tree, into invocations/ itself, or failed writes record nothing', () => {
+  const root = makeScratchProject();
+  const dRoot = path.join(root, '.delivery');
+  fs.mkdirSync(path.join(dRoot, 'invocations'), { recursive: true });
+  const outside = path.join(root, 'src', 'index.js');
+  fs.mkdirSync(path.dirname(outside), { recursive: true });
+  fs.writeFileSync(outside, 'code');
+  const ledgerFile = path.join(dRoot, 'invocations', 'other.ndjson');
+  fs.writeFileSync(ledgerFile, '');
+  const artifact = path.join(dRoot, 'brief.md');
+  fs.writeFileSync(artifact, 'x');
+
+  assert.equal(recordInvocation({ session_id: 's2', hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: outside } }, { cwd: root }), null);
+  assert.equal(recordInvocation({ session_id: 's2', hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: ledgerFile } }, { cwd: root }), null);
+  assert.equal(recordInvocation({ session_id: 's2', hook_event_name: 'PostToolUseFailure', tool_name: 'Write', tool_input: { file_path: artifact }, error_message: 'boom' }, { cwd: root }), null);
+  assert.ok(!fs.existsSync(path.join(dRoot, 'invocations', 's2.ndjson')));
+});
