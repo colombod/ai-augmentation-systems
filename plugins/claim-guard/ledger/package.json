@@ -1,0 +1,18 @@
+{
+  "name": "@colombod/claim-ledger",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --banner:js='#!/usr/bin/env node' --outfile=../dist/claim-ledger.js",
+    "build:test": "esbuild src/*.ts --outdir=.build --platform=node --format=esm",
+    "test": "npm run build:test && node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
