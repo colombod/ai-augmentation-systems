@@ -1,0 +1,10 @@
+{
+  "name": "claim-guard",
+  "version": "0.1.0",
+  "description": "Adversarial claim-verification gate for changesets: harvests explicit and implicit claims, fans 7 adversarial lens agents out cold to refute each against the shipped source, and emits an auditable claim-verification matrix with a deterministic BLOCK / PASS / INDETERMINATE verdict computed by a bundled claim_ledger MCP tool. Reviews; never edits the code it reviews.",
+  "author": { "name": "Diego Colombo", "url": "https://github.com/colombod" },
+  "homepage": "https://github.com/colombod/ai-augmentation-systems",
+  "repository": "https://github.com/colombod/ai-augmentation-systems",
+  "license": "MIT",
+  "keywords": ["verification", "adversarial-review", "claims", "pre-merge", "gate", "code-review", "quality"]
+}
