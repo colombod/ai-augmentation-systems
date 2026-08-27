@@ -1,8 +1,16 @@
 ---
 description: Decompose a roadmap phase into self-contained, implementation-ready story files that carry their full context. Use when a phase is about to start and the work needs to be broken into pickable units. Produces .delivery/stories/.
+argument-hint: "[phase-or-initiative]"
 ---
 
 # Story decomposition
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Phase or epic to decompose: **$ARGUMENTS** (defaults to the first phase not yet decomposed)
 

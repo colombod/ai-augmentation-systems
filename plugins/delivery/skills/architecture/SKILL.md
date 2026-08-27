@@ -1,8 +1,16 @@
 ---
 description: Turn an approved PRD into a technical design grounded in the actual codebase, with decisions, spikes, migration plan and test strategy. Use once requirements are settled and before work is broken into stories. Produces .delivery/initiatives/<initiative>/architecture.md.
+argument-hint: "[initiative]"
 ---
 
 # Architecture and technical design
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Focus note from user: **$ARGUMENTS**
 

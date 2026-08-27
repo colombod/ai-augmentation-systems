@@ -1,7 +1,7 @@
 {
   "name": "delivery",
   "description": "You supply intent and a design seed; the plugin runs research, evidence-graded user personas, simulated interviews and journey walks, PRD, MVP staging, design system, architecture, roadmap and stories \u2014 then scopes a sprint, hands it to an external implementation runner (superpowers or your own), independently reviews acceptance, and re-aligns the plan. Plans and reviews; does not build.",
-  "version": "0.13.0",
+  "version": "0.16.0",
   "author": {
     "name": "Diego Colombo",
     "url": "https://github.com/colombod"

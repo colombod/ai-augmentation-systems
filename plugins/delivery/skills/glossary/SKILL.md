@@ -1,8 +1,16 @@
 ---
 description: Establish and curate the project's ubiquitous language — one agreed term per concept, defined in the business's own words, that every document, question and conversation must use. Run early and re-run whenever a new term appears. Produces .delivery/glossary.md.
+argument-hint: "[term-optional]"
 ---
 
 # Ubiquitous language
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Terms or area to curate: **$ARGUMENTS**
 

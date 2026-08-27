@@ -1,8 +1,16 @@
 ---
 description: Turn a design seed — a brand, a feeling, a reference, a colour — into a concrete design system with tokens, component specs, states and accessibility rules that implementation can build against. Use after personas and before architecture. Produces .delivery/initiatives/<initiative>/design-system.md.
+argument-hint: "[design-seed-or-initiative]"
 ---
 
 # Design system
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Design seed from the originator: **$ARGUMENTS**
 

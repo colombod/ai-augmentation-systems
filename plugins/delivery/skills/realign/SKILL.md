@@ -1,8 +1,16 @@
 ---
 description: Fold what a sprint taught back into the plan — update invalidated assumptions, recalibrate estimates, re-stage priorities and adjust the roadmap. Use after /delivery:sprint-review. Closes the loop so the next cycle starts from what is now known.
+argument-hint: "[sprint-or-initiative]"
 ---
 
 # Re-align the plan
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Sprint: **$ARGUMENTS** (defaults to the most recently reviewed sprint)
 

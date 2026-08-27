@@ -1,8 +1,16 @@
 ---
 description: Research the feature space before specifying anything — how others solve this, what the domain requires, what users complain about today, and what the existing codebase already constrains. Use after the brief and before personas. Produces .delivery/initiatives/<initiative>/research.md.
+argument-hint: "[initiative]"
 ---
 
 # Feature research
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Topic: **$ARGUMENTS** (defaults to the feature named in the brief)
 

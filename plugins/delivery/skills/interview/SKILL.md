@@ -1,8 +1,16 @@
 ---
 description: Run simulated interviews with end-user personas about a product, feature or concept, to surface unmet needs and objections before building. Use after personas exist. Output is labelled synthetic — hypotheses to test, never presented as research findings. Produces .delivery/interviews/.
+argument-hint: "[topic-or-initiative]"
 ---
 
 # Persona interviews
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Topic to probe: **$ARGUMENTS** (defaults to the feature in the brief)
 

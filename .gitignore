@@ -20,6 +20,13 @@ package-lock.json
 # against a separate refs/dolt/data ref on this same remote, not normal git commits.
 .beads/
 
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+.claude/worktrees/
+
 # claim-guard ledger build artifacts
 plugins/claim-guard/ledger/.build/
 plugins/claim-guard/ledger/node_modules/

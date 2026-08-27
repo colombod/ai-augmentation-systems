@@ -1,8 +1,16 @@
 ---
 description: Frame a feature idea, or assess an existing product, and produce a brief. Use at the very start — when the idea is still a sentence, or when you need an honest account of what a working product gets wrong today. Produces .delivery/initiatives/<initiative>/brief.md.
+argument-hint: "[subject-or-initiative]"
 ---
 
 # Product brief
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Subject: **$ARGUMENTS**
 

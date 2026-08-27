@@ -41,3 +41,18 @@ not because the persona is currently underserved.
   across a wider operator sample, or is idiosyncratic to one person's two projects.
 - Real usage data on how often this plugin is actually run in a multi-component repo
   (P-3's premise) versus a single-product one.
+- **Added 2026-08-10, attractor-handoff initiative:** whether P-2 (or anyone) actually
+  chooses the `attractor` runner mode over `superpowers`/`generic` at the `/delivery:handoff`
+  decision point — no observed instance exists (that mode didn't exist during either source
+  transcript). Tracked as open review finding `R-brief-7`,
+  `.delivery/reviews/attractor-handoff-01-brief.md`. Neither `/delivery:interview` nor
+  `/delivery:simulate` resolves this — it needs a real choice being made, not a hypothesis
+  walked through.
+
+## Refinement log
+
+- **2026-08-10, attractor-handoff initiative:** P-2 and P-4 refined (not regenerated) —
+  each gained a dated note connecting existing, unchanged evidence to the new feature's
+  hypothesis. No grade changed; grounding mix below is unchanged. No new persona created —
+  a targeted evidence search found nothing justifying a genuinely new segment, and the
+  brief's "same population as the existing two runner modes" claim held under that check.

@@ -1,8 +1,16 @@
 ---
 description: Derive customer and end-user personas grounded in whatever evidence exists, graded by how much evidence there actually is. Use after research and before writing scenarios, so the product is specified against real user segments rather than an imagined average user. Produces .delivery/personas/.
+argument-hint: "[initiative]"
 ---
 
 # End-user personas
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Focus or segment hint: **$ARGUMENTS**
 

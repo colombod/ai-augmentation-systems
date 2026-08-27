@@ -1,8 +1,16 @@
 ---
 description: Report where a product effort stands across the whole pipeline — gates passed, open review findings, sprint state, and drift between documents. Use to orient at the start of a session or after time away. Read-only.
+argument-hint: "[initiative-optional]"
 ---
 
 # Delivery status
+
+> **Context integrity.** This skill's full text must be in context while you execute
+> it. Compaction keeps only a budgeted slice of invoked skills, and a long pipeline
+> session exceeds that budget — so if this text was compacted away, or this session
+> resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
+> run from a summary of its skill is how a Narrated artifact happens.
+
 
 Read-only. This skill reports and recommends; it changes nothing.
 
@@ -80,10 +88,19 @@ is the specific failure this skill exists to prevent.
 **Invocation status — was each governed artifact actually invoked, or only narrated?**
 Read every `.delivery/invocations/*.ndjson` file (one per session; read all of them, this
 project's full history, not just the current session's). For each governed artifact in the
-Gather table above, report one of three states, as a distinct, scannable marker — never a
+Gather table above, report one of four states, as a distinct, scannable marker — never a
 blank cell someone could mistake for "invoked" by skimming past it:
 
 - **Invoked** — a ledger line exists recording a real tool call that produced this artifact.
+  The strongest form is an `artifact_write` line (ADR-015) whose `artifact` path matches
+  this file exactly — that is per-version provenance: if the file's current sha256 equals
+  the latest such line's `content_hash`, the artifact is **version-traceable**; if it
+  differs and no later line exists, report **modified after last observed write** (a real
+  edit happened outside observation — say so, don't round it to Invoked or Not-invoked).
+  Skill/Agent lines are phase-level evidence only. A `record_type: "backfill"` line counts
+  as **Invoked (backfilled)** — cite its `evidence` field, never report it as plain
+  Invoked. A line carrying `"attribution": "ambiguous"` does **not** qualify — see the
+  fourth state.
 - **Not-invoked** — the artifact's file exists (or was claimed as produced), but no matching
   ledger line exists anywhere in this project's invocation history. This is the state that
   catches narration standing in for a real step — report it even when the file itself looks
@@ -92,6 +109,34 @@ blank cell someone could mistake for "invoked" by skimming past it:
   exists at all for this project, e.g. because it predates this mechanism). State this
   explicitly, distinct from a confirmed **not-invoked** — one means "we looked and found
   nothing," the other means "we could not look."
+- **Ambiguously observed** — the only matching lines carry `"attribution": "ambiguous"`:
+  the hook saw a real governed call but could not attribute it to exactly one `.delivery/`
+  (the session ran from a cwd where several were reachable), so it recorded the call into
+  every candidate rather than guessing or staying silent. This is weaker than **Invoked**
+  (the call may belong to a sibling project — check the record's `candidates` list and
+  `invoked_name` against what this project's artifact actually claims) but categorically
+  different from **Not-invoked**: something real happened and was seen. It is also the
+  observer's own health signal — a run of ambiguous lines means sessions are being launched
+  from a cwd the resolver cannot settle, which is how the 2026-08-10..14 blackout happened
+  before these records existed; say so and name the cwd fix. **One call, one identity:**
+  an ambiguous record is deliberately duplicated into every candidate ledger, so
+  `tool_use_id` is the identity of a governed call — never count the same `tool_use_id`
+  twice across ledgers, and never let one ambiguous line upgrade artifacts in more than
+  one project as if it were two calls.
+
+**Observer liveness — the canary is you (gy5.6).** This status run was itself invoked
+through the Skill tool, so if the observer is alive, the current session's own ledger
+file (`invocations/<this session_id>.ndjson`, in the resolved root or — ambiguous —
+in every candidate) must contain a line for this very invocation by the time you read
+it. Check it every run: no line and no ambiguous record anywhere means the hook is
+**dead in this session** — unregistered, version-skewed, or broken by a harness upgrade
+(the re-verify-after-upgrade obligation in `record-invocation.js`'s header, exercised
+here on every status run). Report **OBSERVER DOWN** as the first line of the whole
+report — every Invoked/Not-invoked judgment below it is then unreliable and must say so.
+A recording race is possible on the first check; re-read once before concluding. As a
+second, cheaper signal: if the newest ledger line in the project is much older than the
+newest governed artifact's last observed write, say so — that gap is how the
+2026-08-10..14 blackout looked from the outside.
 
 **History is preserved, not overwritten.** An artifact once flagged not-invoked, later
 re-produced by a real invocation, reports as **Invoked** now — but the report also notes

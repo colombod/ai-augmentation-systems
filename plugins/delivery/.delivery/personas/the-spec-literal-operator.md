@@ -6,7 +6,7 @@ grounding: observed
 segment: solo operator building against a formal specification, who treats grounding-in-source as the only legitimate form of verification
 status: active
 introduced: 2026-08-05, delivery plugin self-assessment brief
-source: derived
+source: refined:2026-08-10
 ---
 
 > **Grounding: observed.** Drawn directly from the attractor-orchestration-claude
@@ -77,6 +77,20 @@ things."
 easily-source-verifiable question rather than a general stance — a lightweight checkpoint
 might still be welcome elsewhere (brief's Open Question 3).
 **We would find out by:** asking directly, later, where the line actually is.
+
+## Refinement, 2026-08-10 — attractor-handoff initiative
+
+*Budget note: ~720 words against a 600-word cap. Original content was already near budget; this note adds evidence-grading content the writing standard protects from cutting (grounding distinction, open-finding citation, falsification test), not restatement. Declared rather than silently exceeded.*
+
+**What changed:** a hypothesis, not new evidence. This persona's observed disposition
+motivates the `attractor-handoff` brief's deterministic-gate design, but no observed instance
+exists of choosing that runner mode — it didn't exist during either source transcript.
+**"Would choose attractor over `superpowers`/`generic`" is `assumed`, layered on this file's
+otherwise `observed` grounding** — tracked as open finding `R-brief-7`,
+`.delivery/reviews/attractor-handoff-01-brief.md`.
+**Falsifies if:** given the choice, picks `superpowers`/`generic` anyway (e.g. attractor's
+sequential-only, no-human-gate constraints cost more than the gate is worth). Find out by
+asking once the artifact exists to choose.
 
 ## Quotes
 

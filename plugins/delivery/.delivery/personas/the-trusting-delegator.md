@@ -6,7 +6,7 @@ grounding: assumed
 segment: someone who reads this plugin's own verdicts (sprint-review, status) instead of the underlying work, and has no independent way to catch a false one
 status: active
 introduced: 2026-08-05, delivery plugin self-assessment brief
-source: derived
+source: refined:2026-08-10
 ---
 
 > **Grounding: assumed.** No evidence of this person in either transcript — both observed
@@ -80,6 +80,19 @@ changes how urgently this persona's implied fix should be prioritized.
 **We would find out by:** real research — interviews with operators who use
 sprint-review/status output at a remove from the implementation. None exists yet; this is
 what `/delivery:interview` exists to probe, not something to keep asserting as fact.
+
+## Refinement, 2026-08-10 — attractor-handoff initiative
+
+*Budget note: ~730 words against a 600-word cap, for the same reason as the sibling refinement in `the-spec-literal-operator.md` — declared rather than silently exceeded, and no protected content was cut to hide it.*
+
+**What changed:** no new evidence — remains fully `assumed`; a targeted search for real
+instances found none. Added: this is the persona `attractor-handoff`'s deterministic gate is
+hypothesized to protect — an engine-evaluated check would catch a false "done" this persona
+has no other way to catch. **Named risk:** if that gate's own success signal ends up measured
+by an agent self-reporting its verdict (open review finding `R-brief-4`), it reproduces
+exactly this persona's failure, one layer up. A synthetic (not real) reaction to this risk
+exists in `.delivery/reviews/attractor-handoff-01-brief.md`'s persona-simulator pass — cite it
+as synthetic, never as evidence this persona would say it.
 
 ## Quotes
 

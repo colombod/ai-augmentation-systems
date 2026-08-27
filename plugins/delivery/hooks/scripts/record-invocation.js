@@ -32,6 +32,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const DOWNWARD_SEARCH_MAX_DEPTH = 4;
 const DOWNWARD_SEARCH_SKIP_DIRS = new Set([
@@ -175,8 +176,96 @@ function buildRecord(payload) {
   };
 }
 
+// A session ledger "counts" for the continuity tiebreaker only if it holds at
+// least one line this hook actually attributed to that root — ambiguous
+// records are copied into every candidate and must not vote. Read errors and
+// unparsable lines count as no-vote: this feeds an observation decision, and
+// observation never throws.
+function sessionLedgerHasAttributedLine(deliveryRoot, sessionId) {
+  const ledgerPath = path.join(deliveryRoot, 'invocations', `${sessionId}.ndjson`);
+  let raw;
+  try {
+    raw = fs.readFileSync(ledgerPath, 'utf8');
+  } catch (err) {
+    return false;
+  }
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      if (JSON.parse(line).attribution !== 'ambiguous') return true;
+    } catch (err) {
+      // unparsable line — no vote
+    }
+  }
+  return false;
+}
+
+
+// gy5.3 — per-artifact-version provenance. A Skill/Agent line proves a phase
+// ran; it cannot say which artifact version it produced. An observed Write/Edit
+// into a .delivery/ tree can: the artifact's own path picks its root by walking
+// upward (no cwd ambiguity exists for this class, by construction), and a
+// sha256 of the file as it exists after the successful write binds the ledger
+// line to one version. Edits after an invocation are therefore not a provenance
+// hole: an in-session edit appends a new version line; an out-of-session edit
+// leaves the file's hash matching no line, which /delivery:status reports as
+// modified-after-observation (OQ-6, context-management brief r2).
+//
+// Deliberate exclusions: writes outside any .delivery tree (not governed),
+// writes into invocations/ itself (the ledger must not observe itself), and
+// PostToolUseFailure (a failed write changed no version). Only file_path is
+// read from tool_input — the whitelist constraint above holds; the hash is
+// computed from the file on disk, never from tool_input content.
+const ARTIFACT_WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
+
+function recordArtifactWrite(payload) {
+  if (payload.hook_event_name !== 'PostToolUse') return null;
+  const input = payload.tool_input;
+  const filePath = input && typeof input === 'object' ? input.file_path : null;
+  if (!filePath || typeof filePath !== 'string') return null;
+
+  const deliveryRoot = findDeliveryRootUpward(path.dirname(filePath));
+  if (!deliveryRoot) return null;
+  const rel = path.relative(deliveryRoot, filePath);
+  if (rel.startsWith('..') || rel.split(path.sep)[0] === 'invocations') return null;
+
+  let contentHash = null;
+  try {
+    contentHash = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  } catch (err) {
+    return null; // file not readable after a "successful" write — nothing truthful to record
+  }
+
+  const sessionId = payload.session_id || 'unknown-session';
+  const record = {
+    ts: new Date().toISOString(),
+    session_id: payload.session_id || null,
+    hook_event: payload.hook_event_name || null,
+    record_type: 'artifact_write',
+    tool_name: payload.tool_name || null,
+    artifact: rel,
+    content_hash: contentHash,
+    tool_use_id: payload.tool_use_id || null,
+    outcome: 'success',
+    cwd: payload.cwd || null,
+  };
+
+  const ledgerDir = path.join(deliveryRoot, 'invocations');
+  const ledgerPath = path.join(ledgerDir, `${sessionId}.ndjson`);
+  fs.mkdirSync(ledgerDir, { recursive: true });
+  fs.appendFileSync(ledgerPath, JSON.stringify(record) + '\n');
+  return { ledgerPath, record };
+}
+
 function recordInvocation(payload, options) {
   const cwdForResolution = (options && options.cwd) || payload.cwd || process.cwd();
+
+  // Artifact writes are their own governed class (gy5.3) — resolved by the
+  // artifact's path, not the session cwd, so they short-circuit before the
+  // cwd-resolution logic below.
+  if (ARTIFACT_WRITE_TOOLS.has(payload.tool_name)) {
+    return recordArtifactWrite(payload);
+  }
 
   // Governed = Skill/Agent invocations (FR-1-4) or a real capture-tool call
   // (FR-9's channel cross-check). Everything else is ignored even if
@@ -200,24 +289,51 @@ function recordInvocation(payload, options) {
   // Session continuity — a real gap found live, not a hypothetical: a downward
   // search ambiguous between multiple candidates (e.g. this repo's own
   // plugins/delivery/.delivery + plugins/attractor/.delivery) isn't a dead end
-  // if THIS session already wrote a ledger entry under exactly one of them
-  // earlier — that's an established fact about where this session's governed
-  // work lives, not a guess. A brand-new session with no prior write, or one
-  // where two candidates both already have a ledger, stays correctly declined
-  // — this only resolves the case a script can settle without asking.
+  // if THIS session already wrote an ATTRIBUTED ledger entry under exactly one
+  // of them earlier — that's an established fact about where this session's
+  // governed work lives, not a guess. The check must ignore ambiguous records
+  // (below), which land in every candidate by design and prove nothing about
+  // which one this session belongs to.
   if (!deliveryRoot && !findDeliveryRootUpward(cwdForResolution)) {
     const candidates = findAllDeliveryRootsDownward(cwdForResolution, DOWNWARD_SEARCH_MAX_DEPTH);
     if (candidates.length > 1) {
-      const withEstablishedLedger = candidates.filter((candidate) =>
-        fs.existsSync(path.join(candidate, 'invocations', `${sessionId}.ndjson`))
+      const withAttributedLine = candidates.filter((candidate) =>
+        sessionLedgerHasAttributedLine(candidate, sessionId)
       );
-      if (withEstablishedLedger.length === 1) {
-        deliveryRoot = withEstablishedLedger[0];
+      if (withAttributedLine.length === 1) {
+        deliveryRoot = withAttributedLine[0];
+      } else {
+        // Still ambiguous — record it, do not swallow it. The 2026-08-10..14
+        // blackout (context-management gy5.1): an entire pipeline ran from an
+        // ambiguous cwd, every governed call landed here, and the old
+        // `return null` made a dead observer indistinguishable from an idle
+        // session for 14+ days. Writing the record to EVERY candidate, marked
+        // `attribution: 'ambiguous'`, keeps the "ask, don't guess" rule (no
+        // candidate is claimed) while making the silence visible to
+        // /delivery:status. This also dissolves the old bootstrap dead end:
+        // the tiebreaker above keys on attributed lines, so these records
+        // never masquerade as a resolution.
+        const record = buildRecord(payload);
+        record.attribution = 'ambiguous';
+        record.candidates = candidates;
+        const ledgerPaths = [];
+        for (const candidate of candidates) {
+          try {
+            const ledgerDir = path.join(candidate, 'invocations');
+            const ledgerPath = path.join(ledgerDir, `${sessionId}.ndjson`);
+            fs.mkdirSync(ledgerDir, { recursive: true });
+            fs.appendFileSync(ledgerPath, JSON.stringify(record) + '\n');
+            ledgerPaths.push(ledgerPath);
+          } catch (err) {
+            // one unwritable candidate must not lose the others' record
+          }
+        }
+        return ledgerPaths.length > 0 ? { ledgerPaths, record } : null;
       }
     }
   }
 
-  if (!deliveryRoot) return null; // nothing governed here yet, or still genuinely ambiguous — no-op, not an error
+  if (!deliveryRoot) return null; // nothing governed anywhere reachable — no-op, not an error
 
   const ledgerDir = path.join(deliveryRoot, 'invocations');
   const ledgerPath = path.join(ledgerDir, `${sessionId}.ndjson`);
@@ -246,6 +362,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  recordArtifactWrite,
   findDeliveryRoot,
   findDeliveryRootUpward,
   findDeliveryRootDownward,
