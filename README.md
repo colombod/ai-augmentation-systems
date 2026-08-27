@@ -36,6 +36,7 @@ to that project's `.claude/settings.json`:
 | Plugin | What it does |
 | :-- | :-- |
 | [`delivery`](plugins/delivery) | Product Owner, Program Manager, Business Analyst, Solution Architect, Delivery Lead, QA Strategist and an adversarial Feature Critic, wired into a five-phase pipeline: brief → PRD → architecture → roadmap → stories → implementation. |
+| [`attractor`](plugins/attractor) | DOT-graph convergence orchestration for Claude Code: nodes are computation, edges are dispatch, LLM nodes run as `claude -p` subprocesses. |
 | [`claim-guard`](plugins/claim-guard) | Adversarial claim-verification gate for changesets: harvests explicit and implicit claims, fans 7 lens agents out cold to refute each against the shipped source, and gates merge with a deterministic BLOCK / PASS / INDETERMINATE verdict from a bundled `claim_ledger` MCP tool. |
 
 ## Repository layout
