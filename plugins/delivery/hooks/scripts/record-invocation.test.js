@@ -93,7 +93,12 @@ test('recordInvocation: an ambiguous downward search still resolves for a sessio
   assert.equal(lines.length, 2);
 });
 
-test('recordInvocation: a genuinely new session with an ambiguous cwd still declines — no false positive from the continuity fix', () => {
+test('recordInvocation: a genuinely new session with an ambiguous cwd still declines to ATTRIBUTE — but records the ambiguity instead of vanishing (gy5.2)', () => {
+  // Contract changed deliberately after the 08-10..14 blackout: the old
+  // behavior here was `assert.equal(result, null)` — a silent no-op, which is
+  // exactly what made a dead observer indistinguishable from an idle session.
+  // The "no false positive" half of the old test still binds: no candidate may
+  // receive an ATTRIBUTED line. The record itself must exist, marked ambiguous.
   const root = makeScratchProject();
   fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
   fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
@@ -102,7 +107,14 @@ test('recordInvocation: a genuinely new session with an ambiguous cwd still decl
     { session_id: 'sess-brand-new', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } },
     { cwd: root }
   );
-  assert.equal(result, null);
+  assert.ok(result && result.ledgerPaths.length === 2);
+  assert.equal(result.record.attribution, 'ambiguous');
+  for (const p of ['a', 'b']) {
+    const lines = fs
+      .readFileSync(path.join(root, 'plugins', p, '.delivery', 'invocations', 'sess-brand-new.ndjson'), 'utf8')
+      .trim().split('\n').map(JSON.parse);
+    assert.ok(lines.every((l) => l.attribution === 'ambiguous'), `candidate ${p} must hold no attributed line`);
+  }
 });
 
 test('findDeliveryRoot: downward search skips node_modules', () => {
@@ -378,4 +390,95 @@ test('recordInvocation: a non-capture action on the browser tool is not recorded
   );
   assert.equal(result, null);
   assert.equal(fs.existsSync(path.join(root, '.delivery', 'invocations')), false);
+});
+
+// --- gy5.2: observer silence made visible ---------------------------------
+// The 2026-08-10..14 blackout (context-management initiative, gy5.1): a whole
+// pipeline ran from an ambiguous cwd, every governed call hit the decline
+// branch, and the decline wrote NOTHING — silence indistinguishable from
+// idleness, and the session-continuity tiebreaker could never engage because
+// it requires the very ledger file the decline prevents (bootstrap dead-end).
+// These tests pin the fix: ambiguity is recorded, not swallowed.
+
+test('recordInvocation: ambiguous with no established ledger writes an ambiguous record to EVERY candidate', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
+
+  const result = recordInvocation(
+    { session_id: 'sess-blackout', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:brief', secret: 'must-not-leak' } },
+    { cwd: root }
+  );
+
+  assert.ok(result, 'ambiguity must not be a silent no-op');
+  for (const p of ['a', 'b']) {
+    const ledger = path.join(root, 'plugins', p, '.delivery', 'invocations', 'sess-blackout.ndjson');
+    assert.ok(fs.existsSync(ledger), `candidate ${p} must carry the ambiguous record`);
+    const lines = fs.readFileSync(ledger, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].attribution, 'ambiguous');
+    assert.equal(lines[0].invoked_name, 'delivery:brief');
+    assert.equal(lines[0].candidates.length, 2);
+    assert.ok(!JSON.stringify(lines[0]).includes('must-not-leak'), 'whitelist must hold for ambiguous records');
+  }
+});
+
+test('recordInvocation: ambiguous records do not satisfy the continuity tiebreaker — next ambiguous call stays ambiguous', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
+
+  recordInvocation(
+    { session_id: 'sess-two-amb', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:brief' } },
+    { cwd: root }
+  );
+  recordInvocation(
+    { session_id: 'sess-two-amb', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:research' } },
+    { cwd: root }
+  );
+
+  for (const p of ['a', 'b']) {
+    const ledger = path.join(root, 'plugins', p, '.delivery', 'invocations', 'sess-two-amb.ndjson');
+    const lines = fs.readFileSync(ledger, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(lines.length, 2, `both ambiguous calls must appear in candidate ${p}`);
+    assert.ok(lines.every((l) => l.attribution === 'ambiguous'));
+  }
+});
+
+test('recordInvocation: an attributed line later in the session upgrades the tiebreaker — subsequent ambiguous cwd resolves to that root', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
+
+  // 1. bootstrap: first call ambiguous (previously the permanent dead end)
+  recordInvocation(
+    { session_id: 'sess-upgrade', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:brief' } },
+    { cwd: root }
+  );
+  // 2. session moves into candidate a and writes an attributed line
+  const attributed = recordInvocation(
+    { session_id: 'sess-upgrade', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } },
+    { cwd: path.join(root, 'plugins', 'a') }
+  );
+  assert.ok(attributed.record.attribution === undefined || attributed.record.attribution !== 'ambiguous');
+  // 3. back at the ambiguous cwd: continuity must now resolve to a, attributed
+  const third = recordInvocation(
+    { session_id: 'sess-upgrade', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:architecture' } },
+    { cwd: root }
+  );
+  assert.ok(third.ledgerPath, 'third call must resolve, not stay ambiguous');
+  assert.ok(third.ledgerPath.includes(path.join('plugins', 'a', '.delivery')));
+  const aLines = fs.readFileSync(path.join(root, 'plugins', 'a', '.delivery', 'invocations', 'sess-upgrade.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(aLines.filter((l) => l.attribution !== 'ambiguous').length, 2, 'prd + architecture attributed to a');
+  const bLines = fs.readFileSync(path.join(root, 'plugins', 'b', '.delivery', 'invocations', 'sess-upgrade.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(bLines.every((l) => l.attribution === 'ambiguous'), 'b must never receive an attributed line');
+});
+
+test('recordInvocation: zero candidates anywhere is still a no-op (nothing governed here)', () => {
+  const root = makeScratchProject();
+  const result = recordInvocation(
+    { session_id: 'sess-nowhere', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:brief' } },
+    { cwd: root }
+  );
+  assert.equal(result, null);
 });

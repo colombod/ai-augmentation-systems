@@ -88,10 +88,11 @@ is the specific failure this skill exists to prevent.
 **Invocation status — was each governed artifact actually invoked, or only narrated?**
 Read every `.delivery/invocations/*.ndjson` file (one per session; read all of them, this
 project's full history, not just the current session's). For each governed artifact in the
-Gather table above, report one of three states, as a distinct, scannable marker — never a
+Gather table above, report one of four states, as a distinct, scannable marker — never a
 blank cell someone could mistake for "invoked" by skimming past it:
 
 - **Invoked** — a ledger line exists recording a real tool call that produced this artifact.
+  A line carrying `"attribution": "ambiguous"` does **not** qualify — see the fourth state.
 - **Not-invoked** — the artifact's file exists (or was claimed as produced), but no matching
   ledger line exists anywhere in this project's invocation history. This is the state that
   catches narration standing in for a real step — report it even when the file itself looks
@@ -100,6 +101,16 @@ blank cell someone could mistake for "invoked" by skimming past it:
   exists at all for this project, e.g. because it predates this mechanism). State this
   explicitly, distinct from a confirmed **not-invoked** — one means "we looked and found
   nothing," the other means "we could not look."
+- **Ambiguously observed** — the only matching lines carry `"attribution": "ambiguous"`:
+  the hook saw a real governed call but could not attribute it to exactly one `.delivery/`
+  (the session ran from a cwd where several were reachable), so it recorded the call into
+  every candidate rather than guessing or staying silent. This is weaker than **Invoked**
+  (the call may belong to a sibling project — check the record's `candidates` list and
+  `invoked_name` against what this project's artifact actually claims) but categorically
+  different from **Not-invoked**: something real happened and was seen. It is also the
+  observer's own health signal — a run of ambiguous lines means sessions are being launched
+  from a cwd the resolver cannot settle, which is how the 2026-08-10..14 blackout happened
+  before these records existed; say so and name the cwd fix.
 
 **History is preserved, not overwritten.** An artifact once flagged not-invoked, later
 re-produced by a real invocation, reports as **Invoked** now — but the report also notes
