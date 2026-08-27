@@ -3,7 +3,7 @@
 > Phase 1 artifact. Owned by Product Owner and Business Analyst.
 > Status: draft · Last updated: 2026-08-27
 
-**Mode:** frame · **Word count:** 642 excluding tables (cap 900)
+**Mode:** frame · **Word count:** 730 excluding tables (cap 900)
 
 ## Coverage
 
@@ -65,17 +65,20 @@ The last two cannot be measured with data collected today — producing that dat
 
 ## MVP boundary
 
-1. **Diagnose the blackout** (spike): discriminate F-2's hypotheses against session transcripts; the live decline incident already supports the ambiguous-cwd one.
-2. **Make silence visible**: declines and liveness recorded somewhere status can read; fix the bootstrap dead-end; status gains the third state.
-3. **Bind ledger lines to initiative + artifact** (closes F-6).
-4. **Measure the context baseline**: one full phase's token cost, compaction events across historical pipeline transcripts, per-feature plugin-reachability table (F-9 spike).
+Tracked as beads under epic `ai-augmentation-systems-gy5` (operator decision: bd is the task/working-memory surface).
 
-Nothing in the MVP builds memory or compaction machinery — measurement first is the boundary.
+1. **Diagnose the blackout** (spike, `gy5.1`): discriminate F-2's hypotheses against session transcripts; the live decline incident already supports the ambiguous-cwd one.
+2. **Make silence visible** (`gy5.2`): declines and liveness recorded somewhere status can read; fix the bootstrap dead-end; status gains the third state.
+3. **Bind ledger lines to initiative + artifact version** (`gy5.3`): per-artifact-**version** provenance — operator decision 2026-08-27 — tied to an ADR-005 version marker or content hash (closes F-6, including silent healing).
+4. **Measure the context baseline** (`gy5.4`): one full phase's token cost, compaction events across historical pipeline transcripts, per-feature plugin-reachability table (F-9 spike).
+5. **Context-engineering pass over instructions** (`gy5.5`, operator-directed 2026-08-27): apply current Anthropic context-engineering guidance to `skills/*/SKILL.md`, `agents/*.md`, and `AGENTS.md`, grounded in a live-docs research pass, with the panel-isolation invariant held.
+
+Items 1–4 keep the measurement-first boundary; item 5 is an explicit operator override of it for instruction files only — no memory or compaction *machinery* ships in the MVP.
 
 ## Explicitly out of scope
 
 - Context editing integration (not known to be plugin-reachable; F-9 spike gates any future scope)
-- Memory-tool integration and any fourth memory surface (blocked on OQ-2 precedence decision)
+- Memory-tool integration and any fourth memory surface (OQ-2 resolved: bd-first, auto-memory fallback — no new surface gets built)
 - Any change to challenge-panel reviewer isolation — named invariant, not a tuning knob
 - Attractor plugin internals (standing scope discipline)
 - Status read-cost optimization (F-5) — real, but staged after the baseline exists
@@ -87,12 +90,12 @@ Operator opens a session, runs `/delivery:status`, which re-reads the artifact t
 
 ## Open questions
 
-| # | Question | Owner | Blocks |
+| # | Question | Owner | Status |
 | :-- | :-- | :-- | :-- |
-| 1 | Does the observation fix (MVP 1–3) live here or under `harden`'s lineage — and does harden's realign record the field failure of its "complete" Phase 2 either way? | operator | story assignment; harden's calibration record |
-| 2 | Memory-surface precedence: repo CLAUDE.md (`bd remember`, MEMORY.md forbidden) vs Claude Code auto-memory (MEMORY.md exists today) vs `.delivery/` — which wins, per kind of fact? | operator | any memory work; resolves a live contradiction |
-| 3 | Is provenance per-artifact-*version* (line tied to a version marker or hash) required, or is per-artifact enough? Changes MVP 3's design entirely | operator | MVP 3 |
-| 4 | Which context features are plugin-reachable (hooks/skills/agent frontmatter), verified against current docs? | solution-architect spike (MVP 4) | all post-MVP feature scope |
-| 5 | Do historical pipeline transcripts show any compaction event at all? If zero, the compaction workstream stays speculative | qa-strategist spike (MVP 4) | post-MVP staging |
+| 1 | Does the observation fix live here or under `harden`'s lineage? | operator | **Resolved 2026-08-27: fixed here.** Harden's realign carries an addendum recording the field failure so its calibration record stops overstating |
+| 2 | Memory-surface precedence? | operator | **Resolved 2026-08-27: bd (beads) is primary for task tracking, creation and working memory; Claude Code auto-memory only if bd is unavailable.** `.delivery/` remains the artifact store — it is not a memory surface. bd database initialized this session |
+| 3 | Provenance per-artifact-version or per-artifact? | operator | **Resolved 2026-08-27: per-artifact-version** (`gy5.3`) |
+| 4 | Which context features are plugin-reachable (hooks/skills/agent frontmatter), verified against current docs? | solution-architect spike (`gy5.4`) | open — blocks post-MVP feature scope; research pass in flight also feeds `gy5.5` |
+| 5 | Do historical pipeline transcripts show any compaction event at all? If zero, the compaction workstream stays speculative | qa-strategist spike (`gy5.4`) | open — blocks post-MVP staging |
 
 **Glossary proposals** (via `/delivery:glossary`, not silently): *Observer silence* (governed call left no record — dead hook, decline, or lost ledger; distinct from Narrated), *Memory surface* (any store an agent may read/write across sessions), *Compaction* (harness-side context summarization), and a formal revisit of the excluded term *Session*.

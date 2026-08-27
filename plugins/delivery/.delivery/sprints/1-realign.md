@@ -76,3 +76,17 @@ is narrowed to its remaining, unfulfilled purpose only — gathering real eviden
 milestone M4 (whether the reads-only-the-verdict persona shows up), which still needs an
 actual external project and cannot be answered by this same closure. This addendum records
 the plan-vs-actual gap rather than quietly rewriting the original Phase 4 scope.
+
+## Addendum — field failure of the shipped observer, ownership routed elsewhere (2026-08-27)
+
+The invocation ledger this cycle shipped (harden-05/06) failed silently in the field:
+17 commits of attractor-handoff governed work (2026-08-10 → 08-14) produced zero ledger
+lines while the hook demonstrably fired for a sibling `.delivery/` root in the same
+window. Root cause is under diagnosis; a live reproduction on 2026-08-27 showed the
+ambiguous-cwd decline branch leaving no trace, and its session-continuity tiebreaker has
+a bootstrap dead-end (`record-invocation.js:208-220`). This amends this cycle's implicit
+calibration — "the mechanism observes governed work" held only for unambiguous cwds, and
+its failure mode is indistinguishable from idleness. The operator routed the fix to the
+`context-management` initiative (brief, OQ-1, resolved 2026-08-27; beads epic
+`ai-augmentation-systems-gy5`); harden's record is amended here rather than reopening its
+completed phases.
