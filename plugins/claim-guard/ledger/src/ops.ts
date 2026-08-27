@@ -3,7 +3,9 @@
 // tool boundary.
 import fs from "node:fs";
 import { aggregate } from "./aggregate.js";
+import { computeGate } from "./gate.js";
 import { claimId } from "./identity.js";
+import { renderMarkdownMatrix } from "./matrix.js";
 import {
   guardMarkerPath,
   ledgerRoot,
@@ -392,6 +394,67 @@ function enforceEvidenceRules(
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------- aggregate / gate / matrix / report
+
+export function opAggregate(input: { run_id?: string }): OpResult {
+  const found = requireRun(input.run_id);
+  if (!isRun(found)) return found;
+  for (const claim of found.claims) claim.aggregate = aggregate(claim);
+  saveRun(found);
+  const gateResult = computeGate(found);
+  return {
+    ok: true,
+    run_id: found.run_id,
+    claims: found.claims.map((c) => ({
+      claim_id: c.claim_id,
+      text: c.text,
+      type: c.type,
+      aggregate: c.aggregate,
+      adverse_state_test: c.adverse_state_test,
+    })),
+    coverage: gateResult.coverage,
+  };
+}
+
+function validatePolicy(policy: unknown): OpResult | null {
+  if (policy !== undefined && !GATE_POLICIES.includes(policy as GatePolicy)) {
+    return err("invalid_input", `unknown gate_policy: ${String(policy)}`);
+  }
+  return null;
+}
+
+export function opGate(input: { run_id?: string; gate_policy?: string }): OpResult {
+  const found = requireRun(input.run_id);
+  if (!isRun(found)) return found;
+  const badPolicy = validatePolicy(input.gate_policy);
+  if (badPolicy) return badPolicy;
+  const result = computeGate(found, input.gate_policy as GatePolicy | undefined);
+  return { ok: true, run_id: found.run_id, ...result };
+}
+
+export function opRenderMatrix(input: { run_id?: string; format?: string }): OpResult {
+  const found = requireRun(input.run_id);
+  if (!isRun(found)) return found;
+  const format = input.format ?? "markdown";
+  if (format !== "markdown" && format !== "json") {
+    return err("invalid_input", `unknown format: ${format}`);
+  }
+  const content = format === "markdown" ? renderMarkdownMatrix(found) : found;
+  return { ok: true, run_id: found.run_id, content };
+}
+
+// One-call verdict + the matrix that explains it, from the same ledger read —
+// a verdict can never ship alongside a matrix from a different state.
+export function opReport(input: { run_id?: string; gate_policy?: string; format?: string }): OpResult {
+  const gateResult = opGate(input);
+  if (gateResult.ok === false) return gateResult;
+  const matrixResult = opRenderMatrix(input);
+  if (matrixResult.ok === false) return matrixResult;
+  const { content } = matrixResult as { ok: true; content: unknown };
+  const { ok: _ok, ...gateFields } = gateResult as { ok: true } & Record<string, unknown>;
+  return { ok: true, ...gateFields, matrix: content };
 }
 
 // ---------------------------------------------------------------- record_lens_error
