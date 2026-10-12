@@ -16,7 +16,7 @@ on:
 
 jobs:
   test:
-    name: node --test (plugins/delivery/hooks/scripts)
+    name: node --test (plugins/delivery)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +25,9 @@ jobs:
         with:
           node-version: '24'
 
-      # No package.json, no dependencies -- record-invocation.test.js uses
-      # only Node builtins (node:test, node:assert/strict, fs, os, path).
+      # No package.json, no dependencies -- every test uses only Node
+      # builtins. The glob is quoted so node expands it (** included); the
+      # tests put the fake bd in scripts/testing/ on PATH, never the real one.
+      # hooks/scripts/*.test.js includes record-invocation.test.js.
       - name: Run test suite
-        run: node --test plugins/delivery/hooks/scripts/record-invocation.test.js
+        run: node --test 'plugins/delivery/scripts/**/*.test.js' plugins/delivery/hooks/scripts/*.test.js

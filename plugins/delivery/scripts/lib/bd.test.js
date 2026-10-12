@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const { makeBd } = require('./bd.js');
 
-const FAKE_DIR = path.join(__dirname, '..', 'test');
+const FAKE_DIR = path.join(__dirname, '..', 'testing');
 
 function fakeEnv() {
   const store = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bd-')), 'store.json');

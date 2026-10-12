@@ -10,7 +10,7 @@ const { loadInputs, applyPlan, reconcile, writeDenylist, renderDrift } = require
 const { planGraph } = require('./lib/plan-graph.js');
 
 const PLUGIN = path.join(__dirname, '..');
-const FAKE_DIR = path.join(PLUGIN, 'scripts', 'test');
+const FAKE_DIR = path.join(PLUGIN, 'scripts', 'testing');
 
 function fakeEnv() {
   const store = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mat-bd-')), 'store.json');

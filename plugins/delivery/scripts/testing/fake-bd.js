@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/test/fake-bd.js — a fake `bd` for tests. Backed by the JSON file named in
+// scripts/testing/fake-bd.js — a fake `bd` for tests. Backed by the JSON file named in
 // BD_FAKE_STORE. Implements only what materialise and the hooks use. Never used in production.
 const fs = require('fs');
 

@@ -13,7 +13,7 @@ Spec: `plugins/delivery/.superpowers/specs/2026-10-12-shipping-team-design.md` s
 ## Global Constraints
 
 - Plain Node, no dependencies, no package.json. Tests with `node --test`. Paths relative to `plugins/delivery/` unless they start with `plugins/`.
-- Every `bd` call goes through `scripts/lib/bd.js` using `execFileSync` with an argv array, never a shell string. Tests use the fake `bd` at `scripts/test/fake-bd.js` by prepending its directory to `PATH`; no test calls the real `bd`.
+- Every `bd` call goes through `scripts/lib/bd.js` using `execFileSync` with an argv array, never a shell string. Tests use the fake `bd` at `scripts/testing/fake-bd.js` by prepending its directory to `PATH`; no test calls the real `bd`.
 - Bead ids are deterministic and derived only from the manifest prefix, the initiative slug and document ids: epic `<prefix>-<initiative>-ph<N>`, phase review `<prefix>-<initiative>-ph<N>-review`, story `<prefix>-<story id>` (story ids already carry their epic slug), spike `<prefix>-<initiative>-spike-<key>` where `<key>` is the spike table's `#` column lower-cased with non `[a-z0-9]` runs replaced by `-`. Materialise never generates a random id. (Amended after Task 4 review: ids without the initiative collided across initiatives.)
 - Structure flows document to beads only. Materialise creates and updates beads and dependencies; it never closes, deletes or re-assigns a bead, and never touches a bead that is `closed`.
 - Every bead materialise creates carries metadata `{"roadmap_ref":"<initiative>/roadmap.md@<sha> phase <N>", "doc_id":"<story or spike id or phase>", "materialised_by":"delivery"}` and the label `roadmap`. The `<sha>` is the short sha of the last commit that touched the initiative's `roadmap.md` (`git log -1 --format=%h -- <file>`), or `h` + the first 7 hex chars of the roadmap text's sha256 when uncommitted or outside git, so refs do not churn on unrelated commits. (Amended after Task 4 review.)
@@ -26,7 +26,7 @@ Spec: `plugins/delivery/.superpowers/specs/2026-10-12-shipping-team-design.md` s
 
 | File | Responsibility |
 |---|---|
-| `scripts/test/fake-bd.js` | A fake `bd` CLI backed by a JSON file named by `BD_FAKE_STORE`; supports the subset materialise uses |
+| `scripts/testing/fake-bd.js` | A fake `bd` CLI backed by a JSON file named by `BD_FAKE_STORE`; supports the subset materialise uses |
 | `scripts/lib/bd.js` (+ `.test.js`) | Adapter: `show`, `create`, `update`, `depAdd`, `depsOf`, `list`; parses JSON output; normalises array-or-object replies |
 | `scripts/lib/plan-docs.js` (+ `.test.js`) | Parsers: `parseRoadmap`, `parseStories`, `parseSpikes`, `phaseNumber` |
 | `scripts/lib/plan-graph.js` (+ `.test.js`) | Pure planner: `planGraph` → beads and deps; `denylistFrom` |
@@ -41,7 +41,7 @@ Spec: `plugins/delivery/.superpowers/specs/2026-10-12-shipping-team-design.md` s
 ### Task 1: Branch, fake bd, and the bd adapter
 
 **Files:**
-- Create: `scripts/test/fake-bd.js`, `scripts/lib/bd.js`
+- Create: `scripts/testing/fake-bd.js`, `scripts/lib/bd.js`
 - Test: `scripts/lib/bd.test.js`
 
 **Interfaces:**
