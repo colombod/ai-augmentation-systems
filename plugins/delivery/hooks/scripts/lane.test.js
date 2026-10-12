@@ -21,11 +21,11 @@ test('loadPolicy reads lane keys from a delivery role file', () => {
   assert.deepEqual(b.bash, ['any']);
 });
 
-test('splitCommand splits on operators outside quotes and strips env assignments', () => {
+test('splitCommand splits on operators outside quotes and keeps env assignments', () => {
   assert.deepEqual(splitCommand('git status && bd list --json | jq ".[0]"'), ['git status', 'bd list --json', 'jq ".[0]"']);
   assert.deepEqual(splitCommand('echo "a && b"; ls'), ['echo "a && b"', 'ls']);
-  assert.deepEqual(splitCommand('FOO=1 bd prime'), ['bd prime']);
-  assert.deepEqual(splitCommand('env FOO=1 bd prime'), ['bd prime']);
+  assert.deepEqual(splitCommand('FOO=1 bd prime'), ['FOO=1 bd prime']);
+  assert.deepEqual(splitCommand('env FOO=1 bd prime'), ['env FOO=1 bd prime']);
 });
 
 test('classifySegment matches groups by first token, subcommand and flags', () => {
@@ -104,4 +104,164 @@ test('manager lanes: no materialise via read, git-read non-mutating, stream redi
   assert.deepEqual(classifySegment('ls >/tmp/out', GROUPS, ctx()), []);
   assert.deepEqual(classifySegment('ls 2>/dev/nullx', GROUPS, ctx()), []);
   assert.ok(classifySegment('ls &>/dev/null', GROUPS, ctx()).includes('read'));
+});
+
+// Fix round 2: escapes found by adversarial review. Each row: [command, role, expectAllowed, cwd under roleDir].
+const POLICIES = Object.fromEntries(['chief-of-staff', 'product-manager', 'progress-observer', 'delivery-lead', 'builder']
+  .map((id) => [id, loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/' + id })]));
+const COS = 'chief-of-staff', PM = 'product-manager', PO = 'progress-observer', DL = 'delivery-lead', BUILDER = 'builder';
+const PROBES = [
+  // C1 cd tracking: unknown targets, failed or skipped cd, export
+  ['cd $P && git commit -m x', PM, false],
+  ['cd ~/x && git commit -m x', PM, false],
+  ['cd "$X" && git commit -m x', PM, false],
+  ['cd && git commit -m x', PM, false],
+  ['cd - && git commit -m x', PM, false],
+  ['cd `pwd` && git commit -m x', PM, false],
+  ['cd ../product && git commit -m x', PM, false, 'project'],
+  ['cd ../product; cd ../project/nonexistent; git commit -m x', PM, false, 'project'],
+  ['true || cd ../project && git commit -m x', PM, false, 'product'],
+  ['cd ../project && git commit -m x', PM, true, 'product'],
+  ['cd ../project && git add . && git commit -m x', PM, true, 'product'],
+  ['git -C "$X" commit -m x', PM, false, 'project'],
+  ['git -C ~/p commit -m x', PM, false, 'project'],
+  ['export FOO=1', COS, false],
+  // C2 env prefixes classify only as any
+  ['FOO=1 bd prime', COS, false],
+  ['env FOO=1 bd prime', COS, false],
+  ['GIT_DIR=../product/.git git commit -m x', PM, false, 'project'],
+  ['FOO=1 npm test', BUILDER, true],
+  // C3 git option escapes; fetch is a write
+  ['git log --output=/tmp/x', COS, false],
+  ['git diff -o /tmp/x', COS, false],
+  ['git diff --ext-diff', COS, false],
+  ['git cat-file --textconv HEAD:x', COS, false],
+  ['git fetch', COS, false],
+  ['git fetch --upload-pack=evil', PM, false, 'project'],
+  ['git pull --upload-pack=evil', PM, false, 'project'],
+  ['git push --receive-pack=evil', PM, false, 'project'],
+  ['git fetch', PM, true, 'project'],
+  ['git log --oneline -5', COS, true],
+  // C4 write-capable read tools
+  ['sed -n 1,5p f', COS, false],
+  ['uniq a b', COS, false],
+  ['tree -o out', COS, false],
+  ['file -C -m x', COS, false],
+  ['sort -o out in', COS, false],
+  ['sort -uo out in', COS, false],
+  ['sort --output=out in', COS, false],
+  ['sort in', COS, true],
+  ['rg --pre cat x', COS, false],
+  ['rg --pre=cat x', COS, false],
+  ['rg --pre-glob "*" x', COS, false],
+  ['rg foo', COS, true],
+  ['find . -fprint out', COS, false],
+  ['find . -okdir rm {} +', COS, false],
+  ['find . -name x', COS, true],
+  // C5 stream-only redirects
+  ['ls >&1x', COS, false],
+  ['ls 2>&1x', COS, false],
+  ['ls >/dev/nullx', COS, false],
+  ['ls >& out', COS, false],
+  ['ls >&2', COS, true],
+  ['ls 2>&-', COS, true],
+  ['ls > /dev/null', COS, true],
+  ['ls 2>&1|head', COS, true],
+  ['ls >&2;ls', COS, true],
+  ['ls >>/dev/null&&ls', COS, true],
+  // C6 worktree is not a project write
+  ['git worktree add ../x', PM, false, 'project'],
+  ['git worktree remove x', DL, false, 'project'],
+  ['git worktree list', PM, true, 'project'],
+  // I1 bd short flags and --id=
+  ['bd update ex-1 --append-notes y -s closed', COS, false],
+  ['bd update ex-1 --append-notes y -a bob', COS, false],
+  ['bd update ex-1 --append-notes y -p 0', COS, false],
+  ['bd update ex-1 --append-notes y -t bug', COS, false],
+  ['bd update ex-1 --append-notes y -d desc', COS, false],
+  ['bd update ex-1 --append-notes y -l foo', COS, false],
+  ['bd update ex-1 --append-notes y', COS, true],
+  ['bd create t --parent ex-1 --id=ex-9', COS, false],
+  ['bd create t --parent=ex-1', COS, true],
+  ['bd update ex-1 --claim --parent ex-2', PO, false],
+  ['bd update ex-1 -s in_progress -p 0', PO, false],
+  ['bd update ex-1 -s in_progress', PO, true],
+  // I4 legitimate forms
+  ['git --no-pager log -3', COS, true],
+  ['git -P diff', COS, true],
+  ['git --no-color status', COS, true],
+  ['bd --json list', COS, true],
+  ['node ${CLAUDE_PLUGIN_ROOT}/scripts/team-status.js', COS, true],
+  ['node "$CLAUDE_PLUGIN_ROOT/scripts/team-status.js"', COS, true],
+  ['node $CLAUDE_PLUGIN_ROOT/scripts/materialise.js', COS, false],
+  ['node ${CLAUDE_PLUGIN_ROOT}/scripts/materialise.js --project x', DL, true],
+  ['git commit -c abc123 -m x', PM, true, 'project'],
+  ['git -c core.pager=x log', COS, false],
+  // minor: git branch listing forms only
+  ['git branch', COS, false],
+  ['git branch new', COS, false],
+  ['git branch -v new', COS, false],
+  ['git branch -f main HEAD~1', COS, false],
+  ['git branch -vd old', COS, false],
+  ['git branch --list "feat*"', COS, true],
+  ['git branch --contains abc123', COS, true],
+  ['git branch -a', COS, true],
+  ['git branch -vv', COS, true],
+  ['git branch --show-current', COS, true],
+];
+
+test('probe table: lane escapes stay closed, legitimate forms stay open', () => {
+  const failures = [];
+  for (const [command, role, expected, sub] of PROBES) {
+    const cwd = path.join(roleDir, sub || 'project');
+    const d = decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], cwd, ...ctx() });
+    if (d.allow !== expected) failures.push(role + ': ' + command + ' -> ' + d.allow);
+  }
+  assert.deepEqual(failures, []);
+});
+
+test('pathAllowed follows symlinks and real tmp paths; plugin root is not tmp', () => {
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-real-'));
+  fs.mkdirSync(path.join(rd, 'product', 'src'), { recursive: true });
+  fs.mkdirSync(path.join(rd, 'project', '.delivery', 'stories'), { recursive: true });
+  fs.symlinkSync(path.join(rd, 'product'), path.join(rd, 'project', '.delivery', 'stories', 'link'));
+  const writes = ['project/.delivery/stories/**'];
+  assert.ok(pathAllowed(path.join(rd, 'project', '.delivery', 'stories', 'a.md'), { roleDir: rd, writes }));
+  assert.ok(!pathAllowed(path.join(rd, 'project', '.delivery', 'stories', 'link', 'src', 'x.js'), { roleDir: rd, writes }));
+  assert.ok(!pathAllowed([rd, 'project', '.delivery', 'stories', 'link', '..', 'x.js'].join(path.sep), { roleDir: rd, writes })); // physical `..`: rd/x.js
+  // the same role dir reached through /private on macOS, or any other real-path spelling
+  assert.ok(pathAllowed(path.join(fs.realpathSync(rd), 'project', '.delivery', 'stories', 'b.md'), { roleDir: rd, writes }));
+  const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-plugin-'));
+  assert.ok(pathAllowed(path.join(os.tmpdir(), 'scratch.txt'), { roleDir: rd, writes, pluginRoot: fakeRoot }));
+  assert.ok(!pathAllowed(path.join(fakeRoot, 'hooks', 'x.js'), { roleDir: rd, writes, pluginRoot: fakeRoot }));
+  const cos = POLICIES[COS];
+  const viaLink = decideLane({ toolName: 'Write', toolInput: { file_path: 'link/src/x.js' }, policy: { ...cos, writes }, cwd: path.join(rd, 'project', '.delivery', 'stories'), ...ctx({ roleDir: rd }) });
+  assert.equal(viaLink.allow, false);
+});
+
+test('decideLane: MultiEdit and write-capable MCP tools are denied outside the lane', () => {
+  const cos = POLICIES[COS];
+  const target = path.join(roleDir, 'product', 'a.js');
+  assert.equal(decideLane({ toolName: 'MultiEdit', toolInput: { file_path: target, edits: [] }, policy: cos, ...ctx() }).allow, false);
+  assert.equal(decideLane({ toolName: 'MultiEdit', toolInput: { edits: [{ file_path: target, old_string: 'a', new_string: 'b' }] }, policy: cos, ...ctx() }).allow, false);
+  assert.equal(decideLane({ toolName: 'mcp__files__write_file', toolInput: { path: target }, policy: cos, ...ctx() }).allow, false);
+  assert.equal(decideLane({ toolName: 'mcp__docs__create_document', toolInput: {}, policy: cos, ...ctx() }).allow, false);
+  assert.equal(decideLane({ toolName: 'mcp__files__write_file', toolInput: { path: target }, policy: POLICIES[BUILDER], ...ctx() }).allow, true);
+  assert.equal(decideLane({ toolName: 'mcp__files__read_file', toolInput: {}, policy: cos, ...ctx() }).allow, true);
+  assert.equal(decideLane({ toolName: 'Agent', toolInput: { prompt: 'x' }, policy: cos, ...ctx() }).allow, true);
+  assert.equal(decideLane({ toolName: 'Task', toolInput: { prompt: 'x' }, policy: cos, ...ctx() }).allow, true);
+});
+
+test('classifySegment: env prefixes are any-only; ctx.pluginRoot beats the environment', () => {
+  assert.deepEqual(classifySegment('FOO=1 git status', GROUPS, ctx()), ['any']);
+  assert.deepEqual(classifySegment('env git status', GROUPS, ctx()), ['any']);
+  const { any, ...noAny } = GROUPS;
+  assert.deepEqual(classifySegment('FOO=1 git status', noAny, ctx()), []);
+  const saved = process.env.CLAUDE_PLUGIN_ROOT;
+  process.env.CLAUDE_PLUGIN_ROOT = '/elsewhere';
+  try {
+    assert.ok(classifySegment('node ' + PLUGIN_ROOT + '/scripts/team-status.js', GROUPS, ctx()).includes('read'));
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_PLUGIN_ROOT; else process.env.CLAUDE_PLUGIN_ROOT = saved;
+  }
 });

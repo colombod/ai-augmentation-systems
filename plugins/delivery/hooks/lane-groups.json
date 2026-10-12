@@ -1,22 +1,32 @@
 {
   "read": [
-    { "first": "ls" }, { "first": "cat" }, { "first": "head" }, { "first": "tail" }, { "first": "grep" }, { "first": "rg" },
-    { "first": "find" }, { "first": "wc" }, { "first": "diff" }, { "first": "jq" }, { "first": "sort" }, { "first": "uniq" },
+    { "first": "ls" }, { "first": "cat" }, { "first": "head" }, { "first": "tail" }, { "first": "grep" },
+    { "first": "rg", "flags_none": ["--pre", "--pre-glob"] },
+    { "first": "find", "flags_none": ["-exec", "-execdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-ok", "-okdir"] },
+    { "first": "wc" }, { "first": "diff" }, { "first": "jq" },
+    { "first": "sort", "flags_none": ["-o", "--output"] },
     { "first": "cut" }, { "first": "tr" }, { "first": "pwd" }, { "first": "echo" }, { "first": "date" }, { "first": "which" },
-    { "first": "test" }, { "first": "true" }, { "first": "cd" }, { "first": "export" }, { "first": "printf" }, { "first": "basename" },
-    { "first": "dirname" }, { "first": "realpath" }, { "first": "stat" }, { "first": "file" }, { "first": "tree" }, { "first": "sed", "flags_none": ["-i"] },
+    { "first": "test" }, { "first": "true" }, { "first": "cd" }, { "first": "printf" }, { "first": "basename" },
+    { "first": "dirname" }, { "first": "realpath" }, { "first": "stat" },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-status.js" },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/prepare-role.js" }
   ],
   "git-read": [
-    { "first": "git", "sub": ["status", "log", "diff", "show", "rev-parse", "fetch", "remote -v", "remote show", "remote get-url", "ls-files", "blame", "describe", "tag -l", "tag --list", "stash list", "worktree list", "merge-base", "shortlog", "cat-file", "rev-list"] },
-    { "first": "git", "sub": ["branch"], "flags_none": ["-D", "-d", "-m", "-M", "--delete", "--move", "-c", "--copy"] }
+    { "first": "git", "sub": ["status", "log", "diff", "show", "rev-parse", "remote -v", "remote show", "remote get-url", "ls-files", "blame", "describe", "tag -l", "tag --list", "stash list", "worktree list", "merge-base", "shortlog", "cat-file", "rev-list"],
+      "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] },
+    { "first": "git", "sub": ["branch"], "flags_any": ["--list", "-l"],
+      "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "-D", "-d", "-m", "-M", "--delete", "--move", "-c", "-C", "--copy", "-f", "--force", "-u", "--set-upstream-to", "--unset-upstream", "--edit-description", "-t", "--track", "--no-track"] },
+    { "first": "git", "sub": ["branch"], "flags_any": ["-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--show-current", "--contains", "--no-contains", "--merged", "--no-merged"],
+      "no_positional": true, "value_flags": ["--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format"],
+      "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "-D", "-d", "-m", "-M", "--delete", "--move", "-c", "-C", "--copy", "-f", "--force", "-u", "--set-upstream-to", "--unset-upstream", "--edit-description", "-t", "--track", "--no-track"] }
   ],
   "git-write-project": [
-    { "first": "git", "sub": ["add", "commit", "push", "pull", "checkout", "switch", "restore", "stash", "merge", "rebase", "cherry-pick", "reset", "worktree"], "scope": "project" }
+    { "first": "git", "sub": ["add", "commit", "push", "pull", "fetch", "checkout", "switch", "restore", "stash", "merge", "rebase", "cherry-pick", "reset"], "scope": "project",
+      "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] }
   ],
   "git-write-product": [
-    { "first": "git", "sub": ["add", "commit", "push", "pull", "checkout", "switch", "restore", "stash", "merge", "rebase", "cherry-pick", "reset", "worktree"], "scope": "product" }
+    { "first": "git", "sub": ["add", "commit", "push", "pull", "fetch", "checkout", "switch", "restore", "stash", "merge", "rebase", "cherry-pick", "reset", "worktree"], "scope": "product",
+      "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] }
   ],
   "gh-read": [
     { "first": "gh", "sub": ["pr view", "pr list", "pr checks", "pr diff", "pr status", "issue view", "issue list", "run view", "run list", "run watch", "repo view", "release list", "release view"] }
@@ -28,12 +38,12 @@
     { "first": "bd", "sub": ["list", "show", "ready", "prime", "where", "dep list", "dep tree", "dep cycles", "label list", "label list-all", "stats", "help", "comments list"] }
   ],
   "bd-notes": [
-    { "first": "bd", "sub": ["update"], "flags_any": ["--append-notes", "--notes"], "flags_none": ["--parent", "--claim", "--status", "--assignee", "--title", "--type", "--priority", "--add-label", "--remove-label", "--metadata", "--description", "--design", "--acceptance"] },
+    { "first": "bd", "sub": ["update"], "flags_any": ["--append-notes", "--notes"], "flags_none": ["--parent", "--claim", "--status", "--assignee", "--title", "--type", "--priority", "--add-label", "--remove-label", "--metadata", "--description", "--design", "--acceptance", "-s", "-a", "-p", "-t", "-d", "-l"] },
     { "first": "bd", "sub": ["comments add", "comment add"] }
   ],
   "bd-claim": [
-    { "first": "bd", "sub": ["update"], "flags_any": ["--claim"] },
-    { "first": "bd", "sub": ["update"], "flags_any": ["--status", "--assignee"], "flags_none": ["--parent", "--title", "--type"] },
+    { "first": "bd", "sub": ["update"], "flags_any": ["--claim"], "flags_none": ["--parent", "--title", "--type", "--priority", "--add-label", "--remove-label", "--metadata", "--description", "--design", "--acceptance", "-p", "-t", "-d", "-l"] },
+    { "first": "bd", "sub": ["update"], "flags_any": ["--status", "--assignee", "-s", "-a"], "flags_none": ["--parent", "--title", "--type", "--priority", "--add-label", "--remove-label", "--metadata", "--description", "--design", "--acceptance", "-p", "-t", "-d", "-l"] },
     { "first": "bd", "sub": ["close"] }
   ],
   "bd-create-child": [
