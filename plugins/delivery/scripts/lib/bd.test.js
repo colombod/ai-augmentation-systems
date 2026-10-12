@@ -52,6 +52,10 @@ test('list filters by label and hides closed unless all', () => {
   bd.exec(['close', 'ex-2', '--reason', 'EVIDENCE: done']);
   assert.deepEqual(bd.list({ label: 'roadmap' }).map((b) => b.id), ['ex-1']);
   assert.deepEqual(bd.list({ all: true }).map((b) => b.id).sort(), ['ex-1', 'ex-2']);
+  bd.create({ id: 'ex-3', title: 'bare' });
+  const bare = bd.list({ all: true }).find((b) => b.id === 'ex-3');
+  assert.deepEqual(bare.labels, []);
+  assert.deepEqual(bare.metadata, {});
 });
 
 test('create of an existing id throws with the bd message', () => {

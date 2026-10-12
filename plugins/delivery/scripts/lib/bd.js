@@ -25,11 +25,15 @@ function makeBd({ cwd, env } = {}) {
     return value;
   }
 
+  function normalise(b) {
+    return { ...b, type: b.issue_type !== undefined ? b.issue_type : b.type, labels: b.labels || [], metadata: b.metadata || {}, parent: b.parent || null };
+  }
+
   function show(id) {
     let b;
     try { b = one(json(['show', id, '--json'])); } catch (err) { return null; }
     if (!b) return null;
-    return { ...b, type: b.issue_type !== undefined ? b.issue_type : b.type, labels: b.labels || [], metadata: b.metadata || {}, parent: b.parent || null };
+    return normalise(b);
   }
 
   function create({ id, title, type, parent, labels, metadata, priority, description }) {
@@ -67,7 +71,7 @@ function makeBd({ cwd, env } = {}) {
     const args = ['list', '--json', '--limit', '0'];
     if (label) args.push('--label', label);
     if (all) args.push('--all');
-    return json(args) || [];
+    return (json(args) || []).map(normalise);
   }
 
   return { exec, show, create, update, depAdd, depsOf, list };
