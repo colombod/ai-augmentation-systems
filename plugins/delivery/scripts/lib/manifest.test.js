@@ -64,7 +64,7 @@ test('validateManifest reports unknown host, duplicate id, bad model, missing st
   team.roles[1].id = 'chief-of-staff';
   team.roles[2].model = 'gpt';
   delete team.roles[4].steward;
-  delete team.roles[5].steward;
+  delete team.roles[6].steward;
   const problems = validateManifest(team, hosts);
   assert.ok(problems.some((p) => p.includes('unknown host "mars"')));
   assert.ok(problems.some((p) => p.includes('duplicate role id "chief-of-staff"')));
@@ -76,7 +76,7 @@ test('expandInstances expands count into numbered instances', () => {
   const root = scratchProject();
   const { team } = loadManifest(root);
   const ids = expandInstances(team).map((i) => i.instance);
-  assert.deepEqual(ids, ['chief-of-staff', 'staffing', 'product-manager', 'delivery-lead', 'progress-observer', 'builder-1', 'builder-2']);
+  assert.deepEqual(ids, ['chief-of-staff', 'staffing', 'product-manager', 'delivery-lead', 'progress-observer', 'spike-researcher', 'builder-1', 'builder-2']);
 });
 
 test('validateManifest rejects role ids that are not path-safe', () => {
@@ -99,4 +99,16 @@ test('findProjectRoot prefers the marker project_root over the clone inside a ro
   fs.copyFileSync(path.join(TEMPLATES, 'team.json'), path.join(clone, '.delivery', 'team', 'team.json'));
   fs.writeFileSync(path.join(roleDir, '.delivery-role.json'), JSON.stringify({ instance: 'x', project_root: original }));
   assert.equal(findProjectRoot(clone), original);
+});
+
+test('validateManifest rejects an unknown runner and accepts the three known ones', () => {
+  const root = scratchProject();
+  const { team, hosts } = loadManifest(root);
+  const builder = team.roles.find((r) => r.id === 'builder');
+  builder.runner = 'magic';
+  assert.ok(validateManifest(team, hosts).some((p) => p.includes('runner "magic"')));
+  for (const r of ['superpowers', 'attractor', 'plain']) {
+    builder.runner = r;
+    assert.ok(!validateManifest(team, hosts).some((p) => p.includes('runner')));
+  }
 });
