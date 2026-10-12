@@ -49,9 +49,13 @@ function renderStatus({ rows, drift }) {
 
 if (require.main === module) {
   const idx = process.argv.indexOf('--project');
+  if (idx >= 0 && (process.argv[idx + 1] === undefined || process.argv[idx + 1].startsWith('--'))) {
+    console.error('team-status: --project needs a path'); process.exit(2);
+  }
   const root = idx >= 0 ? path.resolve(process.argv[idx + 1]) : findProjectRoot(process.cwd());
   if (!root) { console.error('team-status: no .delivery/team/team.json found from here; pass --project <root>'); process.exit(2); }
-  const status = teamStatus(root);
+  let status;
+  try { status = teamStatus(root); } catch (err) { console.error(`team-status: ${err.message}`); process.exit(2); }
   console.log(renderStatus(status));
   const any = status.drift.missing.length || status.drift.extra.length || status.drift.wrong_model.length || status.drift.stale.length;
   process.exit(any ? 1 : 0);

@@ -53,3 +53,22 @@ test('renderStatus says No drift when the roster matches', () => {
   const s = teamStatus(root, { now: NOW, staleHours: 2 });
   assert.ok(renderStatus(s).includes('No drift.'));
 });
+
+test('CLI exits 2 with a team-status message on a nonexistent project path', () => {
+  const { execFileSync } = require('child_process');
+  const scriptPath = path.join(__dirname, 'team-status.js');
+  assert.throws(
+    () => execFileSync(process.execPath, [scriptPath, '--project', '/nonexistent'], { stdio: 'pipe' }),
+    (err) => err.status === 2 && String(err.stderr).includes('team-status:')
+  );
+});
+
+test('CLI exits 1 when drift exists', () => {
+  const { execFileSync } = require('child_process');
+  const scriptPath = path.join(__dirname, 'team-status.js');
+  const root = scratchProject();
+  assert.throws(
+    () => execFileSync(process.execPath, [scriptPath, '--project', root], { stdio: 'pipe' }),
+    (err) => err.status === 1
+  );
+});
