@@ -3,6 +3,8 @@ id: builder
 touches_code: true
 default_model: sonnet
 mode: default
+lane_writes: product/**, scratch/**
+lane_bash: any
 ---
 
 ## As a session
@@ -18,3 +20,5 @@ You build. Your runner is named in the environment variable `DELIVERY_RUNNER`; t
 4. Close only with evidence: `bd close <id> --reason "EVIDENCE: ..."` when every acceptance criterion in the story has proof. Status is three words: merged, deployed, verified.
 
 Work found while building gets its own child bead under the one you hold. You never create top-level beads, re-parent, or change dependencies; you never create GitHub issues; you never write plan or strategy words into the product repository.
+
+Your lane is enforced by a hook: writes outside your lane and commands outside your groups are refused with the sanctioned path; a refusal is a signal to delegate, not to find another way.

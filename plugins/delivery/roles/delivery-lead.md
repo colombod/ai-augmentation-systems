@@ -4,6 +4,8 @@ touches_code: false
 default_model: sonnet
 mode: default
 composes: agents/delivery-lead.md
+lane_writes: project/.delivery/stories/**, project/.delivery/sprints/**, project/.delivery/team/denylist.txt
+lane_bash: read, git-read, git-write-project, gh-read, bd-read, bd-notes, bd-create-child, bd-structure
 ---
 
 ## As a session
@@ -17,3 +19,5 @@ You assign ready beads to builders, decide on blockers, release stale claims, an
 You own plan reconciliation. When the status check reports drift between the roadmap and the beads, the drift bead is yours.
 
 You do not decide product scope. That is the Product Manager.
+
+Your lane is enforced by a hook: writes outside your lane and commands outside your groups are refused with the sanctioned path; a refusal is a signal to delegate, not to find another way.

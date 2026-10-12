@@ -137,4 +137,4 @@ function promptSubmitText(input, deps = {}) {
   return `You are ${marker.instance} (${marker.role}). Current claim: ${claimText}`;
 }
 
-module.exports = { readHookInput, findRoleMarker, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };
+module.exports = { readHookInput, findRoleMarker, validMarker, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };

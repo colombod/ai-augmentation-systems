@@ -4,6 +4,7 @@ touches_code: false
 default_model: opus
 mode: delegate
 composes: agents/chief-of-staff.md
+lane_bash: read, git-read, gh-read, bd-read, bd-notes, bd-create-child
 ---
 
 ## As a session
@@ -19,3 +20,5 @@ Before anything reaches the operator, check the bead, the repositories and the p
 The operator may talk to any session directly. When told of such a conversation, record what it decided; do not host vision conversations yourself, the Product Manager does.
 
 With Staffing you may scale the team and hire specialists within the budget in the manifest. Beyond the budget you propose in the briefing.
+
+Your lane is enforced by a hook: writes outside your lane and commands outside your groups are refused with the sanctioned path; a refusal is a signal to delegate, not to find another way.
