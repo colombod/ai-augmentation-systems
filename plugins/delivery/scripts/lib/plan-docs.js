@@ -18,7 +18,11 @@ function splitCells(line) {
   for (let i = 0; i < body.length; i++) {
     const ch = body[i];
     if (ch === '\\' && body[i + 1] === '|') { cur += '|'; i++; continue; }
-    if (ch === '`') inCode = !inCode;
+    if (ch === '`') {
+      // Only open a code span when a closing backtick exists later in the row;
+      // an unmatched backtick is literal text and must not swallow later pipes.
+      if (inCode || body.indexOf('`', i + 1) !== -1) inCode = !inCode;
+    }
     if (ch === '|' && !inCode) { cells.push(cur.trim()); cur = ''; continue; }
     cur += ch;
   }

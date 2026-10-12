@@ -96,6 +96,12 @@ test('table cells are pipe-safe for escaped pipes and code spans', () => {
   assert.equal(sp.blocks, 'ex-01');
 });
 
+test('an unterminated backtick does not swallow the rest of the row', () => {
+  const md = '### Phase 1: X\n\n| Work item | Size | Confidence | Depends on |\n| :-- | :-- | :-- | :-- |\n| Fix `login | M | med | |\n';
+  const it = parseRoadmap(md).phases[0].items[0];
+  assert.deepEqual([it.title, it.size, it.confidence, it.dependsOn], ['Fix `login', 'M', 'med', '']);
+});
+
 test('listValue strips surrounding quotes', () => {
   const { listValue } = require('./plan-docs.js');
   assert.deepEqual(listValue('["a", \'b\']'), ['a', 'b']);
