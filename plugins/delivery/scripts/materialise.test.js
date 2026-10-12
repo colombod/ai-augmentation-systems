@@ -282,3 +282,15 @@ test('CLI rejects unknown flags and --check with --dry-run', () => {
     assert.throws(() => execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo', ...extra], { env, stdio: 'pipe' }), (err) => err.status === 2);
   }
 });
+
+test('applyPlan never issues a second create for a duplicated id', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  const plan = planOf(inputs);
+  const dup = { ...plan, beads: [...plan.beads, { ...plan.beads.find((b) => b.id === 'ex-demo-01'), title: 'Second copy' }] };
+  const r = applyPlan({ plan: dup, bd, initiative: 'demo' });
+  assert.equal(r.created.filter((id) => id === 'ex-demo-01').length, 1);
+  assert.ok(!r.commands.some((c) => c.startsWith('create ex-demo-01 "Second copy"')));
+  const dry = applyPlan({ plan: dup, bd: makeBd({ env: fakeEnv() }), dryRun: true, initiative: 'demo' });
+  assert.equal(dry.commands.filter((c) => c.startsWith('create ex-demo-01 ')).length, 1);
+});

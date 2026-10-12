@@ -2,7 +2,8 @@
 const { execFileSync } = require('child_process');
 
 function makeBd({ cwd, env } = {}) {
-  const opts = { cwd: cwd || process.cwd(), env: env || process.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 };
+  // `list --all` returns about 1 KB per bead; the 1 MB default buffer would fail near a thousand beads.
+  const opts = { cwd: cwd || process.cwd(), env: env || process.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000, maxBuffer: 256 * 1024 * 1024 };
 
   function exec(args) {
     try {

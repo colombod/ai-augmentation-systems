@@ -2,11 +2,31 @@
 const path = require('path');
 const { phaseNumber } = require('./plan-docs.js');
 
+function escapeRegExp(text) { return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Last line of defence: materialise must never issue two creates for one id (bd would overwrite the first). First wins.
+function uniqueBeads(beads, warnings) {
+  const seen = new Set();
+  return beads.filter((b) => {
+    if (seen.has(b.id)) { warnings.push(`duplicate bead id ${b.id}`); return false; }
+    seen.add(b.id);
+    return true;
+  });
+}
+
 function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
   const beads = [];
   const deps = [];
   const warnings = [];
-  const phases = roadmap.phases;
+  const phases = [];
+  const seenPhases = new Set();
+  for (const p of roadmap.phases) {
+    if (seenPhases.has(p.number)) { warnings.push(`duplicate phase ${p.number}`); continue; }
+    seenPhases.add(p.number);
+    phases.push(p);
+  }
+  // Story bead ids are <prefix>-<story id>; a story id shaped like a generated id would collide with an epic, review or spike.
+  const generated = new RegExp(`^${escapeRegExp(initiative)}-(ph\\d|spike-)`);
   const phaseIds = new Map();
   const reviewIds = new Map();
   const storyById = new Map();
@@ -24,6 +44,7 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
   const seenStories = new Set();
   for (const s of stories.filter((x) => x.status !== 'superseded')) {
     if (seenStories.has(s.id)) { warnings.push(`duplicate story id ${s.id}`); continue; }
+    if (generated.test(s.id)) { warnings.push(`story ${s.id}: id collides with generated ids`); continue; }
     seenStories.add(s.id);
     live.push(s);
   }
@@ -106,7 +127,7 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
     return true;
   });
 
-  return { beads, deps: uniqueDeps, warnings };
+  return { beads: uniqueBeads(beads, warnings), deps: uniqueDeps, warnings };
 }
 
 const STOPLIST = new Set(['context', 'decision', 'decisions', 'overview', 'goal', 'goals', 'non-goals', 'scope', 'out of scope', 'risks', 'risk', 'background', 'summary', 'constraints', 'requirements', 'functional requirements', 'non-functional requirements', 'assumptions', 'open questions', 'open items', 'alternatives considered', 'consequences', 'status', 'notes', 'phases', 'critical path', 'dependencies', 'buffer', 'testing', 'introduction', 'problem', 'solution']);
@@ -142,4 +163,4 @@ function denylistFrom({ initiative, roadmap, stories, spikes, briefText, prdText
   return out.sort((a, b) => a.localeCompare(b));
 }
 
-module.exports = { planGraph, denylistFrom };
+module.exports = { planGraph, denylistFrom, uniqueBeads };

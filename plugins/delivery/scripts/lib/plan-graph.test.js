@@ -1,7 +1,7 @@
 // scripts/lib/plan-graph.test.js — run with: node --test scripts/lib/plan-graph.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { planGraph, denylistFrom } = require('./plan-graph.js');
+const { planGraph, denylistFrom, uniqueBeads } = require('./plan-graph.js');
 
 const roadmap = { phases: [
   { number: '1', name: 'Foundations', done: false, items: [] },
@@ -94,6 +94,32 @@ test('planGraph guards duplicates and self-dependencies', () => {
   assert.ok(!g.deps.some((d) => d.id === 'ex-ex-05' && d.blockedBy === 'ex-ex-05'));
   const keys = g.deps.map((d) => `${d.id}|${d.blockedBy}`);
   assert.equal(new Set(keys).size, keys.length);
+});
+
+test('planGraph skips story ids that collide with generated ids and duplicate phases', () => {
+  const g = planGraph({
+    ...input,
+    roadmap: { phases: [...roadmap.phases, { number: '1', name: 'Again', done: false, items: [] }] },
+    stories: [...stories,
+      { id: 'demo-ph1', title: 'Clash', status: 'ready', phase: '1', dependsOn: [], file: '/x/a.md' },
+      { id: 'demo-spike-cos-1', title: 'Clash 2', status: 'ready', phase: '1', dependsOn: [], file: '/x/b.md' },
+      { id: 'demo-phase-notes', title: 'Fine', status: 'ready', phase: '1', dependsOn: [], file: '/x/c.md' }],
+  });
+  assert.ok(g.warnings.includes('duplicate phase 1'));
+  assert.ok(g.warnings.includes('story demo-ph1: id collides with generated ids'));
+  assert.ok(g.warnings.includes('story demo-spike-cos-1: id collides with generated ids'));
+  assert.equal(g.beads.filter((b) => b.id === 'ex-demo-ph1').length, 1);
+  assert.equal(g.beads.find((b) => b.id === 'ex-demo-ph1').title, 'Phase 1: Foundations');
+  assert.ok(g.beads.some((b) => b.id === 'ex-demo-phase-notes'));
+  const ids = g.beads.map((b) => b.id);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test('uniqueBeads keeps the first bead per id and warns', () => {
+  const warnings = [];
+  const out = uniqueBeads([{ id: 'a', title: '1' }, { id: 'b' }, { id: 'a', title: '2' }], warnings);
+  assert.deepEqual(out.map((b) => b.title || b.id), ['1', 'b']);
+  assert.deepEqual(warnings, ['duplicate bead id a']);
 });
 
 test('denylistFrom keeps distinctive phrases, drops generic and single-word entries', () => {

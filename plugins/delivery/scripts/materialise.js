@@ -72,6 +72,8 @@ function applyPlan({ plan, bd, dryRun, initiative }) {
       result.commands.push(`create ${b.id} "${b.title}"`);
       if (!dryRun) bd.create({ id: b.id, title: b.title, type: b.type, parent: b.parent || undefined, labels: b.labels, metadata: b.metadata, priority: b.priority });
       result.created.push(b.id);
+      // A second planned bead with this id must update, never create again: bd would silently overwrite it.
+      known.set(b.id, { ...b, status: 'open' });
       continue;
     }
     if (existing.status === 'closed') { result.skippedClosed.push(b.id); continue; }
