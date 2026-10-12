@@ -52,6 +52,28 @@ Every phase reads the previous artifact and **stops if it is missing** rather th
 improvising one. That gate is the point: it is what stops a confident plan being built
 on nothing.
 
+## The shipping team (phase 1)
+
+The pipeline's roles can also run as long-lived sessions, one per role, on the hosts that can do the
+work, coordinating through cross-session messages and beads. Phase 1 ships the pieces that give a
+session its role and keep it:
+
+- `roles/*.md` — the role briefs (chief-of-staff, staffing, product-manager, delivery-lead,
+  progress-observer, builder). Project-specific briefs go in the project repo under
+  `.delivery/team/briefs/`.
+- `.delivery/team/team.json` and `hosts.json` — the manifest, in the private project repo. Templates
+  under `templates/`.
+- `scripts/prepare-role.js --project <root> --instance <id>` — creates one directory per role
+  instance with its own settings (model, env, actor), a composed `CLAUDE.local.md`, a clone of the
+  project repo and, for builders, a worktree of the product repo. Start a session in that directory.
+- Hooks — SessionStart re-injects the role and registers the session in the roster; PostCompact
+  restates it after compaction; UserPromptSubmit adds a one-line reminder with the current claim.
+- `/delivery:join` — confirms the role in-session, primes beads, reports to the Chief of Staff.
+- `/delivery:team` — roster versus manifest: live, stale, missing, wrong model.
+
+Design: `.superpowers/specs/2026-10-12-shipping-team-design.md`. Provisioning, hiring, deploy and
+the plan-to-beads materialise step are later phases.
+
 ## Using it with superpowers
 
 [superpowers](https://github.com/obra/superpowers) has its own chain:
