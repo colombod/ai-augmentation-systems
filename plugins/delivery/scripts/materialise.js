@@ -12,12 +12,15 @@ const { makeBd } = require('./lib/bd.js');
 
 function readIf(file) { return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''; }
 
-// The ref tracks the roadmap file itself: last commit touching it, else a content hash (uncommitted or no git).
+// The ref tracks the roadmap file itself: last commit touching it (suffixed `+` when the file has uncommitted
+// changes), else a content hash (never committed, or no git).
 function roadmapSha(root, initiative, text) {
   try {
     const rel = path.join('.delivery', 'initiatives', initiative, 'roadmap.md');
-    const sha = execFileSync('git', ['-C', root, 'log', '-1', '--format=%h', '--', rel], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
-    if (sha) return sha;
+    const git = (args) => execFileSync('git', ['-C', root, ...args], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    const sha = git(['log', '-1', '--format=%h', '--', rel]);
+    // An uncommitted edit to a committed roadmap is marked `+` so --check sees it as drift.
+    if (sha) return git(['status', '--porcelain', '--', rel]) ? `${sha}+` : sha;
   } catch (err) { /* fall through to the content hash */ }
   return `h${crypto.createHash('sha256').update(text).digest('hex').slice(0, 7)}`;
 }
@@ -116,36 +119,60 @@ function applyPlan({ plan, bd, dryRun, initiative }) {
   return result;
 }
 
-function reconcile({ plan, bd, roadmap }) {
-  const out = { storiesWithoutBead: [], staleRef: [], closedNotRealigned: [], unknownRoadmapBeads: [], depDrift: [] };
+function refSha(ref) { const m = /@(\S+) phase /.exec(ref || ''); return m ? m[1] : 'none'; }
+
+// What would applyPlan change on this bead? Field names; roadmap_ref reported on its own.
+function beadDiff(existing, planned) {
+  const fields = [];
+  if (existing.title !== planned.title) fields.push('title');
+  if ((existing.parent || null) !== (planned.parent || null)) fields.push('parent');
+  if (planned.labels.some((l) => !(existing.labels || []).includes(l))) fields.push('labels');
+  const meta = existing.metadata || {};
+  for (const k of Object.keys(planned.metadata)) if (JSON.stringify(meta[k]) !== JSON.stringify(planned.metadata[k])) fields.push(k);
+  return fields;
+}
+
+function reconcile({ plan, bd, roadmap, initiative }) {
+  if (!initiative) throw new Error('reconcile: initiative is required');
+  const out = { storiesWithoutBead: [], spikesWithoutBead: [], staleRef: [], titleDrift: [], parentDrift: [], otherDrift: [], closedNotRealigned: [], unknownRoadmapBeads: [], depDrift: [] };
   const planned = new Map(plan.beads.map((b) => [b.id, b]));
   const doneByPhase = new Map(roadmap.phases.map((p) => [p.number, p.done]));
   const known = new Map(bd.list({ all: true }).map((x) => [x.id, x]));
-  const initiative = ((plan.beads[0] || {}).metadata || {}).roadmap_ref ? plan.beads[0].metadata.roadmap_ref.split('/')[0] : '';
   for (const b of plan.beads) {
     const existing = known.get(b.id);
-    if (!existing) { if (b.labels.includes('story')) out.storiesWithoutBead.push(b.id); continue; }
-    if (existing.status !== 'closed' && (existing.metadata || {}).roadmap_ref !== b.metadata.roadmap_ref) {
-      out.staleRef.push({ id: b.id, expected: b.metadata.roadmap_ref, actual: (existing.metadata || {}).roadmap_ref || '' });
+    if (!existing) {
+      if (b.labels.includes('story')) out.storiesWithoutBead.push(b.id);
+      if (b.labels.includes('spike')) out.spikesWithoutBead.push(b.id);
+      continue;
     }
     if (b.labels.includes('phase-review') && existing.status === 'closed') {
       const phase = b.docId.replace(/^phase-/, '').replace(/-review$/, '');
       if (!doneByPhase.get(phase)) out.closedNotRealigned.push(b.id);
     }
+    if (existing.status === 'closed') continue;
+    const fields = beadDiff(existing, b);
+    if (!fields.length) continue;
+    if (fields.length === 1 && fields[0] === 'roadmap_ref') {
+      out.staleRef.push({ id: b.id, expected: b.metadata.roadmap_ref, actual: (existing.metadata || {}).roadmap_ref || '' });
+      continue;
+    }
+    if (fields.includes('title')) out.titleDrift.push({ id: b.id, expected: b.title, actual: existing.title });
+    if (fields.includes('parent')) out.parentDrift.push({ id: b.id, expected: b.parent || null, actual: existing.parent || null });
+    const rest = fields.filter((f) => f !== 'title' && f !== 'parent' && f !== 'roadmap_ref');
+    if (rest.length) out.otherDrift.push({ id: b.id, fields: rest });
   }
   const want = plannedBlockers(plan);
   for (const b of plan.beads) {
     const existing = known.get(b.id);
     if (!existing || existing.status === 'closed') continue;
     const have = bd.depsOf(b.id);
-    const planned = want.get(b.id) || [];
-    const missing = planned.filter((x) => !have.includes(x));
-    const extra = have.filter((x) => !planned.includes(x) && isMaterialised(known.get(x), initiative));
+    const wanted = want.get(b.id) || [];
+    const missing = wanted.filter((x) => !have.includes(x));
+    const extra = have.filter((x) => !wanted.includes(x) && isMaterialised(known.get(x), initiative));
     if (missing.length || extra.length) out.depDrift.push({ id: b.id, missing, extra });
   }
   for (const b of known.values()) {
-    const m = b.metadata || {};
-    if (b.labels.includes('roadmap') && m.materialised_by === 'delivery' && b.status !== 'closed' && String(m.roadmap_ref || '').startsWith(`${initiative}/`) && !planned.has(b.id)) out.unknownRoadmapBeads.push(b.id);
+    if (b.labels.includes('roadmap') && b.status !== 'closed' && isMaterialised(b, initiative) && !planned.has(b.id)) out.unknownRoadmapBeads.push(b.id);
   }
   return out;
 }
@@ -157,15 +184,23 @@ function writeDenylist(projectRoot, entries) {
   return file;
 }
 
-function hasDrift(d) { return d.storiesWithoutBead.length || d.staleRef.length || d.closedNotRealigned.length || d.unknownRoadmapBeads.length || d.depDrift.length; }
+function hasDrift(d) { return Object.values(d).some((v) => Array.isArray(v) && v.length > 0); }
 
 function renderDrift(d) {
   const lines = ['## Plan drift'];
+  if (d.staleRef.length) {
+    const olds = [...new Set(d.staleRef.map((x) => refSha(x.actual)))].join(', ');
+    const news = [...new Set(d.staleRef.map((x) => refSha(x.expected)))].join(', ');
+    lines.push(`Roadmap changed since last materialise (${olds}→${news}): ${d.staleRef.length} beads to refresh (run /delivery:materialise)`);
+  }
+  for (const x of d.titleDrift) lines.push(`Title drift: ${x.id} has "${x.actual}", plan says "${x.expected}"`);
+  for (const x of d.parentDrift) lines.push(`Phase drift: ${x.id} is under ${x.actual || 'no epic'}, plan says ${x.expected || 'no epic'}`);
+  for (const x of d.otherDrift) lines.push(`Bead out of date: ${x.id} (${x.fields.join(', ')})`);
   if (d.storiesWithoutBead.length) lines.push(`Stories without a bead: ${d.storiesWithoutBead.join(', ')}`);
-  for (const s of d.staleRef) lines.push(`Stale roadmap_ref: ${s.id} expected ${s.expected}, has ${s.actual || 'none'}`);
+  if (d.spikesWithoutBead.length) lines.push(`Spikes without a bead: ${d.spikesWithoutBead.join(', ')}`);
+  for (const x of d.depDrift) lines.push(`Dependency drift: ${x.id} missing [${x.missing.join(', ')}] extra [${x.extra.join(', ')}]`);
   if (d.closedNotRealigned.length) lines.push(`Phase review closed but roadmap not marked (done): ${d.closedNotRealigned.join(', ')}`);
   if (d.unknownRoadmapBeads.length) lines.push(`Roadmap beads not in the plan: ${d.unknownRoadmapBeads.join(', ')}`);
-  for (const x of d.depDrift) lines.push(`Dependency drift: ${x.id} missing [${x.missing.join(', ')}] extra [${x.extra.join(', ')}]`);
   return lines.join('\n');
 }
 
@@ -193,7 +228,7 @@ if (require.main === module) {
   try {
     const plan = planGraph({ prefix: inputs.team.prefix, initiative: args.initiative, sha: inputs.sha, roadmap: inputs.roadmap, stories: inputs.stories, spikes: inputs.spikes });
     if (args.flags.has('check')) {
-      const d = reconcile({ plan, bd, roadmap: inputs.roadmap });
+      const d = reconcile({ plan, bd, roadmap: inputs.roadmap, initiative: args.initiative });
       if (hasDrift(d)) { console.log(renderDrift(d)); process.exit(1); }
       console.log('No plan drift.');
       process.exit(0);

@@ -40,6 +40,9 @@ function scratchProject() {
   return root;
 }
 
+const planOf = (inputs, sha, stories) => planGraph({ prefix: 'ex', initiative: 'demo', sha: sha || inputs.sha, roadmap: inputs.roadmap, stories: stories || inputs.stories, spikes: inputs.spikes });
+const extraStory = { id: 'demo-03', title: 'Third', status: 'ready', phase: '1', dependsOn: [], file: '/x/demo-03.md' };
+
 test('loadInputs reads everything and the git sha', () => {
   const root = scratchProject();
   const inputs = loadInputs({ projectRoot: root, initiative: 'demo' });
@@ -96,22 +99,61 @@ test('applyPlan dryRun writes nothing and lists commands', () => {
   assert.ok(r.commands.some((c) => c.startsWith('dep ex-demo-02 blocked-by ex-demo-ph1-review')));
 });
 
+const CLEAN = { storiesWithoutBead: [], spikesWithoutBead: [], staleRef: [], titleDrift: [], parentDrift: [], otherDrift: [], closedNotRealigned: [], unknownRoadmapBeads: [], depDrift: [] };
+
 test('reconcile reports each drift class', () => {
   const root = scratchProject();
   const bd = makeBd({ env: fakeEnv() });
   const inputs = loadInputs({ projectRoot: root, initiative: 'demo' });
   const plan = planGraph({ prefix: 'ex', initiative: 'demo', sha: inputs.sha, roadmap: inputs.roadmap, stories: inputs.stories, spikes: inputs.spikes });
   applyPlan({ plan, bd, initiative: 'demo' });
-  assert.deepEqual(reconcile({ plan, bd, roadmap: inputs.roadmap }), { storiesWithoutBead: [], staleRef: [], closedNotRealigned: [], unknownRoadmapBeads: [], depDrift: [] });
-  // drift: a new story without a bead, a stale ref, a closed review, a stray roadmap bead
+  assert.deepEqual(reconcile({ plan, bd, roadmap: inputs.roadmap, initiative: 'demo' }), CLEAN);
+  // drift: a new story without a bead, a sha-only change, a closed review, a stray roadmap bead
   const planB = planGraph({ prefix: 'ex', initiative: 'demo', sha: 'zzz', roadmap: inputs.roadmap, stories: [...inputs.stories, { id: 'demo-03', title: 'Third', status: 'ready', phase: '2', dependsOn: [], file: '/x/demo-03.md' }], spikes: inputs.spikes });
   bd.exec(['close', 'ex-demo-ph1-review', '--reason', 'EVIDENCE: reviewed']);
   bd.create({ id: 'ex-stray', title: 'stray', labels: ['roadmap'], metadata: { materialised_by: 'delivery', roadmap_ref: 'demo/roadmap.md@x phase 1' } });
-  const d = reconcile({ plan: planB, bd, roadmap: inputs.roadmap });
+  const d = reconcile({ plan: planB, bd, roadmap: inputs.roadmap, initiative: 'demo' });
   assert.deepEqual(d.storiesWithoutBead, ['ex-demo-03']);
   assert.ok(d.staleRef.some((x) => x.id === 'ex-demo-ph2' && x.expected.includes('@zzz')));
+  assert.equal(d.staleRef.length, 6);
   assert.deepEqual(d.closedNotRealigned, ['ex-demo-ph1-review']);
   assert.deepEqual(d.unknownRoadmapBeads, ['ex-stray']);
+  assert.deepEqual(d.depDrift, [{ id: 'ex-demo-ph2-review', missing: ['ex-demo-03'], extra: [] }]);
+  const text = renderDrift(d);
+  assert.ok(text.includes(`Roadmap changed since last materialise (${inputs.sha}→zzz): 6 beads to refresh (run /delivery:materialise)`));
+  assert.ok(!text.includes('Stale roadmap_ref'));
+  assert.equal(text.split('\n').filter((l) => l.includes('ex-demo-ph2 ')).length, 0);
+});
+
+test('reconcile reports title, phase and missing-spike drift individually', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  const moved = inputs.stories.map((x) => (x.id === 'demo-02' ? { ...x, phase: '1', title: 'Second, renamed' } : x));
+  const spikes = [...inputs.spikes, { key: '2', question: 'New?', timeBox: '1h', blocks: 'Phase 2' }];
+  const plan = planGraph({ prefix: 'ex', initiative: 'demo', sha: inputs.sha, roadmap: inputs.roadmap, stories: moved, spikes });
+  const d = reconcile({ plan, bd, roadmap: inputs.roadmap, initiative: 'demo' });
+  assert.deepEqual(d.titleDrift, [{ id: 'ex-demo-02', expected: 'Second, renamed', actual: 'Second story' }]);
+  assert.deepEqual(d.parentDrift, [{ id: 'ex-demo-02', expected: 'ex-demo-ph1', actual: 'ex-demo-ph2' }]);
+  assert.deepEqual(d.spikesWithoutBead, ['ex-demo-spike-2']);
+  assert.deepEqual(d.staleRef, []);
+  const text = renderDrift(d);
+  assert.match(text, /Title drift: ex-demo-02/);
+  assert.match(text, /Phase drift: ex-demo-02 is under ex-demo-ph2, plan says ex-demo-ph1/);
+  assert.match(text, /Spikes without a bead: ex-demo-spike-2/);
+});
+
+test('an uncommitted roadmap edit shows as drift via a + sha', () => {
+  const root = scratchProject();
+  const env = fakeEnv();
+  const script = path.join(PLUGIN, 'scripts', 'materialise.js');
+  execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo'], { env });
+  const committed = loadInputs({ projectRoot: root, initiative: 'demo' }).sha;
+  const file = path.join(root, '.delivery', 'initiatives', 'demo', 'roadmap.md');
+  fs.appendFileSync(file, '\n<!-- edited -->\n');
+  assert.equal(loadInputs({ projectRoot: root, initiative: 'demo' }).sha, `${committed}+`);
+  assert.throws(() => execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo', '--check'], { env, stdio: 'pipe' }),
+    (err) => err.status === 1 && String(err.stdout).includes(`Roadmap changed since last materialise (${committed}→${committed}+)`));
 });
 
 test('writeDenylist writes one entry per line', () => {
@@ -133,8 +175,6 @@ test('CLI materialises then reports no drift, and exits 1 on drift', () => {
   assert.throws(() => execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo', '--check'], { env, stdio: 'pipe' }), (err) => err.status === 1 && String(err.stdout).includes('ex-demo-03'));
 });
 
-const planOf = (inputs, sha, stories) => planGraph({ prefix: 'ex', initiative: 'demo', sha: sha || inputs.sha, roadmap: inputs.roadmap, stories: stories || inputs.stories, spikes: inputs.spikes });
-const extraStory = { id: 'demo-03', title: 'Third', status: 'ready', phase: '1', dependsOn: [], file: '/x/demo-03.md' };
 
 test('applyPlan never adds deps to a closed bead and reports them as skippedDeps', () => {
   const bd = makeBd({ env: fakeEnv() });
