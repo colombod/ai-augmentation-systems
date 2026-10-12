@@ -21,7 +21,7 @@ function parse(argv) {
       const key = a.slice(2);
       const next = argv[i + 1];
       if (next === undefined || next.startsWith('--')) { flags[key] = true; continue; }
-      if (key === 'add-label') { (flags[key] = flags[key] || []).push(next); } else { flags[key] = next; }
+      if (key === 'add-label' || key === 'remove-label') { (flags[key] = flags[key] || []).push(next); } else { flags[key] = next; }
       i++;
     } else if (a === '-p' || a === '-t' || a === '-l' || a === '-d' || a === '-a') {
       const map = { '-p': 'priority', '-t': 'type', '-l': 'labels', '-d': 'description', '-a': 'assignee' };
@@ -83,6 +83,7 @@ switch (cmd) {
     if (flags.title) b.title = flags.title;
     if (flags.parent !== undefined) b.parent = flags.parent || null;
     if (flags['add-label']) for (const l of flags['add-label']) if (!b.labels.includes(l)) b.labels.push(l);
+    if (flags['remove-label']) b.labels = b.labels.filter((l) => !flags['remove-label'].includes(l));
     if (flags.metadata) Object.assign(b.metadata, JSON.parse(flags.metadata));
     if (flags['append-notes']) b.notes = b.notes ? `${b.notes}\n${flags['append-notes']}` : flags['append-notes'];
     if (flags.status) b.status = flags.status;

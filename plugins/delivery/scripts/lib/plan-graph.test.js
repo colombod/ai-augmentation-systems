@@ -23,33 +23,33 @@ const input = { prefix: 'ex', initiative: 'demo', sha: 'abc1234', roadmap, stori
 test('planGraph emits deterministic ids, parents, labels and metadata', () => {
   const g = planGraph(input);
   const ids = g.beads.map((b) => b.id);
-  assert.deepEqual(ids, ['ex-ph1', 'ex-ph2', 'ex-ex-01', 'ex-spike-cos-1', 'ex-spike-3', 'ex-ph1-review', 'ex-ex-02', 'ex-spike-2', 'ex-ph2-review']);
+  assert.deepEqual(ids, ['ex-demo-ph1', 'ex-demo-ph2', 'ex-ex-01', 'ex-demo-spike-cos-1', 'ex-demo-spike-3', 'ex-demo-ph1-review', 'ex-ex-02', 'ex-demo-spike-2', 'ex-demo-ph2-review']);
   const epic = g.beads[0];
   assert.equal(epic.title, 'Phase 1: Foundations');
   assert.equal(epic.type, 'epic');
   assert.deepEqual(epic.labels, ['roadmap', 'phase-1']);
   assert.equal(epic.metadata.roadmap_ref, 'demo/roadmap.md@abc1234 phase 1');
   const story = g.beads.find((b) => b.id === 'ex-ex-01');
-  assert.equal(story.parent, 'ex-ph1');
+  assert.equal(story.parent, 'ex-demo-ph1');
   assert.equal(story.metadata.story, 'ex-01');
   assert.equal(story.metadata.story_file, 'ex-01-first.md');
-  const spike = g.beads.find((b) => b.id === 'ex-spike-2');
-  assert.equal(spike.parent, 'ex-ph2');
+  const spike = g.beads.find((b) => b.id === 'ex-demo-spike-2');
+  assert.equal(spike.parent, 'ex-demo-ph2');
   assert.equal(spike.title, 'Spike 2: Is bd --id stable?');
 });
 
 test('planGraph chains phases, reviews, stories and spikes', () => {
   const g = planGraph(input);
   const has = (id, blockedBy) => g.deps.some((d) => d.id === id && d.blockedBy === blockedBy);
-  assert.ok(has('ex-ex-02', 'ex-ph1-review'));
-  assert.ok(has('ex-spike-2', 'ex-ph1-review'));
-  assert.ok(!g.deps.some((d) => d.id === 'ex-ph2'));
-  assert.ok(has('ex-ph1-review', 'ex-ex-01'));
-  assert.ok(has('ex-ph1-review', 'ex-spike-cos-1'));
+  assert.ok(has('ex-ex-02', 'ex-demo-ph1-review'));
+  assert.ok(has('ex-demo-spike-2', 'ex-demo-ph1-review'));
+  assert.ok(!g.deps.some((d) => d.id === 'ex-demo-ph2'));
+  assert.ok(has('ex-demo-ph1-review', 'ex-ex-01'));
+  assert.ok(has('ex-demo-ph1-review', 'ex-demo-spike-cos-1'));
   assert.ok(has('ex-ex-02', 'ex-ex-01'));
-  assert.ok(has('ex-ex-02', 'ex-spike-2'));
-  assert.ok(has('ex-ph2-review', 'ex-ex-02'));
-  assert.ok(!g.deps.some((d) => d.blockedBy === 'ex-spike-3'));
+  assert.ok(has('ex-ex-02', 'ex-demo-spike-2'));
+  assert.ok(has('ex-demo-ph2-review', 'ex-ex-02'));
+  assert.ok(!g.deps.some((d) => d.blockedBy === 'ex-demo-spike-3'));
 });
 
 test('planGraph warns on orphans and unmatched blocks, skips superseded', () => {
@@ -78,7 +78,7 @@ test('planGraph guards duplicates and self-dependencies', () => {
   });
   assert.ok(g.warnings.includes('duplicate spike key cos-1'));
   assert.ok(g.warnings.includes('story ex-05: depends_on itself'));
-  assert.equal(g.beads.filter((b) => b.id === 'ex-spike-cos-1').length, 1);
+  assert.equal(g.beads.filter((b) => b.id === 'ex-demo-spike-cos-1').length, 1);
   assert.ok(!g.deps.some((d) => d.id === 'ex-ex-05' && d.blockedBy === 'ex-ex-05'));
   const keys = g.deps.map((d) => `${d.id}|${d.blockedBy}`);
   assert.equal(new Set(keys).size, keys.length);

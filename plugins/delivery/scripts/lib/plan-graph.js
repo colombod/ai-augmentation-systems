@@ -14,7 +14,7 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
   const base = (n, docId) => ({ roadmap_ref: ref(n), doc_id: docId, materialised_by: 'delivery' });
 
   for (const p of phases) {
-    const id = `${prefix}-ph${p.number}`;
+    const id = `${prefix}-${initiative}-ph${p.number}`;
     phaseIds.set(p.number, id);
     reviewIds.set(p.number, `${id}-review`);
     beads.push({ id, title: `Phase ${p.number}: ${p.name}`, type: 'epic', parent: null, labels: ['roadmap', `phase-${p.number}`], metadata: base(p.number, `phase-${p.number}`), priority: 1, docId: `phase-${p.number}` });
@@ -40,7 +40,7 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
   for (const sp of spikes) {
     if (seenSpikes.has(sp.key)) { warnings.push(`duplicate spike key ${sp.key}`); continue; }
     seenSpikes.add(sp.key);
-    const id = `${prefix}-spike-${sp.key}`;
+    const id = `${prefix}-${initiative}-spike-${sp.key}`;
     const blocksPhase = phaseNumber(sp.blocks);
     let phase = null;
     let unmatched = false;
