@@ -14,9 +14,9 @@ Spec: `plugins/delivery/.superpowers/specs/2026-10-12-shipping-team-design.md` s
 
 - Plain Node, no dependencies, no package.json. Tests with `node --test`. Paths relative to `plugins/delivery/` unless they start with `plugins/`.
 - Every `bd` call goes through `scripts/lib/bd.js` using `execFileSync` with an argv array, never a shell string. Tests use the fake `bd` at `scripts/test/fake-bd.js` by prepending its directory to `PATH`; no test calls the real `bd`.
-- Bead ids are deterministic and derived only from the manifest prefix and document ids: epic `<prefix>-ph<N>`, phase review `<prefix>-ph<N>-review`, story `<prefix>-<story id>`, spike `<prefix>-spike-<key>` where `<key>` is the spike table's `#` column lower-cased with non `[a-z0-9]` runs replaced by `-`. Materialise never generates a random id.
+- Bead ids are deterministic and derived only from the manifest prefix, the initiative slug and document ids: epic `<prefix>-<initiative>-ph<N>`, phase review `<prefix>-<initiative>-ph<N>-review`, story `<prefix>-<story id>` (story ids already carry their epic slug), spike `<prefix>-<initiative>-spike-<key>` where `<key>` is the spike table's `#` column lower-cased with non `[a-z0-9]` runs replaced by `-`. Materialise never generates a random id. (Amended after Task 4 review: ids without the initiative collided across initiatives.)
 - Structure flows document to beads only. Materialise creates and updates beads and dependencies; it never closes, deletes or re-assigns a bead, and never touches a bead that is `closed`.
-- Every bead materialise creates carries metadata `{"roadmap_ref":"<initiative>/roadmap.md@<sha> phase <N>", "doc_id":"<story or spike id or phase>", "materialised_by":"delivery"}` and the label `roadmap`. The `<sha>` is the git short sha of the project repo HEAD when materialise ran.
+- Every bead materialise creates carries metadata `{"roadmap_ref":"<initiative>/roadmap.md@<sha> phase <N>", "doc_id":"<story or spike id or phase>", "materialised_by":"delivery"}` and the label `roadmap`. The `<sha>` is the short sha of the last commit that touched the initiative's `roadmap.md` (`git log -1 --format=%h -- <file>`), or `h` + the first 7 hex chars of the roadmap text's sha256 when uncommitted or outside git, so refs do not churn on unrelated commits. (Amended after Task 4 review.)
 - Runner values are exactly `superpowers`, `attractor`, `plain`.
 - Real `bd` 1.2 facts (probed 2026-10-12, binding): `show --json` returns a one-element array with `issue_type`, `parent`, and `labels`/`metadata` absent when empty; `create --id` cannot take `--parent` (set it with `update --parent` afterwards); `create --id` of an existing id silently overwrites, so existence is always checked with `show` first; a task cannot block an epic, so dependencies are only ever between tasks; `dep list <id> --json` returns the blocker issues themselves with `dependency_type: "blocks"` (parent appears as `parent-child`); `update --metadata` merges.
 - Plugin version bumps from 0.17.0 to 0.18.0 in the last task. All work on branch `delivery-shipping-team-2a` cut from `delivery-shipping-team`. Commit after every task with a `Co-Authored-By` trailer naming the model that ran.
@@ -1292,7 +1292,7 @@ Only the Delivery Lead runs this without `--check`; anyone may run `--check`. St
 
 1. Resolve the project root (marker `project_root`, then `DELIVERY_PROJECT_ROOT`, then upward search) and the initiative slug from `$ARGUMENTS` or the current initiative. Confirm `bd prime` answers; if not, stop and say so.
 2. Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/materialise.js --project <root> --initiative <slug> --dry-run` and show the command list. If the warnings name a story with a phase not in the roadmap, or a spike whose `Blocks` matched nothing, fix the document first (or tell the Product Manager) rather than materialising around it.
-3. Run it again without `--dry-run`. Show the summary line and the warnings verbatim. Append one note to the first phase epic: `bd update <prefix>-ph<first> --append-notes "<date>: materialised <initiative>/roadmap.md@<sha> by <your instance>"`.
+3. Run it again without `--dry-run`. Show the summary line and the warnings verbatim. Append one note to the first phase epic: `bd update <prefix>-<initiative>-ph<first> --append-notes "<date>: materialised <initiative>/roadmap.md@<sha> by <your instance>"`.
 4. Commit `.delivery/team/denylist.txt` in the project repository (`git add .delivery/team/denylist.txt && git commit -m "team: denylist from materialise <sha>"`) and tell the operator through the Chief of Staff that the denylist changed, so they can review it once.
 5. With `--check`: run with `--check`, show the output verbatim, and say who owns each drift class: stories without a bead, stale references and stray roadmap beads are yours (re-run materialise or fix the document); a closed phase review with the roadmap not marked `(done)` belongs to the Product Manager (run realign).
 ```
@@ -1308,8 +1308,8 @@ Only the Delivery Lead runs this without `--check`; anyone may run `--check`. St
 ```markdown
 - `/delivery:materialise <initiative>` — turns `roadmap.md`, the stories and the architecture spikes into
   beads: one epic per phase chained by a phase-review bead, one task per story, one task per spike
-  blocking the story or phase it derisks. Deterministic ids (`<prefix>-ph<N>`, `<prefix>-<story id>`,
-  `<prefix>-spike-<key>`), idempotent, never touches closed beads. `--check` reports drift. It also
+  blocking the story or phase it derisks. Deterministic ids (`<prefix>-<initiative>-ph<N>`, `<prefix>-<story id>`,
+  `<prefix>-<initiative>-spike-<key>`), idempotent, never touches closed beads. `--check` reports drift. It also
   writes `.delivery/team/denylist.txt`, the phrases the leak-prevention hooks block in the product repo.
 - Runners. A builder's manifest entry names its runner: `superpowers`, `attractor` (the attractor
   plugin's pipeline), or `plain`. Delivery plans, dispatches and reviews; the runner builds.
