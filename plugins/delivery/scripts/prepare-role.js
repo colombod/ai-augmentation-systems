@@ -34,10 +34,11 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   const projectDir = path.join(roleDir, 'project');
   if (!fs.existsSync(path.join(projectDir, '.git'))) {
     git(roleDir, 'clone', '--quiet', projectRoot, 'project');
-    const realRemote = remoteOf(projectRoot);
-    if (realRemote) git(projectDir, 'remote', 'set-url', 'origin', realRemote);
     files.push(projectDir);
   }
+  // Reconcile origin every run so a half-failed earlier run self-heals.
+  const realRemote = remoteOf(projectRoot);
+  if (realRemote) git(projectDir, 'remote', 'set-url', 'origin', realRemote);
 
   if (brief.meta.touches_code && productRepo) {
     const productDir = path.join(roleDir, 'product');

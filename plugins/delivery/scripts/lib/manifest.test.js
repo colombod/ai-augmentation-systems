@@ -78,3 +78,9 @@ test('expandInstances expands count into numbered instances', () => {
   const ids = expandInstances(team).map((i) => i.instance);
   assert.deepEqual(ids, ['chief-of-staff', 'staffing', 'product-manager', 'delivery-lead', 'progress-observer', 'builder-1', 'builder-2']);
 });
+
+test('validateManifest rejects role ids that are not path-safe', () => {
+  const { team, hosts } = loadManifest(scratchProject());
+  team.roles[0].id = '../evil';
+  assert.ok(validateManifest(team, hosts).some((p) => p.includes('role id "../evil" must match ^[a-z0-9][a-z0-9-]*$')));
+});

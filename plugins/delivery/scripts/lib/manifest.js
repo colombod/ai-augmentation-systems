@@ -54,6 +54,7 @@ function validateManifest(team, hosts) {
     if (!role.id) { problems.push('team.json: role without "id"'); continue; }
     if (seen.has(role.id)) problems.push(`team.json: duplicate role id "${role.id}"`);
     seen.add(role.id);
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(role.id)) problems.push(`team.json: role id "${role.id}" must match ^[a-z0-9][a-z0-9-]*$`);
     if (!role.brief) problems.push(`team.json: role "${role.id}" has no "brief"`);
     if (!hostNames.has(role.host)) problems.push(`team.json: role "${role.id}" has unknown host "${role.host}"`);
     if (!MODELS.has(role.model)) problems.push(`team.json: role "${role.id}" has model "${role.model}", expected one of ${[...MODELS].join(', ')}`);

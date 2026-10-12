@@ -84,3 +84,15 @@ test('prepareRole refuses an instance that is not in the manifest', () => {
   const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
   assert.throws(() => prepareRole({ projectRoot, instance: 'wizard', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' }), /unknown instance "wizard"/);
 });
+
+test('prepareRole rewrites origin to the project remote, or keeps the local path when there is none', () => {
+  const withRemote = scratchProjectRepo();
+  git(withRemote, 'remote', 'add', 'origin', 'https://example.invalid/proj.git');
+  const teamA = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const a = prepareRole({ projectRoot: withRemote, instance: 'staffing', teamDir: teamA, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  assert.equal(git(path.join(a.roleDir, 'project'), 'remote', 'get-url', 'origin').trim(), 'https://example.invalid/proj.git');
+  const noRemote = scratchProjectRepo();
+  const teamB = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const b = prepareRole({ projectRoot: noRemote, instance: 'staffing', teamDir: teamB, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  assert.equal(git(path.join(b.roleDir, 'project'), 'remote', 'get-url', 'origin').trim(), noRemote);
+});
