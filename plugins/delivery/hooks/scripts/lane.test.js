@@ -368,3 +368,33 @@ test('R5: MCP tools are read-only for allowlist roles', () => {
   assert.equal(allow('mcp__Claude_Browser__navigate'), true);
   assert.equal(decideLane({ toolName: 'mcp__Claude_Browser__navigate', toolInput: {}, policy: pm, ...ctx({ hostHeadless: true }) }).allow, false);
 });
+
+// Fix round 3b: single-quoted text is never expanded by bash, so it is exempt from the expansion check;
+// a quoted command word is not, and a single-quoted flag still counts as that flag.
+const ROUND3B = [
+  ["grep -n 'phase [0-9]*' roadmap.md", COS, true],
+  ["jq -r '.[] | .id' x.json", COS, true],
+  ["bd update x --append-notes 'done? yes! $5 [ok]'", COS, true],
+  ["git log -1 '{--output=x,-1}'", COS, true],
+  ["cat '~/x'", COS, true],
+  ['git log -1 {--output=x,-1}', COS, false],
+  ["'cat' x", COS, false],
+  ['"cat" x', COS, false],
+  ['c\\at x', COS, false],
+  ["git log -1 '--output=x'", COS, false],
+  ['echo "it\'s $X"', COS, false],
+  ["echo $'a'", COS, false],
+  ["echo 'a'$X", COS, false],
+  ["echo 'a\\'$(id)'", COS, false],
+  ['cat "~/x"', COS, false],
+  ['bd update x --append-notes "done? yes!"', COS, false],
+];
+
+test('round 3b: single-quoted text is exempt from the expansion check, not from argv0 or flag rules', () => {
+  const failures = [];
+  for (const [command, role, expected] of ROUND3B) {
+    const d = decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], cwd: path.join(roleDir, 'project'), ...ctx() });
+    if (d.allow !== expected) failures.push(role + ': ' + JSON.stringify(command) + ' -> ' + d.allow);
+  }
+  assert.deepEqual(failures, []);
+});

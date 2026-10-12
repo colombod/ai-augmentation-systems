@@ -136,9 +136,31 @@ const EXPANSION_CHARS = /[{}*?[\]$`!]/;
 const EXPANSION_SEQ = /<<|<\(|>\(|\\\n/;
 const PLUGIN_ROOT_ARG = /^(node[ \t]+"?)(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT)(?=\/)/;
 
-function hasExpansion(raw, t) {
-  const s = raw.replace(PLUGIN_ROOT_ARG, '$1ROOT');
-  return EXPANSION_CHARS.test(s) || EXPANSION_SEQ.test(s) || t.some((x) => x.startsWith('~'));
+// The raw segment with the contents of single-quoted spans blanked: bash never expands them.
+// A ' inside double quotes is literal and opens nothing; $'...' keeps its $ outside the span.
+function blankSingleQuoted(raw) {
+  let out = '';
+  let q = null;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (q === "'") { if (c === "'") { q = null; out += c; } else out += '_'; continue; }
+    if (c === '\\') { out += c + (i + 1 < raw.length ? raw[i + 1] : ''); i++; continue; }
+    if (q === '"') { if (c === '"') q = null; out += c; continue; }
+    if (c === '"' || c === "'") q = c;
+    out += c;
+  }
+  return out;
+}
+
+function hasExpansion(raw) {
+  const s = blankSingleQuoted(raw.replace(PLUGIN_ROOT_ARG, '$1ROOT'));
+  return EXPANSION_CHARS.test(s) || EXPANSION_SEQ.test(s) || /(^|\s)"?~/.test(s);
+}
+
+// The command word must be a plain word: no quotes or escapes ('cat', c\at, "rm").
+function quotedCommandWord(raw) {
+  const first = raw.trimStart().split(/\s/)[0] || '';
+  return /['"\\]/.test(first);
 }
 
 // A leading VAR=value or `env` changes how the command runs (GIT_DIR, PATH, LD_PRELOAD...).
@@ -278,7 +300,7 @@ function classifySegment(seg, groups, ctx) {
     if (!t.length) return [];
     const g = groups && typeof groups === 'object' ? groups : {};
     const guarded = hasRedirect(text) || hasSubstitution(text) || writesFiles(t);
-    if (hasEnvPrefix(t) || hasExpansion(text, t)) return !guarded && Array.isArray(g.any) ? ['any'] : [];
+    if (hasEnvPrefix(t) || hasExpansion(text) || quotedCommandWord(text)) return !guarded && Array.isArray(g.any) ? ['any'] : [];
     const names = [];
     for (const [name, rules] of Object.entries(g)) {
       if (!Array.isArray(rules)) continue;
