@@ -2,16 +2,9 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume|clear",
+        "matcher": "startup|resume|clear|compact",
         "hooks": [
           { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/role-session-start.js"], "timeout": 15 }
-        ]
-      }
-    ],
-    "PostCompact": [
-      {
-        "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/role-post-compact.js"], "timeout": 15 }
         ]
       }
     ],

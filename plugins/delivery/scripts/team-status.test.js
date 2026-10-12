@@ -72,3 +72,10 @@ test('CLI exits 1 when drift exists', () => {
     (err) => err.status === 1
   );
 });
+
+test('renderStatus with a project root prints a Manifest line, "not a git repo" outside git', () => {
+  const root = scratchProject();
+  const s = teamStatus(root, { now: NOW, staleHours: 2 });
+  const text = renderStatus(s, root);
+  assert.ok(text.includes(`Manifest: ${root} at `));
+});
