@@ -85,3 +85,18 @@ test('parseSpikes reads the spikes table and derives keys', () => {
 test('parseSpikes returns an empty list when there is no spikes section', () => {
   assert.deepEqual(parseSpikes('# Arch\n\n## Components\n'), []);
 });
+
+test('table cells are pipe-safe for escaped pipes and code spans', () => {
+  const md = '### Phase 1: X\n\n| Work item | Size | Confidence | Depends on |\n| :-- | :-- | :-- | :-- |\n| Run `a | b` | S | high | x \\| y |\n';
+  const it = parseRoadmap(md).phases[0].items[0];
+  assert.deepEqual([it.title, it.size, it.confidence, it.dependsOn], ['Run `a | b`', 'S', 'high', 'x | y']);
+  const arch = '## Spikes\n\n| # | Q | Box | Blocks |\n| :-- | :-- | :-- | :-- |\n| s1 | Does `a | b` work? | 1 day | ex-01 |\n';
+  const sp = parseSpikes(arch)[0];
+  assert.equal(sp.question, 'Does `a | b` work?');
+  assert.equal(sp.blocks, 'ex-01');
+});
+
+test('listValue strips surrounding quotes', () => {
+  const { listValue } = require('./plan-docs.js');
+  assert.deepEqual(listValue('["a", \'b\']'), ['a', 'b']);
+});

@@ -8,6 +8,24 @@ function phaseNumber(text) {
   return m ? m[1].toLowerCase() : null;
 }
 
+function splitCells(line) {
+  let body = line.trim();
+  if (body.startsWith('|')) body = body.slice(1);
+  if (body.endsWith('|') && !body.endsWith('\\|')) body = body.slice(0, -1);
+  const cells = [];
+  let cur = '';
+  let inCode = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === '\\' && body[i + 1] === '|') { cur += '|'; i++; continue; }
+    if (ch === '`') inCode = !inCode;
+    if (ch === '|' && !inCode) { cells.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
 function tableRows(lines, startIndex) {
   // Returns the cells of the first markdown table starting at or after startIndex,
   // skipping the header and separator rows. Stops at the first non-table line after the table began.
@@ -21,7 +39,7 @@ function tableRows(lines, startIndex) {
   for (; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line.startsWith('|')) break;
-    const cells = line.slice(1, line.endsWith('|') ? -1 : undefined).split('|').map((c) => c.trim());
+    const cells = splitCells(line);
     if (!seenHeader) { seenHeader = true; continue; }
     if (cells.every((c) => /^:?-+:?$/.test(c))) continue;
     rows.push(cells);
@@ -61,7 +79,7 @@ function listValue(value) {
   const s = String(value).trim();
   if (!s || s === '[]') return [];
   const inner = s.startsWith('[') && s.endsWith(']') ? s.slice(1, -1) : s;
-  return inner.split(',').map((x) => x.trim()).filter(Boolean);
+  return inner.split(',').map((x) => x.trim().replace(/^(['"])(.*)\1$/, '$2')).filter(Boolean);
 }
 
 function parseStories(dir) {
