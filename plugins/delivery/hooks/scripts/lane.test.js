@@ -398,3 +398,32 @@ test('round 3b: single-quoted text is exempt from the expansion check, not from 
   }
   assert.deepEqual(failures, []);
 });
+
+// Fix round 4: per-subcommand git value letters, exact options that prefix denied ones, no `open` MCP verb.
+const ROUND4 = [
+  ['git rebase -mx make main', PM, false, 'project'],
+  ['git rebase -Sx x main', PM, false, 'project'],
+  ['git log -Sfoo', COS, true],
+  ['git ls-files -o', COS, true],
+  ['git commit -mfoo', PM, true, 'project'],
+  ['git diff --text', COS, true],
+  ['git diff --stat', COS, true],
+  ['git log --oneline --name-only', COS, true],
+  ['git log --out=x', COS, false],
+  ['git diff --textc', COS, false],
+];
+
+test('round 4: git value letters per subcommand, exact-option exemption', () => {
+  const failures = [];
+  for (const [command, role, expected, sub] of ROUND4) {
+    const d = decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], cwd: path.join(roleDir, sub || 'project'), ...ctx() });
+    if (d.allow !== expected) failures.push(role + ': ' + JSON.stringify(command) + ' -> ' + d.allow);
+  }
+  assert.deepEqual(failures, []);
+});
+
+test('round 4: open is not an MCP read verb', () => {
+  const allow = (toolName) => decideLane({ toolName, toolInput: {}, policy: POLICIES[PM], ...ctx() }).allow;
+  assert.equal(allow('mcp__x__open_terminal_tab'), false);
+  assert.equal(allow('mcp__x__fetch_page'), true);
+});

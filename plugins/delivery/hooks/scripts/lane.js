@@ -17,10 +17,16 @@ const SANCTIONED = {
 };
 const REACH_PREFIXES = ['mcp__Claude_Browser__', 'mcp__claude-in-chrome__', 'mcp__computer-use__', 'mcp__Claude_Code_iOS_Simulator__'];
 // MCP tools for allowlist roles: only read-shaped verbs, and never a name that also carries a write verb.
-const MCP_READ = /^(read|get|list|search|query|view|status|find|describe|resolve|fetch|context|ask|open|show|display|tabs_context|read_page|get_page_text)(_|$)/i;
+const MCP_READ = /^(read|get|list|search|query|view|status|find|describe|resolve|fetch|context|ask|show|display|tabs_context|read_page|get_page_text)(_|$)/i;
 const MCP_WRITE_VERB = /(^|_)(update|upload|trash|send|set|create|delete|write|move|copy|rename|post|put|insert|append|replace|execute|run|remove|edit)(_|$)/i;
-// Value-carrying short git options: letters after them are the value, not more flags (-Sfoo, -mfix).
-const GIT_VALUE_LETTERS = 'SGmO';
+// Value-carrying short git options, per subcommand: letters after them are the value (-Sfoo, -mfix).
+// Every other subcommand (rebase above all) reads a cluster as plain flag letters.
+const GIT_VALUE_LETTERS = {
+  commit: 'm', tag: 'm', merge: 'm', notes: 'm',
+  log: 'SGO', diff: 'SGO', show: 'SGO', grep: 'SGO', shortlog: 'SGO', blame: 'SGO',
+};
+// Real options that happen to prefix a denied one (--text / --textconv): never read as abbreviations.
+const EXACT_OK = ['--text', '--stat', '--patch', '--name-only', '--oneline'];
 const FILE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
 // Commands that change files or privilege: classified [] unless a group names them explicitly.
 const GUARDED_FIRST = ['rm', 'mv', 'cp', 'sudo', 'chmod', 'chown', 'curl', 'wget'];
@@ -189,10 +195,10 @@ function writesFiles(t) {
 }
 
 // Short flags named by a cluster (-vd -> v, d). For git, a value-carrying letter ends the
-// cluster: -Sfoo is S, -amfix is a and m.
-function clusterLetters(x, cmd) {
+// cluster for the subcommands that take it: git log -Sfoo is S, git commit -amfix is a and m.
+function clusterLetters(x, t) {
   if (!/^-[A-Za-z]{2,}$/.test(x)) return '';
-  const values = cmd === 'git' ? GIT_VALUE_LETTERS : '';
+  const values = t[0] === 'git' ? GIT_VALUE_LETTERS[splitGlobals(t).rest[0]] || '' : '';
   let out = '';
   for (const ch of x.slice(1)) { out += ch; if (values.includes(ch)) break; }
   return out;
@@ -206,9 +212,9 @@ function hasFlag(t, f, deny) {
     if (x === f || x.startsWith(`${f}=`)) return true;
     if (deny && f.startsWith('--') && x.startsWith('--')) {
       const opt = x.split('=')[0];
-      if (opt.length >= 4 && f.startsWith(opt)) return true;
+      if (opt.length >= 4 && !EXACT_OK.includes(opt) && f.startsWith(opt)) return true;
     }
-    return short && clusterLetters(x, t[0]).includes(f[1]);
+    return short && clusterLetters(x, t).includes(f[1]);
   });
 }
 
