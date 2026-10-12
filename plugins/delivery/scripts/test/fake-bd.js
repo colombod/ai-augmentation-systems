@@ -100,7 +100,26 @@ switch (cmd) {
       const id = pos[1];
       const blockedBy = flags['blocked-by'] || flags['depends-on'] || pos[2];
       if (!s.issues[id] || !s.issues[blockedBy]) { process.stderr.write('fake-bd: unknown issue in dep\n'); process.exit(1); }
+      // Mirror real bd: reject a dep whose blocker already (transitively) waits on id, whatever the status.
+      const seen = new Set();
+      const stack = [blockedBy];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (cur === id) { process.stderr.write('Error: adding dependency would create a cycle\n'); process.exit(1); }
+        if (seen.has(cur)) continue;
+        seen.add(cur);
+        for (const d of s.deps) if (d.id === cur) stack.push(d.blocked_by);
+      }
       if (!s.deps.some((d) => d.id === id && d.blocked_by === blockedBy)) s.deps.push({ id, blocked_by: blockedBy });
+      save(s);
+      process.stdout.write('ok\n');
+    } else if (sub === 'remove' || sub === 'rm') {
+      // real bd: `dep remove <id> <blocker>` (positional only); removing an absent dep exits 0.
+      const id = pos[1];
+      const blockedBy = pos[2];
+      if (flags['blocked-by']) { process.stderr.write('Error: unknown flag: --blocked-by\n'); process.exit(1); }
+      if (!id || !blockedBy) { process.stderr.write('fake-bd: dep remove <id> <blocker>\n'); process.exit(1); }
+      s.deps = s.deps.filter((d) => !(d.id === id && d.blocked_by === blockedBy));
       save(s);
       process.stdout.write('ok\n');
     } else if (sub === 'list') {

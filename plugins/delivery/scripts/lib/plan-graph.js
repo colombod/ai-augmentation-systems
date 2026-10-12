@@ -45,8 +45,10 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
     let phase = null;
     let unmatched = false;
     if (blocksPhase && phaseIds.has(blocksPhase)) {
+      // A phase-blocking spike gates the phase's work itself (every story), or its review when it has none.
       phase = blocksPhase;
-      spikeBlocks.push({ id: reviewIds.get(phase), blockedBy: id });
+      const work = (storiesByPhase.get(phase) || []).map((s) => `${prefix}-${s.id}`);
+      for (const target of work.length ? work : [reviewIds.get(phase)]) spikeBlocks.push({ id: target, blockedBy: id });
     } else if (storyById.has(sp.blocks)) {
       phase = storyById.get(sp.blocks).phase;
       spikeBlocks.push({ id: `${prefix}-${sp.blocks}`, blockedBy: id });
@@ -75,7 +77,8 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
   for (let i = 1; i < phases.length; i++) {
     const prevReview = reviewIds.get(phases[i - 1].number);
     const p = phases[i];
-    const members = [...(storiesByPhase.get(p.number) || []).map((s) => `${prefix}-${s.id}`), ...(spikesByPhase.get(p.number) || []).filter((sp) => !sp.unmatched).map((sp) => sp.id)];
+    // Only stories wait for the previous phase's review; spikes may run ahead.
+    const members = (storiesByPhase.get(p.number) || []).map((s) => `${prefix}-${s.id}`);
     if (members.length === 0) members.push(reviewIds.get(p.number));
     for (const id of members) deps.push({ id, blockedBy: prevReview });
   }

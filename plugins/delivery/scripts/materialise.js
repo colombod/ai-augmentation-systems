@@ -50,8 +50,21 @@ function loadInputs({ projectRoot, initiative }) {
 
 function sameMeta(a, b) { return JSON.stringify(a || {}) === JSON.stringify(b || {}); }
 
-function applyPlan({ plan, bd, dryRun }) {
-  const result = { created: [], updated: [], depsAdded: [], skippedClosed: [], skippedDeps: [], commands: [] };
+// A bead this initiative's materialise made; only these may lose a dependency it no longer plans.
+function isMaterialised(b, initiative) {
+  const m = (b && b.metadata) || {};
+  return m.materialised_by === 'delivery' && String(m.roadmap_ref || '').startsWith(`${initiative}/`);
+}
+
+function plannedBlockers(plan) {
+  const out = new Map();
+  for (const d of plan.deps) (out.get(d.id) || out.set(d.id, []).get(d.id)).push(d.blockedBy);
+  return out;
+}
+
+function applyPlan({ plan, bd, dryRun, initiative }) {
+  if (!initiative) throw new Error('applyPlan: initiative is required');
+  const result = { created: [], updated: [], depsAdded: [], depsRemoved: [], skippedClosed: [], skippedDeps: [], commands: [] };
   const known = new Map(bd.list({ all: true }).map((b) => [b.id, b]));
   for (const b of plan.beads) {
     const existing = known.get(b.id);
@@ -73,11 +86,26 @@ function applyPlan({ plan, bd, dryRun }) {
     result.updated.push(b.id);
   }
   const closed = new Set(result.skippedClosed);
+  const created = new Set(result.created);
   const cache = new Map();
-  const blockers = (id) => { if (!cache.has(id)) cache.set(id, result.created.includes(id) ? [] : bd.depsOf(id)); return cache.get(id); };
+  const blockers = (id) => { if (!cache.has(id)) cache.set(id, created.has(id) ? [] : bd.depsOf(id)); return cache.get(id); };
+  // Re-thread: drop deps between this initiative's materialised beads that the plan no longer has,
+  // before adding new ones, so a moved story never leaves a cycle for bd to reject.
+  const planned = plannedBlockers(plan);
+  for (const b of plan.beads) {
+    if (created.has(b.id) || closed.has(b.id)) continue;
+    const want = planned.get(b.id) || [];
+    for (const blocker of [...blockers(b.id)]) {
+      if (want.includes(blocker) || !isMaterialised(known.get(blocker), initiative)) continue;
+      result.commands.push(`dep-remove ${b.id} blocked-by ${blocker}`);
+      if (!dryRun) bd.depRemove(b.id, blocker);
+      cache.set(b.id, blockers(b.id).filter((x) => x !== blocker));
+      result.depsRemoved.push({ id: b.id, blockedBy: blocker });
+    }
+  }
   for (const d of plan.deps) {
-    if (closed.has(d.id)) { result.skippedDeps.push(d); continue; }
     if (blockers(d.id).includes(d.blockedBy)) continue;
+    if (closed.has(d.id)) { result.skippedDeps.push(d); continue; }
     result.commands.push(`dep ${d.id} blocked-by ${d.blockedBy}`);
     if (!dryRun) bd.depAdd(d.id, d.blockedBy);
     blockers(d.id).push(d.blockedBy);
@@ -87,7 +115,7 @@ function applyPlan({ plan, bd, dryRun }) {
 }
 
 function reconcile({ plan, bd, roadmap }) {
-  const out = { storiesWithoutBead: [], staleRef: [], closedNotRealigned: [], unknownRoadmapBeads: [] };
+  const out = { storiesWithoutBead: [], staleRef: [], closedNotRealigned: [], unknownRoadmapBeads: [], depDrift: [] };
   const planned = new Map(plan.beads.map((b) => [b.id, b]));
   const doneByPhase = new Map(roadmap.phases.map((p) => [p.number, p.done]));
   const known = new Map(bd.list({ all: true }).map((x) => [x.id, x]));
@@ -103,6 +131,16 @@ function reconcile({ plan, bd, roadmap }) {
       if (!doneByPhase.get(phase)) out.closedNotRealigned.push(b.id);
     }
   }
+  const want = plannedBlockers(plan);
+  for (const b of plan.beads) {
+    const existing = known.get(b.id);
+    if (!existing || existing.status === 'closed') continue;
+    const have = bd.depsOf(b.id);
+    const planned = want.get(b.id) || [];
+    const missing = planned.filter((x) => !have.includes(x));
+    const extra = have.filter((x) => !planned.includes(x) && isMaterialised(known.get(x), initiative));
+    if (missing.length || extra.length) out.depDrift.push({ id: b.id, missing, extra });
+  }
   for (const b of known.values()) {
     const m = b.metadata || {};
     if (b.labels.includes('roadmap') && m.materialised_by === 'delivery' && b.status !== 'closed' && String(m.roadmap_ref || '').startsWith(`${initiative}/`) && !planned.has(b.id)) out.unknownRoadmapBeads.push(b.id);
@@ -117,7 +155,7 @@ function writeDenylist(projectRoot, entries) {
   return file;
 }
 
-function hasDrift(d) { return d.storiesWithoutBead.length || d.staleRef.length || d.closedNotRealigned.length || d.unknownRoadmapBeads.length; }
+function hasDrift(d) { return d.storiesWithoutBead.length || d.staleRef.length || d.closedNotRealigned.length || d.unknownRoadmapBeads.length || d.depDrift.length; }
 
 function renderDrift(d) {
   const lines = ['## Plan drift'];
@@ -125,6 +163,7 @@ function renderDrift(d) {
   for (const s of d.staleRef) lines.push(`Stale roadmap_ref: ${s.id} expected ${s.expected}, has ${s.actual || 'none'}`);
   if (d.closedNotRealigned.length) lines.push(`Phase review closed but roadmap not marked (done): ${d.closedNotRealigned.join(', ')}`);
   if (d.unknownRoadmapBeads.length) lines.push(`Roadmap beads not in the plan: ${d.unknownRoadmapBeads.join(', ')}`);
+  for (const x of d.depDrift) lines.push(`Dependency drift: ${x.id} missing [${x.missing.join(', ')}] extra [${x.extra.join(', ')}]`);
   return lines.join('\n');
 }
 
@@ -157,13 +196,13 @@ if (require.main === module) {
       console.log('No plan drift.');
       process.exit(0);
     }
-    const r = applyPlan({ plan, bd, dryRun: args.flags.has('dry-run') });
+    const r = applyPlan({ plan, bd, dryRun: args.flags.has('dry-run'), initiative: args.initiative });
     const dryRun = args.flags.has('dry-run');
     const entries = denylistFrom({ initiative: args.initiative, roadmap: inputs.roadmap, stories: inputs.stories, spikes: inputs.spikes, briefText: inputs.briefText, prdText: inputs.prdText, personaNames: inputs.personaNames });
     const denylistPath = path.join(root, '.delivery', 'team', 'denylist.txt');
     if (!dryRun) writeDenylist(root, entries);
     const denyText = dryRun ? `denylist would have ${entries.length} entries at ${denylistPath}` : `denylist ${denylistPath} (${entries.length} entries)`;
-    console.log(`${dryRun ? 'dry run: ' : ''}created ${r.created.length}, updated ${r.updated.length}, deps ${r.depsAdded.length}, skipped closed ${r.skippedClosed.length}, skipped deps ${r.skippedDeps.length}; roadmap ${args.initiative}/roadmap.md@${inputs.sha}; ${denyText}`);
+    console.log(`${dryRun ? 'dry run: ' : ''}created ${r.created.length}, updated ${r.updated.length}, deps ${r.depsAdded.length}, deps removed ${r.depsRemoved.length}, skipped closed ${r.skippedClosed.length}, skipped deps ${r.skippedDeps.length}; roadmap ${args.initiative}/roadmap.md@${inputs.sha}; ${denyText}`);
     if (args.flags.has('dry-run')) for (const c of r.commands) console.log(`  ${c}`);
     if (plan.warnings.length) { console.log('warnings:'); for (const w of plan.warnings) console.log(`  ${w}`); }
   } catch (err) {

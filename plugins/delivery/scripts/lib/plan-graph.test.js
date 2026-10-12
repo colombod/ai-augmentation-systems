@@ -42,7 +42,10 @@ test('planGraph chains phases, reviews, stories and spikes', () => {
   const g = planGraph(input);
   const has = (id, blockedBy) => g.deps.some((d) => d.id === id && d.blockedBy === blockedBy);
   assert.ok(has('ex-ex-02', 'ex-demo-ph1-review'));
-  assert.ok(has('ex-demo-spike-2', 'ex-demo-ph1-review'));
+  assert.ok(!has('ex-demo-spike-2', 'ex-demo-ph1-review'));
+  assert.ok(!g.deps.some((d) => d.id.includes('-spike-') && d.blockedBy.endsWith('-review')));
+  assert.ok(has('ex-ex-01', 'ex-demo-spike-cos-1'));
+  assert.ok(!has('ex-ex-02', 'ex-demo-spike-cos-1'));
   assert.ok(!g.deps.some((d) => d.id === 'ex-demo-ph2'));
   assert.ok(has('ex-demo-ph1-review', 'ex-ex-01'));
   assert.ok(has('ex-demo-ph1-review', 'ex-demo-spike-cos-1'));
@@ -58,6 +61,15 @@ test('planGraph warns on orphans and unmatched blocks, skips superseded', () => 
   assert.ok(g.warnings.some((w) => w.includes('spike 3: blocks "the moon" matched nothing')));
   assert.ok(!g.beads.some((b) => b.id === 'ex-ex-03'));
   assert.ok(!g.beads.some((b) => b.id === 'ex-ex-99'));
+});
+
+test('a phase-blocking spike blocks the review when the phase has no stories', () => {
+  const g = planGraph({ ...input, stories: [], spikes: [{ key: '9', question: 'q', timeBox: '1h', blocks: 'Phase 2' }] });
+  const has = (id, blockedBy) => g.deps.some((d) => d.id === id && d.blockedBy === blockedBy);
+  assert.ok(has('ex-demo-ph2-review', 'ex-demo-spike-9'));
+  assert.ok(has('ex-demo-ph2-review', 'ex-demo-ph1-review'));
+  assert.ok(!has('ex-demo-spike-9', 'ex-demo-ph1-review'));
+  assert.equal(g.beads.find((b) => b.id === 'ex-demo-spike-9').parent, 'ex-demo-ph2');
 });
 
 test('planGraph is byte-identical on repeated runs', () => {

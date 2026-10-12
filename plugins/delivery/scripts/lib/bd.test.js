@@ -89,3 +89,22 @@ test('show of a bare bead defaults labels, metadata and parent, and exposes type
   assert.equal(b.parent, null);
   assert.equal(b.type, 'task');
 });
+
+test('depRemove removes one blocker and leaves the rest', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  for (const id of ['ex-a', 'ex-b', 'ex-c']) bd.create({ id, title: id });
+  bd.depAdd('ex-c', 'ex-a');
+  bd.depAdd('ex-c', 'ex-b');
+  bd.depRemove('ex-c', 'ex-a');
+  assert.deepEqual(bd.depsOf('ex-c'), ['ex-b']);
+});
+
+test('depAdd that would create a cycle throws the real bd message', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  for (const id of ['ex-a', 'ex-b', 'ex-c']) bd.create({ id, title: id });
+  bd.depAdd('ex-b', 'ex-a');
+  bd.depAdd('ex-c', 'ex-b');
+  bd.exec(['close', 'ex-b', '--reason', 'EVIDENCE: done']);
+  assert.throws(() => bd.depAdd('ex-a', 'ex-c'), /adding dependency would create a cycle/);
+  assert.throws(() => bd.depAdd('ex-a', 'ex-a'), /cycle/);
+});

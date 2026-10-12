@@ -63,6 +63,9 @@ function makeBd({ cwd, env } = {}) {
 
   function depAdd(id, blockedBy) { exec(['dep', 'add', id, '--blocked-by', blockedBy]); }
 
+  // real bd 1.2.2: `dep remove` takes the blocker positionally; it has no --blocked-by flag.
+  function depRemove(id, blockedBy) { exec(['dep', 'remove', id, blockedBy]); }
+
   function depsOf(id) {
     const rows = json(['dep', 'list', id, '--json']) || [];
     return rows.filter((r) => r.dependency_type === undefined || r.dependency_type === 'blocks').map((r) => r.id).filter(Boolean);
@@ -75,7 +78,7 @@ function makeBd({ cwd, env } = {}) {
     return (json(args) || []).map(normalise);
   }
 
-  return { exec, show, create, update, depAdd, depsOf, list };
+  return { exec, show, create, update, depAdd, depRemove, depsOf, list };
 }
 
 module.exports = { makeBd };
