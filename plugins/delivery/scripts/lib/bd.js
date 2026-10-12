@@ -26,18 +26,23 @@ function makeBd({ cwd, env } = {}) {
   }
 
   function show(id) {
-    try { return one(json(['show', id, '--json'])); } catch (err) { return null; }
+    let b;
+    try { b = one(json(['show', id, '--json'])); } catch (err) { return null; }
+    if (!b) return null;
+    return { ...b, type: b.issue_type !== undefined ? b.issue_type : b.type, labels: b.labels || [], metadata: b.metadata || {}, parent: b.parent || null };
   }
 
   function create({ id, title, type, parent, labels, metadata, priority, description }) {
     const args = ['create', '--id', id, '--title', title, '--silent'];
     if (type) args.push('--type', type);
-    if (parent) args.push('--parent', parent);
     if (labels && labels.length) args.push('--labels', labels.join(','));
     if (metadata) args.push('--metadata', JSON.stringify(metadata));
     if (priority !== undefined) args.push('--priority', String(priority));
     if (description) args.push('--description', description);
-    return exec(args).trim() || id;
+    const made = exec(args).trim() || id;
+    // real bd rejects --id together with --parent, so parent is set afterwards
+    if (parent) update(made, { parent });
+    return made;
   }
 
   function update(id, { title, parent, addLabels, metadata, appendNotes } = {}) {
@@ -55,7 +60,7 @@ function makeBd({ cwd, env } = {}) {
 
   function depsOf(id) {
     const rows = json(['dep', 'list', id, '--json']) || [];
-    return rows.filter((r) => r.id === id || r.issue_id === id).map((r) => r.blocked_by || r.depends_on_id).filter(Boolean);
+    return rows.filter((r) => r.dependency_type === undefined || r.dependency_type === 'blocks').map((r) => r.id).filter(Boolean);
   }
 
   function list({ label, all } = {}) {

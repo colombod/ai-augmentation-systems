@@ -33,6 +33,17 @@ function parse(argv) {
   return { pos, flags };
 }
 
+// Mirror real bd's per-issue JSON shape: issue_type (not type), labels/metadata/parent/notes only when set.
+function view(b) {
+  const { type, labels, metadata, parent, notes, ...rest } = b;
+  const v = { ...rest, issue_type: type };
+  if (parent) v.parent = parent;
+  if (labels && labels.length) v.labels = labels;
+  if (metadata && Object.keys(metadata).length) v.metadata = metadata;
+  if (notes) v.notes = notes;
+  return v;
+}
+
 function out(obj) { process.stdout.write(`${JSON.stringify(obj)}\n`); }
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -44,12 +55,14 @@ switch (cmd) {
     const id = pos[0] || flags.id;
     const b = s.issues[id];
     if (!b) { process.stderr.write(`fake-bd: no such issue ${id}\n`); process.exit(1); }
-    if (flags.json) out(b); else process.stdout.write(`${b.id}: ${b.title}\n`);
+    if (flags.json) out([view(b)]); else process.stdout.write(`${b.id}: ${b.title}\n`);
     break;
   }
   case 'create': {
     const id = flags.id;
     if (!id) { process.stderr.write('fake-bd: --id required in tests\n'); process.exit(2); }
+    if (flags.parent) { process.stderr.write('fake-bd: cannot specify both --id and --parent flags\n'); process.exit(1); }
+    // Test-time guard only: real bd silently overwrites an existing id (title replaced, metadata wiped).
     if (s.issues[id]) { process.stderr.write(`fake-bd: issue ${id} already exists\n`); process.exit(1); }
     const title = flags.title || pos[0] || '';
     s.issues[id] = {
@@ -91,7 +104,11 @@ switch (cmd) {
       process.stdout.write('ok\n');
     } else if (sub === 'list') {
       const id = pos[1];
-      out(s.deps.filter((d) => d.id === id));
+      const rows = s.deps.filter((d) => d.id === id && s.issues[d.blocked_by])
+        .map((d) => ({ ...view(s.issues[d.blocked_by]), dependency_type: 'blocks' }));
+      const par = s.issues[id] && s.issues[id].parent;
+      if (par && s.issues[par]) rows.push({ ...view(s.issues[par]), dependency_type: 'parent-child' });
+      out(rows);
     } else { process.stderr.write('fake-bd: unknown dep subcommand\n'); process.exit(2); }
     break;
   }
@@ -101,7 +118,7 @@ switch (cmd) {
     if (flags.label) items = items.filter((b) => b.labels.includes(flags.label));
     if (flags.assignee) items = items.filter((b) => b.assignee === flags.assignee);
     if (flags.status) items = items.filter((b) => b.status === flags.status);
-    if (flags.json) out(items); else for (const b of items) process.stdout.write(`${b.id}: ${b.title}\n`);
+    if (flags.json) out(items.map(view)); else for (const b of items) process.stdout.write(`${b.id}: ${b.title}\n`);
     break;
   }
   case 'close': {
@@ -117,7 +134,7 @@ switch (cmd) {
   case 'ready': {
     const blocked = new Set(s.deps.filter((d) => s.issues[d.blocked_by] && s.issues[d.blocked_by].status !== 'closed').map((d) => d.id));
     const items = Object.values(s.issues).filter((b) => b.status === 'open' && !blocked.has(b.id));
-    if (flags.json) out(items); else for (const b of items) process.stdout.write(`${b.id}: ${b.title}\n`);
+    if (flags.json) out(items.map(view)); else for (const b of items) process.stdout.write(`${b.id}: ${b.title}\n`);
     break;
   }
   default:

@@ -59,3 +59,29 @@ test('create of an existing id throws with the bd message', () => {
   bd.create({ id: 'ex-dup', title: 'x' });
   assert.throws(() => bd.create({ id: 'ex-dup', title: 'x' }), /already exists/);
 });
+
+test('create with a parent sets it via update', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  bd.create({ id: 'ex-p', title: 'epic', type: 'epic' });
+  bd.create({ id: 'ex-c', title: 'child', type: 'task', parent: 'ex-p' });
+  assert.equal(bd.show('ex-c').parent, 'ex-p');
+});
+
+test('depsOf ignores the parent-child row', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  bd.create({ id: 'ex-p', title: 'epic', type: 'epic' });
+  bd.create({ id: 'ex-a', title: 'a' });
+  bd.create({ id: 'ex-b', title: 'b', parent: 'ex-p' });
+  bd.depAdd('ex-b', 'ex-a');
+  assert.deepEqual(bd.depsOf('ex-b'), ['ex-a']);
+});
+
+test('show of a bare bead defaults labels, metadata and parent, and exposes type', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  bd.create({ id: 'ex-bare', title: 'bare', type: 'task' });
+  const b = bd.show('ex-bare');
+  assert.deepEqual(b.labels, []);
+  assert.deepEqual(b.metadata, {});
+  assert.equal(b.parent, null);
+  assert.equal(b.type, 'task');
+});
