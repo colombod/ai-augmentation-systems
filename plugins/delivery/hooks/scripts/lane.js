@@ -16,7 +16,11 @@ const SANCTIONED = {
   'spike-researcher': 'answers go in the bead and the ADR or roadmap; product code is never yours',
 };
 const REACH_PREFIXES = ['mcp__Claude_Browser__', 'mcp__claude-in-chrome__', 'mcp__computer-use__', 'mcp__Claude_Code_iOS_Simulator__'];
-const MCP_WRITE = /^mcp__.*(write|edit|create|delete|move|copy)/i;
+// MCP tools for allowlist roles: only read-shaped verbs, and never a name that also carries a write verb.
+const MCP_READ = /^(read|get|list|search|query|view|status|find|describe|resolve|fetch|context|ask|open|show|display|tabs_context|read_page|get_page_text)(_|$)/i;
+const MCP_WRITE_VERB = /(^|_)(update|upload|trash|send|set|create|delete|write|move|copy|rename|post|put|insert|append|replace|execute|run|remove|edit)(_|$)/i;
+// Value-carrying short git options: letters after them are the value, not more flags (-Sfoo, -mfix).
+const GIT_VALUE_LETTERS = 'SGmO';
 const FILE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
 // Commands that change files or privilege: classified [] unless a group names them explicitly.
 const GUARDED_FIRST = ['rm', 'mv', 'cp', 'sudo', 'chmod', 'chown', 'curl', 'wget'];
@@ -125,6 +129,18 @@ function hasSubstitution(seg) {
   return found;
 }
 
+// Shell expansion (globs, braces, variables, quoting forms, here-docs, process substitution,
+// continuations) makes the words the shell runs differ from the words we see. Allowlist roles get none.
+// The one exception is the documented `node ${CLAUDE_PLUGIN_ROOT}/scripts/...` form, judged against the plugin root.
+const EXPANSION_CHARS = /[{}*?[\]$`!]/;
+const EXPANSION_SEQ = /<<|<\(|>\(|\\\n/;
+const PLUGIN_ROOT_ARG = /^(node[ \t]+"?)(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT)(?=\/)/;
+
+function hasExpansion(raw, t) {
+  const s = raw.replace(PLUGIN_ROOT_ARG, '$1ROOT');
+  return EXPANSION_CHARS.test(s) || EXPANSION_SEQ.test(s) || t.some((x) => x.startsWith('~'));
+}
+
 // A leading VAR=value or `env` changes how the command runs (GIT_DIR, PATH, LD_PRELOAD...).
 function hasEnvPrefix(t) { return t[0] === 'env' || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0] || ''); }
 
@@ -150,10 +166,28 @@ function writesFiles(t) {
   return false;
 }
 
-// Exact, --flag=value, or a short flag inside a cluster of short flags (-vd contains -d).
-function hasFlag(t, f) {
+// Short flags named by a cluster (-vd -> v, d). For git, a value-carrying letter ends the
+// cluster: -Sfoo is S, -amfix is a and m.
+function clusterLetters(x, cmd) {
+  if (!/^-[A-Za-z]{2,}$/.test(x)) return '';
+  const values = cmd === 'git' ? GIT_VALUE_LETTERS : '';
+  let out = '';
+  for (const ch of x.slice(1)) { out += ch; if (values.includes(ch)) break; }
+  return out;
+}
+
+// Exact, --flag=value, or a short flag in a cluster. When deny is set, a long option of 4+ chars
+// also matches every denied flag it abbreviates (git accepts unique prefixes: --upload for --upload-pack).
+function hasFlag(t, f, deny) {
   const short = /^-[A-Za-z]$/.test(f);
-  return t.some((x) => x === f || x.startsWith(`${f}=`) || (short && /^-[A-Za-z]{2,}$/.test(x) && x.includes(f[1])));
+  return t.some((x) => {
+    if (x === f || x.startsWith(`${f}=`)) return true;
+    if (deny && f.startsWith('--') && x.startsWith('--')) {
+      const opt = x.split('=')[0];
+      if (opt.length >= 4 && f.startsWith(opt)) return true;
+    }
+    return short && clusterLetters(x, t[0]).includes(f[1]);
+  });
 }
 
 const UNSAFE_DIR = /[$~`]/;
@@ -168,8 +202,8 @@ function effectiveDirs(t, dirs) {
       if (globals[k] !== '-C') continue;
       const target = globals[++k];
       if (target === undefined || UNSAFE_DIR.test(target)) d = null;
-      else if (path.isAbsolute(target)) d = path.resolve(target);
-      else d = d === null ? null : path.resolve(d, target);
+      else if (path.isAbsolute(target)) d = target;
+      else d = d === null ? null : `${d}${path.sep}${target}`; // git chdirs physically: realish applies `..`
     }
     return d;
   });
@@ -218,7 +252,7 @@ function ruleMatches(rule, t, ctx) {
     if (!ok) return false;
   }
   if (rule.flags_any && !rule.flags_any.some((f) => hasFlag(t, f))) return false;
-  if (rule.flags_none && rule.flags_none.some((f) => hasFlag(t, f))) return false;
+  if (rule.flags_none && rule.flags_none.some((f) => hasFlag(t, f, true))) return false;
   if (rule.no_positional) {
     const valueFlags = rule.value_flags || [];
     const args = argv.slice(subLen);
@@ -229,8 +263,8 @@ function ruleMatches(rule, t, ctx) {
   }
   if (rule.scope) {
     if (!ctx.roleDir) return false;
-    const base = path.join(path.resolve(ctx.roleDir), String(rule.scope));
-    if (!effectiveDirs(t, ctxDirs(ctx)).every((d) => d !== null && under(d, base))) return false;
+    const base = path.join(realish(ctx.roleDir), String(rule.scope));
+    if (!effectiveDirs(t, ctxDirs(ctx)).every((d) => d !== null && under(realish(d), base))) return false;
   }
   return true;
 }
@@ -244,7 +278,7 @@ function classifySegment(seg, groups, ctx) {
     if (!t.length) return [];
     const g = groups && typeof groups === 'object' ? groups : {};
     const guarded = hasRedirect(text) || hasSubstitution(text) || writesFiles(t);
-    if (hasEnvPrefix(t)) return !guarded && Array.isArray(g.any) ? ['any'] : [];
+    if (hasEnvPrefix(t) || hasExpansion(text, t)) return !guarded && Array.isArray(g.any) ? ['any'] : [];
     const names = [];
     for (const [name, rules] of Object.entries(g)) {
       if (!Array.isArray(rules)) continue;
@@ -353,8 +387,11 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     }
     return { allow: true };
   }
-  if (MCP_WRITE.test(name) && !bash.includes('any')) {
-    return { allow: false, reason: `Role ${pol.roleId} does not use write-capable tool ${name}.${tail}` };
+  if (name.startsWith('mcp__') && !bash.includes('any')) {
+    const verb = name.split('__').pop();
+    if (!MCP_READ.test(verb) || MCP_WRITE_VERB.test(verb)) {
+      return { allow: false, reason: `Role ${pol.roleId} uses MCP tools only to read; ${name} is not a read.${tail}` };
+    }
   }
   if (name === 'Bash') {
     if (bash.includes('any')) return { allow: true };

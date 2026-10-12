@@ -150,7 +150,7 @@ const PROBES = [
   ['sort -o out in', COS, false],
   ['sort -uo out in', COS, false],
   ['sort --output=out in', COS, false],
-  ['sort in', COS, true],
+  ['sort in', COS, false], // fix round 3 (R2): sort left read
   ['rg --pre cat x', COS, false],
   ['rg --pre=cat x', COS, false],
   ['rg --pre-glob "*" x', COS, false],
@@ -203,7 +203,8 @@ const PROBES = [
   ['git branch -v new', COS, false],
   ['git branch -f main HEAD~1', COS, false],
   ['git branch -vd old', COS, false],
-  ['git branch --list "feat*"', COS, true],
+  ['git branch --list "feat*"', COS, false], // fix round 3 (R1): a glob is expansion
+  ['git branch --list main', COS, true],
   ['git branch --contains abc123', COS, true],
   ['git branch -a', COS, true],
   ['git branch -vv', COS, true],
@@ -264,4 +265,106 @@ test('classifySegment: env prefixes are any-only; ctx.pluginRoot beats the envir
   } finally {
     if (saved === undefined) delete process.env.CLAUDE_PLUGIN_ROOT; else process.env.CLAUDE_PLUGIN_ROOT = saved;
   }
+});
+
+// Fix round 3: root-cause remedies. Rows: [command, role, expectAllowed, cwd under roleDir].
+const ROUND3 = [
+  // R1 expansion is forbidden for allowlist roles
+  ['git log -1 {--output=x,-1}', COS, false],
+  ["git log $'--output=x'", COS, false],
+  ['git log $"--output=x"', COS, false],
+  ['git log ${X}', COS, false],
+  ['cd {../product,} && git commit -m x', PM, false, 'project'],
+  ['git -C {../product,.} commit -m x', PM, false, 'project'],
+  ['echo "a$b"', COS, false],
+  ['cat ~/x', COS, false],
+  ['ls *.md', COS, false],
+  ['ls file?.md', COS, false],
+  ['ls [ab].md', COS, false],
+  ['echo hi!', COS, false],
+  ['cat <<EOF', COS, false],
+  ['diff <(ls) x', COS, false],
+  ['git log -1\\\n--oneline', COS, false], // a real backslash-newline continuation
+  ['git log -1 --oneline', COS, true],
+  ['bd update x --append-notes "note with spaces"', COS, true],
+  ["bd update x --append-notes 'single quoted note'", COS, true],
+  ['cat .delivery/team/team.json', COS, true],
+  ['git log --format="%h %s" HEAD~3..HEAD', COS, true],
+  ['FOO=1 npm test', BUILDER, true],
+  ['ls *.md', BUILDER, true],
+  // R2 printf and sort left read
+  ['printf -v X %s y', COS, false],
+  ['printf hello', COS, false],
+  ['sort --compress-program=sh x', COS, false],
+  // R3 prefix-abbreviated options
+  ['git fetch --upload=evil', PM, false, 'project'],
+  ['git fetch --upl=evil', PM, false, 'project'],
+  ['git log --outp=x', COS, false],
+  ['git diff --ext-d', COS, false],
+  ['git push --rec=evil', PM, false, 'project'],
+  ['git rebase -x "make" main', PM, false, 'project'],
+  ['git rebase --exec=make main', PM, false, 'project'],
+  ['git rebase --exe make main', PM, false, 'project'],
+  ['git rebase main', PM, true, 'project'],
+  ['git cherry-pick -x abc123', PM, true, 'project'],
+  ['bd update x --append-notes y --par ex-2', COS, false],
+  ['git log --oneline', COS, true],
+  // R6 value-carrying short options are not clusters
+  ['git log -Sfoo', COS, true],
+  ['git log -Gpattern', COS, true],
+  ['git ls-files -o', COS, true],
+  ['git commit -mfoo', PM, true, 'project'],
+  ['git commit -amfix', PM, true, 'project'],
+  ['git branch -vd old', COS, false],
+];
+
+test('round 3 probe table: expansion, abbreviation and value-carrying options', () => {
+  const failures = [];
+  for (const [command, role, expected, sub] of ROUND3) {
+    const cwd = path.join(roleDir, sub || 'project');
+    const d = decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], cwd, ...ctx() });
+    if (d.allow !== expected) failures.push(role + ': ' + JSON.stringify(command) + ' -> ' + d.allow);
+  }
+  assert.deepEqual(failures, []);
+  for (const seg of ['git log -1 {--output=x,-1}', "git log $'--output=x'", 'echo "a$b"', 'cat ~/x', 'ls *.md']) {
+    assert.deepEqual(classifySegment(seg, GROUPS, ctx()).filter((n) => n !== 'any'), [], seg);
+  }
+});
+
+test('R4: scope uses real paths for cd, -C and the role dir', () => {
+  const real = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lane-scope-')));
+  fs.mkdirSync(path.join(real, 'project'), { recursive: true });
+  fs.mkdirSync(path.join(real, 'product'), { recursive: true });
+  fs.symlinkSync(path.join('..', 'product'), path.join(real, 'project', 'link'));
+  const alias = real + '-alias';
+  fs.symlinkSync(real, alias);
+  const pm = POLICIES[PM];
+  const run = (command, roleDirGiven, cwd) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: pm, ...ctx({ roleDir: roleDirGiven }), cwd }).allow;
+  assert.equal(run('cd link && git commit -m x', real, path.join(real, 'project')), false);
+  assert.equal(run('git -C link commit -m x', real, path.join(real, 'project')), false);
+  assert.equal(run('git -C link/.. commit -m x', real, path.join(real, 'project')), false); // physical: real/
+  assert.equal(run('git commit -m x', real, path.join(real, 'project', 'link')), false);
+  // role dir given through a symlink, cwd given as the real path: still the project
+  assert.equal(run('git commit -m x', alias, path.join(real, 'project')), true);
+  assert.equal(run('git commit -m x', real, path.join(alias, 'project')), true);
+  assert.equal(run('git commit -m x', alias, path.join(alias, 'product')), false);
+});
+
+test('R5: MCP tools are read-only for allowlist roles', () => {
+  const pm = POLICIES[PM];
+  const allow = (toolName, policy = pm) => decideLane({ toolName, toolInput: {}, policy, ...ctx() }).allow;
+  assert.equal(allow('mcp__x__update_file'), false);
+  assert.equal(allow('mcp__x__read_file_content'), true);
+  assert.equal(allow('mcp__x__trash_file'), false);
+  assert.equal(allow('mcp__x__search_and_replace'), false);
+  assert.equal(allow('mcp__x__get_or_create'), false);
+  assert.equal(allow('mcp__x__set_setting'), false);
+  assert.equal(allow('mcp__x__send_message'), false);
+  assert.equal(allow('mcp__x__spawn_task'), false);
+  assert.equal(allow('mcp__x__list_sessions'), true);
+  assert.equal(allow('mcp__x__get_page_text'), true);
+  assert.equal(allow('mcp__x__update_file', POLICIES[BUILDER]), true);
+  // browser and computer tools: the headless rule decides
+  assert.equal(allow('mcp__Claude_Browser__navigate'), true);
+  assert.equal(decideLane({ toolName: 'mcp__Claude_Browser__navigate', toolInput: {}, policy: pm, ...ctx({ hostHeadless: true }) }).allow, false);
 });
