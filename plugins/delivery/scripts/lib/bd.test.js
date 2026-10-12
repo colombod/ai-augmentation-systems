@@ -1,0 +1,61 @@
+// scripts/lib/bd.test.js — run with: node --test scripts/lib/bd.test.js
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { makeBd } = require('./bd.js');
+
+const FAKE_DIR = path.join(__dirname, '..', 'test');
+
+function fakeEnv() {
+  const store = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bd-')), 'store.json');
+  return { ...process.env, PATH: `${FAKE_DIR}${path.delimiter}${process.env.PATH}`, BD_FAKE_STORE: store };
+}
+
+test('show returns null for an unknown id and the bead after create', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  assert.equal(bd.show('ex-ph1'), null);
+  const id = bd.create({ id: 'ex-ph1', title: 'Phase 1: Foundations', type: 'epic', labels: ['roadmap'], metadata: { doc_id: 'phase-1' }, priority: 1 });
+  assert.equal(id, 'ex-ph1');
+  const bead = bd.show('ex-ph1');
+  assert.equal(bead.title, 'Phase 1: Foundations');
+  assert.deepEqual(bead.labels, ['roadmap']);
+  assert.equal(bead.metadata.doc_id, 'phase-1');
+});
+
+test('update changes title, adds labels, merges metadata and appends notes', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  bd.create({ id: 'ex-s1', title: 'old', type: 'task' });
+  bd.update('ex-s1', { title: 'new', addLabels: ['story'], metadata: { k: 'v' }, appendNotes: 'hello' });
+  const b = bd.show('ex-s1');
+  assert.equal(b.title, 'new');
+  assert.ok(b.labels.includes('story'));
+  assert.equal(b.metadata.k, 'v');
+  assert.ok(b.notes.includes('hello'));
+});
+
+test('depAdd is idempotent and depsOf lists blockers', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  bd.create({ id: 'ex-a', title: 'a' });
+  bd.create({ id: 'ex-b', title: 'b' });
+  bd.depAdd('ex-b', 'ex-a');
+  bd.depAdd('ex-b', 'ex-a');
+  assert.deepEqual(bd.depsOf('ex-b'), ['ex-a']);
+  assert.deepEqual(bd.depsOf('ex-a'), []);
+});
+
+test('list filters by label and hides closed unless all', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  bd.create({ id: 'ex-1', title: 'one', labels: ['roadmap'] });
+  bd.create({ id: 'ex-2', title: 'two', labels: ['other'] });
+  bd.exec(['close', 'ex-2', '--reason', 'EVIDENCE: done']);
+  assert.deepEqual(bd.list({ label: 'roadmap' }).map((b) => b.id), ['ex-1']);
+  assert.deepEqual(bd.list({ all: true }).map((b) => b.id).sort(), ['ex-1', 'ex-2']);
+});
+
+test('create of an existing id throws with the bd message', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  bd.create({ id: 'ex-dup', title: 'x' });
+  assert.throws(() => bd.create({ id: 'ex-dup', title: 'x' }), /already exists/);
+});
