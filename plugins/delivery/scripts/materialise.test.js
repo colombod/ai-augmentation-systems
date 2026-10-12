@@ -187,6 +187,9 @@ test('applyPlan never adds deps to a closed bead and reports them as skippedDeps
   assert.deepEqual(bd.depsOf('ex-demo-ph1-review').sort(), before);
   assert.ok(r.skippedDeps.some((d) => d.id === 'ex-demo-ph1-review' && d.blockedBy === 'ex-demo-03'));
   assert.ok(!r.depsAdded.some((d) => d.id === 'ex-demo-ph1-review'));
+  // a dep already present on the closed bead is not "skipped": there was nothing to add
+  assert.ok(!r.skippedDeps.some((d) => d.id === 'ex-demo-ph1-review' && d.blockedBy === 'ex-demo-01'));
+  assert.deepEqual(r.skippedDeps, [{ id: 'ex-demo-ph1-review', blockedBy: 'ex-demo-03' }]);
 });
 
 test('a story moved to another phase gets the new parent and only the new phase label', () => {
@@ -333,4 +336,45 @@ test('applyPlan never issues a second create for a duplicated id', () => {
   assert.ok(!r.commands.some((c) => c.startsWith('create ex-demo-01 "Second copy"')));
   const dry = applyPlan({ plan: dup, bd: makeBd({ env: fakeEnv() }), dryRun: true, initiative: 'demo' });
   assert.equal(dry.commands.filter((c) => c.startsWith('create ex-demo-01 ')).length, 1);
+});
+
+test('a move removes only phase labels, never a human label that starts with phase-', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  bd.update('ex-demo-02', { addLabels: ['phase-2-legacy', 'phase-2b'] });
+  const moved = inputs.stories.map((x) => (x.id === 'demo-02' ? { ...x, phase: '1' } : x));
+  applyPlan({ plan: planOf(inputs, null, moved), bd, initiative: 'demo' });
+  const labels = bd.show('ex-demo-02').labels;
+  assert.ok(labels.includes('phase-2-legacy'));
+  assert.ok(!labels.includes('phase-2b'));
+  assert.ok(!labels.includes('phase-2'));
+});
+
+test('loadInputs skips story ids outside the slug alphabet with a warning', () => {
+  const root = scratchProject();
+  fs.writeFileSync(path.join(root, '.delivery', 'stories', 'bad.md'), '---\nid: Bad Id\ntitle: Bad\nstatus: ready\nphase: Phase 1\n---\n');
+  const inputs = loadInputs({ projectRoot: root, initiative: 'demo' });
+  assert.deepEqual(inputs.stories.map((x) => x.id), ['demo-01', 'demo-02']);
+  assert.ok(inputs.warnings.some((w) => w.includes('"Bad Id"') && w.includes('skipped')));
+});
+
+test('CLI rejects an initiative outside the slug alphabet', () => {
+  const root = scratchProject();
+  const script = path.join(PLUGIN, 'scripts', 'materialise.js');
+  for (const bad of ['../demo', 'Demo', '-demo']) {
+    assert.throws(() => execFileSync(process.execPath, [script, '--project', root, '--initiative', bad], { env: fakeEnv(), stdio: 'pipe' }), (err) => err.status === 2 && String(err.stderr).includes('must match'));
+  }
+});
+
+test('a mid-run failure reports what was done so far', () => {
+  const root = scratchProject();
+  const env = fakeEnv();
+  // demo-01 (phase 1) depending on demo-02 (phase 2) is a cycle bd rejects
+  fs.writeFileSync(path.join(root, '.delivery', 'stories', 'demo-01-first.md'), '---\nid: demo-01\ntitle: First story\nstatus: ready\nphase: Phase 1\ndepends_on: [demo-02]\n---\n');
+  const inputs = loadInputs({ projectRoot: root, initiative: 'demo' });
+  assert.throws(() => applyPlan({ plan: planOf(inputs), bd: makeBd({ env: fakeEnv() }), initiative: 'demo' }), (err) => /cycle/.test(err.message) && err.partial.created.length === 7 && err.partial.depsAdded.length > 0);
+  const script = path.join(PLUGIN, 'scripts', 'materialise.js');
+  assert.throws(() => execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo'], { env, stdio: 'pipe' }),
+    (err) => err.status === 2 && /stopped part-way; so far: created 7 \[/.test(String(err.stdout)) && /would create a cycle/.test(String(err.stderr)));
 });

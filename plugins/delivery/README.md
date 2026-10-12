@@ -87,8 +87,8 @@ preparing or restarting a role, because the hooks read the manifest there. In ph
 per host, so `/delivery:team` reports only roles on this host. `prepare-role` does not set a
 permission mode; a steward passes `--permission-mode` when starting the session.
 
-Design: `.superpowers/specs/2026-10-12-shipping-team-design.md`. Provisioning, hiring, deploy and
-the plan-to-beads materialise step are later phases.
+Design: `.superpowers/specs/2026-10-12-shipping-team-design.md`. Provisioning, hiring and deploy
+are later phases.
 
 ## Using it with superpowers
 

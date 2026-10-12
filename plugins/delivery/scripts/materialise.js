@@ -10,6 +10,8 @@ const { parseRoadmap, parseStories, parseSpikes } = require('./lib/plan-docs.js'
 const { planGraph, denylistFrom } = require('./lib/plan-graph.js');
 const { makeBd } = require('./lib/bd.js');
 
+const SLUG = /^[a-z0-9][a-z0-9-]*$/;
+
 function readIf(file) { return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''; }
 
 // The ref tracks the roadmap file itself: last commit touching it (suffixed `+` when the file has uncommitted
@@ -39,10 +41,18 @@ function loadInputs({ projectRoot, initiative }) {
   const roadmapFile = path.join(init, 'roadmap.md');
   if (!fs.existsSync(roadmapFile)) throw new Error(`materialise: roadmap not found at ${roadmapFile}`);
   const roadmapText = fs.readFileSync(roadmapFile, 'utf8');
+  const warnings = [];
+  // Story ids become bead ids and git-facing names; anything outside the slug alphabet is skipped, not mangled.
+  const stories = parseStories(path.join(projectRoot, '.delivery', 'stories')).filter((st) => {
+    if (SLUG.test(st.id)) return true;
+    warnings.push(`story "${st.id}" (${path.basename(st.file)}): id must match ${SLUG}, skipped`);
+    return false;
+  });
   return {
+    warnings,
     team,
     roadmap: parseRoadmap(roadmapText),
-    stories: parseStories(path.join(projectRoot, '.delivery', 'stories')),
+    stories,
     spikes: parseSpikes(readIf(path.join(init, 'architecture.md'))),
     sha: roadmapSha(projectRoot, initiative, roadmapText),
     briefText: readIf(path.join(init, 'brief.md')),
@@ -68,6 +78,16 @@ function plannedBlockers(plan) {
 function applyPlan({ plan, bd, dryRun, initiative }) {
   if (!initiative) throw new Error('applyPlan: initiative is required');
   const result = { created: [], updated: [], depsAdded: [], depsRemoved: [], skippedClosed: [], skippedDeps: [], commands: [] };
+  try {
+    applyPlanSteps({ plan, bd, dryRun, initiative, result });
+  } catch (err) {
+    err.partial = result;
+    throw err;
+  }
+  return result;
+}
+
+function applyPlanSteps({ plan, bd, dryRun, initiative, result }) {
   const known = new Map(bd.list({ all: true }).map((b) => [b.id, b]));
   for (const b of plan.beads) {
     const existing = known.get(b.id);
@@ -84,7 +104,7 @@ function applyPlan({ plan, bd, dryRun, initiative }) {
     const metaDrift = !sameMeta(existing.metadata, { ...existing.metadata, ...b.metadata });
     const titleChanged = existing.title !== b.title;
     const parentChanged = (existing.parent || null) !== (b.parent || null);
-    const staleLabels = parentChanged ? existing.labels.filter((l) => /^phase-\d/.test(l) && !b.labels.includes(l)) : [];
+    const staleLabels = parentChanged ? existing.labels.filter((l) => /^phase-\d+[a-z]?$/.test(l) && !b.labels.includes(l)) : [];
     if (!missingLabels.length && !staleLabels.length && !metaDrift && !titleChanged && !parentChanged) continue;
     result.commands.push(`update ${b.id}`);
     if (!dryRun) bd.update(b.id, { title: titleChanged ? b.title : undefined, parent: parentChanged ? b.parent : undefined, addLabels: missingLabels, removeLabels: staleLabels, metadata: metaDrift ? b.metadata : undefined });
@@ -222,6 +242,7 @@ if (require.main === module) {
   if (!root) { console.error('materialise: no .delivery/team/team.json found; pass --project <root>'); process.exit(2); }
   if (args.flags.has('check') && args.flags.has('dry-run')) { console.error('materialise: --check and --dry-run cannot be combined'); process.exit(2); }
   if (!args.initiative) { console.error('materialise: --initiative <slug> is required'); process.exit(2); }
+  if (!SLUG.test(args.initiative)) { console.error(`materialise: --initiative "${args.initiative}" must match ${SLUG}`); process.exit(2); }
   let inputs;
   try { inputs = loadInputs({ projectRoot: root, initiative: args.initiative }); } catch (err) { console.error(`materialise: ${err.message}`); process.exit(2); }
   const bd = makeBd({ cwd: root });
@@ -241,8 +262,14 @@ if (require.main === module) {
     const denyText = dryRun ? `denylist would have ${entries.length} entries at ${denylistPath}` : `denylist ${denylistPath} (${entries.length} entries)`;
     console.log(`${dryRun ? 'dry run: ' : ''}created ${r.created.length}, updated ${r.updated.length}, deps ${r.depsAdded.length}, deps removed ${r.depsRemoved.length}, skipped closed ${r.skippedClosed.length}, skipped deps ${r.skippedDeps.length}; roadmap ${args.initiative}/roadmap.md@${inputs.sha}; ${denyText}`);
     if (args.flags.has('dry-run')) for (const c of r.commands) console.log(`  ${c}`);
-    if (plan.warnings.length) { console.log('warnings:'); for (const w of plan.warnings) console.log(`  ${w}`); }
+    const warnings = [...inputs.warnings, ...plan.warnings];
+    if (warnings.length) { console.log('warnings:'); for (const w of warnings) console.log(`  ${w}`); }
   } catch (err) {
+    const p = err.partial;
+    if (p) {
+      const ids = (xs) => xs.map((x) => (typeof x === 'string' ? x : `${x.id}<-${x.blockedBy}`)).join(' ') || '-';
+      console.log(`materialise stopped part-way; so far: created ${p.created.length} [${ids(p.created)}], updated ${p.updated.length} [${ids(p.updated)}], deps ${p.depsAdded.length} [${ids(p.depsAdded)}], deps removed ${p.depsRemoved.length} [${ids(p.depsRemoved)}]`);
+    }
     console.error(`materialise: ${err.message}`);
     process.exit(2);
   }

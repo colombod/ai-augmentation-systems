@@ -63,8 +63,8 @@ test('validateManifest reports unknown host, duplicate id, bad model, missing st
   team.roles[0].host = 'mars';
   team.roles[1].id = 'chief-of-staff';
   team.roles[2].model = 'gpt';
-  delete team.roles[4].steward;
-  delete team.roles[6].steward;
+  delete team.roles.find((r) => r.id === 'progress-observer').steward;
+  delete team.roles.find((r) => r.id === 'builder').steward;
   const problems = validateManifest(team, hosts);
   assert.ok(problems.some((p) => p.includes('unknown host "mars"')));
   assert.ok(problems.some((p) => p.includes('duplicate role id "chief-of-staff"')));
