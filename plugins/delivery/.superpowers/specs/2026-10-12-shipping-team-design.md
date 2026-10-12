@@ -53,7 +53,7 @@ becomes a reconcile item for the Delivery Lead.
 
 | Role | Brief source | Owns | Must not |
 |---|---|---|---|
-| chief-of-staff | delivery agent, extended | the operator's attention, routing, one ranked briefing in merged / deployed / verified; delegate mode | build, change beads, PRs, settings or sessions unless the operator said so, answer for the operator |
+| chief-of-staff | delivery agent, extended | the operator's attention, routing, one ranked briefing in merged / deployed / verified; delegate mode (a brief-level rule: coordinate, never edit product files) | build, change beads, PRs, settings or sessions unless the operator said so, answer for the operator |
 | staffing | new | hiring, the roster, `team.json` (sole writer), scaling within budget | anything else that writes |
 | product-manager | delivery product-owner | vision, brief, PRD, prioritisation, roadmap document; the operator talks to it directly for vision work and it tells the Chief of Staff | dispatch |
 | delivery-lead | delivery delivery-lead | bead structure (sole writer), materialise, reconcile, assignment, blockers | product scope decisions |
@@ -172,8 +172,8 @@ stewards put it in a new session's first prompt. Idempotent.
    (builders: `builder-1/`, `builder-2/`), containing a checkout of the project repo and, for roles
    whose brief says they touch code, a worktree of the product repo. One directory per instance gives
    each session its own auto-memory, actor, and settings.
-2. Writes `.claude/settings.local.json` there: `model` from the manifest, permission mode, the
-   plugin hooks, and an env block exporting `DELIVERY_ROLE=<id>`, `DELIVERY_HOST=<host>`,
+2. Writes `.claude/settings.local.json` there: `model` from the manifest, `DELIVERY_MODE`, `enabledPlugins` for delivery,
+   (the permission mode is passed by the steward at launch, never written to local settings), and an env block exporting `DELIVERY_ROLE=<id>`, `DELIVERY_HOST=<host>`,
    `BEADS_ACTOR=<user>@<host>/<role-id>`.
 3. Writes `CLAUDE.local.md` there: team rules, the role brief, the routing table generated from the
    manifest, the host's capabilities and limits from `hosts.json`.
@@ -181,9 +181,8 @@ stewards put it in a new session's first prompt. Idempotent.
 
 ### 6.2 Retention
 
-- SessionStart re-reads the manifest, re-composes and re-injects the brief, runs `bd prime`, stops
-  if bd does not answer.
-- PostCompact re-injects the brief.
+- SessionStart (startup, resume, clear, compact) re-reads the manifest, rewrites CLAUDE.local.md,
+  injects a short role block under the hook output cap, and registers the session
 - UserPromptSubmit appends one line: role id and current claim.
 
 ### 6.3 Model and cost
@@ -244,6 +243,7 @@ The Delivery Lead owns the seam. `/delivery:team` (and the morning routine) runs
 roadmap stories with no bead, beads with a stale roadmap-ref, phases closed in beads but not in
 realign, manifest roles missing or extra or on the wrong model in the roster bead. Any drift is one
 bead owned by the Delivery Lead (plan) or Staffing (roster), at the top of the briefing.
+In phase 1 the roster is a per-host file; cross-host drift arrives with phase 4.
 
 ## 8. Enforcement: hooks
 

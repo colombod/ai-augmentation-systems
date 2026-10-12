@@ -66,10 +66,17 @@ session its role and keep it:
 - `scripts/prepare-role.js --project <root> --instance <id>` — creates one directory per role
   instance with its own settings (model, env, actor), a composed `CLAUDE.local.md`, a clone of the
   project repo and, for builders, a worktree of the product repo. Start a session in that directory.
-- Hooks — SessionStart re-injects the role and registers the session in the roster; PostCompact
-  restates it after compaction; UserPromptSubmit adds a one-line reminder with the current claim.
+- Hooks — SessionStart re-injects the role on startup, resume, clear and after compaction, and
+  refreshes CLAUDE.local.md from the current manifest; UserPromptSubmit adds a one-line reminder
+  with the current claim.
 - `/delivery:join` — confirms the role in-session, primes beads, reports to the Chief of Staff.
 - `/delivery:team` — roster versus manifest: live, stale, missing, wrong model.
+
+The delivery plugin must be installed on the machine; `prepare-role` enables it for the role
+directory. The steward keeps the original project checkout pulled (`git pull --ff-only`) before
+preparing or restarting a role, because the hooks read the manifest there. In phase 1 the roster is
+per host, so `/delivery:team` reports only roles on this host. `prepare-role` does not set a
+permission mode; a steward passes `--permission-mode` when starting the session.
 
 Design: `.superpowers/specs/2026-10-12-shipping-team-design.md`. Provisioning, hiring, deploy and
 the plan-to-beads materialise step are later phases.

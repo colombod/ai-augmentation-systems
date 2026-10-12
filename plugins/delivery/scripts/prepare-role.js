@@ -52,21 +52,43 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     }
   }
 
-  const settings = {
-    model: role.model,
-    permissions: { defaultMode: 'auto' },
-    env: {
-      DELIVERY_ROLE: instance,
-      DELIVERY_ROLE_ID: role.id,
-      DELIVERY_HOST: role.host,
-      DELIVERY_PROJECT_ROOT: projectRoot,
-      BEADS_ACTOR: `${user || os.userInfo().username}@${role.host}/${instance}`,
-    },
-  };
+  if (brief.meta.touches_code && !productRepo) files.push('warning: no product worktree (pass --product-repo)');
+
+  const actor = `${user || os.userInfo().username}@${role.host}/${instance}`;
   fs.mkdirSync(path.join(roleDir, '.claude'), { recursive: true });
   const settingsFile = path.join(roleDir, '.claude', 'settings.local.json');
+  let settings = {};
+  if (fs.existsSync(settingsFile)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+      if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('not an object');
+    } catch (err) {
+      settings = {};
+      files.push(`warning: ${settingsFile} was not valid JSON and was replaced`);
+    }
+  }
+  settings.model = role.model;
+  settings.env = Object.assign({}, settings.env, {
+    DELIVERY_ROLE: instance,
+    DELIVERY_ROLE_ID: role.id,
+    DELIVERY_HOST: role.host,
+    DELIVERY_PROJECT_ROOT: projectRoot,
+    BEADS_ACTOR: actor,
+    DELIVERY_MODE: role.mode || brief.meta.mode || 'default',
+  });
+  settings.enabledPlugins = Object.assign({}, settings.enabledPlugins, { 'delivery@ai-augmentation-systems': true });
+  if (settings.permissions && typeof settings.permissions === 'object') {
+    delete settings.permissions.defaultMode;
+    if (Object.keys(settings.permissions).length === 0) delete settings.permissions;
+  }
   fs.writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
   files.push(settingsFile);
+
+  const ignoreFile = path.join(projectRoot, '.delivery', 'team', '.gitignore');
+  if (!fs.existsSync(ignoreFile)) {
+    fs.mkdirSync(path.dirname(ignoreFile), { recursive: true });
+    fs.writeFileSync(ignoreFile, 'roster.json\nroster.json.*\n');
+  }
 
   const rules = fs.readFileSync(path.join(pluginRoot, 'templates', 'team-rules.md'), 'utf8');
   const briefFile = path.join(roleDir, 'CLAUDE.local.md');
@@ -77,6 +99,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     instance,
     role: role.id,
     project_root: projectRoot,
+    actor,
     host: role.host,
     model: role.model,
     prepared_at: now || new Date().toISOString(),
@@ -103,7 +126,7 @@ if (require.main === module) {
     console.error('usage: prepare-role.js --project <projectRoot> --instance <id> [--team-dir <dir>] [--product-repo <path>] [--user <name>]');
     process.exit(2);
   }
-  const { roleDir } = prepareRole({
+  const { roleDir, files } = prepareRole({
     projectRoot: args.project,
     instance: args.instance,
     teamDir: args.team_dir,
@@ -111,6 +134,7 @@ if (require.main === module) {
     productRepo: args.product_repo,
     user: args.user,
   });
+  for (const f of files) if (f.startsWith('warning:')) console.error(f);
   console.log(roleDir);
 }
 

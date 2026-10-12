@@ -96,3 +96,45 @@ test('prepareRole rewrites origin to the project remote, or keeps the local path
   const b = prepareRole({ projectRoot: noRemote, instance: 'staffing', teamDir: teamB, pluginRoot: PLUGIN_ROOT, user: 'tester' });
   assert.equal(git(path.join(b.roleDir, 'project'), 'remote', 'get-url', 'origin').trim(), noRemote);
 });
+
+test('prepareRole merges settings, keeps foreign keys, sets DELIVERY_MODE and enabledPlugins, no defaultMode', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  const file = path.join(roleDir, '.claude', 'settings.local.json');
+  const first = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(first.permissions, undefined);
+  assert.equal(first.env.DELIVERY_MODE, 'delegate');
+  assert.equal(first.enabledPlugins['delivery@ai-augmentation-systems'], true);
+  first.permissions = { allow: ['Bash(ls)'], defaultMode: 'auto' };
+  first.model = 'haiku';
+  fs.writeFileSync(file, JSON.stringify(first));
+  prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  const second = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(second.permissions.allow, ['Bash(ls)']);
+  assert.equal(second.permissions.defaultMode, undefined);
+  assert.equal(second.model, 'opus');
+  assert.equal(second.enabledPlugins['delivery@ai-augmentation-systems'], true);
+});
+
+test('prepareRole tolerates invalid settings JSON, writes actor into the marker and a roster gitignore', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  fs.writeFileSync(path.join(roleDir, '.claude', 'settings.local.json'), '{ nope');
+  const again = prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  assert.ok(again.files.some((f) => f.startsWith('warning:') && f.includes('not valid JSON')));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')).actor, 'tester@pc/staffing');
+  const ignore = path.join(projectRoot, '.delivery', 'team', '.gitignore');
+  assert.equal(fs.readFileSync(ignore, 'utf8'), 'roster.json\nroster.json.*\n');
+  fs.writeFileSync(ignore, 'custom\n');
+  prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  assert.equal(fs.readFileSync(ignore, 'utf8'), 'custom\n');
+});
+
+test('prepareRole warns when a code-touching role has no product repo', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  assert.ok(files.includes('warning: no product worktree (pass --product-repo)'));
+});
