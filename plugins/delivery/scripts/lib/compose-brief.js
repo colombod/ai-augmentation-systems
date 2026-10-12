@@ -26,7 +26,11 @@ function loadRoleBrief(pluginRoot, projectRoot, briefRef) {
   const { meta, body } = parseFrontmatter(fs.readFileSync(file, 'utf8'));
   let full = body;
   if (meta.composes) {
-    const agent = parseFrontmatter(fs.readFileSync(path.join(pluginRoot, meta.composes), 'utf8'));
+    if (kind !== 'delivery') throw new Error('brief: project briefs cannot compose');
+    const agentsDir = path.resolve(pluginRoot, 'agents');
+    const target = path.resolve(pluginRoot, String(meta.composes));
+    if (!target.startsWith(agentsDir + path.sep)) throw new Error(`brief: composes path "${meta.composes}" must be under agents/`);
+    const agent = parseFrontmatter(fs.readFileSync(target, 'utf8'));
     full = `${agent.body.trim()}\n\n${body.trim()}\n`;
   }
   return { meta, body: full };
@@ -51,9 +55,35 @@ function routingTable(team) {
   return lines.join('\n');
 }
 
+function headerLines(team, instance, role) {
+  const actor = `<user>@${role.host}/${instance}`;
+  return [
+    `# Role: ${instance} (${role.id}) on ${team.project}`,
+    '',
+    `You are the session "${instance}". Your beads actor is \`${actor}\` (the real user name is set in your environment as BEADS_ACTOR). Bead prefix: \`${team.prefix}-\`. The bd host is \`${team.bd_host}\`.`,
+    '',
+  ];
+}
+
+// Short role block for hook injection (Claude Code caps injected hook output at 10,000 characters).
+function shortBrief({ team, hosts, instance, role, roleDir }) {
+  return [
+    ...headerLines(team, instance, role),
+    routingTable(team),
+    '',
+    describeHost(role.host, hosts.hosts[role.host]),
+    '',
+    `Your full brief and the team rules are in ${roleDir}/CLAUDE.local.md; it is binding. Re-read it if you are unsure of your role.`,
+    '',
+  ].join('\n');
+}
+
+const DELEGATE_SECTION = '# Delegate mode\n\nYou coordinate; you do not build. Do not edit files other than bead notes and, for Staffing, .delivery/team/team.json. Route work by message and report by briefing.';
+
 function composeBrief({ team, hosts, instance, role, brief, rules }) {
   const host = hosts.hosts[role.host];
   const actor = `<user>@${role.host}/${instance}`;
+  const mode = role.mode || brief.meta.mode || 'default';
   return [
     `# Role: ${instance} (${role.id}) on ${team.project}`,
     '',
@@ -73,7 +103,8 @@ function composeBrief({ team, hosts, instance, role, brief, rules }) {
     '',
     brief.body.trim(),
     '',
+    ...(mode === 'delegate' ? [DELEGATE_SECTION, ''] : []),
   ].join('\n');
 }
 
-module.exports = { parseFrontmatter, loadRoleBrief, composeBrief, describeHost, routingTable };
+module.exports = { parseFrontmatter, loadRoleBrief, composeBrief, shortBrief, describeHost, routingTable };

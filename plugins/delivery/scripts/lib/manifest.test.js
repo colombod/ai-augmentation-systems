@@ -84,3 +84,19 @@ test('validateManifest rejects role ids that are not path-safe', () => {
   team.roles[0].id = '../evil';
   assert.ok(validateManifest(team, hosts).some((p) => p.includes('role id "../evil" must match ^[a-z0-9][a-z0-9-]*$')));
 });
+
+test('validateManifest rejects a brief ref that is not delivery/<id> or project/<id>', () => {
+  const { team, hosts } = loadManifest(scratchProject());
+  team.roles[0].brief = '../x';
+  assert.ok(validateManifest(team, hosts).some((p) => p.includes('brief') && p.includes('../x')));
+});
+
+test('findProjectRoot prefers the marker project_root over the clone inside a role directory', () => {
+  const original = scratchProject();
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-role-'));
+  const clone = path.join(roleDir, 'project');
+  fs.mkdirSync(path.join(clone, '.delivery', 'team'), { recursive: true });
+  fs.copyFileSync(path.join(TEMPLATES, 'team.json'), path.join(clone, '.delivery', 'team', 'team.json'));
+  fs.writeFileSync(path.join(roleDir, '.delivery-role.json'), JSON.stringify({ instance: 'x', project_root: original }));
+  assert.equal(findProjectRoot(clone), original);
+});

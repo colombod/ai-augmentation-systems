@@ -11,6 +11,20 @@ function findProjectRoot(startDir) {
   const override = process.env.DELIVERY_PROJECT_ROOT;
   if (override && fs.existsSync(path.join(override, TEAM_REL))) return override;
   let dir = path.resolve(startDir);
+  // A role directory's marker names the original project checkout; prefer it over the role's own clone.
+  for (let d = dir; ;) {
+    const markerFile = path.join(d, '.delivery-role.json');
+    if (fs.existsSync(markerFile)) {
+      try {
+        const root = JSON.parse(fs.readFileSync(markerFile, 'utf8')).project_root;
+        if (typeof root === 'string' && fs.existsSync(path.join(root, TEAM_REL))) return root;
+      } catch (err) { /* unreadable marker: fall through */ }
+      break;
+    }
+    const up = path.dirname(d);
+    if (up === d) break;
+    d = up;
+  }
   for (;;) {
     if (fs.existsSync(path.join(dir, TEAM_REL))) return dir;
     const parent = path.dirname(dir);
@@ -56,6 +70,7 @@ function validateManifest(team, hosts) {
     seen.add(role.id);
     if (!/^[a-z0-9][a-z0-9-]*$/.test(role.id)) problems.push(`team.json: role id "${role.id}" must match ^[a-z0-9][a-z0-9-]*$`);
     if (!role.brief) problems.push(`team.json: role "${role.id}" has no "brief"`);
+    else if (!/^(delivery|project)\/[a-z0-9][a-z0-9-]*$/.test(role.brief)) problems.push(`team.json: role "${role.id}" has invalid brief "${role.brief}"`);
     if (!hostNames.has(role.host)) problems.push(`team.json: role "${role.id}" has unknown host "${role.host}"`);
     if (!MODELS.has(role.model)) problems.push(`team.json: role "${role.id}" has model "${role.model}", expected one of ${[...MODELS].join(', ')}`);
     if (role.mode && !MODES.has(role.mode)) problems.push(`team.json: role "${role.id}" has mode "${role.mode}"`);
