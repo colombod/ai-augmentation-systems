@@ -295,10 +295,43 @@ Active only when the working tree is a product-repo worktree.
 - No claim on a bead whose holder is live (last note within `staleness_hours`).
 - Stop: a session holding a claim cannot end its turn without a note newer than the turn start.
 
-### 8.3 Keep roles in their lane
+### 8.3 Keep roles in their lane: delegation is enforced, not requested
 
-- Delegate mode (chief-of-staff, staffing): deny Write, Edit, bd structural commands, git mutations;
-  Staffing keeps one write, `team.json`.
+The operator's rule (2026-10-12): models rush to do work themselves instead of delegating, so a
+sentence in a brief is not enough. Each role does its own job and never another session's; work is
+done by workers (builders, spike researchers) that managers dispatch to through beads or spawn as
+subagents. A PreToolUse hook enforces this from a policy each role declares.
+
+- **Policy lives in the role file.** Two frontmatter keys, comma-separated: `lane_writes` (path
+  patterns the role may Write/Edit, relative to its role directory: `project/...` is the project
+  repo clone, `product/...` the product worktree, `scratch/...` a throwaway area; `$TMPDIR` is always
+  allowed) and `lane_bash` (named command groups the role may run). Project briefs may declare their
+  own. No policy means no writes and read-only commands.
+- **Command groups** (`hooks/lane-groups.json`): `read` (ls, cat, grep, rg, find, head, tail, wc, diff,
+  jq, node on plugin scripts), `git-read`, `git-write-project`, `git-write-product`, `gh-read`,
+  `gh-write`, `bd-read`, `bd-notes` (append notes and comments only), `bd-claim` (claim, release own,
+  close), `bd-create-child` (create with `--parent` only), `bd-structure` (any create, dep add/remove,
+  re-parent, materialise), `any` (unrestricted Bash, for workers). A Bash command is split on `&&`,
+  `;`, `|`, `||`; every segment must belong to an allowed group or the whole call is refused.
+- **Manager lanes.** Chief of Staff: no writes; read, git-read, gh-read, bd-read, bd-notes,
+  bd-create-child. Staffing: writes `project/.delivery/team/team.json` and `project/.delivery/team/briefs/**`;
+  read, git-read, git-write-project, bd-read, bd-notes. Product Manager: writes
+  `project/.delivery/initiatives/**`, `personas/**`, `interviews/**`, `simulations/**`,
+  `decisions/**`, `glossary.md`; read, git-read, git-write-project, bd-read, bd-notes,
+  bd-create-child. Delivery Lead: writes `project/.delivery/stories/**`, `sprints/**`,
+  `team/denylist.txt`; read, git-read, git-write-project, gh-read, bd-read, bd-notes,
+  bd-create-child, bd-structure. Progress Observer: writes `project/.delivery/reviews/**`; read,
+  git-read, gh-read, bd-read, bd-notes, bd-claim (release stale claims). No manager may write under
+  `product/`.
+- **Worker lanes.** Builder: writes `product/**` and `scratch/**`; bash `any`, still subject to 8.1
+  and 8.2. Spike Researcher: writes `project/.delivery/initiatives/**`, `decisions/**`, `scratch/**`;
+  bash `any`; never `product/**`.
+- **Subagents are allowed everywhere** (the Agent tool is how a manager reads broadly or drafts), and
+  their tool calls pass through the same hook, so a subagent cannot do what its parent role may not.
+- **Refusals teach.** A refused call returns the reason and the sanctioned path: "Role chief-of-staff
+  does not edit product files; create a child bead for a builder (`bd create --parent <id>`) or ask
+  the Delivery Lead." The hook logs refusals to `<roleDir>/.delivery-lane.log` so the morning briefing
+  can report a role that keeps trying to leave its lane.
 - Host reach: deny browser and computer-use tools on a headless host with a message naming which host
   can do it.
 
