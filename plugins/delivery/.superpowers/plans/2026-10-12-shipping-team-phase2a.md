@@ -903,7 +903,7 @@ test('applyPlan creates the graph, is idempotent, and never touches closed beads
   assert.equal(first.created.length, 7);
   assert.ok(first.depsAdded.some((d) => d.id === 'ex-demo-02' && d.blockedBy === 'ex-ph1-review'));
   assert.equal(bd.show('ex-demo-01').parent, 'ex-ph1');
-  assert.deepEqual(bd.depsOf('ex-demo-02'), ['ex-demo-01']);
+  assert.deepEqual(bd.depsOf('ex-demo-02').sort(), ['ex-demo-01', 'ex-ph1-review']);
   const second = applyPlan({ plan, bd });
   assert.deepEqual(second.created, []);
   assert.deepEqual(second.updated, []);
