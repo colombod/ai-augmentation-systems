@@ -148,7 +148,8 @@ roles:
 ```yaml
 hosts:
   alien51:   { kind: pc,    bd: wrapper, headless: false, desktop_apps: true }
-  wintermute:{ kind: ssh,   bd: native,  headless: true,  desktop_apps: false, dolt_server: true }
+  wintermute:{ kind: ssh,   bd: native,  headless: true,  desktop_apps: false, dolt_server: true,
+               lanes: [a, b, c, d], check: vault-check }
   cloud:     { kind: cloud, bd: remote,  headless: true,  desktop_apps: false }
 ```
 
@@ -327,7 +328,15 @@ Provision (`/delivery:provision`, bd-host steward):
 3. Cloud environment: write the environment definition for the project repo (setup script: install
    bd, clone product repo as sibling, set Dolt remote and actor, install the product's test
    dependencies from its developing docs). Register it.
-4. Record every step and its check in a provisioning bead.
+4. Test lanes. On the check host, create N isolated lanes (own folder and Postgres database each) and a
+   lock that refuses a busy lane with a distinct exit code; record lanes in `hosts.yaml`. Builders are
+   assigned a lane in their composed brief, so two sessions never share one.
+5. Existing environments are reused, never duplicated: provision detects a cloud environment or Dolt
+   server that already serves this project and records it instead of creating a second.
+6. Secrets stay with the operator. Provision writes everything except secret values and hands the
+   operator one list of what to paste where, through the Chief of Staff; it never reads or moves a
+   token itself.
+7. Record every step and its check in a provisioning bead.
 
 Then hire (section 9.1), then deploy:
 
