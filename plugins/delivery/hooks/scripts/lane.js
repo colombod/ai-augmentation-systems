@@ -451,4 +451,26 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   return { allow: true };
 }
 
-module.exports = { loadPolicy, splitCommand, classifySegment, pathAllowed, decideLane, sanctioned, tokens };
+function laneDecisionForHook(input, pluginRoot) {
+  const { findRoleMarker, validMarker } = require('./role-context.js');
+  const found = findRoleMarker(input.cwd);
+  if (!found) return null;
+  const ctx = validMarker(found);
+  if (!ctx) return null;
+  const { marker, hosts, role, roleDir } = ctx;
+  const policy = loadPolicy({ pluginRoot, projectRoot: marker.project_root, briefRef: role.brief });
+  const hostMap = (hosts && hosts.hosts) || {};
+  const host = hostMap[role.host] || {};
+  const desktopHosts = Object.entries(hostMap).filter(([, h]) => h && h.desktop_apps).map(([n]) => n);
+  const groups = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'lane-groups.json'), 'utf8'));
+  const d = decideLane({ toolName: input.tool_name, toolInput: input.tool_input || {}, roleDir, policy, groups, pluginRoot, cwd: input.cwd, hostHeadless: !!host.headless, hostName: role.host, desktopHosts });
+  if (d.allow) return null;
+  try {
+    const ti = input.tool_input || {};
+    const what = input.tool_name === 'Bash' ? String(ti.command || '') : String(ti.file_path || ti.notebook_path || '');
+    fs.appendFileSync(path.join(roleDir, '.delivery-lane.log'), `${new Date().toISOString()} ${input.tool_name} ${what.slice(0, 120).replace(/\n/g, ' ')} DENIED\n`);
+  } catch (err) { /* logging must not block */ }
+  return { reason: d.reason };
+}
+
+module.exports = { laneDecisionForHook, loadPolicy, splitCommand, classifySegment, pathAllowed, decideLane, sanctioned, tokens };

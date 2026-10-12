@@ -427,3 +427,45 @@ test('round 4: open is not an MCP read verb', () => {
   assert.equal(allow('mcp__x__open_terminal_tab'), false);
   assert.equal(allow('mcp__x__fetch_page'), true);
 });
+
+const { execFileSync } = require('child_process');
+const { prepareRole } = require('../../scripts/prepare-role.js');
+
+function preparedRole(instance) {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-proj-'));
+  execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: projectRoot });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: projectRoot });
+  fs.mkdirSync(path.join(projectRoot, '.delivery', 'team'), { recursive: true });
+  fs.copyFileSync(path.join(PLUGIN_ROOT, 'templates', 'team.json'), path.join(projectRoot, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(PLUGIN_ROOT, 'templates', 'hosts.json'), path.join(projectRoot, '.delivery', 'team', 'hosts.json'));
+  execFileSync('git', ['add', '-A'], { cwd: projectRoot });
+  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: projectRoot });
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  return { projectRoot, roleDir };
+}
+
+function runHook(script, input, env) {
+  return execFileSync(process.execPath, [path.join(__dirname, script)], { input: JSON.stringify(input), env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
+}
+
+test('role-lane hook denies an out-of-lane edit for chief-of-staff and allows for builder', () => {
+  const { roleDir } = preparedRole('chief-of-staff');
+  const out = runHook('role-lane.js', { cwd: roleDir, session_id: 's', tool_name: 'Edit', tool_input: { file_path: path.join(roleDir, 'product', 'a.js') } }, { DELIVERY_ROLE: 'chief-of-staff', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT });
+  const json = JSON.parse(out);
+  assert.equal(json.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(json.hookSpecificOutput.permissionDecisionReason, /chief-of-staff/);
+  assert.ok(fs.readFileSync(path.join(roleDir, '.delivery-lane.log'), 'utf8').includes('DENIED'));
+  const b = preparedRole('builder-1');
+  const out2 = runHook('role-lane.js', { cwd: b.roleDir, session_id: 's', tool_name: 'Edit', tool_input: { file_path: path.join(b.roleDir, 'product', 'a.js') } }, { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT });
+  assert.equal(out2, '');
+});
+
+test('role-lane hook is inert without a role, with a mismatched DELIVERY_ROLE, and on garbage stdin', () => {
+  assert.equal(runHook('role-lane.js', { cwd: os.tmpdir(), tool_name: 'Bash', tool_input: { command: 'rm -rf /' } }, {}), '');
+  const { roleDir } = preparedRole('staffing');
+  assert.equal(runHook('role-lane.js', { cwd: roleDir, tool_name: 'Bash', tool_input: { command: 'npm test' } }, { DELIVERY_ROLE: 'other' }), '');
+  const raw = execFileSync(process.execPath, [path.join(__dirname, 'role-lane.js')], { input: 'not json', stdio: ['pipe', 'pipe', 'pipe'] }).toString();
+  assert.equal(raw, '');
+});
