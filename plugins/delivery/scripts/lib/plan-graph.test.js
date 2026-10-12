@@ -64,19 +64,45 @@ test('planGraph is byte-identical on repeated runs', () => {
   assert.equal(JSON.stringify(planGraph(input)), JSON.stringify(planGraph(input)));
 });
 
-test('denylistFrom collects titles, names and headings, deduplicated', () => {
+test('planGraph emits no dependency on a skipped story', () => {
+  const g = planGraph({ ...input, stories: [...stories, { id: 'ex-04', title: 'Fourth', status: 'ready', phase: '2', dependsOn: ['ex-99'], file: '/x/ex-04.md' }] });
+  assert.ok(!g.deps.some((d) => d.blockedBy === 'ex-ex-99' || d.id === 'ex-ex-99'));
+  assert.ok(g.warnings.some((w) => w.includes('story ex-04: depends_on ex-99 unknown')));
+});
+
+test('planGraph guards duplicates and self-dependencies', () => {
+  const g = planGraph({
+    ...input,
+    stories: [...stories, { id: 'ex-05', title: 'Fifth', status: 'ready', phase: '1', dependsOn: ['ex-05'], file: '/x/ex-05.md' }],
+    spikes: [...spikes, { key: 'cos-1', question: 'Again', timeBox: '1h', blocks: 'Phase 1' }],
+  });
+  assert.ok(g.warnings.includes('duplicate spike key cos-1'));
+  assert.ok(g.warnings.includes('story ex-05: depends_on itself'));
+  assert.equal(g.beads.filter((b) => b.id === 'ex-spike-cos-1').length, 1);
+  assert.ok(!g.deps.some((d) => d.id === 'ex-ex-05' && d.blockedBy === 'ex-ex-05'));
+  const keys = g.deps.map((d) => `${d.id}|${d.blockedBy}`);
+  assert.equal(new Set(keys).size, keys.length);
+});
+
+test('denylistFrom keeps distinctive phrases, drops generic and single-word entries', () => {
   const list = denylistFrom({
-    initiative: 'demo', roadmap, stories, spikes,
-    briefText: '# Brief: Vault for everyone\n\n## Who it is for\n\ntext\n',
+    initiative: 'demo',
+    roadmap: { phases: [...roadmap.phases, { number: '3', name: 'Beads over Dolt', done: false, items: [] }] },
+    stories, spikes,
+    briefText: '# Brief: Vault for everyone\n\n## Who it is for\n\n## Context\n\ntext\n\n```\n## Inside Fence Heading\n```\n',
     prdText: '# PRD\n\n## Scenario: Sell duplicates\n',
-    personaNames: ['Casual Carl', 'casual carl', 'Pro Pat'],
+    personaNames: ['Casual Carl', 'casual carl', 'Pro Pat', 'Al'],
   });
   assert.ok(list.includes('demo'));
-  assert.ok(list.includes('Foundations'));
-  assert.ok(list.includes('Second'));
+  assert.ok(!list.includes('Al'));
   assert.ok(list.includes('Does env reach hooks?'));
   assert.ok(list.includes('Brief: Vault for everyone'));
   assert.ok(list.includes('Scenario: Sell duplicates'));
+  assert.ok(list.includes('Beads over Dolt'));
+  assert.ok(!list.includes('Foundations'));
+  assert.ok(!list.includes('Second'));
+  assert.ok(!list.includes('Context'));
+  assert.ok(!list.includes('Inside Fence Heading'));
   assert.equal(list.filter((x) => x.toLowerCase() === 'casual carl').length, 1);
   assert.ok(!list.includes('PRD'));
   assert.deepEqual(list, [...list].sort((a, b) => a.localeCompare(b)));

@@ -20,17 +20,26 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
     beads.push({ id, title: `Phase ${p.number}: ${p.name}`, type: 'epic', parent: null, labels: ['roadmap', `phase-${p.number}`], metadata: base(p.number, `phase-${p.number}`), priority: 1, docId: `phase-${p.number}` });
   }
 
-  const live = stories.filter((s) => s.status !== 'superseded');
-  for (const s of live) storyById.set(s.id, s);
+  const live = [];
+  const seenStories = new Set();
+  for (const s of stories.filter((x) => x.status !== 'superseded')) {
+    if (seenStories.has(s.id)) { warnings.push(`duplicate story id ${s.id}`); continue; }
+    seenStories.add(s.id);
+    live.push(s);
+  }
   const storiesByPhase = new Map();
   for (const s of [...live].sort((a, b) => a.id.localeCompare(b.id))) {
     if (!s.phase || !phaseIds.has(s.phase)) { warnings.push(`story ${s.id}: phase ${s.phase} not in roadmap`); continue; }
+    storyById.set(s.id, s);
     (storiesByPhase.get(s.phase) || storiesByPhase.set(s.phase, []).get(s.phase)).push(s);
   }
 
   const spikesByPhase = new Map();
   const spikeBlocks = [];
+  const seenSpikes = new Set();
   for (const sp of spikes) {
+    if (seenSpikes.has(sp.key)) { warnings.push(`duplicate spike key ${sp.key}`); continue; }
+    seenSpikes.add(sp.key);
     const id = `${prefix}-spike-${sp.key}`;
     const blocksPhase = phaseNumber(sp.blocks);
     let phase = null;
@@ -38,7 +47,7 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
     if (blocksPhase && phaseIds.has(blocksPhase)) {
       phase = blocksPhase;
       spikeBlocks.push({ id: reviewIds.get(phase), blockedBy: id });
-    } else if (storyById.has(sp.blocks) && storyById.get(sp.blocks).phase && phaseIds.has(storyById.get(sp.blocks).phase)) {
+    } else if (storyById.has(sp.blocks)) {
       phase = storyById.get(sp.blocks).phase;
       spikeBlocks.push({ id: `${prefix}-${sp.blocks}`, blockedBy: id });
     } else {
@@ -78,25 +87,47 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
   for (const p of phases) {
     for (const s of storiesByPhase.get(p.number) || []) {
       for (const d of s.dependsOn) {
-        if (storyById.has(d)) deps.push({ id: `${prefix}-${s.id}`, blockedBy: `${prefix}-${d}` });
+        if (d === s.id) warnings.push(`story ${s.id}: depends_on itself`);
+        else if (storyById.has(d)) deps.push({ id: `${prefix}-${s.id}`, blockedBy: `${prefix}-${d}` });
         else warnings.push(`story ${s.id}: depends_on ${d} unknown`);
       }
     }
   }
   deps.push(...spikeBlocks);
 
-  return { beads, deps, warnings };
+  const seenDeps = new Set();
+  const uniqueDeps = deps.filter((d) => {
+    const k = `${d.id}\u0000${d.blockedBy}`;
+    if (seenDeps.has(k)) return false;
+    seenDeps.add(k);
+    return true;
+  });
+
+  return { beads, deps: uniqueDeps, warnings };
 }
 
+const STOPLIST = new Set(['context', 'decision', 'decisions', 'overview', 'goal', 'goals', 'non-goals', 'scope', 'out of scope', 'risks', 'risk', 'background', 'summary', 'constraints', 'requirements', 'functional requirements', 'non-functional requirements', 'assumptions', 'open questions', 'open items', 'alternatives considered', 'consequences', 'status', 'notes', 'phases', 'critical path', 'dependencies', 'buffer', 'testing', 'introduction', 'problem', 'solution']);
+
 function headings(text) {
-  return (text || '').split(/\r?\n/).filter((l) => /^#{1,2}\s/.test(l)).map((l) => l.replace(/^#+\s*/, '').trim());
+  const out = [];
+  let fenced = false;
+  for (const l of (text || '').split(/\r?\n/)) {
+    if (/^\s*```/.test(l)) { fenced = !fenced; continue; }
+    if (!fenced && /^#{1,2}\s/.test(l)) out.push(l.replace(/^#+\s*/, '').trim());
+  }
+  return out;
 }
 
 function denylistFrom({ initiative, roadmap, stories, spikes, briefText, prdText, personaNames }) {
-  const raw = [initiative, ...roadmap.phases.map((p) => p.name), ...stories.map((s) => s.title), ...spikes.map((s) => s.question), ...headings(briefText), ...headings(prdText), ...(personaNames || [])];
+  const always = [initiative, ...(personaNames || [])];
+  const derived = [...roadmap.phases.map((p) => p.name), ...stories.map((s) => s.title), ...spikes.map((s) => s.question), ...headings(briefText), ...headings(prdText)]
+    .filter((x) => {
+      const e = String(x || '').trim();
+      return e.split(/\s+/).filter(Boolean).length >= 2 && !STOPLIST.has(e.toLowerCase());
+    });
   const seen = new Set();
   const out = [];
-  for (const entry of raw) {
+  for (const entry of [...always, ...derived]) {
     const e = String(entry || '').trim();
     if (e.length < 3) continue;
     if (/^(phase|spike|roadmap|story|prd|brief)$/i.test(e)) continue;
