@@ -5,10 +5,12 @@
     { "first": "cut" }, { "first": "tr" }, { "first": "pwd" }, { "first": "echo" }, { "first": "date" }, { "first": "which" },
     { "first": "test" }, { "first": "true" }, { "first": "cd" }, { "first": "export" }, { "first": "printf" }, { "first": "basename" },
     { "first": "dirname" }, { "first": "realpath" }, { "first": "stat" }, { "first": "file" }, { "first": "tree" }, { "first": "sed", "flags_none": ["-i"] },
-    { "first": "awk" }, { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/" }, { "first": "node", "flags_any": ["--test"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-status.js" },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/prepare-role.js" }
   ],
   "git-read": [
-    { "first": "git", "sub": ["status", "log", "diff", "show", "branch", "rev-parse", "fetch", "remote", "ls-files", "blame", "describe", "tag", "stash list", "worktree list", "merge-base", "shortlog", "cat-file", "rev-list"] }
+    { "first": "git", "sub": ["status", "log", "diff", "show", "rev-parse", "fetch", "remote -v", "remote show", "remote get-url", "ls-files", "blame", "describe", "tag -l", "tag --list", "stash list", "worktree list", "merge-base", "shortlog", "cat-file", "rev-list"] },
+    { "first": "git", "sub": ["branch"], "flags_none": ["-D", "-d", "-m", "-M", "--delete", "--move", "-c", "--copy"] }
   ],
   "git-write-project": [
     { "first": "git", "sub": ["add", "commit", "push", "pull", "checkout", "switch", "restore", "stash", "merge", "rebase", "cherry-pick", "reset", "worktree"], "scope": "project" }

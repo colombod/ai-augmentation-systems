@@ -40,7 +40,7 @@ test('classifySegment matches groups by first token, subcommand and flags', () =
   assert.deepEqual(classifySegment('cat a > b', GROUPS, ctx()), []);
   assert.deepEqual(classifySegment('sed -i s/a/b/ f', GROUPS, ctx()), []);
   assert.ok(classifySegment(`node ${PLUGIN_ROOT}/scripts/team-status.js`, GROUPS, ctx()).includes('read'));
-  assert.ok(classifySegment('node --test x.test.js', GROUPS, ctx()).includes('read'));
+  assert.ok(!classifySegment('node --test x.test.js', GROUPS, ctx()).includes('read'));
   assert.ok(classifySegment('anything at all', GROUPS, ctx()).includes('any'));
 });
 
@@ -85,4 +85,23 @@ test('decideLane denies browser and computer tools on a headless host', () => {
   assert.equal(d.allow, false);
   assert.match(d.reason, /alien51/);
   assert.equal(decideLane({ toolName: 'mcp__Claude_Browser__navigate', toolInput: {}, policy, ...ctx() }).allow, true);
+});
+
+test('manager lanes: no materialise via read, git-read non-mutating, stream redirects allowed', () => {
+  const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/chief-of-staff' });
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx() });
+  for (const command of [
+    `node ${PLUGIN_ROOT}/scripts/materialise.js --project x --initiative y`,
+    'git branch -D main',
+  ]) assert.equal(run(command).allow, false, command);
+  for (const command of [
+    `node ${PLUGIN_ROOT}/scripts/team-status.js`,
+    'git branch --show-current',
+    'git remote -v',
+    'bd list --json 2>/dev/null',
+    'git status 2>&1 | head',
+  ]) assert.equal(run(command).allow, true, command);
+  assert.deepEqual(classifySegment('ls >/tmp/out', GROUPS, ctx()), []);
+  assert.deepEqual(classifySegment('ls 2>/dev/nullx', GROUPS, ctx()), []);
+  assert.ok(classifySegment('ls &>/dev/null', GROUPS, ctx()).includes('read'));
 });

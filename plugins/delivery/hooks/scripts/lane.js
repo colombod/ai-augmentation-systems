@@ -91,9 +91,16 @@ function tokens(seg) {
   return out;
 }
 
+// Merging or discarding streams (2>&1, >&2, 2>/dev/null, &>/dev/null, >/dev/null) writes no file.
+const STREAM_ONLY = /^(?:>&\d|>>?\s*\/dev\/null(?=\s|$))/;
+
 function hasRedirect(seg) {
   let found = false;
-  scan(seg, (c, i, q) => { if (!q && c === '>') found = true; });
+  scan(seg, (c, i, q) => {
+    if (q || c !== '>') return 0;
+    if (!STREAM_ONLY.test(seg.slice(i))) found = true; // `>>` is checked from its first `>`
+    return seg[i + 1] === '>' ? 1 : 0;
+  });
   return found;
 }
 
