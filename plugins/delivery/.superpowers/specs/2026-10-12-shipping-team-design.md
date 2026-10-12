@@ -29,9 +29,15 @@ are placed on the hosts that can do the work, cost is tuned per role, work is tr
 derived from a planned roadmap, strategy never leaks into the public product repo, and the team
 scales itself as the work gets more specialised. The operator never runs a join command.
 
-Non-goals: delivery does not build. Builder roles run an external runner (superpowers by default).
-Native Agent Teams are not used; every role is an independent session wired by cross-session
-messaging. The Vault is not migrated as part of this work.
+Delivery is the delivery platform. It plans, staffs, dispatches, reviews and realigns; it does not
+write product code itself. Building is done by builder sessions through a **runner** chosen per role
+in the manifest: `superpowers` (brainstorm-skipped, plan then execute), `attractor` (the attractor
+plugin's DOT-graph pipeline, `claude -p` workers), or `plain` (the builder session itself, with the
+story as its only brief). The reviewer is always separate from the runner, which is what makes
+sprint-review trustworthy.
+
+Non-goals: native Agent Teams are not used; every role is an independent session wired by
+cross-session messaging. The Vault is not migrated as part of this work.
 
 ## 3. Two repositories
 
@@ -58,7 +64,8 @@ becomes a reconcile item for the Delivery Lead.
 | product-manager | delivery product-owner | vision, brief, PRD, prioritisation, roadmap document; the operator talks to it directly for vision work and it tells the Chief of Staff | dispatch |
 | delivery-lead | delivery delivery-lead | bead structure (sole writer), materialise, reconcile, assignment, blockers | product scope decisions |
 | progress-observer | delivery qa-strategist, extended | evidence, liveness, roster bead, real-app rows, drift checks | claims on build beads |
-| builder | new, thin | claim a ready bead, run the runner on it, report in three words; one worktree each; `count` and `cap` in the manifest | create GitHub issues, touch bead structure |
+| builder | new, thin | claim a ready bead, run the role's `runner` on it (superpowers, attractor or plain), report in three words; one worktree each; `count` and `cap` in the manifest | create GitHub issues, touch bead structure |
+| spike-researcher | delivery, standing | derisking: claims `spike` beads attached to architecture decisions and roadmap phases, answers the question with sources or an experiment, records the result in the bead and the ADR or roadmap it derisks; research and throwaway experiments only | ship code, take build beads |
 
 Chief of Staff, Product Manager and Delivery Lead are three roles, not one. The Vault's Product
 Manager does both product and dispatch; this design separates them.
@@ -73,8 +80,23 @@ repo, no speculative hires.
 ### 4.3 One-off roles
 
 `migration-expert` (bring an existing project into the two-repo shape, move beads config and team
-rules, generate the first denylist, hand to the Delivery Lead) and `spike-researcher` (research
-only, sourced, no building). Hired for a job, released after.
+rules, generate the first denylist, hand to the Delivery Lead). Hired for a job, released after.
+
+### 4.3a Spikes derisk the plan
+
+A spike is a question whose answer changes a design or a roadmap decision: can host X do Y, does
+API Z rate-limit us, is approach A or B cheaper. Spikes are first-class:
+
+- The architecture step and the roadmap step emit `spike` beads for every decision they mark as
+  unproven, each with the question, the decision it gates, and what answer would change it. A
+  spike bead blocks the story or phase it derisks, so `bd ready` surfaces spikes before the work
+  that depends on them.
+- The Spike Researcher claims them. Output is a sourced answer or a throwaway experiment in a
+  scratch worktree, never product code; the result goes in the bead and into the ADR or roadmap it
+  gates, and the challenge panel reads it at the next gate.
+- Anyone may raise a spike bead when they hit an unknown mid-task (the Chief of Staff's rule:
+  a technical unknown routes to a spike, not to the operator). The Delivery Lead orders them.
+- Staffing scales Spike Researchers like builders: within `budget`, on the number of ready spikes.
 
 ### 4.4 Duties attached to roles
 
@@ -136,7 +158,7 @@ roles:
     host: alien51
     model: sonnet
     count: 2
-    runner: superpowers
+    runner: superpowers   # superpowers | attractor | plain
   - id: chatgpt-host-expert
     brief: project/chatgpt-host-expert
     host: alien51
@@ -366,7 +388,10 @@ Each phase gets its own implementation plan.
 
 1. Roles, manifest, join, retention hooks, `team` status with roster drift. Proves a session takes
    and keeps a role.
-2. Document-to-beads: materialise, reconcile check, record-honesty hooks, leak hooks and denylist.
+2. Document-to-beads: materialise (incl. spike beads from architecture and roadmap), reconcile
+   check, record-honesty hooks, leak hooks and denylist; the builder runner contract (`runner`
+   validated as superpowers | attractor | plain, and the builder and spike-researcher briefs
+   carrying the per-runner loop).
 3. Provision: hosts, beads over Dolt, wrappers, cloud environment, init and migration-expert.
 4. Hire, deploy, stewards, routines.
 
