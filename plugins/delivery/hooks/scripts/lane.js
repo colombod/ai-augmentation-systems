@@ -37,6 +37,10 @@ const GUARDED_FIRST = ['rm', 'mv', 'cp', 'sudo', 'chmod', 'chown', 'curl', 'wget
 const GIT_GLOBAL_ARG = ['-C', '-c'];
 const GIT_GLOBAL_FLAG = ['--no-pager', '--no-color', '-P'];
 const BD_GLOBAL_FLAG = ['--json'];
+// Every bd global option (bd 1.2.2 plus --no-color), for the bd guard: it must find the subcommand
+// behind any of them. The lane keeps BD_GLOBAL_FLAG narrow so these do not widen a lane group.
+const BD_ALL_GLOBAL_FLAG = ['--json', '-q', '--quiet', '--no-color', '-v', '--verbose', '--global', '--ignore-schema-skew', '--profile', '--readonly', '--sandbox'];
+const BD_ALL_GLOBAL_ARG = ['--actor', '--db', '-C', '--directory', '--dolt-auto-commit'];
 // A separator after which a failed or skipped `cd` no longer stops the commands that follow.
 const RESUME_OPS = [';', '||', '&', '\n'];
 
@@ -192,6 +196,18 @@ function splitGlobals(t) {
     }
   } else if (t[0] === 'bd') {
     while (k < t.length && BD_GLOBAL_FLAG.includes(t[k])) { globals.push(t[k]); k++; }
+  }
+  return { globals, rest: t.slice(k) };
+}
+
+// bd global options before the subcommand, all of them; `rest` starts at the subcommand.
+function splitBdGlobals(t) {
+  const globals = [];
+  let k = 1;
+  while (k < t.length) {
+    const x = t[k];
+    const opt = x.split('=')[0];
+    if (BD_ALL_GLOBAL_FLAG.includes(x)) { globals.push(x); k++; } else if (BD_ALL_GLOBAL_ARG.includes(x)) { globals.push(x, t[k + 1]); k += 2; } else if (x.includes('=') && BD_ALL_GLOBAL_ARG.includes(opt)) { globals.push(x); k++; } else break;
   }
   return { globals, rest: t.slice(k) };
 }
@@ -499,4 +515,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { laneDecisionForHook, shellCommandOf, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

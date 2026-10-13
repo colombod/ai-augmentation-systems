@@ -17,7 +17,7 @@ try {
       if (hits.length && !first) first = hits[0];
     }
     if (first) {
-      const line = `Strategy leak suspected in pushed commits: "${first}". Create a strategy review bead now: bd create "Strategy leak: ${first}" --labels strategy-review, and tell the Delivery Lead.`;
+      const line = `Strategy leak suspected in pushed commits: "${first}". Create a strategy review bead now: bd create "Strategy leak: ${first}" --parent <the bead you hold> --labels strategy-review, and tell the Delivery Lead.`;
       process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: line } }));
     }
   }

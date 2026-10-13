@@ -138,3 +138,99 @@ test('C: bd-guard hook and Stop guard run bd at the project root with BEADS_DIR 
   runHookClean('claim-stop.js', { cwd: roleDir, session_id: 's', stop_hook_active: false }, { ...env, BEADS_DIR: '/custom/beads' });
   assert.equal(fs.readFileSync(out, 'utf8').split('\n')[1], '/custom/beads');
 });
+
+// Final wave D: structural bead changes belong to the Delivery Lead.
+test('D: structure is refused for every role but delivery-lead, with the sanctioned path', () => {
+  const me = 'me@pc/builder-1';
+  const beads = {
+    mine: { id: 'mine', status: 'in_progress', assignee: me, updated_at: NOW },
+    theirs: { id: 'theirs', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: NOW },
+  };
+  const bd = fakeBd(beads);
+  const run = (command, roleId = 'builder') => decideBd({ command, actor: me, roleId, staleHours: 2, bd, now: NOW });
+  const refused = [
+    'bd create "found work"',
+    'bd new "found work"',
+    'bd q "found work"',
+    'bd create --title x --type task',
+    'bd update mine --parent ex-9',
+    'bd update mine --parent=ex-9',
+    'bd dep add ex-1 ex-2',
+    'bd dep remove ex-1 ex-2',
+    'bd dep relate ex-1 ex-2',
+    'bd dep unrelate ex-1 ex-2',
+    'bd dep ex-1 --blocks ex-2',
+    'bd delete ex-1',
+    'bd label add ex-1 urgent',
+    'bd label remove mine urgent',
+    'bd label propagate ex-1 urgent',
+    'bd update theirs --add-label urgent',
+    'bd update theirs --remove-label urgent',
+    'bd update theirs --set-labels urgent',
+    'bd --json create "x"',
+    'bd --actor me@pc/builder-1 dep add ex-1 ex-2',
+    'git status && bd delete ex-1',
+  ];
+  for (const command of refused) {
+    const d = run(command);
+    assert.ok(d, command);
+    assert.match(d.reason, /structure belongs to the Delivery Lead; create a child bead under the bead you hold \(`bd create --parent <id>`\) or message the Delivery Lead/, command);
+  }
+  for (const roleId of ['chief-of-staff', 'product-manager', 'progress-observer', 'staffing', 'spike-researcher', undefined]) {
+    assert.ok(run('bd dep add ex-1 ex-2', roleId), String(roleId));
+  }
+  const allowed = [
+    'bd create "found work" --parent mine',
+    'bd create --parent=mine --title x',
+    'bd update mine --add-label urgent',
+    'bd update mine --remove-label urgent',
+    'bd label list mine',
+    'bd dep list ex-1',
+    'bd dep tree ex-1',
+    'bd update mine --append-notes "x"',
+  ];
+  for (const command of allowed) assert.equal(run(command), null, command);
+  for (const command of refused) assert.equal(run(command, 'delivery-lead'), null, `delivery-lead: ${command}`);
+  // A label lookup that fails stays fail-open, like every other lookup in this guard.
+  const boom = { show: () => { throw new Error('bd down'); } };
+  assert.equal(decideBd({ command: 'bd update ex-1 --add-label x', actor: me, roleId: 'builder', staleHours: 2, bd: boom, now: NOW }), null);
+});
+
+// Final wave H.2: global flags, short claim flags, and closing someone else's live claim.
+test('H.2: bd global flags before the subcommand are skipped', () => {
+  for (const command of ['bd --json close ex-1', 'bd -q close ex-1', 'bd --quiet close ex-1', 'bd --no-color close ex-1', 'bd --actor x close ex-1', 'bd --db /tmp/x.db close ex-1', 'bd --actor=x --json close ex-1']) {
+    const p = parseBd(command);
+    assert.equal(p.sub, 'close', command);
+    assert.equal(p.id, 'ex-1', command);
+    assert.match(decideBd({ command, actor: 'a', roleId: 'builder', staleHours: 2, bd: fakeBd({}), now: NOW }).reason, /EVIDENCE:/, command);
+  }
+  assert.equal(parseBd('bd --json dep add ex-1 ex-2').sub, 'dep add');
+});
+
+test('H.2: -a and -s count as claim changes; a live claim cannot be closed by someone else', () => {
+  const beads = {
+    'ex-1': { id: 'ex-1', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: '2026-10-12T11:30:00Z' },
+    'ex-2': { id: 'ex-2', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: '2026-10-12T08:00:00Z' },
+  };
+  const bd = fakeBd(beads);
+  const me = 'me@pc/builder-1';
+  const run = (command, actor = me) => decideBd({ command, actor, roleId: 'builder', staleHours: 2, bd, now: NOW });
+  assert.match(run('bd update ex-1 -a me').reason, /claimed by bob@pc\/builder-2/);
+  assert.match(run('bd update ex-1 -s open').reason, /claimed by bob@pc\/builder-2/);
+  const c = run('bd close ex-1 --reason "EVIDENCE: done"');
+  assert.match(c.reason, /a live claim cannot be released by someone else/);
+  assert.match(c.reason, /bob@pc\/builder-2/);
+  assert.match(run('bd close ex-9 ex-1 --reason "EVIDENCE: done"').reason, /a live claim cannot be released by someone else/);
+  assert.equal(run('bd close ex-1 --reason "EVIDENCE: done"', 'bob@pc/builder-2'), null);
+  assert.equal(run('bd close ex-2 --reason "EVIDENCE: done"'), null);
+  assert.match(run('bd close ex-1 --reason "done"').reason, /EVIDENCE:/);
+});
+
+test('D: the bd-guard hook passes the role, so a builder cannot add a dependency and the Delivery Lead can', () => {
+  const env = (instance) => ({ DELIVERY_ROLE: instance, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT });
+  const b = preparedRole('builder-1');
+  const out = runHook('bd-guard-hook.js', { cwd: b.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'bd dep add ex-1 ex-2' } }, env('builder-1'));
+  assert.match(JSON.parse(out).hookSpecificOutput.permissionDecisionReason, /structure belongs to the Delivery Lead/);
+  const dl = preparedRole('delivery-lead');
+  assert.equal(runHook('bd-guard-hook.js', { cwd: dl.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'bd dep add ex-1 ex-2' } }, env('delivery-lead')), '');
+});

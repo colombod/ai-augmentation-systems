@@ -385,7 +385,7 @@ test('leak-post-push entry reports via additionalContext JSON', () => {
   const json = JSON.parse(out);
   assert.equal(json.hookSpecificOutput.hookEventName, 'PostToolUse');
   assert.match(json.hookSpecificOutput.additionalContext, /Casual Carl/);
-  assert.match(json.hookSpecificOutput.additionalContext, /bd create "Strategy leak: Casual Carl" --labels strategy-review/);
+  assert.match(json.hookSpecificOutput.additionalContext, /bd create "Strategy leak: Casual Carl" --parent <the bead you hold> --labels strategy-review/);
   assert.equal(runHook('leak-post-push.js', { cwd, session_id: 's', tool_name: 'Bash', tool_input: { command: 'git status' } }, env), '');
 });
 

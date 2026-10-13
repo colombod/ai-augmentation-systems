@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// PreToolUse on shell tools (Bash, Monitor, PowerShell): evidence on close; no claim on a live holder.
+// PreToolUse on shell tools (Bash, Monitor, PowerShell): evidence on close; no claim on a live holder;
+// structure only by the Delivery Lead.
 // Deny JSON or nothing; exit 0.
 try {
   const { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor } = require('./role-context.js');
@@ -12,7 +13,7 @@ try {
     const valid = validMarker(findRoleMarker(input.cwd));
     if (valid) {
       const staleHours = (valid.team.budget && valid.team.budget.staleness_hours) || 2;
-      const d = decideBd({ command, actor: actorOf(valid.marker), staleHours, bd: makeBd(bdOptionsFor(valid.marker, input.cwd)) });
+      const d = decideBd({ command, actor: actorOf(valid.marker), roleId: valid.role.id, staleHours, bd: makeBd(bdOptionsFor(valid.marker, input.cwd)) });
       if (d) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.reason } }));
     }
   }
