@@ -18,7 +18,7 @@ class UsageError extends Error {}
 
 const BOOLEAN_FLAGS = new Set(['json', 'force', 'all', 'format-check', 'help']);
 const COMMANDS = ['publish', 'refresh', 'sync', 'record', 'delegate', 'decide', 'revoke', 'ack', 'ask', 'withdraw', 'answer', 'ratify',
-  'find', 'ledger', 'pending', 'verify', 'show'];
+  'find', 'ledger', 'pending', 'verify', 'show', 'problems', 'quarantine', 'repair', 'rehost'];
 
 const USAGE = `usage: operator.js <command> [options]   (all commands: --project <root> --json)
   sync [--transcript <path>] [--session <id>] [--all] [--format-check]
@@ -35,6 +35,10 @@ const USAGE = `usage: operator.js <command> [options]   (all commands: --project
   ledger [--bead ID] [--status open|answered|withdrawn]
   pending [--since 24h] [--all]
   verify <id>        show <id>
+  problems           everything that is excluded, diverged or unpublished (exit 1 when state is affected)
+  rehost --instance <i> --reason "<why it moved>" [--to-host H] [--to-machine M]   record that an instance moved host or machine
+  quarantine --file records/<i>.ndjson --reason "<...>"   (chief of staff) set a failing chain aside as evidence
+  repair --instance <i>   repair a torn tail of that instance's own chain (the partial line is kept as evidence)
   publish [--force]  refresh
 
 Trust: roles are trusted cooperatively. The role marker, DELIVERY_ROLE_DIR and .delivery-session are plain
@@ -122,7 +126,10 @@ function buildContext(flags) {
     refreshed: false,
     warnings: [],
   };
-  if (ctx.by && ctx.host) ctx.by.host = ctx.host;
+  if (ctx.by) {
+    if (ctx.host) ctx.by.host = ctx.host;
+    ctx.by.machine = R.machineId();
+  }
   ctx.instance = ctx.by ? ctx.by.instance : undefined;
   // once per command: the first call fetches and brings other writers' files; later calls do nothing
   ctx.refreshOnce = () => {
@@ -148,8 +155,21 @@ const real = (p) => { try { return fs.realpathSync(p); } catch (e) { return path
 
 // Writing on stale state could ignore a revocation made on another host: refuse unless the
 // refresh worked (or there is no remote to be stale against).
+function divergedOwn(ctx) {
+  const r = ctx.refreshResult;
+  if (!r || !r.diverged || !r.diverged.length) return [];
+  const own = [];
+  if (ctx.instance) own.push(`.delivery/operator/records/${ctx.instance}.ndjson`);
+  const inputs = ctx.host ? `.delivery/operator/inputs/${log.safeHost(ctx.host)}/` : null;
+  return r.diverged.filter((p) => own.includes(p) || (inputs && p.startsWith(inputs)));
+}
+
 function needFresh(ctx) {
   const r = ctx.refreshOnce();
+  const dv = divergedOwn(ctx);
+  if (dv.length) {
+    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the upstream copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. Tell the chief of staff; operator.js problems lists it and operator.js quarantine sets the fork aside`);
+  }
   if (r && !r.ok && !r.no_remote) {
     throw new R.OperatorError('refresh_failed', `could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; a revocation or decision made on another host may be missing, so nothing is recorded. Retry when the remote is reachable (operator.js refresh)`);
   }
@@ -161,7 +181,7 @@ function readWarnings(ctx, problems) {
   const r = ctx.refreshResult;
   if (r && !r.ok && !r.no_remote) w.push(`could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; records on other hosts may be missing`);
   if (r && r.diverged && r.diverged.length) w.push(`diverged: ${r.diverged.join(', ')} differ from the upstream copy; another writer appended to a file only this one should (a forked instance)`);
-  for (const p of problems || []) w.push(`${p.file} fails verification: ${p.error}`);
+  for (const p of problems || []) w.push(p.id ? `${p.id} (${p.file}${p.line ? ':' + p.line : ''}) is excluded: ${p.error}` : `${p.file} fails verification: ${p.error}`);
   return w;
 }
 
@@ -229,15 +249,20 @@ function out(ctx, jsonObj, lines) {
 function quoted(s) { return `"${s}"`; }
 
 function afterWrite(ctx, rec, extra = {}, lines = []) {
+  // LEDGER.md is derived: regenerate it only on current state (a refresh in this command worked) and clean chains
+  const ledgerNotes = [];
+  try {
+    const fr = ctx.refreshOnce();
+    if (fr && !fr.ok && !fr.no_remote) ledgerNotes.push('LEDGER.md was not regenerated: this command could not refresh from the remote');
+    else if (R.viewProblems(ctx.projectRoot).length) ledgerNotes.push('LEDGER.md was not regenerated: a chain or record fails validation (operator.js problems)');
+    else R.writeLedger(ctx.projectRoot);
+  } catch (e) { /* best effort */ }
+  extra = { ...extra, warnings: [...(extra.warnings || []), ...ledgerNotes] };
   const pub = log.publish(ctx.projectRoot, { force: true, host: ctx.host, instance: ctx.instance });
   const published = !!pub.published;
   const warnings = [...(extra.warnings || []), ...ctx.warnings];
   const r = ctx.refreshResult;
   if (r && r.diverged && r.diverged.length) warnings.push(`diverged: ${r.diverged.join(', ')} differ from the upstream copy; another writer appended to a file only this one should (a forked instance)`);
-  try {
-    const pr = R.viewProblems(ctx.projectRoot);
-    if (pr.length) warnings.push(`LEDGER.md was not regenerated: ${pr.map((x) => `${x.file} fails verification`).join('; ')}`);
-  } catch (e) { /* best effort */ }
   const human = [rec.id, ...lines, ...warnings.map((w) => `warning: ${w}`),
     published ? 'published' : `unpublished (${pub.reason || 'not pushed'})`];
   out(ctx, { ok: true, id: rec.id, record: rec, published, unpublished_reason: published ? undefined : (pub.reason || 'not pushed'), warnings }, human);
@@ -271,10 +296,10 @@ const handlers = {
 
   refresh(ctx) {
     const r = log.refresh(ctx.projectRoot, { host: ctx.host, instance: ctx.instance });
-    const lines = [r.ok ? `refreshed (${(r.updated || []).length} files)` : `not refreshed (${r.reason})`];
+    const lines = [r.ok ? `refreshed (${(r.updated || []).length} files)` : (r.no_remote ? `nothing to refresh (${r.reason}; single-host project)` : `not refreshed (${r.reason})`)];
     if (r.diverged && r.diverged.length) lines.push(`warning: diverged: ${r.diverged.join(', ')} differ from the upstream copy; another writer appended to a file only this one should (a forked instance)`);
     out(ctx, r, lines);
-    return r.ok ? 0 : 1;
+    return r.ok || r.no_remote ? 0 : 1;
   },
 
   sync(ctx, flags) {
@@ -313,7 +338,7 @@ const handlers = {
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
     if (flags.supersedes) needFresh(ctx);
     const rec = R.recordDecision({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, statement: flags.statement, scope,
-      by: ctx.by, answers: csv(flags.answers), supersedes: flags.supersedes || null, refresh: ctx.refreshOnce, onWarning: ctx.onWarning });
+      by: ctx.by, answers: csv(flags.answers), supersedes: flags.supersedes || null, refresh: ctx.refreshOnce, noLedger: true, onWarning: ctx.onWarning });
     const warnings = bdNotes(ctx, rec.scope.beads, `DECISION ${rec.id} (operator ${flags.cite}): ${rec.statement}`);
     return afterWrite(ctx, rec, { warnings });
   },
@@ -330,7 +355,7 @@ const handlers = {
     const s = syncCurrent(ctx, flags, flags.cite);
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
     const rec = R.recordDelegation({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, statement: flags.statement, scope,
-      grant: flags.grant, limits: { until: flags.until || null, max_uses: maxUses }, by: ctx.by, answers: csv(flags.answers), refresh: ctx.refreshOnce, onWarning: ctx.onWarning });
+      grant: flags.grant, limits: { until: flags.until || null, max_uses: maxUses }, by: ctx.by, answers: csv(flags.answers), refresh: ctx.refreshOnce, noLedger: true, onWarning: ctx.onWarning });
     return afterWrite(ctx, rec);
   },
 
@@ -342,7 +367,7 @@ const handlers = {
     const under = R.getRecord(ctx.projectRoot, flags.under) || (ctx.refreshOnce() && R.getRecord(ctx.projectRoot, flags.under));
     if (under) refuseIfFormatUnrecognised(ctx, null, (under.cites || [])[0]);
     const rec = R.decideUnder({ projectRoot: ctx.projectRoot, under: flags.under, statement: flags.statement, scope, by: ctx.by,
-      answers: csv(flags.answers), refresh: ctx.refreshOnce });
+      answers: csv(flags.answers), refresh: ctx.refreshOnce, noLedger: true });
     const warnings = bdNotes(ctx, rec.scope.beads, `DECISION ${rec.id} (under ${rec.under}): ${rec.statement}`);
     return afterWrite(ctx, rec, { warnings });
   },
@@ -353,7 +378,7 @@ const handlers = {
     const s = syncCurrent(ctx, flags, flags.cite);
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
     needFresh(ctx);
-    const rec = R.revoke({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, target: flags.target, by: ctx.by, refresh: ctx.refreshOnce, onWarning: ctx.onWarning });
+    const rec = R.revoke({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, target: flags.target, by: ctx.by, refresh: ctx.refreshOnce, noLedger: true, onWarning: ctx.onWarning });
     return afterWrite(ctx, rec);
   },
 
@@ -361,7 +386,7 @@ const handlers = {
     need(flags, 'input', 'reason');
     requireWriter(ctx);
     syncCurrent(ctx, flags, flags.input);
-    const rec = R.ack({ projectRoot: ctx.projectRoot, input: flags.input, reason: flags.reason, by: ctx.by, refresh: ctx.refreshOnce, onWarning: ctx.onWarning });
+    const rec = R.ack({ projectRoot: ctx.projectRoot, input: flags.input, reason: flags.reason, by: ctx.by, refresh: ctx.refreshOnce, noLedger: true, onWarning: ctx.onWarning });
     return afterWrite(ctx, rec);
   },
 
@@ -374,14 +399,14 @@ const handlers = {
     try { const f = expandInstances(ctx.valid.team).find((i) => i.instance === flags.asker); role = f ? f.role.id : null; } catch (e) { role = null; }
     const rec = R.recordQuestion({ projectRoot: ctx.projectRoot, text: flags.text, asker: { instance: flags.asker, role, bead: flags.bead || null },
       scope, options: flags.options ? flags.options.split('|').map((s) => s.trim()).filter(Boolean) : [],
-      recommendation: flags.recommendation || null, by: ctx.by });
+      recommendation: flags.recommendation || null, by: ctx.by, noLedger: true });
     return afterWrite(ctx, rec);
   },
 
   withdraw(ctx, flags) {
     need(flags, 'question', 'reason');
     requireWriter(ctx);
-    const rec = R.withdraw({ projectRoot: ctx.projectRoot, question: flags.question, reason: flags.reason, by: ctx.by, refresh: ctx.refreshOnce });
+    const rec = R.withdraw({ projectRoot: ctx.projectRoot, question: flags.question, reason: flags.reason, by: ctx.by, refresh: ctx.refreshOnce, noLedger: true });
     return afterWrite(ctx, rec);
   },
 
@@ -392,7 +417,7 @@ const handlers = {
     needFresh(ctx);
     const rec = R.recordAnswer({ projectRoot: ctx.projectRoot, cites: csv(flags.cite), question: flags.question, answer: flags.answer,
       confidence: flags.confidence, rationale: flags.rationale, scope, by: ctx.by, answers: csv(flags.answers),
-      supersedes: flags.supersedes || null, refresh: ctx.refreshOnce });
+      supersedes: flags.supersedes || null, refresh: ctx.refreshOnce, noLedger: true });
     return afterWrite(ctx, rec);
   },
 
@@ -402,7 +427,7 @@ const handlers = {
     const s = syncCurrent(ctx, flags, flags.cite);
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
     needFresh(ctx);
-    const rec = R.ratify({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, target: flags.target, by: ctx.by, refresh: ctx.refreshOnce, onWarning: ctx.onWarning });
+    const rec = R.ratify({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, target: flags.target, by: ctx.by, refresh: ctx.refreshOnce, noLedger: true, onWarning: ctx.onWarning });
     // show the answer ratified beside the operator's words
     const target = R.getRecord(ctx.projectRoot, rec.target);
     const inp = log.getInput(ctx.projectRoot, flags.cite);
@@ -414,7 +439,7 @@ const handlers = {
 
   find(ctx, flags) {
     ctx.refreshOnce();
-    const res = R.find(ctx.projectRoot, { scope: parseScope(flags.scope), text: flags.text, all: !!flags.all, refresh: ctx.refreshOnce });
+    const res = R.find(ctx.projectRoot, { scope: parseScope(flags.scope), text: flags.text, all: !!flags.all, refresh: ctx.refreshOnce, noLedger: true });
     const warnings = readWarnings(ctx, res.problems);
     const lines = res.length ? res.map((r) => {
       const sc = Object.entries(r.scope || {}).flatMap(([k, v]) => v.map((x) => `${k.slice(0, -1)}:${x}`)).join(',');
@@ -428,7 +453,7 @@ const handlers = {
   ledger(ctx, flags) {
     if (flags.status && !['open', 'answered', 'withdrawn'].includes(flags.status)) throw new UsageError('--status must be open, answered or withdrawn');
     ctx.refreshOnce();
-    const o = { bead: flags.bead, status: flags.status, since: parseSince(flags.since), refresh: ctx.refreshOnce };
+    const o = { bead: flags.bead, status: flags.status, since: parseSince(flags.since), refresh: ctx.refreshOnce, noLedger: true };
     const rows = R.ledger(ctx.projectRoot, o);
     const warnings = readWarnings(ctx, rows.problems);
     if (ctx.json) { process.stdout.write(JSON.stringify({ rows: [...rows], problems: rows.problems, warnings }) + '\n'); return 0; }
@@ -439,7 +464,9 @@ const handlers = {
   pending(ctx, flags) {
     const since = parseSince(flags.since);
     ctx.refreshOnce();
-    const p = R.pending(ctx.projectRoot, { since, all: !!flags.all, refresh: ctx.refreshOnce });
+    const p = R.pending(ctx.projectRoot, { since, all: !!flags.all, refresh: ctx.refreshOnce, noLedger: true });
+    const dv = divergedOwn(ctx);
+    for (const d of dv) p.problems.push({ file: d, code: 'chain_diverged', error: `${d} differs from the upstream copy (another writer appended to it)` });
     const warnings = readWarnings(ctx, p.problems);
     const lines = [];
     // ids handed out must be visible to other hosts: say so when this host cannot push
@@ -447,7 +474,8 @@ const handlers = {
     if (ctx.by) {
       const pub = log.publish(ctx.projectRoot, { host: ctx.host, instance: ctx.instance });
       unpub = log.unpublished(ctx.projectRoot, { host: ctx.host, instance: ctx.instance });
-      if (unpub.count > 0) lines.push(`unpublished local records: ${unpub.count} (${pub.published ? 'push in progress' : (pub.reason || unpub.reason)})`);
+      const why = pub.published ? 'push in progress' : (pub.reason === 'throttled' ? (log.lastPublishReason(ctx.projectRoot) || 'not pushed yet') : (pub.reason || unpub.reason));
+      if (unpub.count > 0) lines.push(`unpublished local records: ${unpub.count} (${why})`);
     }
     if (p.open_questions.length) {
       lines.push(`Open questions (${p.open_questions.length}):`);
@@ -477,8 +505,9 @@ const handlers = {
   verify(ctx, flags, pos) {
     if (pos.length < 1) throw new UsageError('verify takes one record or input id');
     const id = pos[0];
-    const v = R.verifyRecord(ctx.projectRoot, id, { refresh: ctx.refreshOnce });
-    const rw = readWarnings(ctx, []);
+    const v = R.verifyRecord(ctx.projectRoot, id, { refresh: ctx.refreshOnce, noLedger: true });
+    const dvp = divergedOwn(ctx).map((d) => ({ file: d, code: 'chain_diverged', error: `${d} differs from the upstream copy (another writer appended to it)` }));
+    const rw = readWarnings(ctx, dvp);
     v.warnings = rw;
     if (ctx.json) { process.stdout.write(JSON.stringify(v) + '\n'); return v.ok ? 0 : 1; }
     const lines = [v.ok ? `VERIFIED ${id}` : `NOT VERIFIED ${id}: ${v.code}: ${v.error}`];
@@ -511,6 +540,40 @@ const handlers = {
     }
     process.stdout.write(lines.join('\n') + '\n');
     return v.ok ? 0 : 1;
+  },
+
+  problems(ctx) {
+    ctx.refreshOnce();
+    const p = R.viewProblems(ctx.projectRoot);
+    for (const d of divergedOwn(ctx)) p.push({ file: d, code: 'chain_diverged', error: `${d} differs from the upstream copy (another writer appended to it)` });
+    const lines = p.length ? p.map((x) => `${x.id ? x.id + ' ' : ''}${x.file}${x.line ? ':' + x.line : ''}  ${x.code}  ${x.error}`) : ['no problems'];
+    const extra = readWarnings(ctx, []);
+    out(ctx, { problems: p, warnings: extra }, [...lines, ...extra.map((w) => `warning: ${w}`)]);
+    return p.length ? 1 : 0;
+  },
+
+  quarantine(ctx, flags) {
+    need(flags, 'file', 'reason');
+    requireWriter(ctx);
+    const r = R.quarantine({ projectRoot: ctx.projectRoot, file: flags.file, reason: flags.reason, by: ctx.by });
+    out(ctx, { ok: true, ...r }, [`quarantined: ${r.moved_to}`]);
+    return 0;
+  },
+
+  repair(ctx, flags) {
+    need(flags, 'instance');
+    requireWriter(ctx);
+    const r = R.repairChain({ projectRoot: ctx.projectRoot, instance: flags.instance, by: ctx.by });
+    out(ctx, { ok: true, ...r }, [r.repaired ? `repaired records/${flags.instance}.ndjson (${r.entries} entries kept; the partial tail is saved as .partial-*)` : `records/${flags.instance}.ndjson needs no repair`]);
+    return 0;
+  },
+
+  rehost(ctx, flags) {
+    need(flags, 'instance', 'reason');
+    requireWriter(ctx);
+    const rec = R.recordRehost({ projectRoot: ctx.projectRoot, instance: flags.instance, reason: flags.reason, by: ctx.by,
+      to: flags['to-host'] ? { host: flags['to-host'], machine: flags['to-machine'] || null } : null, noLedger: true });
+    return afterWrite(ctx, rec);
   },
 
   show(ctx, flags, pos) {

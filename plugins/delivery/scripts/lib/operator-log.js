@@ -123,6 +123,15 @@ function setHead(root, host, head) {
   });
 }
 
+function dropHead(root, key) {
+  chain.withLock(headsFile(root) + '.lock', () => {
+    const heads = readHeads(root);
+    if (!(key in heads)) return;
+    delete heads[key];
+    writeJsonAtomic(headsFile(root), heads);
+  });
+}
+
 function syncTranscript(opts) {
   const { projectRoot, transcriptPath, sessionId, instance, role } = opts;
   const host = safeHost(opts.host);
@@ -376,6 +385,22 @@ function refresh(projectRoot, opts = {}) {
 // commit, refuses to push when unpushed commits touch anything else, no autostash or rebase.
 // opts: { force, host, instance }.
 function publish(projectRoot, opts = {}) {
+  const r = publishInner(projectRoot, opts);
+  try {
+    const f = path.join(opDir(projectRoot), 'cursors', 'last-publish.json');
+    if (r.published) writeJsonAtomic(f, { at: Date.now() });
+    else if (r.reason && r.reason !== 'throttled' && r.reason !== 'not a git repository') writeJsonAtomic(f, { at: Date.now(), reason: r.reason });
+  } catch (e) { /* best effort */ }
+  return r;
+}
+
+// The reason the last real push attempt failed (throttled calls do not overwrite it), or null.
+function lastPublishReason(projectRoot) {
+  const j = readJson(path.join(opDir(projectRoot), 'cursors', 'last-publish.json'));
+  return j && j.reason ? j.reason : null;
+}
+
+function publishInner(projectRoot, opts = {}) {
   const no = (reason, extra = {}) => ({ ok: false, published: false, reason, ...extra });
   try {
     const stamp = path.join(opDir(projectRoot), 'cursors', 'last-publish.json');
@@ -483,4 +508,4 @@ function unpublished(projectRoot, opts = {}) {
   }
 }
 
-module.exports = { unpublished, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };
+module.exports = { unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };

@@ -209,4 +209,4 @@ function verifyChain(file, opts = {}) {
   return { ok: true, count, last_hash: prev };
 }
 
-module.exports = { canonical, hashEntry, appendEntry, verifyChain, withLock, readLastLine, lastEntryOf };
+module.exports = { canonical, hashEntry, appendEntry, verifyChain, withLock, readLastLine, lastEntryOf, repairTail };

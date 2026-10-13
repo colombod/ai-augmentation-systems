@@ -412,15 +412,16 @@ test('a decision recorded on one host is published and verified on another with 
   assert.strictEqual(j.id, rec.lines[0]);
 });
 
-test('publish and refresh are commands; refresh outside a git repository reports and exits 1', () => {
+test('publish and refresh are commands; refresh outside a git repository reports single-host and exits 0', () => {
   const { cos } = cosFixture();
   run(cos, ['sync']);
   const p = run(cos, ['publish', '--force', '--json']);
   assert.strictEqual(p.status, 0);
   assert.strictEqual(json(p).published, false);
   const r = run(cos, ['refresh', '--json']);
-  assert.strictEqual(r.status, 1);
+  assert.strictEqual(r.status, 0);
   assert.strictEqual(json(r).ok, false);
+  assert.match(run(cos, ['refresh']).out, /single-host/);
 });
 
 // ===================== trust hardening (fix round 1) =====================
@@ -508,4 +509,83 @@ test('writes that must see current state refuse when the remote is unreachable; 
   assert.match(p.out, /warning: could not refresh from origin/);
   assert.strictEqual(run(cos, ['refresh']).status, 1);
   assert.match(run(cos, ['verify', 'dec-pm-x-000009']).out, /refresh_failed/);
+  assert.match(plain.out, /LEDGER\.md was not regenerated: this command could not refresh/);
+  assert.ok(!/\(throttled\)/.test(p.out), 'the real push failure is shown, not the throttle');
+});
+
+// ===================== fix round 2 =====================
+
+test('rehost: a changed manifest host is refused before appending, with the command that fixes it', () => {
+  const { root, cos } = cosFixture();
+  const a = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres', '--scope', 'bead:ex-1']);
+  assert.strictEqual(a.status, 0, a.out + a.err);
+  // the manifest edit moves the instance to another host
+  const team = JSON.parse(fs.readFileSync(path.join(root, '.delivery/team/team.json'), 'utf8'));
+  team.roles.find((r) => r.id === 'chief-of-staff').host = 'buildbox';
+  fs.writeFileSync(path.join(root, '.delivery/team/team.json'), JSON.stringify(team));
+  const b = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'keep Redis out', '--statement', 'No Redis', '--json']);
+  assert.strictEqual(b.status, 1);
+  assert.strictEqual(json(b).code, 'host_changed');
+  assert.match(json(b).error, /operator\.js rehost --instance chief-of-staff --reason/);
+  const rh = run(cos, ['rehost', '--instance', 'chief-of-staff', '--reason', 'moved to the build box']);
+  assert.strictEqual(rh.status, 0, rh.out + rh.err);
+  assert.match(rh.lines[0], /^rh-chief-of-staff-/);
+  const c = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'keep Redis out', '--statement', 'No Redis']);
+  assert.strictEqual(c.status, 0, c.out + c.err);
+  assert.strictEqual(run(cos, ['verify', a.lines[0]]).status, 0);
+});
+
+test('problems, repair and quarantine: excluded records and chains are listed, torn tails repaired, forks set aside', () => {
+  const { root, cos } = cosFixture();
+  const a = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres', '--scope', 'bead:ex-1']);
+  assert.strictEqual(run(cos, ['problems']).lines[0], 'no problems');
+  // a hash-consistent forged record in the chief of staff's own chain
+  const chain = require('./lib/chain.js');
+  chain.appendEntry(path.join(root, '.delivery/operator/records/chief-of-staff.ndjson'), (last) => ({
+    id: `rev-chief-of-staff-${String(Number(last.id.split('-').pop()) + 1).padStart(6, '0')}`, kind: 'revocation', target: a.lines[0], quote: 'whatever',
+    cites: [], cites_head: [], scope: { beads: [], labels: [], initiatives: [] }, supersedes: null, ts: new Date().toISOString(),
+    by: { instance: 'chief-of-staff', role: 'chief-of-staff', session_id: 'x', host: 'pc', machine: require('./lib/operator-records.js').machineId() } }));
+  const pr = run(cos, ['problems']);
+  assert.strictEqual(pr.status, 1);
+  assert.match(pr.out, /rev-chief-of-staff-000002 records\/chief-of-staff:2  record_invalid/);
+  const pend = run(cos, ['pending']);
+  assert.strictEqual(pend.status, 1);
+  assert.match(pend.out, /rev-chief-of-staff-000002 .* is excluded/);
+  assert.strictEqual(run(cos, ['verify', a.lines[0]]).status, 0, 'the real decision still verifies');
+  // torn tail on a builder chain: reported, repaired on demand
+  const builder = roleDir(root, 'builder-1', 'builder', 'pc', 'sess-b', [human('Use sqlite for the unit tests.', 1, 'sess-b')]);
+  run(builder, ['sync']);
+  const own = run(builder, ['record', '--cite', 'in-pc-000005', '--quote', 'sqlite for the unit tests', '--statement', 'SQLite in unit tests']);
+  assert.strictEqual(own.status, 0, own.out + own.err);
+  fs.appendFileSync(path.join(root, '.delivery/operator/records/builder-1.ndjson'), '{"id":"dec-bui');
+  assert.match(run(cos, ['problems']).out, /records\/builder-1/);
+  const rp = run(builder, ['repair', '--instance', 'builder-1']);
+  assert.strictEqual(rp.status, 0, rp.out + rp.err);
+  assert.match(rp.out, /repaired/);
+  // quarantine: chief of staff only
+  const q0 = run(builder, ['quarantine', '--file', 'records/builder-1.ndjson', '--reason', 'x', '--json']);
+  assert.strictEqual(json(q0).code, 'not_allowed');
+  const q = run(cos, ['quarantine', '--file', 'records/builder-1.ndjson', '--reason', 'forked instance']);
+  assert.strictEqual(q.status, 0, q.out + q.err);
+  assert.ok(!fs.existsSync(path.join(root, '.delivery/operator/records/builder-1.ndjson')));
+  assert.ok(fs.readdirSync(path.join(root, '.delivery/operator/quarantine')).some((f) => /^builder-1\.ndjson\.\d+$/.test(f)));
+});
+
+test('a forked own chain stops writes (chain_diverged) and shows up as a problem', () => {
+  const { hosta, hostb } = twoHostProject();
+  const a = roleDir(hosta, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-a', [human('Use Postgres for the orders service.', 1, 'sess-a')]);
+  const b = roleDir(hostb, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-b', [human('Use Postgres for the orders service.', 1, 'sess-b')]);
+  assert.strictEqual(run(a, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'A']).status, 0);
+  // the second clone wrote the same instance's chain independently
+  const rb = run(b, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'B']);
+  assert.strictEqual(rb.status, 0, rb.out + rb.err);
+  assert.match(rb.out, /records chain forked: another writer appended to records\/chief-of-staff\.ndjson/);
+  const again = run(b, ['ack', '--input', 'in-pc-000001', '--reason', 'x', '--json']);
+  assert.strictEqual(json(again).ok, true, 'a plain write does not need freshness');
+  const dec = run(b, ['answer', '--cite', 'dec-chief-of-staff-000001', '--question', 'q', '--answer', 'a', '--confidence', 'settled', '--json']);
+  assert.strictEqual(dec.status, 1);
+  assert.strictEqual(json(dec).code, 'chain_diverged');
+  const pend = run(b, ['pending']);
+  assert.strictEqual(pend.status, 1);
+  assert.match(pend.out, /chain_diverged|differs from the upstream/);
 });
