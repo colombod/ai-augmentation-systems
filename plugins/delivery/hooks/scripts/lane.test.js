@@ -503,3 +503,31 @@ test('A: hooks.json routes Monitor and PowerShell to the lane, leak and bd guard
   }
   assert.ok(matcherFor('PostToolUse', 'leak-post-push.js').test('Monitor'));
 });
+
+// Final wave B: a per-role MCP allowlist (lane_mcp) beats the read-verb rule; headless still first.
+test('B: lane_mcp allows named MCP tools regardless of verb', () => {
+  const cos = POLICIES[COS];
+  assert.ok(cos.mcp.includes('mcp__ccd_session_mgmt__send_message'));
+  const allow = (toolName, policy = cos, over = {}) => decideLane({ toolName, toolInput: {}, policy, ...ctx(over) }).allow;
+  assert.equal(allow('mcp__ccd_session_mgmt__send_message'), true);
+  assert.equal(allow('mcp__ccd_session_mgmt__list_sessions'), true);
+  assert.equal(allow('mcp__ccd_session_mgmt__get_session'), true);
+  assert.equal(allow('mcp__ccd_session_mgmt__search_session_transcripts'), true);
+  assert.equal(allow('mcp__ccd_session_mgmt__stop_session'), false);
+  assert.equal(allow('mcp__ccd_session_mgmt__delete_session'), false);
+  assert.equal(allow('mcp__x__update_file'), false);
+  assert.equal(allow('mcp__x__send_message'), false);
+  for (const id of ['delivery-lead', 'product-manager', 'staffing', 'progress-observer']) {
+    const p = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/' + id });
+    assert.equal(allow('mcp__ccd_session_mgmt__send_message', p), true, id);
+    assert.equal(allow('mcp__x__update_file', p), false, id);
+  }
+  // A pattern matches the whole name; * is the only wildcard.
+  const custom = { roleId: 'x', writes: [], bash: ['read'], mcp: ['mcp__a__do_*'] };
+  assert.equal(allow('mcp__a__do_thing', custom), true);
+  assert.equal(allow('mcp__a__do_thing_x', custom), true);
+  assert.equal(allow('mcp__ab__do_thing', custom), false);
+  // The headless rule still comes first.
+  const reach = { roleId: 'x', writes: [], bash: ['read'], mcp: ['mcp__Claude_Browser__*'] };
+  assert.equal(allow('mcp__Claude_Browser__navigate', reach, { hostHeadless: true }), false);
+});

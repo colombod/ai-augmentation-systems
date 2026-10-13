@@ -44,7 +44,13 @@ function sanctioned(roleId) { return SANCTIONED[roleId] || 'stay in your lane; a
 
 function loadPolicy({ pluginRoot, projectRoot, briefRef }) {
   const { meta } = loadRoleBrief(pluginRoot, projectRoot, briefRef);
-  return { roleId: String(meta.id || ''), writes: listValue(meta.lane_writes), bash: listValue(meta.lane_bash) };
+  return { roleId: String(meta.id || ''), writes: listValue(meta.lane_writes), bash: listValue(meta.lane_bash), mcp: listValue(meta.lane_mcp) };
+}
+
+// lane_mcp patterns: whole tool names, `*` matches any run of characters, everything else is literal.
+function mcpPatternMatches(pattern, name) {
+  const re = String(pattern).split('*').map((x) => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+  return new RegExp(`^${re}$`).test(name);
 }
 
 // Walk a command with shell quoting rules: backslash escapes outside single quotes,
@@ -428,6 +434,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     }
     return { allow: true };
   }
+  if (name.startsWith('mcp__') && (pol.mcp || []).some((p) => mcpPatternMatches(p, name))) return { allow: true };
   if (name.startsWith('mcp__') && !bash.includes('any')) {
     const verb = name.split('__').pop();
     if (!MCP_READ.test(verb) || MCP_WRITE_VERB.test(verb)) {

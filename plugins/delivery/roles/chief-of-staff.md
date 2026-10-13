@@ -5,6 +5,7 @@ default_model: opus
 mode: delegate
 composes: agents/chief-of-staff.md
 lane_bash: read, git-read, gh-read, bd-read, bd-notes, bd-create-child
+lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 
 ## As a session

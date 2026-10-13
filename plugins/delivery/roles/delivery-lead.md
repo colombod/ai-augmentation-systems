@@ -6,6 +6,7 @@ mode: default
 composes: agents/delivery-lead.md
 lane_writes: project/.delivery/stories/**, project/.delivery/sprints/**, project/.delivery/team/denylist.txt
 lane_bash: read, git-read, git-write-project, gh-read, bd-read, bd-notes, bd-create-child, bd-structure
+lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 
 ## As a session

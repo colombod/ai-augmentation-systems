@@ -6,6 +6,7 @@ mode: default
 composes: agents/qa-strategist.md
 lane_writes: project/.delivery/reviews/**
 lane_bash: read, git-read, gh-read, bd-read, bd-notes, bd-claim
+lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 
 ## As a session

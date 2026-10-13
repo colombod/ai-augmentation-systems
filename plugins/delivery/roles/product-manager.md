@@ -6,6 +6,7 @@ mode: default
 composes: agents/product-owner.md
 lane_writes: project/.delivery/initiatives/**, project/.delivery/personas/**, project/.delivery/interviews/**, project/.delivery/simulations/**, project/.delivery/decisions/**, project/.delivery/glossary.md
 lane_bash: read, git-read, git-write-project, bd-read, bd-notes, bd-create-child
+lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 
 ## As a session
