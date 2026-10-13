@@ -288,10 +288,12 @@ each command runs in) or, for MCP tools, when the role touches product.
   agents (issues are for users). Replies to users pass the same scan. Text that cannot be checked
   (command substitution, `-F` files, `sh -c` strings wrapping git or gh) is refused, and a guard error
   on a shell call inside the product worktree fails closed.
-- PreToolUse on GitHub-style MCP tools (names containing github, gitlab, issue, pull, comment,
-  release, commit or repo) for a role that touches product (a product worktree in its role directory,
+- PreToolUse on GitHub-style MCP tools (hooks.json routes `mcp__` tools whose names contain github,
+  gitlab or git to the hook; within it, names containing github, gitlab, issue, pull, comment,
+  release, commit or repo are scanned) for a role that touches product (a product worktree in its role directory,
   or a builder): every string in the tool input (to depth 4, first 20 KB) passes the same scan, and a
-  tool that creates an issue is refused outright.
+  tool that creates an issue (whole names `create_issue`, `add_issue`, or `issue_write` with
+  `method: create`) is refused outright; `add_issue_comment` is scanned like `gh issue comment`.
 - PreToolUse on Write and Edit: block paths under `.delivery/`, `.beads/` and `team.json` inside the
   product worktree. File contents are not scanned (see 8.5).
 - PostToolUse after push: re-scan pushed commit messages; a hit creates a strategy review bead.
@@ -346,8 +348,8 @@ subagents. A PreToolUse hook enforces this from a policy each role declares.
   (below) comes first.
 - **Other shell channels.** `Monitor` runs a command in the Bash environment and is judged exactly
   like Bash. `PowerShell` cannot be classified into groups: allowed only for roles with `any`. Any
-  other non-MCP tool whose input carries a string `command` is treated as Bash (deny by default for
-  an unknown channel).
+  other non-MCP tool whose input carries a string `command` is treated as Bash when hooks.json routes
+  the tool to the hook (deny by default for an unknown channel).
 - **Command groups** (`hooks/lane-groups.json`): `read` (ls, cat, grep, rg, find, head, tail, wc, diff,
   jq, node on plugin scripts), `git-read`, `git-write-project`, `git-write-product`, `gh-read`,
   `gh-write`, `bd-read`, `bd-notes` (append notes and comments only), `bd-claim` (claim, release own,
