@@ -325,20 +325,34 @@ function upstreamOf(root) {
 // instance's own chain files. opts: { host, instance, fetch = true }.
 function refresh(projectRoot, opts = {}) {
   try {
-    if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return { ok: false, reason: 'not a git repository' };
+    if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return { ok: false, reason: 'not a git repository', no_remote: true };
     const up = upstreamOf(projectRoot);
-    if (!up) return { ok: false, reason: 'no upstream' };
+    if (!up) return { ok: false, reason: 'no upstream', no_remote: true };
     if (opts.fetch !== false) {
       const f = git(projectRoot, ['fetch', up.remote]);
-      if (!f.ok) return { ok: false, reason: f.err || 'fetch failed' };
+      if (!f.ok) return { ok: false, reason: f.err || 'fetch failed', remote: up.remote };
     }
     const diff = git(projectRoot, ['diff', '--name-only', 'HEAD', '@{u}', '--', OP_PATH]);
     const own = [];
     if (opts.host) own.push(`${OP_PATH}/inputs/${safeHost(opts.host)}/`);
     const ownFiles = opts.instance ? [`${OP_PATH}/records/${opts.instance}.ndjson`] : [];
     const updated = [];
+    const diverged = [];
     for (const p of diff.out ? diff.out.split('\n') : []) {
-      if (own.some((o) => p.startsWith(o)) || ownFiles.includes(p)) continue;
+      if (own.some((o) => p.startsWith(o)) || ownFiles.includes(p)) {
+        // a file only this writer appends to: upstream holding lines the local copy lacks means
+        // another writer (a second clone or a forked instance) appended to it
+        const abs = path.join(projectRoot, p);
+        if (fs.existsSync(abs)) {
+          const show = cp.spawnSync('git', ['show', `@{u}:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+          if (show.status === 0) {
+            let local = '';
+            try { local = fs.readFileSync(abs, 'utf8'); } catch (e) { local = ''; }
+            if (!local.startsWith(show.stdout)) diverged.push(p);
+          }
+        }
+        continue;
+      }
       // chains are append-only: take the upstream copy only when the local file is missing or a
       // prefix of it, so a newer local file (this writer's own, unpublished) is never replaced
       const abs = path.join(projectRoot, p);
@@ -352,7 +366,7 @@ function refresh(projectRoot, opts = {}) {
       const c = git(projectRoot, ['checkout', '@{u}', '--', p]);
       if (c.ok) { updated.push(p); git(projectRoot, ['reset', '-q', 'HEAD', '--', p]); }
     }
-    return { ok: true, updated };
+    return { ok: true, updated, diverged, remote: up.remote };
   } catch (e) {
     return { ok: false, reason: String(e && e.message || e) };
   }
@@ -428,7 +442,16 @@ function publish(projectRoot, opts = {}) {
           const cm = ad.ok ? git(projectRoot, ['commit', '--no-edit', '--no-verify', '--no-gpg-sign']) : ad;
           healed = cm.ok;
         }
-        if (!healed) { git(projectRoot, ['merge', '--abort']); return no(m.err || m.out || 'merge failed'); }
+        if (!healed) {
+          git(projectRoot, ['merge', '--abort']);
+          const recFile = opts.instance ? `${OP_PATH}/records/${opts.instance}.ndjson` : null;
+          if (recFile && un.includes(recFile)) {
+            return no(`records chain forked: another writer appended to records/${opts.instance}.ndjson`, { forked: recFile });
+          }
+          const inputsHit = un.find((p) => p.startsWith(hostRel + '/'));
+          if (inputsHit) return no(`inputs chain forked: another writer appended to ${inputsHit.slice(OP_PATH.length + 1)}`, { forked: inputsHit });
+          return no(m.err || m.out || 'merge failed');
+        }
       }
       r = push();
     }
@@ -438,4 +461,26 @@ function publish(projectRoot, opts = {}) {
   }
 }
 
-module.exports = { syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };
+// Entries this writer holds that the upstream does not: { count, reason }. Read-only.
+function unpublished(projectRoot, opts = {}) {
+  try {
+    if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return { count: 0, reason: 'not a git repository' };
+    const up = upstreamOf(projectRoot);
+    if (!up) return { count: 0, reason: 'no upstream' };
+    const rels = [`${OP_PATH}/inputs/${safeHost(opts.host)}`];
+    if (opts.instance) rels.push(`${OP_PATH}/records/${opts.instance}.ndjson`);
+    let count = 0;
+    const d = git(projectRoot, ['diff', '--numstat', '@{u}', '--', ...rels]);
+    for (const l of d.out ? d.out.split('\n') : []) count += Number(l.split('\t')[0]) || 0;
+    const st = git(projectRoot, ['status', '--porcelain', '--untracked-files=all', '--', ...rels]);
+    for (const l of st.out ? st.out.split('\n') : []) {
+      if (!l.startsWith('??')) continue;
+      try { count += fs.readFileSync(path.join(projectRoot, l.slice(3)), 'utf8').split('\n').filter(Boolean).length; } catch (e) { /* gone */ }
+    }
+    return { count, reason: count ? 'not pushed to ' + up.ref : null };
+  } catch (e) {
+    return { count: 0, reason: String(e && e.message || e) };
+  }
+}
+
+module.exports = { unpublished, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };

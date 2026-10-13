@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const chain = require('./chain.js');
 const log = require('./operator-log.js');
+const { loadManifest } = require('./manifest.js');
 
 class OperatorError extends Error {
   constructor(code, message) {
@@ -24,7 +25,10 @@ class OperatorError extends Error {
 const PREFIX_KIND = { dec: 'decision', del: 'delegation', ans: 'answer', q: 'question', rev: 'revocation', rat: 'ratification', ack: 'ack', wd: 'withdrawal' };
 const KIND_PREFIX = Object.fromEntries(Object.entries(PREFIX_KIND).map(([p, k]) => [k, p]));
 const SCOPE_KEYS = ['beads', 'labels', 'initiatives'];
-const MIN_QUOTE = 3;
+const MIN_QUOTE_WORDS = 3;
+const MIN_QUOTE_CHARS = 12;
+const MAX_ANSWER_DEPTH = 2;
+const DELEGATORS = new Set(['chief-of-staff', 'product-manager']);
 const MIN_RATIONALE = 20;
 const MAX_DEPTH = 25;
 const INSTANCE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -40,8 +44,91 @@ function parseRecordId(id) {
   return { prefix: m[1], kind: PREFIX_KIND[m[1]], instance: m[2], seq: Number(m[3]) };
 }
 
-function normalizeWs(s) {
-  return String(s === undefined || s === null ? '' : s).normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+// Normalised comparison form of `text` plus, for each normalised character, its offset in the
+// NFKC form of the input (so an excerpt can be cut from the operator's own words).
+function normMap(text) {
+  const base = String(text === undefined || text === null ? '' : text).normalize('NFKC');
+  let norm = '';
+  const map = [];
+  let prevSpace = true;
+  for (let i = 0; i < base.length; i++) {
+    const ch = base[i];
+    if (/\s/.test(ch)) {
+      if (!prevSpace) { norm += ' '; map.push(i); prevSpace = true; }
+    } else {
+      const l = ch.toLowerCase();
+      for (const c of l) { norm += c; map.push(i); }
+      prevSpace = false;
+    }
+  }
+  if (norm.endsWith(' ')) { norm = norm.slice(0, -1); map.pop(); }
+  return { base, norm, map };
+}
+
+function normalizeWs(s) { return normMap(s).norm; }
+
+const NEGATIONS = new Set(['not', 'never', 'no', 'without', 'stop', 'cannot', 'dont', 'wont', 'cant']);
+function isNegation(tok) {
+  const t = tok.replace(/[,;:()"“”]/g, '');
+  return NEGATIONS.has(t) || /n['’]t$/.test(t);
+}
+
+// The input words that carry a quote: every occurrence of the normalised quote in the input.
+// Returns { ok:false, code, message } or { ok:true, excerpt, attributed, question } where excerpt is
+// the containing sentence with the quoted span as «...».
+function quoteCheck(inputText, quote) {
+  const q = normMap(quote).norm;
+  const words = q.split(' ').filter(Boolean).length;
+  if (words < MIN_QUOTE_WORDS && q.length < MIN_QUOTE_CHARS) {
+    return { ok: false, code: 'quote_mismatch', message: `quote must be at least ${MIN_QUOTE_WORDS} words or ${MIN_QUOTE_CHARS} characters of the operator's exact words` };
+  }
+  const t = normMap(inputText);
+  const hits = [];
+  for (let at = t.norm.indexOf(q); at !== -1; at = t.norm.indexOf(q, at + 1)) hits.push(at);
+  if (!hits.length) return { ok: false, code: 'quote_mismatch', message: 'quote is not a substring of the input (whitespace and case are ignored)' };
+  const clean = [];
+  for (const at of hits) {
+    let cs = 0;
+    for (let k = at - 1; k >= 0; k--) { if ('.!?;,'.includes(t.norm[k])) { cs = k + 1; break; } }
+    const toks = t.norm.slice(cs, at).split(' ').filter(Boolean).slice(-3);
+    if (!toks.some(isNegation)) clean.push(at);
+  }
+  if (!clean.length) {
+    return { ok: false, code: 'quote_negated', message: 'in the input the quoted words follow a negation (not, never, no, stop, ...) that the quote leaves out; quote the whole negated clause' };
+  }
+  const at = clean[0];
+  const start = t.map[at];
+  const end = t.map[at + q.length - 1] + 1;
+  const before = t.base.slice(0, start);
+  const attributed = ((before.match(/"/g) || []).length % 2 === 1) || ((before.match(/“/g) || []).length > (before.match(/”/g) || []).length);
+  let s0 = 0;
+  for (let k = start - 1; k >= 0; k--) { if ('.!?\n'.includes(t.base[k])) { s0 = k + 1; break; } }
+  let e0 = t.base.length;
+  let term = '';
+  for (let k = end; k < t.base.length; k++) { if ('.!?\n'.includes(t.base[k])) { e0 = k + 1; term = t.base[k]; break; } }
+  const question = term === '?' || t.base[end - 1] === '?';
+  let cutStart = false;
+  let cutEnd = false;
+  if (start - s0 > 60) { s0 = start - 60; cutStart = true; }
+  if (e0 - end > 60) { e0 = end + 60; cutEnd = true; }
+  const flat = (x) => x.replace(/\s+/g, ' ');
+  const excerpt = `${cutStart ? '…' : ''}${flat(t.base.slice(s0, start)).trimStart()}«${flat(t.base.slice(start, end))}»${flat(t.base.slice(end, e0)).trimEnd()}${cutEnd ? '…' : ''}`;
+  return { ok: true, excerpt, attributed, question };
+}
+
+function excerptFor(inputText, quote) {
+  const r = quoteCheck(inputText, quote);
+  return r.ok ? r.excerpt : null;
+}
+
+const DEFAULT_HIGH_STAKES = ['security', 'auth', 'money', 'billing', 'payments', 'irreversible', 'data-deletion', 'release', 'production', 'legal', 'privacy'];
+function highStakesLabels(root) {
+  try {
+    const { team } = loadManifest(root);
+    const l = team && team.operator && team.operator.high_stakes_labels;
+    if (Array.isArray(l)) return l.map(String);
+  } catch (e) { /* default */ }
+  return DEFAULT_HIGH_STAKES;
 }
 
 function readEntries(file) {
@@ -82,23 +169,38 @@ function makeStore(root, opts = {}) {
     root,
     now: opts.now ? new Date(opts.now) : new Date(),
     refreshed: false,
+    refreshResult: null,
     files: new Map(),
     _all: null,
+    _byId: null,
+    _problems: null,
     _index: null,
     verified: new Map(),
     inputHosts: new Map(),
-    invalidate() { st.files.clear(); st._all = null; st._index = null; st.verified.clear(); st.inputHosts.clear(); },
+    warn: typeof opts.onWarning === 'function' ? opts.onWarning : () => {},
+    invalidate() { st.files.clear(); st._all = null; st._byId = null; st._problems = null; st._index = null; st.verified.clear(); st.inputHosts.clear(); },
     miss() {
       if (st.refreshed || typeof opts.refresh !== 'function') return false;
       st.refreshed = true;
-      try { opts.refresh(); } catch (e) { /* best effort */ }
+      try { st.refreshResult = opts.refresh() || null; } catch (e) { st.refreshResult = { ok: false, reason: String(e && e.message || e) }; }
       st.invalidate();
       return true;
+    },
+    refreshFailure() {
+      const r = st.refreshResult;
+      return r && r.ok === false && !r.no_remote ? r : null;
+    },
+    // the error for an id that could not be found: a failed refresh is the likelier cause
+    missing(code, msg) {
+      const r = st.refreshFailure();
+      if (r) return new OperatorError('refresh_failed', `could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; the record may exist on another host`);
+      return new OperatorError(code, msg);
     },
     entries(instance) {
       if (!st.files.has(instance)) st.files.set(instance, readEntries(recordsFile(root, instance)));
       return st.files.get(instance);
     },
+    // raw lookup (verification walks it and reports chain failures itself)
     findRecord(id) {
       const p = parseRecordId(id);
       if (!p) return null;
@@ -109,32 +211,53 @@ function makeStore(root, opts = {}) {
       if (!r && st.miss()) r = st.findRecord(id);
       return r;
     },
+    // lookup among records whose chains verify
+    findV(id) { st.scan(); return st._byId.get(id) || null; },
+    vrecord(id) {
+      let r = st.findV(id);
+      if (!r && st.miss()) r = st.findV(id);
+      return r;
+    },
     input(id) {
       let e = log.getInput(root, id);
       if (!e && st.miss()) e = log.getInput(root, id);
       return e;
     },
-    all() {
-      if (!st._all) {
-        const out = [];
-        for (const inst of listInstances(root)) for (const e of st.entries(inst)) if (parseRecordId(e.id)) out.push(e);
-        out.sort(byOrder);
-        st._all = out;
+    // Every view reads only chains that verify; the rest are reported in problems().
+    scan() {
+      if (st._all) return;
+      const insts = listInstances(root);
+      const entries = [];
+      const problems = [];
+      for (const inst of insts) {
+        const v = verifyRecordsFileCached(st, inst);
+        if (v.ok) { for (const e of st.entries(inst)) entries.push(e); } else problems.push({ file: `records/${inst}`, error: v.error, code: v.code });
       }
-      return st._all;
+      const heads = log.readHeads(root);
+      for (const [k, h] of Object.entries(heads)) {
+        if (!k.startsWith('records/')) continue;
+        if (!insts.includes(k.slice('records/'.length)) && h && h.count > 0) {
+          problems.push({ file: k, error: `${k}: chain file is missing but ${h.count} entries were recorded`, code: 'truncated' });
+        }
+      }
+      entries.sort(byOrder);
+      st._all = entries;
+      st._byId = new Map(entries.map((e) => [e.id, e]));
+      st._problems = problems;
     },
+    all() { st.scan(); return st._all; },
+    problems() { st.scan(); return st._problems; },
     index() {
       if (st._index) return st._index;
       const push = (m, k, v) => { if (!m.has(k)) m.set(k, []); m.get(k).push(v); };
-      const ix = { revokedBy: new Map(), supersededBy: new Map(), ratifiedBy: new Map(), answersByQ: new Map(), withdrawnQ: new Map(), underBy: new Map(), citedBy: new Map() };
+      const ix = { revokedBy: new Map(), supersededBy: new Map(), ratifiedBy: new Map(), answersByQ: new Map(), withdrawnQ: new Map(), underBy: new Map(), acks: [] };
       for (const r of st.all()) {
         if (r.kind === 'revocation' && r.target) push(ix.revokedBy, r.target, r);
         if (r.supersedes) push(ix.supersededBy, r.supersedes, r);
         if (r.kind === 'ratification' && r.target) push(ix.ratifiedBy, r.target, r);
         if (r.kind === 'withdrawal' && r.target) push(ix.withdrawnQ, r.target, r);
+        if (r.kind === 'ack') ix.acks.push(r);
         if (r.under) push(ix.underBy, r.under, r);
-        for (const c of Array.isArray(r.cites) ? r.cites : []) push(ix.citedBy, c, r);
-        if (r.input) push(ix.citedBy, r.input, r);
         if (Array.isArray(r.answers) && ['decision', 'delegation', 'answer'].includes(r.kind)) for (const q of r.answers) push(ix.answersByQ, q, r);
       }
       st._index = ix;
@@ -150,13 +273,15 @@ function headsKey(kind, name) { return kind === 'records' ? `records/${name}` : 
 
 function chainFail(code, error, extra = {}) { return { ok: false, code, error, ...extra }; }
 
-// Chain, id sequence and head checks for one records file. Advances (never lowers) the local head.
+// Chain, id sequence, single-host and head checks for one records file. Advances (never lowers)
+// the local head.
 function verifyRecordsFile(root, instance) {
   const file = recordsFile(root, instance);
   if (!fs.existsSync(file)) return chainFail('not_found', `records/${instance}: no such chain file`);
   const v = chain.verifyChain(file);
   if (!v.ok) return chainFail('chain_invalid', `records/${instance}: ${v.error}`, { at: v.at });
   const hashes = [];
+  const hosts = new Set();
   let lastSeq = 0;
   const lines = fs.readFileSync(file, 'utf8').split('\n');
   for (let i = 0; i < lines.length; i++) {
@@ -169,8 +294,12 @@ function verifyRecordsFile(root, instance) {
     if (e.by && e.by.instance !== undefined && e.by.instance !== instance) {
       return chainFail('chain_invalid', `records/${instance} line ${i + 1}: record ${e.id} claims author ${e.by.instance}`, { at: i + 1 });
     }
+    if (e.by && e.by.host) hosts.add(e.by.host);
     lastSeq = p.seq;
     hashes.push(e.hash);
+  }
+  if (hosts.size > 1) {
+    return chainFail('host_mismatch', `records/${instance}: records come from different hosts (${[...hosts].sort().join(', ')}); an instance is single-host, so each host's session needs its own instance id in team.json`);
   }
   const key = headsKey('records', instance);
   const head = log.readHeads(root)[key];
@@ -257,7 +386,9 @@ function needBy(by) {
   if (!by || typeof by !== 'object' || typeof by.instance !== 'string' || !INSTANCE_RE.test(by.instance)) {
     throw new OperatorError('not_allowed', 'the author instance is unknown; run operator.js from a delivery role session (prepare-role writes the marker it reads)');
   }
-  return { instance: by.instance, role: typeof by.role === 'string' ? by.role : 'unknown', session_id: by.session_id || 'unknown' };
+  const out = { instance: by.instance, role: typeof by.role === 'string' ? by.role : 'unknown', session_id: by.session_id || 'unknown' };
+  if (by.host) out.host = String(by.host);
+  return out;
 }
 
 function inputHead(input) {
@@ -265,32 +396,35 @@ function inputHead(input) {
   return { id: input.id, host: input.host, seq: p.seq, hash: input.hash };
 }
 
-// A human input cited with an exact quote by someone entitled to cite it.
-function humanCite(st, cite, quote, by, { requireOwner = true } = {}) {
+function ownsInput(by, input) {
+  return by.role === 'chief-of-staff' || !!(by.session_id && by.session_id !== 'unknown' && by.session_id === input.session_id);
+}
+
+// A human input cited with an exact quote by someone entitled to cite it. Returns { input, excerpt }.
+function humanCite(st, cite, quote, by, { rejectQuestion = false } = {}) {
   const input = st.input(cite);
   if (!input) {
-    throw new OperatorError('not_found', `input ${cite} was not found; list inputs with operator.js pending, or run operator.js sync and operator.js refresh`);
+    throw st.missing('not_found', `input ${cite} was not found; list inputs with operator.js pending, or run operator.js sync and operator.js refresh`);
   }
   if (input.source !== 'human') {
     throw new OperatorError('not_human', `input ${cite} is a ${input.source} message, not the operator's own words; only human inputs can be cited (operator.js pending lists them)`);
   }
-  const nq = normalizeWs(quote);
-  if (nq.length < MIN_QUOTE) {
-    throw new OperatorError('quote_mismatch', `quote must be at least ${MIN_QUOTE} characters of the operator's exact words (operator.js show ${cite} prints them)`);
-  }
-  if (!normalizeWs(input.text).includes(nq)) {
-    throw new OperatorError('quote_mismatch', `quote is not a substring of ${cite} (whitespace and case are ignored); copy the exact words (operator.js show ${cite} prints them)`);
-  }
-  if (requireOwner && by.role !== 'chief-of-staff' && !(by.session_id && by.session_id !== 'unknown' && by.session_id === input.session_id)) {
+  const qc = quoteCheck(input.text, quote);
+  if (!qc.ok) throw new OperatorError(qc.code, `${qc.message} (operator.js show ${cite} prints the operator's words)`);
+  if (!ownsInput(by, input)) {
     throw new OperatorError('not_allowed', `only the chief of staff or the session that captured ${cite} may record it; send the input id ${cite} to the chief of staff`);
   }
-  return input;
+  if (rejectQuestion && qc.question) {
+    throw new OperatorError('quote_is_question', `the sentence containing the quote is a question, not an instruction; cite the operator's answer to it (operator.js pending lists inputs)`);
+  }
+  if (qc.attributed) st.warn(`quote_may_be_attributed: the quoted words sit inside quotation marks in ${cite}; check the operator is not quoting someone else (operator.js show ${cite})`);
+  return { input, excerpt: qc.excerpt };
 }
 
 function checkSupersedes(st, targetId, superseder) {
   if (targetId === undefined || targetId === null || targetId === '') return null;
-  const t = st.record(targetId);
-  if (!t) throw new OperatorError('not_found', `cannot supersede ${targetId}: no such record (operator.js find lists records)`);
+  const t = st.vrecord(targetId);
+  if (!t) throw st.missing('not_found', `cannot supersede ${targetId}: no such verified record (operator.js find lists records)`);
   if (!['decision', 'delegation', 'answer'].includes(t.kind)) {
     throw new OperatorError('supersede_not_allowed', `${targetId} is a ${t.kind}; only decisions, delegations and answers can be superseded`);
   }
@@ -316,11 +450,17 @@ function checkAnswers(st, answers, scope, kind) {
   if (!Array.isArray(answers)) throw new OperatorError('invalid_answers', 'answers must be an array of question ids (q-<instance>-N)');
   const out = [];
   for (const qid of answers) {
-    const q = st.record(qid);
-    if (!q || q.kind !== 'question') throw new OperatorError('not_found', `question ${qid} was not found (operator.js ledger lists questions)`);
+    const q = st.vrecord(qid);
+    if (!q || q.kind !== 'question') throw st.missing('not_found', `question ${qid} was not found (operator.js ledger lists questions)`);
     if (questionStatus(st, q) === 'withdrawn') throw new OperatorError('question_withdrawn', `question ${qid} was withdrawn and cannot be answered (operator.js ledger shows its status)`);
-    if (kind !== 'answer' && !scopeIsEmpty(q.scope) && !scopeIntersects(scope, q.scope)) {
-      throw new OperatorError('scope_mismatch', `the scope of this ${kind} does not overlap the scope of question ${qid}; add --scope with the beads, labels or initiatives it concerns (operator.js ledger shows the question's scope)`);
+    if (!scopeIsEmpty(q.scope)) {
+      if (kind === 'answer') {
+        if (!scopeContained(q.scope, scope)) {
+          throw new OperatorError('scope_not_covered', `the answer's scope does not cover question ${qid} (${missingFrom(q.scope, scope).join(', ')} missing); add it to --scope or answer a narrower question (operator.js ledger shows the question's scope)`);
+        }
+      } else if (!scopeIntersects(scope, q.scope)) {
+        throw new OperatorError('scope_mismatch', `the scope of this ${kind} does not overlap the scope of question ${qid}; add --scope with the beads, labels or initiatives it concerns (operator.js ledger shows the question's scope)`);
+      }
     }
     if (!out.includes(qid)) out.push(qid);
   }
@@ -335,7 +475,7 @@ function appendRecord(st, by, fields) {
   const file = recordsFile(root, inst);
   if (fs.existsSync(file) && fs.statSync(file).size > 0) {
     const v = verifyRecordsFile(root, inst);
-    if (!v.ok) throw new OperatorError(v.code === 'truncated' || v.code === 'history_rewritten' ? v.code : 'chain_invalid', `${v.error}; this chain no longer verifies, so nothing can be appended to it (tell the chief of staff; the project repository history holds the last good copy)`);
+    if (!v.ok) throw new OperatorError(['truncated', 'history_rewritten', 'host_mismatch'].includes(v.code) ? v.code : 'chain_invalid', `${v.error}; this chain no longer verifies, so nothing can be appended to it (tell the chief of staff; the project repository history holds the last good copy)`);
   }
   const prefix = KIND_PREFIX[fields.kind];
   const stored = chain.appendEntry(file, (last) => {
@@ -344,8 +484,7 @@ function appendRecord(st, by, fields) {
     return { id: `${prefix}-${inst}-${pad(seq)}`, ...fields, by, ts: st.now.toISOString() };
   });
   st.invalidate();
-  const after = verifyRecordsFile(root, inst); // advances the head
-  void after;
+  verifyRecordsFile(root, inst); // advances the head
   return stored;
 }
 
@@ -355,7 +494,7 @@ function recordDecision(o) {
   const st = makeStore(o.projectRoot, o);
   const by = needBy(o.by);
   needText(o.statement, 'statement');
-  const input = humanCite(st, o.cite, o.quote, by);
+  const { input } = humanCite(st, o.cite, o.quote, by);
   const scope = normScope(o.scope);
   const answers = checkAnswers(st, o.answers, scope, 'decision');
   const sup = checkSupersedes(st, o.supersedes, 'decision');
@@ -379,8 +518,12 @@ function parseUntil(until, now) {
 function recordDelegation(o) {
   const st = makeStore(o.projectRoot, o);
   const by = needBy(o.by);
+  if (!DELEGATORS.has(by.role)) {
+    throw new OperatorError('not_allowed', 'only the chief of staff or the product manager records a delegation; send the operator\'s input id to the chief of staff');
+  }
   needText(o.statement, 'statement');
-  const input = humanCite(st, o.cite, o.quote, by);
+  needText(o.grant, 'grant (one sentence stating what is delegated)');
+  const { input } = humanCite(st, o.cite, o.quote, by, { rejectQuestion: true });
   const scope = normScope(o.scope, { requireNonEmpty: true, what: 'delegation scope' });
   const lim = o.limits || {};
   const until = parseUntil(lim.until, st.now);
@@ -390,7 +533,7 @@ function recordDelegation(o) {
     if (!Number.isInteger(maxUses) || maxUses < 1) throw new OperatorError('invalid_limits', `max_uses "${lim.max_uses}" must be a positive integer (--max-uses N)`);
   }
   const answers = checkAnswers(st, o.answers, scope, 'delegation');
-  const fields = { kind: 'delegation', statement: o.statement.trim(), quote: o.quote, cites: [o.cite], cites_head: [inputHead(input)], scope,
+  const fields = { kind: 'delegation', statement: o.statement.trim(), grant: o.grant.trim(), quote: o.quote, cites: [o.cite], cites_head: [inputHead(input)], scope,
     limits: { until, max_uses: maxUses }, supersedes: null };
   if (answers.length) fields.answers = answers;
   const rec = appendRecord(st, by, fields);
@@ -398,16 +541,22 @@ function recordDelegation(o) {
   return rec;
 }
 
+function mustVerify(st, id) {
+  const v = verifyRecord(st.root, id, { store: st });
+  if (!v.ok) throw new OperatorError(v.code || 'chain_invalid', `${id} does not verify: ${v.error}`);
+}
+
 function decideUnder(o) {
   const st = makeStore(o.projectRoot, o);
   const by = needBy(o.by);
   needText(o.statement, 'statement');
   const d = st.record(o.under);
-  if (!d) throw new OperatorError('not_found', `delegation ${o.under} was not found (operator.js find lists delegations)`);
+  if (!d) throw st.missing('not_found', `delegation ${o.under} was not found (operator.js find lists delegations)`);
   if (d.kind !== 'delegation') throw new OperatorError('not_delegation', `${o.under} is a ${d.kind}, not a delegation; decide --under takes a del- id`);
   if (by.role !== 'chief-of-staff' && by.instance !== (d.by && d.by.instance)) {
     throw new OperatorError('not_allowed', `only the chief of staff or the author of ${o.under} may decide under it; send the question to the chief of staff`);
   }
+  mustVerify(st, d.id);
   const ix = st.index();
   const rev = (ix.revokedBy.get(d.id) || [])[0];
   if (rev) throw new OperatorError('revoked', `delegation ${d.id} was revoked by ${rev.id}; ask the chief of staff for a fresh decision (operator.js find)`);
@@ -433,19 +582,58 @@ function decideUnder(o) {
   return rec;
 }
 
+function mustFollow(input, target, code) {
+  if (!(Date.parse(input.ts) > Date.parse(target.ts))) {
+    throw new OperatorError(code, `${input.id} (${input.ts}) was said before ${target.id} existed (${target.ts}); only a later operator input can ${code === 'predates_target' ? 'revoke or ratify' : 'act on'} it. Ask the operator again (the chief of staff asks once, with the record shown)`);
+  }
+}
+
 function revoke(o) {
   const st = makeStore(o.projectRoot, o);
   const by = needBy(o.by);
-  const input = humanCite(st, o.cite, o.quote, by);
-  const t = st.record(o.target);
-  if (!t) throw new OperatorError('not_found', `${o.target} was not found (operator.js find lists decisions and delegations)`);
+  const { input } = humanCite(st, o.cite, o.quote, by);
+  const t = st.vrecord(o.target);
+  if (!t) throw st.missing('not_found', `${o.target} was not found among verified records (operator.js find lists decisions and delegations)`);
   if (!['delegation', 'decision'].includes(t.kind)) throw new OperatorError('invalid_target', `${o.target} is a ${t.kind}; only delegations and decisions can be revoked`);
   if ((st.index().revokedBy.get(t.id) || []).length) throw new OperatorError('already_revoked', `${t.id} is already revoked`);
+  mustFollow(input, t, 'predates_target');
   const rec = appendRecord(st, by, { kind: 'revocation', target: t.id, quote: o.quote, cites: [o.cite],
     cites_head: [inputHead(input), { id: t.id, hash: t.hash }], scope: t.scope || emptyScope(), supersedes: null });
   afterWrite(o.projectRoot);
   return rec;
 }
+
+function ratify(o) {
+  const st = makeStore(o.projectRoot, o);
+  const by = needBy(o.by);
+  const { input } = humanCite(st, o.cite, o.quote, by);
+  const t = st.vrecord(o.target);
+  if (!t) throw st.missing('not_found', `${o.target} was not found among verified records (operator.js pending lists answers awaiting ratification)`);
+  const okTarget = (t.kind === 'answer' && t.confidence === 'inferred') || t.kind === 'delegation';
+  if (!okTarget) {
+    throw new OperatorError('not_inferred', `${o.target} is not an inferred answer or a delegation; only those are ratified (operator.js pending lists them)`);
+  }
+  if ((st.index().ratifiedBy.get(t.id) || []).length) throw new OperatorError('already_ratified', `${t.id} is already ratified`);
+  mustFollow(input, t, 'predates_target');
+  const rec = appendRecord(st, by, { kind: 'ratification', target: t.id, quote: o.quote, cites: [o.cite],
+    cites_head: [inputHead(input), { id: t.id, hash: t.hash }], scope: t.scope || emptyScope(), supersedes: null });
+  afterWrite(o.projectRoot);
+  return rec;
+}
+
+// answer-to-answer links below an answer (0 when it cites no answer)
+function answerDepth(st, rec, seen = new Set()) {
+  if (!rec || seen.has(rec.id)) return 0;
+  seen.add(rec.id);
+  let max = -1;
+  for (const cid of rec.cites || []) {
+    const c = st.findRecord(cid);
+    if (c && c.kind === 'answer') max = Math.max(max, answerDepth(st, c, seen));
+  }
+  return max < 0 ? 0 : max + 1;
+}
+
+function isRatified(st, rec) { return (st.index().ratifiedBy.get(rec.id) || []).length > 0; }
 
 function recordAnswer(o) {
   const st = makeStore(o.projectRoot, o);
@@ -462,28 +650,48 @@ function recordAnswer(o) {
     throw new OperatorError('rationale_required', `an inferred answer needs a rationale of at least ${MIN_RATIONALE} characters saying why the cited record extends to this case (--rationale)`);
   }
   const scope = normScope(o.scope);
+  const stakes = new Set(highStakesLabels(o.projectRoot));
+  const qrecs = (Array.isArray(o.answers) ? o.answers : []).map((q) => st.vrecord(q)).filter(Boolean);
+  const touched = [...new Set([...scope.labels, ...qrecs.flatMap((q) => (q.scope && q.scope.labels) || [])])];
+  const hit = touched.filter((l) => stakes.has(l));
+  if (o.confidence === 'inferred' && hit.length) {
+    throw new OperatorError('high_stakes_inferred', `label ${hit.join(', ')} is high-stakes; an answer touching it is never inferred. Take the question to the operator once, batched in the briefing (operator.js ask)`);
+  }
   const cited = [];
   for (const cid of o.cites) {
     const p = parseRecordId(cid);
     if (!p || !['decision', 'delegation', 'answer'].includes(p.kind)) {
       throw new OperatorError('invalid_cite', `${cid} cannot be cited by an answer; cite a dec-, del- or ans- record (operator.js find lists them)`);
     }
-    const c = st.record(cid);
-    if (!c) throw new OperatorError('not_found', `record ${cid} was not found (operator.js find lists records; operator.js refresh pulls other hosts)`);
+    const c = st.vrecord(cid);
+    if (!c) throw st.missing('not_found', `record ${cid} was not found among verified records (operator.js find lists records; operator.js refresh pulls other hosts)`);
     const ix = st.index();
     if ((ix.revokedBy.get(c.id) || []).length) throw new OperatorError('revoked', `${cid} was revoked by ${ix.revokedBy.get(c.id)[0].id} and cannot be cited; find the current record with operator.js find`);
     if ((ix.supersededBy.get(c.id) || []).length) throw new OperatorError('superseded', `${cid} was superseded by ${ix.supersededBy.get(c.id)[0].id}; cite that one (operator.js find)`);
-    const v = verifyRecord(o.projectRoot, cid, { store: st });
-    if (!v.ok) throw new OperatorError(v.code || 'chain_invalid', `cited record ${cid} does not verify: ${v.error}`);
-    if (o.confidence === 'settled' && c.kind === 'answer' && c.confidence !== 'settled' && !(ix.ratifiedBy.get(c.id) || []).length) {
-      throw new OperatorError('not_settled', `${cid} is an inferred answer the operator has not ratified; a settled answer cannot rest on it (answer with --confidence inferred, or cite the underlying decision)`);
+    mustVerify(st, cid);
+    if (c.kind === 'answer' && c.confidence === 'inferred' && !isRatified(st, c)) {
+      if (o.confidence === 'settled') {
+        throw new OperatorError('not_settled', `${cid} is an inferred answer the operator has not ratified; a settled answer cannot rest on it (answer with --confidence inferred, or cite the underlying decision)`);
+      }
+      throw new OperatorError('inferred_chain', `${cid} is an inferred answer the operator has not ratified; an inference cannot rest on another inference. Cite the underlying decision, or have the operator ratify ${cid}`);
     }
     cited.push(c);
   }
+  const depth = cited.some((c) => c.kind === 'answer') ? 1 + Math.max(...cited.filter((c) => c.kind === 'answer').map((c) => answerDepth(st, c))) : 0;
+  if (depth > MAX_ANSWER_DEPTH) {
+    throw new OperatorError('answer_depth_exceeded', `this answer would sit ${depth} answers deep (limit ${MAX_ANSWER_DEPTH}); cite the underlying decision instead (operator.js verify shows the path)`);
+  }
   if (o.confidence === 'settled') {
     const union = scopeUnion(cited.map((c) => c.scope));
+    if (scopeIsEmpty(scope) && !scopeIsEmpty(union)) {
+      throw new OperatorError('settled_needs_scope', 'a settled answer must name what it touches; give --scope with the beads, labels or initiatives the cited records cover');
+    }
     if (!scopeContained(scope, union)) {
       throw new OperatorError('scope_not_covered', `${missingFrom(scope, union).join(', ')} is not covered by the cited records; narrow --scope, cite a record that covers it, or answer --confidence inferred with a rationale`);
+    }
+    const unnamed = touched.filter((l) => stakes.has(l) && !union.labels.includes(l));
+    if (unnamed.length) {
+      throw new OperatorError('high_stakes_not_named', `label ${unnamed.join(', ')} is high-stakes; a settled answer must cite a record whose scope names it explicitly`);
     }
   }
   const answers = checkAnswers(st, o.answers, scope, 'answer');
@@ -497,28 +705,15 @@ function recordAnswer(o) {
   return rec;
 }
 
-function ratify(o) {
-  const st = makeStore(o.projectRoot, o);
-  const by = needBy(o.by);
-  const input = humanCite(st, o.cite, o.quote, by);
-  const t = st.record(o.target);
-  if (!t) throw new OperatorError('not_found', `${o.target} was not found (operator.js pending lists answers awaiting ratification)`);
-  if (t.kind !== 'answer' || t.confidence !== 'inferred') {
-    throw new OperatorError('not_inferred', `${o.target} is not an inferred answer; only inferred answers are ratified (operator.js pending lists them)`);
-  }
-  if ((st.index().ratifiedBy.get(t.id) || []).length) throw new OperatorError('already_ratified', `${t.id} is already ratified`);
-  const rec = appendRecord(st, by, { kind: 'ratification', target: t.id, quote: o.quote, cites: [o.cite],
-    cites_head: [inputHead(input), { id: t.id, hash: t.hash }], scope: t.scope || emptyScope(), supersedes: null });
-  afterWrite(o.projectRoot);
-  return rec;
-}
-
 function ack(o) {
   const st = makeStore(o.projectRoot, o);
   const by = needBy(o.by);
   needText(o.reason, 'reason');
   const input = st.input(o.input);
-  if (!input) throw new OperatorError('not_found', `input ${o.input} was not found (operator.js pending lists inputs; operator.js sync captures new ones)`);
+  if (!input) throw st.missing('not_found', `input ${o.input} was not found (operator.js pending lists inputs; operator.js sync captures new ones)`);
+  if (!ownsInput(by, input)) {
+    throw new OperatorError('not_allowed', `only the chief of staff or the session that captured ${o.input} may acknowledge it; send the input id to the chief of staff`);
+  }
   const rec = appendRecord(st, by, { kind: 'ack', input: input.id, reason: o.reason.trim(), cites: [input.id], cites_head: [inputHead(input)], scope: emptyScope(), supersedes: null });
   afterWrite(o.projectRoot);
   return rec;
@@ -545,8 +740,8 @@ function withdraw(o) {
   const by = needBy(o.by);
   if (by.role !== 'chief-of-staff') throw new OperatorError('not_allowed', 'only the chief of staff withdraws questions');
   needText(o.reason, 'reason');
-  const q = st.record(o.question);
-  if (!q || q.kind !== 'question') throw new OperatorError('not_found', `question ${o.question} was not found (operator.js ledger lists questions)`);
+  const q = st.vrecord(o.question);
+  if (!q || q.kind !== 'question') throw st.missing('not_found', `question ${o.question} was not found (operator.js ledger lists questions)`);
   if (questionStatus(st, q) !== 'open') throw new OperatorError('not_open', `question ${q.id} is ${questionStatus(st, q)}; only open questions are withdrawn (operator.js ledger)`);
   const rec = appendRecord(st, by, { kind: 'withdrawal', target: q.id, reason: o.reason.trim(), cites: [], cites_head: [{ id: q.id, hash: q.hash }], scope: q.scope || emptyScope(), supersedes: null });
   afterWrite(o.projectRoot);
@@ -565,7 +760,12 @@ function verifyRecord(projectRoot, id, opts = {}) {
     result.chains.push({ chain: name, heads: v.heads || 'recorded', count: v.count });
   };
   const fail = (code, error, extra = {}) => {
-    result.ok = false; result.code = code; result.error = error;
+    const r = (code === 'not_found' || code === 'cited_entry_missing') ? st.refreshFailure() : null;
+    result.ok = false;
+    if (r) {
+      result.code = 'refresh_failed';
+      result.error = `could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; the record may exist on another host (${error})`;
+    } else { result.code = code; result.error = error; }
     Object.assign(result, extra);
     return false;
   };
@@ -590,24 +790,27 @@ function verifyRecord(projectRoot, id, opts = {}) {
     return input;
   };
 
-  const inputHop = (input) => ({ id: input.id, kind: 'input', source: input.source, text: input.text, host: input.host,
-    session_id: input.session_id, ts: input.ts, transcript_ref: input.transcript_ref, truncated: input.truncated || undefined });
+  const inputHop = (input, rec, excerpt) => ({ id: input.id, kind: 'input', source: input.source, text: input.text, host: input.host,
+    session_id: input.session_id, ts: input.ts, transcript_ref: input.transcript_ref, truncated: input.truncated || undefined,
+    excerpt: excerpt || undefined, cited_by: rec ? rec.id : undefined });
 
-  const humanInput = (rec, cid, requireQuote) => {
+  // human input cited by a record: present, human, quote covers it, citer entitled
+  const humanInput = (rec, cid, { delegation = false } = {}) => {
     const input = checkInput(rec, cid);
     if (!input) return null;
     if (input.source !== 'human') { fail('not_human', `${cid} cited by ${rec.id} is a ${input.source} message, not the operator's words`); return null; }
-    if (requireQuote) {
-      const nq = normalizeWs(rec.quote);
-      if (nq.length < MIN_QUOTE || !normalizeWs(input.text).includes(nq)) {
-        fail('quote_mismatch', `the quote of ${rec.id} is not a substring of ${cid}`);
-        return null;
-      }
+    const qc = quoteCheck(input.text, rec.quote);
+    if (!qc.ok) { fail(qc.code, `the quote of ${rec.id}: ${qc.message}`); return null; }
+    const by = rec.by || {};
+    if (by.role !== 'chief-of-staff' && !(by.session_id && by.session_id !== 'unknown' && by.session_id === input.session_id)) {
+      fail('not_allowed', `${rec.id} was recorded by ${by.instance} (${by.role}), who neither is the chief of staff nor captured ${cid}`);
+      return null;
     }
-    return input;
+    if (delegation && !DELEGATORS.has(by.role)) { fail('not_allowed', `delegation ${rec.id} was recorded by ${by.role}; only the chief of staff or product manager delegate`); return null; }
+    if (qc.attributed) result.notes.push(`quote_may_be_attributed: the words cited by ${rec.id} sit inside quotation marks in ${cid}`);
+    return { input, excerpt: qc.excerpt };
   };
 
-  // the index is read lazily: a refresh triggered mid-walk rebuilds it
   const IX = () => st.index();
   const timed = (list, rec) => (list || []).filter((x) => before(x, rec));
   const later = (list, rec) => (list || []).filter((x) => !before(x, rec));
@@ -615,7 +818,7 @@ function verifyRecord(projectRoot, id, opts = {}) {
   const hop = (rid, depth, citer) => {
     if (depth > MAX_DEPTH) return fail('chain_invalid', `citation chain from ${id} is deeper than ${MAX_DEPTH} (cycle?)`);
     if (rid.startsWith('in-')) {
-      const input = citer ? checkInput(citer, rid) : (() => {
+      const input = (() => {
         const e = st.input(rid);
         if (!e) { fail('not_found', `input ${rid} was not found (operator.js refresh pulls other hosts)`); return null; }
         const v = verifyInputHostCached(st, e.host);
@@ -624,7 +827,7 @@ function verifyRecord(projectRoot, id, opts = {}) {
         return e;
       })();
       if (!input) return false;
-      result.chain.push(inputHop(input));
+      result.chain.push(inputHop(input, null));
       return true;
     }
     const p = parseRecordId(rid);
@@ -637,6 +840,7 @@ function verifyRecord(projectRoot, id, opts = {}) {
     const hopEntry = { id: rec.id, kind: rec.kind, by: rec.by, ts: rec.ts, scope: rec.scope };
     if (rec.statement !== undefined) hopEntry.statement = rec.statement;
     if (rec.quote) hopEntry.quote = rec.quote;
+    if (rec.grant) hopEntry.grant = rec.grant;
     if (rec.kind === 'answer') Object.assign(hopEntry, { question: rec.question, answer: rec.answer, confidence: rec.confidence, rationale: rec.rationale });
     if (rec.kind === 'question') Object.assign(hopEntry, { text: rec.text, asker: rec.asker });
     if (rec.under) hopEntry.under = rec.under;
@@ -645,22 +849,27 @@ function verifyRecord(projectRoot, id, opts = {}) {
     if (rec.limits) hopEntry.limits = rec.limits;
     result.chain.push(hopEntry);
 
-    // supersession is authority-checked here too: only the operator's own records override
     if (rec.supersedes) {
       const t = st.record(rec.supersedes);
       if (!t) return fail('cited_entry_missing', `${rec.id} supersedes ${rec.supersedes}, which is missing`);
       if (rec.kind === 'answer' && t.kind !== 'answer') return fail('supersede_not_allowed', `answer ${rec.id} supersedes the ${t.kind} ${t.id}`);
     }
-    const sups = IX().supersededBy.get(rec.id) || [];
-    for (const s of sups) result.notes.push(`${rec.id} was superseded by ${s.id} at ${s.ts}`);
-    const revs = IX().revokedBy.get(rec.id) || [];
-    for (const r of revs) result.notes.push(`${rec.id} was revoked by ${r.id} at ${r.ts}${before(r, citer || rec) ? '' : ' (after it was used; it was valid when made)'}`);
+    for (const s of IX().supersededBy.get(rec.id) || []) result.notes.push(`${rec.id} was superseded by ${s.id} at ${s.ts}`);
+    for (const r of IX().revokedBy.get(rec.id) || []) result.notes.push(`${rec.id} was revoked by ${r.id} at ${r.ts}${before(r, citer || rec) ? '' : ' (after it was used; it was valid when made)'}`);
+
+    const asHuman = (rec2, delegation) => {
+      const cid = Array.isArray(rec2.cites) ? rec2.cites[0] : null;
+      if (!cid || !cid.startsWith('in-')) { fail('chain_invalid', `${rec2.id} cites no operator input`); return null; }
+      const h = humanInput(rec2, cid, { delegation });
+      if (!h) return null;
+      hopEntry.excerpt = h.excerpt;
+      result.chain.push(inputHop(h.input, rec2, h.excerpt));
+      return h.input;
+    };
 
     switch (rec.kind) {
       case 'decision':
-      case 'delegation':
-      case 'revocation':
-      case 'ratification': {
+      case 'delegation': {
         if (rec.under) {
           const d = st.record(rec.under);
           if (!d) return fail('cited_entry_missing', `delegation ${rec.under} cited by ${rec.id} is missing (operator.js refresh)`);
@@ -683,21 +892,28 @@ function verifyRecord(projectRoot, id, opts = {}) {
           }
           return true;
         }
-        const cid = Array.isArray(rec.cites) ? rec.cites[0] : null;
-        if (!cid || !cid.startsWith('in-')) return fail('chain_invalid', `${rec.id} cites no operator input`);
-        const input = humanInput(rec, cid, true);
+        return !!asHuman(rec, rec.kind === 'delegation');
+      }
+      case 'revocation':
+      case 'ratification': {
+        const input = asHuman(rec, false);
         if (!input) return false;
-        result.chain.push(inputHop(input));
-        if (rec.kind === 'revocation' || rec.kind === 'ratification') {
-          const t = st.record(rec.target);
-          if (!t) return fail('cited_entry_missing', `${rec.id} targets ${rec.target}, which is missing`);
-          const h = (rec.cites_head || []).find((x) => x && x.id === t.id);
-          if (!h || h.hash !== t.hash) return fail('history_rewritten', `${t.id} no longer matches the hash recorded when ${rec.id} targeted it`);
-          if (rec.kind === 'ratification' && (t.kind !== 'answer' || t.confidence !== 'inferred')) return fail('not_inferred', `${rec.id} ratifies ${t.id}, which is not an inferred answer`);
+        const t = st.record(rec.target);
+        if (!t) return fail('cited_entry_missing', `${rec.id} targets ${rec.target}, which is missing`);
+        const h = (rec.cites_head || []).find((x) => x && x.id === t.id);
+        if (!h || h.hash !== t.hash) return fail('history_rewritten', `${t.id} no longer matches the hash recorded when ${rec.id} targeted it`);
+        if (!(Date.parse(input.ts) > Date.parse(t.ts))) {
+          return fail(rec.kind === 'ratification' ? 'ratification_predates_answer' : 'revocation_predates_target',
+            `${rec.id} cites ${input.id} (${input.ts}), which was said before ${t.id} existed (${t.ts})`);
+        }
+        if (rec.kind === 'ratification' && !((t.kind === 'answer' && t.confidence === 'inferred') || t.kind === 'delegation')) {
+          return fail('not_inferred', `${rec.id} ratifies ${t.id}, which is not an inferred answer or a delegation`);
         }
         return true;
       }
       case 'answer': {
+        const by = rec.by || {};
+        if (by.role !== 'chief-of-staff') return fail('not_allowed', `answer ${rec.id} was recorded by ${by.role}; only the chief of staff answers`);
         const cites = Array.isArray(rec.cites) ? rec.cites : [];
         if (!cites.length) return fail('chain_invalid', `answer ${rec.id} cites nothing`);
         if (rec.confidence !== 'settled' && rec.confidence !== 'inferred') return fail('invalid_confidence', `answer ${rec.id} has confidence ${rec.confidence}`);
@@ -716,8 +932,12 @@ function verifyRecord(projectRoot, id, opts = {}) {
           if (sv) return fail('superseded', `${cid} had been superseded by ${sv.id} (${sv.ts}) when ${rec.id} cited it`);
           citedRecs.push(c);
         }
+        if (cites.some((c) => (parseRecordId(c) || {}).kind === 'answer') && answerDepth(st, rec) > MAX_ANSWER_DEPTH) {
+          return fail('answer_depth_exceeded', `${rec.id} sits more than ${MAX_ANSWER_DEPTH} answers deep`);
+        }
         if (rec.confidence === 'settled') {
           const union = scopeUnion(citedRecs.map((c) => c.scope));
+          if (scopeIsEmpty(rec.scope) && !scopeIsEmpty(union)) return fail('settled_needs_scope', `settled answer ${rec.id} names no scope`);
           if (!scopeContained(rec.scope || emptyScope(), union)) {
             return fail('scope_not_covered', `${missingFrom(rec.scope || emptyScope(), union).join(', ')} is not covered by the records ${rec.id} cites`);
           }
@@ -728,15 +948,23 @@ function verifyRecord(projectRoot, id, opts = {}) {
         const cid = rec.input || (rec.cites || [])[0];
         const input = checkInput(rec, cid);
         if (!input) return false;
-        result.chain.push(inputHop(input));
+        const by = rec.by || {};
+        if (by.role !== 'chief-of-staff' && !(by.session_id && by.session_id !== 'unknown' && by.session_id === input.session_id)) {
+          return fail('not_allowed', `${rec.id} was recorded by ${by.instance} (${by.role}), who neither is the chief of staff nor captured ${cid}`);
+        }
+        result.chain.push(inputHop(input, rec));
         return true;
       }
       case 'withdrawal': {
         const q = st.record(rec.target);
         if (!q) return fail('cited_entry_missing', `question ${rec.target} withdrawn by ${rec.id} is missing`);
+        const h = (rec.cites_head || []).find((x) => x && x.id === q.id);
+        if (!h || h.hash !== q.hash) return fail('history_rewritten', `${q.id} no longer matches the hash recorded when ${rec.id} withdrew it`);
+        if ((rec.by || {}).role !== 'chief-of-staff') return fail('not_allowed', `withdrawal ${rec.id} was recorded by ${(rec.by || {}).role}`);
         return true;
       }
       case 'question':
+        if ((rec.by || {}).role !== 'chief-of-staff') return fail('not_allowed', `question ${rec.id} was recorded by ${(rec.by || {}).role}; only the chief of staff escalates`);
         return true;
       default:
         return fail('chain_invalid', `${rec.id} has unknown kind ${rec.kind}`);
@@ -751,11 +979,20 @@ function verifyRecord(projectRoot, id, opts = {}) {
 
 function listRecords(projectRoot) { return makeStore(projectRoot).all().slice(); }
 function getRecord(projectRoot, id) { return makeStore(projectRoot).findRecord(id); }
+// Chains that fail verification (and so feed no view), as [{ file, error, code }].
+function viewProblems(projectRoot) { return makeStore(projectRoot).problems().slice(); }
 
 function haystack(r) {
-  return normalizeWs([r.statement, r.answer, r.question, r.quote, r.text].filter((x) => typeof x === 'string').join(' '));
+  return normalizeWs([r.statement, r.grant, r.answer, r.question, r.quote, r.text].filter((x) => typeof x === 'string').join(' '));
 }
 function wordsOf(text) { return normalizeWs(text).split(' ').filter(Boolean); }
+
+function normScopeLoose(scope) {
+  if (!scope || typeof scope !== 'object') return emptyScope();
+  const out = emptyScope();
+  for (const k of SCOPE_KEYS) out[k] = Array.isArray(scope[k]) ? scope[k].map(String) : [];
+  return out;
+}
 
 function find(projectRoot, o = {}) {
   const st = makeStore(projectRoot, o);
@@ -763,22 +1000,21 @@ function find(projectRoot, o = {}) {
   const want = normScopeLoose(o.scope);
   const words = o.text ? wordsOf(o.text) : [];
   const kinds = Array.isArray(o.kinds) && o.kinds.length ? o.kinds : null;
-  const scoped = want && !scopeIsEmpty(want);
+  const scoped = !scopeIsEmpty(want);
   const out = [];
   for (const r of st.all()) {
     if (!['decision', 'delegation', 'answer'].includes(r.kind)) continue;
     if (kinds && !kinds.includes(r.kind)) continue;
-    const revoked = (ix.revokedBy.get(r.id) || [])[0];
+    if ((ix.revokedBy.get(r.id) || [])[0]) continue;
     const superseded = (ix.supersededBy.get(r.id) || [])[0];
-    if (revoked) continue;
     if (superseded && !o.all) continue;
     if (scoped && !scopeIntersects(r.scope || emptyScope(), want)) continue;
     if (words.length) { const h = haystack(r); if (!words.every((w) => h.includes(w))) continue; }
     const exactBead = scoped && (r.scope.beads || []).some((b) => (want.beads || []).includes(b));
     out.push({
       id: r.id, kind: r.kind, statement: r.kind === 'answer' ? r.answer : r.statement, question: r.question, quote: r.quote || null,
-      scope: r.scope, confidence: r.kind === 'answer' ? r.confidence : undefined,
-      ratified: r.kind === 'answer' && r.confidence === 'inferred' ? (ix.ratifiedBy.get(r.id) || []).length > 0 : undefined,
+      grant: r.grant || undefined, scope: r.scope, confidence: r.kind === 'answer' ? r.confidence : undefined,
+      ratified: (r.kind === 'answer' && r.confidence === 'inferred') || r.kind === 'delegation' ? isRatified(st, r) : undefined,
       by: r.by, ts: r.ts, superseded_by: superseded ? superseded.id : undefined, match: exactBead ? 'bead' : 'scope', _bead: exactBead, _rec: r,
     });
   }
@@ -790,13 +1026,7 @@ function find(projectRoot, o = {}) {
       .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
     for (const e of inputs) out.push({ id: e.id, kind: 'input', statement: e.text, quote: null, scope: emptyScope(), by: { instance: e.instance, role: e.role, session_id: e.session_id }, ts: e.ts, match: 'text' });
   }
-  return out;
-}
-
-function normScopeLoose(scope) {
-  if (!scope || typeof scope !== 'object') return emptyScope();
-  const out = emptyScope();
-  for (const k of SCOPE_KEYS) out[k] = Array.isArray(scope[k]) ? scope[k].map(String) : [];
+  out.problems = st.problems().slice();
   return out;
 }
 
@@ -815,25 +1045,46 @@ function pending(projectRoot, o = {}) {
     .sort((a, b) => -byOrder(a, b))
     .map((q) => ({ id: q.id, text: q.text, asker: q.asker, scope: q.scope, options: q.options, recommendation: q.recommendation, ts: q.ts }));
   const unratified = st.all().filter((r) => r.kind === 'answer' && r.confidence === 'inferred'
-    && !(ix.ratifiedBy.get(r.id) || []).length && !(ix.supersededBy.get(r.id) || []).length)
+    && !isRatified(st, r) && !(ix.supersededBy.get(r.id) || []).length)
     .sort((a, b) => -byOrder(a, b));
-  return { inputs, open_questions: open, unratified_answers: unratified };
+  // a delegation stays on the list until the operator's next input is acknowledged or it is ratified
+  const glance = st.all().filter((r) => r.kind === 'delegation' && !(ix.revokedBy.get(r.id) || []).length
+    && !(ix.supersededBy.get(r.id) || []).length && !isRatified(st, r)).filter((d) => {
+    const own = log.getInput(projectRoot, (d.cites || [])[0]);
+    const ownTs = own ? Date.parse(own.ts) : Date.parse(d.ts);
+    return !ix.acks.some((a) => {
+      const ai = log.getInput(projectRoot, a.input);
+      return ai && Date.parse(ai.ts) > ownTs && Date.parse(a.ts) >= Date.parse(d.ts);
+    });
+  }).sort((a, b) => -byOrder(a, b));
+  const res = { inputs, open_questions: open, unratified_answers: unratified, delegations_awaiting_glance: glance, problems: st.problems().slice() };
+  if (o.all) {
+    res.acked = ix.acks.map((a) => ({ input: a.input, reason: a.reason, by: a.by, ts: a.ts, id: a.id })).reverse();
+  }
+  return res;
 }
 
 // ---- ledger ----
 
 function resolveHuman(st, rec, depth = 0) {
   if (!rec || depth > MAX_DEPTH) return null;
-  if (rec.under) return resolveHuman(st, st.findRecord(rec.under), depth + 1);
+  if (rec.under) return resolveHuman(st, st.findV(rec.under), depth + 1);
   if (rec.kind === 'answer') {
     for (const cid of rec.cites || []) {
-      const r = resolveHuman(st, st.findRecord(cid), depth + 1);
+      const r = resolveHuman(st, st.findV(cid), depth + 1);
       if (r) return r;
     }
     return null;
   }
   const cid = (rec.cites || []).find((c) => typeof c === 'string' && c.startsWith('in-'));
   if (cid && rec.quote) return { quote: rec.quote, input: cid };
+  return null;
+}
+
+function grantOf(st, rec, depth = 0) {
+  if (!rec || depth > MAX_DEPTH) return null;
+  if (rec.grant) return rec.grant;
+  if (rec.under) return grantOf(st, st.findV(rec.under), depth + 1);
   return null;
 }
 
@@ -850,13 +1101,14 @@ function ledger(projectRoot, o = {}) {
     const answers = [];
     for (const r of ix.answersByQ.get(q.id) || []) {
       if ((ix.revokedBy.get(r.id) || []).length) continue;
-      let h = resolveHuman(st, r);
-      if (h && !st.input(h.input)) h = { ...h, missing: true };
+      const h = resolveHuman(st, r);
+      let excerpt = null;
+      if (h) { const inp = st.input(h.input); if (inp) excerpt = excerptFor(inp.text, h.quote); }
       answers.push({
         id: r.id, kind: r.kind, statement: r.kind === 'answer' ? r.answer : r.statement,
         confidence: r.kind === 'answer' ? r.confidence : 'settled',
-        ratified: r.kind === 'answer' && r.confidence === 'inferred' ? (ix.ratifiedBy.get(r.id) || []).length > 0 : undefined,
-        by: r.by, at: r.ts, quote: h ? h.quote : null, input: h ? h.input : null,
+        ratified: r.kind === 'answer' && r.confidence === 'inferred' ? isRatified(st, r) : undefined,
+        by: r.by, at: r.ts, quote: h ? h.quote : null, excerpt, input: h ? h.input : null, grant: grantOf(st, r) || undefined,
         superseded_by: ((ix.supersededBy.get(r.id) || [])[0] || {}).id,
       });
     }
@@ -867,10 +1119,13 @@ function ledger(projectRoot, o = {}) {
     });
   }
   rows.sort((a, b) => (Date.parse(b.asked_at) - Date.parse(a.asked_at)) || (a.question.id < b.question.id ? 1 : -1));
+  rows.problems = st.problems().slice();
   return rows;
 }
 
-function cell(s) { return String(s === undefined || s === null ? '' : s).replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim(); }
+function cell(s) {
+  return String(s === undefined || s === null ? '' : s).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim();
+}
 
 function renderLedger(projectRoot, o = {}) {
   const rows = ledger(projectRoot, o);
@@ -893,14 +1148,18 @@ function renderLedger(projectRoot, o = {}) {
     const bead = (r.asker && r.asker.bead) || ((r.question.scope && r.question.scope.beads) || []).join(', ');
     const qtext = r.question.text + (r.status === 'open' && r.question.recommendation ? ` (recommended: ${r.question.recommendation})` : '');
     const conf = a ? `${a.confidence}${a.ratified === true ? ', ratified' : a.ratified === false ? ', unratified' : ''}${a.superseded_by ? `, superseded by ${a.superseded_by}` : ''}` : '';
+    const words = a ? (a.excerpt || (a.quote ? a.quote : '')) : '';
+    const answer = a ? `${a.statement}${a.grant ? ` GRANT: ${a.grant}` : ''}` : '';
     lines.push(`| ${[r.question.id, qtext, asker, bead, String(r.asked_at).slice(0, 16).replace('T', ' '), r.status,
-      a ? a.statement : '', a ? `${a.id}${earlier}` : '', a && a.quote ? `"${a.quote}"` : '', conf].map(cell).join(' | ')} |`);
+      answer, a ? `${a.id}${earlier}` : '', words ? `"${words}"` : '', conf].map(cell).join(' | ')} |`);
   }
   lines.push('');
   return lines.join('\n');
 }
 
+// Regenerates LEDGER.md; leaves the previous file alone while any chain fails verification.
 function writeLedger(projectRoot) {
+  if (makeStore(projectRoot).problems().length) return false;
   const text = renderLedger(projectRoot);
   const file = ledgerFile(projectRoot);
   let have = null;
@@ -914,8 +1173,8 @@ function writeLedger(projectRoot) {
 }
 
 module.exports = {
-  OperatorError, normalizeWs,
+  OperatorError, normalizeWs, quoteCheck, excerptFor, highStakesLabels,
   recordDecision, recordAnswer, ratify, recordDelegation, decideUnder, revoke, recordQuestion, withdraw, ack,
-  verifyRecord, find, pending, ledger, renderLedger, writeLedger, listRecords, getRecord,
+  verifyRecord, find, pending, ledger, renderLedger, writeLedger, listRecords, getRecord, viewProblems,
   parseRecordId,
 };

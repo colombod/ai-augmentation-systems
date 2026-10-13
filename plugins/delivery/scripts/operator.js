@@ -23,19 +23,23 @@ const COMMANDS = ['publish', 'refresh', 'sync', 'record', 'delegate', 'decide', 
 const USAGE = `usage: operator.js <command> [options]   (all commands: --project <root> --json)
   sync [--transcript <path>] [--session <id>] [--all] [--format-check]
   record --cite in-N --quote "<exact words>" --statement "<what was decided>" [--scope bead:ID,label:L,initiative:I] [--answers q-N] [--supersedes ID]
-  delegate --cite in-N --quote "<...>" --statement "<...>" --scope ... [--until DATE] [--max-uses N] [--answers q-N]
+  delegate --cite in-N --quote "<...>" --statement "<...>" --grant "<one sentence: what is delegated>" --scope ... [--until DATE] [--max-uses N] [--answers q-N]
   decide --under del-N --statement "<...>" --scope ... [--answers q-N]
   revoke --cite in-N --quote "<...>" --target ID
   ack --input in-N --reason "<why this input is not a decision>"
   ask --text "<question>" --asker <instance> [--bead ID] [--options "A|B"] [--recommendation "<...>"] [--scope ...]
   withdraw --question q-N --reason "<...>"
   answer --cite dec-N[,del-M,...] --question "<...>" --answer "<...>" --confidence settled|inferred [--rationale "<...>"] [--scope ...] [--answers q-N] [--supersedes ID]
-  ratify --cite in-N --quote "<...>" --target ans-N
+  ratify --cite in-N --quote "<...>" --target ans-N|del-N
   find [--scope ...] [--text "<words>"] [--all]
   ledger [--bead ID] [--status open|answered|withdrawn]
-  pending [--since 24h]
+  pending [--since 24h] [--all]
   verify <id>        show <id>
-  publish [--force]  refresh`;
+  publish [--force]  refresh
+
+Trust: roles are trusted cooperatively. The role marker, DELIVERY_ROLE_DIR and .delivery-session are plain
+files and variables a session with Bash could spoof; the hash chains, recorded heads and git history make
+tampering detectable, they are not an access boundary.`;
 
 // ---- argument parsing ----
 
@@ -114,8 +118,11 @@ function buildContext(flags) {
     roleDir: valid ? valid.roleDir : null,
     by: valid ? { instance: valid.marker.instance, role: valid.role.id, session_id: sessionId } : null,
     host: valid ? valid.role.host : (process.env.DELIVERY_HOST || undefined),
+    projectFlag: flags.project ? path.resolve(flags.project) : null,
     refreshed: false,
+    warnings: [],
   };
+  if (ctx.by && ctx.host) ctx.by.host = ctx.host;
   ctx.instance = ctx.by ? ctx.by.instance : undefined;
   // once per command: the first call fetches and brings other writers' files; later calls do nothing
   ctx.refreshOnce = () => {
@@ -124,13 +131,38 @@ function buildContext(flags) {
     ctx.refreshResult = log.refresh(projectRoot, { host: ctx.host, instance: ctx.instance });
     return ctx.refreshResult;
   };
+  ctx.onWarning = (w) => ctx.warnings.push(w);
   return ctx;
 }
 
 function requireWriter(ctx) {
+  if (ctx.by && ctx.projectFlag && real(ctx.projectFlag) !== real(ctx.valid.marker.project_root)) {
+    throw new R.OperatorError('project_mismatch', `--project ${ctx.projectFlag} is not the project of this role (${ctx.valid.marker.project_root}); records are written to the role's own project only. Drop --project`);
+  }
   if (!ctx.by) {
     throw new R.OperatorError('not_allowed', 'no valid role marker for this session, so nothing can be recorded here; run operator.js from a delivery role session (prepare-role writes the marker and sets DELIVERY_ROLE). Reading (verify, show, pending, find, ledger) works anywhere');
   }
+}
+
+const real = (p) => { try { return fs.realpathSync(p); } catch (e) { return path.resolve(p); } };
+
+// Writing on stale state could ignore a revocation made on another host: refuse unless the
+// refresh worked (or there is no remote to be stale against).
+function needFresh(ctx) {
+  const r = ctx.refreshOnce();
+  if (r && !r.ok && !r.no_remote) {
+    throw new R.OperatorError('refresh_failed', `could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; a revocation or decision made on another host may be missing, so nothing is recorded. Retry when the remote is reachable (operator.js refresh)`);
+  }
+}
+
+// What a read should say about the refresh it attempted and about chains that failed verification.
+function readWarnings(ctx, problems) {
+  const w = [];
+  const r = ctx.refreshResult;
+  if (r && !r.ok && !r.no_remote) w.push(`could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; records on other hosts may be missing`);
+  if (r && r.diverged && r.diverged.length) w.push(`diverged: ${r.diverged.join(', ')} differ from the upstream copy; another writer appended to a file only this one should (a forked instance)`);
+  for (const p of problems || []) w.push(`${p.file} fails verification: ${p.error}`);
+  return w;
 }
 
 function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
@@ -199,7 +231,13 @@ function quoted(s) { return `"${s}"`; }
 function afterWrite(ctx, rec, extra = {}, lines = []) {
   const pub = log.publish(ctx.projectRoot, { force: true, host: ctx.host, instance: ctx.instance });
   const published = !!pub.published;
-  const warnings = extra.warnings || [];
+  const warnings = [...(extra.warnings || []), ...ctx.warnings];
+  const r = ctx.refreshResult;
+  if (r && r.diverged && r.diverged.length) warnings.push(`diverged: ${r.diverged.join(', ')} differ from the upstream copy; another writer appended to a file only this one should (a forked instance)`);
+  try {
+    const pr = R.viewProblems(ctx.projectRoot);
+    if (pr.length) warnings.push(`LEDGER.md was not regenerated: ${pr.map((x) => `${x.file} fails verification`).join('; ')}`);
+  } catch (e) { /* best effort */ }
   const human = [rec.id, ...lines, ...warnings.map((w) => `warning: ${w}`),
     published ? 'published' : `unpublished (${pub.reason || 'not pushed'})`];
   out(ctx, { ok: true, id: rec.id, record: rec, published, unpublished_reason: published ? undefined : (pub.reason || 'not pushed'), warnings }, human);
@@ -233,8 +271,10 @@ const handlers = {
 
   refresh(ctx) {
     const r = log.refresh(ctx.projectRoot, { host: ctx.host, instance: ctx.instance });
-    out(ctx, r, [r.ok ? `refreshed (${(r.updated || []).length} files)` : `not refreshed (${r.reason})`]);
-    return 0;
+    const lines = [r.ok ? `refreshed (${(r.updated || []).length} files)` : `not refreshed (${r.reason})`];
+    if (r.diverged && r.diverged.length) lines.push(`warning: diverged: ${r.diverged.join(', ')} differ from the upstream copy; another writer appended to a file only this one should (a forked instance)`);
+    out(ctx, r, lines);
+    return r.ok ? 0 : 1;
   },
 
   sync(ctx, flags) {
@@ -271,14 +311,15 @@ const handlers = {
     requireWriter(ctx);
     const s = syncCurrent(ctx, flags, flags.cite);
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
+    if (flags.supersedes) needFresh(ctx);
     const rec = R.recordDecision({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, statement: flags.statement, scope,
-      by: ctx.by, answers: csv(flags.answers), supersedes: flags.supersedes || null, refresh: ctx.refreshOnce });
+      by: ctx.by, answers: csv(flags.answers), supersedes: flags.supersedes || null, refresh: ctx.refreshOnce, onWarning: ctx.onWarning });
     const warnings = bdNotes(ctx, rec.scope.beads, `DECISION ${rec.id} (operator ${flags.cite}): ${rec.statement}`);
     return afterWrite(ctx, rec, { warnings });
   },
 
   delegate(ctx, flags) {
-    need(flags, 'cite', 'quote', 'statement');
+    need(flags, 'cite', 'quote', 'statement', 'grant');
     const scope = parseScope(flags.scope);
     let maxUses = null;
     if (flags['max-uses'] !== undefined) {
@@ -289,7 +330,7 @@ const handlers = {
     const s = syncCurrent(ctx, flags, flags.cite);
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
     const rec = R.recordDelegation({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, statement: flags.statement, scope,
-      limits: { until: flags.until || null, max_uses: maxUses }, by: ctx.by, answers: csv(flags.answers), refresh: ctx.refreshOnce });
+      grant: flags.grant, limits: { until: flags.until || null, max_uses: maxUses }, by: ctx.by, answers: csv(flags.answers), refresh: ctx.refreshOnce, onWarning: ctx.onWarning });
     return afterWrite(ctx, rec);
   },
 
@@ -297,6 +338,7 @@ const handlers = {
     need(flags, 'under', 'statement');
     const scope = parseScope(flags.scope);
     requireWriter(ctx);
+    needFresh(ctx);
     const under = R.getRecord(ctx.projectRoot, flags.under) || (ctx.refreshOnce() && R.getRecord(ctx.projectRoot, flags.under));
     if (under) refuseIfFormatUnrecognised(ctx, null, (under.cites || [])[0]);
     const rec = R.decideUnder({ projectRoot: ctx.projectRoot, under: flags.under, statement: flags.statement, scope, by: ctx.by,
@@ -310,7 +352,8 @@ const handlers = {
     requireWriter(ctx);
     const s = syncCurrent(ctx, flags, flags.cite);
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
-    const rec = R.revoke({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, target: flags.target, by: ctx.by, refresh: ctx.refreshOnce });
+    needFresh(ctx);
+    const rec = R.revoke({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, target: flags.target, by: ctx.by, refresh: ctx.refreshOnce, onWarning: ctx.onWarning });
     return afterWrite(ctx, rec);
   },
 
@@ -318,7 +361,7 @@ const handlers = {
     need(flags, 'input', 'reason');
     requireWriter(ctx);
     syncCurrent(ctx, flags, flags.input);
-    const rec = R.ack({ projectRoot: ctx.projectRoot, input: flags.input, reason: flags.reason, by: ctx.by, refresh: ctx.refreshOnce });
+    const rec = R.ack({ projectRoot: ctx.projectRoot, input: flags.input, reason: flags.reason, by: ctx.by, refresh: ctx.refreshOnce, onWarning: ctx.onWarning });
     return afterWrite(ctx, rec);
   },
 
@@ -346,6 +389,7 @@ const handlers = {
     need(flags, 'cite', 'question', 'answer', 'confidence');
     const scope = parseScope(flags.scope);
     requireWriter(ctx);
+    needFresh(ctx);
     const rec = R.recordAnswer({ projectRoot: ctx.projectRoot, cites: csv(flags.cite), question: flags.question, answer: flags.answer,
       confidence: flags.confidence, rationale: flags.rationale, scope, by: ctx.by, answers: csv(flags.answers),
       supersedes: flags.supersedes || null, refresh: ctx.refreshOnce });
@@ -357,19 +401,27 @@ const handlers = {
     requireWriter(ctx);
     const s = syncCurrent(ctx, flags, flags.cite);
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
-    const rec = R.ratify({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, target: flags.target, by: ctx.by, refresh: ctx.refreshOnce });
-    return afterWrite(ctx, rec);
+    needFresh(ctx);
+    const rec = R.ratify({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, target: flags.target, by: ctx.by, refresh: ctx.refreshOnce, onWarning: ctx.onWarning });
+    // show the answer ratified beside the operator's words
+    const target = R.getRecord(ctx.projectRoot, rec.target);
+    const inp = log.getInput(ctx.projectRoot, flags.cite);
+    const side = [];
+    if (target) side.push(`ratified ${target.id}: ${quoted(target.answer || target.grant || target.statement || '')}`);
+    if (inp) side.push(`operator said (${inp.id}): ${quoted(R.excerptFor(inp.text, flags.quote) || flags.quote)}`);
+    return afterWrite(ctx, rec, {}, side);
   },
 
   find(ctx, flags) {
     ctx.refreshOnce();
     const res = R.find(ctx.projectRoot, { scope: parseScope(flags.scope), text: flags.text, all: !!flags.all, refresh: ctx.refreshOnce });
+    const warnings = readWarnings(ctx, res.problems);
     const lines = res.length ? res.map((r) => {
       const sc = Object.entries(r.scope || {}).flatMap(([k, v]) => v.map((x) => `${k.slice(0, -1)}:${x}`)).join(',');
       const extra = [r.confidence ? `[${r.confidence}${r.ratified === true ? ', ratified' : ''}]` : '', sc ? `scope ${sc}` : '', r.superseded_by ? `superseded by ${r.superseded_by}` : ''].filter(Boolean).join(' ');
-      return `${r.id} ${r.kind}${extra ? ' ' + extra : ''}: ${r.statement}${r.quote ? ` (operator: ${quoted(r.quote)})` : ''}`;
+      return `${r.id} ${r.kind}${extra ? ' ' + extra : ''}: ${r.statement}${r.quote ? ` (operator: ${quoted(r.quote)})` : ''}${r.grant ? ` GRANT: ${r.grant}` : ''}`;
     }) : ['nothing found'];
-    out(ctx, res, lines);
+    out(ctx, { results: [...res], problems: res.problems, warnings }, [...lines, ...warnings.map((w) => `warning: ${w}`)]);
     return 0;
   },
 
@@ -377,16 +429,26 @@ const handlers = {
     if (flags.status && !['open', 'answered', 'withdrawn'].includes(flags.status)) throw new UsageError('--status must be open, answered or withdrawn');
     ctx.refreshOnce();
     const o = { bead: flags.bead, status: flags.status, since: parseSince(flags.since), refresh: ctx.refreshOnce };
-    if (ctx.json) { process.stdout.write(JSON.stringify(R.ledger(ctx.projectRoot, o)) + '\n'); return 0; }
-    process.stdout.write(R.renderLedger(ctx.projectRoot, o));
+    const rows = R.ledger(ctx.projectRoot, o);
+    const warnings = readWarnings(ctx, rows.problems);
+    if (ctx.json) { process.stdout.write(JSON.stringify({ rows: [...rows], problems: rows.problems, warnings }) + '\n'); return 0; }
+    process.stdout.write(R.renderLedger(ctx.projectRoot, o) + warnings.map((w) => `warning: ${w}\n`).join(''));
     return 0;
   },
 
   pending(ctx, flags) {
     const since = parseSince(flags.since);
     ctx.refreshOnce();
-    const p = R.pending(ctx.projectRoot, { since, refresh: ctx.refreshOnce });
+    const p = R.pending(ctx.projectRoot, { since, all: !!flags.all, refresh: ctx.refreshOnce });
+    const warnings = readWarnings(ctx, p.problems);
     const lines = [];
+    // ids handed out must be visible to other hosts: say so when this host cannot push
+    let unpub = { count: 0 };
+    if (ctx.by) {
+      const pub = log.publish(ctx.projectRoot, { host: ctx.host, instance: ctx.instance });
+      unpub = log.unpublished(ctx.projectRoot, { host: ctx.host, instance: ctx.instance });
+      if (unpub.count > 0) lines.push(`unpublished local records: ${unpub.count} (${pub.published ? 'push in progress' : (pub.reason || unpub.reason)})`);
+    }
     if (p.open_questions.length) {
       lines.push(`Open questions (${p.open_questions.length}):`);
       for (const q of p.open_questions) lines.push(`  ${q.id}  ${q.text}${q.asker && q.asker.bead ? ` (bead ${q.asker.bead})` : ''}${q.recommendation ? ` [recommended: ${q.recommendation}]` : ''}`);
@@ -395,28 +457,40 @@ const handlers = {
       lines.push(`Inferred answers awaiting ratification (${p.unratified_answers.length}):`);
       for (const a of p.unratified_answers) lines.push(`  ${a.id}  ${a.answer} (rationale: ${a.rationale})`);
     }
+    if (p.delegations_awaiting_glance.length) {
+      lines.push(`Delegations awaiting a glance (${p.delegations_awaiting_glance.length}):`);
+      for (const d of p.delegations_awaiting_glance) lines.push(`  ${d.id}  GRANT: ${d.grant}  (operator: ${quoted(d.quote)})`);
+    }
     if (p.inputs.length) {
       lines.push(`Operator inputs with no record or ack (${p.inputs.length}):`);
       for (const i of p.inputs) lines.push(`  ${i.id}  ${i.ts}  ${quoted(i.text.length > 100 ? i.text.slice(0, 100) + '...' : i.text)}`);
     }
+    if (p.acked) {
+      lines.push(`Acknowledged inputs (${p.acked.length}):`);
+      for (const a of p.acked) lines.push(`  ${a.input}  ${a.reason}  (${a.id})`);
+    }
     if (!lines.length) lines.push('nothing pending');
-    out(ctx, p, lines);
-    return 0;
+    out(ctx, { ...p, unpublished: unpub.count, warnings }, [...lines, ...warnings.map((w) => `warning: ${w}`)]);
+    return p.problems.length ? 1 : 0;
   },
 
   verify(ctx, flags, pos) {
     if (pos.length < 1) throw new UsageError('verify takes one record or input id');
     const id = pos[0];
     const v = R.verifyRecord(ctx.projectRoot, id, { refresh: ctx.refreshOnce });
+    const rw = readWarnings(ctx, []);
+    v.warnings = rw;
     if (ctx.json) { process.stdout.write(JSON.stringify(v) + '\n'); return v.ok ? 0 : 1; }
     const lines = [v.ok ? `VERIFIED ${id}` : `NOT VERIFIED ${id}: ${v.code}: ${v.error}`];
     for (const h of v.chain) {
       if (h.kind === 'input') {
         lines.push(`  ${h.id}  input (${h.source}, host ${h.host}, session ${h.session_id || 'unknown'}, ${h.ts})`);
+        if (h.excerpt) lines.push(`    cited in context: ${quoted(h.excerpt)}`);
       } else {
         const body = h.kind === 'answer' ? `${h.answer} [${h.confidence}]` : (h.statement || h.text || h.reason || '');
         const via = h.under ? ` under ${h.under}` : '';
-        lines.push(`  ${h.id}  ${h.kind}${via}${body ? `: ${body}` : ''} (by ${h.by && h.by.instance}, ${h.ts})${h.quote ? ` operator quote: ${quoted(h.quote)}` : ''}`);
+        lines.push(`  ${h.id}  ${h.kind}${via}${body ? `: ${body}` : ''} (by ${h.by && h.by.instance}, ${h.ts})`);
+        if (h.grant) lines.push(`    GRANT: ${h.grant}`);
       }
     }
     for (const n of v.notes) lines.push(`  note: ${n}`);
@@ -424,13 +498,14 @@ const handlers = {
     for (const c of v.chains.filter((x) => x.heads === 'absent')) {
       lines.push(`warning: no head was recorded for ${c.chain} on this host (trusted on first use); a deleted tail would not have been detected before now`);
     }
+    for (const w of rw) lines.push(`warning: ${w}`);
     if (v.ok) {
       const seen = new Set();
       for (const h of v.chain.filter((x) => x.kind === 'input' && x.source === 'human')) {
         if (seen.has(h.id)) continue;
         seen.add(h.id);
         const cite = v.chain.find((x) => x.quote && v.chain.indexOf(x) < v.chain.indexOf(h));
-        if (h.text.length > 600 && cite) lines.push(`operator said (excerpt of ${h.id}, ${h.text.length} characters): ${quoted(cite.quote)}`);
+        if (h.text.length > 600 && cite) lines.push(`operator said (excerpt of ${h.id}, ${h.text.length} characters): ${quoted(h.excerpt || cite.quote)}`);
         else lines.push(`operator said: ${quoted(h.text)}`);
       }
     }
@@ -454,7 +529,12 @@ const handlers = {
     if (!obj) throw new R.OperatorError('not_found', `record ${id} was not found (operator.js refresh pulls other hosts; operator.js find lists records)`);
     const lines = [`${obj.id}  ${obj.kind}`, `by: ${obj.by && obj.by.instance} (${obj.by && obj.by.role}) at ${obj.ts}`];
     for (const k of ['statement', 'question', 'text', 'answer', 'confidence', 'rationale', 'reason']) if (obj[k]) lines.push(`${k}: ${obj[k]}`);
-    if (obj.quote) lines.push(`operator quote: ${quoted(obj.quote)}`);
+    if (obj.quote) {
+      const cid = (obj.cites || []).find((c) => String(c).startsWith('in-'));
+      const inp = cid ? log.getInput(ctx.projectRoot, cid) : null;
+      lines.push(`operator quote: ${quoted((inp && R.excerptFor(inp.text, obj.quote)) || obj.quote)}`);
+    }
+    if (obj.grant) lines.push(`GRANT: ${obj.grant}`);
     if (obj.cites && obj.cites.length) lines.push(`cites: ${obj.cites.join(', ')}`);
     if (obj.under) lines.push(`under: ${obj.under}`);
     if (obj.target) lines.push(`target: ${obj.target}`);
@@ -472,7 +552,7 @@ function main(argv) {
   const cmd = argv[0];
   if (cmd === '--help' || cmd === '-h' || cmd === 'help') { process.stdout.write(USAGE + '\n'); return 0; }
   if (!COMMANDS.includes(cmd)) { process.stderr.write(`operator.js: unknown command "${cmd}"\n${USAGE}\n`); return 2; }
-  let ctx = { json: false };
+  let ctx = { json: argv.includes('--json') };
   try {
     const { flags, pos } = parseArgs(argv.slice(1));
     ctx.json = !!flags.json;
@@ -480,7 +560,8 @@ function main(argv) {
     return handlers[cmd](ctx, flags, pos);
   } catch (err) {
     if (err instanceof UsageError) {
-      process.stderr.write(`operator.js ${cmd}: ${err.message}\n`);
+      if (ctx.json) process.stdout.write(JSON.stringify({ ok: false, code: 'usage', message: err.message }) + '\n');
+      else process.stderr.write(`operator.js ${cmd}: ${err.message}\n`);
       return 2;
     }
     if (err instanceof R.OperatorError) {
@@ -488,7 +569,8 @@ function main(argv) {
       else process.stderr.write(`refused (${err.code}): ${err.message}\n`);
       return 1;
     }
-    process.stderr.write(`operator.js ${cmd}: ${err && err.message ? err.message : err}\n`);
+    if (ctx.json) process.stdout.write(JSON.stringify({ ok: false, code: 'environment', message: String(err && err.message || err) }) + '\n');
+    else process.stderr.write(`operator.js ${cmd}: ${err && err.message ? err.message : err}\n`);
     return 2;
   }
 }

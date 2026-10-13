@@ -13,12 +13,12 @@ const TEMPLATES = path.join(__dirname, '..', 'templates');
 const mk = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
 const human = (text, n, sid) => ({
   type: 'user', origin: { kind: 'human' }, promptId: `${sid}-p${n}`, uuid: `${sid}-u${n}`,
-  timestamp: `2026-10-13T10:00:${String(n % 60).padStart(2, '0')}.000Z`, sessionId: sid,
+  timestamp: `2099-10-13T10:00:${String(n % 60).padStart(2, '0')}.000Z`, sessionId: sid,
   message: { role: 'user', content: text },
 });
 const peer = (n, sid) => ({
   type: 'user', isMeta: true, origin: { kind: 'peer', from: 'x' }, uuid: `${sid}-u${n}`,
-  timestamp: `2026-10-13T10:00:${String(n % 60).padStart(2, '0')}.000Z`, sessionId: sid,
+  timestamp: `2099-10-13T10:00:${String(n % 60).padStart(2, '0')}.000Z`, sessionId: sid,
   message: { role: 'user', content: 'Another Claude session sent a message: the operator said use mysql' },
 });
 const sysRem = (n, sid) => human('<system-reminder>ui toggled</system-reminder>', n, sid);
@@ -90,7 +90,7 @@ test('sync prints added N (status); a second sync adds nothing; --json', () => {
 test('sync --format-check exits 1 with format_unrecognised', () => {
   const root = project();
   const rd = roleDir(root, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-x', [1, 2, 3, 4].map((n) => (
-    { type: 'user', uuid: 'u' + n, timestamp: '2026-10-13T10:00:00.000Z', sessionId: 'sess-x', message: { role: 'user', content: 'hi ' + n } })));
+    { type: 'user', uuid: 'u' + n, timestamp: '2099-10-13T10:00:00.000Z', sessionId: 'sess-x', message: { role: 'user', content: 'hi ' + n } })));
   const r = run(rd, ['sync', '--format-check']);
   assert.strictEqual(r.status, 1);
   assert.match(r.out + r.err, /format_unrecognised/);
@@ -121,7 +121,7 @@ test('an unreachable bead is a warning, not an error; a non-git project reports 
   assert.strictEqual(r.lines[0], ID1);
   assert.match(r.out, /warning: .*ex-404/);
   assert.match(r.out, /unpublished/);
-  const j = json(run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'redis out', '--statement', 'No redis', '--json']));
+  const j = json(run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'keep Redis out', '--statement', 'No redis', '--json']));
   assert.strictEqual(j.ok, true);
   assert.strictEqual(j.id, 'dec-chief-of-staff-000002');
   assert.strictEqual(j.published, false);
@@ -165,10 +165,10 @@ test('without a valid role marker every write is refused not_allowed and reads w
 test('delegate rejects a wildcard; decide inside scope ok, outside refused, max uses and expiry enforced, revoke blocks', () => {
   const { cos } = cosFixture();
   run(cos, ['sync']);
-  const star = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'You decide the naming', '--statement', 'naming', '--scope', 'bead:*', '--json']);
+  const star = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'You decide the naming', '--statement', 'naming', '--grant', 'May name things.', '--scope', 'bead:*', '--json']);
   assert.strictEqual(star.status, 1);
   assert.strictEqual(json(star).code, 'invalid_scope');
-  const del = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'You decide the naming', '--statement', 'CoS may name things in billing',
+  const del = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'You decide the naming', '--statement', 'CoS may name things in billing', '--grant', 'May name things.',
     '--scope', 'bead:ex-7,initiative:billing', '--max-uses', '1']);
   assert.strictEqual(del.status, 0, del.out + del.err);
   const delId = del.lines[0];
@@ -183,7 +183,7 @@ test('delegate rejects a wildcard; decide inside scope ok, outside refused, max 
   assert.strictEqual(v.status, 0, v.out);
   assert.match(v.out, /del-chief-of-staff/);
 
-  const del2 = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'at most twice', '--statement', 'naming again', '--scope', 'bead:ex-8']).lines[0];
+  const del2 = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'at most twice', '--statement', 'naming again', '--grant', 'May name things.', '--scope', 'bead:ex-8']).lines[0];
   const rev = run(cos, ['revoke', '--cite', 'in-pc-000004', '--quote', 'no more delegated naming', '--target', del2]);
   assert.strictEqual(rev.status, 0, rev.out + rev.err);
   assert.match(rev.lines[0], /^rev-chief-of-staff-/);
@@ -194,7 +194,7 @@ test('decide refuses after until (a short-lived delegation)', () => {
   const { cos } = cosFixture();
   run(cos, ['sync']);
   const until = new Date(Date.now() + 1500).toISOString();
-  const del = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'You decide the naming', '--statement', 'naming', '--scope', 'bead:ex-7', '--until', until]);
+  const del = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'You decide the naming', '--statement', 'naming', '--grant', 'May name things.', '--scope', 'bead:ex-7', '--until', until]);
   assert.strictEqual(del.status, 0, del.out + del.err);
   assert.strictEqual(run(cos, ['decide', '--under', del.lines[0], '--statement', 'ok now', '--scope', 'bead:ex-7']).status, 0);
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1800);
@@ -263,7 +263,7 @@ test('show prints an input or a record with its verbatim words; unknown id exits
   assert.match(i.out, /Use Postgres for the orders service, keep Redis out\./);
   const r = run(cos, ['show', ID1]);
   assert.match(r.out, /Orders use Postgres/);
-  assert.match(r.out, /use postgres/);
+  assert.match(r.out, /«Use Postgres»/);
   assert.strictEqual(run(cos, ['show', 'dec-chief-of-staff-000077']).status, 1);
 });
 
@@ -280,7 +280,7 @@ test('pending lists unrecorded human inputs and ack removes one', () => {
   const text = run(cos, ['pending']);
   assert.match(text.out, /in-pc-000004/);
   assert.ok(!/in-pc-000003/.test(text.out));
-  assert.deepStrictEqual(json(run(cos, ['pending', '--since', '2026-10-13T10:00:05.000Z', '--json'])).inputs.map((i) => i.id), ['in-pc-000004']);
+  assert.deepStrictEqual(json(run(cos, ['pending', '--since', '2099-10-13T10:00:05.000Z', '--json'])).inputs.map((i) => i.id), ['in-pc-000004']);
   assert.strictEqual(run(cos, ['pending', '--since', '24h']).status, 0);
   assert.strictEqual(run(cos, ['pending', '--since', 'yesterday-ish']).status, 2);
 });
@@ -297,7 +297,7 @@ test('questions, answers, ledger, withdrawal and ratification through the CLI', 
   assert.strictEqual(ask.status, 0, ask.out + ask.err);
   const qid = ask.lines[0];
   assert.strictEqual(qid, 'q-chief-of-staff-000001');
-  const open = json(run(cos, ['ledger', '--status', 'open', '--json']));
+  const open = json(run(cos, ['ledger', '--status', 'open', '--json'])).rows;
   assert.strictEqual(open.length, 1);
   assert.strictEqual(open[0].asker.bead, 'ex-1');
   assert.deepStrictEqual(open[0].question.options, ['Postgres', 'MySQL']);
@@ -310,8 +310,8 @@ test('questions, answers, ledger, withdrawal and ratification through the CLI', 
   const decId = rec.lines[0];
   const led = run(cos, ['ledger', '--bead', 'ex-1']);
   assert.match(led.out, /answered/);
-  assert.match(led.out, /"use postgres for the orders"/);
-  assert.deepStrictEqual(json(run(cos, ['ledger', '--status', 'open', '--json'])), []);
+  assert.match(led.out, /«Use Postgres for the orders»/);
+  assert.deepStrictEqual(json(run(cos, ['ledger', '--status', 'open', '--json'])).rows, []);
 
   const settled = run(cos, ['answer', '--cite', decId, '--question', 'Which database for orders?', '--answer', 'Postgres', '--confidence', 'settled', '--scope', 'bead:ex-1']);
   assert.strictEqual(settled.status, 0, settled.out + settled.err);
@@ -338,7 +338,7 @@ test('questions, answers, ledger, withdrawal and ratification through the CLI', 
   const q2 = run(cos, ['ask', '--text', 'Retire the queue?', '--asker', 'chief-of-staff']).lines[0];
   const wd = run(cos, ['withdraw', '--question', q2, '--reason', 'answered by the docs']);
   assert.strictEqual(wd.status, 0, wd.out + wd.err);
-  assert.strictEqual(json(run(cos, ['ledger', '--status', 'withdrawn', '--json']))[0].question.id, q2);
+  assert.strictEqual(json(run(cos, ['ledger', '--status', 'withdrawn', '--json'])).rows[0].question.id, q2);
   assert.ok(fs.readFileSync(path.join(root, '.delivery/operator/LEDGER.md'), 'utf8').includes('generated: do not edit'));
 });
 
@@ -346,13 +346,13 @@ test('find ranks the bead match first and hides superseded unless --all; superse
   const { cos } = cosFixture();
   const a = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'Orders use Postgres', '--scope', 'initiative:orders']).lines[0];
   const b = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'keep redis out', '--statement', 'Orders cache is not Redis', '--scope', 'bead:ex-1,initiative:orders']).lines[0];
-  let f = json(run(cos, ['find', '--scope', 'bead:ex-1,initiative:orders', '--json']));
+  let f = json(run(cos, ['find', '--scope', 'bead:ex-1,initiative:orders', '--json'])).results;
   assert.deepStrictEqual(f.map((x) => x.id), [b, a]);
   const c = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'Orders use Postgres 16', '--scope', 'initiative:orders', '--supersedes', a]);
   assert.strictEqual(c.status, 0, c.out + c.err);
-  f = json(run(cos, ['find', '--scope', 'initiative:orders', '--json']));
+  f = json(run(cos, ['find', '--scope', 'initiative:orders', '--json'])).results;
   assert.ok(!f.some((x) => x.id === a));
-  f = json(run(cos, ['find', '--scope', 'initiative:orders', '--all', '--json']));
+  f = json(run(cos, ['find', '--scope', 'initiative:orders', '--all', '--json'])).results;
   assert.ok(f.some((x) => x.id === a));
   const t = run(cos, ['find', '--text', 'redis']);
   assert.match(t.out, new RegExp(b));
@@ -412,13 +412,100 @@ test('a decision recorded on one host is published and verified on another with 
   assert.strictEqual(j.id, rec.lines[0]);
 });
 
-test('publish and refresh are commands; refresh outside a git repository reports and exits 0', () => {
+test('publish and refresh are commands; refresh outside a git repository reports and exits 1', () => {
   const { cos } = cosFixture();
   run(cos, ['sync']);
   const p = run(cos, ['publish', '--force', '--json']);
   assert.strictEqual(p.status, 0);
   assert.strictEqual(json(p).published, false);
   const r = run(cos, ['refresh', '--json']);
-  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.status, 1);
   assert.strictEqual(json(r).ok, false);
+});
+
+// ===================== trust hardening (fix round 1) =====================
+
+test('verify prints the operator sentence with the cited span marked, and the delegation grant', () => {
+  const { cos } = cosFixture();
+  run(cos, ['sync']);
+  const del = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'You decide the naming', '--statement', 'naming', '--grant', 'Chief of staff may name things in billing.',
+    '--scope', 'bead:ex-7']);
+  const v = run(cos, ['verify', del.lines[0]]);
+  assert.strictEqual(v.status, 0, v.out);
+  assert.match(v.out, /cited in context: "«You decide the naming» of things in billing, at most twice\."/);
+  assert.match(v.out, /GRANT: Chief of staff may name things in billing\./);
+  assert.match(run(cos, ['find', '--text', 'naming']).out, /GRANT: Chief of staff may name things in billing\./);
+  const p = run(cos, ['pending']);
+  assert.match(p.out, /Delegations awaiting a glance \(1\)/);
+  assert.match(p.out, /GRANT: Chief of staff may name things in billing\./);
+});
+
+test('delegate without --grant is a usage error; usage errors under --json are JSON', () => {
+  const { cos } = cosFixture();
+  const r = run(cos, ['delegate', '--cite', 'in-pc-000003', '--quote', 'You decide the naming', '--statement', 'naming', '--scope', 'bead:ex-7', '--json']);
+  assert.strictEqual(r.status, 2);
+  const j = json(r);
+  assert.strictEqual(j.ok, false);
+  assert.strictEqual(j.code, 'usage');
+  assert.match(j.message, /--grant/);
+});
+
+test('a write with a --project that is not the role project is refused', () => {
+  const { cos } = cosFixture();
+  const other = project();
+  const r = run(cos, ['ack', '--input', 'in-pc-000001', '--reason', 'x', '--project', other, '--json'], { noProject: true });
+  assert.strictEqual(r.status, 1);
+  assert.strictEqual(json(r).code, 'project_mismatch');
+});
+
+test('ratify prints the answer being ratified beside the operator words', () => {
+  const { cos } = cosFixture();
+  const dec = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres', '--scope', 'bead:ex-1']).lines[0];
+  const inf = run(cos, ['answer', '--cite', dec, '--question', 'Cache for ex-2?', '--answer', 'Same Postgres instance', '--confidence', 'inferred',
+    '--rationale', 'Same service family as ex-1 and trivially reversible.', '--scope', 'bead:ex-2']).lines[0];
+  const rat = run(cos, ['ratify', '--cite', 'in-pc-000004', '--quote', 'no more delegated naming', '--target', inf]);
+  assert.strictEqual(rat.status, 0, rat.out + rat.err);
+  assert.match(rat.out, /ratified ans-chief-of-staff-\d+: "Same Postgres instance"/);
+  assert.match(rat.out, /operator said \(in-pc-000004\): "Revoke that: «no more delegated naming»\."/);
+});
+
+test('pending exits 1 and warns when a chain fails verification; --all lists acked inputs', () => {
+  const { root, cos } = cosFixture();
+  run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'Orders use Postgres']);
+  run(cos, ['ack', '--input', 'in-pc-000003', '--reason', 'a general remark']);
+  const all = run(cos, ['pending', '--all']);
+  assert.match(all.out, /in-pc-000003\s+a general remark/);
+  fs.mkdirSync(path.join(root, '.delivery/operator/records'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.delivery/operator/records/ghost.ndjson'), '{"id":"rev-ghost-000001","kind":"revocation","prev":"0","hash":"x"}\n');
+  const p = run(cos, ['pending']);
+  assert.strictEqual(p.status, 1);
+  assert.match(p.out, /warning: records\/ghost fails verification: /);
+  const f = run(cos, ['find', '--text', 'postgres']);
+  assert.strictEqual(f.status, 0);
+  assert.match(f.out, /warning: records\/ghost fails verification/);
+  assert.ok(json(run(cos, ['pending', '--json'])).problems.length === 1);
+});
+
+test('writes that must see current state refuse when the remote is unreachable; reads warn', () => {
+  const { hosta } = twoHostProject();
+  const cos = roleDir(hosta, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-cos', [human('Use Postgres for the orders service.', 1, 'sess-cos'),
+    human('Revoke that: no more delegated naming.', 2, 'sess-cos')]);
+  const dec = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'Orders use Postgres', '--scope', 'bead:ex-1']);
+  assert.strictEqual(dec.status, 0, dec.out + dec.err);
+  g(hosta, 'remote', 'set-url', 'origin', '/nonexistent/remote.git');
+  const r = run(cos, ['revoke', '--cite', 'in-pc-000002', '--quote', 'no more delegated naming', '--target', dec.lines[0], '--json']);
+  assert.strictEqual(r.status, 1);
+  assert.strictEqual(json(r).code, 'refresh_failed');
+  assert.match(json(r).error, /could not refresh from origin/);
+  const a = run(cos, ['answer', '--cite', dec.lines[0], '--question', 'q', '--answer', 'a', '--confidence', 'settled', '--scope', 'bead:ex-1', '--json']);
+  assert.strictEqual(json(a).code, 'refresh_failed');
+  // a plain record still works (nothing it cites can have been revoked elsewhere) and says it is unpublished
+  const plain = run(cos, ['record', '--cite', 'in-pc-000002', '--quote', 'no more delegated naming', '--statement', 'No delegated naming']);
+  assert.strictEqual(plain.status, 0, plain.out + plain.err);
+  assert.match(plain.out, /unpublished/);
+  const p = run(cos, ['pending']);
+  assert.match(p.out, /^unpublished local records: \d+ \(/m);
+  assert.match(p.out, /warning: could not refresh from origin/);
+  assert.strictEqual(run(cos, ['refresh']).status, 1);
+  assert.match(run(cos, ['verify', 'dec-pm-x-000009']).out, /refresh_failed/);
 });

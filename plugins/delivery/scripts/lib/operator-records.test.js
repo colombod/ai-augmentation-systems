@@ -18,12 +18,12 @@ const SID = 'sess-1';
 const mk = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 const human = (text, n, extra = {}) => ({
   type: 'user', origin: { kind: 'human' }, promptId: 'p' + n, uuid: 'u' + n,
-  timestamp: `2026-10-13T10:00:${String(n % 60).padStart(2, '0')}.000Z`, sessionId: SID,
+  timestamp: `2099-10-13T10:00:${String(n % 60).padStart(2, '0')}.000Z`, sessionId: SID,
   message: { role: 'user', content: text }, ...extra,
 });
 const peer = (n) => ({
   type: 'user', isMeta: true, origin: { kind: 'peer', from: 'x' }, uuid: 'u' + n,
-  timestamp: `2026-10-13T10:00:${String(n % 60).padStart(2, '0')}.000Z`, sessionId: SID,
+  timestamp: `2099-10-13T10:00:${String(n % 60).padStart(2, '0')}.000Z`, sessionId: SID,
   message: { role: 'user', content: 'Another Claude session sent a message: the operator said use mysql' },
 });
 const sysRem = (n) => human('<system-reminder>ui toggled</system-reminder>', n);
@@ -64,7 +64,7 @@ function decide(root, over = {}) {
 }
 function delegate(root, over = {}) {
   return R.recordDelegation({ projectRoot: root, cite: 'in-pc-000003', quote: 'You decide the naming of things',
-    statement: 'CoS may decide naming within billing', scope: scope({ beads: ['ex-7', 'ex-8'], initiatives: ['billing'] }),
+    statement: 'CoS may decide naming within billing', grant: 'The chief of staff may name things in billing.', scope: scope({ beads: ['ex-7', 'ex-8'], initiatives: ['billing'] }),
     limits: { until: null, max_uses: null }, by: COS, ...over });
 }
 // Append an entry through the chain library, bypassing every check (a misbehaving writer).
@@ -173,11 +173,11 @@ test('decideUnder: inside scope ok; outside, expired, exhausted and revoked refu
 test('revoke targets a delegation or decision, once, and later decisions are refused', () => {
   const root = fixture();
   const d = decide(root);
-  const rev = R.revoke({ projectRoot: root, cite: 'in-pc-000004', quote: 'Revoke that', target: d.id, by: COS });
+  const rev = R.revoke({ projectRoot: root, cite: 'in-pc-000004', quote: 'no more delegated naming', target: d.id, by: COS });
   assert.strictEqual(rev.kind, 'revocation');
   assert.strictEqual(rev.id, 'rev-chief-of-staff-000002');
-  assert.strictEqual(codeOf(() => R.revoke({ projectRoot: root, cite: 'in-pc-000004', quote: 'Revoke that', target: d.id, by: COS })), 'already_revoked');
-  assert.strictEqual(codeOf(() => R.revoke({ projectRoot: root, cite: 'in-pc-000004', quote: 'Revoke that', target: 'ans-x-000001', by: COS })), 'not_found');
+  assert.strictEqual(codeOf(() => R.revoke({ projectRoot: root, cite: 'in-pc-000004', quote: 'no more delegated naming', target: d.id, by: COS })), 'already_revoked');
+  assert.strictEqual(codeOf(() => R.revoke({ projectRoot: root, cite: 'in-pc-000004', quote: 'no more delegated naming', target: 'ans-x-000001', by: COS })), 'not_found');
   assert.strictEqual(codeOf(() => R.revoke({ projectRoot: root, cite: 'in-pc-000002', quote: 'use mysql', target: d.id, by: COS })), 'not_human');
 });
 
@@ -352,7 +352,9 @@ test('answer settled inside the cited scope is accepted; outside is scope_not_co
   assert.strictEqual(a.confidence, 'settled');
   assert.strictEqual(codeOf(() => answer(root, { scope: scope({ beads: ['ex-2'] }) })), 'scope_not_covered');
   assert.strictEqual(codeOf(() => answer(root, { scope: scope({ labels: ['security'] }) })), 'scope_not_covered');
-  assert.ok(answer(root, { scope: scope() }));
+  assert.strictEqual(codeOf(() => answer(root, { scope: scope() })), 'settled_needs_scope');
+  const delNoScope = decide(root, { scope: scope(), statement: 'A scopeless note', quote: 'keep Redis out' });
+  assert.ok(answer(root, { cites: [delNoScope.id], scope: scope() }), 'a scopeless basis allows an empty scope');
 });
 
 test('answer: only the chief of staff; question and answer non-empty; cites must exist', () => {
@@ -424,7 +426,7 @@ test('answers cannot cite revoked or superseded records; settled cannot rest on 
   const inf = answer(root, { cites: [d2.id], confidence: 'inferred', scope: scope({ beads: ['ex-2'] }),
     rationale: 'Same service family as ex-1, reversible config choice.' });
   assert.strictEqual(codeOf(() => answer(root, { cites: [inf.id], scope: scope() })), 'not_settled');
-  assert.ok(answer(root, { cites: [inf.id], scope: scope(), confidence: 'inferred', rationale: 'Builds on the earlier inference, still reversible.' }));
+  assert.strictEqual(codeOf(() => answer(root, { cites: [inf.id], scope: scope(), confidence: 'inferred', rationale: 'Builds on the earlier inference, still reversible.' })), 'inferred_chain');
 });
 
 test('supersession after the fact: the older answer still verifies and the path notes it', () => {
@@ -471,12 +473,12 @@ test('find by text needs every word, searches statements and quotes, and returns
   assert.ok(r.some((x) => x.id === d.id));
   assert.ok(r.some((x) => x.id === 'in-pc-000001' && x.kind === 'input'), 'inputs are findable so they can be cited');
   assert.ok(R.find(root, { text: 'redis out' }).some((x) => x.id === 'in-pc-000001'));
-  assert.deepStrictEqual(R.find(root, { text: 'operator said use mysql' }), [], 'a peer input is not citable');
-  assert.deepStrictEqual(R.find(root, { text: 'postgres kubernetes' }), []);
+  assert.deepStrictEqual([...R.find(root, { text: 'operator said use mysql' })], [], 'a peer input is not citable');
+  assert.deepStrictEqual([...R.find(root, { text: 'postgres kubernetes' })], []);
   const onlyDec = R.find(root, { text: 'postgres', kinds: ['decision'] });
   assert.ok(onlyDec.every((x) => x.kind === 'decision'));
   const revoked = decide(root, { statement: 'Cache choice is memcached', quote: 'keep Redis out' });
-  R.revoke({ projectRoot: root, cite: 'in-pc-000004', quote: 'Revoke that', target: revoked.id, by: COS });
+  R.revoke({ projectRoot: root, cite: 'in-pc-000004', quote: 'no more delegated naming', target: revoked.id, by: COS });
   assert.ok(!R.find(root, { text: 'memcached' }).some((x) => x.id === revoked.id));
 });
 
@@ -490,7 +492,7 @@ test('pending lists unrecorded human inputs only; ack and records remove them', 
   assert.deepStrictEqual(R.pending(root, {}).inputs.map((i) => i.id), ['in-pc-000004', 'in-pc-000005']);
   assert.strictEqual(codeOf(() => R.ack({ projectRoot: root, input: 'in-pc-000004', reason: ' ', by: COS })), 'empty');
   assert.strictEqual(codeOf(() => R.ack({ projectRoot: root, input: 'in-pc-009999', reason: 'x', by: COS })), 'not_found');
-  assert.deepStrictEqual(R.pending(root, { since: '2026-10-13T10:00:06.000Z' }).inputs.map((i) => i.id), ['in-pc-000005']);
+  assert.deepStrictEqual(R.pending(root, { since: '2099-10-13T10:00:06.000Z' }).inputs.map((i) => i.id), ['in-pc-000005']);
   assert.deepStrictEqual(R.pending(root, { sessionId: 'nobody' }).inputs, []);
   const v = R.verifyRecord(root, 'ack-chief-of-staff-000002');
   assert.strictEqual(v.ok, true, JSON.stringify(v));
@@ -552,7 +554,7 @@ test('ledger filters by bead, status and since; rows carry asker and asked_at', 
   assert.strictEqual(row.question.id, q1.id);
   assert.strictEqual(row.asker.instance, 'builder-1');
   assert.ok(row.asked_at);
-  assert.deepStrictEqual(R.ledger(root, { since: new Date(Date.now() + 1e6).toISOString() }), []);
+  assert.deepStrictEqual([...R.ledger(root, { since: new Date(Date.now() + 1e6).toISOString() })], []);
 });
 
 test('renderLedger lists open questions first, quotes the operator verbatim, and LEDGER.md follows writes', () => {
@@ -565,7 +567,7 @@ test('renderLedger lists open questions first, quotes the operator verbatim, and
   const iOpen = md.indexOf(qb.id);
   const iAnswered = md.indexOf(qa.id);
   assert.ok(iOpen > -1 && iAnswered > -1 && iOpen < iAnswered, 'open question before the answered one');
-  assert.match(md, /"use postgres for the orders service"/);
+  assert.match(md, /"«Use Postgres for the orders {1,2}service»,/);
   assert.match(md, /Which database should orders use\?/);
   assert.match(md, /settled|decision/);
   const onDisk = fs.readFileSync(path.join(root, '.delivery', 'operator', 'LEDGER.md'), 'utf8');
@@ -698,4 +700,250 @@ test('publish includes the records file and LEDGER.md, and survives a rejected p
   assert.match(tracked, /records\/chief-of-staff\.ndjson/);
   assert.match(tracked, /LEDGER\.md/);
   assert.ok(!/cursors/.test(tracked));
+});
+
+// ===================== trust hardening (fix round 1) =====================
+
+test('C1: ratification and revocation must come after the record they act on', () => {
+  const root = fixture();
+  decide(root);
+  const later = { now: new Date('2100-01-01T00:00:00Z') }; // records written "after" every fixture input
+  const inf = answer(root, { confidence: 'inferred', scope: scope({ beads: ['ex-2'] }),
+    rationale: 'Same service family as ex-1, reversible config choice.', ...later });
+  const d2 = decide(root, { statement: 'later decision', ...later });
+  assert.strictEqual(codeOf(() => R.ratify({ projectRoot: root, cite: 'in-pc-000005', quote: 'behind a flag', target: inf.id, by: COS })), 'predates_target');
+  assert.strictEqual(codeOf(() => R.revoke({ projectRoot: root, cite: 'in-pc-000004', quote: 'no more delegated naming', target: d2.id, by: COS })), 'predates_target');
+  assert.deepStrictEqual(R.pending(root, {}).unratified_answers.map((a) => a.id), [inf.id], 'the refused ratification changed nothing');
+});
+
+test('C1: verify rejects a ratification or revocation older than its target (forged order)', () => {
+  const root = fixture();
+  decide(root);
+  const inf = answer(root, { confidence: 'inferred', scope: scope({ beads: ['ex-2'] }),
+    rationale: 'Same service family as ex-1, reversible config choice.', now: new Date('2100-01-01T00:00:00Z') });
+  const inp = log.getInput(root, 'in-pc-000005');
+  const rat = forge(root, 'chief-of-staff', { idprefix: 'rat', kind: 'ratification', target: inf.id, quote: 'behind a flag', cites: [inp.id],
+    cites_head: [{ id: inp.id, host: 'pc', seq: 5, hash: inp.hash }, { id: inf.id, hash: inf.hash }] });
+  assert.strictEqual(R.verifyRecord(root, rat.id).code, 'ratification_predates_answer');
+  const d = decide(root, { statement: 'x', now: new Date('2100-01-01T00:00:00Z') });
+  const rev = forge(root, 'chief-of-staff', { idprefix: 'rev', kind: 'revocation', target: d.id, quote: 'behind a flag', cites: [inp.id],
+    cites_head: [{ id: inp.id, host: 'pc', seq: 5, hash: inp.hash }, { id: d.id, hash: d.hash }] });
+  assert.strictEqual(R.verifyRecord(root, rev.id).code, 'revocation_predates_target');
+});
+
+function ghost(root, entries) {
+  const f = recFile(root, 'ghost');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+}
+
+test('C2: a file without a valid chain is a problem, never a source of state', () => {
+  const root = fixture();
+  const d = decide(root);
+  const q = ask(root);
+  ghost(root, [
+    { id: 'rev-ghost-000001', kind: 'revocation', target: d.id, cites: ['in-pc-000004'], quote: 'no more delegated naming', ts: '2099-01-01T00:00:00Z', prev: '0', hash: 'deadbeef' },
+    { id: 'dec-ghost-000002', kind: 'decision', statement: 'ghost decision about postgres', scope: scope({ beads: ['ex-1'] }), cites: [], ts: '2099-01-01T00:00:00Z', prev: 'x', hash: 'y' },
+  ]);
+  const f = R.find(root, { scope: { beads: ['ex-1'] } });
+  assert.ok(f.some((x) => x.id === d.id), 'the ghost revocation did not revoke');
+  assert.ok(!f.some((x) => /ghost/.test(x.id)));
+  assert.strictEqual(f.problems.length, 1);
+  assert.strictEqual(f.problems[0].file, 'records/ghost');
+  assert.strictEqual(R.pending(root, {}).problems[0].file, 'records/ghost');
+  assert.strictEqual(R.ledger(root, {}).problems.length, 1);
+  assert.strictEqual(R.ledger(root, {})[0].status, 'open');
+  // writes read the same verified view: the decision is still spendable, and the ledger file is left alone
+  const before = fs.readFileSync(path.join(root, '.delivery', 'operator', 'LEDGER.md'), 'utf8');
+  decide(root, { statement: 'another', answers: [q.id] });
+  assert.strictEqual(fs.readFileSync(path.join(root, '.delivery', 'operator', 'LEDGER.md'), 'utf8'), before, 'LEDGER.md is not regenerated while a chain fails');
+});
+
+test('C2: a corrupt line, a tampered chain and a missing file with a recorded head are reported', () => {
+  const root = fixture();
+  decide(root);
+  decide(root, { by: BUILDER_OWN });
+  fs.appendFileSync(recFile(root), 'this is not json\n');
+  let p = R.pending(root, {});
+  assert.ok(p.problems.some((x) => x.file === 'records/chief-of-staff' && /not valid JSON/.test(x.error)), JSON.stringify(p.problems));
+  assert.deepStrictEqual(R.find(root, {}).filter((x) => x.by.instance === 'chief-of-staff'), [], 'a failing chain feeds no view');
+  fs.rmSync(recFile(root, 'builder-1'));
+  p = R.pending(root, {});
+  assert.ok(p.problems.some((x) => x.file === 'records/builder-1' && /missing/.test(x.error)), JSON.stringify(p.problems));
+});
+
+// quote coverage probe table: [input text, quote, expected code or 'ok']
+const QUOTE_PROBES = [
+  ['Please do not use Redis for the cache.', 'use redis for the cache', 'quote_negated'],
+  ['Please do not use Redis for the cache.', 'do not use redis for the cache', 'ok'],
+  ["We don't want to use Redis here.", 'use redis here', 'quote_negated'],
+  ['Never use Redis for the cache, ok.', 'use redis for the cache', 'quote_negated'],
+  ['Stop using MySQL everywhere.', 'using mysql everywhere', 'quote_negated'],
+  ['Never mind, use Postgres for the orders service.', 'use postgres for the orders service', 'ok'],
+  ['Use Postgres. Do not touch Redis.', 'use postgres', 'ok'],
+  ['Use Postgres for orders.', 'use pg', 'quote_mismatch'],
+  ['Use Postgres for orders.', 'use postgres', 'ok'],
+  ['Use Postgres for orders.', 'use it now', 'quote_mismatch'],
+  ['I would say go ahead with the migration.', 'go ahead with the migration', 'ok'],
+];
+
+test('I1: quote coverage probe table', () => {
+  for (const [text, quote, want] of QUOTE_PROBES) {
+    const r = R.quoteCheck(text, quote);
+    assert.strictEqual(r.ok ? 'ok' : r.code, want, `${text} / ${quote}`);
+  }
+});
+
+test('I1: excerpt marks the span in its sentence; quoted words warn; a question cannot be delegated', () => {
+  const t = 'We spoke earlier. The VP said "use postgres for orders" yesterday. Should we use Postgres for orders?';
+  const a = R.quoteCheck(t, 'use postgres for orders');
+  assert.strictEqual(a.ok, true);
+  assert.strictEqual(a.attributed, true);
+  assert.strictEqual(a.excerpt, 'The VP said "«use postgres for orders»" yesterday.');
+  assert.strictEqual(R.excerptFor('Ship it behind a flag.', 'behind a flag'), 'Ship it «behind a flag».');
+  const root = mk('oprec-proj-');
+  sync(root, writeTranscript([human(t, 1), human('Should we use Postgres for orders?', 2)]));
+  const warns = [];
+  const d = R.recordDecision({ projectRoot: root, cite: 'in-pc-000001', quote: 'use postgres for orders', statement: 'pg', scope: scope(), by: COS, onWarning: (w) => warns.push(w) });
+  assert.ok(warns.some((w) => /quote_may_be_attributed/.test(w)));
+  assert.strictEqual(R.verifyRecord(root, d.id).chain[1].excerpt, 'The VP said "«use postgres for orders»" yesterday.');
+  assert.strictEqual(codeOf(() => R.recordDelegation({ projectRoot: root, cite: 'in-pc-000002', quote: 'use postgres for orders', statement: 's',
+    grant: 'Orders database choice.', scope: scope({ beads: ['ex-1'] }), limits: {}, by: COS })), 'quote_is_question');
+});
+
+test('I1: decisions refuse a negated quote with the code', () => {
+  const root = mk('oprec-proj-');
+  sync(root, writeTranscript([human('Please do not use Redis for the cache.', 1)]));
+  assert.strictEqual(codeOf(() => R.recordDecision({ projectRoot: root, cite: 'in-pc-000001', quote: 'use redis for the cache', statement: 'redis', scope: scope(), by: COS })), 'quote_negated');
+  assert.ok(R.recordDecision({ projectRoot: root, cite: 'in-pc-000001', quote: 'do not use redis for the cache', statement: 'no redis', scope: scope(), by: COS }));
+});
+
+test('I2: an answer must cover its question scope; settled needs a scope when the basis has one', () => {
+  const root = fixture();
+  decide(root, { scope: scope({ beads: ['ex-1', 'ex-9'] }) });
+  const q = ask(root, { scope: scope({ beads: ['ex-1', 'ex-9'] }) });
+  assert.strictEqual(codeOf(() => answer(root, { scope: scope({ beads: ['ex-1'] }), answers: [q.id] })), 'scope_not_covered');
+  assert.strictEqual(codeOf(() => answer(root, { scope: scope(), answers: [q.id] })), 'settled_needs_scope');
+  const ok = answer(root, { scope: scope({ beads: ['ex-1', 'ex-9'] }), answers: [q.id] });
+  assert.deepStrictEqual(ok.answers, [q.id]);
+});
+
+test('I3: ack follows the owner rule; pending --all lists acked inputs with reasons', () => {
+  const root = fixture();
+  assert.strictEqual(codeOf(() => R.ack({ projectRoot: root, input: 'in-pc-000003', reason: 'nothing', by: BUILDER })), 'not_allowed');
+  assert.ok(R.ack({ projectRoot: root, input: 'in-pc-000003', reason: 'own session', by: BUILDER_OWN }));
+  R.ack({ projectRoot: root, input: 'in-pc-000004', reason: 'just chatting', by: COS });
+  assert.strictEqual(R.pending(root, {}).acked, undefined);
+  assert.deepStrictEqual(R.pending(root, { all: true }).acked.map((a) => [a.input, a.reason]).sort(),
+    [['in-pc-000003', 'own session'], ['in-pc-000004', 'just chatting']]);
+  const forged = forge(root, 'builder-1', { idprefix: 'ack', kind: 'ack', input: 'in-pc-000005', reason: 'x', cites: ['in-pc-000005'],
+    cites_head: [{ id: 'in-pc-000005', host: 'pc', seq: 5, hash: log.getInput(root, 'in-pc-000005').hash }], by: { instance: 'builder-1', role: 'builder', session_id: 'other' } });
+  assert.strictEqual(R.verifyRecord(root, forged.id).code, 'not_allowed', 'verify re-checks entitlement');
+});
+
+test('I4: records of one instance from two hosts fail host_mismatch', () => {
+  const root = fixture();
+  decide(root, { by: { ...COS, host: 'pc' } });
+  const d2 = decide(root, { by: { ...COS, host: 'cloud' } });
+  const v = R.verifyRecord(root, d2.id);
+  assert.strictEqual(v.ok, false);
+  assert.strictEqual(v.code, 'host_mismatch');
+});
+
+test('I4: refresh reports a diverged own file, and publish names the fork', () => {
+  const { hosta, hostb } = twoHosts();
+  sync(hosta, writeTranscript([human('Use Postgres for the orders service.', 1)]), { host: 'hosta', sessionId: 'sa' });
+  sync(hostb, writeTranscript([human('Use Postgres for the orders service.', 1)]), { host: 'hostb', sessionId: 'sb' });
+  R.recordDecision({ projectRoot: hosta, cite: 'in-hosta-000001', quote: 'use postgres', statement: 'A', scope: scope(), by: { ...COS, host: 'hosta' } });
+  R.recordDecision({ projectRoot: hostb, cite: 'in-hostb-000001', quote: 'use postgres', statement: 'B', scope: scope(), by: { ...COS, host: 'hostb' } });
+  assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta', instance: 'chief-of-staff' }).published, true);
+  const rf = log.refresh(hostb, { host: 'hostb', instance: 'chief-of-staff' });
+  assert.deepStrictEqual(rf.diverged, ['.delivery/operator/records/chief-of-staff.ndjson']);
+  const pb = log.publish(hostb, { force: true, host: 'hostb', instance: 'chief-of-staff' });
+  assert.strictEqual(pb.published, false);
+  assert.match(pb.reason, /records chain forked: another writer appended to records\/chief-of-staff\.ndjson/);
+});
+
+test('I5/I6: a lookup that misses after a failed refresh says so and carries refresh_failed', () => {
+  const root = fixture();
+  const fakeRefresh = () => ({ ok: false, reason: 'fatal: unable to access remote\nmore', remote: 'origin' });
+  const v = R.verifyRecord(root, 'dec-pm-b-000001', { refresh: fakeRefresh });
+  assert.strictEqual(v.code, 'refresh_failed');
+  assert.match(v.error, /could not refresh from origin: fatal: unable to access remote; the record may exist on another host/);
+  assert.strictEqual(codeOf(() => R.recordAnswer({ projectRoot: root, cites: ['dec-pm-b-000001'], question: 'q', answer: 'a', confidence: 'settled',
+    scope: scope(), by: COS, refresh: fakeRefresh })), 'refresh_failed');
+  // a repository with no remote is not a refresh failure
+  const noRemote = () => ({ ok: false, reason: 'no upstream', no_remote: true });
+  assert.strictEqual(R.verifyRecord(root, 'dec-pm-b-000001', { refresh: noRemote }).code, 'not_found');
+});
+
+test('I7: high-stakes labels are never inferred; settled must name them; defaults and manifest override', () => {
+  const root = fixture();
+  decide(root, { scope: scope({ beads: ['ex-1'], labels: ['security'] }) });
+  const rat = 'Same service family as ex-1, reversible config choice.';
+  assert.strictEqual(codeOf(() => answer(root, { confidence: 'inferred', rationale: rat, scope: scope({ labels: ['security'] }) })), 'high_stakes_inferred');
+  const q = ask(root, { scope: scope({ labels: ['billing'] }) });
+  assert.strictEqual(codeOf(() => answer(root, { confidence: 'inferred', rationale: rat, scope: scope({ beads: ['ex-1'] }), answers: [q.id] })), 'high_stakes_inferred');
+  assert.ok(answer(root, { scope: scope({ labels: ['security'] }) }), 'settled on a label the basis names is fine');
+  // the manifest list replaces the default
+  fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.delivery', 'team', 'team.json'), JSON.stringify({ project: 'x', operator: { high_stakes_labels: ['payroll'] } }));
+  fs.writeFileSync(path.join(root, '.delivery', 'team', 'hosts.json'), JSON.stringify({ hosts: {} }));
+  assert.ok(answer(root, { confidence: 'inferred', rationale: rat, scope: scope({ labels: ['security'] }) }));
+  assert.strictEqual(codeOf(() => answer(root, { confidence: 'inferred', rationale: rat, scope: scope({ labels: ['payroll'] }) })), 'high_stakes_inferred');
+});
+
+test('I7: answer to answer depth is capped at 2 and an inference cannot rest on an inference', () => {
+  const root = fixture();
+  const d = decide(root);
+  const a1 = answer(root, { cites: [d.id] });
+  const a2 = answer(root, { cites: [a1.id] });
+  const a3 = answer(root, { cites: [a2.id] });
+  assert.strictEqual(codeOf(() => answer(root, { cites: [a3.id] })), 'answer_depth_exceeded');
+  assert.ok(R.verifyRecord(root, a3.id).ok);
+});
+
+test('I8: delegation needs a grant, a delegator role, and not a question; grant is echoed and awaits a glance', () => {
+  const root = fixture();
+  assert.strictEqual(codeOf(() => delegate(root, { grant: ' ' })), 'empty');
+  assert.strictEqual(codeOf(() => delegate(root, { by: BUILDER_OWN })), 'not_allowed');
+  const del = delegate(root);
+  assert.strictEqual(del.grant, 'The chief of staff may name things in billing.');
+  assert.ok(R.verifyRecord(root, del.id).chain[0].grant);
+  assert.ok(R.find(root, { text: 'naming' }).some((x) => x.id === del.id && x.grant));
+  assert.deepStrictEqual(R.pending(root, {}).delegations_awaiting_glance.map((d) => d.id), [del.id]);
+  // the operator's next input being acknowledged clears it
+  R.ack({ projectRoot: root, input: 'in-pc-000005', reason: 'seen', by: COS });
+  assert.deepStrictEqual(R.pending(root, {}).delegations_awaiting_glance, []);
+  const del2 = delegate(root, { scope: scope({ beads: ['ex-20'] }) });
+  assert.strictEqual(R.pending(root, {}).delegations_awaiting_glance.length, 1);
+  R.ratify({ projectRoot: root, cite: 'in-pc-000005', quote: 'behind a flag', target: del2.id, by: { ...COS }, now: undefined });
+  assert.deepStrictEqual(R.pending(root, {}).delegations_awaiting_glance, []);
+});
+
+test('I8: decideUnder verifies the delegation before spending it', () => {
+  const root = fixture();
+  const del = delegate(root);
+  const f = recFile(root);
+  fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('CoS may decide naming', 'CoS may decide everything'));
+  assert.strictEqual(codeOf(() => R.decideUnder({ projectRoot: root, under: del.id, statement: 'x', scope: scope({ beads: ['ex-7'] }), by: COS })), 'chain_invalid');
+});
+
+test('minor: ledger cells escape backslashes before pipes; withdrawal cites_head is checked', () => {
+  const root = fixture();
+  const q = ask(root, { text: 'Is a\\|b ok?' });
+  const md = R.renderLedger(root);
+  assert.ok(md.includes('Is a\\\\\\|b ok?'), md);
+  const w = forge(root, 'chief-of-staff', { idprefix: 'wd', kind: 'withdrawal', target: q.id, reason: 'x', cites: [], cites_head: [{ id: q.id, hash: 'wrong' }] });
+  assert.strictEqual(R.verifyRecord(root, w.id).code, 'history_rewritten');
+});
+
+test('refresh surfaces unpublished entries', () => {
+  const { hosta } = twoHosts();
+  sync(hosta, writeTranscript([human('Use Postgres for the orders service.', 1)]), { host: 'hosta' });
+  R.recordDecision({ projectRoot: hosta, cite: 'in-hosta-000001', quote: 'use postgres', statement: 'A', scope: scope(), by: COS });
+  const u = log.unpublished(hosta, { host: 'hosta', instance: 'chief-of-staff' });
+  assert.strictEqual(u.count, 2);
+  log.publish(hosta, { force: true, host: 'hosta', instance: 'chief-of-staff' });
+  assert.strictEqual(log.unpublished(hosta, { host: 'hosta', instance: 'chief-of-staff' }).count, 0);
 });

@@ -458,7 +458,7 @@ test('refresh brings another host file and never overwrites this host file with 
 test('refresh without an upstream reports no upstream', () => {
   const root = project();
   cp.spawnSync('git', ['init', '-q'], { cwd: root });
-  assert.deepStrictEqual(log.refresh(root), { ok: false, reason: 'no upstream' });
+  assert.deepStrictEqual(log.refresh(root), { ok: false, reason: 'no upstream', no_remote: true });
 });
 
 test('a lock whose token changed is not removed by the old holder', () => {
