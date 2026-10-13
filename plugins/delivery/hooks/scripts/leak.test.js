@@ -466,3 +466,30 @@ test('the shared matcher ignores format characters', () => {
   const git = (args) => (args[0] === 'log' ? `for Casual${ZW} Carl` : '');
   assert.deepEqual(scanPushed({ cwd: product, roleDir, denylist, git }), ['Casual Carl']);
 });
+
+// Final wave A: Monitor (and PowerShell, best effort) carry a shell command like Bash.
+test('A: a Monitor or PowerShell commit with a plan phrase is refused in product', () => {
+  const bad = { toolInput: { command: 'git commit -m "Sell duplicates faster"' }, cwd: product, roleDir, denylist };
+  assert.match(decideLeak({ ...bad, toolName: 'Monitor' }).reason, /Sell duplicates faster/);
+  assert.match(decideLeak({ ...bad, toolName: 'PowerShell' }).reason, /Sell duplicates faster/);
+  assert.equal(decideLeak({ ...bad, toolName: 'Monitor', cwd: path.join(roleDir, 'project') }), null);
+  assert.equal(decideLeak({ toolName: 'Monitor', toolInput: { command: 'git commit -m "fix login"' }, cwd: product, roleDir, denylist }), null);
+  const b = preparedRole('builder-1');
+  fs.mkdirSync(path.join(b.roleDir, 'product'), { recursive: true });
+  const env = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  const json = JSON.parse(runHook('leak-guard.js', { cwd: path.join(b.roleDir, 'product'), session_id: 's', tool_name: 'Monitor', tool_input: { command: 'git commit -m "for Casual Carl"' } }, env));
+  assert.equal(json.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(json.hookSpecificOutput.permissionDecisionReason, /Casual Carl/);
+});
+
+test('A: leak-post-push re-scans a push run through Monitor', () => {
+  const b = preparedRole('builder-1');
+  const cwd = path.join(b.roleDir, 'product');
+  fs.mkdirSync(cwd, { recursive: true });
+  require('./leak.js').recordPrepush({ roleDir: b.roleDir, dir: cwd, git: () => 'abc123\n' });
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-bin-'));
+  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase "$1" in log) echo "for Casual Carl";; esac\n', { mode: 0o755 });
+  const env = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+  const out = runHook('leak-post-push.js', { cwd, session_id: 's', tool_name: 'Monitor', tool_input: { command: 'git push' } }, env);
+  assert.match(JSON.parse(out).hookSpecificOutput.additionalContext, /Casual Carl/);
+});

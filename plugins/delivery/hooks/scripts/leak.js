@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { splitWithOps, realish } = require('./lane.js');
+const { splitWithOps, realish, shellCommandOf } = require('./lane.js');
 
 function loadDenylist(projectRoot) {
   const file = path.join(projectRoot, '.delivery', 'team', 'denylist.txt');
@@ -604,8 +604,9 @@ function filePathsOf(input) {
 
 function decideLeak({ toolName, toolInput, cwd, roleDir, denylist }) {
   const base = path.resolve(cwd || process.cwd());
-  if (toolName === 'Bash') {
-    const cmd = String((toolInput || {}).command || '');
+  const shell = shellCommandOf(toolName, toolInput);
+  if (shell !== null) {
+    const cmd = shell;
     for (const item of walk(cmd, base)) {
       if (!item.maybeProduct && !anyInProduct(item.dirs, roleDir, base)) continue;
       if (item.prog === 'unparsed') return { reason: `${UNANALYSABLE} (${item.why}).` };

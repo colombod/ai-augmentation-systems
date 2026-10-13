@@ -469,3 +469,37 @@ test('role-lane hook is inert without a role, with a mismatched DELIVERY_ROLE, a
   const raw = execFileSync(process.execPath, [path.join(__dirname, 'role-lane.js')], { input: 'not json', stdio: ['pipe', 'pipe', 'pipe'] }).toString();
   assert.equal(raw, '');
 });
+
+// Final wave A: shell channels other than Bash.
+test('A: Monitor is judged like Bash, PowerShell needs any, an unknown tool with a command is a shell', () => {
+  const d = (toolName, toolInput, role) => decideLane({ toolName, toolInput, policy: POLICIES[role], ...ctx() });
+  const m = d('Monitor', { command: 'npm test' }, COS);
+  assert.equal(m.allow, false);
+  assert.match(m.reason, /npm test/);
+  assert.match(m.reason, /create a child bead/);
+  assert.equal(d('Monitor', { command: 'git status && bd list --json' }, COS).allow, true);
+  assert.equal(d('Monitor', { command: 'npm test' }, BUILDER).allow, true);
+  const ps = d('PowerShell', { command: 'Get-ChildItem' }, DL);
+  assert.equal(ps.allow, false);
+  assert.match(ps.reason, /PowerShell/);
+  assert.match(ps.reason, /Sanctioned path for delivery-lead/);
+  assert.equal(d('PowerShell', { command: 'Get-ChildItem' }, BUILDER).allow, true);
+  const u = d('ShellRunner', { command: 'npm test' }, DL);
+  assert.equal(u.allow, false);
+  assert.match(u.reason, /npm test/);
+  assert.equal(d('ShellRunner', { command: 'git status' }, DL).allow, true);
+  assert.equal(d('ShellRunner', { command: 'npm test' }, BUILDER).allow, true);
+  assert.equal(d('TodoWrite', { todos: [] }, DL).allow, true);
+});
+
+test('A: hooks.json routes Monitor and PowerShell to the lane, leak and bd guards, Monitor to the post-push scan', () => {
+  const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const matcherFor = (event, script) => {
+    const entry = hooks[event].find((e) => e.hooks.some((h) => h.args.some((a) => a.endsWith(script))));
+    return new RegExp(`^(?:${entry.matcher})$`);
+  };
+  for (const script of ['role-lane.js', 'leak-guard.js', 'bd-guard-hook.js']) {
+    for (const tool of ['Bash', 'Monitor', 'PowerShell']) assert.ok(matcherFor('PreToolUse', script).test(tool), `${script} ${tool}`);
+  }
+  assert.ok(matcherFor('PostToolUse', 'leak-post-push.js').test('Monitor'));
+});

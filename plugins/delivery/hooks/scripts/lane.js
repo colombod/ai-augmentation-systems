@@ -28,6 +28,9 @@ const GIT_VALUE_LETTERS = {
 // Real options that happen to prefix a denied one (--text / --textconv): never read as abbreviations.
 const EXACT_OK = ['--text', '--stat', '--patch', '--name-only', '--oneline'];
 const FILE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
+// Tools that run a shell command from tool_input.command. Any other non-MCP tool whose input
+// carries a string `command` is treated as one too (deny by default for an unknown channel).
+const SHELL_TOOLS = ['Bash', 'Monitor', 'PowerShell'];
 // Commands that change files or privilege: classified [] unless a group names them explicitly.
 const GUARDED_FIRST = ['rm', 'mv', 'cp', 'sudo', 'chmod', 'chown', 'curl', 'wget'];
 // git options that may precede the subcommand. Those in GIT_GLOBAL_ARG take a value.
@@ -392,6 +395,15 @@ function filePathsOf(name, input) {
   return out;
 }
 
+// The shell command a tool call runs, or null when the tool is not a shell channel.
+function shellCommandOf(toolName, toolInput) {
+  const name = String(toolName || '');
+  const input = toolInput && typeof toolInput === 'object' ? toolInput : {};
+  if (SHELL_TOOLS.includes(name)) return String(input.command == null ? '' : input.command);
+  if (FILE_TOOLS.includes(name) || name.startsWith('mcp__')) return null;
+  return typeof input.command === 'string' ? input.command : null;
+}
+
 function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, cwd, hostHeadless, hostName, desktopHosts }) {
   const name = String(toolName || '');
   const pol = policy || { roleId: '', writes: [], bash: [] };
@@ -422,9 +434,13 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       return { allow: false, reason: `Role ${pol.roleId} uses MCP tools only to read; ${name} is not a read.${tail}` };
     }
   }
-  if (name === 'Bash') {
+  const command = shellCommandOf(name, toolInput);
+  if (command !== null) {
     if (bash.includes('any')) return { allow: true };
-    const segs = splitWithOps(toolInput && toolInput.command);
+    if (name === 'PowerShell') {
+      return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: they cannot be checked against the lane groups (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
+    }
+    const segs = splitWithOps(command);
     let live = [cwd ? path.resolve(cwd) : path.resolve(process.cwd())];
     let deferred = [];
     for (let n = 0; n < segs.length; n++) {
@@ -468,10 +484,12 @@ function laneDecisionForHook(input, pluginRoot) {
   if (d.allow) return null;
   try {
     const ti = input.tool_input || {};
-    const what = input.tool_name === 'Bash' ? String(ti.command || '') : String(ti.file_path || ti.notebook_path || '');
-    fs.appendFileSync(path.join(roleDir, '.delivery-lane.log'), `${new Date().toISOString()} ${input.tool_name} ${what.slice(0, 120).replace(/\n/g, ' ')} DENIED\n`);
+    const cmd = shellCommandOf(input.tool_name, ti);
+    const what = cmd !== null ? cmd : String(ti.file_path || ti.notebook_path || '');
+    const tool = String(input.tool_name).replace(/[\x00-\x1f\x7f]/g, ' ');
+    fs.appendFileSync(path.join(roleDir, '.delivery-lane.log'), `${new Date().toISOString()} ${tool} ${what.slice(0, 120).replace(/[\x00-\x1f\x7f]/g, ' ')} DENIED\n`);
   } catch (err) { /* logging must not block */ }
   return { reason: d.reason };
 }
 
-module.exports = { laneDecisionForHook, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { laneDecisionForHook, shellCommandOf, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

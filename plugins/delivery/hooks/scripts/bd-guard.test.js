@@ -58,3 +58,42 @@ test('a lookup that throws, or an unknown bead, allows', () => {
   assert.equal(decideBd({ command: 'bd update ex-1 --claim', actor: 'a', staleHours: 2, bd: boom, now: NOW }), null);
   assert.equal(decideBd({ command: 'bd update ex-9 --claim', actor: 'a', staleHours: 2, bd: fakeBd({}), now: NOW }), null);
 });
+
+// ---- hook entry (subprocess) ----
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
+const { prepareRole } = require('../../scripts/prepare-role.js');
+const PLUGIN_ROOT = path.join(__dirname, '..', '..');
+
+function preparedRole(instance) {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-proj-'));
+  execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: projectRoot });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: projectRoot });
+  fs.mkdirSync(path.join(projectRoot, '.delivery', 'team'), { recursive: true });
+  fs.copyFileSync(path.join(PLUGIN_ROOT, 'templates', 'team.json'), path.join(projectRoot, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(PLUGIN_ROOT, 'templates', 'hosts.json'), path.join(projectRoot, '.delivery', 'team', 'hosts.json'));
+  execFileSync('git', ['add', '-A'], { cwd: projectRoot });
+  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: projectRoot });
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  return { projectRoot, roleDir };
+}
+
+function runHook(script, input, env) {
+  return execFileSync(process.execPath, [path.join(__dirname, script)], { input: JSON.stringify(input), env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
+}
+
+test('A: bd-guard hook judges Monitor and PowerShell commands like Bash, and is inert without a role', () => {
+  const { roleDir } = preparedRole('builder-1');
+  const env = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  for (const tool of ['Bash', 'Monitor', 'PowerShell']) {
+    const out = runHook('bd-guard-hook.js', { cwd: roleDir, session_id: 's', tool_name: tool, tool_input: { command: 'bd close x --reason done' } }, env);
+    const json = JSON.parse(out);
+    assert.equal(json.hookSpecificOutput.permissionDecision, 'deny', tool);
+    assert.match(json.hookSpecificOutput.permissionDecisionReason, /EVIDENCE:/);
+  }
+  assert.equal(runHook('bd-guard-hook.js', { cwd: roleDir, session_id: 's', tool_name: 'Monitor', tool_input: { command: 'bd close x --reason done' } }, { DELIVERY_ROLE: 'other' }), '');
+});
