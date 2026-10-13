@@ -256,6 +256,7 @@ function bad(code, message, extra) { return { code, message, ...(extra || {}) };
 function scopeShapeError(scope, what) {
   if (scope === undefined || scope === null) return null;
   if (typeof scope !== 'object' || Array.isArray(scope)) return bad('invalid_scope', `${what} must be an object of beads, labels and initiatives`);
+  for (const k of Object.keys(scope)) if (!SCOPE_KEYS.includes(k)) return bad('invalid_scope', `${what} carries the key "${k}"; a scope has only beads, labels and initiatives`);
   for (const k of SCOPE_KEYS) {
     const a = scope[k];
     if (a === undefined) continue;
@@ -602,6 +603,18 @@ const KIND_FIELDS = {
 };
 const ALL_FIELDS = new Set([...COMMON_FIELDS, ...Object.values(KIND_FIELDS).flat()]);
 
+const BY_FIELDS = ['instance', 'role', 'session_id', 'host', 'machine'];
+const nonEmpty = (v) => typeof v === 'string' && v.trim() !== '';
+// a place an instance writes from: exactly { host, machine } with a host string and a machine string or null
+function placeError(v, what, id) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return bad('invalid_rehost', `${id}: ${what} must be { host, machine }`);
+  const keys = Object.keys(v).sort();
+  if (keys.length !== 2 || keys[0] !== 'host' || keys[1] !== 'machine') return bad('invalid_rehost', `${id}: ${what} must have exactly the keys host and machine`);
+  if (!nonEmpty(v.host)) return bad('invalid_rehost', `${id}: ${what}.host must be a non-empty string`);
+  if (v.machine !== null && !nonEmpty(v.machine)) return bad('invalid_rehost', `${id}: ${what}.machine must be a non-empty string or null`);
+  return null;
+}
+
 // A record carries only the fields its kind has; View.add applies fields and nothing else may.
 function shapeError(rec) {
   const allowed = new Set([...COMMON_FIELDS, ...(KIND_FIELDS[rec.kind] || [])]);
@@ -628,6 +641,25 @@ function shapeError(rec) {
     if (rec.options !== undefined && (!Array.isArray(rec.options) || rec.options.some((o) => typeof o !== 'string' || !o.trim()))) return bad('invalid_question', `${rec.id}: options must be an array of non-empty strings`);
     if (rec.recommendation !== undefined && rec.recommendation !== null && (typeof rec.recommendation !== 'string' || !rec.recommendation.trim())) return bad('invalid_question', `${rec.id}: recommendation must be a non-empty string or null`);
   }
+  const by = rec.by;
+  if (!by || typeof by !== 'object' || Array.isArray(by)) return bad('invalid_by', `${rec.id} has no author object (by)`);
+  for (const k of Object.keys(by)) if (!BY_FIELDS.includes(k)) return bad('invalid_by', `${rec.id}: by carries the field "${k}"; an author is { instance, role, session_id, host, machine }`);
+  for (const k of ['instance', 'role', 'session_id']) if (!nonEmpty(by[k])) return bad('invalid_by', `${rec.id}: by.${k} must be a non-empty string`);
+  // a missing stamp is host_missing (checked with the stamp rules); a present one must be a string
+  for (const k of ['host', 'machine']) if (by[k] !== undefined && by[k] !== null && !nonEmpty(by[k])) return bad('invalid_by', `${rec.id}: by.${k} must be a non-empty string`);
+  if (rec.kind === 'rehost') {
+    const te = placeError(rec.to, 'to', rec.id); if (te) return te;
+    if (rec.from !== null) { const fe = placeError(rec.from, 'from', rec.id); if (fe) return fe; }
+  }
+  if (rec.limits !== undefined) {
+    const l = rec.limits;
+    if (!l || typeof l !== 'object' || Array.isArray(l)) return bad('invalid_limits', `${rec.id}: limits must be { until, max_uses }`);
+    for (const k of Object.keys(l)) if (!['until', 'max_uses'].includes(k)) return bad('invalid_limits', `${rec.id}: limits carries the field "${k}"`);
+    if (l.until !== null && l.until !== undefined && !nonEmpty(l.until)) return bad('invalid_limits', `${rec.id}: limits.until must be an ISO date string or null`);
+  }
+  if (rec.ratified !== undefined && !(rec.kind === 'answer' && rec.confidence === 'inferred' && rec.ratified === null)) {
+    return bad('misplaced_field', `${rec.id}: ratified is null on an inferred answer and absent otherwise (ratification is its own record)`);
+  }
   return null;
 }
 
@@ -648,10 +680,18 @@ function validateRecord(st, rec, view, mode) {
       const want = roles.get(p.instance);
       if (want === undefined) {
         if (W) return bad('unknown_instance', `instance ${p.instance} is not in team.json; records are written by instances the manifest lists`);
-        // an instance that left the manifest keeps only the history this host recorded while it was listed
+        // an instance that left the manifest keeps only the history this host recorded while it was
+        // listed, judged against the role the manifest gave it then (stored in its head), never the
+        // role the record claims
         const h = st.recordedHead(p.instance);
         if (!h || p.seq > h.count) {
           return bad('unknown_instance', `${rec.id} was appended after instance ${p.instance} left team.json (this host recorded ${h ? h.count : 0} of its entries); its role cannot be checked, so it is not trusted`);
+        }
+        if (typeof h.role !== 'string' || !h.role) {
+          return bad('unknown_instance', `instance ${p.instance} left team.json and this host's head for it records no role (an older head), so ${rec.id} cannot be tied to a role and is not trusted; restore the instance in .delivery/team/team.json to re-check it`);
+        }
+        if (by.role !== h.role) {
+          return bad('role_mismatch', `${rec.id} claims role ${by.role}, but instance ${p.instance} had the role ${h.role} when this host last saw it in team.json`);
         }
       } else if (by.role !== want) {
         return bad('role_mismatch', `${rec.id} claims role ${by.role}, but team.json gives instance ${p.instance} the role ${want}`);
@@ -875,12 +915,24 @@ function verifyRecordsFile(root, instance, opts = {}) {
       return chainFail('history_rewritten', `records/${instance}: history rewritten, entry ${head.count} no longer matches the recorded head`, { heads: state, count: hashes.length });
     }
   }
-  if (opts.setHead !== false && (!head || hashes.length > head.count)) log.setHead(root, key, { count: hashes.length, last_hash: v.last_hash });
+  // a listed reader (opts.role: the manifest role of the instance) stores that role with the head, so
+  // the instance's history is judged by it if the instance later leaves team.json
+  const role = typeof opts.role === 'string' && opts.role ? opts.role : null;
+  if (opts.setHead !== false && (!head || hashes.length > head.count)) {
+    log.setHead(root, key, { count: hashes.length, last_hash: v.last_hash, ...(role ? { role } : (head && head.role ? { role: head.role } : {})) });
+  } else if (opts.setHead !== false && head && role && head.role !== role) {
+    log.setHead(root, key, { ...head, role });
+  }
   return { ok: true, count: hashes.length, last_hash: v.last_hash, heads: state, torn };
 }
 
 function verifyRecordsFileCached(st, instance) {
-  if (!st.verified.has(instance)) st.verified.set(instance, verifyRecordsFile(st.root, instance));
+  if (!st.verified.has(instance)) {
+    const roles = st.roles();
+    const role = roles ? roles.get(instance) : undefined;
+    // only a listed instance's head is advanced (and stamped with its manifest role) by a read
+    st.verified.set(instance, verifyRecordsFile(st.root, instance, role === undefined ? { setHead: false } : { role }));
+  }
   return st.verified.get(instance);
 }
 
@@ -984,7 +1036,7 @@ function commit(st, by, fields, ids = []) {
   }
   st.invalidate();
   if (fs.existsSync(file) && fs.statSync(file).size > 0) {
-    const v = verifyRecordsFile(root, inst);
+    const v = verifyRecordsFile(root, inst, { role: roles.get(inst) });
     if (!v.ok) throw new OperatorError(['truncated', 'history_rewritten'].includes(v.code) ? v.code : 'chain_invalid', `${v.error}; this chain no longer verifies, so nothing can be appended to it (tell the chief of staff; the project repository history holds the last good copy)`);
   }
   for (const id of ids) if (typeof id === 'string' && id) st.record(id); // pulls once when something is missing
@@ -1012,7 +1064,7 @@ function commit(st, by, fields, ids = []) {
     return { id: `${KIND_PREFIX[fields.kind]}-${inst}-${pad(lp2 ? lp2.seq + 1 : 1)}`, ...fields, by, ts: stamp(l) };
   });
   st.invalidate();
-  verifyRecordsFile(root, inst); // advances the head
+  verifyRecordsFile(root, inst, { role: roles.get(inst) }); // advances the head
   return stored;
 }
 

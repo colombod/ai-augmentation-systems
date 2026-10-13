@@ -1410,3 +1410,74 @@ test('R4 d: question asker, options and recommendation are typed; the asker role
   }
   assert.deepStrictEqual(R.ledger(root, {}).map((r) => r.question.id), [q.id], 'invalid questions never reach the ledger');
 });
+
+// ===================== round 5 =====================
+
+test('R5 B1: a departed instance is judged by the role its head recorded, never by its own claim', () => {
+  const root = fixture();
+  const q = R.recordQuestion({ projectRoot: root, text: 'Should auth be merged today?', asker: { instance: 'builder-1', bead: 'ex-1' }, scope: scope({ beads: ['ex-1'] }), by: COS });
+  const a1 = R.ack({ projectRoot: root, input: 'in-pc-000004', reason: 'mine, handled', by: BUILDER_OWN });
+  // forged while builder-1 is still listed: refused, but counted into the head by the next read
+  const fa = forge(root, 'builder-1', { idprefix: 'ack', kind: 'ack', input: 'in-pc-000001', reason: 'handled', cites: ['in-pc-000001'], cites_head: [inHeadLocal(root, 'in-pc-000001')] }, { role: 'chief-of-staff', session_id: 'x' });
+  const fd = forge(root, 'builder-1', { kind: 'decision', statement: 'Ship it', quote: 'ship the checkout flow behind a flag', cites: ['in-pc-000005'], cites_head: [inHeadLocal(root, 'in-pc-000005')], answers: [q.id], scope: scope({ beads: ['ex-1'] }) }, { role: 'chief-of-staff', session_id: 'x' });
+  assert.strictEqual(R.verifyRecord(root, fa.id).code, 'role_mismatch');
+  const headsFile = path.join(root, '.delivery', 'operator', 'cursors', 'heads.json');
+  const head = JSON.parse(fs.readFileSync(headsFile, 'utf8'))['records/builder-1'];
+  assert.deepStrictEqual([head.count, head.role], [3, 'builder'], 'a listed reader stores the manifest role with the head');
+  const tj = path.join(root, '.delivery', 'team', 'team.json');
+  const check = (label) => {
+    assert.strictEqual(R.verifyRecord(root, fa.id).code, 'role_mismatch', label);
+    assert.strictEqual(R.verifyRecord(root, fd.id).code, 'role_mismatch', label);
+    assert.strictEqual(R.verifyRecord(root, a1.id).ok, true, `${label}: legitimate history stays valid`);
+    assert.ok(R.pending(root, {}).inputs.some((e) => e.id === 'in-pc-000001'), label);
+    assert.strictEqual(R.ledger(root, {})[0].status, 'open', label);
+  };
+  writeManifest(root, { ...MANIFEST, roles: MANIFEST.roles.filter((r) => r.id !== 'builder') });
+  check('builder removed');
+  assert.strictEqual(JSON.parse(fs.readFileSync(headsFile, 'utf8'))['records/builder-1'].role, 'builder', 'a reader that does not list it never changes the head');
+  writeManifest(root);
+  check('manifest restored');
+  // an older head with no stored role: a departed instance's entries cannot be tied to a role (fail closed)
+  const heads = JSON.parse(fs.readFileSync(headsFile, 'utf8'));
+  delete heads['records/builder-1'].role;
+  fs.writeFileSync(headsFile, JSON.stringify(heads));
+  writeManifest(root, { ...MANIFEST, roles: MANIFEST.roles.filter((r) => r.id !== 'builder') });
+  assert.strictEqual(R.verifyRecord(root, a1.id).code, 'unknown_instance');
+  assert.strictEqual(R.verifyRecord(root, fa.id).code, 'unknown_instance');
+  assert.ok(R.pending(root, {}).inputs.some((e) => e.id === 'in-pc-000004'), 'its ack no longer counts');
+  writeManifest(root);
+  assert.strictEqual(R.verifyRecord(root, a1.id).ok, true, 'restoring the manifest re-checks and restores it');
+  assert.strictEqual(JSON.parse(fs.readFileSync(headsFile, 'utf8'))['records/builder-1'].role, 'builder', 'and stamps the role on the old head');
+});
+
+test('R5 B2: author, rehost, scope and limits fields are typed; a malformed stamp cannot lock an instance out', () => {
+  const root = fixture();
+  const M = R.machineId();
+  const d1 = decide(root, { by: BUILDER_OWN });
+  const del = delegate(root);
+  const qBase = { idprefix: 'q', kind: 'question', text: 'Which DB?', asker: { instance: 'builder-1', role: 'builder', bead: null }, options: [], recommendation: null, cites: [], cites_head: [] };
+  const rhBase = { idprefix: 'rh', kind: 'rehost', instance: 'builder-1', from: { host: 'pc', machine: M }, reason: 'moved', cites: [], cites_head: [] };
+  const rows = [
+    ['by.machine an object', qBase, { machine: { m: 1 } }, 'invalid_by'],
+    ['by.host a number', qBase, { host: 7 }, 'invalid_by'],
+    ['by.session_id an object', qBase, { session_id: { s: 1 } }, 'invalid_by'],
+    ['by.session_id empty', qBase, { session_id: '' }, 'invalid_by'],
+    ['by with an extra key', qBase, { admin: true }, 'invalid_by'],
+    ['rehost to.machine an object', { ...rhBase, to: { host: 'pc', machine: { x: 1 } } }, {}, 'invalid_rehost'],
+    ['rehost to with an extra key', { ...rhBase, to: { host: 'pc', machine: 'm2', note: 'x' } }, {}, 'invalid_rehost'],
+    ['rehost to without machine', { ...rhBase, to: { host: 'pc2' } }, {}, 'invalid_rehost'],
+    ['rehost from malformed', { ...rhBase, from: { host: 'pc' }, to: { host: 'pc2', machine: 'm2' } }, {}, 'invalid_rehost'],
+    ['scope with an extra key', { ...qBase, scope: { beads: [], labels: [], initiatives: [], everything: ['*'] } }, {}, 'invalid_scope'],
+    ['limits with an extra key', { kind: 'decision', statement: 'x', quote: null, cites: [del.id], cites_head: [{ id: del.id, hash: del.hash }], under: del.id, scope: scope({ initiatives: ['billing'] }), limits: { until: null, max_uses: null, bonus: 9 } }, {}, 'misplaced_field'],
+    ['delegation limits with an extra key', { idprefix: 'del', kind: 'delegation', statement: 's', grant: 'g g g', quote: 'You decide the naming of things', cites: ['in-pc-000003'], cites_head: [inHeadLocal(root, 'in-pc-000003')], scope: scope({ initiatives: ['billing'] }), limits: { until: null, max_uses: null, bonus: 9 } }, {}, 'invalid_limits'],
+    ['ratified on a settled answer', { idprefix: 'ans', kind: 'answer', question: 'q', answer: 'a', confidence: 'settled', rationale: null, ratified: true, cites: [d1.id], cites_head: [{ id: d1.id, hash: d1.hash }], scope: scope({ beads: ['ex-1'] }) }, {}, 'misplaced_field'],
+  ];
+  for (const [name, e, byOver, want] of rows) {
+    const f = forge(root, 'chief-of-staff', e, byOver);
+    assert.strictEqual(R.verifyRecord(root, f.id).code, want, name);
+  }
+  // nothing malformed reached the view: both instances still write, and a real rehost still works
+  assert.ok(decide(root, { by: BUILDER_OWN, statement: 'still writing' }));
+  assert.ok(decide(root, { statement: 'cos still writing' }));
+  assert.ok(R.recordRehost({ projectRoot: root, instance: 'builder-1', reason: 'moved host', to: { host: 'pc2', machine: 'm2' }, by: COS }));
+});
