@@ -464,6 +464,23 @@ decisions. An override is a new decision that `supersedes` the earlier record; a
 the operator's input. `verify` walks answer, decision or delegation, to the verbatim human input,
 and re-checks scope containment for `settled` answers. Commands added: `answer`, `find`, `ratify`.
 
+**Distributed sessions.** Roles run on several hosts (the operator's PC, SSH hosts, cloud sandboxes)
+that share only the private project repository, so every chain file has exactly one writer and git
+never merges a chain: operator inputs are per host, records are per author instance, ids embed the
+owner (`in-<host>-N`, `dec-<instance>-N`). Entries are committed and pushed as they are written
+(`operator.js publish`); a verifier that cannot find a cited id pulls and retries once
+(`operator.js refresh`). An input is as trustworthy as the session environment that captured it and
+records its host, session and transcript reference; a cloud sandbox that cannot push leaves its
+inputs unpublished, which `team-status` and the briefing report. A worker on any host verifies a
+decision with the same command and gets the same chain to the verbatim human words.
+
+**The question ledger.** The Chief of Staff logs every question it escalates to the operator
+(`operator.js ask`: who asked, about which bead, options, its recommendation). The operator's
+answer is linked to it (`--answers q-N`), so `operator.js ledger` and the generated
+`.delivery/operator/LEDGER.md` show, for every question: asker, status (open, answered,
+withdrawn), the answering record, its confidence and the operator's verbatim words. Any session
+can read the ledger and verify any row.
+
 **Enforcement against relaying.**
 1. PreToolUse denies `AskUserQuestion` for every role except chief-of-staff and product-manager,
    with the reason "message the Chief of Staff with the one question; the answer comes back as a
