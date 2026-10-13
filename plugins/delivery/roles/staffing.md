@@ -3,6 +3,9 @@ id: staffing
 touches_code: false
 default_model: sonnet
 mode: delegate
+lane_writes: project/.delivery/team/team.json, project/.delivery/team/briefs/**
+lane_bash: read, git-read, git-write-project, bd-read, bd-notes
+lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 
 ## As a session
@@ -16,3 +19,5 @@ Within `budget` you apply changes yourself: edit the manifest, commit it to the 
 You re-run on evidence: a new platform appears, a role has been idle for a week, beads keep bouncing between roles, complexity grows in one area. Every change you make is one line in the morning briefing.
 
 You never write anything except the manifest and bead notes.
+
+Your lane is enforced by a hook: writes outside your lane and commands outside your groups are refused with the sanctioned path; a refusal is a signal to delegate, not to find another way.

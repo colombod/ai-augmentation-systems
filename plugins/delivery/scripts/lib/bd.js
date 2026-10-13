@@ -72,10 +72,12 @@ function makeBd({ cwd, env } = {}) {
     return rows.filter((r) => r.dependency_type === undefined || r.dependency_type === 'blocks').map((r) => r.id).filter(Boolean);
   }
 
-  function list({ label, all } = {}) {
+  function list({ label, all, assignee, status } = {}) {
     const args = ['list', '--json', '--limit', '0'];
     if (label) args.push('--label', label);
     if (all) args.push('--all');
+    if (assignee) args.push('--assignee', assignee);
+    if (status) args.push('--status', status);
     return (json(args) || []).map(normalise);
   }
 

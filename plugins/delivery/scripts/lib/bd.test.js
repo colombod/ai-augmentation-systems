@@ -45,6 +45,16 @@ test('depAdd is idempotent and depsOf lists blockers', () => {
   assert.deepEqual(bd.depsOf('ex-a'), []);
 });
 
+test('list filters by assignee and status', () => {
+  const bd = makeBd({ env: { ...fakeEnv(), BEADS_ACTOR: 'me@pc/builder-1' } });
+  bd.create({ id: 'ex-1', title: 'one' });
+  bd.create({ id: 'ex-2', title: 'two' });
+  bd.exec(['update', 'ex-1', '--claim']);
+  assert.deepEqual(bd.list({ assignee: 'me@pc/builder-1', status: 'in_progress' }).map((b) => b.id), ['ex-1']);
+  assert.deepEqual(bd.list({ status: 'open' }).map((b) => b.id), ['ex-2']);
+  assert.deepEqual(bd.list({ assignee: 'nobody' }), []);
+});
+
 test('list filters by label and hides closed unless all', () => {
   const bd = makeBd({ env: fakeEnv() });
   bd.create({ id: 'ex-1', title: 'one', labels: ['roadmap'] });

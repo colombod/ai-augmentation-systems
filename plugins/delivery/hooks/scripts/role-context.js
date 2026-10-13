@@ -19,13 +19,22 @@ function readHookInput() {
   }
 }
 
+function readMarker(file) {
+  try { return { markerFile: file, marker: JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch (err) { return null; }
+}
+
+// The session's own role directory (DELIVERY_ROLE_DIR, written by prepare-role) wins, so the marker
+// is found after the session leaves its role tree; otherwise walk up from cwd. Callers still validate.
 function findRoleMarker(cwd) {
+  const envDir = process.env.DELIVERY_ROLE_DIR;
+  if (envDir && process.env.DELIVERY_ROLE && path.isAbsolute(envDir)) {
+    const file = path.join(envDir, '.delivery-role.json');
+    if (fs.existsSync(file)) return readMarker(file);
+  }
   let dir = path.resolve(cwd || process.cwd());
   for (;;) {
     const file = path.join(dir, '.delivery-role.json');
-    if (fs.existsSync(file)) {
-      try { return { markerFile: file, marker: JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch (err) { return null; }
-    }
+    if (fs.existsSync(file)) return readMarker(file);
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -41,10 +50,23 @@ function composeForMarker(marker, pluginRoot) {
   return composeBrief({ team, hosts, instance: marker.instance, role: found.role, brief, rules });
 }
 
-function currentClaim(actor) {
+// Where and with what environment a hook runs bd: at the project root (bd cannot find the
+// database from a role directory), with BEADS_DIR defaulted to <project_root>/.beads when that
+// directory exists and the session did not set one. Falls back to the hook cwd.
+function bdOptionsFor(marker, cwd) {
+  const env = { ...process.env };
+  const root = marker && typeof marker.project_root === 'string' && path.isAbsolute(marker.project_root) && fs.existsSync(marker.project_root) ? marker.project_root : null;
+  if (root && !env.BEADS_DIR) {
+    const beads = path.join(root, '.beads');
+    if (fs.existsSync(beads)) env.BEADS_DIR = beads;
+  }
+  return { cwd: root || cwd || process.cwd(), env };
+}
+
+function currentClaim(actor, opts = {}) {
   if (!actor) return null;
   try {
-    const out = execFileSync('bd', ['list', '--assignee', actor, '--status', 'in_progress', '--json'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).toString();
+    const out = execFileSync('bd', ['list', '--assignee', actor, '--status', 'in_progress', '--json'], { cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).toString();
     const items = JSON.parse(out);
     if (!Array.isArray(items) || items.length === 0) return null;
     return items[0].title ? `${items[0].id}: ${items[0].title}` : String(items[0].id);
@@ -111,7 +133,7 @@ function sessionStartText(input, pluginRoot, deps = {}) {
     // roster write failure must not stop the session; the status check will show the gap
   }
   const short = shortBrief({ team: valid.team, hosts: valid.hosts, instance: marker.instance, role: valid.role, roleDir: valid.roleDir });
-  const claim = (deps.claim || currentClaim)(actorOf(marker));
+  const claim = (deps.claim || currentClaim)(actorOf(marker), bdOptionsFor(marker, input.cwd));
   const prefix = input.source === 'compact' ? 'Context was compacted. Your role is restated below; it has not changed.\n\n' : '';
   return `${prefix}${short}${claimTail(claim)}`;
 }
@@ -122,7 +144,8 @@ function promptSubmitText(input, deps = {}) {
   try { valid = validMarker(found); } catch (err) { return ''; }
   if (!valid) return '';
   const { marker } = valid;
-  const claim = (deps.claim || currentClaim)(actorOf(marker));
+  require('./turn.js').markTurnStart(valid.roleDir, deps.now);
+  const claim = (deps.claim || currentClaim)(actorOf(marker), bdOptionsFor(marker, input.cwd));
   const claimText = claim ? `${claim}.` : 'none (idle; say so and what you could take).';
   try {
     const now = deps.now || new Date().toISOString();
@@ -137,4 +160,4 @@ function promptSubmitText(input, deps = {}) {
   return `You are ${marker.instance} (${marker.role}). Current claim: ${claimText}`;
 }
 
-module.exports = { readHookInput, findRoleMarker, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };
+module.exports = { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };

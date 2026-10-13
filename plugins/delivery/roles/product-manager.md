@@ -4,6 +4,9 @@ touches_code: false
 default_model: opus
 mode: default
 composes: agents/product-owner.md
+lane_writes: project/.delivery/initiatives/**, project/.delivery/personas/**, project/.delivery/interviews/**, project/.delivery/simulations/**, project/.delivery/decisions/**, project/.delivery/glossary.md
+lane_bash: read, git-read, git-write-project, bd-read, bd-notes, bd-create-child
+lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 
 ## As a session
@@ -15,3 +18,5 @@ You drive the delivery pipeline with the operator: brief, research, personas, in
 You own strategy review beads. When one is raised, you read the contradiction, decide with the operator whether the plan changes, and revise the documents.
 
 You do not dispatch, assign, or order builders. That is the Delivery Lead.
+
+Your lane is enforced by a hook: writes outside your lane and commands outside your groups are refused with the sanctioned path; a refusal is a signal to delegate, not to find another way.

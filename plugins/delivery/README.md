@@ -59,18 +59,21 @@ work, coordinating through cross-session messages and beads. Phase 1 ships the p
 session its role and keep it:
 
 - `roles/*.md` — the role briefs (chief-of-staff, staffing, product-manager, delivery-lead,
-  progress-observer, builder). Project-specific briefs go in the project repo under
+  progress-observer, builder, spike-researcher). Project-specific briefs go in the project repo under
   `.delivery/team/briefs/`.
 - `.delivery/team/team.json` and `hosts.json` — the manifest, in the private project repo. Templates
   under `templates/`.
 - `scripts/prepare-role.js --project <root> --instance <id>` — creates one directory per role
   instance with its own settings (model, env, actor), a composed `CLAUDE.local.md`, a clone of the
   project repo and, for builders, a worktree of the product repo. Start a session in that directory.
+  The env includes `DELIVERY_ROLE_DIR` (so the hooks still find the role after a `cd` out of it) and,
+  when the project has `.beads`, `BEADS_DIR` (bd cannot find the database from a role directory).
 - Hooks — SessionStart re-injects the role on startup, resume, clear and after compaction, and
   refreshes CLAUDE.local.md from the current manifest; UserPromptSubmit adds a one-line reminder
   with the current claim.
 - `/delivery:join` — confirms the role in-session, primes beads, reports to the Chief of Staff.
-- `/delivery:team` — roster versus manifest: live, stale, missing, wrong model.
+- `/delivery:team` — roster versus manifest: live, stale, missing, wrong model; warns when bd cannot
+  find a database from the project root.
 - `/delivery:materialise <initiative>` — turns `roadmap.md`, the stories and the architecture spikes into
   beads: one epic per phase chained by a phase-review bead, one task per story, one task per spike
   blocking the story or phase it derisks. Deterministic ids (`<prefix>-<initiative>-ph<N>`, `<prefix>-<story id>`,
@@ -80,6 +83,28 @@ session its role and keep it:
   plugin's pipeline), or `plain`. Delivery plans, dispatches and reviews; the runner builds.
 - Spikes are standing work: the Spike Researcher claims `spike` beads emitted from the architecture
   document and records answers in the bead and the ADR or roadmap they gate.
+- Lanes are enforced. Each role file declares `lane_writes` (paths it may edit, relative to its role
+  directory) and `lane_bash` (command groups from `hooks/lane-groups.json`). A PreToolUse hook refuses
+  anything else and says what the sanctioned path is: managers route work to builder beads, builders
+  never touch plans. Subagents go through the same hook. Refusals are logged to `.delivery-lane.log`
+  in the role directory. A role file without `lane_bash` gets read-only groups; every role may write
+  the harness's own plan and memory files under `~/.claude`.
+- The lane covers every shell channel and MCP. `Monitor` commands are judged like Bash, `PowerShell`
+  is allowed only for roles with `any`, and any other tool carrying a `command` is treated as Bash. For
+  roles without `any`, MCP tools are read-verb only unless the role file's `lane_mcp` key names them
+  (comma-separated tool-name patterns, `*` wildcard); the managers' `lane_mcp` allows session
+  messaging and listing.
+- The product repo is protected: in a product worktree, commit, PR, issue and release text (through
+  Bash, Monitor or PowerShell) is checked against `.delivery/team/denylist.txt` (written by
+  materialise), plan files cannot be written, `gh issue create` is refused, and pushed commits are
+  re-scanned. For roles that touch product, GitHub- and GitLab-style MCP tool inputs pass the same
+  scan and MCP issue creation is refused.
+- The record stays honest: `bd close` needs an `EVIDENCE:` reason, a live claim cannot be taken,
+  released or closed by someone else, bead structure (top-level creates, re-parenting, dependencies,
+  deletes, labels on beads you do not hold) changes only through the Delivery Lead, and a turn that
+  holds a claim cannot end without a note. These are discipline aids for cooperative agents.
+- The product-repo guard is the first line, not the last. It scans commit, PR, issue and release text and refuses plan paths for a cooperative or careless session, and it fails closed inside the product worktree; it is not a boundary against a determined session with unrestricted Bash (file contents, git plumbing, persistent git configuration and pushes from other repositories are out of its reach). Put a push-side or CI scan of the denylist on the product remote for the durable control.
+- Builders use plain `git commit -m "text"` in the product worktree: command substitution, heredoc messages, `-F` files and `$VAR` in message or push-option arguments are refused so the text can be checked.
 
 The delivery plugin must be installed on the machine; `prepare-role` enables it for the role
 directory. The steward keeps the original project checkout pulled (`git pull --ff-only`) before
