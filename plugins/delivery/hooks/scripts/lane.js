@@ -41,6 +41,10 @@ const BD_GLOBAL_FLAG = ['--json'];
 // behind any of them. The lane keeps BD_GLOBAL_FLAG narrow so these do not widen a lane group.
 const BD_ALL_GLOBAL_FLAG = ['--json', '-q', '--quiet', '--no-color', '-v', '--verbose', '--global', '--ignore-schema-skew', '--profile', '--readonly', '--sandbox'];
 const BD_ALL_GLOBAL_ARG = ['--actor', '--db', '-C', '--directory', '--dolt-auto-commit'];
+// A role file without lane_bash (a hired specialist) may read, never write.
+const DEFAULT_BASH = ['read', 'bd-read', 'git-read'];
+// The harness's own plan and memory files, relative to ~/.claude: writable for every role.
+const HARNESS_WRITES = ['plans/**', 'projects/*/memory/**'];
 // A separator after which a failed or skipped `cd` no longer stops the commands that follow.
 const RESUME_OPS = [';', '||', '&', '\n'];
 
@@ -48,7 +52,8 @@ function sanctioned(roleId) { return SANCTIONED[roleId] || 'stay in your lane; a
 
 function loadPolicy({ pluginRoot, projectRoot, briefRef }) {
   const { meta } = loadRoleBrief(pluginRoot, projectRoot, briefRef);
-  return { roleId: String(meta.id || ''), writes: listValue(meta.lane_writes), bash: listValue(meta.lane_bash), mcp: listValue(meta.lane_mcp) };
+  const bash = listValue(meta.lane_bash);
+  return { roleId: String(meta.id || ''), writes: listValue(meta.lane_writes), bash: bash.length ? bash : DEFAULT_BASH.slice(), mcp: listValue(meta.lane_mcp) };
 }
 
 // lane_mcp patterns: whole tool names, `*` matches any run of characters, everything else is literal.
@@ -396,6 +401,17 @@ function pathAllowed(filePath, { roleDir, writes, pluginRoot } = {}) {
   return tmp.some((t) => under(abs, t));
 }
 
+// Under ~/.claude/plans/** or ~/.claude/projects/*/memory/**, by real path (symlinks and `..` resolved).
+function harnessFile(p) {
+  const home = os.homedir();
+  if (!home) return false;
+  const base = realish(path.join(home, '.claude'));
+  const abs = realish(p);
+  if (!under(abs, base) || abs === base) return false;
+  const rel = path.relative(base, abs).split(path.sep).join('/');
+  return HARNESS_WRITES.some((g) => globToRegExp(g).test(rel));
+}
+
 function cdTarget(t) {
   // Returns { dir } for a resolvable target, or { unknown: true } (bare cd, cd -, flags, $ ~ `).
   if (t.length !== 2 || t[1].startsWith('-') || UNSAFE_DIR.test(t[1])) return { unknown: true };
@@ -442,6 +458,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     const base = cwd || process.cwd();
     for (const fp of filePathsOf(name, toolInput)) {
       const p = path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`; // not normalised: realish applies `..` physically
+      if (harnessFile(p)) continue;
       if (pathAllowed(p, { roleDir, writes: pol.writes, pluginRoot: pluginRootOf({ pluginRoot }) })) continue;
       const real = realish(p);
       const rd = roleDir ? realish(roleDir) : null;

@@ -98,4 +98,10 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
   return null;
 }
 
-module.exports = { parseBd, decideBd };
+// The manifest's staleness window; a configured 0 stays 0 (no claim is ever live).
+function staleHoursOf(team) {
+  const v = team && team.budget ? team.budget.staleness_hours : undefined;
+  return v ?? 2;
+}
+
+module.exports = { parseBd, decideBd, staleHoursOf };

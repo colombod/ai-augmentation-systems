@@ -2,8 +2,15 @@
 const fs = require('fs');
 const path = require('path');
 
+// bd records updated_at to the second, so the start is truncated to the second: a note appended
+// in the same second as the prompt still counts as this turn's.
+function toSecond(now) {
+  const ms = Date.parse(now || new Date().toISOString());
+  return Number.isNaN(ms) ? String(now) : new Date(Math.floor(ms / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
 function markTurnStart(roleDir, now) {
-  try { fs.writeFileSync(path.join(roleDir, '.delivery-turn'), `${now || new Date().toISOString()}\n`); } catch (err) { /* ignore */ }
+  try { fs.writeFileSync(path.join(roleDir, '.delivery-turn'), `${toSecond(now)}\n`); } catch (err) { /* ignore */ }
 }
 
 function readTurnStart(roleDir) {

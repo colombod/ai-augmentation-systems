@@ -531,3 +531,69 @@ test('B: lane_mcp allows named MCP tools regardless of verb', () => {
   const reach = { roleId: 'x', writes: [], bash: ['read'], mcp: ['mcp__Claude_Browser__*'] };
   assert.equal(allow('mcp__Claude_Browser__navigate', reach, { hostHeadless: true }), false);
 });
+
+// Final wave H.1: a role file without lane keys gets read-only groups, not a full lockout and no writes.
+test('H.1: missing or empty lane_bash defaults to read, bd-read, git-read', () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-brief-'));
+  const briefs = path.join(projectRoot, '.delivery', 'team', 'briefs');
+  fs.mkdirSync(briefs, { recursive: true });
+  fs.writeFileSync(path.join(briefs, 'specialist.md'), '---\nid: specialist\n---\n\nA hired specialist.\n');
+  fs.writeFileSync(path.join(briefs, 'empty.md'), '---\nid: empty\nlane_bash:\nlane_writes:\n---\n\nEmpty keys.\n');
+  for (const id of ['specialist', 'empty']) {
+    const p = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot, briefRef: `project/${id}` });
+    assert.deepEqual(p.bash, ['read', 'bd-read', 'git-read'], id);
+    assert.deepEqual(p.writes, [], id);
+    assert.deepEqual(p.mcp, [], id);
+    const d = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: p, ...ctx() }).allow;
+    assert.equal(d('git status && bd list --json && ls'), true);
+    assert.equal(d('bd update ex-1 --append-notes x'), false);
+    assert.equal(d('npm test'), false);
+    assert.equal(decideLane({ toolName: 'Write', toolInput: { file_path: path.join(roleDir, 'project', 'x.md') }, policy: p, ...ctx() }).allow, false);
+  }
+});
+
+// Final wave H.5: the harness's own plan and memory files are writable for every role.
+test('H.5: Write/Edit/NotebookEdit/MultiEdit are allowed under ~/.claude/plans and ~/.claude/projects/*/memory', () => {
+  const home = os.homedir();
+  const allow = (toolName, file_path, role = COS) => decideLane({ toolName, toolInput: toolName === 'NotebookEdit' ? { notebook_path: file_path } : { file_path }, policy: POLICIES[role], ...ctx() }).allow;
+  for (const tool of ['Write', 'Edit', 'NotebookEdit', 'MultiEdit']) {
+    assert.equal(allow(tool, path.join(home, '.claude', 'plans', 'my-plan.md')), true, tool);
+    assert.equal(allow(tool, path.join(home, '.claude', 'projects', '-Users-x-proj', 'memory', 'MEMORY.md')), true, tool);
+  }
+  assert.equal(allow('Write', path.join(home, '.claude', 'plans', 'sub', 'p.md'), PM), true);
+  assert.equal(allow('Write', path.join(home, '.claude', 'settings.json')), false);
+  assert.equal(allow('Write', path.join(home, '.claude', 'projects', '-Users-x-proj', 'transcript.jsonl')), false);
+  assert.equal(allow('Write', path.join(home, '.claude', 'plans', '..', 'settings.json')), false);
+  assert.equal(allow('Write', path.join(home, '.claude', 'projects', 'p', 'memory', '..', '..', '..', 'CLAUDE.md')), false);
+  assert.equal(allow('Write', path.join(home, '.claude', 'plansx', 'p.md')), false);
+  assert.equal(decideLane({ toolName: 'MultiEdit', toolInput: { file_path: path.join(home, '.claude', 'plans', 'p.md'), edits: [{ file_path: path.join(roleDir, 'product', 'a.js') }] }, policy: POLICIES[COS], ...ctx() }).allow, false);
+});
+
+// Final wave H.5 and H.6: lane hook through a subprocess.
+test('H.6: role-lane hook fails open on a thrown error, denies Bash and headless browser tools, logs without control characters', () => {
+  const env = (instance) => ({ DELIVERY_ROLE: instance, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT });
+  // A corrupt team manifest makes validMarker throw: empty output, exit 0.
+  const broken = preparedRole('chief-of-staff');
+  fs.writeFileSync(path.join(broken.projectRoot, '.delivery', 'team', 'team.json'), '{ not json');
+  assert.equal(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, env('chief-of-staff')), '');
+  // A corrupt role marker: inert.
+  const marker = preparedRole('chief-of-staff');
+  fs.writeFileSync(path.join(marker.roleDir, '.delivery-role.json'), '{ not json');
+  assert.equal(runHook('role-lane.js', { cwd: marker.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, env('chief-of-staff')), '');
+  // A Bash deny through the hook, logged on one line with control characters stripped.
+  const { roleDir: cos } = preparedRole('chief-of-staff');
+  const out = runHook('role-lane.js', { cwd: cos, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test\r\x1b[2Kfake\tline' } }, env('chief-of-staff'));
+  const json = JSON.parse(out);
+  assert.equal(json.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(json.hookSpecificOutput.permissionDecisionReason, /npm test/);
+  const log = fs.readFileSync(path.join(cos, '.delivery-lane.log'), 'utf8');
+  assert.equal(log.split('\n').filter(Boolean).length, 1);
+  assert.ok(!/[\x00-\x09\x0b-\x1f\x7f]/.test(log));
+  assert.match(log, / Bash npm test/);
+  // A browser tool on a headless host (progress-observer runs on buildbox).
+  const { roleDir: po } = preparedRole('progress-observer');
+  const b = JSON.parse(runHook('role-lane.js', { cwd: po, session_id: 's', tool_name: 'mcp__Claude_Browser__navigate', tool_input: { url: 'http://x' } }, env('progress-observer')));
+  assert.equal(b.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(b.hookSpecificOutput.permissionDecisionReason, /buildbox is headless/);
+  assert.match(b.hookSpecificOutput.permissionDecisionReason, /a session on pc/);
+});

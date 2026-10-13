@@ -234,3 +234,16 @@ test('D: the bd-guard hook passes the role, so a builder cannot add a dependency
   const dl = preparedRole('delivery-lead');
   assert.equal(runHook('bd-guard-hook.js', { cwd: dl.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'bd dep add ex-1 ex-2' } }, env('delivery-lead')), '');
 });
+
+// Final wave H.4: a configured staleness of 0 stays 0; missing means 2.
+test('H.4: staleHoursOf keeps a configured 0 and defaults to 2', () => {
+  const { staleHoursOf } = require('./bd-guard.js');
+  assert.equal(staleHoursOf({ budget: { staleness_hours: 0 } }), 0);
+  assert.equal(staleHoursOf({ budget: { staleness_hours: 5 } }), 5);
+  assert.equal(staleHoursOf({ budget: {} }), 2);
+  assert.equal(staleHoursOf({}), 2);
+  assert.equal(staleHoursOf(null), 2);
+  // With 0, no claim is live: taking it over is not refused.
+  const bead = { 'ex-1': { id: 'ex-1', status: 'in_progress', assignee: 'bob', updated_at: NOW } };
+  assert.equal(decideBd({ command: 'bd update ex-1 --claim', actor: 'me', roleId: 'builder', staleHours: staleHoursOf({ budget: { staleness_hours: 0 } }), bd: fakeBd(bead), now: NOW }), null);
+});

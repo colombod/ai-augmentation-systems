@@ -25,3 +25,14 @@ test('decideStop allows when bd throws or no turn start was recorded', () => {
   markTurnStart(roleDir, '2026-10-12T12:00:00Z');
   assert.equal(decideStop({ input: {}, roleDir, actor: 'me', bd: { list: () => { throw new Error('down'); } } }), null);
 });
+
+// Final wave H.3: bd stores updated_at to the second, so the turn start is truncated to the second.
+test('H.3: the turn start is stored to the second; a note in the same second counts', () => {
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'turn-'));
+  markTurnStart(roleDir, '2026-10-12T12:00:00.789Z');
+  assert.equal(require('./turn.js').readTurnStart(roleDir), '2026-10-12T12:00:00Z');
+  const sameSecond = { list: () => [{ id: 'ex-1', updated_at: '2026-10-12T12:00:00Z' }] };
+  assert.equal(decideStop({ input: {}, roleDir, actor: 'me', bd: sameSecond }), null);
+  markTurnStart(roleDir);
+  assert.match(require('./turn.js').readTurnStart(roleDir), /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+});
