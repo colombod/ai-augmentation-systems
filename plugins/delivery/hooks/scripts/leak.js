@@ -604,7 +604,11 @@ function filePathsOf(input) {
 
 // MCP tools that may publish text to a forge (GitHub, GitLab): their inputs are scanned like gh.
 const MCP_PUBLIC = /github|gitlab|issue|pull|comment|release|commit|repo/i;
-const MCP_ISSUE_CREATE = /(create|add)_?(issue)/i;
+// Whole tool names only: add_issue_comment and list_issue_types must not match. issue_write is a
+// create only when its method says so (it also updates); the rest are creators by name.
+const MCP_ISSUE_CREATE = /(^|__)(create_issue|add_issue|issue_write)$/i;
+const mcpCreatesIssue = (name, input) => MCP_ISSUE_CREATE.test(name)
+  && (!/(^|__)issue_write$/i.test(name) || String(input && input.method).toLowerCase() === 'create');
 const MCP_DEPTH = 4;
 const MCP_BUDGET = 20 * 1024;
 
@@ -632,7 +636,7 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId }) {
   const base = path.resolve(cwd || process.cwd());
   const name = String(toolName || '');
   if (name.startsWith('mcp__') && MCP_PUBLIC.test(name) && touchesProduct(roleDir, roleId)) {
-    if (MCP_ISSUE_CREATE.test(name)) return { reason: 'GitHub issues in the product repo are for users; record internal work in beads.' };
+    if (mcpCreatesIssue(name, toolInput)) return { reason: 'GitHub issues in the product repo are for users; record internal work in beads.' };
     for (const m of mcpStrings(toolInput)) {
       if (BIDI.test(m)) return { reason: `Public text must not contain bidirectional control characters (${name}).${RULE}` };
       const hit = scanText(m, denylist || []);
