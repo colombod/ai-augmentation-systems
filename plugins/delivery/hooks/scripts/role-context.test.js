@@ -177,3 +177,45 @@ test('C: bdOptionsFor runs bd at the project root, defaults BEADS_DIR, falls bac
     if (prev === undefined) delete process.env.BEADS_DIR; else process.env.BEADS_DIR = prev;
   }
 });
+
+// Final wave F: the marker is found through DELIVERY_ROLE_DIR when the session leaves its role directory.
+function withEnv(vars, fn) {
+  const prev = {};
+  for (const k of Object.keys(vars)) { prev[k] = process.env[k]; if (vars[k] === undefined) delete process.env[k]; else process.env[k] = vars[k]; }
+  try { return fn(); } finally { for (const k of Object.keys(prev)) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k]; } }
+}
+
+test('F: findRoleMarker uses DELIVERY_ROLE_DIR from outside the role tree; inert without it', () => {
+  const { validMarker } = require('./role-context.js');
+  const { roleDir } = preparedRole('builder-1');
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-outside-'));
+  withEnv({ DELIVERY_ROLE: 'builder-1', DELIVERY_ROLE_DIR: roleDir }, () => {
+    const found = findRoleMarker(outside);
+    assert.equal(found.marker.instance, 'builder-1');
+    assert.equal(found.markerFile, path.join(roleDir, '.delivery-role.json'));
+    assert.equal(validMarker(found).roleDir, roleDir);
+  });
+  withEnv({ DELIVERY_ROLE: 'builder-1', DELIVERY_ROLE_DIR: undefined }, () => {
+    assert.equal(findRoleMarker(outside), null);
+  });
+  // DELIVERY_ROLE unset, or a directory with no marker: walk up from cwd as before.
+  withEnv({ DELIVERY_ROLE: undefined, DELIVERY_ROLE_DIR: roleDir }, () => {
+    assert.equal(findRoleMarker(outside), null);
+  });
+  withEnv({ DELIVERY_ROLE: 'builder-1', DELIVERY_ROLE_DIR: outside }, () => {
+    assert.equal(findRoleMarker(outside), null);
+    assert.equal(findRoleMarker(path.join(roleDir, 'project')).marker.instance, 'builder-1');
+  });
+  // A marker found through the environment is still validated against DELIVERY_ROLE.
+  withEnv({ DELIVERY_ROLE: 'builder-2', DELIVERY_ROLE_DIR: roleDir }, () => {
+    assert.equal(validMarker(findRoleMarker(outside)), null);
+  });
+});
+
+test('F: the lane hook judges a session that left its role directory', () => {
+  const { roleDir } = preparedRole('chief-of-staff');
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-outside-'));
+  const run = (env) => execFileSync(process.execPath, [path.join(__dirname, 'role-lane.js')], { input: JSON.stringify({ cwd: outside, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }), env: { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, ...env }, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
+  assert.equal(JSON.parse(run({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: roleDir })).hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(run({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: '' }), '');
+});

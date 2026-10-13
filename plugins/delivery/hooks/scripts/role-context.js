@@ -19,13 +19,22 @@ function readHookInput() {
   }
 }
 
+function readMarker(file) {
+  try { return { markerFile: file, marker: JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch (err) { return null; }
+}
+
+// The session's own role directory (DELIVERY_ROLE_DIR, written by prepare-role) wins, so the marker
+// is found after the session leaves its role tree; otherwise walk up from cwd. Callers still validate.
 function findRoleMarker(cwd) {
+  const envDir = process.env.DELIVERY_ROLE_DIR;
+  if (envDir && process.env.DELIVERY_ROLE && path.isAbsolute(envDir)) {
+    const file = path.join(envDir, '.delivery-role.json');
+    if (fs.existsSync(file)) return readMarker(file);
+  }
   let dir = path.resolve(cwd || process.cwd());
   for (;;) {
     const file = path.join(dir, '.delivery-role.json');
-    if (fs.existsSync(file)) {
-      try { return { markerFile: file, marker: JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch (err) { return null; }
-    }
+    if (fs.existsSync(file)) return readMarker(file);
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
