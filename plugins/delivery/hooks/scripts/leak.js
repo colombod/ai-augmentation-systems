@@ -32,11 +32,19 @@ const VAR_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const SHELLS = ['bash', 'sh', 'zsh', 'dash', 'ksh'];
 const RESUME_OPS = [';', '||', '&', '\n'];
 
+// A command the guard cannot parse with confidence. In the product worktree it is refused.
+class Unparseable extends Error {}
+const fail = (why) => { throw new Unparseable(why); };
+// Markers use control characters, which are refused in input, so a planted marker cannot exist.
+const MK = (k) => `\u0001${k}\u0001`;
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+const PRIVATE_USE = /[\uE000-\uF8FF]/;
+
 // Like lane's tokens(), but characters that are literal (single-quoted or escaped) have $, ` and \
 // replaced by sentinels, so a later check for substitution sees only live ones.
-const SENT = { $: '\uE000', '`': '\uE001', '\\': '\uE002' };
+const SENT = { $: '\u0002', '`': '\u0003', '\\': '\u0004' };
 const lit = (c) => SENT[c] || c;
-const unsent = (v) => String(v).replace(/\uE000/g, '$').replace(/\uE001/g, '`').replace(/\uE002/g, '\\');
+const unsent = (v) => String(v).replace(/\u0002/g, '$').replace(/\u0003/g, '`').replace(/\u0004/g, '\\');
 function tokensQ(seg) {
   const s = String(seg == null ? '' : seg);
   const out = [];
@@ -61,43 +69,181 @@ function tokensQ(seg) {
   return out;
 }
 
-// Replace each top-level $(...) / `...` outside single quotes with a numbered marker and return the
-// bodies, so splitting on ; && | never cuts through a substitution. Nested ones are masked on recursion.
-function maskSubst(text) {
-  const bodies = [];
-  let out = '';
-  let q = null;
-  for (let i = 0; i < text.length; i++) {
+// ----- lexer: masks substitutions, drops comments and heredoc bodies, refuses what it cannot delimit -----
+const unbacktick = (b) => b.replace(/\\([$`\\])/g, '$1');
+function addBody(sink, body, open) {
+  if (!sink) return '';
+  sink.bodies.push(body);
+  return `${open}${MK(`S${sink.bodies.length - 1}`)}${open === '`' ? '`' : ')'}`;
+}
+// A substitution starting at `from` (just after its opener); returns the index after its closer.
+function substAt(text, from, closeCh, open, sink) {
+  const end = scanCtx(text, from, closeCh, null);
+  const body = text.slice(from, end);
+  if (sink) sink.out.push(addBody(sink, closeCh === '`' ? unbacktick(body) : body, open));
+  return end + 1;
+}
+// ${...}: only simple forms are accepted; quotes, nesting or substitution inside are refused.
+function paramAt(text, i, sink) {
+  const j = text.indexOf('}', i + 2);
+  if (j < 0) fail('unterminated ${');
+  if (/['"`(){}\\\n]/.test(text.slice(i + 2, j))) fail('parameter expansion with quotes or substitution');
+  if (sink) sink.out.push(text.slice(i, j + 1));
+  return j + 1;
+}
+// Inside "...": returns the index of the closing quote.
+function scanDq(text, i, sink) {
+  const put = (s) => { if (sink) sink.out.push(s); };
+  while (i < text.length) {
     const c = text[i];
-    if (q === "'") { if (c === "'") q = null; out += c; continue; }
-    if (c === '\\') { out += c + (text[i + 1] || ''); i++; continue; }
-    if (c === "'" && q === null) { q = "'"; out += c; continue; }
-    if (c === '"') { q = q === '"' ? null : '"'; out += c; continue; }
-    if (c === '$' && text[i + 1] === '(') {
-      let depth = 1;
-      let j = i + 2;
-      for (; j < text.length && depth > 0; j++) { if (text[j] === '(') depth++; else if (text[j] === ')') depth--; }
-      bodies.push(text.slice(i + 2, depth === 0 ? j - 1 : j));
-      out += `$(\uE010${bodies.length - 1}\uE011)`;
-      i = j - 1;
-    } else if (c === '`') {
-      let j = i + 1;
-      while (j < text.length && text[j] !== '`') { if (text[j] === '\\') j++; j++; }
-      bodies.push(text.slice(i + 1, j));
-      out += `\`\uE010${bodies.length - 1}\uE011\``;
-      i = j;
-    } else out += c;
+    const n = text[i + 1];
+    if (c === '"') return i;
+    if (c === '\\' && n === '\n') { i += 2; continue; }
+    if (c === '\\') { put(c + (n === undefined ? '' : n)); i += 2; continue; }
+    if (c === '$' && n === '(') { i = substAt(text, i + 2, ')', '$(', sink); continue; }
+    if (c === '$' && n === '{') { i = paramAt(text, i, sink); continue; }
+    if (c === '`') { i = substAt(text, i + 1, '`', '`', sink); continue; }
+    put(c);
+    i++;
   }
-  return { masked: out, bodies };
+  return fail('unbalanced double quote');
+}
+// Substitutions in an unquoted heredoc body run; return their markers.
+function heredocSubst(body, sink) {
+  let marks = '';
+  for (let k = 0; k < body.length; k++) {
+    const c = body[k];
+    if (c === '\\') { k++; continue; }
+    if (c === '$' && body[k + 1] === '(') { const e = scanCtx(body, k + 2, ')', null); marks += ` ${addBody(sink, body.slice(k + 2, e), '$(')}`; k = e; continue; }
+    if (c === '`') { const e = scanCtx(body, k + 1, '`', null); marks += ` ${addBody(sink, unbacktick(body.slice(k + 1, e)), '`')}`; k = e; continue; }
+    if (c === '$' && body[k + 1] === '{') { k = paramAt(body, k, null) - 1; }
+  }
+  return marks;
+}
+const META = ' \t\n;&|()<>';
+const CMD_KW = new Set(['then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', 'time']);
+// An unquoted context from i to `close` (')' or '`'; null = end of text). Returns the closer's index.
+// With a sink, the masked text goes to sink.out and substitution bodies to sink.bodies.
+function scanCtx(text, i, close, sink) {
+  const start = i;
+  const put = (s) => { if (sink) sink.out.push(s); };
+  let depth = 0;
+  let caseDepth = 0;
+  let pending = [];
+  const wordStart = (k) => k === start || /[\s;&|()<>]/.test(text[k - 1]);
+  const cmdPos = (k) => {
+    let j = k - 1;
+    while (j >= start && (text[j] === ' ' || text[j] === '\t')) j--;
+    if (j < start || ';&|(\n{)'.includes(text[j])) return true;
+    const m = /(?:^|[\s;&|()])([A-Za-z!{]+)$/.exec(text.slice(start, j + 1));
+    return !!m && CMD_KW.has(m[1]);
+  };
+  const heredocOp = (at) => {
+    let j = at + 2;
+    let strip = false;
+    if (text[j] === '-') { strip = true; j++; }
+    while (text[j] === ' ' || text[j] === '\t') j++;
+    let delim = '';
+    let quoted = false;
+    while (j < text.length && !META.includes(text[j])) {
+      const ch = text[j];
+      if (ch === "'" || ch === '"') { const e = text.indexOf(ch, j + 1); if (e < 0) fail('unbalanced quote'); delim += text.slice(j + 1, e); quoted = true; j = e + 1; continue; }
+      if (ch === '\\') { quoted = true; delim += text[j + 1] || ''; j += 2; continue; }
+      if (ch === '$' || ch === '`') fail('heredoc delimiter with substitution');
+      delim += ch;
+      j++;
+    }
+    if (!delim) fail('heredoc without delimiter');
+    put('<< ');
+    pending.push({ delim, strip, quoted, slot: sink ? sink.out.length : -1 });
+    put('');
+    return j;
+  };
+  const readHeredocs = (from) => {
+    let j = from;
+    for (const h of pending) {
+      const bodyStart = j;
+      let bodyEnd = text.length;
+      let next = text.length;
+      for (;;) {
+        let e = text.indexOf('\n', j);
+        if (e < 0) e = text.length;
+        const line = text.slice(j, e);
+        if ((h.strip ? line.replace(/^\t+/, '') : line) === h.delim) { bodyEnd = j; next = Math.min(e + 1, text.length); break; }
+        if (e >= text.length) break;
+        j = e + 1;
+      }
+      j = next;
+      if (!h.quoted) { const marks = heredocSubst(text.slice(bodyStart, bodyEnd), sink); if (sink) sink.out[h.slot] = marks; }
+    }
+    pending = [];
+    return j;
+  };
+  while (i < text.length) {
+    const c = text[i];
+    const n = text[i + 1];
+    if (c === '\\' && n === '\n') { i += 2; continue; } // line continuation
+    if (c === '\\') { put(c + (n === undefined ? '' : n)); i += 2; continue; }
+    if (c === "'") { const j = text.indexOf("'", i + 1); if (j < 0) fail('unbalanced single quote'); put(text.slice(i, j + 1)); i = j + 1; continue; }
+    if (c === '"') { put('"'); i = scanDq(text, i + 1, sink) + 1; put('"'); continue; }
+    if (c === '$' && n === "'") {
+      let j = i + 2;
+      while (j < text.length && text[j] !== "'") { if (text[j] === '\\') j++; j++; }
+      if (j >= text.length) fail('unbalanced $\' quote');
+      put(MK('A'));
+      i = j + 1;
+      continue;
+    }
+    if (c === '$' && n === '"') { put(`${MK('A')}"`); i = scanDq(text, i + 2, sink) + 1; put('"'); continue; }
+    if (c === '<' && n === '<' && text[i + 2] === '<') { put('<<<'); i += 3; continue; }
+    if (c === '<' && n === '<') { i = heredocOp(i); continue; }
+    if ((c === '$' || c === '<' || c === '>') && n === '(') { i = substAt(text, i + 2, ')', `${c}(`, sink); continue; }
+    if (c === '$' && n === '{') { i = paramAt(text, i, sink); continue; }
+    if (c === '`') { if (close === '`') return i; i = substAt(text, i + 1, '`', '`', sink); continue; }
+    if (c === '#' && wordStart(i)) { while (i < text.length && text[i] !== '\n') i++; continue; }
+    if (c === '\n' && pending.length) { put('\n'); i = readHeredocs(i + 1); continue; }
+    if (wordStart(i) && /^(case|esac)(?![^\s;&|()<>])/.test(text.slice(i, i + 5)) && cmdPos(i)) {
+      if (text.startsWith('case', i)) caseDepth++;
+      else if (caseDepth > 0) caseDepth--;
+      put(text.slice(i, i + 4));
+      i += 4;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')') {
+      if (depth > 0) depth--;
+      else if (caseDepth > 0) { /* a case pattern terminator */ }
+      else if (close === ')') return i;
+      else fail('unbalanced parenthesis');
+    }
+    put(c);
+    i++;
+  }
+  if (close) fail(`unterminated ${close === ')' ? '$(' : '`'} substitution`);
+  if (depth !== 0) fail('unbalanced parenthesis');
+  if (caseDepth !== 0) fail('unterminated case');
+  return i;
+}
+function maskSubst(text) {
+  const sink = { out: [], bodies: [] };
+  scanCtx(text, 0, null, sink);
+  return { masked: sink.out.join(''), bodies: sink.bodies };
 }
 const RISKY_BODY = (b) => /\bgit\b[\s\S]*\b(commit|merge|tag|notes|push)\b/.test(b) || /\bgh\s/.test(b);
 
-const WRAP_VALUE_OPTS = { timeout: ['-s', '-k', '--signal', '--kill-after'], nice: ['-n'], stdbuf: ['-i', '-o', '-e'], xargs: ['-n', '-I', '-L', '-P', '-d', '-s', '-a', '-E'] };
-// Drop leading env/command/VAR=val wrappers and reduce an absolute git/gh/shell path to its name.
-// Returns the command words and the VAR=val assignments seen on the way.
+const WRAPPERS = ['command', 'exec', 'nohup', 'time', 'builtin', 'timeout', 'stdbuf', 'nice', 'xargs', 'coproc', 'sudo'];
+// Options that take a separate value, for the wrappers that have them.
+const WRAP_VALUE = new Set(['--max-args', '--adjustment', '--output', '--error', '--input', '--signal', '--kill-after', '-n', '-P', '-s', '-k', '-I', '-d', '-a', '-L', '-E', '-S', '-i', '-o', '-e']);
+const SUDO_VALUE = new Set(['-u', '-g', '-h', '-p', '-C', '-D', '-r', '-t', '-U', '-T', '--user', '--group', '--host', '--prompt', '--close-from', '--chdir', '--role', '--type', '--other-user', '--command-timeout']);
+const MENTIONS_GIT = (w) => /\b(git|gh)\b/.test(w);
+// Drop leading env/command/sudo/VAR=val wrappers and reduce an absolute git/gh/shell path to its name.
+// Returns the command words, the VAR=val assignments, directory changes (env -C, sudo -D), and
+// whether the wrapper hides the command (exec with git/gh, env -S).
 function unwrap(t) {
   let k = 0;
   const assigns = [];
+  const chdirs = [];
+  let hidden = false;
   const take = (w) => { const i = w.indexOf('='); assigns.push({ name: w.slice(0, i), value: w.slice(i + 1) }); };
   while (k < t.length) {
     const w = t[k];
@@ -106,39 +252,81 @@ function unwrap(t) {
     if (b === 'env') {
       k++;
       while (k < t.length && (t[k].startsWith('-') || VAR_ASSIGN.test(t[k]))) {
-        if (VAR_ASSIGN.test(t[k])) take(t[k]);
-        else if (['-u', '-C', '-S'].includes(t[k])) k++;
+        const o = t[k];
+        if (VAR_ASSIGN.test(o)) take(o);
+        else if (o === '-C' || o === '--chdir') { chdirs.push(t[k + 1]); k++; } else if (o.startsWith('--chdir=')) chdirs.push(o.slice(8));
+        else if (/^-C./.test(o)) chdirs.push(o.slice(2));
+        else if (o.startsWith('--split-string') || /^-[A-Za-z]*S/.test(o)) hidden = true;
+        else if (o === '-u' || o === '--unset') k++;
         k++;
       }
       continue;
     }
-    if (['command', 'exec', 'nohup', 'time', 'builtin', 'timeout', 'stdbuf', 'nice', 'xargs', 'coproc'].includes(b)) {
-      const valueOpts = WRAP_VALUE_OPTS[b] || [];
+    if (WRAPPERS.includes(b)) {
+      if (b === 'exec' && t.slice(k + 1).some(MENTIONS_GIT)) hidden = true;
+      const values = b === 'sudo' ? SUDO_VALUE : ['timeout', 'stdbuf', 'nice', 'xargs'].includes(b) ? WRAP_VALUE : new Set();
       k++;
-      while (k < t.length && t[k].startsWith('-')) { if (valueOpts.includes(t[k])) k++; k++; }
-      if (b === 'timeout') k++; // the duration
+      while (k < t.length && t[k].startsWith('-') && t[k] !== '-') {
+        const o = t[k];
+        if (b === 'sudo' && (o === '-D' || o === '--chdir')) chdirs.push(t[k + 1]);
+        else if (b === 'sudo' && o.startsWith('--chdir=')) chdirs.push(o.slice(8));
+        else if (b === 'sudo' && /^-D./.test(o)) chdirs.push(o.slice(2));
+        if (values.has(o)) k++;
+        k++;
+      }
+      if (b === 'timeout' && k < t.length) k++; // the duration
+      if (b === 'coproc' && /^[A-Za-z_]\w*$/.test(t[k] || '') && t[k + 1] !== undefined && (t[k + 1] === '{' || t[k + 1].startsWith('('))) k++; // coproc NAME
       continue;
     }
     break;
   }
   const rest = t.slice(k);
   if (rest.length) { const b = path.basename(rest[0]); if (['git', 'gh', ...SHELLS].includes(b)) rest[0] = b; }
-  return { rest, assigns };
+  return { rest, assigns, chdirs, hidden };
 }
 
-// Shell reserved words and case labels are transparent: the command after them is what runs.
-const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'for', 'in', 'esac', '!', 'time', 'select', 'function', '{', '}', '(', ')']);
+// Shell reserved words, case labels and function headers are transparent: the command after them runs.
+const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'for', 'in', 'esac', '!', 'select', '{', '}', '(', ')', '()']);
+const FUNC_HEAD = /^[^\s()=$`]+\(\)[{(]*/;
 function stripKeywords(t) {
   let a = t;
   for (;;) {
     if (!a.length) return a;
-    if (a[0] === 'case') { const i = a.findIndex((w) => w.endsWith(')')); a = i >= 0 ? a.slice(i + 1) : []; continue; }
-    if (a[0] === 'function') { a = a.slice(2); continue; }
-    if (/^[\w.-]+\(\)$/.test(a[0])) { a = a.slice(1); continue; }
-    if (a[1] === '()' && /^[\w.-]+$/.test(a[0])) { a = a.slice(2); continue; }
-    if (KEYWORDS.has(a[0]) || /^[\w.*?[\]-]+\)$/.test(a[0])) { a = a.slice(1); continue; }
+    const w = a[0];
+    if (w === 'case') { const i = a.findIndex((x) => x.endsWith(')')); a = i >= 0 ? a.slice(i + 1) : []; continue; }
+    if (w === 'function') {
+      // function NAME, function NAME(), function NAME(){, function NAME()(cmd
+      const r = a.length > 1 ? a[1].replace(/^[^()]*(?:\(\))?[{(]*/, '') : '';
+      a = r ? [r, ...a.slice(2)] : a.slice(2);
+      continue;
+    }
+    if (FUNC_HEAD.test(w)) { const r = w.replace(FUNC_HEAD, ''); a = r ? [r, ...a.slice(1)] : a.slice(1); continue; }
+    if (a[1] === '()' && /^[^\s()=$`]+$/.test(w)) { a = a.slice(2); continue; }
+    if (w.length > 1 && w[0] === '(') { a = [w.replace(/^\(+/, ''), ...a.slice(1)]; continue; }
+    if (KEYWORDS.has(w) || /^[\w.*?[\]-]+\)$/.test(w)) { a = a.slice(1); continue; }
     return a;
   }
+}
+
+// Keywords and wrappers can alternate (coproc { ...; }, time -p, if sudo ...): peel until stable.
+function peel(tokens) {
+  let a = tokens;
+  const assigns = [];
+  const chdirs = [];
+  let persistent = false;
+  let hidden = false;
+  for (let n = 0; n < 100; n++) {
+    const before = JSON.stringify(a);
+    a = stripKeywords(a);
+    if (a[0] === 'export') { a = a.slice(1); persistent = true; }
+    const u = unwrap(a);
+    assigns.push(...u.assigns);
+    chdirs.push(...u.chdirs);
+    hidden = hidden || u.hidden;
+    a = u.rest;
+    if (JSON.stringify(a) === before) break;
+  }
+  return { t: a, assigns, chdirs, persistent, hidden };
 }
 
 function moveDir(d, target) {
@@ -158,8 +346,11 @@ function describe(t, live) {
         const v = w === '--git-dir' ? t[k + 1] : w.slice(10);
         dirs = dirs.map((d) => { const m = moveDir(d, v); return m === null ? null : path.dirname(m); });
         k += w === '--git-dir' ? 2 : 1;
-      } else if (w === '-C' || w === '--work-tree') { const v = t[k + 1]; dirs = dirs.map((d) => moveDir(d, v)); k += 2; } else if (w.startsWith('--work-tree=')) { const v = w.slice(12); dirs = dirs.map((d) => moveDir(d, v)); k++; } else if (GIT_ARG_GLOBALS.includes(w)) k += 2;
-      else k++;
+      } else if (w === '-C' || w === '--work-tree') { const v = t[k + 1]; dirs = dirs.map((d) => moveDir(d, v)); k += 2; } else if (w.startsWith('--work-tree=')) { const v = w.slice(12); dirs = dirs.map((d) => moveDir(d, v)); k++; } else if (GIT_ARG_GLOBALS.includes(w) || w.startsWith('--config-env=')) {
+        const v = w.includes('=') ? w.slice(w.indexOf('=') + 1) : t[k + 1] || '';
+        if ((w === '-c' || w.startsWith('--config-env')) && /^alias\./i.test(v)) return { prog: 'unparsed', why: 'git aliases cannot be checked', dirs };
+        k += w.includes('=') ? 1 : 2;
+      } else k++;
     }
     if (/[$`]/.test(t[k] || '')) return { prog: 'subst', dirs };
     return { prog: 'git', sub: t[k] || '', args: t.slice(k + 1), dirs };
@@ -190,27 +381,38 @@ function envMove(dirs, assigns) {
 }
 
 // Segments of a command with the directories each may run in (cd, pushd/popd, git -C, GIT_DIR tracked).
-function walk(command, cwd) { return walkIn(command, [path.resolve(cwd || process.cwd())]); }
+// A command that cannot be parsed yields an 'unparsed' item; maybeProduct marks one that may move
+// into product by means the guard could not follow.
+function walk(command, cwd) { return walkIn(String(command), [path.resolve(cwd || process.cwd())], true); }
 
-function walkIn(command, startDirs) {
+function walkIn(command, startDirs, top) {
   const items = [];
   let live = startDirs;
   let deferred = [];
   const stack = [];
-  const { masked, bodies: allBodies } = maskSubst(command);
+  let masked;
+  let allBodies;
+  try {
+    if (top && CONTROL.test(command)) fail('control characters');
+    if (top && PRIVATE_USE.test(command)) fail('private-use characters');
+    ({ masked, bodies: allBodies } = maskSubst(command));
+  } catch (e) {
+    if (!(e instanceof Unparseable)) throw e;
+    const maybeProduct = MENTIONS_GIT(command) && /cd|pushd|-C|GIT_|--git-dir|--work-tree|product/.test(command);
+    return [{ prog: 'unparsed', why: e.message, dirs: union(startDirs, [null]), maybeProduct }];
+  }
   const segs = splitWithOps(masked);
   for (let n = 0; n < segs.length; n++) {
     const { text, op } = segs[n];
     if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
-    for (const m of text.matchAll(/\uE010(\d+)\uE011/g)) {
+    for (const m of text.matchAll(/\u0001S(\d+)\u0001/g)) {
       const body = allBodies[Number(m[1])];
+      if (typeof body !== 'string') throw new Error('substitution marker out of range');
       if (RISKY_BODY(body)) items.push({ prog: 'subst', dirs: live });
-      items.push(...walkIn(body, live));
+      items.push(...walkIn(body, live, false));
     }
-    let raw = stripKeywords(tokensQ(text.replace(/^[\s({]+/, '')));
-    let persistent = false;
-    if (raw[0] === 'export') { raw = raw.slice(1); persistent = true; }
-    const { rest: t, assigns } = unwrap(raw);
+    if (text.includes(MK('A'))) items.push({ prog: 'unparsed', why: '$\'...\' or $"..." quoting', dirs: live });
+    const { t, assigns, chdirs, persistent, hidden } = peel(tokensQ(text.replace(/^[\s({]+/, '')));
     if (!t.length || persistent) { live = envMove(live, assigns); if (!t.length) continue; }
     if (t[0] === 'popd') { live = stack.pop() || [null]; continue; }
     if (t[0] === 'cd' || t[0] === 'pushd') {
@@ -222,7 +424,11 @@ function walkIn(command, startDirs) {
       if (reliable) { deferred = union(deferred, live); live = union([], moved); } else live = union(live, moved);
       continue;
     }
-    const item = describe(t, persistent ? live : envMove(live, assigns));
+    const here = chdirs.reduce((ds, c) => ds.map((d) => moveDir(d, c)), persistent ? live : envMove(live, assigns));
+    if (hidden || t[0] === 'eval') { items.push({ prog: 'unparsed', why: 'eval, exec or env -S hides the command', dirs: here }); continue; }
+    if (/[$`]/.test(t[0])) { items.push({ prog: 'unparsed', why: 'the command word is a substitution', dirs: here }); continue; }
+    if (t[0] === 'git' && assigns.some((a) => /^GIT_CONFIG_(PARAMETERS|COUNT|KEY_)/.test(a.name))) { items.push({ prog: 'unparsed', why: 'git configuration from the environment cannot be checked', dirs: here }); continue; }
+    const item = describe(t, here);
     if (item) items.push(item);
   }
   return items;
@@ -317,6 +523,7 @@ function scanText(text, denylist) {
   return null;
 }
 
+const UNANALYSABLE = 'leak guard could not analyse this command; run git and gh as plain commands with inline text';
 const RULE = ' Only Refs <bead id> is allowed; describe the change to the product, never the plan.';
 
 function filePathsOf(input) {
@@ -333,7 +540,8 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist }) {
   if (toolName === 'Bash') {
     const cmd = String((toolInput || {}).command || '');
     for (const item of walk(cmd, base)) {
-      if (!anyInProduct(item.dirs, roleDir, base)) continue;
+      if (!item.maybeProduct && !anyInProduct(item.dirs, roleDir, base)) continue;
+      if (item.prog === 'unparsed') return { reason: `${UNANALYSABLE} (${item.why}).` };
       if (item.prog === 'subst') return { reason: 'Run git and gh as plain commands so the text can be checked; command substitution hides it.' };
       if (item.prog === 'shell') {
         if (/\b(git|gh)\s/.test(item.str)) return { reason: 'Run git and gh directly so the text can be checked; wrapping them in a shell -c string hides it.' };
@@ -419,4 +627,4 @@ function scanPushed({ cwd, roleDir, denylist, git, tags }) {
   return hits;
 }
 
-module.exports = { loadDenylist, inProductWorktree, extractMessages, scanText, decideLeak, scanPushed, pushInfo, recordPrepush, clearPrepush };
+module.exports = { UNANALYSABLE, loadDenylist, inProductWorktree, extractMessages, scanText, decideLeak, scanPushed, pushInfo, recordPrepush, clearPrepush };

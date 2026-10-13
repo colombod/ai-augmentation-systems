@@ -91,6 +91,9 @@ test('leak-guard hook denies a leaking commit from product and is silent from pr
 
 // ---- probe table: [command | tool descriptor, cwd (relative to roleDir), expectDenied] ----
 const P = 'Sell duplicates faster';
+const PU = String.fromCharCode(0xE010);
+const PU2 = String.fromCharCode(0xE011);
+const CTRL = String.fromCharCode(1);
 const probes = [
   [`cd product && git commit -m "${P}"`, '.', true],
   [`git -C product commit -m "${P}"`, '.', true],
@@ -200,6 +203,73 @@ const probes = [
   [`cd "$HOME/proj" && git commit -m "add .delivery/stories/x.md"`, 'project', false],
   [`cd $D && git commit -m "${P}"`, 'product', true],
   [`cd product && git log; cd ..; git commit -m "update .delivery/x"`, '.', true],
+  // round 4: quote-aware substitution scan and fail-closed parsing
+  [`x=$(echo ')'; git commit -m "${P}")`, 'product', true],
+  [`x=$(echo ")"; git commit -m "${P}")`, 'product', true],
+  [`x=$(echo \`echo ')'\`; git commit -m "${P}")`, 'product', true],
+  [`x=$(case a in a) git commit -m "${P}";; esac)`, 'product', true],
+  [`x=$(case a in a) echo hi;; esac)`, 'product', false],
+  [`echo ')'`, 'product', false],
+  [`echo $((1 + 2))`, 'product', false],
+  [`git commit -m "ok`, 'product', true],
+  [`git commit -m 'ok`, 'product', true],
+  [`echo $(echo ')'`, 'product', true],
+  [`(git status`, 'product', true],
+  [`git status)`, 'product', true],
+  [`git commit -m "ok`, 'project', false],
+  [`git commit -m "x${PU}0${PU2}"`, 'product', true],
+  [`echo ${PU}`, 'product', true],
+  [`echo ${PU}`, 'project', false],
+  [`git commit -m "a${CTRL}S0${CTRL}"`, 'product', true],
+  [`git commit -m $'Sell\\x20duplicates faster'`, 'product', true],
+  [`echo $"hello"`, 'product', true],
+  [`echo $'x'`, 'project', false],
+  [`echo $'it\\'s' ; git commit -m "${P}" #'`, 'product', true],
+  [`echo $'it\\'s' ; cd ../product && git commit -m "${P}" #'`, 'project', true],
+  [`echo "\${x:-'a'}"`, 'product', true],
+  [`echo "\${HOME}/x"`, 'product', false],
+  [`echo \${x:-'a'}; cd ../product && git commit -m "${P}"`, 'project', true],
+  [`f(){ git commit -m "${P}";}; f`, 'product', true],
+  [`f() (git commit -m "${P}")`, 'product', true],
+  [`f()(git commit -m "${P}")`, 'product', true],
+  [`function f() (git commit -m "${P}")`, 'product', true],
+  [`function f()(git commit -m "${P}")`, 'product', true],
+  [`function f () { git commit -m "${P}"; }`, 'product', true],
+  [`if (git commit -m "${P}"); then true; fi`, 'product', true],
+  [`coproc { git commit -m "${P}"; }`, 'product', true],
+  [`coproc NAME { git commit -m "${P}"; }`, 'product', true],
+  [`coproc NAME (git commit -m "${P}")`, 'product', true],
+  [`xargs --max-args 1 git commit -m "${P}"`, 'product', true],
+  [`xargs -I {} git commit -m "${P}"`, 'product', true],
+  [`nice --adjustment 5 git commit -m "${P}"`, 'product', true],
+  [`stdbuf --output L git commit -m "${P}"`, 'product', true],
+  [`timeout --signal KILL 5 git commit -m "${P}"`, 'product', true],
+  [`eval "git commit -m x"`, 'product', true],
+  [`eval "$cmd"`, 'product', true],
+  [`exec git commit -m "${P}"`, 'product', true],
+  [`sudo git commit -m "${P}"`, 'product', true],
+  [`sudo -u bob git commit -m "${P}"`, 'product', true],
+  [`time -p git commit -m "${P}"`, 'product', true],
+  [`env -C ../product git commit -m "${P}"`, 'project', true],
+  [`env -S 'git commit -m x'`, 'product', true],
+  [`git commit -m ok # it's\ngit commit -m "${P}"`, 'product', true],
+  [`git status # it's fine`, 'product', false],
+  [`git log --format="%H" # comment`, 'product', false],
+  [`git -c alias.x='commit -m P' x`, 'product', true],
+  [`git -c user.name=x status`, 'product', false],
+  [`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=commit git x -m P`, 'product', true],
+  [`$g commit -m x`, 'product', true],
+  [`\`echo git\` commit -m x`, 'product', true],
+  [`git \\\ncommit -m "${P}"`, 'product', true],
+  [`cat <<EOF\nit's\nEOF\ngit commit -m "${P}"`, 'product', true],
+  [`cd ../product && cat <<EOF\nit's\nEOF\ngit commit -m "${P}"`, 'project', true],
+  [`cat > notes.txt <<'EOF'\nit's here; (really\nEOF`, 'product', false],
+  [`cat <<EOF\n$(git commit -m x)\nEOF`, 'product', true],
+  [`cat <<-EOF\n\thello $(date)\n\tEOF\ngit status`, 'product', false],
+  [`diff <(git commit -m x) y`, 'product', true],
+  [`cat <(git log)`, 'product', false],
+  [`git log --grep commit`, 'product', false],
+  [`echo '$(git commit -m P)'`, 'product', false],
   [{ tool: 'Write', path: 'product/.delivery/x.md' }, '.', true],
   [{ tool: 'Write', path: 'product/.Delivery/x.md' }, 'project', true],
   [{ tool: 'Edit', path: '../product/.beads/a' }, 'project', true],
@@ -263,4 +333,23 @@ test('leak-post-push entry reports via additionalContext JSON', () => {
   assert.match(json.hookSpecificOutput.additionalContext, /Casual Carl/);
   assert.match(json.hookSpecificOutput.additionalContext, /bd create "Strategy leak: Casual Carl" --labels strategy-review/);
   assert.equal(runHook('leak-post-push.js', { cwd, session_id: 's', tool_name: 'Bash', tool_input: { command: 'git status' } }, env), '');
+});
+
+test('leak-guard fails closed in product when the guard itself errors, and stays inert elsewhere', () => {
+  const b = preparedRole('builder-1');
+  // A denylist path that is a directory makes the guard throw (EISDIR) while loading it.
+  const dl = path.join(b.projectRoot, '.delivery', 'team', 'denylist.txt');
+  fs.rmSync(dl);
+  fs.mkdirSync(dl);
+  const env = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  const input = (cwd) => ({ cwd, session_id: 's', tool_name: 'Bash', tool_input: { command: 'git status' } });
+  const json = JSON.parse(runHook('leak-guard.js', input(path.join(b.roleDir, 'product')), env));
+  assert.equal(json.hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(json.hookSpecificOutput.permissionDecisionReason, 'leak guard could not analyse this command; run git and gh as plain commands with inline text');
+  assert.equal(runHook('leak-guard.js', input(path.join(b.roleDir, 'project')), env), '');
+});
+
+test('unparseable commands in product name the reason', () => {
+  const d = decideLeak({ toolName: 'Bash', toolInput: { command: 'git commit -m "ok' }, cwd: product, roleDir, denylist });
+  assert.match(d.reason, /^leak guard could not analyse this command; run git and gh as plain commands with inline text \(unbalanced double quote\)\.$/);
 });
