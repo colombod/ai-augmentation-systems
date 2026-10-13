@@ -1,0 +1,155 @@
+// hooks/scripts/role-context.test.js — run with: node --test hooks/scripts/role-context.test.js
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
+const { findRoleMarker, composeForMarker, sessionStartText, promptSubmitText } = require('./role-context.js');
+const { expandInstances, loadManifest } = require('../../scripts/lib/manifest.js');
+const { prepareRole } = require('../../scripts/prepare-role.js');
+
+const PLUGIN_ROOT = path.join(__dirname, '..', '..');
+const TEMPLATES = path.join(PLUGIN_ROOT, 'templates');
+
+function scratchProjectRepo() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-project-'));
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: root });
+  fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
+  fs.copyFileSync(path.join(TEMPLATES, 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(TEMPLATES, 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
+  execFileSync('git', ['add', '-A'], { cwd: root });
+  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: root });
+  return root;
+}
+
+// Runs fn with DELIVERY_ROLE set the way prepare-role's settings.local.json sets it for a real session.
+function withRole(instance, fn) {
+  const prev = process.env.DELIVERY_ROLE;
+  if (instance === undefined) delete process.env.DELIVERY_ROLE; else process.env.DELIVERY_ROLE = instance;
+  try { return fn(); } finally { if (prev === undefined) delete process.env.DELIVERY_ROLE; else process.env.DELIVERY_ROLE = prev; }
+}
+
+function preparedRole(instance) {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  return { projectRoot, roleDir };
+}
+
+test('findRoleMarker returns null outside a role directory', () => {
+  assert.equal(findRoleMarker(fs.mkdtempSync(path.join(os.tmpdir(), 'nomarker-'))), null);
+});
+
+test('findRoleMarker finds the marker from a subdirectory of the role dir', () => {
+  const { roleDir } = preparedRole('delivery-lead');
+  const sub = path.join(roleDir, 'project', '.delivery');
+  const found = findRoleMarker(sub);
+  assert.equal(found.marker.instance, 'delivery-lead');
+});
+
+test('composeForMarker reflects a manifest change made after prepare', () => {
+  const { projectRoot, roleDir } = preparedRole('builder-1');
+  const teamFile = path.join(projectRoot, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(teamFile, 'utf8'));
+  team.roles.push({ id: 'infra-vercel', brief: 'delivery/builder', host: 'pc', model: 'sonnet' });
+  fs.writeFileSync(teamFile, JSON.stringify(team, null, 2));
+  const { marker } = findRoleMarker(roleDir);
+  const text = composeForMarker(marker, PLUGIN_ROOT);
+  assert.ok(text.includes('| infra-vercel | pc | sonnet |'));
+});
+
+test('sessionStartText registers the session in the roster and returns the short brief', () => {
+  const { projectRoot, roleDir } = preparedRole('staffing');
+  const text = withRole('staffing', () => sessionStartText({ cwd: roleDir, session_id: 'sess-1' }, PLUGIN_ROOT, { now: '2026-10-12T12:00:00Z', claim: () => null }));
+  assert.ok(text.startsWith('# Role: staffing'));
+  const roster = JSON.parse(fs.readFileSync(path.join(projectRoot, '.delivery', 'team', 'roster.json'), 'utf8'));
+  assert.equal(roster.instances.staffing.session_id, 'sess-1');
+  assert.equal(roster.instances.staffing.last_seen, '2026-10-12T12:00:00Z');
+});
+
+test('sessionStartText is empty outside a role directory', () => {
+  assert.equal(sessionStartText({ cwd: os.tmpdir(), session_id: 'x' }, PLUGIN_ROOT, { claim: () => null }), '');
+});
+
+test('promptSubmitText is one line with role and claim', () => {
+  const { roleDir } = preparedRole('builder-2');
+  const text = withRole('builder-2', () => promptSubmitText({ cwd: roleDir }, { claim: () => 'ex-12: Add login' }));
+  assert.equal(text, 'You are builder-2 (builder). Current claim: ex-12: Add login.');
+  const idle = withRole('builder-2', () => promptSubmitText({ cwd: roleDir }, { claim: () => null }));
+  assert.equal(idle, 'You are builder-2 (builder). Current claim: none (idle; say so and what you could take).');
+});
+
+test('compaction restates the role through SessionStart', () => {
+  const { roleDir } = preparedRole('delivery-lead');
+  const text = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source: 'compact' }, PLUGIN_ROOT, { claim: () => null }));
+  assert.ok(text.startsWith('Context was compacted. Your role is restated below; it has not changed.'));
+  assert.ok(text.includes('# Role: delivery-lead'));
+});
+
+test('sessionStartText stays under the 10,000 character cap for every instance and refreshes CLAUDE.local.md', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-team-'));
+  const { team } = loadManifest(projectRoot);
+  for (const { instance } of expandInstances(team)) {
+    const { roleDir } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+    const brief = path.join(roleDir, 'CLAUDE.local.md');
+    fs.writeFileSync(brief, 'SENTINEL');
+    const text = withRole(instance, () => sessionStartText({ cwd: roleDir, session_id: 's', source: 'startup' }, PLUGIN_ROOT, { claim: () => null }));
+    assert.ok(text.length < 10000, `${instance}: ${text.length}`);
+    assert.ok(text.includes('| chief-of-staff | pc | opus |'));
+    assert.ok(text.includes(`${roleDir}/CLAUDE.local.md; it is binding.`));
+    const onDisk = fs.readFileSync(brief, 'utf8');
+    assert.ok(!onDisk.includes('SENTINEL'));
+    assert.ok(onDisk.startsWith('# Role:'));
+  }
+});
+
+test('a marker whose project_root does not exist and DELIVERY_ROLE unset produces nothing and writes nothing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-forged-'));
+  const ghost = path.join(os.tmpdir(), `ctx-ghost-${process.pid}`, 'proj');
+  fs.writeFileSync(path.join(dir, '.delivery-role.json'), JSON.stringify({ instance: 'staffing', role: 'staffing', project_root: ghost, host: 'pc', model: 'sonnet' }));
+  assert.equal(withRole(undefined, () => sessionStartText({ cwd: dir, session_id: 's' }, PLUGIN_ROOT, { claim: () => null })), '');
+  assert.equal(withRole(undefined, () => promptSubmitText({ cwd: dir }, { claim: () => null })), '');
+  assert.ok(!fs.existsSync(path.dirname(ghost)));
+  assert.ok(!fs.existsSync(path.join(dir, 'CLAUDE.local.md')));
+});
+
+test('DELIVERY_ROLE set but no manifest at project_root yields a one-line notice and writes nothing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-nomanifest-'));
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-empty-'));
+  fs.writeFileSync(path.join(dir, '.delivery-role.json'), JSON.stringify({ instance: 'staffing', role: 'staffing', project_root: empty, host: 'pc', model: 'sonnet' }));
+  const text = withRole('staffing', () => sessionStartText({ cwd: dir, session_id: 's' }, PLUGIN_ROOT, { claim: () => null }));
+  assert.ok(text.startsWith(`Role staffing: cannot load the team manifest at ${empty} (`));
+  assert.ok(text.trimEnd().endsWith('Tell the Chief of Staff.'));
+  assert.equal(text.trimEnd().split('\n').length, 1);
+  assert.deepEqual(fs.readdirSync(empty), []);
+  assert.ok(!fs.existsSync(path.join(dir, 'CLAUDE.local.md')));
+});
+
+test('promptSubmitText touches last_seen when older than 5 minutes, not when recent', () => {
+  const { projectRoot, roleDir } = preparedRole('staffing');
+  const rosterFile = path.join(projectRoot, '.delivery', 'team', 'roster.json');
+  const seed = (last_seen) => fs.writeFileSync(rosterFile, JSON.stringify({ instances: { staffing: { session_id: 's', host: 'pc', model: 'sonnet', role_dir: roleDir, joined_at: last_seen, last_seen } } }));
+  const now = '2026-10-12T12:00:00.000Z';
+  seed('2026-10-12T11:50:00.000Z');
+  withRole('staffing', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, now }));
+  assert.equal(JSON.parse(fs.readFileSync(rosterFile, 'utf8')).instances.staffing.last_seen, now);
+  seed('2026-10-12T11:59:00.000Z');
+  withRole('staffing', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, now }));
+  assert.equal(JSON.parse(fs.readFileSync(rosterFile, 'utf8')).instances.staffing.last_seen, '2026-10-12T11:59:00.000Z');
+});
+
+test('currentClaim returns the id alone when the item has no title', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fakebd-'));
+  fs.writeFileSync(path.join(dir, 'bd'), '#!/bin/sh\necho \'[{"id":"ex-9"}]\'\n', { mode: 0o755 });
+  const prev = process.env.PATH;
+  process.env.PATH = `${dir}${path.delimiter}${prev}`;
+  try {
+    assert.equal(require('./role-context.js').currentClaim('a@pc/x'), 'ex-9');
+  } finally {
+    process.env.PATH = prev;
+  }
+});

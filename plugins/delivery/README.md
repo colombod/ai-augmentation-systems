@@ -52,6 +52,35 @@ Every phase reads the previous artifact and **stops if it is missing** rather th
 improvising one. That gate is the point: it is what stops a confident plan being built
 on nothing.
 
+## The shipping team (phase 1)
+
+The pipeline's roles can also run as long-lived sessions, one per role, on the hosts that can do the
+work, coordinating through cross-session messages and beads. Phase 1 ships the pieces that give a
+session its role and keep it:
+
+- `roles/*.md` — the role briefs (chief-of-staff, staffing, product-manager, delivery-lead,
+  progress-observer, builder). Project-specific briefs go in the project repo under
+  `.delivery/team/briefs/`.
+- `.delivery/team/team.json` and `hosts.json` — the manifest, in the private project repo. Templates
+  under `templates/`.
+- `scripts/prepare-role.js --project <root> --instance <id>` — creates one directory per role
+  instance with its own settings (model, env, actor), a composed `CLAUDE.local.md`, a clone of the
+  project repo and, for builders, a worktree of the product repo. Start a session in that directory.
+- Hooks — SessionStart re-injects the role on startup, resume, clear and after compaction, and
+  refreshes CLAUDE.local.md from the current manifest; UserPromptSubmit adds a one-line reminder
+  with the current claim.
+- `/delivery:join` — confirms the role in-session, primes beads, reports to the Chief of Staff.
+- `/delivery:team` — roster versus manifest: live, stale, missing, wrong model.
+
+The delivery plugin must be installed on the machine; `prepare-role` enables it for the role
+directory. The steward keeps the original project checkout pulled (`git pull --ff-only`) before
+preparing or restarting a role, because the hooks read the manifest there. In phase 1 the roster is
+per host, so `/delivery:team` reports only roles on this host. `prepare-role` does not set a
+permission mode; a steward passes `--permission-mode` when starting the session.
+
+Design: `.superpowers/specs/2026-10-12-shipping-team-design.md`. Provisioning, hiring, deploy and
+the plan-to-beads materialise step are later phases.
+
 ## Using it with superpowers
 
 [superpowers](https://github.com/obra/superpowers) has its own chain:

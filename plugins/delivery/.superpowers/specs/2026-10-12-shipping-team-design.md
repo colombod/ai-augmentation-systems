@@ -1,0 +1,422 @@
+# Shipping team: long-lived role sessions for the delivery plugin
+
+Date: 2026-10-12. Status: design approved in conversation, awaiting written review.
+
+## 1. Problem
+
+The operator runs a product (The Vault) with about ten Claude Code sessions, each holding a role
+(Chief of Staff, Product Manager, Delivery Manager, Infra Manager, Progress Observer, Spike
+Researcher, AI Worker, two General Workers, a cloud Documentation Manager). They run on a Windows PC,
+a headless Ubuntu server, and the cloud. They coordinate through cross-session messages and beads
+over a shared Dolt server. The rules that make it work are in the product repo's AGENTS.md
+(sections 5, 8, 9, 10).
+
+Landing that shape took weeks of hand work and it cannot be reproduced for a new project. The
+pieces are scattered: role briefs exist only in session-start prompts; every session started in the
+same folder shares one auto-memory, so one role's notes leak into another's; two sessions share a
+beads actor suffix, so claims cannot tell them apart; the roadmap lives only in beads with no record
+of why; plans sit in a public repo's agents file; and beads reachability needed hand-written SSH
+wrappers because the PC blocks unsigned binaries.
+
+The delivery plugin already has the roles as subagent personas and a planning pipeline, but no
+notion of sessions, hosts, beads, models, or enforcement.
+
+## 2. Goal
+
+Extend the delivery plugin so that one conversation with a Chief of Staff deploys and runs a
+product-shipping team: each session has a specialised role from its first turn and keeps it, roles
+are placed on the hosts that can do the work, cost is tuned per role, work is tracked in beads
+derived from a planned roadmap, strategy never leaks into the public product repo, and the team
+scales itself as the work gets more specialised. The operator never runs a join command.
+
+Delivery is the delivery platform. It plans, staffs, dispatches, reviews and realigns; it does not
+write product code itself. Building is done by builder sessions through a **runner** chosen per role
+in the manifest: `superpowers` (brainstorm-skipped, plan then execute), `attractor` (the attractor
+plugin's DOT-graph pipeline, `claude -p` workers), or `plain` (the builder session itself, with the
+story as its only brief). The reviewer is always separate from the runner, which is what makes
+sprint-review trustworthy.
+
+Non-goals: native Agent Teams are not used; every role is an independent session wired by
+cross-session messaging. The Vault is not migrated as part of this work.
+
+## 3. Two repositories
+
+| Repo | Visibility | Holds |
+|---|---|---|
+| Product repo (e.g. `the-vault`) | may be public | the product, its tests, CI, build and test rules in AGENTS.md, one line pointing at where team rules come from |
+| Project repo (e.g. `the-vault-project`) | private | `team.json`, `hosts.json`, `briefs/`, the whole `.delivery/` tree, beads configuration and Dolt remote, cloud environment definition, the denylist |
+
+Delivery's existing delivery-root resolution points `.delivery/` at the project repo. The product
+repo never learns the team or the plan exists beyond bead ids in commit messages.
+
+Beads syncs through the project repo: it is the Dolt remote. Hosts on the tailnet use the shared
+Dolt server for speed; cloud sessions pull and push against the remote. A Dolt merge conflict
+becomes a reconcile item for the Delivery Lead.
+
+## 4. Roles
+
+### 4.1 Core roles, always present
+
+| Role | Brief source | Owns | Must not |
+|---|---|---|---|
+| chief-of-staff | delivery agent, extended | the operator's attention, routing, one ranked briefing in merged / deployed / verified; delegate mode (a brief-level rule: coordinate, never edit product files) | build, change beads, PRs, settings or sessions unless the operator said so, answer for the operator |
+| staffing | new | hiring, the roster, `team.json` (sole writer), scaling within budget | anything else that writes |
+| product-manager | delivery product-owner | vision, brief, PRD, prioritisation, roadmap document; the operator talks to it directly for vision work and it tells the Chief of Staff | dispatch |
+| delivery-lead | delivery delivery-lead | bead structure (sole writer), materialise, reconcile, assignment, blockers | product scope decisions |
+| progress-observer | delivery qa-strategist, extended | evidence, liveness, roster bead, real-app rows, drift checks | claims on build beads |
+| builder | new, thin | claim a ready bead, run the role's `runner` on it (superpowers, attractor or plain), report in three words; one worktree each; `count` and `cap` in the manifest | create GitHub issues, touch bead structure |
+| spike-researcher | delivery, standing | derisking: claims `spike` beads attached to architecture decisions and roadmap phases, answers the question with sources or an experiment, records the result in the bead and the ADR or roadmap it derisks; research and throwaway experiments only | ship code, take build beads |
+
+Chief of Staff, Product Manager and Delivery Lead are three roles, not one. The Vault's Product
+Manager does both product and dispatch; this design separates them.
+
+### 4.2 Specialists, hired on evidence
+
+Infra per platform (vercel, azure, aws, fly, ...), AI host experts (chatgpt, claude, gemini,
+copilot), data, mobile, security, docs. Each brief says what the role owns, what it is asked for,
+and what it must not do. Default: one specialist per platform that actually appears in the product
+repo, no speculative hires.
+
+### 4.3 One-off roles
+
+`migration-expert` (bring an existing project into the two-repo shape, move beads config and team
+rules, generate the first denylist, hand to the Delivery Lead). Hired for a job, released after.
+
+### 4.3a Spikes derisk the plan
+
+A spike is a question whose answer changes a design or a roadmap decision: can host X do Y, does
+API Z rate-limit us, is approach A or B cheaper. Spikes are first-class:
+
+- The architecture step and the roadmap step emit `spike` beads for every decision they mark as
+  unproven, each with the question, the decision it gates, and what answer would change it. A
+  spike bead blocks the story or phase it derisks, so `bd ready` surfaces spikes before the work
+  that depends on them.
+- The Spike Researcher claims them. Output is a sourced answer or a throwaway experiment in a
+  scratch worktree, never product code; the result goes in the bead and into the ADR or roadmap it
+  gates, and the challenge panel reads it at the next gate.
+- Anyone may raise a spike bead when they hit an unknown mid-task (the Chief of Staff's rule:
+  a technical unknown routes to a spike, not to the operator). The Delivery Lead orders them.
+- Staffing scales Spike Researchers like builders: within `budget`, on the number of ready spikes.
+
+### 4.4 Duties attached to roles
+
+- Steward: one role per host, marked in the manifest. Receives roster changes from Staffing and
+  converges the sessions on its host to the manifest: start, restart with a new model, stop. On the
+  PC this is the infra role; on the bd host it is the progress observer.
+- Infra for provisioning: the steward of the bd host runs provision.
+
+### 4.5 Role library layout
+
+`plugins/delivery/roles/<id>.md`, same frontmatter format as `agents/`. Core briefs compose the
+existing agent files plus a `## As a session` section with the session-level duties. Project-specific
+briefs live in the project repo under `briefs/` and are referenced as `project/<id>`.
+
+## 5. The manifest
+
+`team.json` in the project repo at `.delivery/team/team.json`, written only by Staffing, read by everyone (JSON, not YAML: the plugin has no dependencies and Node has no YAML parser):
+
+```yaml
+project: the-vault
+product_repo: git@github.com:colombod-personal/the-vault.git
+prefix: vault
+bd_host: wintermute
+budget:
+  max_roles: 12
+  builders_cap: 3
+  staleness_hours: 2
+roles:
+  - id: chief-of-staff
+    brief: delivery/chief-of-staff
+    host: alien51
+    model: opus
+    mode: delegate
+  - id: staffing
+    brief: delivery/staffing
+    host: alien51
+    model: sonnet
+    mode: delegate
+  - id: product-manager
+    brief: delivery/product-owner
+    host: alien51
+    model: opus
+  - id: delivery-lead
+    brief: delivery/delivery-lead
+    host: alien51
+    model: sonnet
+  - id: progress-observer
+    brief: delivery/qa-strategist
+    host: wintermute
+    model: haiku
+    steward: true
+  - id: infra-vercel
+    brief: delivery/infra-vercel
+    host: alien51
+    model: sonnet
+    steward: true
+  - id: builder
+    brief: delivery/builder
+    host: alien51
+    model: sonnet
+    count: 2
+    runner: superpowers   # superpowers | attractor | plain
+  - id: chatgpt-host-expert
+    brief: project/chatgpt-host-expert
+    host: alien51
+    model: sonnet
+```
+
+Stored as JSON with the same keys.
+
+`hosts.json` at `.delivery/team/hosts.json`, written by provision:
+
+```yaml
+hosts:
+  alien51:   { kind: pc,    bd: wrapper, headless: false, desktop_apps: true }
+  wintermute:{ kind: ssh,   bd: native,  headless: true,  desktop_apps: false, dolt_server: true,
+               lanes: [a, b, c, d], check: vault-check }
+  cloud:     { kind: cloud, bd: remote,  headless: true,  desktop_apps: false }
+```
+
+Stored as JSON with the same keys.
+
+Authority: Staffing and the Chief of Staff may scale the team up and down and hire specialists on
+their own within `budget`. Anything beyond the budget is a proposal in the morning briefing.
+Changes are commits to the project repo.
+
+## 6. How a session becomes a role and keeps it
+
+### 6.1 Join
+
+`/delivery:join <role-id>` is the only way a session acquires a role. The operator never runs it;
+stewards put it in a new session's first prompt. Idempotent.
+
+1. Creates the role instance directory beside the repos, e.g. `../the-vault-team/product-manager/`
+   (builders: `builder-1/`, `builder-2/`), containing a checkout of the project repo and, for roles
+   whose brief says they touch code, a worktree of the product repo. One directory per instance gives
+   each session its own auto-memory, actor, and settings.
+2. Writes `.claude/settings.local.json` there: `model` from the manifest, `DELIVERY_MODE`, `enabledPlugins` for delivery,
+   (the permission mode is passed by the steward at launch, never written to local settings), and an env block exporting `DELIVERY_ROLE=<id>`, `DELIVERY_HOST=<host>`,
+   `BEADS_ACTOR=<user>@<host>/<role-id>`.
+3. Writes `CLAUDE.local.md` there: team rules, the role brief, the routing table generated from the
+   manifest, the host's capabilities and limits from `hosts.json`.
+4. Runs `bd prime`, registers the session id in the roster bead, messages the Chief of Staff.
+
+### 6.2 Retention
+
+- SessionStart (startup, resume, clear, compact) re-reads the manifest, rewrites CLAUDE.local.md,
+  injects a short role block under the hook output cap, and registers the session
+- UserPromptSubmit appends one line: role id and current claim.
+
+### 6.3 Model and cost
+
+Model is one line per role. Changing it is a manifest commit by Staffing and a restart by the
+steward. Defaults: Opus for chief-of-staff and product-manager, Sonnet for delivery-lead, builders
+and specialists, Haiku for progress-observer. Staffing proposes changes on evidence: mostly-reading
+roles are Haiku candidates, roles producing wrong reasoning are Opus candidates.
+
+### 6.4 Cloud roles
+
+A cloud session can receive messages but cannot reply or be restarted by a peer. It is started by the
+operator on the project repo in the provisioned environment; the SessionStart hook finds the manifest
+and the join prompt the steward prepared. Staffing prepares, the Chief of Staff hands the operator
+the one click.
+
+## 7. Plan and execution: document plans, beads execute
+
+### 7.1 Two forms, one direction each
+
+- Structure flows document to beads only. `roadmap.md` (and the stories) are where phases and order
+  are decided, by the Product Manager with the operator, at the end of the delivery pipeline (brief,
+  research, personas, interview, simulate, PRD, prioritise, architecture, roadmap, challenge at every
+  gate). `/delivery:materialise`, run by the Delivery Lead, is the single writer of bead structure:
+  one epic per phase chained with blocked-by, one child per story, story dependencies from the
+  critical path, a final `phase review` child per epic blocked by all its stories and blocking the
+  next epic. Deterministic and idempotent. Every epic and story bead carries `roadmap-ref:
+  <file>@<git sha> phase <n> [story <id>]` and the journey and criteria it serves.
+- Status and evidence flow beads to document only. Sprint-review and realign read bead evidence.
+  Nobody edits the roadmap to say a phase is done.
+
+### 7.2 Compounding
+
+`bd ready` shows the frontier. Builders claim from it. Work found while building becomes a child
+bead under the bead that found it. A phase closes only when every child is closed with evidence,
+which unblocks the next epic. The chain of evidence is the audit trail.
+
+### 7.3 Review points
+
+- Phase gate, always: the `phase review` bead. Closing it means sprint-review ran and realign
+  updated the roadmap. The next epic cannot start without it.
+- Triggered review: anyone may create a `strategy review` bead citing a contradiction (blocker
+  invalidating a PRD assumption, twin diverging from reality, clustering user reports). The Product
+  Manager owns it; the Chief of Staff puts it at the top of the briefing. Nothing else stops.
+- Cadence review: the morning briefing reports drift (evidence not matching criteria, phases running
+  long, open challenge findings). Drift above the threshold in the manifest creates a strategy review
+  bead.
+
+### 7.4 Pivot mechanics
+
+The operator and the Product Manager revise brief, PRD or roadmap. Materialise reconciles beads:
+new epics added, open beads re-parented or marked deferred with the reason, closed beads never
+touched, dependencies re-threaded. The old plan stays in git history and in deferred beads.
+
+### 7.5 Reconciliation owner and drift detection
+
+The Delivery Lead owns the seam. `/delivery:team` (and the morning routine) runs a reconcile check:
+roadmap stories with no bead, beads with a stale roadmap-ref, phases closed in beads but not in
+realign, manifest roles missing or extra or on the wrong model in the roster bead. Any drift is one
+bead owned by the Delivery Lead (plan) or Staffing (roster), at the top of the briefing.
+In phase 1 the roster is a per-host file; cross-host drift arrives with phase 4.
+
+## 8. Enforcement: hooks
+
+All hooks ship in the plugin (`plugins/delivery/hooks/`) and are active in every role directory.
+They are scripts, so they hold regardless of what the model decides.
+
+### 8.1 Protect the public product repo
+
+Active only when the working tree is a product-repo worktree.
+
+- PreToolUse on `git commit`, `gh pr create|edit`, `gh issue create|comment`: block if the message or
+  body contains a denylist phrase, a `.delivery/` path, or a bead title. Only `Refs <prefix>-<id>` is
+  allowed, never a title. `gh issue create` is blocked outright for agents (issues are for users).
+  Replies to users pass the same scan.
+- PreToolUse on Write and Edit: block paths under `.delivery/`, `.beads/`, `team.json`, and any
+  file whose content matches a project-repo document.
+- PostToolUse after push: re-scan pushed commit messages; a hit creates a strategy review bead.
+- Denylist: generated by materialise into the project repo from initiative names, phase titles,
+  persona names, story titles, and vision vocabulary from brief and PRD; exact phrases of three or
+  more words plus proper nouns; reviewed by the operator once at materialise; the hook names the
+  matched phrase so a false positive is a one-line fix.
+
+### 8.2 Keep the record honest (PreToolUse on bd, Stop)
+
+- No close without a note starting `EVIDENCE:`.
+- No top-level create, re-parent or dependency change from any actor but delivery-lead.
+- No claim on a bead whose holder is live (last note within `staleness_hours`).
+- Stop: a session holding a claim cannot end its turn without a note newer than the turn start.
+
+### 8.3 Keep roles in their lane
+
+- Delegate mode (chief-of-staff, staffing): deny Write, Edit, bd structural commands, git mutations;
+  Staffing keeps one write, `team.json`.
+- Host reach: deny browser and computer-use tools on a headless host with a message naming which host
+  can do it.
+
+### 8.4 Retention hooks
+
+As in 6.2.
+
+## 9. Staffing and routines
+
+### 9.1 Hire
+
+`/delivery:hire`, run by Staffing during onboarding and again on evidence:
+
+1. Reads the product repo: manifests, lockfiles, deploy config, CI, docs, MCP surface.
+2. Maps findings to specialists with a stated reason each.
+3. Proposes a roster with host placement and model, sized small; builders scaled to ready beads
+   within `builders_cap`.
+4. Operator approves through the Chief of Staff (first hire) or Staffing applies within budget
+   (later changes), commits `team.json`, messages stewards.
+5. Re-runs on evidence: new platform in the repo, a role idle for a week, beads bouncing between
+   roles, complexity growing in one area. Proposes beyond budget, applies within it, each change
+   noted in the briefing.
+
+### 9.2 Routines
+
+Scheduled through the existing routine mechanism, so they run whether or not a session is open.
+
+- Morning briefing (Chief of Staff): reads beads, roster, open PRs, CI; runs reconcile and roster
+  drift; one ranked page in merged / deployed / verified with what needs the operator at the top.
+- Evening review (Progress Observer): liveness sweep, stale claims released with a note, done beads
+  older than the retention window summarised into their epic, denylist regenerated if the plan
+  changed.
+
+## 10. Onboarding
+
+Two entry points, one path after the first step.
+
+- New project: `/delivery:init <product-repo> <project-repo>`. Creates the private project repo if
+  missing, the `.delivery/` skeleton, an empty manifest with the core roles, the delivery-root
+  pointer. Continues into provision.
+- Existing project: Staffing hires migration-expert. It proposes the split, moves beads config, plans
+  and team rules to the project repo, leaves build and test rules in the product repo with one
+  pointer line, generates the first denylist. Continues into provision.
+
+Provision (`/delivery:provision`, bd-host steward):
+
+1. Hosts: record each in `hosts.json` (kind, bd reach, headless, desktop apps, steward); verify each
+   SSH host answers.
+2. Beads: on the bd host install bd and Dolt if absent, create the shared Dolt server as a systemd
+   user unit bound to the tailnet, `bd init` with the prefix, set the Dolt remote to the project
+   repo. On hosts that cannot run bd natively, generate the SSH wrapper and actor export. Verify
+   `bd ready` from every host.
+3. Cloud environment: write the environment definition for the project repo (setup script: install
+   bd, clone product repo as sibling, set Dolt remote and actor, install the product's test
+   dependencies from its developing docs). Register it.
+4. Test lanes. On the check host, create N isolated lanes (own folder and Postgres database each) and a
+   lock that refuses a busy lane with a distinct exit code; record lanes in `hosts.json`. Builders are
+   assigned a lane in their composed brief, so two sessions never share one.
+5. Existing environments are reused, never duplicated: provision detects a cloud environment or Dolt
+   server that already serves this project and records it instead of creating a second.
+6. Secrets stay with the operator. Provision writes everything except secret values and hands the
+   operator one list of what to paste where, through the Chief of Staff; it never reads or moves a
+   token itself.
+7. Record every step and its check in a provisioning bead.
+
+Then hire (section 9.1), then deploy:
+
+`/delivery:deploy`, from any session on any host: read manifest and roster bead, compute missing per
+host; start missing roles on this host with join as first prompt; message other stewards; prepare
+cloud join prompts for the operator; wait for the roster bead to show every role live; the Chief of
+Staff gives the first briefing.
+
+Then the Product Manager runs the pipeline to the first roadmap, and the Delivery Lead materialises.
+The operator says yes at hire and at the first roadmap; the Chief of Staff carries everything else.
+
+## 11. New surface
+
+Skills: `init`, `provision`, `hire`, `join`, `deploy`, `materialise`, `team`. Roles: `roles/`.
+Hooks: as in section 8, added to `hooks/hooks.json`. Templates: `team.json`, `hosts.json`,
+`denylist.txt`, composed `CLAUDE.local.md`, cloud environment definition. Routines: two definitions
+under `routines/`. The existing pipeline skills and agents are unchanged except where a core role
+brief composes them.
+
+## 12. Phasing
+
+Each phase gets its own implementation plan.
+
+1. Roles, manifest, join, retention hooks, `team` status with roster drift. Proves a session takes
+   and keeps a role.
+2. Document-to-beads: materialise (incl. spike beads from architecture and roadmap), reconcile
+   check, record-honesty hooks, leak hooks and denylist; the builder runner contract (`runner`
+   validated as superpowers | attractor | plain, and the builder and spike-researcher briefs
+   carrying the per-runner loop).
+3. Provision: hosts, beads over Dolt, wrappers, cloud environment, init and migration-expert.
+4. Hire, deploy, stewards, routines.
+
+## 13. Testing
+
+- Hook scripts: unit tests beside each script, as `record-invocation.test.js` is today; fixtures for
+  allowed and blocked commit messages, bd commands, and tool calls per role and host.
+- Join and materialise: run against a scratch pair of repos; assert the role directory contents,
+  settings, actor, and the bead graph for a fixture roadmap; idempotency by running twice.
+- Reconcile: fixtures with each drift class, assert one bead per class.
+- Provision: dry-run mode that prints every command and check; a live test on wintermute by hand,
+  recorded in the provisioning bead.
+- Hire: fixture repos per platform, assert the proposed roster and reasons.
+
+## 14. Prior art considered
+
+Native Agent Teams (same-host, no resume, no identity beyond spawn prompt), Cortex (markdown task
+files with heartbeat, a dispatcher called chief of staff), metaswarm (subagents in one session),
+Gas Town (Mayor on beads, Linux and tmux, heavy), TAKT (YAML topology). Lifted: liveness ticks and a
+staleness rule, daily briefing and review cadence, pruning, delegate mode. Not lifted: async task
+files (beads does it better), native teams.
+
+## 15. Open items
+
+- The exact routine mechanism for the two scheduled runs (cloud routine versus a steward's local
+  loop) is decided in phase 4's plan.
+- The denylist's false-positive rate is unknown until the Vault's first materialise; the review step
+  at materialise is the control.

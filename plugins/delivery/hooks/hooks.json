@@ -1,14 +1,25 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/role-session-start.js"], "timeout": 15 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/role-prompt-submit.js"], "timeout": 10 }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Skill|Agent|Write|Edit|NotebookEdit|mcp__Claude_Browser__computer|mcp__Claude_Code_iOS_Simulator__control",
         "hooks": [
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/record-invocation.js"]
-          }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/record-invocation.js"] }
         ]
       }
     ],
@@ -16,11 +27,7 @@
       {
         "matcher": "Skill|Agent|Write|Edit|NotebookEdit|mcp__Claude_Browser__computer|mcp__Claude_Code_iOS_Simulator__control",
         "hooks": [
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/record-invocation.js"]
-          }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/record-invocation.js"] }
         ]
       }
     ]
