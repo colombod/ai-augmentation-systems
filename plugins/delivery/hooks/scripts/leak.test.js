@@ -51,7 +51,7 @@ test('decideLeak acts only in the product worktree', () => {
 });
 
 test('scanPushed scans the pushed range', () => {
-  const git = (args) => (args.includes('@{upstream}..HEAD') ? 'fix login\n\nRefs ex-1\n\nCasual Carl wants this\n' : '');
+  const git = (args) => (args[0] === 'log' ? 'fix login\n\nRefs ex-1\n\nCasual   Carl\nwants this\n' : '');
   assert.deepEqual(scanPushed({ cwd: product, roleDir, denylist, git }), ['Casual Carl']);
   assert.deepEqual(scanPushed({ cwd: path.join(roleDir, 'project'), roleDir, denylist, git }), []);
 });
@@ -87,4 +87,100 @@ test('leak-guard hook denies a leaking commit from product and is silent from pr
   assert.equal(json.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(json.hookSpecificOutput.permissionDecisionReason, /Casual Carl/);
   assert.equal(runHook('leak-guard.js', input(path.join(b.roleDir, 'project')), env), '');
+});
+
+// ---- probe table: [command | tool descriptor, cwd (relative to roleDir), expectDenied] ----
+const P = 'Sell duplicates faster';
+const probes = [
+  [`cd product && git commit -m "${P}"`, '.', true],
+  [`git -C product commit -m "${P}"`, '.', true],
+  [`git -C ../product commit -m "${P}"`, 'project', true],
+  [`git -C ../project commit -m "${P}"`, 'product', false],
+  [`cd ../product; git commit -m "${P}"`, 'project', true],
+  [`git commit -m "${P}"`, 'project', false],
+  [`cd ../project && git commit -m "${P}"`, 'product', false],
+  [`git commit -am "${P}"`, 'product', true],
+  [`git commit -qm "${P}"`, 'product', true],
+  [`git commit -m"${P}"`, 'product', true],
+  [`git commit -m${P.replace(/ /g, '')}`, 'product', false],
+  [`git commit -mCasualCarl`, 'product', false],
+  [`git commit -m "ok" -m "casual   carl"`, 'product', true],
+  [`git commit -m "Sell\nduplicates  faster"`, 'product', true],
+  [`git commit -m "Sell\u00a0duplicates faster"`, 'product', true],
+  [`git commit -m "see .Delivery/x"`, 'product', true],
+  [`git commit -F m.txt`, 'product', true],
+  [`git commit -qF m.txt`, 'product', true],
+  [`git commit -t tpl.txt`, 'product', true],
+  [`git commit --template=tpl.txt`, 'product', true],
+  [`git commit --mess "${P}"`, 'product', true],
+  [`git commit --message="${P}"`, 'product', true],
+  [`git --no-pager -c user.name=x commit -m "${P}"`, 'product', true],
+  [`git --git-dir=.git commit -m "${P}"`, 'product', true],
+  [`/usr/bin/git commit -m "${P}"`, 'product', true],
+  [`env GIT_AUTHOR_NAME=x git commit -m "${P}"`, 'product', true],
+  [`FOO=1 command git commit -m "${P}"`, 'product', true],
+  [`bash -c 'git commit -m x'`, 'product', true],
+  [`sh -c "gh pr create --title x"`, 'product', true],
+  [`bash -c 'ls'`, 'product', false],
+  [`git merge feature -m "${P}"`, 'product', true],
+  [`git merge feature -F m.txt`, 'product', true],
+  [`git tag -a v1 -m "${P}"`, 'product', true],
+  [`git notes add -m "${P}"`, 'product', true],
+  [`gh pr create --title="${P}" --body ok`, 'product', true],
+  [`gh -R org/repo pr create --body "${P}"`, 'product', true],
+  [`gh --repo=org/repo pr comment 3 -b "${P}"`, 'product', true],
+  [`gh pr merge 3 --subject "${P}"`, 'product', true],
+  [`gh pr merge 3 -t "${P}"`, 'product', true],
+  [`gh pr review 3 --body "${P}"`, 'product', true],
+  [`gh pr close 3 -c "${P}"`, 'product', true],
+  [`gh issue close 3 --comment "${P}"`, 'product', true],
+  [`gh issue edit 3 -b "${P}"`, 'product', true],
+  [`gh issue comment 3 --body-file b.md`, 'product', true],
+  [`gh release create v1 --notes "${P}"`, 'product', true],
+  [`gh release create v1 -n "${P}"`, 'product', true],
+  [`gh release edit v1 --notes-file n.md`, 'product', true],
+  [`gh pr create -t "fine" -b "Refs ex-1"`, 'product', false],
+  [`gh api repos/o/r/issues/3/comments`, 'product', true],
+  [`gh api -X POST repos/o/r/x`, 'product', true],
+  [`gh api --method PATCH repos/o/r/x`, 'product', true],
+  [`gh api -f body=x repos/o/r/x`, 'product', true],
+  [`gh api --input b.json repos/o/r/x`, 'product', true],
+  [`gh api repos/o/r/pulls`, 'product', false],
+  [`gh issue create --title x`, 'product', true],
+  [`git status && git log`, 'product', false],
+  [{ tool: 'Write', path: 'product/.delivery/x.md' }, '.', true],
+  [{ tool: 'Write', path: 'product/.Delivery/x.md' }, 'project', true],
+  [{ tool: 'Edit', path: '../product/.beads/a' }, 'project', true],
+  [{ tool: 'Write', path: 'product/config/team.json' }, '.', true],
+  [{ tool: 'Write', path: 'product/config/steam.json' }, '.', false],
+  [{ tool: 'Write', path: 'product/src/a.js' }, '.', false],
+  [{ tool: 'Write', path: 'project/.delivery/x.md' }, '.', false],
+  [{ tool: 'MultiEdit', path: 'product/src/a.js', edits: [{ file_path: 'product/.beads/z' }] }, '.', true],
+  [{ tool: 'NotebookEdit', path: 'product/.delivery/n.ipynb' }, '.', true],
+];
+
+test('probe table: commands and tools are gated by effective directory and resolved path', () => {
+  fs.mkdirSync(path.join(roleDir, 'project'), { recursive: true });
+  const list = [...denylist];
+  for (const [probe, where, expectDenied] of probes) {
+    const cwd = path.join(roleDir, where);
+    const call = typeof probe === 'string'
+      ? { toolName: 'Bash', toolInput: { command: probe.replace(/\\n/g, '\n').replace(/\\u00a0/g, '\u00a0') } }
+      : { toolName: probe.tool, toolInput: { file_path: path.join(roleDir, probe.path.replace(/^\.\.\//, '')), edits: probe.edits && probe.edits.map((e) => ({ file_path: path.join(roleDir, e.file_path) })) } };
+    if (typeof probe !== 'string' && probe.path.startsWith('..')) call.toolInput.file_path = path.relative(cwd, path.join(roleDir, probe.path.replace(/^\.\.\//, '')));
+    const d = decideLeak({ ...call, cwd, roleDir, denylist: list });
+    assert.equal(!!d, expectDenied, `${JSON.stringify(probe)} from ${where}: ${d ? d.reason : 'allowed'}`);
+  }
+});
+
+test('push range: recorded upstream, tags, and no duplicate .delivery/ hit', () => {
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-push-'));
+  fs.mkdirSync(path.join(rd, 'product'), { recursive: true });
+  const cwd = path.join(rd, 'product');
+  const calls = [];
+  const git = (args) => { calls.push(args); if (args[0] === 'rev-parse' && args.includes('@{upstream}')) return 'abc123\n'; if (args[0] === 'log') return 'x .delivery/a and .DELIVERY/b'; if (args[0] === 'for-each-ref') return 'tag says Casual Carl'; return ''; };
+  require('./leak.js').recordPrepush({ roleDir: rd, dir: cwd, git });
+  assert.deepEqual(scanPushed({ cwd, roleDir: rd, denylist, git }), ['.delivery/']);
+  assert.ok(calls.some((a) => a[0] === 'log' && a[1] === 'abc123..HEAD'));
+  assert.deepEqual(scanPushed({ cwd, roleDir: rd, denylist, git, tags: true }), ['Casual Carl', '.delivery/']);
 });

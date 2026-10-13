@@ -473,4 +473,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { laneDecisionForHook, loadPolicy, splitCommand, classifySegment, pathAllowed, decideLane, sanctioned, tokens };
+module.exports = { laneDecisionForHook, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
