@@ -446,6 +446,24 @@ sentence is removed; the protocol below replaces it.
 Read commands (`verify`, `show`, `pending`) are in every role's lane. Write commands are in the
 lanes of chief-of-staff, product-manager, delivery-lead, staffing and progress-observer.
 
+**Answering on the operator's behalf.** The Chief of Staff's job is to spare the operator, so it
+answers worker questions itself whenever it can prove the basis, and asks the operator only for what
+no record settles. An answer is a record too (`ans-<seq>`), citing the decisions, delegations or
+earlier answers it applies, with a `confidence`:
+- `settled`: every bead, label and initiative the answer touches lies inside the scope of a cited
+  record that has not been revoked or superseded, and the cited statement covers the question.
+  Workers treat it exactly as the operator's word.
+- `inferred`: a judgement that extends a recorded decision or delegation to a new case. Allowed only
+  for reversible, low-stakes actions (never money, security, irreversible changes, or new product
+  scope), requires a written rationale, and is listed in the next briefing as one line the operator
+  can ratify or override. Workers act on it, preferring reversible steps until it is ratified.
+- Anything else is not answered by the Chief of Staff: it goes to the operator once, batched in the
+  briefing, with options and a recommendation.
+Before escalating, the Chief of Staff searches the record (`operator.js find`) for governing
+decisions. An override is a new decision that `supersedes` the earlier record; a ratification cites
+the operator's input. `verify` walks answer, decision or delegation, to the verbatim human input,
+and re-checks scope containment for `settled` answers. Commands added: `answer`, `find`, `ratify`.
+
 **Enforcement against relaying.**
 1. PreToolUse denies `AskUserQuestion` for every role except chief-of-staff and product-manager,
    with the reason "message the Chief of Staff with the one question; the answer comes back as a
