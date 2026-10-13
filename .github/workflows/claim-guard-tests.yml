@@ -1,0 +1,40 @@
+name: claim-guard tests
+
+# Scoped to plugins/claim-guard/** (plus this file) so a PR touching only one
+# plugin doesn't need the other plugins' workflows to run at all -- each
+# plugin's CI is independently green or red, easier to diagnose and fix.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/claim-guard/**'
+      - '.github/workflows/claim-guard-tests.yml'
+  pull_request:
+    paths:
+      - 'plugins/claim-guard/**'
+      - '.github/workflows/claim-guard-tests.yml'
+
+jobs:
+  test:
+    name: node --test (plugins/claim-guard/ledger)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: plugins/claim-guard/ledger
+        run: npm install
+
+      - name: Run test suite
+        working-directory: plugins/claim-guard/ledger
+        run: npm test
+
+      - name: Rebuild dist and assert the committed bundle is current
+        working-directory: plugins/claim-guard/ledger
+        run: |
+          npm run build
+          git diff --exit-code ../dist/

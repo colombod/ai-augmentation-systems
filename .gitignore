@@ -26,3 +26,7 @@ package-lock.json
 .beads-credential-key
 .beads/proxieddb/
 .claude/worktrees/
+
+# claim-guard ledger build artifacts
+plugins/claim-guard/ledger/.build/
+plugins/claim-guard/ledger/node_modules/

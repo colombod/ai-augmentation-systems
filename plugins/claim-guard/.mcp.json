@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "claim-ledger": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/claim-ledger.js"],
+      "env": { "CLAIM_GUARD_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}" }
+    }
+  }
+}

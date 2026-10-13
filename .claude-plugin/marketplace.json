@@ -4,7 +4,7 @@
     "name": "Diego Colombo",
     "url": "https://github.com/colombod"
   },
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Private marketplace of AI augmentation systems. Each plugin is self-contained under plugins/<name>/ and versioned independently of this registry.",
   "plugins": [
     {
@@ -32,6 +32,13 @@
       "version": "0.2.0",
       "description": "DOT-graph convergence orchestration for Claude Code: nodes are computation, edges are dispatch, LLM nodes run as claude -p subprocesses.",
       "keywords": ["orchestration", "pipeline", "dot", "graphviz"]
+    },
+    {
+      "name": "claim-guard",
+      "source": "./plugins/claim-guard",
+      "version": "0.1.0",
+      "description": "Adversarial claim-verification gate: harvest a changeset's explicit and implicit claims, refute each against the shipped source via 7 lens agents, and gate merge with a deterministic BLOCK / PASS / INDETERMINATE verdict.",
+      "keywords": ["verification", "adversarial-review", "claims", "pre-merge", "gate", "quality"]
     }
   ]
 }
