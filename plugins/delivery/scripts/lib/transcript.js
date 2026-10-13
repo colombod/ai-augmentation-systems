@@ -24,8 +24,11 @@ function classifyRecord(record) {
     const origin = a.origin && typeof a.origin === 'object' ? a.origin : null;
     const kind = origin && origin.kind;
     let source;
-    if (kind === 'human') source = 'human';
-    else if (kind === 'peer') source = 'peer';
+    if (kind === 'human') {
+      const head = text.trim();
+      const injected = SYSTEM_PREFIXES.some((p) => head.startsWith(p));
+      source = a.commandMode === 'prompt' && !injected ? 'human' : 'system';
+    } else if (kind === 'peer') source = 'peer';
     else if (kind) source = 'system';
     else source = 'unknown';
     return {
@@ -48,7 +51,11 @@ function classifyRecord(record) {
   else if (kind === 'human') {
     const head = text.trim();
     source = SYSTEM_PREFIXES.some((p) => head.startsWith(p)) ? 'system' : 'human';
-  } else source = 'unknown';
+  } else {
+    const head = text.trim();
+    // harness-injected UI notes that carry no origin at all are not operator input either
+    source = head.startsWith('<command-name>') || head.startsWith('<local-command') ? 'system' : 'unknown';
+  }
   return {
     source, text,
     ext_id: record.promptId || record.uuid || null,
@@ -57,18 +64,32 @@ function classifyRecord(record) {
   };
 }
 
-// Read complete lines after `fromLine` (count of lines already consumed). A final line without a
-// newline is left for the next read (the harness may still be writing it).
+// Read complete lines. `fromOffset` (bytes already consumed, with `fromLine` the line count at that
+// offset) lets a caller resume without rereading; without it, `fromLine` lines are skipped from the
+// top. A final line without a newline is left for the next read (the harness may still be writing).
+// If the file is smaller than `fromOffset` it was rewritten: read from the top.
 function readHumanInputs(file, opts = {}) {
-  const fromLine = opts.fromLine || 0;
-  const out = { inputs: [], lastLine: fromLine, total_user_records: 0, with_origin: 0 };
-  let raw;
-  try { raw = fs.readFileSync(file, 'utf8'); } catch (e) { return out; }
-  const lines = raw.split('\n');
-  const complete = lines.length - 1; // last element is '' or a partial line
-  for (let i = fromLine; i < complete; i++) {
-    out.lastLine = i + 1;
-    const l = lines[i];
+  let fromLine = opts.fromLine || 0;
+  let fromOffset = opts.fromOffset || 0;
+  const out = { inputs: [], lastLine: fromLine, lastOffset: fromOffset, total_user_records: 0, with_origin: 0, rescanned: false };
+  let buf;
+  try { buf = fs.readFileSync(file); } catch (e) { return out; }
+  if (fromOffset > buf.length) { // rewritten smaller
+    fromOffset = 0; fromLine = 0; out.rescanned = true;
+    out.lastLine = 0; out.lastOffset = 0;
+  }
+  let pos = fromOffset;
+  let lineNo = opts.fromOffset ? fromLine : 0;
+  const skip = opts.fromOffset && !out.rescanned ? 0 : fromLine;
+  for (;;) {
+    const nl = buf.indexOf(0x0a, pos);
+    if (nl === -1) break; // partial or no further line
+    const l = buf.toString('utf8', pos, nl);
+    pos = nl + 1;
+    lineNo++;
+    out.lastLine = lineNo;
+    out.lastOffset = pos;
+    if (lineNo <= skip) continue;
     if (l.trim() === '') continue;
     let rec;
     try { rec = JSON.parse(l); } catch (e) { continue; }
@@ -81,7 +102,7 @@ function readHumanInputs(file, opts = {}) {
     if (!c) continue;
     const att = rec.attachment;
     out.inputs.push({
-      line: i + 1,
+      line: lineNo,
       source: c.source,
       text: c.text,
       ext_id: c.ext_id,
@@ -90,7 +111,7 @@ function readHumanInputs(file, opts = {}) {
       uuid: rec.uuid || null,
     });
   }
-  if (fromLine > complete) out.lastLine = Math.max(complete, 0);
+  if (!opts.fromOffset && fromLine > lineNo) out.lastLine = lineNo;
   return out;
 }
 

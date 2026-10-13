@@ -61,29 +61,84 @@ function lastEntryOf(file) {
   try { return JSON.parse(line); } catch (e) { return null; }
 }
 
+function readToken(lockFile) {
+  try { return fs.readFileSync(lockFile, 'utf8'); } catch (e) { return null; }
+}
+
+// The lock file holds `<pid>:<random>`; the token identifies the holder.
 function acquireLock(lockFile) {
   fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+  const token = `${process.pid}:${crypto.randomBytes(8).toString('hex')}`;
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   for (;;) {
     try {
       const fd = fs.openSync(lockFile, 'wx');
-      try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
-      return;
+      try { fs.writeSync(fd, token); } finally { fs.closeSync(fd); }
+      return token;
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
+      let age;
+      let seen;
       try {
-        const age = Date.now() - fs.statSync(lockFile).mtimeMs;
-        if (age > LOCK_STALE_MS) { fs.unlinkSync(lockFile); continue; }
+        age = Date.now() - fs.statSync(lockFile).mtimeMs;
+        seen = readToken(lockFile);
       } catch (e) { continue; /* vanished: retry */ }
+      if (age > LOCK_STALE_MS) {
+        // Break by renaming to a unique name, then re-check the token we judged stale.
+        const aside = `${lockFile}.stale-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+        try {
+          fs.renameSync(lockFile, aside);
+          if (readToken(aside) === seen) { fs.unlinkSync(aside); continue; }
+          // we moved a lock that was replaced meanwhile: put it back if nobody took the slot
+          try { fs.linkSync(aside, lockFile); } catch (e) { /* slot taken */ }
+          try { fs.unlinkSync(aside); } catch (e) { /* ignore */ }
+        } catch (e) { /* lost the race, retry */ }
+        continue;
+      }
       if (Date.now() >= deadline) throw new Error(`could not acquire lock ${lockFile} within ${LOCK_TIMEOUT_MS} ms`);
       sleepSync(5 + Math.floor(Math.random() * 10));
     }
   }
 }
 
+function releaseLock(lockFile, token) {
+  if (readToken(lockFile) === token) { try { fs.unlinkSync(lockFile); } catch (e) { /* gone */ } }
+}
+
 function withLock(lockFile, fn) {
-  acquireLock(lockFile);
-  try { return fn(); } finally { try { fs.unlinkSync(lockFile); } catch (e) { /* already gone */ } }
+  const token = acquireLock(lockFile);
+  try { return fn(); } finally { releaseLock(lockFile, token); }
+}
+
+function validLine(line) {
+  try {
+    const o = JSON.parse(line);
+    return o && typeof o === 'object' && typeof o.hash === 'string' ? o : null;
+  } catch (e) { return null; }
+}
+
+// If the file's last non-empty line is not a complete entry, move the tail aside as evidence
+// (`<file>.partial-<ts>`) and truncate back to the last valid line. Returns the last valid
+// entry (or null when no valid line remains).
+function repairTail(file) {
+  const raw = fs.readFileSync(file, 'utf8');
+  if (raw.trim() === '') return null;
+  const lines = raw.split('\n');
+  let end = lines.length;
+  while (end > 0 && lines[end - 1].trim() === '') end--;
+  if (validLine(lines[end - 1])) return validLine(lines[end - 1]);
+  let k = end;
+  let last = null;
+  while (k > 0) {
+    last = validLine(lines[k - 1]);
+    if (last) break;
+    k--;
+  }
+  const keep = lines.slice(0, k);
+  const tail = lines.slice(k).join('\n');
+  fs.writeFileSync(`${file}.partial-${Date.now()}-${process.pid}`, tail);
+  fs.writeFileSync(file, keep.length ? keep.join('\n') + '\n' : '');
+  return last;
 }
 
 // Append one entry. `entry` is an object, or a function (lastEntry|null) => object|null, called
@@ -93,7 +148,14 @@ function withLock(lockFile, fn) {
 function appendEntry(file, entry, opts = {}) {
   const doAppend = () => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    let last = lastEntryOf(file);
+    let last = null;
+    let exists = false;
+    try { exists = fs.statSync(file).size > 0; } catch (e) { exists = false; }
+    if (exists) {
+      const tail = readLastLine(file);
+      last = tail ? validLine(tail) : null;
+      if (!last) last = repairTail(file); // never treat a non-empty file as empty
+    }
     if (!last && opts.prevFile) last = lastEntryOf(opts.prevFile);
     const body = typeof entry === 'function' ? entry(last) : entry;
     if (body === null || body === undefined) return null;

@@ -88,12 +88,24 @@ function loadIndex(root, host) {
     lastId = last ? last.id : null;
   }
   const idx = readJson(file);
-  if (idx && idx.last_id === lastId && idx.map && typeof idx.map === 'object') return { file, last_id: lastId, map: idx.map, dirty: false };
-  const map = {};
+  if (idx && idx.last_id === lastId && idx.map && typeof idx.map === 'object') {
+    return { file, last_id: lastId, map: new Map(Object.entries(idx.map)), dirty: false };
+  }
+  const map = new Map();
   for (const f of files) {
-    for (const e of readEntries(path.join(hostDir(root, host), f))) { const k = dedupeKey(e); if (k) map[k] = e.id; }
+    for (const e of readEntries(path.join(hostDir(root, host), f))) { const k = dedupeKey(e); if (k) map.set(k, e.id); }
   }
   return { file, last_id: lastId, map, dirty: true };
+}
+
+// Local-only record of how long each host chain was and its last hash, so a deleted tail
+// is detectable (a pure hash chain cannot see its own truncation).
+function headsFile(root) { return path.join(opDir(root), 'cursors', 'heads.json'); }
+function readHeads(root) { return readJson(headsFile(root)) || {}; }
+function setHead(root, host, head) {
+  const heads = readHeads(root);
+  heads[host] = head;
+  writeJsonAtomic(headsFile(root), heads);
 }
 
 function syncTranscript(opts) {
@@ -107,10 +119,10 @@ function syncTranscript(opts) {
   if (cursor.transcript !== transcriptPath) {
     cursor = { line: 0, transcript: transcriptPath, total_user_records: 0, with_origin: 0 };
   }
-  let read = transcript.readHumanInputs(transcriptPath, { fromLine: cursor.line });
+  let read = transcript.readHumanInputs(transcriptPath, { fromLine: cursor.line, fromOffset: cursor.offset || 0 });
   let base = { total_user_records: cursor.total_user_records || 0, with_origin: cursor.with_origin || 0 };
-  if (read.lastLine < cursor.line) { // transcript shrank: it was rewritten, rescan (ext_id dedupe protects)
-    read = transcript.readHumanInputs(transcriptPath, { fromLine: 0 });
+  if (read.rescanned || read.lastLine < cursor.line) { // rewritten: rescan (dedupe protects)
+    if (!read.rescanned) read = transcript.readHumanInputs(transcriptPath, { fromLine: 0 });
     base = { total_user_records: 0, with_origin: 0 };
   }
 
@@ -125,7 +137,7 @@ function syncTranscript(opts) {
       if (inp.source === 'system') continue;
       const extId = inp.ext_id || `${sessionId}:${inp.line}`;
       const key = dedupeKey({ source: inp.source, ext_id: extId, uuid: inp.uuid });
-      if (idx.map[key]) continue;
+      if (idx.map.has(key)) continue;
       const files = monthFiles(projectRoot, host);
       const latest = files.length ? files[files.length - 1] : null;
       // never write into an older month than the newest existing file: keep one linear chain
@@ -140,7 +152,7 @@ function syncTranscript(opts) {
           host,
           ts: inp.timestamp || now.toISOString(),
           captured_at: now.toISOString(),
-          session_id: sessionId || inp.session_id || null,
+          session_id: inp.session_id || sessionId || null,
           instance: instance || null,
           role: role || null,
           source: inp.source,
@@ -148,19 +160,24 @@ function syncTranscript(opts) {
           text_sha256: sha256(full),
           ext_id: extId,
           uuid: inp.uuid || null,
-          transcript_ref: { file: transcriptPath, line: inp.line },
+          transcript_ref: { file: path.basename(transcriptPath), line: inp.line },
         };
         if (t.truncated) e.truncated = true;
         return e;
       }, { alreadyLocked: true, prevFile });
-      idx.map[key] = stored.id;
+      idx.map.set(key, stored.id);
       idx.last_id = stored.id;
       added++;
     }
-    if (added || idx.dirty) writeJsonAtomic(idx.file, { last_id: idx.last_id, map: idx.map });
+    if (added) {
+      const h = verifyHostRaw(projectRoot, host);
+      if (h.ok) setHead(projectRoot, host, { count: h.count, last_hash: h.last_hash });
+    }
+    if (added || idx.dirty) writeJsonAtomic(idx.file, { last_id: idx.last_id, map: Object.fromEntries(idx.map) });
     // cursor advances only after the entries are on disk
     cursor = {
       line: read.lastLine,
+      offset: read.lastOffset,
       transcript: transcriptPath,
       total_user_records: base.total_user_records + read.total_user_records,
       with_origin: base.with_origin + read.with_origin,
@@ -199,39 +216,63 @@ function listInputs(projectRoot, opts = {}) {
   return out;
 }
 
-function verifyHost(projectRoot, host) {
+// Chain, sequence and text checks for one host, without consulting heads.
+function verifyHostRaw(projectRoot, host) {
   let prev = '0';
   let count = 0;
   let lastSeq = 0;
+  const hashes = [];
   for (const f of monthFiles(projectRoot, host)) {
     const file = path.join(hostDir(projectRoot, host), f);
     const v = chain.verifyChain(file, { prev });
     if (!v.ok) return { ok: false, count: count + v.count, host, file, at: v.at, error: `host ${host} ${f}: ${v.error}` };
-    for (const [i, e] of readEntries(file).entries()) {
+    const lines = fs.readFileSync(file, 'utf8').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      const e = JSON.parse(lines[i]);
+      hashes.push(e.hash);
       const p = parseId(e.id);
       if (!p || p.host !== host || p.seq !== lastSeq + 1) {
-        return { ok: false, count, host, file, at: i + 1, error: `host ${host} ${f}: unexpected id ${e.id} after seq ${lastSeq}` };
+        return { ok: false, count, host, file, at: i + 1, error: `host ${host} ${f} line ${i + 1}: unexpected id ${e.id} after seq ${lastSeq}` };
       }
       lastSeq = p.seq;
       if (typeof e.text === 'string' && !e.truncated && sha256(e.text) !== e.text_sha256) {
-        return { ok: false, count, host, file, at: i + 1, error: `host ${host} ${f}: text does not match text_sha256 for ${e.id}` };
+        return { ok: false, count, host, file, at: i + 1, error: `host ${host} ${f} line ${i + 1}: text does not match text_sha256 for ${e.id}` };
       }
     }
     prev = v.last_hash;
     count += v.count;
   }
-  return { ok: true, count, host };
+  return { ok: true, count, host, last_hash: prev, hashes };
+}
+
+function verifyHost(projectRoot, host) {
+  const v = verifyHostRaw(projectRoot, host);
+  if (!v.ok) return v;
+  const head = readHeads(projectRoot)[host];
+  if (head) {
+    if (v.count < head.count) {
+      return { ok: false, count: v.count, host, error: `host ${host}: truncated, ${v.count} entries but ${head.count} were recorded` };
+    }
+    if (head.count > 0 && v.hashes[head.count - 1] !== head.last_hash) {
+      return { ok: false, count: v.count, host, error: `host ${host}: history rewritten, entry ${head.count} no longer matches the recorded head` };
+    }
+  }
+  if (!head || v.count > head.count) setHead(projectRoot, host, { count: v.count, last_hash: v.last_hash });
+  return { ok: true, count: v.count, host, last_hash: v.last_hash };
 }
 
 function verifyInputs(projectRoot, opts = {}) {
   if (opts.host) return verifyHost(projectRoot, safeHost(opts.host));
   let count = 0;
+  const heads = {};
   for (const host of listHosts(projectRoot)) {
     const v = verifyHost(projectRoot, host);
-    if (!v.ok) return { ...v, count: count + v.count };
+    if (!v.ok) return { ...v, count: count + v.count, heads };
     count += v.count;
+    heads[host] = { count: v.count, last_hash: v.last_hash };
   }
-  return { ok: true, count };
+  return { ok: true, count, heads };
 }
 
 // ---- publish / refresh (best effort, never throw) ----
@@ -241,54 +282,99 @@ function git(cwd, args) {
   return { ok: r.status === 0, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
 }
 
+const OP_PATH = '.delivery/operator';
+
+function upstreamOf(root) {
+  const r = git(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  if (!r.ok || !r.out.includes('/')) return null;
+  const i = r.out.indexOf('/');
+  return { ref: r.out, remote: r.out.slice(0, i), branch: r.out.slice(i + 1) };
+}
+
+// Bring other writers' operator files from the upstream into the working tree, path by path.
+// Never touches anything outside .delivery/operator and never overwrites this host's or this
+// instance's own chain files. opts: { host, instance, fetch = true }.
+function refresh(projectRoot, opts = {}) {
+  try {
+    if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return { ok: false, reason: 'not a git repository' };
+    const up = upstreamOf(projectRoot);
+    if (!up) return { ok: false, reason: 'no upstream' };
+    if (opts.fetch !== false) {
+      const f = git(projectRoot, ['fetch', up.remote]);
+      if (!f.ok) return { ok: false, reason: f.err || 'fetch failed' };
+    }
+    const diff = git(projectRoot, ['diff', '--name-only', 'HEAD', '@{u}', '--', OP_PATH]);
+    const own = [];
+    if (opts.host) own.push(`${OP_PATH}/inputs/${safeHost(opts.host)}/`);
+    const ownFiles = opts.instance ? [`${OP_PATH}/records/${opts.instance}.ndjson`] : [];
+    const updated = [];
+    for (const p of diff.out ? diff.out.split('\n') : []) {
+      if (own.some((o) => p.startsWith(o)) || ownFiles.includes(p)) continue;
+      // chains are append-only: take the upstream copy only when the local file is missing or a
+      // prefix of it, so a newer local file (this writer's own, unpublished) is never replaced
+      const abs = path.join(projectRoot, p);
+      if (fs.existsSync(abs)) {
+        const show = cp.spawnSync('git', ['show', `@{u}:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+        if (show.status !== 0) continue;
+        let local = '';
+        try { local = fs.readFileSync(abs, 'utf8'); } catch (e) { continue; }
+        if (!show.stdout.startsWith(local) || show.stdout === local) continue;
+      }
+      const c = git(projectRoot, ['checkout', '@{u}', '--', p]);
+      if (c.ok) { updated.push(p); git(projectRoot, ['reset', '-q', 'HEAD', '--', p]); }
+    }
+    return { ok: true, updated };
+  } catch (e) {
+    return { ok: false, reason: String(e && e.message || e) };
+  }
+}
+
+// Commit and push only .delivery/operator. Never touches other work: path-scoped add and
+// commit, refuses to push when unpushed commits touch anything else, no autostash or rebase.
+// opts: { force, host, instance }.
 function publish(projectRoot, opts = {}) {
+  const no = (reason, extra = {}) => ({ ok: false, published: false, reason, ...extra });
   try {
     const stamp = path.join(opDir(projectRoot), 'cursors', 'last-publish.json');
     if (!opts.force) {
       const last = readJson(stamp);
-      if (last && Date.now() - last.at < PUBLISH_THROTTLE_MS) return { published: false, reason: 'throttled' };
+      if (last && Date.now() - last.at < PUBLISH_THROTTLE_MS) return no('throttled');
     }
-    if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return { published: false, reason: 'not a git repository' };
+    if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return no('not a git repository');
     try { writeJsonAtomic(stamp, { at: Date.now() }); } catch (e) { /* ignore */ }
     ensureGitignore(projectRoot);
-    const add = git(projectRoot, ['add', '--', '.delivery/operator']);
-    if (!add.ok) return { published: false, reason: add.err };
-    const staged = git(projectRoot, ['diff', '--cached', '--numstat', '--', '.delivery/operator']);
+    const add = git(projectRoot, ['add', '--', OP_PATH]);
+    if (!add.ok) return no(add.err);
+    const staged = git(projectRoot, ['diff', '--cached', '--numstat', '--', OP_PATH]);
     const lines = staged.out ? staged.out.split('\n') : [];
     const n = lines.reduce((s, l) => s + (Number(l.split('\t')[0]) || 0), 0);
     if (lines.length) {
-      const c = git(projectRoot, ['commit', '-m', `operator: ${n} entries`, '--', '.delivery/operator']);
-      if (!c.ok) return { published: false, reason: c.err || c.out };
+      const c = git(projectRoot, ['commit', '--only', '--no-verify', '--no-gpg-sign', '-m', `operator: ${n} entries`, '--', OP_PATH]);
+      if (!c.ok) return no(c.err || c.out);
     }
-    const hasUpstream = git(projectRoot, ['rev-parse', '--abbrev-ref', '@{u}']).ok;
-    if (!hasUpstream && !git(projectRoot, ['remote']).out) return { published: false, reason: 'no remote', committed: lines.length > 0 };
-    const push = () => (hasUpstream ? git(projectRoot, ['push']) : git(projectRoot, ['push', '-u', 'origin', 'HEAD']));
+    const up = upstreamOf(projectRoot);
+    if (!up) return no('no upstream', { committed: lines.length > 0 });
+
+    const unrelated = () => {
+      const d = git(projectRoot, ['diff', '--name-only', '@{u}...HEAD']);
+      return d.out.split('\n').filter((p) => p && !p.startsWith(OP_PATH + '/'));
+    };
+    if (unrelated().length) return no('unpushed unrelated commits', { paths: unrelated() });
+
+    const push = () => git(projectRoot, ['push', up.remote, `HEAD:${up.branch}`]);
     let r = push();
     if (!r.ok) {
-      const pull = git(projectRoot, ['pull', '--rebase', '--autostash']);
-      if (!pull.ok) { git(projectRoot, ['rebase', '--abort']); return { published: false, reason: pull.err || 'pull failed' }; }
+      // rejected: fetch, merge the upstream (path-scoped work was verified above) and retry once
+      const f = git(projectRoot, ['fetch', up.remote]);
+      if (!f.ok) return no(f.err || 'fetch failed');
+      if (unrelated().length) return no('unpushed unrelated commits', { paths: unrelated() });
+      const m = git(projectRoot, ['merge', '--no-edit', '--no-verify', '--no-gpg-sign', '@{u}']);
+      if (!m.ok) { git(projectRoot, ['merge', '--abort']); return no(m.err || m.out || 'merge failed'); }
       r = push();
     }
-    return r.ok ? { published: true, entries: n } : { published: false, reason: r.err };
+    return r.ok ? { ok: true, published: true, entries: n } : no(r.err);
   } catch (e) {
-    return { published: false, reason: String(e && e.message || e) };
-  }
-}
-
-function refresh(projectRoot) {
-  try {
-    if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return { ok: false, reason: 'not a git repository' };
-    if (!git(projectRoot, ['remote']).out) return { ok: false, reason: 'no remote' };
-    const clean = git(projectRoot, ['status', '--porcelain']).out === '';
-    if (clean) {
-      const ff = git(projectRoot, ['pull', '--ff-only']);
-      if (ff.ok) return { ok: true, mode: 'ff' };
-    }
-    const r = git(projectRoot, ['pull', '--rebase', '--autostash']);
-    if (!r.ok) { git(projectRoot, ['rebase', '--abort']); return { ok: false, reason: r.err }; }
-    return { ok: true, mode: 'rebase' };
-  } catch (e) {
-    return { ok: false, reason: String(e && e.message || e) };
+    return no(String(e && e.message || e));
   }
 }
 

@@ -138,3 +138,29 @@ test('concurrent appends from 6 processes keep a valid chain', async () => {
   assert.deepStrictEqual([v.ok, v.count], [true, 48]);
   assert.ok(!fs.existsSync(file + '.lock'));
 });
+
+test('a truncated JSON tail is moved aside and the next append chains from the last good line', () => {
+  const dir = tmp();
+  const file = path.join(dir, 'log.ndjson');
+  chain.appendEntry(file, { id: 'a', n: 1 });
+  const b = chain.appendEntry(file, { id: 'b', n: 2 });
+  fs.appendFileSync(file, '{"id":"c","n":3,"prev":"abc","ha');
+  const next = (last) => ({ n: last ? last.n + 1 : 1 });
+  const c = chain.appendEntry(file, next);
+  assert.strictEqual(c.prev, b.hash);
+  assert.strictEqual(c.n, 3);
+  assert.strictEqual(chain.verifyChain(file).ok, true);
+  assert.strictEqual(chain.verifyChain(file).count, 3);
+  const partial = fs.readdirSync(dir).filter((n) => n.includes('.partial-'));
+  assert.strictEqual(partial.length, 1);
+  assert.match(fs.readFileSync(path.join(dir, partial[0]), 'utf8'), /"id":"c"/);
+});
+
+test('a file with only garbage is never treated as empty history silently: evidence is kept', () => {
+  const dir = tmp();
+  const file = path.join(dir, 'log.ndjson');
+  fs.writeFileSync(file, '{"half');
+  const a = chain.appendEntry(file, { id: 'a' });
+  assert.strictEqual(a.prev, '0');
+  assert.ok(fs.readdirSync(dir).some((n) => n.includes('.partial-')));
+});

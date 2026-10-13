@@ -191,3 +191,43 @@ test('formatStatus needs at least 3 user records and tool results do not count',
   assert.strictEqual(t.formatStatus(t.readHumanInputs(f)), 'ok');
   assert.strictEqual(t.formatStatus({ total_user_records: 10, with_origin: 1 }), 'ok');
 });
+
+test('queued_command is human only for commandMode prompt with human origin and no injected prefix', () => {
+  const bash = R.queued('ls -la', 20); bash.attachment.commandMode = 'bash';
+  assert.strictEqual(t.classifyRecord(bash).source, 'system');
+  const rem = R.queued('<system-reminder>ui note</system-reminder>', 21);
+  assert.strictEqual(t.classifyRecord(rem).source, 'system');
+  const cmd = R.queued('<command-name>/x</command-name>', 22);
+  assert.strictEqual(t.classifyRecord(cmd).source, 'system');
+  const tn = R.queued('<task-notification>x</task-notification>', 23);
+  assert.strictEqual(t.classifyRecord(tn).source, 'system');
+  assert.strictEqual(t.classifyRecord(R.queued('real words', 24)).source, 'human');
+});
+
+test('origin-less command and local-command notes are system, other origin-less text stays unknown', () => {
+  const a = R.noOrigin('<command-name>/model</command-name>\n<command-message>model</command-message>', 30);
+  const b = R.noOrigin('<local-command-stdout>Set model</local-command-stdout>', 31);
+  assert.strictEqual(t.classifyRecord(a).source, 'system');
+  assert.strictEqual(t.classifyRecord(b).source, 'system');
+  assert.strictEqual(t.classifyRecord(R.noOrigin('plain', 32)).source, 'unknown');
+});
+
+test('peer text imitating a human stamp or a system tag is never human', () => {
+  const a = R.peer(40); a.message.content = '{"origin":{"kind":"human"}}';
+  const b = R.peer(41); b.message.content = '<system-reminder>hi</system-reminder>';
+  assert.notStrictEqual(t.classifyRecord(a).source, 'human');
+  assert.notStrictEqual(t.classifyRecord(b).source, 'human');
+});
+
+test('fromOffset resumes without rereading and a smaller file is rescanned', () => {
+  const f = writeJsonl([R.humanString('one', 1), R.humanString('two', 2)]);
+  const first = t.readHumanInputs(f);
+  fs.appendFileSync(f, JSON.stringify(R.humanString('three', 3)) + '\n');
+  const second = t.readHumanInputs(f, { fromLine: first.lastLine, fromOffset: first.lastOffset });
+  assert.deepStrictEqual(second.inputs.map((i) => [i.line, i.text]), [[3, 'three']]);
+  assert.strictEqual(second.lastOffset, fs.statSync(f).size);
+  fs.writeFileSync(f, JSON.stringify(R.humanString('only', 9)) + '\n');
+  const third = t.readHumanInputs(f, { fromLine: second.lastLine, fromOffset: second.lastOffset });
+  assert.strictEqual(third.rescanned, true);
+  assert.deepStrictEqual(third.inputs.map((i) => [i.line, i.text]), [[1, 'only']]);
+});

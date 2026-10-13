@@ -73,7 +73,7 @@ test('entry shape: ts, captured_at, session, instance, role, hash of text, ext_i
   assert.strictEqual(e.role, 'chief-of-staff');
   assert.strictEqual(e.text_sha256, crypto.createHash('sha256').update('exact words').digest('hex'));
   assert.strictEqual(e.ext_id, 'p1');
-  assert.deepStrictEqual(e.transcript_ref, { file: tr, line: 1 });
+  assert.deepStrictEqual(e.transcript_ref, { file: 't.jsonl', line: 1 });
   assert.strictEqual(e.prev, '0');
   assert.strictEqual(e.truncated, undefined);
   assert.ok(/^[0-9a-f]{64}$/.test(e.hash));
@@ -184,7 +184,9 @@ test('month rollover starts a new file whose first entry chains from the previou
   const a = JSON.parse(fs.readFileSync(path.join(dir, '2026-10.ndjson'), 'utf8').trim());
   const b = JSON.parse(fs.readFileSync(path.join(dir, '2026-11.ndjson'), 'utf8').trim());
   assert.strictEqual(b.prev, a.hash);
-  assert.deepStrictEqual(log.verifyInputs(root, { host: 'pc' }), { ok: true, count: 2, host: 'pc' });
+  const vv = log.verifyInputs(root, { host: 'pc' });
+  assert.deepStrictEqual([vv.ok, vv.count, vv.host], [true, 2, 'pc']);
+  assert.match(vv.last_hash, /^[0-9a-f]{64}$/);
 });
 
 test('verifyInputs detects an edited text and names host, file and line', () => {
@@ -230,7 +232,7 @@ test('two hosts write different files with different ids; the first host file is
 test('listInputs filters by since, source and session', () => {
   const root = project();
   sync(root, transcript([human('one', 1), peer(2)]));
-  sync(root, transcript([human('two', 30)]), { sessionId: 'sess-2' });
+  sync(root, transcript([human('two', 30, { sessionId: 'sess-2' })]), { sessionId: 'sess-2' });
   assert.deepStrictEqual(log.listInputs(root, { source: 'human' }).map((e) => e.text), ['one', 'two']);
   assert.deepStrictEqual(log.listInputs(root, { sessionId: 'sess-2' }).map((e) => e.text), ['two']);
   assert.deepStrictEqual(log.listInputs(root, { since: '2026-10-13T10:00:10Z' }).map((e) => e.text), ['two']);
@@ -296,7 +298,7 @@ test('host B input is visible to host A after publish and refresh', () => {
   assert.strictEqual(r.ok, true, JSON.stringify(r));
   assert.strictEqual(log.getInput(hosta, 'in-hostb-000001').text, 'decision from b');
   assert.strictEqual(log.verifyInputs(hosta).ok, true);
-  assert.strictEqual(fs.existsSync(path.join(hosta, '.delivery', 'operator', 'cursors')), false, 'local state not shared');
+  assert.ok(!git(hosta, 'ls-files', '.delivery/operator').includes('cursors/'), 'local state not shared');
 });
 
 test('concurrent appends on both hosts merge without conflict', () => {
@@ -318,7 +320,8 @@ test('concurrent appends on both hosts merge without conflict', () => {
       ['in-hosta-000001', 'in-hosta-000002', 'in-hostb-000001', 'in-hostb-000002']);
     assert.strictEqual(log.verifyInputs(root).ok, true);
   }
-  assert.strictEqual(git(hosta, 'status', '--porcelain').trim(), '');
+  const dirty = git(hosta, 'status', '--porcelain').split('\n').filter((l) => l && !l.includes('.delivery/operator'));
+  assert.deepStrictEqual(dirty, []);
 });
 
 test('publish never throws, even outside a git repository, and is throttled', () => {
@@ -333,4 +336,157 @@ test('publish never throws, even outside a git repository, and is throttled', ()
   const t = log.publish(hosta, {});
   assert.strictEqual(t.published, false);
   assert.strictEqual(t.reason, 'throttled');
+});
+
+// ---- hardening round ----
+
+test('deleting the last line is detected as truncated against the recorded head', () => {
+  const root = project();
+  sync(root, transcript([human('one', 1), human('two', 2), human('three', 3)]));
+  assert.strictEqual(log.verifyInputs(root, { host: 'pc' }).ok, true);
+  const f = path.join(root, '.delivery', 'operator', 'inputs', 'pc', '2026-10.ndjson');
+  const lines = fs.readFileSync(f, 'utf8').trimEnd().split('\n');
+  fs.writeFileSync(f, lines.slice(0, 2).join('\n') + '\n');
+  const v = log.verifyInputs(root, { host: 'pc' });
+  assert.strictEqual(v.ok, false);
+  assert.match(v.error, /truncated/);
+  assert.strictEqual(log.verifyInputs(root).ok, false);
+});
+
+test('verifyInputs returns per-host heads and heads.json is local and git-ignored', () => {
+  const root = project();
+  sync(root, transcript([human('one', 1)]), { host: 'pc' });
+  sync(root, transcript([human('two', 2)]), { host: 'box', sessionId: 's2' });
+  const v = log.verifyInputs(root);
+  assert.deepStrictEqual(Object.keys(v.heads).sort(), ['box', 'pc']);
+  assert.strictEqual(v.heads.pc.count, 1);
+  const h = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'operator', 'cursors', 'heads.json'), 'utf8'));
+  assert.strictEqual(h.pc.last_hash, v.heads.pc.last_hash);
+});
+
+test('a half-written tail line is set aside and the chain and seq continue from the last good line', () => {
+  const root = project();
+  sync(root, transcript([human('one', 1), human('two', 2)]));
+  const f = path.join(root, '.delivery', 'operator', 'inputs', 'pc', '2026-10.ndjson');
+  fs.appendFileSync(f, '{"id":"in-pc-000003","text":"cut o');
+  sync(root, transcript([human('three', 3)]), { sessionId: 's3' });
+  const all = log.listInputs(root);
+  assert.deepStrictEqual(all.map((e) => e.id), ['in-pc-000001', 'in-pc-000002', 'in-pc-000003']);
+  assert.strictEqual(all[2].text, 'three');
+  assert.strictEqual(chain.verifyChain(f).ok, true);
+  const d = path.dirname(f);
+  assert.ok(fs.readdirSync(d).some((n) => n.includes('.partial-')), 'evidence file kept');
+  assert.strictEqual(log.verifyInputs(root, { host: 'pc' }).ok, true);
+});
+
+test('session_id prefers the record sessionId over the caller argument', () => {
+  const root = project();
+  sync(root, transcript([human('one', 1, { sessionId: 'rec-sess' })]), { sessionId: 'arg-sess' });
+  assert.strictEqual(log.listInputs(root)[0].session_id, 'rec-sess');
+});
+
+test('the cursor stores a byte offset and a rewritten smaller file is rescanned', () => {
+  const root = project();
+  const tr = transcript([human('one', 1), human('two', 2)]);
+  sync(root, tr);
+  const cur = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'operator', 'cursors', SID + '.json'), 'utf8'));
+  assert.strictEqual(cur.offset, fs.statSync(tr).size);
+  fs.appendFileSync(tr, JSON.stringify(human('three', 3)) + '\n');
+  const r = sync(root, tr);
+  assert.strictEqual(r.added, 1);
+  assert.strictEqual(log.listInputs(root).find((e) => e.text === 'three').transcript_ref.line, 3);
+});
+
+// publish and refresh must never touch unrelated work
+
+test('publish and refresh leave an unrelated dirty file untouched', () => {
+  const { hosta, hostb } = twoHosts();
+  fs.writeFileSync(path.join(hosta, 'README.md'), 'my uncommitted edits\n');
+  fs.writeFileSync(path.join(hosta, 'scratch.txt'), 'untracked\n');
+  sync(hostb, transcript([human('from b', 1)]), { host: 'hostb' });
+  assert.strictEqual(log.publish(hostb, { force: true }).published, true);
+  sync(hosta, transcript([human('from a', 2)]), { host: 'hosta', sessionId: 'sa' });
+  const p = log.publish(hosta, { force: true, host: 'hosta' });
+  assert.strictEqual(p.published, true, JSON.stringify(p));
+  assert.strictEqual(log.refresh(hosta, { host: 'hosta' }).ok, true);
+  assert.strictEqual(fs.readFileSync(path.join(hosta, 'README.md'), 'utf8'), 'my uncommitted edits\n');
+  assert.strictEqual(fs.readFileSync(path.join(hosta, 'scratch.txt'), 'utf8'), 'untracked\n');
+  assert.ok(git(hosta, 'show', '--stat', '--format=%s', 'HEAD').indexOf('README.md') === -1);
+  assert.strictEqual(log.getInput(hosta, 'in-hostb-000001').text, 'from b');
+});
+
+test('an unrelated unpushed commit blocks publish and nothing is pushed', () => {
+  const { hosta } = twoHosts();
+  fs.writeFileSync(path.join(hosta, 'feature.js'), 'x\n');
+  git(hosta, 'add', 'feature.js');
+  git(hosta, 'commit', '-m', 'unrelated wip');
+  sync(hosta, transcript([human('a', 1)]), { host: 'hosta' });
+  const before = git(hosta, 'rev-parse', '@{u}').trim();
+  const p = log.publish(hosta, { force: true });
+  assert.strictEqual(p.ok, false);
+  assert.strictEqual(p.reason, 'unpushed unrelated commits');
+  assert.strictEqual(git(hosta, 'ls-remote', 'origin', 'main').split('\t')[0], before);
+});
+
+test('a rejected push recovers by fetch, merge and one retry', () => {
+  const { hosta, hostb } = twoHosts();
+  sync(hosta, transcript([human('a', 1)]), { host: 'hosta' });
+  sync(hostb, transcript([human('b', 2)]), { host: 'hostb' });
+  assert.strictEqual(log.publish(hosta, { force: true }).published, true);
+  const p = log.publish(hostb, { force: true });
+  assert.strictEqual(p.published, true, JSON.stringify(p));
+  const remote = git(hostb, 'ls-tree', '-r', '--name-only', 'origin/main');
+  assert.match(remote, /inputs\/hosta\//);
+  assert.match(remote, /inputs\/hostb\//);
+});
+
+test('refresh brings another host file and never overwrites this host file with an older upstream copy', () => {
+  const { hosta, hostb } = twoHosts();
+  sync(hosta, transcript([human('a one', 1)]), { host: 'hosta' });
+  assert.strictEqual(log.publish(hosta, { force: true }).published, true);
+  sync(hosta, transcript([human('a two', 2)]), { host: 'hosta', sessionId: 'sa2' }); // local, unpublished
+  sync(hostb, transcript([human('b one', 3)]), { host: 'hostb' });
+  assert.strictEqual(log.refresh(hostb, { host: 'hostb' }).ok, true);
+  assert.strictEqual(log.publish(hostb, { force: true, host: 'hostb' }).published, true);
+  const r = log.refresh(hosta, { host: 'hosta' });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.deepStrictEqual(log.listInputs(hosta).map((e) => e.text).sort(), ['a one', 'a two', 'b one']);
+  assert.strictEqual(log.verifyInputs(hosta).ok, true);
+});
+
+test('refresh without an upstream reports no upstream', () => {
+  const root = project();
+  cp.spawnSync('git', ['init', '-q'], { cwd: root });
+  assert.deepStrictEqual(log.refresh(root), { ok: false, reason: 'no upstream' });
+});
+
+test('a lock whose token changed is not removed by the old holder', () => {
+  const dir = mk('oplog-lock-');
+  const lock = path.join(dir, 'x.lock');
+  chain.withLock(lock, () => {
+    fs.writeFileSync(lock, '9999:someoneelse'); // stolen as stale and re-acquired by another process
+  });
+  assert.strictEqual(fs.readFileSync(lock, 'utf8'), '9999:someoneelse');
+});
+
+test('refresh applies a second upstream update to a file it brought earlier', () => {
+  const { hosta, hostb } = twoHosts();
+  sync(hostb, transcript([human('b one', 1)]), { host: 'hostb' });
+  log.publish(hostb, { force: true });
+  assert.strictEqual(log.refresh(hosta, { host: 'hosta' }).ok, true);
+  assert.strictEqual(log.listInputs(hosta).length, 1);
+  sync(hostb, transcript([human('b two', 2)]), { host: 'hostb', sessionId: 's2' });
+  log.publish(hostb, { force: true });
+  assert.strictEqual(log.refresh(hosta, { host: 'hosta' }).ok, true);
+  assert.strictEqual(log.listInputs(hosta).length, 2);
+  assert.strictEqual(log.verifyInputs(hosta).ok, true);
+});
+
+test('refresh does not replace a longer local copy even when no host is named', () => {
+  const { hosta } = twoHosts();
+  sync(hosta, transcript([human('a one', 1)]), { host: 'hosta' });
+  log.publish(hosta, { force: true });
+  sync(hosta, transcript([human('a two', 2)]), { host: 'hosta', sessionId: 's2' });
+  assert.strictEqual(log.refresh(hosta).ok, true);
+  assert.strictEqual(log.listInputs(hosta).length, 2);
 });
