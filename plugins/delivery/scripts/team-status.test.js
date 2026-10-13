@@ -22,8 +22,8 @@ const NOW = '2026-10-12T12:00:00Z';
 test('every manifest instance is missing when the roster is empty', () => {
   const root = scratchProject();
   const s = teamStatus(root, { now: NOW, staleHours: 2 });
-  assert.equal(s.rows.length, 7);
-  assert.deepEqual(s.drift.missing, ['chief-of-staff', 'staffing', 'product-manager', 'delivery-lead', 'progress-observer', 'builder-1', 'builder-2']);
+  assert.equal(s.rows.length, 8);
+  assert.deepEqual(s.drift.missing, ['chief-of-staff', 'staffing', 'product-manager', 'delivery-lead', 'progress-observer', 'spike-researcher', 'builder-1', 'builder-2']);
   assert.ok(renderStatus(s).includes('Missing: chief-of-staff'));
 });
 
@@ -47,7 +47,7 @@ test('live, stale, extra and wrong_model are reported', () => {
 
 test('renderStatus says No drift when the roster matches', () => {
   const root = scratchProject();
-  for (const [inst, model] of [['chief-of-staff', 'opus'], ['staffing', 'sonnet'], ['product-manager', 'opus'], ['delivery-lead', 'sonnet'], ['progress-observer', 'haiku'], ['builder-1', 'sonnet'], ['builder-2', 'sonnet']]) {
+  for (const [inst, model] of [['chief-of-staff', 'opus'], ['staffing', 'sonnet'], ['product-manager', 'opus'], ['delivery-lead', 'sonnet'], ['progress-observer', 'haiku'], ['spike-researcher', 'sonnet'], ['builder-1', 'sonnet'], ['builder-2', 'sonnet']]) {
     registerInstance(root, { instance: inst, session_id: inst, host: 'pc', model, role_dir: '/x', now: NOW });
   }
   const s = teamStatus(root, { now: NOW, staleHours: 2 });

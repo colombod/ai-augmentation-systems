@@ -74,6 +74,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     DELIVERY_HOST: role.host,
     DELIVERY_PROJECT_ROOT: projectRoot,
     BEADS_ACTOR: actor,
+    DELIVERY_RUNNER: role.runner || 'plain',
     DELIVERY_MODE: role.mode || brief.meta.mode || 'default',
   });
   settings.enabledPlugins = Object.assign({}, settings.enabledPlugins, { 'delivery@ai-augmentation-systems': true });

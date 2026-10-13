@@ -52,7 +52,7 @@ Every phase reads the previous artifact and **stops if it is missing** rather th
 improvising one. That gate is the point: it is what stops a confident plan being built
 on nothing.
 
-## The shipping team (phase 1)
+## The shipping team
 
 The pipeline's roles can also run as long-lived sessions, one per role, on the hosts that can do the
 work, coordinating through cross-session messages and beads. Phase 1 ships the pieces that give a
@@ -71,6 +71,15 @@ session its role and keep it:
   with the current claim.
 - `/delivery:join` — confirms the role in-session, primes beads, reports to the Chief of Staff.
 - `/delivery:team` — roster versus manifest: live, stale, missing, wrong model.
+- `/delivery:materialise <initiative>` — turns `roadmap.md`, the stories and the architecture spikes into
+  beads: one epic per phase chained by a phase-review bead, one task per story, one task per spike
+  blocking the story or phase it derisks. Deterministic ids (`<prefix>-<initiative>-ph<N>`, `<prefix>-<story id>`,
+  `<prefix>-<initiative>-spike-<key>`), idempotent, never touches closed beads. `--check` reports drift. It also
+  writes `.delivery/team/denylist.txt`, the phrases the leak-prevention hooks block in the product repo.
+- Runners. A builder's manifest entry names its runner: `superpowers`, `attractor` (the attractor
+  plugin's pipeline), or `plain`. Delivery plans, dispatches and reviews; the runner builds.
+- Spikes are standing work: the Spike Researcher claims `spike` beads emitted from the architecture
+  document and records answers in the bead and the ADR or roadmap they gate.
 
 The delivery plugin must be installed on the machine; `prepare-role` enables it for the role
 directory. The steward keeps the original project checkout pulled (`git pull --ff-only`) before
@@ -78,8 +87,8 @@ preparing or restarting a role, because the hooks read the manifest there. In ph
 per host, so `/delivery:team` reports only roles on this host. `prepare-role` does not set a
 permission mode; a steward passes `--permission-mode` when starting the session.
 
-Design: `.superpowers/specs/2026-10-12-shipping-team-design.md`. Provisioning, hiring, deploy and
-the plan-to-beads materialise step are later phases.
+Design: `.superpowers/specs/2026-10-12-shipping-team-design.md`. Provisioning, hiring and deploy
+are later phases.
 
 ## Using it with superpowers
 

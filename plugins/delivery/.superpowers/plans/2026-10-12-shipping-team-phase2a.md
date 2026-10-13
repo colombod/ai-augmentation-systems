@@ -13,18 +13,20 @@ Spec: `plugins/delivery/.superpowers/specs/2026-10-12-shipping-team-design.md` s
 ## Global Constraints
 
 - Plain Node, no dependencies, no package.json. Tests with `node --test`. Paths relative to `plugins/delivery/` unless they start with `plugins/`.
-- Every `bd` call goes through `scripts/lib/bd.js` using `execFileSync` with an argv array, never a shell string. Tests use the fake `bd` at `scripts/test/fake-bd.js` by prepending its directory to `PATH`; no test calls the real `bd`.
-- Bead ids are deterministic and derived only from the manifest prefix and document ids: epic `<prefix>-ph<N>`, phase review `<prefix>-ph<N>-review`, story `<prefix>-<story id>`, spike `<prefix>-spike-<key>` where `<key>` is the spike table's `#` column lower-cased with non `[a-z0-9]` runs replaced by `-`. Materialise never generates a random id.
+- Every `bd` call goes through `scripts/lib/bd.js` using `execFileSync` with an argv array, never a shell string. Tests use the fake `bd` at `scripts/testing/fake-bd.js` by prepending its directory to `PATH`; no test calls the real `bd`.
+- Bead ids are deterministic and derived only from the manifest prefix, the initiative slug and document ids: epic `<prefix>-<initiative>-ph<N>`, phase review `<prefix>-<initiative>-ph<N>-review`, story `<prefix>-<story id>` (story ids already carry their epic slug), spike `<prefix>-<initiative>-spike-<key>` where `<key>` is the spike table's `#` column lower-cased with non `[a-z0-9]` runs replaced by `-`. Materialise never generates a random id. (Amended after Task 4 review: ids without the initiative collided across initiatives.)
 - Structure flows document to beads only. Materialise creates and updates beads and dependencies; it never closes, deletes or re-assigns a bead, and never touches a bead that is `closed`.
-- Every bead materialise creates carries metadata `{"roadmap_ref":"<initiative>/roadmap.md@<sha> phase <N>", "doc_id":"<story or spike id or phase>", "materialised_by":"delivery"}` and the label `roadmap`. The `<sha>` is the git short sha of the project repo HEAD when materialise ran.
+- Every bead materialise creates carries metadata `{"roadmap_ref":"<initiative>/roadmap.md@<sha> phase <N>", "doc_id":"<story or spike id or phase>", "materialised_by":"delivery"}` and the label `roadmap`. The `<sha>` is the short sha of the last commit that touched the initiative's `roadmap.md` (`git log -1 --format=%h -- <file>`), or `h` + the first 7 hex chars of the roadmap text's sha256 when uncommitted or outside git, so refs do not churn on unrelated commits. (Amended after Task 4 review.)
 - Runner values are exactly `superpowers`, `attractor`, `plain`.
+- Real `bd` 1.2 facts (probed 2026-10-12, binding): `show --json` returns a one-element array with `issue_type`, `parent`, and `labels`/`metadata` absent when empty; `create --id` cannot take `--parent` (set it with `update --parent` afterwards); `create --id` of an existing id silently overwrites, so existence is always checked with `show` first; a task cannot block an epic, so dependencies are only ever between tasks; `dep list <id> --json` returns the blocker issues themselves with `dependency_type: "blocks"` (parent appears as `parent-child`); `update --metadata` merges.
+- Real bd rejects dependency cycles; materialise removes stale materialised deps before adding new ones. (Added after the final whole-branch review: `bd dep remove <id> <blocker>` is positional in bd 1.2.2.)
 - Plugin version bumps from 0.17.0 to 0.18.0 in the last task. All work on branch `delivery-shipping-team-2a` cut from `delivery-shipping-team`. Commit after every task with a `Co-Authored-By` trailer naming the model that ran.
 
 ## File map
 
 | File | Responsibility |
 |---|---|
-| `scripts/test/fake-bd.js` | A fake `bd` CLI backed by a JSON file named by `BD_FAKE_STORE`; supports the subset materialise uses |
+| `scripts/testing/fake-bd.js` | A fake `bd` CLI backed by a JSON file named by `BD_FAKE_STORE`; supports the subset materialise uses |
 | `scripts/lib/bd.js` (+ `.test.js`) | Adapter: `show`, `create`, `update`, `depAdd`, `depsOf`, `list`; parses JSON output; normalises array-or-object replies |
 | `scripts/lib/plan-docs.js` (+ `.test.js`) | Parsers: `parseRoadmap`, `parseStories`, `parseSpikes`, `phaseNumber` |
 | `scripts/lib/plan-graph.js` (+ `.test.js`) | Pure planner: `planGraph` → beads and deps; `denylistFrom` |
@@ -39,7 +41,7 @@ Spec: `plugins/delivery/.superpowers/specs/2026-10-12-shipping-team-design.md` s
 ### Task 1: Branch, fake bd, and the bd adapter
 
 **Files:**
-- Create: `scripts/test/fake-bd.js`, `scripts/lib/bd.js`
+- Create: `scripts/testing/fake-bd.js`, `scripts/lib/bd.js`
 - Test: `scripts/lib/bd.test.js`
 
 **Interfaces:**
@@ -598,8 +600,8 @@ git commit -m "delivery: roadmap, story and spike parsers"
   - One phase review per phase: id `<prefix>-ph<N>-review`, title `Phase <N> review: sprint-review and realign`, type `task`, parent the epic, labels `[roadmap, phase-<N>, phase-review]`, priority 1.
   - One task per story that has a phase: id `<prefix>-<story id>`, title the story title, type `task`, parent the phase epic, labels `[roadmap, phase-<N>, story]`, priority 2, metadata adds `story: <id>`, `story_file: <basename>`. Stories with status `superseded` are skipped. A story whose phase is not in the roadmap yields a warning `story <id>: phase <N> not in roadmap` and is skipped.
   - One task per spike: id `<prefix>-spike-<key>`, title `Spike <#>: <question truncated to 120 chars>`, type `task`, labels `[roadmap, spike]`, priority 1, metadata adds `spike: <key>`, `time_box`. Parent and blocking from `blocks`: if `blocks` names a phase (`phaseNumber` non-null) the spike's parent is that epic and the epic's review is blocked by the spike; else if `blocks` equals a story id, the parent is that story's epic and the story is blocked by the spike; else parent is the first phase's epic, no blocking, and a warning `spike <key>: blocks "<text>" matched nothing`.
-  - Dependencies: each epic (except the first) blocked by the previous phase's review; each review blocked by every story and spike of its phase; each story blocked by each `dependsOn` id that is a known story (unknown ids produce a warning `story <id>: depends_on <x> unknown`).
-  - Output ordering is deterministic: epics in roadmap order, then per phase its stories (sorted by id), spikes (document order), review; deps in the order they are derived. Same input, byte-identical output.
+  - Dependencies (tasks only, never an epic): each story and spike of phase N (N > 1) is blocked by the previous phase's review bead (this is the phase chain; epics are containers and are never blocked); each review blocked by every story and spike of its phase; each story blocked by each `dependsOn` id that is a known story (unknown ids produce a warning `story <id>: depends_on <x> unknown`). A phase with no stories and no spikes still gets its review, blocked by the previous review.
+  - Output ordering is deterministic: epics in roadmap order, then per phase its stories (sorted by id), spikes (document order), review; deps in the order they are derived: phase-chain deps first (per phase in order: each story then each spike blocked by the previous review, or the review itself when the phase is empty), then review deps, then story `dependsOn` deps, then spike blocks. Same input, byte-identical output.
 - `denylistFrom({ initiative, roadmap, stories, spikes, briefText, prdText, personaNames }): string[]` — sorted unique list of: the initiative slug; every phase name; every story title; every spike question; every H1/H2 heading text from `briefText` and `prdText` with the leading `#`s removed; every persona name. Entries shorter than 3 characters or matching `^(phase|spike|roadmap|story)\b` alone are dropped. Entries are trimmed and de-duplicated case-insensitively.
 
 - [ ] **Step 1: Write the failing tests**
@@ -648,7 +650,9 @@ test('planGraph emits deterministic ids, parents, labels and metadata', () => {
 test('planGraph chains phases, reviews, stories and spikes', () => {
   const g = planGraph(input);
   const has = (id, blockedBy) => g.deps.some((d) => d.id === id && d.blockedBy === blockedBy);
-  assert.ok(has('ex-ph2', 'ex-ph1-review'));
+  assert.ok(has('ex-ex-02', 'ex-ph1-review'));
+  assert.ok(has('ex-spike-2', 'ex-ph1-review'));
+  assert.ok(!g.deps.some((d) => d.id === 'ex-ph2'));
   assert.ok(has('ex-ph1-review', 'ex-ex-01'));
   assert.ok(has('ex-ph1-review', 'ex-spike-cos-1'));
   assert.ok(has('ex-ex-02', 'ex-ex-01'));
@@ -759,7 +763,13 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
     beads.push({ id: reviewId, title: `Phase ${p.number} review: sprint-review and realign`, type: 'task', parent: epicId, labels: ['roadmap', `phase-${p.number}`, 'phase-review'], metadata: base(p.number, `phase-${p.number}-review`), priority: 1, docId: `phase-${p.number}-review` });
   }
 
-  for (let i = 1; i < phases.length; i++) deps.push({ id: phaseIds.get(phases[i].number), blockedBy: reviewIds.get(phases[i - 1].number) });
+  for (let i = 1; i < phases.length; i++) {
+    const prevReview = reviewIds.get(phases[i - 1].number);
+    const p = phases[i];
+    const members = [...(storiesByPhase.get(p.number) || []).map((s) => `${prefix}-${s.id}`), ...(spikesByPhase.get(p.number) || []).map((sp) => sp.id)];
+    if (members.length === 0) members.push(reviewIds.get(p.number));
+    for (const id of members) deps.push({ id, blockedBy: prevReview });
+  }
   for (const p of phases) {
     const reviewId = reviewIds.get(p.number);
     for (const s of storiesByPhase.get(p.number) || []) deps.push({ id: reviewId, blockedBy: `${prefix}-${s.id}` });
@@ -892,8 +902,9 @@ test('applyPlan creates the graph, is idempotent, and never touches closed beads
   const plan = planGraph({ prefix: 'ex', initiative: 'demo', sha: inputs.sha, roadmap: inputs.roadmap, stories: inputs.stories, spikes: inputs.spikes });
   const first = applyPlan({ plan, bd });
   assert.equal(first.created.length, 7);
-  assert.ok(first.depsAdded.some((d) => d.id === 'ex-ph2' && d.blockedBy === 'ex-ph1-review'));
-  assert.deepEqual(bd.depsOf('ex-demo-02'), ['ex-demo-01']);
+  assert.ok(first.depsAdded.some((d) => d.id === 'ex-demo-02' && d.blockedBy === 'ex-ph1-review'));
+  assert.equal(bd.show('ex-demo-01').parent, 'ex-ph1');
+  assert.deepEqual(bd.depsOf('ex-demo-02').sort(), ['ex-demo-01', 'ex-ph1-review']);
   const second = applyPlan({ plan, bd });
   assert.deepEqual(second.created, []);
   assert.deepEqual(second.updated, []);
@@ -925,7 +936,7 @@ test('applyPlan dryRun writes nothing and lists commands', () => {
   const r = applyPlan({ plan, bd, dryRun: true });
   assert.equal(bd.show('ex-ph1'), null);
   assert.ok(r.commands.some((c) => c.startsWith('create ex-ph1')));
-  assert.ok(r.commands.some((c) => c.startsWith('dep ex-ph2 blocked-by ex-ph1-review')));
+  assert.ok(r.commands.some((c) => c.startsWith('dep ex-demo-02 blocked-by ex-ph1-review')));
 });
 
 test('reconcile reports each drift class', () => {
@@ -1029,7 +1040,7 @@ function applyPlan({ plan, bd, dryRun }) {
       continue;
     }
     if (existing.status === 'closed') { result.skippedClosed.push(b.id); continue; }
-    const missingLabels = b.labels.filter((l) => !(existing.labels || []).includes(l));
+    const missingLabels = b.labels.filter((l) => !existing.labels.includes(l));
     const refChanged = (existing.metadata || {}).roadmap_ref !== b.metadata.roadmap_ref;
     const titleChanged = existing.title !== b.title;
     const parentChanged = (existing.parent || null) !== (b.parent || null);
@@ -1282,7 +1293,7 @@ Only the Delivery Lead runs this without `--check`; anyone may run `--check`. St
 
 1. Resolve the project root (marker `project_root`, then `DELIVERY_PROJECT_ROOT`, then upward search) and the initiative slug from `$ARGUMENTS` or the current initiative. Confirm `bd prime` answers; if not, stop and say so.
 2. Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/materialise.js --project <root> --initiative <slug> --dry-run` and show the command list. If the warnings name a story with a phase not in the roadmap, or a spike whose `Blocks` matched nothing, fix the document first (or tell the Product Manager) rather than materialising around it.
-3. Run it again without `--dry-run`. Show the summary line and the warnings verbatim. Append one note to the first phase epic: `bd update <prefix>-ph<first> --append-notes "<date>: materialised <initiative>/roadmap.md@<sha> by <your instance>"`.
+3. Run it again without `--dry-run`. Show the summary line and the warnings verbatim. Append one note to the first phase epic: `bd update <prefix>-<initiative>-ph<first> --append-notes "<date>: materialised <initiative>/roadmap.md@<sha> by <your instance>"`.
 4. Commit `.delivery/team/denylist.txt` in the project repository (`git add .delivery/team/denylist.txt && git commit -m "team: denylist from materialise <sha>"`) and tell the operator through the Chief of Staff that the denylist changed, so they can review it once.
 5. With `--check`: run with `--check`, show the output verbatim, and say who owns each drift class: stories without a bead, stale references and stray roadmap beads are yours (re-run materialise or fix the document); a closed phase review with the roadmap not marked `(done)` belongs to the Product Manager (run realign).
 ```
@@ -1298,8 +1309,8 @@ Only the Delivery Lead runs this without `--check`; anyone may run `--check`. St
 ```markdown
 - `/delivery:materialise <initiative>` — turns `roadmap.md`, the stories and the architecture spikes into
   beads: one epic per phase chained by a phase-review bead, one task per story, one task per spike
-  blocking the story or phase it derisks. Deterministic ids (`<prefix>-ph<N>`, `<prefix>-<story id>`,
-  `<prefix>-spike-<key>`), idempotent, never touches closed beads. `--check` reports drift. It also
+  blocking the story or phase it derisks. Deterministic ids (`<prefix>-<initiative>-ph<N>`, `<prefix>-<story id>`,
+  `<prefix>-<initiative>-spike-<key>`), idempotent, never touches closed beads. `--check` reports drift. It also
   writes `.delivery/team/denylist.txt`, the phrases the leak-prevention hooks block in the product repo.
 - Runners. A builder's manifest entry names its runner: `superpowers`, `attractor` (the attractor
   plugin's pipeline), or `plain`. Delivery plans, dispatches and reviews; the runner builds.

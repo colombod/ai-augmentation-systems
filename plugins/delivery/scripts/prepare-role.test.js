@@ -67,6 +67,7 @@ test('prepareRole creates a product worktree for a builder on branch team/<insta
   assert.ok(fs.existsSync(path.join(roleDir, 'product', 'README.md')));
   assert.equal(git(path.join(roleDir, 'product'), 'branch', '--show-current').trim(), 'team/builder-2');
   assert.equal(JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).env.BEADS_ACTOR, 'tester@pc/builder-2');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).env.DELIVERY_RUNNER, 'superpowers');
 });
 
 test('prepareRole is idempotent: second run rewrites settings and brief, keeps the clone', () => {

@@ -10,6 +10,7 @@
     { "id": "product-manager",   "brief": "delivery/product-manager",   "host": "pc",       "model": "opus" },
     { "id": "delivery-lead",     "brief": "delivery/delivery-lead",     "host": "pc",       "model": "sonnet" },
     { "id": "progress-observer", "brief": "delivery/progress-observer", "host": "buildbox", "model": "haiku",  "steward": true },
+    { "id": "spike-researcher", "brief": "delivery/spike-researcher", "host": "pc", "model": "sonnet" },
     { "id": "builder",           "brief": "delivery/builder",           "host": "pc",       "model": "sonnet", "count": 2, "runner": "superpowers", "steward": true }
   ]
 }

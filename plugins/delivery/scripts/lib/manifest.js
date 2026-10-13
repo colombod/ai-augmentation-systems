@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MODELS = new Set(['opus', 'sonnet', 'haiku']);
+const RUNNERS = new Set(['superpowers', 'attractor', 'plain']);
 const MODES = new Set(['default', 'delegate']);
 const TEAM_REL = path.join('.delivery', 'team', 'team.json');
 const HOSTS_REL = path.join('.delivery', 'team', 'hosts.json');
@@ -73,6 +74,7 @@ function validateManifest(team, hosts) {
     else if (!/^(delivery|project)\/[a-z0-9][a-z0-9-]*$/.test(role.brief)) problems.push(`team.json: role "${role.id}" has invalid brief "${role.brief}"`);
     if (!hostNames.has(role.host)) problems.push(`team.json: role "${role.id}" has unknown host "${role.host}"`);
     if (!MODELS.has(role.model)) problems.push(`team.json: role "${role.id}" has model "${role.model}", expected one of ${[...MODELS].join(', ')}`);
+    if (role.runner !== undefined && !RUNNERS.has(role.runner)) problems.push(`team.json: role "${role.id}" has runner "${role.runner}", expected one of ${[...RUNNERS].join(', ')}`);
     if (role.mode && !MODES.has(role.mode)) problems.push(`team.json: role "${role.id}" has mode "${role.mode}"`);
     if (role.count !== undefined && (!Number.isInteger(role.count) || role.count < 1)) problems.push(`team.json: role "${role.id}" has invalid count`);
     if (role.steward) stewards.add(role.host);
@@ -101,4 +103,4 @@ function expandInstances(team) {
   return out;
 }
 
-module.exports = { findProjectRoot, loadManifest, validateManifest, expandInstances, TEAM_REL, HOSTS_REL, MODELS };
+module.exports = { findProjectRoot, loadManifest, validateManifest, expandInstances, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };
