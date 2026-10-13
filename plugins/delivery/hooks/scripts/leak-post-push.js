@@ -9,13 +9,15 @@ try {
   const ctx = cmd.includes('push') ? validMarker(findRoleMarker(input.cwd)) : null;
   if (ctx) {
     const denylist = loadDenylist(ctx.marker.project_root);
+    let first = null;
     for (const p of pushInfo(cmd, input.cwd, ctx.roleDir)) {
       const hits = scanPushed({ cwd: p.dir, roleDir: ctx.roleDir, denylist, tags: p.tags });
       clearPrepush(ctx.roleDir, p.dir);
-      if (hits.length) {
-        process.stdout.write(`Strategy leak suspected in pushed commits: "${hits[0]}". Create a strategy review bead now: bd create "Strategy leak: ${hits[0]}" --labels strategy-review, and tell the Delivery Lead.\n`);
-        break;
-      }
+      if (hits.length && !first) first = hits[0];
+    }
+    if (first) {
+      const line = `Strategy leak suspected in pushed commits: "${first}". Create a strategy review bead now: bd create "Strategy leak: ${first}" --labels strategy-review, and tell the Delivery Lead.`;
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: line } }));
     }
   }
 } catch (err) { /* observe only */ }

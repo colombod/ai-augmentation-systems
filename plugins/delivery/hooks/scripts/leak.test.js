@@ -148,6 +148,35 @@ const probes = [
   [`gh api repos/o/r/pulls`, 'product', false],
   [`gh issue create --title x`, 'product', true],
   [`git status && git log`, 'product', false],
+  [`if true; then git commit -m "${P}"; fi`, 'product', true],
+  [`for x in y; do git commit -m "${P}"; done`, 'product', true],
+  [`while true; do git commit -m "${P}"; done`, 'product', true],
+  [`! git commit -m "${P}"`, 'product', true],
+  [`case $x in a) git commit -m "${P}";; b) true;; esac`, 'product', true],
+  [`{ git commit -m "${P}"; }`, 'product', true],
+  [`(git commit -m "${P}")`, 'product', true],
+  [`if true; then git commit -m "fine Refs ex-1"; fi`, 'product', false],
+  [`echo $(git commit -m x)`, 'product', true],
+  [`echo \`git log\``, 'product', true],
+  [`echo $(date)`, 'product', false],
+  [`git commit -m "$(cat msg)"`, 'product', true],
+  [`git commit -m "fix \`id\`"`, 'product', true],
+  [`git commit -m "line\\tbreak"`, 'product', true],
+  [`gh pr create --body "$BODY"`, 'product', true],
+  [`gh pr comment 3 -b "$(cat b)"`, 'product', true],
+  [`git commit --trailer "Note: ${P}"`, 'product', true],
+  [`git commit -m ok --trailer "Refs: ex-1"`, 'product', false],
+  [`git --git-dir ../product/.git commit -m "${P}"`, 'project', true],
+  [`git --git-dir=../product/.git commit -m "${P}"`, 'project', true],
+  [`GIT_DIR=../product/.git git commit -m "${P}"`, 'project', true],
+  [`GIT_WORK_TREE=../product git commit -m "${P}"`, 'project', true],
+  [`export GIT_DIR=../product/.git; git commit -m "${P}"`, 'project', true],
+  [`env GIT_WORK_TREE=../product git commit -m "${P}"`, 'project', true],
+  [`pushd ../product; git commit -m "${P}"`, 'project', true],
+  [`pushd ../product && popd && git commit -m "${P}"`, 'project', false],
+  [`cd "$HOME/proj" && git commit -m "add .delivery/stories/x.md"`, 'project', false],
+  [`cd $D && git commit -m "${P}"`, 'product', true],
+  [`cd product && git log; cd ..; git commit -m "update .delivery/x"`, '.', true],
   [{ tool: 'Write', path: 'product/.delivery/x.md' }, '.', true],
   [{ tool: 'Write', path: 'product/.Delivery/x.md' }, 'project', true],
   [{ tool: 'Edit', path: '../product/.beads/a' }, 'project', true],
@@ -183,4 +212,32 @@ test('push range: recorded upstream, tags, and no duplicate .delivery/ hit', () 
   assert.deepEqual(scanPushed({ cwd, roleDir: rd, denylist, git }), ['.delivery/']);
   assert.ok(calls.some((a) => a[0] === 'log' && a[1] === 'abc123..HEAD'));
   assert.deepEqual(scanPushed({ cwd, roleDir: rd, denylist, git, tags: true }), ['Casual Carl', '.delivery/']);
+});
+
+test('push to an existing tag name scans tags', () => {
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-tag-'));
+  fs.mkdirSync(path.join(rd, 'product'), { recursive: true });
+  const { pushInfo } = require('./leak.js');
+  const git = (args) => (args[0] === 'tag' && args[2] === 'v1' ? 'v1\n' : '');
+  const cwd = path.join(rd, 'product');
+  assert.equal(pushInfo('git push origin v1', cwd, rd, git)[0].tags, true);
+  assert.equal(pushInfo('git push origin main', cwd, rd, git)[0].tags, false);
+  assert.equal(pushInfo('git push origin refs/tags/x', cwd, rd, git)[0].tags, true);
+  assert.deepEqual(pushInfo('git push', path.join(rd, 'project'), rd, git), []);
+});
+
+test('leak-post-push entry reports via additionalContext JSON', () => {
+  const b = preparedRole('builder-1');
+  const cwd = path.join(b.roleDir, 'product');
+  fs.mkdirSync(cwd, { recursive: true });
+  require('./leak.js').recordPrepush({ roleDir: b.roleDir, dir: cwd, git: () => 'abc123\n' });
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-bin-'));
+  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase "$1" in log) echo "fix login"; echo "for Casual Carl";; esac\n', { mode: 0o755 });
+  const env = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+  const out = runHook('leak-post-push.js', { cwd, session_id: 's', tool_name: 'Bash', tool_input: { command: 'git push' } }, env);
+  const json = JSON.parse(out);
+  assert.equal(json.hookSpecificOutput.hookEventName, 'PostToolUse');
+  assert.match(json.hookSpecificOutput.additionalContext, /Casual Carl/);
+  assert.match(json.hookSpecificOutput.additionalContext, /bd create "Strategy leak: Casual Carl" --labels strategy-review/);
+  assert.equal(runHook('leak-post-push.js', { cwd, session_id: 's', tool_name: 'Bash', tool_input: { command: 'git status' } }, env), '');
 });
