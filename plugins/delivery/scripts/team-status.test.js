@@ -100,3 +100,17 @@ test('C: an unreachable bd is a warning line, not drift', () => {
   assert.ok(out.includes('No drift.'));
   assert.ok(out.includes(warning));
 });
+
+test('a configured staleness_hours of 0 stays 0, like the bd guard', () => {
+  const root = scratchProject();
+  const file = path.join(root, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.budget.staleness_hours = 0;
+  fs.writeFileSync(file, JSON.stringify(team));
+  const probe = teamStatus(root, { now: NOW });
+  const instance = probe.rows[0].instance;
+  const role = probe.rows[0].role;
+  registerInstance(root, { instance, role, host: probe.rows[0].host, model: probe.rows[0].model, session_id: 's1', now: '2026-10-12T11:59:00Z' });
+  const s = teamStatus(root, { now: NOW });
+  assert.equal(s.rows.find((r) => r.instance === instance).state, 'stale');
+});
