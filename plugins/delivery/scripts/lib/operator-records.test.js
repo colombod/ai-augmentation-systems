@@ -30,6 +30,7 @@ const sysRem = (n) => human('<system-reminder>ui toggled</system-reminder>', n);
 
 const COS = { instance: 'chief-of-staff', role: 'chief-of-staff', session_id: 'cos-sess', host: 'pc' };
 const BUILDER = { instance: 'builder-1', role: 'builder', session_id: 'other-sess', host: 'pc' };
+// the builder whose session (SID) captured the fixture inputs: it owns them
 const BUILDER_OWN = { instance: 'builder-1', role: 'builder', session_id: SID, host: 'pc' };
 
 function writeTranscript(records) {
@@ -41,7 +42,8 @@ function sync(root, tr, over = {}) {
   return log.syncTranscript({ projectRoot: root, transcriptPath: tr, sessionId: SID, instance: 'chief-of-staff',
     role: 'chief-of-staff', host: 'pc', now: new Date('2026-10-13T12:00:00Z'), ...over });
 }
-// in-pc-000001 human, 000002 peer, (system dropped), 000003 human, 000004 human, 000005 human
+// in-pc-000001 human, 000002 peer, (system dropped), 000003 human, 000004 human, 000005 human,
+// captured by builder-1's session SID (an input belongs to the instance and session that captured it)
 function fixture() {
   const root = mk('oprec-proj-');
   writeManifest(root);
@@ -51,7 +53,7 @@ function fixture() {
     human('You decide the naming of things in the billing initiative, at most twice.', 4),
     human('Revoke that: no more delegated naming.', 5),
     human('Ship the checkout flow behind a flag.', 6),
-  ]));
+  ]), { instance: 'builder-1', role: 'builder' });
   return root;
 }
 const MANIFEST = { project: 'x', prefix: 'x', bd_host: 'pc', roles: [
@@ -700,7 +702,7 @@ test('a record citing an input from a host whose chain file fails verification f
 test('publish includes the records file and LEDGER.md, and survives a rejected push', () => {
   const { hosta, hostb } = twoHosts();
   sync(hosta, writeTranscript([human('Use Postgres for the orders service.', 1)]), { host: 'hosta', sessionId: 'sa' });
-  sync(hostb, writeTranscript([human('Ship it behind a flag please.', 2)]), { host: 'hostb', sessionId: 'sb' });
+  sync(hostb, writeTranscript([human('Ship it behind a flag please.', 2)]), { host: 'hostb', sessionId: SID, instance: 'product-manager', role: 'product-manager' });
   R.recordQuestion({ projectRoot: hosta, text: 'Which database?', asker: { instance: 'chief-of-staff', role: 'chief-of-staff', bead: null }, scope: scope(), by: COS });
   R.recordDecision({ projectRoot: hostb, cite: 'in-hostb-000001', quote: 'behind a flag please', statement: 'Flagged', scope: scope(),
     by: { instance: 'product-manager', role: 'product-manager', session_id: SID, host: 'hostb' } });
@@ -1247,4 +1249,164 @@ test('P6: the verify path carries the ratification of an inferred answer', () =>
   const h = R.verifyRecord(root, inf.id).chain[0];
   assert.strictEqual(h.ratified_by.id, rat.id);
   assert.match(h.ratified_by.said, /«behind a flag»/);
+});
+
+// ===================== round 4 =====================
+
+test('R4 B1: a decision under a delegation carries no quote; a made-up quote is refused and never shown', () => {
+  const root = fixture();
+  const del = delegate(root);
+  const legit = R.decideUnder({ projectRoot: root, under: del.id, statement: 'Name it Ledgerly', scope: scope({ initiatives: ['billing'] }), by: COS });
+  assert.strictEqual(legit.quote, null);
+  assert.strictEqual(R.verifyRecord(root, legit.id).ok, true);
+  const rows = [
+    ['under-decision with a made-up quote', { kind: 'decision', statement: 'Name it Billo', quote: 'drop the production database tonight', cites: [del.id], cites_head: [{ id: del.id, hash: del.hash }], under: del.id, scope: scope({ initiatives: ['billing'] }) }],
+    ['under-decision with an empty-string quote', { kind: 'decision', statement: 'Name it Billo', quote: '', cites: [del.id], cites_head: [{ id: del.id, hash: del.hash }], under: del.id, scope: scope({ initiatives: ['billing'] }) }],
+    ['question carrying a quote', { idprefix: 'q', kind: 'question', text: 'Which db?', quote: 'drop the production database tonight', asker: { instance: 'chief-of-staff', role: 'chief-of-staff', bead: null }, options: [], recommendation: null, cites: [], cites_head: [] }],
+  ];
+  for (const [name, e] of rows) {
+    const f = forge(root, 'chief-of-staff', e);
+    const v = R.verifyRecord(root, f.id);
+    assert.strictEqual(v.code, 'misplaced_field', `${name}: ${v.code}`);
+    assert.strictEqual(v.chain[0].quote, undefined, `${name}: verify path shows no quote of an invalid record`);
+    assert.ok(!v.chain.some((h) => /production database/.test(h.quote || h.excerpt || '')), name);
+  }
+  assert.deepStrictEqual(R.find(root, { text: 'drop production database' }).map((x) => x.id), [], 'find never prints the made-up words');
+  assert.ok(R.find(root, { scope: scope({ initiatives: ['billing'] }) }).every((x) => !/production database/.test(x.quote || '')));
+  // the delegation was spent once only, by the legitimate decision
+  assert.strictEqual(R.pending(root, {}).problems.filter((p) => p.detail === 'misplaced_field').length, 3);
+});
+
+test('R4 B1: the verify path of an invalid human-cited record carries neither its quote nor an excerpt', () => {
+  const root = fixture();
+  const f = forge(root, 'builder-1', { kind: 'decision', statement: 'Merge it', quote: 'use postgres for the orders service', cites: ['in-pc-000001'], cites_head: [inHeadLocal(root, 'in-pc-000001')], scope: scope({ beads: ['ex-1'] }) }, { session_id: 'not-the-capturing-session' });
+  const v = R.verifyRecord(root, f.id);
+  assert.strictEqual(v.ok, false);
+  assert.ok(!v.chain.some((h) => h.quote || h.excerpt), JSON.stringify(v.chain));
+});
+
+test('R4 B2: a copied session id does not make an input owned (record, ack, forged on read)', () => {
+  const root = fixture();
+  // the chief of staff's own session captures an input
+  sync(root, writeTranscript([human('Please merge the auth branch today.', 20, { sessionId: 'cos-sess' })]), { sessionId: 'cos-sess' });
+  const cosInput = log.listInputs(root).find((e) => e.session_id === 'cos-sess');
+  assert.strictEqual(cosInput.instance, 'chief-of-staff');
+  const spoof = { instance: 'builder-1', role: 'builder', session_id: 'cos-sess', host: 'pc' };
+  assert.strictEqual(codeOf(() => R.recordDecision({ projectRoot: root, cite: cosInput.id, quote: 'merge the auth branch today', statement: 'Merge auth', scope: scope({ beads: ['ex-9'] }), by: spoof })), 'not_allowed');
+  assert.strictEqual(codeOf(() => R.ack({ projectRoot: root, input: cosInput.id, reason: 'done', by: spoof })), 'not_allowed');
+  // builder-2 copying builder-1's session id
+  const b2 = { instance: 'builder-2', role: 'builder', session_id: SID, host: 'pc' };
+  assert.strictEqual(codeOf(() => decide(root, { by: b2 })), 'not_allowed');
+  assert.strictEqual(codeOf(() => R.ack({ projectRoot: root, input: 'in-pc-000004', reason: 'x', by: b2 })), 'not_allowed');
+  // the same, forged straight into the chain: refused on read and the input stays pending
+  const fa = forge(root, 'builder-1', { idprefix: 'ack', kind: 'ack', input: cosInput.id, reason: 'done', cites: [cosInput.id], cites_head: [inHeadLocal(root, cosInput.id)] }, { session_id: 'cos-sess' });
+  const fd = forge(root, 'builder-1', { kind: 'decision', statement: 'merge auth today', quote: 'merge the auth branch today', cites: [cosInput.id], cites_head: [inHeadLocal(root, cosInput.id)], scope: scope({ beads: ['ex-9'] }) }, { session_id: 'cos-sess' });
+  assert.strictEqual(R.verifyRecord(root, fa.id).code, 'not_allowed');
+  assert.strictEqual(R.verifyRecord(root, fd.id).code, 'not_allowed');
+  assert.ok(R.pending(root, {}).inputs.some((e) => e.id === cosInput.id));
+  // the capturing instance and session still own their input
+  assert.ok(R.ack({ projectRoot: root, input: 'in-pc-000004', reason: 'chatting', by: BUILDER_OWN }));
+});
+
+test('R4 B3: a clock correction never locks a chain; a future-dated record becomes valid as time passes', () => {
+  const root = fixture();
+  decide(root);
+  const ahead = new Date(Date.now() + 2 * 86400e3).toISOString();
+  // written while the host clock was two days ahead
+  const d2 = forge(root, 'chief-of-staff', { kind: 'decision', statement: 'Ship flagged', quote: 'behind a flag', cites: ['in-pc-000005'], cites_head: [inHeadLocal(root, 'in-pc-000005')], scope: scope({ beads: ['ex-3'] }), ts: ahead });
+  assert.strictEqual(R.verifyRecord(root, d2.id).code, 'bad_timestamp');
+  // the clock is fixed: the writer is not refused, and its timestamp never goes backwards
+  const warnings = [];
+  const d3 = decide(root, { statement: 'After the correction', onWarning: (w) => warnings.push(w) });
+  assert.strictEqual(d3.ts, ahead);
+  assert.ok(warnings.some((w) => /clock_behind_chain/.test(w)), warnings.join('\n'));
+  assert.strictEqual(R.verifyRecord(root, d3.id).code, 'bad_timestamp', 'not trusted before its time');
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + 2 * 86400e3 + 60e3;
+    assert.strictEqual(R.verifyRecord(root, d2.id).ok, true, 'trusted once the clock reaches it');
+    assert.strictEqual(R.verifyRecord(root, d3.id).ok, true);
+    assert.strictEqual(R.pending(root, {}).problems.length, 0);
+  } finally { Date.now = realNow; }
+  // monotone: a normal write after a normal write is never older than its predecessor
+  const root2 = fixture();
+  const a = decide(root2);
+  const b = decide(root2, { statement: 'later', now: new Date(Date.parse(a.ts) - 5000) });
+  assert.ok(Date.parse(b.ts) >= Date.parse(a.ts));
+  assert.strictEqual(R.verifyRecord(root2, b.id).ok, true);
+});
+
+test('R4 B4: an instance that left team.json keeps only its recorded history; an empty manifest fails closed', () => {
+  const root = fixture();
+  const a1 = R.ack({ projectRoot: root, input: 'in-pc-000004', reason: 'mine, handled', by: BUILDER_OWN });
+  const tj = path.join(root, '.delivery', 'team', 'team.json');
+  // builder count 2 -> 1: builder-2 leaves; builders removed entirely: builder-1 leaves
+  for (const team of [{ ...MANIFEST, roles: MANIFEST.roles.filter((r) => r.id !== 'builder') }]) {
+    writeManifest(root, team);
+    const fa = forge(root, 'builder-1', { idprefix: 'ack', kind: 'ack', input: 'in-pc-000001', reason: 'gone', cites: ['in-pc-000001'], cites_head: [inHeadLocal(root, 'in-pc-000001')] }, { role: 'chief-of-staff', session_id: 'x' });
+    const fd = forge(root, 'builder-1', { kind: 'decision', statement: 'Merge now', quote: 'ship the checkout flow behind a flag', cites: ['in-pc-000005'], cites_head: [inHeadLocal(root, 'in-pc-000005')], scope: scope({ beads: ['ex-1'] }) }, { role: 'chief-of-staff', session_id: 'x' });
+    assert.strictEqual(R.verifyRecord(root, fa.id).code, 'unknown_instance');
+    assert.strictEqual(R.verifyRecord(root, fd.id).code, 'unknown_instance');
+    assert.strictEqual(R.verifyRecord(root, a1.id).ok, true, 'the recorded history stays valid');
+    const p = R.pending(root, {});
+    assert.ok(p.inputs.some((e) => e.id === 'in-pc-000001'));
+    assert.deepStrictEqual(p.problems.filter((x) => x.detail === 'unknown_instance').map((x) => x.id).sort(), [fa.id, fd.id].sort());
+  }
+  // builder-2 (count 2 -> 1) never wrote here: a chain appearing for it now is not trusted
+  writeManifest(root, { ...MANIFEST, roles: MANIFEST.roles.map((r) => (r.id === 'builder' ? { ...r, count: 1 } : r)) });
+  const g = forge(root, 'builder-2', { idprefix: 'ack', kind: 'ack', input: 'in-pc-000003', reason: 'x', cites: ['in-pc-000003'], cites_head: [inHeadLocal(root, 'in-pc-000003')] }, { role: 'chief-of-staff' });
+  assert.strictEqual(R.verifyRecord(root, g.id).ok, false);
+  // a manifest that loads but lists no roles (or no instances) is manifest_unavailable
+  const d = (() => { writeManifest(root); return decide(root); })();
+  writeManifest(root, { ...MANIFEST, roles: [] });
+  assert.ok(R.pending(root, {}).problems.some((x) => x.code === 'manifest_unavailable'));
+  assert.deepStrictEqual(R.find(root, {}).map((x) => x.id), []);
+  const v = R.verifyRecord(root, d.id);
+  assert.strictEqual(v.code, 'manifest_unavailable');
+  assert.match(v.error, /\.delivery\/team\/team\.json/);
+  assert.strictEqual(codeOf(() => decide(root, { statement: 'x' })), 'manifest_unavailable');
+  fs.writeFileSync(tj, JSON.stringify(MANIFEST));
+  assert.strictEqual(R.verifyRecord(root, d.id).ok, true);
+});
+
+test('R4 b: a negated quote is refused with the minimal quote that passes', () => {
+  const rows = [
+    ['Use Postgres. Do not touch Redis.', 'Use Postgres', 'Use Postgres. Do not touch Redis.'],
+    ['Please do not merge the auth branch today, thanks.', 'merge the auth branch today', 'Please do not merge the auth branch today'],
+    ['Ship the checkout flow. But wait for QA first. Then tell me.', 'Ship the checkout flow', 'Ship the checkout flow. But wait for QA first.'],
+  ];
+  for (const [text, quote, minimal] of rows) {
+    const r = R.quoteCheck(text, quote);
+    assert.strictEqual(r.code, 'quote_negated', text);
+    assert.strictEqual(r.minimal, minimal, text);
+    assert.ok(r.message.includes(`«${minimal}»`), r.message);
+    assert.strictEqual(R.quoteCheck(text, r.minimal).ok, true, `the suggested quote passes: ${r.minimal}`);
+  }
+  assert.doesNotMatch(R.quoteCheck('Use Postgres. Do not touch Redis.', 'Use Postgres').message, /quote the whole sentence/);
+});
+
+test('R4 d: question asker, options and recommendation are typed; the asker role comes from the manifest', () => {
+  const root = fixture();
+  const q = R.recordQuestion({ projectRoot: root, text: 'Which db?', asker: { instance: 'builder-1', bead: 'ex-1' }, options: ['A', 'B'], recommendation: 'A', scope: scope(), by: COS });
+  assert.deepStrictEqual(q.asker, { instance: 'builder-1', role: 'builder', bead: 'ex-1' });
+  const ask = (over) => codeOf(() => R.recordQuestion({ projectRoot: root, text: 'Which db?', asker: { instance: 'builder-1', role: null, bead: null }, scope: scope(), by: COS, ...over }));
+  assert.strictEqual(ask({ asker: { instance: 'builder-1', role: 'chief-of-staff', bead: null } }), 'role_mismatch');
+  assert.strictEqual(ask({ asker: { instance: 'mallory', role: null, bead: null } }), 'unknown_instance');
+  assert.strictEqual(ask({ asker: { instance: 7 } }), 'invalid_question');
+  assert.strictEqual(ask({ asker: 'builder-1' }), 'invalid_question');
+  assert.strictEqual(ask({ options: 'A|B' }), 'invalid_question');
+  assert.strictEqual(ask({ options: ['A', 3] }), 'invalid_question');
+  assert.strictEqual(ask({ recommendation: 5 }), 'invalid_question');
+  const base = { idprefix: 'q', kind: 'question', text: 'Which db?', cites: [], cites_head: [], recommendation: null };
+  const rows = [
+    ['options not strings', { ...base, asker: { instance: 'builder-1', role: 'builder', bead: null }, options: [1, 2] }, 'invalid_question'],
+    ['recommendation an object', { ...base, asker: { instance: 'builder-1', role: 'builder', bead: null }, options: [], recommendation: { x: 1 } }, 'invalid_question'],
+    ['asker with an extra field', { ...base, asker: { instance: 'builder-1', role: 'builder', bead: null, admin: true }, options: [] }, 'invalid_question'],
+    ['asker role mismatch', { ...base, asker: { instance: 'builder-1', role: 'chief-of-staff', bead: null }, options: [] }, 'role_mismatch'],
+  ];
+  for (const [name, e, want] of rows) {
+    const f = forge(root, 'chief-of-staff', e);
+    assert.strictEqual(R.verifyRecord(root, f.id).code, want, name);
+  }
+  assert.deepStrictEqual(R.ledger(root, {}).map((r) => r.question.id), [q.id], 'invalid questions never reach the ledger');
 });

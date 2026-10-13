@@ -6,7 +6,7 @@
 // (prepare-role writes it and DELIVERY_ROLE names the instance) and end with a best-effort publish.
 const fs = require('fs');
 const path = require('path');
-const { findProjectRoot, expandInstances } = require('./lib/manifest.js');
+const { findProjectRoot, expandInstances, loadManifest } = require('./lib/manifest.js');
 const { findRoleMarker, validMarker, bdOptionsFor } = require('../hooks/scripts/role-context.js');
 const { makeBd } = require('./lib/bd.js');
 const { readRoster } = require('./lib/roster.js');
@@ -106,7 +106,10 @@ function parseSince(v) {
 function buildContext(flags) {
   const cwd = process.cwd();
   let valid = null;
-  try { valid = validMarker(findRoleMarker(cwd)); } catch (e) { valid = null; }
+  let markerError = null;
+  let found = null;
+  try { found = findRoleMarker(cwd); } catch (e) { found = null; }
+  try { valid = validMarker(found); } catch (e) { valid = null; markerError = e; }
   let projectRoot = flags.project ? path.resolve(flags.project) : null;
   if (!projectRoot) projectRoot = (valid && valid.marker.project_root) || findProjectRoot(cwd);
   if (!projectRoot) throw new UsageError('no delivery project found: run from a role session or pass --project <root>');
@@ -125,7 +128,17 @@ function buildContext(flags) {
     projectFlag: flags.project ? path.resolve(flags.project) : null,
     refreshed: false,
     warnings: [],
+    markerError,
   };
+  // a role session whose project manifest does not load (or no longer lists it): say what to restore
+  if (!valid && found && found.marker && process.env.DELIVERY_ROLE === found.marker.instance) {
+    let team = null;
+    try { team = loadManifest(projectRoot).team; } catch (e) { team = null; }
+    let instances = [];
+    try { instances = team ? expandInstances(team) : []; } catch (e) { instances = []; }
+    if (!instances.length) ctx.manifestUnavailable = true;
+    else if (!instances.some((i) => i.instance === found.marker.instance)) ctx.unknownInstance = found.marker.instance;
+  }
   if (ctx.by) {
     if (ctx.host) ctx.by.host = ctx.host;
     ctx.by.machine = R.machineId();
@@ -145,6 +158,12 @@ function buildContext(flags) {
 function requireWriter(ctx) {
   if (ctx.by && ctx.projectFlag && real(ctx.projectFlag) !== real(ctx.valid.marker.project_root)) {
     throw new R.OperatorError('project_mismatch', `--project ${ctx.projectFlag} is not the project of this role (${ctx.valid.marker.project_root}); records are written to the role's own project only. Drop --project`);
+  }
+  if (!ctx.by && ctx.manifestUnavailable) {
+    throw new R.OperatorError('manifest_unavailable', '.delivery/team/team.json cannot be loaded or lists no instances, so this session cannot be attributed to a role and nothing is recorded; restore .delivery/team/team.json (for example git checkout -- .delivery/team/team.json)');
+  }
+  if (!ctx.by && ctx.unknownInstance) {
+    throw new R.OperatorError('unknown_instance', `instance ${ctx.unknownInstance} is not in .delivery/team/team.json, so nothing is recorded from this session; restore .delivery/team/team.json or ask the chief of staff to add the instance`);
   }
   if (!ctx.by) {
     throw new R.OperatorError('not_allowed', 'no valid role marker for this session, so nothing can be recorded here; run operator.js from a delivery role session (prepare-role writes the marker and sets DELIVERY_ROLE). Reading (verify, show, pending, find, ledger) works anywhere');
@@ -190,9 +209,12 @@ function readWarnings(ctx, problems) {
   const r = ctx.refreshResult;
   if (r && !r.ok && !r.no_remote) w.push(`could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; records on other hosts may be missing`);
   if (r && r.diverged && r.diverged.length) w.push(`diverged: ${r.diverged.join(', ')} differ from the upstream copy; another writer appended to a file only this one should (a forked instance)`);
-  for (const p of problems || []) w.push(p.id ? `${p.id} (${p.file}${p.line ? ':' + p.line : ''}) is excluded: ${p.error}` : `${p.file} fails verification: ${p.error}`);
+  for (const p of problems || []) w.push(p.code === 'manifest_unavailable' ? `manifest_unavailable: ${p.error}` : p.id ? `${p.id} (${p.file}${p.line ? ':' + p.line : ''}) is excluded: ${p.error}` : `${p.file} fails verification: ${p.error}`);
   return w;
 }
+
+// with no usable manifest nothing is trusted: an empty answer is not "nothing found"
+function manifestUnavailable(problems) { return (problems || []).some((p) => p.code === 'manifest_unavailable'); }
 
 function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
@@ -465,7 +487,7 @@ const handlers = {
       return `${r.id} ${r.kind}${extra ? ' ' + extra : ''}: ${r.statement}${r.quote ? ` (operator: ${quoted(r.quote)})` : ''}${r.grant ? ` GRANT: ${r.grant}` : ''}`;
     }) : ['nothing found'];
     out(ctx, { results: [...res], problems: res.problems, warnings }, [...lines, ...warnings.map((w) => `warning: ${w}`)]);
-    return 0;
+    return manifestUnavailable(res.problems) ? 1 : 0;
   },
 
   ledger(ctx, flags) {
@@ -474,9 +496,10 @@ const handlers = {
     const o = { bead: flags.bead, status: flags.status, since: parseSince(flags.since), refresh: ctx.refreshOnce, noLedger: true };
     const rows = R.ledger(ctx.projectRoot, o);
     const warnings = readWarnings(ctx, rows.problems);
-    if (ctx.json) { process.stdout.write(JSON.stringify({ rows: [...rows], problems: rows.problems, warnings }) + '\n'); return 0; }
+    const code = manifestUnavailable(rows.problems) ? 1 : 0;
+    if (ctx.json) { process.stdout.write(JSON.stringify({ rows: [...rows], problems: rows.problems, warnings }) + '\n'); return code; }
     process.stdout.write(R.renderLedger(ctx.projectRoot, o) + warnings.map((w) => `warning: ${w}\n`).join(''));
-    return 0;
+    return code;
   },
 
   pending(ctx, flags) {
@@ -613,9 +636,14 @@ const handlers = {
     }
     obj = R.getRecord(ctx.projectRoot, id) || (ctx.refreshOnce() && R.getRecord(ctx.projectRoot, id)) || null;
     if (!obj) throw new R.OperatorError('not_found', `record ${id} was not found (operator.js refresh pulls other hosts; operator.js find lists records)`);
-    const lines = [`${obj.id}  ${obj.kind}`, `by: ${obj.by && obj.by.instance} (${obj.by && obj.by.role}) at ${obj.ts}`];
+    // the record is displayed as stored; its words count as the operator's only if it validates
+    const v = R.verifyRecord(ctx.projectRoot, id, { refresh: ctx.refreshOnce, noLedger: true });
+    const validity = v.ok ? { ok: true } : { ok: false, code: v.code, error: v.error };
+    const lines = [`${obj.id}  ${obj.kind}`, v.ok ? 'validity: valid' : `validity: invalid (${v.code}): ${v.error}`,
+      `by: ${obj.by && obj.by.instance} (${obj.by && obj.by.role}) at ${obj.ts}`];
     for (const k of ['statement', 'question', 'text', 'answer', 'confidence', 'rationale', 'reason']) if (obj[k]) lines.push(`${k}: ${obj[k]}`);
-    if (obj.quote) {
+    if (obj.quote && !v.ok) lines.push("quote: withheld, the record does not validate (the raw record is in --json)");
+    if (obj.quote && v.ok) {
       const cid = (obj.cites || []).find((c) => String(c).startsWith('in-'));
       const inp = cid ? log.getInput(ctx.projectRoot, cid) : null;
       lines.push(`operator quote: ${quoted((inp && R.excerptFor(inp.text, obj.quote)) || obj.quote)}`);
@@ -628,7 +656,7 @@ const handlers = {
     const sc = Object.entries(obj.scope || {}).flatMap(([k, v]) => v.map((x) => `${k.slice(0, -1)}:${x}`));
     if (sc.length) lines.push(`scope: ${sc.join(', ')}`);
     if (obj.supersedes) lines.push(`supersedes: ${obj.supersedes}`);
-    out(ctx, obj, lines);
+    out(ctx, { ...obj, validity }, lines);
     return 0;
   },
 };

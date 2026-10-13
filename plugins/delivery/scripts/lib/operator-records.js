@@ -105,21 +105,35 @@ function quoteCheck(inputText, quote) {
     for (let k = end; k < t.base.length; k++) { if ('.!?\n'.includes(t.base[k])) { e0 = k + 1; term = t.base[k]; break; } }
     return { s0, e0, term };
   };
-  const clean = [];
-  for (const at of hits) {
-    const start = t.map[at];
-    const end = t.map[at + q.length - 1] + 1;
+  // the negation context of the span [start, end) of the NFKC text: the sentence before it (within
+  // the look-back window) and the rest of its sentence plus the sentence that follows it (heuristic,
+  // documented: a hold or a negation right after an instruction usually qualifies it)
+  const context = (start, end) => {
     const sn = sentenceOf(start, end);
     const pre = normMap(t.base.slice(sn.s0, start)).norm;
-    // the rest of the sentence and the sentence that follows it (heuristic, documented: a hold or a
-    // negation right after an instruction usually qualifies it)
     let nextEnd = sn.e0;
     if (sn.term) { for (let k = sn.e0; k < t.base.length; k++) { if ('.!?\n'.includes(t.base[k]) && t.base.slice(sn.e0, k).trim()) { nextEnd = k + 1; break; } if (k === t.base.length - 1) nextEnd = t.base.length; } }
     const post = normMap(t.base.slice(end, nextEnd)).norm;
-    if (!hasNegation(pre, { before: true }) && !hasNegation(post, { before: false })) clean.push(at);
+    return { s0: sn.s0, nextEnd, preNeg: hasNegation(pre, { before: true }), postNeg: hasNegation(post, { before: false }) };
+  };
+  const clean = [];
+  for (const at of hits) {
+    const c = context(t.map[at], t.map[at + q.length - 1] + 1);
+    if (!c.preNeg && !c.postNeg) clean.push(at);
   }
   if (!clean.length) {
-    return { ok: false, code: 'quote_negated', message: 'in the input the quoted words sit in a sentence with a negation or a hold (not, never, no, stop, wait, ...) that the quote leaves out; quote the whole sentence' };
+    // the smallest span around the first occurrence that carries its negation with it
+    let start = t.map[hits[0]];
+    let end = t.map[hits[0] + q.length - 1] + 1;
+    for (let i = 0; i < 20; i++) {
+      const c = context(start, end);
+      if (!c.preNeg && !c.postNeg) break;
+      if (c.preNeg) start = c.s0;
+      if (c.postNeg) end = c.nextEnd;
+    }
+    const minimal = t.base.slice(start, end).replace(/\s+/g, ' ').trim();
+    return { ok: false, code: 'quote_negated', minimal,
+      message: `in the input the quoted words sit next to a negation or a hold (not, never, no, stop, wait, ...) that the quote leaves out; quote at least: «${minimal}»` };
   }
   const at = clean[0];
   const start = t.map[at];
@@ -284,6 +298,7 @@ function answerDepth(view, rec, seen = new Set()) {
   return max < 0 ? 0 : max + 1;
 }
 
+const MANIFEST_HINT = '.delivery/team/team.json cannot be loaded or lists no instances (restore .delivery/team/team.json)';
 const REHOST_HINT = (inst) => `run operator.js rehost --instance ${inst} --reason "<why this instance moved>" from the new place first`;
 
 // THE rules. Called before a record is appended (mode 'write') and again for every record on read
@@ -343,7 +358,7 @@ function validateCore(st, rec, view, mode) {
     if (input.source !== 'human') return { err: bad('not_human', `input ${cid} is a ${input.source} message, not the operator's own words; only human inputs can be cited (operator.js pending lists them)`) };
     const qc = quoteCheck(input.text, rec.quote);
     if (!qc.ok) return { err: bad(qc.code, `${qc.message} (operator.js show ${cid} prints the operator's words)`) };
-    if (!ownsInput(by, input)) return { err: bad('not_allowed', `only the chief of staff or the session that captured ${cid} may record it; send the input id ${cid} to the chief of staff`) };
+    if (!ownsInput(by, input)) return { err: bad('not_allowed', `only the chief of staff or the instance and session that captured ${cid} may record it; send the input id ${cid} to the chief of staff`) };
     if (delegation && !DELEGATORS.has(by.role)) return { err: bad('not_allowed', `only the chief of staff or the product manager records a delegation; send the operator's input id to the chief of staff`) };
     if (W && qc.attributed) st.warn(`quote_may_be_attributed: the quoted words sit inside quotation marks in ${cid}; check the operator is not quoting someone else (operator.js show ${cid})`);
     if (qc.question) return { err: bad('quote_is_question', `the sentence containing the quote is a question, not an instruction; cite the operator's answer to it (operator.js pending lists inputs)`) };
@@ -522,13 +537,21 @@ function validateCore(st, rec, view, mode) {
       if (hc) return hc;
       const hv = st.inputHost(input.host);
       if (!hv.ok) return bad(hv.code, hv.error, { at: hv.at });
-      if (!ownsInput(by, input)) return bad('not_allowed', `only the chief of staff or the session that captured ${cid} may acknowledge it; send the input id to the chief of staff`);
+      if (!ownsInput(by, input)) return bad('not_allowed', `only the chief of staff or the instance and session that captured ${cid} may acknowledge it; send the input id to the chief of staff`);
       return null;
     }
     case 'question': {
       if (!citesAre([])) return bad('bad_cites', `${rec.id} cites nothing and carries no citation`);
       if (by.role !== 'chief-of-staff') return bad('not_allowed', 'only the chief of staff escalates questions to the operator; message the chief of staff with the one question (SendMessage)');
       const e0 = text(rec.text, 'text'); if (e0) return e0;
+      const roles = st.roles() || new Map();
+      const want = roles.get(rec.asker.instance);
+      if (want === undefined) {
+        // on read an asker that has since left the manifest keeps its history (its role cannot be re-checked)
+        if (W) return bad('unknown_instance', `asker ${rec.asker.instance} is not in team.json; --asker names the instance whose question this is`);
+      } else if (rec.asker.role !== want) {
+        return bad('role_mismatch', `${rec.id} names asker ${rec.asker.instance} with role ${rec.asker.role}, but team.json gives it the role ${want}`);
+      }
       return null;
     }
     case 'withdrawal': {
@@ -590,6 +613,21 @@ function shapeError(rec) {
   if (rec.supersedes !== null && rec.supersedes !== undefined) {
     if (!((rec.kind === 'decision' && !rec.under) || rec.kind === 'answer')) return bad('misplaced_field', `${rec.id} is a ${rec.kind}${rec.under ? ' under a delegation' : ''} and may not supersede anything`);
   }
+  // a quote is the operator's words only where the validator checks it against a cited input: a
+  // decision under a delegation cites the delegation, so it carries no quote of its own
+  if (rec.kind === 'decision' && rec.under !== undefined && rec.under !== null && rec.quote !== undefined && rec.quote !== null) {
+    return bad('misplaced_field', `${rec.id} decides under ${rec.under} and may not carry a quote; the operator's words are the delegation's (operator.js verify ${rec.under})`);
+  }
+  if (rec.kind === 'question') {
+    const a = rec.asker;
+    if (!a || typeof a !== 'object' || Array.isArray(a)) return bad('invalid_question', `${rec.id}: asker must be { instance, role, bead }`);
+    for (const k of Object.keys(a)) if (!['instance', 'role', 'bead'].includes(k)) return bad('invalid_question', `${rec.id}: asker carries the field "${k}"`);
+    if (typeof a.instance !== 'string' || !INSTANCE_RE.test(a.instance)) return bad('invalid_question', `${rec.id}: asker.instance must be an instance id`);
+    if (a.role !== null && a.role !== undefined && typeof a.role !== 'string') return bad('invalid_question', `${rec.id}: asker.role must be a string`);
+    if (a.bead !== null && a.bead !== undefined && (typeof a.bead !== 'string' || !a.bead.trim())) return bad('invalid_question', `${rec.id}: asker.bead must be a bead id or null`);
+    if (rec.options !== undefined && (!Array.isArray(rec.options) || rec.options.some((o) => typeof o !== 'string' || !o.trim()))) return bad('invalid_question', `${rec.id}: options must be an array of non-empty strings`);
+    if (rec.recommendation !== undefined && rec.recommendation !== null && (typeof rec.recommendation !== 'string' || !rec.recommendation.trim())) return bad('invalid_question', `${rec.id}: recommendation must be a non-empty string or null`);
+  }
   return null;
 }
 
@@ -606,10 +644,15 @@ function validateRecord(st, rec, view, mode) {
     const by = rec.by;
     if (by && typeof by === 'object' && by.instance === p.instance) {
       const roles = st.roles();
-      if (!roles) return bad('manifest_unavailable', 'team.json cannot be loaded, so the author role cannot be checked');
+      if (!roles) return bad('manifest_unavailable', `${MANIFEST_HINT}, so the author role cannot be checked`);
       const want = roles.get(p.instance);
       if (want === undefined) {
         if (W) return bad('unknown_instance', `instance ${p.instance} is not in team.json; records are written by instances the manifest lists`);
+        // an instance that left the manifest keeps only the history this host recorded while it was listed
+        const h = st.recordedHead(p.instance);
+        if (!h || p.seq > h.count) {
+          return bad('unknown_instance', `${rec.id} was appended after instance ${p.instance} left team.json (this host recorded ${h ? h.count : 0} of its entries); its role cannot be checked, so it is not trusted`);
+        }
       } else if (by.role !== want) {
         return bad('role_mismatch', `${rec.id} claims role ${by.role}, but team.json gives instance ${p.instance} the role ${want}`);
       }
@@ -618,13 +661,17 @@ function validateRecord(st, rec, view, mode) {
   const res = validateCore(st, rec, view, mode);
   if (res) return res;
   const t = Date.parse(rec.ts);
-  if (t > Date.now() + 10 * 60 * 1000) return bad('bad_timestamp', `${rec.id} is dated ${rec.ts}, more than ten minutes in the future`);
-  if (p && p.seq > 1) {
-    const prev = st.entries(p.instance)[p.seq - 2];
-    if (prev && Date.parse(prev.ts) > t) return bad('bad_timestamp', `${rec.id} (${rec.ts}) is older than the record before it in its chain (${prev.ts})`);
-  }
+  const prev = p && p.seq > 1 ? st.entries(p.instance)[p.seq - 2] : null;
+  // Read: a record dated ahead of this reader's clock is not trusted YET; nothing about that verdict
+  // is stored, so it becomes valid once the clock reaches it. Write: a writer whose clock fell behind
+  // its own previous record (a clock correction) stamps the previous record's time (see commit), and
+  // that record is written: a chain never locks up.
+  const clamped = W && prev && rec.ts === prev.ts;
+  if (!clamped && t > Date.now() + FUTURE_TOLERANCE_MS) return bad('bad_timestamp', `${rec.id} is dated ${rec.ts}, more than ten minutes ahead of this clock; it is trusted once the clock reaches it`);
+  if (prev && Date.parse(prev.ts) > t) return bad('bad_timestamp', `${rec.id} (${rec.ts}) is older than the record before it in its chain (${prev.ts})`);
   return null;
 }
+const FUTURE_TOLERANCE_MS = 10 * 60 * 1000;
 
 // ---- store: per-call cache with one refresh on a miss ----
 
@@ -641,7 +688,7 @@ function makeStore(root, opts = {}) {
     inputHosts: new Map(),
     invalid: new Map(),
     warn: typeof opts.onWarning === 'function' ? opts.onWarning : () => {},
-    invalidate() { st._roles = undefined; st.files.clear(); st._inputs = null; st._scan = null; st.verified.clear(); st.inputHosts.clear(); st.invalid = new Map(); },
+    invalidate() { st._roles = undefined; st._heads = null; st.files.clear(); st._inputs = null; st._scan = null; st.verified.clear(); st.inputHosts.clear(); st.invalid = new Map(); },
     miss() {
       if (st.refreshed || typeof opts.refresh !== 'function') return false;
       st.refreshed = true;
@@ -684,10 +731,17 @@ function makeStore(root, opts = {}) {
       return e;
     },
     inputHost(host) { return verifyInputHostCached(st, host); },
+    // the head this host recorded for a records chain (read once per scan)
+    recordedHead(instance) {
+      if (!st._heads) st._heads = log.readHeads(root);
+      return st._heads[headsKey('records', instance)] || null;
+    },
     // instance -> role id from team.json, or null when the manifest cannot be loaded
     roles() {
       if (st._roles === undefined) {
+        // a manifest that lists no instance attributes nothing: fail closed exactly as if it were missing
         try { st._roles = new Map(expandInstances(loadManifest(root).team).map((i) => [i.instance, i.role.id])); } catch (e) { st._roles = null; }
+        if (st._roles && st._roles.size === 0) st._roles = null;
       }
       return st._roles;
     },
@@ -701,10 +755,11 @@ function makeStore(root, opts = {}) {
       const problems = [];
       const entries = [];
       const heads = log.readHeads(root);
+      st._heads = heads;
       if (!manifest) {
         // fail closed: with no manifest nothing is trusted and no head is recorded
         for (const inst of insts) st.verified.set(inst, verifyRecordsFile(root, inst, { setHead: false }));
-        if (insts.length) problems.push({ file: '.delivery/team/team.json', code: 'manifest_unavailable', error: 'team.json or hosts.json cannot be loaded, so no records chain can be attributed to a role and none is trusted' });
+        if (insts.length) problems.push({ file: '.delivery/team/team.json', code: 'manifest_unavailable', error: `${MANIFEST_HINT}, so no records chain can be attributed to a role and none is trusted` });
       }
       for (const inst of manifest ? insts : []) {
         if (manifest && !manifest.has(inst) && !heads[headsKey('records', inst)]) {
@@ -905,8 +960,13 @@ function inputHead(input) {
   return { id: input.id, host: input.host, seq: p.seq, hash: input.hash };
 }
 
+// The chief of staff, or the session that captured the input. The session id is self-asserted, so it
+// counts only together with the instance the input was captured under (an input's instance is part
+// of its hash-chained entry): copying another session's id is not enough.
 function ownsInput(by, input) {
-  return by.role === 'chief-of-staff' || !!(by.session_id && by.session_id !== 'unknown' && by.session_id === input.session_id);
+  if (by.role === 'chief-of-staff') return true;
+  return !!(by.session_id && by.session_id !== 'unknown' && by.session_id === input.session_id
+    && typeof input.instance === 'string' && input.instance === by.instance);
 }
 
 // ---- writing: build the record, run the same validator the readers run, append ----
@@ -916,7 +976,7 @@ function commit(st, by, fields, ids = []) {
   const inst = by.instance;
   const file = recordsFile(root, inst);
   const roles = st.roles();
-  if (!roles) throw new OperatorError('manifest_unavailable', 'team.json or hosts.json cannot be loaded, so nothing can be recorded or trusted; fix the manifest (operator.js problems)');
+  if (!roles) throw new OperatorError('manifest_unavailable', `${MANIFEST_HINT}; nothing can be recorded or trusted until it loads`);
   if (!roles.has(inst)) throw new OperatorError('unknown_instance', `instance ${inst} is not in team.json; records are written by instances the manifest lists`);
   if (fs.existsSync(file)) {
     // writers repair their OWN torn tail (the partial line is kept as evidence); readers only report it
@@ -933,7 +993,15 @@ function commit(st, by, fields, ids = []) {
   const lp = last ? parseRecordId(last.id) : null;
   const seq = lp ? lp.seq + 1 : 1;
   const id = `${KIND_PREFIX[fields.kind]}-${inst}-${pad(seq)}`;
-  const cand = { id, ...fields, by, ts: st.now.toISOString() };
+  // timestamps never go backwards within a chain: max(now, previous record's ts)
+  const stamp = (l) => {
+    const now = st.now.toISOString();
+    return l && typeof l.ts === 'string' && ISO_RE.test(l.ts) && Date.parse(l.ts) > Date.parse(now) ? l.ts : now;
+  };
+  const cand = { id, ...fields, by, ts: stamp(last) };
+  if (cand.ts !== st.now.toISOString() && Date.parse(cand.ts) > Date.now() + FUTURE_TOLERANCE_MS) {
+    st.warn(`clock_behind_chain: this clock (${st.now.toISOString()}) is behind the previous record of records/${inst} (${cand.ts}); the record carries that time and readers trust it once their clocks reach it`);
+  }
   const bad1 = validateRecord(st, cand, view, 'write');
   if (bad1) {
     if (bad1.code === 'not_found') throw st.missing('not_found', bad1.message);
@@ -941,7 +1009,7 @@ function commit(st, by, fields, ids = []) {
   }
   const stored = chain.appendEntry(file, (l) => {
     const lp2 = l ? parseRecordId(l.id) : null;
-    return { id: `${KIND_PREFIX[fields.kind]}-${inst}-${pad(lp2 ? lp2.seq + 1 : 1)}`, ...fields, by, ts: st.now.toISOString() };
+    return { id: `${KIND_PREFIX[fields.kind]}-${inst}-${pad(lp2 ? lp2.seq + 1 : 1)}`, ...fields, by, ts: stamp(l) };
   });
   st.invalidate();
   verifyRecordsFile(root, inst); // advances the head
@@ -1082,11 +1150,21 @@ function recordQuestion(o) {
   const by = needBy(o.by);
   if (by.role !== 'chief-of-staff') throw new OperatorError('not_allowed', 'only the chief of staff escalates questions to the operator; message the chief of staff with the one question (SendMessage)');
   needText(o.text, 'text');
-  const a = o.asker && typeof o.asker === 'object' ? o.asker : {};
-  const asker = { instance: a.instance || by.instance, role: a.role || null, bead: a.bead || null };
-  const options = Array.isArray(o.options) ? o.options.map((x) => String(x).trim()).filter(Boolean) : [];
+  const a = o.asker === undefined || o.asker === null ? {} : o.asker;
+  if (typeof a !== 'object' || Array.isArray(a)) throw new OperatorError('invalid_question', 'asker must be { instance, role, bead }');
+  const instance = a.instance === undefined || a.instance === null ? by.instance : a.instance;
+  if (typeof instance !== 'string' || !INSTANCE_RE.test(instance)) throw new OperatorError('invalid_question', 'asker.instance must be an instance id (--asker <instance>)');
+  if (a.bead !== undefined && a.bead !== null && (typeof a.bead !== 'string' || !a.bead.trim())) throw new OperatorError('invalid_question', 'asker.bead must be a bead id (--bead ID)');
+  if (a.role !== undefined && a.role !== null && typeof a.role !== 'string') throw new OperatorError('invalid_question', 'asker.role must be a string');
+  // the asker's role comes from the manifest; a stated role must agree with it (checked by the validator)
+  const roles = st.roles();
+  const derived = roles ? roles.get(instance) : undefined;
+  const asker = { instance, role: a.role === undefined || a.role === null ? (derived === undefined ? null : derived) : a.role, bead: a.bead ? a.bead.trim() : null };
+  if (o.options !== undefined && o.options !== null && (!Array.isArray(o.options) || o.options.some((x) => typeof x !== 'string'))) throw new OperatorError('invalid_question', 'options must be an array of strings (--options "A|B|C")');
+  const options = (o.options || []).map((x) => x.trim()).filter(Boolean);
+  if (o.recommendation !== undefined && o.recommendation !== null && typeof o.recommendation !== 'string') throw new OperatorError('invalid_question', 'recommendation must be a string');
   const rec = commit(st, by, { kind: 'question', text: o.text.trim(), asker, scope: normScope(o.scope), options,
-    recommendation: o.recommendation ? String(o.recommendation).trim() : null, cites: [], cites_head: [], supersedes: null });
+    recommendation: o.recommendation && o.recommendation.trim() ? o.recommendation.trim() : null, cites: [], cites_head: [], supersedes: null });
   afterWrite(o);
   return rec;
 }
@@ -1204,6 +1282,7 @@ function verifyRecord(projectRoot, id, opts = {}) {
 
   const p = parseRecordId(id);
   if (!p) { fail('not_found', `${id} is not a record or input id`); return finish(); }
+  if (!st.roles()) { fail('manifest_unavailable', `${MANIFEST_HINT}; no record can be attributed to a role, so none verifies`); return finish(); }
   let rec = st.record(id);
   if (!rec) { fail('not_found', `record ${id} was not found (operator.js refresh pulls other hosts)`); return finish(); }
   // pull once when anything it leans on is missing locally
@@ -1232,7 +1311,8 @@ function verifyRecord(projectRoot, id, opts = {}) {
       if (!input) return;
       const hv = verifyInputHostCached(st, input.host);
       noteChain(`inputs/${input.host}`, hv);
-      const qc = citer && citer.quote ? quoteCheck(input.text, citer.quote) : null;
+      // the operator's words are shown only through a citation the validator accepted
+      const qc = citer && citer.quote && IXV.byId.has(citer.id) ? quoteCheck(input.text, citer.quote) : null;
       if (qc && qc.ok && qc.attributed) result.notes.push(`quote_may_be_attributed: the words cited by ${citer.id} sit inside quotation marks in ${rid}`);
       result.chain.push(inputHop(input, citer, qc && qc.ok ? qc.excerpt : null));
       return;
@@ -1241,9 +1321,9 @@ function verifyRecord(projectRoot, id, opts = {}) {
     if (!r) return;
     const pr = parseRecordId(rid);
     noteChain(`records/${pr.instance}`, verifyRecordsFileCached(st, pr.instance));
-    const h = { id: r.id, kind: r.kind, by: r.by, ts: r.ts, scope: r.scope };
+    const h = { id: r.id, kind: r.kind, by: r.by, ts: r.ts, scope: r.scope, valid: IXV.byId.has(r.id) };
     if (r.statement !== undefined) h.statement = r.statement;
-    if (r.quote) h.quote = r.quote;
+    if (r.quote && h.valid) h.quote = r.quote;
     if (r.grant) h.grant = r.grant;
     if (r.kind === 'answer') {
       Object.assign(h, { question: r.question, answer: r.answer, confidence: r.confidence, rationale: r.rationale });
