@@ -11,7 +11,10 @@ function loadDenylist(projectRoot) {
 }
 
 // ---------- paths ----------
-const CI = process.platform === 'darwin' || process.platform === 'win32';
+// Compare paths case-insensitively on every platform: the plan-file segments (.delivery, .beads, team.json)
+// and the product directory must not be dodged by case on a case-insensitive filesystem, and a repo moves
+// between systems. A directory that differs only by case is over-denied on Linux, which is harmless.
+const CI = true;
 const fold = (p) => (CI ? p.toLowerCase() : p);
 function under(dir, parent) { const rel = path.relative(parent, dir); return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)); }
 function productDir(roleDir) { return path.join(realish(path.resolve(roleDir)), 'product'); }
