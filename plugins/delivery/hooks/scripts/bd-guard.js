@@ -9,7 +9,9 @@ const BOOLEAN_FLAGS = new Set(['--claim', '--json', '--all', '--force', '--silen
 const CREATE = new Set(['create', 'new', 'q', 'create-form']);
 // Verbs that restructure or rename the record whatever their arguments (`link` is shorthand for
 // `dep add`; `mol` pours and bonds molecules). Only the Delivery Lead runs them.
-const STRUCTURE_VERBS = new Set(['link', 'rename', 'rename-prefix', 'set-state', 'duplicate', 'supersede']);
+const STRUCTURE_VERBS = new Set(['link', 'rename', 'rename-prefix', 'set-state', 'duplicate', 'supersede', 'todo', 'import']);
+// Only these roles may bring a closed bead back: the Delivery Lead, and the observer who found it unproven.
+const REOPENERS = new Set(['delivery-lead', 'progress-observer']);
 // Verbs that close a bead on the way: they answer to the same evidence and live-claim rules as `close`.
 const CLOSING = new Set(['close', 'duplicate', 'supersede']);
 // `epic` and `swarm` read through these; any other form writes (close-eligible, create, ...).
@@ -54,10 +56,23 @@ function liveOther(bead, actor, staleHours, now) {
   return age < staleHours ? age : null;
 }
 
+// Whether any of these beads exists and is held by someone else. A failed lookup stays fail-open.
+function heldByOther(ids, actor, bd) {
+  return ids.some((id) => {
+    let bead;
+    try { bead = bd.show(id); } catch (err) { return false; }
+    return Boolean(bead) && bead.assignee !== actor;
+  });
+}
+
 function structural(p, actor, bd) {
   const [head, second] = p.sub.split(' ');
   if (CREATE.has(p.sub)) return !p.flags.has('--parent');
   if (p.sub === 'delete') return true;
+  // `duplicates` lists; merging what it finds closes beads.
+  if (p.sub === 'duplicates') return p.ids.includes('merge') || [...p.flags.keys()].some((f) => /^--(auto-)?merge/.test(f));
+  // `tag <id> <label>` is `label add`: the second positional is the label, not a bead.
+  if (p.sub === 'tag') return p.ids.length > 0 && heldByOther(p.ids.slice(0, 1), actor, bd);
   if (STRUCTURE_VERBS.has(p.sub)) return true;
   if (p.sub === 'mol' || head === 'mol') return second !== undefined || p.ids.length > 0;
   if (GROUP_READ[head] && second !== undefined) return !second.startsWith('-') && !GROUP_READ[head].has(second);
@@ -67,11 +82,7 @@ function structural(p, actor, bd) {
     if (p.flags.has('--parent')) return true;
     if (LABEL_FLAGS.some((f) => p.flags.has(f))) {
       // Labels change only on beads the actor holds, every id given. A lookup that fails stays fail-open.
-      return p.ids.some((id) => {
-        let bead;
-        try { bead = bd.show(id); } catch (err) { return false; }
-        return Boolean(bead) && bead.assignee !== actor;
-      });
+      return heldByOther(p.ids, actor, bd);
     }
   }
   return false;
@@ -97,8 +108,13 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
         }
       }
     }
-    if (p.sub === 'update' && p.ids.length && CLAIM_FLAGS.some((f) => p.flags.has(f))) {
-      for (const id of p.ids) {
+    if (p.sub === 'reopen' && !REOPENERS.has(roleId)) {
+      return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: only the Delivery Lead or the progress-observer reopens a closed bead; ask one of them.` };
+    }
+    // `assign <id> <who>` is a claim change: the second positional is a person, not a bead.
+    const assigning = p.sub === 'assign' && p.ids.length > 0;
+    if (assigning || (p.sub === 'update' && p.ids.length && CLAIM_FLAGS.some((f) => p.flags.has(f)))) {
+      for (const id of assigning ? p.ids.slice(0, 1) : p.ids) {
         const bead = lookup(bd, id);
         const age = liveOther(bead, actor, staleHours, now);
         if (age !== null) {
