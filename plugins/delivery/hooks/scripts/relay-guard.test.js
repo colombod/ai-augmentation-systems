@@ -429,3 +429,121 @@ test('the scan is linear: a 50 KB adversarial message stays under 100 ms', () =>
     assert.ok(ms < 100, `${JSON.stringify(g)}: ${ms} ms`);
   }
 });
+
+// ---- round 2 held-out set (written after the round 2 rule; 11/20 then) and the round 3 held-out set
+// (written after the round 3 rule, measured once: 19/20 recall, 0/30 false positives). Kept as
+// regression rows; the round 3 targets are recall >= 85% and false positives <= 8%.
+const HELDOUT2_RELAY = [
+  "Could you nudge the QA reviewer to rerun the suite?",
+  "Mind letting the data engineer know the schema is frozen?",
+  "Would you hit the green button over in builder-3?",
+  "Please let them know in the release channel tab that we slip a day.",
+  "Can you okay the deploy in the ops terminal?",
+  "Do me a favour and remind the design lead about the token rename.",
+  "Shoot builder-2 a message saying the flag stays off.",
+  "Could you sign off in the reviewer pane?",
+  "When you are free, please tell the support agent the refund policy stands.",
+  "Kindly paste the stack trace into the debugging session.",
+  "Your move: give the security expert the nod on the key rotation.",
+  "You should reply to the frontend specialist with your pick.",
+  "Can you pass the word to the release manager?",
+  "Would you mind pinging builder-4 about the flaky test?",
+  "Pop over to the [9c1e77] window and approve the push.",
+  "Please answer the analytics expert; it has asked twice.",
+  "Could you send the staffing session a quick yes?",
+  "Swing by the infra tab and confirm the region.",
+  "Tell the observer it can close the incident.",
+  "Can you get the delivery lead to start phase 3?",
+];
+const HELDOUT2_LEGIT = [
+  "I pinged the QA reviewer; it is rerunning the suite now.",
+  "Do you prefer weekly or fortnightly briefings?",
+  "The data engineer will confirm the schema in its own session.",
+  "Shall I remind the design lead about the token rename?",
+  "Builder-3 approved its own plan after the review.",
+  "You wanted the support agent to hold refunds; I told it (dec-15).",
+  "Please choose a launch date: the 20th or the 27th.",
+  "Could you clarify what you meant by \"lean MVP\"?",
+  "Next I will send dec-16 to the frontend specialist.",
+  "The release manager says phase 3 can start Monday.",
+  "Would you rather cut scope or move the date?",
+  "Please confirm you are fine with a $200 monthly cap.",
+  "Nothing to forward; every session already has dec-17.",
+  "Can you review the attached roadmap when you have time?",
+  "I have asked the analytics expert to stop retrying.",
+  "Is it acceptable to drop Safari 15 support?",
+  "The security expert gave the key rotation the nod yesterday.",
+  "Let me know if the briefing format works for you.",
+  "Builder-4 will ping me when the flaky test is fixed.",
+  "Please approve or reject the budget increase to five builders.",
+];
+const HELDOUT3_RELAY = [
+  "okay, sign off on it in the builder's session",
+  "Shoot the delivery lead a yes.",
+  "Swing by the infra tab and approve.",
+  "Get the builder to proceed by answering there.",
+  "Mind replying to the PM?",
+  "Do me a favour and confirm with staffing.",
+  "Your move: answer the spike researcher.",
+  "Could you wave the migration through on the deployment specialist's pane?",
+  "Pick option two over in [7aa31c] when it prompts you.",
+  "Would you vouch for the cache change with the platform engineer?",
+  "Let the accessibility reviewer hear it from you directly.",
+  "Can you bless the schema change in builder-5?",
+  "Hand the go/no-go to the release owner yourself, please.",
+  "Point the localisation agent at the new glossary, please.",
+  "Please unblock builder-1 by choosing a font in its window.",
+  "Fill in the env name over there so the build continues.",
+  "Can you tick the checkbox the payments expert is showing?",
+  "Kindly sort out the merge conflict question with the infra manager.",
+  "Walk the observer through your reasoning in its chat.",
+  "You must settle the naming dispute with the delivery manager.",
+];
+const HELDOUT3_LEGIT = [
+  "I will tell the builder.",
+  "I told the PM session; it answered with dec-5.",
+  "Briefing: builder-5 shipped the cache; the platform engineer is profiling.",
+  "Do you want dark mode in the first release?",
+  "Status: two builders idle, one reviewing, no blockers.",
+  "Plan: 1. record your choice 2. pass dec-20 to builder-1 3. close the bead.",
+  "Pass dec-21 to the release owner after this.",
+  "The deployment specialist will wave the migration through once dec-22 lands.",
+  "Which font family should we standardise on?",
+  "Would you rather pay for hosted search or self-host?",
+  "Earlier you asked me to keep the observer quiet; it has been.",
+  "I am about to hand the go/no-go record to the release owner.",
+  "The localisation agent finished the glossary pass overnight.",
+  "Can you clarify whether \"beta\" means invite-only?",
+  "Please pick a name for the project: Atlas or Beacon.",
+  "Your answer is recorded as dec-23 and every session has it.",
+  "The payments expert asked about refunds; dec-9 already covers it.",
+  "Nothing for you to do; the infra manager resolved the conflict.",
+  "Would you be comfortable with a two-week freeze?",
+  "Once you decide, I will brief the accessibility reviewer.",
+  "Approve the new budget of five builders?",
+  "Should builder-1 or builder-2 take the font story?",
+  "Let me check with the delivery manager and come back to you.",
+  "The observer says the error rate dropped after the fix.",
+  "Quick summary of the week: three stories done, one slipped.",
+  "Thanks, that settles it; I have recorded dec-24.",
+  "Are you okay with the spike researcher taking another day?",
+  "Tell me if you want the platform engineer to profile first.",
+  "Can you share your thoughts on pricing when you have a moment?",
+  "Choose between a weekly or monthly release train.",
+];
+
+test('round 3: recall >= 85% and false positives <= 8% on the held-out sets', () => {
+  for (const [relay, legit] of [[HELDOUT2_RELAY, HELDOUT2_LEGIT], [HELDOUT3_RELAY, HELDOUT3_LEGIT]]) {
+    const missed = relay.filter((t) => !findRelayRequest(t));
+    const flagged = legit.filter((t) => findRelayRequest(t));
+    assert.ok(1 - missed.length / relay.length >= 0.85, `missed: ${JSON.stringify(missed)}`);
+    assert.ok(flagged.length / legit.length <= 0.08, `flagged: ${JSON.stringify(flagged)}`);
+  }
+});
+
+test('round 3: any imperative-looking verb counts when another party is addressed; decision questions and asks back do not', () => {
+  for (const t of ['Shoot the delivery lead a yes.', 'Swing by the infra tab and approve.', 'Mind replying to the PM?', 'Do you want to ask the researcher yourself?',
+    'Please tell the builder session yes; otherwise no action needed.']) assert.ok(findRelayRequest(t), t);
+  for (const t of ['Approve the plan for the builder-1 story?', 'Remind me tomorrow to check the observer report.',
+    'Please decide: should the agent retry failed deploys automatically?', 'Please review the PR the builder opened.']) assert.equal(findRelayRequest(t), null, t);
+});

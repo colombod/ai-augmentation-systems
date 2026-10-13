@@ -12,29 +12,34 @@ const path = require('path');
 
 // ---- the relay detector ----
 //
-// A structural rule over clauses, not a phrase list. A clause is a relay request when it has
-//   (a) an operator-address mark: please, kindly, can/could/would/will you, would you mind, you'll
-//       need to, your turn, "for you:", when you get a moment, ... or an operator-action verb at
-//       the start of the clause (an imperative: the Chief of Staff's final message has no other
-//       audience than the operator);
-//   (b) an operator-action verb (approve, confirm, reply, tell, ping, DM, let ... know, give ...
-//       the go-ahead, forward, paste, drop a note, open, head over, ...) in base, -s or -ing form;
-//   (c) a reference to another party tied to that verb: a role or instance (builder-2, the
-//       delivery lead, any "<word> specialist|expert|..."), a [hex] session ref, a session, tab,
-//       window, terminal, pane or chat that is not this one, "the other ...", "there", or it/them
-//       as the one who is told or answered;
-// minus cancels: a first-person or third-person subject nearer the verb than the address mark
-// ("once you answer, I will tell the builder", "the builder will answer in its session"), offers
-// ("should I tell ...?", "do you want me to ..."), reported speech ("you said to tell ..."),
-// "no need to", notes to self, and the Chief of Staff's own plan lines that send a record id
-// ("Send dec-8 to builder-2.") with no explicit address mark.
-// Code blocks, inline code, quoted lines (>) and double-quoted spans are ignored. Windows are
-// bounded so the scan is linear in the message length. A heuristic backstop, not a boundary.
+// Biased to recall: a missed relay request puts the operator to work as a messenger, a false alarm
+// costs the Chief of Staff one rewrite. A clause (split at sentence ends, semicolons, blank lines and
+// list items) is a relay request when
+//   (a) it addresses the operator: an address mark (please, kindly, can/could/would/will you, would
+//       you mind, mind <-ing>, you'll need to, you should, your turn/move, do me a favour, when you
+//       have a moment, go ahead, ...) or it starts with an imperative-looking word (any base-form
+//       word that is not a pronoun, auxiliary, determiner, question word, conjunction, preposition,
+//       label or common opener), after bullets, softeners (just, then, okay, ...) and an
+//       "once/when/if you ...," lead-in;
+//   (b) it refers to another party: a role or instance from the manifest, builder-N, any "<word>
+//       specialist|expert|engineer|reviewer|researcher|observer|lead|manager|owner|agent", a [hex]
+//       session ref, a session/tab/window/terminal/pane/chat that is not this one, "the other ...",
+//       "(over) there", or it/them as the one told or answered;
+//   (c) nothing cancels it: a first-person or third-person subject nearer the party than the address
+//       ("once you answer, I will tell the builder", "the builder will answer"), offers ("should I
+//       ...?"), reported speech ("you said ..."), "no need to", notes to self, a party that is only
+//       the subject of the question ("whether the PM may ...", "do you want the builder to ..."),
+//       a counted noun ("five builders"), and the Chief of Staff's plan lines that send a record id.
+// The weakest case, a bare imperative with no address mark, also needs a verb from the operator-
+// action list, a place or session ref, or the party as the verb's direct object ("Shoot the
+// delivery lead a yes"). Code blocks, inline code, quoted lines (>) and double-quoted spans are
+// ignored. Windows are bounded, so the scan is linear. A heuristic backstop, not a boundary.
 
 const DEFAULT_PARTIES = ['builder', 'builders', 'worker', 'workers', 'agent', 'agents', 'pm', 'product manager', 'product owner',
   'delivery lead', 'delivery manager', 'staffing', 'progress observer', 'observer', 'spike researcher', 'researcher',
   'infra', 'infra manager', 'role'];
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const NUMBER_WORDS = 'two|three|four|five|six|seven|eight|nine|ten|several|many|all|both|more|fewer';
 
 function partySource(extra) {
   const names = new Set(DEFAULT_PARTIES);
@@ -44,34 +49,44 @@ function partySource(extra) {
     names.add(x.toLowerCase().replace(/-/g, ' '));
   }
   const list = [...names].sort((a, b) => b.length - a.length).map(escapeRe).join('|');
-  // a counted noun ("3 builders") is a quantity, not a party
-  return String.raw`(?<!\d\s)\b(?:builder-\d+|(?:${list})(?:-\d+)?|[a-z]+ (?:specialist|expert|engineer|reviewer|researcher|observer|lead|manager|owner)s?)\b|\[[a-z0-9-]{4,16}\]`;
+  // a counted noun ("3 builders", "five builders") is a quantity, not a party
+  return String.raw`(?<!(?:\d|\b(?:${NUMBER_WORDS}))\s)\b(?:builder-\d+|(?:${list})(?:-\d+)?|[a-z]+ (?:specialist|expert|engineer|reviewer|researcher|observer|lead|manager|owner|agent)s?)\b|\[[a-z0-9-]{4,16}\]`;
 }
 
 const PLACE = String.raw`(?:session|tab|window|terminal|pane|chat)s?`;
 const NOT_OURS = String.raw`(?<!\b(?:this|my|our|your own|the current|chief of staff'?s?|here in the)\s)`;
-const PLACE_REF = new RegExp(String.raw`${NOT_OURS}\b${PLACE}\b|\[[a-z0-9-]{4,16}\]|\b(?:the )?other (?:one|session|tab|window|side)\b|\bthere\b`);
+// a place where the operator would go: another session, a ref, the other one, (over) there
+const PLACE_SRC = String.raw`${NOT_OURS}\b${PLACE}\b|\[[a-z0-9-]{4,16}\]|\bthe other (?:one|session|tab|window|side)\b|(?<!\b(?:is|are|was|were)\s)\b(?:over )?there\b(?!\s+(?:is|are|was|were|'s|will|should|may|might|has|have)\b)`;
 
-const EXPLICIT = /\b(?:please|kindly|(?:can|could|would|will) you|would you mind|would you be able to|(?:you'll|you will|you) need to|need you to|you should|you must|you have to|you could|you can|you may want to|you might want to|do you want to|go ahead and|your turn|action (?:needed|required)|when you (?:have|get) a (?:moment|sec|second|chance|minute)|needs? your|waiting (?:on|for) you|blocked on you)\b|\b(?:for you|you):/;
-const EXPLICIT_G = new RegExp(EXPLICIT.source, 'g');
+const EXPLICIT = /\b(?:please|kindly|(?:can|could|would|will) you|would you mind|would you be able to|(?:you'll|you will|you) need to|need you to|you should|you must|you have to|you could|you may want to|you might want to|yourself|go ahead|your (?:turn|move)|do me a (?:favour|favor)|action (?:needed|required)|when you (?:have|get) a (?:moment|sec|second|chance|minute)|needs? your|waiting (?:on|for) you|blocked on you)\b|\b(?:for you|you):|^(?:[-*+]\s+|\d+[.)]\s+)?mind \w+ing\b/;
+const EXPLICIT_G = new RegExp(EXPLICIT.source.replace('^(?:[-*+]', '(?:^|\\u0001)(?:[-*+]'), 'g');
 
-const COMM = 'tell|telling|tells|ask|asking|asks|ping|pinging|pings|message|messaging|messages|dm|dming|remind|reminding|nudge|nudging|let|letting|give|giving';
-const XFER = 'forward|forwarding|send|sending|copy|copying|paste|pasting|relay|relaying|pass|passing|post|posting|say|saying|type|typing|enter|entering|reply|replying|replies|respond|responding|answer|answering|drop|dropping|share|sharing';
-const UI = 'approve|approving|accept|accepting|allow|allowing|click|clicking|press|pressing|hit|hitting|confirm|confirming|open|opening|switch|switching|head|heading|hop|hopping|go|going|jump|pop';
-const VERB_G = new RegExp(String.raw`\b(?:${COMM}|${XFER}|${UI})\b`, 'g');
-const COMM_SET = new Set(COMM.split('|'));
-const UI_SET = new Set(UI.split('|'));
-const RECIPIENT_VERBS = new Set([...COMM_SET, 'answer', 'answering', 'reply', 'replying', 'respond', 'responding']);
-const ANSWERISH = /^\s+(?:\S+\s+){0,4}?(?:the go-ahead|the green light|a (?:quick |clear )?(?:yes|no|nod)|an? (?:answer|ok|okay)|the (?:answer|ok|okay|nod)|(?:your|the) (?:decision|answer|choice)|(?:a |the )?thumbs up|the record|(?:dec|del|ans)-[a-z0-9-]*\d)\b/;
+// the operator-action verbs, for the weakest case only
+const ACTION_VERBS = new Set(('tell ask ping message dm remind nudge give forward send copy paste relay pass post say type enter reply respond answer '
+  + 'drop share approve accept allow click press hit confirm open switch head hop go jump pop sign okay ok shoot swing get loop check run nod greenlight').split(' '));
+// first words that do not start an imperative
+const NOT_IMPERATIVE = new Set(('i we you he she it they me us this that these those the a an my your our their its his her there here '
+  + 'is are was were be been am do does did have has had can could would will should shall may might must what which who whom whose when where why how '
+  + 'if once as and but or so because since while although though yes no not thanks thank nothing everything everyone nobody every all both each some any none '
+  + 'one two three four five six seven eight nine ten next then now also still already done status briefing note plan summary update today tomorrow '
+  + 'yesterday great good fine sure sorry hi hello hey welcome per after before with for from in on at to by of about over under without until '
+  + 'recommendation recommended options option decision question questions answer: fyi heads re only maybe perhaps').split(' '));
+const SOFT = String.raw`(?:(?:just|then|now|also|quickly|simply|first|kindly|please|okay|ok|alright|right|so),?\s+)*`;
+const LEAD = String.raw`^(?:[-*+]\s+|\d+[.)]\s+)?(?:(?:once|when|if|after|as soon as|before) you[^,]{0,60},\s*)?${SOFT}`;
+const FIRST_WORD = new RegExp(String.raw`${LEAD}([a-z][a-z'-]*)(:?)`);
 
 const OFFER = /\b(?:should i|shall i|do you want me to|would you like me to|want me to|is it ok if i|can i|may i|happy for me to)\b/;
 const REPORTED = /\byou (?:said|asked|wanted|told|mentioned|decided|chose)\b/;
-const NO_NEED = /\b(?:do not need to|don't need to|no need to|no action|no reply needed|nothing (?:is )?needed|note to self)\b/;
+const NO_NEED = /\b(?:do not need to|don't need to|no need to|no action|no reply needed|nothing (?:is )?needed)\b/;
+const NOTE_TO_SELF = /\bnote to self\b/;
+// asked back to the Chief of Staff ("tell me", "remind me"): the operator is not sent elsewhere
+const BACK_TO_ME = /\b(?:tell|ask|ping|message|send|remind|let|give|show|update|notify|email|dm|call|text)\s+(?:me|us)\b/;
+const ADVERB_LY = /ly$/;
+const LY_VERBS = new Set(['reply', 'apply', 'supply', 'rely']);
 const FIRST_G = /\b(?:i|we|i'll|i've|i'm|i'd|we'll|we've|let me)\b/g;
 const RECORD_ID = /\b(?:dec|del|ans|rec|in)-[a-z0-9-]*\d\b/i;
-const SOFT = String.raw`(?:(?:just|then|now|also|quickly|simply|first|kindly|please),?\s+)*`;
-const SUBORDINATE = String.raw`(?:(?:once|when|if|after|as soon as|before) you[^,]{0,60},\s*)?`;
-const IMPERATIVE = new RegExp(String.raw`^(?:[-*+]\s+|\d+[.)]\s+)?${SUBORDINATE}${SOFT}(?:${COMM}|${XFER}|${UI})\b`);
+const PLAN_VERBS = new Set(['send', 'forward', 'give', 'pass', 'share', 'post', 'copy', 'paste', 'relay']);
+const MODAL = String.raw`(?:will|can|should|would|must|may|might|'ll|is going to|are going to)`;
 
 function strip(text) {
   return String(text)
@@ -84,14 +99,19 @@ function strip(text) {
 
 // Clauses: sentence ends, semicolons, blank lines and list items separate. A single line break
 // does not, so a request wrapped across two lines is still one clause.
+// Each clause carries q: true when it ended with a question mark.
 function clauses(text) {
-  return strip(text).toLowerCase()
+  const parts = strip(text).toLowerCase()
     .replace(/\n\s*\n/g, ' \u0000 ')
     .replace(/\n(?=\s*(?:[-*+]\s|\d+[.)]\s))/g, ' \u0000 ')
     .replace(/\s+/g, ' ')
-    .split(/[.!?;]+(?=\s|$)|\u0000/)
-    .map((c) => c.trim())
-    .filter(Boolean);
+    .split(/([.!?;]+)(?=\s|$)|\u0000/);
+  const out = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    const c = (parts[i] || '').trim();
+    if (c) out.push({ c, q: /\?/.test(parts[i + 1] || '') });
+  }
+  return out;
 }
 
 function lastMatchEnd(reG, s) {
@@ -102,49 +122,70 @@ function lastMatchEnd(reG, s) {
   return at;
 }
 
-// Does the verb at [vs, ve) point at another party?
-function pointsAtParty(c, verb, ve, partyRe) {
-  const after = c.slice(ve, ve + 80);
-  if (/^\s+(?:me|us)\b/.test(after)) return false;
-  if (verb === 'let' || verb === 'letting') return /^\s+(?!me\b|us\b)[^,]{0,40}?\bknow\b/.test(after) && (partyRe.test(after.slice(0, 50)) || /^\s+(?:it|them|him|her)\s+know\b/.test(after) || PLACE_REF.test(after.slice(0, 50)));
-  if ((verb === 'give' || verb === 'giving') && !ANSWERISH.test(after)) return false;
-  if (PLACE_REF.test(after)) return true;
-  // the one who is told or answered: tell it, answer them, respond to it, give builder-1 a yes
-  if (RECIPIENT_VERBS.has(verb) && /^\s+(?:(?:back )?to\s+)?(?:it|them|him|her)\b/.test(after)) return true;
-  const direct = new RegExp(String.raw`^\s+(?:(?:back |along |over )?(?:to|with)\s+)?(?:the |that |your |our )?(?:[a-z]+ ){0,2}?(?:${partyRe.source})`);
-  if (!UI_SET.has(verb) && direct.test(after)) return true;
-  // a party behind a preposition (up to two modifiers: "the support agent"), as a possessive, or as the
-  // subject of a relative clause
-  const behind = new RegExp(String.raw`\b(?:to|in|into|on|at|with|over to|over in|that|which)\s+(?:the |that |its |their )?(?:[a-z]+ ){0,2}?(?:${partyRe.source})|(?:${partyRe.source})'s\b`);
-  return behind.test(after);
+function compile(parties) {
+  const party = partySource(parties);
+  return {
+    party,
+    // a party, a place, or it/them right after a verb of telling or answering
+    ref: new RegExp(String.raw`(?:${party})|${PLACE_SRC}|\b(?:tell|ask|answer|ping|message|remind|nudge|give|shoot|reply to|respond to|let)\s+(?:it|them)\b`, 'g'),
+    place: new RegExp(PLACE_SRC),
+    third: new RegExp(String.raw`(?:${party}|\b(?:he|she|it|they))\s+${MODAL}\b`, 'g'),
+    // the party is only the subject of a decision ("whether the pm may", "want the builder to")
+    // or the party did or does something itself ("the builder opened", "the builder is")
+    subjectAfter: new RegExp(String.raw`^(?:'s)?\s+(?:${MODAL}|[a-z]+ed|is|was|has|had|says|said|sent|made|did|does|wants|needs|thinks|knows)\b`),
+    // a decision about the party or an inverted question: the party follows directly
+    subjectBefore: /\b(?:want|wants|like|prefer|rather|happy for|ok with|fine with|whether|if|should|would|could|can|will|does|do|did|is|are|was|were)\s+(?:the |that |your |our )?(?:(?!you\b|to\b)[a-z-]+ )?$/,
+    relative: /\b(?:that|which|who)\s+(?:the )?$/,
+  };
+}
+
+function addressOf(c) {
+  const explicit = EXPLICIT.test(c);
+  const fw = FIRST_WORD.exec(c);
+  let imperative = false;
+  let verb = null;
+  if (fw && !fw[2]) {
+    const w = fw[1];
+    if (!NOT_IMPERATIVE.has(w) && !/ed$/.test(w) && !(ADVERB_LY.test(w) && !LY_VERBS.has(w)) && !/^builder-\d/.test(w)) { imperative = true; verb = w; }
+  }
+  return { explicit, imperative, verb, verbEnd: fw ? fw[0].length : 0 };
 }
 
 // null, or { phrase } with the clause that asks the operator to carry something to another party.
 function findRelayRequest(text, opts = {}) {
   if (typeof text !== 'string' || !text.trim()) return null;
   try {
-    const partyRe = new RegExp(partySource(opts.parties));
-    const thirdRe = new RegExp(String.raw`(?:${partyRe.source}|\b(?:he|she|it|they))\s+(?:will|can|should|would|must|may|might|'ll|is going to|are going to)\b`, 'g');
-    for (const c of clauses(text)) {
-      if (OFFER.test(c) || REPORTED.test(c) || NO_NEED.test(c)) continue;
-      const explicit = EXPLICIT.test(c);
-      const imperative = IMPERATIVE.test(c);
-      if (!explicit && !imperative) continue;
-      VERB_G.lastIndex = 0;
-      let v;
-      while ((v = VERB_G.exec(c))) {
-        const verb = v[0];
-        const ve = v.index + verb.length;
-        const prefix = c.slice(Math.max(0, v.index - 160), v.index);
-        // the nearest subject before the verb decides who acts
-        const addr = Math.max(lastMatchEnd(EXPLICIT_G, prefix), imperative && v.index <= 120 ? 0 : -1);
-        const other = Math.max(lastMatchEnd(FIRST_G, prefix), lastMatchEnd(thirdRe, prefix));
+    const re = compile(opts.parties);
+    const partyRe = new RegExp(re.party);
+    for (const { c, q } of clauses(text)) {
+      if (OFFER.test(c) || REPORTED.test(c) || NO_NEED.test(c) || NOTE_TO_SELF.test(c) || BACK_TO_ME.test(c)) continue;
+      const a = addressOf(c);
+      if (!a.explicit && !a.imperative) continue;
+      // a bare imperative asked as a question is a decision question ("Approve the plan for builder-1?")
+      if (!a.explicit && q) continue;
+      if (!a.explicit && a.verb && PLAN_VERBS.has(a.verb) && RECORD_ID.test(c)) continue;
+      re.ref.lastIndex = 0;
+      let m;
+      let found = false;
+      let n = 0;
+      while ((m = re.ref.exec(c)) && n++ < 200) {
+        const at = m.index;
+        const before = c.slice(Math.max(0, at - 160), at);
+        const after = c.slice(at + m[0].length, at + m[0].length + 30);
+        if (partyRe.test(m[0]) && !re.relative.test(before) && (re.subjectAfter.test(after) || re.subjectBefore.test(before))) continue;
+        // an address mark after the party ("..., please", "... yourself") addresses the whole clause
+        const addr = Math.max(lastMatchEnd(EXPLICIT_G, before), (a.imperative && at <= 160) || a.explicit ? 0 : -1);
+        const other = Math.max(lastMatchEnd(FIRST_G, before), lastMatchEnd(re.third, before));
         if (addr < 0 || other > addr) continue;
-        if (!pointsAtParty(c, verb, ve, partyRe)) continue;
-        // the Chief of Staff's own plan line: send a record id, nobody addressed
-        if (!explicit && /^(?:send|sending|forward|forwarding|give|giving|pass|passing)$/.test(verb) && RECORD_ID.test(c)) continue;
-        return { phrase: c.slice(0, 200) };
+        if (!a.explicit) {
+          // the weakest case: a bare imperative needs an action verb, a place, or the party as its object
+          const direct = new RegExp(String.raw`^\s*(?:the |that |your |our )?(?:[a-z]+ ){0,2}?(?:${re.party})`).test(c.slice(a.verbEnd, a.verbEnd + 60));
+          if (!ACTION_VERBS.has(a.verb) && !re.place.test(m[0]) && !direct) continue;
+        }
+        found = true;
+        break;
       }
+      if (found) return { phrase: c.slice(0, 200) };
     }
   } catch (err) { /* a heuristic never blocks on its own failure */ }
   return null;
