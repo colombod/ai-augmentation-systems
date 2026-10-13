@@ -99,7 +99,7 @@ function captureNote(res, pluginRoot) {
     const script = path.join(pluginRoot || path.join(__dirname, '..', '..'), 'scripts', 'operator.js');
     parts.push(`Operator inputs with no record yet: ${first}${more}. See \`node ${script} pending\`.`);
   }
-  if (res.problem) parts.push(`Operator capture: ${res.problem}.`);
+  if (res.problem) parts.push(`Operator capture: ${String(res.problem).replace(/[.\s]+$/, '')}.`);
   return parts.join(' ');
 }
 

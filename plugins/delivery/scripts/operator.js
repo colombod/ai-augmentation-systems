@@ -225,10 +225,41 @@ function cursorStatus(projectRoot, sessionId) {
   } catch (e) { return 'ok'; }
 }
 
-function transcriptPathFor(ctx, flags) {
-  if (flags.transcript) return path.resolve(flags.transcript);
+// The transcript the capture hook registered for this session: <roleDir>/.delivery-transcript, else the
+// roster entry of this instance.
+function registeredTranscript(ctx) {
   if (!ctx.roleDir) return null;
-  try { return fs.readFileSync(path.join(ctx.roleDir, '.delivery-transcript'), 'utf8').trim() || null; } catch (e) { return null; }
+  try {
+    const t = fs.readFileSync(path.join(ctx.roleDir, '.delivery-transcript'), 'utf8').trim();
+    if (t) return t;
+  } catch (e) { /* fall back to the roster */ }
+  try {
+    const e = (readRoster(ctx.projectRoot).instances || {})[ctx.instance];
+    return e && typeof e.transcript_path === 'string' && e.transcript_path ? e.transcript_path : null;
+  } catch (e) { return null; }
+}
+
+// Inputs are captured from the calling session's own transcript only (spec 8.6): --transcript must be
+// the transcript registered for this session, and --session this session's own id.
+function checkOwnSyncFlags(ctx, flags) {
+  const how = 'run operator.js sync without --transcript or --session: the capture hook registers this session\'s transcript, and sync reads it';
+  if (flags.transcript !== undefined) {
+    const mine = registeredTranscript(ctx);
+    if (!mine || real(path.resolve(String(flags.transcript))) !== real(mine)) {
+      throw new R.OperatorError('transcript_not_own', `--transcript ${flags.transcript} is not this session's own transcript${mine ? '' : ' (none is registered yet)'}; operator inputs are captured from the calling session's own transcript only. ${how}`);
+    }
+  }
+  if (flags.session !== undefined && ctx.by) {
+    if (ctx.by.session_id === 'unknown' || String(flags.session) !== ctx.by.session_id) {
+      throw new R.OperatorError('transcript_not_own', `--session ${flags.session} is not this session's own id; operator inputs are captured from the calling session's own transcript only. ${how}`);
+    }
+  }
+}
+
+function transcriptPathFor(ctx, flags) {
+  checkOwnSyncFlags(ctx, flags);
+  if (flags.transcript) return path.resolve(flags.transcript);
+  return registeredTranscript(ctx);
 }
 
 function syncOne(ctx, { transcriptPath, sessionId, instance, role }) {
@@ -335,6 +366,7 @@ const handlers = {
 
   sync(ctx, flags) {
     requireWriter(ctx);
+    checkOwnSyncFlags(ctx, flags);
     const res = syncCurrent(ctx, flags, null);
     let added = res.added;
     let status = res.status;

@@ -76,14 +76,18 @@ test('a stale lock is removed and a fresh one times out', () => {
   assert.throws(() => withRosterLock(root, () => 'no'), /roster: lock timeout/);
 });
 
-test('setTranscriptPath records the transcript, writes only on change, and survives registerInstance for the same session', () => {
+test('setTranscriptPath records the transcript, writes only on change, never creates an entry; registerInstance keeps it for the same session', () => {
   const { setTranscriptPath } = require('./roster.js');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'roster-tr-'));
   const now = '2026-10-13T10:00:00Z';
-  assert.equal(setTranscriptPath(root, { instance: 'builder-1', session_id: 's1', transcript_path: '/t/s1.jsonl', host: 'pc', role_dir: '/x', now }), true);
-  assert.equal(setTranscriptPath(root, { instance: 'builder-1', session_id: 's1', transcript_path: '/t/s1.jsonl', host: 'pc', role_dir: '/x', now }), false);
-  registerInstance(root, { instance: 'builder-1', session_id: 's1', host: 'pc', model: 'sonnet', role_dir: '/x', now });
+  assert.equal(setTranscriptPath(root, { instance: 'builder-1', session_id: 's1', transcript_path: '/t/s1.jsonl' }), false, 'no entry yet: left to registration');
+  assert.equal(readRoster(root).instances['builder-1'], undefined);
+  registerInstance(root, { instance: 'builder-1', session_id: 's1', host: 'pc', model: 'sonnet', role_dir: '/x', now, transcript_path: '/t/s1.jsonl' });
   assert.equal(readRoster(root).instances['builder-1'].transcript_path, '/t/s1.jsonl');
+  assert.equal(setTranscriptPath(root, { instance: 'builder-1', session_id: 's1', transcript_path: '/t/s1.jsonl' }), false);
+  assert.equal(setTranscriptPath(root, { instance: 'builder-1', session_id: 's1', transcript_path: '/t/s1b.jsonl' }), true);
+  registerInstance(root, { instance: 'builder-1', session_id: 's1', host: 'pc', model: 'sonnet', role_dir: '/x', now });
+  assert.equal(readRoster(root).instances['builder-1'].transcript_path, '/t/s1b.jsonl', 'same session keeps it');
   assert.equal(readRoster(root).instances['builder-1'].model, 'sonnet');
   registerInstance(root, { instance: 'builder-1', session_id: 's2', host: 'pc', model: 'sonnet', role_dir: '/x', now });
   assert.equal(readRoster(root).instances['builder-1'].transcript_path, undefined, 'a new session drops the old transcript');

@@ -66,10 +66,10 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/materialise.js" }
   ],
   "operator-read": [
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/operator.js", "sub": ["verify", "show", "pending", "sync", "ledger", "find", "problems", "refresh"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/operator.js", "sub": ["verify", "show", "pending", "sync", "ledger", "find", "problems", "refresh"], "flags_none": ["--transcript", "--session"] }
   ],
   "operator-write": [
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/operator.js", "sub": ["record", "delegate", "decide", "revoke", "ack", "ask", "withdraw", "answer", "ratify", "rehost", "quarantine", "repair", "publish"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/operator.js", "sub": ["record", "delegate", "decide", "revoke", "ack", "ask", "withdraw", "answer", "ratify", "rehost", "quarantine", "repair", "publish"], "flags_none": ["--transcript", "--session"] }
   ],
   "any": [
     { "first": "*" }

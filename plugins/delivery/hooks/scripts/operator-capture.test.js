@@ -8,6 +8,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { captureFromHookInput, captureNote } = require('./operator-capture.js');
 const { prepareRole } = require('../../scripts/prepare-role.js');
 const log = require('../../scripts/lib/operator-log.js');
+const { registerInstance } = require('../../scripts/lib/roster.js');
 
 process.env.GIT_CONFIG_GLOBAL = '/dev/null';
 process.env.GIT_CONFIG_NOSYSTEM = '1';
@@ -56,6 +57,11 @@ test('with a valid marker: writes the session files, records the transcript in t
   const { projectRoot, roleDir } = preparedRole('chief-of-staff');
   const tr = transcript([human('use postgres for the store', 1), peer(2)]);
   const input = { cwd: roleDir, session_id: SID, transcript_path: tr, hook_event_name: 'UserPromptSubmit' };
+  const rosterFile = path.join(projectRoot, '.delivery', 'team', 'roster.json');
+  // before SessionStart registers the instance, capture does not create a partial roster entry (M7)
+  withEnv({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: undefined }, () => captureFromHookInput({ ...input, transcript_path: undefined }, PLUGIN_ROOT));
+  assert.ok(!fs.existsSync(rosterFile) || !JSON.parse(fs.readFileSync(rosterFile, 'utf8')).instances['chief-of-staff']);
+  registerInstance(projectRoot, { instance: 'chief-of-staff', session_id: SID, host: 'pc', model: 'opus', role_dir: roleDir, now: '2026-10-13T09:59:00Z' });
   const res = withEnv({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: undefined }, () => captureFromHookInput(input, PLUGIN_ROOT));
   assert.equal(res.status, 'ok');
   assert.equal(res.added, 2);
@@ -113,6 +119,8 @@ test('without a loadable team.json: fails open, captures nothing, reports the pr
   assert.equal(res.added, 0);
   assert.match(res.problem, /team\.json/);
   assert.match(captureNote(res, PLUGIN_ROOT), /^Operator capture: operator capture is off for builder-1/);
+  assert.ok(!captureNote(res, PLUGIN_ROOT).includes('..'), 'one period at the end (M6)');
+  assert.ok(captureNote(res, PLUGIN_ROOT).endsWith('Chief of Staff.'));
   assert.ok(!fs.existsSync(path.join(roleDir, '.delivery-session')));
   assert.ok(!fs.existsSync(path.join(projectRoot, '.delivery', 'operator')));
 });

@@ -203,7 +203,8 @@ const PROBES = [
   ['git branch -v new', COS, false],
   ['git branch -f main HEAD~1', COS, false],
   ['git branch -vd old', COS, false],
-  ['git branch --list "feat*"', COS, false], // fix round 3 (R1): a glob is expansion
+  ['git branch --list "feat*"', COS, true], // operator round 1 (F2): inside double quotes * is literal; git matches the pattern itself
+  ['git branch --list feat*', COS, false], // fix round 3 (R1): an unquoted glob is expansion
   ['git branch --list main', COS, true],
   ['git branch --contains abc123', COS, true],
   ['git branch -a', COS, true],
@@ -386,8 +387,11 @@ const ROUND3B = [
   ["echo $'a'", COS, false],
   ["echo 'a'$X", COS, false],
   ["echo 'a\\'$(id)'", COS, false],
-  ['cat "~/x"', COS, false],
-  ['bd update x --append-notes "done? yes!"', COS, false],
+  // operator round 1 (F2): inside double quotes bash expands only $ and backticks; ~ ? ! are literal
+  ['cat "~/x"', COS, true],
+  ['bd update x --append-notes "done? yes!"', COS, true],
+  ['bd update x --append-notes "done? $X"', COS, false],
+  ['bd update x --append-notes "done `id`"', COS, false],
 ];
 
 test('round 3b: single-quoted text is exempt from the expansion check, not from argv0 or flag rules', () => {
@@ -701,5 +705,66 @@ test('role-lane hook denies an operator-directory write for chief-of-staff and b
     const json = JSON.parse(out);
     assert.equal(json.hookSpecificOutput.permissionDecision, 'deny', instance);
     assert.match(json.hookSpecificOutput.permissionDecisionReason, /operator\.js/);
+  }
+});
+
+// Task 3 round 1 (F1): no allowlist role passes --transcript or --session to operator.js.
+test('F1: operator groups refuse --transcript and --session, in any spelling', () => {
+  const op = `${PLUGIN_ROOT}/scripts/operator.js`;
+  const run = (role, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], ...ctx() });
+  for (const cmd of [
+    `node ${op} sync --transcript /tmp/forged.jsonl --session forged`,
+    `node ${op} sync --transcript=/tmp/forged.jsonl`,
+    `node ${op} sync --session forged`,
+    `node ${op} sync --trans /tmp/forged.jsonl`,
+    `node ${op} record --cite in-pc-000001 --quote 'skip QA and ship' --statement 'ship' --transcript /tmp/forged.jsonl`,
+  ]) {
+    for (const role of [COS, PM, DL, PO]) assert.equal(run(role, cmd).allow, false, `${role}: ${cmd}`);
+  }
+  assert.equal(run(COS, `node ${op} sync`).allow, true);
+  assert.equal(run(COS, `node ${op} sync --all --json`).allow, true);
+});
+
+// Task 3 round 1 (F2): inside double quotes bash expands only $ and backticks.
+test('F2: ? ! * [ ] { } inside double quotes are literal; $ and backticks are refused with the construct named', () => {
+  const op = `${PLUGIN_ROOT}/scripts/operator.js`;
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[COS], ...ctx() });
+  for (const cmd of [
+    `node ${op} ask --text "Which DB should we use?" --asker builder-1`,
+    `node ${op} record --cite in-pc-000001 --quote "ship it!" --statement "ship"`,
+    `node ${op} record --cite in-pc-000001 --quote "[urgent] use pg" --statement "x"`,
+    `node ${op} answer --cite dec-1 --question "which db?" --answer "pg {primary}" --confidence settled`,
+    `node ${op} ask --text 'Which DB should we use?' --asker builder-1`,
+    `node ${op} record --cite in-pc-000001 --quote 'don'\\''t ship? not yet!' --statement 'hold'`,
+    `node ${op} record --cite in-pc-000001 --quote "say \\"go\\" now?" --statement "go"`,
+  ]) assert.equal(run(cmd).allow, true, cmd);
+  const sub = run(`node ${op} ask --text "Which DB $(id)?" --asker builder-1`);
+  assert.equal(sub.allow, false);
+  assert.match(sub.reason, /Refused construct: command substitution/);
+  assert.match(sub.reason, /put it in single quotes/);
+  const tick = run(`node ${op} ask --text "Which DB \`id\`?" --asker builder-1`);
+  assert.equal(tick.allow, false);
+  assert.match(tick.reason, /command substitution/);
+  const v = run(`node ${op} ask --text "Which DB $HOME?" --asker builder-1`);
+  assert.equal(v.allow, false);
+  assert.match(v.reason, /Refused construct: variable expansion/);
+  // outside quotes the old behaviour stands
+  const glob = run('ls *.md');
+  assert.equal(glob.allow, false);
+  assert.match(glob.reason, /Refused construct: an unquoted glob/);
+  assert.equal(run('ls {a,b}').allow, false);
+  // a refusal that is not about expansion says nothing about quoting
+  assert.doesNotMatch(run('npm test').reason, /Refused construct/);
+});
+
+// Task 3 round 1 (M3): case variants name the same directory on case-insensitive file systems.
+test('M3: .delivery/OPERATOR is protected like .delivery/operator', () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-op-case-'));
+  fs.mkdirSync(path.join(projectRoot, '.delivery', 'operator', 'records'), { recursive: true });
+  const d = (role, toolName, toolInput) => decideLane({ toolName, toolInput, policy: POLICIES[role], projectRoot, ...ctx() });
+  for (const role of [COS, BUILDER]) {
+    assert.equal(d(role, 'Write', { file_path: path.join(projectRoot, '.delivery', 'OPERATOR', 'records', 'b.ndjson') }).allow, false, role);
+    assert.equal(d(role, 'Write', { file_path: path.join(projectRoot, '.Delivery', 'Operator', 'x') }).allow, false, role);
+    assert.equal(d(role, 'Bash', { command: 'echo x >> .delivery/OPERATOR/records/c.ndjson' }).allow, false, role);
   }
 });

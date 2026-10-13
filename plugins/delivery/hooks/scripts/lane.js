@@ -157,29 +157,49 @@ function hasSubstitution(seg) {
 // Shell expansion (globs, braces, variables, quoting forms, here-docs, process substitution,
 // continuations) makes the words the shell runs differ from the words we see. Allowlist roles get none.
 // The one exception is the documented `node ${CLAUDE_PLUGIN_ROOT}/scripts/...` form, judged against the plugin root.
-const EXPANSION_CHARS = /[{}*?[\]$`!]/;
-const EXPANSION_SEQ = /<<|<\(|>\(|\\\n/;
 const PLUGIN_ROOT_ARG = /^(node[ \t]+"?)(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT)(?=\/)/;
 
-// The raw segment with the contents of single-quoted spans blanked: bash never expands them.
+// The raw segment with quoted text bash does not expand blanked. Single-quoted spans: everything.
+// Double-quoted spans: everything except `$` and backtick (bash expands only those there, plus `\`
+// escapes and the interactive-only `!`; globs, braces, `~`, `?`, `[ ]`, `!` are literal inside them).
 // A ' inside double quotes is literal and opens nothing; $'...' keeps its $ outside the span.
-function blankSingleQuoted(raw) {
+function blankQuoted(raw) {
   let out = '';
   let q = null;
   for (let i = 0; i < raw.length; i++) {
     const c = raw[i];
     if (q === "'") { if (c === "'") { q = null; out += c; } else out += '_'; continue; }
+    if (q === '"') {
+      if (c === '"') { q = null; out += c; continue; }
+      if (c === '\\') { out += '__'; i++; continue; } // \" \$ \` \\ are literal; the pair expands nothing
+      if (c === '$' && raw[i + 1] === '(') { out += '$('; i++; continue; } // command substitution stays visible
+      out += c === '$' || c === '`' ? c : '_';
+      continue;
+    }
     if (c === '\\') { out += c + (i + 1 < raw.length ? raw[i + 1] : ''); i++; continue; }
-    if (q === '"') { if (c === '"') q = null; out += c; continue; }
     if (c === '"' || c === "'") q = c;
     out += c;
   }
   return out;
 }
 
+// The expansion construct a segment uses, as a short phrase, or null when it uses none.
+function expansionConstruct(raw) {
+  const s = blankQuoted(String(raw == null ? '' : raw).replace(PLUGIN_ROOT_ARG, '$1ROOT'));
+  if (/\$\(|`/.test(s)) return 'command substitution ($(...) or backticks)';
+  if (/<\(|>\(/.test(s)) return 'process substitution';
+  if (/<</.test(s)) return 'a here-document';
+  if (/\\\n/.test(s)) return 'a line continuation';
+  if (/\$/.test(s)) return 'variable expansion ($)';
+  if (/[*?[\]]/.test(s)) return 'an unquoted glob (* ? [ ])';
+  if (/[{}]/.test(s)) return 'unquoted brace expansion ({ })';
+  if (/!/.test(s)) return 'an unquoted !';
+  if (/(^|\s)~/.test(s)) return 'tilde expansion (~)';
+  return null;
+}
+
 function hasExpansion(raw) {
-  const s = blankSingleQuoted(raw.replace(PLUGIN_ROOT_ARG, '$1ROOT'));
-  return EXPANSION_CHARS.test(s) || EXPANSION_SEQ.test(s) || /(^|\s)"?~/.test(s);
+  return expansionConstruct(raw) !== null;
 }
 
 // The command word must be a plain word: no quotes or escapes ('cat', c\at, "rm").
@@ -449,7 +469,7 @@ function shellCommandOf(toolName, toolInput) {
 const OPERATOR_REL = path.join('.delivery', 'operator');
 const OPERATOR_REASON = 'operator records are written by `operator.js` only; read them with `operator.js show`';
 // A mention of the operator directory in a shell command (.delivery/operator, .delivery//operator, .delivery/./operator).
-const OPERATOR_MENTION = /\.delivery\/+(?:\.\/+)*operator(?=\/|[\s'";|&)>]|$)/;
+const OPERATOR_MENTION = /\.delivery\/+(?:\.\/+)*operator(?=\/|[\s'";|&)>]|$)/i; // case-folded: macOS and Windows file systems are
 const OPERATOR_WRITE_WORDS = ['tee', 'cp', 'mv', 'rm', 'truncate', 'dd', 'ln', 'install', 'rsync'];
 
 function operatorDirs({ projectRoot, roleDir }) {
@@ -459,9 +479,10 @@ function operatorDirs({ projectRoot, roleDir }) {
   return out;
 }
 
+// Case-folded: on a case-insensitive file system .delivery/OPERATOR is the same directory.
 function underOperator(p, dirs) {
-  const real = realish(p);
-  return dirs.some((d) => under(real, d));
+  const real = realish(p).toLowerCase();
+  return dirs.some((d) => under(real, d.toLowerCase()));
 }
 
 // Best effort, and tamper-evidence rather than a boundary (the hash chains and recorded heads are what
@@ -531,7 +552,9 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
       const names = classifySegment(text, groups, { roleDir, pluginRoot, dirs: live });
       if (!names.some((x) => bash.includes(x))) {
-        return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\` (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
+        const construct = expansionConstruct(text);
+        const why = construct ? ` Refused construct: ${construct}; the lane cannot check what the shell would expand it to. If the text is meant literally, put it in single quotes.` : '';
+        return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\` (allowed groups: ${bash.join(', ') || 'none'}).${why}${tail}` };
       }
       const t = tokens(text);
       if (t[0] !== 'cd') continue;
@@ -575,4 +598,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

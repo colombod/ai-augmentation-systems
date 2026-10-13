@@ -145,6 +145,7 @@ function sessionStartText(input, pluginRoot, deps = {}) {
       model: marker.model,
       role_dir: valid.roleDir,
       now,
+      transcript_path: typeof input.transcript_path === 'string' && path.isAbsolute(input.transcript_path) ? input.transcript_path : undefined,
     });
   } catch (err) {
     // roster write failure must not stop the session; the status check will show the gap
