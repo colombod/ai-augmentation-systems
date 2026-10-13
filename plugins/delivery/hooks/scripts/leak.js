@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { splitWithOps, tokens, realish } = require('./lane.js');
+const { splitWithOps, realish } = require('./lane.js');
 
 function loadDenylist(projectRoot) {
   const file = path.join(projectRoot, '.delivery', 'team', 'denylist.txt');
@@ -32,6 +32,67 @@ const VAR_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const SHELLS = ['bash', 'sh', 'zsh', 'dash', 'ksh'];
 const RESUME_OPS = [';', '||', '&', '\n'];
 
+// Like lane's tokens(), but characters that are literal (single-quoted or escaped) have $, ` and \
+// replaced by sentinels, so a later check for substitution sees only live ones.
+const SENT = { $: '\uE000', '`': '\uE001', '\\': '\uE002' };
+const lit = (c) => SENT[c] || c;
+const unsent = (v) => String(v).replace(/\uE000/g, '$').replace(/\uE001/g, '`').replace(/\uE002/g, '\\');
+function tokensQ(seg) {
+  const s = String(seg == null ? '' : seg);
+  const out = [];
+  let cur = null;
+  let q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q === "'") { if (c === "'") q = null; else cur += lit(c); continue; }
+    if (q === '"') {
+      if (c === '"') q = null;
+      else if (c === '\\' && i + 1 < s.length && '"\\$`'.includes(s[i + 1])) cur += lit(s[++i]);
+      else cur += c;
+      continue;
+    }
+    if (/\s/.test(c)) { if (cur !== null) out.push(cur); cur = null; continue; }
+    if (cur === null) cur = '';
+    if (c === '\\') { if (i + 1 < s.length) cur += lit(s[++i]); continue; }
+    if (c === '"' || c === "'") { q = c; continue; }
+    cur += c;
+  }
+  if (cur !== null) out.push(cur);
+  return out;
+}
+
+// Replace each top-level $(...) / `...` outside single quotes with a numbered marker and return the
+// bodies, so splitting on ; && | never cuts through a substitution. Nested ones are masked on recursion.
+function maskSubst(text) {
+  const bodies = [];
+  let out = '';
+  let q = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q === "'") { if (c === "'") q = null; out += c; continue; }
+    if (c === '\\') { out += c + (text[i + 1] || ''); i++; continue; }
+    if (c === "'" && q === null) { q = "'"; out += c; continue; }
+    if (c === '"') { q = q === '"' ? null : '"'; out += c; continue; }
+    if (c === '$' && text[i + 1] === '(') {
+      let depth = 1;
+      let j = i + 2;
+      for (; j < text.length && depth > 0; j++) { if (text[j] === '(') depth++; else if (text[j] === ')') depth--; }
+      bodies.push(text.slice(i + 2, depth === 0 ? j - 1 : j));
+      out += `$(\uE010${bodies.length - 1}\uE011)`;
+      i = j - 1;
+    } else if (c === '`') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '`') { if (text[j] === '\\') j++; j++; }
+      bodies.push(text.slice(i + 1, j));
+      out += `\`\uE010${bodies.length - 1}\uE011\``;
+      i = j;
+    } else out += c;
+  }
+  return { masked: out, bodies };
+}
+const RISKY_BODY = (b) => /\bgit\b[\s\S]*\b(commit|merge|tag|notes|push)\b/.test(b) || /\bgh\s/.test(b);
+
+const WRAP_VALUE_OPTS = { timeout: ['-s', '-k', '--signal', '--kill-after'], nice: ['-n'], stdbuf: ['-i', '-o', '-e'], xargs: ['-n', '-I', '-L', '-P', '-d', '-s', '-a', '-E'] };
 // Drop leading env/command/VAR=val wrappers and reduce an absolute git/gh/shell path to its name.
 // Returns the command words and the VAR=val assignments seen on the way.
 function unwrap(t) {
@@ -51,7 +112,13 @@ function unwrap(t) {
       }
       continue;
     }
-    if (['command', 'exec', 'nohup', 'time', 'builtin'].includes(b)) { k++; while (k < t.length && t[k].startsWith('-')) k++; continue; }
+    if (['command', 'exec', 'nohup', 'time', 'builtin', 'timeout', 'stdbuf', 'nice', 'xargs', 'coproc'].includes(b)) {
+      const valueOpts = WRAP_VALUE_OPTS[b] || [];
+      k++;
+      while (k < t.length && t[k].startsWith('-')) { if (valueOpts.includes(t[k])) k++; k++; }
+      if (b === 'timeout') k++; // the duration
+      continue;
+    }
     break;
   }
   const rest = t.slice(k);
@@ -66,6 +133,9 @@ function stripKeywords(t) {
   for (;;) {
     if (!a.length) return a;
     if (a[0] === 'case') { const i = a.findIndex((w) => w.endsWith(')')); a = i >= 0 ? a.slice(i + 1) : []; continue; }
+    if (a[0] === 'function') { a = a.slice(2); continue; }
+    if (/^[\w.-]+\(\)$/.test(a[0])) { a = a.slice(1); continue; }
+    if (a[1] === '()' && /^[\w.-]+$/.test(a[0])) { a = a.slice(2); continue; }
     if (KEYWORDS.has(a[0]) || /^[\w.*?[\]-]+\)$/.test(a[0])) { a = a.slice(1); continue; }
     return a;
   }
@@ -91,11 +161,13 @@ function describe(t, live) {
       } else if (w === '-C' || w === '--work-tree') { const v = t[k + 1]; dirs = dirs.map((d) => moveDir(d, v)); k += 2; } else if (w.startsWith('--work-tree=')) { const v = w.slice(12); dirs = dirs.map((d) => moveDir(d, v)); k++; } else if (GIT_ARG_GLOBALS.includes(w)) k += 2;
       else k++;
     }
+    if (/[$`]/.test(t[k] || '')) return { prog: 'subst', dirs };
     return { prog: 'git', sub: t[k] || '', args: t.slice(k + 1), dirs };
   }
   if (t[0] === 'gh') {
     let k = 1;
     while (k < t.length && t[k].startsWith('-')) { if (t[k] === '-R' || t[k] === '--repo') k += 2; else k++; }
+    if (/[$`]/.test(`${t[k] || ''}${t[k + 1] || ''}`)) return { prog: 'subst', dirs: live };
     if (t[k] === 'api') return { prog: 'gh', sub: 'api', args: t.slice(k + 1), dirs: live };
     return { prog: 'gh', sub: `${t[k] || ''} ${t[k + 1] || ''}`.trim(), args: t.slice(k + 2), dirs: live };
   }
@@ -118,17 +190,24 @@ function envMove(dirs, assigns) {
 }
 
 // Segments of a command with the directories each may run in (cd, pushd/popd, git -C, GIT_DIR tracked).
-function walk(command, cwd) {
+function walk(command, cwd) { return walkIn(command, [path.resolve(cwd || process.cwd())]); }
+
+function walkIn(command, startDirs) {
   const items = [];
-  let live = [path.resolve(cwd || process.cwd())];
+  let live = startDirs;
   let deferred = [];
   const stack = [];
-  const segs = splitWithOps(command);
+  const { masked, bodies: allBodies } = maskSubst(command);
+  const segs = splitWithOps(masked);
   for (let n = 0; n < segs.length; n++) {
     const { text, op } = segs[n];
     if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
-    if (/\$\(|`/.test(text) && /\b(git|gh)\s/.test(text)) items.push({ prog: 'subst', dirs: live });
-    let raw = stripKeywords(tokens(text.replace(/^[\s({]+/, '')));
+    for (const m of text.matchAll(/\uE010(\d+)\uE011/g)) {
+      const body = allBodies[Number(m[1])];
+      if (RISKY_BODY(body)) items.push({ prog: 'subst', dirs: live });
+      items.push(...walkIn(body, live));
+    }
+    let raw = stripKeywords(tokensQ(text.replace(/^[\s({]+/, '')));
     let persistent = false;
     if (raw[0] === 'export') { raw = raw.slice(1); persistent = true; }
     const { rest: t, assigns } = unwrap(raw);
@@ -198,7 +277,7 @@ function itemMessages(item) {
   if (!spec) return [];
   return parseFlags(item.args, spec, item.prog === 'git').map((f) => {
     if (f.kind === 'file') return `<file: ${f.value}>`;
-    return /[$`]|\\[A-Za-z]/.test(f.value) ? `<subst: ${f.value}>` : f.value;
+    return /[$`]|\\[A-Za-z]/.test(f.value) ? `<subst: ${unsent(f.value)}>` : unsent(f.value);
   });
 }
 
