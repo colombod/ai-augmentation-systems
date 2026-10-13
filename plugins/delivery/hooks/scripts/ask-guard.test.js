@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
-const { decideAsk, REASON } = require('./ask-guard.js');
+const { decideAsk, REASON, CHANNEL_REASON } = require('./ask-guard.js');
 const { prepareRole } = require('../../scripts/prepare-role.js');
 
 process.env.GIT_CONFIG_GLOBAL = '/dev/null';
@@ -71,12 +71,29 @@ test('inert without a marker, with a marker of another session, with an unloadab
   assert.equal(decideAsk({}), null);
 });
 
-test('hooks.json routes AskUserQuestion, and only it, to the ask guard', () => {
+test('PushNotification and SendUserFile are operator channels too: denied for workers, allowed for the askers', () => {
+  assert.equal(CHANNEL_REASON, 'You do not address the operator. Message the Chief of Staff; the Chief of Staff decides what reaches the operator.');
+  for (const instance of ['builder-1', 'spike-researcher', 'delivery-lead', 'staffing', 'progress-observer']) {
+    const { roleDir } = preparedRole(instance);
+    for (const tool of ['PushNotification', 'SendUserFile']) {
+      const out = JSON.parse(runHook({ ...ask(roleDir), tool_name: tool, tool_input: {} }, instance).stdout);
+      assert.equal(out.hookSpecificOutput.permissionDecision, 'deny', `${instance} ${tool}`);
+      assert.equal(out.hookSpecificOutput.permissionDecisionReason, CHANNEL_REASON);
+    }
+  }
+  for (const instance of ['chief-of-staff', 'product-manager']) {
+    const { roleDir } = preparedRole(instance);
+    for (const tool of ['PushNotification', 'SendUserFile']) assert.equal(runHook({ ...ask(roleDir), tool_name: tool, tool_input: {} }, instance).stdout, '', `${instance} ${tool}`);
+  }
+  assert.equal(decideAsk({ tool_name: 'constructor' }), null, 'only the named tools are channels');
+});
+
+test('hooks.json routes the operator channels, and only them, to the guard', () => {
   const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
   const entry = hooks.PreToolUse.find((e) => e.hooks.some((h) => h.args.some((a) => a.endsWith('ask-guard.js'))));
   assert.ok(entry, 'ask-guard.js is wired');
   const re = new RegExp(`^(?:${entry.matcher})$`);
-  assert.ok(re.test('AskUserQuestion'));
+  for (const tool of ['AskUserQuestion', 'PushNotification', 'SendUserFile']) assert.ok(re.test(tool), tool);
   assert.ok(!re.test('Bash'));
   assert.ok(!re.test('SendMessage'));
 });

@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { findRelayRequest, decideStopForOperator, RELAY_REASON } = require('./relay-guard.js');
+const { findRelayRequest, decideStopForOperator, operatorChecks, RELAY_REASON, RELAY_REASON_NO_RECORD } = require('./relay-guard.js');
 const { captureFromHookInput } = require('./operator-capture.js');
 const { prepareRole } = require('../../scripts/prepare-role.js');
 const R = require('../../scripts/lib/operator-records.js');
@@ -160,6 +160,8 @@ test('blocks a relay request with the carry reason once nothing is pending', () 
   const p = captured('chief-of-staff', [human('use postgres', 1)]);
   R.ack({ projectRoot: p.projectRoot, input: 'in-pc-000001', reason: 'noted', by: COS_BY });
   assert.deepEqual(decideStopForOperator(stopArgs(p, { last_assistant_message: 'Recorded dec-1.\n\ncan you paste this answer to the builder?' })), { reason: RELAY_REASON });
+  assert.deepEqual(decideStopForOperator(stopArgs(p, { last_assistant_message: 'The builder asks whether to use Redis. Can you tell the builder session A or B?' })), { reason: RELAY_REASON_NO_RECORD });
+  assert.equal(RELAY_REASON_NO_RECORD, 'You carry answers; the operator does not. Ask the operator here yourself, record the answer, then SendMessage the record id to the session, and remove the request from your message.');
   assert.equal(RELAY_REASON, 'You carry answers; the operator does not. Send the record id to the session yourself with SendMessage, and remove the request from your message.');
   assert.equal(decideStopForOperator(stopArgs(p, { last_assistant_message: 'I will tell the Delivery Lead.' })), null);
 });
@@ -169,7 +171,9 @@ test('allows when the operator directory is missing, the manifest fails, or the 
   fs.writeFileSync(path.join(p.roleDir, '.delivery-session'), `${SID}\n`);
   assert.ok(!fs.existsSync(log.opDir(p.projectRoot)));
   assert.equal(decideStopForOperator(stopArgs(p)), null, 'no operator directory: the input check is skipped');
-  assert.deepEqual(decideStopForOperator(stopArgs(p, { last_assistant_message: BRIEF_POSITIVES[1] })), { reason: RELAY_REASON }, 'the relay check needs no records');
+  const warned = [];
+  assert.deepEqual(decideStopForOperator(stopArgs(p, { last_assistant_message: BRIEF_POSITIVES[1] }, { deps: { warn: (m) => warned.push(m) } })), { reason: RELAY_REASON_NO_RECORD }, 'the relay check needs no records');
+  assert.match(warned.join(''), /\.delivery\/operator does not exist yet/, 'a marker without an operator directory says so on stderr');
 
   const q = captured('chief-of-staff', [human('use postgres', 1)]);
   const warnings = [];
@@ -190,4 +194,145 @@ test('allows when the operator directory is missing, the manifest fails, or the 
   // bad arguments never throw
   assert.equal(decideStopForOperator(), null);
   assert.equal(decideStopForOperator({ role: 'chief-of-staff', projectRoot: 'relative' }), null);
+});
+
+// ---- the review corpus (round 1): 40 natural relay requests, 12 questions about the operator's own
+// decisions, 14 status messages and 29 extra negatives. Recall must stay >= 95%, false positives 0.
+const CORPUS_RELAY = [...BRIEF_POSITIVES.slice(0, 4), ...[
+  "Reply 'go' in the builder's session.",
+  "Reply \"go\" in the builder's session.",
+  "Please reply go in the builder-1 session when you have a sec.",
+  "Answer the question in session abc123.",
+  "Could you answer the builder's question in its tab?",
+  "Type \"yes\" in the delivery lead session.",
+  "Please go to the delivery lead tab and confirm.",
+  "Can you hop over to the builder window and approve the plan?",
+  "Head to the infra session and click approve.",
+  "Could you switch to the PM tab and confirm the scope?",
+  "Can you let the infra session know we are going with Postgres?",
+  "Please let the builder know the answer is B.",
+  "Just tell them yes.",
+  "When you get a moment, tell the builder to go ahead with option A.",
+  "Tell the builder session to proceed.",
+  "Could you tell builder-2 to use the staging DB?",
+  "Can you give the delivery lead the go-ahead?",
+  "Please give builder-1 a yes on the migration.",
+  "Ask the PM session to approve the scope change.",
+  "Could you ask the product manager to sign off?",
+  "Press approve in the builder window.",
+  "Please click Allow in the builder-1 session so it can push.",
+  "You will need to approve the permission prompt in the spike researcher session.",
+  "Could you accept the permission request on the observer tab?",
+  "Forward this to the delivery lead.",
+  "Please forward my summary to the builder.",
+  "Copy/paste this into the builder session.",
+  "Copy and paste the following into builder-1:",
+  "Can you paste the decision into the delivery lead chat?",
+  "Please approve in the other session.",
+  "Please confirm over in the builder session.",
+  "The builder is waiting on you - please answer it there.",
+  "The delivery lead needs your answer in its session.",
+  "**Action for you:**\n- Tell the builder to use option B\n- Reply `go` in the infra session",
+  "Next steps:\n1. **Please tell the delivery lead** to proceed.\n2. Nothing else.",
+  "- **You:** forward dec-12 to builder-1",
+]];
+const CORPUS_OWN_DECISION = [
+  "Do you want option A (Postgres) or option B (SQLite)? I recommend A.",
+  "Should the builder use Postgres or SQLite? Your call.",
+  "Can you confirm the budget cap of 3 builders?",
+  "Would you approve shipping v1 without the export feature?",
+  "Do you want me to tell the builder to pause?",
+  "Should I ask the delivery lead to re-plan phase 2?",
+  "Which session should I prioritise, the builder or the infra one?",
+  "Can you tell me whether the infra role should own DNS?",
+  "Are you happy for the builders to work on the payment story next?",
+  "Would you like the researcher to spike the queue options first?",
+  "Please decide: should the agent retry failed deploys automatically?",
+  "Could you tell us which customers to prioritise?",
+];
+const CORPUS_STATUS = [
+  "Briefing: builder-1 merged the auth PR. The delivery lead asked about scope; I answered with dec-14 and sent it to its session.",
+  "I sent the record id dec-000007 to the builder session with SendMessage. Nothing needs you.",
+  "Status: 3 sessions active. The infra session is idle. The observer flagged one failing test.",
+  "You asked me to tell the builder to stop; done, the builder acknowledged dec-9.",
+  "You told me yesterday to send updates to the delivery lead; I have done so.",
+  "Once you choose, I will message the builder and the delivery lead with the record id.",
+  "The builder wants to know whether to use Redis. Please tell me A or B.",
+  "Please message me if anything changes.",
+  "You can ask any session for status yourself, but you do not need to.",
+  "Thanks. Recorded as dec-21; the builders have it.",
+  "Please send me the API key name (not the value) you want the agent to use.",
+  "Please review the PR the builder opened: https://github.com/x/y/pull/3",
+  "Could you ping me when the staging deploy is done on your side?",
+  "If you want, you can watch the builder session; no action needed.",
+];
+const CORPUS_EXTRA_NEGATIVES = [
+  "Let me know which option you prefer.",
+  "Tell me whether the infra role should own DNS.",
+  "Ask me anything about the plan.",
+  "Approve the plan for the builder-1 story? I recommend yes.",
+  "Confirm the budget cap of 3 builders?",
+  "Should I give the builder the go-ahead?",
+  "Do you want to give the builders more budget?",
+  "The builder will answer in its session once dec-3 lands.",
+  "I answered in the builder session with dec-3.",
+  "Go ahead and pick A or B.",
+  "Go to the dashboard link if you want details; nothing is needed.",
+  "Let the record show the builder finished.",
+  "The delivery lead is waiting on dec-4; I sent it.",
+  "You said to tell the builder to wait; I did that.",
+  "Answer in this chat: A or B?",
+  "Please reply here with A or B.",
+  "If you prefer, I can ask the PM session to approve.",
+  "I will let the infra session know.",
+  "Builder-1 asked whether to use Redis. Options: A) Redis B) in-memory. Recommendation: A. Which do you want?",
+  "**Decision needed:** should the agent auto-retry deploys? A) yes B) no.",
+  "Tell me if you want the researcher to spike first.",
+  "Approve shipping v1 without export? Recommended: yes.",
+  "Press on with the current plan, or pause the builders?",
+  "Click the PR link to review if you like: https://x/y/1",
+  "Once you answer, I will give the builder the go-ahead.",
+  "Then I will tell the delivery lead to proceed.",
+  "Next: I message the builder with dec-5.",
+  "Send me your pick, A or B.",
+  "Remind me tomorrow to check the observer report.",
+];
+
+test('round 1 corpus: recall >= 95% on 40 relay requests, no false positive on 55 negatives', () => {
+  assert.equal(CORPUS_RELAY.length, 40);
+  const missed = CORPUS_RELAY.filter((t) => !findRelayRequest(t));
+  assert.ok((CORPUS_RELAY.length - missed.length) / CORPUS_RELAY.length >= 0.95, `missed: ${JSON.stringify(missed)}`);
+  assert.equal(CORPUS_OWN_DECISION.length, 12);
+  assert.equal(CORPUS_STATUS.length, 14);
+  for (const t of [...CORPUS_OWN_DECISION, ...CORPUS_STATUS, ...CORPUS_EXTRA_NEGATIVES]) {
+    const r = findRelayRequest(t);
+    assert.equal(r, null, `false positive: ${JSON.stringify(t)} => ${r && r.phrase}`);
+  }
+});
+
+test("the user's own example and the bare imperatives are flagged", () => {
+  for (const t of ["Reply 'go' in the builder's session.", 'Tell the builder session to proceed.', 'Just tell them yes.']) assert.ok(findRelayRequest(t), t);
+});
+
+test('every applicable operator reason is returned, not only the first', () => {
+  const p = captured('chief-of-staff', [human('use postgres', 1)]);
+  const found = operatorChecks(stopArgs(p, { stop_hook_active: true, last_assistant_message: 'Please tell the builder session to use postgres.' }));
+  assert.deepEqual(found.map((f) => f.kind), ['unrecorded', 'relay'], 'operatorChecks ignores stop_hook_active; claim-stop limits repeats');
+  const joined = decideStopForOperator(stopArgs(p, { last_assistant_message: 'Please tell the builder session to use postgres.' }));
+  assert.match(joined.reason, /^You have an operator input with no record: in-pc-000001/);
+  assert.ok(joined.reason.endsWith(RELAY_REASON_NO_RECORD));
+  assert.deepEqual(operatorChecks(stopArgs(p, {}, { role: 'builder' })), []);
+});
+
+test("I3: a chain problem on the chief of staff's own records file replaces the unrecorded check with the repair path", () => {
+  const p = captured('chief-of-staff', [human('use postgres', 1)]);
+  const inputs = [{ id: 'in-pc-000001', session_id: SID, instance: 'chief-of-staff', text: 'use postgres' }];
+  const torn = () => ({ inputs, problems: [{ file: 'records/chief-of-staff', code: 'truncated', error: 'records/chief-of-staff: truncated 4 entries but 5 recorded' }] });
+  const found = operatorChecks(stopArgs(p, {}, { deps: { pending: torn } }));
+  assert.deepEqual(found.map((f) => f.kind), ['integrity']);
+  assert.equal(found[0].reason, 'Your own operator records chain (records/chief-of-staff.ndjson) fails verification (truncated: records/chief-of-staff: truncated 4 entries but 5 recorded). Nothing can be recorded or acknowledged until it is repaired: run operator.js problems, then operator.js repair --instance chief-of-staff for a torn tail, or restore the file from repository history for a truncated or rewritten chain. Do not ask the operator to relay anything meanwhile.');
+  // another instance's chain, or one invalid record, does not stop the chief of staff from recording
+  for (const problem of [{ file: 'records/builder-1', code: 'truncated', error: 'x' }, { file: 'records/chief-of-staff', code: 'record_invalid', error: 'x', id: 'dec-x' }]) {
+    assert.deepEqual(operatorChecks(stopArgs(p, {}, { deps: { pending: () => ({ inputs, problems: [problem] }) } })).map((f) => f.kind), ['unrecorded']);
+  }
 });
