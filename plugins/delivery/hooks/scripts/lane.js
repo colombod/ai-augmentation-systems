@@ -67,6 +67,7 @@ function splitWithOps(command) {
     if (q) return 0;
     const next = s[i + 1];
     const prev = s[i - 1];
+    if ((c === '|' && prev === '>') || (c === '&' && prev === '<')) return 0; // >| and <&: redirections, not separators
     if ((c === '&' && next === '&') || (c === '|' && next === '|')) { cuts.push([i, i + 2, c + next]); return 1; }
     if (c === '&' && (prev === '>' || next === '>')) return 0; // 2>&1, &> file: a redirection, not a separator
     if (c === ';' || c === '|' || c === '&' || c === '\n') cuts.push([i, i + 1, c]);

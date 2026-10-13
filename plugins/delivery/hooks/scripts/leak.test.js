@@ -290,7 +290,7 @@ const probes = [
   [`f(){ git commit "$@"; }; f -m P`, 'product', true],
   [`echo "-m 'P'" | xargs git commit`, 'product', true],
   [`echo x | parallel gh pr comment 3 -b {}`, 'product', true],
-  [`git push origin "$BRANCH"`, 'product', true],
+  [`git push origin "$BRANCH"`, 'product', false], // refspec words are exempt (final patch, ruling 7)
   [`git -c "$A" x`, 'product', true],
   [`echo a b | xargs rm`, 'product', false],
   [`git log "$REV"`, 'product', false],
@@ -302,6 +302,28 @@ const probes = [
   [`git config alias.x 'commit -m P'`, 'product', true],
   [`git config --global alias.x status`, 'product', true],
   [`git config user.name x`, 'product', false],
+  // final patch
+  [`git commit -F <(echo 'Casual Carl')`, 'product', true],
+  [`git commit --file <(echo 'Casual Carl')`, 'product', true],
+  [`git tag -a v1 -F <(echo 'Casual Carl')`, 'product', true],
+  [`gh pr create --body-file <(echo 'Casual Carl')`, 'product', true],
+  [`gh issue comment 1 -F <(echo 'Casual Carl')`, 'product', true],
+  [`git commit >| x -m 'Casual Carl'`, 'product', true],
+  [`git commit >|/dev/null -m 'Casual Carl'`, 'product', true],
+  [`git commit <&0 -m 'Casual Carl'`, 'product', true],
+  [`git commit 0<&- -m 'Casual Carl'`, 'product', true],
+  [`gh pr create >|x --title 'Casual Carl'`, 'product', true],
+  [`git commit -m fix >|log`, 'product', false],
+  [`ls | wc`, 'product', false],
+  [`gh issue reopen 1 -c 'Casual Carl'`, 'product', true],
+  [`gh pr reopen 1 --comment 'Casual Carl'`, 'product', true],
+  ['time ! '.repeat(101) + "git commit -m 'Casual Carl'", 'product', true],
+  [`env --chdir=../product git commit -m 'Casual Carl'`, 'project', true],
+  [`git commit -m 'Cas${ZW}ual Carl'`, 'product', true],
+  [`git commit -m 'Casual${ZW}Carl'`, 'product', true],
+  [`git push -u origin "$(git branch --show-current)"`, 'product', false],
+  [`git push -o "$X" origin main`, 'product', true],
+  [`git push --push-option="$X" origin main`, 'product', true],
   [{ tool: 'Write', path: 'product/.delivery/x.md' }, '.', true],
   [{ tool: 'Write', path: 'product/.Delivery/x.md' }, 'project', true],
   [{ tool: 'Edit', path: '../product/.beads/a' }, 'project', true],
@@ -421,6 +443,13 @@ test('leak-guard entry fails closed from the role directory and for git with a d
   fs.mkdirSync(path.join(b.roleDir, 'project'), { recursive: true });
   assert.ok(denied(runHook('leak-guard.js', input(path.join(b.roleDir, 'project'), 'cd ../product && git commit -m x'), env)));
   assert.equal(runHook('leak-guard.js', input(path.join(b.roleDir, 'project'), 'ls'), env), '');
+});
+
+test('a push refspec with an expansion counts as a tag push', () => {
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-refspec-'));
+  fs.mkdirSync(path.join(rd, 'product'), { recursive: true });
+  const { pushInfo } = require('./leak.js');
+  assert.equal(pushInfo('git push origin "$REF"', path.join(rd, 'product'), rd, () => '')[0].tags, true);
 });
 
 test('redirected pushes are seen by pushInfo', () => {

@@ -46,7 +46,8 @@ const SENT = { $: '\u0002', '`': '\u0003', '\\': '\u0004' };
 const lit = (c) => SENT[c] || c;
 const unsent = (v) => String(v).replace(/\u0002/g, '$').replace(/\u0003/g, '`').replace(/\u0004/g, '\\');
 // Redirection operators at the start of an unquoted word; the word they apply to is dropped with them.
-const REDIR = /^\d*(?:&>>|&>|>>|>&|>\||<<<|<<-?|<&|<>|>|<)/;
+// `<(` and `>(` are process substitutions, not redirections: they stay as words (e.g. a -F value).
+const REDIR = /^\d*(?:&>>|&>|>>|>&|>\||<<<|<<-?|<&|<>|>(?!\()|<(?!\())/;
 function tokensQ(seg) {
   const s = String(seg == null ? '' : seg);
   const out = [];
@@ -347,7 +348,8 @@ function peel(tokens) {
   const chdirs = [];
   let persistent = false;
   let hidden = false;
-  for (let n = 0; n < 100; n++) {
+  let settled = false;
+  for (let n = 0; n < 100 && !settled; n++) {
     const before = JSON.stringify(a);
     a = stripKeywords(a);
     if (a[0] === 'export') { a = a.slice(1); persistent = true; }
@@ -356,8 +358,9 @@ function peel(tokens) {
     chdirs.push(...u.chdirs);
     hidden = hidden || u.hidden;
     a = u.rest;
-    if (JSON.stringify(a) === before) break;
+    if (JSON.stringify(a) === before) settled = true;
   }
+  if (!settled) fail('too many keywords and wrappers to peel');
   return { t: a, assigns, chdirs, persistent, hidden };
 }
 
@@ -416,7 +419,7 @@ function envMove(dirs, assigns) {
 // Segments of a command with the directories each may run in (cd, pushd/popd, git -C, GIT_DIR tracked).
 // A command that cannot be parsed yields an 'unparsed' item; maybeProduct marks one that may move
 // into product by means the guard could not follow.
-const MOVES = /cd|pushd|-C|GIT_|--git-dir|--work-tree|product/;
+const MOVES = /cd|pushd|chdir|-C|GIT_|--git-dir|--work-tree|product/;
 // Whether a command the guard failed on may act in product by means it could not follow.
 const maybeProductText = (command) => MENTIONS_GIT(String(command)) && MOVES.test(String(command));
 function walk(command, cwd) {
@@ -486,7 +489,7 @@ const GIT_SPECS = {
   notes: { text: ['-m', '--message'], file: ['-F', '--file'], letters: 'mFC' },
 };
 const GH_SPEC = { text: ['--title', '-t', '--body', '-b', '--subject', '--comment', '-c', '--notes', '-n'], file: ['--body-file', '--notes-file', '-F'], letters: 'tbcnF' };
-const GH_WRITES = ['pr create', 'pr edit', 'pr comment', 'pr merge', 'pr review', 'pr close', 'issue comment', 'issue close', 'issue edit', 'release create', 'release edit'];
+const GH_WRITES = ['pr create', 'pr edit', 'pr comment', 'pr merge', 'pr review', 'pr close', 'pr reopen', 'issue comment', 'issue close', 'issue edit', 'issue reopen', 'release create', 'release edit'];
 
 function parseFlags(args, spec, abbrev) {
   const out = [];
@@ -558,13 +561,32 @@ function ghApiWrite(args) {
 }
 
 // ---------- matching ----------
-const norm = (s) => String(s || '').normalize('NFKC').replace(/\p{Cf}/gu, '').toLowerCase().replace(/\s+/g, ' ');
+const normWith = (s, cf) => String(s || '').normalize('NFKC').replace(/\p{Cf}/gu, cf).toLowerCase().replace(/\s+/g, ' ');
+const norm = (s) => normWith(s, '');
+const normSpaced = (s) => normWith(s, ' ');
+// git push: remote and refspec words may be expanded (a refspec with $ counts as a tag push in
+// pushInfo); push options and their values may not. Returns the first expanded option, if any.
+const PUSH_VALUE_OPTS = ['-o', '--push-option', '--receive-pack', '--exec', '--repo'];
+function pushOptionExpanded(args) {
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i];
+    if (w === '--') break;
+    if (!w.startsWith('-')) continue;
+    if (/[$`]/.test(w)) return w;
+    if (PUSH_VALUE_OPTS.includes(w)) { const v = args[i + 1]; if (v !== undefined && /[$`]/.test(v)) return v; i++; }
+  }
+  return undefined;
+}
 const BIDI = /[\u202A-\u202E\u2066-\u2069]/;
 
+// Two haystacks: format characters deleted, and replaced by a space; a phrase in either matches.
+const hays = (s) => [norm(s), normSpaced(s)];
+const inAny = (hs, n) => hs.some((h) => h.includes(n));
+
 function scanText(text, denylist) {
-  const hay = norm(text);
-  if (hay.includes('.delivery/')) return { phrase: '.delivery/' };
-  for (const p of denylist) { const n = norm(p).trim(); if (n && hay.includes(n)) return { phrase: p }; }
+  const hay = hays(text);
+  if (inAny(hay, '.delivery/')) return { phrase: '.delivery/' };
+  for (const p of denylist) { const n = norm(p).trim(); if (n && inAny(hay, n)) return { phrase: p }; }
   return null;
 }
 
@@ -595,7 +617,7 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist }) {
       if (item.prog === 'gh' && item.sub === 'issue create') return { reason: 'GitHub issues in the product repo are for users; record internal work in beads.' };
       if (item.prog === 'gh' && item.sub === 'api' && ghApiWrite(item.args)) return { reason: 'Public writes through gh api cannot be checked; use the checked gh commands (pr, issue comment) with inline text.' };
       const writes = (item.prog === 'git' && ['commit', 'merge', 'tag', 'notes', 'push'].includes(item.sub)) || (item.prog === 'gh' && (GH_WRITES.includes(item.sub) || item.sub === 'issue create' || item.sub === 'api'));
-      const injected = writes ? item.args.find((x) => /[$`]/.test(x)) : undefined;
+      const injected = !writes ? undefined : item.prog === 'git' && item.sub === 'push' ? pushOptionExpanded(item.args) : item.args.find((x) => /[$`]/.test(x));
       if (injected !== undefined) return { reason: `Write arguments inline, without $ or backticks, so they can be checked (${unsent(injected).slice(0, 60)}).${RULE}` };
       for (const m of itemMessages(item)) {
         if (BIDI.test(m)) return { reason: `Commit and PR text must not contain bidirectional control characters.${RULE}` };
@@ -635,7 +657,7 @@ function pushInfo(command, cwd, roleDir, git) {
       if (d === null ? !anyInProduct([null], roleDir, cwd) : !dirUnderProduct(d, roleDir)) continue;
       const dir = d === null ? path.resolve(cwd) : d;
       const run = git || gitIn(dir);
-      const tags = item.args.some((a) => a === '--tags' || a === '--follow-tags') || names.some((n) => n.includes('refs/tags/') || run(['tag', '-l', n]).trim() === n);
+      const tags = item.args.some((a) => a === '--tags' || a === '--follow-tags') || names.some((n) => /[$`]/.test(n)) || names.some((n) => n.includes('refs/tags/') || run(['tag', '-l', n]).trim() === n);
       out.push({ dir, tags });
     }
   }
@@ -669,10 +691,10 @@ function scanPushed({ cwd, roleDir, denylist, git, tags }) {
   else if (run(['rev-parse', '--verify', '-q', 'origin/HEAD']).trim()) log = run(['log', 'origin/HEAD..HEAD', '--format=%B']);
   else log = run(['log', '-n', '20', '--format=%B']);
   if (tags) log += `\n${run(['for-each-ref', 'refs/tags', '--format=%(contents)'])}`;
-  const hay = norm(log);
+  const hay = hays(log);
   const hits = [];
-  for (const p of denylist) { const n = norm(p).trim(); if (n && hay.includes(n) && !hits.includes(p)) hits.push(p); }
-  if (hay.includes('.delivery/') && !hits.includes('.delivery/')) hits.push('.delivery/');
+  for (const p of denylist) { const n = norm(p).trim(); if (n && inAny(hay, n) && !hits.includes(p)) hits.push(p); }
+  if (inAny(hay, '.delivery/') && !hits.includes('.delivery/')) hits.push('.delivery/');
   return hits;
 }
 
