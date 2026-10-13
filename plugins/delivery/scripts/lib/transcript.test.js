@@ -231,3 +231,14 @@ test('fromOffset resumes without rereading and a smaller file is rescanned', () 
   assert.strictEqual(third.rescanned, true);
   assert.deepStrictEqual(third.inputs.map((i) => [i.line, i.text]), [[1, 'only']]);
 });
+
+test('a leading system-reminder block does not hide the real text block', () => {
+  const rec = R.humanString('x', 50);
+  rec.message.content = [{ type: 'text', text: '<system-reminder>note</system-reminder>' }, { type: 'text', text: 'real words' }];
+  const c = t.classifyRecord(rec);
+  assert.strictEqual(c.source, 'human');
+  assert.strictEqual(c.text, 'real words');
+  const only = R.humanString('x', 51);
+  only.message.content = [{ type: 'text', text: '<system-reminder>note</system-reminder>' }];
+  assert.strictEqual(t.classifyRecord(only).source, 'system');
+});

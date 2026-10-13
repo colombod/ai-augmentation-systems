@@ -8,7 +8,10 @@ function textOf(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     const parts = content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text);
-    return parts.length ? parts.join('\n') : null;
+    if (!parts.length) return null;
+    // harness reminders can ride along as extra leading blocks: classify by the real words
+    const real = parts.filter((p) => !p.trim().startsWith('<system-reminder>'));
+    return (real.length ? real : parts).join('\n');
   }
   return null;
 }

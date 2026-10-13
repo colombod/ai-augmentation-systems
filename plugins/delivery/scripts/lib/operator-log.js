@@ -50,9 +50,13 @@ function readEntries(file) {
 
 function ensureGitignore(root) {
   const f = path.join(opDir(root), '.gitignore');
-  if (fs.existsSync(f)) return;
+  const want = ['cursors/', '*.lock', '*.lock.stale-*', '*.stale-*'];
   fs.mkdirSync(opDir(root), { recursive: true });
-  try { fs.writeFileSync(f, 'cursors/\n*.lock\n', { flag: 'wx' }); } catch (e) { /* raced */ }
+  let have = '';
+  try { have = fs.readFileSync(f, 'utf8'); } catch (e) { /* new */ }
+  const missing = want.filter((l) => !have.split('\n').includes(l));
+  if (!missing.length) return;
+  try { fs.writeFileSync(f, have + (have && !have.endsWith('\n') ? '\n' : '') + missing.join('\n') + '\n'); } catch (e) { /* raced */ }
 }
 
 function writeJsonAtomic(file, obj) {
@@ -63,6 +67,15 @@ function writeJsonAtomic(file, obj) {
 }
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return null; }
+}
+
+// sha256 of the (up to 4096) bytes just before `offset`: detects a transcript rewritten larger.
+function tailHash(file, offset) {
+  try {
+    const buf = fs.readFileSync(file);
+    if (offset > buf.length) return null;
+    return sha256(buf.subarray(Math.max(0, offset - 4096), offset));
+  } catch (e) { return null; }
 }
 
 function truncateText(text) {
@@ -119,8 +132,14 @@ function syncTranscript(opts) {
   if (cursor.transcript !== transcriptPath) {
     cursor = { line: 0, transcript: transcriptPath, total_user_records: 0, with_origin: 0 };
   }
-  let read = transcript.readHumanInputs(transcriptPath, { fromLine: cursor.line, fromOffset: cursor.offset || 0 });
-  let base = { total_user_records: cursor.total_user_records || 0, with_origin: cursor.with_origin || 0 };
+  let rewritten = false;
+  if (cursor.offset && cursor.tail_sha256 && tailHash(transcriptPath, cursor.offset) !== cursor.tail_sha256) {
+    rewritten = true; // bytes before the stored offset changed: rescan from the top (dedupe is safe)
+  }
+  let read = transcript.readHumanInputs(transcriptPath, rewritten
+    ? { fromLine: 0 } : { fromLine: cursor.line, fromOffset: cursor.offset || 0 });
+  let base = rewritten ? { total_user_records: 0, with_origin: 0 }
+    : { total_user_records: cursor.total_user_records || 0, with_origin: cursor.with_origin || 0 };
   if (read.rescanned || read.lastLine < cursor.line) { // rewritten: rescan (dedupe protects)
     if (!read.rescanned) read = transcript.readHumanInputs(transcriptPath, { fromLine: 0 });
     base = { total_user_records: 0, with_origin: 0 };
@@ -170,14 +189,19 @@ function syncTranscript(opts) {
       added++;
     }
     if (added) {
+      // a head only ever advances: a log that was truncated stays flagged by verify
       const h = verifyHostRaw(projectRoot, host);
-      if (h.ok) setHead(projectRoot, host, { count: h.count, last_hash: h.last_hash });
+      const cur = readHeads(projectRoot)[host];
+      if (h.ok && (!cur || (h.count >= cur.count && (cur.count === 0 || h.hashes[cur.count - 1] === cur.last_hash)))) {
+        setHead(projectRoot, host, { count: h.count, last_hash: h.last_hash });
+      }
     }
     if (added || idx.dirty) writeJsonAtomic(idx.file, { last_id: idx.last_id, map: Object.fromEntries(idx.map) });
     // cursor advances only after the entries are on disk
     cursor = {
       line: read.lastLine,
       offset: read.lastOffset,
+      tail_sha256: tailHash(transcriptPath, read.lastOffset),
       transcript: transcriptPath,
       total_user_records: base.total_user_records + read.total_user_records,
       with_origin: base.with_origin + read.with_origin,
@@ -250,29 +274,32 @@ function verifyHost(projectRoot, host) {
   const v = verifyHostRaw(projectRoot, host);
   if (!v.ok) return v;
   const head = readHeads(projectRoot)[host];
+  const state = head ? 'recorded' : 'absent';
   if (head) {
     if (v.count < head.count) {
-      return { ok: false, count: v.count, host, error: `host ${host}: truncated, ${v.count} entries but ${head.count} were recorded` };
+      return { ok: false, count: v.count, host, heads: state, error: `host ${host}: truncated, ${v.count} entries but ${head.count} were recorded` };
     }
     if (head.count > 0 && v.hashes[head.count - 1] !== head.last_hash) {
-      return { ok: false, count: v.count, host, error: `host ${host}: history rewritten, entry ${head.count} no longer matches the recorded head` };
+      return { ok: false, count: v.count, host, heads: state, error: `host ${host}: history rewritten, entry ${head.count} no longer matches the recorded head` };
     }
   }
   if (!head || v.count > head.count) setHead(projectRoot, host, { count: v.count, last_hash: v.last_hash });
-  return { ok: true, count: v.count, host, last_hash: v.last_hash };
+  return { ok: true, count: v.count, host, last_hash: v.last_hash, heads: state };
 }
 
 function verifyInputs(projectRoot, opts = {}) {
   if (opts.host) return verifyHost(projectRoot, safeHost(opts.host));
   let count = 0;
-  const heads = {};
+  const hostHeads = {};
+  let state = 'recorded';
   for (const host of listHosts(projectRoot)) {
     const v = verifyHost(projectRoot, host);
-    if (!v.ok) return { ...v, count: count + v.count, heads };
+    if (v.heads === 'absent') state = 'absent';
+    if (!v.ok) return { ...v, count: count + v.count, host_heads: hostHeads };
     count += v.count;
-    heads[host] = { count: v.count, last_hash: v.last_hash };
+    hostHeads[host] = { count: v.count, last_hash: v.last_hash };
   }
-  return { ok: true, count, heads };
+  return { ok: true, count, heads: state, host_heads: hostHeads };
 }
 
 // ---- publish / refresh (best effort, never throw) ----
@@ -343,13 +370,21 @@ function publish(projectRoot, opts = {}) {
     if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return no('not a git repository');
     try { writeJsonAtomic(stamp, { at: Date.now() }); } catch (e) { /* ignore */ }
     ensureGitignore(projectRoot);
-    const add = git(projectRoot, ['add', '--', OP_PATH]);
-    if (!add.ok) return no(add.err);
-    const staged = git(projectRoot, ['diff', '--cached', '--numstat', '--', OP_PATH]);
+    // only this writer's own files: its host's inputs, its instance's records, the .gitignore
+    const hostRel = `${OP_PATH}/inputs/${safeHost(opts.host)}`;
+    const own = [`${OP_PATH}/.gitignore`, hostRel];
+    if (opts.instance) own.push(`${OP_PATH}/records/${opts.instance}.ndjson`);
+    const ownPaths = own.filter((p) => fs.existsSync(path.join(projectRoot, p)));
+    if (ownPaths.length) {
+      const add = git(projectRoot, ['add', '--', ...ownPaths]);
+      if (!add.ok) return no(add.err);
+    }
+    const staged = ownPaths.length ? git(projectRoot, ['diff', '--cached', '--numstat', '--', ...ownPaths]) : { out: '' };
     const lines = staged.out ? staged.out.split('\n') : [];
-    const n = lines.reduce((s, l) => s + (Number(l.split('\t')[0]) || 0), 0);
+    const n = lines.filter((l) => !l.endsWith('.gitignore'))
+      .reduce((s, l) => s + (Number(l.split('\t')[0]) || 0), 0);
     if (lines.length) {
-      const c = git(projectRoot, ['commit', '--only', '--no-verify', '--no-gpg-sign', '-m', `operator: ${n} entries`, '--', OP_PATH]);
+      const c = git(projectRoot, ['commit', '--only', '--no-verify', '--no-gpg-sign', '-m', `operator: ${n} entries`, '--', ...ownPaths]);
       if (!c.ok) return no(c.err || c.out);
     }
     const up = upstreamOf(projectRoot);
@@ -368,6 +403,15 @@ function publish(projectRoot, opts = {}) {
       const f = git(projectRoot, ['fetch', up.remote]);
       if (!f.ok) return no(f.err || 'fetch failed');
       if (unrelated().length) return no('unpushed unrelated commits', { paths: unrelated() });
+      // other writers' files refreshed earlier are derived copies: drop them so the merge can bring them
+      const ownPrefixes = [hostRel + '/', `${OP_PATH}/records/${opts.instance}.ndjson`, `${OP_PATH}/.gitignore`];
+      const st = git(projectRoot, ['status', '--porcelain', '--untracked-files=all', '--', OP_PATH]);
+      for (const l of st.out ? st.out.split('\n') : []) {
+        const p = l.slice(3);
+        if (!p.startsWith(OP_PATH + '/') || ownPrefixes.some((o) => p.startsWith(o))) continue;
+        if (l.startsWith('??')) { try { fs.unlinkSync(path.join(projectRoot, p)); } catch (e) { /* ignore */ } }
+        else git(projectRoot, ['checkout', 'HEAD', '--', p]);
+      }
       const m = git(projectRoot, ['merge', '--no-edit', '--no-verify', '--no-gpg-sign', '@{u}']);
       if (!m.ok) { git(projectRoot, ['merge', '--abort']); return no(m.err || m.out || 'merge failed'); }
       r = push();

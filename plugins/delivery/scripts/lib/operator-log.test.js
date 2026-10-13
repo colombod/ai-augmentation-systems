@@ -292,7 +292,7 @@ test('host B input is visible to host A after publish and refresh', () => {
   const { hosta, hostb } = twoHosts();
   sync(hostb, transcript([human('decision from b', 1)]), { host: 'hostb', instance: 'pm-b' });
   assert.strictEqual(log.getInput(hosta, 'in-hostb-000001'), null);
-  const p = log.publish(hostb, { force: true });
+  const p = log.publish(hostb, { force: true, host: 'hostb' });
   assert.strictEqual(p.published, true, JSON.stringify(p));
   const r = log.refresh(hosta);
   assert.strictEqual(r.ok, true, JSON.stringify(r));
@@ -305,14 +305,14 @@ test('concurrent appends on both hosts merge without conflict', () => {
   const { hosta, hostb } = twoHosts();
   sync(hosta, transcript([human('a one', 1)]), { host: 'hosta', sessionId: 'sa' });
   sync(hostb, transcript([human('b one', 2)]), { host: 'hostb', sessionId: 'sb' });
-  assert.strictEqual(log.publish(hosta, { force: true }).published, true);
-  const pb = log.publish(hostb, { force: true }); // rejected, rebases once, pushes
+  assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta' }).published, true);
+  const pb = log.publish(hostb, { force: true, host: 'hostb' }); // rejected, rebases once, pushes
   assert.strictEqual(pb.published, true, JSON.stringify(pb));
   // each host appends again while the other has not refreshed
   sync(hosta, transcript([human('a two', 3)]), { host: 'hosta', sessionId: 'sa2' });
   sync(hostb, transcript([human('b two', 4)]), { host: 'hostb', sessionId: 'sb2' });
-  assert.strictEqual(log.publish(hosta, { force: true }).published, true);
-  assert.strictEqual(log.publish(hostb, { force: true }).published, true);
+  assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta' }).published, true);
+  assert.strictEqual(log.publish(hostb, { force: true, host: 'hostb' }).published, true);
   assert.strictEqual(log.refresh(hosta).ok, true);
   assert.strictEqual(log.refresh(hostb).ok, true);
   for (const root of [hosta, hostb]) {
@@ -331,9 +331,9 @@ test('publish never throws, even outside a git repository, and is throttled', ()
   assert.strictEqual(r.published, false);
   const { hosta } = twoHosts();
   sync(hosta, transcript([human('x', 1)]), { host: 'hosta' });
-  assert.strictEqual(log.publish(hosta, { force: true }).published, true);
+  assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta' }).published, true);
   sync(hosta, transcript([human('y', 2)]), { host: 'hosta', sessionId: 's2' });
-  const t = log.publish(hosta, {});
+  const t = log.publish(hosta, { host: 'hosta' });
   assert.strictEqual(t.published, false);
   assert.strictEqual(t.reason, 'throttled');
 });
@@ -358,10 +358,11 @@ test('verifyInputs returns per-host heads and heads.json is local and git-ignore
   sync(root, transcript([human('one', 1)]), { host: 'pc' });
   sync(root, transcript([human('two', 2)]), { host: 'box', sessionId: 's2' });
   const v = log.verifyInputs(root);
-  assert.deepStrictEqual(Object.keys(v.heads).sort(), ['box', 'pc']);
-  assert.strictEqual(v.heads.pc.count, 1);
+  assert.deepStrictEqual(Object.keys(v.host_heads).sort(), ['box', 'pc']);
+  assert.strictEqual(v.host_heads.pc.count, 1);
+  assert.strictEqual(v.heads, 'recorded');
   const h = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'operator', 'cursors', 'heads.json'), 'utf8'));
-  assert.strictEqual(h.pc.last_hash, v.heads.pc.last_hash);
+  assert.strictEqual(h.pc.last_hash, v.host_heads.pc.last_hash);
 });
 
 test('a half-written tail line is set aside and the chain and seq continue from the last good line', () => {
@@ -404,7 +405,7 @@ test('publish and refresh leave an unrelated dirty file untouched', () => {
   fs.writeFileSync(path.join(hosta, 'README.md'), 'my uncommitted edits\n');
   fs.writeFileSync(path.join(hosta, 'scratch.txt'), 'untracked\n');
   sync(hostb, transcript([human('from b', 1)]), { host: 'hostb' });
-  assert.strictEqual(log.publish(hostb, { force: true }).published, true);
+  assert.strictEqual(log.publish(hostb, { force: true, host: 'hostb' }).published, true);
   sync(hosta, transcript([human('from a', 2)]), { host: 'hosta', sessionId: 'sa' });
   const p = log.publish(hosta, { force: true, host: 'hosta' });
   assert.strictEqual(p.published, true, JSON.stringify(p));
@@ -422,7 +423,7 @@ test('an unrelated unpushed commit blocks publish and nothing is pushed', () => 
   git(hosta, 'commit', '-m', 'unrelated wip');
   sync(hosta, transcript([human('a', 1)]), { host: 'hosta' });
   const before = git(hosta, 'rev-parse', '@{u}').trim();
-  const p = log.publish(hosta, { force: true });
+  const p = log.publish(hosta, { force: true, host: 'hosta' });
   assert.strictEqual(p.ok, false);
   assert.strictEqual(p.reason, 'unpushed unrelated commits');
   assert.strictEqual(git(hosta, 'ls-remote', 'origin', 'main').split('\t')[0], before);
@@ -432,8 +433,8 @@ test('a rejected push recovers by fetch, merge and one retry', () => {
   const { hosta, hostb } = twoHosts();
   sync(hosta, transcript([human('a', 1)]), { host: 'hosta' });
   sync(hostb, transcript([human('b', 2)]), { host: 'hostb' });
-  assert.strictEqual(log.publish(hosta, { force: true }).published, true);
-  const p = log.publish(hostb, { force: true });
+  assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta' }).published, true);
+  const p = log.publish(hostb, { force: true, host: 'hostb' });
   assert.strictEqual(p.published, true, JSON.stringify(p));
   const remote = git(hostb, 'ls-tree', '-r', '--name-only', 'origin/main');
   assert.match(remote, /inputs\/hosta\//);
@@ -443,7 +444,7 @@ test('a rejected push recovers by fetch, merge and one retry', () => {
 test('refresh brings another host file and never overwrites this host file with an older upstream copy', () => {
   const { hosta, hostb } = twoHosts();
   sync(hosta, transcript([human('a one', 1)]), { host: 'hosta' });
-  assert.strictEqual(log.publish(hosta, { force: true }).published, true);
+  assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta' }).published, true);
   sync(hosta, transcript([human('a two', 2)]), { host: 'hosta', sessionId: 'sa2' }); // local, unpublished
   sync(hostb, transcript([human('b one', 3)]), { host: 'hostb' });
   assert.strictEqual(log.refresh(hostb, { host: 'hostb' }).ok, true);
@@ -472,11 +473,11 @@ test('a lock whose token changed is not removed by the old holder', () => {
 test('refresh applies a second upstream update to a file it brought earlier', () => {
   const { hosta, hostb } = twoHosts();
   sync(hostb, transcript([human('b one', 1)]), { host: 'hostb' });
-  log.publish(hostb, { force: true });
+  log.publish(hostb, { force: true, host: 'hostb' });
   assert.strictEqual(log.refresh(hosta, { host: 'hosta' }).ok, true);
   assert.strictEqual(log.listInputs(hosta).length, 1);
   sync(hostb, transcript([human('b two', 2)]), { host: 'hostb', sessionId: 's2' });
-  log.publish(hostb, { force: true });
+  log.publish(hostb, { force: true, host: 'hostb' });
   assert.strictEqual(log.refresh(hosta, { host: 'hosta' }).ok, true);
   assert.strictEqual(log.listInputs(hosta).length, 2);
   assert.strictEqual(log.verifyInputs(hosta).ok, true);
@@ -485,8 +486,86 @@ test('refresh applies a second upstream update to a file it brought earlier', ()
 test('refresh does not replace a longer local copy even when no host is named', () => {
   const { hosta } = twoHosts();
   sync(hosta, transcript([human('a one', 1)]), { host: 'hosta' });
-  log.publish(hosta, { force: true });
+  log.publish(hosta, { force: true, host: 'hosta' });
   sync(hosta, transcript([human('a two', 2)]), { host: 'hosta', sessionId: 's2' });
   assert.strictEqual(log.refresh(hosta).ok, true);
   assert.strictEqual(log.listInputs(hosta).length, 2);
+});
+
+// ---- round 2 ----
+
+test('a sync after truncation cannot lower the head: verify keeps failing and heads.json says 5', () => {
+  const root = project();
+  sync(root, transcript(Array.from({ length: 5 }, (_, i) => human('m' + i, i + 1))));
+  const f = path.join(root, '.delivery', 'operator', 'inputs', 'pc', '2026-10.ndjson');
+  const lines = fs.readFileSync(f, 'utf8').trimEnd().split('\n');
+  fs.writeFileSync(f, lines.slice(0, 3).join('\n') + '\n');
+  assert.strictEqual(sync(root, transcript([human('new', 9)]), { sessionId: 's9' }).added, 1);
+  const v = log.verifyInputs(root, { host: 'pc' });
+  assert.strictEqual(v.ok, false);
+  assert.match(v.error, /truncated/);
+  const heads = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'operator', 'cursors', 'heads.json'), 'utf8'));
+  assert.strictEqual(heads.pc.count, 5);
+});
+
+test('heads is reported as absent when heads.json has no entry for the host', () => {
+  const root = project();
+  sync(root, transcript([human('one', 1)]));
+  assert.strictEqual(log.verifyInputs(root, { host: 'pc' }).heads, 'recorded');
+  fs.rmSync(path.join(root, '.delivery', 'operator', 'cursors', 'heads.json'));
+  const v = log.verifyInputs(root, { host: 'pc' });
+  assert.strictEqual(v.ok, true);
+  assert.strictEqual(v.heads, 'absent');
+  assert.strictEqual(log.verifyInputs(root).heads, 'recorded'); // now trusted from first use
+});
+
+test('a transcript rewritten larger than the stored offset is rescanned from the top', () => {
+  const root = project();
+  const tr = transcript([human('one', 1), human('two', 2)]);
+  sync(root, tr);
+  const bigger = [human('zero', 5), human('one', 1), human('two', 2), human('three', 3), human('four', 4)];
+  fs.writeFileSync(tr, bigger.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const r = sync(root, tr);
+  assert.strictEqual(r.added, 3);
+  assert.deepStrictEqual(log.listInputs(root).map((e) => e.text).sort(), ['four', 'one', 'three', 'two', 'zero']);
+});
+
+test('the operator .gitignore also covers stale lock names', () => {
+  const root = project();
+  sync(root, transcript([human('one', 1)]));
+  const gi = fs.readFileSync(path.join(root, '.delivery', 'operator', '.gitignore'), 'utf8');
+  assert.match(gi, /^\*\.stale-\*$/m);
+  assert.match(gi, /^\*\.lock\.stale-\*$/m);
+});
+
+test('publish adds only this host files and counts entries, not .gitignore lines', () => {
+  const { hosta, hostb } = twoHosts();
+  const stray = path.join(hosta, '.delivery', 'operator', 'inputs', 'hostz');
+  fs.mkdirSync(stray, { recursive: true });
+  fs.writeFileSync(path.join(stray, '2026-10.ndjson'), 'foreign\n');
+  fs.mkdirSync(path.join(hosta, '.delivery', 'operator', 'records'), { recursive: true });
+  fs.writeFileSync(path.join(hosta, '.delivery', 'operator', 'records', 'other-instance.ndjson'), 'foreign\n');
+  sync(hosta, transcript([human('a', 1), human('b', 2)]), { host: 'hosta' });
+  const p = log.publish(hosta, { force: true, host: 'hosta', instance: 'mine' });
+  assert.strictEqual(p.published, true, JSON.stringify(p));
+  assert.strictEqual(p.entries, 2);
+  const tracked = git(hosta, 'ls-tree', '-r', '--name-only', 'HEAD');
+  assert.match(tracked, /inputs\/hosta\//);
+  assert.doesNotMatch(tracked, /hostz/);
+  assert.doesNotMatch(tracked, /other-instance/);
+  assert.match(git(hosta, 'log', '-1', '--format=%s'), /operator: 2 entries/);
+  assert.ok(hostb);
+});
+
+test('a file refreshed earlier does not block recovery from a rejected push', () => {
+  const { hosta, hostb } = twoHosts();
+  sync(hosta, transcript([human('a one', 1)]), { host: 'hosta' });
+  assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta' }).published, true);
+  assert.strictEqual(log.refresh(hostb, { host: 'hostb' }).ok, true); // brings hosta file, uncommitted
+  sync(hosta, transcript([human('a two', 2)]), { host: 'hosta', sessionId: 's2' });
+  assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta' }).published, true);
+  sync(hostb, transcript([human('b one', 3)]), { host: 'hostb' });
+  const p = log.publish(hostb, { force: true, host: 'hostb' });
+  assert.strictEqual(p.published, true, JSON.stringify(p));
+  assert.strictEqual(log.listInputs(hostb).length, 3);
 });
