@@ -101,7 +101,24 @@ function claimTail(claim) {
     : '\nYou hold no claim. Run `bd prime` then `bd ready`, and say what you could take.\n';
 }
 
+// Operator capture runs first in every role hook; its failure never changes the hook's own output.
+// Returns the short note for the session ('' when there is nothing to say); problems also go to
+// deps.warn (the hook scripts pass a stderr writer).
+function operatorCaptureNote(input, pluginRoot, deps = {}) {
+  try {
+    const { captureFromHookInput, captureNote } = require('./operator-capture.js');
+    const res = (deps.capture || captureFromHookInput)(input || {}, pluginRoot);
+    if (res && res.problem && deps.warn) deps.warn(`delivery: ${res.problem}\n`);
+    return captureNote(res, pluginRoot);
+  } catch (err) {
+    return '';
+  }
+}
+
+const PLUGIN_ROOT = path.join(__dirname, '..', '..');
+
 function sessionStartText(input, pluginRoot, deps = {}) {
+  const note = operatorCaptureNote(input, pluginRoot || PLUGIN_ROOT, deps);
   const found = findRoleMarker(input.cwd);
   if (!found || !found.marker || process.env.DELIVERY_ROLE !== found.marker.instance) return '';
   const { marker } = found;
@@ -135,14 +152,15 @@ function sessionStartText(input, pluginRoot, deps = {}) {
   const short = shortBrief({ team: valid.team, hosts: valid.hosts, instance: marker.instance, role: valid.role, roleDir: valid.roleDir });
   const claim = (deps.claim || currentClaim)(actorOf(marker), bdOptionsFor(marker, input.cwd));
   const prefix = input.source === 'compact' ? 'Context was compacted. Your role is restated below; it has not changed.\n\n' : '';
-  return `${prefix}${short}${claimTail(claim)}`;
+  return `${prefix}${short}${claimTail(claim)}${note ? `\n${note}\n` : ''}`;
 }
 
 function promptSubmitText(input, deps = {}) {
+  const note = operatorCaptureNote(input, PLUGIN_ROOT, deps);
   const found = findRoleMarker(input.cwd);
   let valid;
-  try { valid = validMarker(found); } catch (err) { return ''; }
-  if (!valid) return '';
+  try { valid = validMarker(found); } catch (err) { return note; }
+  if (!valid) return note;
   const { marker } = valid;
   require('./turn.js').markTurnStart(valid.roleDir, deps.now);
   const claim = (deps.claim || currentClaim)(actorOf(marker), bdOptionsFor(marker, input.cwd));
@@ -157,7 +175,7 @@ function promptSubmitText(input, deps = {}) {
   } catch (err) {
     // liveness bookkeeping must never break a prompt
   }
-  return `You are ${marker.instance} (${marker.role}). Current claim: ${claimText}`;
+  return `You are ${marker.instance} (${marker.role}). Current claim: ${claimText}${note ? `\n${note}` : ''}`;
 }
 
-module.exports = { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };
+module.exports = { operatorCaptureNote, readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };

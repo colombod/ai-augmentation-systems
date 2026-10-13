@@ -76,8 +76,29 @@ function registerInstance(projectRoot, { instance, session_id, host, model, role
       joined_at: existing.joined_at || now,
       last_seen: now,
     };
+    // the capture hook may have recorded this session's transcript first: keep it for the same session
+    if (existing.transcript_path && existing.session_id === session_id) roster.instances[instance].transcript_path = existing.transcript_path;
     writeRoster(projectRoot, roster);
     return roster;
+  });
+}
+
+// Record where this instance's session transcript lives (operator.js sync --all reads it).
+// Writes only when something changed; creates a minimal entry when SessionStart has not registered yet.
+function setTranscriptPath(projectRoot, { instance, session_id, transcript_path, host, role_dir, now }) {
+  const cur = readRoster(projectRoot).instances[instance];
+  if (cur && cur.transcript_path === transcript_path && (!session_id || cur.session_id === session_id)) return false;
+  return withRosterLock(projectRoot, () => {
+    const roster = readRoster(projectRoot);
+    const existing = roster.instances[instance];
+    if (existing) {
+      existing.transcript_path = transcript_path;
+      if (session_id) existing.session_id = session_id;
+    } else {
+      roster.instances[instance] = { session_id: session_id || 'unknown', host, role_dir, transcript_path, joined_at: now, last_seen: now };
+    }
+    writeRoster(projectRoot, roster);
+    return true;
   });
 }
 
@@ -91,4 +112,4 @@ function touchInstance(projectRoot, { instance, now }) {
   });
 }
 
-module.exports = { readRoster, writeRoster, registerInstance, touchInstance, withRosterLock, ROSTER_REL };
+module.exports = { readRoster, writeRoster, registerInstance, touchInstance, setTranscriptPath, withRosterLock, ROSTER_REL };

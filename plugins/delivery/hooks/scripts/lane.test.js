@@ -533,7 +533,7 @@ test('B: lane_mcp allows named MCP tools regardless of verb', () => {
 });
 
 // Final wave H.1: a role file without lane keys gets read-only groups, not a full lockout and no writes.
-test('H.1: missing or empty lane_bash defaults to read, bd-read, git-read', () => {
+test('H.1: missing or empty lane_bash defaults to read, bd-read, git-read, operator-read', () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-brief-'));
   const briefs = path.join(projectRoot, '.delivery', 'team', 'briefs');
   fs.mkdirSync(briefs, { recursive: true });
@@ -541,7 +541,7 @@ test('H.1: missing or empty lane_bash defaults to read, bd-read, git-read', () =
   fs.writeFileSync(path.join(briefs, 'empty.md'), '---\nid: empty\nlane_bash:\nlane_writes:\n---\n\nEmpty keys.\n');
   for (const id of ['specialist', 'empty']) {
     const p = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot, briefRef: `project/${id}` });
-    assert.deepEqual(p.bash, ['read', 'bd-read', 'git-read'], id);
+    assert.deepEqual(p.bash, ['read', 'bd-read', 'git-read', 'operator-read'], id);
     assert.deepEqual(p.writes, [], id);
     assert.deepEqual(p.mcp, [], id);
     const d = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: p, ...ctx() }).allow;
@@ -596,4 +596,110 @@ test('H.6: role-lane hook fails open on a thrown error, denies Bash and headless
   assert.equal(b.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(b.hookSpecificOutput.permissionDecisionReason, /buildbox is headless/);
   assert.match(b.hookSpecificOutput.permissionDecisionReason, /a session on pc/);
+});
+
+// Operator decisions: operator-read / operator-write groups and the protected operator directory.
+test('operator groups: subcommand is the word after the exact script path', () => {
+  const op = `${PLUGIN_ROOT}/scripts/operator.js`;
+  assert.ok(classifySegment(`node ${op} verify dec-000001`, GROUPS, ctx()).includes('operator-read'));
+  assert.ok(!classifySegment(`node ${op} verify dec-000001`, GROUPS, ctx()).includes('operator-write'));
+  assert.ok(classifySegment('node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js pending --json', GROUPS, ctx()).includes('operator-read'));
+  for (const sub of ['show dec-1', 'sync', 'ledger', 'find --text x', 'problems', 'refresh']) {
+    assert.ok(classifySegment(`node ${op} ${sub}`, GROUPS, ctx()).includes('operator-read'), sub);
+  }
+  for (const sub of ['record --cite in-pc-000001 --quote "use postgres now" --statement "db"', 'delegate', 'decide', 'revoke', 'ack --input in-pc-000001 --reason "chat"', 'answer', 'ask', 'ratify', 'withdraw']) {
+    const names = classifySegment(`node ${op} ${sub}`, GROUPS, ctx());
+    assert.ok(names.includes('operator-write'), sub);
+    assert.ok(!names.includes('operator-read'), sub);
+  }
+  // another script, a copy elsewhere, or the subcommand in the wrong place: no operator group
+  assert.deepEqual(classifySegment(`node ${PLUGIN_ROOT}/scripts/team-status.js verify`, GROUPS, ctx()).filter((x) => x.startsWith('operator')), []);
+  assert.deepEqual(classifySegment('node /tmp/operator.js verify dec-1', GROUPS, ctx()).filter((x) => x.startsWith('operator')), []);
+  assert.deepEqual(classifySegment(`node ${op} --json verify dec-1`, GROUPS, ctx()).filter((x) => x.startsWith('operator')), []);
+  assert.deepEqual(classifySegment(`node ${op} verify dec-1 > /tmp/x`, GROUPS, ctx()), []);
+});
+
+test('operator groups per role: managers read and write, a lane without operator-write cannot record, builder has any', () => {
+  const op = `${PLUGIN_ROOT}/scripts/operator.js`;
+  const run = (policy, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx() });
+  for (const role of [COS, PM, PO, DL]) {
+    assert.ok(POLICIES[role].bash.includes('operator-read'), role);
+    assert.ok(POLICIES[role].bash.includes('operator-write'), role);
+    assert.equal(run(POLICIES[role], `node ${op} verify dec-000001`).allow, true, role);
+    assert.equal(run(POLICIES[role], `node ${op} record --cite in-pc-000001 --quote "use postgres now" --statement "db"`).allow, true, role);
+  }
+  assert.equal(run(POLICIES[BUILDER], `node ${op} record --cite in-pc-000001 --quote "use postgres now" --statement "db"`).allow, true);
+  const readOnly = { roleId: 'reader', writes: [], bash: ['read', 'operator-read'] };
+  assert.equal(run(readOnly, `node ${op} verify dec-000001`).allow, true);
+  const d = run(readOnly, `node ${op} record --cite in-pc-000001 --quote "use postgres now" --statement "db"`);
+  assert.equal(d.allow, false);
+  assert.match(d.reason, /allowed groups: read, operator-read/);
+  const staffing = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/staffing' });
+  assert.ok(staffing.bash.includes('operator-read') && staffing.bash.includes('operator-write'));
+});
+
+test('the operator directory is never written with file tools, by any role', () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-op-proj-'));
+  const inputs = path.join(projectRoot, '.delivery', 'operator', 'inputs');
+  fs.mkdirSync(inputs, { recursive: true });
+  const target = path.join(inputs, '2026-10.ndjson');
+  const deny = (role, toolName, toolInput, over = {}) => decideLane({ toolName, toolInput, policy: POLICIES[role], projectRoot, ...ctx(), ...over });
+  for (const role of [COS, BUILDER, DL]) {
+    for (const tool of ['Write', 'Edit', 'MultiEdit']) {
+      const d = deny(role, tool, tool === 'MultiEdit' ? { file_path: target, edits: [] } : { file_path: target });
+      assert.equal(d.allow, false, `${role} ${tool}`);
+      assert.match(d.reason, /operator records are written by `operator\.js` only; read them with `operator\.js show`/);
+    }
+    assert.equal(deny(role, 'NotebookEdit', { notebook_path: path.join(projectRoot, '.delivery', 'operator', 'x.ipynb') }).allow, false, role);
+  }
+  // relative paths, `..` and symlinks resolve to the real directory
+  assert.equal(deny(BUILDER, 'Write', { file_path: '.delivery/operator/records/builder-1.ndjson' }, { cwd: projectRoot }).allow, false);
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(projectRoot, '.delivery', 'x', '..', 'operator', 'heads.json') }).allow, false);
+  const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lane-op-link-')), 'op');
+  fs.symlinkSync(path.join(projectRoot, '.delivery', 'operator'), link);
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(link, 'inputs', 'x.ndjson') }).allow, false);
+  // the role's own clone of the project is protected too
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(roleDir, 'project', '.delivery', 'operator', 'records', 'b.ndjson') }).allow, false);
+  // neighbours stay as they were: builder's product lane, and tmp
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(roleDir, 'product', 'a.js') }).allow, true);
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(projectRoot, '.delivery', 'operator-notes.md') }).allow, true);
+});
+
+test('shell writes into the operator directory are denied; reads are not', () => {
+  const run = (role, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], ...ctx() });
+  for (const cmd of [
+    'echo x >> .delivery/operator/records/chain.ndjson',
+    'echo x > ./.delivery/operator/inputs/pc/2026-10.ndjson',
+    'cat evil | tee -a .delivery/operator/records/b.ndjson',
+    'cp /tmp/forged .delivery/operator/records/b.ndjson',
+    'mv /tmp/forged .delivery//operator/records/b.ndjson',
+    "sed -i '' s/a/b/ .delivery/operator/records/b.ndjson",
+    'rm -rf .delivery/operator',
+    'truncate -s 0 .delivery/operator/inputs/pc/2026-10.ndjson',
+    'dd if=/dev/zero of=.delivery/operator/heads.json',
+    'cd .delivery/operator && echo x >> records/b.ndjson',
+    'git checkout HEAD~3 -- .delivery/operator/records/b.ndjson',
+  ]) {
+    for (const role of [BUILDER, COS]) {
+      const d = run(role, cmd);
+      assert.equal(d.allow, false, `${role}: ${cmd}`);
+      if (role === BUILDER) assert.match(d.reason, /operator\.js/, cmd);
+    }
+  }
+  assert.equal(run(BUILDER, 'cat .delivery/operator/records/b.ndjson | jq .id').allow, true);
+  assert.equal(run(BUILDER, 'grep -c human .delivery/operator/inputs/pc/2026-10.ndjson 2>&1').allow, true);
+  assert.equal(run(BUILDER, 'echo x > /tmp/other.txt').allow, true);
+  assert.equal(run(BUILDER, `node ${PLUGIN_ROOT}/scripts/operator.js ack --input in-pc-000001 --reason "chat" 2>&1`).allow, true);
+  assert.equal(run(COS, 'ls .delivery/operator/records').allow, true);
+});
+
+test('role-lane hook denies an operator-directory write for chief-of-staff and builder through the real manifest', () => {
+  for (const instance of ['chief-of-staff', 'builder-1']) {
+    const { projectRoot, roleDir } = preparedRole(instance);
+    const file = path.join(projectRoot, '.delivery', 'operator', 'inputs', '2026-10.ndjson');
+    const out = runHook('role-lane.js', { cwd: roleDir, session_id: 's', tool_name: 'Write', tool_input: { file_path: file, content: '{}' } }, { DELIVERY_ROLE: instance, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT });
+    const json = JSON.parse(out);
+    assert.equal(json.hookSpecificOutput.permissionDecision, 'deny', instance);
+    assert.match(json.hookSpecificOutput.permissionDecisionReason, /operator\.js/);
+  }
 });

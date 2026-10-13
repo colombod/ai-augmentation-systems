@@ -219,3 +219,33 @@ test('F: the lane hook judges a session that left its role directory', () => {
   assert.equal(JSON.parse(run({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: roleDir })).hookSpecificOutput.permissionDecision, 'deny');
   assert.equal(run({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: '' }), '');
 });
+
+// Operator decisions: capture runs first in the role hooks and never changes their own output.
+test('promptSubmitText and sessionStartText append the capture note; a throwing capture changes nothing', () => {
+  const { roleDir } = preparedRole('delivery-lead');
+  const pending = () => ({ added: 0, status: 'ok', pending: [{ id: 'in-pc-000004', text: 'phase 2 before phase 3' }] });
+  const text = withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, capture: pending }));
+  assert.ok(text.startsWith('You are delivery-lead (delivery-lead). Current claim: none'));
+  assert.match(text, /\nOperator inputs with no record yet: in-pc-000004 \("phase 2 before phase 3"\)\. See `node .*operator\.js pending`\.$/);
+  const start = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's' }, PLUGIN_ROOT, { claim: () => null, capture: pending }));
+  assert.ok(start.startsWith('# Role: delivery-lead'));
+  assert.match(start, /Operator inputs with no record yet: in-pc-000004/);
+  const boom = () => { throw new Error('boom'); };
+  assert.equal(withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, capture: boom })),
+    'You are delivery-lead (delivery-lead). Current claim: none (idle; say so and what you could take).');
+  const quiet = () => ({ added: 0, status: 'ok', pending: [] });
+  assert.equal(withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, capture: quiet })),
+    'You are delivery-lead (delivery-lead). Current claim: none (idle; say so and what you could take).');
+});
+
+test('promptSubmitText with an unloadable manifest still reports the capture problem; warn receives it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-cap-nomanifest-'));
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-cap-empty-'));
+  fs.writeFileSync(path.join(dir, '.delivery-role.json'), JSON.stringify({ instance: 'staffing', role: 'staffing', project_root: empty, host: 'pc', model: 'sonnet' }));
+  const warned = [];
+  const text = withRole('staffing', () => promptSubmitText({ cwd: dir, session_id: 's' }, { claim: () => null, warn: (m) => warned.push(m) }));
+  assert.match(text, /^Operator capture: operator capture is off for staffing: \.delivery\/team\/team\.json cannot be loaded/);
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /^delivery: operator capture is off for staffing/);
+  assert.deepEqual(fs.readdirSync(empty), []);
+});

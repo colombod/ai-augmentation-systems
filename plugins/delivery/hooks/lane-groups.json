@@ -65,6 +65,12 @@
     { "first": "bd", "sub": ["create", "dep add", "dep remove", "dep relate", "dep unrelate", "label add", "label remove", "label propagate", "delete", "update"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/materialise.js" }
   ],
+  "operator-read": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/operator.js", "sub": ["verify", "show", "pending", "sync", "ledger", "find", "problems", "refresh"] }
+  ],
+  "operator-write": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/operator.js", "sub": ["record", "delegate", "decide", "revoke", "ack", "ask", "withdraw", "answer", "ratify", "rehost", "quarantine", "repair", "publish"] }
+  ],
   "any": [
     { "first": "*" }
   ]

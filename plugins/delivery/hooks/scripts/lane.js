@@ -42,7 +42,7 @@ const BD_GLOBAL_FLAG = ['--json'];
 const BD_ALL_GLOBAL_FLAG = ['--json', '-q', '--quiet', '--no-color', '-v', '--verbose', '--global', '--ignore-schema-skew', '--profile', '--readonly', '--sandbox'];
 const BD_ALL_GLOBAL_ARG = ['--actor', '--db', '-C', '--directory', '--dolt-auto-commit'];
 // A role file without lane_bash (a hired specialist) may read, never write.
-const DEFAULT_BASH = ['read', 'bd-read', 'git-read'];
+const DEFAULT_BASH = ['read', 'bd-read', 'git-read', 'operator-read'];
 // The harness's own plan and memory files, relative to ~/.claude: writable for every role.
 const HARNESS_WRITES = ['plans/**', 'projects/*/memory/**'];
 // A separator after which a failed or skipped `cd` no longer stops the commands that follow.
@@ -290,10 +290,12 @@ function ruleMatches(rule, t, ctx) {
   if (t[0] !== rule.first) return false;
   const argv = splitGlobals(t).rest;
   let subLen = 0;
+  // With arg_prefix the first argument is the script path, so the subcommand is the word after it.
+  const subAt = rule.arg_prefix ? 1 : 0;
   if (rule.sub) {
-    const hit = rule.sub.map((s) => String(s).split(' ')).find((parts) => parts.every((p, k) => argv[k] === p));
+    const hit = rule.sub.map((s) => String(s).split(' ')).find((parts) => parts.every((p, k) => argv[subAt + k] === p));
     if (!hit) return false;
-    subLen = hit.length;
+    subLen = subAt + hit.length;
   }
   if (rule.arg_prefix) {
     const root = pluginRootOf(ctx);
@@ -442,7 +444,45 @@ function shellCommandOf(toolName, toolInput) {
   return typeof input.command === 'string' ? input.command : null;
 }
 
-function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, cwd, hostHeadless, hostName, desktopHosts }) {
+// The operator directory: written only by scripts/operator.js (run through the operator-write group).
+// Protected for every role, `any` included: the project's own copy and the role's clone of it.
+const OPERATOR_REL = path.join('.delivery', 'operator');
+const OPERATOR_REASON = 'operator records are written by `operator.js` only; read them with `operator.js show`';
+// A mention of the operator directory in a shell command (.delivery/operator, .delivery//operator, .delivery/./operator).
+const OPERATOR_MENTION = /\.delivery\/+(?:\.\/+)*operator(?=\/|[\s'";|&)>]|$)/;
+const OPERATOR_WRITE_WORDS = ['tee', 'cp', 'mv', 'rm', 'truncate', 'dd', 'ln', 'install', 'rsync'];
+
+function operatorDirs({ projectRoot, roleDir }) {
+  const out = [];
+  if (projectRoot && path.isAbsolute(String(projectRoot))) out.push(realish(path.join(String(projectRoot), OPERATOR_REL)));
+  if (roleDir) out.push(realish(path.join(String(roleDir), 'project', OPERATOR_REL)));
+  return out;
+}
+
+function underOperator(p, dirs) {
+  const real = realish(p);
+  return dirs.some((d) => under(real, d));
+}
+
+// Best effort, and tamper-evidence rather than a boundary (the hash chains and recorded heads are what
+// detect a change): a shell command that names the operator directory and also writes something.
+function operatorShellWrite(command) {
+  const text = String(command == null ? '' : command);
+  if (!OPERATOR_MENTION.test(text)) return false;
+  return splitCommand(text).some((seg) => {
+    const t = tokens(seg);
+    if (!t.length) return false;
+    if (hasRedirect(seg)) return true;
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    const first = path.basename(words[0] || '');
+    if (OPERATOR_WRITE_WORDS.includes(first)) return true;
+    if (first === 'sed' && writesFiles(['sed', ...words.slice(1)])) return true;
+    if (first === 'git' && ['checkout', 'restore', 'rm', 'mv', 'apply', 'reset'].includes(splitGlobals(words).rest[0])) return true;
+    return false;
+  });
+}
+
+function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, cwd, hostHeadless, hostName, desktopHosts, projectRoot }) {
   const name = String(toolName || '');
   const pol = policy || { roleId: '', writes: [], bash: [] };
   const bash = pol.bash || [];
@@ -454,10 +494,12 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     }
     return { allow: true };
   }
+  const opDirs = operatorDirs({ projectRoot, roleDir });
   if (FILE_TOOLS.includes(name)) {
     const base = cwd || process.cwd();
     for (const fp of filePathsOf(name, toolInput)) {
       const p = path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`; // not normalised: realish applies `..` physically
+      if (underOperator(p, opDirs)) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
       if (harnessFile(p)) continue;
       if (pathAllowed(p, { roleDir, writes: pol.writes, pluginRoot: pluginRootOf({ pluginRoot }) })) continue;
       const real = realish(p);
@@ -476,6 +518,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   }
   const command = shellCommandOf(name, toolInput);
   if (command !== null) {
+    if (operatorShellWrite(command)) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
       return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: they cannot be checked against the lane groups (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
@@ -520,7 +563,7 @@ function laneDecisionForHook(input, pluginRoot) {
   const host = hostMap[role.host] || {};
   const desktopHosts = Object.entries(hostMap).filter(([, h]) => h && h.desktop_apps).map(([n]) => n);
   const groups = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'lane-groups.json'), 'utf8'));
-  const d = decideLane({ toolName: input.tool_name, toolInput: input.tool_input || {}, roleDir, policy, groups, pluginRoot, cwd: input.cwd, hostHeadless: !!host.headless, hostName: role.host, desktopHosts });
+  const d = decideLane({ toolName: input.tool_name, toolInput: input.tool_input || {}, roleDir, policy, groups, pluginRoot, cwd: input.cwd, hostHeadless: !!host.headless, hostName: role.host, desktopHosts, projectRoot: marker.project_root });
   if (d.allow) return null;
   try {
     const ti = input.tool_input || {};
@@ -532,4 +575,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
