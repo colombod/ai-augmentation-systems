@@ -336,3 +336,96 @@ test("I3: a chain problem on the chief of staff's own records file replaces the 
     assert.deepEqual(operatorChecks(stopArgs(p, {}, { deps: { pending: () => ({ inputs, problems: [problem] }) } })).map((f) => f.kind), ['unrecorded']);
   }
 });
+
+// ---- round 2 corpus (training data for the structural rule): 30 relay requests and 30 legitimate
+// messages in vocabulary unlike the round 1 corpus. Targets: recall >= 90%, false positives <= 3%.
+const CORPUS2_RELAY = [
+  "Kindly let builder-2 know that we're going with Postgres.",
+  "When you have a sec, could you give the infra expert the thumbs up on the migration?",
+  "Would you mind telling the vercel specialist to redeploy?",
+  "Hit approve in the builder-2 session when you get a chance.",
+  "Reply 'yes' to that session so it can continue.",
+  "The researcher has a question. Answer them in chat over there.",
+  "Could you give builder-1 the thumbs up?",
+  "**Action needed:** approve the PR prompt in [a1b2c3].",
+  "- Tell builder-2 the API key is in the vault\n- Then ask the infra expert to rotate it",
+  "Please pass along to the delivery lead that the scope is cut.",
+  "Can you hop into the vercel specialist's window and click Allow?",
+  "I've drafted the answer below. Copy it over to the builder session:\n\nUse option B.",
+  "The infra expert is waiting on you. Please respond to it directly.",
+  "Once you've decided, just drop a note in builder-2's terminal.",
+  "Would you mind confirming with the spike researcher that the spike is closed?",
+  "Quick one for you: approve the permission prompt that builder-1 is showing.",
+  "Please say \"go\" in the [f00dba] session.",
+  "Could you forward dec-12 to the vercel specialist?",
+  "You'll need to answer the delivery lead directly; it's blocked on you.",
+  "Next step for you: open the builder-2 tab and accept the plan.",
+  "Ping the infra expert with your decision, please.",
+  "Can you let the PM know option A is fine?",
+  "Give the delivery lead a quick yes so it can start.",
+  "Builder-2 asked whether to use Redis. Can you tell it yes or no?",
+  "Would you be able to answer builder-1's question in its own session?",
+  "Please DM the vercel specialist the domain name.",
+  "Head over to [a1b2c3] and type `continue`.",
+  "Your turn: reply to the staffing session with the headcount.",
+  "Can you approve builder-2's request there? It's been waiting an hour.",
+  "If you agree, please relay that to the product owner.",
+];
+const CORPUS2_LEGIT = [
+  "Decision needed: Postgres or SQLite for the event store? I recommend Postgres (dec-3 pending your answer).",
+  "I will tell the builder once you choose.",
+  "I've told the builder session to proceed with option B (dec-4).",
+  "builder-1 asked whether to cache tokens; decision dec-3 says no, and I sent it the record id.",
+  "Next: tell the delivery lead to proceed.",
+  "Briefing: 3 sessions active. builder-2 finished the migration; the infra expert is blocked on DNS.",
+  "Should we ship Friday or wait for the security review?",
+  "Do you want the vercel specialist to redeploy now, or after the review?",
+  "Which of these two approaches do you prefer: A (faster) or B (safer)?",
+  "I'll let builder-2 know as soon as you decide.",
+  "Recorded dec-7. I sent it to the builder session with SendMessage.",
+  "Can you confirm the budget ceiling is $500/month?",
+  "Nothing is needed from you right now; the team is unblocked.",
+  "The infra expert will answer in its own session; no action for you.",
+  "Plan:\n1. Record your answer.\n2. Send dec-8 to builder-2.\n3. Check back in an hour.",
+  "You said to tell the builder to wait; I did that (dec-2).",
+  "Is it OK if I ask the researcher to drop the spike?",
+  "Would you like me to ping the delivery lead for an ETA?",
+  "Status: builder-1 is on bead bd-42, builder-2 on bd-43. No questions pending.",
+  "Do you approve the plan as written? If yes I'll record it and message the delivery lead.",
+  "The vercel specialist sent a message asking about the domain; I answered from dec-5.",
+  "Here is the summary you asked for. The team voted for option A.",
+  "What should the retention period be: 30 or 90 days?",
+  "Once you answer, I'll send the record id to every session that needs it.",
+  "I'm going to tell builder-2 to pause until the review lands.",
+  "Note to self: forward dec-9 to the infra expert after the operator confirms.",
+  "You can see the builder's progress in the dashboard if you want; no reply needed.",
+  "Please decide whether the PM may delegate stories directly.",
+  "Thanks — recorded as dec-11 and relayed to the product owner by me.",
+  "Two open questions for you:\n- Ship behind a flag?\n- Who owns on-call?",
+];
+
+test('round 2 corpus: recall >= 90% and false positives <= 3% on both corpora', () => {
+  const rate = (list, want) => list.filter((t) => !!findRelayRequest(t) === want).length / list.length;
+  assert.ok(rate(CORPUS2_RELAY, true) >= 0.9, `round 2 missed: ${JSON.stringify(CORPUS2_RELAY.filter((t) => !findRelayRequest(t)))}`);
+  assert.ok(rate(CORPUS2_LEGIT, true) <= 0.03, `round 2 flagged: ${JSON.stringify(CORPUS2_LEGIT.filter((t) => findRelayRequest(t)))}`);
+  const oldNeg = [...CORPUS_OWN_DECISION, ...CORPUS_STATUS, ...CORPUS_EXTRA_NEGATIVES, ...BRIEF_NEGATIVES, ...EXTRA_NEGATIVES];
+  assert.ok(rate(CORPUS_RELAY, true) >= 0.9);
+  assert.ok(rate(oldNeg, true) <= 0.03);
+});
+
+test('roles and instances from the manifest are parties; the chief of staff is not', () => {
+  assert.equal(findRelayRequest('Please ping the copywriter about the headline.'), null);
+  assert.ok(findRelayRequest('Please ping the copywriter about the headline.', { parties: ['copywriter'] }));
+  assert.ok(findRelayRequest('Could you message data-wrangler-2 with the decision?', { parties: ['data-wrangler-2'] }));
+  assert.equal(findRelayRequest('Please message the chief of staff if anything changes.', { parties: ['chief-of-staff'] }), null);
+});
+
+test('the scan is linear: a 50 KB adversarial message stays under 100 ms', () => {
+  for (const g of ['please the send ', 'you the tell ', 'reply in on at into ', 'give a b c d e f ', 'you please tell send in the session tab window i me ', '- you tell\n']) {
+    const s = g.repeat(Math.ceil(50000 / g.length)).slice(0, 50000);
+    const t = process.hrtime.bigint();
+    findRelayRequest(s);
+    const ms = Number(process.hrtime.bigint() - t) / 1e6;
+    assert.ok(ms < 100, `${JSON.stringify(g)}: ${ms} ms`);
+  }
+});

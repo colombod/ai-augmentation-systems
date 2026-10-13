@@ -7,6 +7,17 @@
 // blocking stop, so a relay request is not masked by another reason and the hook cannot loop.
 // Block JSON or nothing; exit 0.
 const path = require('path');
+
+// Every role and instance id in the manifest is a party the operator could be asked to reach.
+function partiesOf(valid) {
+  try {
+    const { expandInstances } = require('../../scripts/lib/manifest.js');
+    const out = new Set();
+    for (const i of expandInstances(valid.team)) { out.add(i.instance); if (i.role && i.role.id) out.add(i.role.id); }
+    return [...out];
+  } catch (err) { return []; }
+}
+
 try {
   const { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor } = require('./role-context.js');
   const input = readHookInput();
@@ -19,12 +30,12 @@ try {
   let valid = null;
   try { valid = input ? validMarker(findRoleMarker(input.cwd)) : null; } catch (err) { valid = null; }
   if (valid) {
-    const { operatorChecks, sessionIdOf } = require('./relay-guard.js');
+    const { operatorChecks } = require('./relay-guard.js');
     const { decideStop, composeStop } = require('./turn.js');
     const candidates = [];
     try {
       candidates.push(...operatorChecks({ input, roleDir: valid.roleDir, projectRoot: valid.marker.project_root, role: valid.role.id,
-        instance: valid.marker.instance, captureStatus: cap && cap.status, deps: { warn: (m) => process.stderr.write(m) } }));
+        instance: valid.marker.instance, captureStatus: cap && cap.status, parties: partiesOf(valid), deps: { warn: (m) => process.stderr.write(m) } }));
     } catch (err) { /* the operator checks fail open */ }
     try {
       const { makeBd } = require('../../scripts/lib/bd.js');
@@ -32,7 +43,7 @@ try {
       const claim = decideStop({ input: { ...input, stop_hook_active: false }, roleDir: valid.roleDir, actor: actorOf(valid.marker), bd: makeBd(bdOptionsFor(valid.marker, input.cwd)) });
       if (claim) candidates.push({ kind: 'claim', reason: claim.reason });
     } catch (err) { /* allow */ }
-    const d = composeStop({ input, roleDir: valid.roleDir, sessionId: sessionIdOf(valid.roleDir, input), candidates });
+    const d = composeStop({ input, roleDir: valid.roleDir, candidates });
     if (d) process.stdout.write(JSON.stringify({ decision: 'block', reason: d.reason }));
   }
 } catch (err) { /* allow */ }

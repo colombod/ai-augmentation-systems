@@ -103,7 +103,7 @@ test('C1: a relay request first written on the continuation still blocks once (t
   assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: 'Please tell the builder session to proceed.' }).stdout, '');
 });
 
-test('termination, worst case: all three kinds at once block once, then stops 2 and 3 pass', () => {
+test('termination, worst case: all three kinds block at stop 1, relay once more with the clause, stop 3 passes', () => {
   const { roleDir } = preparedRole('chief-of-staff');
   const tr = transcript([human('ship the importer behind a flag', 1)]);
   const bd = fakeBd();
@@ -114,10 +114,42 @@ test('termination, worst case: all three kinds at once block once, then stops 2 
   assert.match(s1.reason, UNRECORDED);
   assert.ok(s1.reason.includes(RELAY_REASON_NO_RECORD));
   assert.match(s1.reason, CLAIM);
-  assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: msg }, bd.bin).stdout, '');
+  const s2 = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: msg }, bd.bin));
+  assert.equal(s2.reason, `${RELAY_REASON_NO_RECORD} You wrote: "could you forward this to the builder session".`);
   assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: msg }, bd.bin).stdout, '');
   // the next turn (a first stop) evaluates afresh
   assert.match(reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: msg }, bd.bin)).reason, CLAIM);
+});
+
+test('B1: a second chief-of-staff session in the same role directory cannot reset the first one (conc.js)', () => {
+  const { roleDir } = preparedRole('chief-of-staff');
+  const tr = transcript([human('use postgres', 1)]);
+  const trB = path.join(path.dirname(tr), 'sess-B.jsonl');
+  fs.writeFileSync(trB, '');
+  const M = 'Please tell the builder session to proceed.';
+  const A = (active) => runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: active, last_assistant_message: M }).stdout !== '';
+  const B = () => runStop('chief-of-staff', { session_id: 'sess-B', cwd: roleDir, transcript_path: trB, last_assistant_message: 'hi' });
+  let blocks = 0;
+  if (A(false)) blocks++;
+  if (A(true)) blocks++;
+  for (let i = 0; i < 3; i++) { B(); if (A(true)) blocks++; }
+  assert.equal(blocks, 2);
+});
+
+test('torn tail: the repair note joins the unrecorded check instead of replacing it', () => {
+  const { projectRoot, roleDir } = preparedRole('chief-of-staff');
+  const tr = transcript([human('use postgres', 1)]);
+  runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'ok' });
+  R.ack({ projectRoot, input: 'in-pc-000001', reason: 'a', by: COS_BY });
+  fs.appendFileSync(path.join(projectRoot, '.delivery', 'operator', 'records', 'chief-of-staff.ndjson'), '{"id":"partial');
+  const tr2 = transcript([human('use postgres', 1), human('ship friday', 2)]);
+  const s1 = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr2, last_assistant_message: 'ok' }));
+  assert.match(s1.reason, /has an incomplete last line \(torn_tail/);
+  assert.match(s1.reason, /no record: in-pc-000002/);
+  assert.doesNotMatch(s1.reason, /Nothing can be recorded/);
+  // and it is true: an ack still works and repairs the tail
+  R.ack({ projectRoot, input: 'in-pc-000002', reason: 'b', by: COS_BY });
+  assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr2, last_assistant_message: 'ok' }).stdout, '');
 });
 
 test('termination, staggered worst case: kinds appearing one per stop still end by the third stop', () => {

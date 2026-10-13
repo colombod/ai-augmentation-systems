@@ -482,9 +482,10 @@ withdrawn), the answering record, its confidence and the operator's verbatim wor
 can read the ledger and verify any row.
 
 **Enforcement against relaying.**
-1. PreToolUse denies `AskUserQuestion` for every role except chief-of-staff and product-manager,
-   with the reason "message the Chief of Staff with the one question; the answer comes back as a
-   decision record".
+1. PreToolUse denies the operator channels `AskUserQuestion`, `PushNotification` and `SendUserFile`
+   for every role except chief-of-staff and product-manager, with the reason "message the Chief of
+   Staff with the one question; the answer comes back as a decision record" (for the two
+   notification tools: "the Chief of Staff decides what reaches the operator").
 2. The Chief of Staff's Stop guard blocks a turn while a human input in its session has neither a
    record nor an ack ("record it, then send the record id to the sessions that need it"), and
    inspects the final assistant message for relay requests (asking the operator or "you" to tell,

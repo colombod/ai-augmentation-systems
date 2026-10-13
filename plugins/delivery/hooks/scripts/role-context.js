@@ -163,7 +163,7 @@ function promptSubmitText(input, deps = {}) {
   try { valid = validMarker(found); } catch (err) { return note; }
   if (!valid) return note;
   const { marker } = valid;
-  require('./turn.js').markTurnStart(valid.roleDir, deps.now);
+  require('./turn.js').markTurnStart(valid.roleDir, deps.now, input.session_id);
   const claim = (deps.claim || currentClaim)(actorOf(marker), bdOptionsFor(marker, input.cwd));
   const claimText = claim ? `${claim}.` : 'none (idle; say so and what you could take).';
   try {
