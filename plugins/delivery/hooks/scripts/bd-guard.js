@@ -3,10 +3,17 @@
 // A discipline aid, not a security boundary: a segment it cannot parse is allowed.
 const { splitCommand, tokens, splitBdGlobals } = require('./lane.js');
 
-const TWO_WORD = new Set(['dep', 'label', 'comments', 'comment', 'dolt']);
+const TWO_WORD = new Set(['dep', 'label', 'comments', 'comment', 'dolt', 'epic', 'swarm']);
 // Flags that never take a value, so the token after them is an id, not their argument.
 const BOOLEAN_FLAGS = new Set(['--claim', '--json', '--all', '--force', '--silent', '--quiet', '--verbose']);
 const CREATE = new Set(['create', 'new', 'q', 'create-form']);
+// Verbs that restructure or rename the record whatever their arguments (`link` is shorthand for
+// `dep add`; `mol` pours and bonds molecules). Only the Delivery Lead runs them.
+const STRUCTURE_VERBS = new Set(['link', 'rename', 'rename-prefix', 'set-state', 'duplicate', 'supersede']);
+// Verbs that close a bead on the way: they answer to the same evidence and live-claim rules as `close`.
+const CLOSING = new Set(['close', 'duplicate', 'supersede']);
+// `epic` and `swarm` read through these; any other form writes (close-eligible, create, ...).
+const GROUP_READ = { epic: new Set(['status']), swarm: new Set(['status', 'validate', 'list']) };
 const DEP_READ = new Set(['list', 'tree', 'cycles']);
 const LABEL_WRITE = new Set(['add', 'remove', 'propagate']);
 const LABEL_FLAGS = ['--add-label', '--remove-label', '--set-labels'];
@@ -51,15 +58,20 @@ function structural(p, actor, bd) {
   const [head, second] = p.sub.split(' ');
   if (CREATE.has(p.sub)) return !p.flags.has('--parent');
   if (p.sub === 'delete') return true;
+  if (STRUCTURE_VERBS.has(p.sub)) return true;
+  if (p.sub === 'mol' || head === 'mol') return second !== undefined || p.ids.length > 0;
+  if (GROUP_READ[head] && second !== undefined) return !second.startsWith('-') && !GROUP_READ[head].has(second);
   if (head === 'dep' && second !== undefined) return !DEP_READ.has(second);
   if (head === 'label' && LABEL_WRITE.has(second)) return true;
   if (p.sub === 'update') {
     if (p.flags.has('--parent')) return true;
     if (LABEL_FLAGS.some((f) => p.flags.has(f))) {
-      // Labels change only on a bead the actor holds. A lookup that fails stays fail-open.
-      let bead;
-      try { bead = bd.show(p.id); } catch (err) { return false; }
-      return Boolean(bead) && bead.assignee !== actor;
+      // Labels change only on beads the actor holds, every id given. A lookup that fails stays fail-open.
+      return p.ids.some((id) => {
+        let bead;
+        try { bead = bd.show(id); } catch (err) { return false; }
+        return Boolean(bead) && bead.assignee !== actor;
+      });
     }
   }
   return false;
@@ -72,10 +84,10 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
     if (roleId !== 'delivery-lead' && structural(p, actor, bd)) {
       return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: ${STRUCTURE}` };
     }
-    if (p.sub === 'close') {
+    if (CLOSING.has(p.sub)) {
       const reason = p.flags.get('--reason') || p.flags.get('-r');
       if (typeof reason !== 'string' || !reason.startsWith('EVIDENCE:')) {
-        return { reason: `Close with evidence: bd close ${p.id || '<id>'} --reason "EVIDENCE: what shipped, how it was checked, link". A bead closes only when every criterion has proof.` };
+        return { reason: `Close with evidence: bd ${p.sub} ${p.id || '<id>'} --reason "EVIDENCE: what shipped, how it was checked, link". A bead closes only when every criterion has proof.` };
       }
       for (const id of p.ids) {
         const bead = lookup(bd, id);
