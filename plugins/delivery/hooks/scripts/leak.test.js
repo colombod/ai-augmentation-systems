@@ -94,6 +94,8 @@ const P = 'Sell duplicates faster';
 const PU = String.fromCharCode(0xE010);
 const PU2 = String.fromCharCode(0xE011);
 const CTRL = String.fromCharCode(1);
+const ZW = String.fromCharCode(0x200B);
+const RLO = String.fromCharCode(0x202E);
 const probes = [
   [`cd product && git commit -m "${P}"`, '.', true],
   [`git -C product commit -m "${P}"`, '.', true],
@@ -270,6 +272,36 @@ const probes = [
   [`cat <(git log)`, 'product', false],
   [`git log --grep commit`, 'product', false],
   [`echo '$(git commit -m P)'`, 'product', false],
+  // round 5: redirections, argument injection, xargs/parallel, config aliases, format characters
+  [`>/dev/null git commit -m "${P}"`, 'product', true],
+  [`2>/dev/null git commit -m "${P}"`, 'product', true],
+  [`<<<x git commit -m "${P}"`, 'product', true],
+  [`FOO=1 >x git commit -m "${P}"`, 'product', true],
+  [`git >/dev/null commit -m "${P}"`, 'product', true],
+  [`git 2>&1 commit -m "${P}"`, 'product', true],
+  [`git commit -m >x '${P}'`, 'product', true],
+  [`> /dev/null git commit -m "${P}"`, 'product', true],
+  [`cd ../product && >/dev/null git commit -m "${P}"`, 'project', true],
+  [`git commit -m "fine" >/dev/null 2>&1`, 'product', false],
+  [`git commit -m '>x'`, 'product', false],
+  [`cat <<EOF > notes.txt\nhello\nEOF\ngit status`, 'product', false],
+  [`set -- -m "${P}"; git commit "$@"`, 'product', true],
+  [`A='-mP'; git commit "$A"`, 'product', true],
+  [`f(){ git commit "$@"; }; f -m P`, 'product', true],
+  [`echo "-m 'P'" | xargs git commit`, 'product', true],
+  [`echo x | parallel gh pr comment 3 -b {}`, 'product', true],
+  [`git push origin "$BRANCH"`, 'product', true],
+  [`git -c "$A" x`, 'product', true],
+  [`echo a b | xargs rm`, 'product', false],
+  [`git log "$REV"`, 'product', false],
+  [`git commit -m "Se${ZW}ll duplicates faster"`, 'product', true],
+  [`git commit -m "Sell duplicates fas${ZW}ter"`, 'product', true],
+  [`git commit -m "fix ${RLO}login"`, 'product', true],
+  [`export GIT_CONFIG_COUNT=1`, 'product', true],
+  [`export GIT_CONFIG_PARAMETERS="'alias.x=commit'"; git x`, 'product', true],
+  [`git config alias.x 'commit -m P'`, 'product', true],
+  [`git config --global alias.x status`, 'product', true],
+  [`git config user.name x`, 'product', false],
   [{ tool: 'Write', path: 'product/.delivery/x.md' }, '.', true],
   [{ tool: 'Write', path: 'product/.Delivery/x.md' }, 'project', true],
   [{ tool: 'Edit', path: '../product/.beads/a' }, 'project', true],
@@ -352,4 +384,56 @@ test('leak-guard fails closed in product when the guard itself errors, and stays
 test('unparseable commands in product name the reason', () => {
   const d = decideLeak({ toolName: 'Bash', toolInput: { command: 'git commit -m "ok' }, cwd: product, roleDir, denylist });
   assert.match(d.reason, /^leak guard could not analyse this command; run git and gh as plain commands with inline text \(unbalanced double quote\)\.$/);
+});
+
+test('bounded analysis: oversized or deeply nested commands are refused quickly and fail closed', () => {
+  fs.mkdirSync(path.join(roleDir, 'project'), { recursive: true });
+  const nested = (n) => `${'$('.repeat(n)}x${')'.repeat(n)}`;
+  const run = (command, where) => decideLeak({ toolName: 'Bash', toolInput: { command }, cwd: path.join(roleDir, where), roleDir, denylist });
+  // A 60 KB payload (20,000 deep) after a leaking commit into product: denied from project and from roleDir.
+  const big = `cd ../product && git commit -m '${P}'; echo ${nested(20000)}`;
+  assert.ok(big.length > 60000);
+  assert.ok(run(big, 'project'));
+  assert.ok(run(big.replace('../product', 'product'), '.'));
+  // Under the size bound but deeper than 32: refused in product.
+  assert.match(run(`echo ${nested(33)}`, 'product').reason, /nesting deeper than 32/);
+  assert.equal(run(`echo ${'$(echo '.repeat(30)}x${')'.repeat(30)}`, 'product'), null);
+  assert.ok(run(`echo ${'$(echo '.repeat(33)}x${')'.repeat(33)}`, 'product'));
+  for (const payload of [nested(16500), 'case '.repeat(50000), `${'( '.repeat(5000)}`, `${'{ '.repeat(8000)}`, 'case x in '.repeat(1600)]) {
+    const t0 = process.hrtime.bigint();
+    run(payload, 'product');
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 1000, `${payload.slice(0, 12)}... (${payload.length} chars) took ${ms} ms`);
+  }
+  assert.ok(run(nested(16500), 'product'));
+  assert.ok(run('case '.repeat(50000), 'product'));
+});
+
+test('leak-guard entry fails closed from the role directory and for git with a directory change', () => {
+  const b = preparedRole('builder-1');
+  const dl = path.join(b.projectRoot, '.delivery', 'team', 'denylist.txt');
+  fs.rmSync(dl);
+  fs.mkdirSync(dl);
+  const env = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  const input = (cwd, command) => ({ cwd, session_id: 's', tool_name: 'Bash', tool_input: { command } });
+  const denied = (out) => JSON.parse(out).hookSpecificOutput.permissionDecision === 'deny';
+  assert.ok(denied(runHook('leak-guard.js', input(b.roleDir, 'ls'), env)));
+  fs.mkdirSync(path.join(b.roleDir, 'project'), { recursive: true });
+  assert.ok(denied(runHook('leak-guard.js', input(path.join(b.roleDir, 'project'), 'cd ../product && git commit -m x'), env)));
+  assert.equal(runHook('leak-guard.js', input(path.join(b.roleDir, 'project'), 'ls'), env), '');
+});
+
+test('redirected pushes are seen by pushInfo', () => {
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-redir-'));
+  fs.mkdirSync(path.join(rd, 'product'), { recursive: true });
+  const { pushInfo } = require('./leak.js');
+  const cwd = path.join(rd, 'product');
+  assert.equal(pushInfo('git >/dev/null push origin main', cwd, rd, () => '').length, 1);
+  assert.equal(pushInfo('2>&1 git push', cwd, rd, () => '').length, 1);
+});
+
+test('the shared matcher ignores format characters', () => {
+  assert.deepEqual(scanText(`we sell dupli${ZW}cates faster`, denylist), { phrase: 'Sell duplicates faster' });
+  const git = (args) => (args[0] === 'log' ? `for Casual${ZW} Carl` : '');
+  assert.deepEqual(scanPushed({ cwd: product, roleDir, denylist, git }), ['Casual Carl']);
 });

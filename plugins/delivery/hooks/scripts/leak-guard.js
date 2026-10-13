@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // PreToolUse: no plan text or files reach the product repo. Deny JSON or nothing; exit 0 always.
-// Fails closed in the product worktree: if the guard itself errors on a Bash call there, it denies.
+// Fails closed: if the guard itself errors on a Bash call in product, at the role directory, or one
+// whose text pairs git/gh with a directory change, it denies.
 const deny = (reason) => process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
 let input = null;
 let ctx = null;
@@ -22,9 +23,10 @@ try {
 } catch (err) {
   if (process.env.LEAK_DEBUG) console.error(err);
   try {
-    const { inProductWorktree, UNANALYSABLE } = require('./leak.js');
+    const { failClosed, UNANALYSABLE } = require('./leak.js');
     if (!ctx && input && input.tool_name) { const rc = require('./role-context.js'); ctx = rc.validMarker(rc.findRoleMarker(input.cwd)); }
-    if (ctx && input.tool_name === 'Bash' && inProductWorktree(input.cwd, ctx.roleDir)) deny(UNANALYSABLE);
+    const command = String((input.tool_input || {}).command || '');
+    if (ctx && input.tool_name === 'Bash' && failClosed({ command, cwd: input.cwd, roleDir: ctx.roleDir })) deny(UNANALYSABLE);
   } catch (e) { /* outside what we can judge: stay inert */ }
 }
 process.exit(0);
