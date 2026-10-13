@@ -581,11 +581,34 @@ test('a forked own chain stops writes (chain_diverged) and shows up as a problem
   assert.strictEqual(rb.status, 0, rb.out + rb.err);
   assert.match(rb.out, /records chain forked: another writer appended to records\/chief-of-staff\.ndjson/);
   const again = run(b, ['ack', '--input', 'in-pc-000001', '--reason', 'x', '--json']);
-  assert.strictEqual(json(again).ok, true, 'a plain write does not need freshness');
+  assert.strictEqual(again.status, 1);
+  assert.strictEqual(json(again).code, 'chain_diverged', 'every writer refuses on a diverged chain');
+  assert.match(json(again).error, /quarantine --file records\/<instance>\.ndjson \(or inputs\//);
   const dec = run(b, ['answer', '--cite', 'dec-chief-of-staff-000001', '--question', 'q', '--answer', 'a', '--confidence', 'settled', '--json']);
   assert.strictEqual(dec.status, 1);
   assert.strictEqual(json(dec).code, 'chain_diverged');
   const pend = run(b, ['pending']);
   assert.strictEqual(pend.status, 1);
   assert.match(pend.out, /chain_diverged|differs from the upstream/);
+});
+
+test('round 3: verify prints host, machine, session and ratification state; quarantine takes an inputs file', () => {
+  const { root, cos } = cosFixture();
+  const dec = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres', '--scope', 'bead:ex-1']).lines[0];
+  const inf = run(cos, ['answer', '--cite', dec, '--question', 'Cache for ex-2?', '--answer', 'Same Postgres instance', '--confidence', 'inferred',
+    '--rationale', 'Same service family as ex-1 and trivially reversible.', '--scope', 'bead:ex-2']).lines[0];
+  let v = run(cos, ['verify', inf]);
+  assert.match(v.out, /host pc machine [0-9a-f]{12} session sess-cos/);
+  assert.match(v.out, /^\s+unratified$/m);
+  run(cos, ['ratify', '--cite', 'in-pc-000004', '--quote', 'no more delegated naming', '--target', inf]);
+  v = run(cos, ['verify', inf]);
+  assert.match(v.out, /ratified by rat-chief-of-staff-\d+ \(operator said "Revoke that: «no more delegated naming»\."\)/);
+  const bad = run({ ...cos, instance: 'builder-1' }, ['quarantine', '--file', 'inputs/pc/2099-10.ndjson', '--reason', 'x', '--json']);
+  assert.strictEqual(json(bad).code, 'not_allowed');
+  const ok = run(cos, ['quarantine', '--file', 'inputs/pc/2099-10.ndjson', '--reason', 'forked host label']);
+  assert.strictEqual(ok.status, 1, 'the file name is wrong: inputs are filed by capture month');
+  const month = fs.readdirSync(path.join(root, '.delivery/operator/inputs/pc'))[0];
+  const q = run(cos, ['quarantine', '--file', `inputs/pc/${month}`, '--reason', 'forked host label']);
+  assert.strictEqual(q.status, 0, q.out + q.err);
+  assert.ok(fs.readdirSync(path.join(root, '.delivery/operator/quarantine')).some((f) => /^inputs-pc-/.test(f)));
 });

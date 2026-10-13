@@ -69,13 +69,13 @@ function normalizeWs(s) { return normMap(s).norm; }
 
 // Negation lexicon (single tokens, plus n't contractions) and phrases. A negation counts when it
 // sits in the same SENTENCE as the quote: within 6 tokens before it, or anywhere after it.
-const NEG_TOKENS = new Set(['not', 'never', 'no', 'without', 'stop', 'cannot', 'dont', 'wont', 'cant', 'nobody', 'nothing', 'refuse', 'avoid', 'wait']);
+const NEG_TOKENS = new Set(['not', 'never', 'no', 'nope', 'without', 'stop', 'cannot', 'dont', 'wont', 'cant', 'nobody', 'nothing', 'refuse', 'avoid', 'wait']);
 const NEG_PHRASES = ['hold off', 'no longer', 'not yet', 'not now', "don't think", 'do not want'];
-const NEG_EXCEPTIONS = ["don't forget to", 'no problem', 'not a problem', 'no need to wait', 'stop waiting', 'without delay', 'no worries'];
+const NEG_EXCEPTIONS = ["don't forget to", 'no problem', 'not a problem', 'no need to wait', 'stop waiting', 'without delay', 'no worries', 'no rush', 'never mind', 'no doubt', 'no big deal'];
 const NEG_WINDOW = 6;
 
 function hasNegation(segment, { before }) {
-  let text = ` ${segment.replace(/[,;:()"“”]/g, ' ').replace(/\s+/g, ' ')} `;
+  let text = ` ${segment.replace(/[,;:()"“”.!?]/g, ' ').replace(/\s+/g, ' ')} `;
   for (const e of NEG_EXCEPTIONS) text = text.split(` ${e} `).join(' ');
   let toks = text.split(' ').filter(Boolean);
   if (before) toks = toks.slice(-NEG_WINDOW);
@@ -111,7 +111,11 @@ function quoteCheck(inputText, quote) {
     const end = t.map[at + q.length - 1] + 1;
     const sn = sentenceOf(start, end);
     const pre = normMap(t.base.slice(sn.s0, start)).norm;
-    const post = normMap(t.base.slice(end, sn.term ? sn.e0 - 1 : sn.e0)).norm;
+    // the rest of the sentence and the sentence that follows it (heuristic, documented: a hold or a
+    // negation right after an instruction usually qualifies it)
+    let nextEnd = sn.e0;
+    if (sn.term) { for (let k = sn.e0; k < t.base.length; k++) { if ('.!?\n'.includes(t.base[k]) && t.base.slice(sn.e0, k).trim()) { nextEnd = k + 1; break; } if (k === t.base.length - 1) nextEnd = t.base.length; } }
+    const post = normMap(t.base.slice(end, nextEnd)).norm;
     if (!hasNegation(pre, { before: true }) && !hasNegation(post, { before: false })) clean.push(at);
   }
   if (!clean.length) {
@@ -203,11 +207,11 @@ class View {
     this.byId.set(r.id, r);
     this.list.push(r);
     if (r.kind === 'revocation' && r.target) push(this.revokedBy, r.target, r);
-    if (r.supersedes) push(this.supersededBy, r.supersedes, r);
+    if (r.supersedes && ((r.kind === 'decision' && !r.under) || r.kind === 'answer')) push(this.supersededBy, r.supersedes, r);
     if (r.kind === 'ratification' && r.target) push(this.ratifiedBy, r.target, r);
     if (r.kind === 'withdrawal' && r.target) push(this.withdrawnQ, r.target, r);
     if (r.kind === 'ack') this.acks.push(r);
-    if (r.under) push(this.underBy, r.under, r);
+    if (r.under && r.kind === 'decision') push(this.underBy, r.under, r);
     if (Array.isArray(r.answers) && ['decision', 'delegation', 'answer'].includes(r.kind)) for (const q of r.answers) push(this.answersByQ, q, r);
     const by = r.by || {};
     if (r.kind === 'rehost' && r.instance && r.to) {
@@ -284,7 +288,7 @@ const REHOST_HINT = (inst) => `run operator.js rehost --instance ${inst} --reaso
 
 // THE rules. Called before a record is appended (mode 'write') and again for every record on read
 // (mode 'read'), against the records that were already valid. Returns null or { code, message }.
-function validateRecord(st, rec, view, mode) {
+function validateCore(st, rec, view, mode) {
   const W = mode === 'write';
   const p = parseRecordId(rec.id);
   if (!p) return bad('chain_invalid', `${rec.id} is not a record id`);
@@ -298,8 +302,7 @@ function validateRecord(st, rec, view, mode) {
   const selfRehost = rec.kind === 'rehost' && rec.instance === author;
   const stamped = !!(by.host && by.machine);
   if (!stamped) {
-    const grand = !W && !by.machine && !view.stamped.has(author) && st.headsState(author) === 'recorded';
-    if (!grand) return bad('host_missing', `${rec.id} carries no host and machine stamp (by.host, by.machine); records are written by operator.js from a delivery role session`);
+    return bad('host_missing', `${rec.id} carries no host and machine stamp (by.host, by.machine); records are written by operator.js from a delivery role session`);
   } else if (!selfRehost) {
     const e = view.inst.get(author);
     if (e && e.host !== by.host) return bad('host_changed', `instance ${author} wrote from host ${e.host} before and from ${by.host} now; ${REHOST_HINT(author)}`);
@@ -385,10 +388,14 @@ function validateRecord(st, rec, view, mode) {
   };
 
   const sign = [text(rec.statement, 'statement')];
+  const citesAre = (list) => Array.isArray(rec.cites) && rec.cites.length === list.length && rec.cites.every((c, i) => c === list[i]);
+  const oneCite = () => (Array.isArray(rec.cites) && rec.cites.length === 1 && typeof rec.cites[0] === 'string' && rec.cites[0].startsWith('in-')
+    ? null : bad('bad_cites', `${rec.id} must cite exactly one operator input; extra citations are not validated and are refused`));
 
   switch (rec.kind) {
     case 'decision': {
       if (rec.under) {
+        if (!citesAre([rec.under])) return bad('bad_cites', `${rec.id} decides under ${rec.under} and must cite exactly it`);
         const e0 = text(rec.statement, 'statement'); if (e0) return e0;
         const d = dep(rec.under, 'delegation');
         if (d.err) return W ? bad('not_found', `delegation ${rec.under} was not found (operator.js find lists delegations)`) : d.err;
@@ -414,12 +421,14 @@ function validateRecord(st, rec, view, mode) {
         return checkAnswersField('decision');
       }
       for (const e of sign) if (e) return e;
+      const oc = oneCite(); if (oc) return oc;
       const r = humanInput(Array.isArray(rec.cites) ? rec.cites[0] : null);
       if (r.err) return r.err;
       return checkAnswersField('decision') || checkSupersedesField('decision');
     }
     case 'delegation': {
       for (const e of [text(rec.statement, 'statement'), text(rec.grant, 'grant (one sentence stating what is delegated)')]) if (e) return e;
+      const oc = oneCite(); if (oc) return oc;
       const r = humanInput(Array.isArray(rec.cites) ? rec.cites[0] : null, { delegation: true });
       if (r.err) return r.err;
       if (scopeIsEmpty(sc)) return bad('invalid_scope', 'delegation scope is empty; name at least one bead, label or initiative explicitly (--scope bead:ID,label:L,initiative:I)');
@@ -432,6 +441,7 @@ function validateRecord(st, rec, view, mode) {
     }
     case 'revocation':
     case 'ratification': {
+      const oc = oneCite(); if (oc) return oc;
       const r = humanInput(Array.isArray(rec.cites) ? rec.cites[0] : null);
       if (r.err) return r.err;
       const d = dep(rec.target, 'target');
@@ -504,7 +514,8 @@ function validateRecord(st, rec, view, mode) {
     }
     case 'ack': {
       const e0 = text(rec.reason, 'reason'); if (e0) return e0;
-      const cid = rec.input || (rec.cites || [])[0];
+      const cid = rec.input;
+      if (typeof cid !== 'string' || !citesAre([cid])) return bad('bad_cites', `${rec.id} must cite exactly the input it acknowledges`);
       const input = st.localInput(cid);
       if (!input) return bad(missingCode, `input ${cid} was not found (operator.js pending lists inputs; operator.js sync captures new ones)`);
       const hc = hashCheck(cid, input.hash);
@@ -515,11 +526,13 @@ function validateRecord(st, rec, view, mode) {
       return null;
     }
     case 'question': {
+      if (!citesAre([])) return bad('bad_cites', `${rec.id} cites nothing and carries no citation`);
       if (by.role !== 'chief-of-staff') return bad('not_allowed', 'only the chief of staff escalates questions to the operator; message the chief of staff with the one question (SendMessage)');
       const e0 = text(rec.text, 'text'); if (e0) return e0;
       return null;
     }
     case 'withdrawal': {
+      if (!citesAre([])) return bad('bad_cites', `${rec.id} carries no citation`);
       if (by.role !== 'chief-of-staff') return bad('not_allowed', 'only the chief of staff withdraws questions');
       const e0 = text(rec.reason, 'reason'); if (e0) return e0;
       const d = dep(rec.target, 'question');
@@ -532,6 +545,7 @@ function validateRecord(st, rec, view, mode) {
       return null;
     }
     case 'rehost': {
+      if (!citesAre([])) return bad('bad_cites', `${rec.id} carries no citation`);
       const e0 = text(rec.reason, 'reason'); if (e0) return e0;
       if (typeof rec.instance !== 'string' || !INSTANCE_RE.test(rec.instance)) return bad('invalid_target', 'rehost names no valid instance');
       if (by.role !== 'chief-of-staff' && by.instance !== rec.instance) return bad('not_allowed', 'only the chief of staff or the instance itself records a rehost');
@@ -550,6 +564,68 @@ function validateRecord(st, rec, view, mode) {
   }
 }
 
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+const COMMON_FIELDS = ['id', 'kind', 'by', 'ts', 'prev', 'hash', 'scope', 'cites', 'cites_head', 'supersedes'];
+const KIND_FIELDS = {
+  decision: ['statement', 'quote', 'under', 'answers'],
+  delegation: ['statement', 'grant', 'quote', 'limits', 'answers'],
+  answer: ['question', 'answer', 'confidence', 'rationale', 'ratified', 'answers'],
+  revocation: ['target', 'quote'],
+  ratification: ['target', 'quote'],
+  ack: ['input', 'reason'],
+  question: ['text', 'asker', 'options', 'recommendation'],
+  withdrawal: ['target', 'reason'],
+  rehost: ['instance', 'from', 'to', 'reason'],
+};
+const ALL_FIELDS = new Set([...COMMON_FIELDS, ...Object.values(KIND_FIELDS).flat()]);
+
+// A record carries only the fields its kind has; View.add applies fields and nothing else may.
+function shapeError(rec) {
+  const allowed = new Set([...COMMON_FIELDS, ...(KIND_FIELDS[rec.kind] || [])]);
+  for (const k of Object.keys(rec)) {
+    if (allowed.has(k)) continue;
+    if (!ALL_FIELDS.has(k)) return bad('unknown_field', `${rec.id} carries the field "${k}", which no record kind has`);
+    return bad('misplaced_field', `${rec.id} is a ${rec.kind} and may not carry "${k}"`);
+  }
+  if (rec.supersedes !== null && rec.supersedes !== undefined) {
+    if (!((rec.kind === 'decision' && !rec.under) || rec.kind === 'answer')) return bad('misplaced_field', `${rec.id} is a ${rec.kind}${rec.under ? ' under a delegation' : ''} and may not supersede anything`);
+  }
+  return null;
+}
+
+// Shape, timestamp, role and the rules of the kind; then the chain's time order.
+function validateRecord(st, rec, view, mode) {
+  const W = mode === 'write';
+  const p = parseRecordId(rec.id);
+  if (p && rec.kind === p.kind) {
+    const se = shapeError(rec);
+    if (se) return se;
+    if (typeof rec.ts !== 'string' || !ISO_RE.test(rec.ts) || Number.isNaN(Date.parse(rec.ts))) {
+      return bad('bad_timestamp', `${rec.id} has no ISO-8601 UTC timestamp`);
+    }
+    const by = rec.by;
+    if (by && typeof by === 'object' && by.instance === p.instance) {
+      const roles = st.roles();
+      if (!roles) return bad('manifest_unavailable', 'team.json cannot be loaded, so the author role cannot be checked');
+      const want = roles.get(p.instance);
+      if (want === undefined) {
+        if (W) return bad('unknown_instance', `instance ${p.instance} is not in team.json; records are written by instances the manifest lists`);
+      } else if (by.role !== want) {
+        return bad('role_mismatch', `${rec.id} claims role ${by.role}, but team.json gives instance ${p.instance} the role ${want}`);
+      }
+    }
+  }
+  const res = validateCore(st, rec, view, mode);
+  if (res) return res;
+  const t = Date.parse(rec.ts);
+  if (t > Date.now() + 10 * 60 * 1000) return bad('bad_timestamp', `${rec.id} is dated ${rec.ts}, more than ten minutes in the future`);
+  if (p && p.seq > 1) {
+    const prev = st.entries(p.instance)[p.seq - 2];
+    if (prev && Date.parse(prev.ts) > t) return bad('bad_timestamp', `${rec.id} (${rec.ts}) is older than the record before it in its chain (${prev.ts})`);
+  }
+  return null;
+}
+
 // ---- store: per-call cache with one refresh on a miss ----
 
 function makeStore(root, opts = {}) {
@@ -565,7 +641,7 @@ function makeStore(root, opts = {}) {
     inputHosts: new Map(),
     invalid: new Map(),
     warn: typeof opts.onWarning === 'function' ? opts.onWarning : () => {},
-    invalidate() { st.files.clear(); st._inputs = null; st._scan = null; st.verified.clear(); st.inputHosts.clear(); st.invalid = new Map(); },
+    invalidate() { st._roles = undefined; st.files.clear(); st._inputs = null; st._scan = null; st.verified.clear(); st.inputHosts.clear(); st.invalid = new Map(); },
     miss() {
       if (st.refreshed || typeof opts.refresh !== 'function') return false;
       st.refreshed = true;
@@ -608,26 +684,42 @@ function makeStore(root, opts = {}) {
       return e;
     },
     inputHost(host) { return verifyInputHostCached(st, host); },
-    headsState(instance) { const v = st.verified.get(instance); return v && v.heads; },
+    // instance -> role id from team.json, or null when the manifest cannot be loaded
+    roles() {
+      if (st._roles === undefined) {
+        try { st._roles = new Map(expandInstances(loadManifest(root).team).map((i) => [i.instance, i.role.id])); } catch (e) { st._roles = null; }
+      }
+      return st._roles;
+    },
 
     // Every view reads only chains that verify and, within them, only records that pass the validator.
     scan() {
       if (st._scan) return st._scan;
       const insts = listInstances(root);
-      let manifest = null;
-      try { manifest = new Set(expandInstances(loadManifest(root).team).map((i) => i.instance)); } catch (e) { manifest = null; }
+      const roles = st.roles();
+      const manifest = roles ? new Set(roles.keys()) : null;
       const problems = [];
       const entries = [];
       const heads = log.readHeads(root);
-      for (const inst of insts) {
+      if (!manifest) {
+        // fail closed: with no manifest nothing is trusted and no head is recorded
+        for (const inst of insts) st.verified.set(inst, verifyRecordsFile(root, inst, { setHead: false }));
+        if (insts.length) problems.push({ file: '.delivery/team/team.json', code: 'manifest_unavailable', error: 'team.json or hosts.json cannot be loaded, so no records chain can be attributed to a role and none is trusted' });
+      }
+      for (const inst of manifest ? insts : []) {
         if (manifest && !manifest.has(inst) && !heads[headsKey('records', inst)]) {
           const peek = verifyRecordsFile(root, inst, { setHead: false });
           st.verified.set(inst, peek);
           problems.push({ file: `records/${inst}`, code: 'unknown_instance', error: `records/${inst}: instance ${inst} is not in team.json and this host has no recorded head for it; its records are not trusted (operator.js quarantine --file records/${inst}.ndjson --reason "<why>" sets it aside)` });
           continue;
         }
-        const v = verifyRecordsFileCached(st, inst);
-        if (v.ok) { for (const e of st.entries(inst)) entries.push(e); } else problems.push({ file: `records/${inst}`, error: v.error, code: v.code });
+        // a remembered instance (recorded head) that left the manifest stays valid history; its head
+        // is never advanced by a read
+        const v = manifest.has(inst) ? verifyRecordsFileCached(st, inst) : (st.verified.get(inst) || st.verified.set(inst, verifyRecordsFile(root, inst, { setHead: false })).get(inst));
+        if (v.ok) {
+          for (const e of st.entries(inst)) entries.push(e);
+          if (v.torn) problems.push({ file: `records/${inst}`, code: 'torn_tail', error: `records/${inst}: the last line is incomplete (a crash while writing); the valid ${v.count} entries are used. The writer repairs it on its next write, or run operator.js repair --instance ${inst}` });
+        } else problems.push({ file: `records/${inst}`, error: v.error, code: v.code });
       }
       for (const [k, h] of Object.entries(heads)) {
         if (!k.startsWith('records/')) continue;
@@ -686,11 +778,24 @@ function chainFail(code, error, extra = {}) { return { ok: false, code, error, .
 function verifyRecordsFile(root, instance, opts = {}) {
   const file = recordsFile(root, instance);
   if (!fs.existsSync(file)) return chainFail('not_found', `records/${instance}: no such chain file`);
-  const v = chain.verifyChain(file);
+  let raw = fs.readFileSync(file, 'utf8');
+  let torn = false;
+  let v;
+  if (raw.length && !raw.endsWith('\n')) {
+    const cut = raw.lastIndexOf('\n') + 1;
+    let whole = true;
+    try { JSON.parse(raw.slice(cut)); } catch (e) { whole = false; }
+    if (!whole) { torn = true; raw = raw.slice(0, cut); }
+  }
+  if (torn) {
+    const tmp = path.join(require('os').tmpdir(), `operator-prefix-${process.pid}-${Date.now()}.ndjson`);
+    fs.writeFileSync(tmp, raw);
+    try { v = chain.verifyChain(tmp); } finally { try { fs.unlinkSync(tmp); } catch (e) { /* gone */ } }
+  } else v = chain.verifyChain(file);
   if (!v.ok) return chainFail('chain_invalid', `records/${instance}: ${v.error}`, { at: v.at });
   const hashes = [];
   let lastSeq = 0;
-  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  const lines = raw.split('\n');
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].trim()) continue;
     const e = JSON.parse(lines[i]);
@@ -716,7 +821,7 @@ function verifyRecordsFile(root, instance, opts = {}) {
     }
   }
   if (opts.setHead !== false && (!head || hashes.length > head.count)) log.setHead(root, key, { count: hashes.length, last_hash: v.last_hash });
-  return { ok: true, count: hashes.length, last_hash: v.last_hash, heads: state };
+  return { ok: true, count: hashes.length, last_hash: v.last_hash, heads: state, torn };
 }
 
 function verifyRecordsFileCached(st, instance) {
@@ -810,6 +915,9 @@ function commit(st, by, fields, ids = []) {
   const root = st.root;
   const inst = by.instance;
   const file = recordsFile(root, inst);
+  const roles = st.roles();
+  if (!roles) throw new OperatorError('manifest_unavailable', 'team.json or hosts.json cannot be loaded, so nothing can be recorded or trusted; fix the manifest (operator.js problems)');
+  if (!roles.has(inst)) throw new OperatorError('unknown_instance', `instance ${inst} is not in team.json; records are written by instances the manifest lists`);
   if (fs.existsSync(file)) {
     // writers repair their OWN torn tail (the partial line is kept as evidence); readers only report it
     try { chain.withLock(file + '.lock', () => chain.repairTail(file)); } catch (e) { /* the verification below reports it */ }
@@ -1017,8 +1125,21 @@ function quarantine(o) {
   const root = o.projectRoot;
   if (!o.by || o.by.role !== 'chief-of-staff') throw new OperatorError('not_allowed', 'only the chief of staff quarantines a chain file');
   needText(o.reason, 'reason');
+  const im = /^inputs\/([A-Za-z0-9][A-Za-z0-9._-]*)\/(\d{4}-\d{2})\.ndjson$/.exec(String(o.file || ''));
+  if (im) {
+    const src = path.join(log.opDir(root), 'inputs', im[1], `${im[2]}.ndjson`);
+    if (!fs.existsSync(src)) throw new OperatorError('not_found', `inputs/${im[1]}/${im[2]}.ndjson does not exist here`);
+    const dir = path.join(log.opDir(root), 'quarantine');
+    fs.mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, `inputs-${im[1]}-${im[2]}.ndjson.${Date.now()}`);
+    fs.renameSync(src, dest);
+    fs.writeFileSync(`${dest}.reason.txt`, `${o.reason.trim()}\nby ${o.by.instance} at ${new Date().toISOString()}\n`);
+    try { fs.unlinkSync(`${src}.lock`); } catch (e) { /* none */ }
+    log.dropHead(root, log.safeHost(im[1]));
+    return { moved_to: path.relative(root, dest) };
+  }
   const m = /^(?:records\/)?([A-Za-z0-9][A-Za-z0-9._-]*)\.ndjson$/.exec(String(o.file || ''));
-  if (!m) throw new OperatorError('invalid_target', 'quarantine takes --file records/<instance>.ndjson');
+  if (!m) throw new OperatorError('invalid_target', 'quarantine takes --file records/<instance>.ndjson or inputs/<host>/<YYYY-MM>.ndjson');
   const src = recordsFile(root, m[1]);
   if (!fs.existsSync(src)) throw new OperatorError('not_found', `records/${m[1]}.ndjson does not exist here`);
   const dir = path.join(log.opDir(root), 'quarantine');
@@ -1124,7 +1245,15 @@ function verifyRecord(projectRoot, id, opts = {}) {
     if (r.statement !== undefined) h.statement = r.statement;
     if (r.quote) h.quote = r.quote;
     if (r.grant) h.grant = r.grant;
-    if (r.kind === 'answer') Object.assign(h, { question: r.question, answer: r.answer, confidence: r.confidence, rationale: r.rationale });
+    if (r.kind === 'answer') {
+      Object.assign(h, { question: r.question, answer: r.answer, confidence: r.confidence, rationale: r.rationale });
+      if (r.confidence === 'inferred') {
+        const rat = (IXV.ratifiedBy.get(r.id) || [])[0];
+        let said = null;
+        if (rat) { const ri = st.localInput((rat.cites || [])[0]); said = ri ? (excerptFor(ri.text, rat.quote) || rat.quote) : rat.quote; }
+        h.ratified_by = rat ? { id: rat.id, said } : null;
+      }
+    }
     if (r.kind === 'question') Object.assign(h, { text: r.text, asker: r.asker });
     if (r.kind === 'rehost') Object.assign(h, { instance: r.instance, from: r.from, to: r.to });
     if (r.under) h.under = r.under;
@@ -1215,8 +1344,9 @@ function pending(projectRoot, o = {}) {
   const handled = new Set();
   for (const r of st.all()) {
     if (!['decision', 'delegation', 'revocation', 'ratification', 'ack'].includes(r.kind)) continue;
-    for (const c of Array.isArray(r.cites) ? r.cites : []) if (typeof c === 'string' && c.startsWith('in-')) handled.add(c);
-    if (r.input) handled.add(r.input);
+    // validation guarantees exactly one cite (an ack: exactly its input); nothing else counts
+    const c = r.kind === 'ack' ? r.input : (Array.isArray(r.cites) ? r.cites[0] : null);
+    if (typeof c === 'string' && c.startsWith('in-')) handled.add(c);
   }
   const inputs = log.listInputs(projectRoot, { source: 'human', since: o.since || undefined, sessionId: o.sessionId || undefined })
     .filter((e) => !handled.has(e.id));

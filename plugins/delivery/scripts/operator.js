@@ -164,11 +164,20 @@ function divergedOwn(ctx) {
   return r.diverged.filter((p) => own.includes(p) || (inputs && p.startsWith(inputs)));
 }
 
+// every writer: a diverged own chain refuses before anything is appended (a failed fetch does not)
+function needNotDiverged(ctx) {
+  ctx.refreshOnce();
+  const dv = divergedOwn(ctx);
+  if (dv.length) {
+    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the upstream copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. Tell the chief of staff; operator.js problems lists it, and operator.js quarantine --file records/<instance>.ndjson (or inputs/<host>/<YYYY-MM>.ndjson) sets the fork aside. One working copy per host label is assumed`);
+  }
+}
+
 function needFresh(ctx) {
   const r = ctx.refreshOnce();
   const dv = divergedOwn(ctx);
   if (dv.length) {
-    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the upstream copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. Tell the chief of staff; operator.js problems lists it and operator.js quarantine sets the fork aside`);
+    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the upstream copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. Tell the chief of staff; operator.js problems lists it, and operator.js quarantine --file records/<instance>.ndjson (or inputs/<host>/<YYYY-MM>.ndjson) sets the fork aside. One working copy per host label is assumed: two clones writing as the same instance or host fork its chain`);
   }
   if (r && !r.ok && !r.no_remote) {
     throw new R.OperatorError('refresh_failed', `could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; a revocation or decision made on another host may be missing, so nothing is recorded. Retry when the remote is reachable (operator.js refresh)`);
@@ -334,6 +343,7 @@ const handlers = {
     need(flags, 'cite', 'quote', 'statement');
     const scope = parseScope(flags.scope);
     requireWriter(ctx);
+    needNotDiverged(ctx);
     const s = syncCurrent(ctx, flags, flags.cite);
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
     if (flags.supersedes) needFresh(ctx);
@@ -352,6 +362,7 @@ const handlers = {
       if (!Number.isInteger(maxUses) || maxUses < 1) throw new UsageError('--max-uses must be a positive integer');
     }
     requireWriter(ctx);
+    needNotDiverged(ctx);
     const s = syncCurrent(ctx, flags, flags.cite);
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
     const rec = R.recordDelegation({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, statement: flags.statement, scope,
@@ -363,6 +374,7 @@ const handlers = {
     need(flags, 'under', 'statement');
     const scope = parseScope(flags.scope);
     requireWriter(ctx);
+    needNotDiverged(ctx);
     needFresh(ctx);
     const under = R.getRecord(ctx.projectRoot, flags.under) || (ctx.refreshOnce() && R.getRecord(ctx.projectRoot, flags.under));
     if (under) refuseIfFormatUnrecognised(ctx, null, (under.cites || [])[0]);
@@ -375,6 +387,7 @@ const handlers = {
   revoke(ctx, flags) {
     need(flags, 'cite', 'quote', 'target');
     requireWriter(ctx);
+    needNotDiverged(ctx);
     const s = syncCurrent(ctx, flags, flags.cite);
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
     needFresh(ctx);
@@ -385,6 +398,7 @@ const handlers = {
   ack(ctx, flags) {
     need(flags, 'input', 'reason');
     requireWriter(ctx);
+    needNotDiverged(ctx);
     syncCurrent(ctx, flags, flags.input);
     const rec = R.ack({ projectRoot: ctx.projectRoot, input: flags.input, reason: flags.reason, by: ctx.by, refresh: ctx.refreshOnce, noLedger: true, onWarning: ctx.onWarning });
     return afterWrite(ctx, rec);
@@ -395,6 +409,7 @@ const handlers = {
     const scope = parseScope(flags.scope);
     if (flags.bead && !scope.beads.includes(flags.bead)) scope.beads.push(flags.bead);
     requireWriter(ctx);
+    needNotDiverged(ctx);
     let role = null;
     try { const f = expandInstances(ctx.valid.team).find((i) => i.instance === flags.asker); role = f ? f.role.id : null; } catch (e) { role = null; }
     const rec = R.recordQuestion({ projectRoot: ctx.projectRoot, text: flags.text, asker: { instance: flags.asker, role, bead: flags.bead || null },
@@ -406,6 +421,7 @@ const handlers = {
   withdraw(ctx, flags) {
     need(flags, 'question', 'reason');
     requireWriter(ctx);
+    needNotDiverged(ctx);
     const rec = R.withdraw({ projectRoot: ctx.projectRoot, question: flags.question, reason: flags.reason, by: ctx.by, refresh: ctx.refreshOnce, noLedger: true });
     return afterWrite(ctx, rec);
   },
@@ -414,6 +430,7 @@ const handlers = {
     need(flags, 'cite', 'question', 'answer', 'confidence');
     const scope = parseScope(flags.scope);
     requireWriter(ctx);
+    needNotDiverged(ctx);
     needFresh(ctx);
     const rec = R.recordAnswer({ projectRoot: ctx.projectRoot, cites: csv(flags.cite), question: flags.question, answer: flags.answer,
       confidence: flags.confidence, rationale: flags.rationale, scope, by: ctx.by, answers: csv(flags.answers),
@@ -424,6 +441,7 @@ const handlers = {
   ratify(ctx, flags) {
     need(flags, 'cite', 'quote', 'target');
     requireWriter(ctx);
+    needNotDiverged(ctx);
     const s = syncCurrent(ctx, flags, flags.cite);
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
     needFresh(ctx);
@@ -518,7 +536,11 @@ const handlers = {
       } else {
         const body = h.kind === 'answer' ? `${h.answer} [${h.confidence}]` : (h.statement || h.text || h.reason || '');
         const via = h.under ? ` under ${h.under}` : '';
-        lines.push(`  ${h.id}  ${h.kind}${via}${body ? `: ${body}` : ''} (by ${h.by && h.by.instance}, ${h.ts})`);
+        const b = h.by || {};
+        lines.push(`  ${h.id}  ${h.kind}${via}${body ? `: ${body}` : ''} (by ${b.instance} [${b.role}] host ${b.host || '?'} machine ${b.machine || '?'} session ${b.session_id || 'unknown'}, ${h.ts})`);
+        if (h.kind === 'answer' && h.confidence === 'inferred') {
+          lines.push(h.ratified_by ? `    ratified by ${h.ratified_by.id} (operator said ${quoted(h.ratified_by.said || '')})` : '    unratified');
+        }
         if (h.grant) lines.push(`    GRANT: ${h.grant}`);
       }
     }
@@ -571,6 +593,7 @@ const handlers = {
   rehost(ctx, flags) {
     need(flags, 'instance', 'reason');
     requireWriter(ctx);
+    needNotDiverged(ctx);
     const rec = R.recordRehost({ projectRoot: ctx.projectRoot, instance: flags.instance, reason: flags.reason, by: ctx.by,
       to: flags['to-host'] ? { host: flags['to-host'], machine: flags['to-machine'] || null } : null, noLedger: true });
     return afterWrite(ctx, rec);
