@@ -493,3 +493,39 @@ test('A: leak-post-push re-scans a push run through Monitor', () => {
   const out = runHook('leak-post-push.js', { cwd, session_id: 's', tool_name: 'Monitor', tool_input: { command: 'git push' } }, env);
   assert.match(JSON.parse(out).hookSpecificOutput.additionalContext, /Casual Carl/);
 });
+
+// Final wave E: GitHub-style MCP tools are scanned like gh for roles that touch product.
+test('E: MCP GitHub-style tool inputs are scanned for plan phrases; issue creation is refused', () => {
+  const run = (toolName, toolInput, over = {}) => decideLeak({ toolName, toolInput, cwd: path.join(roleDir, 'project'), roleDir, denylist, ...over });
+  const d = run('mcp__github__create_pull_request', { owner: 'o', repo: 'r', title: 'Login fix', body: 'Refs ex-1. Sell duplicates faster' });
+  assert.match(d.reason, /Sell duplicates faster/);
+  assert.equal(run('mcp__github__create_pull_request', { owner: 'o', repo: 'r', title: 'Login fix', body: 'Refs ex-1' }), null);
+  assert.match(run('mcp__gitlab__update_merge_request', { a: { b: { c: ['see .delivery/stories/x.md'] } } }).reason, /\.delivery\//);
+  assert.match(run('mcp__github__push_files', { files: [{ path: 'a', content: 'for Casual Carl' }], message: 'x' }).reason, /Casual Carl/);
+  assert.match(run('mcp__github__create_issue', { title: 'clean' }).reason, /GitHub issues in the product repo are for users/);
+  assert.match(run('mcp__x__addIssue', { title: 'clean' }).reason, /for users/);
+  // Depth and size are bounded: a phrase deeper than four levels or past 20 KB is not reached.
+  assert.equal(run('mcp__github__create_pull_request', { a: { b: { c: { d: { e: { f: 'Sell duplicates faster' } } } } } }), null);
+  assert.equal(run('mcp__github__create_pull_request', { pad: 'x'.repeat(21000), body: 'Sell duplicates faster' }), null);
+  // Not a public-text tool, or a role that does not touch product: nothing to check.
+  assert.equal(run('mcp__files__read_file', { body: 'Sell duplicates faster' }), null);
+  const thinker = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-thinker-'));
+  assert.equal(run('mcp__github__create_issue', { body: 'Sell duplicates faster' }, { roleDir: thinker, roleId: 'product-manager' }), null);
+  assert.match(run('mcp__github__create_pull_request', { body: 'Sell duplicates faster' }, { roleDir: thinker, roleId: 'builder' }).reason, /Sell duplicates faster/);
+});
+
+test('E: the leak-guard hook scans a GitHub MCP call for a builder', () => {
+  const b = preparedRole('builder-1');
+  const env = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  const input = (body) => ({ cwd: b.roleDir, session_id: 's', tool_name: 'mcp__github__create_pull_request', tool_input: { title: 'x', body } });
+  const json = JSON.parse(runHook('leak-guard.js', input('for Casual Carl'), env));
+  assert.equal(json.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(json.hookSpecificOutput.permissionDecisionReason, /Casual Carl/);
+  assert.equal(runHook('leak-guard.js', input('Refs ex-1'), env), '');
+  const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const entry = hooks.PreToolUse.find((e) => e.hooks.some((h) => h.args.some((a) => a.endsWith('leak-guard.js'))));
+  const re = new RegExp(`^(?:${entry.matcher})$`);
+  assert.ok(re.test('mcp__github__create_pull_request'));
+  assert.ok(re.test('mcp__gitlab__create_merge_request'));
+  assert.ok(!re.test('mcp__files__read_file'));
+});

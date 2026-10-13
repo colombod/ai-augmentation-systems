@@ -602,8 +602,44 @@ function filePathsOf(input) {
   return out;
 }
 
-function decideLeak({ toolName, toolInput, cwd, roleDir, denylist }) {
+// MCP tools that may publish text to a forge (GitHub, GitLab): their inputs are scanned like gh.
+const MCP_PUBLIC = /github|gitlab|issue|pull|comment|release|commit|repo/i;
+const MCP_ISSUE_CREATE = /(create|add)_?(issue)/i;
+const MCP_DEPTH = 4;
+const MCP_BUDGET = 20 * 1024;
+
+// Every string value in a tool input, to depth 4, within the first 20 KB in total.
+function mcpStrings(input) {
+  const out = [];
+  let left = MCP_BUDGET;
+  const visit = (v, depth) => {
+    if (left <= 0) return;
+    if (typeof v === 'string') { out.push(v.slice(0, left)); left -= v.length; return; }
+    if (!v || typeof v !== 'object' || depth >= MCP_DEPTH) return;
+    for (const child of Array.isArray(v) ? v : Object.values(v)) visit(child, depth + 1);
+  };
+  visit(input, 0);
+  return out;
+}
+
+// A role touches product when its role directory has a product worktree, or it is a builder.
+function touchesProduct(roleDir, roleId) {
+  if (roleId === 'builder') return true;
+  try { return fs.existsSync(productDir(roleDir)); } catch (e) { return false; }
+}
+
+function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId }) {
   const base = path.resolve(cwd || process.cwd());
+  const name = String(toolName || '');
+  if (name.startsWith('mcp__') && MCP_PUBLIC.test(name) && touchesProduct(roleDir, roleId)) {
+    if (MCP_ISSUE_CREATE.test(name)) return { reason: 'GitHub issues in the product repo are for users; record internal work in beads.' };
+    for (const m of mcpStrings(toolInput)) {
+      if (BIDI.test(m)) return { reason: `Public text must not contain bidirectional control characters (${name}).${RULE}` };
+      const hit = scanText(m, denylist || []);
+      if (hit) return { reason: `Text sent through ${name} contains a plan phrase: "${hit.phrase}".${RULE}` };
+    }
+    return null;
+  }
   const shell = shellCommandOf(toolName, toolInput);
   if (shell !== null) {
     const cmd = shell;

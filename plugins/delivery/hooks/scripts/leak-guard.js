@@ -14,8 +14,9 @@ try {
   if (ctx) {
     const toolInput = input.tool_input || {};
     const shell = shellCommandOf(input.tool_name, toolInput);
-    const denylist = shell !== null ? loadDenylist(ctx.marker.project_root) : [];
-    const d = decideLeak({ toolName: input.tool_name, toolInput, cwd: input.cwd, roleDir: ctx.roleDir, denylist });
+    const scansText = shell !== null || String(input.tool_name).startsWith('mcp__');
+    const denylist = scansText ? loadDenylist(ctx.marker.project_root) : [];
+    const d = decideLeak({ toolName: input.tool_name, toolInput, cwd: input.cwd, roleDir: ctx.roleDir, denylist, roleId: ctx.role.id });
     if (d) deny(d.reason);
     else if (shell !== null) {
       // Remember where each push started so the post-push scan covers exactly the pushed range.

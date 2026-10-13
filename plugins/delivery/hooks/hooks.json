@@ -45,7 +45,7 @@
         ]
       },
       {
-        "matcher": "Write|Edit|NotebookEdit|MultiEdit|Bash|Monitor|PowerShell",
+        "matcher": "Write|Edit|NotebookEdit|MultiEdit|Bash|Monitor|PowerShell|mcp__.*(github|gitlab|git).*",
         "hooks": [
           { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/leak-guard.js"], "timeout": 10 }
         ]
