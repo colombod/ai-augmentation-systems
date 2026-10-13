@@ -56,13 +56,13 @@
   "bd-claim": [
     { "first": "bd", "sub": ["update"], "flags_any": ["--claim"], "flags_none": ["--parent", "--title", "--type", "--priority", "--add-label", "--remove-label", "--metadata", "--description", "--design", "--acceptance", "-p", "-t", "-d", "-l"] },
     { "first": "bd", "sub": ["update"], "flags_any": ["--status", "--assignee", "-s", "-a"], "flags_none": ["--parent", "--title", "--type", "--priority", "--add-label", "--remove-label", "--metadata", "--description", "--design", "--acceptance", "-p", "-t", "-d", "-l"] },
-    { "first": "bd", "sub": ["close"] }
+    { "first": "bd", "sub": ["close", "assign", "reopen"] }
   ],
   "bd-create-child": [
     { "first": "bd", "sub": ["create"], "flags_any": ["--parent"], "flags_none": ["--id"] }
   ],
   "bd-structure": [
-    { "first": "bd", "sub": ["create", "dep add", "dep remove", "dep relate", "dep unrelate", "label add", "label remove", "label propagate", "delete", "update"] },
+    { "first": "bd", "sub": ["create", "dep add", "dep remove", "dep relate", "dep unrelate", "label add", "label remove", "label propagate", "delete", "update", "assign", "tag", "todo", "import", "reopen", "duplicates", "link", "duplicate", "supersede", "rename", "rename-prefix", "set-state", "mol", "epic", "swarm"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/materialise.js" }
   ],
   "any": [

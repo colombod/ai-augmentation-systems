@@ -156,3 +156,32 @@ test('C: prepareRole writes BEADS_DIR when the project has .beads, never overwri
   prepareRole({ projectRoot, instance: 'delivery-lead', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
   assert.equal(read().env.BEADS_DIR, '/custom/beads');
 });
+
+test('C: a BEADS_DIR prepare-role wrote earlier is refreshed when the project moves; a user value never is', () => {
+  const projectRoot = scratchProjectRepo();
+  fs.mkdirSync(path.join(projectRoot, '.beads'));
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const prep = (root) => prepareRole({ projectRoot: root, instance: 'delivery-lead', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  const { roleDir } = prep(projectRoot);
+  const settingsFile = path.join(roleDir, '.claude', 'settings.local.json');
+  const marker = () => JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8'));
+  const read = () => JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  assert.equal(marker().beads_dir_written, path.join(projectRoot, '.beads'));
+  // The project directory moves: the value prepare-role wrote is stale and is refreshed.
+  const moved = `${projectRoot}-moved`;
+  fs.renameSync(projectRoot, moved);
+  prep(moved);
+  assert.equal(read().env.BEADS_DIR, path.join(moved, '.beads'));
+  assert.equal(marker().beads_dir_written, path.join(moved, '.beads'));
+  // A value the user set is left alone, and is not recorded as ours.
+  const s = read();
+  s.env.BEADS_DIR = '/custom/beads';
+  fs.writeFileSync(settingsFile, JSON.stringify(s));
+  prep(moved);
+  assert.equal(read().env.BEADS_DIR, '/custom/beads');
+  assert.equal(marker().beads_dir_written, undefined);
+  // And once the marker no longer remembers a write, a later run does not claim the user's value either.
+  fs.renameSync(moved, projectRoot);
+  prep(projectRoot);
+  assert.equal(read().env.BEADS_DIR, '/custom/beads');
+});

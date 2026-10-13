@@ -79,8 +79,20 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     DELIVERY_MODE: role.mode || brief.meta.mode || 'default',
   });
   // Hooks and bd run from the role directory, where bd cannot find the project database on its own.
+  // A value this script wrote earlier (remembered in the marker) follows the project when it moves;
+  // any other value was set by the user and is never touched.
+  const markerFile = path.join(roleDir, '.delivery-role.json');
+  let previouslyWritten;
+  try { previouslyWritten = JSON.parse(fs.readFileSync(markerFile, 'utf8')).beads_dir_written; } catch (err) { previouslyWritten = undefined; }
   const beadsDir = path.join(projectRoot, '.beads');
-  if (!settings.env.BEADS_DIR && fs.existsSync(beadsDir)) settings.env.BEADS_DIR = beadsDir;
+  let beadsDirWritten;
+  const currentBeadsDir = settings.env.BEADS_DIR;
+  if (fs.existsSync(beadsDir) && (!currentBeadsDir || (previouslyWritten && currentBeadsDir === previouslyWritten))) {
+    settings.env.BEADS_DIR = beadsDir;
+    beadsDirWritten = beadsDir;
+  } else if (previouslyWritten && currentBeadsDir === previouslyWritten) {
+    beadsDirWritten = previouslyWritten;
+  }
   settings.enabledPlugins = Object.assign({}, settings.enabledPlugins, { 'delivery@ai-augmentation-systems': true });
   if (settings.permissions && typeof settings.permissions === 'object') {
     delete settings.permissions.defaultMode;
@@ -109,7 +121,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     model: role.model,
     prepared_at: now || new Date().toISOString(),
   };
-  const markerFile = path.join(roleDir, '.delivery-role.json');
+  if (beadsDirWritten) marker.beads_dir_written = beadsDirWritten;
   fs.writeFileSync(markerFile, `${JSON.stringify(marker, null, 2)}\n`);
   files.push(markerFile);
 

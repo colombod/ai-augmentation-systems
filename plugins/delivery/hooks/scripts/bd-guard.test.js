@@ -196,6 +196,101 @@ test('D: structure is refused for every role but delivery-lead, with the sanctio
   assert.equal(decideBd({ command: 'bd update ex-1 --add-label x', actor: me, roleId: 'builder', staleHours: 2, bd: boom, now: NOW }), null);
 });
 
+// Follow-up: verbs that mutate structure, identity or lifecycle in ways create/dep/label did not cover.
+test('F1: link, rename, set-state, mol and the write forms of epic and swarm are structure', () => {
+  const me = 'me@pc/builder-1';
+  const bd = fakeBd({ mine: { id: 'mine', status: 'in_progress', assignee: me, updated_at: NOW }, theirs: { id: 'theirs', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: NOW } });
+  const run = (command, roleId = 'builder') => decideBd({ command, actor: me, roleId, staleHours: 2, bd, now: NOW });
+  const refused = [
+    'bd link ex-1 ex-2',
+    'bd link ex-1 ex-2 --type blocks',
+    'bd duplicate ex-1 --of ex-2',
+    'bd supersede ex-1 --with ex-2',
+    'bd rename ex-1 ex-9',
+    'bd rename-prefix ex- new-',
+    'bd set-state mine phase=review',
+    'bd mol pour proto',
+    'bd mol bond a b',
+    'bd epic close-eligible',
+    'bd swarm create ex-1',
+    'bd --json link ex-1 ex-2',
+  ];
+  for (const command of refused) {
+    const d = run(command);
+    assert.ok(d, command);
+    assert.match(d.reason, /structure belongs to the Delivery Lead/, command);
+    assert.equal(run(command, undefined) !== null, true, `unknown role: ${command}`);
+  }
+  const allowed = ['bd epic status', 'bd epic', 'bd epic --help', 'bd swarm status ex-1', 'bd swarm validate ex-1', 'bd swarm list', 'bd mol', 'bd show mine'];
+  for (const command of allowed) assert.equal(run(command), null, command);
+  for (const command of refused.filter((c) => !/duplicate|supersede/.test(c))) assert.equal(run(command, 'delivery-lead'), null, `delivery-lead: ${command}`);
+});
+
+test('F1: duplicate and supersede follow the close rules for the Delivery Lead', () => {
+  const bd = fakeBd({ theirs: { id: 'theirs', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: NOW }, old: { id: 'old', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: '2026-10-12T05:00:00Z' } });
+  const run = (command) => decideBd({ command, actor: 'lead@pc/delivery-lead', roleId: 'delivery-lead', staleHours: 2, bd, now: NOW });
+  assert.match(run('bd duplicate theirs --of ex-2').reason, /Close with evidence/);
+  assert.match(run('bd supersede theirs --with ex-2').reason, /Close with evidence/);
+  assert.match(run('bd duplicate theirs --of ex-2 --reason "EVIDENCE: same scope"').reason, /claimed by bob@pc\/builder-2 and live/);
+  assert.match(run('bd supersede theirs --with ex-2 --reason "EVIDENCE: replaced"').reason, /live/);
+  assert.equal(run('bd duplicate old --of ex-2 --reason "EVIDENCE: same scope as ex-2"'), null);
+  assert.equal(run('bd supersede old --with ex-2 --reason "EVIDENCE: replaced by ex-2"'), null);
+});
+
+test('F1: label flags on update check every id given, not only the first', () => {
+  const me = 'me@pc/builder-1';
+  const bd = fakeBd({ mine: { id: 'mine', status: 'in_progress', assignee: me, updated_at: NOW }, theirs: { id: 'theirs', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: NOW } });
+  const run = (command) => decideBd({ command, actor: me, roleId: 'builder', staleHours: 2, bd, now: NOW });
+  assert.ok(run('bd update mine theirs --add-label x'));
+  assert.ok(run('bd update mine theirs --set-labels x'));
+  assert.ok(run('bd update theirs mine --remove-label x'));
+  assert.equal(run('bd update mine mine --add-label x'), null);
+  // A lookup that throws for one id stays fail-open for that id; the others are still checked.
+  const flaky = { show: (id) => { if (id === 'gone') throw new Error('x'); return bd.show(id); } };
+  assert.ok(decideBd({ command: 'bd update gone theirs --add-label x', actor: me, roleId: 'builder', staleHours: 2, bd: flaky, now: NOW }));
+});
+
+// Operator follow-up: verbs found passing when probed against bd 1.2.2.
+test('F2: assign follows the claim rules; tag follows label add', () => {
+  const me = 'me@pc/builder-1';
+  const bd = fakeBd({
+    mine: { id: 'mine', status: 'in_progress', assignee: me, updated_at: NOW },
+    theirs: { id: 'theirs', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: NOW },
+    old: { id: 'old', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: '2026-10-12T05:00:00Z' },
+    open: { id: 'open', status: 'open', updated_at: NOW },
+  });
+  const run = (command, roleId = 'builder') => decideBd({ command, actor: me, roleId, staleHours: 2, bd, now: NOW });
+  assert.match(run('bd assign theirs me@pc/builder-1').reason, /claimed by bob@pc\/builder-2 and live/);
+  assert.match(run('bd --json assign theirs someone').reason, /live/);
+  assert.equal(run('bd assign open me@pc/builder-1'), null);
+  assert.equal(run('bd assign mine me@pc/builder-1'), null);
+  assert.equal(run('bd assign old me@pc/builder-1'), null);
+  // The second positional is a person, never looked up as a bead.
+  assert.equal(run('bd assign open theirs'), null);
+  assert.match(run('bd tag theirs urgent').reason, /structure belongs to the Delivery Lead/);
+  assert.match(run('bd tag open urgent').reason, /structure belongs to the Delivery Lead/);
+  assert.equal(run('bd tag mine urgent'), null);
+  assert.equal(run('bd tag theirs urgent', 'delivery-lead'), null);
+  const boom = { show: () => { throw new Error('bd down'); } };
+  assert.equal(decideBd({ command: 'bd tag ex-1 x', actor: me, roleId: 'builder', staleHours: 2, bd: boom, now: NOW }), null);
+});
+
+test('F2: todo, import and duplicates --merge are structure; plain duplicates lists', () => {
+  const run = (command, roleId = 'builder') => decideBd({ command, actor: 'me@pc/builder-1', roleId, staleHours: 2, bd: fakeBd({}), now: NOW });
+  const refused = ['bd todo add "x"', 'bd todo done ex-1', 'bd todo', 'bd import issues.jsonl', 'bd import -i issues.jsonl', 'bd duplicates --merge', 'bd duplicates --auto-merge', 'bd duplicates merge ex-1 ex-2', 'bd --json import f.jsonl'];
+  for (const command of refused) {
+    assert.match(run(command).reason, /structure belongs to the Delivery Lead; create a child bead under the bead you hold/, command);
+    assert.equal(run(command, 'delivery-lead'), null, `delivery-lead: ${command}`);
+  }
+  for (const command of ['bd duplicates', 'bd duplicates --json', 'bd duplicates --dry-run', 'bd note ex-1 "hello"']) assert.equal(run(command), null, command);
+});
+
+test('F2: reopen is refused except for the delivery-lead and the progress-observer', () => {
+  const run = (roleId) => decideBd({ command: 'bd reopen ex-1', actor: 'a', roleId, staleHours: 2, bd: fakeBd({}), now: NOW });
+  for (const roleId of ['builder', 'chief-of-staff', 'product-manager', 'staffing', 'spike-researcher', undefined]) assert.match(run(roleId).reason, /reopening a closed bead is the Delivery Lead's or Progress Observer's call; message them with the evidence that it is not done/, String(roleId));
+  for (const roleId of ['delivery-lead', 'progress-observer']) assert.equal(run(roleId), null, roleId);
+});
+
 // Final wave H.2: global flags, short claim flags, and closing someone else's live claim.
 test('H.2: bd global flags before the subcommand are skipped', () => {
   for (const command of ['bd --json close ex-1', 'bd -q close ex-1', 'bd --quiet close ex-1', 'bd --no-color close ex-1', 'bd --actor x close ex-1', 'bd --db /tmp/x.db close ex-1', 'bd --actor=x --json close ex-1']) {
