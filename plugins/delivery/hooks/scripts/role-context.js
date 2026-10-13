@@ -122,6 +122,7 @@ function promptSubmitText(input, deps = {}) {
   try { valid = validMarker(found); } catch (err) { return ''; }
   if (!valid) return '';
   const { marker } = valid;
+  require('./turn.js').markTurnStart(valid.roleDir, deps.now);
   const claim = (deps.claim || currentClaim)(actorOf(marker));
   const claimText = claim ? `${claim}.` : 'none (idle; say so and what you could take).';
   try {
@@ -137,4 +138,4 @@ function promptSubmitText(input, deps = {}) {
   return `You are ${marker.instance} (${marker.role}). Current claim: ${claimText}`;
 }
 
-module.exports = { readHookInput, findRoleMarker, validMarker, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };
+module.exports = { readHookInput, findRoleMarker, validMarker, actorOf, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };

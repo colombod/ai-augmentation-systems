@@ -78,6 +78,7 @@ test('promptSubmitText is one line with role and claim', () => {
   const { roleDir } = preparedRole('builder-2');
   const text = withRole('builder-2', () => promptSubmitText({ cwd: roleDir }, { claim: () => 'ex-12: Add login' }));
   assert.equal(text, 'You are builder-2 (builder). Current claim: ex-12: Add login.');
+  assert.ok(fs.existsSync(path.join(roleDir, '.delivery-turn')), 'prompt-submit marks the turn start');
   const idle = withRole('builder-2', () => promptSubmitText({ cwd: roleDir }, { claim: () => null }));
   assert.equal(idle, 'You are builder-2 (builder). Current claim: none (idle; say so and what you could take).');
 });
