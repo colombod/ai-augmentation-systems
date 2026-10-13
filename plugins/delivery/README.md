@@ -80,6 +80,18 @@ session its role and keep it:
   plugin's pipeline), or `plain`. Delivery plans, dispatches and reviews; the runner builds.
 - Spikes are standing work: the Spike Researcher claims `spike` beads emitted from the architecture
   document and records answers in the bead and the ADR or roadmap they gate.
+- Lanes are enforced. Each role file declares `lane_writes` (paths it may edit, relative to its role
+  directory) and `lane_bash` (command groups from `hooks/lane-groups.json`). A PreToolUse hook refuses
+  anything else and says what the sanctioned path is: managers route work to builder beads, builders
+  never touch plans. Subagents go through the same hook. Refusals are logged to `.delivery-lane.log`
+  in the role directory.
+- The product repo is protected: in a product worktree, commit, PR and issue text is checked against
+  `.delivery/team/denylist.txt` (written by materialise), plan files cannot be written, `gh issue create`
+  is refused, and pushed commits are re-scanned.
+- The record stays honest: `bd close` needs an `EVIDENCE:` reason, a live claim cannot be taken or
+  released by someone else, and a turn that holds a claim cannot end without a note.
+- The product-repo guard is the first line, not the last. It scans commit, PR, issue and release text and refuses plan paths for a cooperative or careless session, and it fails closed inside the product worktree; it is not a boundary against a determined session with unrestricted Bash (file contents, git plumbing, persistent git configuration and pushes from other repositories are out of its reach). Put a push-side or CI scan of the denylist on the product remote for the durable control.
+- Builders use plain `git commit -m "text"` in the product worktree: command substitution, heredoc messages, `-F` files and `$VAR` in message or push-option arguments are refused so the text can be checked.
 
 The delivery plugin must be installed on the machine; `prepare-role` enables it for the role
 directory. The steward keeps the original project checkout pulled (`git pull --ff-only`) before
