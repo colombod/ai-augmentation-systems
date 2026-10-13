@@ -5,7 +5,18 @@ const { execFileSync } = require('child_process');
 const { findProjectRoot, loadManifest, expandInstances } = require('./lib/manifest.js');
 const { readRoster } = require('./lib/roster.js');
 
-function teamStatus(projectRoot, { now, staleHours } = {}) {
+// Can bd find a database from the project root? Role directories need BEADS_DIR (prepare-role
+// writes it when <project>/.beads exists); a failure here means the hooks cannot see beads either.
+function bdReachable(projectRoot) {
+  try {
+    execFileSync('bd', ['where'], { cwd: projectRoot, stdio: ['ignore', 'ignore', 'ignore'], timeout: 10000 });
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function teamStatus(projectRoot, { now, staleHours, bdCheck } = {}) {
   const { team } = loadManifest(projectRoot);
   const roster = readRoster(projectRoot);
   const nowMs = Date.parse(now || new Date().toISOString());
@@ -31,7 +42,9 @@ function teamStatus(projectRoot, { now, staleHours } = {}) {
   for (const instance of Object.keys(roster.instances)) {
     if (!expectedIds.has(instance)) drift.extra.push(instance);
   }
-  return { rows, drift, recovered_from: roster.recovered_from };
+  let bd_reachable = false;
+  try { bd_reachable = Boolean((bdCheck || bdReachable)(projectRoot)); } catch (err) { bd_reachable = false; }
+  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable };
 }
 
 function hasDrift(drift) {
@@ -46,11 +59,12 @@ function manifestRev(projectRoot) {
   }
 }
 
-function renderStatus({ rows, drift, recovered_from }, projectRoot) {
+function renderStatus({ rows, drift, recovered_from, bd_reachable }, projectRoot) {
   const lines = ['| Instance | Role | Host | Model | Session | State |', '|---|---|---|---|---|---|'];
   for (const r of rows) lines.push(`| ${r.instance} | ${r.role} | ${r.host} | ${r.model} | ${r.session_id} | ${r.state} |`);
   lines.push('');
   if (projectRoot) { lines.push(`Manifest: ${projectRoot} at ${manifestRev(projectRoot)}`); lines.push(''); }
+  if (bd_reachable === false) { lines.push('Warning: bd unreachable from role directories: set BEADS_DIR or provision beads (phase 3)'); lines.push(''); }
   if (recovered_from) { lines.push(`Note: roster.json was unreadable and moved to ${recovered_from}; the roster restarts empty.`); lines.push(''); }
   if (!hasDrift(drift)) { lines.push('No drift.'); return lines.join('\n'); }
   lines.push('## Roster drift');

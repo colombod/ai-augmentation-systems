@@ -139,3 +139,19 @@ test('prepareRole warns when a code-touching role has no product repo', () => {
   const { files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
   assert.ok(files.includes('warning: no product worktree (pass --product-repo)'));
 });
+
+test('C: prepareRole writes BEADS_DIR when the project has .beads, never overwriting a user value', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  let { roleDir } = prepareRole({ projectRoot, instance: 'delivery-lead', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  const read = () => JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8'));
+  assert.equal(read().env.BEADS_DIR, undefined);
+  fs.mkdirSync(path.join(projectRoot, '.beads'));
+  ({ roleDir } = prepareRole({ projectRoot, instance: 'delivery-lead', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' }));
+  assert.equal(read().env.BEADS_DIR, path.join(projectRoot, '.beads'));
+  const s = read();
+  s.env.BEADS_DIR = '/custom/beads';
+  fs.writeFileSync(path.join(roleDir, '.claude', 'settings.local.json'), JSON.stringify(s));
+  prepareRole({ projectRoot, instance: 'delivery-lead', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  assert.equal(read().env.BEADS_DIR, '/custom/beads');
+});

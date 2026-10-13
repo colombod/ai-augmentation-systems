@@ -77,6 +77,9 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     DELIVERY_RUNNER: role.runner || 'plain',
     DELIVERY_MODE: role.mode || brief.meta.mode || 'default',
   });
+  // Hooks and bd run from the role directory, where bd cannot find the project database on its own.
+  const beadsDir = path.join(projectRoot, '.beads');
+  if (!settings.env.BEADS_DIR && fs.existsSync(beadsDir)) settings.env.BEADS_DIR = beadsDir;
   settings.enabledPlugins = Object.assign({}, settings.enabledPlugins, { 'delivery@ai-augmentation-systems': true });
   if (settings.permissions && typeof settings.permissions === 'object') {
     delete settings.permissions.defaultMode;

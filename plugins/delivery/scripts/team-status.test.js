@@ -79,3 +79,24 @@ test('renderStatus with a project root prints a Manifest line, "not a git repo" 
   const text = renderStatus(s, root);
   assert.ok(text.includes(`Manifest: ${root} at `));
 });
+
+test('C: an unreachable bd is a warning line, not drift', () => {
+  const root = scratchProject();
+  const warning = 'bd unreachable from role directories: set BEADS_DIR or provision beads (phase 3)';
+  const down = teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => false });
+  assert.equal(down.bd_reachable, false);
+  assert.ok(renderStatus(down).includes(warning));
+  const up = teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => true });
+  assert.ok(!renderStatus(up).includes(warning));
+  // CLI: no drift and no beads database at the project root still exits 0, with the warning.
+  const now = new Date().toISOString();
+  for (const [inst, model] of [['chief-of-staff', 'opus'], ['staffing', 'sonnet'], ['product-manager', 'opus'], ['delivery-lead', 'sonnet'], ['progress-observer', 'haiku'], ['spike-researcher', 'sonnet'], ['builder-1', 'sonnet'], ['builder-2', 'sonnet']]) {
+    registerInstance(root, { instance: inst, session_id: inst, host: 'pc', model, role_dir: '/x', now });
+  }
+  const { execFileSync } = require('child_process');
+  const env = { ...process.env, PATH: fs.mkdtempSync(path.join(os.tmpdir(), 'nobd-')) + path.delimiter + '/usr/bin' + path.delimiter + '/bin' };
+  delete env.BEADS_DIR;
+  const out = execFileSync(process.execPath, [path.join(__dirname, 'team-status.js'), '--project', root], { env, stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+  assert.ok(out.includes('No drift.'));
+  assert.ok(out.includes(warning));
+});

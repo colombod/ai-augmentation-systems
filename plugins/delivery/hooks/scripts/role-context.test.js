@@ -154,3 +154,26 @@ test('currentClaim returns the id alone when the item has no title', () => {
     process.env.PATH = prev;
   }
 });
+
+test('C: bdOptionsFor runs bd at the project root, defaults BEADS_DIR, falls back to the hook cwd', () => {
+  const { bdOptionsFor } = require('./role-context.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-bd-'));
+  const prev = process.env.BEADS_DIR;
+  delete process.env.BEADS_DIR;
+  try {
+    let o = bdOptionsFor({ project_root: root }, '/elsewhere');
+    assert.equal(o.cwd, root);
+    assert.equal(o.env.BEADS_DIR, undefined);
+    fs.mkdirSync(path.join(root, '.beads'));
+    o = bdOptionsFor({ project_root: root }, '/elsewhere');
+    assert.equal(o.env.BEADS_DIR, path.join(root, '.beads'));
+    process.env.BEADS_DIR = '/custom/beads';
+    assert.equal(bdOptionsFor({ project_root: root }, '/elsewhere').env.BEADS_DIR, '/custom/beads');
+    delete process.env.BEADS_DIR;
+    o = bdOptionsFor({ project_root: path.join(root, 'missing') }, '/elsewhere');
+    assert.equal(o.cwd, '/elsewhere');
+    assert.equal(o.env.BEADS_DIR, undefined);
+  } finally {
+    if (prev === undefined) delete process.env.BEADS_DIR; else process.env.BEADS_DIR = prev;
+  }
+});

@@ -97,3 +97,44 @@ test('A: bd-guard hook judges Monitor and PowerShell commands like Bash, and is 
   }
   assert.equal(runHook('bd-guard-hook.js', { cwd: roleDir, session_id: 's', tool_name: 'Monitor', tool_input: { command: 'bd close x --reason done' } }, { DELIVERY_ROLE: 'other' }), '');
 });
+
+// Final wave C: hooks run bd from the project root with BEADS_DIR defaulted, so bd is reachable
+// from a role directory. A probe `bd` records where it ran and what BEADS_DIR it saw.
+function probeBd(showJson, listJson) {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-bin-'));
+  const out = path.join(bin, 'probe.txt');
+  fs.writeFileSync(path.join(bin, 'bd'), `#!/bin/sh\n{ pwd -P; printf '%s\\n' "$BEADS_DIR"; } > "${out}"\ncase "$1" in\n  show) echo '${showJson}';;\n  list) echo '${listJson}';;\nesac\n`, { mode: 0o755 });
+  return { bin, out };
+}
+
+function runHookClean(script, input, env, unset) {
+  const full = { ...process.env, ...env };
+  for (const k of unset || []) delete full[k];
+  return execFileSync(process.execPath, [path.join(__dirname, script)], { input: JSON.stringify(input), env: full, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
+}
+
+test('C: bd-guard hook and Stop guard run bd at the project root with BEADS_DIR defaulted', () => {
+  const { projectRoot, roleDir } = preparedRole('builder-1');
+  fs.mkdirSync(path.join(projectRoot, '.beads'));
+  const live = new Date().toISOString();
+  const { bin, out } = probeBd(
+    JSON.stringify([{ id: 'ex-1', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: live }]),
+    JSON.stringify([{ id: 'ex-1', status: 'in_progress', assignee: 'tester@pc/builder-1', updated_at: '2000-01-01T00:00:00Z' }]),
+  );
+  const env = { DELIVERY_ROLE: 'builder-1', BEADS_ACTOR: 'tester@pc/builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+  const real = (p) => fs.realpathSync(p);
+  const d = runHookClean('bd-guard-hook.js', { cwd: roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'bd update ex-1 --claim' } }, env, ['BEADS_DIR']);
+  assert.match(JSON.parse(d).hookSpecificOutput.permissionDecisionReason, /claimed by bob@pc\/builder-2/);
+  let [cwd, beadsDir] = fs.readFileSync(out, 'utf8').split('\n');
+  assert.equal(cwd, real(projectRoot));
+  assert.equal(beadsDir, path.join(projectRoot, '.beads'));
+  require('./turn.js').markTurnStart(roleDir, new Date().toISOString());
+  const s = runHookClean('claim-stop.js', { cwd: roleDir, session_id: 's', stop_hook_active: false }, env, ['BEADS_DIR']);
+  assert.equal(JSON.parse(s).decision, 'block');
+  [cwd, beadsDir] = fs.readFileSync(out, 'utf8').split('\n');
+  assert.equal(cwd, real(projectRoot));
+  assert.equal(beadsDir, path.join(projectRoot, '.beads'));
+  // A BEADS_DIR the user set is kept.
+  runHookClean('claim-stop.js', { cwd: roleDir, session_id: 's', stop_hook_active: false }, { ...env, BEADS_DIR: '/custom/beads' });
+  assert.equal(fs.readFileSync(out, 'utf8').split('\n')[1], '/custom/beads');
+});
