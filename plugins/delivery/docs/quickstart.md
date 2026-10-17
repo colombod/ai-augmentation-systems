@@ -1,4 +1,6 @@
-# Start a shipping team
+# Start a shipping team: the manual way
+
+> **The quick way is `/delivery:start`.** Run it in an ordinary Claude Code session, outside any role directory. It checks the prerequisites, asks a few questions and runs `scripts/start.js`, which does steps 1 to 3 below for you and prints the commands for step 4. This page shows what it runs, with real output, and how to do each step by hand.
 
 This guide starts a small shipping team on one machine: a Chief of Staff, a Product Manager, a Delivery Lead and one builder. Each runs as its own Claude Code session in its own directory. You talk to the Chief of Staff; the others talk to it.
 
@@ -14,11 +16,82 @@ The planning pipeline (`/delivery:brief` and the rest) works on its own without 
 
 ## Prerequisites
 
+- Claude Code v2.1.224 or later, on macOS or Linux: the role sessions message each other.
+- Node 18 or later, and git.
 - `bd` (beads) on the PATH. `bd version` should answer.
-- `node` and `git`.
-- Claude Code with the delivery plugin installed: `/plugin install delivery@ai-augmentation-systems` (the repository README's Install section has the marketplace step). In the commands below, `<plugin-root>` is the plugin's directory: the `installPath` listed for `delivery@ai-augmentation-systems` in `~/.claude/plugins/installed_plugins.json`.
-- A **private project repo**, `<project-root>`. It holds strategy: the plan under `.delivery/`, the team manifest, and your recorded decisions.
-- A **product repo**, a local checkout at `<product-checkout>`. It holds code only. Builders get their own worktree of it.
+- The delivery plugin installed: `/plugin install delivery@ai-augmentation-systems` (the repository README's Install section has the marketplace step). In the commands below, `<plugin-root>` is the plugin's directory: the `installPath` listed for `delivery@ai-augmentation-systems` in `~/.claude/plugins/installed_plugins.json`.
+- A **private project repo**, `<project-root>`. It holds strategy: the plan under `.delivery/`, the team manifest, and your recorded decisions. `start.js` creates it (`git init`) when it does not exist; add a private remote so plans and records are pushed.
+- For an existing product, a **product repo**: a local checkout at `<product-checkout>`, or a clone URL that `start.js` clones next to the project repo as `<project>-product`. It holds code only. Builders get their own worktree of it.
+
+`node <plugin-root>/scripts/start.js --check` checks these and prints the fix for each one missing. It exits 1 when a hard prerequisite (node, git, bd, claude and its version) is missing; the plugin's install state and the project remote are warnings. On this machine:
+
+```
+delivery prerequisites
+  [pass] node: 26.5.0 (need 18 or later)
+  [pass] git: git version 2.54.0 (Apple Git-157)
+  [pass] bd (beads): bd version 1.2.2 (Homebrew)
+  [pass] claude (Claude Code): 2.1.287 (cross-session messaging needs 2.1.224 or later)
+  [warn] delivery plugin: installed 0.16.0 is older than this copy (0.20.0); the installed hooks may lack the shipping team. Fix: update it with /plugin
+All hard prerequisites are met.
+```
+
+## What `/delivery:start` runs
+
+The skill asks you for the project repo, the product repo, the host name, the preset and the permission mode, then runs `start.js` twice: a dry run to show you the plan, then the real run. All inputs are flags; the script never prompts.
+
+```
+node <plugin-root>/scripts/start.js --project <project-root> --host laptop --product-repo <product-checkout> --dry-run
+node <plugin-root>/scripts/start.js --project <project-root> --host laptop --product-repo <product-checkout>
+```
+
+Other flags: `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Lead, one builder; `full` adds Staffing, the Progress Observer and the Spike Researcher), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default: none, so each session uses your own Claude Code default), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
+
+The real run, against a throwaway fixture (paths shortened to placeholders):
+
+```
+delivery start: <project-root>
+  project repo: create <project-root> and run git init
+  manifest: write .delivery/team/team.json and .delivery/team/hosts.json: preset minimal, host "laptop", prefix "acme", roles chief-of-staff, product-manager, delivery-lead, builder
+  manifest: valid
+  product repo: using the checkout at <product-checkout>
+  manifest: committed (6f71b80)
+  beads: run bd init --prefix acme
+  roles (in <team-dir>):
+    chief-of-staff: prepared (opus)
+    product-manager: prepared (opus)
+    delivery-lead: prepared (sonnet)
+    builder: prepared (sonnet)
+
+Start each session in its own terminal, the Chief of Staff first:
+  cd <team-dir>/chief-of-staff && claude --name chief-of-staff
+  cd <team-dir>/product-manager && claude --name product-manager
+  cd <team-dir>/delivery-lead && claude --name delivery-lead
+  cd <team-dir>/builder && claude --name builder
+  (no --permission-mode: each session uses your own Claude Code default; pass --permission-mode to choose one)
+
+Then:
+  1. In every session, run /delivery:join.
+  2. Open the Chief of Staff session and talk to it. It is the only session you need to talk to.
+  3. /delivery:team shows who is live; ask the Chief of Staff for the question ledger to see every decision.
+```
+
+The dry run prints the same plan with "would" in front of each write, and writes nothing. Running it again is safe: an existing manifest is kept as it is (and `--preset`, `--host`, `--prefix` and `--runner` are not applied to it), `bd init` runs only when `.beads` is absent, and only roles without a prepared directory are prepared:
+
+```
+delivery start: <project-root>
+  project repo: exists
+  manifest: keeping the existing .delivery/team/team.json and .delivery/team/hosts.json (project "acme", 4 instance(s)); --preset, --host, --prefix and --runner are not applied to it
+  manifest: valid
+  product repo: none given; a builder prepared in this run gets no product worktree (pass --product-repo <path|url>)
+  beads: .beads exists; bd init skipped
+  roles (in <team-dir>):
+    chief-of-staff: already prepared
+    product-manager: already prepared
+    delivery-lead: already prepared
+    builder: already prepared
+```
+
+When `bd` is missing, `start.js` still prepares the roles and says how to finish: install `bd`, run `bd init --prefix <prefix>` in `<project-root>`, then run `prepare-role` (step 3) again for each instance so its settings get `BEADS_DIR`. `start.js` leaves an already prepared role as it is, so it does not do this part. The steps below are what `start.js` does, for doing them by hand.
 
 ## 1. Write the team manifest
 
@@ -37,7 +110,7 @@ Create `.delivery/team/team.json` and `.delivery/team/hosts.json` in `<project-r
     { "id": "chief-of-staff",  "brief": "delivery/chief-of-staff",  "host": "laptop", "model": "opus",   "mode": "delegate" },
     { "id": "product-manager", "brief": "delivery/product-manager", "host": "laptop", "model": "opus" },
     { "id": "delivery-lead",   "brief": "delivery/delivery-lead",   "host": "laptop", "model": "sonnet" },
-    { "id": "builder",         "brief": "delivery/builder",         "host": "laptop", "model": "sonnet", "runner": "superpowers", "steward": true }
+    { "id": "builder",         "brief": "delivery/builder",         "host": "laptop", "model": "sonnet", "runner": "plain", "steward": true }
   ]
 }
 ```
@@ -102,7 +175,7 @@ cd <team-dir>/chief-of-staff
 claude --permission-mode <mode> --name chief-of-staff
 ```
 
-`<mode>` is your choice for that role (`claude --help` lists the modes). The lane hook runs before every file write, shell command and MCP call. The model comes from the role's `settings.local.json`. Name each session after its instance: `/delivery:join` reports to the session named `chief-of-staff`. On start, the SessionStart hook injects the role, registers the session in the roster, and starts capturing what you type in that session.
+`<mode>` is your choice for that role (`claude --help` lists the modes). The lane hook runs before every file write, shell command and MCP call. The model comes from the role's `settings.local.json`. Name each session after its instance: `/delivery:join` reports to the session named `chief-of-staff`. On start, the SessionStart hook makes sure the role is loaded, registers the session in the roster, and starts capturing what you type in that session.
 
 ## 5. Join, then check the team
 
@@ -268,7 +341,7 @@ What `verify` proves and what it does not is listed under **Limits** in the READ
 
 ## What is not automated yet
 
-- **Provisioning, hiring and deploy are later phases.** Today you write `team.json`, run `prepare-role` for each instance, and start each session yourself.
+- **Provisioning, hiring and deploy are later phases.** `/delivery:start` writes the manifest and prepares the roles on this host, but you still start each session yourself, and adding a host or a role later means editing `team.json` and running `start.js` (or `prepare-role`) again.
 - **The roster is per host.** `/delivery:team` reports only the roles on the host it runs on.
 - **Nothing restarts a session for you.** When a session ends, start it again in its role directory; the SessionStart hook restores the role.
 

@@ -151,6 +151,15 @@ switch (cmd) {
     break;
   }
   case 'prime': process.stdout.write('fake-bd prime\n'); break;
+  case 'version': process.stdout.write('bd version 0.0.0-fake\n'); break;
+  case 'init': {
+    // what start.js relies on: a .beads directory in the working directory
+    const dir = require('path').join(process.cwd(), '.beads');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(require('path').join(dir, 'fake-config.json'), JSON.stringify({ prefix: flags.prefix || null }));
+    process.stdout.write(`fake-bd init ${flags.prefix || ''}\n`);
+    break;
+  }
   case 'ready': {
     const blocked = new Set(s.deps.filter((d) => s.issues[d.blocked_by] && s.issues[d.blocked_by].status !== 'closed').map((d) => d.id));
     const items = Object.values(s.issues).filter((b) => b.status === 'open' && !blocked.has(b.id));

@@ -1,16 +1,41 @@
 # delivery
 
-You supply **intent** — why this app exists, what it should do — and optionally a
-**design seed** for identity and look and feel. The plugin produces everything needed
-to reach implementation, scopes it into sprints, hands each one to whatever runner you
-choose, then independently reviews acceptance and re-aligns the plan.
+## Start here
+
+delivery gives you a team of Claude Code sessions, one per role, that plan and ship a product while you talk to only one of them, the **Chief of Staff**. You decide once: your exact words are recorded with proof that every session can check, so nobody asks you to repeat or pass anything on. Without a team, the same plugin is a planning pipeline that turns your intent into a brief, a PRD, an architecture, a roadmap and stories.
+
+### Prerequisites
+
+- Claude Code v2.1.224 or later, on macOS or Linux (the sessions message each other).
+- Node 18 or later, and git.
+- beads: `bd` on the PATH. **Beads** are the team's work items.
+- A private **project repo** (the plan, the team manifest, your decisions) and, for an existing product, its **product repo** (code only).
+- This plugin installed: `/plugin install delivery@ai-augmentation-systems`.
+
+`/delivery:start` checks all of these for you and names the fix for anything missing.
+
+### Start a new project in 3 steps
+
+1. **Install the plugin:** `/plugin install delivery@ai-augmentation-systems` (the repository README has the marketplace step).
+2. **Run `/delivery:start`** in an ordinary Claude Code session, outside any role directory. It asks for the project repo, the product repo, the host name, the preset and the permission mode, shows a dry run, then writes the team manifest, creates the beads database, prepares one directory per role and prints the command that starts each session.
+3. **Start the printed sessions,** run `/delivery:join` in each, then open the Chief of Staff session and talk to it.
+
+### Using the team
+
+- **Talk to the Chief of Staff.** It is your one contact. Other sessions send their questions to it; it answers from what you already decided and asks you the rest once, in one ranked briefing.
+- **Who does what.** Product Manager: what to build and why, the plan documents. Delivery Lead: turns the plan into beads and runs the work. Builders: build in their own worktree of the product repo. The `full` preset adds Staffing (the roster), the Progress Observer (keeps the record true) and the Spike Researcher (technical unknowns).
+- **See progress** with `/delivery:team` in any session (who is live, stale or missing), or ask the Chief of Staff for a briefing.
+- **Decisions are recorded and verified.** `operator.js ledger` lists every question the team asked you and its answer; a session runs `operator.js verify <record id>` to see your exact words before it acts.
+- **When something blocks,** the refusal names the way out. See [Troubleshooting](docs/quickstart.md#troubleshooting).
+
+### Use the planning pipeline without a team
+
+Run the pipeline skills yourself, from `/delivery:brief` on: see [The pipeline](#the-pipeline) and [Which skill do I run when?](#which-skill-do-i-run-when).
 
 ## What you get
 
-A team of long-lived Claude Code sessions, one per role, that plans and ships a product while you talk to only one of them: the **Chief of Staff**, the session whose job is to protect your time.
-
-- **Your time and attention are protected.** Other sessions send their questions to the Chief of Staff, which answers from what you already decided and brings you only what only you can decide, once, in one ranked briefing.
-- **You decide once, and the decision carries proof.** Your exact words are recorded and get a **record id** (such as `dec-chief-of-staff-000004`); any session can check that id and see your words, so nobody asks you to repeat or pass anything on.
+- **Your time and attention are protected.** Only what only you can decide reaches you, once, in one ranked briefing.
+- **You decide once, and the decision carries proof.** Each decision gets a **record id** (such as `dec-chief-of-staff-000004`) that any session can check against your exact words.
 - **Roles cannot do each other's jobs.** Each role has a **lane** (the files it may edit and the commands it may run), and hooks refuse anything outside it.
 - **You choose the model, and so the cost, per role.** For example opus for the Chief of Staff, sonnet for builders, haiku for the Progress Observer; `builders_cap` limits how many builders run.
 - **One source of truth for the work.** The planning documents are the plan, and `/delivery:materialise` turns them into **beads** (work items in the `bd` issue tracker) and reports drift between the two.
@@ -63,9 +88,11 @@ A team of long-lived Claude Code sessions, one per role, that plans and ships a 
 
 ## Documentation map
 
-- **This README, top part:** what you get, how it works, and why it exists.
-- **[docs/quickstart.md](docs/quickstart.md):** start a shipping team on one machine, step by step, with a worked example and troubleshooting.
-- **Reference, from "The pipeline" down:** every phase, mechanism, limit and artifact. Read it when you need the detail.
+- **Start here** (above): prerequisites, the three steps, how to use the team.
+- **What you get, the picture, four things to know** (above): how it works and why it helps.
+- **`/delivery:start`** (`skills/start/SKILL.md`, driving `scripts/start.js`): the guided start.
+- **[docs/quickstart.md](docs/quickstart.md):** the manual way, what `start.js` does step by step, one decision traced with real output, and troubleshooting.
+- **Reference, from "Why this exists" down:** every phase, mechanism, limit and artifact. Read it when you need the detail.
 
 ## Why this exists
 
@@ -79,6 +106,11 @@ mostly won't use. Neither models the **customer**, and neither closes the loop b
 checking whether what shipped was any good.
 
 ## The pipeline
+
+You supply **intent** — why this app exists, what it should do — and optionally a
+**design seed** for identity and look and feel. The plugin produces everything needed
+to reach implementation, scopes it into sprints, hands each one to whatever runner you
+choose, then independently reviews acceptance and re-aligns the plan.
 
 **This package does not build.** Implementation belongs to an external runner —
 [superpowers](https://github.com/obra/superpowers), your own harness, an agent, a team.
@@ -131,6 +163,7 @@ Pipeline skills plan the product: run them yourself, in order. In a shipping tea
 | The wave was built | `/delivery:sprint-review`, then `/delivery:realign` | pipeline |
 | Before you commit to any document | `/delivery:challenge` | pipeline, any gate |
 | You want to know where the plan stands | `/delivery:status` | pipeline, read-only |
+| You want a shipping team for a project | `/delivery:start` | team, in your own ordinary session |
 | A role session has just started in its role directory | `/delivery:join` | team, every role session |
 | You want to see who is live, stale or missing | `/delivery:team` | team, read-only |
 | The operator spoke, or a session needs an operator decision | `/delivery:decision` | team, the Chief of Staff |
@@ -138,7 +171,7 @@ Pipeline skills plan the product: run them yourself, in order. In a shipping tea
 
 ## The shipping team
 
-**In short.** The pipeline's roles run as long-lived sessions, one per role, each in its own prepared directory. They coordinate through cross-session messages and beads, and you talk only to the Chief of Staff. Each session's role is restored by hooks on every start and compaction, and its lane is checked before every file write, shell command and MCP call. A builder works in its own worktree of the product repo, where commit and PR text is checked against the denylist and plan files are refused. To start one, follow [docs/quickstart.md](docs/quickstart.md).
+**In short.** The pipeline's roles run as long-lived sessions, one per role, each in its own prepared directory. They coordinate through cross-session messages and beads, and you talk only to the Chief of Staff. Each session's role is restored by hooks on every start and compaction, and its lane is checked before every file write, shell command and MCP call. A builder works in its own worktree of the product repo, where commit and PR text is checked against the denylist and plan files are refused. To start one, run `/delivery:start`; [docs/quickstart.md](docs/quickstart.md) has the manual way.
 
 **Reference.** The bullets below list every mechanism; read them when you need the detail.
 

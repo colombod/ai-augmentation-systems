@@ -11,6 +11,7 @@ const PLUGIN_ROOT = path.join(__dirname, '..');
 const read = (...p) => fs.readFileSync(path.join(PLUGIN_ROOT, ...p), 'utf8');
 const README = read('README.md');
 const QUICKSTART = read('docs', 'quickstart.md');
+const START_SKILL = read('skills', 'start', 'SKILL.md');
 
 function section(text, heading) {
   const start = text.indexOf(`\n${heading}\n`);
@@ -20,8 +21,8 @@ function section(text, heading) {
   return next < 0 ? rest : rest.slice(0, next);
 }
 
-test('README opens with what you get, the picture and the four things, before "Why this exists"', () => {
-  const order = ['## What you get', '## How it works in one picture', '## Four things to know', '## Documentation map', '## Why this exists'];
+test('README opens with Start here, what you get, the picture and the four things, before "Why this exists"', () => {
+  const order = ['## Start here', '## What you get', '## How it works in one picture', '## Four things to know', '## Documentation map', '## Why this exists'];
   const at = order.map((h) => README.indexOf(`\n${h}\n`));
   for (let i = 0; i < order.length; i++) assert.ok(at[i] > 0, `missing ${order[i]}`);
   for (let i = 1; i < order.length; i++) assert.ok(at[i - 1] < at[i], `${order[i - 1]} must come before ${order[i]}`);
@@ -85,5 +86,42 @@ test('front-door docs carry no local paths or personal data', () => {
     const emails = [...text.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.(?:com|org|net|io)\b/g)].map((m) => m[0])
       .filter((e) => !e.startsWith('git@') && !/@example\./.test(e) && !/^noreply@/.test(e));
     assert.deepStrictEqual(emails, [], `${name} carries an email address`);
+  }
+});
+
+test('README "Start here": first, short, with prerequisites, three steps and how to use the team', () => {
+  const firstH2 = README.indexOf('\n## ');
+  assert.equal(firstH2, README.indexOf('\n## Start here\n'), 'Start here is the first section');
+  const body = section(README, '## Start here');
+  assert.ok(body.split('\n').length <= 40, `Start here is ${body.split('\n').length} lines; keep it at 40 or fewer`);
+  for (const h of ['### Prerequisites', '### Start a new project in 3 steps', '### Using the team', '### Use the planning pipeline without a team']) assert.ok(body.includes(h), h);
+  const steps = section(body.replace(/^/, '\n'), '### Start a new project in 3 steps') || body.slice(body.indexOf('### Start a new project in 3 steps'));
+  for (const n of ['1. ', '2. ', '3. ']) assert.ok(steps.includes(`\n${n}`), `step ${n}`);
+  assert.match(steps, /\/delivery:start/);
+  for (const need of ['v2.1.224', 'Node 18', 'git', '`bd`', 'project repo', 'product repo', '/plugin install delivery@ai-augmentation-systems']) assert.ok(body.includes(need), `prerequisites name ${need}`);
+});
+
+test('start.js: every flag the docs and the start skill name is one start.js accepts, and the check minimums match', () => {
+  const src = read('scripts', 'start.js');
+  const known = /const KNOWN = new Set\(\[([^\]]*)\]\)/.exec(src);
+  assert.ok(known, 'start.js declares KNOWN');
+  const accepted = new Set([...known[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]));
+  let seen = 0;
+  // a line that runs start.js, or the quickstart's list of its other flags: every --flag after it must exist
+  for (const [name, text] of [['docs/quickstart.md', QUICKSTART], ['README.md', README], ['skills/start/SKILL.md', START_SKILL]]) {
+    for (const line of text.split('\n')) {
+      const at = line.startsWith('Other flags:') ? 0 : line.indexOf('start.js');
+      if (at < 0) continue;
+      for (const m of line.slice(at).matchAll(/(?<![\w-])--([a-z][a-z-]*)/g)) {
+        seen++;
+        assert.ok(accepted.has(m[1]), `${name} names start.js --${m[1]}, which start.js does not accept`);
+      }
+    }
+  }
+  assert.ok(seen > 5);
+  const { MIN_CLAUDE, MIN_NODE_MAJOR } = require('./start.js');
+  for (const text of [README, QUICKSTART]) {
+    assert.ok(text.includes(`v${MIN_CLAUDE.join('.')}`), 'docs state the Claude Code minimum start.js checks');
+    assert.ok(text.includes(`Node ${MIN_NODE_MAJOR}`), 'docs state the Node minimum start.js checks');
   }
 });
