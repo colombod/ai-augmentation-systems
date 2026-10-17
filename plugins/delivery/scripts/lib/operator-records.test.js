@@ -713,11 +713,14 @@ test('publish includes the records file and LEDGER.md, and survives a rejected p
   // both wrote a different LEDGER.md; B's push is rejected, the derived ledger conflict heals, push succeeds
   const pb = log.publish(hostb, { force: true, host: 'hostb', instance: 'product-manager' });
   assert.strictEqual(pb.published, true, JSON.stringify(pb));
-  const tracked = git(hostb, 'ls-files', '.delivery/operator');
+  // the recovery never merges into the checkout: the upstream holds both chains, and the other
+  // writer's chain reaches hostb's working tree through refresh (operator paths only)
+  const tracked = git(hostb, 'ls-tree', '-r', '--name-only', 'origin/main', '--', '.delivery/operator');
   assert.match(tracked, /records\/product-manager\.ndjson/);
   assert.match(tracked, /records\/chief-of-staff\.ndjson/);
   assert.match(tracked, /LEDGER\.md/);
   assert.ok(!/cursors/.test(tracked));
+  assert.ok(fs.existsSync(path.join(hostb, '.delivery', 'operator', 'records', 'chief-of-staff.ndjson')));
 });
 
 // ===================== trust hardening (fix round 1) =====================

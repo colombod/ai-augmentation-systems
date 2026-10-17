@@ -551,9 +551,15 @@ hook creates the boundary instead (no SessionStart was seen), nothing captured i
 invocation is marked pre-role.
 
 **Rulings on parked items.**
-- *Role-directory clone and `git merge @{u}`.* When a rejected push is retried, the merge can bring
-  upstream's unrelated tracked files into the role directory's project clone. Accepted: that clone is
-  machine-managed and never edited by hand; `prepare-role` reconciles it.
+- *Rejected pushes (superseded ruling).* Recovery used to merge the whole upstream into the
+  checkout and to delete or reset other writers' operator files first. Role sessions write through
+  the operator's own project checkout (`marker.project_root`), shared by every local role, so that
+  pulled unrelated work into the operator's branch and could delete another session's unpublished
+  records. Recovery now never merges into, deletes from or resets the checkout: it fetches, builds
+  the next upstream commit with git plumbing (a temporary index seeded from upstream plus this
+  writer's own committed chain files, each checked append-only against the upstream copy, a fork
+  refused), pushes that commit, then refreshes operator paths only. The checkout's branch keeps its
+  own operator commits (content already upstream); a later pull merges them without conflict.
 - *Lock deadline and stale threshold.* A writer waits at most 2 s for a chain lock, and a lock is
   treated as stale after 10 s; pid liveness is not checked (pids are host-local). A crashed writer's
   fresh lock therefore refuses writes for up to 10 s with a retryable error; hooks fail open.

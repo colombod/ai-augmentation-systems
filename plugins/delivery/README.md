@@ -253,7 +253,7 @@ Prompts typed before a session became the role (a resumed or adopted session) ar
 - `records/<instance>.ndjson`: decisions, delegations, answers, acks, questions and ratifications, written only by `operator.js`;
 - `LEDGER.md`: the question ledger, generated from the records.
 
-Each chain file has exactly one writer, so git never merges a chain. `operator.js problems` lists anything that fails verification.
+Each chain file has exactly one writer, so git never merges a chain. When a push is rejected because another writer pushed first, `publish` builds the next commit on top of the upstream with git plumbing (only this writer's own chain files, checked append-only) and pushes that. It never merges into, deletes from or resets your checkout, so other sessions' unpublished files and your unrelated work stay as they were. `operator.js problems` lists anything that fails verification.
 
 **Limits.** This is tamper-evidence for cooperative sessions, not a security boundary.
 - **Files can be rewritten.** A session with unrestricted Bash can rewrite and re-hash the files. The hash chains, the recorded heads and the git history make that detectable; they do not prevent it.

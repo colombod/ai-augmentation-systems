@@ -374,9 +374,27 @@ function verifyInputs(projectRoot, opts = {}) {
 
 // ---- publish / refresh (best effort, never throw) ----
 
-function git(cwd, args) {
-  const r = cp.spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60000 });
-  return { ok: r.status === 0, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
+// Output keeps its leading whitespace: porcelain status lines start with a status column that may be
+// a space (' M path'), and trimming it shifts every column after it.
+function git(cwd, args, o = {}) {
+  const r = cp.spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60000, maxBuffer: 256 * 1024 * 1024, env: o.env ? { ...process.env, ...o.env } : process.env, input: o.input });
+  return { ok: r.status === 0, out: (r.stdout || '').replace(/\s+$/, ''), err: (r.stderr || '').trim() };
+}
+
+// git status entries under rels, parsed from -z output: [{ code: 'XY', path }].
+function porcelain(root, rels) {
+  const r = cp.spawnSync('git', ['status', '--porcelain', '-z', '--untracked-files=all', '--', ...rels], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0) return [];
+  const parts = (r.stdout || '').split('\0');
+  const out = [];
+  for (let i = 0; i < parts.length; i++) {
+    const e = parts[i];
+    if (e.length < 4) continue;
+    const code = e.slice(0, 2);
+    out.push({ code, path: e.slice(3) });
+    if (code[0] === 'R' || code[0] === 'C') i++; // the rename source follows
+  }
+  return out;
 }
 
 const OP_PATH = '.delivery/operator';
@@ -500,48 +518,77 @@ function publishInner(projectRoot, opts = {}) {
     const push = () => git(projectRoot, ['push', up.remote, `HEAD:${up.branch}`]);
     let r = push();
     if (!r.ok) {
-      // rejected: fetch, merge the upstream (path-scoped work was verified above) and retry once
+      // Rejected: another writer pushed first. Never merge into, delete from or reset this checkout
+      // (for a role session it is the operator's own project checkout, shared by every local role,
+      // so its untracked operator files can be another session's unpublished records). Build the
+      // next upstream commit with git plumbing instead: upstream's tree plus this writer's own
+      // committed chain files, checked append-only against upstream, and push that.
       const f = git(projectRoot, ['fetch', up.remote]);
       if (!f.ok) return no(f.err || 'fetch failed');
       if (unrelated().length) return no('unpushed unrelated commits', { paths: unrelated() });
-      // other writers' files refreshed earlier are derived copies: drop them so the merge can bring them
-      const ownPrefixes = [hostRel + '/', `${OP_PATH}/records/${opts.instance}.ndjson`, `${OP_PATH}/.gitignore`, `${OP_PATH}/LEDGER.md`];
-      const st = git(projectRoot, ['status', '--porcelain', '--untracked-files=all', '--', OP_PATH]);
-      for (const l of st.out ? st.out.split('\n') : []) {
-        const p = l.slice(3);
-        if (!p.startsWith(OP_PATH + '/') || ownPrefixes.some((o) => p.startsWith(o))) continue;
-        if (l.startsWith('??')) { try { fs.unlinkSync(path.join(projectRoot, p)); } catch (e) { /* ignore */ } }
-        else git(projectRoot, ['checkout', 'HEAD', '--', p]);
-      }
-      const m = git(projectRoot, ['merge', '--no-edit', '--no-verify', '--no-gpg-sign', '@{u}']);
-      if (!m.ok) {
-        // the generated ledger can conflict when two hosts wrote concurrently: it is derived, take
-        // the upstream copy (the next write regenerates it); anything else aborts the merge
-        const un = git(projectRoot, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
-        const ledger = `${OP_PATH}/LEDGER.md`;
-        let healed = false;
-        if (un.length && un.every((p) => p === ledger)) {
-          const co = git(projectRoot, ['checkout', '--theirs', '--', ledger]);
-          const ad = co.ok ? git(projectRoot, ['add', '--', ledger]) : co;
-          const cm = ad.ok ? git(projectRoot, ['commit', '--no-edit', '--no-verify', '--no-gpg-sign']) : ad;
-          healed = cm.ok;
-        }
-        if (!healed) {
-          git(projectRoot, ['merge', '--abort']);
-          const recFile = opts.instance ? `${OP_PATH}/records/${opts.instance}.ndjson` : null;
-          if (recFile && un.includes(recFile)) {
-            return no(`records chain forked: another writer appended to records/${opts.instance}.ndjson`, { forked: recFile });
-          }
-          const inputsHit = un.find((p) => p.startsWith(hostRel + '/'));
-          if (inputsHit) return no(`inputs chain forked: another writer appended to ${inputsHit.slice(OP_PATH.length + 1)}`, { forked: inputsHit });
-          return no(m.err || m.out || 'merge failed');
-        }
-      }
-      r = push();
+      const rec = publishOnUpstream(projectRoot, up, own, opts, n);
+      if (!rec.ok) return no(rec.reason, rec.extra || {});
+      r = rec;
+      // bring other writers' files into the working tree, operator paths only, never over local appends
+      if (r.ok) { try { refresh(projectRoot, { host: opts.host, instance: opts.instance, fetch: false }); } catch (e) { /* best effort */ } }
     }
     return r.ok ? { ok: true, published: true, entries: n } : no(r.err);
   } catch (e) {
     return no(String(e && e.message || e));
+  }
+}
+
+// Commit this writer's own committed operator files on top of the upstream tip, without touching
+// the working tree or the branch: a temporary index seeded from upstream, the own files' HEAD
+// contents added after an append-only check (the upstream copy must be a prefix of ours, else the
+// chain forked), commit-tree on upstream, push the commit. { ok, reason?, extra? }.
+function publishOnUpstream(projectRoot, up, own, opts, n) {
+  const idx = path.join(os.tmpdir(), `operator-publish-${process.pid}-${Date.now()}.index`);
+  const env = { GIT_INDEX_FILE: idx };
+  try {
+    const listed = git(projectRoot, ['ls-tree', '-r', '--name-only', 'HEAD', '--', ...own]);
+    const files = listed.out ? listed.out.split('\n').filter(Boolean) : [];
+    const rt = git(projectRoot, ['read-tree', up.ref], { env });
+    if (!rt.ok) return { ok: false, reason: rt.err || 'read-tree failed' };
+    const recFile = opts.instance ? `${OP_PATH}/records/${opts.instance}.ndjson` : null;
+    const hostRel = `${OP_PATH}/inputs/${safeHost(opts.host)}/`;
+    const forks = [];
+    for (const p of files) {
+      const ours = cp.spawnSync('git', ['show', `HEAD:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+      if (ours.status !== 0) continue;
+      const theirs = cp.spawnSync('git', ['show', `${up.ref}:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+      const derived = p === `${OP_PATH}/.gitignore` || p === `${OP_PATH}/LEDGER.md`;
+      if (!derived && theirs.status === 0) {
+        if (theirs.stdout.startsWith(ours.stdout)) continue; // upstream already holds all of ours
+        if (!ours.stdout.startsWith(theirs.stdout)) { forks.push(p); continue; }
+      }
+      const blob = git(projectRoot, ['hash-object', '-w', '--stdin'], { input: ours.stdout });
+      if (!blob.ok) return { ok: false, reason: blob.err || 'hash-object failed' };
+      const ui = git(projectRoot, ['update-index', '--add', '--cacheinfo', `100644,${blob.out},${p}`], { env });
+      if (!ui.ok) return { ok: false, reason: ui.err || 'update-index failed' };
+    }
+    if (forks.length) {
+      // the records chain is named first: it is the one writes are refused on
+      if (recFile && forks.includes(recFile)) return { ok: false, reason: `records chain forked: another writer appended to records/${opts.instance}.ndjson`, extra: { forked: recFile } };
+      const hit = forks.find((p) => p.startsWith(hostRel));
+      if (hit) return { ok: false, reason: `inputs chain forked: another writer appended to ${hit.slice(OP_PATH.length + 1)}`, extra: { forked: hit } };
+      return { ok: false, reason: `${forks[0]} differs from the upstream copy; nothing was pushed`, extra: { forked: forks[0] } };
+    }
+    const tree = git(projectRoot, ['write-tree'], { env });
+    const upTree = git(projectRoot, ['rev-parse', `${up.ref}^{tree}`]);
+    if (!tree.ok || !upTree.ok) return { ok: false, reason: tree.err || upTree.err || 'write-tree failed' };
+    if (tree.out === upTree.out) return { ok: true, published: true, entries: n };
+    const upTip = git(projectRoot, ['rev-parse', up.ref]);
+    const c = git(projectRoot, ['commit-tree', tree.out, '-p', upTip.out, '-m', `operator: ${n} entries`]);
+    if (!c.ok) return { ok: false, reason: c.err || 'commit-tree failed' };
+    const push = git(projectRoot, ['push', up.remote, `${c.out}:refs/heads/${up.branch}`]);
+    if (!push.ok) return { ok: false, reason: push.err || 'push rejected' };
+    git(projectRoot, ['fetch', up.remote]);
+    return { ok: true, published: true, entries: n };
+  } catch (e) {
+    return { ok: false, reason: String(e && e.message || e) };
+  } finally {
+    try { fs.unlinkSync(idx); } catch (e) { /* gone */ }
   }
 }
 
@@ -557,10 +604,9 @@ function unpublished(projectRoot, opts = {}) {
     let count = 0;
     const d = git(projectRoot, ['diff', '--numstat', '@{u}', '--', ...rels]);
     for (const l of d.out ? d.out.split('\n') : []) count += Number(l.split('\t')[0]) || 0;
-    const st = git(projectRoot, ['status', '--porcelain', '--untracked-files=all', '--', ...rels]);
-    for (const l of st.out ? st.out.split('\n') : []) {
-      if (!l.startsWith('??')) continue;
-      try { count += fs.readFileSync(path.join(projectRoot, l.slice(3)), 'utf8').split('\n').filter(Boolean).length; } catch (e) { /* gone */ }
+    for (const e of porcelain(projectRoot, rels)) {
+      if (e.code !== '??') continue;
+      try { count += fs.readFileSync(path.join(projectRoot, e.path), 'utf8').split('\n').filter(Boolean).length; } catch (x) { /* gone */ }
     }
     return { count, reason: count ? 'not pushed to ' + up.ref : null };
   } catch (e) {
@@ -568,4 +614,4 @@ function unpublished(projectRoot, opts = {}) {
   }
 }
 
-module.exports = { roleBoundary, roleSince, headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };
+module.exports = { porcelain, roleBoundary, roleSince, headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };
