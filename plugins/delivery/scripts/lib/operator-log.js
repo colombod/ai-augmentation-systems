@@ -113,20 +113,40 @@ function loadIndex(root, host) {
 
 // Local-only record of how long each host chain was and its last hash, so a deleted tail
 // is detectable (a pure hash chain cannot see its own truncation).
-// When this session became the role: the first time the capture hook saw this session id in the
-// role directory (SessionStart always runs first in a role session, so earlier transcript lines are
-// prompts from before the session was a role). Kept in <roleDir>/.delivery-role-since.json as
-// { session_id, since }; a new session id starts a new one. create:false only reads.
-function roleSince(roleDir, sessionId, { now, create = true } = {}) {
-  if (!roleDir || !sessionId) return null;
+// When this session became the role: the first time a capture hook saw this session id in the role
+// directory (SessionStart always runs first in a role session, so earlier transcript lines are
+// prompts from before the session was a role). <roleDir>/.delivery-role-since.json holds
+// { sessions: { <session id>: <ISO time> } }: one entry per session, never overwritten, updated
+// atomically under a lock, the oldest pruned beyond ROLE_SINCE_KEEP. roleBoundary returns
+// { since, created } (created: this call wrote it); create:false only reads.
+const ROLE_SINCE_KEEP = 32;
+function roleBoundary(roleDir, sessionId, { now, create = true } = {}) {
+  if (!roleDir || !sessionId) return { since: null, created: false };
   const f = path.join(roleDir, '.delivery-role-since.json');
-  const cur = readJson(f);
-  if (cur && cur.session_id === sessionId && typeof cur.since === 'string' && !Number.isNaN(Date.parse(cur.since))) return cur.since;
-  if (!create) return null;
-  const since = new Date(now || Date.now()).toISOString();
-  try { fs.writeFileSync(f, `${JSON.stringify({ session_id: sessionId, since })}\n`); } catch (e) { return null; }
-  return since;
+  const valid = (t) => typeof t === 'string' && !Number.isNaN(Date.parse(t));
+  const read = () => {
+    const cur = readJson(f);
+    if (cur && plainObject(cur.sessions)) return { ...cur.sessions };
+    // the first version kept one { session_id, since }
+    if (cur && typeof cur.session_id === 'string' && valid(cur.since)) return { [cur.session_id]: cur.since };
+    return {};
+  };
+  const have = read()[sessionId];
+  if (valid(have)) return { since: have, created: false };
+  if (!create) return { since: null, created: false };
+  try {
+    return chain.withLock(f + '.lock', () => {
+      const sessions = read();
+      if (valid(sessions[sessionId])) return { since: sessions[sessionId], created: false };
+      const since = new Date(now || Date.now()).toISOString();
+      sessions[sessionId] = since;
+      const keep = Object.entries(sessions).filter(([, t]) => valid(t)).sort((a, b) => Date.parse(b[1]) - Date.parse(a[1])).slice(0, ROLE_SINCE_KEEP);
+      writeJsonAtomic(f, { sessions: Object.fromEntries(keep) });
+      return { since, created: true };
+    });
+  } catch (e) { return { since: null, created: false }; }
 }
+function roleSince(roleDir, sessionId, opts = {}) { return roleBoundary(roleDir, sessionId, opts).since; }
 
 function headsFile(root) { return path.join(opDir(root), 'cursors', 'heads.json'); }
 const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -548,4 +568,4 @@ function unpublished(projectRoot, opts = {}) {
   }
 }
 
-module.exports = { roleSince, headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };
+module.exports = { roleBoundary, roleSince, headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };

@@ -183,7 +183,7 @@ test('I4: prompts typed before the session became the role are stored and citabl
   assert.equal(res.added, 2);
   assert.deepEqual(res.pending, []);
   const since = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role-since.json'), 'utf8'));
-  assert.deepEqual(since, { session_id: SID, since: '2026-10-17T08:00:00.000Z' });
+  assert.deepEqual(since, { sessions: { [SID]: '2026-10-17T08:00:00.000Z' } });
   // a prompt typed as the role arrives later in the same transcript
   fs.appendFileSync(tr, JSON.stringify(human('use postgres for the orders store', 3)) + '\n');
   withEnv({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: undefined }, () => captureFromHookInput({ ...input, hook_event_name: 'UserPromptSubmit' }, PLUGIN_ROOT, { now: '2026-10-17T08:05:00.000Z' }));
@@ -200,4 +200,34 @@ test('I4: prompts typed before the session became the role are stored and citabl
   assert.equal(R.verifyRecord(projectRoot, d.id).ok, true);
   // a new session id in the same role directory starts a new boundary
   assert.equal(log.roleSince(roleDir, 'another-session', { now: '2026-10-18T00:00:00.000Z' }), '2026-10-18T00:00:00.000Z');
+});
+
+test('Copilot 4: SessionStart sets the boundary even without a transcript, so the first prompt is pending', () => {
+  const R = require('../../scripts/lib/operator-records.js');
+  const run = (input, now) => withEnv({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: undefined }, () => captureFromHookInput(input, PLUGIN_ROOT, { now }));
+  const { projectRoot, roleDir } = preparedRole('chief-of-staff');
+  run({ cwd: roleDir, session_id: SID, hook_event_name: 'SessionStart' }, '2026-10-17T08:00:00.000Z');
+  const first = { ...human('use postgres for the store', 1), timestamp: '2026-10-17T08:01:00.000Z' };
+  const tr = transcript([first]);
+  run({ cwd: roleDir, session_id: SID, transcript_path: tr, hook_event_name: 'UserPromptSubmit' }, '2026-10-17T08:02:00.000Z');
+  assert.deepEqual(R.pending(projectRoot, {}).inputs.map((e) => e.id), ['in-pc-000001']);
+  // no SessionStart seen at all: inputs captured by the invocation that creates the boundary are never pre-role
+  const b = preparedRole('chief-of-staff');
+  const tr2 = transcript([{ ...human('ship the checkout flow', 2), timestamp: '2026-10-17T09:00:00.000Z' }]);
+  run({ cwd: b.roleDir, session_id: SID, transcript_path: tr2, hook_event_name: 'UserPromptSubmit' }, '2026-10-17T09:00:05.000Z');
+  assert.deepEqual(R.pending(b.projectRoot, {}).inputs.map((e) => e.id), ['in-pc-000001']);
+});
+
+test('Copilot 5: boundaries are kept per session: another session in the same role directory does not reset one', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap-since-'));
+  assert.equal(log.roleSince(dir, 'A', { now: '2026-10-17T08:00:00.000Z' }), '2026-10-17T08:00:00.000Z');
+  assert.equal(log.roleSince(dir, 'B', { now: '2026-10-17T09:00:00.000Z' }), '2026-10-17T09:00:00.000Z');
+  assert.equal(log.roleSince(dir, 'A', { now: '2026-10-17T10:00:00.000Z' }), '2026-10-17T08:00:00.000Z', 'A keeps its boundary');
+  assert.equal(log.roleSince(dir, 'B', { now: '2026-10-17T11:00:00.000Z' }), '2026-10-17T09:00:00.000Z');
+  // pruned by count, the oldest first
+  for (let i = 0; i < 40; i++) log.roleSince(dir, `s${i}`, { now: new Date(Date.parse('2026-10-18T00:00:00Z') + i * 1000).toISOString() });
+  const file = JSON.parse(fs.readFileSync(path.join(dir, '.delivery-role-since.json'), 'utf8'));
+  assert.ok(Object.keys(file.sessions).length <= 32);
+  assert.ok(file.sessions.s39);
+  assert.equal(file.sessions.A, undefined);
 });

@@ -57,13 +57,24 @@ function captureFromHookInput(input, pluginRoot, deps = {}) {
       } catch (err) { problems.push(`cannot record the transcript in the roster (${err.message})`); }
     }
 
+    // The session's role boundary is fixed by the first hook that sees it (SessionStart), whether or
+    // not a transcript exists yet. When some later hook creates it instead (no SessionStart seen),
+    // nothing captured by that same invocation is marked pre-role: the prompt that triggered it may
+    // be dated a moment before the hook ran.
+    let boundary = { since: null, created: false };
+    if (sessionId) {
+      try { boundary = require('../../scripts/lib/operator-log.js').roleBoundary(roleDir, sessionId, { now }); } catch (err) { /* no boundary: nothing is pre-role */ }
+    }
+    const firstSight = boundary.created && inp.hook_event_name !== 'SessionStart';
+
     let added = 0;
     let status = transcriptPath && fs.existsSync(transcriptPath) ? 'ok' : 'no_transcript';
     if (status === 'ok') {
       try {
         const sync = deps.syncTranscript || require('../../scripts/lib/operator-log.js').syncTranscript;
         const sid = sessionId || path.basename(transcriptPath).replace(/\.jsonl$/, '');
-        const roleSince = require('../../scripts/lib/operator-log.js').roleSince(roleDir, sid, { now });
+        const opLog = require('../../scripts/lib/operator-log.js');
+        const roleSince = firstSight ? null : (sessionId ? boundary.since : opLog.roleSince(roleDir, sid, { now }));
         const r = sync({ projectRoot, transcriptPath, sessionId: sid,
           instance: marker.instance, role: role.id, host: role.host, roleSince });
         added = (r && r.added) || 0;

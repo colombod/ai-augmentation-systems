@@ -542,9 +542,13 @@ after a plugin-cache version move the operator.js rules name the old path until 
 again.
 
 **Ruling: prompts from before the role.** A session resumed or adopted into a role directory has
-earlier human prompts in its transcript. The first capture of a session id in a role directory writes
-`<roleDir>/.delivery-role-since.json`; inputs dated earlier are stored and citable (`record --cite`
-works on request) but carry `pre_role: true` and never appear in `pending` or block a Stop.
+earlier human prompts in its transcript. The first hook that sees a session id in a role directory
+(SessionStart, with or without a transcript yet) records that session's boundary in
+`<roleDir>/.delivery-role-since.json`, one entry per session id, never overwritten, written under a
+lock and pruned to the newest 32. Inputs dated earlier are stored and citable (`record --cite` works
+on request) but carry `pre_role: true` and never appear in `pending` or block a Stop. When a later
+hook creates the boundary instead (no SessionStart was seen), nothing captured in that same
+invocation is marked pre-role.
 
 **Rulings on parked items.**
 - *Role-directory clone and `git merge @{u}`.* When a rejected push is retried, the merge can bring
