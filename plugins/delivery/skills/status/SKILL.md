@@ -11,17 +11,12 @@ argument-hint: "[initiative-optional]"
 > resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
 > run from a summary of its skill is how a Narrated artifact happens.
 
-
 Read-only. This skill reports and recommends; it changes nothing.
 
-## Where `.delivery/` resolves to
+## Conventions
 
-Not necessarily the repository root. Resolve before reading or writing anything below:
-
-1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
-2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
-3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
-4. **Default.** Otherwise, use `.delivery/` at the repository root.
+Before reading or writing anything below, Read `${CLAUDE_PLUGIN_ROOT}/references/conventions.md` (if `${CLAUDE_PLUGIN_ROOT}` is empty, use the `installPath` of `delivery@ai-augmentation-systems` from `~/.claude/plugins/installed_plugins.json`).
+Its sections **Where `.delivery/` resolves to** bind this skill as if written here.
 
 ## Which initiative — status reports across all of them, by design
 
