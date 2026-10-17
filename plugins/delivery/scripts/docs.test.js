@@ -59,6 +59,16 @@ test('display names: the Delivery Manager is never called the Delivery Lead in t
   for (const [name, text] of [['README.md', README], ['docs/quickstart.md', QUICKSTART], ['docs/reference.md', REFERENCE]]) {
     assert.doesNotMatch(text, /Delivery Lead/, name);
   }
+  for (const dir of ['skills', 'roles', 'agents', 'templates', 'references', 'docs']) {
+    const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+    for (const f of walk(path.join(PLUGIN_ROOT, dir)).filter((f) => f.endsWith('.md'))) {
+      assert.doesNotMatch(fs.readFileSync(f, 'utf8'), /Delivery Lead/, path.relative(PLUGIN_ROOT, f));
+    }
+  }
+  // the reference's roles table: one row per role brief, display name first, id second
+  const rows = [...REFERENCE.matchAll(/^\| ([A-Z][A-Za-z ]+?)(?: \(optional, `full`\))? \| `([a-z-]+)`/gm)].map((m) => [m[1], m[2]]);
+  assert.deepStrictEqual(rows.map((r) => r[1]).sort(), fs.readdirSync(path.join(PLUGIN_ROOT, 'roles')).map((f) => f.replace(/\.md$/, '')).sort());
+  assert.ok(rows.some(([name, id]) => name === 'Delivery Manager' && id === 'delivery-lead'), 'delivery-lead is displayed as the Delivery Manager');
   assert.match(REFERENCE, /## Sessions you run vs reviewers they call/);
   assert.match(REFERENCE, /Agents are reviewer lenses, not sessions/);
   for (const f of fs.readdirSync(path.join(PLUGIN_ROOT, 'agents'))) assert.ok(REFERENCE.includes('`' + f.replace(/\.md$/, '') + '`'), `reference lists the lens ${f}`);

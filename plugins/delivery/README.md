@@ -118,9 +118,11 @@ Who talks to whom: you talk to the Chief of Staff (and to the Product Manager ab
 | Staffing, Spike Researcher | sonnet | spikes are deep research |
 | Progress Observer | haiku | its sweeps miss drift |
 
+**Pick a whole-team profile** when you start: `start.js --models quality|balanced|economy` (`balanced`, the default, is this table; `quality` also puts the Delivery Manager on opus; `economy` moves the senior roles to sonnet and Staffing to haiku).
+
 **Change a role's model:** edit `roles[].model` in `.delivery/team/team.json`, rerun `prepare-role` for that instance, and restart its session. `/delivery:team` shows each session's model and flags a wrong one. The model is how you set the cost of each role; `budget.builders_cap` limits how many builders run.
 
-**Per story:** the Delivery Manager sets `size: S|M|L` in every story (S routine, M ordinary, L risky or ambiguous). Materialise turns it into a `size-S|M|L` label; a builder gives `size-L` beads a stronger model for its implementer and reviewer (`$DELIVERY_LARGE_MODEL`), and a story that needs a specific model says `model:` in its frontmatter.
+**Per story:** the Delivery Manager sets `size: S|M|L` in every story (S routine, M ordinary, L risky or ambiguous). Materialise turns it into a `size-S|M|L` label; a builder gives `size-L` beads a stronger model for its implementer and reviewer (`$DELIVERY_LARGE_MODEL`, opus except in `economy`), and a story that needs a specific model says `model:` in its frontmatter.
 
 ## Operator decisions
 
