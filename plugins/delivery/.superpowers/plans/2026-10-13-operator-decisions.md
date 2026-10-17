@@ -62,7 +62,7 @@ Spec: `plugins/delivery/.superpowers/specs/2026-10-12-shipping-team-design.md` s
 - [ ] **Step 2: Run them to verify they fail**: `node --test plugins/delivery/scripts/lib/transcript.test.js plugins/delivery/scripts/lib/chain.test.js plugins/delivery/scripts/lib/operator-log.test.js` → FAIL, modules not found.
 - [ ] **Step 3: Implement** the three modules per the Interfaces block.
 - [ ] **Step 4: Run the tests to verify they pass**, pristine output.
-- [ ] **Step 5: Real-transcript smoke (report only, do not commit output):** run `node -e "const t=require('./plugins/delivery/scripts/lib/transcript.js'); const r=t.readHumanInputs(process.env.HOME+'/.claude/projects/-Users-colombod-private-workspaces-claude-review-experience/43cb1ada-1a27-4c13-9924-7bd9ec1753d1.jsonl'); console.log(r.inputs.filter(i=>i.source==='human').length, 'human', r.inputs.filter(i=>i.source==='peer').length, 'peer', t.formatStatus(r))"` and paste the single output line into the report (if the file is absent, say so).
+- [ ] **Step 5: Real-transcript smoke (report only, do not commit output):** run `node -e "const t=require('./plugins/delivery/scripts/lib/transcript.js'); const r=t.readHumanInputs('<transcript.jsonl>'); console.log(r.inputs.filter(i=>i.source==='human').length, 'human', r.inputs.filter(i=>i.source==='peer').length, 'peer', t.formatStatus(r))"` and paste the single output line into the report (if the file is absent, say so).
 - [ ] **Step 6: Commit** `git add plugins/delivery/scripts/lib && git commit -m "delivery: transcript reader, hash chain and operator inputs log"`.
 
 ---
