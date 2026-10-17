@@ -25,16 +25,15 @@ test('leak guard: write and shell tools, and git-hosting MCP tools only', () => 
   for (const t of [...NEVER, 'mcp__slack__post_message', 'mcp__ccd_session_mgmt__send_message']) assert.ok(!m.test(t), t);
 });
 
-test('bd guard, operator channel guard, leak post-push and invocation recorder match their exact tools', () => {
+test('bd guard, operator channel guard and invocation recorder match their exact tools', () => {
   const bd = matcherFor('PreToolUse', 'bd-guard-hook.js');
   for (const t of ['Bash', 'Monitor', 'PowerShell']) assert.ok(bd.test(t), t);
   for (const t of [...NEVER, 'Write']) assert.ok(!bd.test(t), t);
   const ask = matcherFor('PreToolUse', 'ask-guard.js');
   for (const t of ['AskUserQuestion', 'PushNotification', 'SendUserFile']) assert.ok(ask.test(t), t);
   for (const t of [...NEVER, 'AskUserQuestions', 'MySendUserFile']) assert.ok(!ask.test(t), t);
-  const post = matcherFor('PostToolUse', 'leak-post-push.js');
-  for (const t of ['Bash', 'Monitor']) assert.ok(post.test(t), t);
-  for (const t of [...NEVER, 'PowerShell']) assert.ok(!post.test(t), t);
+  // the post-push re-scan was removed (A2): the durable control is a push-side scan in CI
+  assert.ok(!JSON.stringify(hooks).includes('leak-post-push'));
   for (const ev of ['PostToolUse', 'PostToolUseFailure']) {
     const rec = matcherFor(ev, 'record-invocation.js');
     for (const t of ['Skill', 'Agent', 'Write', 'Edit', 'NotebookEdit', 'mcp__Claude_Browser__computer']) assert.ok(rec.test(t), t);

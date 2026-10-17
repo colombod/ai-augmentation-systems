@@ -231,11 +231,14 @@ test('promptSubmitText and sessionStartText append the capture note; a throwing 
   assert.ok(start.startsWith('# Role: delivery-lead'));
   assert.match(start, /Operator inputs with no record yet: in-pc-000004/);
   const boom = () => { throw new Error('boom'); };
+  fs.rmSync(path.join(roleDir, '.delivery-last-claim'), { force: true }); // as if the claim just changed
   assert.equal(withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, capture: boom })),
     'You are delivery-lead (delivery-lead). Current claim: none (idle; say so and what you could take).');
+  // the role line repeats only when the claim changes (A2): the same idle claim says nothing new
   const quiet = () => ({ added: 0, status: 'ok', pending: [] });
-  assert.equal(withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, capture: quiet })),
-    'You are delivery-lead (delivery-lead). Current claim: none (idle; say so and what you could take).');
+  assert.equal(withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, capture: quiet })), '');
+  assert.equal(withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => 'ex-9: x', capture: quiet })),
+    'You are delivery-lead (delivery-lead). Current claim: ex-9: x.');
 });
 
 test('promptSubmitText with an unloadable manifest still reports the capture problem; warn receives it', () => {

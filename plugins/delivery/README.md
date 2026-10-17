@@ -190,8 +190,9 @@ session its role and keep it:
   The env includes `DELIVERY_ROLE_DIR` (so the hooks still find the role after a `cd` out of it) and,
   when the project has `.beads`, `BEADS_DIR` (bd cannot find the database from a role directory).
 - Hooks — SessionStart re-injects the role on startup, resume, clear and after compaction, and
-  refreshes CLAUDE.local.md from the current manifest; UserPromptSubmit adds a one-line reminder
-  with the current claim.
+  refreshes CLAUDE.local.md from the current manifest; UserPromptSubmit captures operator input,
+  marks the turn and, only when the claim changed since the last prompt, adds a one-line reminder
+  of the current claim.
 - `/delivery:join` — confirms the role in-session, primes beads, reports to the Chief of Staff.
 - `/delivery:team` — roster versus manifest: live, stale, missing, wrong model; warns when bd cannot
   find a database from the project root; counts operator entries not yet pushed, operator inputs
@@ -219,14 +220,33 @@ session its role and keep it:
   messaging and listing.
 - The product repo is protected: in a product worktree, commit, PR, issue and release text (through
   Bash, Monitor or PowerShell) is checked against `.delivery/team/denylist.txt` (written by
-  materialise), plan files cannot be written, `gh issue create` is refused, and pushed commits are
-  re-scanned. For roles that touch product, GitHub- and GitLab-style MCP tool inputs pass the same
+  materialise), plan files cannot be written, and `gh issue create` is refused. For roles that touch product, GitHub- and GitLab-style MCP tool inputs pass the same
   scan and MCP issue creation is refused.
 - The record stays honest: `bd close` needs an `EVIDENCE:` reason, a live claim cannot be taken,
   released or closed by someone else, bead structure (top-level creates, re-parenting, dependencies,
   deletes, labels on beads you do not hold) changes only through the Delivery Lead, and a turn that
-  holds a claim cannot end without a note. These are discipline aids for cooperative agents.
-- The product-repo guard is the first line, not the last. It scans commit, PR, issue and release text and refuses plan paths for a cooperative or careless session, and it fails closed inside the product worktree; it is not a boundary against a determined session with unrestricted Bash (file contents, git plumbing, persistent git configuration and pushes from other repositories are out of its reach). Put a push-side or CI scan of the denylist on the product remote for the durable control.
+  holds a claim but left no note in it gets a one-line reminder on the next prompt (it is not blocked). These are discipline aids for cooperative agents.
+- The product-repo guard is the first line, not the last. It scans commit, PR, issue and release text and refuses plan paths for a cooperative or careless session, and it fails closed inside the product worktree; it is not a boundary against a determined session with unrestricted Bash (file contents, git plumbing, persistent git configuration and pushes from other repositories are out of its reach). Put a push-side or CI scan of the denylist on the product remote for the durable control, for example a GitHub Actions job in the product repository:
+
+  ```yaml
+  # .github/workflows/denylist.yml — fails a push whose commit messages carry a plan phrase.
+  # DENYLIST holds the lines of the project repo's .delivery/team/denylist.txt (a repository secret).
+  on: [push, pull_request]
+  jobs:
+    denylist:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+          with: { fetch-depth: 0 }
+        - env: { DENYLIST: "${{ secrets.DENYLIST }}" }
+          run: |
+            printf '%s\n' "$DENYLIST" | grep -v '^\s*$' > /tmp/denylist.txt
+            base="${{ github.event.before || github.event.pull_request.base.sha }}"
+            git log --format=%B "${base}..HEAD" > /tmp/messages.txt || git log -n 50 --format=%B > /tmp/messages.txt
+            if grep -i -F -f /tmp/denylist.txt /tmp/messages.txt || grep -F '.delivery/' /tmp/messages.txt; then
+              echo "plan text in commit messages"; exit 1
+            fi
+  ```
 - Builders use plain `git commit -m "text"` in the product worktree: command substitution, heredoc messages, `-F` files and `$VAR` in message or push-option arguments are refused so the text can be checked.
 
 The delivery plugin must be installed on the machine; `prepare-role` enables it for the role
@@ -317,7 +337,7 @@ The shipping team runs on hooks and per-role settings. These are the places wher
 - **ralph-loop and the Stop cap.** Claude Code allows at most 8 consecutive Stop blocks. The delivery Stop hook blocks at most twice per turn, but a loop plugin that also blocks Stop shares that budget, and the harness then ends the turn regardless.
 - **Role directories make roles.** An ordinary session started inside a role directory (where `.delivery-role.json` and `settings.local.json` live) becomes that role, with its lane, its deny rules and its Stop guard.
 - **Cost.** Each hook is a separate `node` process: about 30 ms for node itself, about 38 ms per delivery hook measured on this machine.
-  - A Bash call pays 4 spawns (lane, leak guard, bd guard, the post-push scan), in role and in ordinary sessions alike; the hooks return immediately outside a role.
+  - A Bash call pays 3 spawns (lane, leak guard, bd guard; the post-push scan is gone), in role and in ordinary sessions alike; the hooks return immediately outside a role.
   - A Write or Edit pays 3 (lane, leak guard, the invocation recorder, which now runs async).
   - Tools the matchers no longer catch by accident (TodoWrite, BashOutput, and so on) pay none; before the matchers were anchored, a harness reading them as unanchored regexes would have run 3 hooks on a TodoWrite.
   - The invocation recorder no longer walks directories below the working directory, which took 3.5 s from `$HOME`.

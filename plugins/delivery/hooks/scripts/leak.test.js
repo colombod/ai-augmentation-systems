@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { loadDenylist, inProductWorktree, extractMessages, scanText, decideLeak, scanPushed } = require('./leak.js');
+const { loadDenylist, inProductWorktree, extractMessages, scanText, decideLeak } = require('./leak.js');
 const { prepareRole } = require('../../scripts/prepare-role.js');
 
 const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-'));
@@ -48,12 +48,6 @@ test('decideLeak acts only in the product worktree', () => {
   assert.match(decideLeak({ toolName: 'Bash', toolInput: { command: 'git commit -F m.txt' }, cwd: product, roleDir, denylist }).reason, /inline/);
   assert.match(decideLeak({ toolName: 'Write', toolInput: { file_path: '.delivery/team/team.json' }, cwd: product, roleDir, denylist }).reason, /\.delivery/);
   assert.equal(decideLeak({ toolName: 'Write', toolInput: { file_path: 'src/a.js' }, cwd: product, roleDir, denylist }), null);
-});
-
-test('scanPushed scans the pushed range', () => {
-  const git = (args) => (args[0] === 'log' ? 'fix login\n\nRefs ex-1\n\nCasual   Carl\nwants this\n' : '');
-  assert.deepEqual(scanPushed({ cwd: product, roleDir, denylist, git }), ['Casual Carl']);
-  assert.deepEqual(scanPushed({ cwd: path.join(roleDir, 'project'), roleDir, denylist, git }), []);
 });
 
 // ---- subprocess test ----
@@ -349,46 +343,6 @@ test('probe table: commands and tools are gated by effective directory and resol
   }
 });
 
-test('push range: recorded upstream, tags, and no duplicate .delivery/ hit', () => {
-  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-push-'));
-  fs.mkdirSync(path.join(rd, 'product'), { recursive: true });
-  const cwd = path.join(rd, 'product');
-  const calls = [];
-  const git = (args) => { calls.push(args); if (args[0] === 'rev-parse' && args.includes('@{upstream}')) return 'abc123\n'; if (args[0] === 'log') return 'x .delivery/a and .DELIVERY/b'; if (args[0] === 'for-each-ref') return 'tag says Casual Carl'; return ''; };
-  require('./leak.js').recordPrepush({ roleDir: rd, dir: cwd, git });
-  assert.deepEqual(scanPushed({ cwd, roleDir: rd, denylist, git }), ['.delivery/']);
-  assert.ok(calls.some((a) => a[0] === 'log' && a[1] === 'abc123..HEAD'));
-  assert.deepEqual(scanPushed({ cwd, roleDir: rd, denylist, git, tags: true }), ['Casual Carl', '.delivery/']);
-});
-
-test('push to an existing tag name scans tags', () => {
-  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-tag-'));
-  fs.mkdirSync(path.join(rd, 'product'), { recursive: true });
-  const { pushInfo } = require('./leak.js');
-  const git = (args) => (args[0] === 'tag' && args[2] === 'v1' ? 'v1\n' : '');
-  const cwd = path.join(rd, 'product');
-  assert.equal(pushInfo('git push origin v1', cwd, rd, git)[0].tags, true);
-  assert.equal(pushInfo('git push origin main', cwd, rd, git)[0].tags, false);
-  assert.equal(pushInfo('git push origin refs/tags/x', cwd, rd, git)[0].tags, true);
-  assert.deepEqual(pushInfo('git push', path.join(rd, 'project'), rd, git), []);
-});
-
-test('leak-post-push entry reports via additionalContext JSON', () => {
-  const b = preparedRole('builder-1');
-  const cwd = path.join(b.roleDir, 'product');
-  fs.mkdirSync(cwd, { recursive: true });
-  require('./leak.js').recordPrepush({ roleDir: b.roleDir, dir: cwd, git: () => 'abc123\n' });
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-bin-'));
-  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase "$1" in log) echo "fix login"; echo "for Casual Carl";; esac\n', { mode: 0o755 });
-  const env = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
-  const out = runHook('leak-post-push.js', { cwd, session_id: 's', tool_name: 'Bash', tool_input: { command: 'git push' } }, env);
-  const json = JSON.parse(out);
-  assert.equal(json.hookSpecificOutput.hookEventName, 'PostToolUse');
-  assert.match(json.hookSpecificOutput.additionalContext, /Casual Carl/);
-  assert.match(json.hookSpecificOutput.additionalContext, /bd create "Strategy leak: Casual Carl" --parent <the bead you hold> --labels strategy-review/);
-  assert.equal(runHook('leak-post-push.js', { cwd, session_id: 's', tool_name: 'Bash', tool_input: { command: 'git status' } }, env), '');
-});
-
 test('leak-guard fails closed in product when the guard itself errors, and stays inert elsewhere', () => {
   const b = preparedRole('builder-1');
   // A denylist path that is a directory makes the guard throw (EISDIR) while loading it.
@@ -445,26 +399,9 @@ test('leak-guard entry fails closed from the role directory and for git with a d
   assert.equal(runHook('leak-guard.js', input(path.join(b.roleDir, 'project'), 'ls'), env), '');
 });
 
-test('a push refspec with an expansion counts as a tag push', () => {
-  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-refspec-'));
-  fs.mkdirSync(path.join(rd, 'product'), { recursive: true });
-  const { pushInfo } = require('./leak.js');
-  assert.equal(pushInfo('git push origin "$REF"', path.join(rd, 'product'), rd, () => '')[0].tags, true);
-});
-
-test('redirected pushes are seen by pushInfo', () => {
-  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-redir-'));
-  fs.mkdirSync(path.join(rd, 'product'), { recursive: true });
-  const { pushInfo } = require('./leak.js');
-  const cwd = path.join(rd, 'product');
-  assert.equal(pushInfo('git >/dev/null push origin main', cwd, rd, () => '').length, 1);
-  assert.equal(pushInfo('2>&1 git push', cwd, rd, () => '').length, 1);
-});
-
 test('the shared matcher ignores format characters', () => {
   assert.deepEqual(scanText(`we sell dupli${ZW}cates faster`, denylist), { phrase: 'Sell duplicates faster' });
-  const git = (args) => (args[0] === 'log' ? `for Casual${ZW} Carl` : '');
-  assert.deepEqual(scanPushed({ cwd: product, roleDir, denylist, git }), ['Casual Carl']);
+  assert.deepEqual(scanText(`for Casual${ZW} Carl`, denylist), { phrase: 'Casual Carl' });
 });
 
 // Final wave A: Monitor (and PowerShell, best effort) carry a shell command like Bash.
@@ -480,18 +417,6 @@ test('A: a Monitor or PowerShell commit with a plan phrase is refused in product
   const json = JSON.parse(runHook('leak-guard.js', { cwd: path.join(b.roleDir, 'product'), session_id: 's', tool_name: 'Monitor', tool_input: { command: 'git commit -m "for Casual Carl"' } }, env));
   assert.equal(json.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(json.hookSpecificOutput.permissionDecisionReason, /Casual Carl/);
-});
-
-test('A: leak-post-push re-scans a push run through Monitor', () => {
-  const b = preparedRole('builder-1');
-  const cwd = path.join(b.roleDir, 'product');
-  fs.mkdirSync(cwd, { recursive: true });
-  require('./leak.js').recordPrepush({ roleDir: b.roleDir, dir: cwd, git: () => 'abc123\n' });
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-bin-'));
-  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase "$1" in log) echo "for Casual Carl";; esac\n', { mode: 0o755 });
-  const env = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
-  const out = runHook('leak-post-push.js', { cwd, session_id: 's', tool_name: 'Monitor', tool_input: { command: 'git push' } }, env);
-  assert.match(JSON.parse(out).hookSpecificOutput.additionalContext, /Casual Carl/);
 });
 
 // Final wave E: GitHub-style MCP tools are scanned like gh for roles that touch product.

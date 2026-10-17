@@ -41,7 +41,8 @@ try {
       const { makeBd } = require('../../scripts/lib/bd.js');
       // composeStop limits repeats, so the claim check runs on a continuation too
       const claim = decideStop({ input: { ...input, stop_hook_active: false }, roleDir: valid.roleDir, actor: actorOf(valid.marker), bd: makeBd(bdOptionsFor(valid.marker, input.cwd)) });
-      if (claim) candidates.push({ kind: 'claim', reason: claim.reason });
+      // a missing claim note is a reminder for the next prompt, not a block (A2)
+      if (claim) { try { require('fs').writeFileSync(path.join(valid.roleDir, require('./role-context.js').CLAIM_REMINDER), `Reminder: ${claim.reason}`); } catch (e) { /* best effort */ } }
     } catch (err) { /* allow */ }
     const d = composeStop({ input, roleDir: valid.roleDir, candidates });
     if (d) process.stdout.write(JSON.stringify({ decision: 'block', reason: d.reason }));

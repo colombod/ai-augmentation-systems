@@ -117,13 +117,14 @@ test('termination, worst case: all three kinds block at stop 1, relay once more 
   const s1 = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: msg }, bd.bin));
   assert.match(s1.reason, UNRECORDED);
   assert.ok(s1.reason.includes(NO_ID('Could you forward this to the builder session')), s1.reason);
-  assert.match(s1.reason, CLAIM);
+  assert.doesNotMatch(s1.reason, CLAIM, 'a missing claim note no longer blocks (A2)');
+  assert.match(fs.readFileSync(path.join(roleDir, '.delivery-claim-reminder'), 'utf8'), CLAIM);
   const s2 = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: msg }, bd.bin));
   // the second relay block repeats the quoted reason; it is not quoted twice
   assert.equal(s2.reason, NO_ID('Could you forward this to the builder session'));
   assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: msg }, bd.bin).stdout, '');
   // the next turn (a first stop) evaluates afresh
-  assert.match(reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: msg }, bd.bin)).reason, CLAIM);
+  assert.match(reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: msg }, bd.bin)).reason, UNRECORDED);
 });
 
 test('B1: a second chief-of-staff session in the same role directory cannot reset the first one (conc.js)', () => {
@@ -176,17 +177,29 @@ test('termination, staggered worst case: kinds appearing one per stop still end 
   assert.ok(!fs.existsSync(path.join(roleDir, '.delivery-stop-state.json')));
 });
 
-test('order: the claim-note check still runs once the operator checks pass', () => {
+test('A2: the claim-note check still runs, as a reminder for the next prompt, never a block', () => {
   const { projectRoot, roleDir } = preparedRole('chief-of-staff');
   const tr = transcript([human('ship the importer behind a flag', 1)]);
   const bd = fakeBd();
   bd.stale();
   fs.writeFileSync(path.join(roleDir, '.delivery-turn'), '2026-10-13T10:00:00Z\n');
   const first = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'Noted.' }, bd.bin));
-  assert.ok(first.reason.indexOf('You have an operator input') < first.reason.indexOf('You hold ex-7'), 'operator reasons come first');
+  assert.match(first.reason, /You have an operator input/);
+  assert.doesNotMatch(first.reason, CLAIM);
   R.ack({ projectRoot, input: 'in-pc-000001', reason: 'an instruction already in the plan', by: COS_BY });
-  const claim = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'Sent dec-1 to the builder.' }, bd.bin));
-  assert.match(claim.reason, /^You hold ex-7 and this turn left no note in it/);
+  const reminder = path.join(roleDir, '.delivery-claim-reminder');
+  fs.rmSync(reminder, { force: true });
+  assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'Sent dec-1 to the builder.' }, bd.bin).stdout, '', 'nothing blocks');
+  assert.match(fs.readFileSync(reminder, 'utf8'), /^Reminder: You hold ex-7 and this turn left no note in it/);
+  // the next prompt says it once, then it is gone
+  const { promptSubmitText } = require('./role-context.js');
+  const prev = process.env.DELIVERY_ROLE;
+  process.env.DELIVERY_ROLE = 'chief-of-staff';
+  try {
+    assert.match(promptSubmitText({ cwd: roleDir }, { claim: () => 'ex-7: importer' }), /^Reminder: You hold ex-7/);
+    assert.ok(!fs.existsSync(reminder));
+    assert.doesNotMatch(promptSubmitText({ cwd: roleDir }, { claim: () => 'ex-7: importer' }), /Reminder/);
+  } finally { if (prev === undefined) delete process.env.DELIVERY_ROLE; else process.env.DELIVERY_ROLE = prev; }
 });
 
 test('I3: a broken own records chain blocks once per turn with the repair path, not with an ack it cannot write', () => {

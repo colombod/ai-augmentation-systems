@@ -130,7 +130,8 @@ test('C: bd-guard hook and Stop guard run bd at the project root with BEADS_DIR 
   assert.equal(beadsDir, path.join(projectRoot, '.beads'));
   require('./turn.js').markTurnStart(roleDir, new Date().toISOString());
   const s = runHookClean('claim-stop.js', { cwd: roleDir, session_id: 's', stop_hook_active: false }, env, ['BEADS_DIR']);
-  assert.equal(JSON.parse(s).decision, 'block');
+  assert.equal(s, '', 'a missing claim note is a reminder, not a block');
+  assert.match(fs.readFileSync(path.join(roleDir, '.delivery-claim-reminder'), 'utf8'), /left no note/);
   [cwd, beadsDir] = fs.readFileSync(out, 'utf8').split('\n');
   assert.equal(cwd, real(projectRoot));
   assert.equal(beadsDir, path.join(projectRoot, '.beads'));

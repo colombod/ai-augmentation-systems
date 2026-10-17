@@ -188,7 +188,23 @@ function promptSubmitText(input, deps = {}) {
   } catch (err) {
     // liveness bookkeeping must never break a prompt
   }
-  return `You are ${marker.instance} (${marker.role}). Current claim: ${claimText}${note ? `\n${note}` : ''}`;
+  // The role line repeats only when the claim changed since the last prompt; a claim note the last
+  // turn missed (the Stop hook leaves it as a reminder rather than blocking) is said once.
+  const lines = [];
+  const reminderFile = path.join(valid.roleDir, CLAIM_REMINDER);
+  try { const r = fs.readFileSync(reminderFile, 'utf8').trim(); if (r) lines.push(r); fs.unlinkSync(reminderFile); } catch (err) { /* none */ }
+  const lastFile = path.join(valid.roleDir, LAST_CLAIM);
+  let last = null;
+  try { last = fs.readFileSync(lastFile, 'utf8'); } catch (err) { last = null; }
+  if (last !== claimText) {
+    lines.push(`You are ${marker.instance} (${marker.role}). Current claim: ${claimText}`);
+    try { fs.writeFileSync(lastFile, claimText); } catch (err) { /* say it again next time */ }
+  }
+  if (note) lines.push(note);
+  return lines.join('\n');
 }
 
-module.exports = { operatorCaptureNote, readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };
+const CLAIM_REMINDER = '.delivery-claim-reminder';
+const LAST_CLAIM = '.delivery-last-claim';
+
+module.exports = { CLAIM_REMINDER, operatorCaptureNote, readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };

@@ -496,7 +496,7 @@ test('A: Monitor is judged like Bash, PowerShell needs any, an unknown tool with
   assert.equal(d('TodoWrite', { todos: [] }, DL).allow, true);
 });
 
-test('A: hooks.json routes Monitor and PowerShell to the lane, leak and bd guards, Monitor to the post-push scan', () => {
+test('A: hooks.json routes Monitor and PowerShell to the lane, leak and bd guards', () => {
   const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
   const matcherFor = (event, script) => {
     const entry = hooks[event].find((e) => e.hooks.some((h) => h.args.some((a) => a.endsWith(script))));
@@ -505,7 +505,6 @@ test('A: hooks.json routes Monitor and PowerShell to the lane, leak and bd guard
   for (const script of ['role-lane.js', 'leak-guard.js', 'bd-guard-hook.js']) {
     for (const tool of ['Bash', 'Monitor', 'PowerShell']) assert.ok(matcherFor('PreToolUse', script).test(tool), `${script} ${tool}`);
   }
-  assert.ok(matcherFor('PostToolUse', 'leak-post-push.js').test('Monitor'));
 });
 
 // Final wave B: a per-role MCP allowlist (lane_mcp) beats the read-verb rule; headless still first.

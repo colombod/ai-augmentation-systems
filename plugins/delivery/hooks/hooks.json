@@ -43,19 +43,6 @@
             "timeout": 5
           }
         ]
-      },
-      {
-        "matcher": "^(Bash|Monitor)$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node",
-            "args": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/leak-post-push.js"
-            ],
-            "timeout": 15
-          }
-        ]
       }
     ],
     "PostToolUseFailure": [
