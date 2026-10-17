@@ -71,6 +71,10 @@ test('composeStop: relay may block twice per turn, the second time quoting the c
   assert.equal(composeStop({ input: { session_id: 's' }, roleDir, candidates: [relay] }).reason, 'R.');
   assert.equal(composeStop({ input: { session_id: 's', stop_hook_active: true }, roleDir, candidates: [relay] }).reason, 'R. You wrote: "please tell the builder session yes".');
   assert.equal(composeStop({ input: { session_id: 's', stop_hook_active: true }, roleDir, candidates: [relay] }), null);
+  // a reason that already quotes its clause is not quoted a second time
+  const quoted = { kind: 'relay', reason: 'R. You wrote: "x". Rewrite it.', detail: 'x' };
+  assert.equal(composeStop({ input: { session_id: 't' }, roleDir, candidates: [quoted] }).reason, quoted.reason);
+  assert.equal(composeStop({ input: { session_id: 't', stop_hook_active: true }, roleDir, candidates: [quoted] }).reason, quoted.reason);
 });
 
 test('B1: on a continuation, missing, corrupt or foreign state counts as exhausted', () => {

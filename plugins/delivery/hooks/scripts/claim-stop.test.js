@@ -8,7 +8,10 @@ const path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
 const { prepareRole } = require('../../scripts/prepare-role.js');
 const R = require('../../scripts/lib/operator-records.js');
-const { RELAY_REASON, RELAY_REASON_NO_RECORD } = require('./relay-guard.js');
+const { relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD } = require('./relay-guard.js');
+// the relay reason quotes the flagged clause from the first block on
+const NO_ID = (clause) => relayReason('', clause);
+const WITH_ID = (clause) => relayReason('dec-1', clause);
 
 process.env.GIT_CONFIG_GLOBAL = '/dev/null';
 process.env.GIT_CONFIG_NOSYSTEM = '1';
@@ -78,9 +81,10 @@ test('the chief of staff\'s stop captures the operator\'s words, then blocks unt
   // a relay request in the final message blocks with the carry reason; with no record id, ask here first
   const relay = runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'Please tell the Delivery Lead session to proceed with the migration' });
   assert.equal(relay.status, 0);
-  assert.deepEqual(reasonOf(relay), { decision: 'block', reason: RELAY_REASON_NO_RECORD });
+  assert.deepEqual(reasonOf(relay), { decision: 'block', reason: NO_ID('Please tell the Delivery Lead session to proceed with the migration') });
   const withId = runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: "Recorded as dec-000002. Reply 'go' in the builder's session." });
-  assert.deepEqual(reasonOf(withId), { decision: 'block', reason: RELAY_REASON });
+  assert.deepEqual(reasonOf(withId), { decision: 'block', reason: WITH_ID("Reply 'go' in the builder's session") });
+  assert.ok(RELAY_REASON && RELAY_REASON_NO_RECORD);
 });
 
 test('C1: a pending input does not mask a relay request: both reasons arrive in the first block', () => {
@@ -89,7 +93,7 @@ test('C1: a pending input does not mask a relay request: both reasons arrive in 
   const msg = 'Recorded as dec-1. Please tell the builder session to proceed with option B.';
   const first = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: msg }));
   assert.match(first.reason, UNRECORDED);
-  assert.ok(first.reason.includes(RELAY_REASON), first.reason);
+  assert.ok(first.reason.includes(WITH_ID('Please tell the builder session to proceed with option B')), first.reason);
 });
 
 test('C1: a relay request first written on the continuation still blocks once (the turn\'s second block)', () => {
@@ -98,7 +102,7 @@ test('C1: a relay request first written on the continuation still blocks once (t
   assert.match(reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'Noted.' })).reason, UNRECORDED);
   R.ack({ projectRoot, input: 'in-pc-000001', reason: 'x', by: COS_BY });
   const second = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: 'Acked. Please tell the builder session to proceed with option B.' }));
-  assert.deepEqual(second, { decision: 'block', reason: RELAY_REASON_NO_RECORD });
+  assert.deepEqual(second, { decision: 'block', reason: NO_ID('Please tell the builder session to proceed with option B') });
   // the same kind never blocks twice in a turn
   assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: 'Please tell the builder session to proceed.' }).stdout, '');
 });
@@ -112,10 +116,11 @@ test('termination, worst case: all three kinds block at stop 1, relay once more 
   const msg = 'Could you forward this to the builder session?';
   const s1 = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: msg }, bd.bin));
   assert.match(s1.reason, UNRECORDED);
-  assert.ok(s1.reason.includes(RELAY_REASON_NO_RECORD));
+  assert.ok(s1.reason.includes(NO_ID('Could you forward this to the builder session')), s1.reason);
   assert.match(s1.reason, CLAIM);
   const s2 = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: msg }, bd.bin));
-  assert.equal(s2.reason, `${RELAY_REASON_NO_RECORD} You wrote: "could you forward this to the builder session".`);
+  // the second relay block repeats the quoted reason; it is not quoted twice
+  assert.equal(s2.reason, NO_ID('Could you forward this to the builder session'));
   assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: msg }, bd.bin).stdout, '');
   // the next turn (a first stop) evaluates afresh
   assert.match(reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: msg }, bd.bin)).reason, CLAIM);
@@ -161,7 +166,7 @@ test('termination, staggered worst case: kinds appearing one per stop still end 
   assert.match(s1.reason, UNRECORDED);
   assert.doesNotMatch(s1.reason, CLAIM);
   const s2 = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: 'Please tell the builder session yes.' }, bd.bin));
-  assert.equal(s2.reason, RELAY_REASON_NO_RECORD);
+  assert.equal(s2.reason, NO_ID('Please tell the builder session yes'));
   bd.stale();
   const s3 = runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: 'Please tell the builder session yes.' }, bd.bin);
   assert.equal(s3.status, 0);

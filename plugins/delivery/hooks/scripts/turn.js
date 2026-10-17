@@ -40,7 +40,7 @@ function decideStop({ input, roleDir, actor, bd }) {
 // Joins every applicable stop reason into one block, limited per turn and per session so a stop
 // always ends:
 // - each kind (unrecorded, integrity, relay, claim, ...) blocks at most LIMITS[kind] times per turn
-//   (default once; relay twice, the second time quoting the clause);
+//   (default once; relay twice; a reason that does not quote its clause gets it quoted the second time);
 // - at most two stops per turn block; the third always passes.
 // State is per session (input.session_id) in its own file, written atomically. A first stop
 // (stop_hook_active false) starts a fresh state. On a continuation, a missing, unreadable or
@@ -94,7 +94,8 @@ function composeStop({ input, roleDir, candidates, sessionId: fallbackSession })
     : (candidates || []).filter((c) => c && c.kind && c.reason && (Number(st.blocks[c.kind]) || 0) < (LIMITS[c.kind] || 1));
   const reasons = fresh.map((c) => {
     const seen = Number(st.blocks[c.kind]) || 0;
-    return seen > 0 && c.detail ? `${c.reason} You wrote: "${String(c.detail).slice(0, 160)}".` : c.reason;
+    // a reason that already quotes the clause (the relay reason does from the first block) is not quoted twice
+    return seen > 0 && c.detail && !String(c.reason).includes('You wrote:') ? `${c.reason} You wrote: "${String(c.detail).slice(0, 160)}".` : c.reason;
   });
   if (fresh.length) {
     for (const c of fresh) st.blocks[c.kind] = (Number(st.blocks[c.kind]) || 0) + 1;
