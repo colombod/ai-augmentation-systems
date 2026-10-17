@@ -334,7 +334,7 @@ subagents. A PreToolUse hook enforces this from a policy each role declares.
   repo clone, `product/...` the product worktree, `scratch/...` a throwaway area; `$TMPDIR` is always
   allowed) and `lane_bash` (named command groups the role may run). Project briefs may declare their
   own. A role file without `lane_writes` may write nothing in its role directory; one without (or
-  with an empty) `lane_bash` gets `read, bd-read, git-read`. Every role may also write the harness's
+  with an empty) `lane_bash` gets `read, bd-read, git-read, operator-read`; this default is also the lane of a hired specialist whose brief declares none, so every role can verify an operator record. Every role may also write the harness's
   own plan and memory files (`~/.claude/plans/**`, `~/.claude/projects/*/memory/**`).
 - **MCP tools.** Roles with `any` use MCP tools unrestricted. For every other role an MCP tool is
   allowed when its name matches a pattern in the optional third key, `lane_mcp` (comma-separated
@@ -354,8 +354,9 @@ subagents. A PreToolUse hook enforces this from a policy each role declares.
   close), `bd-create-child` (create with `--parent` only), `bd-structure` (any create, dep add/remove,
   re-parent, materialise), `any` (unrestricted Bash, for workers). A Bash command is split on `&&`,
   `;`, `|`, `||`; every segment must belong to an allowed group or the whole call is refused.
-- **Manager lanes.** Chief of Staff: no writes; read, git-read, gh-read, bd-read, bd-notes,
-  bd-create-child. Staffing: writes `project/.delivery/team/team.json` and `project/.delivery/team/briefs/**`;
+- **Manager lanes.** Every manager lane below also includes `operator-read` and `operator-write`
+  (the `operator.js` read and writer commands, 8.6). Chief of Staff: no writes; read, git-read,
+  gh-read, bd-read, bd-notes, bd-create-child. Staffing: writes `project/.delivery/team/team.json` and `project/.delivery/team/briefs/**`;
   read, git-read, git-write-project, bd-read, bd-notes. Product Manager: writes
   `project/.delivery/initiatives/**`, `personas/**`, `interviews/**`, `simulations/**`,
   `decisions/**`, `glossary.md`; read, git-read, git-write-project, bd-read, bd-notes,
@@ -400,7 +401,8 @@ provenance that every other session can verify and act on without asking the ope
 the Chief of Staff carries it. Human time is spent deciding, never relaying.
 
 **What was wrong before.** Team rule 11 said "nothing from outside a session passes as the
-operator's word", with no trusted way for a decision to travel. Workers therefore refused a relayed
+operator's word", with no trusted way for a decision to travel. Rule 11 now covers personal data
+only; rule 12 is the record rule below, and the SendMessage rule moved to 13. Workers therefore refused a relayed
 answer and the Chief of Staff fell back on asking the operator to say it to them directly. That
 sentence is removed; the protocol below replaces it.
 
@@ -503,6 +505,18 @@ writes to `.delivery/operator/` for every role, and the hash chain plus git hist
 detectable, but a hostile session with unrestricted Bash could rewrite and re-hash the files: this is
 tamper-evidence for cooperative sessions, not a boundary (same class as 8.5). Inputs contain the
 operator's own words and live only in the private project repo.
+
+**Residual channels for `any` roles.** The channel guard (enforcement 1) names three tools, and
+`lane_mcp` is allow-only, so roles whose lane is `any` (builder, spike researcher) keep every other
+path to the operator's attention. They are documented here as a residual, not enforced:
+- `set_session_title` and `set_unread` on the session-management and sidebar servers, which put
+  flags in the operator's UI;
+- `send_message` to any session, including one the operator is watching;
+- computer-use, browser and Claude Browser tools, which drive the screen the operator sees;
+- Bash notifications such as `osascript -e 'display notification'`, `say` and `terminal-notifier`;
+- any messaging MCP server the host has configured (Slack, email).
+The briefs and rule 12 say workers never address the operator. The recommended later control is an
+MCP deny list for `any` lanes, with the channel guard extended to the session-management UI tools.
 
 ## 9. Staffing and routines
 

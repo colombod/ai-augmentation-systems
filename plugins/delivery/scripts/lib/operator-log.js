@@ -508,8 +508,9 @@ function unpublished(projectRoot, opts = {}) {
     if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return { count: 0, reason: 'not a git repository' };
     const up = upstreamOf(projectRoot);
     if (!up) return { count: 0, reason: 'no upstream' };
-    const rels = [`${OP_PATH}/inputs/${safeHost(opts.host)}`];
-    if (opts.instance) rels.push(`${OP_PATH}/records/${opts.instance}.ndjson`);
+    // opts.all: every chain in the operator directory (a reader that does not know its host)
+    const rels = opts.all ? [`${OP_PATH}/inputs`, `${OP_PATH}/records`] : [`${OP_PATH}/inputs/${safeHost(opts.host)}`];
+    for (const i of opts.all ? [] : (opts.instances || (opts.instance ? [opts.instance] : []))) rels.push(`${OP_PATH}/records/${i}.ndjson`);
     let count = 0;
     const d = git(projectRoot, ['diff', '--numstat', '@{u}', '--', ...rels]);
     for (const l of d.out ? d.out.split('\n') : []) count += Number(l.split('\t')[0]) || 0;

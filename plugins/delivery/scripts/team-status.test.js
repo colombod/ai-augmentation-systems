@@ -100,3 +100,79 @@ test('C: an unreachable bd is a warning line, not drift', () => {
   assert.ok(out.includes('No drift.'));
   assert.ok(out.includes(warning));
 });
+
+// Task 5: operator lines. A fixture project with five captured operator inputs, one decision, one
+// ack and one inferred answer; then a git clone with an upstream to count unpublished entries.
+test('operator lines: unpublished entries, inputs pending a record and inferred answers awaiting ratification', () => {
+  const log = require('./lib/operator-log.js');
+  const R = require('./lib/operator-records.js');
+  const cp = require('child_process');
+  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' };
+  const git = (cwd, ...a) => cp.execFileSync('git', a, { cwd, env: gitEnv, stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+
+  // without an operator directory: all zero
+  const empty = teamStatus(scratchProject(), { now: NOW, staleHours: 2, bdCheck: () => true });
+  assert.deepEqual(empty.operator, { unpublished: 0, pending_inputs: [], unratified: [], notes: [] });
+  const emptyText = renderStatus(empty);
+  assert.ok(emptyText.includes('Operator entries unpublished: 0'));
+  assert.ok(emptyText.includes('Operator inputs pending a record: 0\n'));
+  assert.ok(emptyText.includes('Inferred answers awaiting ratification: 0\n'));
+
+  const remote = fs.mkdtempSync(path.join(os.tmpdir(), 'status-remote-'));
+  git(remote, 'init', '-q', '--bare');
+  const root = scratchProject();
+  git(root, 'init', '-q');
+  git(root, 'config', 'user.email', 't@example.test'); git(root, 'config', 'user.name', 't'); git(root, 'config', 'commit.gpgsign', 'false');
+  git(root, 'add', '-A'); git(root, 'commit', '-q', '-m', 'init');
+  git(root, 'remote', 'add', 'origin', remote);
+  git(root, 'push', '-q', '-u', 'origin', 'HEAD');
+
+  const SID = 'sess-cos';
+  const tr = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'status-tr-')), 't.jsonl');
+  const texts = ['Use Postgres for the orders service.', 'ok thanks', 'Ship the checkout flow behind a flag.', 'What about the mobile app?', 'Also look at billing later.'];
+  fs.writeFileSync(tr, texts.map((t, i) => JSON.stringify({ type: 'user', origin: { kind: 'human' }, promptId: 'p' + i, uuid: 'u' + i,
+    timestamp: `2026-10-13T10:00:0${i}.000Z`, sessionId: SID, message: { role: 'user', content: t } })).join('\n') + '\n');
+  log.syncTranscript({ projectRoot: root, transcriptPath: tr, sessionId: SID, instance: 'chief-of-staff', role: 'chief-of-staff', host: 'pc' });
+  const COS = { instance: 'chief-of-staff', role: 'chief-of-staff', session_id: SID, host: 'pc', machine: R.machineId() };
+  const scope = (o) => ({ beads: [], labels: [], initiatives: [], ...o });
+  const d = R.recordDecision({ projectRoot: root, cite: 'in-pc-000001', quote: 'use postgres for the orders service', statement: 'Orders use Postgres', scope: scope({ beads: ['ex-1'] }), by: COS });
+  R.ack({ projectRoot: root, input: 'in-pc-000002', reason: 'conversational', by: COS });
+  const a = R.recordAnswer({ projectRoot: root, cites: [d.id], question: 'Which database does the orders worker use?', answer: 'Postgres, like the service.',
+    confidence: 'inferred', rationale: 'Same service family as ex-1, a reversible configuration choice.', scope: scope({ beads: ['ex-2'] }), by: COS });
+
+  const s = teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => true, host: 'pc' });
+  assert.deepEqual(s.operator.pending_inputs, ['in-pc-000003', 'in-pc-000004', 'in-pc-000005']);
+  assert.deepEqual(s.operator.unratified, [a.id]);
+  // 5 inputs on host pc and 3 records by chief-of-staff (on pc), none pushed
+  assert.equal(s.operator.unpublished, 8);
+  const text = renderStatus(s, root);
+  assert.ok(text.includes('Operator entries unpublished: 8'), text);
+  assert.ok(text.includes('Operator inputs pending a record: 3 (in-pc-000003, in-pc-000004, in-pc-000005)'), text);
+  assert.ok(text.includes(`Inferred answers awaiting ratification: 1 (${a.id})`), text);
+  // a host with no operator chains of its own has nothing unpublished
+  assert.equal(teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => true, host: 'buildbox' }).operator.unpublished, 0);
+  // once pushed, nothing is unpublished
+  git(root, 'add', '-A'); git(root, 'commit', '-q', '-m', 'operator'); git(root, 'push', '-q');
+  assert.equal(teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => true, host: 'pc' }).operator.unpublished, 0);
+  // a fourth input listed as "..." after three ids
+  const four = renderStatus({ ...s, operator: { ...s.operator, pending_inputs: ['a', 'b', 'c', 'd'] } });
+  assert.ok(four.includes('Operator inputs pending a record: 4 (a, b, c, ...)'));
+});
+
+test('operator lines leave the exit code alone: no drift still exits 0 with pending inputs', () => {
+  const log = require('./lib/operator-log.js');
+  const root = scratchProject();
+  const tr = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'status-tr-')), 't.jsonl');
+  fs.writeFileSync(tr, JSON.stringify({ type: 'user', origin: { kind: 'human' }, promptId: 'p1', uuid: 'u1', timestamp: '2026-10-13T10:00:00.000Z',
+    sessionId: 's', message: { role: 'user', content: 'Ship the checkout flow behind a flag.' } }) + '\n');
+  log.syncTranscript({ projectRoot: root, transcriptPath: tr, sessionId: 's', instance: 'chief-of-staff', role: 'chief-of-staff', host: 'pc' });
+  const now = new Date().toISOString();
+  for (const [inst, model] of [['chief-of-staff', 'opus'], ['staffing', 'sonnet'], ['product-manager', 'opus'], ['delivery-lead', 'sonnet'], ['progress-observer', 'haiku'], ['spike-researcher', 'sonnet'], ['builder-1', 'sonnet'], ['builder-2', 'sonnet']]) {
+    registerInstance(root, { instance: inst, session_id: inst, host: 'pc', model, role_dir: '/x', now });
+  }
+  const { execFileSync } = require('child_process');
+  const out = execFileSync(process.execPath, [path.join(__dirname, 'team-status.js'), '--project', root], { stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+  assert.ok(out.includes('No drift.'));
+  assert.ok(out.includes('Operator inputs pending a record: 1 (in-pc-000001)'), out);
+  assert.ok(out.includes('Operator entries unpublished: 0'), out);
+});
