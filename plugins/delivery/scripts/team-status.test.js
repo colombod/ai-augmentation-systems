@@ -8,12 +8,14 @@ const { teamStatus, renderStatus } = require('./team-status.js');
 const { registerInstance } = require('./lib/roster.js');
 
 const TEMPLATES = path.join(__dirname, '..', 'templates');
+// the full manifest the tests run against (templates/ holds the minimal one users start from)
+const MANIFEST_FIXTURE = path.join(__dirname, 'testing', 'manifest');
 
 function scratchProject() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'status-'));
   fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
-  fs.copyFileSync(path.join(TEMPLATES, 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
-  fs.copyFileSync(path.join(TEMPLATES, 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
+  fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
   return root;
 }
 

@@ -9,6 +9,8 @@ const { prepareRole } = require('./prepare-role.js');
 
 const PLUGIN_ROOT = path.join(__dirname, '..');
 const TEMPLATES = path.join(PLUGIN_ROOT, 'templates');
+// the full manifest the tests run against (templates/ holds the minimal one users start from)
+const MANIFEST_FIXTURE = path.join(__dirname, 'testing', 'manifest');
 
 function git(cwd, ...args) {
   return execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString();
@@ -20,8 +22,8 @@ function scratchProjectRepo() {
   git(root, 'config', 'user.email', 't@t');
   git(root, 'config', 'user.name', 't');
   fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
-  fs.copyFileSync(path.join(TEMPLATES, 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
-  fs.copyFileSync(path.join(TEMPLATES, 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
+  fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
   git(root, 'add', '-A');
   git(root, 'commit', '-q', '-m', 'init');
   return root;

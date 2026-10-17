@@ -171,10 +171,11 @@ test('an existing manifest is never overwritten; an invalid one or a half one is
   assert.match(r.out, /keeping the existing .*1 instance\(s\)/);
   assert.match(r.out, /would run bd init --prefix zz/);
   assert.equal(fs.readFileSync(path.join(project, '.delivery/team/team.json'), 'utf8'), teamText);
-  fs.writeFileSync(path.join(project, '.delivery/team/team.json'), JSON.stringify({ ...team, roles: [{ ...team.roles[0], model: 'gpt' }] }));
+  fs.writeFileSync(path.join(project, '.delivery/team/team.json'), JSON.stringify({ ...team, roles: [{ ...team.roles[0], model: ' ' }] }));
   const bad = start(['--project', project]);
   assert.equal(bad.status, 1);
-  assert.match(bad.out, /manifest: invalid:\n.*model "gpt"/);
+  // A4: any model string is accepted; an empty one is invalid
+  assert.match(bad.out, /manifest: invalid:\n.*invalid "model"/);
   fs.rmSync(path.join(project, '.delivery/team/hosts.json'));
   const half = start(['--project', project]);
   assert.equal(half.status, 1);
@@ -192,7 +193,7 @@ test('without bd the scaffold still prepares the roles and says how to finish', 
   assert.equal(settings.env.BEADS_DIR, undefined);
 });
 
-test('a product repo URL is cloned next to the project and recorded in team.json', () => {
+test('a product repo URL is cloned next to the project; the manifest does not carry it (A4)', () => {
   const base = mk('start-url-');
   const project = path.join(base, 'acme');
   const url = `file://${productRepo()}`;
@@ -200,7 +201,7 @@ test('a product repo URL is cloned next to the project and recorded in team.json
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /clone file:\/\/.* into .*acme-product/);
   assert.ok(fs.existsSync(path.join(base, 'acme-product', '.git')));
-  assert.equal(manifestOf(project).team.product_repo, url);
+  assert.equal(manifestOf(project).team.product_repo, undefined);
   assert.ok(fs.existsSync(path.join(base, 'acme-team', 'builder', 'product', '.git')));
 });
 

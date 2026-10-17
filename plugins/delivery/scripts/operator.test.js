@@ -9,6 +9,8 @@ const cp = require('child_process');
 const OPERATOR = path.join(__dirname, 'operator.js');
 const TESTING = path.join(__dirname, 'testing');
 const TEMPLATES = path.join(__dirname, '..', 'templates');
+// the full manifest the tests run against (templates/ holds the minimal one users start from)
+const MANIFEST_FIXTURE = path.join(__dirname, 'testing', 'manifest');
 
 const mk = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
 const human = (text, n, sid) => ({
@@ -30,7 +32,7 @@ function gitProject(root) {
 }
 function writeManifest(root) {
   fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
-  for (const f of ['team.json', 'hosts.json']) fs.copyFileSync(path.join(TEMPLATES, f), path.join(root, '.delivery', 'team', f));
+  for (const f of ['team.json', 'hosts.json']) fs.copyFileSync(path.join(MANIFEST_FIXTURE, f), path.join(root, '.delivery', 'team', f));
 }
 function project() { const root = mk('opcli-proj-'); writeManifest(root); return root; }
 

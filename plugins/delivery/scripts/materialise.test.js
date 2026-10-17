@@ -23,8 +23,8 @@ function scratchProject() {
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: root });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: root });
   fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
-  fs.copyFileSync(path.join(PLUGIN, 'templates', 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
-  fs.copyFileSync(path.join(PLUGIN, 'templates', 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
+  fs.copyFileSync(path.join(PLUGIN, 'scripts', 'testing', 'manifest', 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(PLUGIN, 'scripts', 'testing', 'manifest', 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
   const init = path.join(root, '.delivery', 'initiatives', 'demo');
   fs.mkdirSync(init, { recursive: true });
   fs.writeFileSync(path.join(init, 'roadmap.md'), '# Roadmap\n\n## Phases\n\n### Phase 1: Foundations\n\n| Work item | Size | Confidence | Depends on |\n| :-- | :-- | :-- | :-- |\n| A | S | high | |\n\n### Phase 2: Beads\n\n| Work item | Size | Confidence | Depends on |\n| :-- | :-- | :-- | :-- |\n| B | M | med | A |\n');

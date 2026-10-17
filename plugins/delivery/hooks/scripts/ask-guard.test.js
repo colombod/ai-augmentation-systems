@@ -18,8 +18,8 @@ function preparedRole(instance) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ask-proj-'));
   execFileSync('git', ['init', '-q'], { cwd: projectRoot });
   fs.mkdirSync(path.join(projectRoot, '.delivery', 'team'), { recursive: true });
-  fs.copyFileSync(path.join(PLUGIN_ROOT, 'templates', 'team.json'), path.join(projectRoot, '.delivery', 'team', 'team.json'));
-  fs.copyFileSync(path.join(PLUGIN_ROOT, 'templates', 'hosts.json'), path.join(projectRoot, '.delivery', 'team', 'hosts.json'));
+  fs.copyFileSync(path.join(PLUGIN_ROOT, 'scripts', 'testing', 'manifest', 'team.json'), path.join(projectRoot, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(PLUGIN_ROOT, 'scripts', 'testing', 'manifest', 'hosts.json'), path.join(projectRoot, '.delivery', 'team', 'hosts.json'));
   const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ask-team-'));
   const { roleDir } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
   return { projectRoot, roleDir };

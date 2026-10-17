@@ -23,8 +23,8 @@ function preparedRole(instance) {
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: projectRoot });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: projectRoot });
   fs.mkdirSync(path.join(projectRoot, '.delivery', 'team'), { recursive: true });
-  fs.copyFileSync(path.join(PLUGIN_ROOT, 'templates', 'team.json'), path.join(projectRoot, '.delivery', 'team', 'team.json'));
-  fs.copyFileSync(path.join(PLUGIN_ROOT, 'templates', 'hosts.json'), path.join(projectRoot, '.delivery', 'team', 'hosts.json'));
+  fs.copyFileSync(path.join(PLUGIN_ROOT, 'scripts', 'testing', 'manifest', 'team.json'), path.join(projectRoot, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(PLUGIN_ROOT, 'scripts', 'testing', 'manifest', 'hosts.json'), path.join(projectRoot, '.delivery', 'team', 'hosts.json'));
   execFileSync('git', ['add', '-A'], { cwd: projectRoot });
   execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: projectRoot });
   const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap-team-'));

@@ -10,6 +10,8 @@ const { expandInstances } = require('./lib/manifest.js');
 
 const PLUGIN_ROOT = path.join(__dirname, '..');
 const TEMPLATES = path.join(PLUGIN_ROOT, 'templates');
+// the full manifest the tests run against (templates/ holds the minimal one users start from)
+const MANIFEST_FIXTURE = path.join(__dirname, 'testing', 'manifest');
 const read = (...p) => fs.readFileSync(path.join(PLUGIN_ROOT, ...p), 'utf8');
 const RULES = read('templates', 'team-rules.md');
 const SKILL = read('skills', 'decision', 'SKILL.md');
@@ -17,8 +19,8 @@ const ROLES = fs.readdirSync(path.join(PLUGIN_ROOT, 'roles')).filter((f) => f.en
 const roleText = (id) => read('roles', `${id}.md`);
 
 function renderAll() {
-  const team = JSON.parse(fs.readFileSync(path.join(TEMPLATES, 'team.json'), 'utf8'));
-  const hosts = JSON.parse(fs.readFileSync(path.join(TEMPLATES, 'hosts.json'), 'utf8'));
+  const team = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), 'utf8'));
+  const hosts = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), 'utf8'));
   return expandInstances(team).map((i) => ({
     instance: i.instance,
     text: composeBrief({ team, hosts, instance: i.instance, role: i.role, brief: loadRoleBrief(PLUGIN_ROOT, '/nonexistent', i.role.brief), rules: RULES }),
@@ -134,7 +136,7 @@ test('rendered operator.js commands carry the absolute plugin root, pass the rol
     .replace(/<[^>]*>/g, 'x1');
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'rules-proj-'));
   fs.mkdirSync(path.join(project, '.delivery', 'team'), { recursive: true });
-  for (const f of ['team.json', 'hosts.json']) fs.copyFileSync(path.join(TEMPLATES, f), path.join(project, '.delivery', 'team', f));
+  for (const f of ['team.json', 'hosts.json']) fs.copyFileSync(path.join(MANIFEST_FIXTURE, f), path.join(project, '.delivery', 'team', f));
   let n = 0;
   for (const root of [PLUGIN_ROOT, spaced]) {
     const prefix = operatorCommand(root);
@@ -164,8 +166,8 @@ test('rendered operator.js commands carry the absolute plugin root, pass the rol
 });
 
 test('rendered briefs and the SessionStart block contain no literal ${CLAUDE_PLUGIN_ROOT}', () => {
-  const team = JSON.parse(fs.readFileSync(path.join(TEMPLATES, 'team.json'), 'utf8'));
-  const hosts = JSON.parse(fs.readFileSync(path.join(TEMPLATES, 'hosts.json'), 'utf8'));
+  const team = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), 'utf8'));
+  const hosts = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), 'utf8'));
   const { shortBrief } = require('./lib/compose-brief.js');
   for (const i of expandInstances(team)) {
     const text = composeBrief({ team, hosts, instance: i.instance, role: i.role, brief: loadRoleBrief(PLUGIN_ROOT, '/nonexistent', i.role.brief), rules: RULES, pluginRoot: PLUGIN_ROOT });

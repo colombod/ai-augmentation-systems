@@ -4,15 +4,17 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { findProjectRoot, loadManifest, validateManifest, expandInstances } = require('./manifest.js');
+const { manifestWarnings, findProjectRoot, loadManifest, validateManifest, expandInstances } = require('./manifest.js');
 
 const TEMPLATES = path.join(__dirname, '..', '..', 'templates');
+// the full manifest the tests run against (templates/ holds the minimal one users start from)
+const MANIFEST_FIXTURE = path.join(__dirname, '..', 'testing', 'manifest');
 
 function scratchProject() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-test-'));
   fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
-  fs.copyFileSync(path.join(TEMPLATES, 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
-  fs.copyFileSync(path.join(TEMPLATES, 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
+  fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
   return root;
 }
 
@@ -68,8 +70,30 @@ test('validateManifest reports unknown host, duplicate id, bad model, missing st
   const problems = validateManifest(team, hosts);
   assert.ok(problems.some((p) => p.includes('unknown host "mars"')));
   assert.ok(problems.some((p) => p.includes('duplicate role id "chief-of-staff"')));
-  assert.ok(problems.some((p) => p.includes('model "gpt"')));
-  assert.ok(problems.some((p) => p.includes('no steward for host "pc"')));
+  // A4: any model string is accepted (a warning, not a problem)
+  assert.ok(!problems.some((p) => p.includes('model "gpt"')));
+  assert.ok(manifestWarnings(team).some((w) => w.includes('model "gpt"') && /passed to Claude Code as written/.test(w)));
+  assert.ok(problems.some((p) => p.includes('no steward for host "pc"')), 'two hosts in use: stewards are required');
+});
+
+test('A4: a single-host team needs no steward; a missing model falls back to the brief default_model; an empty model is refused', () => {
+  const hosts = { hosts: { pc: { kind: 'pc' } } };
+  const team = { project: 'x', prefix: 'x', bd_host: 'pc', roles: [
+    { id: 'chief-of-staff', brief: 'delivery/chief-of-staff', host: 'pc' },
+    { id: 'builder', brief: 'delivery/builder', host: 'pc', model: 'claude-sonnet-9' },
+  ] };
+  assert.deepEqual(validateManifest(team, hosts), []);
+  assert.equal(manifestWarnings(team).length, 1);
+  const root = fs.mkdtempSync(path.join(require('os').tmpdir(), 'man-a4-'));
+  fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.delivery', 'team', 'team.json'), JSON.stringify(team));
+  fs.writeFileSync(path.join(root, '.delivery', 'team', 'hosts.json'), JSON.stringify(hosts));
+  const loaded = loadManifest(root).team;
+  assert.equal(loaded.roles[0].model, 'opus', 'chief-of-staff default_model');
+  assert.equal(loaded.roles[1].model, 'claude-sonnet-9');
+  assert.ok(validateManifest({ ...team, roles: [{ ...team.roles[0], model: '  ' }] }, hosts).some((p) => /invalid "model"/.test(p)));
+  // the fields no script reads are still accepted
+  assert.deepEqual(validateManifest({ ...team, product_repo: 'git@x:y.git', budget: { max_roles: 3 } }, { hosts: { pc: { kind: 'pc', dolt_server: true, check: 'prepush' } } }), []);
 });
 
 test('expandInstances expands count into numbered instances', () => {
@@ -96,7 +120,7 @@ test('findProjectRoot prefers the marker project_root over the clone inside a ro
   const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-role-'));
   const clone = path.join(roleDir, 'project');
   fs.mkdirSync(path.join(clone, '.delivery', 'team'), { recursive: true });
-  fs.copyFileSync(path.join(TEMPLATES, 'team.json'), path.join(clone, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), path.join(clone, '.delivery', 'team', 'team.json'));
   fs.writeFileSync(path.join(roleDir, '.delivery-role.json'), JSON.stringify({ instance: 'x', project_root: original }));
   assert.equal(findProjectRoot(clone), original);
 });
@@ -111,4 +135,15 @@ test('validateManifest rejects an unknown runner and accepts the three known one
     builder.runner = r;
     assert.ok(!validateManifest(team, hosts).some((p) => p.includes('runner')));
   }
+});
+
+test('A4: templates/ holds the minimal four-role single-host team, valid and without the never-read fields', () => {
+  const T = path.join(__dirname, '..', '..', 'templates');
+  const team = JSON.parse(fs.readFileSync(path.join(T, 'team.json'), 'utf8'));
+  const hosts = JSON.parse(fs.readFileSync(path.join(T, 'hosts.json'), 'utf8'));
+  assert.deepEqual(team.roles.map((r) => r.id), ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder']);
+  assert.deepEqual(validateManifest(team, hosts), []);
+  assert.equal(team.product_repo, undefined);
+  assert.equal((team.budget || {}).max_roles, undefined);
+  for (const h of Object.values(hosts.hosts)) { assert.equal(h.dolt_server, undefined); assert.equal(h.check, undefined); }
 });

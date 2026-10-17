@@ -95,22 +95,21 @@ When `bd` is missing, `start.js` still prepares the roles and says how to finish
 
 ## 1. Write the team manifest
 
-Create `.delivery/team/team.json` and `.delivery/team/hosts.json` in `<project-root>`. The full templates are `<plugin-root>/templates/team.json` and `<plugin-root>/templates/hosts.json`. A minimal single-host team:
+Create `.delivery/team/team.json` and `.delivery/team/hosts.json` in `<project-root>`. The templates `<plugin-root>/templates/team.json` and `<plugin-root>/templates/hosts.json` are this minimal single-host team; `docs/team-example.md` shows every field of a larger one:
 
 `<project-root>/.delivery/team/team.json`
 
 ```json
 {
   "project": "acme",
-  "product_repo": "git@github.com:acme/acme.git",
   "prefix": "acme",
   "bd_host": "laptop",
-  "budget": { "max_roles": 6, "builders_cap": 1, "staleness_hours": 2 },
+  "budget": { "builders_cap": 1, "staleness_hours": 2 },
   "roles": [
     { "id": "chief-of-staff",  "brief": "delivery/chief-of-staff",  "host": "laptop", "model": "opus",   "mode": "delegate" },
     { "id": "product-manager", "brief": "delivery/product-manager", "host": "laptop", "model": "opus" },
     { "id": "delivery-lead",   "brief": "delivery/delivery-lead",   "host": "laptop", "model": "sonnet" },
-    { "id": "builder",         "brief": "delivery/builder",         "host": "laptop", "model": "sonnet", "runner": "plain", "steward": true }
+    { "id": "builder",         "brief": "delivery/builder",         "host": "laptop", "model": "sonnet", "runner": "plain" }
   ]
 }
 ```
@@ -128,10 +127,10 @@ Create `.delivery/team/team.json` and `.delivery/team/hosts.json` in `<project-r
 What the fields mean, as `scripts/lib/manifest.js` checks them:
 
 - `project`, `prefix` and `bd_host` are required. `prefix` is the bead id prefix. `project` also names the default team directory, `<project-root>/../<project>-team`.
-- `product_repo` is the product's remote, kept for people and briefs; the scripts do not read it. You pass the local checkout to `prepare-role` instead (step 3).
-- Each role needs an `id` (lower case, digits, `-`), a `brief` (`delivery/<role>` for the plugin's role files in `roles/`, or `project/<name>` for a brief under `.delivery/team/briefs/`), a `host` that is a key in `hosts.json`, and a `model`: `opus`, `sonnet` or `haiku`. The model is how you set the cost of each role.
+- The product repository is not named in the manifest: you pass its local checkout to `prepare-role` (step 3).
+- Each role needs an `id` (lower case, digits, `-`), a `brief` (`delivery/<role>` for the plugin's role files in `roles/`, or `project/<name>` for a brief under `.delivery/team/briefs/`), a `host` that is a key in `hosts.json`, and a `model`: any model name Claude Code accepts (`opus`, `sonnet` and `haiku` are checked; another name is passed through with a warning). Leave it out to use the role brief's `default_model`. The model is how you set the cost of each role.
 - Optional: `mode` (`default` or `delegate`), `runner` for builders (`superpowers`, `attractor` or `plain`), `count` for several instances (`builder-1`, `builder-2`, ...), and `retired: true` for an instance that has left.
-- Every host that is not `cloud` needs one role with `"steward": true`. The manifest is refused without it.
+- A team on more than one host needs, on each host that is not `cloud`, one role with `"steward": true`. A single-host team needs none.
 - The number of builders may not exceed `budget.builders_cap`. `staleness_hours` is when `/delivery:team` calls a silent session stale.
 
 Commit the manifest. The hooks read it from this checkout, so keep it pulled (`git pull --ff-only`) before preparing or restarting a role.

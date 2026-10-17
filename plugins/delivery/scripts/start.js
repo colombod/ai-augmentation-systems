@@ -178,8 +178,7 @@ function buildManifest({ project, prefix, host, preset, runner, productRemote })
     if (id === 'builder') r.runner = runner;
     return r;
   });
-  const team = { project, prefix, bd_host: host, budget: { max_roles: roles.length, builders_cap: 1, staleness_hours: 2 }, roles };
-  if (productRemote) team.product_repo = productRemote;
+  const team = { project, prefix, bd_host: host, budget: { builders_cap: 1, staleness_hours: 2 }, roles };
   const hosts = { hosts: { [host]: { kind: 'pc', bd: 'native', headless: false, desktop_apps: true } } };
   return { team, hosts };
 }
