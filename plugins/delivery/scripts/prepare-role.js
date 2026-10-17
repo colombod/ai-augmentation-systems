@@ -25,6 +25,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   const found = expandInstances(team).find((i) => i.instance === instance);
   if (!found) throw new Error(`unknown instance "${instance}" (not in team.json)`);
   const { role } = found;
+  if (role.retired) throw new Error(`instance "${instance}" is retired in team.json; it is kept so its records verify, not started`);
   const brief = loadRoleBrief(pluginRoot, projectRoot, role.brief);
   teamDir = path.resolve(teamDir || path.join(projectRoot, '..', `${team.project}-team`));
   const roleDir = path.join(teamDir, instance);

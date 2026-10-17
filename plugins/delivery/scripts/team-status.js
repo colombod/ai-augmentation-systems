@@ -51,6 +51,12 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps 
 
   for (const { instance, role } of expected) {
     const entry = roster.instances[instance];
+    // a retired role stays listed so its operator records keep verifying on every host; it is not
+    // expected to run, so it is never missing, stale or drift
+    if (role.retired) {
+      rows.push({ instance, role: role.id, host: role.host, model: role.model, session_id: entry ? entry.session_id : '', last_seen: entry ? entry.last_seen : '', state: 'retired' });
+      continue;
+    }
     if (!entry) {
       drift.missing.push(instance);
       rows.push({ instance, role: role.id, host: role.host, model: role.model, session_id: '', last_seen: '', state: 'missing' });

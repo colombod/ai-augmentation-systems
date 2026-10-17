@@ -767,3 +767,18 @@ test('C1: a whole-input "yes" is recorded against a logged question and verify s
   assert.ok(v.out.includes(`answers ${qid}: "Ship the checkout flow this week?"`), v.out);
   assert.ok(v.out.includes('operator said: "yes"'), v.out);
 });
+
+test('I6: a retired instance records nothing new; its earlier records still verify', () => {
+  const root = project();
+  const st = roleDir(root, 'staffing', 'staffing', 'pc', 'sess-st', [human('Hire a second builder for the billing work.', 1, 'sess-st')]);
+  const r = run(st, ['record', '--cite', 'in-pc-000001', '--quote', 'hire a second builder', '--statement', 'Hire builder-3']);
+  assert.strictEqual(r.status, 0, r.out + r.err);
+  const file = path.join(root, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.roles.find((x) => x.id === 'staffing').retired = true;
+  fs.writeFileSync(file, JSON.stringify(team));
+  const again = run(st, ['ack', '--input', 'in-pc-000001', '--reason', 'conversational', '--json']);
+  assert.strictEqual(again.status, 1);
+  assert.match(again.out, /retired_instance/);
+  assert.strictEqual(run(st, ['verify', r.lines[0]]).status, 0);
+});

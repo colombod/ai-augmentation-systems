@@ -170,6 +170,9 @@ function requireWriter(ctx) {
   if (!ctx.by && ctx.unknownInstance) {
     throw new R.OperatorError('unknown_instance', `instance ${ctx.unknownInstance} is not in .delivery/team/team.json, so nothing is recorded from this session; restore .delivery/team/team.json or ask the chief of staff to add the instance`);
   }
+  if (ctx.valid && ctx.valid.role && ctx.valid.role.retired) {
+    throw new R.OperatorError('retired_instance', `instance ${ctx.by.instance} is retired in .delivery/team/team.json; its records stay verifiable but it records nothing new. Record from a live instance, or ask the chief of staff`);
+  }
   if (!ctx.by) {
     throw new R.OperatorError('not_allowed', 'no valid role marker for this session, so nothing can be recorded here; run operator.js from a delivery role session (prepare-role writes the marker and sets DELIVERY_ROLE). Reading (verify, show, pending, find, ledger) works anywhere');
   }

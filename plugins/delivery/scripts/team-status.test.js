@@ -190,3 +190,28 @@ test('a configured staleness_hours of 0 stays 0, like the bd guard', () => {
   const s = teamStatus(root, { now: NOW });
   assert.equal(s.rows.find((r) => r.instance === instance).state, 'stale');
 });
+
+test('I6: a retired role stays listed but is never missing or drift, and prepare-role refuses it', () => {
+  const root = scratchProject();
+  const file = path.join(root, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.roles.find((r) => r.id === 'spike-researcher').retired = true;
+  fs.writeFileSync(file, JSON.stringify(team));
+  const now = new Date().toISOString();
+  for (const [inst, model] of [['chief-of-staff', 'opus'], ['staffing', 'sonnet'], ['product-manager', 'opus'], ['delivery-lead', 'sonnet'], ['progress-observer', 'haiku'], ['builder-1', 'sonnet'], ['builder-2', 'sonnet']]) {
+    registerInstance(root, { instance: inst, session_id: inst, host: 'pc', model, role_dir: '/x', now });
+  }
+  const s = teamStatus(root, { bdCheck: () => true });
+  assert.equal(s.rows.find((r) => r.instance === 'spike-researcher').state, 'retired');
+  assert.deepEqual(s.drift.missing, []);
+  assert.ok(renderStatus(s).includes('No drift.'));
+  const { execFileSync } = require('child_process');
+  const out = execFileSync(process.execPath, [path.join(__dirname, 'team-status.js'), '--project', root], { stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+  assert.ok(out.includes('| spike-researcher | spike-researcher | pc | sonnet |  | retired |'), out);
+  const { validateManifest } = require('./lib/manifest.js');
+  const hosts = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'team', 'hosts.json'), 'utf8'));
+  assert.deepEqual(validateManifest(team, hosts), []);
+  assert.ok(validateManifest({ ...team, roles: team.roles.map((r) => (r.id === 'staffing' ? { ...r, retired: 'yes' } : r)) }, hosts).some((p) => /non-boolean "retired"/.test(p)));
+  const { prepareRole } = require('./prepare-role.js');
+  assert.throws(() => prepareRole({ projectRoot: root, instance: 'spike-researcher', teamDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-')), pluginRoot: path.join(__dirname, '..'), user: 't' }), /retired/);
+});
