@@ -128,8 +128,14 @@ function ensureStore(projectRoot) {
   fs.mkdirSync(loc.store, { recursive: true });
   withStoreLock(loc, () => {
     if (fs.existsSync(path.join(loc.store, '.git', 'HEAD'))) return;
+    // sha1 objects: blob ids are computed here to skip unchanged files; git before 2.29 has no
+    // --object-format and makes sha1 repositories anyway
+    const init = run(loc.store, ['init', '-q', '--template=', '--object-format=sha1']);
+    if (!init.ok) {
+      const plain = run(loc.store, ['init', '-q', '--template=']);
+      if (!plain.ok) throw new Error(`cannot create the private operator store at ${loc.store}: ${firstLine(plain.err || init.err)}`);
+    }
     const steps = [
-      ['init', '-q', '--template=', '--object-format=sha1'],
       ['symbolic-ref', 'HEAD', REF],
       ['config', 'core.hooksPath', '/dev/null'],
       ['config', 'commit.gpgSign', 'false'],
