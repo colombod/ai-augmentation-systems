@@ -1,4 +1,4 @@
-// scripts/docs.test.js — the front-door docs (README top, docs/quickstart.md) name only things that
+// scripts/docs.test.js — the front-door docs (README, docs/quickstart.md, docs/reference.md) name only things that
 // exist: scripts, operator commands, skills, templates, prepare-role flags, and a manifest that
 // validates. Light on purpose: it catches rot when a script, command or skill is renamed.
 const test = require('node:test');
@@ -12,6 +12,7 @@ const read = (...p) => fs.readFileSync(path.join(PLUGIN_ROOT, ...p), 'utf8');
 const README = read('README.md');
 const QUICKSTART = read('docs', 'quickstart.md');
 const START_SKILL = read('skills', 'start', 'SKILL.md');
+const REFERENCE = read('docs', 'reference.md');
 
 function section(text, heading) {
   const start = text.indexOf(`\n${heading}\n`);
@@ -21,18 +22,55 @@ function section(text, heading) {
   return next < 0 ? rest : rest.slice(0, next);
 }
 
-test('README opens with Start here, what you get, the picture and the four things, before "Why this exists"', () => {
-  const order = ['## Start here', '## What you get', '## How it works in one picture', '## Four things to know', '## Documentation map', '## Why this exists'];
+test('README follows the flow: Start here, what you get, the picture, Define → Contract → Navigate, the team, models, operator decisions, pipeline, limits, reference', () => {
+  const order = ['## Start here', '## What you get', '## How it works in one picture', '## The flow: Define → Contract → Navigate', '## The team', '## Models', '## Operator decisions', '## Using the planning pipeline without a team', '## Clashes and limits', '## Reference'];
   const at = order.map((h) => README.indexOf(`\n${h}\n`));
   for (let i = 0; i < order.length; i++) assert.ok(at[i] > 0, `missing ${order[i]}`);
   for (let i = 1; i < order.length; i++) assert.ok(at[i - 1] < at[i], `${order[i - 1]} must come before ${order[i]}`);
+  const lines = README.split('\n').length;
+  assert.ok(lines >= 120 && lines <= 220, `README is ${lines} lines; keep it around 150-200 and move detail to docs/reference.md`);
   const picture = section(README, '## How it works in one picture');
   assert.match(picture, /```[\s\S]*Chief of Staff[\s\S]*```/);
-  for (const word of ['Staffing', 'Product', 'Delivery', 'Progress', 'Builders', 'Spike', 'operator.js verify', 'PROJECT repo', 'PRODUCT repo']) {
+  for (const word of ['Staffing', 'Product', 'Delivery', 'Manager', 'Progress', 'Builders', 'Spike', 'operator.js verify', 'PROJECT repo', 'PRODUCT repo']) {
     assert.ok(picture.includes(word), `the picture shows ${word}`);
   }
   assert.ok(README.includes('(docs/quickstart.md)'), 'README links the quickstart');
   assert.ok(README.includes('### Which skill do I run when?'));
+});
+
+test('README flow: three stages, each with what it produces, its owner and its model tier, plus the fast path', () => {
+  const flow = section(README, '## The flow: Define → Contract → Navigate');
+  assert.match(flow, /Fast path:\*\* `\/delivery:brief` → `\/delivery:prd` → `\/delivery:architecture` → `\/delivery:roadmap` → `\/delivery:stories`/);
+  const stages = ['**1. DEFINE the product.**', '**2. CONTRACT.**', '**3. NAVIGATE delivery.**'];
+  const at = stages.map((s) => flow.indexOf(s));
+  for (let i = 0; i < stages.length; i++) assert.ok(at[i] >= 0 && (i === 0 || at[i - 1] < at[i]), stages[i]);
+  for (let i = 0; i < stages.length; i++) {
+    const body = flow.slice(at[i], i + 1 < stages.length ? at[i + 1] : undefined);
+    assert.ok(body.split('\n').filter(Boolean).length <= 10, `${stages[i]} is 10 lines or fewer`);
+    for (const need of ['Produces:', 'Owner', /opus|sonnet|haiku/]) assert.ok(typeof need === 'string' ? body.includes(need) : need.test(body), `${stages[i]} names ${need}`);
+  }
+  assert.ok(flow.includes('/delivery:simulate') && flow.includes('--interview') && flow.includes('--journey'));
+  assert.ok(section(README, '## The team').includes('owns stage 3'), 'the team section says who owns stage 3');
+  const models = section(README, '## Models');
+  for (const need of ['| Chief of Staff | opus', '| Product Manager | opus', '| Delivery Manager | sonnet', '| Builder | sonnet', '| Progress Observer | haiku', 'roles[].model', 'size-L', 'size: S|M|L']) assert.ok(models.includes(need), `Models names ${need}`);
+});
+
+test('display names: the Delivery Manager is never called the Delivery Lead in the docs', () => {
+  for (const [name, text] of [['README.md', README], ['docs/quickstart.md', QUICKSTART], ['docs/reference.md', REFERENCE]]) {
+    assert.doesNotMatch(text, /Delivery Lead/, name);
+  }
+  assert.match(REFERENCE, /## Sessions you run vs reviewers they call/);
+  assert.match(REFERENCE, /Agents are reviewer lenses, not sessions/);
+  for (const f of fs.readdirSync(path.join(PLUGIN_ROOT, 'agents'))) assert.ok(REFERENCE.includes('`' + f.replace(/\.md$/, '') + '`'), `reference lists the lens ${f}`);
+  for (const f of fs.readdirSync(path.join(PLUGIN_ROOT, 'roles'))) assert.ok(REFERENCE.includes('`' + f.replace(/\.md$/, '') + '`'), `reference lists the role ${f}`);
+});
+
+test('README and docs/reference.md: every relative link resolves', () => {
+  for (const [name, text, base] of [['README.md', README, PLUGIN_ROOT], ['docs/reference.md', REFERENCE, path.join(PLUGIN_ROOT, 'docs')]]) {
+    for (const m of text.matchAll(/\]\(((?!https?:|#)[^)#\s]+)(?:#[^)]*)?\)/g)) {
+      assert.ok(fs.existsSync(path.join(base, m[1])), `${name} links ${m[1]}, which does not exist`);
+    }
+  }
 });
 
 test('quickstart: every script path it names exists', () => {
@@ -54,8 +92,8 @@ test('quickstart and README: every operator.js command they name is a real comma
   }
 });
 
-test('quickstart and README: every /delivery: skill they name exists', () => {
-  for (const [name, text] of [['docs/quickstart.md', QUICKSTART], ['README.md', README]]) {
+test('quickstart, README and reference: every /delivery: skill they name exists', () => {
+  for (const [name, text] of [['docs/quickstart.md', QUICKSTART], ['README.md', README], ['docs/reference.md', REFERENCE]]) {
     for (const m of text.matchAll(/\/delivery:([a-z][a-z-]*)/g)) {
       assert.ok(fs.existsSync(path.join(PLUGIN_ROOT, 'skills', m[1], 'SKILL.md')), `${name} names /delivery:${m[1]}, which has no skill`);
     }
@@ -81,7 +119,7 @@ test('quickstart: the minimal team.json and hosts.json it shows validate and exp
 });
 
 test('front-door docs carry no local paths or personal data', () => {
-  for (const [name, text] of [['docs/quickstart.md', QUICKSTART], ['README.md', README]]) {
+  for (const [name, text] of [['docs/quickstart.md', QUICKSTART], ['README.md', README], ['docs/reference.md', REFERENCE]]) {
     assert.doesNotMatch(text, /\/Users\/|\/home\/[a-z]|\/var\/folders\//, name);
     const emails = [...text.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.(?:com|org|net|io)\b/g)].map((m) => m[0])
       .filter((e) => !e.startsWith('git@') && !/@example\./.test(e) && !/^noreply@/.test(e));

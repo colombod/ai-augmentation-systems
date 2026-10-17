@@ -35,7 +35,7 @@ to that project's `.claude/settings.json`:
 
 | Plugin | What it does |
 | :-- | :-- |
-| [`delivery`](plugins/delivery) | Define the product (vision, then a contract precise enough to build against), then deliver it. A planning pipeline (brief → research → personas → PRD → prioritisation → design → architecture → roadmap → stories → sprint → review → realign) with an adversarial challenge panel at every gate, and a shipping team of role sessions (Chief of Staff, Product Manager, Delivery Manager, builders) that carries it to shipped product, or a hand-off to your own runner. |
+| [`delivery`](plugins/delivery) | Define the product, contract it, then navigate it to shipped. DEFINE: brief → PRD with MVP staging → architecture (research, personas, persona simulation and design as optional depth). CONTRACT: roadmap → stories with acceptance criteria and derisking spikes. NAVIGATE: materialise → sprint → build → sprint review → realign. An adversarial challenge panel at every gate, and a shipping team of role sessions (Chief of Staff, Product Manager, Delivery Manager, builders, each on the model its work needs) that carries it to shipped product, or a hand-off to your own runner. |
 | [`claim-guard`](plugins/claim-guard) | Adversarial claim-verification gate for changesets: harvests explicit and implicit claims, fans 7 lens agents out cold to refute each against the shipped source, and gates merge with a deterministic BLOCK / PASS / INDETERMINATE verdict from a bundled `claim_ledger` MCP tool. |
 
 ## Repository layout
