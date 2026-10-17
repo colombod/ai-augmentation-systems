@@ -270,6 +270,25 @@ Each chain file has exactly one writer, so git never merges a chain. When a push
 
 **Migrating a Vault-style team.** Some teams onboard with their own agent rules. If those rules say that nothing from outside a session passes as the owner's word (the Vault's `AGENTS.md` does), replace that sentence with the record rule above. A rule that refuses every relayed decision, with no trusted way for one to travel, is exactly what made the operator a relay. Workers refused relayed answers, so the Chief of Staff asked the operator to repeat each decision to each session. Keep the intent, nothing unverified counts as the operator's word, and add the way through: a decision that `operator.js verify` accepts counts in full.
 
+## Clashes and limits
+
+The shipping team runs on hooks and per-role settings. These are the places where they meet the rest of a Claude Code setup.
+
+- **Permission modes.** With a user-level `defaultMode` of `auto`, or a steward starting a role with `--permission-mode`, nothing prompts. The lane hook is then the only allowlist, and a hook that fails to spawn (no `node`, a moved plugin path) fails open. Defence in depth: `prepare-role` writes native `permissions.deny` rules into each role's `settings.local.json`, and these hold even then:
+  - `AskUserQuestion`, `PushNotification` and `SendUserFile` for every role except the Chief of Staff and the Product Manager;
+  - `Bash(git push:*)`, `Bash(sudo:*)`, `Bash(curl:*)`, `Bash(wget:*)` and `Bash(rm:*)` for restricted (manager) lanes, each only where the lane does not allow it. The Product Manager, Delivery Lead and Staffing keep `git push` because they push plan documents.
+
+  A role session whose lane cannot be checked (marker present, manifest unreadable) fails closed.
+- **Plugin updates.** Hook paths are fixed when a session starts, and the `permissions.allow` rules name the operator.js path of the plugin version that wrote them. After updating the plugin, rerun `prepare-role` for each role and restart its session; until then in-lane commands may prompt again.
+- **superpowers.** Its "you must invoke skills" instruction competes with the lanes in manager roles: a manager pushed to run a planning or execution skill is then refused by its lane. Consider disabling superpowers in manager role directories through `enabledPlugins` in the role's `settings.local.json` (for example `"superpowers@<its marketplace>": false`). `prepare-role` does not do this for you, because the plugin's id depends on the marketplace it was installed from.
+- **ralph-loop and the Stop cap.** Claude Code allows at most 8 consecutive Stop blocks. The delivery Stop hook blocks at most twice per turn, but a loop plugin that also blocks Stop shares that budget, and the harness then ends the turn regardless.
+- **Role directories make roles.** An ordinary session started inside a role directory (where `.delivery-role.json` and `settings.local.json` live) becomes that role, with its lane, its deny rules and its Stop guard.
+- **Cost.** Each hook is a separate `node` process: about 30 ms for node itself, about 38 ms per delivery hook measured on this machine.
+  - A Bash call pays 4 spawns (lane, leak guard, bd guard, the post-push scan), in role and in ordinary sessions alike; the hooks return immediately outside a role.
+  - A Write or Edit pays 3 (lane, leak guard, the invocation recorder, which now runs async).
+  - Tools the matchers no longer catch by accident (TodoWrite, BashOutput, and so on) pay none; before the matchers were anchored, a harness reading them as unanchored regexes would have run 3 hooks on a TodoWrite.
+  - The invocation recorder no longer walks directories below the working directory, which took 3.5 s from `$HOME`.
+
 ## Using it with superpowers
 
 [superpowers](https://github.com/obra/superpowers) has its own chain:
