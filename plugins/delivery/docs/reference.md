@@ -224,23 +224,47 @@ never published.
     copy, and the changed chains must verify (hash chain, id sequence, text hashes).
   - **On every merge** (publish and refresh), every chain on either side must reach the result whole
     (no deletion, shortening or rewrite), and two copies that grew differently are a fork.
-  - **The owner rule:** a chain this store writes (this host's `inputs/<host>/` chains, and a records
-    chain whose last line here was written from this host) may be behind on the remote, never ahead or
-    different. A remote extension of it is a fork, refused, unless a valid rehost moved the instance to
-    another host, or the store is new and does not hold or write that chain yet (a fresh clone adopts
-    its host's published chains; a new store fetches once before its first capture for that reason).
+  - **The owner rule:** a chain this store writes may be behind on the remote, never ahead or
+    different. Owned are this host's `inputs/<host>/` chains, a records chain whose last line here was
+    written from this host, and any records chain to which the remote adds lines claiming to come from
+    this host. A remote extension of an owned chain is a fork, refused (`refresh` exits 1; `problems`
+    and `pending` list it, naming the rehost record when one is involved), with two exceptions:
+    - a valid rehost moved the instance to another host, and that destination is where the
+      **committed** `.delivery/team/team.json` (the project's HEAD; an uncommitted edit does not count)
+      places the instance, or the rehost is already in this store's copy. So a second writer that
+      records a rehost is not merged silently: move an instance by committing the manifest change, then
+      running `operator.js rehost` from the new host;
+    - the store is new and does not hold or write that chain yet: a fresh clone adopts its host's
+      published chains (a new store with no HEAD fetches once before its first capture for that reason).
   - **Before every push**, whatever reached the store (operator.js, a merge, or a commit made by hand
     in the store), every chain that differs from the fetched remote copy must still start with it, and
     must verify as committed.
   A refusal pushes nothing and names the command that fixes it. `operator.js refresh` is the fetch and
   merge alone. A chain has one writer by design (per host, per instance); the owner rule is what makes
   a second writer show up as a fork instead of being merged.
-- Network calls are bounded: each fetch or push at most 15 s (`DELIVERY_GIT_TIMEOUT_MS`), one publish
-  at most 30 s in all, and once the remote has failed to answer, the rest of that command does not wait
-  on it again. A write against an unreachable remote returns in seconds and says it is unpublished.
+- Network calls are bounded: each fetch or push at most 15 s (`DELIVERY_GIT_TIMEOUT_MS`), and one
+  publish's network work at most 30 s (`DELIVERY_PUBLISH_BUDGET_MS`). That budget does not include
+  waiting for the store lock (up to 60 s while another command on this host holds it) or the
+  command's own refresh before it. When a fetch or push times out or cannot reach the remote, the
+  store remembers it for 60 s, across processes: a write against an unreachable remote takes 10-15 s
+  the first time and returns at once (saying it is unpublished) for the next minute; reads that
+  refresh do the same. A refusal (permission, branch rule) is not remembered that way.
 - With no remote the store is local only (`publish` says "no remote"). A project directory outside git
   keeps the records in `<project>/.delivery/operator/`; records an earlier version left there are
   copied into the store once.
+- **Cooperative trust, specifically.** Anyone with push access to the project remote, or a session
+  with unrestricted Bash on a host, can do things these checks only make visible, or not even that:
+  - pre-seed the chains of a host that has no store yet; the new store adopts them as its own;
+  - write records citing human inputs they typed themselves: they verify and are indistinguishable;
+  - push one line into a foreign chain that claims a host: that host's owner rule then refuses every
+    merge, so it cannot publish until the chain is set aside with `operator.js quarantine
+    --adopt-remote` (after review) or the remote branch is repaired by hand;
+  - commit a correctly hashed line in a host's own store, which that host then publishes.
+  And a re-clone whose first fetch fails (offline) starts this host's inputs chain over, which is a
+  fork against the published one: recover with `operator.js quarantine --file inputs/<host>/<YYYY-MM>.ndjson`
+  on that host (the published chain is taken); the inputs captured meanwhile are in the quarantined
+  copy and come back on the next capture, because capture re-reads the session transcript (or run
+  `operator.js sync`).
 - **Deleting or re-cloning the project checkout deletes its store**, and with it every entry not yet
   published (and, without a remote, everything). Before deleting a clone, run `operator.js publish`
   and check that `/delivery:team` (team-status) shows `Operator entries unpublished: 0`. team-status

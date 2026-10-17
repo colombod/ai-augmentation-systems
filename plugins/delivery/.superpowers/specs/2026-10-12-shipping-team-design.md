@@ -501,16 +501,26 @@ branch, merges it and pushes, retrying a rejected push up to five times. The che
 (1) before a commit, each changed chain still starts with its committed copy and verifies;
 (2) on every merge, every chain on either side reaches the result whole (no deletion, shortening or
 rewrite), and two copies that grew differently are a fork;
-(3) the owner rule: a chain this store writes (this host's inputs chains, and a records chain whose
-last line here was written from this host) may be behind on the remote, never ahead or different, so
-a second writer shows up as a fork instead of being merged; a valid rehost of the instance to another
-host is the exception, and so is a new store that neither holds nor writes the chain yet (a fresh
-clone adopts its host's published chains; a new store fetches once before its first capture);
+(3) the owner rule: a chain this store writes (this host's inputs chains, a records chain whose last
+line here was written from this host, and any records chain the remote extends with lines claiming
+this host) may be behind on the remote, never ahead or different, so a second writer shows up as a
+fork instead of being merged. The exceptions: a valid rehost of the instance to the host the
+committed manifest (`team.json` in the project's HEAD) places it on, or a rehost already in this
+store's copy, so a second writer that records its own rehost is a loud fork naming the rehost record,
+not a silent merge; and a new store that neither holds nor writes the chain yet (a fresh clone adopts
+its host's published chains; a store with no HEAD fetches once before its first capture);
 (4) before every push, whatever reached the store (operator.js, a merge, a commit made by hand in the
 store), every chain that differs from the fetched remote copy must start with it and verify as
 committed. A refusal pushes nothing. Network calls are bounded (15 s per fetch or push,
-`DELIVERY_GIT_TIMEOUT_MS`; 30 s per publish; a remote that failed to answer is not waited on again in
-the same command). `operator.js refresh` is the same fetch and merge without the push, in the store
+`DELIVERY_GIT_TIMEOUT_MS`; 30 s of network work per publish, not counting the store lock wait or the
+refresh before it; a remote that timed out or could not be reached is not tried again for 60 s by any
+command on the host). quarantine names every line it takes from the remote that this store did not
+write, and refuses a remote copy that only adds lines until `--adopt-remote` is given after review; the
+chain's own instance (or host, for inputs) may quarantine it, not only the chief of staff. Cooperative
+trust, as listed in the reference: anyone with push access can pre-seed a not-yet-created host's
+chains, write records citing inputs they typed, or push a line claiming a host (locking that host's
+publish until quarantine), and an offline first fetch on a re-clone forks the host's inputs chain
+(recovered with quarantine; the inputs are re-captured from the transcript). `operator.js refresh` is the same fetch and merge without the push, in the store
 only; reads that list (`pending`, `find`, `ledger`, `problems`) refresh first, and a verifier that
 cannot find a cited id refreshes and retries once. Deleting or re-cloning a checkout deletes its store
 and every entry not yet published; team-status shows the count and warns after 24 hours. Nobody pulls the project checkout for

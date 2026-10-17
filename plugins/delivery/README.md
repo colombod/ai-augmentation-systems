@@ -148,6 +148,7 @@ Delegations, ratification, revocation and chain repair are in [docs/operator-ref
 
 **Limits.** This is tamper-evidence for cooperative sessions, not a security boundary.
 - **Files can be rewritten.** A session with unrestricted Bash can rewrite and re-hash the files; the hash chains, recorded heads, the store's append-only merge check and its git history make that detectable, not impossible.
+- **Push access is trust too.** Anyone who can push to the project remote can pre-seed a new host's chains, write records citing inputs they typed, or push a line claiming a host, which blocks that host's publishing until its chain is set aside (`operator.js quarantine`, reviewed with `--adopt-remote`). A rehost counts only when the committed `team.json` agrees. Details: [docs/reference.md](docs/reference.md#operator-decisions-in-detail).
 - **Recorded heads are local** (`cursors/heads.json` on each host), so they are cooperative trust too.
 - **Records are checked for form, not relevance.** A well-formed record citing a real input cannot be machine-rejected when the input does not support it; detection is human, from the verbatim words and author `verify` prints.
 - **Capture depends on the harness's undocumented transcript format.** If it changes, `operator.js sync` reports `format_unrecognised` and recording fails closed. Cloud sessions are captured only when they sync from their own host.
