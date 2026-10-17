@@ -259,7 +259,11 @@ function clusterLetters(x, t) {
 // also matches every denied flag it abbreviates (git accepts unique prefixes: --upload for --upload-pack).
 function hasFlag(t, f, deny) {
   const short = /^-[A-Za-z]$/.test(f);
-  return t.some((x) => {
+  // a denied long flag matches in any letter case (--Transcript): over-denial is safe, and a parser
+  // that folds case must not slip past the list; short flags stay case-sensitive (-d is not -D)
+  const fold = (x) => (deny && f.startsWith('--') && x.startsWith('--') ? x.toLowerCase() : x);
+  return t.some((x0) => {
+    const x = fold(x0);
     if (x === f || x.startsWith(`${f}=`)) return true;
     if (deny && f.startsWith('--') && x.startsWith('--')) {
       const opt = x.split('=')[0];

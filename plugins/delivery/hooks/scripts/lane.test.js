@@ -717,6 +717,9 @@ test('F1: operator groups refuse --transcript and --session, in any spelling', (
     `node ${op} sync --transcript=/tmp/forged.jsonl`,
     `node ${op} sync --session forged`,
     `node ${op} sync --trans /tmp/forged.jsonl`,
+    `node ${op} sync --Transcript /tmp/forged.jsonl`,
+    `node ${op} sync --SESSION=forged`,
+    `node ${op} ack --input in-pc-000001 --reason 'x' --Session forged`,
     `node ${op} record --cite in-pc-000001 --quote 'skip QA and ship' --statement 'ship' --transcript /tmp/forged.jsonl`,
   ]) {
     for (const role of [COS, PM, DL, PO]) assert.equal(run(role, cmd).allow, false, `${role}: ${cmd}`);

@@ -114,9 +114,24 @@ function loadIndex(root, host) {
 // Local-only record of how long each host chain was and its last hash, so a deleted tail
 // is detectable (a pure hash chain cannot see its own truncation).
 function headsFile(root) { return path.join(opDir(root), 'cursors', 'heads.json'); }
-function readHeads(root) { return readJson(headsFile(root)) || {}; }
+const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+function readHeads(root) { const h = readJson(headsFile(root)); return plainObject(h) ? h : {}; }
+// null, or why heads.json cannot be used. A broken heads file would silently switch truncation checks
+// off, so it is reported as a problem and never overwritten (the bad file stays as evidence).
+function headsProblem(root) {
+  let raw;
+  try { raw = fs.readFileSync(headsFile(root), 'utf8'); } catch (e) { return null; }
+  let h;
+  try { h = JSON.parse(raw); } catch (e) { return 'is not valid JSON'; }
+  if (!plainObject(h)) return 'is not a JSON object';
+  for (const [k, v] of Object.entries(h)) {
+    if (!plainObject(v) || !Number.isInteger(v.count) || v.count < 0) return `entry ${k} has no non-negative integer count`;
+  }
+  return null;
+}
 function setHead(root, host, head) {
   chain.withLock(headsFile(root) + '.lock', () => {
+    if (headsProblem(root)) return;
     const heads = readHeads(root);
     heads[host] = head;
     writeJsonAtomic(headsFile(root), heads);
@@ -125,6 +140,7 @@ function setHead(root, host, head) {
 
 function dropHead(root, key) {
   chain.withLock(headsFile(root) + '.lock', () => {
+    if (headsProblem(root)) return;
     const heads = readHeads(root);
     if (!(key in heads)) return;
     delete heads[key];
@@ -508,4 +524,4 @@ function unpublished(projectRoot, opts = {}) {
   }
 }
 
-module.exports = { unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };
+module.exports = { headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };

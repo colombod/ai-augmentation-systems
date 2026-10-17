@@ -59,6 +59,7 @@ function run(rd, args, opts = {}) {
   delete env.DELIVERY_PROJECT_ROOT;
   delete env.DELIVERY_ROLE; delete env.DELIVERY_ROLE_DIR;
   if (rd.instance) { env.DELIVERY_ROLE = rd.instance; env.DELIVERY_ROLE_DIR = rd.dir; }
+  if (opts.noRoleDir) delete env.DELIVERY_ROLE_DIR;
   const full = opts.noProject ? args : [...args, '--project', rd.root];
   const r = cp.spawnSync('node', [OPERATOR, ...full], { cwd: rd.dir, env, encoding: 'utf8' });
   return { status: r.status, out: r.stdout, err: r.stderr, lines: r.stdout.split('\n').filter(Boolean) };
@@ -736,4 +737,19 @@ test('sync --transcript with no registered transcript is refused', () => {
   assert.strictEqual(r.status, 1);
   assert.strictEqual(json(r).code, 'transcript_not_own');
   assert.match(json(r).error, /none is registered yet/);
+});
+
+test('Task 5: writer commands refuse when DELIVERY_ROLE is set but DELIVERY_ROLE_DIR is not; reads still work', () => {
+  const { cos } = cosFixture();
+  for (const args of [['sync'], ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres'],
+    ['ack', '--input', 'in-pc-000001', '--reason', 'conversational']]) {
+    const r = run(cos, [...args, '--json'], { noRoleDir: true });
+    assert.strictEqual(r.status, 1, r.out + r.err);
+    assert.match(r.out + r.err, /role_dir_unset/);
+    assert.match(r.out + r.err, /export DELIVERY_ROLE_DIR=/);
+  }
+  assert.strictEqual(fs.existsSync(path.join(cos.root, '.delivery', 'operator', 'records', 'chief-of-staff.ndjson')), false);
+  assert.strictEqual(run(cos, ['pending', '--json'], { noRoleDir: true }).status, 0);
+  // with both set the same command records
+  assert.strictEqual(run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']).status, 0);
 });

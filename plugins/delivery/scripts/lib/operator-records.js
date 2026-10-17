@@ -300,6 +300,7 @@ function answerDepth(view, rec, seen = new Set()) {
 }
 
 const MANIFEST_HINT = '.delivery/team/team.json cannot be loaded or lists no instances (restore .delivery/team/team.json)';
+const RESTORE_HINT = (rel) => `restore the file from repository history (git log -- ${rel})`;
 const REHOST_HINT = (inst) => `run operator.js rehost --instance ${inst} --reason "<why this instance moved>" from the new place first`;
 
 // THE rules. Called before a record is appended (mode 'write') and again for every record on read
@@ -685,7 +686,7 @@ function validateRecord(st, rec, view, mode) {
         // role the record claims
         const h = st.recordedHead(p.instance);
         if (!h || p.seq > h.count) {
-          return bad('unknown_instance', `${rec.id} was appended after instance ${p.instance} left team.json (this host recorded ${h ? h.count : 0} of its entries); its role cannot be checked, so it is not trusted`);
+          return bad('unknown_instance', `${rec.id} was appended after instance ${p.instance} left team.json (this host recorded ${h ? h.count : 0} of its entries); its role cannot be checked, so it is not trusted; restore the instance in .delivery/team/team.json to re-check it`);
         }
         if (typeof h.role !== 'string' || !h.role) {
           return bad('unknown_instance', `instance ${p.instance} left team.json and this host's head for it records no role (an older head), so ${rec.id} cannot be tied to a role and is not trusted; restore the instance in .delivery/team/team.json to re-check it`);
@@ -701,17 +702,26 @@ function validateRecord(st, rec, view, mode) {
   const res = validateCore(st, rec, view, mode);
   if (res) return res;
   const t = Date.parse(rec.ts);
-  const prev = p && p.seq > 1 ? st.entries(p.instance)[p.seq - 2] : null;
-  // Read: a record dated ahead of this reader's clock is not trusted YET; nothing about that verdict
-  // is stored, so it becomes valid once the clock reaches it. Write: a writer whose clock fell behind
-  // its own previous record (a clock correction) stamps the previous record's time (see commit), and
-  // that record is written: a chain never locks up.
-  const clamped = W && prev && rec.ts === prev.ts;
-  if (!clamped && t > Date.now() + FUTURE_TOLERANCE_MS) return bad('bad_timestamp', `${rec.id} is dated ${rec.ts}, more than ten minutes ahead of this clock; it is trusted once the clock reaches it`);
-  if (prev && Date.parse(prev.ts) > t) return bad('bad_timestamp', `${rec.id} (${rec.ts}) is older than the record before it in its chain (${prev.ts})`);
+  // A record dated ahead of this reader's clock is not trusted YET; nothing about that verdict is
+  // stored, so it becomes valid once the clock reaches it. Order is judged against the previous VALID
+  // record of the chain, so one forged far-future entry cannot invalidate every record after it.
+  const prev = p ? prevValidRecord(st, view, p.instance, p.seq) : null;
+  if (t > Date.now() + FUTURE_TOLERANCE_MS) return bad('bad_timestamp', `${rec.id} is dated ${rec.ts}, more than ten minutes ahead of this clock; it is trusted once the clock reaches it`);
+  if (prev && Date.parse(prev.ts) > t) return bad('bad_timestamp', `${rec.id} (${rec.ts}) is older than the record before it in its chain (${prev.id}, ${prev.ts})`);
   return null;
 }
 const FUTURE_TOLERANCE_MS = 10 * 60 * 1000;
+
+// The nearest earlier record of the same chain that is in the view (valid). Readers visit a chain's
+// records in order, so every earlier record has its verdict by the time a later one is judged.
+function prevValidRecord(st, view, instance, seq) {
+  const es = st.entries(instance);
+  for (let i = Math.min(seq - 2, es.length - 1); i >= 0; i--) {
+    const v = es[i] && view.byId.get(es[i].id);
+    if (v) return v;
+  }
+  return null;
+}
 
 // ---- store: per-call cache with one refresh on a miss ----
 
@@ -796,6 +806,8 @@ function makeStore(root, opts = {}) {
       const entries = [];
       const heads = log.readHeads(root);
       st._heads = heads;
+      const hp = log.headsProblem(root);
+      if (hp) problems.push({ file: '.delivery/operator/cursors/heads.json', code: 'heads_invalid', error: `.delivery/operator/cursors/heads.json ${hp}, so truncated or rewritten operator chains cannot be detected and no head is advanced; it is a local file: restore it from a backup, or move it aside to re-record heads from the current chains (trusted on first use)` });
       if (!manifest) {
         // fail closed: with no manifest nothing is trusted and no head is recorded
         for (const inst of insts) st.verified.set(inst, verifyRecordsFile(root, inst, { setHead: false }));
@@ -805,7 +817,7 @@ function makeStore(root, opts = {}) {
         if (manifest && !manifest.has(inst) && !heads[headsKey('records', inst)]) {
           const peek = verifyRecordsFile(root, inst, { setHead: false });
           st.verified.set(inst, peek);
-          problems.push({ file: `records/${inst}`, code: 'unknown_instance', error: `records/${inst}: instance ${inst} is not in team.json and this host has no recorded head for it; its records are not trusted (operator.js quarantine --file records/${inst}.ndjson --reason "<why>" sets it aside)` });
+          problems.push({ file: `records/${inst}`, code: 'unknown_instance', error: `records/${inst}: instance ${inst} is not in team.json and this host has no recorded head for it; its records are not trusted; restore the instance in .delivery/team/team.json to re-check it, or operator.js quarantine --file records/${inst}.ndjson --reason "<why>" sets it aside` });
           continue;
         }
         // a remembered instance (recorded head) that left the manifest stays valid history; its head
@@ -887,7 +899,8 @@ function verifyRecordsFile(root, instance, opts = {}) {
     fs.writeFileSync(tmp, raw);
     try { v = chain.verifyChain(tmp); } finally { try { fs.unlinkSync(tmp); } catch (e) { /* gone */ } }
   } else v = chain.verifyChain(file);
-  if (!v.ok) return chainFail('chain_invalid', `records/${instance}: ${v.error}`, { at: v.at });
+  const restore = RESTORE_HINT(`.delivery/operator/records/${instance}.ndjson`);
+  if (!v.ok) return chainFail('chain_invalid', `records/${instance}: ${v.error}; ${restore}`, { at: v.at });
   const hashes = [];
   let lastSeq = 0;
   const lines = raw.split('\n');
@@ -896,10 +909,10 @@ function verifyRecordsFile(root, instance, opts = {}) {
     const e = JSON.parse(lines[i]);
     const p = parseRecordId(e.id);
     if (!p || p.instance !== instance || p.seq !== lastSeq + 1) {
-      return chainFail('chain_invalid', `records/${instance} line ${i + 1}: unexpected id ${e.id} after seq ${lastSeq}`, { at: i + 1 });
+      return chainFail('chain_invalid', `records/${instance} line ${i + 1}: unexpected id ${e.id} after seq ${lastSeq}; ${restore}`, { at: i + 1 });
     }
     if (e.by && e.by.instance !== undefined && e.by.instance !== instance) {
-      return chainFail('chain_invalid', `records/${instance} line ${i + 1}: record ${e.id} claims author ${e.by.instance}`, { at: i + 1 });
+      return chainFail('chain_invalid', `records/${instance} line ${i + 1}: record ${e.id} claims author ${e.by.instance}; ${restore}`, { at: i + 1 });
     }
     lastSeq = p.seq;
     hashes.push(e.hash);
@@ -909,10 +922,10 @@ function verifyRecordsFile(root, instance, opts = {}) {
   const state = head ? 'recorded' : 'absent';
   if (head) {
     if (hashes.length < head.count) {
-      return chainFail('truncated', `records/${instance}: truncated, ${hashes.length} entries but ${head.count} were recorded`, { heads: state, count: hashes.length });
+      return chainFail('truncated', `records/${instance}: truncated, ${hashes.length} entries but ${head.count} were recorded; ${restore}`, { heads: state, count: hashes.length });
     }
     if (head.count > 0 && hashes[head.count - 1] !== head.last_hash) {
-      return chainFail('history_rewritten', `records/${instance}: history rewritten, entry ${head.count} no longer matches the recorded head`, { heads: state, count: hashes.length });
+      return chainFail('history_rewritten', `records/${instance}: history rewritten, entry ${head.count} no longer matches the recorded head; ${restore}`, { heads: state, count: hashes.length });
     }
   }
   // a listed reader (opts.role: the manifest role of the instance) stores that role with the head, so
@@ -944,7 +957,7 @@ function verifyInputHostCached(st, host) {
       let code = 'chain_invalid';
       if (/truncated/.test(r.error || '')) code = 'truncated';
       else if (/history rewritten/.test(r.error || '')) code = 'history_rewritten';
-      st.inputHosts.set(host, chainFail(code, r.error, { at: r.at, count: r.count }));
+      st.inputHosts.set(host, chainFail(code, `${r.error}; ${RESTORE_HINT(`.delivery/operator/inputs/${log.safeHost(host)}/`)}`, { at: r.at, count: r.count }));
     }
   }
   return st.inputHosts.get(host);
@@ -1037,7 +1050,7 @@ function commit(st, by, fields, ids = []) {
   st.invalidate();
   if (fs.existsSync(file) && fs.statSync(file).size > 0) {
     const v = verifyRecordsFile(root, inst, { role: roles.get(inst) });
-    if (!v.ok) throw new OperatorError(['truncated', 'history_rewritten'].includes(v.code) ? v.code : 'chain_invalid', `${v.error}; this chain no longer verifies, so nothing can be appended to it (tell the chief of staff; the project repository history holds the last good copy)`);
+    if (!v.ok) throw new OperatorError(['truncated', 'history_rewritten'].includes(v.code) ? v.code : 'chain_invalid', `${v.error}. This chain no longer verifies, so nothing can be appended to it; tell the chief of staff`);
   }
   for (const id of ids) if (typeof id === 'string' && id) st.record(id); // pulls once when something is missing
   const view = st.view();
@@ -1045,14 +1058,18 @@ function commit(st, by, fields, ids = []) {
   const lp = last ? parseRecordId(last.id) : null;
   const seq = lp ? lp.seq + 1 : 1;
   const id = `${KIND_PREFIX[fields.kind]}-${inst}-${pad(seq)}`;
-  // timestamps never go backwards within a chain: max(now, previous record's ts)
+  // timestamps never go backwards over VALID records: max(now, previous valid record's ts), and never
+  // beyond now + ten minutes, so a forged far-future entry cannot drag every later stamp with it
+  const now = st.now.toISOString();
+  const limit = Math.max(Date.parse(now), Date.now()) + FUTURE_TOLERANCE_MS;
   const stamp = (l) => {
-    const now = st.now.toISOString();
-    return l && typeof l.ts === 'string' && ISO_RE.test(l.ts) && Date.parse(l.ts) > Date.parse(now) ? l.ts : now;
+    const pv = l && view.byId.get(l.id) ? l : prevValidRecord(st, view, inst, seq);
+    const pt = pv && typeof pv.ts === 'string' && ISO_RE.test(pv.ts) ? Date.parse(pv.ts) : NaN;
+    return pt > Date.parse(now) && pt <= limit ? pv.ts : now;
   };
   const cand = { id, ...fields, by, ts: stamp(last) };
-  if (cand.ts !== st.now.toISOString() && Date.parse(cand.ts) > Date.now() + FUTURE_TOLERANCE_MS) {
-    st.warn(`clock_behind_chain: this clock (${st.now.toISOString()}) is behind the previous record of records/${inst} (${cand.ts}); the record carries that time and readers trust it once their clocks reach it`);
+  if (last && typeof last.ts === 'string' && Date.parse(last.ts) > Date.parse(cand.ts)) {
+    st.warn(`clock_behind_chain: records/${inst} ends with ${last.id} dated ${last.ts}, ahead of this clock (${now}); this record is stamped ${cand.ts}. If ${last.id} is genuine (a clock that ran fast), records written now stop verifying once its time arrives; if it is not yours it is forged. Either way the way out is to give this instance a new id in .delivery/team/team.json (Staffing) and record from that, or have the chief of staff record the decision`);
   }
   const bad1 = validateRecord(st, cand, view, 'write');
   if (bad1) {

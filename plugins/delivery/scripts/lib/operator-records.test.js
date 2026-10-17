@@ -287,6 +287,9 @@ test('deleting the last record line is detected through the records head', () =>
   assert.strictEqual(v.ok, false);
   assert.strictEqual(v.code, 'truncated');
   assert.match(v.error, /chief-of-staff/);
+  assert.match(v.error, /restore the file from repository history \(git log -- \.delivery\/operator\/records\/chief-of-staff\.ndjson\)/);
+  assert.match(codeOf(() => decide(root, { statement: 'third' })) || '', /truncated/);
+  try { decide(root, { statement: 'third' }); } catch (e) { assert.match(e.message, /restore the file from repository history/); }
   const heads = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'operator', 'cursors', 'heads.json'), 'utf8'));
   assert.strictEqual(heads['records/chief-of-staff'].count, 2, 'a failed verify never lowers a head');
 });
@@ -1067,6 +1070,7 @@ test('replay: a ghost chain for an instance not in team.json is excluded; rememb
     cites_head: [inHead(root, 'in-pc-000005')], scope: scope(), by: mal, ts: new Date().toISOString() });
   const p = R.pending(root, {});
   assert.ok(p.problems.some((x) => x.code === 'unknown_instance' && x.file === 'records/mallory'));
+  assert.match(p.problems.find((x) => x.file === 'records/mallory').error, /restore the instance in \.delivery\/team\/team\.json to re-check it/);
   assert.ok(R.find(root, {}).some((x) => x.id === d.id));
   assert.strictEqual(R.verifyRecord(root, 'rev-mallory-000001').ok, false);
   const heads = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'operator', 'cursors', 'heads.json'), 'utf8'));
@@ -1308,25 +1312,31 @@ test('R4 B2: a copied session id does not make an input owned (record, ack, forg
   assert.ok(R.ack({ projectRoot: root, input: 'in-pc-000004', reason: 'chatting', by: BUILDER_OWN }));
 });
 
-test('R4 B3: a clock correction never locks a chain; a future-dated record becomes valid as time passes', () => {
+test('R4 B3 (Task 5 P1): after a clock correction the writer stamps its own clock, not the fast-clock entry; the warning names the way out', () => {
   const root = fixture();
-  decide(root);
+  const d1 = decide(root);
   const ahead = new Date(Date.now() + 2 * 86400e3).toISOString();
   // written while the host clock was two days ahead
   const d2 = forge(root, 'chief-of-staff', { kind: 'decision', statement: 'Ship flagged', quote: 'behind a flag', cites: ['in-pc-000005'], cites_head: [inHeadLocal(root, 'in-pc-000005')], scope: scope({ beads: ['ex-3'] }), ts: ahead });
   assert.strictEqual(R.verifyRecord(root, d2.id).code, 'bad_timestamp');
-  // the clock is fixed: the writer is not refused, and its timestamp never goes backwards
+  // the clock is fixed: the writer is not refused and never stamps beyond now + ten minutes
   const warnings = [];
   const d3 = decide(root, { statement: 'After the correction', onWarning: (w) => warnings.push(w) });
-  assert.strictEqual(d3.ts, ahead);
-  assert.ok(warnings.some((w) => /clock_behind_chain/.test(w)), warnings.join('\n'));
-  assert.strictEqual(R.verifyRecord(root, d3.id).code, 'bad_timestamp', 'not trusted before its time');
+  assert.ok(Date.parse(d3.ts) <= Date.now() + 10 * 60e3, d3.ts);
+  assert.ok(Date.parse(d3.ts) >= Date.parse(d1.ts));
+  const w = warnings.find((x) => /clock_behind_chain/.test(x));
+  assert.ok(w, warnings.join('\n'));
+  assert.match(w, /new id in \.delivery\/team\/team\.json/);
+  assert.match(w, /chief of staff record/);
+  // valid now: its order is judged against the previous VALID record (d1), not the future entry
+  assert.strictEqual(R.verifyRecord(root, d3.id).ok, true);
   const realNow = Date.now;
   try {
+    // once the fast-clock entry's time arrives it is trusted, and what was written after it is now out
+    // of order: the documented cost the warning names
     Date.now = () => realNow() + 2 * 86400e3 + 60e3;
     assert.strictEqual(R.verifyRecord(root, d2.id).ok, true, 'trusted once the clock reaches it');
-    assert.strictEqual(R.verifyRecord(root, d3.id).ok, true);
-    assert.strictEqual(R.pending(root, {}).problems.length, 0);
+    assert.strictEqual(R.verifyRecord(root, d3.id).code, 'bad_timestamp');
   } finally { Date.now = realNow; }
   // monotone: a normal write after a normal write is never older than its predecessor
   const root2 = fixture();
@@ -1334,6 +1344,25 @@ test('R4 B3: a clock correction never locks a chain; a future-dated record becom
   const b = decide(root2, { statement: 'later', now: new Date(Date.parse(a.ts) - 5000) });
   assert.ok(Date.parse(b.ts) >= Date.parse(a.ts));
   assert.strictEqual(R.verifyRecord(root2, b.id).ok, true);
+});
+
+test('Task 5 P1: a forged 2099 entry in a chain does not drag later stamps into 2099 and does not invalidate them', () => {
+  const root = fixture();
+  const d1 = decide(root);
+  const forged = forge(root, 'chief-of-staff', { kind: 'decision', statement: 'Forged far future', quote: 'behind a flag', cites: ['in-pc-000005'], cites_head: [inHeadLocal(root, 'in-pc-000005')], scope: scope({ beads: ['ex-3'] }), ts: '2099-12-31T00:00:00.000Z' });
+  assert.strictEqual(R.verifyRecord(root, forged.id).code, 'bad_timestamp');
+  const warnings = [];
+  const d3 = decide(root, { statement: 'Written after the forgery', onWarning: (w) => warnings.push(w) });
+  assert.ok(!d3.ts.startsWith('2099'), d3.ts);
+  assert.ok(Date.parse(d3.ts) <= Date.now() + 10 * 60e3);
+  assert.ok(warnings.some((w) => /clock_behind_chain/.test(w) && w.includes(forged.id) && /new id/.test(w)), warnings.join('\n'));
+  assert.strictEqual(R.verifyRecord(root, d3.id).ok, true);
+  assert.strictEqual(R.verifyRecord(root, d1.id).ok, true);
+  // the next write chains on d3, the previous valid record
+  const d4 = decide(root, { statement: 'And another' });
+  assert.ok(Date.parse(d4.ts) >= Date.parse(d3.ts) && !d4.ts.startsWith('2099'));
+  assert.strictEqual(R.verifyRecord(root, d4.id).ok, true);
+  assert.deepStrictEqual(R.pending(root, {}).problems.map((p) => p.id), [forged.id]);
 });
 
 test('R4 B4: an instance that left team.json keeps only its recorded history; an empty manifest fails closed', () => {
@@ -1347,6 +1376,7 @@ test('R4 B4: an instance that left team.json keeps only its recorded history; an
     const fd = forge(root, 'builder-1', { kind: 'decision', statement: 'Merge now', quote: 'ship the checkout flow behind a flag', cites: ['in-pc-000005'], cites_head: [inHeadLocal(root, 'in-pc-000005')], scope: scope({ beads: ['ex-1'] }) }, { role: 'chief-of-staff', session_id: 'x' });
     assert.strictEqual(R.verifyRecord(root, fa.id).code, 'unknown_instance');
     assert.strictEqual(R.verifyRecord(root, fd.id).code, 'unknown_instance');
+    assert.match(R.verifyRecord(root, fd.id).error, /restore the instance in \.delivery\/team\/team\.json to re-check it/);
     assert.strictEqual(R.verifyRecord(root, a1.id).ok, true, 'the recorded history stays valid');
     const p = R.pending(root, {});
     assert.ok(p.inputs.some((e) => e.id === 'in-pc-000001'));
@@ -1480,4 +1510,25 @@ test('R5 B2: author, rehost, scope and limits fields are typed; a malformed stam
   assert.ok(decide(root, { by: BUILDER_OWN, statement: 'still writing' }));
   assert.ok(decide(root, { statement: 'cos still writing' }));
   assert.ok(R.recordRehost({ projectRoot: root, instance: 'builder-1', reason: 'moved host', to: { host: 'pc2', machine: 'm2' }, by: COS }));
+});
+
+test('Task 5 P4: a heads.json that is not an object, or has a non-integer count, is a problem and is never overwritten', () => {
+  for (const bad of ['[]', '"x"', 'not json', JSON.stringify({ 'records/chief-of-staff': { count: 'two', last_hash: 'h' } })]) {
+    const root = fixture();
+    decide(root);
+    const hf = path.join(root, '.delivery', 'operator', 'cursors', 'heads.json');
+    fs.writeFileSync(hf, bad);
+    const p = R.pending(root, {});
+    const hp = p.problems.find((x) => x.code === 'heads_invalid');
+    assert.ok(hp, `${bad}: ${JSON.stringify(p.problems)}`);
+    assert.match(hp.error, /cannot be detected/);
+    // a write still works but leaves the bad file as evidence; the problem stays visible
+    decide(root, { statement: 'after the heads broke' });
+    assert.strictEqual(fs.readFileSync(hf, 'utf8'), bad);
+    assert.ok(R.pending(root, {}).problems.some((x) => x.code === 'heads_invalid'));
+  }
+  // a well-formed heads file is no problem
+  const ok = fixture();
+  decide(ok);
+  assert.ok(!R.pending(ok, {}).problems.some((x) => x.code === 'heads_invalid'));
 });

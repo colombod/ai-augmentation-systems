@@ -156,6 +156,11 @@ function buildContext(flags) {
 }
 
 function requireWriter(ctx) {
+  // Without DELIVERY_ROLE_DIR the marker is found by walking up from the working directory, which can
+  // be another role's tree: a writer fails closed rather than record under the wrong instance.
+  if (process.env.DELIVERY_ROLE && !process.env.DELIVERY_ROLE_DIR) {
+    throw new R.OperatorError('role_dir_unset', `DELIVERY_ROLE is set (${process.env.DELIVERY_ROLE}) but DELIVERY_ROLE_DIR is not, so this session's own role marker cannot be told apart from one found above the working directory; nothing is recorded. Start the session through prepare-role (it sets both), or export DELIVERY_ROLE_DIR=<this role's directory> and retry. Reading (verify, show, pending, find, ledger) works anywhere`);
+  }
   if (ctx.by && ctx.projectFlag && real(ctx.projectFlag) !== real(ctx.valid.marker.project_root)) {
     throw new R.OperatorError('project_mismatch', `--project ${ctx.projectFlag} is not the project of this role (${ctx.valid.marker.project_root}); records are written to the role's own project only. Drop --project`);
   }
