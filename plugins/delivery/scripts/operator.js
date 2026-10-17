@@ -145,11 +145,16 @@ function buildContext(flags) {
     ctx.by.machine = R.machineId();
   }
   ctx.instance = ctx.by ? ctx.by.instance : undefined;
+  // every instance the manifest places on this host: their records chains are written only here
+  ctx.hostInstances = [];
+  if (valid && ctx.host) {
+    try { ctx.hostInstances = expandInstances(valid.team).filter((i) => log.safeHost(i.role.host) === log.safeHost(ctx.host)).map((i) => i.instance); } catch (e) { ctx.hostInstances = []; }
+  }
   // once per command: the first call fetches and brings other writers' files; later calls do nothing
   ctx.refreshOnce = () => {
     if (ctx.refreshed) return ctx.refreshResult;
     ctx.refreshed = true;
-    ctx.refreshResult = log.refresh(projectRoot, { host: ctx.host, instance: ctx.instance });
+    ctx.refreshResult = log.refresh(projectRoot, { host: ctx.host, instance: ctx.instance, instances: ctx.hostInstances });
     return ctx.refreshResult;
   };
   ctx.onWarning = (w) => ctx.warnings.push(w);
@@ -329,7 +334,7 @@ function afterWrite(ctx, rec, extra = {}, lines = []) {
     else R.writeLedger(ctx.projectRoot);
   } catch (e) { /* best effort */ }
   extra = { ...extra, warnings: [...(extra.warnings || []), ...ledgerNotes] };
-  const pub = log.publish(ctx.projectRoot, { force: true, host: ctx.host, instance: ctx.instance });
+  const pub = log.publish(ctx.projectRoot, { force: true, host: ctx.host, instance: ctx.instance, instances: ctx.hostInstances });
   const published = !!pub.published;
   const warnings = [...(extra.warnings || []), ...ctx.warnings];
   const r = ctx.refreshResult;
@@ -377,7 +382,7 @@ function ackPending(ctx, flags) {
     acked.push(R.ack({ projectRoot: ctx.projectRoot, input: e.id, reason: flags.reason, by: ctx.by, refresh: ctx.refreshOnce, noLedger: true, onWarning: ctx.onWarning }).id);
   }
   if (acked.length) { try { R.writeLedger(ctx.projectRoot); } catch (e) { /* best effort */ } }
-  const pub = acked.length ? log.publish(ctx.projectRoot, { force: true, host: ctx.host, instance: ctx.instance }) : { published: false, reason: 'nothing written' };
+  const pub = acked.length ? log.publish(ctx.projectRoot, { force: true, host: ctx.host, instance: ctx.instance, instances: ctx.hostInstances }) : { published: false, reason: 'nothing written' };
   const lines = [acked.length ? `acked ${acked.length}: ${acked.join(', ')}` : 'nothing to ack'];
   if (kept.length) lines.push(`left pending (said after an open question was asked, so it may be its answer): ${kept.join(', ')}; record it with --answers q-..., or ack it by id`);
   if (acked.length) lines.push(pub.published ? 'published' : `unpublished (${pub.reason || 'not pushed'})`);
@@ -389,13 +394,16 @@ function ackPending(ctx, flags) {
 
 const handlers = {
   publish(ctx, flags) {
-    const r = log.publish(ctx.projectRoot, { force: !!flags.force, host: ctx.host, instance: ctx.instance });
-    out(ctx, r, [r.published ? `published${r.entries !== undefined ? ` (${r.entries} entries)` : ''}` : `unpublished (${r.reason || 'nothing pushed'})`]);
-    return 0;
+    const r = log.publish(ctx.projectRoot, { force: !!flags.force, host: ctx.host, instance: ctx.instance, instances: ctx.hostInstances });
+    const what = r.nothing_new ? 'nothing new to push' : `${r.entries || 0} ${r.entries === 1 ? 'entry' : 'entries'} pushed`;
+    out(ctx, r, [r.published ? `published (${what})` : `unpublished (${r.reason || 'nothing pushed'})`]);
+    // exit 1 when an error kept the entries from the remote; not for a store without a remote, a
+    // project outside git, or a throttled call
+    return r.published || ['no remote', 'not a git repository', 'throttled'].includes(r.reason) ? 0 : 1;
   },
 
   refresh(ctx) {
-    const r = log.refresh(ctx.projectRoot, { host: ctx.host, instance: ctx.instance });
+    const r = log.refresh(ctx.projectRoot, { host: ctx.host, instance: ctx.instance, instances: ctx.hostInstances });
     const lines = [r.ok ? `refreshed (${(r.updated || []).length} files)` : (r.no_remote ? `nothing to refresh (${r.reason}; single-host project)` : `not refreshed (${r.reason})`)];
     if (r.diverged && r.diverged.length) lines.push(`warning: diverged: ${r.diverged.join(', ')} differ from the remote copy; another writer appended to a file only one writer should (a forked instance), or the remote copy was rewritten (operator.js problems)`);
     if (r.refused && r.refused.reason) lines.push(`warning: not committed in the private store: ${r.refused.reason}`);
@@ -586,8 +594,8 @@ const handlers = {
     // ids handed out must be visible to other hosts: say so when this host cannot push
     let unpub = { count: 0 };
     if (ctx.by) {
-      const pub = log.publish(ctx.projectRoot, { host: ctx.host, instance: ctx.instance });
-      unpub = log.unpublished(ctx.projectRoot, { host: ctx.host, instance: ctx.instance });
+      const pub = log.publish(ctx.projectRoot, { host: ctx.host, instance: ctx.instance, instances: ctx.hostInstances });
+      unpub = log.unpublished(ctx.projectRoot, { host: ctx.host, instance: ctx.instance, instances: ctx.hostInstances });
       const why = pub.published ? 'push in progress' : (pub.reason === 'throttled' ? (log.lastPublishReason(ctx.projectRoot) || 'not pushed yet') : (pub.reason || unpub.reason));
       if (unpub.count > 0) lines.push(`unpublished local records: ${unpub.count} (${why})`);
     }
@@ -671,7 +679,13 @@ const handlers = {
     for (const d of divergedOwn(ctx)) p.push({ file: d, code: 'chain_diverged', error: `${d} differs from the remote copy (another writer appended to it)` });
     const lines = p.length ? p.map((x) => `${x.id ? x.id + ' ' : ''}${x.file}${x.line ? ':' + x.line : ''}  ${x.code}  ${x.error}`) : ['no problems'];
     const extra = readWarnings(ctx, []);
-    out(ctx, { problems: p, warnings: extra }, [...lines, ...extra.map((w) => `warning: ${w}`)]);
+    // entries the remote does not hold yet: a warning, not a problem (the exit code stays 0 for them)
+    const u = log.unpublished(ctx.projectRoot, { all: true });
+    if (u.count > 0) {
+      extra.push(u.no_remote ? `unpublished: ${u.count} entries are local only (no remote; they are lost if this checkout is deleted)`
+        : `unpublished: ${u.count} entries are not on the remote yet${u.oldest ? ` (oldest from ${u.oldest})` : ''}; run operator.js publish${log.lastPublishReason(ctx.projectRoot) ? ` (last attempt: ${log.lastPublishReason(ctx.projectRoot)})` : ''}`);
+    }
+    out(ctx, { problems: p, warnings: extra, unpublished: u.count || 0 }, [...lines, ...extra.map((w) => `warning: ${w}`)]);
     return p.length ? 1 : 0;
   },
 

@@ -161,7 +161,12 @@ test('operator lines: unpublished entries, inputs pending a record and inferred 
   git(root, 'remote', 'remove', 'origin');
   const local = teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => true, host: 'pc' });
   assert.equal(local.operator.no_remote, true);
-  assert.ok(renderStatus(local, root).includes('Operator entries unpublished: no remote (the operator store is local only)'));
+  assert.ok(local.operator.unpublished > 0, 'a local-only store still counts its entries');
+  assert.ok(renderStatus(local, root).includes(`Operator entries unpublished: ${local.operator.unpublished} (no remote: the operator store is local only)`));
+  // entries left unpublished for more than a day are called out
+  const old = renderStatus({ ...s, operator: { ...s.operator, unpublished: 2, unpublished_since: new Date(Date.now() - 30 * 3600e3).toISOString() } });
+  assert.ok(old.includes('Warning: operator entries unpublished for 30 hours: run operator.js publish, or check the remote'), old);
+  assert.ok(!renderStatus(s).includes('unpublished for'), 'fresh entries are not a warning');
   // a fourth input listed as "..." after three ids
   const four = renderStatus({ ...s, operator: { ...s.operator, pending_inputs: ['a', 'b', 'c', 'd'] } });
   assert.ok(four.includes('Operator inputs pending a record: 4 (a, b, c, ...)'));

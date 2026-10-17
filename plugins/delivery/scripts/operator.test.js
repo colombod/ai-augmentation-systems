@@ -516,6 +516,14 @@ test('writes that must see current state refuse when the remote is unreachable; 
   assert.strictEqual(run(cos, ['refresh']).status, 1);
   assert.match(run(cos, ['verify', 'dec-pm-x-000009']).out, /refresh_failed/);
   assert.match(plain.out, /LEDGER\.md was not regenerated: this command could not refresh/);
+  // an explicit publish that cannot reach the remote exits 1; problems lists the entries as a warning only
+  const pubr = run(cos, ['publish', '--force']);
+  assert.strictEqual(pubr.status, 1, pubr.out + pubr.err);
+  assert.match(pubr.out, /^unpublished \(/);
+  const pr = run(cos, ['problems']);
+  assert.strictEqual(pr.status, 0, pr.out + pr.err);
+  assert.match(pr.out, /^no problems$/m);
+  assert.match(pr.out, /warning: unpublished: \d+ entries are not on the remote yet/);
   assert.ok(!/\(throttled\)/.test(p.out), 'the real push failure is shown, not the throttle');
 });
 

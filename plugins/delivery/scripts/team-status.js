@@ -32,6 +32,7 @@ function operatorStatus(projectRoot, team, { host, deps = {} } = {}) {
     const u = log.unpublished(projectRoot, h ? { host: h, instances } : { all: true });
     res.unpublished = u.count || 0;
     if (u.no_remote && u.reason === 'no remote') res.no_remote = true;
+    if (res.unpublished && u.oldest) res.unpublished_since = u.oldest;
   } catch (err) { res.notes.push(`unpublished count unavailable: ${err.message}`); }
   try {
     const p = R.pending(projectRoot, {});
@@ -100,7 +101,9 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, war
   lines.push('');
   if (projectRoot) { lines.push(`Manifest: ${projectRoot} at ${manifestRev(projectRoot)}`); lines.push(''); }
   if (operator) {
-    lines.push(`Operator entries unpublished: ${operator.no_remote ? 'no remote (the operator store is local only)' : operator.unpublished}`);
+    lines.push(`Operator entries unpublished: ${operator.unpublished}${operator.no_remote ? ' (no remote: the operator store is local only)' : ''}`);
+    const hours = operator.unpublished_since ? Math.floor((Date.now() - Date.parse(operator.unpublished_since)) / 3600e3) : 0;
+    if (hours >= 24 && !operator.no_remote) lines.push(`Warning: operator entries unpublished for ${hours} hours: run operator.js publish, or check the remote (push access, the delivery-operator branch rules)`);
     lines.push(`Operator inputs pending a record: ${operator.pending_inputs.length}${firstIds(operator.pending_inputs)}`);
     lines.push(`Inferred answers awaiting ratification: ${operator.unratified.length}${firstIds(operator.unratified)}`);
     for (const n of operator.notes) lines.push(`Note: ${n}`);
