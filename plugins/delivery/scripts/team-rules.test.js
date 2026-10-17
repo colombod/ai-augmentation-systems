@@ -175,3 +175,14 @@ test('rendered briefs and the SessionStart block contain no literal ${CLAUDE_PLU
     assert.ok(short.includes(`Operator commands: \`node ${path.join(PLUGIN_ROOT, 'scripts', 'operator.js')} <command>\``), i.instance);
   }
 });
+
+test('A1: stage 3 is owned: the Delivery Lead runs acceptance, the Product Manager realign and pivots, builders take spikes when no Spike Researcher is hired', () => {
+  const dl = roleText('delivery-lead');
+  assert.match(dl, /phase-review beads and acceptance/);
+  assert.match(dl, /\/delivery:sprint-review/);
+  const pm = roleText('product-manager');
+  assert.match(pm, /You own realign and pivots/);
+  assert.match(pm, /\/delivery:realign/);
+  const b = roleText('builder');
+  assert.match(b, /When the team has no Spike Researcher, you take spike beads in spike mode/);
+});

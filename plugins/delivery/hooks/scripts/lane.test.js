@@ -17,7 +17,7 @@ test('loadPolicy reads lane keys from a delivery role file', () => {
   assert.ok(p.bash.includes('bd-notes'));
   assert.ok(!p.bash.includes('any'));
   const b = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/builder' });
-  assert.deepEqual(b.writes, ['product/**', 'scratch/**']);
+  assert.deepEqual(b.writes, ['product/**', 'scratch/**', 'project/.delivery/decisions/**']);
   assert.deepEqual(b.bash, ['any']);
 });
 
@@ -817,4 +817,37 @@ test('F2: the new bd verbs classify into the lane groups the guard expects', () 
   }
   for (const c of ['bd assign ex-1 me', 'bd reopen ex-1']) assert.ok(classifySegment(c, GROUPS, ctx()).includes('bd-claim'), c);
   assert.ok(!classifySegment('bd tag ex-1 x', GROUPS, ctx()).includes('bd-claim'));
+});
+
+// A1: the minimal team (Chief of Staff, Product Manager, Delivery Lead, builder) can carry the whole
+// pipeline: every artifact a pipeline skill writes is in at least one of their lanes.
+test('A1: every pipeline output path is writable by at least one role of the minimal team', () => {
+  const minimal = ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder'];
+  const policies = Object.fromEntries(minimal.map((id) => [id, loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/' + id })]));
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-a1-'));
+  const outputs = {
+    'initiatives/checkout/brief.md': 'product-manager', 'initiatives/checkout/research.md': 'product-manager',
+    'initiatives/checkout/prd.md': 'product-manager', 'initiatives/checkout/prioritization.md': 'product-manager',
+    'initiatives/checkout/design-system.md': 'product-manager', 'initiatives/checkout/architecture.md': 'product-manager',
+    'initiatives/checkout/roadmap.md': 'product-manager', 'initiatives/checkout/notes.md': 'product-manager',
+    'glossary.md': 'product-manager', 'personas/casual-carl.md': 'product-manager', 'interviews/casual-carl-01.md': 'product-manager',
+    'simulations/checkout-journey.md': 'product-manager', 'decisions/ADR-007-queue.md': 'product-manager',
+    'stories/checkout-01-cart.md': 'delivery-lead', 'stories/README.md': 'delivery-lead',
+    'sprints/1-checkout.md': 'delivery-lead', 'sprints/1-checkout-handoff.md': 'delivery-lead', 'sprints/1-checkout-review.md': 'delivery-lead',
+    'sprints/1-realign.md': 'product-manager', 'reviews/checkout-prd-01.md': 'product-manager', 'reviews/checkout-sprint-1-01.md': 'delivery-lead',
+    'team/denylist.txt': 'delivery-lead',
+  };
+  for (const [rel, owner] of Object.entries(outputs)) {
+    const file = path.join(rd, 'project', '.delivery', ...rel.split('/'));
+    const writers = minimal.filter((id) => pathAllowed(file, { roleDir: rd, writes: policies[id].writes }));
+    assert.ok(writers.length >= 1, `${rel}: no role of the minimal team may write it`);
+    assert.ok(writers.includes(owner), `${rel}: expected ${owner}, writable by ${writers.join(', ')}`);
+  }
+  // the builder's product worktree, scratch area and spike-mode ADRs
+  for (const rel of ['product/src/cart.js', 'scratch/spike/notes.md', 'project/.delivery/decisions/ADR-008-spike.md']) {
+    assert.ok(pathAllowed(path.join(rd, ...rel.split('/')), { roleDir: rd, writes: policies.builder.writes }), rel);
+  }
+  // nobody in the minimal team but the Product Manager rewrites the roadmap, and no one writes the operator directory
+  assert.ok(!pathAllowed(path.join(rd, 'project/.delivery/initiatives/checkout/roadmap.md'), { roleDir: rd, writes: policies['delivery-lead'].writes }));
+  assert.ok(!pathAllowed(path.join(rd, 'project/.delivery/sprints/1-checkout.md'), { roleDir: rd, writes: policies['product-manager'].writes }), 'the PM writes only the realign record under sprints/');
 });

@@ -361,14 +361,14 @@ subagents. A PreToolUse hook enforces this from a policy each role declares.
   gh-read, bd-read, bd-notes, bd-create-child. Staffing: writes `project/.delivery/team/team.json` and `project/.delivery/team/briefs/**`;
   read, git-read, git-write-project, bd-read, bd-notes. Product Manager: writes
   `project/.delivery/initiatives/**`, `personas/**`, `interviews/**`, `simulations/**`,
-  `decisions/**`, `glossary.md`; read, git-read, git-write-project, bd-read, bd-notes,
-  bd-create-child. Delivery Lead: writes `project/.delivery/stories/**`, `sprints/**`,
+  `decisions/**`, `reviews/**`, `sprints/*-realign.md`, `glossary.md`; read, git-read, git-write-project, bd-read, bd-notes,
+  bd-create-child. Delivery Lead: writes `project/.delivery/stories/**`, `sprints/**`, `reviews/**`,
   `team/denylist.txt`; read, git-read, git-write-project, gh-read, bd-read, bd-notes,
   bd-create-child, bd-structure. Progress Observer: writes `project/.delivery/reviews/**`; read,
   git-read, gh-read, bd-read, bd-notes, bd-claim (release stale claims). No manager may write under
   `product/`.
-- **Worker lanes.** Builder: writes `product/**` and `scratch/**`; bash `any`, still subject to 8.1
-  and 8.2. Spike Researcher: writes `project/.delivery/initiatives/**`, `decisions/**`, `scratch/**`;
+- **Worker lanes.** Builder: writes `product/**`, `scratch/**` and `project/.delivery/decisions/**`
+  (spike mode, when no Spike Researcher is hired); bash `any`, still subject to 8.1 and 8.2. Spike Researcher: writes `project/.delivery/initiatives/**`, `decisions/**`, `scratch/**`;
   bash `any`; never `product/**`.
 - **Subagents are allowed everywhere** (the Agent tool is how a manager reads broadly or drafts), and
   their tool calls pass through the same hook, so a subagent cannot do what its parent role may not.
