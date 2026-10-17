@@ -94,7 +94,7 @@ test('--dry-run prints the plan and writes nothing', () => {
   const r = start(['--project', project, '--host', 'laptop', '--product-repo', productRepo(), '--dry-run']);
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /would create .*acme and run git init/);
-  assert.match(r.out, /would write \.delivery\/team\/team\.json and \.delivery\/team\/hosts\.json: preset minimal, host "laptop", prefix "acme"/);
+  assert.match(r.out, /would write \.delivery\/team\/team\.json and \.delivery\/team\/hosts\.json: preset minimal, models balanced, host "laptop", prefix "acme"/);
   assert.match(r.out, /would run bd init --prefix acme/);
   assert.match(r.out, /builder: would prepare \(sonnet, product worktree on team\/builder\)/);
   assert.deepEqual(fs.readdirSync(base), []);
@@ -210,4 +210,21 @@ test('usage errors exit 2', () => {
   assert.equal(start(['--project', mk('x-'), '--permission-mode', 'yolo']).status, 2);
   assert.equal(start(['--bogus', '1']).status, 2);
   assert.equal(start([]).status, 2);
+});
+
+test('A5: --models presets set every role\'s model and the builders\' large-bead model in the generated team.json', () => {
+  const { MODEL_PRESETS, buildManifest } = require('./start.js');
+  const models = (preset) => Object.fromEntries(buildManifest({ project: 'acme', prefix: 'acme', host: 'h', preset: 'full', runner: 'plain', models: preset }).team.roles.map((r) => [r.id, r.model]));
+  assert.deepEqual(models('balanced'), { 'chief-of-staff': 'opus', staffing: 'sonnet', 'product-manager': 'opus', 'delivery-lead': 'sonnet', 'progress-observer': 'haiku', 'spike-researcher': 'sonnet', builder: 'sonnet' });
+  assert.deepEqual(models('quality'), { 'chief-of-staff': 'opus', staffing: 'sonnet', 'product-manager': 'opus', 'delivery-lead': 'opus', 'progress-observer': 'haiku', 'spike-researcher': 'sonnet', builder: 'sonnet' });
+  assert.deepEqual(models('economy'), { 'chief-of-staff': 'sonnet', staffing: 'haiku', 'product-manager': 'sonnet', 'delivery-lead': 'sonnet', 'progress-observer': 'haiku', 'spike-researcher': 'sonnet', builder: 'sonnet' });
+  const builder = (preset) => buildManifest({ project: 'acme', prefix: 'acme', host: 'h', preset: 'minimal', runner: 'plain', models: preset }).team.roles.find((r) => r.id === 'builder');
+  assert.equal(builder('quality').large_model, 'opus');
+  assert.equal(builder('economy').large_model, 'sonnet');
+  assert.ok(Object.keys(MODEL_PRESETS).length === 3);
+  assert.equal(start(['--project', mk('x-'), '--models', 'cheap']).status, 2);
+  const project = path.join(mk('start-models-'), 'acme');
+  const r = start(['--project', project, '--host', 'laptop', '--models', 'economy', '--dry-run']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /preset minimal, models economy/);
 });

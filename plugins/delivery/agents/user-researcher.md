@@ -1,5 +1,6 @@
 ---
 name: user-researcher
+model: sonnet
 description: Derives end-user personas from evidence and designs how to test them. Use when you need customer personas to review a product against, when segmenting an audience, or when deciding what real research would settle a question. Distinguishes evidence-grounded personas from invented ones.
 ---
 

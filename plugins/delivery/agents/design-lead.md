@@ -1,5 +1,6 @@
 ---
 name: design-lead
+model: sonnet
 description: Owns identity, look and feel, and the design system that implementation builds against. Use when turning a design seed or brand intent into concrete tokens, component specs and accessibility rules, or when judging whether built UI matches the intended system. Invoke after personas and before stories.
 ---
 

@@ -217,3 +217,14 @@ test('I6: a retired role stays listed but is never missing or drift, and prepare
   const { prepareRole } = require('./prepare-role.js');
   assert.throws(() => prepareRole({ projectRoot: root, instance: 'spike-researcher', teamDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-')), pluginRoot: path.join(__dirname, '..'), user: 't' }), /retired/);
 });
+
+test('A5: /delivery:team says how to change a model, and warns on a model name it does not know', () => {
+  const root = scratchProject();
+  const file = path.join(root, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.roles[0].model = 'claude-opus-9';
+  fs.writeFileSync(file, JSON.stringify(team));
+  const text = renderStatus(teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => true }));
+  assert.ok(text.includes('To change a model: edit roles[].model in .delivery/team/team.json, rerun prepare-role for that instance, restart its session.'));
+  assert.match(text, /Warning: team.json: role "chief-of-staff" has model "claude-opus-9"/);
+});

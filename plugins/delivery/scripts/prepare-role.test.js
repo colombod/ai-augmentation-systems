@@ -236,3 +236,16 @@ test('hardening a/b: native deny rules per role, idempotent, keeping the user\'s
   assert.ok(!again.includes('AskUserQuestion'), 'the chief of staff may ask: the managed deny is removed');
   assert.deepEqual(deny('chief-of-staff'), again);
 });
+
+test('A5: a builder gets DELIVERY_LARGE_MODEL from its manifest large_model (default opus); a manager does not', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const envOf = (instance) => JSON.parse(fs.readFileSync(path.join(prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 't' }).roleDir, '.claude', 'settings.local.json'), 'utf8')).env;
+  assert.equal(envOf('builder-1').DELIVERY_LARGE_MODEL, 'opus');
+  assert.equal(envOf('chief-of-staff').DELIVERY_LARGE_MODEL, undefined);
+  const file = path.join(projectRoot, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.roles.find((r) => r.id === 'builder').large_model = 'sonnet';
+  fs.writeFileSync(file, JSON.stringify(team));
+  assert.equal(envOf('builder-1').DELIVERY_LARGE_MODEL, 'sonnet');
+});

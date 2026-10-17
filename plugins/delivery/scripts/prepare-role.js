@@ -84,6 +84,8 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     BEADS_ACTOR: actor,
     DELIVERY_RUNNER: role.runner || 'plain',
     DELIVERY_MODE: role.mode || brief.meta.mode || 'default',
+    // the model a builder gives its implementer and reviewer subagents on a size-L bead
+    ...(brief.meta.touches_code ? { DELIVERY_LARGE_MODEL: role.large_model || 'opus' } : {}),
   });
   // Hooks and bd run from the role directory, where bd cannot find the project database on its own.
   // A value this script wrote earlier (remembered in the marker) follows the project when it moves;

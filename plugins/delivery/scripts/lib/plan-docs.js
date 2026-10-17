@@ -98,7 +98,7 @@ function parseStories(dir) {
     if (!meta.id) continue;
     out.push({
       id: String(meta.id), title: String(meta.title || meta.id), status: String(meta.status || ''), epic: String(meta.epic || ''),
-      phase: phaseNumber(meta.phase), dependsOn: listValue(meta.depends_on), size: String(meta.size || ''), file,
+      phase: phaseNumber(meta.phase), dependsOn: listValue(meta.depends_on), size: String(meta.size || ''), model: String(meta.model || '').trim(), file,
     });
   }
   return out;

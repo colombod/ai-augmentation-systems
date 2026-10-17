@@ -188,3 +188,9 @@ test('A1: stage 3 is owned: the Delivery Lead runs acceptance, the Product Manag
   const b = roleText('builder');
   assert.match(b, /When the team has no Spike Researcher, you take spike beads in spike mode/);
 });
+
+test('A5: builders pick the subagent model from size-L or a bead model; the Delivery Lead sizes stories honestly', () => {
+  assert.match(roleText('builder'), /`size-L`, or one whose metadata carries `model`, gets that model for the implementer and reviewer subagents/);
+  assert.match(roleText('builder'), /reviewer is at least as capable as the implementer/);
+  assert.match(roleText('delivery-lead'), /Set `size:` honestly in every story: S is routine, M is ordinary work, L means risky or ambiguous/);
+});

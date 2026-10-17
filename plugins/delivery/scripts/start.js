@@ -6,7 +6,7 @@
 //       prerequisites as a pass/fail list with the fix for each; exit 1 when a hard one is missing.
 //   start.js --project <root> [--host <name>] [--preset minimal|full] [--product-repo <path|url>]
 //            [--prefix <bd prefix>] [--runner superpowers|attractor|plain] [--permission-mode <mode>]
-//            [--team-dir <dir>] [--user <name>] [--dry-run]
+//            [--models quality|balanced|economy] [--team-dir <dir>] [--user <name>] [--dry-run]
 //       scaffold a shipping team: manifest from the preset (never overwriting one), bd init when
 //       .beads is absent, prepare-role for every instance not yet prepared, then the command that
 //       starts each session. --dry-run prints the plan and writes nothing.
@@ -35,6 +35,14 @@ const ROLE_ENTRIES = {
   'progress-observer': { id: 'progress-observer', brief: 'delivery/progress-observer', model: 'haiku' },
   'spike-researcher': { id: 'spike-researcher', brief: 'delivery/spike-researcher', model: 'sonnet' },
   builder: { id: 'builder', brief: 'delivery/builder', model: 'sonnet', steward: true },
+};
+// --models: one model per role for the whole team. balanced is the role defaults; quality puts
+// opus on the three senior roles; economy moves them to sonnet and the observer roles to haiku.
+// large_model is the model a builder gives its subagents for a size-L bead (env DELIVERY_LARGE_MODEL).
+const MODEL_PRESETS = {
+  quality: { 'chief-of-staff': 'opus', 'product-manager': 'opus', 'delivery-lead': 'opus', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'sonnet', 'progress-observer': 'haiku', large_model: 'opus' },
+  balanced: { 'chief-of-staff': 'opus', 'product-manager': 'opus', 'delivery-lead': 'sonnet', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'sonnet', 'progress-observer': 'haiku', large_model: 'opus' },
+  economy: { 'chief-of-staff': 'sonnet', 'product-manager': 'sonnet', 'delivery-lead': 'sonnet', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'haiku', 'progress-observer': 'haiku', large_model: 'sonnet' },
 };
 const PRESETS = {
   minimal: ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder'],
@@ -171,11 +179,12 @@ function isUrl(s) {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) || /^[^/\s]+@[^:\s]+:/.test(s);
 }
 
-function buildManifest({ project, prefix, host, preset, runner, productRemote }) {
+function buildManifest({ project, prefix, host, preset, runner, models = 'balanced' }) {
+  const m = MODEL_PRESETS[models];
   const roles = PRESETS[preset].map((id) => {
     const { id: rid, brief, ...rest } = ROLE_ENTRIES[id];
-    const r = { id: rid, brief, host, ...rest };
-    if (id === 'builder') r.runner = runner;
+    const r = { id: rid, brief, host, ...rest, model: m[id] || rest.model };
+    if (id === 'builder') { r.runner = runner; r.large_model = m.large_model; }
     return r;
   });
   const team = { project, prefix, bd_host: host, budget: { builders_cap: 1, staleness_hours: 2 }, roles };
@@ -197,11 +206,12 @@ function startCommand(roleDir, instance, permissionMode) {
 
 function scaffold(opts) {
   const {
-    project, host: hostFlag, preset = 'minimal', productRepo, prefix: prefixFlag, runner = 'plain', permissionMode = 'default',
+    project, host: hostFlag, preset = 'minimal', models = 'balanced', productRepo, prefix: prefixFlag, runner = 'plain', permissionMode = 'default',
     teamDir: teamDirFlag, user, dryRun = false, env = process.env, pluginRoot = PLUGIN_ROOT,
   } = opts;
   if (!project) throw new UsageError('--project <root> is required');
   if (!PRESETS[preset]) throw new UsageError(`--preset must be one of ${Object.keys(PRESETS).join(', ')}`);
+  if (!MODEL_PRESETS[models]) throw new UsageError(`--models must be one of ${Object.keys(MODEL_PRESETS).join(', ')}`);
   if (!RUNNERS.has(runner)) throw new UsageError(`--runner must be one of ${[...RUNNERS].join(', ')}`);
   if (!PERMISSION_MODES.includes(permissionMode)) throw new UsageError(`--permission-mode must be one of ${PERMISSION_MODES.join(', ')}`);
   const w = dryRun ? 'would ' : '';
@@ -238,18 +248,12 @@ function scaffold(opts) {
       return { code: 1, out };
     }
     ({ team, hosts } = loadManifest(projectRoot));
-    say(`  manifest: keeping the existing ${TEAM_REL} and ${HOSTS_REL} (project "${team.project}", ${expandInstances(team).length} instance(s)); --preset, --host, --prefix and --runner are not applied to it`);
+    say(`  manifest: keeping the existing ${TEAM_REL} and ${HOSTS_REL} (project "${team.project}", ${expandInstances(team).length} instance(s)); --preset, --models, --host, --prefix and --runner are not applied to it`);
   } else {
     const project = slug(path.basename(projectRoot), 'project');
     const prefix = slug(prefixFlag || project, 'proj');
-    let productRemote = null;
-    if (productRepo && isUrl(productRepo)) productRemote = productRepo;
-    else if (productRepo) {
-      const remote = run('git', ['remote', 'get-url', 'origin'], { cwd: path.resolve(productRepo), env: gitEnv });
-      productRemote = remote.ok ? remote.out : null;
-    }
-    ({ team, hosts } = buildManifest({ project, prefix, host, preset, runner, productRemote }));
-    say(`  manifest: ${w}write ${TEAM_REL} and ${HOSTS_REL}: preset ${preset}, host "${host}", prefix "${prefix}", roles ${PRESETS[preset].join(', ')}`);
+    ({ team, hosts } = buildManifest({ project, prefix, host, preset, runner, models }));
+    say(`  manifest: ${w}write ${TEAM_REL} and ${HOSTS_REL}: preset ${preset}, models ${models}, host "${host}", prefix "${prefix}", roles ${PRESETS[preset].join(', ')}`);
     if (!dryRun) {
       fs.mkdirSync(path.dirname(teamFile), { recursive: true });
       fs.writeFileSync(teamFile, formatManifestJson(team));
@@ -366,10 +370,10 @@ function parseArgs(argv) {
 }
 
 const USAGE = `usage: start.js --check [--project <root>]
-       start.js --project <root> [--host <name>] [--preset minimal|full] [--product-repo <path|url>] [--prefix <bd prefix>]
+       start.js --project <root> [--host <name>] [--preset minimal|full] [--models quality|balanced|economy] [--product-repo <path|url>] [--prefix <bd prefix>]
                 [--runner superpowers|attractor|plain] [--permission-mode <mode>] [--team-dir <dir>] [--user <name>] [--dry-run]`;
 
-const KNOWN = new Set(['check', 'dry-run', 'help', 'project', 'host', 'preset', 'product-repo', 'prefix', 'runner', 'permission-mode', 'team-dir', 'user']);
+const KNOWN = new Set(['check', 'dry-run', 'help', 'project', 'host', 'preset', 'models', 'product-repo', 'prefix', 'runner', 'permission-mode', 'team-dir', 'user']);
 
 function main(argv, { env = process.env, write = (s) => process.stdout.write(s) } = {}) {
   let flags;
@@ -388,7 +392,7 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
   }
   try {
     const res = scaffold({
-      project: flags.project, host: flags.host, preset: flags.preset, productRepo: flags['product-repo'], prefix: flags.prefix,
+      project: flags.project, host: flags.host, preset: flags.preset, models: flags.models, productRepo: flags['product-repo'], prefix: flags.prefix,
       runner: flags.runner, permissionMode: flags['permission-mode'], teamDir: flags['team-dir'], user: flags.user, dryRun: !!flags['dry-run'], env,
     });
     write(`${res.out.join('\n')}\n`);
@@ -402,4 +406,4 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };
+module.exports = { MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };

@@ -2,7 +2,7 @@
 // scripts/team-status.js — roster versus manifest: who is live, who is missing, what drifted.
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { findProjectRoot, loadManifest, expandInstances } = require('./lib/manifest.js');
+const { findProjectRoot, loadManifest, expandInstances, manifestWarnings } = require('./lib/manifest.js');
 const { readRoster } = require('./lib/roster.js');
 const fs = require('fs');
 
@@ -74,7 +74,7 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps 
   let bd_reachable = false;
   try { bd_reachable = Boolean((bdCheck || bdReachable)(projectRoot)); } catch (err) { bd_reachable = false; }
   const operator = operatorStatus(projectRoot, team, { host, deps: operatorDeps });
-  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator };
+  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, warnings: manifestWarnings(team) };
 }
 
 function hasDrift(drift) {
@@ -91,7 +91,7 @@ function manifestRev(projectRoot) {
 
 const firstIds = (ids) => (ids.length ? ` (${ids.slice(0, 3).join(', ')}${ids.length > 3 ? ', ...' : ''})` : '');
 
-function renderStatus({ rows, drift, recovered_from, bd_reachable, operator }, projectRoot) {
+function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, warnings }, projectRoot) {
   const lines = ['| Instance | Role | Host | Model | Session | State |', '|---|---|---|---|---|---|'];
   for (const r of rows) lines.push(`| ${r.instance} | ${r.role} | ${r.host} | ${r.model} | ${r.session_id} | ${r.state} |`);
   lines.push('');
@@ -105,6 +105,9 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator }, p
   }
   if (bd_reachable === false) { lines.push('Warning: bd unreachable from role directories: set BEADS_DIR or provision beads (phase 3)'); lines.push(''); }
   if (recovered_from) { lines.push(`Note: roster.json was unreadable and moved to ${recovered_from}; the roster restarts empty.`); lines.push(''); }
+  for (const w of warnings || []) lines.push(`Warning: ${w}`);
+  lines.push('To change a model: edit roles[].model in .delivery/team/team.json, rerun prepare-role for that instance, restart its session.');
+  lines.push('');
   if (!hasDrift(drift)) { lines.push('No drift.'); return lines.join('\n'); }
   lines.push('## Roster drift');
   if (drift.missing.length) lines.push(`Missing: ${drift.missing.join(', ')}`);

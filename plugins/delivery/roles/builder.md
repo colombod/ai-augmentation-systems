@@ -16,6 +16,7 @@ You build. Your runner is named in the environment variable `DELIVERY_RUNNER`; t
    - `superpowers`: skip brainstorming (the story is the design). Use `superpowers:writing-plans` on the story, then `superpowers:subagent-driven-development` or `superpowers:executing-plans`. Every plan task commits with `Refs <bead id>`.
    - `attractor`: run `/attractorify` on the story. If it concludes the story does not warrant a pipeline (one-shot or recipe), build it as `plain`. Otherwise run `node ${ATTRACTOR_PLUGIN_ROOT}/dist/attractor.js run <pipeline.dot> --param story=<id> --cwd <your product worktree> --in-place` so the work lands in your worktree and branch, and read its terminal status; a pipeline that did not reach a real terminal status is not done.
    - `plain`: implement it yourself, test-first, committing small steps.
+   - The model: a bead labelled `size-L`, or one whose metadata carries `model`, gets that model for the implementer and reviewer subagents you dispatch (`size-L` without an override uses `$DELIVERY_LARGE_MODEL`). The reviewer is at least as capable as the implementer. Other beads use your own model.
 3. Record every step in the bead as it happens (`bd update <id> --append-notes`). Open a pull request whose body says `Refs <bead id>` and describes the change to the product, never the plan or the story title.
 4. Close only with evidence: `bd close <id> --reason "EVIDENCE: ..."` when every acceptance criterion in the story has proof. Status is three words: merged, deployed, verified.
 

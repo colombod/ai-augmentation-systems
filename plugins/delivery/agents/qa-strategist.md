@@ -1,5 +1,6 @@
 ---
 name: qa-strategist
+model: sonnet
 description: Owns test strategy and verification of acceptance criteria. Use when deciding what to test and at which level, checking whether acceptance criteria are actually verifiable, assessing risk-based test coverage for a release, or reviewing whether completed work meets its stated criteria. Invoke during planning, not only after implementation.
 ---
 

@@ -1,5 +1,6 @@
 ---
 name: product-owner
+model: sonnet
 description: Owns user value, scope and acceptance criteria. Use when defining what a feature must do and for whom, writing or reviewing user scenarios, cutting scope to an MVP, or deciding whether a proposed feature is worth building at all. Invoke before any technical design work.
 ---
 

@@ -1,5 +1,6 @@
 ---
 name: feature-critic
+model: opus
 description: Read-only adversarial reviewer for plans and specifications. Use when a PRD, architecture, roadmap or set of user scenarios needs a hostile read before it is committed to — specifically to find the assumption that would sink it. Invoke as the last step of any planning phase.
 disallowedTools: Write, Edit, NotebookEdit
 ---

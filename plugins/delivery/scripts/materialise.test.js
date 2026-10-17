@@ -378,3 +378,21 @@ test('a mid-run failure reports what was done so far', () => {
   assert.throws(() => execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo'], { env, stdio: 'pipe' }),
     (err) => err.status === 2 && /stopped part-way; so far: created 7 \[/.test(String(err.stdout)) && /would create a cycle/.test(String(err.stderr)));
 });
+
+test('A5: a story\'s size becomes a size-S|M|L label and its model a bead metadata override; a resize swaps the label', () => {
+  const root = scratchProject();
+  const story = (size, model) => fs.writeFileSync(path.join(root, '.delivery', 'stories', 'demo-02-second.md'),
+    `---\nid: demo-02\ntitle: Second story\nstatus: ready\nepic: demo\nphase: Phase 2\ndepends_on: [demo-01]\nsize: ${size}\n${model ? `model: ${model}\n` : ''}---\n# Second\n`);
+  story('L', 'opus');
+  const bd = makeBd({ env: fakeEnv() });
+  applyPlan({ plan: planOf(loadInputs({ projectRoot: root, initiative: 'demo' })), bd, initiative: 'demo' });
+  let b = bd.show('ex-demo-02');
+  assert.ok(b.labels.includes('size-L'), JSON.stringify(b.labels));
+  assert.equal(b.metadata.model, 'opus');
+  assert.ok(bd.show('ex-demo-01').labels.includes('size-S'));
+  assert.equal(bd.show('ex-demo-01').metadata.model, undefined, 'no override without model:');
+  story('m');
+  applyPlan({ plan: planOf(loadInputs({ projectRoot: root, initiative: 'demo' })), bd, initiative: 'demo' });
+  b = bd.show('ex-demo-02');
+  assert.ok(b.labels.includes('size-M') && !b.labels.includes('size-L'), JSON.stringify(b.labels));
+});
