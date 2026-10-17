@@ -498,10 +498,14 @@ function shellCommandOf(toolName, toolInput) {
 const OPERATOR_REL = path.join('.delivery', 'operator');
 const STORE_REL = path.join('.git', 'delivery-operator');
 const OPERATOR_REASON = 'operator records are written by `operator.js` only; read them with `operator.js show`';
-// A mention of the operator records in a shell command: .delivery/operator (also .delivery//operator,
-// .delivery/./operator) or anything named delivery-operator (the store directory and its branch).
-// Case-folded: macOS and Windows file systems are case-insensitive.
-const OPERATOR_MENTION = /\.delivery\/+(?:\.\/+)*operator(?=\/|[\s'";|&)>]|$)|(?:^|[\s/'"=:])delivery-operator(?=\/|[\s'";|&)>:]|$)/i;
+// A mention of the operator records in a shell command, as a path: .delivery/operator (also
+// .delivery//operator, .delivery/./operator) or the store, .git/delivery-operator. Case-folded: macOS and
+// Windows file systems are case-insensitive. A bare "delivery-operator" in a commit message or a local
+// branch name is not a mention; pushes of the delivery-operator branch and git commands aimed at the
+// store (-C, --git-dir, --work-tree, GIT_DIR) are checked separately below.
+const OPERATOR_MENTION = /\.delivery\/+(?:\.\/+)*operator(?=\/|[\s'";|&)>]|$)|\.git\/+(?:\.\/+)*delivery-operator(?=\/|[\s'";|&)>]|$)/i;
+const STORE_SEGMENT = /(?:^|[\\/])delivery-operator(?:[\\/]|$)/i;
+const BRANCH_REF = /(?:^|[:+/])delivery-operator$/i;
 const OPERATOR_WRITE_WORDS = ['tee', 'cp', 'mv', 'rm', 'truncate', 'dd', 'ln', 'install', 'rsync'];
 // git subcommands that only read: any other git command that names the operator records writes them
 // (a commit, push, reset, checkout or update-ref in the store, or a push of its branch).
@@ -533,16 +537,28 @@ function underOperator(p, dirs) {
 // records and also writes something.
 function operatorShellWrite(command) {
   const text = String(command == null ? '' : command);
-  if (!OPERATOR_MENTION.test(text)) return false;
+  const mentioned = OPERATOR_MENTION.test(text);
   return splitCommand(text).some((seg) => {
     const t = tokens(seg);
     if (!t.length) return false;
-    if (hasRedirect(seg)) return true;
+    const envs = t.filter((x) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(x));
     const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
     const first = path.basename(words[0] || '');
+    if (first === 'git') {
+      const { globals, rest } = splitGlobals(['git', ...words.slice(1)]);
+      const sub = rest[0];
+      // the delivery-operator branch is pushed by operator.js only
+      if (sub === 'push' && rest.slice(1).some((a) => BRANCH_REF.test(a) || /refs\/heads\/delivery-operator/i.test(a))) return true;
+      // a git command run in or on the store
+      const targets = [...globals.filter((g, i) => globals[i - 1] === '-C'), ...rest.filter((a) => /^--(?:git-dir|work-tree)=/.test(a)).map((a) => a.split('=')[1]),
+        ...envs.filter((e) => /^GIT_(?:DIR|WORK_TREE)=/.test(e)).map((e) => e.split('=')[1])];
+      if (targets.some((d) => STORE_SEGMENT.test(String(d))) && !GIT_READS.includes(sub)) return true;
+    }
+    if (!mentioned) return false;
+    if (hasRedirect(seg)) return true;
     if (OPERATOR_WRITE_WORDS.includes(first)) return true;
     if (first === 'sed' && writesFiles(['sed', ...words.slice(1)])) return true;
-    if (first === 'git' && !GIT_READS.includes(splitGlobals(words).rest[0])) return true;
+    if (first === 'git' && !GIT_READS.includes(splitGlobals(['git', ...words.slice(1)]).rest[0])) return true;
     return false;
   });
 }

@@ -803,7 +803,9 @@ test('shell writes into the private operator store or its branch are denied; rea
     'GIT_DIR=.git/delivery-operator/.git git update-ref refs/heads/delivery-operator HEAD~1',
     'git push --force origin HEAD:delivery-operator',
     'git push origin :delivery-operator',
-    'git fetch origin delivery-operator:delivery-operator',
+    'git push origin refs/heads/main:refs/heads/delivery-operator',
+    'cd .git && git -C delivery-operator update-ref -d refs/heads/delivery-operator',
+    'git --git-dir=.git/delivery-operator/.git reset --hard',
   ]) {
     for (const role of [BUILDER, COS]) {
       const d = run(role, cmd);
@@ -815,6 +817,15 @@ test('shell writes into the private operator store or its branch are denied; rea
   assert.equal(run(BUILDER, 'grep -c human .git/delivery-operator/operator/inputs/pc/2026-10.ndjson').allow, true);
   assert.equal(run(COS, 'git -C .git/delivery-operator log --oneline').allow, true);
   assert.equal(run(COS, 'ls .git/delivery-operator/operator/records').allow, true);
+  // a bare name is not a mention: commit messages and local branches that merely say it are left alone
+  for (const role of [BUILDER, COS]) {
+    const cmd = 'git commit -m "explain the delivery-operator branch"';
+    const d = run(role, cmd);
+    assert.ok(d.allow || !/operator\.js/.test(d.reason), `${role}: ${cmd}`);
+  }
+  assert.ok(!require('./lane.js').operatorShellWrite('git branch -D delivery-operator'));
+  assert.ok(!require('./lane.js').operatorShellWrite('git commit -m "delivery-operator notes"'));
+  assert.ok(require('./lane.js').operatorShellWrite('git push origin delivery-operator'));
 });
 
 test('role-lane hook denies a write into the private operator store through the real manifest', () => {
