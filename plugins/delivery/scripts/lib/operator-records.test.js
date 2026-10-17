@@ -1533,29 +1533,76 @@ test('Task 5 P4: a heads.json that is not an object, or has a non-integer count,
   assert.ok(!R.pending(ok, {}).problems.some((x) => x.code === 'heads_invalid'));
 });
 
-test('C1: a short answer that is the whole input is recorded and verified; a short fragment of a longer input is refused', () => {
+test('C1/B1: ask, the operator replies "yes", "B", "17", "No.", sync, record --answers: each recorded and verified', () => {
   const root = mk('oprec-short-');
   writeManifest(root);
-  const texts = ['yes', 'B', '17', 'No.', 'ship it', 'agreed!', 'yes but only for staging'];
-  sync(root, writeTranscript(texts.map((t, i) => human(t, i + 1))), { instance: 'chief-of-staff', role: 'chief-of-staff' });
-  const q = ask(root, { text: 'Ship the checkout flow this week?' });
-  const quotes = ['yes', 'b', '17', 'No', 'ship it', 'agreed'];
-  quotes.forEach((quote, i) => {
-    const d = R.recordDecision({ projectRoot: root, cite: `in-pc-00000${i + 1}`, quote, statement: `answer ${i + 1}`, scope: scope({ beads: ['ex-1'] }), by: COS, answers: i === 0 ? [q.id] : [] });
+  const replies = ['yes', 'B', '17', 'No.', 'ship it', 'agreed!'];
+  const qs = replies.map((r, i) => ask(root, { text: `Question ${i + 1} for the operator?` }));
+  // the operator replies after the questions were asked (fixture inputs are dated 2099)
+  sync(root, writeTranscript([...replies, 'yes but only for staging'].map((t, i) => human(t, i + 1))), { instance: 'chief-of-staff', role: 'chief-of-staff' });
+  replies.forEach((reply, i) => {
+    const quote = reply.replace(/[.!]$/, '').toLowerCase();
+    const d = R.recordDecision({ projectRoot: root, cite: `in-pc-00000${i + 1}`, quote, statement: `answer ${i + 1}`, scope: scope({ beads: ['ex-1'] }), by: COS, answers: [qs[i].id] });
     const v = R.verifyRecord(root, d.id);
     assert.strictEqual(v.ok, true, `${quote}: ${v.error}`);
-    if (i === 0) {
-      // the bare "yes" shows beside the question it answers, in verify and in the ledger
-      assert.deepStrictEqual(v.chain[0].answers_questions, [{ id: q.id, text: 'Ship the checkout flow this week?' }]);
-      const row = R.ledger(root, {}).find((r) => r.question.id === q.id);
-      assert.strictEqual(row.status, 'answered');
-      assert.match(R.renderLedger(root, {}), /Ship the checkout flow this week\?/);
-    }
+    const aq = v.chain[0].answers_questions[0];
+    assert.strictEqual(aq.id, qs[i].id);
+    assert.strictEqual(aq.text, `Question ${i + 1} for the operator?`);
+    assert.ok(typeof aq.minutes_before_answer === 'number' && aq.minutes_before_answer > 0);
   });
-  // "yes" out of "yes but only for staging" is a fragment: still refused, not whole
+  assert.strictEqual(R.ledger(root, {}).filter((r) => r.status === 'answered').length, replies.length);
+  // a bare short answer without its question means nothing: refused with the hint
+  const q7 = ask(root, { text: 'Spare question?' });
+  sync(root, writeTranscript([human('ok', 20)]), { instance: 'chief-of-staff', role: 'chief-of-staff' });
+  const bare = (() => { try { R.recordDecision({ projectRoot: root, cite: 'in-pc-000008', quote: 'ok', statement: 'x', scope: scope({ beads: ['ex-1'] }), by: COS }); } catch (e) { return e; } return null; })();
+  assert.strictEqual(bare.code, 'quote_mismatch');
+  assert.match(bare.message, /pass --answers q-/);
+  assert.ok(R.recordDecision({ projectRoot: root, cite: 'in-pc-000008', quote: 'ok', statement: 'x', scope: scope({ beads: ['ex-1'] }), by: COS, answers: [q7.id] }));
+  // "yes" out of "yes but only for staging" is a fragment: still refused
   assert.strictEqual(codeOf(() => R.recordDecision({ projectRoot: root, cite: 'in-pc-000007', quote: 'yes', statement: 'ship', scope: scope({ beads: ['ex-1'] }), by: COS })), 'quote_mismatch');
   assert.strictEqual(R.quoteCheck('yes but only for staging', 'yes').ok, false);
   assert.strictEqual(R.quoteCheck('No.', 'no').whole, true);
-  // the whole longer input is fine as before
+  // the whole longer input needs no question
   assert.ok(R.recordDecision({ projectRoot: root, cite: 'in-pc-000007', quote: 'yes but only for staging', statement: 'staging only', scope: scope({ beads: ['ex-1'] }), by: COS }));
+});
+
+test('B1: an operator input said before the question cannot answer it (the reviewer repro), for any quote length', () => {
+  const root = mk('oprec-order-');
+  writeManifest(root);
+  const early = (text, n) => ({ ...human(text, n), timestamp: `2026-10-12T09:00:0${n}.000Z` });
+  sync(root, writeTranscript([early('yes', 1), early('Go ahead and delete the old staging tables now.', 2)]), { instance: 'chief-of-staff', role: 'chief-of-staff' });
+  const q = ask(root, { text: 'Delete the production database?' });
+  assert.ok(Date.parse(q.ts) > Date.parse('2026-10-12T09:00:01.000Z'));
+  assert.strictEqual(codeOf(() => R.recordDecision({ projectRoot: root, cite: 'in-pc-000001', quote: 'yes', statement: 'Delete prod', scope: scope({ beads: ['ex-1'] }), by: COS, answers: [q.id] })), 'predates_question');
+  assert.strictEqual(codeOf(() => R.recordDecision({ projectRoot: root, cite: 'in-pc-000002', quote: 'delete the old staging tables now', statement: 'Delete prod', scope: scope({ beads: ['ex-1'] }), by: COS, answers: [q.id] })), 'predates_question');
+  // the long sentence is still a plain decision without --answers
+  const plain = R.recordDecision({ projectRoot: root, cite: 'in-pc-000002', quote: 'delete the old staging tables now', statement: 'Drop old staging tables', scope: scope({ beads: ['ex-1'] }), by: COS });
+  assert.strictEqual(R.verifyRecord(root, plain.id).ok, true);
+  // read side: a forged record linking the early "yes" to the question does not verify
+  const forged = forge(root, 'chief-of-staff', { kind: 'decision', statement: 'Delete prod', quote: 'yes', cites: ['in-pc-000001'], cites_head: [inHeadLocal(root, 'in-pc-000001')], scope: scope({ beads: ['ex-1'] }), answers: [q.id] });
+  assert.strictEqual(R.verifyRecord(root, forged.id).code, 'predates_question');
+  assert.strictEqual(R.ledger(root, {}).find((r) => r.question.id === q.id).status, 'open');
+  // answer-on-behalf cites earlier records and is unaffected by the ordering rule
+  const q2 = ask(root, { text: 'Which tables go?', scope: scope({ beads: ['ex-1'] }) });
+  const a = R.recordAnswer({ projectRoot: root, cites: [plain.id], question: 'Which tables go?', answer: 'The old staging tables.', confidence: 'settled', scope: scope({ beads: ['ex-1'] }), by: COS, answers: [q2.id] });
+  assert.strictEqual(R.verifyRecord(root, a.id).ok, true);
+});
+
+test('B1: one operator input answers one question; a second --answers from the same input is refused unless the first is superseded or its question withdrawn', () => {
+  const root = mk('oprec-once-');
+  writeManifest(root);
+  const q1 = ask(root, { text: 'Ship the checkout flow?' });
+  const q2 = ask(root, { text: 'Delete the production database?' });
+  sync(root, writeTranscript([human('yes', 1), human('Yes, ship the checkout flow this week.', 2)]), { instance: 'chief-of-staff', role: 'chief-of-staff' });
+  const d1 = R.recordDecision({ projectRoot: root, cite: 'in-pc-000001', quote: 'yes', statement: 'Ship checkout', scope: scope({ beads: ['ex-1'] }), by: COS, answers: [q1.id] });
+  const e = (() => { try { R.recordDecision({ projectRoot: root, cite: 'in-pc-000001', quote: 'yes', statement: 'Delete prod', scope: scope({ beads: ['ex-1'] }), by: COS, answers: [q2.id] }); } catch (x) { return x; } return null; })();
+  assert.strictEqual(e.code, 'input_already_answers');
+  assert.match(e.message, /fresh operator sentence/);
+  assert.strictEqual(codeOf(() => R.recordDecision({ projectRoot: root, cite: 'in-pc-000002', quote: 'ship the checkout flow this week', statement: 'x', scope: scope({ beads: ['ex-1'] }), by: COS, answers: [q1.id, q2.id] })), 'input_already_answers');
+  // superseding the first pairing (the operator's fuller reply answers q1) frees the input
+  const d1b = R.recordDecision({ projectRoot: root, cite: 'in-pc-000002', quote: 'ship the checkout flow this week', statement: 'Ship checkout this week', scope: scope({ beads: ['ex-1'] }), by: COS, answers: [q1.id], supersedes: d1.id });
+  assert.strictEqual(R.verifyRecord(root, d1b.id).ok, true);
+  const d2 = R.recordDecision({ projectRoot: root, cite: 'in-pc-000001', quote: 'yes', statement: 'Delete prod', scope: scope({ beads: ['ex-1'] }), by: COS, answers: [q2.id] });
+  assert.strictEqual(R.verifyRecord(root, d2.id).ok, true);
+  assert.strictEqual(R.verifyRecord(root, d1.id).ok, true, 'the superseded pairing stays valid history');
 });

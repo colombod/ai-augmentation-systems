@@ -161,6 +161,11 @@ function quoteCheck(inputText, quote) {
   return { ok: true, excerpt, attributed, question };
 }
 
+function isShortQuote(quote) {
+  const q = normMap(quote).norm;
+  return q.split(' ').filter(Boolean).length < MIN_QUOTE_WORDS && q.length < MIN_QUOTE_CHARS;
+}
+
 function excerptFor(inputText, quote) {
   const r = quoteCheck(inputText, quote);
   return r.ok ? r.excerpt : null;
@@ -382,15 +387,28 @@ function validateCore(st, rec, view, mode) {
   if (sErr) return sErr;
   const sc = { beads: [], labels: [], initiatives: [], ...(rec.scope || {}) };
 
-  const checkAnswersField = (kindOfRec) => {
+  // input: the operator input a human-quote record cites (decision, delegation). An operator sentence
+  // answers a question only if it was said after the question was asked, and answers one question.
+  const checkAnswersField = (kindOfRec, input) => {
     if (rec.answers === undefined) return null;
     if (!Array.isArray(rec.answers)) return bad('invalid_answers', 'answers must be an array of question ids');
+    if (input && rec.answers.length > 1) return bad('input_already_answers', `one operator input answers one question; ${input.id} is linked to ${rec.answers.length}. Record one --answers per question, each from the operator's own reply to it`);
     for (const qid of rec.answers) {
       const d = dep(qid, 'question');
       if (d.err) return d.err;
       const q = d.r;
       if (q.kind !== 'question') return bad(missingCode, `question ${qid} was not found (operator.js ledger lists questions)`);
       if (questionStatus(view, q) === 'withdrawn') return bad('question_withdrawn', `question ${qid} was withdrawn and cannot be answered (operator.js ledger shows its status)`);
+      if (input) {
+        if (!(Date.parse(input.ts) > Date.parse(q.ts))) {
+          return bad('predates_question', `${input.id} (${input.ts}) was said before question ${qid} was asked (${q.ts}), so it cannot answer it; record it without --answers as a plain decision, or ask the operator and record the reply`);
+        }
+        const other = view.list.find((x) => x.id !== rec.id && before(x, rec) && ['decision', 'delegation'].includes(x.kind) && !x.under
+          && Array.isArray(x.cites) && x.cites[0] === input.id && Array.isArray(x.answers) && x.answers.some((a) => a !== qid)
+          && !tooEarly(view.supersededBy.get(x.id)).length
+          && x.answers.some((a) => { const oq = view.byId.get(a); return oq && questionStatus(view, oq) !== 'withdrawn'; }));
+        if (other) return bad('input_already_answers', `${input.id} already answers ${other.answers.join(', ')} through ${other.id}; one operator input answers one question. Record a new decision from a fresh operator sentence (ask the operator, then record the reply with --answers ${qid})`);
+      }
       if (!scopeIsEmpty(q.scope)) {
         if (kindOfRec === 'answer') {
           if (!scopeContained(q.scope, sc)) return bad('scope_not_covered', `the answer's scope does not cover question ${qid} (${missingFrom(q.scope, sc).join(', ')} missing); add it to --scope or answer a narrower question (operator.js ledger shows the question's scope)`);
@@ -400,6 +418,13 @@ function validateCore(st, rec, view, mode) {
       }
     }
     return null;
+  };
+
+  // a bare short answer ("yes", "B") only means something next to the question it answers
+  const shortNeedsQuestion = (r) => {
+    if (!r.qc || !r.qc.whole || !isShortQuote(rec.quote)) return null;
+    if (Array.isArray(rec.answers) && rec.answers.length) return null;
+    return bad('quote_mismatch', `"${String(rec.quote).trim()}" is the whole of ${r.input.id} but shorter than ${MIN_QUOTE_WORDS} words or ${MIN_QUOTE_CHARS} characters; a bare short answer only means something next to its question: pass --answers q-... (operator.js ask logs the question first)`);
   };
 
   const checkSupersedesField = (superseder) => {
@@ -451,20 +476,21 @@ function validateCore(st, rec, view, mode) {
       const oc = oneCite(); if (oc) return oc;
       const r = humanInput(Array.isArray(rec.cites) ? rec.cites[0] : null);
       if (r.err) return r.err;
-      return checkAnswersField('decision') || checkSupersedesField('decision');
+      return shortNeedsQuestion(r) || checkAnswersField('decision', r.input) || checkSupersedesField('decision');
     }
     case 'delegation': {
       for (const e of [text(rec.statement, 'statement'), text(rec.grant, 'grant (one sentence stating what is delegated)')]) if (e) return e;
       const oc = oneCite(); if (oc) return oc;
       const r = humanInput(Array.isArray(rec.cites) ? rec.cites[0] : null, { delegation: true });
       if (r.err) return r.err;
+      const sq = shortNeedsQuestion(r); if (sq) return sq;
       if (scopeIsEmpty(sc)) return bad('invalid_scope', 'delegation scope is empty; name at least one bead, label or initiative explicitly (--scope bead:ID,label:L,initiative:I)');
       const lim = rec.limits || {};
       if (lim.until !== null && lim.until !== undefined && (Number.isNaN(Date.parse(lim.until)) || Date.parse(lim.until) <= Date.parse(rec.ts))) {
         return bad('invalid_limits', `until "${lim.until}" must be a date after the delegation`);
       }
       if (lim.max_uses !== null && lim.max_uses !== undefined && (!Number.isInteger(lim.max_uses) || lim.max_uses < 1)) return bad('invalid_limits', `max_uses "${lim.max_uses}" must be a positive integer`);
-      return checkAnswersField('delegation');
+      return checkAnswersField('delegation', r.input);
     }
     case 'revocation':
     case 'ratification': {
@@ -1416,7 +1442,19 @@ function verifyRecord(projectRoot, id, opts = {}) {
     if (r.kind === 'question') Object.assign(h, { text: r.text, asker: r.asker });
     // a bare "yes" is understood only beside the question it answers
     if (Array.isArray(r.answers) && r.answers.length) {
-      h.answers_questions = r.answers.map((qid) => { const q = IXV.byId.get(qid) || st.findRecord(qid); return { id: qid, text: q && q.kind === 'question' ? q.text : null }; });
+      const said = r.quote && Array.isArray(r.cites) ? st.localInput(r.cites[0]) : null;
+      h.answers_questions = r.answers.map((qid) => {
+        const q = IXV.byId.get(qid) || st.findRecord(qid);
+        const out = { id: qid, text: q && q.kind === 'question' ? q.text : null, ts: q ? q.ts : null };
+        if (q && said) out.minutes_before_answer = Math.round((Date.parse(said.ts) - Date.parse(q.ts)) / 60000);
+        return out;
+      });
+      // legacy guard: one input should answer one question
+      if (said) {
+        const qs = new Set();
+        for (const x of IXV.list) if (x.quote && Array.isArray(x.cites) && x.cites[0] === said.id && Array.isArray(x.answers)) for (const a of x.answers) qs.add(a);
+        if (qs.size > 1) result.notes.push(`${said.id} is linked as the answer to ${qs.size} questions (${[...qs].join(', ')}); one input should answer one question`);
+      }
     }
     if (r.kind === 'rehost') Object.assign(h, { instance: r.instance, from: r.from, to: r.to });
     if (r.under) h.under = r.under;

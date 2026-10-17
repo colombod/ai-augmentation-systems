@@ -765,6 +765,7 @@ test('C1: a whole-input "yes" is recorded against a logged question and verify s
   const v = run(cos, ['verify', r.lines[0]]);
   assert.strictEqual(v.status, 0, v.out + v.err);
   assert.ok(v.out.includes(`answers ${qid}: "Ship the checkout flow this week?"`), v.out);
+  assert.match(v.out, /answers q-chief-of-staff-000001: "Ship the checkout flow this week\?" \(asked [^,]+, -?\d+ minutes before the answer\)/);
   assert.ok(v.out.includes('operator said: "yes"'), v.out);
 });
 

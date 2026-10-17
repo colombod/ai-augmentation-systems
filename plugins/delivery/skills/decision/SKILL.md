@@ -16,7 +16,7 @@ You are the Chief of Staff, the only channel to the operator. The operator spend
 
 **If `${CLAUDE_PLUGIN_ROOT}` is empty** in your shell, use the command printed on the `Operator commands:` line of your role block (or in your CLAUDE.local.md) instead.
 
-**How to quote.** Put every quote, statement, question and reason in single quotes: they keep the operator's words exact, and the lane refuses `$` and backticks inside double quotes. Write a single quote inside them as `'\''`. A quote must be the operator's exact words, at least three words or twelve characters, and must not drop a negation. A short answer ("yes", "B", "17", "No.") is quoted whole: the whole input is always citable. Record it with `--answers q-<instance>-N` so `verify` shows the question beside it.
+**How to quote.** Put every quote, statement, question and reason in single quotes: they keep the operator's words exact, and the lane refuses `$` and backticks inside double quotes. Write a single quote inside them as `'\''`. A quote must be the operator's exact words, at least three words or twelve characters, and must not drop a negation. A short answer ("yes", "B", "17", "No.") is quoted whole: the whole input is always citable. Record it with `--answers q-<instance>-N`; that is required for a bare short answer. An operator input answers a question only when it was said after the question was asked, and it answers one question only.
 
 **One command per input.** Your Stop hook holds the turn while any input from this session has neither a record nor an ack.
 
