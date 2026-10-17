@@ -109,7 +109,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
 
   const rules = fs.readFileSync(path.join(pluginRoot, 'templates', 'team-rules.md'), 'utf8');
   const briefFile = path.join(roleDir, 'CLAUDE.local.md');
-  fs.writeFileSync(briefFile, composeBrief({ team, hosts, instance, role, brief, rules }));
+  fs.writeFileSync(briefFile, composeBrief({ team, hosts, instance, role, brief, rules, pluginRoot }));
   files.push(briefFile);
 
   const marker = {

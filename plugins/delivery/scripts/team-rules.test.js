@@ -116,26 +116,62 @@ test('every operator.js command quoted in the rules, briefs and skill exists wit
   assert.ok(seen >= 20, `only ${seen} commands found`);
 });
 
-// Run the thing: the commands the briefs and the skill tell a role to type pass that role's lane.
-test('the operator.js commands in each manager brief and the decision skill pass that role\'s lane', () => {
+// Run the thing: the commands the briefs and the skill tell a role to type, rendered with the absolute
+// plugin root the way the role session receives them, pass that role's lane and actually run. The
+// plugin root is tried as is and through a path with a space and a quote in it.
+test('rendered operator.js commands carry the absolute plugin root, pass the role\'s lane and run, also from a path with spaces', () => {
   const os = require('os');
+  const { spawnSync } = require('child_process');
   const { loadPolicy, decideLane } = require('../hooks/scripts/lane.js');
+  const { resolvePluginRoot, operatorCommand } = require('./lib/plugin-root.js');
   const groups = JSON.parse(read('hooks', 'lane-groups.json'));
   const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rules-lane-'));
-  const concrete = (span) => span.slice(1, -1)
+  const spaced = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rules-root-')), "plugin cache's 0.20.0");
+  fs.symlinkSync(PLUGIN_ROOT, spaced);
+  const concrete = (cmd) => cmd
     .replace(/\[[^\]]*\]/g, '') // optional parts
     .replace(/'<[^>]*>'/g, "'the operator said: don'\\''t ship yet, ok? A|B'") // a quoted value with awkward characters
     .replace(/<[^>]*>/g, 'x1');
-  const cases = [['chief-of-staff', roleText('chief-of-staff')], ['chief-of-staff', SKILL], ['product-manager', roleText('product-manager')]];
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'rules-proj-'));
+  fs.mkdirSync(path.join(project, '.delivery', 'team'), { recursive: true });
+  for (const f of ['team.json', 'hosts.json']) fs.copyFileSync(path.join(TEMPLATES, f), path.join(project, '.delivery', 'team', f));
   let n = 0;
-  for (const [role, text] of cases) {
-    const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/' + role });
-    for (const span of text.match(/`node \$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/operator\.js [^`]*`/g) || []) {
-      const command = concrete(span);
-      const d = decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir, groups, pluginRoot: PLUGIN_ROOT, hostHeadless: false });
-      assert.equal(d.allow, true, `${role}: ${command}\n${d.reason || ''}`);
-      n++;
+  for (const root of [PLUGIN_ROOT, spaced]) {
+    const prefix = operatorCommand(root);
+    if (root === spaced) assert.ok(prefix.startsWith("node '"), prefix);
+    const cases = [['chief-of-staff', roleText('chief-of-staff')], ['chief-of-staff', SKILL], ['product-manager', roleText('product-manager')], ['chief-of-staff', RULES]];
+    for (const [role, raw] of cases) {
+      const text = resolvePluginRoot(raw, root);
+      assert.ok(!text.includes('${CLAUDE_PLUGIN_ROOT}'));
+      const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/' + role });
+      const spans = text.split('`').filter((x, k) => k % 2 === 1 && x.startsWith(prefix + ' '));
+      assert.ok(spans.length >= 1, `${role}: no rendered command for ${root}`);
+      for (const span of spans) {
+        const command = concrete(span);
+        const d = decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir, groups, pluginRoot: root, hostHeadless: false });
+        assert.equal(d.allow, true, `${role}: ${command}\n${d.reason || ''}`);
+        n++;
+      }
     }
+    // the rendered verify command from rule 12 runs: the script is found and answers for the fixture
+    const verify = resolvePluginRoot(RULES, root).split('`').find((x) => x.startsWith(prefix + ' verify'));
+    const r = spawnSync('sh', ['-c', `${verify.replace('<id>', 'dec-chief-of-staff-000001')} --project '${project}'`], { encoding: 'utf8', env: { ...process.env, CLAUDE_PLUGIN_ROOT: '' } });
+    assert.ok(!/Cannot find module/.test(r.stderr), r.stderr);
+    assert.strictEqual(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout + r.stderr, /NOT VERIFIED dec-chief-of-staff-000001: not_found/);
   }
-  assert.ok(n >= 20, String(n));
+  assert.ok(n >= 40, String(n));
+});
+
+test('rendered briefs and the SessionStart block contain no literal ${CLAUDE_PLUGIN_ROOT}', () => {
+  const team = JSON.parse(fs.readFileSync(path.join(TEMPLATES, 'team.json'), 'utf8'));
+  const hosts = JSON.parse(fs.readFileSync(path.join(TEMPLATES, 'hosts.json'), 'utf8'));
+  const { shortBrief } = require('./lib/compose-brief.js');
+  for (const i of expandInstances(team)) {
+    const text = composeBrief({ team, hosts, instance: i.instance, role: i.role, brief: loadRoleBrief(PLUGIN_ROOT, '/nonexistent', i.role.brief), rules: RULES, pluginRoot: PLUGIN_ROOT });
+    assert.ok(!text.includes('${CLAUDE_PLUGIN_ROOT}'), i.instance);
+    assert.ok(text.includes(path.join(PLUGIN_ROOT, 'scripts', 'operator.js')), i.instance);
+    const short = shortBrief({ team, hosts, instance: i.instance, role: i.role, roleDir: '/r', pluginRoot: PLUGIN_ROOT });
+    assert.ok(short.includes(`Operator commands: \`node ${path.join(PLUGIN_ROOT, 'scripts', 'operator.js')} <command>\``), i.instance);
+  }
 });

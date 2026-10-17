@@ -56,7 +56,9 @@ test('prepareRole creates a thinking role directory without a product worktree',
   assert.ok(brief.startsWith('# Role: chief-of-staff (chief-of-staff) on example'));
   // the rendered rules carry the record rule (12), never the old relay-refusing sentence
   assert.ok(brief.includes('12. **Operator decisions are records, never relays.**'));
-  assert.ok(brief.includes('node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js verify <id>'));
+  // C2: the role session's Bash has no CLAUDE_PLUGIN_ROOT, so the brief carries the absolute path
+  assert.ok(!brief.includes('${CLAUDE_PLUGIN_ROOT}'));
+  assert.ok(brief.includes(`node ${path.join(PLUGIN_ROOT, 'scripts', 'operator.js')} verify <id>`));
   assert.ok(!brief.includes("passes as the operator's word"));
   assert.ok(brief.includes("### The operator's time is yours to protect"));
   const marker = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8'));

@@ -47,7 +47,7 @@ function composeForMarker(marker, pluginRoot) {
   if (!found) return `# Role: ${marker.instance}\n\nThis instance is no longer in team.json. Stop and tell the Chief of Staff.\n`;
   const brief = loadRoleBrief(pluginRoot, marker.project_root, found.role.brief);
   const rules = fs.readFileSync(path.join(pluginRoot, 'templates', 'team-rules.md'), 'utf8');
-  return composeBrief({ team, hosts, instance: marker.instance, role: found.role, brief, rules });
+  return composeBrief({ team, hosts, instance: marker.instance, role: found.role, brief, rules, pluginRoot });
 }
 
 // Where and with what environment a hook runs bd: at the project root (bd cannot find the
@@ -150,7 +150,7 @@ function sessionStartText(input, pluginRoot, deps = {}) {
   } catch (err) {
     // roster write failure must not stop the session; the status check will show the gap
   }
-  const short = shortBrief({ team: valid.team, hosts: valid.hosts, instance: marker.instance, role: valid.role, roleDir: valid.roleDir });
+  const short = shortBrief({ team: valid.team, hosts: valid.hosts, instance: marker.instance, role: valid.role, roleDir: valid.roleDir, pluginRoot: pluginRoot || PLUGIN_ROOT });
   const claim = (deps.claim || currentClaim)(actorOf(marker), bdOptionsFor(marker, input.cwd));
   const prefix = input.source === 'compact' ? 'Context was compacted. Your role is restated below; it has not changed.\n\n' : '';
   return `${prefix}${short}${claimTail(claim)}${note ? `\n${note}\n` : ''}`;

@@ -8,6 +8,7 @@
 // never throws. The transcript may lag the hook; capture is idempotent, so every trigger catches up.
 const fs = require('fs');
 const path = require('path');
+const { operatorCommand } = require('../../scripts/lib/plugin-root.js');
 
 const OP_REL = path.join('.delivery', 'operator');
 
@@ -96,8 +97,8 @@ function captureNote(res, pluginRoot) {
   if (res.pending && res.pending.length) {
     const first = res.pending.slice(0, 3).map((p) => `${p.id} ("${p.text.replace(/\s+/g, ' ').slice(0, 60)}")`).join(', ');
     const more = res.pending.length > 3 ? ` and ${res.pending.length - 3} more` : '';
-    const script = path.join(pluginRoot || path.join(__dirname, '..', '..'), 'scripts', 'operator.js');
-    parts.push(`Operator inputs with no record yet: ${first}${more}. See \`node ${script} pending\`.`);
+    const cmd = operatorCommand(pluginRoot || path.join(__dirname, '..', '..'));
+    parts.push(`Operator inputs with no record yet: ${first}${more}. See \`${cmd} pending\`.`);
   }
   if (res.problem) parts.push(`Operator capture: ${String(res.problem).replace(/[.\s]+$/, '')}.`);
   return parts.join(' ');
