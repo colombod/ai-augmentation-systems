@@ -5,11 +5,67 @@ You supply **intent** — why this app exists, what it should do — and optiona
 to reach implementation, scopes it into sprints, hands each one to whatever runner you
 choose, then independently reviews acceptance and re-aligns the plan.
 
-**This package does not build.** Implementation belongs to an external runner —
-[superpowers](https://github.com/obra/superpowers), your own harness, an agent, a team.
-That boundary is deliberate: it keeps the pipeline harness-agnostic, and it keeps the
-thing that reviews the work separate from the thing that produced it, which is what makes
-`/delivery:sprint-review` worth trusting.
+## What you get
+
+A team of long-lived Claude Code sessions, one per role, that plans and ships a product while you talk to only one of them: the **Chief of Staff**, the session whose job is to protect your time.
+
+- **Your time and attention are protected.** Other sessions send their questions to the Chief of Staff, which answers from what you already decided and brings you only what only you can decide, once, in one ranked briefing.
+- **You decide once, and the decision carries proof.** Your exact words are recorded and get a **record id** (such as `dec-chief-of-staff-000004`); any session can check that id and see your words, so nobody asks you to repeat or pass anything on.
+- **Roles cannot do each other's jobs.** Each role has a **lane** (the files it may edit and the commands it may run), and hooks refuse anything outside it.
+- **You choose the model, and so the cost, per role.** For example opus for the Chief of Staff, sonnet for builders, haiku for the Progress Observer; `builders_cap` limits how many builders run.
+- **One source of truth for the work.** The planning documents are the plan, and `/delivery:materialise` turns them into **beads** (work items in the `bd` issue tracker) and reports drift between the two.
+- **Strategy stays private.** Plans, the team manifest and your decisions live in a private project repo; the product repo gets code only.
+
+## How it works in one picture
+
+```
+                                  YOU (the operator)
+                                       │   ▲
+               you talk; it asks you   │   │  one ranked briefing: open questions,
+               only what you decide    ▼   │  answers waiting for your OK
+                         ┌───────────────────────────────────┐
+                         │          Chief of Staff           │
+                         │ records your words, answers from  │
+                         │ earlier records, routes the work  │
+                         └─────────────────┬─────────────────┘
+                   messages (SendMessage)  │  beads (bd: work items, claims, notes)
+      ┌──────────────┬──────────────┬──────┴───────┬──────────────┬──────────────┐
+      ▼              ▼              ▼              ▼              ▼              ▼
+   Staffing      Product        Delivery       Progress       Builders        Spike
+   (who is on    Manager        Lead           Observer       (build in      Researcher
+   the team)     (what, why)    (plan into     (keeps the     the product    (answers
+                                beads)         record true)   repo)          spike beads)
+
+  How one decision travels (a record id, never a relay):
+
+    1. you say "B"  ──▶  2. Chief of Staff records it  ──▶  3. record id sent to the session
+       (captured from       operator.js record                 SendMessage:
+        the transcript)     --quote 'B' --answers q-...        dec-chief-of-staff-000004
+                            (hash-chained, with provenance)               │
+                                                                          ▼
+                                     4. the session checks it: operator.js verify dec-chief-of-staff-000004
+                                        VERIFIED ... operator said: "B"   (then acts; never asks you)
+
+  Two repositories:
+
+    private PROJECT repo (strategy)                 PRODUCT repo (code only)
+    .delivery/initiatives, stories, reviews         one worktree per builder, branch team/<instance>
+    .delivery/team/ (team.json, hosts.json)         leak guard: plan text and plan files refused
+    .delivery/operator/ (your words, records)
+```
+
+## Four things to know
+
+1. **You talk to the Chief of Staff only.** It is the one session that speaks to you; every other session sends its question to it, never to you. The Product Manager may also talk with you about product vision, and records your words the same way.
+2. **Your answer is recorded once, with proof.** The Chief of Staff records your exact words linked to the question and sends the record id to the sessions that need it. A worker runs `operator.js verify <id>`, sees your words and the chain back to them, and acts; it never expects to hear from you.
+3. **Every role has a lane, enforced by hooks.** A role file declares the paths the role may write and the command groups it may run, and a PreToolUse hook refuses anything else with the sanctioned way to do it. Managers route work to builder beads; builders never touch plans.
+4. **The product repo stays free of strategy.** Plans, the manifest and your decisions live in the private project repo, and in a builder's product worktree a leak guard checks commit, PR, issue and release text against `.delivery/team/denylist.txt` and refuses plan files. It is a first line for cooperative sessions, not a boundary: for the durable control, put a push-side or CI scan of the denylist on the product remote.
+
+## Documentation map
+
+- **This README, top part:** what you get, how it works, and why it exists.
+- **[docs/quickstart.md](docs/quickstart.md):** start a shipping team on one machine, step by step, with a worked example and troubleshooting.
+- **Reference, from "The pipeline" down:** every phase, mechanism, limit and artifact. Read it when you need the detail.
 
 ## Why this exists
 
@@ -23,6 +79,12 @@ mostly won't use. Neither models the **customer**, and neither closes the loop b
 checking whether what shipped was any good.
 
 ## The pipeline
+
+**This package does not build.** Implementation belongs to an external runner —
+[superpowers](https://github.com/obra/superpowers), your own harness, an agent, a team.
+That boundary is deliberate: it keeps the pipeline harness-agnostic, and it keeps the
+thing that reviews the work separate from the thing that produced it, which is what makes
+`/delivery:sprint-review` worth trusting.
 
 ```
 INTENT (+ design seed)
@@ -52,7 +114,33 @@ Every phase reads the previous artifact and **stops if it is missing** rather th
 improvising one. That gate is the point: it is what stops a confident plan being built
 on nothing.
 
+### Which skill do I run when?
+
+Pipeline skills plan the product: run them yourself, in order. In a shipping team the role whose lane holds the output runs them: the Product Manager writes `.delivery/initiatives/` (brief to roadmap), personas, interviews, simulations and ADRs; the Delivery Lead writes stories and sprints. Team skills run inside role sessions.
+
+| When | Run | Kind |
+| :-- | :-- | :-- |
+| You have an idea, or a product to assess | `/delivery:brief` | pipeline |
+| New terms keep appearing | `/delivery:glossary` | pipeline |
+| The brief exists; you need prior art and constraints | `/delivery:research` | pipeline |
+| You need the users the product is for | `/delivery:personas`, then `/delivery:interview` and `/delivery:simulate` | pipeline |
+| Users are settled; you need a specification | `/delivery:prd`, then `/delivery:prioritize` | pipeline |
+| You need look and feel, then a technical design | `/delivery:design`, then `/delivery:architecture` | pipeline |
+| Design is settled; you need order and stories | `/delivery:roadmap`, then `/delivery:stories` | pipeline |
+| A wave of work is ready to build | `/delivery:sprint`, then `/delivery:handoff` | pipeline |
+| The wave was built | `/delivery:sprint-review`, then `/delivery:realign` | pipeline |
+| Before you commit to any document | `/delivery:challenge` | pipeline, any gate |
+| You want to know where the plan stands | `/delivery:status` | pipeline, read-only |
+| A role session has just started in its role directory | `/delivery:join` | team, every role session |
+| You want to see who is live, stale or missing | `/delivery:team` | team, read-only |
+| The operator spoke, or a session needs an operator decision | `/delivery:decision` | team, the Chief of Staff |
+| The roadmap, stories or spikes changed | `/delivery:materialise <initiative>` | team, the Delivery Lead (anyone with `--check`) |
+
 ## The shipping team
+
+**In short.** The pipeline's roles run as long-lived sessions, one per role, each in its own prepared directory. They coordinate through cross-session messages and beads, and you talk only to the Chief of Staff. Each session's role is restored by hooks on every start and compaction, and its lane is checked before every file write, shell command and MCP call. A builder works in its own worktree of the product repo, where commit and PR text is checked against the denylist and plan files are refused. To start one, follow [docs/quickstart.md](docs/quickstart.md).
+
+**Reference.** The bullets below list every mechanism; read them when you need the detail.
 
 The pipeline's roles can also run as long-lived sessions, one per role, on the hosts that can do the
 work, coordinating through cross-session messages and beads. Phase 1 ships the pieces that give a
@@ -119,7 +207,14 @@ are later phases.
 
 ## Operator decisions
 
-The operator decides; nobody asks them to relay. Team rule 12 says it: the operator is never asked to answer another session, forward an answer, repeat a decision or press a button for someone. A session that needs the operator messages the Chief of Staff with one question. An operator decision reaches a session as a record id, and the session checks it before acting:
+**In plain words.**
+You answer once.
+The Chief of Staff records your exact words, links them to the question, and sends the record id.
+A worker runs `verify` and sees your words and the chain back to them.
+Nobody asks you to pass anything on.
+What this proves, and what it does not, is under **Limits** at the end of this section. [docs/quickstart.md](docs/quickstart.md) walks through one decision with real output.
+
+**Reference.** The operator decides; nobody asks them to relay. Team rule 12 says it: the operator is never asked to answer another session, forward an answer, repeat a decision or press a button for someone. A session that needs the operator messages the Chief of Staff with one question. An operator decision reaches a session as a record id, and the session checks it before acting:
 
 ```
 node <plugin root>/scripts/operator.js verify <id>
