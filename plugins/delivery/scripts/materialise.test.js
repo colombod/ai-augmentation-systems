@@ -395,4 +395,6 @@ test('A5: a story\'s size becomes a size-S|M|L label and its model a bead metada
   applyPlan({ plan: planOf(loadInputs({ projectRoot: root, initiative: 'demo' })), bd, initiative: 'demo' });
   b = bd.show('ex-demo-02');
   assert.ok(b.labels.includes('size-M') && !b.labels.includes('size-L'), JSON.stringify(b.labels));
+  assert.equal(b.metadata.model, undefined, 'removing model: from the story clears the override (final M5)');
+  assert.equal(b.metadata.story, 'demo-02', 'the rest of the metadata stays');
 });

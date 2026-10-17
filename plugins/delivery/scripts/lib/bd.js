@@ -50,13 +50,14 @@ function makeBd({ cwd, env } = {}) {
     return made;
   }
 
-  function update(id, { title, parent, addLabels, removeLabels, metadata, appendNotes } = {}) {
+  function update(id, { title, parent, addLabels, removeLabels, metadata, unsetMetadata, appendNotes } = {}) {
     const args = ['update', id];
     if (title) args.push('--title', title);
     if (parent !== undefined) args.push('--parent', parent || '');
     for (const l of addLabels || []) args.push('--add-label', l);
     for (const l of removeLabels || []) args.push('--remove-label', l);
     if (metadata) args.push('--metadata', JSON.stringify(metadata));
+    for (const k of unsetMetadata || []) args.push('--unset-metadata', k);
     if (appendNotes) args.push('--append-notes', appendNotes);
     if (args.length === 2) return;
     exec(args);
