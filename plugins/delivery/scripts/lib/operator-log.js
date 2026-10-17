@@ -452,21 +452,41 @@ function refresh(projectRoot, opts = {}) {
         if (fs.existsSync(abs)) {
           let local;
           try { local = fs.readFileSync(abs, 'utf8'); } catch (e) { return; }
-          if (local === show.stdout) return;
-          if (!isChain || !show.stdout.startsWith(local)) { if (isChain) diverged.push(p); return; }
+          if (!show.stdout.startsWith(local)) { if (isChain) diverged.push(p); return; } // equal or a strict prefix: take it
         }
+        // Checked out into the index too: an untracked or unstaged copy of a file the upstream tracks
+        // makes the next `git pull --ff-only` abort; an index entry equal to the upstream lets it
+        // fast-forward. The copy is the upstream's own content, so committing it changes nothing.
         const c = git(projectRoot, ['checkout', up.ref, '--', p]);
-        // keep the index as it was: refreshed copies are working-tree files, never staged for the user
-        if (c.ok) { updated.push(p); git(projectRoot, ['reset', '-q', 'HEAD', '--', p]); }
+        if (c.ok) updated.push(p);
       };
       if (p.startsWith(`${OP_PATH}/inputs/`)) chain.withLock(path.join(path.dirname(abs), '.host.lock'), apply);
       else if (p.startsWith(`${OP_PATH}/records/`)) chain.withLock(abs + '.lock', apply);
       else apply();
     }
-    return { ok: true, updated, diverged, remote: up.remote };
+    const caughtUp = diverged.length ? false : catchUp(projectRoot, up);
+    return { ok: true, updated, diverged, remote: up.remote, caught_up: caughtUp };
   } catch (e) {
     return { ok: false, reason: String(e && e.message || e) };
   }
+}
+
+// When the local branch is behind the upstream only by operator commits, fast-forward it: the
+// refreshed copies are already equal to the upstream (staged), so the branch, the index and the
+// working tree agree, the next `git pull --ff-only` has nothing in its way, and no file outside
+// .delivery/operator changes. When the upstream also carries other work (plan documents pushed from
+// a role clone, the user's own commits), the branch is left for the user's own pull: the staged
+// copies equal the upstream, so that pull fast-forwards too as long as no newer operator commit
+// landed meanwhile (operator.js refresh restages them). Returns true when it fast-forwarded.
+function catchUp(projectRoot, up) {
+  try {
+    if (cp.spawnSync('git', ['merge-base', '--is-ancestor', 'HEAD', up.ref], { cwd: projectRoot }).status !== 0) return false;
+    const changed = git(projectRoot, ['diff', '--name-only', 'HEAD', up.ref]).out.split('\n').filter(Boolean);
+    if (!changed.length || changed.some((p) => !p.startsWith(OP_PATH + '/'))) return false;
+    // derived files are regenerated on the next write: take the upstream copy
+    for (const p of [`${OP_PATH}/LEDGER.md`, `${OP_PATH}/.gitignore`]) if (changed.includes(p)) git(projectRoot, ['checkout', up.ref, '--', p]);
+    return git(projectRoot, ['merge', '--ff-only', '--quiet', up.ref]).ok;
+  } catch (e) { return false; }
 }
 
 // Commit and push only .delivery/operator. Never touches other work: path-scoped add and
@@ -524,7 +544,9 @@ function publishInner(projectRoot, opts = {}) {
       const d = git(projectRoot, ['diff', '--name-only', '@{u}...HEAD']);
       return d.out.split('\n').filter((p) => p && !p.startsWith(OP_PATH + '/'));
     };
-    if (unrelated().length) return no('unpushed unrelated commits', { paths: unrelated() });
+    const refuseUnrelated = () => no('unpushed unrelated commits', { paths: unrelated(),
+      hint: 'this checkout has unpushed commits outside .delivery/operator; push or move them first (nothing was rewritten or pushed), then the next operator write publishes' });
+    if (unrelated().length) return refuseUnrelated();
 
     const push = () => git(projectRoot, ['push', up.remote, `HEAD:${up.branch}`]);
     let r = push();
@@ -536,7 +558,7 @@ function publishInner(projectRoot, opts = {}) {
       // committed chain files, checked append-only against upstream, and push that.
       const f = git(projectRoot, ['fetch', up.remote]);
       if (!f.ok) return no(f.err || 'fetch failed');
-      if (unrelated().length) return no('unpushed unrelated commits', { paths: unrelated() });
+      if (unrelated().length) return refuseUnrelated();
       const rec = publishOnUpstream(projectRoot, up, own, opts, n);
       if (!rec.ok) return no(rec.reason, rec.extra || {});
       // bring other writers' files into the working tree, operator paths only, never over local appends
@@ -558,7 +580,10 @@ function publishOnUpstream(projectRoot, up, own, opts, n) {
   const idx = path.join(os.tmpdir(), `operator-publish-${process.pid}-${Date.now()}.index`);
   const env = { GIT_INDEX_FILE: idx };
   try {
-    const listed = git(projectRoot, ['ls-tree', '-r', '--name-only', 'HEAD', '--', ...own]);
+    // every operator file the local branch holds, not only this writer's: another local role's
+    // committed but unpushed chain must survive into the new upstream commit (the branch becomes its
+    // parent, so a later pull fast-forwards and must not delete it)
+    const listed = git(projectRoot, ['ls-tree', '-r', '--name-only', 'HEAD', '--', OP_PATH]);
     const files = listed.out ? listed.out.split('\n').filter(Boolean) : [];
     const rt = git(projectRoot, ['read-tree', up.ref], { env });
     if (!rt.ok) return { ok: false, reason: rt.err || 'read-tree failed' };
@@ -589,9 +614,14 @@ function publishOnUpstream(projectRoot, up, own, opts, n) {
     const tree = git(projectRoot, ['write-tree'], { env });
     const upTree = git(projectRoot, ['rev-parse', `${up.ref}^{tree}`]);
     if (!tree.ok || !upTree.ok) return { ok: false, reason: tree.err || upTree.err || 'write-tree failed' };
-    if (tree.out === upTree.out) return { ok: true, published: true, entries: n };
     const upTip = git(projectRoot, ['rev-parse', up.ref]);
-    const c = git(projectRoot, ['commit-tree', tree.out, '-p', upTip.out, '-m', `operator: ${n} entries`]);
+    // The new upstream commit merges the local branch (parents: upstream tip, local HEAD), so the
+    // checkout's branch is an ancestor of the upstream and `git pull --ff-only` keeps working. The
+    // local branch holds only operator commits here (unrelated ones were refused before the push),
+    // so taking upstream's tree for everything else loses nothing.
+    const isAncestor = cp.spawnSync('git', ['merge-base', '--is-ancestor', 'HEAD', upTip.out], { cwd: projectRoot }).status === 0;
+    if (tree.out === upTree.out && isAncestor) return { ok: true, published: true, entries: n };
+    const c = git(projectRoot, ['commit-tree', tree.out, '-p', upTip.out, '-p', 'HEAD', '-m', `operator: ${n} entries`]);
     if (!c.ok) return { ok: false, reason: c.err || 'commit-tree failed' };
     const push = git(projectRoot, ['push', up.remote, `${c.out}:refs/heads/${up.branch}`]);
     if (!push.ok) return { ok: false, reason: push.err || 'push rejected' };

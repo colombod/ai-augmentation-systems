@@ -579,6 +579,10 @@ test('a forked own chain stops writes (chain_diverged) and shows up as a problem
   const a = roleDir(hosta, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-a', [human('Use Postgres for the orders service.', 1, 'sess-a')]);
   const b = roleDir(hostb, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-b', [human('Use Postgres for the orders service.', 1, 'sess-b')]);
   assert.strictEqual(run(a, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'A']).status, 0);
+  // unrelated work upstream keeps hostb from fast-forwarding onto A's chain before it writes (a
+  // clone behind only by operator commits catches up and would append in order instead of forking)
+  fs.writeFileSync(path.join(hosta, 'notes.md'), 'x\n');
+  g(hosta, 'add', 'notes.md'); g(hosta, 'commit', '-m', 'unrelated'); g(hosta, 'push');
   // the second clone wrote the same instance's chain independently
   const rb = run(b, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'B']);
   assert.strictEqual(rb.status, 0, rb.out + rb.err);

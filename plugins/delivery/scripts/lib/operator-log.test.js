@@ -681,3 +681,79 @@ test('Copilot 6: porcelain status keeps a worktree-only modified entry\'s full p
   assert.ok(st.some((e) => e.code === ' M' && e.path === rel), JSON.stringify(st));
   assert.ok(st.some((e) => e.code === '??' && e.path === '.delivery/operator/records/new.ndjson'), JSON.stringify(st));
 });
+
+// ---- final review B1: after a recovered push the checkout stays pullable ----
+
+test('B1: after a rejected-then-recovered publish both checkouts pull --ff-only, and nothing of the user\'s is touched', () => {
+  const { hosta, hostb } = twoHosts();
+  const gitOk = (cwd, ...a) => cp.spawnSync('git', a, { cwd, encoding: 'utf8' });
+  sync(hosta, transcript([human('a one', 1)]), { host: 'hosta', sessionId: 'sa' });
+  fs.mkdirSync(path.join(hosta, '.delivery', 'operator', 'records'), { recursive: true });
+  fs.writeFileSync(path.join(hosta, '.delivery', 'operator', 'records', 'pm.ndjson'), '{"id":"dec-pm-000001"}\n');
+  assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta', instance: 'pm' }).published, true);
+  // hostb: the user's own work, and another local role's unpublished record
+  fs.writeFileSync(path.join(hostb, 'README.md'), 'my uncommitted edits\n');
+  fs.writeFileSync(path.join(hostb, 'scratch.txt'), 'untracked\n');
+  const peer = path.join(hostb, '.delivery', 'operator', 'records', 'other-role.ndjson');
+  fs.mkdirSync(path.dirname(peer), { recursive: true });
+  fs.writeFileSync(peer, '{"id":"dec-other-role-000001"}\n');
+  sync(hostb, transcript([human('b one', 2)]), { host: 'hostb', sessionId: 'sb' });
+  const p = log.publish(hostb, { force: true, host: 'hostb', instance: 'dm' }); // rejected, recovered
+  assert.strictEqual(p.published, true, JSON.stringify(p));
+  for (const root of [hostb, hosta]) {
+    const pull = gitOk(root, 'pull', '--ff-only');
+    assert.strictEqual(pull.status, 0, `${root}: ${pull.stderr}`);
+  }
+  assert.match(git(hostb, 'status', '-sb').split('\n')[0], /^## main\.\.\.origin\/main$/);
+  const st = git(hostb, 'status', '--porcelain').split('\n').filter(Boolean);
+  assert.ok(!st.some((l) => l.startsWith('??') && /inputs\/hosta\/|records\/pm\.ndjson/.test(l)), st.join('\n'));
+  assert.ok(st.includes(' M README.md') && st.includes('?? scratch.txt'), st.join('\n'));
+  assert.strictEqual(fs.readFileSync(path.join(hostb, 'README.md'), 'utf8'), 'my uncommitted edits\n');
+  assert.strictEqual(fs.readFileSync(peer, 'utf8'), '{"id":"dec-other-role-000001"}\n');
+  assert.ok(git(hostb, 'ls-files', '.delivery/operator').includes('records/pm.ndjson'), 'the peer chain upstream has is now tracked');
+  // a second and a third publish from either side keep both checkouts pullable
+  for (const [root, host, inst, n] of [[hostb, 'hostb', 'dm', 3], [hosta, 'hosta', 'pm', 4], [hostb, 'hostb', 'dm', 5]]) {
+    sync(root, transcript([human(`more ${n}`, n)]), { host, sessionId: `s${n}` });
+    assert.strictEqual(log.publish(root, { force: true, host, instance: inst }).published, true);
+    for (const r of [hosta, hostb]) assert.strictEqual(gitOk(r, 'pull', '--ff-only').status, 0, r);
+  }
+  assert.strictEqual(fs.readFileSync(path.join(hostb, 'README.md'), 'utf8'), 'my uncommitted edits\n');
+  assert.strictEqual(log.verifyInputs(hostb).ok, true);
+});
+
+test('B1: an unrelated unpushed commit is never rewritten; publish refuses with a clear message', () => {
+  const { hosta, hostb } = twoHosts();
+  sync(hosta, transcript([human('a one', 1)]), { host: 'hosta', sessionId: 'sa' });
+  assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta' }).published, true);
+  fs.writeFileSync(path.join(hostb, 'feature.js'), 'x\n');
+  git(hostb, 'add', 'feature.js');
+  git(hostb, 'commit', '-m', 'my own work');
+  const head = git(hostb, 'rev-parse', 'HEAD').trim();
+  const remoteBefore = git(hostb, 'ls-remote', 'origin', 'main').split('\t')[0];
+  sync(hostb, transcript([human('b one', 2)]), { host: 'hostb', sessionId: 'sb' });
+  const p = log.publish(hostb, { force: true, host: 'hostb' });
+  assert.strictEqual(p.published, false);
+  assert.strictEqual(p.reason, 'unpushed unrelated commits');
+  assert.match(p.hint, /nothing was rewritten or pushed/);
+  assert.strictEqual(git(hostb, 'rev-parse', 'HEAD~1').trim(), head, 'only the operator commit sits on top of the user\'s');
+  assert.strictEqual(git(hostb, 'ls-remote', 'origin', 'main').split('\t')[0], remoteBefore);
+  assert.ok(git(hostb, 'log', '--format=%s', '-3').includes('my own work'));
+});
+
+test('B1: with unrelated work upstream the checkout is left for the user\'s pull, and that pull fast-forwards', () => {
+  const { hosta, hostb } = twoHosts();
+  const gitOk = (cwd, ...a) => cp.spawnSync('git', a, { cwd, encoding: 'utf8' });
+  fs.writeFileSync(path.join(hostb, 'plan.md'), 'pushed from a role clone\n');
+  git(hostb, 'add', 'plan.md'); git(hostb, 'commit', '-m', 'plan docs'); git(hostb, 'push', 'origin', 'HEAD:main');
+  sync(hostb, transcript([human('b one', 2)]), { host: 'hostb', sessionId: 'sb' });
+  assert.strictEqual(log.publish(hostb, { force: true, host: 'hostb', instance: 'pm' }).published, true);
+  fs.writeFileSync(path.join(hosta, 'README.md'), 'my uncommitted edits\n');
+  sync(hosta, transcript([human('a one', 1)]), { host: 'hosta', sessionId: 'sa' });
+  assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta', instance: 'dm' }).published, true);
+  assert.ok(!fs.existsSync(path.join(hosta, 'plan.md')), 'the recovery itself brings no unrelated file');
+  const pull = gitOk(hosta, 'pull', '--ff-only');
+  assert.strictEqual(pull.status, 0, pull.stderr);
+  assert.ok(fs.existsSync(path.join(hosta, 'plan.md')), 'the user\'s own pull does');
+  assert.strictEqual(fs.readFileSync(path.join(hosta, 'README.md'), 'utf8'), 'my uncommitted edits\n');
+  assert.match(git(hosta, 'status', '-sb').split('\n')[0], /^## main\.\.\.origin\/main$/);
+});
