@@ -8,7 +8,7 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 
 # Delivery roadmap: <feature name>
 
-> Phase 4 artifact. Owned by Program Manager, with QA Strategist.
+> Written by /delivery:roadmap. Owned by Program Manager, with QA Strategist.
 > Status: draft | agreed  ·  Last updated: <date>
 > PRD: `.delivery/initiatives/<initiative>/prd.md` · Architecture: `.delivery/initiatives/<initiative>/architecture.md`
 

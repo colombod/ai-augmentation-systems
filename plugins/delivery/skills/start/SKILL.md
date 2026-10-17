@@ -20,18 +20,19 @@ You are helping the human (the operator) start a team of role sessions for a pro
    - **New or existing:** a new project with no code yet, or an existing product. For an existing one, ask for the product repo as a local checkout path or a clone URL; builders get their own worktree of it. For a new one, say the team can be started now without a product repo and a builder prepared later.
    - **Host name:** the name this machine has in the manifest. Default: the short hostname (`hostname -s`).
    - **Preset:** recommend `minimal` (Chief of Staff, Product Manager, Delivery Manager, one builder). `full` adds Staffing (owns the roster), the Progress Observer (keeps the record true, runs on haiku) and the Spike Researcher (answers technical unknowns).
+   - **Models:** recommend `balanced` (opus for the Chief of Staff and the Product Manager, sonnet for the Delivery Manager and builders, haiku for the Progress Observer). `quality` also puts the Delivery Manager on opus; `economy` puts the Chief of Staff, Product Manager and Delivery Manager on sonnet and Staffing on haiku. Builders give their subagents a stronger model for size-L stories in every preset. A model can be changed later in `team.json`.
    - **Permission mode** for the role sessions: `default` (no `--permission-mode` flag: each session uses the human's own Claude Code default; the manager roles have their lane's commands pre-allowed), or one of the modes `claude --help` lists. Say that the lane hook checks file writes, shell commands and MCP calls whatever the mode.
 
    Then run `start.js --check --project <project repo>` once more if the project repo already exists, and mention a missing remote as a warning.
 
-4. **Dry run.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/start.js --project <project repo> --host <host> --preset <preset> [--product-repo <path or url>] [--permission-mode <mode>] --dry-run` and show the plan verbatim. Ask the human to confirm it.
+4. **Dry run.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/start.js --project <project repo> --host <host> --preset <preset> --models <models> [--product-repo <path or url>] [--permission-mode <mode>] --dry-run` and show the plan verbatim. Ask the human to confirm it.
 
 5. **Real run.** Run the same command without `--dry-run` and show the output verbatim. If it exits non-zero, show the refusal and stop; never work around it. If it says a manifest already exists, that manifest is kept as it is; say so.
 
 6. **Start the sessions.** Tell the human to run each printed `cd ... && claude ...` line in its own terminal, the Chief of Staff first, and to run `/delivery:team join` in each session once it starts.
 
 7. **How to use the team.** End with these five lines, in your words:
-   - Talk only to the Chief of Staff; the other sessions send their questions to it, not to you.
+   - Talk to the Chief of Staff for decisions and logistics, and with the Product Manager about product vision; the other sessions send their questions to the Chief of Staff, not to you.
    - It answers from what you already decided, and asks you the rest once, in one ranked briefing.
    - Each of your decisions is recorded with your exact words; to see every question and answer, run `node <plugin root>/scripts/operator.js ledger --project <project repo>`, or ask the Chief of Staff.
    - `/delivery:team`, in any session, shows who is live, stale or missing.

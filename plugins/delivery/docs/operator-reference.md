@@ -54,4 +54,4 @@ The cited input must be said after the record it ratifies or revokes.
 - `operator.js problems`: every chain or record that fails verification, is diverged or is unpublished (exit 1 when anything is affected).
 - `operator.js repair --instance <i>`: repair a torn last line of that instance's own chain. The partial line is kept as evidence.
 - `operator.js quarantine --file records/<i>.ndjson|inputs/<host>/<YYYY-MM>.ndjson --reason '<what failed>'` (Chief of Staff only): set a failing chain aside, kept as evidence, so writing can go on. Restore the file from repository history when you can.
-- `operator.js rehost --instance <i> --reason '<why it moved>' [--to-host <h>] [--to-machine <m>]`: record that an instance moved to another host or machine, before it writes from there.
+- `operator.js rehost --instance <i> --reason '<why it moved>' [--to-host <h>] [--to-machine <m>]`: record that an instance moved to another host or machine, before it writes from there. `--to-machine` is read only together with `--to-host`.

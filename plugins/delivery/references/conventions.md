@@ -97,6 +97,11 @@ and a hand-off the runner has to guess at.
    **ground each term** in a worked example, a file path or a value from the data.
 6. **A term nobody can define crisply** is an unresolved product decision wearing a noun:
    list it as an open question for the originator, never invent a definition.
+7. **Sweep for completeness.** Every domain noun in the existing artifacts appears in the
+   glossary or is deliberately excluded, and no synonym is left without one canonical term.
+
+**Report what changed** when you hand off: new terms, resolved synonyms, and any term that could
+not be defined. Those are product decisions, and they belong to the originator.
 
 `/delivery:status` reports terms used in documents that are not in the glossary.
 

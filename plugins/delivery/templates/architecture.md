@@ -8,7 +8,7 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 
 # Architecture: <feature name>
 
-> Phase 3 artifact. Owned by Solution Architect, with QA Strategist.
+> Written by /delivery:architecture. Owned by Solution Architect, with QA Strategist.
 > Status: draft | reviewed | agreed  ·  Last updated: <date>
 > PRD: `.delivery/initiatives/<initiative>/prd.md`
 

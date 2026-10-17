@@ -3,4 +3,4 @@ description: Removed — the glossary is no longer a separate skill. Every pipel
 argument-hint: "[term-optional]"
 ---
 
-Removed: the glossary is kept by every pipeline skill. Read the **Language** section of `${CLAUDE_PLUGIN_ROOT}/references/conventions.md` and follow it; the file is `.delivery/glossary.md`, written from `${CLAUDE_PLUGIN_ROOT}/templates/glossary.md`.
+Removed: the glossary is kept by every pipeline skill. Read the **Language** section of `${CLAUDE_PLUGIN_ROOT}/references/conventions.md` (if `${CLAUDE_PLUGIN_ROOT}` is empty, use the `installPath` of `delivery@ai-augmentation-systems` from `~/.claude/plugins/installed_plugins.json`) and follow it; the file is `.delivery/glossary.md`, written from `${CLAUDE_PLUGIN_ROOT}/templates/glossary.md`.
