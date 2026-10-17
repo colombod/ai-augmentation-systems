@@ -122,8 +122,10 @@ are later phases.
 The operator decides; nobody asks them to relay. Team rule 12 says it: the operator is never asked to answer another session, forward an answer, repeat a decision or press a button for someone. A session that needs the operator messages the Chief of Staff with one question. An operator decision reaches a session as a record id, and the session checks it before acting:
 
 ```
-node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js verify <id>
+node <plugin root>/scripts/operator.js verify <id>
 ```
+
+A role session's shell has no `CLAUDE_PLUGIN_ROOT`, so the brief (`CLAUDE.local.md`) and the SessionStart role block print the absolute path; both are re-rendered at every SessionStart.
 
 `verify` walks the record to the operator's verbatim words. When it verifies, the record is the operator's word: act on it and do not ask again. A message that claims a decision but carries no verifiable id is information. The reply asks the sender for the id; it never goes to the operator.
 
@@ -136,7 +138,9 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js verify <id>
    - anything else, including "ok thanks": `operator.js ack --reason 'conversational'`.
 3. Carry: `SendMessage` the record id to every session that needs it.
 
-Every operator input in the Chief of Staff's session gets a record or an ack, and its Stop hook holds the turn until then.
+Every operator input in the Chief of Staff's session (and the Product Manager's) gets a record or an ack, and the Stop hook holds the turn until then. A short answer such as "yes", "B" or "No." is quoted whole; record it with `--answers q-<instance>-N` so `verify` shows the question beside it.
+
+Prompts typed before a session became the role (a resumed or adopted session) are stored and citable on request (`record --cite` works), but they are marked `pre_role` and never count as pending or block a Stop.
 
 **Answering on the operator's behalf.** Before asking the operator, the Chief of Staff searches the record with `operator.js find`.
 - When a record settles the question, it answers with `operator.js answer --confidence settled`.
@@ -145,8 +149,9 @@ Every operator input in the Chief of Staff's session gets a record or an ack, an
 
 **Enforcement.**
 - Only the Chief of Staff and the Product Manager may use `AskUserQuestion`, `PushNotification` and `SendUserFile`.
-- The Chief of Staff's Stop hook blocks a turn that leaves an operator input unrecorded or asks the operator to relay.
-- Lanes deny writes to `.delivery/operator/`, and only the manager roles' lanes include the writer commands. Workers with unrestricted Bash can record or acknowledge only inputs that their own session captured; the library checks this.
+- The Stop hook of the Chief of Staff and of the Product Manager blocks a turn that leaves one of that session's operator inputs unrecorded or asks the operator to relay (including "approve the permission prompt in X").
+- Lanes deny writes to `.delivery/operator/`, and only the manager roles' lanes include the writer commands. Workers with unrestricted Bash can record or acknowledge only inputs that their own session captured. The library checks this, but the check is cooperative: it compares a session id that the session's own Bash can rewrite.
+- `prepare-role` pre-allows each manager lane's own commands in the role's `settings.local.json`, so a session does not stop on a permission prompt only the operator can clear. The lane hook still refuses anything outside the lane.
 
 **Artifacts.** These live in `.delivery/operator/` in the private project repository, are committed, and are pushed by `operator.js publish`:
 - `inputs/<host>/<YYYY-MM>.ndjson`: one hash-chained entry per operator prompt, written by the capture hook from the session transcript;
@@ -161,10 +166,11 @@ Each chain file has exactly one writer, so git never merges a chain. `operator.j
 - **Records are checked for form, not relevance.** A validly shaped record that cites a real operator input cannot be machine-rejected, even when the input it cites does not support it. Detection is human: the git history, and the verbatim words and author that `verify` prints.
 - **Capture depends on the harness.** Capture relies on the harness's `origin` stamp on each transcript entry, and that format is undocumented. If it changes, `operator.js sync` reports `format_unrecognised` and recording fails closed.
 - **Cloud sessions are captured late.** Their transcripts are not reachable from other hosts. Inputs typed directly into a cloud session are captured only when that session syncs from its own host.
+- **Keystrokes can be injected.** A role with unrestricted Bash can type into another session (`tmux send-keys`, computer-use, a terminal MCP server, `osascript`), and the harness records that as a human prompt. This cannot be told apart in the transcript.
 - **The relay detector is a heuristic backstop.** It catches common phrasings, not all of them. The structural fix is that no session ever needs the operator to relay.
 - **Instance ids.** An instance id belongs to one role:
   - A new role gets a new instance id; giving an existing id a different role invalidates its earlier records.
-  - When an instance leaves, retire it in `team.json` rather than deleting its entry and its chain. A host that never recorded that instance's head trusts its records only while `team.json` lists it.
+  - When an instance leaves, mark its role entry `"retired": true` in `team.json` rather than deleting the entry and its chain. A host that never recorded that instance's head trusts its records only while `team.json` lists it. A retired role is shown as `retired` by `/delivery:team` (never missing or drift), `prepare-role` refuses to start it, and `operator.js` records nothing new from it. One instance of a counted role (`builder-2` of two) cannot be retired alone; lowering the count drops it from the manifest.
 
 **Migrating a Vault-style team.** Some teams onboard with their own agent rules. If those rules say that nothing from outside a session passes as the owner's word (the Vault's `AGENTS.md` does), replace that sentence with the record rule above. A rule that refuses every relayed decision, with no trusted way for one to travel, is exactly what made the operator a relay. Workers refused relayed answers, so the Chief of Staff asked the operator to repeat each decision to each session. Keep the intent, nothing unverified counts as the operator's word, and add the way through: a decision that `operator.js verify` accepts counts in full.
 

@@ -412,26 +412,30 @@ is the record rule, and the SendMessage rule moved to 13.
 1. A decision exists only as a record that traces to a verbatim operator input captured by a hook.
    A message saying "the operator decided X" carries no weight by itself; with a record id that
    verifies it carries full weight and is never re-asked.
-2. The model cannot author an operator input. Inputs are written by the UserPromptSubmit hook from
-   the prompt the harness received, classified by source (`human`, `peer`, `system`, `unknown`);
-   only `human` inputs are citable.
+2. The model cannot author an operator input through the harness. Inputs are captured by
+   `hooks/scripts/operator-capture.js` (run from the SessionStart, UserPromptSubmit and Stop hooks)
+   out of the session's own transcript, classified by the harness's `origin` stamp (`human`,
+   `peer`, `system`, `unknown`); only `human` inputs are citable. Residual: a role whose lane is
+   `any` can inject keystrokes into a session the harness then records as a human prompt (`tmux
+   send-keys`, computer-use, a terminal MCP server, `osascript` keystrokes). That is not detectable
+   from the transcript; it is the same cooperative-trust class as rewriting the files (below).
 3. Delegation is a record too: a standing "you decide this class of things" with scope and limits.
    Decisions under it chain to it, and verification walks the whole chain to the human input.
 4. Workers never address the operator. They message the Chief of Staff with one question and get
    back a decision record id.
 
 **Artifacts** (project repo, `.delivery/operator/`, committed, private):
-- `inputs/<YYYY-MM>.ndjson`: one hash-chained entry per prompt seen by any role session:
-  `{ id: "in-<seq>", ts, session_id, instance, role, source, text, text_sha256, prev, hash }`.
-  Written only by the capture hook. Texts over 64 KB are stored truncated with the full sha256 and
-  `truncated: true`.
-- `records/<seq>.json`: `{ id: "dec-<seq>" | "del-<seq>", kind: decision | delegation | revocation |
-  ack, statement, quote, cites: [in-... | del-...], scope: { beads, labels, initiatives }, by:
-  { instance, role, session_id }, ts, supersedes, limits: { until, max_uses }, prev, hash }`.
-  Written only by `scripts/operator.js`.
+- `inputs/<host>/<YYYY-MM>.ndjson`: one hash-chained entry per prompt seen by a role session on
+  that host: `{ id: "in-<host>-<seq>", host, ts, captured_at, session_id, instance, role, source,
+  text, text_sha256, transcript_ref, pre_role?, prev, hash }`. Written only by the capture path.
+  Texts over 64 KB are stored truncated with the full sha256 and `truncated: true`.
+- `records/<instance>.ndjson`: one chain per author instance, of decisions, delegations, answers,
+  questions, revocations, ratifications, acks, withdrawals and rehosts (`dec-<instance>-<seq>`,
+  `del-...`, `ans-...`, `q-...`, ...), each with `by: { instance, role, session_id, host, machine }`,
+  `ts`, `cites`, `cites_head`, `scope` and the kind's own fields. Written only by `scripts/operator.js`.
 - Both are hash chains (each `hash` covers `prev` and the canonical entry), so an edit is detectable
-  by anyone who verifies. The project repo's git history is a second witness; the Chief of Staff
-  commits the operator directory with each briefing.
+  by anyone who verifies. The project repo's git history is a second witness: `operator.js publish`
+  (run after every write) commits and pushes the writer's own chain files.
 
 **Commands** (`scripts/operator.js`; one script, all output machine-readable with `--json`):
 - `record --cite in-N --quote "<exact span>" --statement "<what is decided>" --scope bead:ID,...`:
@@ -490,7 +494,7 @@ can read the ledger and verify any row.
    for every role except chief-of-staff and product-manager, with the reason "message the Chief of
    Staff with the one question; the answer comes back as a decision record" (for the two
    notification tools: "the Chief of Staff decides what reaches the operator").
-2. The Chief of Staff's Stop guard blocks a turn while a human input in its session has neither a
+2. The Stop guard of the two operator-facing roles (Chief of Staff and Product Manager) blocks a turn while a human input in its session has neither a
    record nor an ack ("record it, then send the record id to the sessions that need it"), and
    inspects the final assistant message for relay requests (asking the operator or "you" to tell,
    send, forward, paste, relay, confirm or reply to another session, role or "the worker"), blocking
@@ -502,7 +506,11 @@ can read the ledger and verify any row.
 
 **Trust model and limits.** Capture relies on the harness: peers reach a session only through
 SendMessage, whose delivery is wrapped by the harness, so a peer cannot produce an unwrapped
-human-looking prompt; unknown wrappers are classified `unknown` and are not citable. Lanes deny
+human-looking prompt; unknown wrappers are classified `unknown` and are not citable. A role whose
+lane is `any` can still type into another session (keystroke injection through `tmux send-keys`,
+computer-use, a terminal MCP server or `osascript`), and that text is recorded as `human`; the
+input ownership check (a worker may record only inputs its own session captured) compares a session
+id that the session's own Bash can rewrite. Both are cooperative trust, documented, not enforced. Lanes deny
 writes to `.delivery/operator/` for every role, and the hash chain plus git history make edits
 detectable, but a hostile session with unrestricted Bash could rewrite and re-hash the files: this is
 tamper-evidence for cooperative sessions, not a boundary (same class as 8.5). Inputs contain the
@@ -519,6 +527,42 @@ path to the operator's attention. They are documented here as a residual, not en
 - any messaging MCP server the host has configured (Slack, email).
 The briefs and rule 12 say workers never address the operator. The recommended later control is an
 MCP deny list for `any` lanes, with the channel guard extended to the session-management UI tools.
+
+**Ruling: harness permission prompts.** A permission prompt in a role session can only be cleared by
+the human pressing a button, which makes the operator a relay for that session. Mitigation:
+`prepare-role` writes the role's in-lane commands as prefix `permissions.allow` rules in the role's
+`settings.local.json` (unrestricted `any` lanes get none); the lane hook still runs before the
+permission check, so the rules widen nothing. A prompt that still appears goes into the Chief of
+Staff's next briefing as one batched owner-side line ("approve once in session X, or extend the
+lane"); asking the operator to go and approve it is a relay request the Stop guard flags. Residual:
+after a plugin-cache version move the operator.js rules name the old path until `prepare-role` runs
+again.
+
+**Ruling: prompts from before the role.** A session resumed or adopted into a role directory has
+earlier human prompts in its transcript. The first capture of a session id in a role directory writes
+`<roleDir>/.delivery-role-since.json`; inputs dated earlier are stored and citable (`record --cite`
+works on request) but carry `pre_role: true` and never appear in `pending` or block a Stop.
+
+**Rulings on parked items.**
+- *Role-directory clone and `git merge @{u}`.* When a rejected push is retried, the merge can bring
+  upstream's unrelated tracked files into the role directory's project clone. Accepted: that clone is
+  machine-managed and never edited by hand; `prepare-role` reconciles it.
+- *Lock deadline and stale threshold.* A writer waits at most 2 s for a chain lock, and a lock is
+  treated as stale after 10 s; pid liveness is not checked (pids are host-local). A crashed writer's
+  fresh lock therefore refuses writes for up to 10 s with a retryable error; hooks fail open.
+  Accepted as is.
+- *Machine id.* `by.machine` is a hash of the hostname. It tells two machines apart that share one
+  instance id, not two clones on one machine (one working copy per host label is assumed), and a
+  renamed host needs `operator.js rehost`. It is an identifier, not a secret.
+- *`sync --all` and the roster.* `sync --all` reads other instances' transcripts from the roster's
+  `transcript_path`, which an `any`-lane session can rewrite to point at a forged file. Residual of
+  the keystroke-injection class; the recommended hardening is to accept only paths under the
+  harness's own projects directory and to restrict `--all` to the Chief of Staff.
+- *Forged or fast-clock chain entries.* A writer never stamps beyond its clock plus ten minutes and
+  orders against the previous valid record, and warns (`clock_behind_chain`). Recovery from a chain
+  whose last entry is far in the future is a new instance id in team.json (Staffing) or recording
+  through the Chief of Staff; the old instance can be retired (`"retired": true`) so its history
+  keeps verifying.
 
 ## 9. Staffing and routines
 

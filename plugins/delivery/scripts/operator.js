@@ -21,7 +21,7 @@ const COMMANDS = ['publish', 'refresh', 'sync', 'record', 'delegate', 'decide', 
   'find', 'ledger', 'pending', 'verify', 'show', 'problems', 'quarantine', 'repair', 'rehost'];
 
 const USAGE = `usage: operator.js <command> [options]   (all commands: --project <root> --json)
-  sync [--transcript <path>] [--session <id>] [--all] [--format-check]
+  sync [--all] [--format-check]   (--transcript <path> and --session <id> are refused in role lanes: capture reads the session's own transcript)
   record --cite in-N --quote "<exact words>" --statement "<what was decided>" [--scope bead:ID,label:L,initiative:I] [--answers q-N] [--supersedes ID]
   delegate --cite in-N --quote "<...>" --statement "<...>" --grant "<one sentence: what is delegated>" --scope ... [--until DATE] [--max-uses N] [--answers q-N]
   decide --under del-N --statement "<...>" --scope ... [--answers q-N]
