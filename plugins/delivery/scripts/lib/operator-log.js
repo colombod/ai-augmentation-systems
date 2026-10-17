@@ -148,6 +148,11 @@ function setHead(root, host, head) {
   chain.withLock(headsFile(root) + '.lock', () => {
     if (headsProblem(root)) return;
     const heads = readHeads(root);
+    // callers check before taking the lock; re-check under it so a stale reader cannot lower a head
+    // another writer raised meanwhile (that would hide a later truncation): the highest verified head
+    // stays, and a different hash at the same count is a conflict, not an update
+    const cur = heads[host];
+    if (cur && (head.count < cur.count || (head.count === cur.count && head.last_hash !== cur.last_hash))) return;
     heads[host] = head;
     writeJsonAtomic(headsFile(root), heads);
   });

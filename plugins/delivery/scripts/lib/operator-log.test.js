@@ -569,3 +569,18 @@ test('a file refreshed earlier does not block recovery from a rejected push', ()
   assert.strictEqual(p.published, true, JSON.stringify(p));
   assert.strictEqual(log.listInputs(hostb).length, 3);
 });
+
+test('Copilot 2: a head never moves back inside the lock (a stale reader cannot lower a head capture raised)', () => {
+  const root = project();
+  // the interleaving: a reader verified 11 entries, capture then recorded 12, the reader writes last
+  log.setHead(root, 'pc', { count: 12, last_hash: 'h12' });
+  log.setHead(root, 'pc', { count: 11, last_hash: 'h11' });
+  assert.deepStrictEqual(log.readHeads(root).pc, { count: 12, last_hash: 'h12' });
+  // a conflicting hash at the same count is refused too; the same head with a role added is not
+  log.setHead(root, 'pc', { count: 12, last_hash: 'other' });
+  assert.strictEqual(log.readHeads(root).pc.last_hash, 'h12');
+  log.setHead(root, 'pc', { count: 12, last_hash: 'h12', role: 'chief-of-staff' });
+  assert.strictEqual(log.readHeads(root).pc.role, 'chief-of-staff');
+  log.setHead(root, 'pc', { count: 13, last_hash: 'h13' });
+  assert.strictEqual(log.readHeads(root).pc.count, 13);
+});
