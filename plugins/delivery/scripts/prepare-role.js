@@ -17,6 +17,12 @@ function remoteOf(repo) {
   try { return git(repo, 'remote', 'get-url', 'origin'); } catch (err) { return null; }
 }
 
+// operator channels only the operator-facing roles use (the ask-guard hook is the second layer)
+const OPERATOR_FACING_ROLES = new Set(['chief-of-staff', 'product-manager']);
+const OPERATOR_CHANNEL_TOOLS = ['AskUserQuestion', 'PushNotification', 'SendUserFile'];
+// commands no restricted lane needs; denied natively unless the role's lane allows them
+const LANE_BACKSTOP_DENY = ['Bash(git push:*)', 'Bash(sudo:*)', 'Bash(curl:*)', 'Bash(wget:*)', 'Bash(rm:*)'];
+
 function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, user, now }) {
   projectRoot = path.resolve(projectRoot);
   const { team, hosts } = loadManifest(projectRoot);
@@ -100,12 +106,27 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   try {
     const { loadPolicy, laneAllowRules } = require('../hooks/scripts/lane.js');
     const groups = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'lane-groups.json'), 'utf8'));
-    const rules = laneAllowRules(loadPolicy({ pluginRoot, projectRoot, briefRef: role.brief }), groups, pluginRoot);
+    const policy = loadPolicy({ pluginRoot, projectRoot, briefRef: role.brief });
+    const rules = laneAllowRules(policy, groups, pluginRoot);
+    if (!settings.permissions || typeof settings.permissions !== 'object') settings.permissions = {};
     if (rules.length) {
-      if (!settings.permissions || typeof settings.permissions !== 'object') settings.permissions = {};
       const have = Array.isArray(settings.permissions.allow) ? settings.permissions.allow : [];
       settings.permissions.allow = [...new Set([...have, ...rules])];
     }
+    // Native deny rules: they hold where a hook cannot (no node, a broken manifest, a moved plugin,
+    // bypassPermissions). Workers and managers never address the operator; a lane without `any`
+    // never needs these commands, so a hook that fails open still cannot run them. Recomputed on
+    // every run: a rule the role now needs is taken out again; the user's other rules stay.
+    const operatorFacing = OPERATOR_FACING_ROLES.has(role.id);
+    const unrestricted = policy.bash.includes('any');
+    const want = [
+      ...(operatorFacing ? [] : OPERATOR_CHANNEL_TOOLS),
+      ...(unrestricted ? [] : LANE_BACKSTOP_DENY.filter((r) => !rules.includes(r))),
+    ];
+    const managed = new Set([...OPERATOR_CHANNEL_TOOLS, ...LANE_BACKSTOP_DENY]);
+    const haveDeny = Array.isArray(settings.permissions.deny) ? settings.permissions.deny : [];
+    const deny = [...new Set([...haveDeny.filter((r) => !managed.has(r)), ...want])];
+    if (deny.length) settings.permissions.deny = deny; else delete settings.permissions.deny;
   } catch (err) {
     files.push(`warning: lane permission rules not written (${err.message})`);
   }
@@ -170,4 +191,4 @@ if (require.main === module) {
   console.log(roleDir);
 }
 
-module.exports = { prepareRole };
+module.exports = { OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, prepareRole };

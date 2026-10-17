@@ -203,5 +203,34 @@ test('I5: an unrestricted (any) lane gets no pre-allowed commands', () => {
   const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
   const { roleDir } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
   const settings = JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8'));
-  assert.equal(settings.permissions, undefined);
+  assert.equal(settings.permissions.allow, undefined);
+});
+
+test('hardening a/b: native deny rules per role, idempotent, keeping the user\'s own rules', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const ASK = ['AskUserQuestion', 'PushNotification', 'SendUserFile'];
+  const settingsOf = (instance) => {
+    const { roleDir } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+    return { roleDir, s: JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')) };
+  };
+  const deny = (instance) => ((settingsOf(instance).s.permissions || {}).deny || []).slice().sort();
+  // operator-facing roles may ask; the chief of staff has no git push in its lane
+  assert.deepEqual(deny('chief-of-staff'), ['Bash(curl:*)', 'Bash(git push:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)']);
+  // the product manager, delivery lead and staffing push plan documents (git-write-project)
+  assert.deepEqual(deny('product-manager'), ['Bash(curl:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)']);
+  assert.deepEqual(deny('delivery-lead'), [...ASK, 'Bash(curl:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
+  assert.deepEqual(deny('staffing'), [...ASK, 'Bash(curl:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
+  assert.deepEqual(deny('progress-observer'), [...ASK, 'Bash(curl:*)', 'Bash(git push:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
+  // workers (lane any) keep their commands but still never address the operator
+  assert.deepEqual(deny('builder-1'), ASK.slice().sort());
+  assert.deepEqual(deny('spike-researcher'), ASK.slice().sort());
+  // idempotent; a user's own deny rule is kept; managed rules a role does not need are taken out
+  const { roleDir, s } = settingsOf('chief-of-staff');
+  s.permissions.deny = [...s.permissions.deny, 'Bash(npm publish:*)', 'AskUserQuestion'];
+  fs.writeFileSync(path.join(roleDir, '.claude', 'settings.local.json'), JSON.stringify(s));
+  const again = deny('chief-of-staff');
+  assert.ok(again.includes('Bash(npm publish:*)'));
+  assert.ok(!again.includes('AskUserQuestion'), 'the chief of staff may ask: the managed deny is removed');
+  assert.deepEqual(deny('chief-of-staff'), again);
 });
