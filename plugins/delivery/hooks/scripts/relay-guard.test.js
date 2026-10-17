@@ -343,7 +343,10 @@ test("I3: a chain problem on the chief of staff's own records file replaces the 
   const torn = () => ({ inputs, problems: [{ file: 'records/chief-of-staff', code: 'truncated', error: 'records/chief-of-staff: truncated 4 entries but 5 recorded' }] });
   const found = operatorChecks(stopArgs(p, {}, { deps: { pending: torn } }));
   assert.deepEqual(found.map((f) => f.kind), ['integrity']);
-  assert.equal(found[0].reason, `Your own operator records chain (records/chief-of-staff.ndjson) fails verification (truncated: records/chief-of-staff: truncated 4 entries but 5 recorded). Nothing can be recorded or acknowledged until it is repaired: run \`${OP} problems\`, then \`${OP} repair --instance chief-of-staff\` for a torn tail, or restore the file from repository history for a truncated or rewritten chain. Do not ask the operator to relay anything meanwhile.`);
+  assert.equal(found[0].reason, `Your own operator records chain (records/chief-of-staff.ndjson) fails verification (truncated: records/chief-of-staff: truncated 4 entries but 5 recorded). Nothing can be recorded or acknowledged on it, and no lane can write the operator directory: run \`${OP} problems\` to see it, then set it aside with \`${OP} quarantine --file records/chief-of-staff.ndjson --reason '<what failed>'\` (the file is kept as evidence) and keep recording, and put "restore .delivery/operator/records/chief-of-staff.ndjson from repository history" in your next briefing as one owner-side line. Do not ask the operator to relay anything meanwhile.`);
+  // the Product Manager cannot quarantine: it is told to ask the Chief of Staff
+  const pm = operatorChecks(stopArgs(p, {}, { role: 'product-manager', instance: 'chief-of-staff', deps: { pending: torn } }));
+  assert.match(pm[0].reason, /SendMessage the Chief of Staff with the problem/);
   // another instance's chain, or one invalid record, does not stop the chief of staff from recording
   for (const problem of [{ file: 'records/builder-1', code: 'truncated', error: 'x' }, { file: 'records/chief-of-staff', code: 'record_invalid', error: 'x', id: 'dec-x' }]) {
     assert.deepEqual(operatorChecks(stopArgs(p, {}, { deps: { pending: () => ({ inputs, problems: [problem] }) } })).map((f) => f.kind), ['unrecorded']);
@@ -881,4 +884,12 @@ test('I5: asking the operator to clear another session\'s permission prompt is a
     'Permission prompts are pre-allowed for in-lane commands now.',
     'No permission prompt is open anywhere.',
   ]) assert.equal(findRelayRequest(m), null, m);
+});
+
+test('M5: a retired Chief of Staff or Product Manager instance gets no operator stop checks', () => {
+  const p = captured('chief-of-staff', [human('use postgres for the store', 1)]);
+  const args = stopArgs(p, { last_assistant_message: 'Please tell the builder session to use postgres.' });
+  assert.ok(operatorChecks(args).length >= 1);
+  assert.deepEqual(operatorChecks({ ...args, retired: true }), []);
+  assert.deepEqual(operatorChecks({ ...args, role: 'product-manager', instance: 'product-manager', retired: true }), []);
 });

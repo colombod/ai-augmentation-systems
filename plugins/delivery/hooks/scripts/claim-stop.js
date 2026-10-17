@@ -35,7 +35,7 @@ try {
     const candidates = [];
     try {
       candidates.push(...operatorChecks({ input, roleDir: valid.roleDir, projectRoot: valid.marker.project_root, role: valid.role.id,
-        instance: valid.marker.instance, captureStatus: cap && cap.status, parties: partiesOf(valid), pluginRoot: path.join(__dirname, '..', '..'), deps: { warn: (m) => process.stderr.write(m) } }));
+        instance: valid.marker.instance, captureStatus: cap && cap.status, parties: partiesOf(valid), pluginRoot: path.join(__dirname, '..', '..'), retired: !!valid.role.retired, deps: { warn: (m) => process.stderr.write(m) } }));
     } catch (err) { /* the operator checks fail open */ }
     try {
       const { makeBd } = require('../../scripts/lib/bd.js');

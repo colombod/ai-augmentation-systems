@@ -200,7 +200,7 @@ test('I3: a broken own records chain blocks once per turn with the repair path, 
   fs.writeFileSync(rf, txt.slice(0, txt.length - 40));
   const s1 = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'ok' }));
   assert.match(s1.reason, /^Your own operator records chain \(records\/chief-of-staff\.ndjson\) fails verification/);
-  assert.match(s1.reason, /operator\.js repair --instance chief-of-staff/);
+  assert.match(s1.reason, /operator\.js quarantine --file records\/chief-of-staff\.ndjson/);
   assert.doesNotMatch(s1.reason, /no record: in-pc/);
   assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: 'ok' }).stdout, '');
 });

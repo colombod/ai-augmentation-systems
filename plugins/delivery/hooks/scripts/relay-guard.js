@@ -355,9 +355,16 @@ function unrecordedReason(list, op) {
   return `You have an operator input with no record: ${n} ("${excerpt}")${more}. Record the decision (\`${op} record --cite ${n} --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\`) or acknowledge it (\`${op} ack --input ${n} --reason '<why this is not a decision>'\`; 'conversational' for chat), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.`;
 }
 
-function integrityReason(instance, problem, op) {
+// What the session CAN do: no lane may write the operator directory, so restoring the file from git
+// is an owner-side task for the briefing; the Chief of Staff can set the broken chain aside (the file
+// is kept as evidence) and keep recording; the Product Manager asks the Chief of Staff to.
+function integrityReason(instance, problem, op, role) {
   const what = `${problem.code || 'chain_invalid'}: ${String(problem.error || '').replace(/\s+/g, ' ').slice(0, 160)}`;
-  return `Your own operator records chain (records/${instance}.ndjson) fails verification (${what}). Nothing can be recorded or acknowledged until it is repaired: run \`${op} problems\`, then \`${op} repair --instance ${instance}\` for a torn tail, or restore the file from repository history for a truncated or rewritten chain. Do not ask the operator to relay anything meanwhile.`;
+  const quarantine = `\`${op} quarantine --file records/${instance}.ndjson --reason '<what failed>'\``;
+  const act = role === 'chief-of-staff'
+    ? `set it aside with ${quarantine} (the file is kept as evidence) and keep recording, and put "restore .delivery/operator/records/${instance}.ndjson from repository history" in your next briefing as one owner-side line`
+    : `SendMessage the Chief of Staff with the problem; it sets the chain aside with ${quarantine} and puts the restore in its briefing`;
+  return `Your own operator records chain (records/${instance}.ndjson) fails verification (${what}). Nothing can be recorded or acknowledged on it, and no lane can write the operator directory: run \`${op} problems\` to see it, then ${act}. Do not ask the operator to relay anything meanwhile.`;
 }
 
 function readTrim(file) {
@@ -392,7 +399,7 @@ function tornTailReason(instance, problem, op) {
 }
 
 // [{ kind: 'unrecorded' | 'integrity', reason }] for the Chief of Staff's own inputs ([] or null when nothing applies).
-function inputCheck({ projectRoot, sessionId, instance, deps, warn, op }) {
+function inputCheck({ projectRoot, sessionId, instance, deps, warn, op, role }) {
   if (!sessionId) return null;
   if (!fs.existsSync(path.join(projectRoot, '.delivery', 'operator'))) {
     warn('delivery: .delivery/operator does not exist yet, so the unrecorded-input check had nothing to read; operator capture creates it on the first captured input\n');
@@ -413,7 +420,7 @@ function inputCheck({ projectRoot, sessionId, instance, deps, warn, op }) {
   }
   const out = [];
   const broken = ownChainProblem(problems, instance);
-  if (broken && broken.code !== REPAIRABLE_BY_WRITE) return [{ kind: 'integrity', reason: integrityReason(instance, broken, op) }];
+  if (broken && broken.code !== REPAIRABLE_BY_WRITE) return [{ kind: 'integrity', reason: integrityReason(instance, broken, op, role) }];
   if (broken) out.push({ kind: 'integrity', reason: tornTailReason(instance, broken, op) });
   const mine = ((res && res.inputs) || []).filter((e) => e && e.id && e.session_id === sessionId && (!instance || e.instance === instance));
   if (mine.length) out.push({ kind: 'unrecorded', reason: unrecordedReason(mine, op) });
@@ -422,9 +429,10 @@ function inputCheck({ projectRoot, sessionId, instance, deps, warn, op }) {
 
 // Every operator check that applies to this stop, ignoring stop_hook_active (claim-stop.js limits
 // repeats per turn, per session). [] for roles that do not address the operator, and on any failure.
-function operatorChecks({ input, roleDir, projectRoot, role, instance, captureStatus, parties, pluginRoot, deps = {} } = {}) {
+function operatorChecks({ input, roleDir, projectRoot, role, instance, captureStatus, parties, pluginRoot, retired, deps = {} } = {}) {
   try {
-    if (!OPERATOR_FACING.has(role)) return [];
+    // a retired instance records nothing new (operator.js refuses), so its guard stands down
+    if (!OPERATOR_FACING.has(role) || retired) return [];
     const op = operatorCommand(pluginRoot || DEFAULT_PLUGIN_ROOT);
     if (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot)) return [];
     const inp = input && typeof input === 'object' ? input : {};
@@ -435,7 +443,7 @@ function operatorChecks({ input, roleDir, projectRoot, role, instance, captureSt
       return [];
     }
     const out = [];
-    out.push(...(inputCheck({ projectRoot, sessionId, instance, deps, warn, op }) || []));
+    out.push(...(inputCheck({ projectRoot, sessionId, instance, deps, warn, op, role }) || []));
     const relay = findRelayRequest(inp.last_assistant_message, { parties });
     if (relay) out.push({ kind: 'relay', reason: relayReason(inp.last_assistant_message, relay.clause), detail: relay.phrase });
     return out;

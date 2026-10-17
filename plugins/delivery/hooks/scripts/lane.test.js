@@ -576,10 +576,16 @@ test('H.5: Write/Edit/NotebookEdit/MultiEdit are allowed under ~/.claude/plans a
 // Final wave H.5 and H.6: lane hook through a subprocess.
 test('H.6: role-lane hook fails open on a thrown error, denies Bash and headless browser tools, logs without control characters', () => {
   const env = (instance) => ({ DELIVERY_ROLE: instance, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT });
-  // A corrupt team manifest makes validMarker throw: empty output, exit 0.
+  // M1: a corrupt team manifest with this session's own marker present fails CLOSED with the way out;
+  // restoring the manifest stays allowed, and a session that is not this role stays inert.
   const broken = preparedRole('chief-of-staff');
   fs.writeFileSync(path.join(broken.projectRoot, '.delivery', 'team', 'team.json'), '{ not json');
-  assert.equal(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, env('chief-of-staff')), '');
+  const closed = JSON.parse(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, env('chief-of-staff')));
+  assert.equal(closed.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(closed.hookSpecificOutput.permissionDecisionReason, /the lane cannot be checked .*checkout -- \.delivery\/team\/team\.json/);
+  assert.equal(JSON.parse(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Write', tool_input: { file_path: path.join(broken.roleDir, 'x') } }, env('chief-of-staff'))).hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: `git -C ${broken.projectRoot} checkout -- .delivery/team/team.json` } }, env('chief-of-staff')), '');
+  assert.equal(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, env('someone-else')), '');
   // A corrupt role marker: inert.
   const marker = preparedRole('chief-of-staff');
   fs.writeFileSync(path.join(marker.roleDir, '.delivery-role.json'), '{ not json');

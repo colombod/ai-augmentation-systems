@@ -138,7 +138,7 @@ A role session's shell has no `CLAUDE_PLUGIN_ROOT`, so the brief (`CLAUDE.local.
    - anything else, including "ok thanks": `operator.js ack --reason 'conversational'`.
 3. Carry: `SendMessage` the record id to every session that needs it.
 
-Every operator input in the Chief of Staff's session (and the Product Manager's) gets a record or an ack, and the Stop hook holds the turn until then. A short answer such as "yes", "B" or "No." is quoted whole; record it with `--answers q-<instance>-N` so `verify` shows the question beside it.
+Every operator input in the Chief of Staff's session (and the Product Manager's) gets a record or an ack, and the Stop hook holds the turn until then. A short answer such as "yes", "B" or "No." is quoted whole and must be recorded with `--answers q-<instance>-N`. `verify` checks that the operator's input came after the question was asked and does not answer another question, and prints the question beside the answer with how long before it was asked. Whether the reply really answers that question is still the Chief of Staff's claim, shown for a reader to judge.
 
 Prompts typed before a session became the role (a resumed or adopted session) are stored and citable on request (`record --cite` works), but they are marked `pre_role` and never count as pending or block a Stop.
 
@@ -151,7 +151,7 @@ Prompts typed before a session became the role (a resumed or adopted session) ar
 - Only the Chief of Staff and the Product Manager may use `AskUserQuestion`, `PushNotification` and `SendUserFile`.
 - The Stop hook of the Chief of Staff and of the Product Manager blocks a turn that leaves one of that session's operator inputs unrecorded or asks the operator to relay (including "approve the permission prompt in X").
 - Lanes deny writes to `.delivery/operator/`, and only the manager roles' lanes include the writer commands. Workers with unrestricted Bash can record or acknowledge only inputs that their own session captured. The library checks this, but the check is cooperative: it compares a session id that the session's own Bash can rewrite.
-- `prepare-role` pre-allows each manager lane's own commands in the role's `settings.local.json`, so a session does not stop on a permission prompt only the operator can clear. The lane hook still refuses anything outside the lane.
+- `prepare-role` pre-allows each manager lane's own commands in the role's `settings.local.json`, so a session does not stop on a permission prompt only the operator can clear. These rules are only as narrow as the lane hook in front of them: the hook refuses anything outside the lane, and when a role session's lane cannot be checked (manifest unreadable, an internal error) it now fails closed and allows only restoring the manifest. A session whose role marker is missing gets no lane check at all, and then the allow rules let matching commands through without a prompt.
 
 **Artifacts.** These live in `.delivery/operator/` in the private project repository, are committed, and are pushed by `operator.js publish`:
 - `inputs/<host>/<YYYY-MM>.ndjson`: one hash-chained entry per operator prompt, written by the capture hook from the session transcript;
@@ -166,6 +166,7 @@ Each chain file has exactly one writer, so git never merges a chain. `operator.j
 - **Records are checked for form, not relevance.** A validly shaped record that cites a real operator input cannot be machine-rejected, even when the input it cites does not support it. Detection is human: the git history, and the verbatim words and author that `verify` prints.
 - **Capture depends on the harness.** Capture relies on the harness's `origin` stamp on each transcript entry, and that format is undocumented. If it changes, `operator.js sync` reports `format_unrecognised` and recording fails closed.
 - **Cloud sessions are captured late.** Their transcripts are not reachable from other hosts. Inputs typed directly into a cloud session are captured only when that session syncs from its own host.
+- **The pre-role boundary is a local file.** `<roleDir>/.delivery-role-since.json` is not checked. Deleting it, or dating it in the future, hides genuine inputs from `pending` and the Stop guard. Only a session with unrestricted Bash or a human can do that.
 - **Keystrokes can be injected.** A role with unrestricted Bash can type into another session (`tmux send-keys`, computer-use, a terminal MCP server, `osascript`), and the harness records that as a human prompt. This cannot be told apart in the transcript.
 - **The relay detector is a heuristic backstop.** It catches common phrasings, not all of them. The structural fix is that no session ever needs the operator to relay.
 - **Instance ids.** An instance id belongs to one role:

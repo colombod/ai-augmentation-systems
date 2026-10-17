@@ -531,8 +531,11 @@ MCP deny list for `any` lanes, with the channel guard extended to the session-ma
 **Ruling: harness permission prompts.** A permission prompt in a role session can only be cleared by
 the human pressing a button, which makes the operator a relay for that session. Mitigation:
 `prepare-role` writes the role's in-lane commands as prefix `permissions.allow` rules in the role's
-`settings.local.json` (unrestricted `any` lanes get none); the lane hook still runs before the
-permission check, so the rules widen nothing. A prompt that still appears goes into the Chief of
+`settings.local.json` (unrestricted `any` lanes get none). The rules depend on the lane hook running
+first and refusing what the lane does not allow. Where a role session's marker is present but the
+lane cannot be decided (manifest unreadable, an internal exception), the hook fails closed and allows
+only restoring the manifest; where no role marker is found the hook is inert, and the allow rules
+then let a matching command through without a prompt. A prompt that still appears goes into the Chief of
 Staff's next briefing as one batched owner-side line ("approve once in session X, or extend the
 lane"); asking the operator to go and approve it is a relay request the Stop guard flags. Residual:
 after a plugin-cache version move the operator.js rules name the old path until `prepare-role` runs
