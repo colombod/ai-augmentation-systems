@@ -163,7 +163,8 @@ test('the prompt, session-start and stop hooks capture first and keep their own 
   assert.match(prompt.stdout, /\nOperator inputs with no record yet: in-pc-000001 \("drop the export feature"\)/);
   const start = run('role-session-start.js', { cwd: roleDir, session_id: SID, transcript_path: tr, source: 'startup' });
   assert.equal(start.status, 0);
-  assert.ok(start.stdout.startsWith('# Role: product-manager'));
+  // CLAUDE.local.md is current (prepare-role wrote it), so a startup injects no role block, only the claim and the note
+  assert.ok(!start.stdout.includes('# Role: product-manager'), start.stdout);
   assert.match(start.stdout, /Operator inputs with no record yet: in-pc-000001/);
   const roster = JSON.parse(fs.readFileSync(path.join(projectRoot, '.delivery', 'team', 'roster.json'), 'utf8'));
   assert.equal(roster.instances['product-manager'].transcript_path, tr, 'SessionStart registration keeps the transcript of the same session');

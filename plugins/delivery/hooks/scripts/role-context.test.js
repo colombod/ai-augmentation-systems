@@ -249,3 +249,23 @@ test('promptSubmitText with an unloadable manifest still reports the capture pro
   assert.match(warned[0], /^delivery: operator capture is off for staffing/);
   assert.deepEqual(fs.readdirSync(empty), []);
 });
+
+test('hardening e: startup and resume inject no role block when CLAUDE.local.md is current; a changed file or clear/compact restates it', () => {
+  const { roleDir } = preparedRole('delivery-lead');
+  const brief = path.join(roleDir, 'CLAUDE.local.md');
+  for (const source of ['startup', 'resume']) {
+    const text = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source }, PLUGIN_ROOT, { claim: () => null }));
+    assert.ok(!text.includes('# Role: delivery-lead'), `${source}: ${text}`);
+    assert.match(text, /^You hold no claim\./);
+  }
+  // the manifest changed since the file was written: the loaded copy is stale, so restate and say re-read
+  fs.writeFileSync(brief, fs.readFileSync(brief, 'utf8') + '\nstale line\n');
+  const changed = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source: 'startup' }, PLUGIN_ROOT, { claim: () => null }));
+  assert.match(changed, /CLAUDE\.local\.md was rewritten at this start .* re-read it now/);
+  assert.ok(changed.includes('# Role: delivery-lead'));
+  assert.ok(!fs.readFileSync(brief, 'utf8').includes('stale line'), 'the file is rewritten');
+  for (const source of ['clear', 'compact']) {
+    const text = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source }, PLUGIN_ROOT, { claim: () => null }));
+    assert.ok(text.includes('# Role: delivery-lead'), source);
+  }
+});
