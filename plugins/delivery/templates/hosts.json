@@ -1,7 +1,5 @@
 {
   "hosts": {
-    "pc":       { "kind": "pc",    "bd": "wrapper", "headless": false, "desktop_apps": true },
-    "buildbox": { "kind": "ssh",   "bd": "native",  "headless": true,  "desktop_apps": false, "dolt_server": true, "lanes": ["a", "b"], "check": "prepush" },
-    "cloud":    { "kind": "cloud", "bd": "remote",  "headless": true,  "desktop_apps": false }
+    "pc": { "kind": "pc", "bd": "native", "headless": false, "desktop_apps": true }
   }
 }

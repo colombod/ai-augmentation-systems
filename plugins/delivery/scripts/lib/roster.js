@@ -64,7 +64,7 @@ function withRosterLock(projectRoot, fn) {
   }
 }
 
-function registerInstance(projectRoot, { instance, session_id, host, model, role_dir, now }) {
+function registerInstance(projectRoot, { instance, session_id, host, model, role_dir, now, transcript_path }) {
   return withRosterLock(projectRoot, () => {
     const roster = readRoster(projectRoot);
     const existing = roster.instances[instance] || {};
@@ -76,8 +76,29 @@ function registerInstance(projectRoot, { instance, session_id, host, model, role
       joined_at: existing.joined_at || now,
       last_seen: now,
     };
+    // the capture hook may have recorded this session's transcript first: keep it for the same session
+    if (typeof transcript_path === 'string' && transcript_path) roster.instances[instance].transcript_path = transcript_path;
+    else if (existing.transcript_path && existing.session_id === session_id) roster.instances[instance].transcript_path = existing.transcript_path;
     writeRoster(projectRoot, roster);
     return roster;
+  });
+}
+
+// Record where this instance's session transcript lives (operator.js sync --all reads it).
+// Writes only when something changed. An instance not registered yet is left to registerInstance
+// (SessionStart), which records the transcript with the full entry; returns false then.
+function setTranscriptPath(projectRoot, { instance, session_id, transcript_path }) {
+  const cur = readRoster(projectRoot).instances[instance];
+  if (!cur) return false;
+  if (cur.transcript_path === transcript_path && (!session_id || cur.session_id === session_id)) return false;
+  return withRosterLock(projectRoot, () => {
+    const roster = readRoster(projectRoot);
+    const existing = roster.instances[instance];
+    if (!existing) return false;
+    existing.transcript_path = transcript_path;
+    if (session_id) existing.session_id = session_id;
+    writeRoster(projectRoot, roster);
+    return true;
   });
 }
 
@@ -91,4 +112,4 @@ function touchInstance(projectRoot, { instance, now }) {
   });
 }
 
-module.exports = { readRoster, writeRoster, registerInstance, touchInstance, withRosterLock, ROSTER_REL };
+module.exports = { readRoster, writeRoster, registerInstance, touchInstance, setTranscriptPath, withRosterLock, ROSTER_REL };

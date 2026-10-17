@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // scripts/prepare-role.js — create one role instance directory from the manifest.
-// Run by a steward (phase 4) or by hand: the session is then started IN that
+// Run by start.js, a steward or by hand: the session is then started IN that
 // directory and the SessionStart hook does the rest. Idempotent.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { loadManifest, validateManifest, expandInstances } = require('./lib/manifest.js');
+const { loadManifest, validateManifest, manifestWarnings, expandInstances, canonicalRoleId } = require('./lib/manifest.js');
 const { loadRoleBrief, composeBrief } = require('./lib/compose-brief.js');
 
 function git(cwd, ...args) {
@@ -17,7 +17,14 @@ function remoteOf(repo) {
   try { return git(repo, 'remote', 'get-url', 'origin'); } catch (err) { return null; }
 }
 
+// operator channels only the operator-facing roles use (the ask-guard hook is the second layer)
+const OPERATOR_FACING_ROLES = new Set(['chief-of-staff', 'product-manager']);
+const OPERATOR_CHANNEL_TOOLS = ['AskUserQuestion', 'PushNotification', 'SendUserFile'];
+// commands no restricted lane needs; denied natively unless the role's lane allows them
+const LANE_BACKSTOP_DENY = ['Bash(git push:*)', 'Bash(sudo:*)', 'Bash(curl:*)', 'Bash(wget:*)', 'Bash(rm:*)'];
+
 function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, user, now }) {
+  instance = canonicalRoleId(instance); // --instance delivery-manager means delivery-lead
   projectRoot = path.resolve(projectRoot);
   const { team, hosts } = loadManifest(projectRoot);
   const problems = validateManifest(team, hosts);
@@ -25,11 +32,13 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   const found = expandInstances(team).find((i) => i.instance === instance);
   if (!found) throw new Error(`unknown instance "${instance}" (not in team.json)`);
   const { role } = found;
+  if (role.retired) throw new Error(`instance "${instance}" is retired in team.json; it is kept so its records verify, not started`);
   const brief = loadRoleBrief(pluginRoot, projectRoot, role.brief);
   teamDir = path.resolve(teamDir || path.join(projectRoot, '..', `${team.project}-team`));
   const roleDir = path.join(teamDir, instance);
   fs.mkdirSync(roleDir, { recursive: true });
   const files = [];
+  for (const w of manifestWarnings(team)) if (w.includes(`"${role.id}"`)) files.push(`warning: ${w}`);
 
   const projectDir = path.join(roleDir, 'project');
   if (!fs.existsSync(path.join(projectDir, '.git'))) {
@@ -77,6 +86,8 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     BEADS_ACTOR: actor,
     DELIVERY_RUNNER: role.runner || 'plain',
     DELIVERY_MODE: role.mode || brief.meta.mode || 'default',
+    // the model a builder gives its implementer and reviewer subagents on a size-L bead
+    ...(brief.meta.touches_code ? { DELIVERY_LARGE_MODEL: role.large_model || 'opus' } : {}),
   });
   // Hooks and bd run from the role directory, where bd cannot find the project database on its own.
   // A value this script wrote earlier (remembered in the marker) follows the project when it moves;
@@ -94,6 +105,35 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     beadsDirWritten = previouslyWritten;
   }
   settings.enabledPlugins = Object.assign({}, settings.enabledPlugins, { 'delivery@ai-augmentation-systems': true });
+  // Pre-allow the lane's own commands (spec 8.6, permission prompts): a manager session should not
+  // stop on a prompt only the operator can clear for a command its lane already permits.
+  try {
+    const { loadPolicy, laneAllowRules } = require('../hooks/scripts/lane.js');
+    const groups = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'lane-groups.json'), 'utf8'));
+    const policy = loadPolicy({ pluginRoot, projectRoot, briefRef: role.brief });
+    const rules = laneAllowRules(policy, groups, pluginRoot);
+    if (!settings.permissions || typeof settings.permissions !== 'object') settings.permissions = {};
+    if (rules.length) {
+      const have = Array.isArray(settings.permissions.allow) ? settings.permissions.allow : [];
+      settings.permissions.allow = [...new Set([...have, ...rules])];
+    }
+    // Native deny rules: they hold where a hook cannot (no node, a broken manifest, a moved plugin,
+    // bypassPermissions). Workers and managers never address the operator; a lane without `any`
+    // never needs these commands, so a hook that fails open still cannot run them. Recomputed on
+    // every run: a rule the role now needs is taken out again; the user's other rules stay.
+    const operatorFacing = OPERATOR_FACING_ROLES.has(role.id);
+    const unrestricted = policy.bash.includes('any');
+    const want = [
+      ...(operatorFacing ? [] : OPERATOR_CHANNEL_TOOLS),
+      ...(unrestricted ? [] : LANE_BACKSTOP_DENY.filter((r) => !rules.includes(r))),
+    ];
+    const managed = new Set([...OPERATOR_CHANNEL_TOOLS, ...LANE_BACKSTOP_DENY]);
+    const haveDeny = Array.isArray(settings.permissions.deny) ? settings.permissions.deny : [];
+    const deny = [...new Set([...haveDeny.filter((r) => !managed.has(r)), ...want])];
+    if (deny.length) settings.permissions.deny = deny; else delete settings.permissions.deny;
+  } catch (err) {
+    files.push(`warning: lane permission rules not written (${err.message})`);
+  }
   if (settings.permissions && typeof settings.permissions === 'object') {
     delete settings.permissions.defaultMode;
     if (Object.keys(settings.permissions).length === 0) delete settings.permissions;
@@ -109,7 +149,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
 
   const rules = fs.readFileSync(path.join(pluginRoot, 'templates', 'team-rules.md'), 'utf8');
   const briefFile = path.join(roleDir, 'CLAUDE.local.md');
-  fs.writeFileSync(briefFile, composeBrief({ team, hosts, instance, role, brief, rules }));
+  fs.writeFileSync(briefFile, composeBrief({ team, hosts, instance, role, brief, rules, pluginRoot }));
   files.push(briefFile);
 
   const marker = {
@@ -155,4 +195,4 @@ if (require.main === module) {
   console.log(roleDir);
 }
 
-module.exports = { prepareRole };
+module.exports = { OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, prepareRole };

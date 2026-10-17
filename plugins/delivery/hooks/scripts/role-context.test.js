@@ -11,6 +11,8 @@ const { prepareRole } = require('../../scripts/prepare-role.js');
 
 const PLUGIN_ROOT = path.join(__dirname, '..', '..');
 const TEMPLATES = path.join(PLUGIN_ROOT, 'templates');
+// the full manifest the tests run against (templates/ holds the minimal one users start from)
+const MANIFEST_FIXTURE = path.join(__dirname, '..', '..', 'scripts', 'testing', 'manifest');
 
 function scratchProjectRepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-project-'));
@@ -18,8 +20,8 @@ function scratchProjectRepo() {
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: root });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: root });
   fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
-  fs.copyFileSync(path.join(TEMPLATES, 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
-  fs.copyFileSync(path.join(TEMPLATES, 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
+  fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
   execFileSync('git', ['add', '-A'], { cwd: root });
   execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: root });
   return root;
@@ -218,4 +220,57 @@ test('F: the lane hook judges a session that left its role directory', () => {
   const run = (env) => execFileSync(process.execPath, [path.join(__dirname, 'role-lane.js')], { input: JSON.stringify({ cwd: outside, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }), env: { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, ...env }, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
   assert.equal(JSON.parse(run({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: roleDir })).hookSpecificOutput.permissionDecision, 'deny');
   assert.equal(run({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: '' }), '');
+});
+
+// Operator decisions: capture runs first in the role hooks and never changes their own output.
+test('promptSubmitText and sessionStartText append the capture note; a throwing capture changes nothing', () => {
+  const { roleDir } = preparedRole('delivery-lead');
+  const pending = () => ({ added: 0, status: 'ok', pending: [{ id: 'in-pc-000004', text: 'phase 2 before phase 3' }] });
+  const text = withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, capture: pending }));
+  assert.ok(text.startsWith('You are delivery-lead (delivery-lead). Current claim: none'));
+  assert.match(text, /\nOperator inputs with no record yet: in-pc-000004 \("phase 2 before phase 3"\)\. See `node .*operator\.js pending`\.$/);
+  const start = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's' }, PLUGIN_ROOT, { claim: () => null, capture: pending }));
+  assert.ok(start.startsWith('# Role: delivery-lead'));
+  assert.match(start, /Operator inputs with no record yet: in-pc-000004/);
+  const boom = () => { throw new Error('boom'); };
+  fs.rmSync(path.join(roleDir, '.delivery-last-claim'), { force: true }); // as if the claim just changed
+  assert.equal(withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, capture: boom })),
+    'You are delivery-lead (delivery-lead). Current claim: none (idle; say so and what you could take).');
+  // the role line repeats only when the claim changes (A2): the same idle claim says nothing new
+  const quiet = () => ({ added: 0, status: 'ok', pending: [] });
+  assert.equal(withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, capture: quiet })), '');
+  assert.equal(withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => 'ex-9: x', capture: quiet })),
+    'You are delivery-lead (delivery-lead). Current claim: ex-9: x.');
+});
+
+test('promptSubmitText with an unloadable manifest still reports the capture problem; warn receives it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-cap-nomanifest-'));
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-cap-empty-'));
+  fs.writeFileSync(path.join(dir, '.delivery-role.json'), JSON.stringify({ instance: 'staffing', role: 'staffing', project_root: empty, host: 'pc', model: 'sonnet' }));
+  const warned = [];
+  const text = withRole('staffing', () => promptSubmitText({ cwd: dir, session_id: 's' }, { claim: () => null, warn: (m) => warned.push(m) }));
+  assert.match(text, /^Operator capture: operator capture is off for staffing: \.delivery\/team\/team\.json cannot be loaded/);
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /^delivery: operator capture is off for staffing/);
+  assert.deepEqual(fs.readdirSync(empty), []);
+});
+
+test('hardening e: startup and resume inject no role block when CLAUDE.local.md is current; a changed file or clear/compact restates it', () => {
+  const { roleDir } = preparedRole('delivery-lead');
+  const brief = path.join(roleDir, 'CLAUDE.local.md');
+  for (const source of ['startup', 'resume']) {
+    const text = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source }, PLUGIN_ROOT, { claim: () => null }));
+    assert.ok(!text.includes('# Role: delivery-lead'), `${source}: ${text}`);
+    assert.match(text, /^You hold no claim\./);
+  }
+  // the manifest changed since the file was written: the loaded copy is stale, so restate and say re-read
+  fs.writeFileSync(brief, fs.readFileSync(brief, 'utf8') + '\nstale line\n');
+  const changed = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source: 'startup' }, PLUGIN_ROOT, { claim: () => null }));
+  assert.match(changed, /CLAUDE\.local\.md was rewritten at this start .* re-read it now/);
+  assert.ok(changed.includes('# Role: delivery-lead'));
+  assert.ok(!fs.readFileSync(brief, 'utf8').includes('stale line'), 'the file is rewritten');
+  for (const source of ['clear', 'compact']) {
+    const text = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source }, PLUGIN_ROOT, { claim: () => null }));
+    assert.ok(text.includes('# Role: delivery-lead'), source);
+  }
 });

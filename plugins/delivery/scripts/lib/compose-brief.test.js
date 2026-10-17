@@ -8,11 +8,13 @@ const { loadManifest, expandInstances } = require('./manifest.js');
 
 const PLUGIN_ROOT = path.join(__dirname, '..', '..');
 const TEMPLATES = path.join(PLUGIN_ROOT, 'templates');
+// the full manifest the tests run against (templates/ holds the minimal one users start from)
+const MANIFEST_FIXTURE = path.join(__dirname, '..', 'testing', 'manifest');
 
 function templateManifest() {
   return {
-    team: JSON.parse(fs.readFileSync(path.join(TEMPLATES, 'team.json'), 'utf8')),
-    hosts: JSON.parse(fs.readFileSync(path.join(TEMPLATES, 'hosts.json'), 'utf8')),
+    team: JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), 'utf8')),
+    hosts: JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), 'utf8')),
   };
 }
 

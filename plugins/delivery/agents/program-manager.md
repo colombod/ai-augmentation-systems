@@ -1,5 +1,6 @@
 ---
 name: program-manager
+model: sonnet
 description: Owns sequencing, dependencies, risk and the delivery roadmap. Use when turning an approved PRD and architecture into a phased delivery plan, identifying critical-path and cross-team dependencies, sizing milestones, or re-planning after a slip. Invoke after product and architecture direction are settled.
 ---
 

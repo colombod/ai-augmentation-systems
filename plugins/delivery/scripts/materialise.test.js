@@ -23,8 +23,8 @@ function scratchProject() {
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: root });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: root });
   fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
-  fs.copyFileSync(path.join(PLUGIN, 'templates', 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
-  fs.copyFileSync(path.join(PLUGIN, 'templates', 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
+  fs.copyFileSync(path.join(PLUGIN, 'scripts', 'testing', 'manifest', 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(PLUGIN, 'scripts', 'testing', 'manifest', 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
   const init = path.join(root, '.delivery', 'initiatives', 'demo');
   fs.mkdirSync(init, { recursive: true });
   fs.writeFileSync(path.join(init, 'roadmap.md'), '# Roadmap\n\n## Phases\n\n### Phase 1: Foundations\n\n| Work item | Size | Confidence | Depends on |\n| :-- | :-- | :-- | :-- |\n| A | S | high | |\n\n### Phase 2: Beads\n\n| Work item | Size | Confidence | Depends on |\n| :-- | :-- | :-- | :-- |\n| B | M | med | A |\n');
@@ -377,4 +377,24 @@ test('a mid-run failure reports what was done so far', () => {
   const script = path.join(PLUGIN, 'scripts', 'materialise.js');
   assert.throws(() => execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo'], { env, stdio: 'pipe' }),
     (err) => err.status === 2 && /stopped part-way; so far: created 7 \[/.test(String(err.stdout)) && /would create a cycle/.test(String(err.stderr)));
+});
+
+test('A5: a story\'s size becomes a size-S|M|L label and its model a bead metadata override; a resize swaps the label', () => {
+  const root = scratchProject();
+  const story = (size, model) => fs.writeFileSync(path.join(root, '.delivery', 'stories', 'demo-02-second.md'),
+    `---\nid: demo-02\ntitle: Second story\nstatus: ready\nepic: demo\nphase: Phase 2\ndepends_on: [demo-01]\nsize: ${size}\n${model ? `model: ${model}\n` : ''}---\n# Second\n`);
+  story('L', 'opus');
+  const bd = makeBd({ env: fakeEnv() });
+  applyPlan({ plan: planOf(loadInputs({ projectRoot: root, initiative: 'demo' })), bd, initiative: 'demo' });
+  let b = bd.show('ex-demo-02');
+  assert.ok(b.labels.includes('size-L'), JSON.stringify(b.labels));
+  assert.equal(b.metadata.model, 'opus');
+  assert.ok(bd.show('ex-demo-01').labels.includes('size-S'));
+  assert.equal(bd.show('ex-demo-01').metadata.model, undefined, 'no override without model:');
+  story('m');
+  applyPlan({ plan: planOf(loadInputs({ projectRoot: root, initiative: 'demo' })), bd, initiative: 'demo' });
+  b = bd.show('ex-demo-02');
+  assert.ok(b.labels.includes('size-M') && !b.labels.includes('size-L'), JSON.stringify(b.labels));
+  assert.equal(b.metadata.model, undefined, 'removing model: from the story clears the override (final M5)');
+  assert.equal(b.metadata.story, 'demo-02', 'the rest of the metadata stays');
 });

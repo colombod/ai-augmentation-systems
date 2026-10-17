@@ -86,7 +86,12 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
     const epicId = phaseIds.get(p.number);
     const reviewId = reviewIds.get(p.number);
     for (const s of storiesByPhase.get(p.number) || []) {
-      beads.push({ id: `${prefix}-${s.id}`, title: s.title, type: 'task', parent: epicId, labels: ['roadmap', `phase-${p.number}`, 'story'], metadata: { ...base(p.number, s.id), story: s.id, story_file: path.basename(s.file) }, priority: 2, docId: s.id });
+      // size (S|M|L) becomes a label and an optional model override bead metadata, so a builder can
+      // pick the model for its implementer and reviewer subagents from the bead alone
+      const size = /^[sml]$/i.test(String(s.size || '').trim()) ? String(s.size).trim().toUpperCase() : null;
+      const metadata = { ...base(p.number, s.id), story: s.id, story_file: path.basename(s.file) };
+      if (s.model) metadata.model = s.model;
+      beads.push({ id: `${prefix}-${s.id}`, title: s.title, type: 'task', parent: epicId, labels: ['roadmap', `phase-${p.number}`, 'story', ...(size ? [`size-${size}`] : [])], metadata, priority: 2, docId: s.id });
     }
     for (const sp of spikesByPhase.get(p.number) || []) {
       const q = sp.question.length > 120 ? `${sp.question.slice(0, 117)}...` : sp.question;

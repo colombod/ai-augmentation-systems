@@ -11,50 +11,14 @@ argument-hint: "[subject-or-initiative]"
 > resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
 > run from a summary of its skill is how a Narrated artifact happens.
 
-
 Subject: **$ARGUMENTS**
 
-Phase 1 of the pipeline. Output: `.delivery/initiatives/<initiative>/brief.md`.
+DEFINE stage, the entry point. Output: `.delivery/initiatives/<initiative>/brief.md`.
 
-## Where `.delivery/` resolves to
+## Conventions
 
-Not necessarily the repository root. Resolve before reading or writing anything below:
-
-1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
-2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
-3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
-4. **Default.** Otherwise, use `.delivery/` at the repository root.
-
-## Which initiative
-
-Every artifact below lives under `.delivery/initiatives/<slug>/`, never directly under
-`.delivery/` — this is what lets independent initiatives (epics, sprints, parallel
-workstreams) be planned in parallel branches without colliding on the same shared file
-(`ADR-004`; the incident that motivated it: two initiatives independently continued the same
-`S-n`/`FR-n` sequence in one shared `prd.md`, discovered only at merge). Resolve which
-initiative before reading or writing anything below:
-
-1. **Explicit signal.** The user names an initiative, or one is already established for this
-   conversation — use it.
-2. **Exactly one exists.** If `.delivery/initiatives/` has exactly one subdirectory, use it
-   without asking — this keeps single-initiative projects exactly as simple as before this
-   convention existed.
-3. **Ask, don't guess.** Otherwise (zero, or more than one, with no explicit signal) — ask
-   which initiative this work belongs to, or whether to start a new one. Never silently
-   default to the most recently modified one.
-4. **Starting a new initiative.** Confirm its slug (kebab-case, derived from the brief
-   subject or what the user names) before creating `.delivery/initiatives/<slug>/` — check it
-   doesn't collide with an existing initiative slug or any other top-level `.delivery/` entry.
-   A genuinely new initiative needs its own `/delivery:brief`, or an explicit
-   `extends: <existing-slug>` note (in this new initiative's own first artifact) declaring it
-   reuses an existing initiative's problem framing instead of running its own — state which,
-   don't leave it implicit.
-
-Cross-cutting, project-wide, never per-initiative: `.delivery/glossary.md`,
-`.delivery/personas/`, `.delivery/interviews/`, `.delivery/simulations/`,
-`.delivery/decisions/ADR-NNN-*.md`, `.delivery/invocations/<session_id>.ndjson`.
-`.delivery/stories/`, `.delivery/reviews/`, `.delivery/sprints/` stay flat but are prefixed
-by initiative slug, matching `stories/<slug>-NN-<name>.md`'s existing convention.
+Before reading or writing anything below, Read `${CLAUDE_PLUGIN_ROOT}/references/conventions.md` (if `${CLAUDE_PLUGIN_ROOT}` is empty, use the `installPath` of `delivery@ai-augmentation-systems` from `~/.claude/plugins/installed_plugins.json`).
+Its sections **Where `.delivery/` resolves to**, **Which initiative**, **Language** bind this skill as if written here.
 
 ## Pick the mode first, and say which
 
@@ -138,21 +102,6 @@ an answer, and never quietly drop a question because it is inconvenient.
 - At least one measurable success signal
 - Explicit out-of-scope list
 - Open questions with owners, where any remain
-
-## Language
-
-Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
-`/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
-at the end. Do not coin synonyms for concepts it already names.
-
-Any term you need that is missing gets **proposed explicitly**, with a definition in the
-business's vocabulary and a concrete referent. Any term carrying two meanings gets raised as
-a defect, not resolved silently.
-
-**Questions go out in the vocabulary of whoever must answer them**, with a worked example in
-their world. A question for the business owner written in engineering terms is a blocker
-with a name on it, not a question. If a question is really an engineering call, decide it
-here rather than routing it to them.
 
 ## Writing
 

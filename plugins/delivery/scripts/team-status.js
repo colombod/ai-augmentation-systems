@@ -2,8 +2,9 @@
 // scripts/team-status.js — roster versus manifest: who is live, who is missing, what drifted.
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { findProjectRoot, loadManifest, expandInstances } = require('./lib/manifest.js');
+const { findProjectRoot, loadManifest, expandInstances, manifestWarnings } = require('./lib/manifest.js');
 const { readRoster } = require('./lib/roster.js');
+const fs = require('fs');
 
 // Can bd find a database from the project root? Role directories need BEADS_DIR (prepare-role
 // writes it when <project>/.beads exists); a failure here means the hooks cannot see beads either.
@@ -16,7 +17,32 @@ function bdReachable(projectRoot) {
   }
 }
 
-function teamStatus(projectRoot, { now, staleHours, bdCheck } = {}) {
+// Operator decisions at a glance: entries in this host's private operator store that the remote's
+// delivery-operator branch does not hold yet ("no remote" without one), human inputs with no record or
+// ack, inferred answers awaiting ratification. All zero when the operator directory does not exist.
+// Read-only: no refresh, no network, no git writes; a failure becomes a note, never an exit code.
+function operatorStatus(projectRoot, team, { host, deps = {} } = {}) {
+  const res = { unpublished: 0, pending_inputs: [], unratified: [], notes: [] };
+  const log = deps.log || require('./lib/operator-log.js');
+  if (!fs.existsSync(log.opDir(projectRoot))) return res;
+  const R = deps.records || require('./lib/operator-records.js');
+  try {
+    const h = host || process.env.DELIVERY_HOST;
+    const instances = h ? expandInstances(team).filter((i) => i.role.host === h).map((i) => i.instance) : [];
+    const u = log.unpublished(projectRoot, h ? { host: h, instances } : { all: true });
+    res.unpublished = u.count || 0;
+    if (u.no_remote && u.reason === 'no remote') res.no_remote = true;
+  } catch (err) { res.notes.push(`unpublished count unavailable: ${err.message}`); }
+  try {
+    const p = R.pending(projectRoot, {});
+    res.pending_inputs = (p.inputs || []).map((e) => e.id);
+    res.unratified = (p.unratified_answers || []).map((a) => a.id);
+    if ((p.problems || []).length) res.notes.push(`${p.problems.length} operator record problem(s): run operator.js problems`);
+  } catch (err) { res.notes.push(`operator pending unavailable: ${err.message}`); }
+  return res;
+}
+
+function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps } = {}) {
   const { team } = loadManifest(projectRoot);
   const roster = readRoster(projectRoot);
   const nowMs = Date.parse(now || new Date().toISOString());
@@ -28,6 +54,12 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck } = {}) {
 
   for (const { instance, role } of expected) {
     const entry = roster.instances[instance];
+    // a retired role stays listed so its operator records keep verifying on every host; it is not
+    // expected to run, so it is never missing, stale or drift
+    if (role.retired) {
+      rows.push({ instance, role: role.id, host: role.host, model: role.model, session_id: entry ? entry.session_id : '', last_seen: entry ? entry.last_seen : '', state: 'retired' });
+      continue;
+    }
     if (!entry) {
       drift.missing.push(instance);
       rows.push({ instance, role: role.id, host: role.host, model: role.model, session_id: '', last_seen: '', state: 'missing' });
@@ -44,7 +76,8 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck } = {}) {
   }
   let bd_reachable = false;
   try { bd_reachable = Boolean((bdCheck || bdReachable)(projectRoot)); } catch (err) { bd_reachable = false; }
-  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable };
+  const operator = operatorStatus(projectRoot, team, { host, deps: operatorDeps });
+  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, warnings: manifestWarnings(team) };
 }
 
 function hasDrift(drift) {
@@ -59,13 +92,25 @@ function manifestRev(projectRoot) {
   }
 }
 
-function renderStatus({ rows, drift, recovered_from, bd_reachable }, projectRoot) {
+const firstIds = (ids) => (ids.length ? ` (${ids.slice(0, 3).join(', ')}${ids.length > 3 ? ', ...' : ''})` : '');
+
+function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, warnings }, projectRoot) {
   const lines = ['| Instance | Role | Host | Model | Session | State |', '|---|---|---|---|---|---|'];
   for (const r of rows) lines.push(`| ${r.instance} | ${r.role} | ${r.host} | ${r.model} | ${r.session_id} | ${r.state} |`);
   lines.push('');
   if (projectRoot) { lines.push(`Manifest: ${projectRoot} at ${manifestRev(projectRoot)}`); lines.push(''); }
-  if (bd_reachable === false) { lines.push('Warning: bd unreachable from role directories: set BEADS_DIR or provision beads (phase 3)'); lines.push(''); }
+  if (operator) {
+    lines.push(`Operator entries unpublished: ${operator.no_remote ? 'no remote (the operator store is local only)' : operator.unpublished}`);
+    lines.push(`Operator inputs pending a record: ${operator.pending_inputs.length}${firstIds(operator.pending_inputs)}`);
+    lines.push(`Inferred answers awaiting ratification: ${operator.unratified.length}${firstIds(operator.unratified)}`);
+    for (const n of operator.notes) lines.push(`Note: ${n}`);
+    lines.push('');
+  }
+  if (bd_reachable === false) { lines.push('Warning: bd unreachable from role directories: run bd init in the project root, then rerun prepare-role so the roles get BEADS_DIR'); lines.push(''); }
   if (recovered_from) { lines.push(`Note: roster.json was unreadable and moved to ${recovered_from}; the roster restarts empty.`); lines.push(''); }
+  for (const w of warnings || []) lines.push(`Warning: ${w}`);
+  lines.push('To change a model: edit roles[].model in .delivery/team/team.json, rerun prepare-role for that instance, restart its session.');
+  lines.push('');
   if (!hasDrift(drift)) { lines.push('No drift.'); return lines.join('\n'); }
   lines.push('## Roster drift');
   if (drift.missing.length) lines.push(`Missing: ${drift.missing.join(', ')}`);
@@ -88,4 +133,4 @@ if (require.main === module) {
   process.exit(hasDrift(status.drift) ? 1 : 0);
 }
 
-module.exports = { teamStatus, renderStatus };
+module.exports = { teamStatus, renderStatus, operatorStatus };

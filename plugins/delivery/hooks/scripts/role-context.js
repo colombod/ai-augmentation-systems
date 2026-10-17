@@ -47,7 +47,7 @@ function composeForMarker(marker, pluginRoot) {
   if (!found) return `# Role: ${marker.instance}\n\nThis instance is no longer in team.json. Stop and tell the Chief of Staff.\n`;
   const brief = loadRoleBrief(pluginRoot, marker.project_root, found.role.brief);
   const rules = fs.readFileSync(path.join(pluginRoot, 'templates', 'team-rules.md'), 'utf8');
-  return composeBrief({ team, hosts, instance: marker.instance, role: found.role, brief, rules });
+  return composeBrief({ team, hosts, instance: marker.instance, role: found.role, brief, rules, pluginRoot });
 }
 
 // Where and with what environment a hook runs bd: at the project root (bd cannot find the
@@ -101,7 +101,24 @@ function claimTail(claim) {
     : '\nYou hold no claim. Run `bd prime` then `bd ready`, and say what you could take.\n';
 }
 
+// Operator capture runs first in every role hook; its failure never changes the hook's own output.
+// Returns the short note for the session ('' when there is nothing to say); problems also go to
+// deps.warn (the hook scripts pass a stderr writer).
+function operatorCaptureNote(input, pluginRoot, deps = {}) {
+  try {
+    const { captureFromHookInput, captureNote } = require('./operator-capture.js');
+    const res = (deps.capture || captureFromHookInput)(input || {}, pluginRoot);
+    if (res && res.problem && deps.warn) deps.warn(`delivery: ${res.problem}\n`);
+    return captureNote(res, pluginRoot);
+  } catch (err) {
+    return '';
+  }
+}
+
+const PLUGIN_ROOT = path.join(__dirname, '..', '..');
+
 function sessionStartText(input, pluginRoot, deps = {}) {
+  const note = operatorCaptureNote(input, pluginRoot || PLUGIN_ROOT, deps);
   const found = findRoleMarker(input.cwd);
   if (!found || !found.marker || process.env.DELIVERY_ROLE !== found.marker.instance) return '';
   const { marker } = found;
@@ -115,11 +132,21 @@ function sessionStartText(input, pluginRoot, deps = {}) {
   } catch (err) {
     return `Role ${marker.instance}: cannot load the team manifest at ${marker.project_root} (${err.message}). Tell the Chief of Staff.\n`;
   }
-  try {
-    fs.writeFileSync(path.join(valid.roleDir, 'CLAUDE.local.md'), full);
-  } catch (err) {
-    // an unwritable file must not stop the session; the injected block still carries the role
+  // CLAUDE.local.md loads natively at session start, before this hook rewrites it. When the file is
+  // already byte-identical, a startup or resume needs no role block injected (the loaded copy is
+  // current); when this run changes it, the loaded copy is stale and the block is injected with a
+  // re-read instruction. clear and compact always restate the role.
+  const briefFile = path.join(valid.roleDir, 'CLAUDE.local.md');
+  let unchanged = false;
+  try { unchanged = fs.readFileSync(briefFile, 'utf8') === full; } catch (err) { unchanged = false; }
+  if (!unchanged) {
+    try {
+      fs.writeFileSync(briefFile, full);
+    } catch (err) {
+      // an unwritable file must not stop the session; the injected block still carries the role
+    }
   }
+  const freshStart = input.source === 'startup' || input.source === 'resume';
   try {
     registerInstance(marker.project_root, {
       instance: marker.instance,
@@ -128,23 +155,27 @@ function sessionStartText(input, pluginRoot, deps = {}) {
       model: marker.model,
       role_dir: valid.roleDir,
       now,
+      transcript_path: typeof input.transcript_path === 'string' && path.isAbsolute(input.transcript_path) ? input.transcript_path : undefined,
     });
   } catch (err) {
     // roster write failure must not stop the session; the status check will show the gap
   }
-  const short = shortBrief({ team: valid.team, hosts: valid.hosts, instance: marker.instance, role: valid.role, roleDir: valid.roleDir });
   const claim = (deps.claim || currentClaim)(actorOf(marker), bdOptionsFor(marker, input.cwd));
-  const prefix = input.source === 'compact' ? 'Context was compacted. Your role is restated below; it has not changed.\n\n' : '';
-  return `${prefix}${short}${claimTail(claim)}`;
+  if (freshStart && unchanged) return `${claimTail(claim).trimStart()}${note ? `\n${note}\n` : ''}`;
+  const short = shortBrief({ team: valid.team, hosts: valid.hosts, instance: marker.instance, role: valid.role, roleDir: valid.roleDir, pluginRoot: pluginRoot || PLUGIN_ROOT });
+  const prefix = input.source === 'compact' ? 'Context was compacted. Your role is restated below; it has not changed.\n\n'
+    : (freshStart ? `Your ${valid.roleDir}/CLAUDE.local.md was rewritten at this start (the manifest or the plugin changed), so the copy loaded with this session is stale: re-read it now; it is binding.\n\n` : '');
+  return `${prefix}${short}${claimTail(claim)}${note ? `\n${note}\n` : ''}`;
 }
 
 function promptSubmitText(input, deps = {}) {
+  const note = operatorCaptureNote(input, PLUGIN_ROOT, deps);
   const found = findRoleMarker(input.cwd);
   let valid;
-  try { valid = validMarker(found); } catch (err) { return ''; }
-  if (!valid) return '';
+  try { valid = validMarker(found); } catch (err) { return note; }
+  if (!valid) return note;
   const { marker } = valid;
-  require('./turn.js').markTurnStart(valid.roleDir, deps.now);
+  require('./turn.js').markTurnStart(valid.roleDir, deps.now, input.session_id);
   const claim = (deps.claim || currentClaim)(actorOf(marker), bdOptionsFor(marker, input.cwd));
   const claimText = claim ? `${claim}.` : 'none (idle; say so and what you could take).';
   try {
@@ -157,7 +188,23 @@ function promptSubmitText(input, deps = {}) {
   } catch (err) {
     // liveness bookkeeping must never break a prompt
   }
-  return `You are ${marker.instance} (${marker.role}). Current claim: ${claimText}`;
+  // The role line repeats only when the claim changed since the last prompt; a claim note the last
+  // turn missed (the Stop hook leaves it as a reminder rather than blocking) is said once.
+  const lines = [];
+  const reminderFile = path.join(valid.roleDir, CLAIM_REMINDER);
+  try { const r = fs.readFileSync(reminderFile, 'utf8').trim(); if (r) lines.push(r); fs.unlinkSync(reminderFile); } catch (err) { /* none */ }
+  const lastFile = path.join(valid.roleDir, LAST_CLAIM);
+  let last = null;
+  try { last = fs.readFileSync(lastFile, 'utf8'); } catch (err) { last = null; }
+  if (last !== claimText) {
+    lines.push(`You are ${marker.instance} (${marker.role}). Current claim: ${claimText}`);
+    try { fs.writeFileSync(lastFile, claimText); } catch (err) { /* say it again next time */ }
+  }
+  if (note) lines.push(note);
+  return lines.join('\n');
 }
 
-module.exports = { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };
+const CLAIM_REMINDER = '.delivery-claim-reminder';
+const LAST_CLAIM = '.delivery-last-claim';
+
+module.exports = { CLAIM_REMINDER, operatorCaptureNote, readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };

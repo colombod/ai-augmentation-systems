@@ -8,11 +8,11 @@ const { listValue } = require('../../scripts/lib/plan-docs.js');
 
 const SANCTIONED = {
   'chief-of-staff': 'route it: create a child bead for the right role (`bd create --parent <id> ...`) and message that session',
-  staffing: 'only team.json and briefs are yours; anything else goes to the Delivery Lead',
-  'product-manager': 'product documents are yours; building goes to a builder bead, plan structure to the Delivery Lead',
+  staffing: 'only team.json and briefs are yours; anything else goes to the Delivery Manager',
+  'product-manager': 'product documents are yours; building goes to a builder bead, plan structure to the Delivery Manager',
   'delivery-lead': 'stories, sprints and bead structure are yours; building goes to a builder bead',
   'progress-observer': 'record evidence in reviews and beads; fixes go to a builder bead',
-  builder: 'product code in your worktree is yours; plans belong to the Delivery Lead',
+  builder: 'product code in your worktree is yours; plans belong to the Delivery Manager',
   'spike-researcher': 'answers go in the bead and the ADR or roadmap; product code is never yours',
 };
 const REACH_PREFIXES = ['mcp__Claude_Browser__', 'mcp__claude-in-chrome__', 'mcp__computer-use__', 'mcp__Claude_Code_iOS_Simulator__'];
@@ -42,18 +42,40 @@ const BD_GLOBAL_FLAG = ['--json'];
 const BD_ALL_GLOBAL_FLAG = ['--json', '-q', '--quiet', '--no-color', '-v', '--verbose', '--global', '--ignore-schema-skew', '--profile', '--readonly', '--sandbox'];
 const BD_ALL_GLOBAL_ARG = ['--actor', '--db', '-C', '--directory', '--dolt-auto-commit'];
 // A role file without lane_bash (a hired specialist) may read, never write.
-const DEFAULT_BASH = ['read', 'bd-read', 'git-read'];
+const DEFAULT_BASH = ['read', 'bd-read', 'git-read', 'operator-read'];
 // The harness's own plan and memory files, relative to ~/.claude: writable for every role.
 const HARNESS_WRITES = ['plans/**', 'projects/*/memory/**'];
 // A separator after which a failed or skipped `cd` no longer stops the commands that follow.
 const RESUME_OPS = [';', '||', '&', '\n'];
 
-function sanctioned(roleId) { return SANCTIONED[roleId] || 'stay in your lane; ask the Delivery Lead'; }
+function sanctioned(roleId) { return SANCTIONED[roleId] || 'stay in your lane; ask the Delivery Manager'; }
 
 function loadPolicy({ pluginRoot, projectRoot, briefRef }) {
   const { meta } = loadRoleBrief(pluginRoot, projectRoot, briefRef);
   const bash = listValue(meta.lane_bash);
   return { roleId: String(meta.id || ''), writes: listValue(meta.lane_writes), bash: bash.length ? bash : DEFAULT_BASH.slice(), mcp: listValue(meta.lane_mcp) };
+}
+
+// Harness permission rules that pre-allow a lane's own commands, so a worker session does not stop
+// on a permission prompt only the operator can clear. Prefix rules only: the lane hook still runs
+// before the permission check and refuses whatever the lane does not allow (flags_none, scope).
+// Unrestricted (`any`) lanes get none: pre-allowing every command is not this hook's call.
+function laneAllowRules(policy, groups, pluginRoot) {
+  if (!policy || policy.bash.includes('any')) return [];
+  const root = pluginRoot ? path.resolve(pluginRoot) : null;
+  const out = new Set();
+  for (const g of policy.bash) {
+    for (const rule of (groups && groups[g]) || []) {
+      if (!rule || !rule.first || rule.first === '*') continue;
+      let head = rule.first;
+      if (rule.arg_prefix) {
+        if (!root) continue;
+        head = `${rule.first} ${String(rule.arg_prefix).replace('${CLAUDE_PLUGIN_ROOT}', root)}`;
+      }
+      for (const sub of rule.sub && rule.sub.length ? rule.sub : [null]) out.add(`Bash(${sub ? `${head} ${sub}` : head}:*)`);
+    }
+  }
+  return [...out];
 }
 
 // lane_mcp patterns: whole tool names, `*` matches any run of characters, everything else is literal.
@@ -157,29 +179,49 @@ function hasSubstitution(seg) {
 // Shell expansion (globs, braces, variables, quoting forms, here-docs, process substitution,
 // continuations) makes the words the shell runs differ from the words we see. Allowlist roles get none.
 // The one exception is the documented `node ${CLAUDE_PLUGIN_ROOT}/scripts/...` form, judged against the plugin root.
-const EXPANSION_CHARS = /[{}*?[\]$`!]/;
-const EXPANSION_SEQ = /<<|<\(|>\(|\\\n/;
 const PLUGIN_ROOT_ARG = /^(node[ \t]+"?)(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT)(?=\/)/;
 
-// The raw segment with the contents of single-quoted spans blanked: bash never expands them.
+// The raw segment with quoted text bash does not expand blanked. Single-quoted spans: everything.
+// Double-quoted spans: everything except `$` and backtick (bash expands only those there, plus `\`
+// escapes and the interactive-only `!`; globs, braces, `~`, `?`, `[ ]`, `!` are literal inside them).
 // A ' inside double quotes is literal and opens nothing; $'...' keeps its $ outside the span.
-function blankSingleQuoted(raw) {
+function blankQuoted(raw) {
   let out = '';
   let q = null;
   for (let i = 0; i < raw.length; i++) {
     const c = raw[i];
     if (q === "'") { if (c === "'") { q = null; out += c; } else out += '_'; continue; }
+    if (q === '"') {
+      if (c === '"') { q = null; out += c; continue; }
+      if (c === '\\') { out += '__'; i++; continue; } // \" \$ \` \\ are literal; the pair expands nothing
+      if (c === '$' && raw[i + 1] === '(') { out += '$('; i++; continue; } // command substitution stays visible
+      out += c === '$' || c === '`' ? c : '_';
+      continue;
+    }
     if (c === '\\') { out += c + (i + 1 < raw.length ? raw[i + 1] : ''); i++; continue; }
-    if (q === '"') { if (c === '"') q = null; out += c; continue; }
     if (c === '"' || c === "'") q = c;
     out += c;
   }
   return out;
 }
 
+// The expansion construct a segment uses, as a short phrase, or null when it uses none.
+function expansionConstruct(raw) {
+  const s = blankQuoted(String(raw == null ? '' : raw).replace(PLUGIN_ROOT_ARG, '$1ROOT'));
+  if (/\$\(|`/.test(s)) return 'command substitution ($(...) or backticks)';
+  if (/<\(|>\(/.test(s)) return 'process substitution';
+  if (/<</.test(s)) return 'a here-document';
+  if (/\\\n/.test(s)) return 'a line continuation';
+  if (/\$/.test(s)) return 'variable expansion ($)';
+  if (/[*?[\]]/.test(s)) return 'an unquoted glob (* ? [ ])';
+  if (/[{}]/.test(s)) return 'unquoted brace expansion ({ })';
+  if (/!/.test(s)) return 'an unquoted !';
+  if (/(^|\s)~/.test(s)) return 'tilde expansion (~)';
+  return null;
+}
+
 function hasExpansion(raw) {
-  const s = blankSingleQuoted(raw.replace(PLUGIN_ROOT_ARG, '$1ROOT'));
-  return EXPANSION_CHARS.test(s) || EXPANSION_SEQ.test(s) || /(^|\s)"?~/.test(s);
+  return expansionConstruct(raw) !== null;
 }
 
 // The command word must be a plain word: no quotes or escapes ('cat', c\at, "rm").
@@ -239,7 +281,11 @@ function clusterLetters(x, t) {
 // also matches every denied flag it abbreviates (git accepts unique prefixes: --upload for --upload-pack).
 function hasFlag(t, f, deny) {
   const short = /^-[A-Za-z]$/.test(f);
-  return t.some((x) => {
+  // a denied long flag matches in any letter case (--Transcript): over-denial is safe, and a parser
+  // that folds case must not slip past the list; short flags stay case-sensitive (-d is not -D)
+  const fold = (x) => (deny && f.startsWith('--') && x.startsWith('--') ? x.toLowerCase() : x);
+  return t.some((x0) => {
+    const x = fold(x0);
     if (x === f || x.startsWith(`${f}=`)) return true;
     if (deny && f.startsWith('--') && x.startsWith('--')) {
       const opt = x.split('=')[0];
@@ -290,10 +336,12 @@ function ruleMatches(rule, t, ctx) {
   if (t[0] !== rule.first) return false;
   const argv = splitGlobals(t).rest;
   let subLen = 0;
+  // With arg_prefix the first argument is the script path, so the subcommand is the word after it.
+  const subAt = rule.arg_prefix ? 1 : 0;
   if (rule.sub) {
-    const hit = rule.sub.map((s) => String(s).split(' ')).find((parts) => parts.every((p, k) => argv[k] === p));
+    const hit = rule.sub.map((s) => String(s).split(' ')).find((parts) => parts.every((p, k) => argv[subAt + k] === p));
     if (!hit) return false;
-    subLen = hit.length;
+    subLen = subAt + hit.length;
   }
   if (rule.arg_prefix) {
     const root = pluginRootOf(ctx);
@@ -442,7 +490,64 @@ function shellCommandOf(toolName, toolInput) {
   return typeof input.command === 'string' ? input.command : null;
 }
 
-function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, cwd, hostHeadless, hostName, desktopHosts }) {
+// The operator records: written only by scripts/operator.js (run through the operator-write group).
+// They live in the project's private operator store, <git-common-dir>/delivery-operator (see
+// scripts/lib/operator-store.js); the legacy <project>/.delivery/operator stays protected so a stray
+// copy there never becomes a back door. Protected for every role, `any` included: the project's own
+// checkout and the role's clone of it.
+const OPERATOR_REL = path.join('.delivery', 'operator');
+const STORE_REL = path.join('.git', 'delivery-operator');
+const OPERATOR_REASON = 'operator records are written by `operator.js` only; read them with `operator.js show`';
+// A mention of the operator records in a shell command: .delivery/operator (also .delivery//operator,
+// .delivery/./operator) or anything named delivery-operator (the store directory and its branch).
+// Case-folded: macOS and Windows file systems are case-insensitive.
+const OPERATOR_MENTION = /\.delivery\/+(?:\.\/+)*operator(?=\/|[\s'";|&)>]|$)|(?:^|[\s/'"=:])delivery-operator(?=\/|[\s'";|&)>:]|$)/i;
+const OPERATOR_WRITE_WORDS = ['tee', 'cp', 'mv', 'rm', 'truncate', 'dd', 'ln', 'install', 'rsync'];
+// git subcommands that only read: any other git command that names the operator records writes them
+// (a commit, push, reset, checkout or update-ref in the store, or a push of its branch).
+const GIT_READS = ['log', 'show', 'status', 'diff', 'ls-files', 'ls-tree', 'cat-file', 'rev-parse', 'rev-list', 'blame', 'grep',
+  'shortlog', 'describe', 'merge-base', 'for-each-ref', 'show-ref', 'ls-remote', 'count-objects', 'whatchanged'];
+
+function operatorDirs({ projectRoot, roleDir }) {
+  const out = [];
+  if (projectRoot && path.isAbsolute(String(projectRoot))) {
+    out.push(realish(path.join(String(projectRoot), OPERATOR_REL)), realish(path.join(String(projectRoot), STORE_REL)));
+    // a project that is a linked worktree keeps its store in the main repository's .git
+    try {
+      const sd = require('../../scripts/lib/operator-store.js').storeDir(String(projectRoot));
+      if (sd) out.push(realish(sd));
+    } catch (err) { /* the fixed paths above still hold */ }
+  }
+  if (roleDir) out.push(realish(path.join(String(roleDir), 'project', OPERATOR_REL)), realish(path.join(String(roleDir), 'project', STORE_REL)));
+  return out;
+}
+
+// Case-folded: on a case-insensitive file system .delivery/OPERATOR is the same directory.
+function underOperator(p, dirs) {
+  const real = realish(p).toLowerCase();
+  return dirs.some((d) => under(real, d.toLowerCase()));
+}
+
+// Best effort, and tamper-evidence rather than a boundary (the hash chains, recorded heads and the
+// store's append-only merge check are what detect a change): a shell command that names the operator
+// records and also writes something.
+function operatorShellWrite(command) {
+  const text = String(command == null ? '' : command);
+  if (!OPERATOR_MENTION.test(text)) return false;
+  return splitCommand(text).some((seg) => {
+    const t = tokens(seg);
+    if (!t.length) return false;
+    if (hasRedirect(seg)) return true;
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    const first = path.basename(words[0] || '');
+    if (OPERATOR_WRITE_WORDS.includes(first)) return true;
+    if (first === 'sed' && writesFiles(['sed', ...words.slice(1)])) return true;
+    if (first === 'git' && !GIT_READS.includes(splitGlobals(words).rest[0])) return true;
+    return false;
+  });
+}
+
+function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, cwd, hostHeadless, hostName, desktopHosts, projectRoot }) {
   const name = String(toolName || '');
   const pol = policy || { roleId: '', writes: [], bash: [] };
   const bash = pol.bash || [];
@@ -454,10 +559,12 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     }
     return { allow: true };
   }
+  const opDirs = operatorDirs({ projectRoot, roleDir });
   if (FILE_TOOLS.includes(name)) {
     const base = cwd || process.cwd();
     for (const fp of filePathsOf(name, toolInput)) {
       const p = path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`; // not normalised: realish applies `..` physically
+      if (underOperator(p, opDirs)) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
       if (harnessFile(p)) continue;
       if (pathAllowed(p, { roleDir, writes: pol.writes, pluginRoot: pluginRootOf({ pluginRoot }) })) continue;
       const real = realish(p);
@@ -476,6 +583,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   }
   const command = shellCommandOf(name, toolInput);
   if (command !== null) {
+    if (operatorShellWrite(command)) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
       return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: they cannot be checked against the lane groups (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
@@ -488,7 +596,9 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
       const names = classifySegment(text, groups, { roleDir, pluginRoot, dirs: live });
       if (!names.some((x) => bash.includes(x))) {
-        return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\` (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
+        const construct = expansionConstruct(text);
+        const why = construct ? ` Refused construct: ${construct}; the lane cannot check what the shell would expand it to. If the text is meant literally, put it in single quotes.` : '';
+        return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\` (allowed groups: ${bash.join(', ') || 'none'}).${why}${tail}` };
       }
       const t = tokens(text);
       if (t[0] !== 'cd') continue;
@@ -520,7 +630,7 @@ function laneDecisionForHook(input, pluginRoot) {
   const host = hostMap[role.host] || {};
   const desktopHosts = Object.entries(hostMap).filter(([, h]) => h && h.desktop_apps).map(([n]) => n);
   const groups = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'lane-groups.json'), 'utf8'));
-  const d = decideLane({ toolName: input.tool_name, toolInput: input.tool_input || {}, roleDir, policy, groups, pluginRoot, cwd: input.cwd, hostHeadless: !!host.headless, hostName: role.host, desktopHosts });
+  const d = decideLane({ toolName: input.tool_name, toolInput: input.tool_input || {}, roleDir, policy, groups, pluginRoot, cwd: input.cwd, hostHeadless: !!host.headless, hostName: role.host, desktopHosts, projectRoot: marker.project_root });
   if (d.allow) return null;
   try {
     const ti = input.tool_input || {};
@@ -532,4 +642,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

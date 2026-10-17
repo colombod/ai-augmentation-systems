@@ -1,7 +1,6 @@
 // hooks/scripts/leak.js — keep plans and strategy out of the public product repo.
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
 const { splitWithOps, realish, shellCommandOf } = require('./lane.js');
 
 function loadDenylist(projectRoot) {
@@ -589,6 +588,8 @@ const inAny = (hs, n) => hs.some((h) => h.includes(n));
 function scanText(text, denylist) {
   const hay = hays(text);
   if (inAny(hay, '.delivery/')) return { phrase: '.delivery/' };
+  // the private operator store's path: operator records never travel in product text
+  if (inAny(hay, 'delivery-operator/')) return { phrase: 'delivery-operator/' };
   for (const p of denylist) { const n = norm(p).trim(); if (n && inAny(hay, n)) return { phrase: p }; }
   return null;
 }
@@ -687,59 +688,4 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId }) {
   return null;
 }
 
-// ---------- push re-scan ----------
-const PREPUSH = '.delivery-prepush';
-const gitIn = (dir) => (args) => { try { return execFileSync('git', args, { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] }).toString(); } catch (err) { return ''; } };
-
-// git pushes in the product worktree: [{ dir, tags }]. A pushed ref that is a tag counts as a tag push.
-function pushInfo(command, cwd, roleDir, git) {
-  const out = [];
-  for (const item of walk(command, cwd)) {
-    if (item.prog !== 'git' || item.sub !== 'push' || !anyInProduct(item.dirs, roleDir, cwd)) continue;
-    const names = item.args.filter((a) => !a.startsWith('-')).flatMap((a) => a.replace(/^\+/, '').split(':')).filter(Boolean);
-    for (const d of item.dirs) {
-      if (d === null ? !anyInProduct([null], roleDir, cwd) : !dirUnderProduct(d, roleDir)) continue;
-      const dir = d === null ? path.resolve(cwd) : d;
-      const run = git || gitIn(dir);
-      const tags = item.args.some((a) => a === '--tags' || a === '--follow-tags') || names.some((n) => /[$`]/.test(n)) || names.some((n) => n.includes('refs/tags/') || run(['tag', '-l', n]).trim() === n);
-      out.push({ dir, tags });
-    }
-  }
-  return out;
-}
-
-function readPrepush(roleDir) { try { return JSON.parse(fs.readFileSync(path.join(roleDir, PREPUSH), 'utf8')) || {}; } catch (e) { return {}; } }
-function prepushKey(dir) { return fold(realish(path.resolve(dir))); }
-
-function recordPrepush({ roleDir, dir, git }) {
-  const run = git || gitIn(dir);
-  const sha = run(['rev-parse', '@{upstream}']).trim();
-  const all = readPrepush(roleDir);
-  all[prepushKey(dir)] = sha || null;
-  fs.writeFileSync(path.join(roleDir, PREPUSH), JSON.stringify(all));
-}
-
-function clearPrepush(roleDir, dir) {
-  const all = readPrepush(roleDir);
-  delete all[prepushKey(dir)];
-  try { fs.writeFileSync(path.join(roleDir, PREPUSH), JSON.stringify(all)); } catch (e) { /* ignore */ }
-}
-
-function scanPushed({ cwd, roleDir, denylist, git, tags }) {
-  if (!inProductWorktree(cwd, roleDir)) return [];
-  const run = git || gitIn(cwd);
-  const all = readPrepush(roleDir);
-  const key = prepushKey(cwd);
-  let log;
-  if (Object.prototype.hasOwnProperty.call(all, key) && all[key]) log = run(['log', `${all[key]}..HEAD`, '--format=%B']);
-  else if (run(['rev-parse', '--verify', '-q', 'origin/HEAD']).trim()) log = run(['log', 'origin/HEAD..HEAD', '--format=%B']);
-  else log = run(['log', '-n', '20', '--format=%B']);
-  if (tags) log += `\n${run(['for-each-ref', 'refs/tags', '--format=%(contents)'])}`;
-  const hay = hays(log);
-  const hits = [];
-  for (const p of denylist) { const n = norm(p).trim(); if (n && inAny(hay, n) && !hits.includes(p)) hits.push(p); }
-  if (inAny(hay, '.delivery/') && !hits.includes('.delivery/')) hits.push('.delivery/');
-  return hits;
-}
-
-module.exports = { UNANALYSABLE, failClosed, loadDenylist, inProductWorktree, extractMessages, scanText, decideLeak, scanPushed, pushInfo, recordPrepush, clearPrepush };
+module.exports = { UNANALYSABLE, failClosed, loadDenylist, inProductWorktree, extractMessages, scanText, decideLeak };

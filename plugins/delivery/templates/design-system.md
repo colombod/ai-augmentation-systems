@@ -17,7 +17,7 @@ against, rather than paraphrasing. IDs are never reused, even if a row is remove
 
 # Design system
 
-> Phase 7 artifact. Owned by Design Lead.
+> Written by /delivery:design. Owned by Design Lead.
 > **Seed from originator:** <verbatim>
 > Everything below is marked **seeded** (given) or **inferred** (extrapolated).
 > Every row carries a `Rule ID` — see the scheme in this file's header comment — so a

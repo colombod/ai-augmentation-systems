@@ -104,10 +104,16 @@ function applyPlanSteps({ plan, bd, dryRun, initiative, result }) {
     const metaDrift = !sameMeta(existing.metadata, { ...existing.metadata, ...b.metadata });
     const titleChanged = existing.title !== b.title;
     const parentChanged = (existing.parent || null) !== (b.parent || null);
-    const staleLabels = parentChanged ? existing.labels.filter((l) => /^phase-\d+[a-z]?$/.test(l) && !b.labels.includes(l)) : [];
-    if (!missingLabels.length && !staleLabels.length && !metaDrift && !titleChanged && !parentChanged) continue;
+    const staleLabels = [
+      ...(parentChanged ? existing.labels.filter((l) => /^phase-\d+[a-z]?$/.test(l) && !b.labels.includes(l)) : []),
+      // a story re-sized in its file: the old size label goes
+      ...existing.labels.filter((l) => /^size-[SML]$/.test(l) && !b.labels.includes(l)),
+    ];
+    // a story that no longer names a model: the bead's model override goes too
+    const unsetMetadata = b.labels.includes('story') && (existing.metadata || {}).model !== undefined && b.metadata.model === undefined ? ['model'] : [];
+    if (!missingLabels.length && !staleLabels.length && !metaDrift && !titleChanged && !parentChanged && !unsetMetadata.length) continue;
     result.commands.push(`update ${b.id}`);
-    if (!dryRun) bd.update(b.id, { title: titleChanged ? b.title : undefined, parent: parentChanged ? b.parent : undefined, addLabels: missingLabels, removeLabels: staleLabels, metadata: metaDrift ? b.metadata : undefined });
+    if (!dryRun) bd.update(b.id, { title: titleChanged ? b.title : undefined, parent: parentChanged ? b.parent : undefined, addLabels: missingLabels, removeLabels: staleLabels, metadata: metaDrift ? b.metadata : undefined, unsetMetadata });
     result.updated.push(b.id);
   }
   const closed = new Set(result.skippedClosed);

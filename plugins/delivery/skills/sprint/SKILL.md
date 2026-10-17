@@ -1,6 +1,6 @@
 ---
-description: Produce a scoped implementation package for an external runner — which stories, in what order, with acceptance criteria, design tokens, test commands and required report-back. Use before handing a wave of work to an implementation system. Writes no source code.
-argument-hint: "[initiative]"
+description: Produce a scoped implementation package for a wave of work — which stories, in what order, with acceptance criteria, design tokens, test commands and required report-back — for the team's builders or an external runner. With --runner superpowers|generic, also convert it into that runner's native format (a superpowers spec or plan, or a generic self-contained brief). Use before a wave is built. Writes no source code.
+argument-hint: "[scope] [--runner superpowers|generic]"
 ---
 
 # Sprint scope package
@@ -11,56 +11,20 @@ argument-hint: "[initiative]"
 > resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
 > run from a summary of its skill is how a Narrated artifact happens.
 
-
-Scope: **$ARGUMENTS** (a roadmap phase, an MVP stage, a story-ID list, or empty for the next unstarted phase)
+Scope: **$ARGUMENTS** (a roadmap phase, an MVP stage, a story-ID list, or empty for the next unstarted phase; `--runner superpowers|generic` adds the hand-off below)
 
 **This skill does not implement anything.** It produces the input an implementation
-run consumes — your own harness, a coding agent, a contractor, or a team. The plugin
-plans, scopes, reviews and re-aligns; building is somebody else's job.
+run consumes — the shipping team's builders, your own harness, a coding agent, or a
+contractor. Building is the builders' or the runner's job, not this skill's.
 
 That boundary is deliberate. It keeps this package harness-agnostic, and it keeps the
 thing that reviews the work separate from the thing that produced it — which is what
 makes `/delivery:sprint-review` worth trusting.
 
-## Where `.delivery/` resolves to
+## Conventions
 
-Not necessarily the repository root. Resolve before reading or writing anything below:
-
-1. **Reuse.** An existing `.delivery/` anywhere reachable from the working directory wins — never create a second one.
-2. **Explicit override.** Otherwise honor a delivery-root path stated in the nearest `CLAUDE.md`/`AGENTS.md`.
-3. **Ask, don't guess.** Otherwise, if this repository holds more than one independently-releasable component (multiple `package.json`/`plugin.json`/`pyproject.toml`, workspace members, or similar) stop and ask which component this work belongs to. Silently defaulting to the repo root in a multi-component repo is the failure this step exists to prevent.
-4. **Default.** Otherwise, use `.delivery/` at the repository root.
-
-## Which initiative
-
-Every artifact below lives under `.delivery/initiatives/<slug>/`, never directly under
-`.delivery/` — this is what lets independent initiatives (epics, sprints, parallel
-workstreams) be planned in parallel branches without colliding on the same shared file
-(`ADR-004`; the incident that motivated it: two initiatives independently continued the same
-`S-n`/`FR-n` sequence in one shared `prd.md`, discovered only at merge). Resolve which
-initiative before reading or writing anything below:
-
-1. **Explicit signal.** The user names an initiative, or one is already established for this
-   conversation — use it.
-2. **Exactly one exists.** If `.delivery/initiatives/` has exactly one subdirectory, use it
-   without asking — this keeps single-initiative projects exactly as simple as before this
-   convention existed.
-3. **Ask, don't guess.** Otherwise (zero, or more than one, with no explicit signal) — ask
-   which initiative this work belongs to, or whether to start a new one. Never silently
-   default to the most recently modified one.
-4. **Starting a new initiative.** Confirm its slug (kebab-case, derived from the brief
-   subject or what the user names) before creating `.delivery/initiatives/<slug>/` — check it
-   doesn't collide with an existing initiative slug or any other top-level `.delivery/` entry.
-   A genuinely new initiative needs its own `/delivery:brief`, or an explicit
-   `extends: <existing-slug>` note (in this new initiative's own first artifact) declaring it
-   reuses an existing initiative's problem framing instead of running its own — state which,
-   don't leave it implicit.
-
-Cross-cutting, project-wide, never per-initiative: `.delivery/glossary.md`,
-`.delivery/personas/`, `.delivery/interviews/`, `.delivery/simulations/`,
-`.delivery/decisions/ADR-NNN-*.md`, `.delivery/invocations/<session_id>.ndjson`.
-`.delivery/stories/`, `.delivery/reviews/`, `.delivery/sprints/` stay flat but are prefixed
-by initiative slug, matching `stories/<slug>-NN-<name>.md`'s existing convention.
+Before reading or writing anything below, Read `${CLAUDE_PLUGIN_ROOT}/references/conventions.md` (if `${CLAUDE_PLUGIN_ROOT}` is empty, use the `installPath` of `delivery@ai-augmentation-systems` from `~/.claude/plugins/installed_plugins.json`).
+Its sections **Where `.delivery/` resolves to**, **Which initiative**, **Language**, **Writing, then revising** bind this skill as if written here.
 
 ## Gate check
 
@@ -121,67 +85,27 @@ counteracts that.
 **7. Working agreement.** Branch name, one commit per story, and that tests must not be
 weakened to pass — if a test is wrong, report it rather than editing the assertion.
 
-## Language
+## Hand off to a runner (`--runner`)
 
-Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
-`/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
-at the end. Do not coin synonyms for concepts it already names.
-
-Any term you need that is missing gets **proposed explicitly**, with a definition in the
-business's vocabulary and a concrete referent. Any term carrying two meanings gets raised as
-a defect, not resolved silently.
-
-**Questions go out in the vocabulary of whoever must answer them**, with a worked example in
-their world. A question for the business owner written in engineering terms is a blocker
-with a name on it, not a question. If a question is really an engineering call, decide it
-here rather than routing it to them.
+Only when `--runner` is given (`superpowers` or `generic`; if it is given with no value, ask
+which). After the package is written, Read
+`${CLAUDE_PLUGIN_ROOT}/skills/sprint/references/runners.md` and follow it: its pre-flight,
+the section for the chosen runner, and its report. It binds this skill as if written here.
+The shipping team's builders read the package itself and need no `--runner`. If a package
+for this scope already exists in `.delivery/sprints/` and only the hand-off is wanted, reuse
+it: re-run the gate check against it instead of building a new one.
 
 ## Writing, then revising
 
-**Budget: 600 words target, 900 hard cap** (excludes code, YAML and data tables).
-
-**Compose first. Do not try to hit the budget while writing.** Restraint during
-composition trades substance for brevity in the wrong order — the findings get thinner
-while the scaffolding survives. Write what the artifact needs, then cut what it does not.
-
-**Then measure, do not estimate.** The budget counts **prose only**. Data tables, code
-blocks and YAML are excluded, so measure with them stripped:
-
-```bash
-grep -v '^|' <the file you just wrote> | wc -w
-```
-
-A plain `wc -w` counts the tables and will overstate the total, often by several times.
-Measuring the wrong number leads to cutting the wrong thing.
-
-**Rows in a data table can never help you meet the budget, because they are not counted.**
-Deleting them is pure loss for zero benefit. The term table, the requirement table, the
-findings table, the friction map — these *are* the artifact. If a revision pass is removing
-rows, it has misunderstood the rule and should stop.
-
-**If the count exceeds 900, you are not finished.** Make a revision pass over the file and
-delete, in this order, until it fits:
-
-1. Preamble, recap, and any sentence describing what the document is about to say
-2. **Restatement** — the same fact as prose *and* a table row *and* a summary bullet. Keep the form that carries it best; delete the others. This is almost always the biggest win.
-3. Process narration — "I examined X and found Y" becomes Y
-4. Hedging — either you know it, or it is labelled an assumption. Both are shorter.
-5. Citations past the first for a given claim
-6. Examples past the first, unless the next one shows a *different* failure mode
-
-Then re-measure with the same command and confirm.
-
-**Never delete** any row of a data table, findings and their failure scenarios, one citation per claim, grounding
-and confidence labels, synthetic-output warnings, open questions, or IDs a later phase
-reads. If the artifact cannot fit without losing those, keep them, exceed the cap, and
-**write the final count and the reason into the document**. A declared overrun is a
-judgement. A silent one is a habit.
-
+**Budget: 600 words target, 900 hard cap** (excludes code, YAML and data tables). Compose, measure and revise as *Writing, then revising* in the conventions says.
 
 ## Report
 
 Present the package location and a summary: stories included, excluded and why, the
 verification contract, and any risk you want the runner warned about.
 
-State clearly that the next step after the external run is `/delivery:sprint-review`,
-which will re-verify independently rather than trusting the run's own report.
+With `--runner`, add the hand-off report that `runners.md` asks for.
+
+State clearly that the next step after the run is `/delivery:sprint-review`,
+which will re-verify independently rather than trusting the run's own report, then
+`/delivery:realign`.

@@ -21,7 +21,7 @@ function parse(argv) {
       const key = a.slice(2);
       const next = argv[i + 1];
       if (next === undefined || next.startsWith('--')) { flags[key] = true; continue; }
-      if (key === 'add-label' || key === 'remove-label') { (flags[key] = flags[key] || []).push(next); } else { flags[key] = next; }
+      if (key === 'add-label' || key === 'remove-label' || key === 'unset-metadata') { (flags[key] = flags[key] || []).push(next); } else { flags[key] = next; }
       i++;
     } else if (a === '-p' || a === '-t' || a === '-l' || a === '-d' || a === '-a') {
       const map = { '-p': 'priority', '-t': 'type', '-l': 'labels', '-d': 'description', '-a': 'assignee' };
@@ -85,6 +85,7 @@ switch (cmd) {
     if (flags['add-label']) for (const l of flags['add-label']) if (!b.labels.includes(l)) b.labels.push(l);
     if (flags['remove-label']) b.labels = b.labels.filter((l) => !flags['remove-label'].includes(l));
     if (flags.metadata) Object.assign(b.metadata, JSON.parse(flags.metadata));
+    for (const k of flags['unset-metadata'] || []) delete b.metadata[k];
     if (flags['append-notes']) b.notes = b.notes ? `${b.notes}\n${flags['append-notes']}` : flags['append-notes'];
     if (flags.status) b.status = flags.status;
     if (flags.assignee !== undefined) b.assignee = flags.assignee;
@@ -151,6 +152,15 @@ switch (cmd) {
     break;
   }
   case 'prime': process.stdout.write('fake-bd prime\n'); break;
+  case 'version': process.stdout.write('bd version 0.0.0-fake\n'); break;
+  case 'init': {
+    // what start.js relies on: a .beads directory in the working directory
+    const dir = require('path').join(process.cwd(), '.beads');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(require('path').join(dir, 'fake-config.json'), JSON.stringify({ prefix: flags.prefix || null }));
+    process.stdout.write(`fake-bd init ${flags.prefix || ''}\n`);
+    break;
+  }
   case 'ready': {
     const blocked = new Set(s.deps.filter((d) => s.issues[d.blocked_by] && s.issues[d.blocked_by].status !== 'closed').map((d) => d.id));
     const items = Object.values(s.issues).filter((b) => b.status === 'open' && !blocked.has(b.id));

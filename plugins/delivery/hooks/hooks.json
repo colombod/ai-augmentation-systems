@@ -4,63 +4,128 @@
       {
         "matcher": "startup|resume|clear|compact",
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/role-session-start.js"], "timeout": 15 }
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/role-session-start.js"
+            ],
+            "timeout": 15
+          }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/role-prompt-submit.js"], "timeout": 10 }
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/role-prompt-submit.js"
+            ],
+            "timeout": 10
+          }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Skill|Agent|Write|Edit|NotebookEdit|mcp__Claude_Browser__computer|mcp__Claude_Code_iOS_Simulator__control",
+        "matcher": "^(Skill|Agent|Write|Edit|NotebookEdit|mcp__Claude_Browser__computer|mcp__Claude_Code_iOS_Simulator__control)$",
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/record-invocation.js"] }
-        ]
-      },
-      {
-        "matcher": "Bash|Monitor",
-        "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/leak-post-push.js"], "timeout": 15 }
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/record-invocation.js"
+            ],
+            "async": true,
+            "timeout": 5
+          }
         ]
       }
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "Skill|Agent|Write|Edit|NotebookEdit|mcp__Claude_Browser__computer|mcp__Claude_Code_iOS_Simulator__control",
+        "matcher": "^(Skill|Agent|Write|Edit|NotebookEdit|mcp__Claude_Browser__computer|mcp__Claude_Code_iOS_Simulator__control)$",
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/record-invocation.js"] }
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/record-invocation.js"
+            ],
+            "async": true,
+            "timeout": 5
+          }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|NotebookEdit|MultiEdit|Bash|Monitor|PowerShell|mcp__.*",
+        "matcher": "^(Write|Edit|NotebookEdit|MultiEdit|Bash|Monitor|PowerShell)$|^mcp__.*$",
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/role-lane.js"], "timeout": 10 }
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/role-lane.js"
+            ],
+            "timeout": 10
+          }
         ]
       },
       {
-        "matcher": "Write|Edit|NotebookEdit|MultiEdit|Bash|Monitor|PowerShell|mcp__.*(github|gitlab|git).*",
+        "matcher": "^(Write|Edit|NotebookEdit|MultiEdit|Bash|Monitor|PowerShell)$|^mcp__.*(github|gitlab|git).*$",
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/leak-guard.js"], "timeout": 10 }
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/leak-guard.js"
+            ],
+            "timeout": 10
+          }
         ]
       },
       {
-        "matcher": "Bash|Monitor|PowerShell",
+        "matcher": "^(Bash|Monitor|PowerShell)$",
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/bd-guard-hook.js"], "timeout": 15 }
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/bd-guard-hook.js"
+            ],
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "^(AskUserQuestion|PushNotification|SendUserFile)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/ask-guard.js"
+            ],
+            "timeout": 10
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/claim-stop.js"], "timeout": 15 }
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/claim-stop.js"
+            ],
+            "timeout": 15
+          }
         ]
       }
     ]

@@ -8,7 +8,7 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 
 # Prioritisation and MVP staging
 
-> Phase 6 artifact. Owned by Product Owner, with Program Manager and User Researcher.
+> Written by /delivery:prd (MVP staging, step 6). Owned by Product Owner, with Program Manager and User Researcher.
 > Value pass — effort figures here are pre-architecture estimates and get reconciled
 > against real cost in `roadmap.md`.
 > Evidence basis: <persona grounding summary>. Last updated: <date>
