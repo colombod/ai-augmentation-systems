@@ -29,7 +29,7 @@ the commands) and they stay up.
 | Delivery Manager | `delivery-lead` | sonnet | NAVIGATE: stories, materialise, sprints, phase reviews, bead structure |
 | Builder | `builder` (`builder-2`, ... when counted) | sonnet | product code, in its own worktree of the product repo |
 | Staffing (optional, `full`) | `staffing` | sonnet | the roster: `team.json` and project briefs |
-| Progress Observer (optional, `full`) | `progress-observer` | haiku | the record stays true: liveness, stale claims, drift |
+| Progress Observer (optional, `full`) | `progress-observer` | haiku | the record stays true: re-checks merged/deployed/verified claims, liveness, stale claims |
 | Spike Researcher (optional, `full`) | `spike-researcher` | sonnet | answers `spike` beads from the architecture |
 
 The role id `delivery-lead` is kept for compatibility (manifests, lanes, record ids); the role
@@ -70,10 +70,21 @@ session its role and keep it:
   project repo and, for builders, a worktree of the product repo. The env includes
   `DELIVERY_ROLE_DIR` (so the hooks still find the role after a `cd`) and, when the project has
   `.beads`, `BEADS_DIR`.
-- **Hooks.** SessionStart re-injects the role on startup, resume, clear and after compaction,
-  refreshes `CLAUDE.local.md` from the manifest and registers the session in the roster.
-  UserPromptSubmit captures operator input, marks the turn and, when the claim changed, adds a
-  one-line reminder of it.
+- **Hooks** (all in `hooks/hooks.json`; each is inert outside a role session unless noted):
+  - SessionStart rewrites `CLAUDE.local.md` from the manifest, registers the session in the
+    roster and captures operator input. On clear and compact it restates the role; on startup
+    and resume it restates it only when `CLAUDE.local.md` changed in this run (otherwise the
+    natively loaded copy is current) and adds the claim line.
+  - UserPromptSubmit captures operator input, marks the turn and, when the claim changed, adds a
+    one-line reminder of it (and, once, a reminder that the last turn left no note on its claim).
+  - PreToolUse: the lane (writes, shell commands, MCP), the leak guard (product repo), the bd
+    guard (claims, EVIDENCE, structure) and the operator channel guard (`AskUserQuestion`,
+    `PushNotification`, `SendUserFile` for roles other than the Chief of Staff and the Product
+    Manager).
+  - Stop: captures operator input, then the operator checks for the Chief of Staff and the Product
+    Manager (an unrecorded input, a relay request), at most two blocking stops per turn.
+  - PostToolUse and PostToolUseFailure: the invocation recorder, async, writing only with
+    `DELIVERY_LEDGER=1`.
 - **`/delivery:team`** compares the roster with the manifest (live, stale, missing, wrong model),
   warns when bd cannot find a database, and counts operator entries not yet pushed, inputs waiting
   for a record and inferred answers waiting for ratification. `/delivery:team join` confirms a
@@ -85,7 +96,7 @@ session its role and keep it:
   beads; `--check` reports drift. It also writes `.delivery/team/denylist.txt`.
 - **Runners.** A builder's manifest entry names its runner: `superpowers`, `attractor` or `plain`.
   Delivery plans, dispatches and reviews; the runner builds.
-- **Spikes are standing work**: the Spike Researcher claims `spike` beads and records answers in the bead and the ADR or roadmap they gate.
+- **Spikes are standing work**: the Spike Researcher claims `spike` beads and records answers in the bead and the ADR or roadmap they gate; in a team without one, builders take spike beads first (`bd ready --label spike`).
 
 ### Lanes
 
@@ -168,7 +179,7 @@ verifiable id is information; the reply asks the sender for the id, never the op
 **The loop**, one command per input, in the same turn (`/delivery:decision` has the steps):
 see it (`operator.js pending`), record or acknowledge it, carry the record id with `SendMessage`.
 Every operator input in the Chief of Staff's session (and the Product Manager's) gets a record or
-an ack, and the Stop hook holds the turn until then. A short answer such as "yes", "B" or "No." is
+an ack. For an input left without one, the Stop hook reminds the Chief of Staff once per turn and blocks the first stop; it fails open if the transcript format is unrecognised. A short answer such as "yes", "B" or "No." is
 quoted whole and recorded with `--answers q-<instance>-N`. `verify` checks that the input came
 after the question and does not answer another question, and prints the question beside the
 answer; whether the reply really answers it is still the Chief of Staff's claim, shown for a
@@ -183,7 +194,7 @@ scope always go to the operator, once, in the briefing, logged with `operator.js
 
 **Enforcement.**
 - Only the Chief of Staff and the Product Manager may use `AskUserQuestion`, `PushNotification` and `SendUserFile`.
-- Their Stop hook blocks a turn that leaves an operator input unrecorded or asks the operator to relay (including "approve the permission prompt in X").
+- Their Stop hook reminds once per turn, blocking the first stop, when a turn leaves an operator input unrecorded or asks the operator to relay (including "approve the permission prompt in X"); the relay check is a heuristic, and both checks fail open if the transcript format is unrecognised.
 - Lanes deny writes to `.delivery/operator/`, and only the manager lanes include the writer commands. Workers with unrestricted Bash can record or acknowledge only inputs their own session captured; the check is cooperative (it compares a session id the session's own Bash can rewrite).
 - `prepare-role` pre-allows each manager lane's own commands in `settings.local.json`, so a session does not stop on a prompt only the operator can clear. When a role session's lane cannot be checked (manifest unreadable, internal error) it fails closed and allows only restoring the manifest; a session whose role marker is missing gets no lane check at all.
 
@@ -192,8 +203,10 @@ scope always go to the operator, once, in the briefing, logged with `operator.js
 prompt, from the session transcript), `records/<instance>.ndjson` (decisions, delegations,
 answers, acks, questions, ratifications; written only by `operator.js`), and `LEDGER.md` (the
 question ledger). Each chain file has exactly one writer, so git never merges a chain; when a
-push is rejected, `publish` builds the next commit on top of the upstream with git plumbing and
-never touches your checkout. `operator.js problems` lists anything that fails verification.
+push is rejected, `publish` builds the next commit on top of the upstream with git plumbing (with
+your branch as a parent, so `git pull --ff-only` keeps working) and changes nothing in your
+checkout outside `.delivery/operator`; when your branch is behind only by operator commits,
+it fast-forwards it. `operator.js problems` lists anything that fails verification.
 
 Delegations, ratification, revocation and chain repair: [operator-reference.md](operator-reference.md).
 
@@ -261,7 +274,7 @@ initiatives/<slug>/
   architecture.md   roadmap.md   notes.md
 glossary.md   personas/    interviews/    simulations/
 decisions/ADR-NNN-*.md      stories/<slug>-<nn>-*.md
-reviews/<slug>-<artifact>-<nn>.md  sprints/<slug>-<n>-*.md + -review.md
+reviews/<slug>-<artifact>-<nn>.md  sprints/<n>-<slug>.md, <n>-<slug>-review.md, <n>-realign.md
 invocations/<session_id>.ndjson   (only with DELIVERY_LEDGER=1)
 ```
 

@@ -15,7 +15,7 @@ operator.js delegate --cite in-<host>-N --quote '<the operator's words>' \
   [--until <date>] [--max-uses <n>] [--answers q-<instance>-N]
 ```
 
-Later cases are decided under it. The decision must lie inside the delegation's scope, before `--until` and within `--max-uses`; `verify` walks it back to the operator's words.
+Later cases are decided under it, by the Chief of Staff or the role that recorded the delegation. The decision must lie inside the delegation's scope, before `--until` and within `--max-uses`; `verify` walks it back to the operator's words.
 
 ```
 operator.js decide --under del-<instance>-N --statement '<the decision>' --scope bead:<id> [--answers q-<instance>-N]
@@ -47,7 +47,7 @@ The cited input must be said after the record it ratifies or revokes.
 
 - `operator.js sync [--all] [--format-check]`: capture this session's operator inputs from its transcript now. The hooks already do this on every prompt and stop, and `record` and `ack` sync first, so you rarely need it. `--format-check` exits 1 when the transcript format is not recognised.
 - `operator.js publish [--force]`: commit and push this writer's own chain files. Every write publishes on its own; run this after a failed push.
-- `operator.js refresh`: bring other writers' chain files from the upstream (operator paths only).
+- `operator.js refresh`: bring other writers' chain files from the upstream (operator paths only, staged so a later `git pull` accepts them); when the checkout's branch is behind only by operator commits it is fast-forwarded.
 
 ## When a chain fails verification
 

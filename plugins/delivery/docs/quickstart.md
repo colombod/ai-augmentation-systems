@@ -2,7 +2,7 @@
 
 > **The quick way is `/delivery:start`.** Run it in an ordinary Claude Code session, outside any role directory. It checks the prerequisites, asks a few questions and runs `scripts/start.js`, which does steps 1 to 3 below for you and prints the commands for step 4. This page shows what it runs, with real output, and how to do each step by hand.
 
-This guide starts a small shipping team on one machine: a Chief of Staff, a Product Manager, a Delivery Manager and one builder. Each runs as its own Claude Code session in its own directory. You talk to the Chief of Staff; the others talk to it.
+This guide starts a small shipping team on one machine: a Chief of Staff, a Product Manager, a Delivery Manager and one builder. Each runs as its own Claude Code session in its own directory. You talk to the Chief of Staff for decisions and logistics, and with the Product Manager about product vision; the other sessions send their questions to the Chief of Staff.
 
 Words used below:
 
@@ -37,24 +37,24 @@ All hard prerequisites are met.
 
 ## What `/delivery:start` runs
 
-The skill asks you for the project repo, the product repo, the host name, the preset and the permission mode, then runs `start.js` twice: a dry run to show you the plan, then the real run. All inputs are flags; the script never prompts.
+The skill asks you for the project repo, the product repo, the host name, the preset, the model profile and the permission mode, then runs `start.js` twice: a dry run to show you the plan, then the real run. All inputs are flags; the script never prompts.
 
 ```
-node <plugin-root>/scripts/start.js --project <project-root> --host laptop --product-repo <product-checkout> --dry-run
-node <plugin-root>/scripts/start.js --project <project-root> --host laptop --product-repo <product-checkout>
+node <plugin-root>/scripts/start.js --project <project-root> --host laptop --models balanced --product-repo <product-checkout> --dry-run
+node <plugin-root>/scripts/start.js --project <project-root> --host laptop --models balanced --product-repo <product-checkout>
 ```
 
-Other flags: `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Manager, one builder; `full` adds Staffing, the Progress Observer and the Spike Researcher), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default: none, so each session uses your own Claude Code default), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
+Other flags: `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Manager, one builder; `full` adds Staffing, the Progress Observer and the Spike Researcher), `--models quality|balanced|economy` (default `balanced`; see the README's Models section), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default: none, so each session uses your own Claude Code default), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
 
 The real run, against a throwaway fixture (paths shortened to placeholders):
 
 ```
 delivery start: <project-root>
   project repo: create <project-root> and run git init
-  manifest: write .delivery/team/team.json and .delivery/team/hosts.json: preset minimal, host "laptop", prefix "acme", roles chief-of-staff, product-manager, delivery-lead, builder
+  manifest: write .delivery/team/team.json and .delivery/team/hosts.json: preset minimal, models balanced, host "laptop", prefix "acme", roles chief-of-staff, product-manager, delivery-lead, builder
   manifest: valid
   product repo: using the checkout at <product-checkout>
-  manifest: committed (6f71b80)
+  manifest: committed (6380dab)
   beads: run bd init --prefix acme
   roles (in <team-dir>):
     chief-of-staff: prepared (opus)
@@ -71,16 +71,16 @@ Start each session in its own terminal, the Chief of Staff first:
 
 Then:
   1. In every session, run /delivery:team join.
-  2. Open the Chief of Staff session and talk to it. It is the only session you need to talk to.
+  2. Open the Chief of Staff session and talk to it for decisions and logistics; talk with the Product Manager about product vision.
   3. /delivery:team shows who is live; ask the Chief of Staff for the question ledger to see every decision.
 ```
 
-The dry run prints the same plan with "would" in front of each write, and writes nothing. Running it again is safe: an existing manifest is kept as it is (and `--preset`, `--host`, `--prefix` and `--runner` are not applied to it), `bd init` runs only when `.beads` is absent, and only roles without a prepared directory are prepared:
+The dry run prints the same plan with "would" in front of each write, and writes nothing. Running it again is safe: an existing manifest is kept as it is (and `--preset`, `--models`, `--host`, `--prefix` and `--runner` are not applied to it; if it is uncommitted, for example after a refused run, just those two files are committed), `bd init` runs only when `.beads` is absent, and only roles without a prepared directory are prepared (plus, once `.beads` exists, any prepared role still missing `BEADS_DIR`, which is re-prepared):
 
 ```
 delivery start: <project-root>
   project repo: exists
-  manifest: keeping the existing .delivery/team/team.json and .delivery/team/hosts.json (project "acme", 4 instance(s)); --preset, --host, --prefix and --runner are not applied to it
+  manifest: keeping the existing .delivery/team/team.json and .delivery/team/hosts.json (project "acme", 4 instance(s)); --preset, --models, --host, --prefix and --runner are not applied to it
   manifest: valid
   product repo: none given; a builder prepared in this run gets no product worktree (pass --product-repo <path|url>)
   beads: .beads exists; bd init skipped
@@ -91,7 +91,7 @@ delivery start: <project-root>
     builder: already prepared
 ```
 
-When `bd` is missing, `start.js` still prepares the roles and says how to finish: install `bd`, run `bd init --prefix <prefix>` in `<project-root>`, then run `prepare-role` (step 3) again for each instance so its settings get `BEADS_DIR`. `start.js` leaves an already prepared role as it is, so it does not do this part. The steps below are what `start.js` does, for doing them by hand.
+When `bd` is missing, `start.js` still prepares the roles and says how to finish: install `bd`, run `bd init --prefix <prefix>` in `<project-root>`, then run `start.js` again: it re-prepares each role that lacks `BEADS_DIR`. The steps below are what `start.js` does, for doing them by hand.
 
 ## 1. Write the team manifest
 
@@ -109,7 +109,7 @@ Create `.delivery/team/team.json` and `.delivery/team/hosts.json` in `<project-r
     { "id": "chief-of-staff",  "brief": "delivery/chief-of-staff",  "host": "laptop", "model": "opus",   "mode": "delegate" },
     { "id": "product-manager", "brief": "delivery/product-manager", "host": "laptop", "model": "opus" },
     { "id": "delivery-lead",   "brief": "delivery/delivery-lead",   "host": "laptop", "model": "sonnet" },
-    { "id": "builder",         "brief": "delivery/builder",         "host": "laptop", "model": "sonnet", "runner": "plain" }
+    { "id": "builder",         "brief": "delivery/builder",         "host": "laptop", "model": "sonnet", "runner": "plain", "large_model": "opus" }
   ]
 }
 ```
@@ -129,7 +129,7 @@ What the fields mean, as `scripts/lib/manifest.js` checks them:
 - `project`, `prefix` and `bd_host` are required. `prefix` is the bead id prefix. `project` also names the default team directory, `<project-root>/../<project>-team`.
 - The product repository is not named in the manifest: you pass its local checkout to `prepare-role` (step 3).
 - Each role needs an `id` (lower case, digits, `-`), a `brief` (`delivery/<role>` for the plugin's role files in `roles/`, or `project/<name>` for a brief under `.delivery/team/briefs/`), a `host` that is a key in `hosts.json`, and a `model`: any model name Claude Code accepts (`opus`, `sonnet` and `haiku` are checked; another name is passed through with a warning). Leave it out to use the role brief's `default_model`. The model is how you set the cost of each role.
-- Optional: `mode` (`default` or `delegate`), `runner` for builders (`superpowers`, `attractor` or `plain`), `count` for several instances (`builder-1`, `builder-2`, ...), and `retired: true` for an instance that has left.
+- Optional: `mode` (`default` or `delegate`), `runner` for builders (`superpowers`, `attractor` or `plain`), `large_model` for builders (the model their subagents get on a `size-L` bead, exported as `DELIVERY_LARGE_MODEL`; default `opus`), `count` for several instances (`builder-1`, `builder-2`, ...), `steward: true` (see below; `start.js` marks the builder), and `retired: true` for an instance that has left.
 - A team on more than one host needs, on each host that is not `cloud`, one role with `"steward": true`. A single-host team needs none.
 - The number of builders may not exceed `budget.builders_cap`. `staleness_hours` is when `/delivery:team` calls a silent session stale.
 
@@ -206,6 +206,8 @@ Operator entries unpublished: 0
 Operator inputs pending a record: 0
 Inferred answers awaiting ratification: 0
 
+To change a model: edit roles[].model in .delivery/team/team.json, rerun prepare-role for that instance, restart its session.
+
 No drift.
 ```
 
@@ -215,12 +217,12 @@ To give the team work, plan with the pipeline skills (the Product Manager writes
 
 Talk to the Chief of Staff in its session, in your own words. For each thing you say, in the same turn, it:
 
-1. **captures** your words from the session transcript (`operator.js sync`) and lists what is waiting (`operator.js pending`);
-2. **records** a decision with your exact words (`operator.js record`), records a standing preference (`operator.js delegate`), or **acknowledges** anything else (`operator.js ack --reason 'conversational'`);
+1. **sees** your words, which the hooks capture from the session transcript, with `operator.js pending`;
+2. **records** a decision with your exact words (`operator.js record`) or **acknowledges** anything else (`operator.js ack`; `ack --pending --reason 'conversational'` for chat); a standing preference is a delegation ([operator-reference.md](operator-reference.md));
 3. **delegates** the work: it turns your ask into a bead, or finds the bead that holds it, and routes it to a role;
 4. **sends the record id** with `SendMessage` to every session that needs it. That session runs `operator.js verify <id>` and acts.
 
-Its Stop hook holds the turn until each of your inputs has a record or an ack. `/delivery:decision` holds the full loop.
+For an input still without a record or an ack, its Stop hook reminds the Chief of Staff once per turn and blocks the first stop; it fails open if the transcript format is unrecognised. `/delivery:decision` holds the full loop.
 
 To see every question the team asked you and how each was answered, ask for the ledger, or run it yourself:
 
@@ -364,12 +366,12 @@ Run the restore command it names, or fix the file from outside the session.
 
 **4. `format_unrecognised`.** `operator.js sync` or `record` reports that the transcript format was not recognised. Capture relies on an undocumented field the harness writes on each transcript entry; when it changes, recording fails closed rather than trusting what it cannot read. Nothing is recorded until the transcript reader in `scripts/lib/transcript.js` is updated. Tell whoever maintains the plugin; `operator.js sync --format-check` shows the state.
 
-**5. The Chief of Staff's turn is blocked by its Stop hook.** Two common reasons, both with the way out in the message:
+**5. The Chief of Staff's turn is blocked by its Stop hook** (once per turn: the first stop). Two common reasons, both with the way out in the message:
 
 - An input of yours has no record. The Chief of Staff records it or acks it, then carries on:
 
   ```
-  You have an operator input with no record: in-laptop-000003 ("ok thanks"). Record the decision (...) or acknowledge it (`node <plugin-root>/scripts/operator.js ack --input in-laptop-000003 --reason '<why this is not a decision>'`; 'conversational' for chat), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.
+  You have an operator input with no record: in-laptop-000003 ("ok thanks"). Record the decision (...) or acknowledge it (`node <plugin-root>/scripts/operator.js ack --input in-laptop-000003 --reason '<why this is not a decision>'`; for chat, `node <plugin-root>/scripts/operator.js ack --pending --reason 'conversational'` acks them all at once), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.
   ```
 
 - It asked you to pass something on. The relay guard quotes the clause; the Chief of Staff rewrites only that clause and sends the record id itself:

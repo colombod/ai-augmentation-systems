@@ -2,7 +2,7 @@
 
 ## Start here
 
-delivery gives you a team of Claude Code sessions, one per role, that plan and ship a product while you talk to only one of them, the **Chief of Staff**. You decide once: your exact words are recorded with proof that every session can check, so nobody asks you to repeat or pass anything on. Without a team, the same plugin is a planning pipeline that turns your intent into a brief, a PRD, an architecture, a roadmap and stories.
+delivery gives you a team of Claude Code sessions, one per role, that plan and ship a product while you talk mainly to one of them, the **Chief of Staff** (and to the Product Manager about product vision). You decide once: your exact words are recorded with proof that every session can check, so nobody asks you to repeat or pass anything on. Without a team, the same plugin is a planning pipeline that turns your intent into a brief, a PRD, an architecture, a roadmap and stories.
 
 ### Prerequisites
 
@@ -17,7 +17,7 @@ delivery gives you a team of Claude Code sessions, one per role, that plan and s
 ### Start a new project in 3 steps
 
 1. **Install the plugin:** `/plugin install delivery@ai-augmentation-systems` (the repository README has the marketplace step).
-2. **Run `/delivery:start`** in an ordinary Claude Code session, outside any role directory. It asks for the project repo, the product repo, the host name, the preset and the permission mode, shows a dry run, then writes the team manifest, creates the beads database, prepares one directory per role and prints the command that starts each session.
+2. **Run `/delivery:start`** in an ordinary Claude Code session, outside any role directory. It asks for the project repo, the product repo, the host name, the preset, the model profile and the permission mode, shows a dry run, then writes the team manifest, creates the beads database, prepares one directory per role and prints the command that starts each session.
 3. **Start the printed sessions,** run `/delivery:team join` in each, then open the Chief of Staff session and talk to it.
 
 ### Using the team
@@ -102,7 +102,7 @@ The default team (`minimal` preset) has four roles:
 The `full` preset adds three optional roles:
 
 - **Staffing** — owns the roster (`team.json`, project briefs).
-- **Progress Observer** — keeps the record true: liveness, stale claims, drift.
+- **Progress Observer** — keeps the record true: re-checks what is claimed merged, deployed or verified, watches liveness and releases stale claims.
 - **Spike Researcher** — answers spike beads from the architecture.
 
 Who talks to whom: you talk to the Chief of Staff (and to the Product Manager about vision); every session messages the Chief of Staff with questions for you; work moves between roles as beads, and the Delivery Manager alone changes their structure. The agents in `agents/` are reviewer lenses that skills call, not sessions: see [Sessions you run vs reviewers they call](docs/reference.md#sessions-you-run-vs-reviewers-they-call).

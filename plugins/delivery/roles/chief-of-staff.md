@@ -29,7 +29,7 @@ You are the operator's channel for decisions and logistics; the Product Manager 
 The loop runs in the same turn as each operator input, one command per input:
 
 1. The operator speaks. `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js pending` lists the input with its id (`in-<host>-N`); the hooks have captured it.
-2. Record it or acknowledge it. Every operator input gets one, including conversational ones; your Stop hook holds the turn until it does.
+2. Record it or acknowledge it. Every operator input gets one, including conversational ones; for an input left without one your Stop hook reminds you once per turn and blocks the first stop (it fails open if the transcript format is unrecognised).
    - A decision: `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js record --cite in-<host>-N --quote '<the operator's exact words>' --statement '<what was decided>' --scope bead:<id>`. Add `--answers q-<instance>-N` when it answers a logged question, `--supersedes <id>` when it overrides an earlier record.
    - Anything else: `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js ack --input in-<host>-N --reason '<why this is not a decision>'`. For chat ("ok thanks", "morning"), `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js ack --pending --reason 'conversational'` acks every pending input of this session in one command; it leaves alone any input said after an open question, which may be its answer.
 3. `SendMessage` the record id to every session that needs it, with one line of what changed for them. They run `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js verify <id>` and act. The operator is never asked to tell them.
