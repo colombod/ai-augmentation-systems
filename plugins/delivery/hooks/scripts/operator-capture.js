@@ -6,8 +6,9 @@
 // harness-stamped inputs to the operator log for this role instance, and reports how many of this
 // instance's human inputs still have no record. It decides nothing and never throws. In the project
 // checkout it runs only a read-only `git rev-parse` (to find the private operator store); the one
-// network call is on a store that has never seen the remote, which fetches once (at most 5 s) before
-// its first capture so a re-cloned host continues its own chain. The transcript may lag the hook;
+// network call is on a store with no HEAD yet (never committed, never merged the remote), which fetches
+// once (at most 5 s, no wait for the store lock, at most every 10 minutes) before its first capture so
+// a re-cloned host continues its own chain. The transcript may lag the hook;
 // capture is idempotent, so every trigger catches up.
 const fs = require('fs');
 const path = require('path');

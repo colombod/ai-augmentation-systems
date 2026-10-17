@@ -16,7 +16,7 @@ const R = require('./lib/operator-records.js');
 
 class UsageError extends Error {}
 
-const BOOLEAN_FLAGS = new Set(['json', 'force', 'all', 'format-check', 'help', 'pending']);
+const BOOLEAN_FLAGS = new Set(['json', 'force', 'all', 'format-check', 'help', 'pending', 'adopt-remote']);
 const COMMANDS = ['publish', 'refresh', 'sync', 'record', 'delegate', 'decide', 'revoke', 'ack', 'ask', 'withdraw', 'answer', 'ratify',
   'find', 'ledger', 'pending', 'verify', 'show', 'problems', 'quarantine', 'repair', 'rehost'];
 
@@ -38,7 +38,7 @@ const USAGE = `usage: operator.js <command> [options]   (all commands: --project
   verify <id>        show <id>
   problems           everything that is excluded, diverged or unpublished (exit 1 when state is affected)
   rehost --instance <i> --reason "<why it moved>" [--to-host H] [--to-machine M]   record that an instance moved host or machine
-  quarantine --file records/<i>.ndjson --reason "<...>"   (chief of staff) set a failing chain aside as evidence
+  quarantine --file records/<i>.ndjson --reason "<...>" [--adopt-remote]   (chief of staff, or the chain's own instance or host) set a failing chain aside as evidence
   repair --instance <i>   repair a torn tail of that instance's own chain (the partial line is kept as evidence)
   publish [--force]  refresh
 
@@ -197,12 +197,20 @@ function divergedOwn(ctx) {
   return r.diverged.filter((p) => own.includes(p) || (inputs && p.startsWith(inputs)));
 }
 
+// The problem entry for a diverged own chain, with what the store found (an unauthorised rehost, the
+// lines not written here) when it said.
+function divergedProblem(ctx, d) {
+  const det = ((ctx.refreshResult && ctx.refreshResult.diverged_detail) || []).find((x) => x.path === d);
+  return { file: d, code: 'chain_diverged', ...(det && det.rehost ? { id: det.rehost } : {}),
+    error: `${d} differs from the remote copy (another writer appended to it)${det && det.note ? `: ${det.note}` : ''}` };
+}
+
 // every writer: a diverged own chain refuses before anything is appended (a failed fetch does not)
 function needNotDiverged(ctx) {
   ctx.refreshOnce();
   const dv = divergedOwn(ctx);
   if (dv.length) {
-    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the remote copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. Tell the chief of staff; operator.js problems lists it, and operator.js quarantine --file records/<instance>.ndjson (or inputs/<host>/<YYYY-MM>.ndjson) sets the fork aside. One working copy per host label is assumed`);
+    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the remote copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. operator.js problems shows what the remote added (and any rehost it relies on). The chief of staff, or this instance for its own chain (this host for its inputs chain), runs operator.js quarantine --file records/<instance>.ndjson (or inputs/<host>/<YYYY-MM>.ndjson): it keeps this copy as evidence and takes the remote copy, and when the remote copy only adds lines it names them and needs --adopt-remote after they are reviewed. One working copy per host label and instance is assumed: two clones writing as the same instance or host fork its chain`);
   }
 }
 
@@ -210,7 +218,7 @@ function needFresh(ctx) {
   const r = ctx.refreshOnce();
   const dv = divergedOwn(ctx);
   if (dv.length) {
-    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the remote copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. Tell the chief of staff; operator.js problems lists it, and operator.js quarantine --file records/<instance>.ndjson (or inputs/<host>/<YYYY-MM>.ndjson) sets the fork aside. One working copy per host label is assumed: two clones writing as the same instance or host fork its chain`);
+    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the remote copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. operator.js problems shows what the remote added (and any rehost it relies on). The chief of staff, or this instance for its own chain (this host for its inputs chain), runs operator.js quarantine --file records/<instance>.ndjson (or inputs/<host>/<YYYY-MM>.ndjson): it keeps this copy as evidence and takes the remote copy, and when the remote copy only adds lines it names them and needs --adopt-remote after they are reviewed. One working copy per host label and instance is assumed: two clones writing as the same instance or host fork its chain`);
   }
   if (r && !r.ok && !r.no_remote) {
     throw new R.OperatorError('refresh_failed', `could not refresh from the project remote: ${String(r.reason || 'unknown').split('\n')[0]}; a revocation or decision made on another host may be missing, so nothing is recorded. Retry when the remote is reachable (operator.js refresh)`);
@@ -588,7 +596,7 @@ const handlers = {
     ctx.refreshOnce();
     const p = R.pending(ctx.projectRoot, { since, all: !!flags.all, refresh: ctx.refreshOnce, noLedger: true });
     const dv = divergedOwn(ctx);
-    for (const d of dv) p.problems.push({ file: d, code: 'chain_diverged', error: `${d} differs from the remote copy (another writer appended to it)` });
+    for (const d of dv) p.problems.push(divergedProblem(ctx, d));
     const warnings = readWarnings(ctx, p.problems);
     const lines = [];
     // ids handed out must be visible to other hosts: say so when this host cannot push
@@ -628,7 +636,7 @@ const handlers = {
     if (pos.length < 1) throw new UsageError('verify takes one record or input id');
     const id = pos[0];
     const v = R.verifyRecord(ctx.projectRoot, id, { refresh: ctx.refreshOnce, noLedger: true });
-    const dvp = divergedOwn(ctx).map((d) => ({ file: d, code: 'chain_diverged', error: `${d} differs from the remote copy (another writer appended to it)` }));
+    const dvp = divergedOwn(ctx).map((d) => divergedProblem(ctx, d));
     const rw = readWarnings(ctx, dvp);
     v.warnings = rw;
     if (ctx.json) { process.stdout.write(JSON.stringify(v) + '\n'); return v.ok ? 0 : 1; }
@@ -676,7 +684,7 @@ const handlers = {
   problems(ctx) {
     ctx.refreshOnce();
     const p = R.viewProblems(ctx.projectRoot);
-    for (const d of divergedOwn(ctx)) p.push({ file: d, code: 'chain_diverged', error: `${d} differs from the remote copy (another writer appended to it)` });
+    for (const d of divergedOwn(ctx)) p.push(divergedProblem(ctx, d));
     const lines = p.length ? p.map((x) => `${x.id ? x.id + ' ' : ''}${x.file}${x.line ? ':' + x.line : ''}  ${x.code}  ${x.error}`) : ['no problems'];
     const extra = readWarnings(ctx, []);
     // entries the remote does not hold yet: a warning, not a problem (the exit code stays 0 for them)
@@ -692,8 +700,14 @@ const handlers = {
   quarantine(ctx, flags) {
     need(flags, 'file', 'reason');
     requireWriter(ctx);
-    const r = R.quarantine({ projectRoot: ctx.projectRoot, file: flags.file, reason: flags.reason, by: ctx.by });
-    out(ctx, { ok: true, ...r }, [`quarantined: ${r.moved_to}`]);
+    const r = R.quarantine({ projectRoot: ctx.projectRoot, file: flags.file, reason: flags.reason, by: ctx.by, adoptRemote: !!flags['adopt-remote'] });
+    const lines = [`quarantined: ${r.moved_to}`];
+    if (r.adopted && r.adopted.length) {
+      lines.push(`took the remote copy; these lines were not written by this store: ${r.adopted.map((e) => `${e.id} (by ${e.instance || '?'} from ${e.host || '?'})`).join(', ')}`);
+      lines.push(`review them (operator.js show <id>) before relying on them; the evidence note is ${r.evidence}`);
+    }
+    if (r.warning) lines.push(`warning: ${r.warning}`);
+    out(ctx, { ok: true, ...r }, lines);
     return 0;
   },
 

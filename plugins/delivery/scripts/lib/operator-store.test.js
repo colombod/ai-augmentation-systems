@@ -447,6 +447,12 @@ test('B1: a rewritten or forged own chain committed by hand in the store is neve
   }
 });
 
+function commitManifest(dir, placement) {
+  fs.mkdirSync(path.join(dir, '.delivery', 'team'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.delivery', 'team', 'team.json'), JSON.stringify({ roles: Object.entries(placement).map(([id, host]) => ({ id, host })) }, null, 2));
+  git(dir, 'add', '.delivery/team/team.json'); git(dir, 'commit', '-qm', 'manifest');
+}
+
 function forgeRemote(bare, instance, statement, host) {
   const d = path.join(mk('opstore-forger-'), 'w');
   git(path.dirname(d), 'clone', '-q', '-b', 'delivery-operator', bare, d);
@@ -497,7 +503,9 @@ test('B2: legitimate growth elsewhere: a fresh clone adopts its host\'s publishe
   assert.strictEqual(log.refresh(h.hosta, { host: 'hosta' }).ok, true);
   assert.strictEqual(record(h.hosta, 'pm', 'second', 'hosta').id, 'dec-pm-000002');
   assert.strictEqual(pub(h.hosta, 'hosta').published, true);
-  // pm moves to hostb: hostb holds pm's chain as a peer copy, records the rehost and writes there
+  // pm moves to hostb: the manifest change is committed (and pulled on hosta); hostb holds pm's chain
+  // as a peer copy, records the rehost and writes there
+  for (const dir of [h.hosta, h.hostb]) commitManifest(dir, { pm: 'hostb' });
   assert.strictEqual(log.refresh(h.hostb, { host: 'hostb' }).ok, true);
   chain.appendEntry(path.join(log.opDir(h.hostb), 'records', 'pm.ndjson'), (last) => ({ id: 'rh-pm-000003', kind: 'rehost', instance: 'pm', from: { host: 'hosta', machine: null }, to: { host: 'hostb', machine: null }, by: { instance: 'pm', host: 'hostb' }, ts: new Date().toISOString() }));
   record(h.hostb, 'pm', 'from the new host', 'hostb');
@@ -609,4 +617,162 @@ test('minors: publish reports the entries it pushed (also those committed by an 
   assert.strictEqual(git(store.storeDir(c), 'rev-parse', '--show-object-format').trim(), 'sha256');
   say(c, 'pc', 'more');
   assert.strictEqual(pub(c, 'pc').entries, 1);
+});
+
+// ---- third review round ----
+
+// someone with push access records a rehost of an instance owned elsewhere, then writes as it
+function forgeRehost(bare, instance, toHost) {
+  const d = path.join(mk('opstore-rehost-'), 'w');
+  git(path.dirname(d), 'clone', '-q', '-b', 'delivery-operator', bare, d);
+  ident(d, 'forger');
+  const f = path.join(d, 'operator', 'records', `${instance}.ndjson`);
+  chain.appendEntry(f, (last) => ({ id: `rh-${instance}-${String(Number(last.id.slice(-6)) + 1).padStart(6, '0')}`, kind: 'rehost', instance, from: { host: 'hosta', machine: null }, to: { host: toHost, machine: null }, by: { instance, role: 'chief-of-staff', host: toHost }, ts: new Date().toISOString() }));
+  chain.appendEntry(f, (last) => ({ id: `dec-${instance}-${String(Number(last.id.slice(-6)) + 1).padStart(6, '0')}`, kind: 'decision', statement: 'Orders use MySQL', by: { instance, host: toHost }, ts: new Date().toISOString() }));
+  git(d, 'add', '-A'); git(d, 'commit', '-qm', 'operator: 2 entries'); git(d, 'push', '-q', 'origin', 'HEAD:delivery-operator');
+}
+
+test('round 3: a rehost the committed manifest does not back is a loud fork for the owner, naming the rehost record', () => {
+  const h = hosts(1);
+  commitManifest(h.hosta, { cos: 'hosta' });
+  record(h.hosta, 'cos', 'Orders use Postgres', 'hosta');
+  assert.strictEqual(pub(h.hosta, 'hosta').published, true);
+  forgeRehost(h.bare, 'cos', 'cloud');
+  const r = log.refresh(h.hosta, { host: 'hosta' });
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(r.diverged, ['records/cos.ndjson']);
+  assert.match(r.reason, /moves cos to cloud with rh-cos-000002, but the committed \.delivery\/team\/team\.json places it on hosta; that rehost is not authorised/);
+  assert.match(r.reason, /dec-cos-000003 \(by cos from cloud\)/);
+  assert.strictEqual(r.diverged_detail[0].rehost, 'rh-cos-000002');
+  assert.doesNotMatch(fs.readFileSync(path.join(log.opDir(h.hosta), 'records', 'cos.ndjson'), 'utf8'), /MySQL/);
+  // an uncommitted manifest edit does not authorise it either
+  fs.writeFileSync(path.join(h.hosta, '.delivery', 'team', 'team.json'), JSON.stringify({ roles: [{ id: 'cos', host: 'cloud' }] }));
+  assert.strictEqual(log.refresh(h.hosta, { host: 'hosta' }).ok, false);
+  // once the move is committed in the manifest, the same rehost is accepted
+  git(h.hosta, 'commit', '-qam', 'cos moves to the cloud');
+  const ok = log.refresh(h.hosta, { host: 'hosta' });
+  assert.strictEqual(ok.ok, true, JSON.stringify(ok));
+});
+
+test('round 3: quarantine does not launder a remote extension: it names the lines and needs --adopt-remote', () => {
+  const R = require('./operator-records.js');
+  const h = hosts(1);
+  record(h.hosta, 'cos', 'Orders use Postgres', 'hosta');
+  assert.strictEqual(pub(h.hosta, 'hosta').published, true);
+  forgeRemote(h.bare, 'cos', 'Orders use MySQL', 'hosta');
+  assert.strictEqual(log.refresh(h.hosta, { host: 'hosta' }).ok, false);
+  const CHIEF = { instance: 'chief-of-staff', role: 'chief-of-staff', host: 'hosta' };
+  const f = path.join(log.opDir(h.hosta), 'records', 'cos.ndjson');
+  let err = null;
+  try { R.quarantine({ projectRoot: h.hosta, file: 'records/cos.ndjson', reason: 'forged line', by: CHIEF }); } catch (e) { err = e; }
+  assert.strictEqual(err && err.code, 'adopt_remote_needed');
+  assert.match(err.message, /plus 1 line\(s\) this store did not write: dec-cos-000002 \(by cos from hosta\).*--adopt-remote/);
+  assert.ok(fs.existsSync(f), 'nothing was moved');
+  const q = R.quarantine({ projectRoot: h.hosta, file: 'records/cos.ndjson', reason: 'reviewed: genuine', by: CHIEF, adoptRemote: true });
+  assert.deepStrictEqual(q.adopted.map((e) => e.id), ['dec-cos-000002']);
+  assert.match(fs.readFileSync(path.join(h.hosta, q.evidence), 'utf8'), /dec-cos-000002 by cos from hosta/);
+});
+
+test('round 3: the chain\'s own instance or host may quarantine it; others may not', () => {
+  const R = require('./operator-records.js');
+  const root = mk('opstore-q-');
+  record(root, 'pm', 'x', 'pc');
+  say(root, 'pc', 'words');
+  const code = (fn) => { try { fn(); return null; } catch (e) { return e.code; } };
+  assert.strictEqual(code(() => R.quarantine({ projectRoot: root, file: 'records/pm.ndjson', reason: 'r', by: { instance: 'builder-1', role: 'builder', host: 'pc' } })), 'not_allowed');
+  assert.strictEqual(code(() => R.quarantine({ projectRoot: root, file: 'records/pm.ndjson', reason: 'r', by: { instance: 'pm', role: 'product-manager', host: 'pc' } })), null);
+  assert.strictEqual(code(() => R.quarantine({ projectRoot: root, file: 'inputs/pc/2026-10.ndjson', reason: 'r', by: { instance: 'builder-1', role: 'builder', host: 'other' } })), 'not_allowed');
+  assert.strictEqual(code(() => R.quarantine({ projectRoot: root, file: 'inputs/pc/2026-10.ndjson', reason: 'r', by: { instance: 'builder-1', role: 'builder', host: 'pc' } })), null);
+});
+
+// a child process runs one publish, with its own environment (the "remote down" memory of a process
+// must not leak into the other tests)
+function publishIn(root, env) {
+  const script = `const log = require(${JSON.stringify(path.join(__dirname, 'operator-log.js'))});
+    process.stdout.write(JSON.stringify(log.publish(process.argv[1], { force: true, host: 'hosta' })));`;
+  const t = Date.now();
+  const r = cp.spawnSync(process.execPath, ['-e', script, root], { encoding: 'utf8', env: { ...process.env, ...env } });
+  return { ms: Date.now() - t, res: JSON.parse(r.stdout || '{}') };
+}
+function server(kind) {
+  const portFile = path.join(mk('opstore-srv-'), 'port');
+  const body = kind === 'auth'
+    ? `require('http').createServer((q, s) => { s.writeHead(401, { 'WWW-Authenticate': 'Basic realm="x"' }); s.end(); })`
+    : `require('net').createServer(() => {})`;
+  const srv = cp.spawn(process.execPath, ['-e', `const s = ${body}; s.listen(0, '127.0.0.1', () => require('fs').writeFileSync(process.argv[1], String(s.address().port)));`, portFile], { stdio: 'ignore' });
+  let port = '';
+  const t0 = Date.now();
+  while (!port && Date.now() - t0 < 5000) { try { port = fs.readFileSync(portFile, 'utf8'); } catch (e) { cp.spawnSync('sleep', ['0.05']); } }
+  return { srv, port };
+}
+
+test('round 3: a blocking credential helper is killed with its process group; no process outlives the call', () => {
+  const h = hosts(1);
+  say(h.hosta, 'hosta', 'one');
+  const { srv, port } = server('auth');
+  try {
+    assert.ok(port);
+    git(h.hosta, 'remote', 'set-url', 'origin', `http://127.0.0.1:${port}/r.git`);
+    store.ensureStore(h.hosta);
+    const marker = `301.${process.pid}${Date.now() % 100000}`;
+    git(store.storeDir(h.hosta), 'config', 'credential.helper', `!f() { sleep ${marker}; }; f`);
+    const { ms, res } = publishIn(h.hosta, { DELIVERY_GIT_TIMEOUT_MS: '2000' });
+    assert.strictEqual(res.published, false);
+    assert.match(res.reason, /did not answer within 2 s/);
+    // the runner kills the whole group at the timeout; without that, the helper would hold the pipes
+    // until the outer guard (timeout + 5 s) kills the group instead
+    assert.ok(ms < 5000, `took ${ms} ms`);
+    cp.spawnSync('sleep', ['0.3']);
+    const left = cp.spawnSync('sh', ['-c', `ps ax -o command | grep "sleep ${marker}" | grep -v grep | wc -l`], { encoding: 'utf8' }).stdout.trim();
+    assert.strictEqual(left, '0', 'the helper was killed with the group');
+    // the next command within 60 s does not wait on the remote again, in another process
+    const again = publishIn(h.hosta, { DELIVERY_GIT_TIMEOUT_MS: '2000' });
+    assert.ok(again.ms < 1500, `took ${again.ms} ms`);
+    assert.match(again.res.reason, /seen \d+ s ago; tried again after \d+ s/);
+  } finally { srv.kill('SIGKILL'); }
+});
+
+test('round 3: one publish stays inside its budget even when each network call may take longer', () => {
+  const h = hosts(1);
+  say(h.hosta, 'hosta', 'one');
+  const { srv, port } = server('hang');
+  try {
+    git(h.hosta, 'remote', 'set-url', 'origin', `http://127.0.0.1:${port}/r.git`);
+    const { ms, res } = publishIn(h.hosta, { DELIVERY_GIT_TIMEOUT_MS: '20000', DELIVERY_PUBLISH_BUDGET_MS: '2500' });
+    assert.strictEqual(res.published, false);
+    assert.ok(ms < 6000, `took ${ms} ms`);
+  } finally { srv.kill('SIGKILL'); }
+});
+
+test('round 3: a refresh that works clears the reason the last push failed', () => {
+  const h = hosts(1);
+  say(h.hosta, 'hosta', 'one');
+  const f = path.join(log.opDir(h.hosta), 'cursors', 'last-publish.json');
+  fs.writeFileSync(f, JSON.stringify({ at: Date.now(), reason: 'records chain forked: an old fork' }));
+  assert.match(log.lastPublishReason(h.hosta), /old fork/);
+  assert.strictEqual(log.refresh(h.hosta, { host: 'hosta' }).ok, true);
+  assert.strictEqual(log.lastPublishReason(h.hosta), null);
+});
+
+test('round 3: an offline first fetch on a re-clone forks the host chain; quarantine recovers it and the inputs are captured again', () => {
+  const R = require('./operator-records.js');
+  const h = hosts(1);
+  say(h.hosta, 'hosta', 'one');
+  assert.strictEqual(pub(h.hosta, 'hosta').published, true);
+  fs.rmSync(store.storeDir(h.hosta), { recursive: true, force: true });
+  const good = git(h.hosta, 'config', '--get', 'remote.origin.url').trim();
+  git(h.hosta, 'remote', 'set-url', 'origin', path.join(h.base, 'missing.git'));
+  const tr = path.join(mk('opstore-tr2-'), 't.jsonl');
+  fs.writeFileSync(tr, JSON.stringify({ type: 'user', origin: { kind: 'human' }, promptId: 'off-p1', uuid: 'off-u1', timestamp: '2026-10-13T11:00:00.000Z', sessionId: 'off', message: { role: 'user', content: 'said while offline' } }) + '\n');
+  const sync = () => log.syncTranscript({ projectRoot: h.hosta, transcriptPath: tr, sessionId: 'off', instance: 'cos', role: 'chief-of-staff', host: 'hosta', now: new Date('2026-10-13T12:00:00Z') });
+  sync();
+  assert.deepStrictEqual(log.listInputs(h.hosta).map((e) => e.id), ['in-hosta-000001'], 'the chain started over');
+  git(h.hosta, 'remote', 'set-url', 'origin', good);
+  const r = log.refresh(h.hosta, { host: 'hosta' });
+  assert.deepStrictEqual(r.diverged, ['inputs/hosta/2026-10.ndjson']);
+  assert.match(r.reason, /quarantine --file inputs\/hosta\/2026-10\.ndjson/);
+  R.quarantine({ projectRoot: h.hosta, file: 'inputs/hosta/2026-10.ndjson', reason: 'offline re-clone', by: { instance: 'cos', role: 'chief-of-staff', host: 'hosta' } });
+  sync();
+  assert.deepStrictEqual(log.listInputs(h.hosta).map((e) => [e.id, e.text]), [['in-hosta-000001', 'one'], ['in-hosta-000002', 'said while offline']]);
+  assert.strictEqual(pub(h.hosta, 'hosta').published, true);
 });

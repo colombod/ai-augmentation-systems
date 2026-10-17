@@ -1120,7 +1120,8 @@ test('torn tail: readers report it, the writer repairs its own chain and keeps t
 test('quarantine moves a chain file aside as evidence and clears its head', () => {
   const root = fixture();
   decide(root, { by: BUILDER_OWN });
-  assert.strictEqual(codeOf(() => R.quarantine({ projectRoot: root, file: 'records/builder-1.ndjson', reason: 'forked', by: BUILDER })), 'not_allowed');
+  // an instance may set aside its own chain, not another's
+  assert.strictEqual(codeOf(() => R.quarantine({ projectRoot: root, file: 'records/chief-of-staff.ndjson', reason: 'forked', by: BUILDER })), 'not_allowed');
   assert.strictEqual(codeOf(() => R.quarantine({ projectRoot: root, file: '../x.ndjson', reason: 'x', by: COS })), 'invalid_target');
   const r = R.quarantine({ projectRoot: root, file: 'records/builder-1.ndjson', reason: 'forked instance', by: COS });
   assert.match(r.moved_to, /quarantine\/builder-1\.ndjson\.\d+$/);

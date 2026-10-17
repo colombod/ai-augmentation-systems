@@ -432,7 +432,16 @@ function storeOpts(projectRoot, opts) {
 // merge in the store only). { ok, updated, diverged, reason?, no_remote?, remote? }.
 function refresh(projectRoot, opts = {}) {
   try {
-    return store.refresh(projectRoot, storeOpts(projectRoot, opts));
+    const r = store.refresh(projectRoot, storeOpts(projectRoot, opts));
+    // a refresh that worked clears the reason the last push failed (a fork that was resolved since)
+    if (r.ok) {
+      try {
+        const f = path.join(opDir(projectRoot), 'cursors', 'last-publish.json');
+        const j = readJson(f);
+        if (j && j.reason) writeJsonAtomic(f, { at: j.at });
+      } catch (e) { /* best effort */ }
+    }
+    return r;
   } catch (e) {
     return { ok: false, updated: [], diverged: [], reason: String(e && e.message || e) };
   }

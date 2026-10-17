@@ -1310,37 +1310,61 @@ function recordRehost(o) {
 }
 
 // Local evidence handling; neither records anything in a chain.
+// Who may set a chain aside: the chief of staff any chain; an instance its own records chain; a role
+// its own host's inputs chains (so a host without a chief of staff can recover its own chains).
 function quarantine(o) {
   const root = o.projectRoot;
-  if (!o.by || o.by.role !== 'chief-of-staff') throw new OperatorError('not_allowed', 'only the chief of staff quarantines a chain file');
   needText(o.reason, 'reason');
   const im = /^inputs\/([A-Za-z0-9][A-Za-z0-9._-]*)\/(\d{4}-\d{2})\.ndjson$/.exec(String(o.file || ''));
-  if (im) {
-    const src = path.join(log.opDir(root), 'inputs', im[1], `${im[2]}.ndjson`);
-    if (!fs.existsSync(src)) throw new OperatorError('not_found', `inputs/${im[1]}/${im[2]}.ndjson does not exist here`);
-    const dir = path.join(log.opDir(root), 'quarantine');
-    fs.mkdirSync(dir, { recursive: true });
-    const dest = path.join(dir, `inputs-${im[1]}-${im[2]}.ndjson.${Date.now()}`);
-    fs.renameSync(src, dest);
-    fs.writeFileSync(`${dest}.reason.txt`, `${o.reason.trim()}\nby ${o.by.instance} at ${new Date().toISOString()}\n`);
-    try { fs.unlinkSync(`${src}.lock`); } catch (e) { /* none */ }
-    log.dropHead(root, log.safeHost(im[1]));
-    const sa = require('./operator-store.js').setAside(root, `inputs/${im[1]}/${im[2]}.ndjson`, dest);
-    return { moved_to: path.relative(root, dest), ...(sa.adopted ? { adopted_remote: true } : {}), ...(sa.ok ? {} : { warning: sa.reason }) };
+  const m = im ? null : /^(?:records\/)?([A-Za-z0-9][A-Za-z0-9._-]*)\.ndjson$/.exec(String(o.file || ''));
+  if (!im && !m) throw new OperatorError('invalid_target', 'quarantine takes --file records/<instance>.ndjson or inputs/<host>/<YYYY-MM>.ndjson');
+  const own = o.by && (im ? (o.by.host && log.safeHost(o.by.host) === log.safeHost(im[1])) : o.by.instance === m[1]);
+  if (!o.by || (o.by.role !== 'chief-of-staff' && !own)) {
+    throw new OperatorError('not_allowed', 'only the chief of staff, or the chain\'s own instance (records/<instance>.ndjson) or host (inputs/<host>/), quarantines a chain file');
   }
-  const m = /^(?:records\/)?([A-Za-z0-9][A-Za-z0-9._-]*)\.ndjson$/.exec(String(o.file || ''));
-  if (!m) throw new OperatorError('invalid_target', 'quarantine takes --file records/<instance>.ndjson or inputs/<host>/<YYYY-MM>.ndjson');
-  const src = recordsFile(root, m[1]);
-  if (!fs.existsSync(src)) throw new OperatorError('not_found', `records/${m[1]}.ndjson does not exist here`);
+  const rel = im ? `inputs/${im[1]}/${im[2]}.ndjson` : `records/${m[1]}.ndjson`;
+  const src = im ? path.join(log.opDir(root), 'inputs', im[1], `${im[2]}.ndjson`) : recordsFile(root, m[1]);
+  if (!fs.existsSync(src)) throw new OperatorError('not_found', `${rel} does not exist here`);
+  const store = require('./operator-store.js');
+  // the remote's copy is taken only after a look at what it adds
+  const pre = store.asideCheck(root, rel, fs.readFileSync(src));
+  if (pre.extension && !o.adoptRemote) {
+    throw new OperatorError('adopt_remote_needed', `the remote copy of ${rel} is this copy plus ${pre.adopted.length} line(s) this store did not write: ${pre.adopted.map((e) => `${e.id} (by ${e.instance || '?'} from ${e.host || '?'})`).join(', ')}. Setting this copy aside would take them as this chain's history. Review them first (operator.js show <id>); if they are genuine, rerun with --adopt-remote. If they are not, leave the chain as it is, tell the operator, and have the remote's delivery-operator branch repaired (git -C ${store.storeDir(root)} log -p refs/remotes/origin/delivery-operator -- operator/${rel})`);
+  }
   const dir = path.join(log.opDir(root), 'quarantine');
   fs.mkdirSync(dir, { recursive: true });
-  const dest = path.join(dir, `${m[1]}.ndjson.${Date.now()}`);
+  const dest = path.join(dir, im ? `inputs-${im[1]}-${im[2]}.ndjson.${Date.now()}` : `${m[1]}.ndjson.${Date.now()}`);
   fs.renameSync(src, dest);
   fs.writeFileSync(`${dest}.reason.txt`, `${o.reason.trim()}\nby ${o.by.instance} at ${new Date().toISOString()}\n`);
   try { fs.unlinkSync(`${src}.lock`); } catch (e) { /* none */ }
-  log.dropHead(root, headsKey('records', m[1]));
-  const sa = require('./operator-store.js').setAside(root, `records/${m[1]}.ndjson`, dest);
-  return { moved_to: path.relative(root, dest), ...(sa.adopted ? { adopted_remote: true } : {}), ...(sa.ok ? {} : { warning: sa.reason }) };
+  log.dropHead(root, im ? log.safeHost(im[1]) : headsKey('records', m[1]));
+  if (im) {
+    // the inputs captured into the set-aside copy are captured again: the host's dedupe index and the
+    // transcript cursors start over (dedupe keeps what the remaining chain already has)
+    const cur = path.join(log.opDir(root), 'cursors');
+    try {
+      for (const f of fs.readdirSync(cur)) {
+        if (!f.endsWith('.json')) continue;
+        const full = path.join(cur, f);
+        if (f === `inputs-index-${log.safeHost(im[1])}.json`) { fs.unlinkSync(full); continue; }
+        let j = null;
+        try { j = JSON.parse(fs.readFileSync(full, 'utf8')); } catch (e) { j = null; }
+        if (j && typeof j.transcript === 'string') fs.unlinkSync(full);
+      }
+    } catch (e) { /* no cursors yet */ }
+  }
+  const sa = store.setAside(root, rel, dest);
+  const out = { moved_to: path.relative(root, dest) };
+  if (sa.adopted) {
+    out.adopted_remote = true;
+    out.adopted = sa.lines || [];
+    const note = `${dest}.adopted.txt`;
+    fs.writeFileSync(note, [`took the remote copy of ${rel} after setting this one aside (${o.reason.trim()})`,
+      `lines this store did not write, to review:`, ...out.adopted.map((e) => `  ${e.id} by ${e.instance || '?'} from ${e.host || '?'} at ${e.ts || '?'}`), ''].join('\n'));
+    out.evidence = path.relative(root, note);
+  }
+  if (!sa.ok) out.warning = sa.reason;
+  return out;
 }
 
 function repairChain(o) {

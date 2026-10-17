@@ -72,6 +72,7 @@ const NET_RUNNER = `
 const cp = require('child_process');
 const [cwd, timeout, args] = [process.argv[1], Number(process.argv[2]), JSON.parse(process.argv[3])];
 const c = cp.spawn('git', args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+process.stderr.write('PGID:' + c.pid + '\\n'); // so the parent can kill the group if this runner stalls
 let out = '', err = '', timedOut = false;
 c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { err += d; });
 const t = setTimeout(() => { timedOut = true; try { process.kill(-c.pid, 'SIGKILL'); } catch (e) { try { c.kill('SIGKILL'); } catch (x) {} } }, timeout);
@@ -85,6 +86,11 @@ function runNet(loc, args, timeoutMs) {
     { env, encoding: 'utf8', timeout: timeoutMs + 5000, maxBuffer: 64 * 1024 * 1024 });
   let j = null;
   try { j = JSON.parse(r.stdout); } catch (e) { j = null; }
+  if (!j) {
+    // the runner itself did not finish: kill the git process group it started
+    const m = /PGID:(\d+)/.exec(String(r.stderr || ''));
+    if (m) { try { process.kill(-Number(m[1]), 'SIGKILL'); } catch (e) { /* gone */ } }
+  }
   if (!j) return { ok: false, out: '', err: `git ${args[0]} did not finish (${r.error ? r.error.message : 'no result'})`, timedOut: true };
   return { ok: j.code === 0 && !j.timedOut, out: String(j.out || '').replace(/\s+$/, ''), err: String(j.err || '').trim(), timedOut: !!j.timedOut };
 }
@@ -475,7 +481,7 @@ function divergedReason(loc, bad) {
     return `the remote copy of ${b.path} no longer starts with this store's copy: published history was rewritten. Nothing was merged or pushed. Tell the chief of staff; inspect with \`git -C ${loc.store} log -p ${TRACKING} -- ${OP}/${b.path}\`. To accept the remote copy after keeping this one as evidence: ${take}`;
   }
   const kind = b.path.startsWith('inputs/') ? 'inputs' : 'records';
-  return `${kind} chain forked: another writer appended to ${b.path}, a chain only one writer appends to (a forked instance, or two clones using one host label); this store's copy and the remote copy both grew differently. Nothing was merged or pushed. Tell the chief of staff: operator.js problems lists it, and operator.js quarantine --file ${b.path} sets this copy aside as evidence. One working copy per host label and instance is assumed`;
+  return `${kind} chain forked: another writer appended to ${b.path}, a chain only one writer appends to (a forked instance, two clones using one host label, or a line pushed by someone else)${b.note ? `: ${b.note}` : ''}. Nothing was merged or pushed. Tell the chief of staff: operator.js problems lists it; operator.js quarantine --file ${b.path} sets this copy aside as evidence (the chief of staff, or the instance that owns the chain), and refuses to take the remote's extra lines unless --adopt-remote is given after reviewing them. One working copy per host label and instance is assumed`;
 }
 
 // Bring the working files from tree `from` to commit `to`, file by file under each chain's writer
@@ -533,13 +539,30 @@ function chainEntries(buf) {
   return out;
 }
 
+// The host the COMMITTED manifest (team.json in the project's HEAD; read-only `git show`) places an
+// instance on, or null when it cannot be read. An uncommitted edit of team.json does not count.
+function manifestHost(loc, instance) {
+  if (!loc.manifestHosts) {
+    loc.manifestHosts = new Map();
+    const r = run(loc.root, ['show', 'HEAD:./.delivery/team/team.json'], { plain: true });
+    try {
+      const { expandInstances, normalizeAliases } = require('./manifest.js');
+      for (const i of expandInstances(normalizeAliases(JSON.parse(r.out)))) if (i.role && i.role.host) loc.manifestHosts.set(i.instance, safeLabel(i.role.host));
+    } catch (e) { /* no committed manifest: no rehost is authorised by it */ }
+  }
+  return loc.manifestHosts.get(instance) || null;
+}
+
 // A records chain an instance of this host writes may grow elsewhere only after the instance moved:
 // the latest rehost of that instance in a chain that verifies, recorded by the chief of staff or by
-// the instance itself, names another host.
-function movedAway(loc, tree, instance, host) {
+// the instance itself, names another host, AND either that destination is the host the committed
+// manifest gives the instance, or the rehost is already in this store's own copy (it was written or
+// accepted here). { moved, rehost? } — rehost: the latest rehost seen, so a refusal can name it.
+function movedAway(loc, ours, tree, instance, host) {
   const files = Object.keys(tree).filter((p) => p.startsWith(`${OP}/records/`) && isChain(p));
-  const blobs = readBlobs(loc.store, files.map((p) => tree[p]));
+  const blobs = readBlobs(loc.store, [...files.map((p) => tree[p]), ...files.map((p) => ours[p])]);
   let last = null;
+  let lastFile = null;
   for (const p of files) {
     const entries = chainEntries(blobs.get(tree[p]) || Buffer.alloc(0));
     if (!entries) continue;
@@ -547,10 +570,13 @@ function movedAway(loc, tree, instance, host) {
       if (e.kind !== 'rehost' || e.instance !== instance || !e.to || typeof e.to.host !== 'string') continue;
       const by = e.by || {};
       if (by.role !== 'chief-of-staff' && by.instance !== instance) continue;
-      if (!last || Date.parse(e.ts) > Date.parse(last.ts)) last = e;
+      if (!last || Date.parse(e.ts) > Date.parse(last.ts)) { last = e; lastFile = p; }
     }
   }
-  return !!last && safeLabel(last.to.host) !== safeLabel(host);
+  if (!last || safeLabel(last.to.host) === safeLabel(host)) return { moved: false, rehost: last };
+  const known = ours[lastFile] && blobs.get(ours[lastFile]) && blobs.get(ours[lastFile]).toString('utf8').includes(`"hash":"${last.hash}"`);
+  const placed = manifestHost(loc, instance) === safeLabel(last.to.host);
+  return { moved: !!(known || placed), rehost: last, unauthorised: !(known || placed) };
 }
 const safeLabel = (h) => String(h || '').replace(/[^A-Za-z0-9._-]/g, '_').replace(/^[-.]+/, '');
 
@@ -588,14 +614,22 @@ function ownerConflicts(loc, opts, ours, oursTree, theirs, theirsTree) {
     const mine = o ? parse(o) : [];
     const added = parse(o ? t.subarray(o.length) : t);
     const writtenHere = mine.length > 0 && fromHere(mine[mine.length - 1]);
-    if (writtenHere && !movedAway(loc, theirsTree, rm[1], host)) { out.push({ path: opRel(p), kind: 'fork' }); continue; }
-    if (added.some(fromHere) && !adopt && !movedAway(loc, theirsTree, rm[1], host)) out.push({ path: opRel(p), kind: 'fork' });
+    const claims = added.some(fromHere) && !adopt;
+    if (!writtenHere && !claims) continue;
+    const mv = movedAway(loc, oursTree, theirsTree, rm[1], host);
+    if (mv.moved) continue;
+    const ids = added.filter(Boolean).map((e) => `${e.id} (by ${e.by && e.by.instance || '?'} from ${e.by && e.by.host || '?'})`);
+    const note = mv.unauthorised
+      ? `the remote moves ${rm[1]} to ${mv.rehost.to.host} with ${mv.rehost.id}, but the committed .delivery/team/team.json places it on ${manifestHost(loc, rm[1]) || 'no host'}; that rehost is not authorised. Lines not written here: ${ids.join(', ')}`
+      : `lines not written here: ${ids.join(', ')}`;
+    out.push({ path: opRel(p), kind: 'fork', note, rehost: mv.unauthorised ? mv.rehost.id : undefined });
   }
   return out;
 }
 
 // Merge the fetched remote branch into the store. { ok, updated, diverged?, reason? }.
 function mergeRemote(loc, opts = {}) {
+  loc.manifestHosts = null; // read the committed manifest afresh for each merge
   const theirs = revParse(loc.store, TRACKING);
   if (!theirs) return { ok: true, updated: [] };
   const ours = revParse(loc.store, 'HEAD');
@@ -603,7 +637,7 @@ function mergeRemote(loc, opts = {}) {
   const oursTree = treeOf(loc.store, ours);
   const theirsTree = treeOf(loc.store, theirs);
   const owned = ownerConflicts(loc, opts, ours, oursTree, theirs, theirsTree);
-  if (owned.length) return { ok: false, updated: [], diverged: owned.map((c) => c.path), reason: divergedReason(loc, owned) };
+  if (owned.length) return { ok: false, updated: [], diverged: owned.map((c) => c.path), diverged_detail: owned.map((c) => ({ path: c.path, note: c.note, rehost: c.rehost })), reason: divergedReason(loc, owned) };
   let target;
   let mergedTree;
   if (!ours || run(loc.store, ['merge-base', '--is-ancestor', ours, theirs]).ok) {
@@ -731,19 +765,39 @@ function humanReason(op, err, timedOut) {
 const retryable = (err) => /\[rejected\]|non-fast-forward|fetch first|cannot lock ref|incorrect old value|failed to update ref|stale info|but expected/i.test(String(err || ''))
   && !/protected branch|declined|pre-receive hook/i.test(String(err || ''));
 
-function noteNetwork(r, reason) {
-  if (r.timedOut || UNREACHABLE.test(r.err)) networkDown = reason;
+// "Remote down" is remembered for DOWN_MS across processes (a stamp in the store's local state), so
+// the next commands on this host report unpublished at once instead of each waiting on the remote.
+// Only a timeout or a transport failure sets it, never a refusal (permission, branch rule).
+const DOWN_MS = 60 * 1000;
+const downFile = (loc) => path.join(loc.opDir, 'cursors', 'remote-down.json');
+function noteNetwork(loc, r, reason) {
+  if (!(r.timedOut || UNREACHABLE.test(r.err))) return;
+  networkDown = reason;
+  // keyed by a hash of the URL (never the URL itself): another remote is not known to be down
+  try { fs.mkdirSync(path.dirname(downFile(loc)), { recursive: true }); fs.writeFileSync(downFile(loc), JSON.stringify({ at: Date.now(), reason, url: urlKey(loc) })); } catch (e) { /* best effort */ }
 }
+const urlKey = (loc) => crypto.createHash('sha256').update(String(projectRemote(loc) || '')).digest('hex').slice(0, 16);
+function remoteDown(loc) {
+  if (networkDown) return `${networkDown} (not tried again in this command)`;
+  try {
+    const j = JSON.parse(fs.readFileSync(downFile(loc), 'utf8'));
+    const age = Date.now() - j.at;
+    if (j.url === urlKey(loc) && age >= 0 && age < DOWN_MS) return `${j.reason} (seen ${Math.round(age / 1000)} s ago; tried again after ${Math.round((DOWN_MS - age) / 1000)} s)`;
+  } catch (e) { /* none */ }
+  return null;
+}
+function remoteUp(loc) { try { fs.unlinkSync(downFile(loc)); } catch (e) { /* none */ } }
 
 function fetchRemote(loc, timeoutMs) {
   const f = runNet(loc, ['fetch', '--quiet', '--prune', '--no-tags', 'origin', `+${REF}:${TRACKING}`], timeoutMs);
-  if (f.ok) return { ok: true };
+  if (f.ok) { remoteUp(loc); return { ok: true }; }
   if (!f.timedOut && /couldn't find remote ref|no such ref|not our ref|remote ref does not exist/i.test(f.err)) {
     run(loc.store, ['update-ref', '-d', TRACKING]);
+    remoteUp(loc);
     return { ok: true };
   }
   const reason = humanReason('fetch', f.err, f.timedOut);
-  noteNetwork(f, reason);
+  noteNetwork(loc, f, reason);
   return { ok: false, reason, network: !!networkDown };
 }
 
@@ -769,7 +823,8 @@ function syncStore(projectRoot, opts = {}) {
       if (!c.ok && opts.push) return { ok: false, published: false, reason: c.reason, code: c.code, paths: c.paths, updated: [] };
       const refused = c.ok ? undefined : { reason: c.reason, paths: c.paths };
       if (!url) return { ok: false, published: false, no_remote: true, reason: 'no remote', committed: c.committed, entries: c.entries, updated: [], refused };
-      if (networkDown) return { ok: false, published: false, network: true, reason: `${networkDown} (not tried again in this command)`, remote: 'origin', updated: [], refused };
+      const down = remoteDown(loc);
+      if (down) return { ok: false, published: false, network: true, reason: down, remote: 'origin', updated: [], refused };
       const updated = [];
       for (let attempt = 1; attempt <= (opts.push ? PUSH_ATTEMPTS : 1); attempt++) {
         if (left() < 1000) {
@@ -780,7 +835,7 @@ function syncStore(projectRoot, opts = {}) {
         if (!f.ok) return { ok: false, published: false, reason: f.reason, network: f.network, remote: 'origin', updated, refused };
         const m = mergeRemote(loc, opts);
         updated.push(...m.updated);
-        if (!m.ok) return { ok: false, published: false, reason: m.reason, diverged: m.diverged || [], remote: 'origin', updated, refused };
+        if (!m.ok) return { ok: false, published: false, reason: m.reason, diverged: m.diverged || [], diverged_detail: m.diverged_detail, remote: 'origin', updated, refused };
         if (!opts.push) return { ok: true, published: false, updated, diverged: [], remote: 'origin', refused };
         const head = revParse(loc.store, 'HEAD');
         const remote = revParse(loc.store, TRACKING);
@@ -797,7 +852,7 @@ function syncStore(projectRoot, opts = {}) {
         }
         if (p.timedOut || !retryable(p.err)) {
           const reason = humanReason('push', p.err, p.timedOut);
-          noteNetwork(p, reason);
+          noteNetwork(loc, p, reason);
           return { ok: false, published: false, reason, network: !!networkDown, remote: 'origin', updated };
         }
         sleepMs(50 + Math.floor(Math.random() * 200));
@@ -820,6 +875,7 @@ function refresh(projectRoot, opts = {}) {
   if (r.network) out.network = true;
   if (r.remote) out.remote = r.remote;
   if (r.refused) out.refused = r.refused;
+  if (r.diverged_detail) out.diverged_detail = r.diverged_detail;
   return out;
 }
 
@@ -885,6 +941,26 @@ function unpublished(projectRoot, opts = {}) {
   }
 }
 
+// The lines of `remote` this copy does not have, as { id, instance, host, ts }.
+function linesNotIn(remote, mine) {
+  const have = new Set(mine.toString('utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l).hash; } catch (e) { return null; } }));
+  return remote.toString('utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (e) { return null; } })
+    .filter((e) => e && !have.has(e.hash)).map((e) => ({ id: e.id, instance: e.by && e.by.instance, host: (e.by && e.by.host) || e.host, ts: e.ts }));
+}
+
+// Before quarantine moves a chain aside (read-only): what taking the remote copy would bring.
+// { extension: the remote copy is this copy plus more lines, adopted: [those lines] }.
+function asideCheck(projectRoot, rel, current) {
+  const loc = locate(projectRoot);
+  if (!loc.git || !fs.existsSync(path.join(loc.store, '.git', 'HEAD'))) return { extension: false, adopted: [] };
+  const r = treeOf(loc.store, revParse(loc.store, TRACKING))[`${OP}/${rel}`];
+  if (!r) return { extension: false, adopted: [] };
+  const remote = readBlobs(loc.store, [r]).get(r);
+  const mine = complete(current);
+  const extension = remote.length > mine.length && startsWith(remote, mine);
+  return { extension, adopted: extension ? linesNotIn(remote, mine) : [] };
+}
+
 // After operator.js quarantine moved a chain file aside (rel: its path in the operator directory,
 // evidence: where it was moved), make the store agree so the set-aside copy stops blocking merges:
 // - the remote holds the very copy that was set aside: it stays absent here (it keeps failing
@@ -928,11 +1004,13 @@ function setAside(projectRoot, rel, evidence) {
         const lock = writerLock(loc, p);
         if (lock) require('./chain.js').withLock(lock, write); else write();
       }
-      return { ok: true, adopted: !!r };
+      let lines = [];
+      if (r) { try { lines = linesNotIn(readBlobs(loc.store, [r]).get(r), complete(fs.readFileSync(evidence))); } catch (e) { lines = []; } }
+      return { ok: true, adopted: !!r, lines };
     });
   } catch (e) {
     return { ok: false, reason: String(e && e.message || e) };
   }
 }
 
-module.exports = { operatorDir, storeDir, ensureStore, publish, refresh, bootstrap, unpublished, setAside, BRANCH, STORE_NAME, LEGACY_REL, _locate: locate };
+module.exports = { operatorDir, storeDir, ensureStore, publish, refresh, bootstrap, unpublished, setAside, asideCheck, BRANCH, STORE_NAME, LEGACY_REL, _locate: locate };

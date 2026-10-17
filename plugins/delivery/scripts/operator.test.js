@@ -576,8 +576,8 @@ test('problems, repair and quarantine: excluded records and chains are listed, t
   const rp = run(builder, ['repair', '--instance', 'builder-1']);
   assert.strictEqual(rp.status, 0, rp.out + rp.err);
   assert.match(rp.out, /repaired/);
-  // quarantine: chief of staff only
-  const q0 = run(builder, ['quarantine', '--file', 'records/builder-1.ndjson', '--reason', 'x', '--json']);
+  // quarantine: the chief of staff, or the chain's own instance; not another instance's chain
+  const q0 = run(builder, ['quarantine', '--file', 'records/chief-of-staff.ndjson', '--reason', 'x', '--json']);
   assert.strictEqual(json(q0).code, 'not_allowed');
   const q = run(cos, ['quarantine', '--file', 'records/builder-1.ndjson', '--reason', 'forked instance']);
   assert.strictEqual(q.status, 0, q.out + q.err);
