@@ -285,6 +285,22 @@ function indirect(c, q, next) {
 
 // null, or { phrase, clause }: the clause (lowercased, and in its own casing) that asks the operator
 // to carry something to another party.
+// "the builder has a permission prompt open, please approve it": asking the operator to press a
+// button in another session's harness is a relay too (spec 8.6, permission prompts)
+const PERMISSION_PROMPT = /\bpermission (?:prompt|dialog|request|popup|pop-up)s?\b/i;
+const PROMPT_STATE = /\b(?:open|opened|showing|shown|pending|waiting|up|stuck)\b/i;
+const APPROVE_IT = /\b(?:approve|allow|accept|click|press|confirm|ok)\b[^.?!;]{0,40}?\b(?:it|that|them|the prompt|the dialog|the request|yes)\b/i;
+const SELF_APPROVE = /\b(?:i|we)(?:'ll| will| have| had| already)?\s+(?:\w+\s+)?(?:approve|allow|accept|click|press|confirm)/i;
+
+function permissionPromptRelay(list, i) {
+  const { c } = list[i];
+  if (!PERMISSION_PROMPT.test(c) || !PROMPT_STATE.test(c)) return false;
+  for (const x of [c, list[i + 1] && list[i + 1].c].filter(Boolean)) {
+    if (APPROVE_IT.test(x) && !SELF_APPROVE.test(x)) return true;
+  }
+  return false;
+}
+
 function findRelayRequest(text, opts = {}) {
   if (typeof text !== 'string' || !text.trim()) return null;
   try {
@@ -292,6 +308,7 @@ function findRelayRequest(text, opts = {}) {
     const list = clauses(text);
     for (let i = 0; i < list.length; i++) {
       const { raw, c, q, ctx } = list[i];
+      if (permissionPromptRelay(list, i)) return { phrase: c.slice(0, 200), clause: raw.slice(0, 200) };
       if (OFFER.test(c) || NO_NEED.test(c) || NOTE_TO_SELF.test(c) || BACK_TO_ME.test(c)) continue;
       // reported speech cancels when it comes before the request ("you said to tell ..."), not
       // when it qualifies the object ("brief the engineer on the thresholds you chose")

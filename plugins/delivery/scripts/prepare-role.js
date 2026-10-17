@@ -94,6 +94,20 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     beadsDirWritten = previouslyWritten;
   }
   settings.enabledPlugins = Object.assign({}, settings.enabledPlugins, { 'delivery@ai-augmentation-systems': true });
+  // Pre-allow the lane's own commands (spec 8.6, permission prompts): a manager session should not
+  // stop on a prompt only the operator can clear for a command its lane already permits.
+  try {
+    const { loadPolicy, laneAllowRules } = require('../hooks/scripts/lane.js');
+    const groups = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'lane-groups.json'), 'utf8'));
+    const rules = laneAllowRules(loadPolicy({ pluginRoot, projectRoot, briefRef: role.brief }), groups, pluginRoot);
+    if (rules.length) {
+      if (!settings.permissions || typeof settings.permissions !== 'object') settings.permissions = {};
+      const have = Array.isArray(settings.permissions.allow) ? settings.permissions.allow : [];
+      settings.permissions.allow = [...new Set([...have, ...rules])];
+    }
+  } catch (err) {
+    files.push(`warning: lane permission rules not written (${err.message})`);
+  }
   if (settings.permissions && typeof settings.permissions === 'object') {
     delete settings.permissions.defaultMode;
     if (Object.keys(settings.permissions).length === 0) delete settings.permissions;

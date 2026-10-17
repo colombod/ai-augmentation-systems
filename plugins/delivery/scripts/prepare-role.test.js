@@ -112,15 +112,20 @@ test('prepareRole merges settings, keeps foreign keys, sets DELIVERY_MODE and en
   const { roleDir } = prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
   const file = path.join(roleDir, '.claude', 'settings.local.json');
   const first = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.equal(first.permissions, undefined);
+  // I5: the lane's own commands are pre-allowed (no permission prompt only the operator can clear)
+  assert.ok(first.permissions.allow.includes('Bash(bd ready:*)'));
+  assert.ok(first.permissions.allow.includes(`Bash(node ${path.join(PLUGIN_ROOT, 'scripts', 'operator.js')} record:*)`));
+  assert.ok(!first.permissions.allow.some((r) => /Bash\(git push|Bash\(\*/.test(r)), 'nothing outside the chief of staff lane');
   assert.equal(first.env.DELIVERY_MODE, 'delegate');
   assert.equal(first.enabledPlugins['delivery@ai-augmentation-systems'], true);
+  const generated = first.permissions.allow.slice();
   first.permissions = { allow: ['Bash(ls)'], defaultMode: 'auto' };
   first.model = 'haiku';
   fs.writeFileSync(file, JSON.stringify(first));
   prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
   const second = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.deepEqual(second.permissions.allow, ['Bash(ls)']);
+  assert.equal(second.permissions.allow[0], 'Bash(ls)', 'a user rule is kept');
+  assert.deepEqual(second.permissions.allow.slice(1).sort(), generated.sort());
   assert.equal(second.permissions.defaultMode, undefined);
   assert.equal(second.model, 'opus');
   assert.equal(second.enabledPlugins['delivery@ai-augmentation-systems'], true);
@@ -191,4 +196,12 @@ test('C: a BEADS_DIR prepare-role wrote earlier is refreshed when the project mo
   fs.renameSync(moved, projectRoot);
   prep(projectRoot);
   assert.equal(read().env.BEADS_DIR, '/custom/beads');
+});
+
+test('I5: an unrestricted (any) lane gets no pre-allowed commands', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  const settings = JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8'));
+  assert.equal(settings.permissions, undefined);
 });

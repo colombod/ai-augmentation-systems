@@ -56,6 +56,28 @@ function loadPolicy({ pluginRoot, projectRoot, briefRef }) {
   return { roleId: String(meta.id || ''), writes: listValue(meta.lane_writes), bash: bash.length ? bash : DEFAULT_BASH.slice(), mcp: listValue(meta.lane_mcp) };
 }
 
+// Harness permission rules that pre-allow a lane's own commands, so a worker session does not stop
+// on a permission prompt only the operator can clear. Prefix rules only: the lane hook still runs
+// before the permission check and refuses whatever the lane does not allow (flags_none, scope).
+// Unrestricted (`any`) lanes get none: pre-allowing every command is not this hook's call.
+function laneAllowRules(policy, groups, pluginRoot) {
+  if (!policy || policy.bash.includes('any')) return [];
+  const root = pluginRoot ? path.resolve(pluginRoot) : null;
+  const out = new Set();
+  for (const g of policy.bash) {
+    for (const rule of (groups && groups[g]) || []) {
+      if (!rule || !rule.first || rule.first === '*') continue;
+      let head = rule.first;
+      if (rule.arg_prefix) {
+        if (!root) continue;
+        head = `${rule.first} ${String(rule.arg_prefix).replace('${CLAUDE_PLUGIN_ROOT}', root)}`;
+      }
+      for (const sub of rule.sub && rule.sub.length ? rule.sub : [null]) out.add(`Bash(${sub ? `${head} ${sub}` : head}:*)`);
+    }
+  }
+  return [...out];
+}
+
 // lane_mcp patterns: whole tool names, `*` matches any run of characters, everything else is literal.
 function mcpPatternMatches(pattern, name) {
   const re = String(pattern).split('*').map((x) => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*');
@@ -602,4 +624,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

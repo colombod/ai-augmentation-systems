@@ -869,3 +869,16 @@ test('I2: every command named in a Stop block reason passes the Chief of Staff\'
     }
   }
 });
+
+test('I5: asking the operator to clear another session\'s permission prompt is a relay request', () => {
+  for (const m of [
+    'The builder has a permission prompt open; please approve it.',
+    'builder-2 is stuck on a permission prompt pending in its session, can you approve it?',
+    'There is a permission dialog showing in the spike session. Just accept it when you get a moment.',
+  ]) assert.ok(findRelayRequest(m), m);
+  for (const m of [
+    'The builder had a permission prompt pending; I approved it from the lane allow list.',
+    'Permission prompts are pre-allowed for in-lane commands now.',
+    'No permission prompt is open anywhere.',
+  ]) assert.equal(findRelayRequest(m), null, m);
+});
