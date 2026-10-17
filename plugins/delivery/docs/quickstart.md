@@ -340,7 +340,7 @@ What `verify` proves and what it does not is listed under **Limits** in the READ
 
 ## What is not automated yet
 
-- **Provisioning, hiring and deploy are later phases.** `/delivery:start` writes the manifest and prepares the roles on this host, but you still start each session yourself, and adding a host or a role later means editing `team.json` and running `start.js` (or `prepare-role`) again.
+- **Provisioning and deploy are manual.** `/delivery:start` writes the manifest and prepares the roles on this host, but you still start each session yourself, and adding a host or a role later means editing `team.json` and running `start.js` (or `prepare-role`) again.
 - **The roster is per host.** `/delivery:team` reports only the roles on the host it runs on.
 - **Nothing restarts a session for you.** When a session ends, start it again in its role directory; the SessionStart hook restores the role.
 
@@ -360,7 +360,7 @@ Role chief-of-staff: the lane cannot be checked (manifest: team.json: invalid JS
 
 Run the restore command it names, or fix the file from outside the session.
 
-**3. `bd` cannot find the database.** From a role directory `bd where` says `No active beads workspace found`, and `/delivery:team` warns `bd unreachable from role directories: set BEADS_DIR or provision beads (phase 3)`. The role's `settings.local.json` has no `BEADS_DIR`, usually because `prepare-role` ran before `bd init`. Run `bd init` in `<project-root>` if needed, run `prepare-role` again for each instance, and restart the sessions.
+**3. `bd` cannot find the database.** From a role directory `bd where` says `No active beads workspace found`, and `/delivery:team` warns `bd unreachable from role directories: run bd init in the project root, then rerun prepare-role so the roles get BEADS_DIR`. The role's `settings.local.json` has no `BEADS_DIR`, usually because `prepare-role` ran before `bd init`. Run `bd init` in `<project-root>` if needed, run `prepare-role` again for each instance, and restart the sessions.
 
 **4. `format_unrecognised`.** `operator.js sync` or `record` reports that the transcript format was not recognised. Capture relies on an undocumented field the harness writes on each transcript entry; when it changes, recording fails closed rather than trusting what it cannot read. Nothing is recorded until the transcript reader in `scripts/lib/transcript.js` is updated. Tell whoever maintains the plugin; `operator.js sync --format-check` shows the state.
 

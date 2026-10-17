@@ -14,7 +14,7 @@ argument-hint: "[runner]"
 
 Runner: **$ARGUMENTS** (`superpowers` | `generic`; defaults to asking)
 
-This plugin plans, scopes, reviews and re-aligns. It does not build. This skill translates
+This skill does not build: the shipping team's builders, or your runner, do. It translates
 the scope package into whatever the chosen runner expects, so the hand-off is a real
 contract rather than a pile of markdown someone has to re-read.
 

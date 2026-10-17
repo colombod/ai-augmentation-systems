@@ -112,10 +112,10 @@ You supply **intent** — why this app exists, what it should do — and optiona
 to reach implementation, scopes it into sprints, hands each one to whatever runner you
 choose, then independently reviews acceptance and re-aligns the plan.
 
-**This package does not build.** Implementation belongs to an external runner —
-[superpowers](https://github.com/obra/superpowers), your own harness, an agent, a team.
-That boundary is deliberate: it keeps the pipeline harness-agnostic, and it keeps the
-thing that reviews the work separate from the thing that produced it, which is what makes
+**Two ways to build.** Run the shipping team, where builder sessions build each story with a
+runner ([superpowers](https://github.com/obra/superpowers), attractor or plain), or hand each
+sprint to an external runner of your own — a harness, an agent, a team. Either way the thing that
+reviews the work is separate from the thing that produced it, which is what makes
 `/delivery:sprint-review` worth trusting.
 
 ```
@@ -176,7 +176,7 @@ Pipeline skills plan the product: run them yourself, in order. In a shipping tea
 **Reference.** The bullets below list every mechanism; read them when you need the detail.
 
 The pipeline's roles can also run as long-lived sessions, one per role, on the hosts that can do the
-work, coordinating through cross-session messages and beads. Phase 1 ships the pieces that give a
+work, coordinating through cross-session messages and beads. These are the pieces that give a
 session its role and keep it:
 
 - `roles/*.md` — the role briefs (chief-of-staff, staffing, product-manager, delivery-lead,
@@ -251,12 +251,12 @@ session its role and keep it:
 
 The delivery plugin must be installed on the machine; `prepare-role` enables it for the role
 directory. The steward keeps the original project checkout pulled (`git pull --ff-only`) before
-preparing or restarting a role, because the hooks read the manifest there. In phase 1 the roster is
+preparing or restarting a role, because the hooks read the manifest there. The roster is
 per host, so `/delivery:team` reports only roles on this host. `prepare-role` does not set a
 permission mode; a steward passes `--permission-mode` when starting the session.
 
-Design: `.superpowers/specs/2026-10-12-shipping-team-design.md`. Provisioning, hiring and deploy
-are later phases.
+What is not automated yet (starting sessions, adding hosts, deploy) is listed in
+`docs/quickstart.md`.
 
 ## Operator decisions
 

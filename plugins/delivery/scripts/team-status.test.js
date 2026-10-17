@@ -84,7 +84,7 @@ test('renderStatus with a project root prints a Manifest line, "not a git repo" 
 
 test('C: an unreachable bd is a warning line, not drift', () => {
   const root = scratchProject();
-  const warning = 'bd unreachable from role directories: set BEADS_DIR or provision beads (phase 3)';
+  const warning = 'bd unreachable from role directories: run bd init in the project root, then rerun prepare-role so the roles get BEADS_DIR';
   const down = teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => false });
   assert.equal(down.bd_reachable, false);
   assert.ok(renderStatus(down).includes(warning));

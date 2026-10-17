@@ -103,7 +103,7 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, war
     for (const n of operator.notes) lines.push(`Note: ${n}`);
     lines.push('');
   }
-  if (bd_reachable === false) { lines.push('Warning: bd unreachable from role directories: set BEADS_DIR or provision beads (phase 3)'); lines.push(''); }
+  if (bd_reachable === false) { lines.push('Warning: bd unreachable from role directories: run bd init in the project root, then rerun prepare-role so the roles get BEADS_DIR'); lines.push(''); }
   if (recovered_from) { lines.push(`Note: roster.json was unreadable and moved to ${recovered_from}; the roster restarts empty.`); lines.push(''); }
   for (const w of warnings || []) lines.push(`Warning: ${w}`);
   lines.push('To change a model: edit roles[].model in .delivery/team/team.json, rerun prepare-role for that instance, restart its session.');
