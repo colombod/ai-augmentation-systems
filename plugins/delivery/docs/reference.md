@@ -219,16 +219,34 @@ never published.
   `delivery-operator`. A session publishes only with push access to the project remote (cloud and
   SSH sessions included); otherwise its records stay committed in its store and show as unpublished.
 - `operator.js publish` (after every write) commits the store's new lines, fetches the branch,
-  merges it, and pushes, retrying a rejected push up to five times. Before every push it checks that
-  each chain it commits verifies and that every chain on either side reaches the result whole: a
-  deleted, shortened or rewritten chain, or one that grew differently on two sides (a fork), is
-  refused and nothing is pushed. `operator.js refresh` is the fetch and merge alone.
+  merges it, and pushes, retrying a rejected push up to five times. What is checked:
+  - **Before a commit**, every chain file whose complete lines changed must start with its committed
+    copy, and the changed chains must verify (hash chain, id sequence, text hashes).
+  - **On every merge** (publish and refresh), every chain on either side must reach the result whole
+    (no deletion, shortening or rewrite), and two copies that grew differently are a fork.
+  - **The owner rule:** a chain this store writes (this host's `inputs/<host>/` chains, and a records
+    chain whose last line here was written from this host) may be behind on the remote, never ahead or
+    different. A remote extension of it is a fork, refused, unless a valid rehost moved the instance to
+    another host, or the store is new and does not hold or write that chain yet (a fresh clone adopts
+    its host's published chains; a new store fetches once before its first capture for that reason).
+  - **Before every push**, whatever reached the store (operator.js, a merge, or a commit made by hand
+    in the store), every chain that differs from the fetched remote copy must still start with it, and
+    must verify as committed.
+  A refusal pushes nothing and names the command that fixes it. `operator.js refresh` is the fetch and
+  merge alone. A chain has one writer by design (per host, per instance); the owner rule is what makes
+  a second writer show up as a fork instead of being merged.
+- Network calls are bounded: each fetch or push at most 15 s (`DELIVERY_GIT_TIMEOUT_MS`), one publish
+  at most 30 s in all, and once the remote has failed to answer, the rest of that command does not wait
+  on it again. A write against an unreachable remote returns in seconds and says it is unpublished.
 - With no remote the store is local only (`publish` says "no remote"). A project directory outside git
   keeps the records in `<project>/.delivery/operator/`; records an earlier version left there are
   copied into the store once.
-- Deleting the store loses only what was not yet published. Inspect it with
-  `git -C .git/delivery-operator log --stat`; `operator.js problems` lists anything that fails
-  verification.
+- **Deleting or re-cloning the project checkout deletes its store**, and with it every entry not yet
+  published (and, without a remote, everything). Before deleting a clone, run `operator.js publish`
+  and check that `/delivery:team` (team-status) shows `Operator entries unpublished: 0`. team-status
+  warns when entries have been unpublished for more than 24 hours, and `operator.js problems` lists
+  unpublished entries as a warning. Published entries come back: a new clone's store takes them from
+  the remote. Inspect a store with `git -C .git/delivery-operator log --stat`.
 
 Delegations, ratification, revocation and chain repair: [operator-reference.md](operator-reference.md).
 

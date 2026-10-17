@@ -492,16 +492,28 @@ the operator's input. `verify` walks answer, decision or delegation, to the verb
 and re-checks scope containment for `settled` answers. Commands added: `answer`, `find`, `ratify`.
 
 **Distributed sessions.** Roles run on several hosts (the operator's PC, SSH hosts, cloud sandboxes)
-that share only the private project repository, so every chain file has exactly one writer and git
-never merges a chain's content: operator inputs are per host, records are per author instance, ids
-embed the owner (`in-<host>-N`, `dec-<instance>-N`). Entries travel on the project remote's
+that share only the private project repository. Every chain file is designed to have one writer and
+git never merges a chain's content: operator inputs are per host, records are per author instance,
+ids embed the owner (`in-<host>-N`, `dec-<instance>-N`). Entries travel on the project remote's
 `delivery-operator` branch, which carries operator files only (repository branch rules must allow
 pushes to it). `operator.js publish` (after every write) commits the store's new lines, fetches the
-branch, merges it (peer files differ by name, so a merge is a union; a chain that grew on both sides
-is a fork and is refused), checks before every push that each chain on both sides reaches the result
-whole and that the chains being committed verify, and pushes, retrying a rejected push up to five
-times. `operator.js refresh` is the same fetch and merge without the push, in the store only; a
-verifier that cannot find a cited id refreshes and retries once. Nobody pulls the project checkout for
+branch, merges it and pushes, retrying a rejected push up to five times. The checks:
+(1) before a commit, each changed chain still starts with its committed copy and verifies;
+(2) on every merge, every chain on either side reaches the result whole (no deletion, shortening or
+rewrite), and two copies that grew differently are a fork;
+(3) the owner rule: a chain this store writes (this host's inputs chains, and a records chain whose
+last line here was written from this host) may be behind on the remote, never ahead or different, so
+a second writer shows up as a fork instead of being merged; a valid rehost of the instance to another
+host is the exception, and so is a new store that neither holds nor writes the chain yet (a fresh
+clone adopts its host's published chains; a new store fetches once before its first capture);
+(4) before every push, whatever reached the store (operator.js, a merge, a commit made by hand in the
+store), every chain that differs from the fetched remote copy must start with it and verify as
+committed. A refusal pushes nothing. Network calls are bounded (15 s per fetch or push,
+`DELIVERY_GIT_TIMEOUT_MS`; 30 s per publish; a remote that failed to answer is not waited on again in
+the same command). `operator.js refresh` is the same fetch and merge without the push, in the store
+only; reads that list (`pending`, `find`, `ledger`, `problems`) refresh first, and a verifier that
+cannot find a cited id refreshes and retries once. Deleting or re-cloning a checkout deletes its store
+and every entry not yet published; team-status shows the count and warns after 24 hours. Nobody pulls the project checkout for
 operator records. An input is as trustworthy as the session environment that captured it and records
 its host, session and transcript reference; a session can publish only with push access to the
 project remote (cloud and SSH sessions included): without it the records stay committed in its store

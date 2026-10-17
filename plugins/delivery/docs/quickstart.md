@@ -336,7 +336,7 @@ An id that does not check out is refused, and the builder asks the Chief of Staf
 NOT VERIFIED dec-chief-of-staff-000099: not_found: record dec-chief-of-staff-000099 was not found (operator.js refresh pulls other hosts)
 ```
 
-In the fixture each write also printed `unpublished (no remote)`, because the throwaway project repo has no remote. With a remote, each write ends with a best-effort commit in the private operator store (`.git/delivery-operator/`, never your checkout) and a push to the remote's `delivery-operator` branch (`operator.js publish`); the session needs push access, and branch rules must allow that branch. You never pull for operator records: `operator.js refresh`, which every reading command runs, fetches them into the store.
+In the fixture each write also printed `unpublished (no remote)`, because the throwaway project repo has no remote. With a remote, each write ends with a best-effort commit in the private operator store (`.git/delivery-operator/`, never your checkout) and a push to the remote's `delivery-operator` branch (`operator.js publish`); the session needs push access, and branch rules must allow that branch. You never pull for operator records: `operator.js refresh` fetches them into the store. `pending`, `find`, `ledger`, `problems` and every write run it first; `verify` and `show` run it only when the id is not found locally.
 
 What `verify` proves and what it does not is listed under **Limits** in the README's "Operator decisions" section. In short: this is tamper-evidence for cooperative sessions, not a security boundary.
 

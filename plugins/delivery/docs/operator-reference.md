@@ -46,13 +46,13 @@ The cited input must be said after the record it ratifies or revokes.
 ## Capture and distribution
 
 - `operator.js sync [--all] [--format-check]`: capture this session's operator inputs from its transcript now. The hooks already do this on every prompt and stop, and `record` and `ack` sync first, so you rarely need it. `--format-check` exits 1 when the transcript format is not recognised.
-- `operator.js publish [--force]`: commit the store's new entries and push them to the `delivery-operator` branch of the project's `origin` (fetch, append-only merge, push; a rejected push is retried up to five times). Every write publishes on its own; run this after a failed push. It needs push access to the project remote, and the repository's branch rules must allow pushes to `delivery-operator`.
+- `operator.js publish [--force]`: commit the store's new entries and push them to the `delivery-operator` branch of the project's `origin` (fetch, append-only merge, push; a rejected push is retried up to five times). Every write publishes on its own; run this after a failed push. It needs push access to the project remote, and the repository's branch rules must allow pushes to `delivery-operator`. It prints how many entries it pushed, and exits 1 when an error kept them from the remote (not for "no remote"). Each fetch or push waits at most 15 s (`DELIVERY_GIT_TIMEOUT_MS`), a publish at most 30 s.
 - `operator.js refresh`: fetch that branch and merge other writers' chains into the private store. It never touches your checkout; you never pull for operator records.
 - The store is `.git/delivery-operator/` of the checkout (the main repository's `.git` for a linked worktree). Inspect it with `git -C .git/delivery-operator log --stat`; deleting it loses only what was not yet published.
 
 ## When a chain fails verification
 
-- `operator.js problems`: every chain or record that fails verification, is diverged or is unpublished (exit 1 when anything is affected).
+- `operator.js problems`: every chain or record that fails verification or is diverged (exit 1 when anything is affected), and entries not on the remote yet as a warning (exit code unaffected).
 - `operator.js repair --instance <i>`: repair a torn last line of that instance's own chain. The partial line is kept as evidence.
 - `operator.js quarantine --file records/<i>.ndjson|inputs/<host>/<YYYY-MM>.ndjson --reason '<what failed>'` (Chief of Staff only): set a failing chain aside, kept as evidence (in the store's local `quarantine/`), so writing can go on. When the remote holds another copy (the other side of a fork, or the lines published before a local corruption) the store takes it; a never-published copy leaves the store. Restore from the store's history (`git -C .git/delivery-operator log -p -- operator/<chain>`) when you can.
 - `operator.js rehost --instance <i> --reason '<why it moved>' [--to-host <h>] [--to-machine <m>]`: record that an instance moved to another host or machine, before it writes from there. `--to-machine` is read only together with `--to-host`.
