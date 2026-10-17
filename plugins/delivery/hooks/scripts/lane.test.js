@@ -772,6 +772,11 @@ test('the private operator store is never written with file tools, by any role',
   const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lane-store-link-')), 'st');
   fs.symlinkSync(path.join(projectRoot, '.git', 'delivery-operator'), link);
   assert.equal(deny(BUILDER, 'Write', { file_path: path.join(link, 'operator', 'records', 'x.ndjson') }).allow, false);
+  // a shell write through that symlink, which never names the store, resolves into it too
+  for (const cmd of [`echo x >> ${link}/operator/records/x.ndjson`, `cp /tmp/forged ${link}/operator/records/x.ndjson`, `echo x | tee -a ${link}/operator/LEDGER.md`]) {
+    assert.equal(deny(BUILDER, 'Bash', { command: cmd }).allow, false, cmd);
+  }
+  assert.equal(deny(BUILDER, 'Bash', { command: `cat ${link}/operator/records/x.ndjson` }).allow, true, 'reading through it is fine');
   // the role's own clone of the project
   assert.equal(deny(BUILDER, 'Write', { file_path: path.join(roleDir, 'project', '.git', 'delivery-operator', 'operator', 'records', 'b.ndjson') }).allow, false);
   // a project that is a linked worktree: its store is in the main repository's .git
@@ -826,6 +831,12 @@ test('shell writes into the private operator store or its branch are denied; rea
   assert.ok(!require('./lane.js').operatorShellWrite('git branch -D delivery-operator'));
   assert.ok(!require('./lane.js').operatorShellWrite('git commit -m "delivery-operator notes"'));
   assert.ok(require('./lane.js').operatorShellWrite('git push origin delivery-operator'));
+  // entering the store step by step is a mention too
+  for (const cmd of ['cd .git && cd delivery-operator && git -c user.name=x commit -qam x', 'cd .git; cd delivery-operator; echo x >> operator/records/b.ndjson',
+    'pushd .git/delivery-operator && git reset --hard', 'cd .git && cd Delivery-Operator && rm -rf operator']) {
+    assert.ok(require('./lane.js').operatorShellWrite(cmd), cmd);
+  }
+  assert.ok(!require('./lane.js').operatorShellWrite('cd .git && git log --oneline'));
 });
 
 test('role-lane hook denies a write into the private operator store through the real manifest', () => {

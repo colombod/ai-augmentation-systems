@@ -535,12 +535,31 @@ function underOperator(p, dirs) {
 // Best effort, and tamper-evidence rather than a boundary (the hash chains, recorded heads and the
 // store's append-only merge check are what detect a change): a shell command that names the operator
 // records and also writes something.
-function operatorShellWrite(command) {
+// Where a segment writes: redirect targets, and the path arguments of the write words.
+function writeTargets(seg, t) {
+  const out = [];
+  const re = />{1,2}\s*([^\s;&|()<>]+)/g;
+  let m;
+  while ((m = re.exec(seg))) if (!/^&\d?$/.test(m[1])) out.push(m[1].replace(/^['"]|['"]$/g, ''));
+  if (OPERATOR_WRITE_WORDS.includes(path.basename(t[0] || ''))) out.push(...t.slice(1).filter((x) => !x.startsWith('-')));
+  return out;
+}
+
+// opts: { cwd, dirs } — the operator directories; a write whose target resolves into one (through a
+// symlink, for instance) counts even when the command never names it.
+function operatorShellWrite(command, opts = {}) {
   const text = String(command == null ? '' : command);
-  const mentioned = OPERATOR_MENTION.test(text);
-  return splitCommand(text).some((seg) => {
+  const segs = splitCommand(text);
+  // entering the store (cd .git && cd delivery-operator, pushd .git/delivery-operator) is a mention
+  const entered = segs.some((seg) => { const t = tokens(seg); return ['cd', 'pushd'].includes(t[0]) && t.slice(1).some((a) => STORE_SEGMENT.test(a)); });
+  const mentioned = entered || OPERATOR_MENTION.test(text);
+  return segs.some((seg) => {
     const t = tokens(seg);
     if (!t.length) return false;
+    if (opts.dirs && opts.dirs.length) {
+      const base = opts.cwd || process.cwd();
+      if (writeTargets(seg, t).some((x) => underOperator(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`, opts.dirs))) return true;
+    }
     const envs = t.filter((x) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(x));
     const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
     const first = path.basename(words[0] || '');
@@ -599,7 +618,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   }
   const command = shellCommandOf(name, toolInput);
   if (command !== null) {
-    if (operatorShellWrite(command)) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
+    if (operatorShellWrite(command, { cwd, dirs: opDirs })) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
       return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: they cannot be checked against the lane groups (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
