@@ -542,16 +542,24 @@ after a plugin-cache version move the operator.js rules name the old path until 
 again.
 
 **Ruling: prompts from before the role.** A session resumed or adopted into a role directory has
-earlier human prompts in its transcript. SessionStart records that session's role boundary in
-`<roleDir>/.delivery-role-since.json`, even when its transcript is not yet available. Boundaries are
-keyed by session id so sessions sharing a role directory do not replace one another's. Inputs dated
-earlier are stored and citable (`record --cite` works on request) but carry `pre_role: true` and never
-appear in `pending` or block a Stop.
+earlier human prompts in its transcript. The first hook that sees a session id in a role directory
+(SessionStart, with or without a transcript yet) records that session's boundary in
+`<roleDir>/.delivery-role-since.json`, one entry per session id, never overwritten, written under a
+lock and pruned to the newest 32. Inputs dated earlier are stored and citable (`record --cite` works
+on request) but carry `pre_role: true` and never appear in `pending` or block a Stop. When a later
+hook creates the boundary instead (no SessionStart was seen), nothing captured in that same
+invocation is marked pre-role.
 
 **Rulings on parked items.**
-- *Rejected-push recovery.* The shared project checkout can contain other sessions' unpublished
-  operator records. A rejected push is reconciled in an isolated checkout, then only operator paths
-  are refreshed in the original project; unrelated upstream project files are never merged there.
+- *Rejected pushes (superseded ruling).* Recovery used to merge the whole upstream into the
+  checkout and to delete or reset other writers' operator files first. Role sessions write through
+  the operator's own project checkout (`marker.project_root`), shared by every local role, so that
+  pulled unrelated work into the operator's branch and could delete another session's unpublished
+  records. Recovery now never merges into, deletes from or resets the checkout: it fetches, builds
+  the next upstream commit with git plumbing (a temporary index seeded from upstream plus this
+  writer's own committed chain files, each checked append-only against the upstream copy, a fork
+  refused), pushes that commit, then refreshes operator paths only. The checkout's branch keeps its
+  own operator commits (content already upstream); a later pull merges them without conflict.
 - *Lock deadline and stale threshold.* A writer waits at most 2 s for a chain lock, and a lock is
   treated as stale after 10 s; pid liveness is not checked (pids are host-local). A crashed writer's
   fresh lock therefore refuses writes for up to 10 s with a retryable error; hooks fail open.

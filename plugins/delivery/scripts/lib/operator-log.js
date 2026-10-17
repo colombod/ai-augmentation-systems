@@ -113,36 +113,40 @@ function loadIndex(root, host) {
 
 // Local-only record of how long each host chain was and its last hash, so a deleted tail
 // is detectable (a pure hash chain cannot see its own truncation).
-// When each session became the role. Kept in <roleDir>/.delivery-role-since.json so sessions sharing
-// a role directory do not replace one another's boundary.
-function roleSince(roleDir, sessionId, { now, create = true } = {}) {
-  if (!roleDir || !sessionId) return null;
+// When this session became the role: the first time a capture hook saw this session id in the role
+// directory (SessionStart always runs first in a role session, so earlier transcript lines are
+// prompts from before the session was a role). <roleDir>/.delivery-role-since.json holds
+// { sessions: { <session id>: <ISO time> } }: one entry per session, never overwritten, updated
+// atomically under a lock, the oldest pruned beyond ROLE_SINCE_KEEP. roleBoundary returns
+// { since, created } (created: this call wrote it); create:false only reads.
+const ROLE_SINCE_KEEP = 32;
+function roleBoundary(roleDir, sessionId, { now, create = true } = {}) {
+  if (!roleDir || !sessionId) return { since: null, created: false };
   const f = path.join(roleDir, '.delivery-role-since.json');
-  const getSession = (sessions) => {
-    const since = sessions[sessionId];
-    return typeof since === 'string' && !Number.isNaN(Date.parse(since)) ? since : null;
-  };
-  if (!create) {
+  const valid = (t) => typeof t === 'string' && !Number.isNaN(Date.parse(t));
+  const read = () => {
     const cur = readJson(f);
-    const sessions = cur && cur.sessions && typeof cur.sessions === 'object' ? cur.sessions : {};
-    return getSession(sessions) || (cur && cur.session_id === sessionId ? cur.since : null);
-  }
+    if (cur && plainObject(cur.sessions)) return { ...cur.sessions };
+    // the first version kept one { session_id, since }
+    if (cur && typeof cur.session_id === 'string' && valid(cur.since)) return { [cur.session_id]: cur.since };
+    return {};
+  };
+  const have = read()[sessionId];
+  if (valid(have)) return { since: have, created: false };
+  if (!create) return { since: null, created: false };
   try {
     return chain.withLock(f + '.lock', () => {
-      const cur = readJson(f);
-      const sessions = Object.assign(Object.create(null), cur && cur.sessions && typeof cur.sessions === 'object' ? cur.sessions : {});
-      if (cur && cur.session_id && typeof cur.since === 'string' && !Object.prototype.hasOwnProperty.call(sessions, cur.session_id)) {
-        sessions[cur.session_id] = cur.since;
-      }
-      const saved = getSession(sessions);
-      if (saved) return saved;
+      const sessions = read();
+      if (valid(sessions[sessionId])) return { since: sessions[sessionId], created: false };
       const since = new Date(now || Date.now()).toISOString();
       sessions[sessionId] = since;
-      writeJsonAtomic(f, { sessions });
-      return since;
+      const keep = Object.entries(sessions).filter(([, t]) => valid(t)).sort((a, b) => Date.parse(b[1]) - Date.parse(a[1])).slice(0, ROLE_SINCE_KEEP);
+      writeJsonAtomic(f, { sessions: Object.fromEntries(keep) });
+      return { since, created: true };
     });
-  } catch (e) { return null; }
+  } catch (e) { return { since: null, created: false }; }
 }
+function roleSince(roleDir, sessionId, opts = {}) { return roleBoundary(roleDir, sessionId, opts).since; }
 
 function headsFile(root) { return path.join(opDir(root), 'cursors', 'heads.json'); }
 const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -164,9 +168,11 @@ function setHead(root, host, head) {
   chain.withLock(headsFile(root) + '.lock', () => {
     if (headsProblem(root)) return;
     const heads = readHeads(root);
-    const current = heads[host];
-    if (current && (head.count < current.count ||
-        (head.count === current.count && head.last_hash !== current.last_hash))) return;
+    // callers check before taking the lock; re-check under it so a stale reader cannot lower a head
+    // another writer raised meanwhile (that would hide a later truncation): the highest verified head
+    // stays, and a different hash at the same count is a conflict, not an update
+    const cur = heads[host];
+    if (cur && (head.count < cur.count || (head.count === cur.count && head.last_hash !== cur.last_hash))) return;
     heads[host] = head;
     writeJsonAtomic(headsFile(root), heads);
   });
@@ -368,9 +374,27 @@ function verifyInputs(projectRoot, opts = {}) {
 
 // ---- publish / refresh (best effort, never throw) ----
 
-function git(cwd, args) {
-  const r = cp.spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60000 });
-  return { ok: r.status === 0, out: (r.stdout || '').trimEnd(), err: (r.stderr || '').trimEnd() };
+// Output keeps its leading whitespace: porcelain status lines start with a status column that may be
+// a space (' M path'), and trimming it shifts every column after it.
+function git(cwd, args, o = {}) {
+  const r = cp.spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60000, maxBuffer: 256 * 1024 * 1024, env: o.env ? { ...process.env, ...o.env } : process.env, input: o.input });
+  return { ok: r.status === 0, out: (r.stdout || '').replace(/\s+$/, ''), err: (r.stderr || '').trim() };
+}
+
+// git status entries under rels, parsed from -z output: [{ code: 'XY', path }].
+function porcelain(root, rels) {
+  const r = cp.spawnSync('git', ['status', '--porcelain', '-z', '--untracked-files=all', '--', ...rels], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0) return [];
+  const parts = (r.stdout || '').split('\0');
+  const out = [];
+  for (let i = 0; i < parts.length; i++) {
+    const e = parts[i];
+    if (e.length < 4) continue;
+    const code = e.slice(0, 2);
+    out.push({ code, path: e.slice(3) });
+    if (code[0] === 'R' || code[0] === 'C') i++; // the rename source follows
+  }
+  return out;
 }
 
 const OP_PATH = '.delivery/operator';
@@ -415,30 +439,29 @@ function refresh(projectRoot, opts = {}) {
         }
         continue;
       }
+      // Chains are append-only: take the upstream copy only when the local file is missing or a
+      // strict prefix of it, checked and replaced under the same lock their writer appends with, so
+      // a peer's unpublished append in a shared checkout is never replaced. Any other local
+      // difference is kept (and reported for chains); the derived LEDGER.md and .gitignore are
+      // regenerated locally and are neither replaced nor reported.
       const abs = path.join(projectRoot, p);
       const show = cp.spawnSync('git', ['show', `${up.ref}:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
       if (show.status !== 0) continue;
+      const isChain = p.startsWith(`${OP_PATH}/inputs/`) || p.startsWith(`${OP_PATH}/records/`);
       const apply = () => {
         if (fs.existsSync(abs)) {
           let local;
           try { local = fs.readFileSync(abs, 'utf8'); } catch (e) { return; }
           if (local === show.stdout) return;
-          const isChain = p.startsWith(`${OP_PATH}/inputs/`) || p.startsWith(`${OP_PATH}/records/`);
-          // A chain prefix is recoverable only while its writer is excluded by the same lock used
-          // for appends. Other operator files may be generated or edited concurrently, so preserve
-          // any local difference instead of treating it as a disposable refresh copy.
-          if (!isChain || !show.stdout.startsWith(local)) { diverged.push(p); return; }
+          if (!isChain || !show.stdout.startsWith(local)) { if (isChain) diverged.push(p); return; }
         }
         const c = git(projectRoot, ['checkout', up.ref, '--', p]);
-        if (c.ok) updated.push(p);
+        // keep the index as it was: refreshed copies are working-tree files, never staged for the user
+        if (c.ok) { updated.push(p); git(projectRoot, ['reset', '-q', 'HEAD', '--', p]); }
       };
-      if (p.startsWith(`${OP_PATH}/inputs/`)) {
-        chain.withLock(path.join(path.dirname(abs), '.host.lock'), apply);
-      } else if (p.startsWith(`${OP_PATH}/records/`)) {
-        chain.withLock(abs + '.lock', apply);
-      } else {
-        apply();
-      }
+      if (p.startsWith(`${OP_PATH}/inputs/`)) chain.withLock(path.join(path.dirname(abs), '.host.lock'), apply);
+      else if (p.startsWith(`${OP_PATH}/records/`)) chain.withLock(abs + '.lock', apply);
+      else apply();
     }
     return { ok: true, updated, diverged, remote: up.remote };
   } catch (e) {
@@ -506,51 +529,78 @@ function publishInner(projectRoot, opts = {}) {
     const push = () => git(projectRoot, ['push', up.remote, `HEAD:${up.branch}`]);
     let r = push();
     if (!r.ok) {
-      // Keep reconciliation out of the shared checkout: a peer's unpublished operator file may
-      // be present there, while unrelated project files must remain untouched.
+      // Rejected: another writer pushed first. Never merge into, delete from or reset this checkout
+      // (for a role session it is the operator's own project checkout, shared by every local role,
+      // so its untracked operator files can be another session's unpublished records). Build the
+      // next upstream commit with git plumbing instead: upstream's tree plus this writer's own
+      // committed chain files, checked append-only against upstream, and push that.
       const f = git(projectRoot, ['fetch', up.remote]);
       if (!f.ok) return no(f.err || 'fetch failed');
       if (unrelated().length) return no('unpushed unrelated commits', { paths: unrelated() });
-      const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'delivery-operator-publish-'));
-      const checkout = path.join(temp, 'checkout');
-      let addedWorktree = false;
-      try {
-        const add = git(projectRoot, ['worktree', 'add', '--detach', checkout, 'HEAD']);
-        if (!add.ok) return no(add.err || add.out || 'could not create isolated publish checkout');
-        addedWorktree = true;
-        const m = git(checkout, ['merge', '--no-edit', '--no-verify', '--no-gpg-sign', up.ref]);
-        if (!m.ok) {
-          const un = git(checkout, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
-          const ledger = `${OP_PATH}/LEDGER.md`;
-          if (un.length && un.every((p) => p === ledger)) {
-            const co = git(checkout, ['checkout', '--theirs', '--', ledger]);
-            const ad = co.ok ? git(checkout, ['add', '--', ledger]) : co;
-            const cm = ad.ok ? git(checkout, ['commit', '--no-edit', '--no-verify', '--no-gpg-sign']) : ad;
-            if (!cm.ok) return no(cm.err || cm.out || 'could not resolve generated ledger');
-          } else {
-            git(checkout, ['merge', '--abort']);
-            const recFile = opts.instance ? `${OP_PATH}/records/${opts.instance}.ndjson` : null;
-            if (recFile && un.includes(recFile)) {
-              return no(`records chain forked: another writer appended to records/${opts.instance}.ndjson`, { forked: recFile });
-            }
-            const inputsHit = un.find((p) => p.startsWith(hostRel + '/'));
-            if (inputsHit) return no(`inputs chain forked: another writer appended to ${inputsHit.slice(OP_PATH.length + 1)}`, { forked: inputsHit });
-            return no(m.err || m.out || 'merge failed');
-          }
-        }
-        r = git(checkout, ['push', up.remote, `HEAD:${up.branch}`]);
-        if (!r.ok) return no(r.err || r.out || 'push failed after isolated merge');
-      } finally {
-        if (addedWorktree) git(projectRoot, ['worktree', 'remove', '--force', checkout]);
-        fs.rmSync(temp, { recursive: true, force: true });
-      }
-      const refreshed = git(projectRoot, ['fetch', up.remote]);
-      const sync = refreshed.ok ? refresh(projectRoot, { fetch: false, host: opts.host, instance: opts.instance }) : null;
-      return { ok: true, published: true, entries: n, refreshed: !!(sync && sync.ok), ...(sync && sync.diverged.length ? { diverged: sync.diverged } : {}) };
+      const rec = publishOnUpstream(projectRoot, up, own, opts, n);
+      if (!rec.ok) return no(rec.reason, rec.extra || {});
+      // bring other writers' files into the working tree, operator paths only, never over local appends
+      let sync = null;
+      try { sync = refresh(projectRoot, { host: opts.host, instance: opts.instance, fetch: false }); } catch (e) { sync = null; }
+      return { ...rec, refreshed: !!(sync && sync.ok), ...(sync && sync.diverged && sync.diverged.length ? { diverged: sync.diverged } : {}) };
     }
     return r.ok ? { ok: true, published: true, entries: n } : no(r.err);
   } catch (e) {
     return no(String(e && e.message || e));
+  }
+}
+
+// Commit this writer's own committed operator files on top of the upstream tip, without touching
+// the working tree or the branch: a temporary index seeded from upstream, the own files' HEAD
+// contents added after an append-only check (the upstream copy must be a prefix of ours, else the
+// chain forked), commit-tree on upstream, push the commit. { ok, reason?, extra? }.
+function publishOnUpstream(projectRoot, up, own, opts, n) {
+  const idx = path.join(os.tmpdir(), `operator-publish-${process.pid}-${Date.now()}.index`);
+  const env = { GIT_INDEX_FILE: idx };
+  try {
+    const listed = git(projectRoot, ['ls-tree', '-r', '--name-only', 'HEAD', '--', ...own]);
+    const files = listed.out ? listed.out.split('\n').filter(Boolean) : [];
+    const rt = git(projectRoot, ['read-tree', up.ref], { env });
+    if (!rt.ok) return { ok: false, reason: rt.err || 'read-tree failed' };
+    const recFile = opts.instance ? `${OP_PATH}/records/${opts.instance}.ndjson` : null;
+    const hostRel = `${OP_PATH}/inputs/${safeHost(opts.host)}/`;
+    const forks = [];
+    for (const p of files) {
+      const ours = cp.spawnSync('git', ['show', `HEAD:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+      if (ours.status !== 0) continue;
+      const theirs = cp.spawnSync('git', ['show', `${up.ref}:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+      const derived = p === `${OP_PATH}/.gitignore` || p === `${OP_PATH}/LEDGER.md`;
+      if (!derived && theirs.status === 0) {
+        if (theirs.stdout.startsWith(ours.stdout)) continue; // upstream already holds all of ours
+        if (!ours.stdout.startsWith(theirs.stdout)) { forks.push(p); continue; }
+      }
+      const blob = git(projectRoot, ['hash-object', '-w', '--stdin'], { input: ours.stdout });
+      if (!blob.ok) return { ok: false, reason: blob.err || 'hash-object failed' };
+      const ui = git(projectRoot, ['update-index', '--add', '--cacheinfo', `100644,${blob.out},${p}`], { env });
+      if (!ui.ok) return { ok: false, reason: ui.err || 'update-index failed' };
+    }
+    if (forks.length) {
+      // the records chain is named first: it is the one writes are refused on
+      if (recFile && forks.includes(recFile)) return { ok: false, reason: `records chain forked: another writer appended to records/${opts.instance}.ndjson`, extra: { forked: recFile } };
+      const hit = forks.find((p) => p.startsWith(hostRel));
+      if (hit) return { ok: false, reason: `inputs chain forked: another writer appended to ${hit.slice(OP_PATH.length + 1)}`, extra: { forked: hit } };
+      return { ok: false, reason: `${forks[0]} differs from the upstream copy; nothing was pushed`, extra: { forked: forks[0] } };
+    }
+    const tree = git(projectRoot, ['write-tree'], { env });
+    const upTree = git(projectRoot, ['rev-parse', `${up.ref}^{tree}`]);
+    if (!tree.ok || !upTree.ok) return { ok: false, reason: tree.err || upTree.err || 'write-tree failed' };
+    if (tree.out === upTree.out) return { ok: true, published: true, entries: n };
+    const upTip = git(projectRoot, ['rev-parse', up.ref]);
+    const c = git(projectRoot, ['commit-tree', tree.out, '-p', upTip.out, '-m', `operator: ${n} entries`]);
+    if (!c.ok) return { ok: false, reason: c.err || 'commit-tree failed' };
+    const push = git(projectRoot, ['push', up.remote, `${c.out}:refs/heads/${up.branch}`]);
+    if (!push.ok) return { ok: false, reason: push.err || 'push rejected' };
+    git(projectRoot, ['fetch', up.remote]);
+    return { ok: true, published: true, entries: n };
+  } catch (e) {
+    return { ok: false, reason: String(e && e.message || e) };
+  } finally {
+    try { fs.unlinkSync(idx); } catch (e) { /* gone */ }
   }
 }
 
@@ -566,10 +616,9 @@ function unpublished(projectRoot, opts = {}) {
     let count = 0;
     const d = git(projectRoot, ['diff', '--numstat', '@{u}', '--', ...rels]);
     for (const l of d.out ? d.out.split('\n') : []) count += Number(l.split('\t')[0]) || 0;
-    const st = git(projectRoot, ['status', '--porcelain', '--untracked-files=all', '--', ...rels]);
-    for (const l of st.out ? st.out.split('\n') : []) {
-      if (!l.startsWith('??')) continue;
-      try { count += fs.readFileSync(path.join(projectRoot, l.slice(3)), 'utf8').split('\n').filter(Boolean).length; } catch (e) { /* gone */ }
+    for (const e of porcelain(projectRoot, rels)) {
+      if (e.code !== '??') continue;
+      try { count += fs.readFileSync(path.join(projectRoot, e.path), 'utf8').split('\n').filter(Boolean).length; } catch (x) { /* gone */ }
     }
     return { count, reason: count ? 'not pushed to ' + up.ref : null };
   } catch (e) {
@@ -577,4 +626,4 @@ function unpublished(projectRoot, opts = {}) {
   }
 }
 
-module.exports = { roleSince, headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };
+module.exports = { porcelain, roleBoundary, roleSince, headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };

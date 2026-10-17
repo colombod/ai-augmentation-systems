@@ -282,7 +282,7 @@ function syncCurrent(ctx, flags, cite) {
   const sid = flags.session || (ctx.by.session_id !== 'unknown' ? ctx.by.session_id : (tr ? path.basename(tr).replace(/\.jsonl$/, '') : 'unknown'));
   const doSync = () => {
     if (!tr || !fs.existsSync(tr)) return;
-    const r = syncOne(ctx, { transcriptPath: tr, sessionId: sid, instance: ctx.by.instance, role: ctx.by.role, roleSince: log.roleSince(ctx.roleDir, sid) });
+    const r = syncOne(ctx, { transcriptPath: tr, sessionId: sid, instance: ctx.by.instance, role: ctx.by.role, roleSince: (() => { const b = log.roleBoundary(ctx.roleDir, sid); return b.created ? null : b.since; })() });
     res = { added: res.added + r.added, status: r.status };
   };
   doSync();
