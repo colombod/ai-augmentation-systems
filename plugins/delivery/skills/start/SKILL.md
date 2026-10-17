@@ -19,7 +19,7 @@ You are helping the human (the operator) start a team of role sessions for a pro
    - **Project repo:** where the private project repo is, or should be created. It holds the plan, the team manifest and the operator's decisions; it should be private. Default: `$ARGUMENTS` if given, otherwise the current directory when it is a git repo.
    - **New or existing:** a new project with no code yet, or an existing product. For an existing one, ask for the product repo as a local checkout path or a clone URL; builders get their own worktree of it. For a new one, say the team can be started now without a product repo and a builder prepared later.
    - **Host name:** the name this machine has in the manifest. Default: the short hostname (`hostname -s`).
-   - **Preset:** recommend `minimal` (Chief of Staff, Product Manager, Delivery Lead, one builder). `full` adds Staffing (owns the roster), the Progress Observer (keeps the record true, runs on haiku) and the Spike Researcher (answers technical unknowns).
+   - **Preset:** recommend `minimal` (Chief of Staff, Product Manager, Delivery Manager, one builder). `full` adds Staffing (owns the roster), the Progress Observer (keeps the record true, runs on haiku) and the Spike Researcher (answers technical unknowns).
    - **Permission mode** for the role sessions: `default` (no `--permission-mode` flag: each session uses the human's own Claude Code default; the manager roles have their lane's commands pre-allowed), or one of the modes `claude --help` lists. Say that the lane hook checks file writes, shell commands and MCP calls whatever the mode.
 
    Then run `start.js --check --project <project repo>` once more if the project repo already exists, and mention a missing remote as a warning.

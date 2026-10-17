@@ -249,3 +249,11 @@ test('A5: a builder gets DELIVERY_LARGE_MODEL from its manifest large_model (def
   fs.writeFileSync(file, JSON.stringify(team));
   assert.equal(envOf('builder-1').DELIVERY_LARGE_MODEL, 'sonnet');
 });
+
+test('ruling 4: prepare-role --instance delivery-manager prepares the delivery-lead instance', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance: 'delivery-manager', teamDir, pluginRoot: PLUGIN_ROOT, user: 't' });
+  assert.equal(path.basename(roleDir), 'delivery-lead');
+  assert.match(fs.readFileSync(path.join(roleDir, 'CLAUDE.local.md'), 'utf8'), /Delivery Manager/);
+});

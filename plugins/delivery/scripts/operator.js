@@ -6,7 +6,7 @@
 // (prepare-role writes it and DELIVERY_ROLE names the instance) and end with a best-effort publish.
 const fs = require('fs');
 const path = require('path');
-const { findProjectRoot, expandInstances, loadManifest } = require('./lib/manifest.js');
+const { findProjectRoot, expandInstances, loadManifest, canonicalRoleId } = require('./lib/manifest.js');
 const { findRoleMarker, validMarker, bdOptionsFor } = require('../hooks/scripts/role-context.js');
 const { makeBd } = require('./lib/bd.js');
 const { readRoster } = require('./lib/roster.js');
@@ -499,6 +499,7 @@ const handlers = {
 
   ask(ctx, flags) {
     need(flags, 'text', 'asker');
+    flags.asker = canonicalRoleId(flags.asker); // delivery-manager is the display name of delivery-lead
     const scope = parseScope(flags.scope);
     if (flags.bead && !scope.beads.includes(flags.bead)) scope.beads.push(flags.bead);
     requireWriter(ctx);

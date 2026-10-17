@@ -818,7 +818,7 @@ test('F2: the new bd verbs classify into the lane groups the guard expects', () 
   assert.ok(!classifySegment('bd tag ex-1 x', GROUPS, ctx()).includes('bd-claim'));
 });
 
-// A1: the minimal team (Chief of Staff, Product Manager, Delivery Lead, builder) can carry the whole
+// A1: the minimal team (Chief of Staff, Product Manager, Delivery Manager, builder) can carry the whole
 // pipeline: every artifact a pipeline skill writes is in at least one of their lanes.
 test('A1: every pipeline output path is writable by at least one role of the minimal team', () => {
   const minimal = ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder'];

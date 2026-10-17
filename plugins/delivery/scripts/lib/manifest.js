@@ -66,8 +66,23 @@ function defaultModelFor(role, projectRoot) {
   } catch (err) { return null; }
 }
 
+// "Delivery Manager" is the display name of the role whose id stays delivery-lead (records, lanes and
+// bead actors carry the id). Wherever a person types a role or instance id, delivery-manager works too.
+function canonicalRoleId(id) {
+  const m = /^delivery-manager(-\d+)?$/.exec(String(id || ''));
+  return m ? `delivery-lead${m[1] || ''}` : id;
+}
+function normalizeAliases(team) {
+  for (const role of (team && Array.isArray(team.roles) ? team.roles : [])) {
+    if (!role || typeof role !== 'object') continue;
+    if (role.id === 'delivery-manager') role.id = 'delivery-lead';
+    if (role.brief === 'delivery/delivery-manager') role.brief = 'delivery/delivery-lead';
+  }
+  return team;
+}
+
 function loadManifest(projectRoot) {
-  const team = readJson(projectRoot, TEAM_REL);
+  const team = normalizeAliases(readJson(projectRoot, TEAM_REL));
   if (team && Array.isArray(team.roles)) {
     for (const role of team.roles) {
       if (role && typeof role === 'object' && (role.model === undefined || role.model === null || role.model === '')) {
@@ -90,6 +105,7 @@ function manifestWarnings(team) {
 }
 
 function validateManifest(team, hosts) {
+  normalizeAliases(team);
   const problems = [];
   const hostNames = new Set(Object.keys((hosts && hosts.hosts) || {}));
   const seen = new Set();
@@ -147,4 +163,4 @@ function expandInstances(team) {
   return out;
 }
 
-module.exports = { findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, expandInstances, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };
+module.exports = { canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, expandInstances, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };

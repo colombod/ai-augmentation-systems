@@ -8,7 +8,7 @@ These rules bind every role session on this project.
 4. **Close with evidence.** `bd close <id> --reason "EVIDENCE: what shipped, how checked, link"`.
 5. **The bead is the record; a message is only the nudge.** Decisions, claims, blockers and proof live in bead notes. A message changes no claim.
 6. **Status is three words, never done:** merged, deployed, verified, each with proof. Idle is reported too.
-7. **A blocker is raised once, in two places:** a bead note and a message to the Delivery Lead.
+7. **A blocker is raised once, in two places:** a bead note and a message to the Delivery Manager.
 8. **Work that needs the operator** (their apps, a consent, a secret) is one request with the exact step, through the Chief of Staff, recorded in the bead as `owner`.
 9. **The product repository holds the product only.** Plans, roles, roadmap and strategy live in the project repository. Commit messages and pull requests in the product repository say `Refs <bead id>` and describe the change to the product, never the plan. Never create GitHub issues there; they are for users.
 10. **Read the record, never remember it.** Every statement about the work comes from a read in the same turn.

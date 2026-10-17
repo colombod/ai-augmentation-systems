@@ -147,3 +147,15 @@ test('A4: templates/ holds the minimal four-role single-host team, valid and wit
   assert.equal((team.budget || {}).max_roles, undefined);
   for (const h of Object.values(hosts.hosts)) { assert.equal(h.dolt_server, undefined); assert.equal(h.check, undefined); }
 });
+
+test('ruling 4: "delivery-manager" is accepted wherever a role id is typed and means delivery-lead', () => {
+  const { canonicalRoleId } = require('./manifest.js');
+  assert.equal(canonicalRoleId('delivery-manager'), 'delivery-lead');
+  assert.equal(canonicalRoleId('delivery-manager-2'), 'delivery-lead-2');
+  assert.equal(canonicalRoleId('builder-1'), 'builder-1');
+  const hosts = { hosts: { pc: { kind: 'pc' } } };
+  const team = { project: 'x', prefix: 'x', bd_host: 'pc', roles: [{ id: 'delivery-manager', brief: 'delivery/delivery-manager', host: 'pc' }] };
+  assert.deepEqual(validateManifest(team, hosts), []);
+  assert.equal(team.roles[0].id, 'delivery-lead');
+  assert.deepEqual(expandInstances(team).map((i) => i.instance), ['delivery-lead']);
+});

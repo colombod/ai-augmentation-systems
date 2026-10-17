@@ -8,11 +8,11 @@ const { listValue } = require('../../scripts/lib/plan-docs.js');
 
 const SANCTIONED = {
   'chief-of-staff': 'route it: create a child bead for the right role (`bd create --parent <id> ...`) and message that session',
-  staffing: 'only team.json and briefs are yours; anything else goes to the Delivery Lead',
-  'product-manager': 'product documents are yours; building goes to a builder bead, plan structure to the Delivery Lead',
+  staffing: 'only team.json and briefs are yours; anything else goes to the Delivery Manager',
+  'product-manager': 'product documents are yours; building goes to a builder bead, plan structure to the Delivery Manager',
   'delivery-lead': 'stories, sprints and bead structure are yours; building goes to a builder bead',
   'progress-observer': 'record evidence in reviews and beads; fixes go to a builder bead',
-  builder: 'product code in your worktree is yours; plans belong to the Delivery Lead',
+  builder: 'product code in your worktree is yours; plans belong to the Delivery Manager',
   'spike-researcher': 'answers go in the bead and the ADR or roadmap; product code is never yours',
 };
 const REACH_PREFIXES = ['mcp__Claude_Browser__', 'mcp__claude-in-chrome__', 'mcp__computer-use__', 'mcp__Claude_Code_iOS_Simulator__'];
@@ -48,7 +48,7 @@ const HARNESS_WRITES = ['plans/**', 'projects/*/memory/**'];
 // A separator after which a failed or skipped `cd` no longer stops the commands that follow.
 const RESUME_OPS = [';', '||', '&', '\n'];
 
-function sanctioned(roleId) { return SANCTIONED[roleId] || 'stay in your lane; ask the Delivery Lead'; }
+function sanctioned(roleId) { return SANCTIONED[roleId] || 'stay in your lane; ask the Delivery Manager'; }
 
 function loadPolicy({ pluginRoot, projectRoot, briefRef }) {
   const { meta } = loadRoleBrief(pluginRoot, projectRoot, briefRef);

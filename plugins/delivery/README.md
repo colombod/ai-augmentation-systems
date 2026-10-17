@@ -23,7 +23,7 @@ delivery gives you a team of Claude Code sessions, one per role, that plan and s
 ### Using the team
 
 - **Talk to the Chief of Staff** for decisions and logistics; talk with the Product Manager about product vision. Both record what you decide. Other sessions send their questions to the Chief of Staff; it answers from what you already decided and asks you the rest once, in one ranked briefing.
-- **Who does what.** Product Manager: what to build and why, the plan documents. Delivery Lead: turns the plan into beads and runs the work. Builders: build in their own worktree of the product repo. The `full` preset adds Staffing (the roster), the Progress Observer (keeps the record true) and the Spike Researcher (technical unknowns).
+- **Who does what.** Product Manager: what to build and why, the plan documents. Delivery Manager: turns the plan into beads and runs the work. Builders: build in their own worktree of the product repo. The `full` preset adds Staffing (the roster), the Progress Observer (keeps the record true) and the Spike Researcher (technical unknowns).
 - **See progress** with `/delivery:team` in any session (who is live, stale or missing), or ask the Chief of Staff for a briefing.
 - **Decisions are recorded and verified.** `operator.js ledger` lists every question the team asked you and its answer; a session runs `operator.js verify <record id>` to see your exact words before it acts.
 - **When something blocks,** the refusal names the way out. See [Troubleshooting](docs/quickstart.md#troubleshooting).
@@ -148,7 +148,7 @@ on nothing.
 
 ### Which skill do I run when?
 
-Pipeline skills plan the product: run them yourself, in order. In a shipping team the role whose lane holds the output runs them: the Product Manager writes `.delivery/initiatives/` (brief to roadmap), personas, interviews, simulations and ADRs; the Delivery Lead writes stories and sprints. Team skills run inside role sessions.
+Pipeline skills plan the product: run them yourself, in order. In a shipping team the role whose lane holds the output runs them: the Product Manager writes `.delivery/initiatives/` (brief to roadmap), personas, interviews, simulations and ADRs; the Delivery Manager writes stories and sprints. Team skills run inside role sessions.
 
 | When | Run | Kind |
 | :-- | :-- | :-- |
@@ -167,7 +167,7 @@ Pipeline skills plan the product: run them yourself, in order. In a shipping tea
 | A role session has just started in its role directory | `/delivery:join` | team, every role session |
 | You want to see who is live, stale or missing | `/delivery:team` | team, read-only |
 | The operator spoke, or a session needs an operator decision | `/delivery:decision` | team, the Chief of Staff |
-| The roadmap, stories or spikes changed | `/delivery:materialise <initiative>` | team, the Delivery Lead (anyone with `--check`) |
+| The roadmap, stories or spikes changed | `/delivery:materialise <initiative>` | team, the Delivery Manager (anyone with `--check`) |
 
 ## The shipping team
 
@@ -224,7 +224,7 @@ session its role and keep it:
   scan and MCP issue creation is refused.
 - The record stays honest: `bd close` needs an `EVIDENCE:` reason, a live claim cannot be taken,
   released or closed by someone else, bead structure (top-level creates, re-parenting, dependencies,
-  deletes, labels on beads you do not hold) changes only through the Delivery Lead, and a turn that
+  deletes, labels on beads you do not hold) changes only through the Delivery Manager, and a turn that
   holds a claim but left no note in it gets a one-line reminder on the next prompt (it is not blocked). These are discipline aids for cooperative agents.
 - The product-repo guard is the first line, not the last. It scans commit, PR, issue and release text and refuses plan paths for a cooperative or careless session, and it fails closed inside the product worktree; it is not a boundary against a determined session with unrestricted Bash (file contents, git plumbing, persistent git configuration and pushes from other repositories are out of its reach). Put a push-side or CI scan of the denylist on the product remote for the durable control, for example a GitHub Actions job in the product repository:
 
@@ -330,7 +330,7 @@ The shipping team runs on hooks and per-role settings. These are the places wher
 
 - **Permission modes.** With a user-level `defaultMode` of `auto`, or a steward starting a role with `--permission-mode`, nothing prompts. The lane hook is then the only allowlist, and a hook that fails to spawn (no `node`, a moved plugin path) fails open. Defence in depth: `prepare-role` writes native `permissions.deny` rules into each role's `settings.local.json`, and these hold even then:
   - `AskUserQuestion`, `PushNotification` and `SendUserFile` for every role except the Chief of Staff and the Product Manager;
-  - `Bash(git push:*)`, `Bash(sudo:*)`, `Bash(curl:*)`, `Bash(wget:*)` and `Bash(rm:*)` for restricted (manager) lanes, each only where the lane does not allow it. The Product Manager, Delivery Lead and Staffing keep `git push` because they push plan documents.
+  - `Bash(git push:*)`, `Bash(sudo:*)`, `Bash(curl:*)`, `Bash(wget:*)` and `Bash(rm:*)` for restricted (manager) lanes, each only where the lane does not allow it. The Product Manager, Delivery Manager and Staffing keep `git push` because they push plan documents.
 
   A role session whose lane cannot be checked (marker present, manifest unreadable) fails closed.
 - **Plugin updates.** Hook paths are fixed when a session starts, and the `permissions.allow` rules name the operator.js path of the plugin version that wrote them. After updating the plugin, rerun `prepare-role` for each role and restart its session; until then in-lane commands may prompt again.
@@ -431,7 +431,7 @@ while nobody can actually complete a journey.
 ## Personas
 
 **Team roles** — Product Owner, Program Manager, Business Analyst, Solution Architect,
-Design Lead, Delivery Lead, QA Strategist, and the read-only Feature Critic.
+Design Lead, Delivery Manager, QA Strategist, and the read-only Feature Critic.
 
 **Customer side** — User Researcher (derives and grades personas) and Persona Simulator
 (embodies one end-user persona, read-only, output always labelled synthetic).

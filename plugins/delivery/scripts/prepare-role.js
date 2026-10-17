@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { loadManifest, validateManifest, expandInstances } = require('./lib/manifest.js');
+const { loadManifest, validateManifest, expandInstances, canonicalRoleId } = require('./lib/manifest.js');
 const { loadRoleBrief, composeBrief } = require('./lib/compose-brief.js');
 
 function git(cwd, ...args) {
@@ -24,6 +24,7 @@ const OPERATOR_CHANNEL_TOOLS = ['AskUserQuestion', 'PushNotification', 'SendUser
 const LANE_BACKSTOP_DENY = ['Bash(git push:*)', 'Bash(sudo:*)', 'Bash(curl:*)', 'Bash(wget:*)', 'Bash(rm:*)'];
 
 function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, user, now }) {
+  instance = canonicalRoleId(instance); // --instance delivery-manager means delivery-lead
   projectRoot = path.resolve(projectRoot);
   const { team, hosts } = loadManifest(projectRoot);
   const problems = validateManifest(team, hosts);

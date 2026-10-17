@@ -140,7 +140,7 @@ test('C: bd-guard hook and Stop guard run bd at the project root with BEADS_DIR 
   assert.equal(fs.readFileSync(out, 'utf8').split('\n')[1], '/custom/beads');
 });
 
-// Final wave D: structural bead changes belong to the Delivery Lead.
+// Final wave D: structural bead changes belong to the Delivery Manager.
 test('D: structure is refused for every role but delivery-lead, with the sanctioned path', () => {
   const me = 'me@pc/builder-1';
   const beads = {
@@ -175,7 +175,7 @@ test('D: structure is refused for every role but delivery-lead, with the sanctio
   for (const command of refused) {
     const d = run(command);
     assert.ok(d, command);
-    assert.match(d.reason, /structure belongs to the Delivery Lead; create a child bead under the bead you hold \(`bd create --parent <id>`\) or message the Delivery Lead/, command);
+    assert.match(d.reason, /structure belongs to the Delivery Manager; create a child bead under the bead you hold \(`bd create --parent <id>`\) or message the Delivery Manager/, command);
   }
   for (const roleId of ['chief-of-staff', 'product-manager', 'progress-observer', 'staffing', 'spike-researcher', undefined]) {
     assert.ok(run('bd dep add ex-1 ex-2', roleId), String(roleId));
@@ -219,7 +219,7 @@ test('F1: link, rename, set-state, mol and the write forms of epic and swarm are
   for (const command of refused) {
     const d = run(command);
     assert.ok(d, command);
-    assert.match(d.reason, /structure belongs to the Delivery Lead/, command);
+    assert.match(d.reason, /structure belongs to the Delivery Manager/, command);
     assert.equal(run(command, undefined) !== null, true, `unknown role: ${command}`);
   }
   const allowed = ['bd epic status', 'bd epic', 'bd epic --help', 'bd swarm status ex-1', 'bd swarm validate ex-1', 'bd swarm list', 'bd mol', 'bd show mine'];
@@ -227,7 +227,7 @@ test('F1: link, rename, set-state, mol and the write forms of epic and swarm are
   for (const command of refused.filter((c) => !/duplicate|supersede/.test(c))) assert.equal(run(command, 'delivery-lead'), null, `delivery-lead: ${command}`);
 });
 
-test('F1: duplicate and supersede follow the close rules for the Delivery Lead', () => {
+test('F1: duplicate and supersede follow the close rules for the Delivery Manager', () => {
   const bd = fakeBd({ theirs: { id: 'theirs', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: NOW }, old: { id: 'old', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: '2026-10-12T05:00:00Z' } });
   const run = (command) => decideBd({ command, actor: 'lead@pc/delivery-lead', roleId: 'delivery-lead', staleHours: 2, bd, now: NOW });
   assert.match(run('bd duplicate theirs --of ex-2').reason, /Close with evidence/);
@@ -268,8 +268,8 @@ test('F2: assign follows the claim rules; tag follows label add', () => {
   assert.equal(run('bd assign old me@pc/builder-1'), null);
   // The second positional is a person, never looked up as a bead.
   assert.equal(run('bd assign open theirs'), null);
-  assert.match(run('bd tag theirs urgent').reason, /structure belongs to the Delivery Lead/);
-  assert.match(run('bd tag open urgent').reason, /structure belongs to the Delivery Lead/);
+  assert.match(run('bd tag theirs urgent').reason, /structure belongs to the Delivery Manager/);
+  assert.match(run('bd tag open urgent').reason, /structure belongs to the Delivery Manager/);
   assert.equal(run('bd tag mine urgent'), null);
   assert.equal(run('bd tag theirs urgent', 'delivery-lead'), null);
   const boom = { show: () => { throw new Error('bd down'); } };
@@ -280,7 +280,7 @@ test('F2: todo, import and duplicates --merge are structure; plain duplicates li
   const run = (command, roleId = 'builder') => decideBd({ command, actor: 'me@pc/builder-1', roleId, staleHours: 2, bd: fakeBd({}), now: NOW });
   const refused = ['bd todo add "x"', 'bd todo done ex-1', 'bd todo', 'bd import issues.jsonl', 'bd import -i issues.jsonl', 'bd duplicates --merge', 'bd duplicates --auto-merge', 'bd duplicates merge ex-1 ex-2', 'bd --json import f.jsonl'];
   for (const command of refused) {
-    assert.match(run(command).reason, /structure belongs to the Delivery Lead; create a child bead under the bead you hold/, command);
+    assert.match(run(command).reason, /structure belongs to the Delivery Manager; create a child bead under the bead you hold/, command);
     assert.equal(run(command, 'delivery-lead'), null, `delivery-lead: ${command}`);
   }
   for (const command of ['bd duplicates', 'bd duplicates --json', 'bd duplicates --dry-run', 'bd note ex-1 "hello"']) assert.equal(run(command), null, command);
@@ -288,7 +288,7 @@ test('F2: todo, import and duplicates --merge are structure; plain duplicates li
 
 test('F2: reopen is refused except for the delivery-lead and the progress-observer', () => {
   const run = (roleId) => decideBd({ command: 'bd reopen ex-1', actor: 'a', roleId, staleHours: 2, bd: fakeBd({}), now: NOW });
-  for (const roleId of ['builder', 'chief-of-staff', 'product-manager', 'staffing', 'spike-researcher', undefined]) assert.match(run(roleId).reason, /reopening a closed bead is the Delivery Lead's or Progress Observer's call; message them with the evidence that it is not done/, String(roleId));
+  for (const roleId of ['builder', 'chief-of-staff', 'product-manager', 'staffing', 'spike-researcher', undefined]) assert.match(run(roleId).reason, /reopening a closed bead is the Delivery Manager's or Progress Observer's call; message them with the evidence that it is not done/, String(roleId));
   for (const roleId of ['delivery-lead', 'progress-observer']) assert.equal(run(roleId), null, roleId);
 });
 
@@ -322,11 +322,11 @@ test('H.2: -a and -s count as claim changes; a live claim cannot be closed by so
   assert.match(run('bd close ex-1 --reason "done"').reason, /EVIDENCE:/);
 });
 
-test('D: the bd-guard hook passes the role, so a builder cannot add a dependency and the Delivery Lead can', () => {
+test('D: the bd-guard hook passes the role, so a builder cannot add a dependency and the Delivery Manager can', () => {
   const env = (instance) => ({ DELIVERY_ROLE: instance, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT });
   const b = preparedRole('builder-1');
   const out = runHook('bd-guard-hook.js', { cwd: b.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'bd dep add ex-1 ex-2' } }, env('builder-1'));
-  assert.match(JSON.parse(out).hookSpecificOutput.permissionDecisionReason, /structure belongs to the Delivery Lead/);
+  assert.match(JSON.parse(out).hookSpecificOutput.permissionDecisionReason, /structure belongs to the Delivery Manager/);
   const dl = preparedRole('delivery-lead');
   assert.equal(runHook('bd-guard-hook.js', { cwd: dl.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'bd dep add ex-1 ex-2' } }, env('delivery-lead')), '');
 });

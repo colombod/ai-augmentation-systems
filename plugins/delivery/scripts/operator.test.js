@@ -803,3 +803,10 @@ test('ruling 2: ack --pending acks every pending input of this session that cann
   assert.deepStrictEqual(json(run(cos, ['pending', '--json'])).inputs.map((e) => e.id), ['in-pc-000003']);
   assert.strictEqual(run(cos, ['ack', '--pending', '--input', 'in-pc-000003', '--reason', 'x']).status, 2);
 });
+
+test('ruling 4: operator.js ask --asker delivery-manager records the delivery-lead instance', () => {
+  const { cos } = cosFixture();
+  const r = run(cos, ['ask', '--text', 'Which phase first?', '--asker', 'delivery-manager', '--json']);
+  assert.strictEqual(r.status, 0, r.out + r.err);
+  assert.deepStrictEqual(json(r).record.asker, { instance: 'delivery-lead', role: 'delivery-lead', bead: null });
+});

@@ -2,7 +2,7 @@
 
 > **The quick way is `/delivery:start`.** Run it in an ordinary Claude Code session, outside any role directory. It checks the prerequisites, asks a few questions and runs `scripts/start.js`, which does steps 1 to 3 below for you and prints the commands for step 4. This page shows what it runs, with real output, and how to do each step by hand.
 
-This guide starts a small shipping team on one machine: a Chief of Staff, a Product Manager, a Delivery Lead and one builder. Each runs as its own Claude Code session in its own directory. You talk to the Chief of Staff; the others talk to it.
+This guide starts a small shipping team on one machine: a Chief of Staff, a Product Manager, a Delivery Manager and one builder. Each runs as its own Claude Code session in its own directory. You talk to the Chief of Staff; the others talk to it.
 
 Words used below:
 
@@ -44,7 +44,7 @@ node <plugin-root>/scripts/start.js --project <project-root> --host laptop --pro
 node <plugin-root>/scripts/start.js --project <project-root> --host laptop --product-repo <product-checkout>
 ```
 
-Other flags: `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Lead, one builder; `full` adds Staffing, the Progress Observer and the Spike Researcher), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default: none, so each session uses your own Claude Code default), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
+Other flags: `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Manager, one builder; `full` adds Staffing, the Progress Observer and the Spike Researcher), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default: none, so each session uses your own Claude Code default), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
 
 The real run, against a throwaway fixture (paths shortened to placeholders):
 
@@ -209,7 +209,7 @@ Inferred answers awaiting ratification: 0
 No drift.
 ```
 
-To give the team work, plan with the pipeline skills (the Product Manager writes `.delivery/initiatives/<initiative>/`, the Delivery Lead writes stories), then the Delivery Lead runs `/delivery:materialise <initiative>` to turn the roadmap, stories and spikes into beads.
+To give the team work, plan with the pipeline skills (the Product Manager writes `.delivery/initiatives/<initiative>/`, the Delivery Manager writes stories), then the Delivery Manager runs `/delivery:materialise <initiative>` to turn the roadmap, stories and spikes into beads.
 
 ## 6. Your first conversation
 
