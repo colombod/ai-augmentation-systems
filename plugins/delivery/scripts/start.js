@@ -16,7 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { loadManifest, validateManifest, expandInstances, TEAM_REL, HOSTS_REL, RUNNERS } = require('./lib/manifest.js');
+const { loadManifest, validateManifest, manifestWarnings, expandInstances, TEAM_REL, HOSTS_REL, RUNNERS } = require('./lib/manifest.js');
 
 const PLUGIN_ROOT = path.join(__dirname, '..');
 const PLUGIN_ID = 'delivery@ai-augmentation-systems';
@@ -36,8 +36,9 @@ const ROLE_ENTRIES = {
   'spike-researcher': { id: 'spike-researcher', brief: 'delivery/spike-researcher', model: 'sonnet' },
   builder: { id: 'builder', brief: 'delivery/builder', model: 'sonnet', steward: true },
 };
-// --models: one model per role for the whole team. balanced is the role defaults; quality puts
-// opus on the three senior roles; economy moves them to sonnet and the observer roles to haiku.
+// --models: one model per role for the whole team. balanced is the role defaults (opus for the Chief
+// of Staff and the Product Manager); quality also puts the Delivery Manager on opus; economy moves
+// all three to sonnet and Staffing to haiku. Builders stay on sonnet in every preset.
 // large_model is the model a builder gives its subagents for a size-L bead (env DELIVERY_LARGE_MODEL).
 const MODEL_PRESETS = {
   quality: { 'chief-of-staff': 'opus', 'product-manager': 'opus', 'delivery-lead': 'opus', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'sonnet', 'progress-observer': 'haiku', large_model: 'opus' },
@@ -248,6 +249,10 @@ function scaffold(opts) {
       return { code: 1, out };
     }
     ({ team, hosts } = loadManifest(projectRoot));
+    // a manifest an earlier (refused) run wrote, or edited by hand, is not in the role clones until
+    // it is committed: commit just these two files
+    const st = run('git', ['status', '--porcelain', '--', TEAM_REL, HOSTS_REL], { cwd: projectRoot, env: gitEnv });
+    if (st.ok && st.out) { if (dryRun) say('  manifest: would commit the uncommitted manifest files'); else wroteManifest = true; }
     say(`  manifest: keeping the existing ${TEAM_REL} and ${HOSTS_REL} (project "${team.project}", ${expandInstances(team).length} instance(s)); --preset, --models, --host, --prefix and --runner are not applied to it`);
   } else {
     const project = slug(path.basename(projectRoot), 'project');
@@ -267,6 +272,7 @@ function scaffold(opts) {
     return { code: 1, out };
   }
   say('  manifest: valid');
+  for (const warning of manifestWarnings(team)) say(`  manifest: warning: ${warning}`);
 
   // 3. the product checkout builders get a worktree of
   // a URL is cloned next to the project repo as <project>-product; a path is used as it is
@@ -277,7 +283,7 @@ function scaffold(opts) {
     } else if (isUrl(productRepo)) {
       say(`  product repo: ${w}clone ${productRepo} into ${productCheckout}`);
       if (!dryRun) {
-        const c = run('git', ['clone', '--quiet', productRepo, productCheckout], { env: gitEnv, timeout: 300000 });
+        const c = run('git', ['clone', '--quiet', '--', productRepo, productCheckout], { env: gitEnv, timeout: 300000 });
         if (!c.ok) { say(`  product repo: clone failed: ${c.err.slice(0, 300)}`); return { code: 1, out }; }
       }
     } else {
@@ -306,7 +312,7 @@ function scaffold(opts) {
   if (fs.existsSync(path.join(projectRoot, '.beads'))) {
     say('  beads: .beads exists; bd init skipped');
   } else if (!run('bd', ['version'], { env }).ok) {
-    say(`  beads: skipped: bd is not on PATH. Install it, run \`bd init --prefix ${team.prefix}\` in ${projectRoot}, then run start.js again so each role gets BEADS_DIR`);
+    say(`  beads: skipped: bd is not on PATH. Install it, run \`bd init --prefix ${team.prefix}\` in ${projectRoot}, then run start.js again: it re-prepares the roles so each gets BEADS_DIR`);
   } else {
     say(`  beads: ${w}run bd init --prefix ${team.prefix}`);
     if (!dryRun) {
@@ -324,14 +330,18 @@ function scaffold(opts) {
   const { prepareRole } = require('./prepare-role.js');
   for (const { instance, role } of instances) {
     const roleDir = path.join(teamDir, instance);
-    if (fs.existsSync(path.join(roleDir, '.delivery-role.json'))) {
+    const beadsNow = fs.existsSync(path.join(projectRoot, '.beads'));
+    const needsBeadsDir = beadsNow && fs.existsSync(path.join(roleDir, '.delivery-role.json')) && (() => {
+      try { return !(JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).env || {}).BEADS_DIR; } catch (e) { return true; }
+    })();
+    if (fs.existsSync(path.join(roleDir, '.delivery-role.json')) && !needsBeadsDir) {
       say(`    ${instance}: already prepared`);
     } else if (dryRun) {
-      say(`    ${instance}: would prepare (${role.model}${role.id === 'builder' && productCheckout ? ', product worktree on team/' + instance : ''})`);
+      say(`    ${instance}: would ${needsBeadsDir ? 're-prepare for BEADS_DIR' : 'prepare'} (${role.model}${role.id === 'builder' && productCheckout ? ', product worktree on team/' + instance : ''})`);
     } else {
       try {
         const { files } = prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo: productCheckout || undefined, user });
-        say(`    ${instance}: prepared (${role.model})`);
+        say(`    ${instance}: ${needsBeadsDir ? 're-prepared for BEADS_DIR' : 'prepared'} (${role.model})`);
         for (const f of files) if (f.startsWith('warning:')) say(`      ${f}`);
       } catch (err) {
         say(`    ${instance}: prepare failed: ${err.message}`);
@@ -348,7 +358,7 @@ function scaffold(opts) {
   say('');
   say('Then:');
   say('  1. In every session, run /delivery:team join.');
-  say('  2. Open the Chief of Staff session and talk to it. It is the only session you need to talk to.');
+  say('  2. Open the Chief of Staff session and talk to it for decisions and logistics; talk with the Product Manager about product vision.');
   say('  3. /delivery:team shows who is live; ask the Chief of Staff for the question ledger to see every decision.');
   return { code: 0, out, teamDir, prepared, projectRoot };
 }

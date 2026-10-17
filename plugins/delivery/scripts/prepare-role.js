@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // scripts/prepare-role.js — create one role instance directory from the manifest.
-// Run by a steward (phase 4) or by hand: the session is then started IN that
+// Run by start.js, a steward or by hand: the session is then started IN that
 // directory and the SessionStart hook does the rest. Idempotent.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { loadManifest, validateManifest, expandInstances, canonicalRoleId } = require('./lib/manifest.js');
+const { loadManifest, validateManifest, manifestWarnings, expandInstances, canonicalRoleId } = require('./lib/manifest.js');
 const { loadRoleBrief, composeBrief } = require('./lib/compose-brief.js');
 
 function git(cwd, ...args) {
@@ -38,6 +38,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   const roleDir = path.join(teamDir, instance);
   fs.mkdirSync(roleDir, { recursive: true });
   const files = [];
+  for (const w of manifestWarnings(team)) if (w.includes(`"${role.id}"`)) files.push(`warning: ${w}`);
 
   const projectDir = path.join(roleDir, 'project');
   if (!fs.existsSync(path.join(projectDir, '.git'))) {

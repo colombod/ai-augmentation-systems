@@ -228,3 +228,57 @@ test('A5: --models presets set every role\'s model and the builders\' large-bead
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /preset minimal, models economy/);
 });
+
+test('final M1: a manifest left uncommitted by a refused run is committed by the next run', () => {
+  const project = path.join(mk('start-m1-'), 'acme');
+  const bad = start(['--project', project, '--host', 'laptop', '--product-repo', '/nonexistent']);
+  assert.equal(bad.status, 1, bad.out);
+  assert.match(bad.out, /refused: \/nonexistent is not a git checkout/);
+  const git = (...a) => cp.execFileSync(GIT, a, { cwd: project, encoding: 'utf8' });
+  assert.match(git('status', '--porcelain'), /\?\? \.delivery\//, 'the refused run left the manifest uncommitted');
+  const ok = start(['--project', project, '--host', 'laptop']);
+  assert.equal(ok.status, 0, ok.out);
+  assert.match(ok.out, /manifest: committed/);
+  assert.equal(git('status', '--porcelain', '--', '.delivery/team/team.json', '.delivery/team/hosts.json'), '');
+});
+
+test('final M2: a --product-repo value starting with - is a path, refused cleanly, never a git option', () => {
+  const project = path.join(mk('start-m2-'), 'acme');
+  const r = start(['--project', project, '--host', 'laptop', '--product-repo', '-uupload-pack=touch /tmp/pwned']);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /is not a git checkout/);
+  // a URL-shaped value that starts with - reaches git clone only after --, so it is a repository, not an option
+  const r2 = start(['--project', path.join(mk('start-m2b-'), 'acme'), '--host', 'laptop', '--product-repo', '-uupload@x:y']);
+  assert.equal(r2.status, 1, r2.out);
+  assert.match(r2.out, /clone -uupload@x:y into/);
+  assert.match(r2.out, /clone failed/);
+});
+
+test('final I3: after bd is installed and .beads exists, a re-run re-prepares the roles so each gets BEADS_DIR', () => {
+  const project = path.join(mk('start-i3-'), 'acme');
+  const first = start(['--project', project, '--host', 'laptop'], { path: bin({ bd: false }) });
+  assert.equal(first.status, 0, first.out);
+  assert.match(first.out, /then run start\.js again: it re-prepares the roles/);
+  const teamDir = path.join(path.dirname(project), 'acme-team');
+  const envOf = (i) => readJson(path.join(teamDir, i, '.claude', 'settings.local.json')).env;
+  assert.equal(envOf('chief-of-staff').BEADS_DIR, undefined);
+  fs.mkdirSync(path.join(project, '.beads')); // bd init ran
+  const again = start(['--project', project, '--host', 'laptop']);
+  assert.equal(again.status, 0, again.out);
+  assert.match(again.out, /chief-of-staff: re-prepared for BEADS_DIR/);
+  for (const i of ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder']) assert.equal(envOf(i).BEADS_DIR, path.join(project, '.beads'), i);
+  assert.match(start(['--project', project, '--host', 'laptop']).out, /chief-of-staff: already prepared/);
+});
+
+test('final M6: an unknown model name is a warning in start.js output, not a refusal', () => {
+  const project = path.join(mk('start-m6-'), 'acme');
+  assert.equal(start(['--project', project, '--host', 'laptop']).status, 0);
+  const file = path.join(project, '.delivery/team/team.json');
+  const team = readJson(file);
+  team.roles[0].model = 'claude-opus-9';
+  fs.writeFileSync(file, JSON.stringify(team));
+  const r = start(['--project', project, '--host', 'laptop']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /manifest: warning: team.json: role "chief-of-staff" has model "claude-opus-9"/);
+  assert.match(r.out, /manifest: committed/, 'the hand edit is committed too');
+});

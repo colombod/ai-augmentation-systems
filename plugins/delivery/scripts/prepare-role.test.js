@@ -257,3 +257,16 @@ test('ruling 4: prepare-role --instance delivery-manager prepares the delivery-l
   assert.equal(path.basename(roleDir), 'delivery-lead');
   assert.match(fs.readFileSync(path.join(roleDir, 'CLAUDE.local.md'), 'utf8'), /Delivery Manager/);
 });
+
+test('final M6: prepare-role reports an unknown model name of the role it prepares as a warning', () => {
+  const projectRoot = scratchProjectRepo();
+  const file = path.join(projectRoot, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.roles.find((r) => r.id === 'staffing').model = 'claude-sonnet-9';
+  fs.writeFileSync(file, JSON.stringify(team));
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { files } = prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT, user: 't' });
+  assert.ok(files.some((f) => /^warning: .*"claude-sonnet-9"/.test(f)), files.join('\n'));
+  const other = prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 't' });
+  assert.ok(!other.files.some((f) => /claude-sonnet-9/.test(f)), 'only the prepared role\'s own model');
+});
