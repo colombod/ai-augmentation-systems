@@ -183,7 +183,7 @@ test('I4: prompts typed before the session became the role are stored and citabl
   assert.equal(res.added, 2);
   assert.deepEqual(res.pending, []);
   const since = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role-since.json'), 'utf8'));
-  assert.deepEqual(since, { session_id: SID, since: '2026-10-17T08:00:00.000Z' });
+  assert.deepEqual(since, { sessions: { [SID]: '2026-10-17T08:00:00.000Z' } });
   // a prompt typed as the role arrives later in the same transcript
   fs.appendFileSync(tr, JSON.stringify(human('use postgres for the orders store', 3)) + '\n');
   withEnv({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: undefined }, () => captureFromHookInput({ ...input, hook_event_name: 'UserPromptSubmit' }, PLUGIN_ROOT, { now: '2026-10-17T08:05:00.000Z' }));
@@ -200,4 +200,32 @@ test('I4: prompts typed before the session became the role are stored and citabl
   assert.equal(R.verifyRecord(projectRoot, d.id).ok, true);
   // a new session id in the same role directory starts a new boundary
   assert.equal(log.roleSince(roleDir, 'another-session', { now: '2026-10-18T00:00:00.000Z' }), '2026-10-18T00:00:00.000Z');
+});
+
+test('SessionStart records a per-session role boundary without a transcript', () => {
+  const { projectRoot, roleDir } = preparedRole('chief-of-staff');
+  const start = (sessionId, now) => withEnv({ DELIVERY_ROLE: 'chief-of-staff' }, () =>
+    captureFromHookInput({ cwd: roleDir, session_id: sessionId, hook_event_name: 'SessionStart' }, PLUGIN_ROOT, { now }));
+  assert.equal(start('session-a', '2026-10-17T08:00:00.000Z').status, 'no_transcript');
+  assert.equal(start('session-b', '2026-10-17T09:00:00.000Z').status, 'no_transcript');
+
+  const at = (text, promptId, timestamp, sessionId) => ({
+    ...human(text, promptId.slice(1)),
+    promptId,
+    timestamp,
+    sessionId,
+  });
+  const tr = transcript([
+    at('before role', 'a-1', '2026-10-17T07:00:00.000Z', 'session-a'),
+    at('first role prompt', 'a-2', '2026-10-17T08:30:00.000Z', 'session-a'),
+  ]);
+  const capture = (now) => withEnv({ DELIVERY_ROLE: 'chief-of-staff' }, () =>
+    captureFromHookInput({ cwd: roleDir, session_id: 'session-a', transcript_path: tr }, PLUGIN_ROOT, { now }));
+  capture('2026-10-17T08:35:00.000Z');
+  fs.appendFileSync(tr, `${JSON.stringify(at('second role prompt', 'a-3', '2026-10-17T08:45:00.000Z', 'session-a'))}\n`);
+  capture('2026-10-17T08:50:00.000Z');
+
+  assert.deepEqual(log.listInputs(projectRoot, { source: 'human', sessionId: 'session-a' }).map((e) => !!e.pre_role), [true, false, false]);
+  assert.equal(log.roleSince(roleDir, 'session-a', { create: false }), '2026-10-17T08:00:00.000Z');
+  assert.equal(log.roleSince(roleDir, 'session-b', { create: false }), '2026-10-17T09:00:00.000Z');
 });

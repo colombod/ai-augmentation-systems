@@ -365,6 +365,16 @@ test('verifyInputs returns per-host heads and heads.json is local and git-ignore
   assert.strictEqual(h.pc.last_hash, v.host_heads.pc.last_hash);
 });
 
+test('setHead rejects a stale lower count and a conflicting hash at the same count', () => {
+  const root = project();
+  log.setHead(root, 'pc', { count: 12, last_hash: 'head-12' });
+  log.setHead(root, 'pc', { count: 11, last_hash: 'head-11' });
+  log.setHead(root, 'pc', { count: 12, last_hash: 'conflict-12' });
+  assert.deepStrictEqual(log.readHeads(root).pc, { count: 12, last_hash: 'head-12' });
+  log.setHead(root, 'pc', { count: 13, last_hash: 'head-13' });
+  assert.deepStrictEqual(log.readHeads(root).pc, { count: 13, last_hash: 'head-13' });
+});
+
 test('a half-written tail line is set aside and the chain and seq continue from the last good line', () => {
   const root = project();
   sync(root, transcript([human('one', 1), human('two', 2)]));
@@ -429,16 +439,28 @@ test('an unrelated unpushed commit blocks publish and nothing is pushed', () => 
   assert.strictEqual(git(hosta, 'ls-remote', 'origin', 'main').split('\t')[0], before);
 });
 
-test('a rejected push recovers by fetch, merge and one retry', () => {
+test('a rejected push reconciles in isolation and preserves local peer and project files', () => {
   const { hosta, hostb } = twoHosts();
+  fs.writeFileSync(path.join(hosta, 'README.md'), 'upstream project edit\n');
+  git(hosta, 'add', 'README.md');
+  git(hosta, 'commit', '-m', 'unrelated upstream project change');
+  git(hosta, 'push');
   sync(hosta, transcript([human('a', 1)]), { host: 'hosta' });
   sync(hostb, transcript([human('b', 2)]), { host: 'hostb' });
   assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta' }).published, true);
+  const peerRecord = path.join(hostb, '.delivery', 'operator', 'records', 'peer-session.ndjson');
+  fs.mkdirSync(path.dirname(peerRecord), { recursive: true });
+  fs.writeFileSync(peerRecord, '{"unpublished":"peer decision"}\n');
+  const peerBytes = fs.readFileSync(peerRecord, 'utf8');
   const p = log.publish(hostb, { force: true, host: 'hostb' });
   assert.strictEqual(p.published, true, JSON.stringify(p));
+  assert.strictEqual(fs.readFileSync(peerRecord, 'utf8'), peerBytes);
+  assert.strictEqual(fs.readFileSync(path.join(hostb, 'README.md'), 'utf8'), 'project\n');
+  assert.equal(p.refreshed, true);
   const remote = git(hostb, 'ls-tree', '-r', '--name-only', 'origin/main');
   assert.match(remote, /inputs\/hosta\//);
   assert.match(remote, /inputs\/hostb\//);
+  assert.match(git(hostb, 'show', 'origin/main:README.md'), /upstream project edit/);
 });
 
 test('refresh brings another host file and never overwrites this host file with an older upstream copy', () => {

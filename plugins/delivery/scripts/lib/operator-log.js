@@ -113,19 +113,35 @@ function loadIndex(root, host) {
 
 // Local-only record of how long each host chain was and its last hash, so a deleted tail
 // is detectable (a pure hash chain cannot see its own truncation).
-// When this session became the role: the first time the capture hook saw this session id in the
-// role directory (SessionStart always runs first in a role session, so earlier transcript lines are
-// prompts from before the session was a role). Kept in <roleDir>/.delivery-role-since.json as
-// { session_id, since }; a new session id starts a new one. create:false only reads.
+// When each session became the role. Kept in <roleDir>/.delivery-role-since.json so sessions sharing
+// a role directory do not replace one another's boundary.
 function roleSince(roleDir, sessionId, { now, create = true } = {}) {
   if (!roleDir || !sessionId) return null;
   const f = path.join(roleDir, '.delivery-role-since.json');
-  const cur = readJson(f);
-  if (cur && cur.session_id === sessionId && typeof cur.since === 'string' && !Number.isNaN(Date.parse(cur.since))) return cur.since;
-  if (!create) return null;
-  const since = new Date(now || Date.now()).toISOString();
-  try { fs.writeFileSync(f, `${JSON.stringify({ session_id: sessionId, since })}\n`); } catch (e) { return null; }
-  return since;
+  const getSession = (sessions) => {
+    const since = sessions[sessionId];
+    return typeof since === 'string' && !Number.isNaN(Date.parse(since)) ? since : null;
+  };
+  if (!create) {
+    const cur = readJson(f);
+    const sessions = cur && cur.sessions && typeof cur.sessions === 'object' ? cur.sessions : {};
+    return getSession(sessions) || (cur && cur.session_id === sessionId ? cur.since : null);
+  }
+  try {
+    return chain.withLock(f + '.lock', () => {
+      const cur = readJson(f);
+      const sessions = Object.assign(Object.create(null), cur && cur.sessions && typeof cur.sessions === 'object' ? cur.sessions : {});
+      if (cur && cur.session_id && typeof cur.since === 'string' && !Object.prototype.hasOwnProperty.call(sessions, cur.session_id)) {
+        sessions[cur.session_id] = cur.since;
+      }
+      const saved = getSession(sessions);
+      if (saved) return saved;
+      const since = new Date(now || Date.now()).toISOString();
+      sessions[sessionId] = since;
+      writeJsonAtomic(f, { sessions });
+      return since;
+    });
+  } catch (e) { return null; }
 }
 
 function headsFile(root) { return path.join(opDir(root), 'cursors', 'heads.json'); }
@@ -148,6 +164,9 @@ function setHead(root, host, head) {
   chain.withLock(headsFile(root) + '.lock', () => {
     if (headsProblem(root)) return;
     const heads = readHeads(root);
+    const current = heads[host];
+    if (current && (head.count < current.count ||
+        (head.count === current.count && head.last_hash !== current.last_hash))) return;
     heads[host] = head;
     writeJsonAtomic(headsFile(root), heads);
   });
@@ -351,7 +370,7 @@ function verifyInputs(projectRoot, opts = {}) {
 
 function git(cwd, args) {
   const r = cp.spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60000 });
-  return { ok: r.status === 0, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
+  return { ok: r.status === 0, out: (r.stdout || '').trimEnd(), err: (r.stderr || '').trimEnd() };
 }
 
 const OP_PATH = '.delivery/operator';
@@ -396,18 +415,30 @@ function refresh(projectRoot, opts = {}) {
         }
         continue;
       }
-      // chains are append-only: take the upstream copy only when the local file is missing or a
-      // prefix of it, so a newer local file (this writer's own, unpublished) is never replaced
       const abs = path.join(projectRoot, p);
-      if (fs.existsSync(abs)) {
-        const show = cp.spawnSync('git', ['show', `@{u}:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-        if (show.status !== 0) continue;
-        let local = '';
-        try { local = fs.readFileSync(abs, 'utf8'); } catch (e) { continue; }
-        if (!show.stdout.startsWith(local) || show.stdout === local) continue;
+      const show = cp.spawnSync('git', ['show', `${up.ref}:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+      if (show.status !== 0) continue;
+      const apply = () => {
+        if (fs.existsSync(abs)) {
+          let local;
+          try { local = fs.readFileSync(abs, 'utf8'); } catch (e) { return; }
+          if (local === show.stdout) return;
+          const isChain = p.startsWith(`${OP_PATH}/inputs/`) || p.startsWith(`${OP_PATH}/records/`);
+          // A chain prefix is recoverable only while its writer is excluded by the same lock used
+          // for appends. Other operator files may be generated or edited concurrently, so preserve
+          // any local difference instead of treating it as a disposable refresh copy.
+          if (!isChain || !show.stdout.startsWith(local)) { diverged.push(p); return; }
+        }
+        const c = git(projectRoot, ['checkout', up.ref, '--', p]);
+        if (c.ok) updated.push(p);
+      };
+      if (p.startsWith(`${OP_PATH}/inputs/`)) {
+        chain.withLock(path.join(path.dirname(abs), '.host.lock'), apply);
+      } else if (p.startsWith(`${OP_PATH}/records/`)) {
+        chain.withLock(abs + '.lock', apply);
+      } else {
+        apply();
       }
-      const c = git(projectRoot, ['checkout', '@{u}', '--', p]);
-      if (c.ok) { updated.push(p); git(projectRoot, ['reset', '-q', 'HEAD', '--', p]); }
     }
     return { ok: true, updated, diverged, remote: up.remote };
   } catch (e) {
@@ -475,44 +506,47 @@ function publishInner(projectRoot, opts = {}) {
     const push = () => git(projectRoot, ['push', up.remote, `HEAD:${up.branch}`]);
     let r = push();
     if (!r.ok) {
-      // rejected: fetch, merge the upstream (path-scoped work was verified above) and retry once
+      // Keep reconciliation out of the shared checkout: a peer's unpublished operator file may
+      // be present there, while unrelated project files must remain untouched.
       const f = git(projectRoot, ['fetch', up.remote]);
       if (!f.ok) return no(f.err || 'fetch failed');
       if (unrelated().length) return no('unpushed unrelated commits', { paths: unrelated() });
-      // other writers' files refreshed earlier are derived copies: drop them so the merge can bring them
-      const ownPrefixes = [hostRel + '/', `${OP_PATH}/records/${opts.instance}.ndjson`, `${OP_PATH}/.gitignore`, `${OP_PATH}/LEDGER.md`];
-      const st = git(projectRoot, ['status', '--porcelain', '--untracked-files=all', '--', OP_PATH]);
-      for (const l of st.out ? st.out.split('\n') : []) {
-        const p = l.slice(3);
-        if (!p.startsWith(OP_PATH + '/') || ownPrefixes.some((o) => p.startsWith(o))) continue;
-        if (l.startsWith('??')) { try { fs.unlinkSync(path.join(projectRoot, p)); } catch (e) { /* ignore */ } }
-        else git(projectRoot, ['checkout', 'HEAD', '--', p]);
-      }
-      const m = git(projectRoot, ['merge', '--no-edit', '--no-verify', '--no-gpg-sign', '@{u}']);
-      if (!m.ok) {
-        // the generated ledger can conflict when two hosts wrote concurrently: it is derived, take
-        // the upstream copy (the next write regenerates it); anything else aborts the merge
-        const un = git(projectRoot, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
-        const ledger = `${OP_PATH}/LEDGER.md`;
-        let healed = false;
-        if (un.length && un.every((p) => p === ledger)) {
-          const co = git(projectRoot, ['checkout', '--theirs', '--', ledger]);
-          const ad = co.ok ? git(projectRoot, ['add', '--', ledger]) : co;
-          const cm = ad.ok ? git(projectRoot, ['commit', '--no-edit', '--no-verify', '--no-gpg-sign']) : ad;
-          healed = cm.ok;
-        }
-        if (!healed) {
-          git(projectRoot, ['merge', '--abort']);
-          const recFile = opts.instance ? `${OP_PATH}/records/${opts.instance}.ndjson` : null;
-          if (recFile && un.includes(recFile)) {
-            return no(`records chain forked: another writer appended to records/${opts.instance}.ndjson`, { forked: recFile });
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'delivery-operator-publish-'));
+      const checkout = path.join(temp, 'checkout');
+      let addedWorktree = false;
+      try {
+        const add = git(projectRoot, ['worktree', 'add', '--detach', checkout, 'HEAD']);
+        if (!add.ok) return no(add.err || add.out || 'could not create isolated publish checkout');
+        addedWorktree = true;
+        const m = git(checkout, ['merge', '--no-edit', '--no-verify', '--no-gpg-sign', up.ref]);
+        if (!m.ok) {
+          const un = git(checkout, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean);
+          const ledger = `${OP_PATH}/LEDGER.md`;
+          if (un.length && un.every((p) => p === ledger)) {
+            const co = git(checkout, ['checkout', '--theirs', '--', ledger]);
+            const ad = co.ok ? git(checkout, ['add', '--', ledger]) : co;
+            const cm = ad.ok ? git(checkout, ['commit', '--no-edit', '--no-verify', '--no-gpg-sign']) : ad;
+            if (!cm.ok) return no(cm.err || cm.out || 'could not resolve generated ledger');
+          } else {
+            git(checkout, ['merge', '--abort']);
+            const recFile = opts.instance ? `${OP_PATH}/records/${opts.instance}.ndjson` : null;
+            if (recFile && un.includes(recFile)) {
+              return no(`records chain forked: another writer appended to records/${opts.instance}.ndjson`, { forked: recFile });
+            }
+            const inputsHit = un.find((p) => p.startsWith(hostRel + '/'));
+            if (inputsHit) return no(`inputs chain forked: another writer appended to ${inputsHit.slice(OP_PATH.length + 1)}`, { forked: inputsHit });
+            return no(m.err || m.out || 'merge failed');
           }
-          const inputsHit = un.find((p) => p.startsWith(hostRel + '/'));
-          if (inputsHit) return no(`inputs chain forked: another writer appended to ${inputsHit.slice(OP_PATH.length + 1)}`, { forked: inputsHit });
-          return no(m.err || m.out || 'merge failed');
         }
+        r = git(checkout, ['push', up.remote, `HEAD:${up.branch}`]);
+        if (!r.ok) return no(r.err || r.out || 'push failed after isolated merge');
+      } finally {
+        if (addedWorktree) git(projectRoot, ['worktree', 'remove', '--force', checkout]);
+        fs.rmSync(temp, { recursive: true, force: true });
       }
-      r = push();
+      const refreshed = git(projectRoot, ['fetch', up.remote]);
+      const sync = refreshed.ok ? refresh(projectRoot, { fetch: false, host: opts.host, instance: opts.instance }) : null;
+      return { ok: true, published: true, entries: n, refreshed: !!(sync && sync.ok), ...(sync && sync.diverged.length ? { diverged: sync.diverged } : {}) };
     }
     return r.ok ? { ok: true, published: true, entries: n } : no(r.err);
   } catch (e) {

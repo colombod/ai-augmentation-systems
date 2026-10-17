@@ -254,6 +254,7 @@ Prompts typed before a session became the role (a resumed or adopted session) ar
 - `LEDGER.md`: the question ledger, generated from the records.
 
 Each chain file has exactly one writer, so git never merges a chain. `operator.js problems` lists anything that fails verification.
+On a rejected push, `publish` reconciles in an isolated checkout and refreshes only operator paths in the project checkout; local peer files are preserved unless their contents are already present upstream.
 
 **Limits.** This is tamper-evidence for cooperative sessions, not a security boundary.
 - **Files can be rewritten.** A session with unrestricted Bash can rewrite and re-hash the files. The hash chains, the recorded heads and the git history make that detectable; they do not prevent it.
@@ -261,7 +262,7 @@ Each chain file has exactly one writer, so git never merges a chain. `operator.j
 - **Records are checked for form, not relevance.** A validly shaped record that cites a real operator input cannot be machine-rejected, even when the input it cites does not support it. Detection is human: the git history, and the verbatim words and author that `verify` prints.
 - **Capture depends on the harness.** Capture relies on the harness's `origin` stamp on each transcript entry, and that format is undocumented. If it changes, `operator.js sync` reports `format_unrecognised` and recording fails closed.
 - **Cloud sessions are captured late.** Their transcripts are not reachable from other hosts. Inputs typed directly into a cloud session are captured only when that session syncs from its own host.
-- **The pre-role boundary is a local file.** `<roleDir>/.delivery-role-since.json` is not checked. Deleting it, or dating it in the future, hides genuine inputs from `pending` and the Stop guard. Only a session with unrestricted Bash or a human can do that.
+- **The pre-role boundary is a local file.** SessionStart records each session's boundary in `<roleDir>/.delivery-role-since.json`, even if the transcript is not yet available; sessions sharing a role directory keep separate boundaries. The file is not checked. Deleting it, or dating it in the future, hides genuine inputs from `pending` and the Stop guard. Only a session with unrestricted Bash or a human can do that.
 - **Keystrokes can be injected.** A role with unrestricted Bash can type into another session (`tmux send-keys`, computer-use, a terminal MCP server, `osascript`), and the harness records that as a human prompt. This cannot be told apart in the transcript.
 - **The relay detector is a heuristic backstop.** It catches common phrasings, not all of them. The structural fix is that no session ever needs the operator to relay.
 - **Instance ids.** An instance id belongs to one role:

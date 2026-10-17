@@ -542,14 +542,16 @@ after a plugin-cache version move the operator.js rules name the old path until 
 again.
 
 **Ruling: prompts from before the role.** A session resumed or adopted into a role directory has
-earlier human prompts in its transcript. The first capture of a session id in a role directory writes
-`<roleDir>/.delivery-role-since.json`; inputs dated earlier are stored and citable (`record --cite`
-works on request) but carry `pre_role: true` and never appear in `pending` or block a Stop.
+earlier human prompts in its transcript. SessionStart records that session's role boundary in
+`<roleDir>/.delivery-role-since.json`, even when its transcript is not yet available. Boundaries are
+keyed by session id so sessions sharing a role directory do not replace one another's. Inputs dated
+earlier are stored and citable (`record --cite` works on request) but carry `pre_role: true` and never
+appear in `pending` or block a Stop.
 
 **Rulings on parked items.**
-- *Role-directory clone and `git merge @{u}`.* When a rejected push is retried, the merge can bring
-  upstream's unrelated tracked files into the role directory's project clone. Accepted: that clone is
-  machine-managed and never edited by hand; `prepare-role` reconciles it.
+- *Rejected-push recovery.* The shared project checkout can contain other sessions' unpublished
+  operator records. A rejected push is reconciled in an isolated checkout, then only operator paths
+  are refreshed in the original project; unrelated upstream project files are never merged there.
 - *Lock deadline and stale threshold.* A writer waits at most 2 s for a chain lock, and a lock is
   treated as stale after 10 s; pid liveness is not checked (pids are host-local). A crashed writer's
   fresh lock therefore refuses writes for up to 10 s with a retryable error; hooks fail open.

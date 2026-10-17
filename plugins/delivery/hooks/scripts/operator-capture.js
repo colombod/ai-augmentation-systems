@@ -43,6 +43,7 @@ function captureFromHookInput(input, pluginRoot, deps = {}) {
     const now = deps.now || new Date().toISOString();
     const transcriptPath = typeof inp.transcript_path === 'string' && path.isAbsolute(inp.transcript_path) ? inp.transcript_path : null;
     const sessionId = typeof inp.session_id === 'string' && inp.session_id ? inp.session_id : null;
+    const sid = sessionId || (transcriptPath ? path.basename(transcriptPath).replace(/\.jsonl$/, '') : null);
     const problems = [];
 
     try {
@@ -57,13 +58,13 @@ function captureFromHookInput(input, pluginRoot, deps = {}) {
       } catch (err) { problems.push(`cannot record the transcript in the roster (${err.message})`); }
     }
 
+    const operatorLog = require('../../scripts/lib/operator-log.js');
+    const roleSince = sid ? operatorLog.roleSince(roleDir, sid, { now }) : null;
     let added = 0;
     let status = transcriptPath && fs.existsSync(transcriptPath) ? 'ok' : 'no_transcript';
     if (status === 'ok') {
       try {
-        const sync = deps.syncTranscript || require('../../scripts/lib/operator-log.js').syncTranscript;
-        const sid = sessionId || path.basename(transcriptPath).replace(/\.jsonl$/, '');
-        const roleSince = require('../../scripts/lib/operator-log.js').roleSince(roleDir, sid, { now });
+        const sync = deps.syncTranscript || operatorLog.syncTranscript;
         const r = sync({ projectRoot, transcriptPath, sessionId: sid,
           instance: marker.instance, role: role.id, host: role.host, roleSince });
         added = (r && r.added) || 0;

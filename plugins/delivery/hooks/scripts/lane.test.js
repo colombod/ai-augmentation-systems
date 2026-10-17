@@ -584,7 +584,17 @@ test('H.6: role-lane hook fails open on a thrown error, denies Bash and headless
   assert.equal(closed.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(closed.hookSpecificOutput.permissionDecisionReason, /the lane cannot be checked .*checkout -- \.delivery\/team\/team\.json/);
   assert.equal(JSON.parse(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Write', tool_input: { file_path: path.join(broken.roleDir, 'x') } }, env('chief-of-staff'))).hookSpecificOutput.permissionDecision, 'deny');
-  assert.equal(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: `git -C ${broken.projectRoot} checkout -- .delivery/team/team.json` } }, env('chief-of-staff')), '');
+  const restore = `git -C '${broken.projectRoot}' checkout -- .delivery/team/team.json`;
+  assert.equal(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: restore } }, env('chief-of-staff')), '');
+  for (const command of [
+    `git -C $(id) checkout -- .delivery/team/team.json`,
+    `git -C ${broken.projectRoot} checkout -- $(id).delivery/team/team.json`,
+    `git -C ${broken.projectRoot} checkout -- x;id;#.delivery/team/team.json`,
+    `git -C /tmp/other checkout -- .delivery/team/team.json`,
+  ]) {
+    const denied = JSON.parse(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command } }, env('chief-of-staff')));
+    assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny', command);
+  }
   assert.equal(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, env('someone-else')), '');
   // A corrupt role marker: inert.
   const marker = preparedRole('chief-of-staff');

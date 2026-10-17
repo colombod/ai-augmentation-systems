@@ -7,8 +7,12 @@
 // both the lane and the permission prompt. Without a role marker the hook stays inert.
 const path = require('path');
 
-// the one repair a role session may still run: restoring the manifest from the project repository
-const RESTORE = /^\s*git\s+(?:-C\s+\S+\s+)?(?:checkout|restore)\s+(?:--\s+)?\S*\.delivery\/team\/(?:team|hosts)\.json\s*$/;
+// the one repair a role session may still run: restoring its manifest from the project repository
+function restoreCommand(projectRoot) {
+  if (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot)) return null;
+  const quotedRoot = `'${projectRoot.replace(/'/g, "'\\''")}'`;
+  return `git -C ${quotedRoot} checkout -- .delivery/team/team.json`;
+}
 
 function ownMarker(input) {
   try {
@@ -28,10 +32,11 @@ try {
 } catch (err) {
   const marker = input && input.tool_name ? ownMarker(input) : null;
   const cmd = input && input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : '';
-  if (marker && !(input.tool_name === 'Bash' && RESTORE.test(cmd))) {
+  if (marker && !(input.tool_name === 'Bash' && cmd === restoreCommand(marker.project_root))) {
     const why = String(err && err.message ? err.message : err).replace(/\s+/g, ' ').slice(0, 200);
+    const restore = restoreCommand(marker.project_root);
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
-      permissionDecisionReason: `Role ${marker.instance}: the lane cannot be checked (${why}), so nothing that writes or runs is allowed. Restore the manifest with \`git -C ${marker.project_root} checkout -- .delivery/team/team.json\` (allowed), or tell the Chief of Staff by SendMessage.` } }));
+      permissionDecisionReason: `Role ${marker.instance}: the lane cannot be checked (${why}), so nothing that writes or runs is allowed. Restore the manifest with \`${restore}\` (allowed), or tell the Chief of Staff by SendMessage.` } }));
   }
 }
 process.exit(0);
