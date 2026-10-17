@@ -187,7 +187,7 @@ test('A1: stage 3 is owned: the Delivery Manager runs acceptance, the Product Ma
   assert.match(pm, /You own realign and pivots/);
   assert.match(pm, /\/delivery:realign/);
   const b = roleText('builder');
-  assert.match(b, /When the team has no Spike Researcher, you take spike beads in spike mode/);
+  assert.match(b, /This team has no Spike Researcher, so spikes are yours/);
 });
 
 test('A5: builders pick the subagent model from size-L or a bead model; the Delivery Manager sizes stories honestly', () => {
@@ -224,4 +224,22 @@ test('ruling 3: briefs and the decision skill teach only the day-one operator co
   for (const cmd of ['delegate', 'decide', 'revoke', 'ratify', 'withdraw', 'rehost', 'quarantine', 'repair', 'problems', 'ledger', 'show']) {
     assert.ok(ref.includes(`operator.js ${cmd}`), `reference covers ${cmd}`);
   }
+});
+
+test('final I1: the builder brief tells builders to take spikes first only when the team has no Spike Researcher', () => {
+  const full = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), 'utf8'));
+  const hosts = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), 'utf8'));
+  const minimal = { ...full, roles: full.roles.filter((r) => r.id !== 'spike-researcher') };
+  const render = (team) => {
+    const i = expandInstances(team).find((x) => x.instance === 'builder-1');
+    return composeBrief({ team, hosts, instance: 'builder-1', role: i.role, brief: loadRoleBrief(PLUGIN_ROOT, '/nonexistent', i.role.brief), rules: RULES });
+  };
+  const without = render(minimal);
+  const withSr = render(full);
+  assert.match(without, /Run `bd ready --label spike` first/);
+  assert.match(without, /bd close <id> --reason "EVIDENCE: <the answer in one line>"/);
+  assert.doesNotMatch(without, /Spike beads are the Spike Researcher's/);
+  assert.doesNotMatch(withSr, /bd ready --label spike/);
+  assert.match(withSr, /Spike beads are the Spike Researcher's: leave them/);
+  for (const t of [without, withSr]) assert.ok(!/<!-- (if|unless|end)/.test(t), 'no markers reach the session');
 });

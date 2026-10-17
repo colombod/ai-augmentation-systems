@@ -343,3 +343,13 @@ test('H.4: staleHoursOf keeps a configured 0 and defaults to 2', () => {
   const bead = { 'ex-1': { id: 'ex-1', status: 'in_progress', assignee: 'bob', updated_at: NOW } };
   assert.equal(decideBd({ command: 'bd update ex-1 --claim', actor: 'me', roleId: 'builder', staleHours: staleHoursOf({ budget: { staleness_hours: 0 } }), bd: fakeBd(bead), now: NOW }), null);
 });
+
+test('final I1: the builder brief\'s spike close command passes the bd guard; a close without EVIDENCE does not', () => {
+  const brief = fs.readFileSync(path.join(__dirname, '..', '..', 'roles', 'builder.md'), 'utf8');
+  const shape = /`(bd close <id> --reason "EVIDENCE: [^"`]*")`/.exec(brief);
+  assert.ok(shape, 'the builder brief documents the spike close command');
+  const command = shape[1].replace('<id>', 'ex-demo-spike-cache').replace(/<[^>]*>/g, 'Redis is not needed: Postgres LISTEN covers it');
+  const bd = fakeBd({ 'ex-demo-spike-cache': { id: 'ex-demo-spike-cache', status: 'in_progress', assignee: 'a', labels: ['spike'] } });
+  assert.equal(decideBd({ command, actor: 'a', roleId: 'builder', staleHours: 2, bd, now: NOW }), null, command);
+  assert.match(decideBd({ command: 'bd close ex-demo-spike-cache --reason "answered"', actor: 'a', roleId: 'builder', staleHours: 2, bd, now: NOW }).reason, /EVIDENCE:/);
+});
