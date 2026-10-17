@@ -194,3 +194,17 @@ test('A5: builders pick the subagent model from size-L or a bead model; the Deli
   assert.match(roleText('builder'), /reviewer is at least as capable as the implementer/);
   assert.match(roleText('delivery-lead'), /Set `size:` honestly in every story: S is routine, M is ordinary work, L means risky or ambiguous/);
 });
+
+test('A6: optional roles promise only what exists', () => {
+  const po = roleText('progress-observer');
+  for (const gone of ['roster bead', 'evidence rows', 'evening review', 'retention window']) assert.ok(!po.includes(gone), gone);
+  assert.match(po, /optional role/);
+  const st = roleText('staffing');
+  assert.ok(!st.includes('converges its sessions'));
+  assert.match(st, /runs `prepare-role` for the new or changed instances/);
+  const { PRESETS } = require('./start.js');
+  for (const id of ['spike-researcher', 'staffing', 'progress-observer']) {
+    assert.ok(!PRESETS.minimal.includes(id), `${id} is opt-in`);
+    assert.ok(PRESETS.full.includes(id), `${id} stays available`);
+  }
+});
