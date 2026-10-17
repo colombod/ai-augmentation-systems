@@ -147,7 +147,7 @@ test('torn tail: the repair note joins the unrecorded check instead of replacing
   const tr = transcript([human('use postgres', 1)]);
   runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'ok' });
   R.ack({ projectRoot, input: 'in-pc-000001', reason: 'a', by: COS_BY });
-  fs.appendFileSync(path.join(projectRoot, '.delivery', 'operator', 'records', 'chief-of-staff.ndjson'), '{"id":"partial');
+  fs.appendFileSync(path.join(require('../../scripts/lib/operator-log.js').opDir(projectRoot), 'records', 'chief-of-staff.ndjson'), '{"id":"partial');
   const tr2 = transcript([human('use postgres', 1), human('ship friday', 2)]);
   const s1 = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr2, last_assistant_message: 'ok' }));
   assert.match(s1.reason, /has an incomplete last line \(torn_tail/);
@@ -208,7 +208,7 @@ test('I3: a broken own records chain blocks once per turn with the repair path, 
   runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true });
   R.ack({ projectRoot, input: 'in-pc-000001', reason: 'a', by: COS_BY });
   R.ack({ projectRoot, input: 'in-pc-000002', reason: 'b', by: COS_BY });
-  const rf = path.join(projectRoot, '.delivery', 'operator', 'records', 'chief-of-staff.ndjson');
+  const rf = path.join(require('../../scripts/lib/operator-log.js').opDir(projectRoot), 'records', 'chief-of-staff.ndjson');
   const txt = fs.readFileSync(rf, 'utf8');
   fs.writeFileSync(rf, txt.slice(0, txt.length - 40));
   const s1 = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'ok' }));

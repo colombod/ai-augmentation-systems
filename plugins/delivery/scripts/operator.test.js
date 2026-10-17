@@ -406,7 +406,10 @@ test('a decision recorded on one host is published and verified on another with 
   const rec = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'Orders use Postgres', '--scope', 'bead:ex-1']);
   assert.strictEqual(rec.status, 0, rec.out + rec.err);
   assert.ok(!/unpublished/.test(rec.out), rec.out);
-  assert.match(g(hosta, 'ls-files', '.delivery/operator'), /records\/chief-of-staff\.ndjson/);
+  const store = require('./lib/operator-store.js').storeDir(hosta);
+  assert.match(g(store, 'ls-files'), /operator\/records\/chief-of-staff\.ndjson/);
+  assert.strictEqual(g(hosta, 'status', '--porcelain'), '', 'nothing lands in the user checkout');
+  assert.match(g(hosta, 'ls-remote', 'origin', 'delivery-operator'), /refs\/heads\/delivery-operator/);
   // host B has none of it locally; verify refreshes once and retries
   const v = run(obs, ['verify', rec.lines[0]]);
   assert.strictEqual(v.status, 0, v.out + v.err);
@@ -500,7 +503,7 @@ test('writes that must see current state refuse when the remote is unreachable; 
   const r = run(cos, ['revoke', '--cite', 'in-pc-000002', '--quote', 'no more delegated naming', '--target', dec.lines[0], '--json']);
   assert.strictEqual(r.status, 1);
   assert.strictEqual(json(r).code, 'refresh_failed');
-  assert.match(json(r).error, /could not refresh from origin/);
+  assert.match(json(r).error, /could not refresh from the project remote/);
   const a = run(cos, ['answer', '--cite', dec.lines[0], '--question', 'q', '--answer', 'a', '--confidence', 'settled', '--scope', 'bead:ex-1', '--json']);
   assert.strictEqual(json(a).code, 'refresh_failed');
   // a plain record still works (nothing it cites can have been revoked elsewhere) and says it is unpublished
@@ -509,7 +512,7 @@ test('writes that must see current state refuse when the remote is unreachable; 
   assert.match(plain.out, /unpublished/);
   const p = run(cos, ['pending']);
   assert.match(p.out, /^unpublished local records: \d+ \(/m);
-  assert.match(p.out, /warning: could not refresh from origin/);
+  assert.match(p.out, /warning: could not refresh from the project remote/);
   assert.strictEqual(run(cos, ['refresh']).status, 1);
   assert.match(run(cos, ['verify', 'dec-pm-x-000009']).out, /refresh_failed/);
   assert.match(plain.out, /LEDGER\.md was not regenerated: this command could not refresh/);
@@ -579,14 +582,15 @@ test('a forked own chain stops writes (chain_diverged) and shows up as a problem
   const a = roleDir(hosta, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-a', [human('Use Postgres for the orders service.', 1, 'sess-a')]);
   const b = roleDir(hostb, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-b', [human('Use Postgres for the orders service.', 1, 'sess-b')]);
   assert.strictEqual(run(a, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'A']).status, 0);
-  // unrelated work upstream keeps hostb from fast-forwarding onto A's chain before it writes (a
-  // clone behind only by operator commits catches up and would append in order instead of forking)
-  fs.writeFileSync(path.join(hosta, 'notes.md'), 'x\n');
-  g(hosta, 'add', 'notes.md'); g(hosta, 'commit', '-m', 'unrelated'); g(hosta, 'push');
-  // the second clone wrote the same instance's chain independently
+  // the second clone wrote the same instance's chain while it could not see the remote
+  const url = g(hostb, 'config', '--get', 'remote.origin.url').trim();
+  g(hostb, 'remote', 'set-url', 'origin', '/nonexistent/remote.git');
   const rb = run(b, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'B']);
   assert.strictEqual(rb.status, 0, rb.out + rb.err);
-  assert.match(rb.out, /records chain forked: another writer appended to records\/chief-of-staff\.ndjson/);
+  assert.match(rb.out, /unpublished/);
+  g(hostb, 'remote', 'set-url', 'origin', url);
+  const pub = run(b, ['publish', '--force']);
+  assert.match(pub.out, /records chain forked: another writer appended to records\/chief-of-staff\.ndjson/);
   const again = run(b, ['ack', '--input', 'in-pc-000001', '--reason', 'x', '--json']);
   assert.strictEqual(again.status, 1);
   assert.strictEqual(json(again).code, 'chain_diverged', 'every writer refuses on a diverged chain');
@@ -596,7 +600,7 @@ test('a forked own chain stops writes (chain_diverged) and shows up as a problem
   assert.strictEqual(json(dec).code, 'chain_diverged');
   const pend = run(b, ['pending']);
   assert.strictEqual(pend.status, 1);
-  assert.match(pend.out, /chain_diverged|differs from the upstream/);
+  assert.match(pend.out, /chain_diverged|differs from the remote copy/);
 });
 
 test('round 3: verify prints host, machine, session and ratification state; quarantine takes an inputs file', () => {

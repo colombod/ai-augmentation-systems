@@ -401,8 +401,10 @@ function tornTailReason(instance, problem, op) {
 // [{ kind: 'unrecorded' | 'integrity', reason }] for the Chief of Staff's own inputs ([] or null when nothing applies).
 function inputCheck({ projectRoot, sessionId, instance, deps, warn, op, role }) {
   if (!sessionId) return null;
-  if (!fs.existsSync(path.join(projectRoot, '.delivery', 'operator'))) {
-    warn('delivery: .delivery/operator does not exist yet, so the unrecorded-input check had nothing to read; operator capture creates it on the first captured input\n');
+  let opDir = null;
+  try { opDir = require('../../scripts/lib/operator-log.js').opDir(projectRoot); } catch (err) { opDir = null; }
+  if (!opDir || !fs.existsSync(opDir)) {
+    warn('delivery: the operator records directory does not exist yet, so the unrecorded-input check had nothing to read; operator capture creates it on the first captured input\n');
     return null;
   }
   let res;

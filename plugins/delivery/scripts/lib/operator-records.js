@@ -1319,7 +1319,8 @@ function quarantine(o) {
     fs.writeFileSync(`${dest}.reason.txt`, `${o.reason.trim()}\nby ${o.by.instance} at ${new Date().toISOString()}\n`);
     try { fs.unlinkSync(`${src}.lock`); } catch (e) { /* none */ }
     log.dropHead(root, log.safeHost(im[1]));
-    return { moved_to: path.relative(root, dest) };
+    const sa = require('./operator-store.js').setAside(root, `inputs/${im[1]}/${im[2]}.ndjson`, dest);
+    return { moved_to: path.relative(root, dest), ...(sa.adopted ? { adopted_remote: true } : {}), ...(sa.ok ? {} : { warning: sa.reason }) };
   }
   const m = /^(?:records\/)?([A-Za-z0-9][A-Za-z0-9._-]*)\.ndjson$/.exec(String(o.file || ''));
   if (!m) throw new OperatorError('invalid_target', 'quarantine takes --file records/<instance>.ndjson or inputs/<host>/<YYYY-MM>.ndjson');
@@ -1332,7 +1333,8 @@ function quarantine(o) {
   fs.writeFileSync(`${dest}.reason.txt`, `${o.reason.trim()}\nby ${o.by.instance} at ${new Date().toISOString()}\n`);
   try { fs.unlinkSync(`${src}.lock`); } catch (e) { /* none */ }
   log.dropHead(root, headsKey('records', m[1]));
-  return { moved_to: path.relative(root, dest) };
+  const sa = require('./operator-store.js').setAside(root, `records/${m[1]}.ndjson`, dest);
+  return { moved_to: path.relative(root, dest), ...(sa.adopted ? { adopted_remote: true } : {}), ...(sa.ok ? {} : { warning: sa.reason }) };
 }
 
 function repairChain(o) {
@@ -1686,6 +1688,6 @@ module.exports = {
   OperatorError, normalizeWs, quoteCheck, excerptFor, highStakesLabels, machineId,
   recordDecision, recordAnswer, ratify, recordDelegation, decideUnder, revoke, recordQuestion, withdraw, ack, recordRehost,
   quarantine, repairChain,
-  verifyRecord, find, pending, ledger, renderLedger, writeLedger, listRecords, getRecord, viewProblems,
+  verifyRecord, verifyRecordsFile, find, pending, ledger, renderLedger, writeLedger, listRecords, getRecord, viewProblems,
   parseRecordId,
 };

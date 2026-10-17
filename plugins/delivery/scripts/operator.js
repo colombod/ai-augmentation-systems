@@ -187,8 +187,8 @@ function divergedOwn(ctx) {
   const r = ctx.refreshResult;
   if (!r || !r.diverged || !r.diverged.length) return [];
   const own = [];
-  if (ctx.instance) own.push(`.delivery/operator/records/${ctx.instance}.ndjson`);
-  const inputs = ctx.host ? `.delivery/operator/inputs/${log.safeHost(ctx.host)}/` : null;
+  if (ctx.instance) own.push(`records/${ctx.instance}.ndjson`);
+  const inputs = ctx.host ? `inputs/${log.safeHost(ctx.host)}/` : null;
   return r.diverged.filter((p) => own.includes(p) || (inputs && p.startsWith(inputs)));
 }
 
@@ -197,7 +197,7 @@ function needNotDiverged(ctx) {
   ctx.refreshOnce();
   const dv = divergedOwn(ctx);
   if (dv.length) {
-    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the upstream copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. Tell the chief of staff; operator.js problems lists it, and operator.js quarantine --file records/<instance>.ndjson (or inputs/<host>/<YYYY-MM>.ndjson) sets the fork aside. One working copy per host label is assumed`);
+    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the remote copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. Tell the chief of staff; operator.js problems lists it, and operator.js quarantine --file records/<instance>.ndjson (or inputs/<host>/<YYYY-MM>.ndjson) sets the fork aside. One working copy per host label is assumed`);
   }
 }
 
@@ -205,10 +205,10 @@ function needFresh(ctx) {
   const r = ctx.refreshOnce();
   const dv = divergedOwn(ctx);
   if (dv.length) {
-    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the upstream copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. Tell the chief of staff; operator.js problems lists it, and operator.js quarantine --file records/<instance>.ndjson (or inputs/<host>/<YYYY-MM>.ndjson) sets the fork aside. One working copy per host label is assumed: two clones writing as the same instance or host fork its chain`);
+    throw new R.OperatorError('chain_diverged', `${dv.join(', ')} differs from the remote copy: another writer appended to a chain only this instance should (a forked instance or a second clone). Nothing more is written to it. Tell the chief of staff; operator.js problems lists it, and operator.js quarantine --file records/<instance>.ndjson (or inputs/<host>/<YYYY-MM>.ndjson) sets the fork aside. One working copy per host label is assumed: two clones writing as the same instance or host fork its chain`);
   }
   if (r && !r.ok && !r.no_remote) {
-    throw new R.OperatorError('refresh_failed', `could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; a revocation or decision made on another host may be missing, so nothing is recorded. Retry when the remote is reachable (operator.js refresh)`);
+    throw new R.OperatorError('refresh_failed', `could not refresh from the project remote: ${String(r.reason || 'unknown').split('\n')[0]}; a revocation or decision made on another host may be missing, so nothing is recorded. Retry when the remote is reachable (operator.js refresh)`);
   }
 }
 
@@ -216,8 +216,8 @@ function needFresh(ctx) {
 function readWarnings(ctx, problems) {
   const w = [];
   const r = ctx.refreshResult;
-  if (r && !r.ok && !r.no_remote) w.push(`could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; records on other hosts may be missing`);
-  if (r && r.diverged && r.diverged.length) w.push(`diverged: ${r.diverged.join(', ')} differ from the upstream copy; another writer appended to a file only this one should (a forked instance)`);
+  if (r && !r.ok && !r.no_remote) w.push(`could not refresh from the project remote: ${String(r.reason || 'unknown').split('\n')[0]}; records on other hosts may be missing`);
+  if (r && r.diverged && r.diverged.length) w.push(`diverged: ${r.diverged.join(', ')} differ from the remote copy; another writer appended to a file only one writer should (a forked instance), or the remote copy was rewritten (operator.js problems)`);
   for (const p of problems || []) w.push(p.code === 'manifest_unavailable' ? `manifest_unavailable: ${p.error}` : p.id ? `${p.id} (${p.file}${p.line ? ':' + p.line : ''}) is excluded: ${p.error}` : `${p.file} fails verification: ${p.error}`);
   return w;
 }
@@ -283,7 +283,7 @@ function syncCurrent(ctx, flags, cite) {
   const sid = flags.session || (ctx.by.session_id !== 'unknown' ? ctx.by.session_id : (tr ? path.basename(tr).replace(/\.jsonl$/, '') : 'unknown'));
   const doSync = () => {
     if (!tr || !fs.existsSync(tr)) return;
-    const r = syncOne(ctx, { transcriptPath: tr, sessionId: sid, instance: ctx.by.instance, role: ctx.by.role, roleSince: (() => { const b = log.roleBoundary(ctx.roleDir, sid); return b.created ? null : b.since; })() });
+    const r = syncOne(ctx, { transcriptPath: tr, sessionId: sid, instance: ctx.by.instance, role: ctx.by.role, roleSince: (() => { const b = log.roleBoundary(ctx.roleDir, sid, { projectRoot: ctx.projectRoot, instance: ctx.by.instance }); return b.created ? null : b.since; })() });
     res = { added: res.added + r.added, status: r.status };
   };
   doSync();
@@ -333,7 +333,7 @@ function afterWrite(ctx, rec, extra = {}, lines = []) {
   const published = !!pub.published;
   const warnings = [...(extra.warnings || []), ...ctx.warnings];
   const r = ctx.refreshResult;
-  if (r && r.diverged && r.diverged.length) warnings.push(`diverged: ${r.diverged.join(', ')} differ from the upstream copy; another writer appended to a file only this one should (a forked instance)`);
+  if (r && r.diverged && r.diverged.length) warnings.push(`diverged: ${r.diverged.join(', ')} differ from the remote copy; another writer appended to a file only one writer should (a forked instance), or the remote copy was rewritten (operator.js problems)`);
   const human = [rec.id, ...lines, ...warnings.map((w) => `warning: ${w}`),
     published ? 'published' : `unpublished (${pub.reason || 'not pushed'})`];
   out(ctx, { ok: true, id: rec.id, record: rec, published, unpublished_reason: published ? undefined : (pub.reason || 'not pushed'), warnings }, human);
@@ -397,7 +397,8 @@ const handlers = {
   refresh(ctx) {
     const r = log.refresh(ctx.projectRoot, { host: ctx.host, instance: ctx.instance });
     const lines = [r.ok ? `refreshed (${(r.updated || []).length} files)` : (r.no_remote ? `nothing to refresh (${r.reason}; single-host project)` : `not refreshed (${r.reason})`)];
-    if (r.diverged && r.diverged.length) lines.push(`warning: diverged: ${r.diverged.join(', ')} differ from the upstream copy; another writer appended to a file only this one should (a forked instance)`);
+    if (r.diverged && r.diverged.length) lines.push(`warning: diverged: ${r.diverged.join(', ')} differ from the remote copy; another writer appended to a file only one writer should (a forked instance), or the remote copy was rewritten (operator.js problems)`);
+    if (r.refused && r.refused.reason) lines.push(`warning: not committed in the private store: ${r.refused.reason}`);
     out(ctx, r, lines);
     return r.ok || r.no_remote ? 0 : 1;
   },
@@ -579,7 +580,7 @@ const handlers = {
     ctx.refreshOnce();
     const p = R.pending(ctx.projectRoot, { since, all: !!flags.all, refresh: ctx.refreshOnce, noLedger: true });
     const dv = divergedOwn(ctx);
-    for (const d of dv) p.problems.push({ file: d, code: 'chain_diverged', error: `${d} differs from the upstream copy (another writer appended to it)` });
+    for (const d of dv) p.problems.push({ file: d, code: 'chain_diverged', error: `${d} differs from the remote copy (another writer appended to it)` });
     const warnings = readWarnings(ctx, p.problems);
     const lines = [];
     // ids handed out must be visible to other hosts: say so when this host cannot push
@@ -619,7 +620,7 @@ const handlers = {
     if (pos.length < 1) throw new UsageError('verify takes one record or input id');
     const id = pos[0];
     const v = R.verifyRecord(ctx.projectRoot, id, { refresh: ctx.refreshOnce, noLedger: true });
-    const dvp = divergedOwn(ctx).map((d) => ({ file: d, code: 'chain_diverged', error: `${d} differs from the upstream copy (another writer appended to it)` }));
+    const dvp = divergedOwn(ctx).map((d) => ({ file: d, code: 'chain_diverged', error: `${d} differs from the remote copy (another writer appended to it)` }));
     const rw = readWarnings(ctx, dvp);
     v.warnings = rw;
     if (ctx.json) { process.stdout.write(JSON.stringify(v) + '\n'); return v.ok ? 0 : 1; }
@@ -667,7 +668,7 @@ const handlers = {
   problems(ctx) {
     ctx.refreshOnce();
     const p = R.viewProblems(ctx.projectRoot);
-    for (const d of divergedOwn(ctx)) p.push({ file: d, code: 'chain_diverged', error: `${d} differs from the upstream copy (another writer appended to it)` });
+    for (const d of divergedOwn(ctx)) p.push({ file: d, code: 'chain_diverged', error: `${d} differs from the remote copy (another writer appended to it)` });
     const lines = p.length ? p.map((x) => `${x.id ? x.id + ' ' : ''}${x.file}${x.line ? ':' + x.line : ''}  ${x.code}  ${x.error}`) : ['no problems'];
     const extra = readWarnings(ctx, []);
     out(ctx, { problems: p, warnings: extra }, [...lines, ...extra.map((w) => `warning: ${w}`)]);

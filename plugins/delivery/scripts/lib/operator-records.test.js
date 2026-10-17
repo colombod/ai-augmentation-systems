@@ -680,8 +680,7 @@ test('B records into its own chain file concurrently; both publish without confl
     assert.strictEqual(R.verifyRecord(root, db.id).ok, true);
     assert.deepStrictEqual(R.listRecords(root).map((r) => r.id).sort(), [da.id, db.id].sort());
   }
-  const dirty = git(hosta, 'status', '--porcelain').split('\n').filter((l) => l && !l.includes('.delivery/operator'));
-  assert.deepStrictEqual(dirty, []);
+  assert.strictEqual(git(hosta, 'status', '--porcelain'), '', 'the user checkout is untouched');
 });
 
 test('a record citing an input from a host whose chain file fails verification fails naming that host', () => {
@@ -691,7 +690,7 @@ test('a record citing an input from a host whose chain file fails verification f
   log.publish(hosta, { force: true, host: 'hosta', instance: 'chief-of-staff' });
   const rf = refresher(hostb, 'hostb', 'product-manager');
   assert.strictEqual(R.verifyRecord(hostb, d.id, { refresh: rf }).ok, true);
-  const f = path.join(hostb, '.delivery', 'operator', 'inputs', 'hosta', '2026-10.ndjson');
+  const f = path.join(log.opDir(hostb), 'inputs', 'hosta', '2026-10.ndjson');
   const lines = fs.readFileSync(f, 'utf8').split('\n');
   const e = JSON.parse(lines[1]);
   e.text = 'Second remark, edited.';
@@ -713,14 +712,16 @@ test('publish includes the records file and LEDGER.md, and survives a rejected p
   // both wrote a different LEDGER.md; B's push is rejected, the derived ledger conflict heals, push succeeds
   const pb = log.publish(hostb, { force: true, host: 'hostb', instance: 'product-manager' });
   assert.strictEqual(pb.published, true, JSON.stringify(pb));
-  // the recovery never merges into the checkout: the upstream holds both chains, and the other
-  // writer's chain reaches hostb's working tree through refresh (operator paths only)
-  const tracked = git(hostb, 'ls-tree', '-r', '--name-only', 'origin/main', '--', '.delivery/operator');
-  assert.match(tracked, /records\/product-manager\.ndjson/);
-  assert.match(tracked, /records\/chief-of-staff\.ndjson/);
-  assert.match(tracked, /LEDGER\.md/);
+  // the remote's delivery-operator branch holds both chains and a ledger, never local state; the
+  // project branch and the user's checkout carry none of it
+  const tracked = git(require('./operator-store.js').storeDir(hostb), 'ls-tree', '-r', '--name-only', 'refs/remotes/origin/delivery-operator');
+  assert.match(tracked, /operator\/records\/product-manager\.ndjson/);
+  assert.match(tracked, /operator\/records\/chief-of-staff\.ndjson/);
+  assert.match(tracked, /operator\/LEDGER\.md/);
   assert.ok(!/cursors/.test(tracked));
-  assert.ok(fs.existsSync(path.join(hostb, '.delivery', 'operator', 'records', 'chief-of-staff.ndjson')));
+  assert.ok(!/operator/.test(git(hostb, 'ls-tree', '-r', '--name-only', 'origin/main')));
+  assert.strictEqual(git(hostb, 'status', '--porcelain'), '');
+  assert.ok(fs.existsSync(path.join(log.opDir(hostb), 'records', 'chief-of-staff.ndjson')));
 });
 
 // ===================== trust hardening (fix round 1) =====================
@@ -917,7 +918,7 @@ test('I4: refresh reports a diverged own file, and publish names the fork', () =
   R.recordDecision({ projectRoot: hostb, cite: 'in-hostb-000001', quote: 'use postgres', statement: 'B', scope: scope(), by: { ...COS, host: 'hostb' } });
   assert.strictEqual(log.publish(hosta, { force: true, host: 'hosta', instance: 'chief-of-staff' }).published, true);
   const rf = log.refresh(hostb, { host: 'hostb', instance: 'chief-of-staff' });
-  assert.deepStrictEqual(rf.diverged, ['.delivery/operator/records/chief-of-staff.ndjson']);
+  assert.deepStrictEqual(rf.diverged, ['records/chief-of-staff.ndjson']);
   const pb = log.publish(hostb, { force: true, host: 'hostb', instance: 'chief-of-staff' });
   assert.strictEqual(pb.published, false);
   assert.match(pb.reason, /records chain forked: another writer appended to records\/chief-of-staff\.ndjson/);

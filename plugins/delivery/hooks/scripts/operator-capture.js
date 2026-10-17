@@ -10,8 +10,6 @@ const fs = require('fs');
 const path = require('path');
 const { operatorCommand } = require('../../scripts/lib/plugin-root.js');
 
-const OP_REL = path.join('.delivery', 'operator');
-
 function writeIfChanged(file, value) {
   try {
     if (fs.readFileSync(file, 'utf8').trim() === value) return;
@@ -63,7 +61,7 @@ function captureFromHookInput(input, pluginRoot, deps = {}) {
     // be dated a moment before the hook ran.
     let boundary = { since: null, created: false };
     if (sessionId) {
-      try { boundary = require('../../scripts/lib/operator-log.js').roleBoundary(roleDir, sessionId, { now }); } catch (err) { /* no boundary: nothing is pre-role */ }
+      try { boundary = require('../../scripts/lib/operator-log.js').roleBoundary(roleDir, sessionId, { now, projectRoot, instance: marker.instance }); } catch (err) { /* no boundary: nothing is pre-role */ }
     }
     const firstSight = boundary.created && inp.hook_event_name !== 'SessionStart';
 
@@ -74,7 +72,7 @@ function captureFromHookInput(input, pluginRoot, deps = {}) {
         const sync = deps.syncTranscript || require('../../scripts/lib/operator-log.js').syncTranscript;
         const sid = sessionId || path.basename(transcriptPath).replace(/\.jsonl$/, '');
         const opLog = require('../../scripts/lib/operator-log.js');
-        const roleSince = firstSight ? null : (sessionId ? boundary.since : opLog.roleSince(roleDir, sid, { now }));
+        const roleSince = firstSight ? null : (sessionId ? boundary.since : opLog.roleSince(roleDir, sid, { now, projectRoot, instance: marker.instance }));
         const r = sync({ projectRoot, transcriptPath, sessionId: sid,
           instance: marker.instance, role: role.id, host: role.host, roleSince });
         added = (r && r.added) || 0;
@@ -87,7 +85,7 @@ function captureFromHookInput(input, pluginRoot, deps = {}) {
     if (status === 'format_unrecognised') problems.push('the transcript format was not recognised, so no operator input was captured as human; tell the Chief of Staff');
 
     let pending = [];
-    if (fs.existsSync(path.join(projectRoot, OP_REL))) {
+    if (fs.existsSync(require('../../scripts/lib/operator-log.js').opDir(projectRoot))) {
       try {
         const pend = deps.pending || require('../../scripts/lib/operator-records.js').pending;
         const res = pend(projectRoot, {});

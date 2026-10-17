@@ -153,9 +153,15 @@ test('operator lines: unpublished entries, inputs pending a record and inferred 
   assert.ok(text.includes(`Inferred answers awaiting ratification: 1 (${a.id})`), text);
   // a host with no operator chains of its own has nothing unpublished
   assert.equal(teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => true, host: 'buildbox' }).operator.unpublished, 0);
-  // once pushed, nothing is unpublished
-  git(root, 'add', '-A'); git(root, 'commit', '-q', '-m', 'operator'); git(root, 'push', '-q');
+  // the records are not in the user's checkout; once published to the delivery-operator branch, nothing is unpublished
+  assert.equal(git(root, 'status', '--porcelain'), '');
+  assert.equal(log.publish(root, { force: true, host: 'pc' }).published, true);
   assert.equal(teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => true, host: 'pc' }).operator.unpublished, 0);
+  // without a remote the line says so instead of a count
+  git(root, 'remote', 'remove', 'origin');
+  const local = teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => true, host: 'pc' });
+  assert.equal(local.operator.no_remote, true);
+  assert.ok(renderStatus(local, root).includes('Operator entries unpublished: no remote (the operator store is local only)'));
   // a fourth input listed as "..." after three ids
   const four = renderStatus({ ...s, operator: { ...s.operator, pending_inputs: ['a', 'b', 'c', 'd'] } });
   assert.ok(four.includes('Operator inputs pending a record: 4 (a, b, c, ...)'));

@@ -1,19 +1,19 @@
 // scripts/lib/operator-log.js — the operator inputs log.
-// One hash chain per host: .delivery/operator/inputs/<host>/<YYYY-MM>.ndjson, single writer per file
-// so git never merges a chain. Ids embed the host: in-<host>-<6-digit seq>.
+// One hash chain per host: <operator dir>/inputs/<host>/<YYYY-MM>.ndjson, single writer per file
+// so git never merges a chain (the operator dir is in the private store, see operator-store.js). Ids embed the host: in-<host>-<6-digit seq>.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const cp = require('child_process');
 const chain = require('./chain.js');
+const store = require('./operator-store.js');
 const transcript = require('./transcript.js');
 
 const MAX_TEXT_BYTES = 65536;
 const PUBLISH_THROTTLE_MS = 30 * 1000;
-const OP_REL = path.join('.delivery', 'operator');
 
-const opDir = (root) => path.join(root, OP_REL);
+// Where the operator records live: the private store of a git project, else <project>/.delivery/operator.
+const opDir = (root) => store.operatorDir(root);
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
 function safeHost(host) {
@@ -48,7 +48,10 @@ function readEntries(file) {
   return out;
 }
 
+// Only for a project outside git (records in <project>/.delivery/operator): the private store keeps its
+// local state out of commits with its own exclude file.
 function ensureGitignore(root) {
+  if (store.storeDir(root)) return;
   const f = path.join(opDir(root), '.gitignore');
   const want = ['cursors/', '*.lock', '*.lock.stale-*', '*.stale-*'];
   fs.mkdirSync(opDir(root), { recursive: true });
@@ -113,23 +116,36 @@ function loadIndex(root, host) {
 
 // Local-only record of how long each host chain was and its last hash, so a deleted tail
 // is detectable (a pure hash chain cannot see its own truncation).
-// When this session became the role: the first time a capture hook saw this session id in the role
-// directory (SessionStart always runs first in a role session, so earlier transcript lines are
-// prompts from before the session was a role). <roleDir>/.delivery-role-since.json holds
-// { sessions: { <session id>: <ISO time> } }: one entry per session, never overwritten, updated
-// atomically under a lock, the oldest pruned beyond ROLE_SINCE_KEEP. roleBoundary returns
+// When this session became the role: the first time a capture hook saw this session id for the role
+// instance (SessionStart always runs first in a role session, so earlier transcript lines are prompts
+// from before the session was a role). Local state of the operator store:
+// <operator dir>/cursors/role-since/<instance>.json holds { sessions: { <session id>: <ISO time> } }:
+// one entry per session, never overwritten, updated atomically under a lock, the oldest pruned beyond
+// ROLE_SINCE_KEEP. Without opts.projectRoot and opts.instance (and to read boundaries an earlier
+// version kept) the file is <roleDir>/.delivery-role-since.json. roleBoundary returns
 // { since, created } (created: this call wrote it); create:false only reads.
 const ROLE_SINCE_KEEP = 32;
-function roleBoundary(roleDir, sessionId, { now, create = true } = {}) {
-  if (!roleDir || !sessionId) return { since: null, created: false };
-  const f = path.join(roleDir, '.delivery-role-since.json');
+function roleBoundary(roleDir, sessionId, { now, create = true, projectRoot, instance } = {}) {
+  if (!sessionId || (!roleDir && !(projectRoot && instance))) return { since: null, created: false };
+  const legacy = roleDir ? path.join(roleDir, '.delivery-role-since.json') : null;
+  const f = projectRoot && instance
+    ? path.join(opDir(projectRoot), 'cursors', 'role-since', `${String(instance).replace(/[^A-Za-z0-9._-]/g, '_')}.json`)
+    : legacy;
   const valid = (t) => typeof t === 'string' && !Number.isNaN(Date.parse(t));
-  const read = () => {
-    const cur = readJson(f);
+  const readFrom = (file) => {
+    const cur = file ? readJson(file) : null;
     if (cur && plainObject(cur.sessions)) return { ...cur.sessions };
     // the first version kept one { session_id, since }
     if (cur && typeof cur.session_id === 'string' && valid(cur.since)) return { [cur.session_id]: cur.since };
     return {};
+  };
+  const read = () => {
+    const own = readFrom(f);
+    if (f !== legacy && legacy && !valid(own[sessionId])) {
+      const old = readFrom(legacy)[sessionId];
+      if (valid(old)) own[sessionId] = old;
+    }
+    return own;
   };
   const have = read()[sessionId];
   if (valid(have)) return { since: have, created: false };
@@ -373,125 +389,46 @@ function verifyInputs(projectRoot, opts = {}) {
 }
 
 // ---- publish / refresh (best effort, never throw) ----
+// Storage and transport are operator-store.js: a private git repository inside the project's .git
+// directory. Nothing here runs git in the user's checkout.
 
-// Output keeps its leading whitespace: porcelain status lines start with a status column that may be
-// a space (' M path'), and trimming it shifts every column after it.
-function git(cwd, args, o = {}) {
-  const r = cp.spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60000, maxBuffer: 256 * 1024 * 1024, env: o.env ? { ...process.env, ...o.env } : process.env, input: o.input });
-  return { ok: r.status === 0, out: (r.stdout || '').replace(/\s+$/, ''), err: (r.stderr || '').trim() };
+// The chains a publish is about to commit must verify first (store paths relative to the operator
+// directory). Returns null, or { path, error } for the first that does not.
+function checkChains(projectRoot) {
+  return (rels) => {
+    const hosts = new Set();
+    const instances = new Set();
+    for (const r of rels) {
+      const im = /^inputs\/([^/]+)\//.exec(r);
+      if (im) hosts.add(im[1]);
+      const rm = /^records\/(.+)\.ndjson$/.exec(r);
+      if (rm) instances.add(rm[1]);
+    }
+    for (const h of [...hosts].sort()) {
+      const v = verifyHostRaw(projectRoot, h);
+      if (!v.ok) return { path: `inputs/${h}/`, error: v.error };
+    }
+    const R = require('./operator-records.js'); // loaded late: operator-records requires this module
+    for (const i of [...instances].sort()) {
+      const v = R.verifyRecordsFile(projectRoot, i, { setHead: false });
+      if (!v.ok) return { path: `records/${i}.ndjson`, error: v.error };
+    }
+    return null;
+  };
 }
 
-// git status entries under rels, parsed from -z output: [{ code: 'XY', path }].
-function porcelain(root, rels) {
-  const r = cp.spawnSync('git', ['status', '--porcelain', '-z', '--untracked-files=all', '--', ...rels], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  if (r.status !== 0) return [];
-  const parts = (r.stdout || '').split('\0');
-  const out = [];
-  for (let i = 0; i < parts.length; i++) {
-    const e = parts[i];
-    if (e.length < 4) continue;
-    const code = e.slice(0, 2);
-    out.push({ code, path: e.slice(3) });
-    if (code[0] === 'R' || code[0] === 'C') i++; // the rename source follows
-  }
-  return out;
-}
-
-const OP_PATH = '.delivery/operator';
-
-function upstreamOf(root) {
-  const r = git(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
-  if (!r.ok || !r.out.includes('/')) return null;
-  const i = r.out.indexOf('/');
-  return { ref: r.out, remote: r.out.slice(0, i), branch: r.out.slice(i + 1) };
-}
-
-// Bring other writers' operator files from the upstream into the working tree, path by path.
-// Never touches anything outside .delivery/operator and never overwrites this host's or this
-// instance's own chain files. opts: { host, instance, fetch = true }.
+// Bring other writers' records from the remote into the private store (fetch and an append-only
+// merge in the store only). { ok, updated, diverged, reason?, no_remote?, remote? }.
 function refresh(projectRoot, opts = {}) {
   try {
-    if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return { ok: false, reason: 'not a git repository', no_remote: true };
-    const up = upstreamOf(projectRoot);
-    if (!up) return { ok: false, reason: 'no upstream', no_remote: true };
-    if (opts.fetch !== false) {
-      const f = git(projectRoot, ['fetch', up.remote]);
-      if (!f.ok) return { ok: false, reason: f.err || 'fetch failed', remote: up.remote };
-    }
-    const diff = git(projectRoot, ['diff', '--name-only', 'HEAD', '@{u}', '--', OP_PATH]);
-    const own = [];
-    if (opts.host) own.push(`${OP_PATH}/inputs/${safeHost(opts.host)}/`);
-    const ownFiles = opts.instance ? [`${OP_PATH}/records/${opts.instance}.ndjson`] : [];
-    const updated = [];
-    const diverged = [];
-    for (const p of diff.out ? diff.out.split('\n') : []) {
-      if (own.some((o) => p.startsWith(o)) || ownFiles.includes(p)) {
-        // a file only this writer appends to: upstream holding lines the local copy lacks means
-        // another writer (a second clone or a forked instance) appended to it
-        const abs = path.join(projectRoot, p);
-        if (fs.existsSync(abs)) {
-          const show = cp.spawnSync('git', ['show', `@{u}:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-          if (show.status === 0) {
-            let local = '';
-            try { local = fs.readFileSync(abs, 'utf8'); } catch (e) { local = ''; }
-            if (!local.startsWith(show.stdout)) diverged.push(p);
-          }
-        }
-        continue;
-      }
-      // Chains are append-only: take the upstream copy only when the local file is missing or a
-      // strict prefix of it, checked and replaced under the same lock their writer appends with, so
-      // a peer's unpublished append in a shared checkout is never replaced. Any other local
-      // difference is kept (and reported for chains); the derived LEDGER.md and .gitignore are
-      // regenerated locally and are neither replaced nor reported.
-      const abs = path.join(projectRoot, p);
-      const show = cp.spawnSync('git', ['show', `${up.ref}:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-      if (show.status !== 0) continue;
-      const isChain = p.startsWith(`${OP_PATH}/inputs/`) || p.startsWith(`${OP_PATH}/records/`);
-      const apply = () => {
-        if (fs.existsSync(abs)) {
-          let local;
-          try { local = fs.readFileSync(abs, 'utf8'); } catch (e) { return; }
-          if (!show.stdout.startsWith(local)) { if (isChain) diverged.push(p); return; } // equal or a strict prefix: take it
-        }
-        // Checked out into the index too: an untracked or unstaged copy of a file the upstream tracks
-        // makes the next `git pull --ff-only` abort; an index entry equal to the upstream lets it
-        // fast-forward. The copy is the upstream's own content, so committing it changes nothing.
-        const c = git(projectRoot, ['checkout', up.ref, '--', p]);
-        if (c.ok) updated.push(p);
-      };
-      if (p.startsWith(`${OP_PATH}/inputs/`)) chain.withLock(path.join(path.dirname(abs), '.host.lock'), apply);
-      else if (p.startsWith(`${OP_PATH}/records/`)) chain.withLock(abs + '.lock', apply);
-      else apply();
-    }
-    const caughtUp = diverged.length ? false : catchUp(projectRoot, up);
-    return { ok: true, updated, diverged, remote: up.remote, caught_up: caughtUp };
+    return store.refresh(projectRoot, { check: checkChains(projectRoot), host: opts.host ? safeHost(opts.host) : undefined });
   } catch (e) {
-    return { ok: false, reason: String(e && e.message || e) };
+    return { ok: false, updated: [], diverged: [], reason: String(e && e.message || e) };
   }
 }
 
-// When the local branch is behind the upstream only by operator commits, fast-forward it: the
-// refreshed copies are already equal to the upstream (staged), so the branch, the index and the
-// working tree agree, the next `git pull --ff-only` has nothing in its way, and no file outside
-// .delivery/operator changes. When the upstream also carries other work (plan documents pushed from
-// a role clone, the user's own commits), the branch is left for the user's own pull: the staged
-// copies equal the upstream, so that pull fast-forwards too as long as no newer operator commit
-// landed meanwhile (operator.js refresh restages them). Returns true when it fast-forwarded.
-function catchUp(projectRoot, up) {
-  try {
-    if (cp.spawnSync('git', ['merge-base', '--is-ancestor', 'HEAD', up.ref], { cwd: projectRoot }).status !== 0) return false;
-    const changed = git(projectRoot, ['diff', '--name-only', 'HEAD', up.ref]).out.split('\n').filter(Boolean);
-    if (!changed.length || changed.some((p) => !p.startsWith(OP_PATH + '/'))) return false;
-    // derived files are regenerated on the next write: take the upstream copy
-    for (const p of [`${OP_PATH}/LEDGER.md`, `${OP_PATH}/.gitignore`]) if (changed.includes(p)) git(projectRoot, ['checkout', up.ref, '--', p]);
-    return git(projectRoot, ['merge', '--ff-only', '--quiet', up.ref]).ok;
-  } catch (e) { return false; }
-}
-
-// Commit and push only .delivery/operator. Never touches other work: path-scoped add and
-// commit, refuses to push when unpushed commits touch anything else, no autostash or rebase.
-// opts: { force, host, instance }.
+// Commit this store's new entries and push them to the delivery-operator branch of the project's
+// origin. Throttled unless opts.force. { ok, published, entries?, reason?, diverged? }.
 function publish(projectRoot, opts = {}) {
   const r = publishInner(projectRoot, opts);
   try {
@@ -509,151 +446,24 @@ function lastPublishReason(projectRoot) {
 }
 
 function publishInner(projectRoot, opts = {}) {
-  const no = (reason, extra = {}) => ({ ok: false, published: false, reason, ...extra });
   try {
-    const stamp = path.join(opDir(projectRoot), 'cursors', 'last-publish.json');
     if (!opts.force) {
-      const last = readJson(stamp);
-      if (last && Date.now() - last.at < PUBLISH_THROTTLE_MS) return no('throttled');
+      const last = readJson(path.join(opDir(projectRoot), 'cursors', 'last-publish.json'));
+      if (last && Date.now() - last.at < PUBLISH_THROTTLE_MS) return { ok: false, published: false, reason: 'throttled' };
     }
-    if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return no('not a git repository');
-    try { writeJsonAtomic(stamp, { at: Date.now() }); } catch (e) { /* ignore */ }
-    ensureGitignore(projectRoot);
-    // only this writer's own files: its host's inputs, its instance's records, the .gitignore
-    const hostRel = `${OP_PATH}/inputs/${safeHost(opts.host)}`;
-    // LEDGER.md is generated by whichever host wrote last (derived, never merged by hand)
-    const own = [`${OP_PATH}/.gitignore`, `${OP_PATH}/LEDGER.md`, hostRel];
-    if (opts.instance) own.push(`${OP_PATH}/records/${opts.instance}.ndjson`);
-    const ownPaths = own.filter((p) => fs.existsSync(path.join(projectRoot, p)));
-    if (ownPaths.length) {
-      const add = git(projectRoot, ['add', '--', ...ownPaths]);
-      if (!add.ok) return no(add.err);
-    }
-    const staged = ownPaths.length ? git(projectRoot, ['diff', '--cached', '--numstat', '--', ...ownPaths]) : { out: '' };
-    const lines = staged.out ? staged.out.split('\n') : [];
-    const n = lines.filter((l) => !l.endsWith('.gitignore'))
-      .reduce((s, l) => s + (Number(l.split('\t')[0]) || 0), 0);
-    if (lines.length) {
-      const c = git(projectRoot, ['commit', '--only', '--no-verify', '--no-gpg-sign', '-m', `operator: ${n} entries`, '--', ...ownPaths]);
-      if (!c.ok) return no(c.err || c.out);
-    }
-    const up = upstreamOf(projectRoot);
-    if (!up) return no('no upstream', { committed: lines.length > 0 });
-
-    const unrelated = () => {
-      const d = git(projectRoot, ['diff', '--name-only', '@{u}...HEAD']);
-      return d.out.split('\n').filter((p) => p && !p.startsWith(OP_PATH + '/'));
-    };
-    const refuseUnrelated = () => no('unpushed unrelated commits', { paths: unrelated(),
-      hint: 'this checkout has unpushed commits outside .delivery/operator; push or move them first (nothing was rewritten or pushed), then the next operator write publishes' });
-    if (unrelated().length) return refuseUnrelated();
-
-    const push = () => git(projectRoot, ['push', up.remote, `HEAD:${up.branch}`]);
-    let r = push();
-    if (!r.ok) {
-      // Rejected: another writer pushed first. Never merge into, delete from or reset this checkout
-      // (for a role session it is the operator's own project checkout, shared by every local role,
-      // so its untracked operator files can be another session's unpublished records). Build the
-      // next upstream commit with git plumbing instead: upstream's tree plus this writer's own
-      // committed chain files, checked append-only against upstream, and push that.
-      const f = git(projectRoot, ['fetch', up.remote]);
-      if (!f.ok) return no(f.err || 'fetch failed');
-      if (unrelated().length) return refuseUnrelated();
-      const rec = publishOnUpstream(projectRoot, up, own, opts, n);
-      if (!rec.ok) return no(rec.reason, rec.extra || {});
-      // bring other writers' files into the working tree, operator paths only, never over local appends
-      let sync = null;
-      try { sync = refresh(projectRoot, { host: opts.host, instance: opts.instance, fetch: false }); } catch (e) { sync = null; }
-      return { ...rec, refreshed: !!(sync && sync.ok), ...(sync && sync.diverged && sync.diverged.length ? { diverged: sync.diverged } : {}) };
-    }
-    return r.ok ? { ok: true, published: true, entries: n } : no(r.err);
+    return store.publish(projectRoot, { check: checkChains(projectRoot), host: opts.host ? safeHost(opts.host) : undefined });
   } catch (e) {
-    return no(String(e && e.message || e));
+    return { ok: false, published: false, reason: String(e && e.message || e) };
   }
 }
 
-// Commit this writer's own committed operator files on top of the upstream tip, without touching
-// the working tree or the branch: a temporary index seeded from upstream, the own files' HEAD
-// contents added after an append-only check (the upstream copy must be a prefix of ours, else the
-// chain forked), commit-tree on upstream, push the commit. { ok, reason?, extra? }.
-function publishOnUpstream(projectRoot, up, own, opts, n) {
-  const idx = path.join(os.tmpdir(), `operator-publish-${process.pid}-${Date.now()}.index`);
-  const env = { GIT_INDEX_FILE: idx };
-  try {
-    // every operator file the local branch holds, not only this writer's: another local role's
-    // committed but unpushed chain must survive into the new upstream commit (the branch becomes its
-    // parent, so a later pull fast-forwards and must not delete it)
-    const listed = git(projectRoot, ['ls-tree', '-r', '--name-only', 'HEAD', '--', OP_PATH]);
-    const files = listed.out ? listed.out.split('\n').filter(Boolean) : [];
-    const rt = git(projectRoot, ['read-tree', up.ref], { env });
-    if (!rt.ok) return { ok: false, reason: rt.err || 'read-tree failed' };
-    const recFile = opts.instance ? `${OP_PATH}/records/${opts.instance}.ndjson` : null;
-    const hostRel = `${OP_PATH}/inputs/${safeHost(opts.host)}/`;
-    const forks = [];
-    for (const p of files) {
-      const ours = cp.spawnSync('git', ['show', `HEAD:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-      if (ours.status !== 0) continue;
-      const theirs = cp.spawnSync('git', ['show', `${up.ref}:${p}`], { cwd: projectRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-      const derived = p === `${OP_PATH}/.gitignore` || p === `${OP_PATH}/LEDGER.md`;
-      if (!derived && theirs.status === 0) {
-        if (theirs.stdout.startsWith(ours.stdout)) continue; // upstream already holds all of ours
-        if (!ours.stdout.startsWith(theirs.stdout)) { forks.push(p); continue; }
-      }
-      const blob = git(projectRoot, ['hash-object', '-w', '--stdin'], { input: ours.stdout });
-      if (!blob.ok) return { ok: false, reason: blob.err || 'hash-object failed' };
-      const ui = git(projectRoot, ['update-index', '--add', '--cacheinfo', `100644,${blob.out},${p}`], { env });
-      if (!ui.ok) return { ok: false, reason: ui.err || 'update-index failed' };
-    }
-    if (forks.length) {
-      // the records chain is named first: it is the one writes are refused on
-      if (recFile && forks.includes(recFile)) return { ok: false, reason: `records chain forked: another writer appended to records/${opts.instance}.ndjson`, extra: { forked: recFile } };
-      const hit = forks.find((p) => p.startsWith(hostRel));
-      if (hit) return { ok: false, reason: `inputs chain forked: another writer appended to ${hit.slice(OP_PATH.length + 1)}`, extra: { forked: hit } };
-      return { ok: false, reason: `${forks[0]} differs from the upstream copy; nothing was pushed`, extra: { forked: forks[0] } };
-    }
-    const tree = git(projectRoot, ['write-tree'], { env });
-    const upTree = git(projectRoot, ['rev-parse', `${up.ref}^{tree}`]);
-    if (!tree.ok || !upTree.ok) return { ok: false, reason: tree.err || upTree.err || 'write-tree failed' };
-    const upTip = git(projectRoot, ['rev-parse', up.ref]);
-    // The new upstream commit merges the local branch (parents: upstream tip, local HEAD), so the
-    // checkout's branch is an ancestor of the upstream and `git pull --ff-only` keeps working. The
-    // local branch holds only operator commits here (unrelated ones were refused before the push),
-    // so taking upstream's tree for everything else loses nothing.
-    const isAncestor = cp.spawnSync('git', ['merge-base', '--is-ancestor', 'HEAD', upTip.out], { cwd: projectRoot }).status === 0;
-    if (tree.out === upTree.out && isAncestor) return { ok: true, published: true, entries: n };
-    const c = git(projectRoot, ['commit-tree', tree.out, '-p', upTip.out, '-p', 'HEAD', '-m', `operator: ${n} entries`]);
-    if (!c.ok) return { ok: false, reason: c.err || 'commit-tree failed' };
-    const push = git(projectRoot, ['push', up.remote, `${c.out}:refs/heads/${up.branch}`]);
-    if (!push.ok) return { ok: false, reason: push.err || 'push rejected' };
-    git(projectRoot, ['fetch', up.remote]);
-    return { ok: true, published: true, entries: n };
-  } catch (e) {
-    return { ok: false, reason: String(e && e.message || e) };
-  } finally {
-    try { fs.unlinkSync(idx); } catch (e) { /* gone */ }
-  }
-}
-
-// Entries this writer holds that the upstream does not: { count, reason }. Read-only.
+// Entries this store holds that the remote branch does not (as last fetched). opts: { host, instance,
+// instances } limit the count to those chains; opts.all counts every chain. { count, reason }.
 function unpublished(projectRoot, opts = {}) {
-  try {
-    if (!git(projectRoot, ['rev-parse', '--is-inside-work-tree']).ok) return { count: 0, reason: 'not a git repository' };
-    const up = upstreamOf(projectRoot);
-    if (!up) return { count: 0, reason: 'no upstream' };
-    // opts.all: every chain in the operator directory (a reader that does not know its host)
-    const rels = opts.all ? [`${OP_PATH}/inputs`, `${OP_PATH}/records`] : [`${OP_PATH}/inputs/${safeHost(opts.host)}`];
-    for (const i of opts.all ? [] : (opts.instances || (opts.instance ? [opts.instance] : []))) rels.push(`${OP_PATH}/records/${i}.ndjson`);
-    let count = 0;
-    const d = git(projectRoot, ['diff', '--numstat', '@{u}', '--', ...rels]);
-    for (const l of d.out ? d.out.split('\n') : []) count += Number(l.split('\t')[0]) || 0;
-    for (const e of porcelain(projectRoot, rels)) {
-      if (e.code !== '??') continue;
-      try { count += fs.readFileSync(path.join(projectRoot, e.path), 'utf8').split('\n').filter(Boolean).length; } catch (x) { /* gone */ }
-    }
-    return { count, reason: count ? 'not pushed to ' + up.ref : null };
-  } catch (e) {
-    return { count: 0, reason: String(e && e.message || e) };
-  }
+  const host = safeHost(opts.host);
+  const inst = new Set(opts.instances || (opts.instance ? [opts.instance] : []));
+  const filter = opts.all ? null : (rel) => rel.startsWith(`inputs/${host}/`) || inst.has((/^records\/(.+)\.ndjson$/.exec(rel) || [])[1]);
+  return store.unpublished(projectRoot, { filter });
 }
 
-module.exports = { porcelain, roleBoundary, roleSince, headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };
+module.exports = { roleBoundary, roleSince, headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };

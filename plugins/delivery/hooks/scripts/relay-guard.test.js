@@ -186,7 +186,7 @@ test('allows when the operator directory is missing, the manifest fails, or the 
   assert.equal(decideStopForOperator(stopArgs(p)), null, 'no operator directory: the input check is skipped');
   const warned = [];
   assert.deepEqual(decideStopForOperator(stopArgs(p, { last_assistant_message: BRIEF_POSITIVES[1] }, { deps: { warn: (m) => warned.push(m) } })), { reason: relayReason(BRIEF_POSITIVES[1], 'can you paste this answer to the builder') }, 'the relay check needs no records');
-  assert.match(warned.join(''), /\.delivery\/operator does not exist yet/, 'a marker without an operator directory says so on stderr');
+  assert.match(warned.join(''), /operator records directory does not exist yet/, 'a marker without an operator directory says so on stderr');
 
   const q = captured('chief-of-staff', [human('use postgres', 1)]);
   const warnings = [];

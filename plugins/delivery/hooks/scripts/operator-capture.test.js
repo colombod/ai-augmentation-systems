@@ -183,7 +183,9 @@ test('I4: prompts typed before the session became the role are stored and citabl
   const res = withEnv({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: undefined }, () => captureFromHookInput(input, PLUGIN_ROOT, { now: '2026-10-17T08:00:00.000Z' }));
   assert.equal(res.added, 2);
   assert.deepEqual(res.pending, []);
-  const since = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role-since.json'), 'utf8'));
+  // local state of the operator store, never in the role directory or the user's checkout
+  assert.ok(!fs.existsSync(path.join(roleDir, '.delivery-role-since.json')));
+  const since = JSON.parse(fs.readFileSync(path.join(log.opDir(projectRoot), 'cursors', 'role-since', 'chief-of-staff.json'), 'utf8'));
   assert.deepEqual(since, { sessions: { [SID]: '2026-10-17T08:00:00.000Z' } });
   // a prompt typed as the role arrives later in the same transcript
   fs.appendFileSync(tr, JSON.stringify(human('use postgres for the orders store', 3)) + '\n');
@@ -200,7 +202,7 @@ test('I4: prompts typed before the session became the role are stored and citabl
   const d = R.recordDecision({ projectRoot, cite: 'in-pc-000001', quote: 'look at the billing export first', statement: 'Billing export first', scope: { beads: ['ex-1'], labels: [], initiatives: [] }, by: cos });
   assert.equal(R.verifyRecord(projectRoot, d.id).ok, true);
   // a new session id in the same role directory starts a new boundary
-  assert.equal(log.roleSince(roleDir, 'another-session', { now: '2026-10-18T00:00:00.000Z' }), '2026-10-18T00:00:00.000Z');
+  assert.equal(log.roleSince(roleDir, 'another-session', { now: '2026-10-18T00:00:00.000Z', projectRoot, instance: 'chief-of-staff' }), '2026-10-18T00:00:00.000Z');
 });
 
 test('SessionStart records a per-session role boundary without a transcript', () => {
@@ -227,8 +229,9 @@ test('SessionStart records a per-session role boundary without a transcript', ()
   capture('2026-10-17T08:50:00.000Z');
 
   assert.deepEqual(log.listInputs(projectRoot, { source: 'human', sessionId: 'session-a' }).map((e) => !!e.pre_role), [true, false, false]);
-  assert.equal(log.roleSince(roleDir, 'session-a', { create: false }), '2026-10-17T08:00:00.000Z');
-  assert.equal(log.roleSince(roleDir, 'session-b', { create: false }), '2026-10-17T09:00:00.000Z');
+  const own = { create: false, projectRoot, instance: 'chief-of-staff' };
+  assert.equal(log.roleSince(roleDir, 'session-a', own), '2026-10-17T08:00:00.000Z');
+  assert.equal(log.roleSince(roleDir, 'session-b', own), '2026-10-17T09:00:00.000Z');
 });
 
 test('Copilot 4: SessionStart sets the boundary even without a transcript, so the first prompt is pending', () => {
@@ -259,4 +262,14 @@ test('Copilot 5: boundaries are kept per session: another session in the same ro
   assert.ok(Object.keys(file.sessions).length <= 32);
   assert.ok(file.sessions.s39);
   assert.equal(file.sessions.A, undefined);
+});
+
+test('a boundary an earlier version kept in the role directory is still read for its session', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap-since-'));
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cap-since-proj-'));
+  fs.writeFileSync(path.join(dir, '.delivery-role-since.json'), JSON.stringify({ sessions: { old: '2026-10-01T00:00:00.000Z' } }));
+  const o = { projectRoot, instance: 'pm', now: '2026-10-17T00:00:00.000Z' };
+  assert.equal(log.roleSince(dir, 'old', o), '2026-10-01T00:00:00.000Z');
+  assert.equal(log.roleSince(dir, 'new', o), '2026-10-17T00:00:00.000Z');
+  assert.ok(fs.existsSync(path.join(log.opDir(projectRoot), 'cursors', 'role-since', 'pm.json')));
 });

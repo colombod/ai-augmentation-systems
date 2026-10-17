@@ -17,18 +17,21 @@ function bdReachable(projectRoot) {
   }
 }
 
-// Operator decisions at a glance: entries this host has not pushed, human inputs with no record or
+// Operator decisions at a glance: entries in this host's private operator store that the remote's
+// delivery-operator branch does not hold yet ("no remote" without one), human inputs with no record or
 // ack, inferred answers awaiting ratification. All zero when the operator directory does not exist.
-// Read-only: no refresh, no git writes; a failure becomes a note, never an exit code.
+// Read-only: no refresh, no network, no git writes; a failure becomes a note, never an exit code.
 function operatorStatus(projectRoot, team, { host, deps = {} } = {}) {
   const res = { unpublished: 0, pending_inputs: [], unratified: [], notes: [] };
-  if (!fs.existsSync(path.join(projectRoot, '.delivery', 'operator'))) return res;
   const log = deps.log || require('./lib/operator-log.js');
+  if (!fs.existsSync(log.opDir(projectRoot))) return res;
   const R = deps.records || require('./lib/operator-records.js');
   try {
     const h = host || process.env.DELIVERY_HOST;
     const instances = h ? expandInstances(team).filter((i) => i.role.host === h).map((i) => i.instance) : [];
-    res.unpublished = log.unpublished(projectRoot, h ? { host: h, instances } : { all: true }).count || 0;
+    const u = log.unpublished(projectRoot, h ? { host: h, instances } : { all: true });
+    res.unpublished = u.count || 0;
+    if (u.no_remote && u.reason === 'no remote') res.no_remote = true;
   } catch (err) { res.notes.push(`unpublished count unavailable: ${err.message}`); }
   try {
     const p = R.pending(projectRoot, {});
@@ -97,7 +100,7 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, war
   lines.push('');
   if (projectRoot) { lines.push(`Manifest: ${projectRoot} at ${manifestRev(projectRoot)}`); lines.push(''); }
   if (operator) {
-    lines.push(`Operator entries unpublished: ${operator.unpublished}`);
+    lines.push(`Operator entries unpublished: ${operator.no_remote ? 'no remote (the operator store is local only)' : operator.unpublished}`);
     lines.push(`Operator inputs pending a record: ${operator.pending_inputs.length}${firstIds(operator.pending_inputs)}`);
     lines.push(`Inferred answers awaiting ratification: ${operator.unratified.length}${firstIds(operator.unratified)}`);
     for (const n of operator.notes) lines.push(`Note: ${n}`);
