@@ -753,3 +753,17 @@ test('Task 5: writer commands refuse when DELIVERY_ROLE is set but DELIVERY_ROLE
   // with both set the same command records
   assert.strictEqual(run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres']).status, 0);
 });
+
+test('C1: a whole-input "yes" is recorded against a logged question and verify shows the question beside it', () => {
+  const root = project();
+  const cos = roleDir(root, 'chief-of-staff', 'chief-of-staff', 'pc', 'sess-y', [human('yes', 1, 'sess-y')]);
+  const q = run(cos, ['ask', '--text', 'Ship the checkout flow this week?', '--asker', 'chief-of-staff', '--json']);
+  assert.strictEqual(q.status, 0, q.out + q.err);
+  const qid = json(q).id;
+  const r = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'yes', '--statement', 'Ship checkout this week', '--answers', qid]);
+  assert.strictEqual(r.status, 0, r.out + r.err);
+  const v = run(cos, ['verify', r.lines[0]]);
+  assert.strictEqual(v.status, 0, v.out + v.err);
+  assert.ok(v.out.includes(`answers ${qid}: "Ship the checkout flow this week?"`), v.out);
+  assert.ok(v.out.includes('operator said: "yes"'), v.out);
+});

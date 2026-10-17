@@ -87,11 +87,21 @@ function hasNegation(segment, { before }) {
 // The input words that carry a quote: every occurrence of the normalised quote in the input.
 // Returns { ok:false, code, message } or { ok:true, excerpt, attributed, question } where excerpt is
 // the containing sentence with the quoted span as «...».
+// A quote that is the operator's WHOLE input ("yes", "B", "17", "No.") is the answer itself: always
+// citable whatever its length, and not subject to the negation heuristic (a whole-input "No." is a
+// legitimate answer, not a dropped negation). Terminal punctuation and whitespace are ignored.
+const wholeForm = (s) => s.replace(/[\s.!?,;:]+$/u, '').trim();
+
 function quoteCheck(inputText, quote) {
   const q = normMap(quote).norm;
+  const whole = wholeForm(normMap(inputText).norm);
+  if (whole && wholeForm(q) === whole) {
+    const base = String(inputText).normalize('NFKC').replace(/\s+/g, ' ').trim();
+    return { ok: true, excerpt: `«${base}»`, attributed: false, question: /\?\s*$/.test(base), whole: true };
+  }
   const words = q.split(' ').filter(Boolean).length;
   if (words < MIN_QUOTE_WORDS && q.length < MIN_QUOTE_CHARS) {
-    return { ok: false, code: 'quote_mismatch', message: `quote must be at least ${MIN_QUOTE_WORDS} words or ${MIN_QUOTE_CHARS} characters of the operator's exact words` };
+    return { ok: false, code: 'quote_mismatch', message: `quote must be at least ${MIN_QUOTE_WORDS} words or ${MIN_QUOTE_CHARS} characters of the operator's exact words, or the whole of a short input ("yes", "B")` };
   }
   const t = normMap(inputText);
   const hits = [];
@@ -1404,6 +1414,10 @@ function verifyRecord(projectRoot, id, opts = {}) {
       }
     }
     if (r.kind === 'question') Object.assign(h, { text: r.text, asker: r.asker });
+    // a bare "yes" is understood only beside the question it answers
+    if (Array.isArray(r.answers) && r.answers.length) {
+      h.answers_questions = r.answers.map((qid) => { const q = IXV.byId.get(qid) || st.findRecord(qid); return { id: qid, text: q && q.kind === 'question' ? q.text : null }; });
+    }
     if (r.kind === 'rehost') Object.assign(h, { instance: r.instance, from: r.from, to: r.to });
     if (r.under) h.under = r.under;
     if (r.target) h.target = r.target;

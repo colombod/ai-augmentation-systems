@@ -602,6 +602,8 @@ const handlers = {
           lines.push(h.ratified_by ? `    ratified by ${h.ratified_by.id} (operator said ${quoted(h.ratified_by.said || '')})` : '    unratified');
         }
         if (h.grant) lines.push(`    GRANT: ${h.grant}`);
+        if (h.kind === 'answer' && h.question) lines.push(`    question: ${quoted(h.question)}`);
+        for (const q of h.answers_questions || []) lines.push(`    answers ${q.id}: ${q.text ? quoted(q.text) : '(question not found)'}`);
       }
     }
     for (const n of v.notes) lines.push(`  note: ${n}`);

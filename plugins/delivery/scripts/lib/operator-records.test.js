@@ -1532,3 +1532,30 @@ test('Task 5 P4: a heads.json that is not an object, or has a non-integer count,
   decide(ok);
   assert.ok(!R.pending(ok, {}).problems.some((x) => x.code === 'heads_invalid'));
 });
+
+test('C1: a short answer that is the whole input is recorded and verified; a short fragment of a longer input is refused', () => {
+  const root = mk('oprec-short-');
+  writeManifest(root);
+  const texts = ['yes', 'B', '17', 'No.', 'ship it', 'agreed!', 'yes but only for staging'];
+  sync(root, writeTranscript(texts.map((t, i) => human(t, i + 1))), { instance: 'chief-of-staff', role: 'chief-of-staff' });
+  const q = ask(root, { text: 'Ship the checkout flow this week?' });
+  const quotes = ['yes', 'b', '17', 'No', 'ship it', 'agreed'];
+  quotes.forEach((quote, i) => {
+    const d = R.recordDecision({ projectRoot: root, cite: `in-pc-00000${i + 1}`, quote, statement: `answer ${i + 1}`, scope: scope({ beads: ['ex-1'] }), by: COS, answers: i === 0 ? [q.id] : [] });
+    const v = R.verifyRecord(root, d.id);
+    assert.strictEqual(v.ok, true, `${quote}: ${v.error}`);
+    if (i === 0) {
+      // the bare "yes" shows beside the question it answers, in verify and in the ledger
+      assert.deepStrictEqual(v.chain[0].answers_questions, [{ id: q.id, text: 'Ship the checkout flow this week?' }]);
+      const row = R.ledger(root, {}).find((r) => r.question.id === q.id);
+      assert.strictEqual(row.status, 'answered');
+      assert.match(R.renderLedger(root, {}), /Ship the checkout flow this week\?/);
+    }
+  });
+  // "yes" out of "yes but only for staging" is a fragment: still refused, not whole
+  assert.strictEqual(codeOf(() => R.recordDecision({ projectRoot: root, cite: 'in-pc-000007', quote: 'yes', statement: 'ship', scope: scope({ beads: ['ex-1'] }), by: COS })), 'quote_mismatch');
+  assert.strictEqual(R.quoteCheck('yes but only for staging', 'yes').ok, false);
+  assert.strictEqual(R.quoteCheck('No.', 'no').whole, true);
+  // the whole longer input is fine as before
+  assert.ok(R.recordDecision({ projectRoot: root, cite: 'in-pc-000007', quote: 'yes but only for staging', statement: 'staging only', scope: scope({ beads: ['ex-1'] }), by: COS }));
+});
