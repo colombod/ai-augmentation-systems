@@ -7,7 +7,9 @@
 // exit 0 always. Other channels (MCP session tools, desktop and browser control, shell) are lane
 // matters; see the Task 4 report for the residual.
 const ASKERS = new Set(['chief-of-staff', 'product-manager']);
-const REASON = 'You do not address the operator. Message the Chief of Staff with the one question (SendMessage to the chief-of-staff session); the answer comes back to you as a decision record id you verify with operator.js verify.';
+const path = require('path');
+const { operatorCommand } = require('../../scripts/lib/plugin-root.js');
+const REASON = `You do not address the operator. Message the Chief of Staff with the one question (SendMessage to the chief-of-staff session); the answer comes back to you as a decision record id you verify with \`${operatorCommand(path.join(__dirname, '..', '..'))} verify <id>\`.`;
 const CHANNEL_REASON = 'You do not address the operator. Message the Chief of Staff; the Chief of Staff decides what reaches the operator.';
 const CHANNELS = { AskUserQuestion: REASON, PushNotification: CHANNEL_REASON, SendUserFile: CHANNEL_REASON };
 

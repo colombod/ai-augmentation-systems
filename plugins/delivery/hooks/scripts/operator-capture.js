@@ -68,7 +68,7 @@ function captureFromHookInput(input, pluginRoot, deps = {}) {
         if (r && r.status) status = r.status;
       } catch (err) {
         status = 'error';
-        problems.push(`operator capture failed (${err && err.message ? err.message : err}); run operator.js sync to retry`);
+        problems.push(`operator capture failed (${err && err.message ? err.message : err}); run \`${operatorCommand(pluginRoot || path.join(__dirname, '..', '..'))} sync\` to retry`);
       }
     }
     if (status === 'format_unrecognised') problems.push('the transcript format was not recognised, so no operator input was captured as human; tell the Chief of Staff');

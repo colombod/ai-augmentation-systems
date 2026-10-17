@@ -1,6 +1,7 @@
-// hooks/scripts/relay-guard.js — the Chief of Staff carries answers; the operator never relays them.
+// hooks/scripts/relay-guard.js — the operator-facing roles carry answers; the operator never relays them.
 //
-// Two checks for the Chief of Staff's Stop hook (claim-stop.js calls decideStopForOperator):
+// Two checks for the Stop hook of the Chief of Staff and the Product Manager, the two roles that
+// address the operator (claim-stop.js calls operatorChecks and bounds repeats per turn with turn.js):
 //   1. an operator input captured in this session that has neither a record nor an ack blocks the
 //      turn: record it (or ack it), then send the record id to the sessions that need it;
 //   2. a final message that asks the operator to carry something to another session (tell, send,
@@ -9,6 +10,11 @@
 // flagging a question about the operator's own decision. Everything here fails open (returns null).
 const fs = require('fs');
 const path = require('path');
+const { operatorCommand } = require('../../scripts/lib/plugin-root.js');
+
+// the roles whose sessions the operator addresses, so whose inputs must be recorded
+const OPERATOR_FACING = new Set(['chief-of-staff', 'product-manager']);
+const DEFAULT_PLUGIN_ROOT = path.join(__dirname, '..', '..');
 
 // ---- the relay detector ----
 //
@@ -313,7 +319,7 @@ function findRelayRequest(text, opts = {}) {
 // The relay reasons quote the flagged clause from the first block on.
 const RELAY_REASON = 'You carry answers; the operator does not. Rewrite only that clause: send the record id yourself with SendMessage; keep any real decision question to the operator.';
 // the relayed thing has no record yet (a question to pass on, an answer not recorded)
-const RELAY_REASON_NO_RECORD = 'You carry answers; the operator does not. Rewrite only that clause: ask the operator here yourself and record the answer, then send the record id yourself with SendMessage; keep any real decision question to the operator.';
+const RELAY_REASON_NO_RECORD = 'You carry answers; the operator does not. Rewrite only that clause: a decision only the operator can make goes into your next batched briefing (if it blocks work now, ask it once here yourself); record the answer, then send the record id yourself with SendMessage.';
 const RELAY_RECORD_ID = /\b(?:dec|del|ans)-[a-z0-9-]*\d\b/i;
 
 function relayReason(message, clause) {
@@ -323,17 +329,18 @@ function relayReason(message, clause) {
   return `${head}. You wrote: "${String(clause).replace(/\s+/g, ' ').slice(0, 160)}". ${tail.join('. ')}`;
 }
 
-function unrecordedReason(list) {
+// Commands in block reasons are the exact form the session can run (absolute path, single quotes).
+function unrecordedReason(list, op) {
   const first = list[0];
   const n = first.id;
   const excerpt = String(first.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   const more = list.length > 1 ? ` and ${list.length - 1} more` : '';
-  return `You have an operator input with no record: ${n} ("${excerpt}")${more}. Record the decision (operator.js record --cite ${n} --quote "<exact words>" --statement "<what was decided>" --scope bead:ID) or acknowledge it (operator.js ack --input ${n} --reason "<why this is not a decision>"), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.`;
+  return `You have an operator input with no record: ${n} ("${excerpt}")${more}. Record the decision (\`${op} record --cite ${n} --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\`) or acknowledge it (\`${op} ack --input ${n} --reason '<why this is not a decision>'\`; 'conversational' for chat), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.`;
 }
 
-function integrityReason(instance, problem) {
+function integrityReason(instance, problem, op) {
   const what = `${problem.code || 'chain_invalid'}: ${String(problem.error || '').replace(/\s+/g, ' ').slice(0, 160)}`;
-  return `Your own operator records chain (records/${instance}.ndjson) fails verification (${what}). Nothing can be recorded or acknowledged until it is repaired: run operator.js problems, then operator.js repair --instance ${instance} for a torn tail, or restore the file from repository history for a truncated or rewritten chain. Do not ask the operator to relay anything meanwhile.`;
+  return `Your own operator records chain (records/${instance}.ndjson) fails verification (${what}). Nothing can be recorded or acknowledged until it is repaired: run \`${op} problems\`, then \`${op} repair --instance ${instance}\` for a torn tail, or restore the file from repository history for a truncated or rewritten chain. Do not ask the operator to relay anything meanwhile.`;
 }
 
 function readTrim(file) {
@@ -363,12 +370,12 @@ function ownChainProblem(problems, instance) {
   return problems.find((p) => p && p.file === `records/${instance}` && !['record_invalid', 'unknown_instance'].includes(p.code)) || null;
 }
 
-function tornTailReason(instance, problem) {
-  return `Your own operator records chain (records/${instance}.ndjson) has an incomplete last line (torn_tail: ${String(problem.error || '').replace(/\s+/g, ' ').slice(0, 120)}). The valid entries are used and your next record or ack repairs it; operator.js repair --instance ${instance} repairs it now.`;
+function tornTailReason(instance, problem, op) {
+  return `Your own operator records chain (records/${instance}.ndjson) has an incomplete last line (torn_tail: ${String(problem.error || '').replace(/\s+/g, ' ').slice(0, 120)}). The valid entries are used and your next record or ack repairs it; \`${op} repair --instance ${instance}\` repairs it now.`;
 }
 
 // [{ kind: 'unrecorded' | 'integrity', reason }] for the Chief of Staff's own inputs ([] or null when nothing applies).
-function inputCheck({ projectRoot, sessionId, instance, deps, warn }) {
+function inputCheck({ projectRoot, sessionId, instance, deps, warn, op }) {
   if (!sessionId) return null;
   if (!fs.existsSync(path.join(projectRoot, '.delivery', 'operator'))) {
     warn('delivery: .delivery/operator does not exist yet, so the unrecorded-input check had nothing to read; operator capture creates it on the first captured input\n');
@@ -378,29 +385,30 @@ function inputCheck({ projectRoot, sessionId, instance, deps, warn }) {
   try {
     res = (deps.pending || require('../../scripts/lib/operator-records.js').pending)(projectRoot, { sessionId });
   } catch (err) {
-    warn(`delivery: the unrecorded-input check was skipped (${err && err.message ? err.message : err}); run operator.js pending\n`);
+    warn(`delivery: the unrecorded-input check was skipped (${err && err.message ? err.message : err}); run ${op} pending\n`);
     return null;
   }
   const problems = (res && Array.isArray(res.problems)) ? res.problems : [];
   const untrusted = problems.find((p) => p && (p.code === 'manifest_unavailable' || p.code === 'format_unrecognised'));
   if (untrusted) {
-    warn(`delivery: the unrecorded-input check was skipped: ${untrusted.error || untrusted.code}; run operator.js pending\n`);
+    warn(`delivery: the unrecorded-input check was skipped: ${untrusted.error || untrusted.code}; run ${op} pending\n`);
     return null;
   }
   const out = [];
   const broken = ownChainProblem(problems, instance);
-  if (broken && broken.code !== REPAIRABLE_BY_WRITE) return [{ kind: 'integrity', reason: integrityReason(instance, broken) }];
-  if (broken) out.push({ kind: 'integrity', reason: tornTailReason(instance, broken) });
+  if (broken && broken.code !== REPAIRABLE_BY_WRITE) return [{ kind: 'integrity', reason: integrityReason(instance, broken, op) }];
+  if (broken) out.push({ kind: 'integrity', reason: tornTailReason(instance, broken, op) });
   const mine = ((res && res.inputs) || []).filter((e) => e && e.id && e.session_id === sessionId && (!instance || e.instance === instance));
-  if (mine.length) out.push({ kind: 'unrecorded', reason: unrecordedReason(mine) });
+  if (mine.length) out.push({ kind: 'unrecorded', reason: unrecordedReason(mine, op) });
   return out;
 }
 
 // Every operator check that applies to this stop, ignoring stop_hook_active (claim-stop.js limits
-// repeats per turn). [] for any role but the Chief of Staff, and on any failure.
-function operatorChecks({ input, roleDir, projectRoot, role, instance, captureStatus, parties, deps = {} } = {}) {
+// repeats per turn, per session). [] for roles that do not address the operator, and on any failure.
+function operatorChecks({ input, roleDir, projectRoot, role, instance, captureStatus, parties, pluginRoot, deps = {} } = {}) {
   try {
-    if (role !== 'chief-of-staff') return [];
+    if (!OPERATOR_FACING.has(role)) return [];
+    const op = operatorCommand(pluginRoot || DEFAULT_PLUGIN_ROOT);
     if (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot)) return [];
     const inp = input && typeof input === 'object' ? input : {};
     const warn = deps.warn || (() => {});
@@ -410,7 +418,7 @@ function operatorChecks({ input, roleDir, projectRoot, role, instance, captureSt
       return [];
     }
     const out = [];
-    out.push(...(inputCheck({ projectRoot, sessionId, instance, deps, warn }) || []));
+    out.push(...(inputCheck({ projectRoot, sessionId, instance, deps, warn, op }) || []));
     const relay = findRelayRequest(inp.last_assistant_message, { parties });
     if (relay) out.push({ kind: 'relay', reason: relayReason(inp.last_assistant_message, relay.clause), detail: relay.phrase });
     return out;
@@ -419,13 +427,4 @@ function operatorChecks({ input, roleDir, projectRoot, role, instance, captureSt
   }
 }
 
-// Stateless form: null, or { reason } joining every applicable operator reason. Null on a
-// continuation (stop_hook_active). Never throws.
-function decideStopForOperator(args = {}) {
-  const inp = args && args.input && typeof args.input === 'object' ? args.input : {};
-  if (inp.stop_hook_active) return null;
-  const found = operatorChecks(args);
-  return found.length ? { reason: found.map((f) => f.reason).join('\n\n') } : null;
-}
-
-module.exports = { findRelayRequest, operatorChecks, decideStopForOperator, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD };
+module.exports = { findRelayRequest, operatorChecks, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD, OPERATOR_FACING };

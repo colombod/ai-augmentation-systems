@@ -152,7 +152,10 @@ test('the prompt, session-start and stop hooks capture first and keep their own 
   const run = (script, input) => spawnSync(process.execPath, [path.join(__dirname, script)], { input: JSON.stringify(input), env, encoding: 'utf8' });
   const stop = run('claim-stop.js', { cwd: roleDir, session_id: SID, transcript_path: tr, hook_event_name: 'Stop' });
   assert.equal(stop.status, 0);
-  assert.equal(stop.stdout, '', 'no claim, no block: the capture adds nothing to the Stop output');
+  // I3: the Product Manager addresses the operator too, so its own unrecorded input blocks its stop
+  const block = JSON.parse(stop.stdout);
+  assert.equal(block.decision, 'block');
+  assert.match(block.reason, /^You have an operator input with no record: in-pc-000001 \("drop the export feature"\)/);
   assert.equal(log.listInputs(projectRoot, { source: 'human' }).length, 1);
   const prompt = run('role-prompt-submit.js', { cwd: roleDir, session_id: SID, transcript_path: tr });
   assert.equal(prompt.status, 0);

@@ -42,7 +42,7 @@ test('denies AskUserQuestion for builder, delivery-lead and progress-observer wi
     const out = JSON.parse(r.stdout);
     assert.deepEqual(out, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: REASON } }, instance);
   }
-  assert.equal(REASON, 'You do not address the operator. Message the Chief of Staff with the one question (SendMessage to the chief-of-staff session); the answer comes back to you as a decision record id you verify with operator.js verify.');
+  assert.equal(REASON, `You do not address the operator. Message the Chief of Staff with the one question (SendMessage to the chief-of-staff session); the answer comes back to you as a decision record id you verify with \`node ${path.join(__dirname, '..', '..', 'scripts', 'operator.js')} verify <id>\`.`);
 });
 
 test('allows the chief of staff and the product manager', () => {

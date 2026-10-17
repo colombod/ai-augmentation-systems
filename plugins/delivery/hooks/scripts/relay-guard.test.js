@@ -5,7 +5,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { findRelayRequest, decideStopForOperator, operatorChecks, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD } = require('./relay-guard.js');
+const { findRelayRequest, operatorChecks, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD } = require('./relay-guard.js');
+const { operatorCommand } = require('../../scripts/lib/plugin-root.js');
 const { captureFromHookInput } = require('./operator-capture.js');
 const { prepareRole } = require('../../scripts/prepare-role.js');
 const R = require('../../scripts/lib/operator-records.js');
@@ -17,6 +18,14 @@ process.env.GIT_TERMINAL_PROMPT = '0';
 
 const PLUGIN_ROOT = path.join(__dirname, '..', '..');
 const SID = 'sess-relay-1';
+const OP = operatorCommand(PLUGIN_ROOT);
+// stateless view of the operator checks: null on a continuation, else every reason joined
+function decideStopForOperator(args = {}) {
+  const inp = args && args.input && typeof args.input === 'object' ? args.input : {};
+  if (inp.stop_hook_active) return null;
+  const found = operatorChecks(args);
+  return found.length ? { reason: found.map((f) => f.reason).join('\n\n') } : null;
+}
 
 // ---- the relay detector ----
 
@@ -125,7 +134,7 @@ test('blocks the chief of staff with an unrecorded input of its own session, and
   const p = captured('chief-of-staff', [human('use postgres for the store, it is what ops already runs', 1)]);
   assert.equal(p.cap.status, 'ok');
   const d = decideStopForOperator(stopArgs(p));
-  assert.equal(d.reason, 'You have an operator input with no record: in-pc-000001 ("use postgres for the store, it is what ops already runs"). Record the decision (operator.js record --cite in-pc-000001 --quote "<exact words>" --statement "<what was decided>" --scope bead:ID) or acknowledge it (operator.js ack --input in-pc-000001 --reason "<why this is not a decision>"), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.');
+  assert.equal(d.reason, `You have an operator input with no record: in-pc-000001 ("use postgres for the store, it is what ops already runs"). Record the decision (\`${OP} record --cite in-pc-000001 --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\`) or acknowledge it (\`${OP} ack --input in-pc-000001 --reason '<why this is not a decision>'\`; 'conversational' for chat), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.`);
   R.ack({ projectRoot: p.projectRoot, input: 'in-pc-000001', reason: 'a preference, recorded elsewhere', by: COS_BY });
   assert.equal(decideStopForOperator(stopArgs(p)), null);
 });
@@ -163,8 +172,8 @@ test('blocks a relay request with the carry reason once nothing is pending', () 
   assert.deepEqual(decideStopForOperator(stopArgs(p, { last_assistant_message: 'Recorded dec-1.\n\ncan you paste this answer to the builder?' })),
     { reason: 'You carry answers; the operator does not. You wrote: "can you paste this answer to the builder". Rewrite only that clause: send the record id yourself with SendMessage; keep any real decision question to the operator.' });
   assert.deepEqual(decideStopForOperator(stopArgs(p, { last_assistant_message: 'The builder asks whether to use Redis. Can you tell the builder session A or B?' })),
-    { reason: 'You carry answers; the operator does not. You wrote: "Can you tell the builder session A or B". Rewrite only that clause: ask the operator here yourself and record the answer, then send the record id yourself with SendMessage; keep any real decision question to the operator.' });
-  assert.equal(RELAY_REASON_NO_RECORD, 'You carry answers; the operator does not. Rewrite only that clause: ask the operator here yourself and record the answer, then send the record id yourself with SendMessage; keep any real decision question to the operator.');
+    { reason: 'You carry answers; the operator does not. You wrote: "Can you tell the builder session A or B". Rewrite only that clause: a decision only the operator can make goes into your next batched briefing (if it blocks work now, ask it once here yourself); record the answer, then send the record id yourself with SendMessage.' });
+  assert.equal(RELAY_REASON_NO_RECORD, 'You carry answers; the operator does not. Rewrite only that clause: a decision only the operator can make goes into your next batched briefing (if it blocks work now, ask it once here yourself); record the answer, then send the record id yourself with SendMessage.');
   assert.equal(RELAY_REASON, 'You carry answers; the operator does not. Rewrite only that clause: send the record id yourself with SendMessage; keep any real decision question to the operator.');
   assert.equal(relayReason('dec-1', null), RELAY_REASON, 'no clause: the base reason');
   assert.equal(decideStopForOperator(stopArgs(p, { last_assistant_message: 'I will tell the Delivery Lead.' })), null);
@@ -334,7 +343,7 @@ test("I3: a chain problem on the chief of staff's own records file replaces the 
   const torn = () => ({ inputs, problems: [{ file: 'records/chief-of-staff', code: 'truncated', error: 'records/chief-of-staff: truncated 4 entries but 5 recorded' }] });
   const found = operatorChecks(stopArgs(p, {}, { deps: { pending: torn } }));
   assert.deepEqual(found.map((f) => f.kind), ['integrity']);
-  assert.equal(found[0].reason, 'Your own operator records chain (records/chief-of-staff.ndjson) fails verification (truncated: records/chief-of-staff: truncated 4 entries but 5 recorded). Nothing can be recorded or acknowledged until it is repaired: run operator.js problems, then operator.js repair --instance chief-of-staff for a torn tail, or restore the file from repository history for a truncated or rewritten chain. Do not ask the operator to relay anything meanwhile.');
+  assert.equal(found[0].reason, `Your own operator records chain (records/chief-of-staff.ndjson) fails verification (truncated: records/chief-of-staff: truncated 4 entries but 5 recorded). Nothing can be recorded or acknowledged until it is repaired: run \`${OP} problems\`, then \`${OP} repair --instance chief-of-staff\` for a torn tail, or restore the file from repository history for a truncated or rewritten chain. Do not ask the operator to relay anything meanwhile.`);
   // another instance's chain, or one invalid record, does not stop the chief of staff from recording
   for (const problem of [{ file: 'records/builder-1', code: 'truncated', error: 'x' }, { file: 'records/chief-of-staff', code: 'record_invalid', error: 'x', id: 'dec-x' }]) {
     assert.deepEqual(operatorChecks(stopArgs(p, {}, { deps: { pending: () => ({ inputs, problems: [problem] }) } })).map((f) => f.kind), ['unrecorded']);
@@ -640,7 +649,7 @@ test('round 4 fixes, one by one', () => {
 test('round 4: the relay reason quotes the flagged clause on the first block, in its own casing', () => {
   const r = findRelayRequest('All good. Could you Tell the Delivery Lead to proceed?');
   assert.equal(r.clause, 'Could you Tell the Delivery Lead to proceed');
-  assert.equal(relayReason('', r.clause), 'You carry answers; the operator does not. You wrote: "Could you Tell the Delivery Lead to proceed". Rewrite only that clause: ask the operator here yourself and record the answer, then send the record id yourself with SendMessage; keep any real decision question to the operator.');
+  assert.equal(relayReason('', r.clause), 'You carry answers; the operator does not. You wrote: "Could you Tell the Delivery Lead to proceed". Rewrite only that clause: a decision only the operator can make goes into your next batched briefing (if it blocks work now, ask it once here yourself); record the answer, then send the record id yourself with SendMessage.');
   assert.equal(relayReason('dec-3', r.clause), 'You carry answers; the operator does not. You wrote: "Could you Tell the Delivery Lead to proceed". Rewrite only that clause: send the record id yourself with SendMessage; keep any real decision question to the operator.');
 });
 
@@ -823,6 +832,40 @@ test('round 4 sets: recall, long-briefing and short false positives stay at or b
       assert.equal(sfp.length, 0, `${name} short flagged: ${JSON.stringify(sfp)}`);
       const lfp = long.map(f).filter(Boolean);
       assert.ok(lfp.length <= maxLong, `${name} long flagged: ${JSON.stringify(lfp.map((r) => r.phrase))}`);
+    }
+  }
+});
+
+test('I3: the Product Manager gets the unrecorded-input and relay checks for its own session; other roles get none', () => {
+  const p = captured('product-manager', [human('drop the export feature from the beta', 1)]);
+  const args = stopArgs(p, { last_assistant_message: 'Please tell the builder session to drop it.' }, { role: 'product-manager', instance: 'product-manager' });
+  assert.deepEqual(operatorChecks(args).map((f) => f.kind), ['unrecorded', 'relay']);
+  R.ack({ projectRoot: p.projectRoot, input: 'in-pc-000001', reason: 'conversational', by: { instance: 'product-manager', role: 'product-manager', session_id: SID, host: 'pc' } });
+  assert.deepEqual(operatorChecks(args).map((f) => f.kind), ['relay']);
+  for (const role of ['delivery-lead', 'staffing', 'progress-observer', 'builder', 'spike-researcher']) {
+    assert.deepEqual(operatorChecks({ ...args, role }), [], role);
+  }
+});
+
+test('I2: every command named in a Stop block reason passes the Chief of Staff\'s and the Product Manager\'s lane', () => {
+  const { loadPolicy, decideLane } = require('./lane.js');
+  const groups = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'lane-groups.json'), 'utf8'));
+  const p = captured('chief-of-staff', [human('use postgres for the store', 1)]);
+  const inputs = [{ id: 'in-pc-000001', session_id: SID, instance: 'chief-of-staff', text: 'use postgres' }];
+  const reasons = [
+    ...operatorChecks(stopArgs(p)).map((f) => f.reason),
+    ...operatorChecks(stopArgs(p, {}, { deps: { pending: () => ({ inputs, problems: [{ file: 'records/chief-of-staff', code: 'truncated', error: 'x' }] }) } })).map((f) => f.reason),
+    ...operatorChecks(stopArgs(p, {}, { deps: { pending: () => ({ inputs, problems: [{ file: 'records/chief-of-staff', code: 'torn_tail', error: 'x' }] }) } })).map((f) => f.reason),
+  ];
+  const commands = reasons.flatMap((r) => r.split('`').filter((x, k) => k % 2 === 1));
+  assert.ok(commands.length >= 5, commands.join('\n'));
+  for (const role of ['chief-of-staff', 'product-manager']) {
+    const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/' + role });
+    for (const c of commands) {
+      assert.ok(c.startsWith(`${OP} `), c);
+      const command = c.replace(/'<[^>]*>'/g, "'the operator said: don'\\''t, ok?'").replace(/<[^>]*>/g, 'x1');
+      const d = decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: p.roleDir, groups, pluginRoot: PLUGIN_ROOT, hostHeadless: false });
+      assert.equal(d.allow, true, `${role}: ${command}\n${d.reason || ''}`);
     }
   }
 });
