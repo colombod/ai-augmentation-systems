@@ -287,9 +287,9 @@ test('deleting the last record line is detected through the records head', () =>
   assert.strictEqual(v.ok, false);
   assert.strictEqual(v.code, 'truncated');
   assert.match(v.error, /chief-of-staff/);
-  assert.match(v.error, /restore the file from repository history \(git log -- \.delivery\/operator\/records\/chief-of-staff\.ndjson\)/);
+  assert.match(v.error, /restore the file from a backup of .*records\/chief-of-staff\.ndjson/);
   assert.match(codeOf(() => decide(root, { statement: 'third' })) || '', /truncated/);
-  try { decide(root, { statement: 'third' }); } catch (e) { assert.match(e.message, /restore the file from repository history/); }
+  try { decide(root, { statement: 'third' }); } catch (e) { assert.match(e.message, /restore the file from a backup/); }
   const heads = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'operator', 'cursors', 'heads.json'), 'utf8'));
   assert.strictEqual(heads['records/chief-of-staff'].count, 2, 'a failed verify never lowers a head');
 });
@@ -929,7 +929,7 @@ test('I5/I6: a lookup that misses after a failed refresh says so and carries ref
   const fakeRefresh = () => ({ ok: false, reason: 'fatal: unable to access remote\nmore', remote: 'origin' });
   const v = R.verifyRecord(root, 'dec-product-manager-000001', { refresh: fakeRefresh });
   assert.strictEqual(v.code, 'refresh_failed');
-  assert.match(v.error, /could not refresh from origin: fatal: unable to access remote; the record may exist on another host/);
+  assert.match(v.error, /could not refresh from the project remote: fatal: unable to access remote; the record may exist on another host/);
   assert.strictEqual(codeOf(() => R.recordAnswer({ projectRoot: root, cites: ['dec-product-manager-000001'], question: 'q', answer: 'a', confidence: 'settled',
     scope: scope(), by: COS, refresh: fakeRefresh })), 'refresh_failed');
   // a repository with no remote is not a refresh failure

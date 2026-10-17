@@ -4,8 +4,8 @@
 // Called first by the SessionStart, UserPromptSubmit and Stop hooks (and runnable on its own:
 // stdin JSON, silent, exit 0). It only captures: it remembers where the transcript is, appends new
 // harness-stamped inputs to the operator log for this role instance, and reports how many of this
-// instance's human inputs still have no record. It decides nothing, runs no git and no network, and
-// never throws. The transcript may lag the hook; capture is idempotent, so every trigger catches up.
+// instance's human inputs still have no record. It decides nothing, runs no network and no git that
+// changes anything (one read-only `git rev-parse` locates the private operator store), and never throws. The transcript may lag the hook; capture is idempotent, so every trigger catches up.
 const fs = require('fs');
 const path = require('path');
 const { operatorCommand } = require('../../scripts/lib/plugin-root.js');

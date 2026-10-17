@@ -150,7 +150,7 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
       const remote = run('git', ['remote', 'get-url', 'origin'], { cwd: root, env: runEnv });
       rows.push(remote.ok
         ? { name: 'project repo remote', status: 'pass', detail: remote.out, hard: false }
-        : { name: 'project repo remote', status: 'warn', detail: 'no origin remote', fix: 'add a private remote (`git remote add origin <url>`) so operator records and plans are pushed', hard: false });
+        : { name: 'project repo remote', status: 'warn', detail: 'no origin remote', fix: 'add a private remote (`git remote add origin <url>`) so plans are pushed and operator records travel on its delivery-operator branch (sessions need push access to publish them)', hard: false });
     }
   }
   return rows;

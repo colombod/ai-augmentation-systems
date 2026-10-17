@@ -355,14 +355,14 @@ function unrecordedReason(list, op) {
   return `You have an operator input with no record: ${n} ("${excerpt}")${more}. Record the decision (\`${op} record --cite ${n} --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\`) or acknowledge it (\`${op} ack --input ${n} --reason '<why this is not a decision>'\`; for chat, \`${op} ack --pending --reason 'conversational'\` acks them all at once), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.`;
 }
 
-// What the session CAN do: no lane may write the operator directory, so restoring the file from git
-// is an owner-side task for the briefing; the Chief of Staff can set the broken chain aside (the file
+// What the session CAN do: no lane may write the operator records, so restoring the file from the
+// private operator store's history is an owner-side task for the briefing; the Chief of Staff can set the broken chain aside (the file
 // is kept as evidence) and keep recording; the Product Manager asks the Chief of Staff to.
 function integrityReason(instance, problem, op, role) {
   const what = `${problem.code || 'chain_invalid'}: ${String(problem.error || '').replace(/\s+/g, ' ').slice(0, 160)}`;
   const quarantine = `\`${op} quarantine --file records/${instance}.ndjson --reason '<what failed>'\``;
   const act = role === 'chief-of-staff'
-    ? `set it aside with ${quarantine} (the file is kept as evidence) and keep recording, and put "restore .delivery/operator/records/${instance}.ndjson from repository history" in your next briefing as one owner-side line`
+    ? `set it aside with ${quarantine} (the file is kept as evidence) and keep recording, and put "restore operator records/${instance}.ndjson from the operator store's history (operator.js problems names the command)" in your next briefing as one owner-side line`
     : `SendMessage the Chief of Staff with the problem; it sets the chain aside with ${quarantine} and puts the restore in its briefing`;
   return `Your own operator records chain (records/${instance}.ndjson) fails verification (${what}). Nothing can be recorded or acknowledged on it, and no lane can write the operator directory: run \`${op} problems\` to see it, then ${act}. Do not ask the operator to relay anything meanwhile.`;
 }

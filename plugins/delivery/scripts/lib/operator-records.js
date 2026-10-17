@@ -1,6 +1,6 @@
 // scripts/lib/operator-records.js — operator decision records and their verification.
 //
-// One hash chain per author instance: .delivery/operator/records/<instance>.ndjson, single writer,
+// One hash chain per author instance: <operator dir>/records/<instance>.ndjson, single writer,
 // so git never merges a chain. Ids embed the instance (dec-<instance>-000012); inputs embed the host
 // (in-<host>-000007). Every record stores `cites_head` (the hash of each cited entry at citation
 // time) so a cited entry that is later removed or rewritten, anywhere, makes verify fail.
@@ -315,7 +315,13 @@ function answerDepth(view, rec, seen = new Set()) {
 }
 
 const MANIFEST_HINT = '.delivery/team/team.json cannot be loaded or lists no instances (restore .delivery/team/team.json)';
-const RESTORE_HINT = (rel) => `restore the file from repository history (git log -- ${rel})`;
+// rel: the chain's path inside the operator directory. A git project's chains have history in the
+// private operator store (and the published copy on the delivery-operator branch of origin).
+const RESTORE_HINT = (root, rel) => {
+  const sd = require('./operator-store.js').storeDir(root);
+  return sd ? `restore the file from the operator store's history (git -C ${sd} log -p -- operator/${rel}; the delivery-operator branch of origin holds the published copy)`
+    : `restore the file from a backup of ${path.join(log.opDir(root), rel)} (this project is not a git repository, so the records have no history)`;
+};
 const REHOST_HINT = (inst) => `run operator.js rehost --instance ${inst} --reason "<why this instance moved>" from the new place first`;
 
 // THE rules. Called before a record is appended (mode 'write') and again for every record on read
@@ -789,7 +795,7 @@ function makeStore(root, opts = {}) {
     // the error for an id that could not be found: a failed refresh is the likelier cause
     missing(code, msg) {
       const r = st.refreshFailure();
-      if (r) return new OperatorError('refresh_failed', `could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; the record may exist on another host`);
+      if (r) return new OperatorError('refresh_failed', `could not refresh from the project remote: ${String(r.reason || 'unknown').split('\n')[0]}; the record may exist on another host`);
       return new OperatorError(code, msg);
     },
     entries(instance) {
@@ -843,7 +849,7 @@ function makeStore(root, opts = {}) {
       const heads = log.readHeads(root);
       st._heads = heads;
       const hp = log.headsProblem(root);
-      if (hp) problems.push({ file: '.delivery/operator/cursors/heads.json', code: 'heads_invalid', error: `.delivery/operator/cursors/heads.json ${hp}, so truncated or rewritten operator chains cannot be detected and no head is advanced; it is a local file: restore it from a backup, or move it aside to re-record heads from the current chains (trusted on first use)` });
+      if (hp) problems.push({ file: 'cursors/heads.json', code: 'heads_invalid', error: `${path.join(log.opDir(root), 'cursors', 'heads.json')} ${hp}, so truncated or rewritten operator chains cannot be detected and no head is advanced; it is a local file: restore it from a backup, or move it aside to re-record heads from the current chains (trusted on first use)` });
       if (!manifest) {
         // fail closed: with no manifest nothing is trusted and no head is recorded
         for (const inst of insts) st.verified.set(inst, verifyRecordsFile(root, inst, { setHead: false }));
@@ -935,7 +941,7 @@ function verifyRecordsFile(root, instance, opts = {}) {
     fs.writeFileSync(tmp, raw);
     try { v = chain.verifyChain(tmp); } finally { try { fs.unlinkSync(tmp); } catch (e) { /* gone */ } }
   } else v = chain.verifyChain(file);
-  const restore = RESTORE_HINT(`.delivery/operator/records/${instance}.ndjson`);
+  const restore = RESTORE_HINT(root, `records/${instance}.ndjson`);
   if (!v.ok) return chainFail('chain_invalid', `records/${instance}: ${v.error}; ${restore}`, { at: v.at });
   const hashes = [];
   let lastSeq = 0;
@@ -993,7 +999,7 @@ function verifyInputHostCached(st, host) {
       let code = 'chain_invalid';
       if (/truncated/.test(r.error || '')) code = 'truncated';
       else if (/history rewritten/.test(r.error || '')) code = 'history_rewritten';
-      st.inputHosts.set(host, chainFail(code, `${r.error}; ${RESTORE_HINT(`.delivery/operator/inputs/${log.safeHost(host)}/`)}`, { at: r.at, count: r.count }));
+      st.inputHosts.set(host, chainFail(code, `${r.error}; ${RESTORE_HINT(st.root, `inputs/${log.safeHost(host)}/`)}`, { at: r.at, count: r.count }));
     }
   }
   return st.inputHosts.get(host);
@@ -1364,7 +1370,7 @@ function verifyRecord(projectRoot, id, opts = {}) {
     result.ok = false;
     if (r) {
       result.code = 'refresh_failed';
-      result.error = `could not refresh from ${r.remote || 'the upstream'}: ${String(r.reason || 'unknown').split('\n')[0]}; the record may exist on another host (${error})`;
+      result.error = `could not refresh from the project remote: ${String(r.reason || 'unknown').split('\n')[0]}; the record may exist on another host (${error})`;
     } else { result.code = code; result.error = error; }
     Object.assign(result, extra);
     return result;
