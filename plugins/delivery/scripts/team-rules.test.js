@@ -73,7 +73,7 @@ test('decision skill: frontmatter, the loop with exact commands, answer-on-behal
   const { meta, body } = parseFrontmatter(SKILL);
   assert.ok(typeof meta.description === 'string' && meta.description.length > 40);
   assert.ok('argument-hint' in meta);
-  for (const cmd of ['sync', 'pending', 'record', 'ack', 'delegate', 'decide', 'find', 'answer', 'ask', 'ratify', 'verify']) {
+  for (const cmd of ['pending', 'record', 'ack', 'find', 'answer', 'ask', 'verify']) {
     assert.ok(body.includes(`node \${CLAUDE_PLUGIN_ROOT}/scripts/operator.js ${cmd}`), cmd);
   }
   assert.ok(body.indexOf('operator.js find') < body.indexOf('--confidence settled'), 'find comes before answering');
@@ -207,5 +207,21 @@ test('A6: optional roles promise only what exists', () => {
   for (const id of ['spike-researcher', 'staffing', 'progress-observer']) {
     assert.ok(!PRESETS.minimal.includes(id), `${id} is opt-in`);
     assert.ok(PRESETS.full.includes(id), `${id} stays available`);
+  }
+});
+
+test('ruling 3: briefs and the decision skill teach only the day-one operator commands; the rest is in docs/operator-reference.md', () => {
+  const DAY_ONE = new Set(['pending', 'find', 'record', 'ack', 'ask', 'answer', 'verify']);
+  const texts = [['decision skill', SKILL], ['team-rules', RULES], ...ROLES.map((id) => [id, roleText(id)])];
+  for (const [name, text] of texts) {
+    for (const m of text.matchAll(/operator\.js ([a-z]+)/g)) assert.ok(DAY_ONE.has(m[1]), `${name} teaches operator.js ${m[1]}`);
+  }
+  for (const id of ROLES.filter((r) => !['chief-of-staff', 'product-manager'].includes(r))) {
+    const cmds = new Set([...roleText(id).matchAll(/operator\.js ([a-z]+)/g)].map((m) => m[1]));
+    for (const c of cmds) assert.equal(c, 'verify', `${id}: workers only verify`);
+  }
+  const ref = read('docs', 'operator-reference.md');
+  for (const cmd of ['delegate', 'decide', 'revoke', 'ratify', 'withdraw', 'rehost', 'quarantine', 'repair', 'problems', 'ledger', 'show']) {
+    assert.ok(ref.includes(`operator.js ${cmd}`), `reference covers ${cmd}`);
   }
 });

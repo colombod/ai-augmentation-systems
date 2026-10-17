@@ -22,7 +22,7 @@ delivery gives you a team of Claude Code sessions, one per role, that plan and s
 
 ### Using the team
 
-- **Talk to the Chief of Staff.** It is your one contact. Other sessions send their questions to it; it answers from what you already decided and asks you the rest once, in one ranked briefing.
+- **Talk to the Chief of Staff** for decisions and logistics; talk with the Product Manager about product vision. Both record what you decide. Other sessions send their questions to the Chief of Staff; it answers from what you already decided and asks you the rest once, in one ranked briefing.
 - **Who does what.** Product Manager: what to build and why, the plan documents. Delivery Lead: turns the plan into beads and runs the work. Builders: build in their own worktree of the product repo. The `full` preset adds Staffing (the roster), the Progress Observer (keeps the record true) and the Spike Researcher (technical unknowns).
 - **See progress** with `/delivery:team` in any session (who is live, stale or missing), or ask the Chief of Staff for a briefing.
 - **Decisions are recorded and verified.** `operator.js ledger` lists every question the team asked you and its answer; a session runs `operator.js verify <record id>` to see your exact words before it acts.
@@ -279,12 +279,13 @@ A role session's shell has no `CLAUDE_PLUGIN_ROOT`, so the brief (`CLAUDE.local.
 
 **The loop.** The Chief of Staff runs it in the same turn as each operator input, one command per input (`/delivery:decision` has the steps):
 
-1. Capture: `operator.js sync`, then `operator.js pending` for the input id.
+1. See it: the hooks capture each input; `operator.js pending` lists it with its id.
 2. Record or acknowledge:
    - a decision: `operator.js record --cite in-<host>-N --quote '<exact words>' --statement '...' --scope bead:<id>`;
-   - a standing preference: `operator.js delegate`, with later cases under it through `operator.js decide --under`;
-   - anything else, including "ok thanks": `operator.js ack --reason 'conversational'`.
+   - anything else: `operator.js ack --input in-<host>-N --reason '...'`, or for chat (“ok thanks”) `operator.js ack --pending --reason 'conversational'`, which acks them all at once.
 3. Carry: `SendMessage` the record id to every session that needs it.
+
+Those, with `find`, `ask`, `answer` and `verify`, are the everyday commands. Standing preferences (delegations), ratification, revocation and chain repair are in [docs/operator-reference.md](docs/operator-reference.md).
 
 Every operator input in the Chief of Staff's session (and the Product Manager's) gets a record or an ack, and the Stop hook holds the turn until then. A short answer such as "yes", "B" or "No." is quoted whole and must be recorded with `--answers q-<instance>-N`. `verify` checks that the operator's input came after the question was asked and does not answer another question, and prints the question beside the answer with how long before it was asked. Whether the reply really answers that question is still the Chief of Staff's claim, shown for a reader to judge.
 
