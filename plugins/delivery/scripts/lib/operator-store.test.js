@@ -56,10 +56,10 @@ function say(root, host, ...texts) {
   return log.syncTranscript({ projectRoot: root, transcriptPath: f, sessionId: sid, instance: 'cos', role: 'chief-of-staff', host, now: new Date('2026-10-13T12:00:00Z') });
 }
 // a valid records chain entry for an instance (enough for the publish check: hashes, ids, author)
-function record(root, instance, statement) {
+function record(root, instance, statement, host, extra = {}) {
   return chain.appendEntry(path.join(log.opDir(root), 'records', `${instance}.ndjson`), (last) => {
     const n = last ? Number(last.id.slice(-6)) + 1 : 1;
-    return { id: `dec-${instance}-${String(n).padStart(6, '0')}`, kind: 'decision', statement, by: { instance }, ts: new Date().toISOString() };
+    return { id: `dec-${instance}-${String(n).padStart(6, '0')}`, kind: 'decision', statement, by: { instance, ...(host ? { host } : {}) }, ts: new Date().toISOString(), ...extra };
   });
 }
 const pub = (root, host) => log.publish(root, { force: true, host });
@@ -419,4 +419,194 @@ test('quarantine resolves a fork: the set-aside copy is kept as evidence, the st
   record(h3.hosta, 'pm', 'fresh');
   assert.strictEqual(pub(h3.hosta, 'hosta').published, true);
   assert.doesNotMatch(remoteFile(h3.bare, 'records/pm.ndjson'), /local only/);
+});
+
+// ---- second review round: B1, B2, B3 ----
+
+test('B1: a rewritten or forged own chain committed by hand in the store is never pushed', () => {
+  for (const how of ['rewrite', 'bad hash']) {
+    const h = hosts(1);
+    record(h.hosta, 'cos', 'Orders use Postgres', 'hosta');
+    record(h.hosta, 'cos', 'no redis', 'hosta');
+    assert.strictEqual(pub(h.hosta, 'hosta').published, true);
+    const sd = store.storeDir(h.hosta);
+    const f = path.join(log.opDir(h.hosta), 'records', 'cos.ndjson');
+    const lines = fs.readFileSync(f, 'utf8').trimEnd().split('\n');
+    if (how === 'rewrite') lines[0] = lines[0].replace('Postgres', 'MySQL');
+    else { const o = JSON.parse(lines[1]); lines.push(JSON.stringify({ ...o, id: 'dec-cos-000003', statement: 'forged', prev: o.hash, hash: 'f'.repeat(40) })); }
+    fs.writeFileSync(f, lines.join('\n') + '\n');
+    git(sd, 'add', 'operator/records/cos.ndjson');
+    git(sd, '-c', 'user.name=x', '-c', 'user.email=x@example.test', 'commit', '-qm', 'by hand');
+    const before = git(h.bare, 'rev-parse', 'delivery-operator');
+    const r = pub(h.hosta, 'hosta');
+    assert.strictEqual(r.published, false, how);
+    assert.match(r.reason, how === 'rewrite' ? /records\/cos\.ndjson in the private operator store no longer starts with the published copy/ : /records\/cos\.ndjson as committed in the private operator store fails verification/, how);
+    assert.match(r.reason, /git -C .* checkout refs\/remotes\/origin\/delivery-operator -- <path>/, how);
+    assert.doesNotMatch(r.reason, /operator-outgoing-/, 'no scratch path in the advice');
+    assert.strictEqual(git(h.bare, 'rev-parse', 'delivery-operator'), before, how);
+  }
+});
+
+function forgeRemote(bare, instance, statement, host) {
+  const d = path.join(mk('opstore-forger-'), 'w');
+  git(path.dirname(d), 'clone', '-q', '-b', 'delivery-operator', bare, d);
+  ident(d, 'forger');
+  chain.appendEntry(path.join(d, 'operator', 'records', `${instance}.ndjson`), (last) => ({
+    ...last, id: `dec-${instance}-${String(Number(last.id.slice(-6)) + 1).padStart(6, '0')}`, statement, by: { instance, host }, hash: undefined, prev: undefined }));
+  git(d, 'commit', '-qam', 'operator: 1 entry'); git(d, 'push', '-q', 'origin', 'HEAD:delivery-operator');
+}
+
+test('B2: a correctly hashed extension of this store\'s own chain on the remote is a fork for its owner; a reader takes it', () => {
+  const h = hosts(2);
+  record(h.hosta, 'cos', 'Orders use Postgres', 'hosta');
+  say(h.hosta, 'hosta', 'use postgres');
+  assert.strictEqual(pub(h.hosta, 'hosta').published, true);
+  forgeRemote(h.bare, 'cos', 'Orders use MySQL', 'hosta');
+  const r = log.refresh(h.hosta, { host: 'hosta' });
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(r.diverged, ['records/cos.ndjson']);
+  assert.match(r.reason, /records chain forked: another writer appended to records\/cos\.ndjson.*operator\.js quarantine/);
+  assert.doesNotMatch(fs.readFileSync(path.join(log.opDir(h.hosta), 'records', 'cos.ndjson'), 'utf8'), /MySQL/, 'the forged line never reaches the owner\'s copy');
+  assert.strictEqual(pub(h.hosta, 'hosta').published, false);
+  // the same for this host's inputs chain
+  const h2 = hosts(1);
+  say(h2.hosta, 'hosta', 'one');
+  pub(h2.hosta, 'hosta');
+  tamper(h2.bare, (d) => {
+    chain.appendEntry(path.join(d, 'operator', 'inputs', 'hosta', '2026-10.ndjson'), (last) => ({ ...last, id: 'in-hosta-000002', text: 'forged', hash: undefined, prev: undefined }));
+  });
+  assert.deepStrictEqual(log.refresh(h2.hosta, { host: 'hosta' }).diverged, ['inputs/hosta/2026-10.ndjson']);
+  // a reader (no host of its own on that chain) cannot tell, and takes the extension; verify reads it
+  assert.strictEqual(log.refresh(h.hostb, { host: 'hostb' }).ok, true);
+  assert.match(fs.readFileSync(path.join(log.opDir(h.hostb), 'records', 'cos.ndjson'), 'utf8'), /MySQL/);
+});
+
+test('B2: legitimate growth elsewhere: a fresh clone adopts its host\'s published chains, and a rehosted instance continues on its new host', () => {
+  const h = hosts(2);
+  say(h.hosta, 'hosta', 'one', 'two');
+  record(h.hosta, 'pm', 'first', 'hosta');
+  assert.strictEqual(pub(h.hosta, 'hosta').published, true);
+  // the store is deleted (or the checkout re-cloned): the first capture fetches before writing
+  fs.rmSync(store.storeDir(h.hosta), { recursive: true, force: true });
+  say(h.hosta, 'hosta', 'three');
+  assert.deepStrictEqual(log.listInputs(h.hosta).map((e) => e.id), ['in-hosta-000001', 'in-hosta-000002', 'in-hosta-000003'], 'the host chain continues');
+  assert.strictEqual(pub(h.hosta, 'hosta').published, true);
+  assert.deepStrictEqual(inputsOf(h.bare, 'hosta'), ['in-hosta-000001', 'in-hosta-000002', 'in-hosta-000003']);
+  // a new store that refreshes before any capture adopts the own records chain too
+  fs.rmSync(store.storeDir(h.hosta), { recursive: true, force: true });
+  assert.strictEqual(log.refresh(h.hosta, { host: 'hosta' }).ok, true);
+  assert.strictEqual(record(h.hosta, 'pm', 'second', 'hosta').id, 'dec-pm-000002');
+  assert.strictEqual(pub(h.hosta, 'hosta').published, true);
+  // pm moves to hostb: hostb holds pm's chain as a peer copy, records the rehost and writes there
+  assert.strictEqual(log.refresh(h.hostb, { host: 'hostb' }).ok, true);
+  chain.appendEntry(path.join(log.opDir(h.hostb), 'records', 'pm.ndjson'), (last) => ({ id: 'rh-pm-000003', kind: 'rehost', instance: 'pm', from: { host: 'hosta', machine: null }, to: { host: 'hostb', machine: null }, by: { instance: 'pm', host: 'hostb' }, ts: new Date().toISOString() }));
+  record(h.hostb, 'pm', 'from the new host', 'hostb');
+  assert.strictEqual(pub(h.hostb, 'hostb').published, true);
+  // the old host sees its former chain grow and accepts it: the rehost explains it
+  const r = log.refresh(h.hosta, { host: 'hosta' });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.match(fs.readFileSync(path.join(log.opDir(h.hosta), 'records', 'pm.ndjson'), 'utf8'), /from the new host/);
+});
+
+test('I3: a remote update never replaces a working copy that already holds more lines (uncommitted local lines are kept)', () => {
+  const h = hosts(2);
+  record(h.hosta, 'pm', 'one', 'hosta');
+  pub(h.hosta, 'hosta');
+  say(h.hostb, 'hostb', 'b');
+  pub(h.hostb, 'hostb'); // hostb holds pm v1
+  record(h.hosta, 'pm', 'two', 'hosta');
+  pub(h.hosta, 'hosta'); // the remote holds pm v1+v2
+  // hostb's working copy already has v1+v2 and a third line, not committed: another chain's local
+  // rewrite makes hostb's commit refuse, so the refresh merges with those lines still uncommitted
+  const pmB = path.join(log.opDir(h.hostb), 'records', 'pm.ndjson');
+  fs.copyFileSync(path.join(log.opDir(h.hosta), 'records', 'pm.ndjson'), pmB);
+  record(h.hostb, 'pm', 'three, local only', 'hosta');
+  const inB = path.join(log.opDir(h.hostb), 'inputs', 'hostb', '2026-10.ndjson');
+  fs.writeFileSync(inB, fs.readFileSync(inB, 'utf8').replace('"b"', '"edited"'));
+  const r = log.refresh(h.hostb);
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.ok(r.refused, 'the local commit was refused');
+  assert.match(fs.readFileSync(pmB, 'utf8'), /three, local only/, 'the local line is kept');
+});
+
+test('I3: two copies of one chain with no shared history merge to the longer one when it extends the other', () => {
+  const h = hosts(2);
+  say(h.hosta, 'hosta', 'one', 'two');
+  pub(h.hosta, 'hosta');
+  // hostb carries hosta's first line from an earlier version's .delivery/operator, imported into a new store
+  const first = fs.readFileSync(path.join(log.opDir(h.hosta), 'inputs', 'hosta', '2026-10.ndjson'), 'utf8').split('\n')[0] + '\n';
+  const legacy = path.join(h.hostb, '.delivery', 'operator', 'inputs', 'hosta');
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.writeFileSync(path.join(legacy, '2026-10.ndjson'), first);
+  const r = log.refresh(h.hostb, { host: 'hostb' });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.deepStrictEqual(log.listInputs(h.hostb).map((e) => e.id), ['in-hosta-000001', 'in-hosta-000002']);
+});
+
+test('B3: a remote that accepts and never answers costs one bounded wait per command, kills its git processes, and a later publish delivers everything', () => {
+  const h = hosts(1);
+  say(h.hosta, 'hosta', 'one');
+  assert.strictEqual(pub(h.hosta, 'hosta').published, true);
+  // accepts every connection and never answers
+  const portFile = path.join(mk('opstore-hang-'), 'port');
+  const srv = cp.spawn(process.execPath, ['-e', `const s = require('net').createServer(() => {}); s.listen(0, '127.0.0.1', () => require('fs').writeFileSync(process.argv[1], String(s.address().port)));`, portFile], { stdio: 'ignore' });
+  let port = '';
+  const t0 = Date.now();
+  while (!port && Date.now() - t0 < 5000) { try { port = fs.readFileSync(portFile, 'utf8'); } catch (e) { cp.spawnSync('sleep', ['0.05']); } }
+  try {
+    assert.ok(port, 'the black-hole server is listening');
+    const good = git(h.hosta, 'config', '--get', 'remote.origin.url').trim();
+    git(h.hosta, 'remote', 'set-url', 'origin', `http://127.0.0.1:${port}/r.git`);
+    say(h.hosta, 'hosta', 'two', 'three');
+    // one command: a refresh then a publish, as every operator.js write does
+    const script = `const log = require(${JSON.stringify(path.join(__dirname, 'operator-log.js'))});
+      const a = log.refresh(process.argv[1], { host: 'hosta' }); const b = log.publish(process.argv[1], { force: true, host: 'hosta' });
+      process.stdout.write(JSON.stringify({ a, b }));`;
+    const start = Date.now();
+    const out = cp.spawnSync(process.execPath, ['-e', script, h.hosta], { encoding: 'utf8', env: { ...process.env, DELIVERY_GIT_TIMEOUT_MS: '' } });
+    const ms = Date.now() - start;
+    const { a, b } = JSON.parse(out.stdout);
+    assert.ok(ms < 45000, `took ${ms} ms`);
+    assert.strictEqual(a.ok, false);
+    assert.match(a.reason, /not reachable|did not answer within/);
+    assert.strictEqual(b.published, false);
+    assert.match(b.reason, /not tried again in this command/, 'the publish does not wait on the remote a second time');
+    const left = cp.spawnSync('sh', ['-c', `ps ax -o command | grep "127.0.0.1:${port}" | grep -v grep | wc -l`], { encoding: 'utf8' }).stdout.trim();
+    assert.strictEqual(left, '0', 'no git process outlives the command');
+    git(h.hosta, 'remote', 'set-url', 'origin', good);
+    assert.strictEqual(pub(h.hosta, 'hosta').published, true);
+    assert.deepStrictEqual(inputsOf(h.bare, 'hosta'), ['in-hosta-000001', 'in-hosta-000002', 'in-hosta-000003']);
+  } finally { srv.kill('SIGKILL'); }
+});
+
+test('minors: publish reports the entries it pushed (also those committed by an earlier refresh), honours pushurl, and follows a sha256 project', () => {
+  const h = hosts(1);
+  say(h.hosta, 'hosta', 'one', 'two');
+  assert.strictEqual(log.refresh(h.hosta, { host: 'hosta' }).ok, true); // committed in the store, not pushed
+  const r = pub(h.hosta, 'hosta');
+  assert.strictEqual(r.published, true);
+  assert.strictEqual(r.entries, 2);
+  assert.strictEqual(pub(h.hosta, 'hosta').nothing_new, true);
+  // a push URL set on the project is the store's push URL too
+  const mirror = path.join(h.base, 'push.git');
+  git(h.base, 'clone', '-q', '--bare', h.bare, mirror);
+  git(h.hosta, 'config', 'remote.origin.pushurl', mirror);
+  say(h.hosta, 'hosta', 'three');
+  assert.strictEqual(pub(h.hosta, 'hosta').published, true);
+  assert.strictEqual(git(store.storeDir(h.hosta), 'config', '--get', 'remote.origin.pushurl').trim(), mirror);
+  assert.strictEqual(git(mirror, 'show', 'delivery-operator:operator/inputs/hosta/2026-10.ndjson').trim().split('\n').length, 3);
+  // a sha256 project gets a sha256 store
+  const probe = gitTry(h.base, 'init', '-q', '--object-format=sha256', path.join(h.base, 'probe256'));
+  if (probe.status !== 0) return; // git without sha256 support
+  const bare = path.join(h.base, 'r256.git');
+  git(h.base, 'init', '-q', '--bare', '--object-format=sha256', bare);
+  const c = path.join(h.base, 'c256');
+  git(h.base, 'clone', '-q', bare, c);
+  ident(c, 'c');
+  say(c, 'pc', 'sha256 words');
+  const p256 = pub(c, 'pc');
+  assert.strictEqual(p256.published, true, JSON.stringify(p256));
+  assert.strictEqual(git(store.storeDir(c), 'rev-parse', '--show-object-format').trim(), 'sha256');
+  say(c, 'pc', 'more');
+  assert.strictEqual(pub(c, 'pc').entries, 1);
 });

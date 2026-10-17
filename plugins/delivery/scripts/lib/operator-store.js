@@ -27,9 +27,21 @@ const TRACKING = `refs/remotes/origin/${BRANCH}`;
 const STORE_NAME = 'delivery-operator';
 const OP = 'operator'; // the operator directory inside the store
 const LEGACY_REL = path.join('.delivery', 'operator');
-const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
-const ZERO = '0000000000000000000000000000000000000000';
+// object ids depend on the repository's object format (the store follows the project's)
+const EMPTY_TREES = { sha1: '4b825dc642cb6eb9a060e54bf8d69288fbee4904', sha256: '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321' };
+const emptyTree = (loc) => EMPTY_TREES[loc.fmt] || EMPTY_TREES.sha1;
+const zero = (loc) => '0'.repeat(loc.fmt === 'sha256' ? 64 : 40);
 const PUSH_ATTEMPTS = 5;
+// Network calls (fetch, push) are bounded: a remote that accepts and never answers must not stall a
+// write. Each call gets at most DELIVERY_GIT_TIMEOUT_MS (default 15 s), one publish at most
+// DELIVERY_PUBLISH_BUDGET_MS in all (default 30 s).
+const envMs = (k, d) => { const n = Number(process.env[k]); return Number.isFinite(n) && n > 0 ? n : d; };
+const NET_TIMEOUT_MS = () => envMs('DELIVERY_GIT_TIMEOUT_MS', 15000);
+const PUBLISH_BUDGET_MS = () => envMs('DELIVERY_PUBLISH_BUDGET_MS', 30000);
+const NET_FLAGS = ['-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=10'];
+// set when a network call in this process timed out or could not reach the remote: later calls in the
+// same command do not wait on it again
+let networkDown = null;
 const LOCK_WAIT_MS = 60 * 1000;
 const LOCK_STALE_MS = 10 * 60 * 1000;
 const IDENTITY = { GIT_AUTHOR_NAME: 'delivery operator store', GIT_AUTHOR_EMAIL: 'operator-store@delivery.invalid',
@@ -52,6 +64,33 @@ function baseEnv(extra) {
   for (const k of REPO_ENV) delete env[k];
   env.GIT_TERMINAL_PROMPT = '0';
   return extra ? { ...env, ...extra } : env;
+}
+
+// A network git call, in its own process group, killed with the whole group (git-remote-http, ssh)
+// when it outlives its timeout. { ok, out, err, timedOut }.
+const NET_RUNNER = `
+const cp = require('child_process');
+const [cwd, timeout, args] = [process.argv[1], Number(process.argv[2]), JSON.parse(process.argv[3])];
+const c = cp.spawn('git', args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+let out = '', err = '', timedOut = false;
+c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { err += d; });
+const t = setTimeout(() => { timedOut = true; try { process.kill(-c.pid, 'SIGKILL'); } catch (e) { try { c.kill('SIGKILL'); } catch (x) {} } }, timeout);
+c.on('error', (e) => { err += String(e.message); });
+c.on('close', (code) => { clearTimeout(t); process.stdout.write(JSON.stringify({ code, out, err, timedOut })); });
+`;
+function runNet(loc, args, timeoutMs) {
+  const env = baseEnv();
+  if (!env.GIT_SSH_COMMAND && !env.GIT_SSH && !sshConfigured(loc)) env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes -o ConnectTimeout=10';
+  const r = cp.spawnSync(process.execPath, ['-e', NET_RUNNER, loc.store, String(timeoutMs), JSON.stringify([...STORE_FLAGS, ...NET_FLAGS, ...args])],
+    { env, encoding: 'utf8', timeout: timeoutMs + 5000, maxBuffer: 64 * 1024 * 1024 });
+  let j = null;
+  try { j = JSON.parse(r.stdout); } catch (e) { j = null; }
+  if (!j) return { ok: false, out: '', err: `git ${args[0]} did not finish (${r.error ? r.error.message : 'no result'})`, timedOut: true };
+  return { ok: j.code === 0 && !j.timedOut, out: String(j.out || '').replace(/\s+$/, ''), err: String(j.err || '').trim(), timedOut: !!j.timedOut };
+}
+function sshConfigured(loc) {
+  if (loc.sshConfigured === undefined) loc.sshConfigured = run(loc.store, ['config', '--get', 'core.sshCommand']).ok;
+  return loc.sshConfigured;
 }
 
 function run(cwd, args, o = {}) {
@@ -88,8 +127,19 @@ function locate(projectRoot) {
   if (!r.ok || !r.out) return legacy;
   const store = path.join(path.resolve(root, r.out), STORE_NAME);
   const loc = { git: true, root, store, opDir: path.join(store, OP), legacy: legacy.opDir };
+  Object.defineProperty(loc, 'fmt', { enumerable: true, get() { return objectFormat(loc); } });
   located.set(root, loc);
   return loc;
+}
+
+// The store's object format: the store's own once it exists, else the project's (read-only), else sha1.
+function objectFormat(loc) {
+  if (loc._fmt) return loc._fmt;
+  const where = fs.existsSync(path.join(loc.store, '.git', 'HEAD')) ? loc.store : loc.root;
+  const r = run(where, ['rev-parse', '--show-object-format'], { plain: true });
+  const f = r.ok && /^sha(1|256)$/.test(r.out) ? r.out : 'sha1';
+  if (where === loc.store) loc._fmt = f;
+  return f;
 }
 
 // The directory every operator read and write uses. For a git project, records an earlier version left
@@ -128,9 +178,9 @@ function ensureStore(projectRoot) {
   fs.mkdirSync(loc.store, { recursive: true });
   withStoreLock(loc, () => {
     if (fs.existsSync(path.join(loc.store, '.git', 'HEAD'))) return;
-    // sha1 objects: blob ids are computed here to skip unchanged files; git before 2.29 has no
-    // --object-format and makes sha1 repositories anyway
-    const init = run(loc.store, ['init', '-q', '--template=', '--object-format=sha1']);
+    // the project's object format (blob ids are computed here to skip unchanged files); git before
+    // 2.29 has no --object-format and makes sha1 repositories anyway
+    const init = run(loc.store, ['init', '-q', '--template=', `--object-format=${objectFormat(loc)}`]);
     if (!init.ok) {
       const plain = run(loc.store, ['init', '-q', '--template=']);
       if (!plain.ok) throw new Error(`cannot create the private operator store at ${loc.store}: ${firstLine(plain.err || init.err)}`);
@@ -162,7 +212,8 @@ function withStoreLock(loc, fn, o = {}) {
   const file = o.early ? path.join(loc.store, '.store-init.lock') : path.join(loc.store, '.git', 'delivery-store.lock');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const token = `${process.pid}:${crypto.randomBytes(8).toString('hex')}`;
-  const deadline = Date.now() + LOCK_WAIT_MS;
+  const wait = o.waitMs === undefined ? LOCK_WAIT_MS : o.waitMs;
+  const deadline = Date.now() + wait;
   for (;;) {
     try {
       const fd = fs.openSync(file, 'wx');
@@ -184,7 +235,8 @@ function withStoreLock(loc, fn, o = {}) {
         continue;
       }
       if (Date.now() >= deadline) {
-        throw new Error(`another operator command on this host holds the store lock (${file}, pid ${pid || '?'}) for over ${LOCK_WAIT_MS / 1000} s; retry in a moment, or remove the lock file if no operator command is running`);
+        if (o.waitMs !== undefined) return o.busy ? o.busy() : undefined;
+        throw new Error(`another operator command on this host holds the store lock (${file}, pid ${pid || '?'}) for over ${wait / 1000} s; retry in a moment, or remove the lock file if no operator command is running`);
       }
       sleepMs(20 + Math.floor(Math.random() * 30));
     }
@@ -200,8 +252,8 @@ function firstLine(s) {
   return String(s || '').split('\n').map((l) => l.replace(/^(?:fatal|error|remote|hint|warning):\s*/i, '').trim()).find(Boolean) || '';
 }
 
-function blobSha(buf) {
-  return crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
+function blobSha(loc, buf) {
+  return crypto.createHash(loc.fmt === 'sha256' ? 'sha256' : 'sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
 }
 
 function revParse(dir, rev) {
@@ -300,7 +352,7 @@ function commitLocal(loc, opts) {
     if (raw === null) continue;
     const body = p === LEDGER ? raw : complete(raw);
     if (!body.length && !tree[p]) continue;
-    const sha = blobSha(body);
+    const sha = blobSha(loc, body);
     if (tree[p] === sha) continue;
     changes.push({ path: p, body, sha });
   }
@@ -322,7 +374,7 @@ function commitLocal(loc, opts) {
   const idx = tempIndex(loc);
   const env = { GIT_INDEX_FILE: idx };
   try {
-    const rt = run(loc.store, ['read-tree', head || EMPTY_TREE], { env });
+    const rt = run(loc.store, ['read-tree', head || emptyTree(loc)], { env });
     if (!rt.ok) return { ok: false, committed: false, reason: `cannot stage in the private operator store: ${firstLine(rt.err)}` };
     for (const c of changes) {
       const w = run(loc.store, ['hash-object', '-w', '--stdin'], { input: c.body });
@@ -335,7 +387,7 @@ function commitLocal(loc, opts) {
     const msg = `operator: ${entries} ${entries === 1 ? 'entry' : 'entries'}${opts.host ? ` from ${opts.host}` : ''}`;
     const c = run(loc.store, ['commit-tree', '--no-gpg-sign', t.out, ...(head ? ['-p', head] : []), '-m', msg], { env: IDENTITY });
     if (!c.ok) return { ok: false, committed: false, reason: `cannot commit in the private operator store: ${firstLine(c.err)}` };
-    const u = run(loc.store, ['update-ref', REF, c.out, head || ZERO]);
+    const u = run(loc.store, ['update-ref', REF, c.out, head || zero(loc)]);
     if (!u.ok) return { ok: false, committed: false, reason: `cannot advance the private operator store: ${firstLine(u.err)}` };
     run(loc.store, ['read-tree', c.out]); // the store's own index follows, so `git -C <store> status` reads clean
     return { ok: true, committed: true, entries, sha: c.out };
@@ -378,7 +430,7 @@ function mergeTrees(loc, ours, theirs) {
   const idx = tempIndex(loc);
   const env = { GIT_INDEX_FILE: idx };
   try {
-    const rt = run(loc.store, ['read-tree', '-i', '-m', base.ok && base.out ? base.out : EMPTY_TREE, ours, theirs], { env });
+    const rt = run(loc.store, ['read-tree', '-i', '-m', base.ok && base.out ? base.out : emptyTree(loc), ours, theirs], { env });
     if (!rt.ok) return { error: `cannot merge in the private operator store: ${firstLine(rt.err)}` };
     const u = run(loc.store, ['ls-files', '-u', '-z'], { env });
     const stages = {};
@@ -462,14 +514,96 @@ function applyToWorking(loc, fromTree, toTree) {
   return { updated, conflicts: [] };
 }
 
+// ---- ownership: the chains this store writes ----
+
+// Every line of a chain buffer hashes to the next ([] of entries, or null when it does not verify).
+function chainEntries(buf) {
+  const { hashEntry } = require('./chain.js');
+  const out = [];
+  let prev = '0';
+  for (const l of buf.toString('utf8').split('\n')) {
+    if (!l.trim()) continue;
+    let e;
+    try { e = JSON.parse(l); } catch (x) { return null; }
+    const { hash, ...rest } = e;
+    if (rest.prev !== prev || hashEntry(prev, rest) !== hash) return null;
+    prev = hash;
+    out.push(e);
+  }
+  return out;
+}
+
+// A records chain an instance of this host writes may grow elsewhere only after the instance moved:
+// the latest rehost of that instance in a chain that verifies, recorded by the chief of staff or by
+// the instance itself, names another host.
+function movedAway(loc, tree, instance, host) {
+  const files = Object.keys(tree).filter((p) => p.startsWith(`${OP}/records/`) && isChain(p));
+  const blobs = readBlobs(loc.store, files.map((p) => tree[p]));
+  let last = null;
+  for (const p of files) {
+    const entries = chainEntries(blobs.get(tree[p]) || Buffer.alloc(0));
+    if (!entries) continue;
+    for (const e of entries) {
+      if (e.kind !== 'rehost' || e.instance !== instance || !e.to || typeof e.to.host !== 'string') continue;
+      const by = e.by || {};
+      if (by.role !== 'chief-of-staff' && by.instance !== instance) continue;
+      if (!last || Date.parse(e.ts) > Date.parse(last.ts)) last = e;
+    }
+  }
+  return !!last && safeLabel(last.to.host) !== safeLabel(host);
+}
+const safeLabel = (h) => String(h || '').replace(/[^A-Za-z0-9._-]/g, '_').replace(/^[-.]+/, '');
+
+// The owner-side rule. A chain this store writes has one writer, this store: the remote may hold fewer
+// of its lines (not pushed yet), never more or other ones. Which chains those are follows from the
+// content, not from the manifest (so a rehost needs no manifest change on every host):
+//  - inputs/<opts.host>/*: this host's inputs chains;
+//  - a records chain whose last line in this store was written from this host (by.host), until a valid
+//    rehost moves its instance elsewhere (the latest rehost in a chain that verifies, recorded by the
+//    chief of staff or the instance itself);
+//  - and any records chain the remote extends with lines that claim to come from this host.
+// Any of those growing on the remote is a fork, refused, except when the store is new (no history
+// shared with the remote yet) and neither holds nor writes that chain yet: a fresh clone of a host
+// that published before adopts its own published chains. [{ path, kind: 'fork' }].
+function ownerConflicts(loc, opts, ours, oursTree, theirs, theirsTree) {
+  if (!opts.host) return [];
+  const host = safeLabel(opts.host);
+  const paths = Object.keys(theirsTree).filter((p) => isChain(p) && theirsTree[p] !== oursTree[p]).sort();
+  if (!paths.length) return [];
+  const base = ours ? run(loc.store, ['merge-base', ours, theirs]) : null;
+  const newStore = !ours || !base.ok || !base.out;
+  const blobs = readBlobs(loc.store, paths.flatMap((p) => [oursTree[p], theirsTree[p]]));
+  const parse = (buf) => buf.toString('utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (e) { return null; } });
+  const fromHere = (e) => !!e && !!e.by && safeLabel(e.by.host) === host;
+  const out = [];
+  for (const p of paths) {
+    const o = oursTree[p] ? blobs.get(oursTree[p]) : null;
+    const t = blobs.get(theirsTree[p]);
+    if (o && startsWith(o, t)) continue; // the remote is behind: lines not pushed yet
+    if (o && !startsWith(t, o)) continue; // not an extension: verifyMerge names the rewrite or fork
+    const adopt = !o && newStore && readWorking(loc, p) === null;
+    if (p.startsWith(`${OP}/inputs/${host}/`)) { if (!adopt) out.push({ path: opRel(p), kind: 'fork' }); continue; }
+    const rm = new RegExp(`^${OP}/records/(.+)\\.ndjson$`).exec(p);
+    if (!rm) continue;
+    const mine = o ? parse(o) : [];
+    const added = parse(o ? t.subarray(o.length) : t);
+    const writtenHere = mine.length > 0 && fromHere(mine[mine.length - 1]);
+    if (writtenHere && !movedAway(loc, theirsTree, rm[1], host)) { out.push({ path: opRel(p), kind: 'fork' }); continue; }
+    if (added.some(fromHere) && !adopt && !movedAway(loc, theirsTree, rm[1], host)) out.push({ path: opRel(p), kind: 'fork' });
+  }
+  return out;
+}
+
 // Merge the fetched remote branch into the store. { ok, updated, diverged?, reason? }.
-function mergeRemote(loc) {
+function mergeRemote(loc, opts = {}) {
   const theirs = revParse(loc.store, TRACKING);
   if (!theirs) return { ok: true, updated: [] };
   const ours = revParse(loc.store, 'HEAD');
   if (ours && run(loc.store, ['merge-base', '--is-ancestor', theirs, ours]).ok) return { ok: true, updated: [] };
   const oursTree = treeOf(loc.store, ours);
   const theirsTree = treeOf(loc.store, theirs);
+  const owned = ownerConflicts(loc, opts, ours, oursTree, theirs, theirsTree);
+  if (owned.length) return { ok: false, updated: [], diverged: owned.map((c) => c.path), reason: divergedReason(loc, owned) };
   let target;
   let mergedTree;
   if (!ours || run(loc.store, ['merge-base', '--is-ancestor', ours, theirs]).ok) {
@@ -491,17 +625,62 @@ function mergeRemote(loc) {
   }
   const w = applyToWorking(loc, oursTree, mergedTree);
   if (w.conflicts.length) return { ok: false, updated: [], diverged: w.conflicts.map((c) => c.path), reason: divergedReason(loc, w.conflicts) };
-  const u = run(loc.store, ['update-ref', REF, target, ours || ZERO]);
+  const u = run(loc.store, ['update-ref', REF, target, ours || zero(loc)]);
   if (!u.ok) return { ok: false, updated: w.updated, reason: `cannot advance the private operator store: ${firstLine(u.err)}` };
   run(loc.store, ['read-tree', target]);
   return { ok: true, updated: w.updated };
 }
 
+// Before every push: what HEAD would add to the remote. Every chain that differs from the fetched remote
+// copy must still start with it (nothing deleted, shortened or rewritten), and must verify as committed
+// (opts.check on the committed blobs, written to a scratch directory), however it reached the store:
+// operator.js, a refresh, or a commit made by hand in the store. { ok, entries, reason?, paths? }.
+function verifyOutgoing(loc, opts) {
+  const head = revParse(loc.store, 'HEAD');
+  const H = treeOf(loc.store, head);
+  const T = treeOf(loc.store, revParse(loc.store, TRACKING));
+  const delta = [...new Set([...Object.keys(H), ...Object.keys(T)])].filter((p) => isChain(p) && H[p] !== T[p]).sort();
+  if (!delta.length) return { ok: true, entries: 0 };
+  const gone = delta.filter((p) => !H[p]);
+  const how = `Nothing was pushed. Inspect it with \`git -C ${loc.store} log -p -- <path>\`; restore the published copy with \`git -C ${loc.store} checkout ${TRACKING} -- <path>\` and commit it in the store, or have the chief of staff set it aside with operator.js quarantine`;
+  if (gone.length) return { ok: false, code: 'outgoing_invalid', paths: gone.map(opRel), reason: `the private operator store no longer holds ${opRel(gone[0])}, which the remote has; a published chain is never deleted. ${how}` };
+  const blobs = readBlobs(loc.store, delta.flatMap((p) => [H[p], T[p]]));
+  let entries = 0;
+  for (const p of delta) {
+    const mine = blobs.get(H[p]);
+    const theirs = T[p] ? blobs.get(T[p]) : null;
+    if (theirs && !startsWith(mine, theirs)) {
+      return { ok: false, code: 'outgoing_invalid', paths: [opRel(p)], reason: `${opRel(p)} in the private operator store no longer starts with the published copy (it was rewritten or shortened). ${how}` };
+    }
+    entries += lineCount(mine) - (theirs ? lineCount(theirs) : 0);
+  }
+  if (opts.check) {
+    const scratch = fs.mkdtempSync(path.join(require('os').tmpdir(), 'operator-outgoing-'));
+    try {
+      const dir = path.join(scratch, LEGACY_REL);
+      const hosts = new Set(delta.map((p) => (/^operator\/inputs\/([^/]+)\//.exec(p) || [])[1]).filter(Boolean));
+      const files = Object.keys(H).filter((p) => (hosts.has((/^operator\/inputs\/([^/]+)\//.exec(p) || [])[1]) && isChain(p)) || (delta.includes(p) && p.startsWith(`${OP}/records/`)));
+      const all = readBlobs(loc.store, files.map((p) => H[p]));
+      for (const p of files) {
+        fs.mkdirSync(path.join(dir, path.dirname(opRel(p))), { recursive: true });
+        fs.writeFileSync(path.join(dir, opRel(p)), all.get(H[p]));
+      }
+      const bad = opts.check(delta.map(opRel), scratch);
+      // the scratch copy's own restore hint would point at the scratch directory: ours replaces it
+      const why = bad ? String(bad.error || '').replace(/; restore the file[\s\S]*$/, '') : '';
+      if (bad) return { ok: false, code: 'outgoing_invalid', paths: [bad.path], reason: `${bad.path} as committed in the private operator store fails verification (${why}). ${how}` };
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  }
+  return { ok: true, entries };
+}
+
 // ---- the remote ----
 
-// The project's origin URL (read-only), resolved when it is a relative local path.
-function projectRemote(loc) {
-  const r = run(loc.root, ['config', '--get', 'remote.origin.url'], { plain: true });
+// The project's origin URL and push URL (read-only), resolved when they are relative local paths.
+function projectRemote(loc, key = 'url') {
+  const r = run(loc.root, ['config', '--get', `remote.origin.${key}`], { plain: true });
   if (!r.ok || !r.out) return null;
   const url = r.out.trim();
   if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(url) || /^[^/\\]+@[^/\\]+:/.test(url) || path.isAbsolute(url)) return url;
@@ -515,19 +694,29 @@ function setOrigin(loc, url) {
     if (cur.ok) run(loc.store, ['remote', 'remove', 'origin']);
     return;
   }
-  if (cur.ok && cur.out === url) return;
-  run(loc.store, ['config', 'remote.origin.url', url]);
-  run(loc.store, ['config', '--replace-all', 'remote.origin.fetch', `+${REF}:${TRACKING}`]);
+  if (!(cur.ok && cur.out === url)) {
+    run(loc.store, ['config', 'remote.origin.url', url]);
+    run(loc.store, ['config', '--replace-all', 'remote.origin.fetch', `+${REF}:${TRACKING}`]);
+  }
+  const push = projectRemote(loc, 'pushurl');
+  const curPush = run(loc.store, ['config', '--get', 'remote.origin.pushurl']);
+  if (push && !(curPush.ok && curPush.out === push)) run(loc.store, ['config', 'remote.origin.pushurl', push]);
+  if (!push && curPush.ok) run(loc.store, ['config', '--unset-all', 'remote.origin.pushurl']);
 }
+
+const UNREACHABLE = /could not resolve host|unable to access|connection refused|timed out|ETIMEDOUT|network is unreachable|could not connect|connection reset|no route to host|operation timed out/i;
 
 // What a failed fetch or push means, in words a person can act on. Never repeats the URL (it can hold
 // a token).
-function humanReason(op, err) {
+function humanReason(op, err, timedOut) {
   const e = String(err || '');
-  if (/could not resolve host|unable to access|connection refused|timed out|network is unreachable|could not connect|connection reset|no route to host/i.test(e)) {
+  if (timedOut) {
+    return `the project remote (origin) did not answer within ${Math.round(NET_TIMEOUT_MS() / 1000)} s (${op} timed out); the records stay committed in the private operator store and publish on the next operator command. Check the network and \`git remote -v\` in the project (DELIVERY_GIT_TIMEOUT_MS raises the limit)`;
+  }
+  if (UNREACHABLE.test(e)) {
     return `the project remote (origin) is not reachable for ${op}; the records stay committed in the private operator store and publish on the next operator command once the network is back`;
   }
-  if (/permission denied|authentication failed|could not read username|could not read password|403|access denied|denied to|not authorized|invalid credentials/i.test(e)) {
+  if (/permission denied|authentication failed|could not read username|could not read password|403|access denied|denied to|not authorized|invalid credentials|terminal prompts disabled/i.test(e)) {
     return `this session may not ${op === 'fetch' ? 'read' : 'push to'} the project remote (origin); a session publishes operator records only with push access to the project repository (cloud and SSH sessions included). The records stay committed in the private operator store`;
   }
   if (/protected branch|declined|pre-receive hook|rule violations|GH006|GH013/i.test(e)) {
@@ -542,26 +731,35 @@ function humanReason(op, err) {
 const retryable = (err) => /\[rejected\]|non-fast-forward|fetch first|cannot lock ref|incorrect old value|failed to update ref|stale info|but expected/i.test(String(err || ''))
   && !/protected branch|declined|pre-receive hook/i.test(String(err || ''));
 
-function fetchRemote(loc) {
-  const f = run(loc.store, ['fetch', '--quiet', '--prune', '--no-tags', 'origin', `+${REF}:${TRACKING}`]);
+function noteNetwork(r, reason) {
+  if (r.timedOut || UNREACHABLE.test(r.err)) networkDown = reason;
+}
+
+function fetchRemote(loc, timeoutMs) {
+  const f = runNet(loc, ['fetch', '--quiet', '--prune', '--no-tags', 'origin', `+${REF}:${TRACKING}`], timeoutMs);
   if (f.ok) return { ok: true };
-  if (/couldn't find remote ref|no such ref|not our ref|remote ref does not exist/i.test(f.err)) {
+  if (!f.timedOut && /couldn't find remote ref|no such ref|not our ref|remote ref does not exist/i.test(f.err)) {
     run(loc.store, ['update-ref', '-d', TRACKING]);
     return { ok: true };
   }
-  return { ok: false, reason: humanReason('fetch', f.err) };
+  const reason = humanReason('fetch', f.err, f.timedOut);
+  noteNetwork(f, reason);
+  return { ok: false, reason, network: !!networkDown };
 }
 
 // ---- publish / refresh ----
 
 // One round under the store lock: commit this store's new lines, fetch the remote branch, merge it
-// (append-only, verified), and with opts.push push the result, retrying a rejected push (another
-// host pushed first) up to PUSH_ATTEMPTS times. opts: { push, check, host }.
+// (owner rule, append-only, verified), and with opts.push verify what would be pushed and push it,
+// retrying a rejected push (another host pushed first) up to PUSH_ATTEMPTS times, all within
+// the publish budget. opts: { push, check, host, lockWaitMs, netTimeoutMs }.
 // { ok, published, entries, updated, diverged?, no_remote?, reason?, committed?, refused? }.
 function syncStore(projectRoot, opts = {}) {
   let loc;
   try { loc = ensureStore(projectRoot); } catch (e) { return { ok: false, published: false, reason: String(e.message || e), updated: [] }; }
   if (!loc) return { ok: false, published: false, no_remote: true, reason: 'not a git repository', updated: [] };
+  const deadline = Date.now() + PUBLISH_BUDGET_MS();
+  const left = () => Math.min(opts.netTimeoutMs || NET_TIMEOUT_MS(), deadline - Date.now());
   try {
     return withStoreLock(loc, () => {
       const url = projectRemote(loc);
@@ -571,30 +769,42 @@ function syncStore(projectRoot, opts = {}) {
       if (!c.ok && opts.push) return { ok: false, published: false, reason: c.reason, code: c.code, paths: c.paths, updated: [] };
       const refused = c.ok ? undefined : { reason: c.reason, paths: c.paths };
       if (!url) return { ok: false, published: false, no_remote: true, reason: 'no remote', committed: c.committed, entries: c.entries, updated: [], refused };
+      if (networkDown) return { ok: false, published: false, network: true, reason: `${networkDown} (not tried again in this command)`, remote: 'origin', updated: [], refused };
       const updated = [];
       for (let attempt = 1; attempt <= (opts.push ? PUSH_ATTEMPTS : 1); attempt++) {
-        const f = fetchRemote(loc);
-        if (!f.ok) return { ok: false, published: false, reason: f.reason, remote: 'origin', updated, refused };
-        const m = mergeRemote(loc);
+        if (left() < 1000) {
+          return { ok: false, published: false, remote: 'origin', updated, refused,
+            reason: `publishing took longer than ${Math.round(PUBLISH_BUDGET_MS() / 1000)} s (the remote is slow or kept moving); the records stay committed in the private operator store and the next operator command publishes them` };
+        }
+        const f = fetchRemote(loc, left());
+        if (!f.ok) return { ok: false, published: false, reason: f.reason, network: f.network, remote: 'origin', updated, refused };
+        const m = mergeRemote(loc, opts);
         updated.push(...m.updated);
         if (!m.ok) return { ok: false, published: false, reason: m.reason, diverged: m.diverged || [], remote: 'origin', updated, refused };
         if (!opts.push) return { ok: true, published: false, updated, diverged: [], remote: 'origin', refused };
         const head = revParse(loc.store, 'HEAD');
         const remote = revParse(loc.store, TRACKING);
         if (!head || (remote && run(loc.store, ['merge-base', '--is-ancestor', head, remote]).ok)) {
-          return { ok: true, published: true, entries: c.entries, nothing_new: true, updated, diverged: [], remote: 'origin' };
+          return { ok: true, published: true, entries: 0, nothing_new: true, updated, diverged: [], remote: 'origin' };
         }
-        const p = run(loc.store, ['push', '--quiet', '--no-verify', 'origin', `HEAD:${REF}`]);
+        const out = verifyOutgoing(loc, opts);
+        if (!out.ok) return { ok: false, published: false, reason: out.reason, code: out.code, paths: out.paths, remote: 'origin', updated };
+        if (left() < 1000) continue;
+        const p = runNet(loc, ['push', '--quiet', '--no-verify', 'origin', `${head}:${REF}`], left());
         if (p.ok) {
           run(loc.store, ['update-ref', TRACKING, head]);
-          return { ok: true, published: true, entries: c.entries, updated, diverged: [], remote: 'origin', attempts: attempt };
+          return { ok: true, published: true, entries: out.entries, updated, diverged: [], remote: 'origin', attempts: attempt };
         }
-        if (!retryable(p.err)) return { ok: false, published: false, reason: humanReason('push', p.err), remote: 'origin', updated };
+        if (p.timedOut || !retryable(p.err)) {
+          const reason = humanReason('push', p.err, p.timedOut);
+          noteNetwork(p, reason);
+          return { ok: false, published: false, reason, network: !!networkDown, remote: 'origin', updated };
+        }
         sleepMs(50 + Math.floor(Math.random() * 200));
       }
       return { ok: false, published: false, remote: 'origin', updated,
-        reason: `the remote delivery-operator branch kept moving (${PUSH_ATTEMPTS} pushes were rejected because other hosts pushed first); the records stay committed in the private operator store and the next operator command publishes them` };
-    });
+        reason: `the remote delivery-operator branch kept moving (pushes were rejected because other hosts pushed first); the records stay committed in the private operator store and the next operator command publishes them` };
+    }, opts.lockWaitMs === undefined ? {} : { waitMs: opts.lockWaitMs, busy: () => ({ ok: false, published: false, busy: true, reason: 'another operator command is using the store', updated: [] }) });
   } catch (e) {
     return { ok: false, published: false, reason: String(e && e.message || e), updated: [] };
   }
@@ -607,43 +817,71 @@ function refresh(projectRoot, opts = {}) {
   const out = { ok: r.ok, updated: r.updated || [], diverged: r.diverged || [] };
   if (r.reason) out.reason = r.reason;
   if (r.no_remote) out.no_remote = true;
+  if (r.network) out.network = true;
   if (r.remote) out.remote = r.remote;
   if (r.refused) out.refused = r.refused;
   return out;
 }
 
+// A store that has never seen the remote fetches it once before its first capture, so a fresh clone of
+// a host that published before continues that host's chain instead of starting a second one (which
+// would be a fork). Best effort: no wait for the store lock, at most one attempt per 10 minutes.
+function bootstrap(projectRoot, opts = {}) {
+  try {
+    const loc = locate(projectRoot);
+    if (!loc.git || fs.existsSync(path.join(loc.store, '.git', 'HEAD')) && revParse(loc.store, 'HEAD')) return null;
+    if (!projectRemote(loc)) return null;
+    const stamp = path.join(operatorDir(projectRoot), 'cursors', 'bootstrap.json');
+    let last = 0;
+    try { last = JSON.parse(fs.readFileSync(stamp, 'utf8')).at || 0; } catch (e) { last = 0; }
+    if (Date.now() - last < 10 * 60 * 1000) return null;
+    fs.mkdirSync(path.dirname(stamp), { recursive: true });
+    fs.writeFileSync(stamp, JSON.stringify({ at: Date.now() }));
+    // a capture hook has a 10-15 s budget: the fetch gets 5 s of it
+    return refresh(projectRoot, { ...opts, lockWaitMs: 0, netTimeoutMs: 5000 });
+  } catch (e) { return null; }
+}
+
 // Entries in this store that the remote branch does not hold yet (as last fetched; read-only, no
-// network). opts.filter(path relative to the operator directory) limits the chains counted.
-// { count, commits, reason, no_remote? }.
+// network), and when the oldest of them was captured. Without a remote every entry is local only.
+// opts.filter(path relative to the operator directory) limits the chains counted.
+// { count, commits, oldest, reason, no_remote? }.
 function unpublished(projectRoot, opts = {}) {
   try {
     const loc = locate(projectRoot);
-    if (!loc.git) return { count: 0, commits: 0, reason: 'not a git repository', no_remote: true };
-    if (!projectRemote(loc)) return { count: 0, commits: 0, reason: 'no remote', no_remote: true };
-    if (!fs.existsSync(path.join(loc.store, '.git', 'HEAD'))) {
-      let n = 0;
-      for (const p of workingFiles(loc)) if (p !== LEDGER && (!opts.filter || opts.filter(opRel(p)))) n += lineCount(complete(readWorking(loc, p) || Buffer.alloc(0)));
-      return { count: n, commits: 0, reason: n ? 'not pushed to the delivery-operator branch of origin' : null };
-    }
-    const remote = revParse(loc.store, TRACKING);
-    const head = revParse(loc.store, 'HEAD');
+    if (!loc.git) return { count: 0, commits: 0, oldest: null, reason: 'not a git repository', no_remote: true };
+    const noRemote = !projectRemote(loc);
+    const born = fs.existsSync(path.join(loc.store, '.git', 'HEAD')) && revParse(loc.store, 'HEAD');
+    const remote = born && !noRemote ? revParse(loc.store, TRACKING) : null;
     const rt = treeOf(loc.store, remote);
     const files = workingFiles(loc).filter((p) => p !== LEDGER && (!opts.filter || opts.filter(opRel(p))));
     const blobs = readBlobs(loc.store, files.map((p) => rt[p]));
     let count = 0;
+    let oldest = null;
     for (const p of files) {
       const mine = complete(readWorking(loc, p) || Buffer.alloc(0));
       const theirs = rt[p] ? blobs.get(rt[p]) : null;
-      count += Math.max(0, lineCount(mine) - (theirs && startsWith(mine, theirs) ? lineCount(theirs) : 0));
+      const skip = theirs && startsWith(mine, theirs) ? lineCount(theirs) : 0;
+      const lines = mine.toString('utf8').split('\n').filter(Boolean);
+      if (lines.length <= skip) continue;
+      count += lines.length - skip;
+      try {
+        const e = JSON.parse(lines[skip]);
+        const t = Date.parse(e.captured_at || e.ts);
+        if (!Number.isNaN(t) && (oldest === null || t < oldest)) oldest = t;
+      } catch (e) { /* unparsable: counted, not dated */ }
     }
     let commits = 0;
-    if (head) {
+    if (born) {
+      const head = revParse(loc.store, 'HEAD');
       const r = run(loc.store, ['rev-list', '--count', remote ? `${remote}..${head}` : head]);
       commits = r.ok ? Number(r.out) || 0 : 0;
     }
-    return { count, commits, reason: count ? 'not pushed to the delivery-operator branch of origin' : null };
+    const out = { count, commits, oldest: oldest === null ? null : new Date(oldest).toISOString() };
+    if (noRemote) return { ...out, reason: 'no remote', no_remote: true };
+    return { ...out, reason: count ? 'not pushed to the delivery-operator branch of origin' : null };
   } catch (e) {
-    return { count: 0, commits: 0, reason: String(e && e.message || e) };
+    return { count: 0, commits: 0, oldest: null, reason: String(e && e.message || e) };
   }
 }
 
@@ -666,7 +904,7 @@ function setAside(projectRoot, rel, evidence) {
       const h = treeOf(loc.store, head)[p];
       const r = treeOf(loc.store, revParse(loc.store, TRACKING))[p];
       let q = null;
-      try { q = blobSha(complete(fs.readFileSync(evidence))); } catch (e) { q = null; }
+      try { q = blobSha(loc, complete(fs.readFileSync(evidence))); } catch (e) { q = null; }
       if (r && r === q) return { ok: true, adopted: false };
       if (h !== r) {
         const idx = tempIndex(loc);
@@ -697,4 +935,4 @@ function setAside(projectRoot, rel, evidence) {
   }
 }
 
-module.exports = { operatorDir, storeDir, ensureStore, publish, refresh, unpublished, setAside, BRANCH, STORE_NAME, LEGACY_REL, _locate: locate };
+module.exports = { operatorDir, storeDir, ensureStore, publish, refresh, bootstrap, unpublished, setAside, BRANCH, STORE_NAME, LEGACY_REL, _locate: locate };

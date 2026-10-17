@@ -208,6 +208,8 @@ function syncTranscript(opts) {
   const { projectRoot, transcriptPath, sessionId, instance, role } = opts;
   const host = safeHost(opts.host);
   const now = opts.now ? new Date(opts.now) : new Date();
+  // a store that has never seen the remote first takes this host's published chain (see bootstrap)
+  if (opts.bootstrap !== false) store.bootstrap(projectRoot, storeOpts(projectRoot, { host, instance }));
   ensureGitignore(projectRoot);
 
   const cursorFile = path.join(opDir(projectRoot), 'cursors', `${String(sessionId).replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
@@ -395,7 +397,8 @@ function verifyInputs(projectRoot, opts = {}) {
 // The chains a publish is about to commit must verify first (store paths relative to the operator
 // directory). Returns null, or { path, error } for the first that does not.
 function checkChains(projectRoot) {
-  return (rels) => {
+  // root: where the chains are read (the project, or a scratch copy of what is about to be pushed)
+  return (rels, root = projectRoot) => {
     const hosts = new Set();
     const instances = new Set();
     for (const r of rels) {
@@ -405,23 +408,31 @@ function checkChains(projectRoot) {
       if (rm) instances.add(rm[1]);
     }
     for (const h of [...hosts].sort()) {
-      const v = verifyHostRaw(projectRoot, h);
+      const v = verifyHostRaw(root, h);
       if (!v.ok) return { path: `inputs/${h}/`, error: v.error };
     }
     const R = require('./operator-records.js'); // loaded late: operator-records requires this module
     for (const i of [...instances].sort()) {
-      const v = R.verifyRecordsFile(projectRoot, i, { setHead: false });
+      const v = R.verifyRecordsFile(root, i, { setHead: false });
       if (!v.ok) return { path: `records/${i}.ndjson`, error: v.error };
     }
     return null;
   };
 }
 
+// opts.host: this host's label (its inputs chains are written here only); opts.instance and
+// opts.instances: the instances whose records chains are written here only (operator.js passes every
+// instance of this host from the manifest). Without a host no owner rule applies (a reader).
+function storeOpts(projectRoot, opts) {
+  const instances = [...new Set([...(opts.instances || []), ...(opts.instance ? [opts.instance] : [])])];
+  return { check: checkChains(projectRoot), host: opts.host ? safeHost(opts.host) : undefined, instances };
+}
+
 // Bring other writers' records from the remote into the private store (fetch and an append-only
 // merge in the store only). { ok, updated, diverged, reason?, no_remote?, remote? }.
 function refresh(projectRoot, opts = {}) {
   try {
-    return store.refresh(projectRoot, { check: checkChains(projectRoot), host: opts.host ? safeHost(opts.host) : undefined });
+    return store.refresh(projectRoot, storeOpts(projectRoot, opts));
   } catch (e) {
     return { ok: false, updated: [], diverged: [], reason: String(e && e.message || e) };
   }
@@ -451,7 +462,7 @@ function publishInner(projectRoot, opts = {}) {
       const last = readJson(path.join(opDir(projectRoot), 'cursors', 'last-publish.json'));
       if (last && Date.now() - last.at < PUBLISH_THROTTLE_MS) return { ok: false, published: false, reason: 'throttled' };
     }
-    return store.publish(projectRoot, { check: checkChains(projectRoot), host: opts.host ? safeHost(opts.host) : undefined });
+    return store.publish(projectRoot, storeOpts(projectRoot, opts));
   } catch (e) {
     return { ok: false, published: false, reason: String(e && e.message || e) };
   }
