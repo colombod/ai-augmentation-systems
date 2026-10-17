@@ -18,6 +18,9 @@ const {
   recordInvocation,
 } = require('./record-invocation.js');
 
+// the ledger is opt-in (A3); these tests exercise it switched on unless they say otherwise
+process.env.DELIVERY_LEDGER = '1';
+
 function makeScratchProject() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'record-invocation-test-'));
 }
@@ -420,5 +423,23 @@ test('gating: a session inside a project with .delivery/ still records; a role s
     assert.ok(r2 && r2.ledgerPath.startsWith(path.join(root, '.delivery', 'invocations')));
   } finally {
     for (const [k, v] of [['DELIVERY_ROLE', prev.role], ['DELIVERY_PROJECT_ROOT', prev.pr]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+test('A3: the ledger is opt-in: without DELIVERY_LEDGER=1 nothing is recorded, even inside a project or as a role', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, '.delivery'));
+  const prev = { l: process.env.DELIVERY_LEDGER, r: process.env.DELIVERY_ROLE };
+  try {
+    for (const v of [undefined, '0', 'true']) {
+      if (v === undefined) delete process.env.DELIVERY_LEDGER; else process.env.DELIVERY_LEDGER = v;
+      process.env.DELIVERY_ROLE = 'builder-1';
+      assert.equal(recordInvocation({ session_id: 'off', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } }, { cwd: root }), null, String(v));
+    }
+    assert.ok(!fs.existsSync(path.join(root, '.delivery', 'invocations')));
+    process.env.DELIVERY_LEDGER = '1';
+    assert.ok(recordInvocation({ session_id: 'on', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } }, { cwd: root }));
+  } finally {
+    for (const [k, v] of [['DELIVERY_LEDGER', prev.l], ['DELIVERY_ROLE', prev.r]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
 });

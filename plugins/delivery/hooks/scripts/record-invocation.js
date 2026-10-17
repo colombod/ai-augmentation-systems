@@ -64,8 +64,10 @@ function findDeliveryRoot(startDir) {
   return null;
 }
 
-// The gate: a delivery role session, or a cwd inside a project with .delivery/ above it.
+// The gate: the opt-in ledger is on, and this is a delivery role session or a cwd inside a project.
+// The ledger is opt-in (DELIVERY_LEDGER=1): without it nothing is written anywhere.
 function shouldRecord(cwd) {
+  if (process.env.DELIVERY_LEDGER !== '1') return false;
   if (process.env.DELIVERY_ROLE) return true;
   return !!findDeliveryRootUpward(cwd);
 }

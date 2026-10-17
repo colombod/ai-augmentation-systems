@@ -52,7 +52,7 @@ initiative before reading or writing anything below:
 
 Cross-cutting, project-wide, never per-initiative: `.delivery/glossary.md`,
 `.delivery/personas/`, `.delivery/interviews/`, `.delivery/simulations/`,
-`.delivery/decisions/ADR-NNN-*.md`, `.delivery/invocations/<session_id>.ndjson`.
+`.delivery/decisions/ADR-NNN-*.md` (and `.delivery/invocations/` when the opt-in invocation ledger is on).
 `.delivery/stories/`, `.delivery/reviews/`, `.delivery/sprints/` stay flat but are prefixed
 by initiative slug, matching `stories/<slug>-NN-<name>.md`'s existing convention.
 
@@ -78,8 +78,8 @@ For any criterion describing behavior a real user would see or get back — rend
 behavior, a CLI's real output, or a TUI's rendered state — this delegation applies
 `delivery:qa-strategist`'s standing rule for verifying a user-facing claim (see that
 agent's own file — the required channel differs by surface: a real capture for GUI,
-cross-checked against the invocation ledger; a directly-observed real invocation for CLI,
-since no ledger cross-check exists yet for it; a real visual capture for TUI, or an honest
+cross-checked against the invocation ledger when that opt-in ledger is on; a directly-observed
+real invocation for CLI; a real visual capture for TUI, or an honest
 "unable to be checked" if none is available. A visual "met" verdict must also cite a
 `design-system.md` `Rule ID` or state plainly that none exists). This is the same rule
 whether or not the work was checked ad hoc before this formal review ever ran — it does

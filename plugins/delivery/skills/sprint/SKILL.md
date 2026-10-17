@@ -58,7 +58,7 @@ initiative before reading or writing anything below:
 
 Cross-cutting, project-wide, never per-initiative: `.delivery/glossary.md`,
 `.delivery/personas/`, `.delivery/interviews/`, `.delivery/simulations/`,
-`.delivery/decisions/ADR-NNN-*.md`, `.delivery/invocations/<session_id>.ndjson`.
+`.delivery/decisions/ADR-NNN-*.md` (and `.delivery/invocations/` when the opt-in invocation ledger is on).
 `.delivery/stories/`, `.delivery/reviews/`, `.delivery/sprints/` stay flat but are prefixed
 by initiative slug, matching `stories/<slug>-NN-<name>.md`'s existing convention.
 

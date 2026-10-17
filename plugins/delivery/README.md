@@ -449,7 +449,7 @@ initiatives/<slug>/
 glossary.md   personas/    interviews/    simulations/
 decisions/ADR-NNN-*.md      stories/<slug>-<nn>-*.md
 reviews/<slug>-<artifact>-<nn>.md  sprints/<slug>-<n>-*.md + -review.md
-invocations/<session_id>.ndjson
+invocations/<session_id>.ndjson   (only with DELIVERY_LEDGER=1)
 ```
 
 **Every planning document lives under `.delivery/initiatives/<slug>/`, one directory per
@@ -490,5 +490,10 @@ explicitly in that project's `CLAUDE.md`/`AGENTS.md` — every skill checks ther
 falling back to the default above.
 
 The one exception: `hooks/` ships a small Node script, registered on real tool-call
-events, that records whether a phase actually ran — not something an agent can narrate
-past. See `.delivery/decisions/ADR-001-hook-based-invocation-provenance.md` for why.
+events, that can record whether a phase actually ran — not something an agent can narrate
+past. It is opt-in: set `DELIVERY_LEDGER=1` in the environment of the sessions you want
+recorded (for a role, in the `env` block of its `.claude/settings.local.json`, which
+`prepare-role` keeps on rerun). It then appends to `.delivery/invocations/<session_id>.ndjson`
+in role sessions and in sessions working inside the project, and `/delivery:status` reports
+each artifact as invoked, not invoked or untraceable. Without it nothing is recorded and
+status says the ledger is off. See `.delivery/decisions/ADR-001-hook-based-invocation-provenance.md` for why.
