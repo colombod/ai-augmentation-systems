@@ -424,7 +424,8 @@ is the record rule, and the SendMessage rule moved to 13.
 4. Workers never address the operator. They message the Chief of Staff with one question and get
    back a decision record id.
 
-**Artifacts** (project repo, `.delivery/operator/`, committed, private):
+**Artifacts** (a private operator store per checkout, published to the project repo's
+`delivery-operator` branch; see "Where the records live" below):
 - `inputs/<host>/<YYYY-MM>.ndjson`: one hash-chained entry per prompt seen by a role session on
   that host: `{ id: "in-<host>-<seq>", host, ts, captured_at, session_id, instance, role, source,
   text, text_sha256, transcript_ref, pre_role?, prev, hash }`. Written only by the capture path.
@@ -434,8 +435,26 @@ is the record rule, and the SendMessage rule moved to 13.
   `del-...`, `ans-...`, `q-...`, ...), each with `by: { instance, role, session_id, host, machine }`,
   `ts`, `cites`, `cites_head`, `scope` and the kind's own fields. Written only by `scripts/operator.js`.
 - Both are hash chains (each `hash` covers `prev` and the canonical entry), so an edit is detectable
-  by anyone who verifies. The project repo's git history is a second witness: `operator.js publish`
-  (run after every write) commits and pushes the writer's own chain files.
+  by anyone who verifies. The store's git history is a second witness: `operator.js publish` (run
+  after every write) commits the new lines and pushes them, and a merge only ever accepts a chain
+  that grew (a deleted, shortened or rewritten chain is refused).
+
+**Where the records live.** Never in the user's checkout. Each git checkout keeps them in a private
+git repository at `<git-common-dir>/delivery-operator/` (for a normal clone `.git/delivery-operator/`;
+a linked worktree shares its main repository's), branch `delivery-operator`, tracking only
+`operator/inputs/`, `operator/records/` and `operator/LEDGER.md`; `operator/cursors/` (heads, cursors,
+per-session role boundaries) and `operator/quarantine/` are local state, never committed. Because the
+store is inside `.git`, the user's index, working tree, `git status`, `git clean`, `git stash`,
+`git reset --hard`, `git pull` and the user's own commits never see it, in any repository state
+(detached HEAD, no upstream, a merge or rebase in progress, `pull.rebase=true`, a shallow clone).
+Every role on a host uses the store of its marker's `project_root` (the original checkout), so the
+roles of one checkout share one store and different clones have their own. The store's `origin` is
+the project's `origin` (read with `git config --get`); in the project checkout only
+`git rev-parse --git-common-dir` and that config read ever run. With no remote the store is local
+only and publish reports "no remote". A project directory outside git keeps the records in
+`<project>/.delivery/operator/` (local only); records an earlier version left there are copied into
+the store the first time. Deleting the store loses only what was not yet published; the published
+copy is the `delivery-operator` branch on the remote. Inspect it with `git -C <store> log`.
 
 **Commands** (`scripts/operator.js`; one script, all output machine-readable with `--json`):
 - `record --cite in-N --quote "<exact span>" --statement "<what is decided>" --scope bead:ID,...`:
@@ -474,18 +493,25 @@ and re-checks scope containment for `settled` answers. Commands added: `answer`,
 
 **Distributed sessions.** Roles run on several hosts (the operator's PC, SSH hosts, cloud sandboxes)
 that share only the private project repository, so every chain file has exactly one writer and git
-never merges a chain: operator inputs are per host, records are per author instance, ids embed the
-owner (`in-<host>-N`, `dec-<instance>-N`). Entries are committed and pushed as they are written
-(`operator.js publish`); a verifier that cannot find a cited id pulls and retries once
-(`operator.js refresh`). An input is as trustworthy as the session environment that captured it and
-records its host, session and transcript reference; a cloud sandbox that cannot push leaves its
-inputs unpublished, which `team-status` and the briefing report. A worker on any host verifies a
+never merges a chain's content: operator inputs are per host, records are per author instance, ids
+embed the owner (`in-<host>-N`, `dec-<instance>-N`). Entries travel on the project remote's
+`delivery-operator` branch, which carries operator files only (repository branch rules must allow
+pushes to it). `operator.js publish` (after every write) commits the store's new lines, fetches the
+branch, merges it (peer files differ by name, so a merge is a union; a chain that grew on both sides
+is a fork and is refused), checks before every push that each chain on both sides reaches the result
+whole and that the chains being committed verify, and pushes, retrying a rejected push up to five
+times. `operator.js refresh` is the same fetch and merge without the push, in the store only; a
+verifier that cannot find a cited id refreshes and retries once. Nobody pulls the project checkout for
+operator records. An input is as trustworthy as the session environment that captured it and records
+its host, session and transcript reference; a session can publish only with push access to the
+project remote (cloud and SSH sessions included): without it the records stay committed in its store
+and `team-status` and the briefing report them as unpublished. A worker on any host verifies a
 decision with the same command and gets the same chain to the verbatim human words.
 
 **The question ledger.** The Chief of Staff logs every question it escalates to the operator
 (`operator.js ask`: who asked, about which bead, options, its recommendation). The operator's
 answer is linked to it (`--answers q-N`), so `operator.js ledger` and the generated
-`.delivery/operator/LEDGER.md` show, for every question: asker, status (open, answered,
+`operator/LEDGER.md` in the operator store show, for every question: asker, status (open, answered,
 withdrawn), the answering record, its confidence and the operator's verbatim words. Any session
 can read the ledger and verify any row.
 
@@ -511,10 +537,12 @@ lane is `any` can still type into another session (keystroke injection through `
 computer-use, a terminal MCP server or `osascript`), and that text is recorded as `human`; the
 input ownership check (a worker may record only inputs its own session captured) compares a session
 id that the session's own Bash can rewrite. Both are cooperative trust, documented, not enforced. Lanes deny
-writes to `.delivery/operator/` for every role, and the hash chain plus git history make edits
-detectable, but a hostile session with unrestricted Bash could rewrite and re-hash the files: this is
-tamper-evidence for cooperative sessions, not a boundary (same class as 8.5). Inputs contain the
-operator's own words and live only in the private project repo.
+writes to the operator store (`.git/delivery-operator`, and the legacy `.delivery/operator/`) and
+writes to its branch for every role, and the hash chains, recorded heads and the store's append-only
+merge check make edits detectable, but a hostile session with unrestricted Bash could rewrite and
+re-hash the files: this is tamper-evidence for cooperative sessions, not a boundary (same class as
+8.5). Inputs contain the operator's own words and live only in the private store and on the private
+project repo's `delivery-operator` branch.
 
 **Residual channels for `any` roles.** The channel guard (enforcement 1) names three tools, and
 `lane_mcp` is allow-only, so roles whose lane is `any` (builder, spike researcher) keep every other
@@ -543,23 +571,25 @@ again.
 
 **Ruling: prompts from before the role.** A session resumed or adopted into a role directory has
 earlier human prompts in its transcript. The first hook that sees a session id in a role directory
-(SessionStart, with or without a transcript yet) records that session's boundary in
-`<roleDir>/.delivery-role-since.json`, one entry per session id, never overwritten, written under a
+(SessionStart, with or without a transcript yet) records that session's boundary in the operator
+store's local state (`operator/cursors/role-since/<instance>.json`; the old
+`<roleDir>/.delivery-role-since.json` is still read), one entry per session id, never overwritten, written under a
 lock and pruned to the newest 32. Inputs dated earlier are stored and citable (`record --cite` works
 on request) but carry `pre_role: true` and never appear in `pending` or block a Stop. When a later
 hook creates the boundary instead (no SessionStart was seen), nothing captured in that same
 invocation is marked pre-role.
 
 **Rulings on parked items.**
-- *Rejected pushes (superseded ruling).* Recovery used to merge the whole upstream into the
-  checkout and to delete or reset other writers' operator files first. Role sessions write through
-  the operator's own project checkout (`marker.project_root`), shared by every local role, so that
-  pulled unrelated work into the operator's branch and could delete another session's unpublished
-  records. Recovery now never merges into, deletes from or resets the checkout: it fetches, builds
-  the next upstream commit with git plumbing (a temporary index seeded from upstream plus this
-  writer's own committed chain files, each checked append-only against the upstream copy, a fork
-  refused), pushes that commit, then refreshes operator paths only. The checkout's branch keeps its
-  own operator commits (content already upstream); a later pull merges them without conflict.
+- *Rejected pushes and the user's checkout (superseded twice).* The records used to be committed in
+  the user's own checkout (`.delivery/operator/`), and every recovery scheme for a rejected push
+  (merging upstream, then plumbing commits with the checkout's branch as a parent, then staging peer
+  copies into the user's index) still left operator files in the user's index and working tree:
+  `git pull` refused in common cases, peer copies leaked into the user's commits, `git clean` or
+  `reset --hard` deleted unpublished records, and publish committed onto detached HEADs and
+  mid-rebase. Ruling: operator storage moved to the private store described under "Where the records
+  live"; nothing operator-related is ever in the user's index or working tree, so these cases do not
+  arise. Every write to the store happens under one store lock; a rejected push is fetched, merged
+  (append-only, verified) and retried up to five times with 50-250 ms jitter.
 - *Lock deadline and stale threshold.* A writer waits at most 2 s for a chain lock, and a lock is
   treated as stale after 10 s; pid liveness is not checked (pids are host-local). A crashed writer's
   fresh lock therefore refuses writes for up to 10 s with a retryable error; hooks fail open.

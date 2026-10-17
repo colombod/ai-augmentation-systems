@@ -71,7 +71,9 @@ Run the pipeline skills yourself, from `/delivery:brief` on: see [Using the plan
 
     private PROJECT repo (strategy)                 PRODUCT repo (code only)
     .delivery/initiatives, stories, reviews         one worktree per builder, branch team/<instance>
-    .delivery/team/, .delivery/operator/            leak guard: plan text and plan files refused
+    .delivery/team/                                 leak guard: plan text and plan files refused
+    branch delivery-operator: operator records
+      (kept in .git/delivery-operator, never in your checkout)
 ```
 
 ## The flow: Define → Contract → Navigate
@@ -140,14 +142,16 @@ Nobody asks you to pass anything on.
 - `operator.js find`, `operator.js answer`, `operator.js ask` — answer from earlier records, or log a question for your briefing.
 - `operator.js verify <id>` — any session checks a decision before acting; `operator.js ledger` lists every question and answer.
 
+**Where the records live.** Not in your checkout. Each checkout keeps them in a private git repository inside its `.git` directory (`.git/delivery-operator/`), so `git status`, `git clean`, `git stash`, `git reset --hard`, `git pull` and your own commits never see them. They travel on the project remote's `delivery-operator` branch, which carries operator files only: your repository's branch rules must allow pushes to it, and a session (cloud and SSH ones included) publishes only with push access to the project remote. Without a remote the records stay local. Deleting `.git/delivery-operator` loses only what was not yet published. Inspect it with `git -C .git/delivery-operator log --stat`.
+
 Delegations, ratification, revocation and chain repair are in [docs/operator-reference.md](docs/operator-reference.md); enforcement and the record files in [docs/reference.md](docs/reference.md#operator-decisions-in-detail). [docs/quickstart.md](docs/quickstart.md) walks through one decision with real output.
 
 **Limits.** This is tamper-evidence for cooperative sessions, not a security boundary.
-- **Files can be rewritten.** A session with unrestricted Bash can rewrite and re-hash the files; the hash chains, recorded heads and git history make that detectable, not impossible.
+- **Files can be rewritten.** A session with unrestricted Bash can rewrite and re-hash the files; the hash chains, recorded heads, the store's append-only merge check and its git history make that detectable, not impossible.
 - **Recorded heads are local** (`cursors/heads.json` on each host), so they are cooperative trust too.
 - **Records are checked for form, not relevance.** A well-formed record citing a real input cannot be machine-rejected when the input does not support it; detection is human, from the verbatim words and author `verify` prints.
 - **Capture depends on the harness's undocumented transcript format.** If it changes, `operator.js sync` reports `format_unrecognised` and recording fails closed. Cloud sessions are captured only when they sync from their own host.
-- **The pre-role boundary is a local file** (`<roleDir>/.delivery-role-since.json`); deleting or post-dating it hides genuine inputs.
+- **The pre-role boundary is a local file** (`cursors/role-since/<instance>.json` in the operator store); deleting or post-dating it hides genuine inputs.
 - **Keystrokes can be injected** into another session by a role with unrestricted Bash, and the harness records that as a human prompt.
 - **The relay detector is a heuristic backstop**; the structural fix is that no session ever needs you to relay.
 - **Instance ids belong to one role.** A new role gets a new id; mark a departed instance `"retired": true` in `team.json` rather than deleting it.

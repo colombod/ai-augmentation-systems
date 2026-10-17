@@ -195,18 +195,40 @@ scope always go to the operator, once, in the briefing, logged with `operator.js
 **Enforcement.**
 - Only the Chief of Staff and the Product Manager may use `AskUserQuestion`, `PushNotification` and `SendUserFile`.
 - Their Stop hook reminds once per turn, blocking the first stop, when a turn leaves an operator input unrecorded or asks the operator to relay (including "approve the permission prompt in X"); the relay check is a heuristic, and both checks fail open if the transcript format is unrecognised.
-- Lanes deny writes to `.delivery/operator/`, and only the manager lanes include the writer commands. Workers with unrestricted Bash can record or acknowledge only inputs their own session captured; the check is cooperative (it compares a session id the session's own Bash can rewrite).
+- Lanes deny writes to the operator store (`.git/delivery-operator/`, in the project and in a role's clone, case-folded and through symlinks), to the legacy `.delivery/operator/`, and git commands that would write the store or push its branch; only the manager lanes include the writer commands. Workers with unrestricted Bash can record or acknowledge only inputs their own session captured; the check is cooperative (it compares a session id the session's own Bash can rewrite).
 - `prepare-role` pre-allows each manager lane's own commands in `settings.local.json`, so a session does not stop on a prompt only the operator can clear. When a role session's lane cannot be checked (manifest unreadable, internal error) it fails closed and allows only restoring the manifest; a session whose role marker is missing gets no lane check at all.
 
-**Artifacts**, in `.delivery/operator/` of the private project repo, committed and pushed by
-`operator.js publish`: `inputs/<host>/<YYYY-MM>.ndjson` (one hash-chained entry per operator
-prompt, from the session transcript), `records/<instance>.ndjson` (decisions, delegations,
-answers, acks, questions, ratifications; written only by `operator.js`), and `LEDGER.md` (the
-question ledger). Each chain file has exactly one writer, so git never merges a chain; when a
-push is rejected, `publish` builds the next commit on top of the upstream with git plumbing (with
-your branch as a parent, so `git pull --ff-only` keeps working) and changes nothing in your
-checkout outside `.delivery/operator`; when your branch is behind only by operator commits,
-it fast-forwards it. `operator.js problems` lists anything that fails verification.
+**Artifacts**, in the `operator/` directory of the private operator store:
+`inputs/<host>/<YYYY-MM>.ndjson` (one hash-chained entry per operator prompt, from the session
+transcript), `records/<instance>.ndjson` (decisions, delegations, answers, acks, questions,
+ratifications; written only by `operator.js`), and `LEDGER.md` (the question ledger). `cursors/`
+(recorded heads, transcript cursors, per-session role boundaries) and `quarantine/` are local and
+never published.
+
+**Where they live and how they travel.**
+- The store is a private git repository at `<git-common-dir>/delivery-operator/`: `.git/delivery-operator/`
+  in a normal clone, the main repository's `.git` for a linked worktree. Every role uses the store of
+  its marker's `project_root`, so the roles of one checkout share it and other clones have their own.
+- It is inside `.git`, so it is outside your index and working tree: `git status`, `git clean -fdx`,
+  `git stash -u`, `git reset --hard`, `git checkout .`, `git pull` (with `pull.rebase` or not) and
+  your own commits never touch it, whatever state the checkout is in (detached, no upstream, mid-merge
+  or mid-rebase, shallow). In your checkout the plugin only reads `git rev-parse --git-common-dir`
+  and `git config --get remote.origin.url`. You never pull for operator records.
+- Its `origin` is your project's `origin`; the records travel on that remote's `delivery-operator`
+  branch, which carries operator files only. Repository branch rules must allow pushes to
+  `delivery-operator`. A session publishes only with push access to the project remote (cloud and
+  SSH sessions included); otherwise its records stay committed in its store and show as unpublished.
+- `operator.js publish` (after every write) commits the store's new lines, fetches the branch,
+  merges it, and pushes, retrying a rejected push up to five times. Before every push it checks that
+  each chain it commits verifies and that every chain on either side reaches the result whole: a
+  deleted, shortened or rewritten chain, or one that grew differently on two sides (a fork), is
+  refused and nothing is pushed. `operator.js refresh` is the fetch and merge alone.
+- With no remote the store is local only (`publish` says "no remote"). A project directory outside git
+  keeps the records in `<project>/.delivery/operator/`; records an earlier version left there are
+  copied into the store once.
+- Deleting the store loses only what was not yet published. Inspect it with
+  `git -C .git/delivery-operator log --stat`; `operator.js problems` lists anything that fails
+  verification.
 
 Delegations, ratification, revocation and chain repair: [operator-reference.md](operator-reference.md).
 
