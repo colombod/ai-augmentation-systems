@@ -16,7 +16,7 @@ const R = require('./lib/operator-records.js');
 
 class UsageError extends Error {}
 
-const BOOLEAN_FLAGS = new Set(['json', 'force', 'all', 'format-check', 'help']);
+const BOOLEAN_FLAGS = new Set(['json', 'force', 'all', 'format-check', 'help', 'pending']);
 const COMMANDS = ['publish', 'refresh', 'sync', 'record', 'delegate', 'decide', 'revoke', 'ack', 'ask', 'withdraw', 'answer', 'ratify',
   'find', 'ledger', 'pending', 'verify', 'show', 'problems', 'quarantine', 'repair', 'rehost'];
 
@@ -27,6 +27,7 @@ const USAGE = `usage: operator.js <command> [options]   (all commands: --project
   decide --under del-N --statement "<...>" --scope ... [--answers q-N]
   revoke --cite in-N --quote "<...>" --target ID
   ack --input in-N --reason "<why this input is not a decision>"
+  ack --pending --reason 'conversational'   every pending input of this session that may not answer an open question
   ask --text "<question>" --asker <instance> [--bead ID] [--options "A|B"] [--recommendation "<...>"] [--scope ...]
   withdraw --question q-N --reason "<...>"
   answer --cite dec-N[,del-M,...] --question "<...>" --answer "<...>" --confidence settled|inferred [--rationale "<...>"] [--scope ...] [--answers q-N] [--supersedes ID]
@@ -355,6 +356,35 @@ function bdNotes(ctx, beads, text) {
   return warnings;
 }
 
+// ack --pending: one command for the conversational inputs of this session. An input captured after
+// the oldest open question may be the operator's answer to it, so it is left for a record (or an
+// explicit ack by id) and named in the output.
+function ackPending(ctx, flags) {
+  need(flags, 'reason');
+  if (flags.input) throw new UsageError('--pending acks every pending input of this session; drop --input, or drop --pending to ack one');
+  requireWriter(ctx);
+  needNotDiverged(ctx);
+  syncCurrent(ctx, flags, null);
+  const sid = ctx.by.session_id;
+  const p = R.pending(ctx.projectRoot, { sessionId: sid !== 'unknown' ? sid : undefined, refresh: ctx.refreshOnce, noLedger: true });
+  const mine = (p.inputs || []).filter((e) => e.session_id === sid && e.instance === ctx.by.instance);
+  const openTs = (p.open_questions || []).map((q) => Date.parse(q.ts)).filter((t) => !Number.isNaN(t));
+  const firstOpen = openTs.length ? Math.min(...openTs) : null;
+  const acked = [];
+  const kept = [];
+  for (const e of mine) {
+    if (firstOpen !== null && Date.parse(e.ts) > firstOpen) { kept.push(e.id); continue; }
+    acked.push(R.ack({ projectRoot: ctx.projectRoot, input: e.id, reason: flags.reason, by: ctx.by, refresh: ctx.refreshOnce, noLedger: true, onWarning: ctx.onWarning }).id);
+  }
+  if (acked.length) { try { R.writeLedger(ctx.projectRoot); } catch (e) { /* best effort */ } }
+  const pub = acked.length ? log.publish(ctx.projectRoot, { force: true, host: ctx.host, instance: ctx.instance }) : { published: false, reason: 'nothing written' };
+  const lines = [acked.length ? `acked ${acked.length}: ${acked.join(', ')}` : 'nothing to ack'];
+  if (kept.length) lines.push(`left pending (said after an open question was asked, so it may be its answer): ${kept.join(', ')}; record it with --answers q-..., or ack it by id`);
+  if (acked.length) lines.push(pub.published ? 'published' : `unpublished (${pub.reason || 'not pushed'})`);
+  out(ctx, { ok: true, acked, kept, published: !!pub.published, warnings: ctx.warnings }, lines);
+  return 0;
+}
+
 // ---- commands ----
 
 const handlers = {
@@ -458,6 +488,7 @@ const handlers = {
   },
 
   ack(ctx, flags) {
+    if (flags.pending) return ackPending(ctx, flags);
     need(flags, 'input', 'reason');
     requireWriter(ctx);
     needNotDiverged(ctx);

@@ -785,3 +785,21 @@ test('I6: a retired instance records nothing new; its earlier records still veri
   assert.match(again.out, /retired_instance/);
   assert.strictEqual(run(st, ['verify', r.lines[0]]).status, 0);
 });
+
+test('ruling 2: ack --pending acks every pending input of this session that cannot answer an open question', () => {
+  const root = project();
+  const sid = 'sess-pend';
+  const cos = roleDir(root, 'chief-of-staff', 'chief-of-staff', 'pc', sid, [human('ok thanks', 1, sid), human('morning', 2, sid)]);
+  const r = run(cos, ['ack', '--pending', '--reason', 'conversational', '--json']);
+  assert.strictEqual(r.status, 0, r.out + r.err);
+  assert.deepStrictEqual(json(r).acked.length, 2);
+  assert.deepStrictEqual(json(run(cos, ['pending', '--json'])).inputs, []);
+  // a question is now open: a later input may be its answer and is left pending
+  assert.strictEqual(run(cos, ['ask', '--text', 'Ship it friday?', '--asker', 'chief-of-staff']).status, 0);
+  fs.appendFileSync(cos.tr, JSON.stringify({ ...human('yes', 3, sid), timestamp: '2099-12-31T00:00:00.000Z' }) + '\n');
+  const r2 = run(cos, ['ack', '--pending', '--reason', 'conversational']);
+  assert.strictEqual(r2.status, 0, r2.out + r2.err);
+  assert.match(r2.out, /left pending \(said after an open question was asked/);
+  assert.deepStrictEqual(json(run(cos, ['pending', '--json'])).inputs.map((e) => e.id), ['in-pc-000003']);
+  assert.strictEqual(run(cos, ['ack', '--pending', '--input', 'in-pc-000003', '--reason', 'x']).status, 2);
+});

@@ -91,9 +91,10 @@ function usage() {
     if (!/^ {2}[a-z]/.test(line)) continue;
     for (const seg of line.trim().split(/ {2,}/)) {
       const m = /^([a-z]+)\b(.*)$/.exec(seg);
-      // the first mention is the command line; later prose ("record that an instance moved") is not
-      if (!m || map.has(m[1])) continue;
-      map.set(m[1], new Set([...(m[2].match(/--[a-z-]+/g) || []), '--json', '--project']));
+      // a command may have several usage lines (ack --input, ack --pending): their flags are united;
+      // prose after a usage ("record that an instance moved") carries no flags
+      if (!m) continue;
+      map.set(m[1], new Set([...(map.get(m[1]) || []), ...(m[2].match(/--[a-z-]+/g) || []), '--json', '--project']));
     }
   }
   return map;

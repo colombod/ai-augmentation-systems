@@ -352,7 +352,7 @@ function unrecordedReason(list, op) {
   const n = first.id;
   const excerpt = String(first.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   const more = list.length > 1 ? ` and ${list.length - 1} more` : '';
-  return `You have an operator input with no record: ${n} ("${excerpt}")${more}. Record the decision (\`${op} record --cite ${n} --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\`) or acknowledge it (\`${op} ack --input ${n} --reason '<why this is not a decision>'\`; 'conversational' for chat), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.`;
+  return `You have an operator input with no record: ${n} ("${excerpt}")${more}. Record the decision (\`${op} record --cite ${n} --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\`) or acknowledge it (\`${op} ack --input ${n} --reason '<why this is not a decision>'\`; for chat, \`${op} ack --pending --reason 'conversational'\` acks them all at once), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.`;
 }
 
 // What the session CAN do: no lane may write the operator directory, so restoring the file from git
