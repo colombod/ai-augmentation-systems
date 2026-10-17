@@ -33,6 +33,7 @@ test('scanText is a case-insensitive literal match and catches .delivery paths',
   assert.deepEqual(scanText('we sell DUPLICATES faster now', denylist), { phrase: 'Sell duplicates faster' });
   assert.equal(scanText('fix login (Refs ex-1)', denylist), null);
   assert.deepEqual(scanText('see .delivery/stories/x.md', denylist), { phrase: '.delivery/' });
+  assert.deepEqual(scanText('from .git/delivery-operator/operator/records/pm.ndjson', denylist), { phrase: 'delivery-operator/' });
   assert.equal(scanText('phase 2: beads over dolt', ['Phase 2: Beads over Dolt']).phrase, 'Phase 2: Beads over Dolt');
   assert.equal(scanText('anything', ['.*']), null);
 });

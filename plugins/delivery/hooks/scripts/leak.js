@@ -588,6 +588,8 @@ const inAny = (hs, n) => hs.some((h) => h.includes(n));
 function scanText(text, denylist) {
   const hay = hays(text);
   if (inAny(hay, '.delivery/')) return { phrase: '.delivery/' };
+  // the private operator store's path: operator records never travel in product text
+  if (inAny(hay, 'delivery-operator/')) return { phrase: 'delivery-operator/' };
   for (const p of denylist) { const n = norm(p).trim(); if (n && inAny(hay, n)) return { phrase: p }; }
   return null;
 }

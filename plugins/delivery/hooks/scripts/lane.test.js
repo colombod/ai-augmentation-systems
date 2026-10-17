@@ -746,6 +746,88 @@ test('role-lane hook denies an operator-directory write for chief-of-staff and b
   }
 });
 
+// The private operator store (<git-common-dir>/delivery-operator) gets the protection the old
+// .delivery/operator directory had, and that directory keeps it.
+test('the private operator store is never written with file tools, by any role', () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-store-proj-'));
+  execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+  const records = path.join(projectRoot, '.git', 'delivery-operator', 'operator', 'records');
+  fs.mkdirSync(records, { recursive: true });
+  const target = path.join(records, 'chief-of-staff.ndjson');
+  const deny = (role, toolName, toolInput, over = {}) => decideLane({ toolName, toolInput, policy: POLICIES[role], projectRoot, ...ctx(), ...over });
+  for (const role of [COS, BUILDER, DL]) {
+    for (const tool of ['Write', 'Edit', 'MultiEdit']) {
+      const d = deny(role, tool, tool === 'MultiEdit' ? { file_path: target, edits: [] } : { file_path: target });
+      assert.equal(d.allow, false, `${role} ${tool}`);
+      assert.match(d.reason, /operator records are written by `operator\.js` only/);
+    }
+    assert.equal(deny(role, 'NotebookEdit', { notebook_path: path.join(projectRoot, '.git', 'delivery-operator', 'x.ipynb') }).allow, false, role);
+    // the store's own git metadata too (refs, objects, config)
+    assert.equal(deny(role, 'Write', { file_path: path.join(projectRoot, '.git', 'delivery-operator', '.git', 'refs', 'heads', 'delivery-operator') }).allow, false, role);
+  }
+  // relative, `..`, case-folded and symlinked spellings resolve to the store
+  assert.equal(deny(BUILDER, 'Write', { file_path: '.git/delivery-operator/operator/records/b.ndjson' }, { cwd: projectRoot }).allow, false);
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(projectRoot, '.git', 'x', '..', 'delivery-operator', 'operator', 'LEDGER.md') }).allow, false);
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(projectRoot, '.GIT', 'Delivery-Operator', 'operator', 'b.ndjson') }).allow, false);
+  const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lane-store-link-')), 'st');
+  fs.symlinkSync(path.join(projectRoot, '.git', 'delivery-operator'), link);
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(link, 'operator', 'records', 'x.ndjson') }).allow, false);
+  // the role's own clone of the project
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(roleDir, 'project', '.git', 'delivery-operator', 'operator', 'records', 'b.ndjson') }).allow, false);
+  // a project that is a linked worktree: its store is in the main repository's .git
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: projectRoot });
+  const wt = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lane-store-wt-')), 'wt');
+  execFileSync('git', ['worktree', 'add', '-q', wt], { cwd: projectRoot });
+  assert.equal(deny(BUILDER, 'Write', { file_path: target }, { projectRoot: wt }).allow, false);
+  // the legacy directory stays protected: a stray copy there is no back door
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(projectRoot, '.delivery', 'operator', 'records', 'b.ndjson') }).allow, false);
+  // neighbours stay as they were
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(roleDir, 'product', 'a.js') }).allow, true);
+  const nb = deny(BUILDER, 'Write', { file_path: path.join(projectRoot, '.git', 'delivery-operator-notes.md') });
+  assert.ok(nb.allow || !/operator\.js/.test(nb.reason), 'a neighbour of the store is not treated as the store');
+});
+
+test('shell writes into the private operator store or its branch are denied; reads are not', () => {
+  const run = (role, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], ...ctx() });
+  for (const cmd of [
+    'echo x >> .git/delivery-operator/operator/records/chain.ndjson',
+    'echo x > ./.git//delivery-operator/operator/inputs/pc/2026-10.ndjson',
+    'cat evil | tee -a .git/delivery-operator/operator/records/b.ndjson',
+    'cp /tmp/forged .git/delivery-operator/operator/records/b.ndjson',
+    "sed -i '' s/a/b/ .git/delivery-operator/operator/records/b.ndjson",
+    'rm -rf .git/delivery-operator',
+    'truncate -s 0 .GIT/Delivery-Operator/operator/inputs/pc/2026-10.ndjson',
+    'git -C .git/delivery-operator reset --hard HEAD~1',
+    'git -C .git/delivery-operator commit -qam forged',
+    'cd .git/delivery-operator && git checkout HEAD~3 -- operator/records/b.ndjson',
+    'GIT_DIR=.git/delivery-operator/.git git update-ref refs/heads/delivery-operator HEAD~1',
+    'git push --force origin HEAD:delivery-operator',
+    'git push origin :delivery-operator',
+    'git fetch origin delivery-operator:delivery-operator',
+  ]) {
+    for (const role of [BUILDER, COS]) {
+      const d = run(role, cmd);
+      assert.equal(d.allow, false, `${role}: ${cmd}`);
+      if (role === BUILDER) assert.match(d.reason, /operator\.js/, cmd);
+    }
+  }
+  assert.equal(run(BUILDER, 'cat .git/delivery-operator/operator/records/b.ndjson | jq .id').allow, true);
+  assert.equal(run(BUILDER, 'grep -c human .git/delivery-operator/operator/inputs/pc/2026-10.ndjson').allow, true);
+  assert.equal(run(COS, 'git -C .git/delivery-operator log --oneline').allow, true);
+  assert.equal(run(COS, 'ls .git/delivery-operator/operator/records').allow, true);
+});
+
+test('role-lane hook denies a write into the private operator store through the real manifest', () => {
+  for (const instance of ['chief-of-staff', 'builder-1']) {
+    const { projectRoot, roleDir } = preparedRole(instance);
+    const file = path.join(projectRoot, '.git', 'delivery-operator', 'operator', 'records', `${instance}.ndjson`);
+    const out = runHook('role-lane.js', { cwd: roleDir, session_id: 's', tool_name: 'Write', tool_input: { file_path: file, content: '{}' } }, { DELIVERY_ROLE: instance, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT });
+    const json = JSON.parse(out);
+    assert.equal(json.hookSpecificOutput.permissionDecision, 'deny', instance);
+    assert.match(json.hookSpecificOutput.permissionDecisionReason, /operator\.js/);
+  }
+});
+
 // Task 3 round 1 (F1): no allowlist role passes --transcript or --session to operator.js.
 test('F1: operator groups refuse --transcript and --session, in any spelling', () => {
   const op = `${PLUGIN_ROOT}/scripts/operator.js`;

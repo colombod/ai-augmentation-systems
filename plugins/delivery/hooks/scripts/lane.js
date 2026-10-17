@@ -490,18 +490,35 @@ function shellCommandOf(toolName, toolInput) {
   return typeof input.command === 'string' ? input.command : null;
 }
 
-// The operator directory: written only by scripts/operator.js (run through the operator-write group).
-// Protected for every role, `any` included: the project's own copy and the role's clone of it.
+// The operator records: written only by scripts/operator.js (run through the operator-write group).
+// They live in the project's private operator store, <git-common-dir>/delivery-operator (see
+// scripts/lib/operator-store.js); the legacy <project>/.delivery/operator stays protected so a stray
+// copy there never becomes a back door. Protected for every role, `any` included: the project's own
+// checkout and the role's clone of it.
 const OPERATOR_REL = path.join('.delivery', 'operator');
+const STORE_REL = path.join('.git', 'delivery-operator');
 const OPERATOR_REASON = 'operator records are written by `operator.js` only; read them with `operator.js show`';
-// A mention of the operator directory in a shell command (.delivery/operator, .delivery//operator, .delivery/./operator).
-const OPERATOR_MENTION = /\.delivery\/+(?:\.\/+)*operator(?=\/|[\s'";|&)>]|$)/i; // case-folded: macOS and Windows file systems are
+// A mention of the operator records in a shell command: .delivery/operator (also .delivery//operator,
+// .delivery/./operator) or anything named delivery-operator (the store directory and its branch).
+// Case-folded: macOS and Windows file systems are case-insensitive.
+const OPERATOR_MENTION = /\.delivery\/+(?:\.\/+)*operator(?=\/|[\s'";|&)>]|$)|(?:^|[\s/'"=:])delivery-operator(?=\/|[\s'";|&)>:]|$)/i;
 const OPERATOR_WRITE_WORDS = ['tee', 'cp', 'mv', 'rm', 'truncate', 'dd', 'ln', 'install', 'rsync'];
+// git subcommands that only read: any other git command that names the operator records writes them
+// (a commit, push, reset, checkout or update-ref in the store, or a push of its branch).
+const GIT_READS = ['log', 'show', 'status', 'diff', 'ls-files', 'ls-tree', 'cat-file', 'rev-parse', 'rev-list', 'blame', 'grep',
+  'shortlog', 'describe', 'merge-base', 'for-each-ref', 'show-ref', 'ls-remote', 'count-objects', 'whatchanged'];
 
 function operatorDirs({ projectRoot, roleDir }) {
   const out = [];
-  if (projectRoot && path.isAbsolute(String(projectRoot))) out.push(realish(path.join(String(projectRoot), OPERATOR_REL)));
-  if (roleDir) out.push(realish(path.join(String(roleDir), 'project', OPERATOR_REL)));
+  if (projectRoot && path.isAbsolute(String(projectRoot))) {
+    out.push(realish(path.join(String(projectRoot), OPERATOR_REL)), realish(path.join(String(projectRoot), STORE_REL)));
+    // a project that is a linked worktree keeps its store in the main repository's .git
+    try {
+      const sd = require('../../scripts/lib/operator-store.js').storeDir(String(projectRoot));
+      if (sd) out.push(realish(sd));
+    } catch (err) { /* the fixed paths above still hold */ }
+  }
+  if (roleDir) out.push(realish(path.join(String(roleDir), 'project', OPERATOR_REL)), realish(path.join(String(roleDir), 'project', STORE_REL)));
   return out;
 }
 
@@ -511,8 +528,9 @@ function underOperator(p, dirs) {
   return dirs.some((d) => under(real, d.toLowerCase()));
 }
 
-// Best effort, and tamper-evidence rather than a boundary (the hash chains and recorded heads are what
-// detect a change): a shell command that names the operator directory and also writes something.
+// Best effort, and tamper-evidence rather than a boundary (the hash chains, recorded heads and the
+// store's append-only merge check are what detect a change): a shell command that names the operator
+// records and also writes something.
 function operatorShellWrite(command) {
   const text = String(command == null ? '' : command);
   if (!OPERATOR_MENTION.test(text)) return false;
@@ -524,7 +542,7 @@ function operatorShellWrite(command) {
     const first = path.basename(words[0] || '');
     if (OPERATOR_WRITE_WORDS.includes(first)) return true;
     if (first === 'sed' && writesFiles(['sed', ...words.slice(1)])) return true;
-    if (first === 'git' && ['checkout', 'restore', 'rm', 'mv', 'apply', 'reset'].includes(splitGlobals(words).rest[0])) return true;
+    if (first === 'git' && !GIT_READS.includes(splitGlobals(words).rest[0])) return true;
     return false;
   });
 }
