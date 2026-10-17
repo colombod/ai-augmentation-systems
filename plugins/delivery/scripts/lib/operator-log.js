@@ -113,6 +113,21 @@ function loadIndex(root, host) {
 
 // Local-only record of how long each host chain was and its last hash, so a deleted tail
 // is detectable (a pure hash chain cannot see its own truncation).
+// When this session became the role: the first time the capture hook saw this session id in the
+// role directory (SessionStart always runs first in a role session, so earlier transcript lines are
+// prompts from before the session was a role). Kept in <roleDir>/.delivery-role-since.json as
+// { session_id, since }; a new session id starts a new one. create:false only reads.
+function roleSince(roleDir, sessionId, { now, create = true } = {}) {
+  if (!roleDir || !sessionId) return null;
+  const f = path.join(roleDir, '.delivery-role-since.json');
+  const cur = readJson(f);
+  if (cur && cur.session_id === sessionId && typeof cur.since === 'string' && !Number.isNaN(Date.parse(cur.since))) return cur.since;
+  if (!create) return null;
+  const since = new Date(now || Date.now()).toISOString();
+  try { fs.writeFileSync(f, `${JSON.stringify({ session_id: sessionId, since })}\n`); } catch (e) { return null; }
+  return since;
+}
+
 function headsFile(root) { return path.join(opDir(root), 'cursors', 'heads.json'); }
 const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 function readHeads(root) { const h = readJson(headsFile(root)); return plainObject(h) ? h : {}; }
@@ -209,6 +224,9 @@ function syncTranscript(opts) {
           transcript_ref: { file: path.basename(transcriptPath), line: inp.line },
         };
         if (t.truncated) e.truncated = true;
+        // a prompt typed before this session became the role (a resumed or adopted session): kept
+        // and citable, never pending (see roleSince)
+        if (opts.roleSince && Date.parse(e.ts) < Date.parse(opts.roleSince)) e.pre_role = true;
         return e;
       }, { alreadyLocked: true, prevFile });
       idx.map.set(key, stored.id);
@@ -525,4 +543,4 @@ function unpublished(projectRoot, opts = {}) {
   }
 }
 
-module.exports = { headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };
+module.exports = { roleSince, headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };

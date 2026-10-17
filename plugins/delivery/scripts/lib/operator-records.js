@@ -1512,7 +1512,8 @@ function pending(projectRoot, o = {}) {
     if (typeof c === 'string' && c.startsWith('in-')) handled.add(c);
   }
   const inputs = log.listInputs(projectRoot, { source: 'human', since: o.since || undefined, sessionId: o.sessionId || undefined })
-    .filter((e) => !handled.has(e.id));
+    // pre-role prompts (typed before the session became the role) are citable but never pending
+    .filter((e) => !handled.has(e.id) && !e.pre_role);
   const open = st.all().filter((r) => r.kind === 'question' && questionStatus(view, r) === 'open')
     .sort((a, b) => -byOrder(a, b))
     .map((q) => ({ id: q.id, text: q.text, asker: q.asker, scope: q.scope, options: q.options, recommendation: q.recommendation, ts: q.ts }));

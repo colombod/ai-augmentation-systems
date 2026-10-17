@@ -37,7 +37,7 @@ function preparedRole(instance) {
 
 const human = (text, n) => ({
   type: 'user', origin: { kind: 'human' }, promptId: 'p' + n, uuid: 'u' + n,
-  timestamp: `2026-10-13T10:00:${String(n).padStart(2, '0')}.000Z`, sessionId: SID, message: { role: 'user', content: text },
+  timestamp: `2099-10-13T10:00:${String(n).padStart(2, '0')}.000Z`, sessionId: SID, message: { role: 'user', content: text },
 });
 function transcript(records) {
   const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'stop-tr-')), `${SID}.jsonl`);

@@ -267,8 +267,8 @@ function transcriptPathFor(ctx, flags) {
   return registeredTranscript(ctx);
 }
 
-function syncOne(ctx, { transcriptPath, sessionId, instance, role }) {
-  return log.syncTranscript({ projectRoot: ctx.projectRoot, transcriptPath, sessionId, instance, role, host: ctx.host });
+function syncOne(ctx, { transcriptPath, sessionId, instance, role, roleSince }) {
+  return log.syncTranscript({ projectRoot: ctx.projectRoot, transcriptPath, sessionId, instance, role, host: ctx.host, roleSince });
 }
 
 // Sync this session's transcript; when `cite` is not found yet, retry for up to 2 s (the transcript
@@ -279,7 +279,7 @@ function syncCurrent(ctx, flags, cite) {
   const sid = flags.session || (ctx.by.session_id !== 'unknown' ? ctx.by.session_id : (tr ? path.basename(tr).replace(/\.jsonl$/, '') : 'unknown'));
   const doSync = () => {
     if (!tr || !fs.existsSync(tr)) return;
-    const r = syncOne(ctx, { transcriptPath: tr, sessionId: sid, instance: ctx.by.instance, role: ctx.by.role });
+    const r = syncOne(ctx, { transcriptPath: tr, sessionId: sid, instance: ctx.by.instance, role: ctx.by.role, roleSince: log.roleSince(ctx.roleDir, sid) });
     res = { added: res.added + r.added, status: r.status };
   };
   doSync();

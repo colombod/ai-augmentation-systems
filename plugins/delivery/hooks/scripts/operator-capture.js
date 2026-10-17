@@ -62,8 +62,10 @@ function captureFromHookInput(input, pluginRoot, deps = {}) {
     if (status === 'ok') {
       try {
         const sync = deps.syncTranscript || require('../../scripts/lib/operator-log.js').syncTranscript;
-        const r = sync({ projectRoot, transcriptPath, sessionId: sessionId || path.basename(transcriptPath).replace(/\.jsonl$/, ''),
-          instance: marker.instance, role: role.id, host: role.host });
+        const sid = sessionId || path.basename(transcriptPath).replace(/\.jsonl$/, '');
+        const roleSince = require('../../scripts/lib/operator-log.js').roleSince(roleDir, sid, { now });
+        const r = sync({ projectRoot, transcriptPath, sessionId: sid,
+          instance: marker.instance, role: role.id, host: role.host, roleSince });
         added = (r && r.added) || 0;
         if (r && r.status) status = r.status;
       } catch (err) {

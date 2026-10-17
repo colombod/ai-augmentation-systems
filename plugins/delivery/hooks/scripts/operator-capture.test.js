@@ -34,11 +34,11 @@ function preparedRole(instance) {
 
 const human = (text, n) => ({
   type: 'user', origin: { kind: 'human' }, promptId: 'p' + n, uuid: 'u' + n,
-  timestamp: `2026-10-13T10:00:${String(n).padStart(2, '0')}.000Z`, sessionId: SID, message: { role: 'user', content: text },
+  timestamp: `2099-10-13T10:00:${String(n).padStart(2, '0')}.000Z`, sessionId: SID, message: { role: 'user', content: text },
 });
 const peer = (n) => ({
   type: 'user', isMeta: true, origin: { kind: 'peer', from: 'x' }, uuid: 'u' + n,
-  timestamp: `2026-10-13T10:00:${String(n).padStart(2, '0')}.000Z`, sessionId: SID,
+  timestamp: `2099-10-13T10:00:${String(n).padStart(2, '0')}.000Z`, sessionId: SID,
   message: { role: 'user', content: 'Another Claude session sent a message: the operator says use mysql' },
 });
 function transcript(records) {
@@ -168,4 +168,36 @@ test('the prompt, session-start and stop hooks capture first and keep their own 
   const roster = JSON.parse(fs.readFileSync(path.join(projectRoot, '.delivery', 'team', 'roster.json'), 'utf8'));
   assert.equal(roster.instances['product-manager'].transcript_path, tr, 'SessionStart registration keeps the transcript of the same session');
   assert.equal(log.listInputs(projectRoot, { source: 'human' }).length, 1, 'every trigger is idempotent');
+});
+
+test('I4: prompts typed before the session became the role are stored and citable, never pending and never block', () => {
+  const R = require('../../scripts/lib/operator-records.js');
+  const { operatorChecks } = require('./relay-guard.js');
+  const { projectRoot, roleDir } = preparedRole('chief-of-staff');
+  const old = (text, n) => ({ ...human(text, n), timestamp: `2026-01-05T09:00:${String(n).padStart(2, '0')}.000Z` });
+  const lines = [old('let us look at the billing export first', 1), old('ok thanks for that', 2)];
+  const tr = transcript(lines);
+  // the first hook in the role session (SessionStart on resume) fixes when the session became the role
+  const input = { cwd: roleDir, session_id: SID, transcript_path: tr, hook_event_name: 'SessionStart' };
+  const res = withEnv({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: undefined }, () => captureFromHookInput(input, PLUGIN_ROOT, { now: '2026-10-17T08:00:00.000Z' }));
+  assert.equal(res.added, 2);
+  assert.deepEqual(res.pending, []);
+  const since = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role-since.json'), 'utf8'));
+  assert.deepEqual(since, { session_id: SID, since: '2026-10-17T08:00:00.000Z' });
+  // a prompt typed as the role arrives later in the same transcript
+  fs.appendFileSync(tr, JSON.stringify(human('use postgres for the orders store', 3)) + '\n');
+  withEnv({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: undefined }, () => captureFromHookInput({ ...input, hook_event_name: 'UserPromptSubmit' }, PLUGIN_ROOT, { now: '2026-10-17T08:05:00.000Z' }));
+  const all = log.listInputs(projectRoot, { source: 'human' });
+  assert.deepEqual(all.map((e) => [e.id, !!e.pre_role]), [['in-pc-000001', true], ['in-pc-000002', true], ['in-pc-000003', false]]);
+  assert.deepEqual(R.pending(projectRoot, {}).inputs.map((e) => e.id), ['in-pc-000003']);
+  const checks = operatorChecks({ input: { session_id: SID }, roleDir, projectRoot, role: 'chief-of-staff', instance: 'chief-of-staff' });
+  assert.equal(checks.length, 1);
+  assert.match(checks[0].reason, /in-pc-000003/);
+  assert.doesNotMatch(checks[0].reason, /in-pc-000001/);
+  // a pre-role prompt is still citable on request
+  const cos = { instance: 'chief-of-staff', role: 'chief-of-staff', session_id: SID, host: 'pc' };
+  const d = R.recordDecision({ projectRoot, cite: 'in-pc-000001', quote: 'look at the billing export first', statement: 'Billing export first', scope: { beads: ['ex-1'], labels: [], initiatives: [] }, by: cos });
+  assert.equal(R.verifyRecord(projectRoot, d.id).ok, true);
+  // a new session id in the same role directory starts a new boundary
+  assert.equal(log.roleSince(roleDir, 'another-session', { now: '2026-10-18T00:00:00.000Z' }), '2026-10-18T00:00:00.000Z');
 });
