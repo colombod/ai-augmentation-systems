@@ -52,24 +52,24 @@ existing Consistency check already does for `FR-n` coverage.
 
 ## Gather
 
-Read whichever exist, and note which do not:
+Read whichever exist, and note which do not (* = optional depth: a missing optional step is not a gap unless a later artifact cites it):
 
-| Phase | Artifact |
-| :-- | :-- |
-| 1 Brief | `.delivery/initiatives/<initiative>/brief.md` |
-| 2 Research | `.delivery/initiatives/<initiative>/research.md` |
-| 3 Personas | `.delivery/personas/` |
-| 4a Interviews | `.delivery/interviews/` |
-| 4b Simulation | `.delivery/simulations/` |
-| 5 PRD | `.delivery/initiatives/<initiative>/prd.md` |
-| 6 Prioritisation | `.delivery/initiatives/<initiative>/prioritization.md` |
-| 7 Design | `.delivery/initiatives/<initiative>/design-system.md` |
-| 8 Architecture | `.delivery/initiatives/<initiative>/architecture.md`, `decisions/` |
-| 9 Roadmap | `.delivery/initiatives/<initiative>/roadmap.md` |
-| 10 Stories | `.delivery/stories/` |
-| 11 Sprints | `.delivery/sprints/` |
-| — Reviews | `.delivery/reviews/` |
-| — Glossary | `.delivery/glossary.md` |
+| Stage | Step | Artifact |
+| :-- | :-- | :-- |
+| DEFINE | Brief | `.delivery/initiatives/<initiative>/brief.md` |
+| DEFINE | Research* | `.delivery/initiatives/<initiative>/research.md` |
+| DEFINE | Personas* | `.delivery/personas/` |
+| DEFINE | Simulate --interview* | `.delivery/interviews/` |
+| DEFINE | Simulate --journey* | `.delivery/simulations/` |
+| DEFINE | PRD | `.delivery/initiatives/<initiative>/prd.md` |
+| DEFINE | PRD: MVP staging | `.delivery/initiatives/<initiative>/prioritization.md` |
+| DEFINE | Design* | `.delivery/initiatives/<initiative>/design-system.md` |
+| DEFINE | Architecture | `.delivery/initiatives/<initiative>/architecture.md`, `decisions/` |
+| CONTRACT | Roadmap | `.delivery/initiatives/<initiative>/roadmap.md` |
+| CONTRACT | Stories | `.delivery/stories/` |
+| NAVIGATE | Sprints and reviews | `.delivery/sprints/` |
+| any gate | Reviews | `.delivery/reviews/` |
+| all | Glossary | `.delivery/glossary.md` |
 
 If none exist, say the pipeline has not started and point at `/delivery:brief`.
 

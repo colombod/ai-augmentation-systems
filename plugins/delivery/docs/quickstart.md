@@ -70,7 +70,7 @@ Start each session in its own terminal, the Chief of Staff first:
   (no --permission-mode: each session uses your own Claude Code default; pass --permission-mode to choose one)
 
 Then:
-  1. In every session, run /delivery:join.
+  1. In every session, run /delivery:team join.
   2. Open the Chief of Staff session and talk to it. It is the only session you need to talk to.
   3. /delivery:team shows who is live; ask the Chief of Staff for the question ledger to see every decision.
 ```
@@ -174,14 +174,14 @@ cd <team-dir>/chief-of-staff
 claude --permission-mode <mode> --name chief-of-staff
 ```
 
-`<mode>` is your choice for that role (`claude --help` lists the modes). The lane hook runs before every file write, shell command and MCP call. The model comes from the role's `settings.local.json`. Name each session after its instance: `/delivery:join` reports to the session named `chief-of-staff`. On start, the SessionStart hook makes sure the role is loaded, registers the session in the roster, and starts capturing what you type in that session.
+`<mode>` is your choice for that role (`claude --help` lists the modes). The lane hook runs before every file write, shell command and MCP call. The model comes from the role's `settings.local.json`. Name each session after its instance: `/delivery:team join` reports to the session named `chief-of-staff`. On start, the SessionStart hook makes sure the role is loaded, registers the session in the roster, and starts capturing what you type in that session.
 
 ## 5. Join, then check the team
 
 In each session, run:
 
 ```
-/delivery:join
+/delivery:team join
 ```
 
 It checks the role marker, runs `bd prime`, confirms the session is `live` in the roster, and reports to the Chief of Staff (the Chief of Staff reports to you). Then, in any session:

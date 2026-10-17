@@ -13,7 +13,7 @@ argument-hint: "[initiative]"
 
 Constraints from user (deadlines, team size, fixed dates): **$ARGUMENTS**
 
-Phase 9 of the pipeline. Inputs: `.delivery/initiatives/<initiative>/prd.md`, `.delivery/initiatives/<initiative>/architecture.md`, `.delivery/initiatives/<initiative>/prioritization.md`. Output: `.delivery/initiatives/<initiative>/roadmap.md`.
+CONTRACT stage. Inputs: `.delivery/initiatives/<initiative>/prd.md`, `.delivery/initiatives/<initiative>/architecture.md`, `.delivery/initiatives/<initiative>/prioritization.md`. Output: `.delivery/initiatives/<initiative>/roadmap.md`.
 
 ## Conventions
 

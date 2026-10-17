@@ -28,7 +28,7 @@ You are helping the human (the operator) start a team of role sessions for a pro
 
 5. **Real run.** Run the same command without `--dry-run` and show the output verbatim. If it exits non-zero, show the refusal and stop; never work around it. If it says a manifest already exists, that manifest is kept as it is; say so.
 
-6. **Start the sessions.** Tell the human to run each printed `cd ... && claude ...` line in its own terminal, the Chief of Staff first, and to run `/delivery:join` in each session once it starts.
+6. **Start the sessions.** Tell the human to run each printed `cd ... && claude ...` line in its own terminal, the Chief of Staff first, and to run `/delivery:team join` in each session once it starts.
 
 7. **How to use the team.** End with these five lines, in your words:
    - Talk only to the Chief of Staff; the other sessions send their questions to it, not to you.

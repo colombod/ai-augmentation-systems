@@ -13,7 +13,7 @@ argument-hint: "[initiative]"
 
 Focus note from user: **$ARGUMENTS**
 
-Phase 8 of the pipeline. Inputs: `.delivery/initiatives/<initiative>/prd.md`, plus `prioritization.md` and `design-system.md` where they exist. Output: `.delivery/initiatives/<initiative>/architecture.md` and ADRs in `.delivery/decisions/`.
+DEFINE stage, last step. Inputs: `.delivery/initiatives/<initiative>/prd.md`, plus `prioritization.md` and `design-system.md` where they exist. Output: `.delivery/initiatives/<initiative>/architecture.md` and ADRs in `.delivery/decisions/`.
 
 ## Conventions
 

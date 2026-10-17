@@ -58,9 +58,9 @@ Ask, and record what they chose.
 
 ## Language
 
-Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, run
-`/delivery:glossary` — or, for a small effort, collect terms as you go and propose the file
-at the end. Do not coin synonyms for concepts it already names.
+Read `.delivery/glossary.md` first and use its terms exactly. If it does not exist, create
+it as *Keeping the glossary* below says — or, for a small effort, collect terms as you go and
+propose the file at the end. Do not coin synonyms for concepts it already names.
 
 Any term you need that is missing gets **proposed explicitly**, with a definition in the
 business's vocabulary and a concrete referent. Any term carrying two meanings gets raised as
@@ -70,6 +70,35 @@ a defect, not resolved silently.
 their world. A question for the business owner written in engineering terms is a blocker
 with a name on it, not a question. If a question is really an engineering call, decide it
 here rather than routing it to them.
+
+### Keeping the glossary
+
+`.delivery/glossary.md`, one agreed term per concept, written from
+`${CLAUDE_PLUGIN_ROOT}/templates/glossary.md` (budget: 500 words target, 900 hard cap). It is
+project-wide and every skill reads it; any skill that coins or meets a new term adds it.
+Every document is written by someone fluent in a different dialect — the analyst's *booking
+window* is the architect's *date range* and the owner's *price list* — and the damage shows
+at the edges: questions the owner cannot answer, requirements that drift into two concepts,
+and a hand-off the runner has to guess at.
+
+1. **Curate, never regenerate.** If the file exists, edit it. Terms are stable: changing a
+   definition means saying what it was, what it is now, and which documents were written
+   under the old meaning.
+2. **Harvest the terms actually in use** — the originator's own words first (they outrank
+   everything), then the brief, PRD, personas, architecture, and real identifiers in code
+   and data.
+3. **Resolve collisions.** Synonyms (several words, one concept): pick one, list the rest as
+   *aliases, not to be used*, with the document each came from. Homonyms (one word, several
+   concepts): split them and rename at least one.
+4. **Let the business word win.** Where domain and code disagree, the domain term is the
+   entry and the code identifier is recorded as its implementation name. Do not rename code
+   as a side effect.
+5. **Define in the owner's words**, plain sentence first, precise one after if needed, and
+   **ground each term** in a worked example, a file path or a value from the data.
+6. **A term nobody can define crisply** is an unresolved product decision wearing a noun:
+   list it as an open question for the originator, never invent a definition.
+
+`/delivery:status` reports terms used in documents that are not in the glossary.
 
 ## Writing, then revising
 

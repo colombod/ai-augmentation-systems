@@ -13,7 +13,7 @@ argument-hint: "[subject-or-initiative]"
 
 Subject: **$ARGUMENTS**
 
-Phase 1 of the pipeline. Output: `.delivery/initiatives/<initiative>/brief.md`.
+DEFINE stage, the entry point. Output: `.delivery/initiatives/<initiative>/brief.md`.
 
 ## Conventions
 

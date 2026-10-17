@@ -1,6 +1,6 @@
 ---
-description: Produce a scoped implementation package for an external runner — which stories, in what order, with acceptance criteria, design tokens, test commands and required report-back. Use before handing a wave of work to an implementation system. Writes no source code.
-argument-hint: "[initiative]"
+description: Produce a scoped implementation package for a wave of work — which stories, in what order, with acceptance criteria, design tokens, test commands and required report-back — for the team's builders or an external runner. With --runner superpowers|generic, also convert it into that runner's native format (a superpowers spec or plan, or a generic self-contained brief). Use before a wave is built. Writes no source code.
+argument-hint: "[scope] [--runner superpowers|generic]"
 ---
 
 # Sprint scope package
@@ -11,11 +11,11 @@ argument-hint: "[initiative]"
 > resumed mid-phase, re-invoke the skill with the Skill tool before acting. A phase
 > run from a summary of its skill is how a Narrated artifact happens.
 
-Scope: **$ARGUMENTS** (a roadmap phase, an MVP stage, a story-ID list, or empty for the next unstarted phase)
+Scope: **$ARGUMENTS** (a roadmap phase, an MVP stage, a story-ID list, or empty for the next unstarted phase; `--runner superpowers|generic` adds the hand-off below)
 
 **This skill does not implement anything.** It produces the input an implementation
-run consumes — your own harness, a coding agent, a contractor, or a team. The plugin
-plans, scopes, reviews and re-aligns; building is somebody else's job.
+run consumes — the shipping team's builders, your own harness, a coding agent, or a
+contractor. Building is the builders' or the runner's job, not this skill's.
 
 That boundary is deliberate. It keeps this package harness-agnostic, and it keeps the
 thing that reviews the work separate from the thing that produced it — which is what
@@ -85,6 +85,16 @@ counteracts that.
 **7. Working agreement.** Branch name, one commit per story, and that tests must not be
 weakened to pass — if a test is wrong, report it rather than editing the assertion.
 
+## Hand off to a runner (`--runner`)
+
+Only when `--runner` is given (`superpowers` or `generic`; if it is given with no value, ask
+which). After the package is written, Read
+`${CLAUDE_PLUGIN_ROOT}/skills/sprint/references/runners.md` and follow it: its pre-flight,
+the section for the chosen runner, and its report. It binds this skill as if written here.
+The shipping team's builders read the package itself and need no `--runner`. If a package
+for this scope already exists in `.delivery/sprints/` and only the hand-off is wanted, reuse
+it: re-run the gate check against it instead of building a new one.
+
 ## Writing, then revising
 
 **Budget: 600 words target, 900 hard cap** (excludes code, YAML and data tables). Compose, measure and revise as *Writing, then revising* in the conventions says.
@@ -94,5 +104,8 @@ weakened to pass — if a test is wrong, report it rather than editing the asser
 Present the package location and a summary: stories included, excluded and why, the
 verification contract, and any risk you want the runner warned about.
 
-State clearly that the next step after the external run is `/delivery:sprint-review`,
-which will re-verify independently rather than trusting the run's own report.
+With `--runner`, add the hand-off report that `runners.md` asks for.
+
+State clearly that the next step after the run is `/delivery:sprint-review`,
+which will re-verify independently rather than trusting the run's own report, then
+`/delivery:realign`.

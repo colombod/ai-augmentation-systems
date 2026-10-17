@@ -13,7 +13,7 @@ argument-hint: "[phase-or-initiative]"
 
 Phase or epic to decompose: **$ARGUMENTS** (defaults to the first phase not yet decomposed)
 
-Phase 10 of the pipeline. Inputs: `.delivery/initiatives/<initiative>/prd.md`, `.delivery/initiatives/<initiative>/architecture.md`, `.delivery/initiatives/<initiative>/roadmap.md`, plus `design-system.md` where it exists. Output: `.delivery/stories/`.
+CONTRACT stage. Inputs: `.delivery/initiatives/<initiative>/prd.md`, `.delivery/initiatives/<initiative>/architecture.md`, `.delivery/initiatives/<initiative>/roadmap.md`, plus `design-system.md` where it exists. Output: `.delivery/stories/`.
 
 ## Conventions
 

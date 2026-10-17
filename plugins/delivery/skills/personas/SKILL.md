@@ -13,7 +13,7 @@ argument-hint: "[initiative]"
 
 Focus or segment hint: **$ARGUMENTS**
 
-Phase 3 of the pipeline. Inputs: `.delivery/initiatives/<initiative>/brief.md`, `.delivery/initiatives/<initiative>/research.md`. Output: `.delivery/personas/`.
+DEFINE stage, optional depth. Inputs: `.delivery/initiatives/<initiative>/brief.md`, `.delivery/initiatives/<initiative>/research.md`. Output: `.delivery/personas/`.
 
 These are **customer personas** — the people who use the product. They are a different thing from the plugin's internal role agents (Product Owner, Architect, and so on), which represent the team.
 
@@ -111,7 +111,7 @@ source: derived | seeded-from:<project> | refined:<date>
 ```
 
 **The frontmatter fields are mandatory and machine-readable** — `id`, `grounding`, `status`,
-`source`. `/delivery:status` reports the grounding mix from them and `/delivery:prioritize`
+`source`. `/delivery:status` reports the grounding mix from them and `/delivery:prd` (its MVP-staging step)
 checks per-stage persona coverage by them. Writing the grade only in the body, however
 prominently, breaks both silently. Do both: frontmatter for the tools, prose for the reader.
 
@@ -138,4 +138,4 @@ IDs are stable and never reused. A retired `P-2` stays `P-2`.
 
 Report the personas with their grades. State plainly how much of this set is `assumed` — if most of it is, say that the phases downstream are generating hypotheses rather than validating a design, because that changes how their output should be read.
 
-Next step: `/delivery:interview` to probe them, or `/delivery:simulate` to walk them through journeys.
+Next step: `/delivery:simulate --interview` to probe them, or `/delivery:simulate --journey` to walk them through journeys — or straight to `/delivery:prd` on the fast path.

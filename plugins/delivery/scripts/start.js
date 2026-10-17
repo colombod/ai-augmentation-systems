@@ -347,7 +347,7 @@ function scaffold(opts) {
   if (permissionMode === 'default') say('  (no --permission-mode: each session uses your own Claude Code default; pass --permission-mode to choose one)');
   say('');
   say('Then:');
-  say('  1. In every session, run /delivery:join.');
+  say('  1. In every session, run /delivery:team join.');
   say('  2. Open the Chief of Staff session and talk to it. It is the only session you need to talk to.');
   say('  3. /delivery:team shows who is live; ask the Chief of Staff for the question ledger to see every decision.');
   return { code: 0, out, teamDir, prepared, projectRoot };

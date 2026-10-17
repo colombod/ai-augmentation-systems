@@ -13,7 +13,7 @@ argument-hint: "[initiative]"
 
 Topic: **$ARGUMENTS** (defaults to the feature named in the brief)
 
-Phase 2 of the pipeline. Input: `.delivery/initiatives/<initiative>/brief.md`. Output: `.delivery/initiatives/<initiative>/research.md`.
+DEFINE stage, optional depth. Input: `.delivery/initiatives/<initiative>/brief.md`. Output: `.delivery/initiatives/<initiative>/research.md`.
 
 ## Conventions
 

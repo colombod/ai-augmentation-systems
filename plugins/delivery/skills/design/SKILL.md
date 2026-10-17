@@ -13,7 +13,7 @@ argument-hint: "[design-seed-or-initiative]"
 
 Design seed from the originator: **$ARGUMENTS**
 
-Phase 7 of the pipeline. Inputs: `.delivery/initiatives/<initiative>/brief.md`, `.delivery/personas/`, plus any existing tokens in the codebase. Output: `.delivery/initiatives/<initiative>/design-system.md`.
+DEFINE stage, optional depth. Inputs: `.delivery/initiatives/<initiative>/brief.md`, `.delivery/personas/`, plus any existing tokens in the codebase. Output: `.delivery/initiatives/<initiative>/design-system.md`.
 
 ## Conventions
 
