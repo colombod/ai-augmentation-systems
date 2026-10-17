@@ -503,7 +503,16 @@ test('E: MCP GitHub-style tool inputs are scanned for plan phrases; issue creati
   assert.match(run('mcp__gitlab__update_merge_request', { a: { b: { c: ['see .delivery/stories/x.md'] } } }).reason, /\.delivery\//);
   assert.match(run('mcp__github__push_files', { files: [{ path: 'a', content: 'for Casual Carl' }], message: 'x' }).reason, /Casual Carl/);
   assert.match(run('mcp__github__create_issue', { title: 'clean' }).reason, /GitHub issues in the product repo are for users/);
-  assert.match(run('mcp__x__addIssue', { title: 'clean' }).reason, /for users/);
+  assert.match(run('mcp__x__add_issue', { title: 'clean' }).reason, /for users/);
+  // issue_write creates only with method create; an update, and a comment, are scanned like gh instead.
+  assert.match(run('mcp__github__issue_write', { method: 'create', title: 'clean' }).reason, /for users/);
+  assert.equal(run('mcp__github__issue_write', { method: 'update', issue_number: 3, title: 'clean' }), null);
+  assert.match(run('mcp__github__issue_write', { method: 'update', issue_number: 3, body: 'Sell duplicates faster' }).reason, /Sell duplicates faster/);
+  assert.equal(run('mcp__github__add_issue_comment', { body: 'Refs ex-1' }), null);
+  assert.match(run('mcp__github__add_issue_comment', { body: 'Sell duplicates faster' }).reason, /Sell duplicates faster/);
+  // Whole tool names only: a name that merely contains the words is not an issue creator.
+  assert.equal(run('mcp__github__list_issue_types', { title: 'clean' }), null);
+  assert.equal(run('mcp__x__addIssue', { title: 'clean' }), null);
   // Depth and size are bounded: a phrase deeper than four levels or past 20 KB is not reached.
   assert.equal(run('mcp__github__create_pull_request', { a: { b: { c: { d: { e: { f: 'Sell duplicates faster' } } } } } }), null);
   assert.equal(run('mcp__github__create_pull_request', { pad: 'x'.repeat(21000), body: 'Sell duplicates faster' }), null);

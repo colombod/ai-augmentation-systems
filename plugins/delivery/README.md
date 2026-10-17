@@ -92,7 +92,7 @@ session its role and keep it:
   in the role directory. A role file without `lane_bash` gets read-only groups; every role may write
   the harness's own plan and memory files under `~/.claude`.
 - The lane covers every shell channel and MCP. `Monitor` commands are judged like Bash, `PowerShell`
-  is allowed only for roles with `any`, and any other tool carrying a `command` is treated as Bash. For
+  is allowed only for roles with `any`, and any other tool carrying a `command` is treated as Bash when hooks.json routes it to the hook. For
   roles without `any`, MCP tools are read-verb only unless the role file's `lane_mcp` key names them
   (comma-separated tool-name patterns, `*` wildcard); the managers' `lane_mcp` allows session
   messaging and listing.

@@ -771,3 +771,11 @@ test('M3: .delivery/OPERATOR is protected like .delivery/operator', () => {
     assert.equal(d(role, 'Bash', { command: 'echo x >> .delivery/OPERATOR/records/c.ndjson' }).allow, false, role);
   }
 });
+
+test('F2: the new bd verbs classify into the lane groups the guard expects', () => {
+  for (const c of ['bd assign ex-1 me', 'bd tag ex-1 x', 'bd todo add "x"', 'bd import f.jsonl', 'bd reopen ex-1', 'bd duplicates --merge', 'bd link ex-1 ex-2']) {
+    assert.ok(classifySegment(c, GROUPS, ctx()).includes('bd-structure'), c);
+  }
+  for (const c of ['bd assign ex-1 me', 'bd reopen ex-1']) assert.ok(classifySegment(c, GROUPS, ctx()).includes('bd-claim'), c);
+  assert.ok(!classifySegment('bd tag ex-1 x', GROUPS, ctx()).includes('bd-claim'));
+});
