@@ -304,8 +304,11 @@ function shaMatch(a, b) {
   return Math.min(x.length, y.length) >= 7 && (x.startsWith(y) || y.startsWith(x));
 }
 
-// Why a row does not count for criterion c, or null when it does (D2, D3).
-function rowProblem(row, { c, surface, noSurface, sha, deployedAt, authors }) {
+// A criterion a reality check verifies (R-33): its probe says so, or no test reaches its surface.
+const byRealityCheck = (c, surface) => Boolean((c.probe && c.probe.by === 'reality-check') || (surface && surface.scriptable === false));
+
+// Why a row does not count for criterion c, or null when it does (D2, D3, R-33).
+function rowProblem(row, { c, surface, noSurface, sha, deployedAt, authors, recordOk = () => false }) {
   if (row.type !== 'row' || Number(row.criterion) !== c.n) return 'not this criterion';
   if (row.criterion_hash !== criterionHash(c)) return `${row.id} checked another wording of criterion ${c.n}`;
   if (row.result !== 'pass') return `${row.id} is a ${row.result}`;
@@ -315,6 +318,8 @@ function rowProblem(row, { c, surface, noSurface, sha, deployedAt, authors }) {
   if (!shaMatch(row.sha, sha)) return `${row.id} is on ${String(row.sha).slice(0, 12)}, not the deployed ${String(sha).slice(0, 12)}`;
   if (deployedAt && String(row.at) < String(deployedAt)) return `${row.id} was recorded before the deploy`;
   if (authors.actors.includes(row.actor) || authors.roles.includes(row.by)) return `${row.id} was recorded by the author (${row.by})`;
+  // the Reality Checker's run through reality-check.js, or a row that cites the owner's record
+  if (byRealityCheck(c, surface) && !(row.via === 'reality-check' && row.by === 'reality-checker') && !(row.record && recordOk(row.record))) return `${row.id} is not a reality check (R-33): criterion ${c.n} is verified on the surface by the Reality Checker`;
   return null;
 }
 
@@ -326,13 +331,16 @@ function doneCheck({ story, bead, rows = [], surface, noSurface = false, instanc
   const cut = rows.find((r) => r.type === 'cut' && recordOk(r.record));
   if (cut) return { ok: true, cut: cut.id, criteria: [] };
   if (!story || !story.criteria.length) return { ok: false, criteria: [], empty: true };
-  const ctx = { surface, noSurface, sha: m.deployed_sha || null, deployedAt: m.deployed_at || null, authors: authorsOf(bead, instances) };
+  const ctx = { surface, noSurface, sha: m.deployed_sha || null, deployedAt: m.deployed_at || null, authors: authorsOf(bead, instances), recordOk };
   const out = story.criteria.map((c) => {
     const waiver = rows.find((r) => r.type === 'waiver' && Number(r.criterion) === c.n && r.criterion_hash === criterionHash(c) && (!m.deployed_at || r.at < m.deployed_at) && recordOk(r.record));
     if (waiver) return { n: c.n, waiver: waiver.id };
     const mine = rows.filter((r) => r.type === 'row' && Number(r.criterion) === c.n);
-    const good = mine.find((r) => !rowProblem(r, { ...ctx, c }));
-    if (good) return { n: c.n, row: good.id };
+    // the latest row that would count as a pass decides: a fail after a pass un-verifies
+    const live = mine.filter((r) => !rowProblem({ ...r, result: 'pass' }, { ...ctx, c }));
+    const last = live[live.length - 1];
+    if (last && last.result !== 'pass') return { n: c.n, why: `${last.id} is a ${last.result}, the latest run on the deployed sha` };
+    if (last) return { n: c.n, row: last.id };
     const why = mine.length ? rowProblem(mine[mine.length - 1], { ...ctx, c }) : `no pass row${ctx.sha ? '' : ', no deployed sha'}`;
     return { n: c.n, why };
   });
@@ -341,5 +349,5 @@ function doneCheck({ story, bead, rows = [], surface, noSurface = false, instanc
 
 const initiativeOf = (bead) => { const m = /^([a-z0-9][a-z0-9-]*)\//.exec(String((bead && bead.metadata && bead.metadata.roadmap_ref) || '')); return m ? m[1] : null; };
 
-module.exports = { parseStory, storyHash, criterionHash, storySurface, isStoryBead, readyFindings, shippableState, scopeDrift, claimDivergence, stateOf, stateCounts, unverifiedOver, areaOf,
+module.exports = { byRealityCheck, parseStory, storyHash, criterionHash, storySurface, isStoryBead, readyFindings, shippableState, scopeDrift, claimDivergence, stateOf, stateCounts, unverifiedOver, areaOf,
   readEvidence, readEvidenceChecked, headProblem, appendEvidence, evidenceFile, roleOfActor, authorsOf, shaMatch, rowProblem, doneCheck, initiativeOf, STATE, DEFAULT_MAX_UNVERIFIED };

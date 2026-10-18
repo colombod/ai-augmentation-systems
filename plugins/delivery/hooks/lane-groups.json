@@ -82,7 +82,7 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/warnings.js", "sub": ["ack"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/ready.js" },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/evidence.js", "sub": ["add", "state", "waive", "cut"] },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/reality-check.js", "sub": ["plan"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/reality-check.js", "sub": ["plan", "refine"] }
   ],
   "reality-check": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/reality-check.js", "sub": ["run-record"] }

@@ -2,6 +2,7 @@
 // scripts/evidence.js — evidence rows (R-11) and the merged / deployed / verified states (R-12).
 //   evidence.js add <bead> --criterion <n> --result pass|fail --surface <id> --sha <deployed sha>
 //               [--run <run id, log query or URL>] [--host h] [--app a] [--mode m] [--install-artifact x]
+//               [--record dec-...]   (a criterion a reality check verifies counts from a DM row only on the owner's record)
 //   evidence.js state <bead> merged [--pr <n>] | deployed --sha <sha> [--version <what the surface shows>]
 //   evidence.js waive <bead> --criterion <n> --record <dec-...> --risk '<risk accepted>'
 //   evidence.js cut <bead> --record <dec-...> --reason '<why the story is not delivered>'
@@ -152,7 +153,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
     else if (a.surface !== inp.surface.id || !sameTuple(observed, tupleOf(inp.surface))) why = `observed on ${observed.app}, ${observed.mode} (${observed.host}), not ${describe(inp.surface)}`;
   }
   if (!why && !G.shaMatch(a.sha, m.deployed_sha)) { why = `on ${a.sha}, not the deployed ${m.deployed_sha}`; gate = 'D3'; }
-  const row = record(store, who.root, id, { type: 'row', criterion: c.n, criterion_hash: G.criterionHash(c), result: a.result, surface: a.surface, tuple: observed, sha: a.sha, run: a.run || null, by, actor, at, arm: why ? 'side' : 'main', ...(why ? { why } : {}), ...(via ? { via: via.by, capture: via.capture, observed_version: via.observed_version } : {}) });
+  // R-33: a criterion verified on the surface counts from the Reality Checker's run, or on the owner's record
+  if (a.record) { const bad = unverifiedRecord(who, a.record, verifyRecord); if (bad) return refuse(bad); }
+  if (!why && !via && !a.record && G.byRealityCheck(c, inp.surface)) { why = `criterion ${c.n} is verified by a reality check (R-33): reality-check.js plan ${id}, then the Reality Checker runs it; or cite the owner's record (--record dec-...)`; gate = 'R-33'; }
+  const row = record(store, who.root, id, { type: 'row', criterion: c.n, criterion_hash: G.criterionHash(c), result: a.result, surface: a.surface, tuple: observed, sha: a.sha, run: a.run || null, by, actor, at, arm: why ? 'side' : 'main', ...(why ? { why } : {}), ...(a.record ? { record: a.record } : {}), ...(via ? { via: via.by, capture: via.capture, observed_version: via.observed_version } : {}) });
   if (why) return { ...refuse(`not verification of ${id} (${gate}): ${why}. Kept as side arm ${row.id}.`), row };
   const d = syncVerified(store, bead, { ...inp, rows: [...inp.rows, row] });
   const note = inp.noSurface ? '\nwarning: the story declares no customer surface, so the surface was not checked (R-09)' : '';

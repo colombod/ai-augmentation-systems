@@ -6,7 +6,7 @@ const { findProjectRoot, loadManifest, expandInstances } = require('./manifest.j
 const { loadSurface } = require('./surface.js');
 const G = require('./gates.js');
 
-// { root, roleId, instance, actor, team } for this session; role fields are null outside a role session.
+// { root, roleId, instance, actor, team, roleDir } for this session; role fields are null outside a role session.
 function whoAmI({ cwd = process.cwd(), env = process.env, project } = {}) {
   let valid = null;
   try {
@@ -22,6 +22,7 @@ function whoAmI({ cwd = process.cwd(), env = process.env, project } = {}) {
     roleId: valid ? valid.role.id : null,
     instance: valid ? valid.marker.instance : null,
     actor: valid ? (env.BEADS_ACTOR || valid.marker.actor) : (env.BEADS_ACTOR || null),
+    roleDir: valid ? valid.roleDir : null,
   };
 }
 

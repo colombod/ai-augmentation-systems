@@ -27,13 +27,15 @@ function setup() {
   const call = (mod, instance, argv, now) => mod.main(argv, { cwd: root, env: {}, bd, now, who: whoFor(root, instance) });
   const dm = (...argv) => call(rc, 'delivery-lead', argv, T.plan);
   const deploy = (version) => call(evidence, 'delivery-lead', ['state', ID, 'deployed', '--sha', SHA, ...(version ? ['--version', version] : [])], T.deploy);
-  const capture = (name = 'c1.txt') => {
-    const dir = path.join(root, '.delivery', 'evidence', 'artifacts', ID);
+  let k = 0;
+  // every capture is a distinct file (a reused capture is refused)
+  const capture = (name = 'c1.txt', base = root) => {
+    const dir = path.join(base, '.delivery', 'evidence', 'artifacts', ID);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, name), 'Imported 212 cards from collection.csv (v1.4.2)\n');
+    fs.writeFileSync(path.join(dir, name), `Imported 212 cards from collection.csv (v1.4.2), run ${++k}\n`);
     return path.join(dir, name);
   };
-  const record = (n, result, extra = [], now = T.run) => call(rc, 'reality-checker', ['run-record', ID, '--criterion', String(n), '--result', result, '--artifact', capture(), '--observed-version', 'v1.4.2', ...extra], now);
+  const record = (n, result, extra = [], now = T.run) => call(rc, 'reality-checker', ['run-record', ID, '--criterion', String(n), '--result', result, '--artifact', capture(`c${n}-${k + 1}.txt`), '--observed-version', 'v1.4.2', ...extra], now);
   return { root, bd, call, dm, deploy, record, capture, bead: () => bd.show(ID) };
 }
 
@@ -83,7 +85,7 @@ test('10-17: a Reality Checker row on the wrong tuple (Codex mode for ChatGPT pl
   assert.equal(row.via, 'reality-check');
   assert.equal(row.by, 'reality-checker');
   assert.equal(row.observed_version, 'v1.4.2');
-  assert.match(row.capture.path, /^artifacts\/ex-vault-0n9-3\/c1\.txt$/);
+  assert.match(row.capture.path, /^artifacts\/ex-vault-0n9-3\/c2-\d+\.txt$/);
   assert.match(row.capture.sha256, /^[0-9a-f]{16}$/);
   assert.equal(call(evidence, 'delivery-lead', ['check', ID]).code, 0, 'the done gate counts the pass rows');
 });
@@ -206,4 +208,122 @@ test('the Reality Checker brief renders with the plugin path and tells it to sto
   assert.ok(text.includes(`node ${path.join(PLUGIN_ROOT, 'scripts', 'reality-check.js')} run-record`));
   assert.match(text, /If a run hits a sign-in, consent or payment wall, stop/);
   assert.match(text, /Asking the owner to check, try or look at anything is never an owner step/);
+});
+
+// ---- fix round (PR 53 review) ----
+
+test('R-11: a Delivery Manager pass on a reality-check criterion is a side arm unless it cites a verified owner record', () => {
+  const { root, bd, deploy, call } = setup();
+  deploy('v1.4.2');
+  const add = (n, extra = []) => evidence.main(['add', ID, '--criterion', String(n), '--result', 'pass', '--surface', 'S1', '--sha', SHA, ...extra], { cwd: root, env: {}, bd, now: T.run, who: whoFor(root, 'delivery-lead'), verifyRecord: (r, id) => ({ ok: id === 'dec-chief-of-staff-41' }) });
+  const r = add(1);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /criterion 1 is verified by a reality check \(R-33\)/);
+  assert.match(add(1, ['--record', 'dec-x-9']).out, /dec-x-9 does not verify/);
+  assert.equal(add(1, ['--record', 'dec-chief-of-staff-41']).code, 0, "the owner's record lets a DM row count");
+  // a row written by hand as the DM's does not count at the gate either
+  const G2 = require('./lib/gates.js');
+  const story = G2.parseStory(fs.readFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-3.md'), 'utf8'));
+  const c2 = story.criteria[1];
+  const row = { id: 'ev-x-9', type: 'row', criterion: 2, criterion_hash: G2.criterionHash(c2), result: 'pass', arm: 'main', surface: 'S1', tuple: { host: 'chatgpt.com', app: 'ChatGPT web', mode: 'plain chat', install_artifact: 'connector from the shipped plugin' }, sha: SHA, by: 'delivery-lead', actor: 't@pc/delivery-lead', at: T.run };
+  const surface = require('./lib/surface.js').loadSurface(root, 'vault').surfaces[0];
+  assert.match(G2.rowProblem(row, { c: c2, surface, sha: SHA, authors: { actors: [], roles: [] } }), /not a reality check/);
+  assert.equal(call(evidence, 'delivery-lead', ['check', ID]).code, 1);
+});
+
+test('the done gate counts the latest main-arm row per criterion on the deployed sha: a fail after a pass un-verifies', () => {
+  const { dm, deploy, record, bead, call } = setup();
+  deploy('v1.4.2');
+  dm('plan', ID, '--attempts', '3');
+  record(1, 'pass');
+  record(2, 'pass');
+  assert.equal(G.stateOf(bead()), 'verified');
+  record(1, 'fail');
+  assert.equal(G.stateOf(bead()), 'deployed');
+  assert.match(call(evidence, 'delivery-lead', ['check', ID]).out, /criterion 1: .*is a fail/);
+});
+
+test('capture: real-path containment in the shared checkout or the checker\'s own project clone; no symlink escape; published into the shared store', () => {
+  const { root, bd, dm, deploy, capture } = setup();
+  deploy('v1.4.2');
+  dm('plan', ID);
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-role-'));
+  const who = { ...whoFor(root, 'reality-checker'), roleDir };
+  const out = (artifact) => rc.main(['run-record', ID, '--criterion', '1', '--result', 'pass', '--artifact', artifact, '--observed-version', 'v1.4.2'], { cwd: roleDir, env: {}, now: T.run, who, bd }).out;
+  // an outside directory that merely contains the artifacts suffix
+  assert.match(out(capture('s.txt', fs.mkdtempSync(path.join(os.tmpdir(), 'evil-')))), /must be under/);
+  // a symlink in the bead's own directory pointing outside
+  const link = path.join(root, '.delivery', 'evidence', 'artifacts', ID, 'hosts.txt');
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync('/etc/hosts', link);
+  assert.match(out(link), /must be under/);
+  // a capture in the checker's project clone, given relative to its role directory, is copied into the shared store
+  capture('clone.txt', path.join(roleDir, 'project'));
+  assert.match(out(`project/.delivery/evidence/artifacts/${ID}/clone.txt`), /criterion 1 pass/);
+  const row = G.readEvidence(root, ID).pop();
+  assert.equal(row.capture.path, `artifacts/${ID}/clone.txt`);
+  assert.ok(fs.existsSync(path.join(root, '.delivery', 'evidence', row.capture.path)), 'the row names a file in the shared store');
+});
+
+test('capture reuse: a capture already cited for another bead, criterion or sha is refused', () => {
+  const { root, dm, deploy, call, capture } = setup();
+  deploy('v1.4.2');
+  dm('plan', ID);
+  const file = capture('one.txt');
+  const run = (n, artifact) => call(rc, 'reality-checker', ['run-record', ID, '--criterion', String(n), '--result', 'pass', '--artifact', artifact, '--observed-version', 'v1.4.2'], T.run);
+  assert.equal(run(1, file).code, 0);
+  const copy = path.join(path.dirname(file), 'copy.txt');
+  fs.copyFileSync(file, copy);
+  assert.match(run(2, copy).out, /already backs ev-ex-vault-0n9-3-1 \(criterion 1/);
+});
+
+test('Copilot: the script\'s criterion hash and tuple are what count; deployed_version and evidence_head are protected bead fields', () => {
+  const { root, bd, dm, deploy, record } = setup();
+  deploy('v1.4.2');
+  dm('plan', ID);
+  // the surface declaration changes after planning: a run that followed the old script is a side arm
+  const file = path.join(root, '.delivery', 'initiatives', 'vault', 'surface.json');
+  const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+  doc.surfaces[0].install_artifact = 'connector from the 1.5 zip';
+  fs.writeFileSync(file, JSON.stringify(doc));
+  assert.match(record(1, 'pass').out, /\(D2\)/);
+  doc.surfaces[0].install_artifact = 'connector from the shipped plugin';
+  fs.writeFileSync(file, JSON.stringify(doc));
+  // a reworded criterion: the old script group no longer matches
+  const story = path.join(root, '.delivery', 'stories', 'vault-0n9-3.md');
+  fs.writeFileSync(story, fs.readFileSync(story, 'utf8').replace('with the card count', 'with the card count and deck name'));
+  assert.match(record(1, 'pass').out, /criterion 1 changed since the script was planned/);
+  void bd;
+  const { decideBd } = require('../hooks/scripts/bd-guard.js');
+  const fake = { show: () => ({ id: 'mine', status: 'in_progress', assignee: 'me@pc/builder-1', labels: ['story'], metadata: { story_file: 'x.md' } }) };
+  for (const k of ['deployed_version', 'evidence_head']) {
+    const r = decideBd({ command: `bd update mine --metadata '{"${k}":"x"}'`, actor: 'me@pc/builder-1', roleId: 'builder', staleHours: 2, bd: fake, now: T.run });
+    assert.ok(r && r.reason, k);
+  }
+});
+
+test('Copilot 470: the Delivery Manager refines the shared script through reality-check.js refine; others cannot', () => {
+  const { root, dm, call } = setup();
+  dm('plan', ID);
+  const r = dm('refine', ID, '--criterion', '1', '--step', '1', '--action', 'Drop collection.csv into a new plain chat', '--capture', 'screenshot,page-text');
+  assert.equal(r.code, 0, r.out);
+  dm('refine', ID, '--criterion', '1', '--add-step', '--action', 'Ask for the deck count', '--expect', 'the chat answers 3 decks');
+  dm('refine', ID, '--read-on-screen', 'the connector about line', '--account', 'vault-test-1');
+  const s = JSON.parse(fs.readFileSync(path.join(root, rc.scriptRel(ID)), 'utf8'));
+  assert.equal(s.criteria[0].steps[0].action, 'Drop collection.csv into a new plain chat');
+  assert.deepEqual(s.criteria[0].steps[0].capture, ['screenshot', 'page-text']);
+  assert.equal(s.criteria[0].steps[1].expect, 'the chat answers 3 decks');
+  assert.deepEqual([s.artifact.read_on_screen, s.account.name], ['the connector about line', 'vault-test-1']);
+  assert.match(call(rc, 'reality-checker', ['refine', ID, '--criterion', '1', '--step', '1', '--action', 'x']).out, /the Delivery Manager's to do/);
+  assert.match(dm('refine', ID, '--account', 'hunter2-password').out, /a name, never a secret/);
+});
+
+test('a side-arm run does not use up the cap', () => {
+  const { dm, deploy, record } = setup();
+  deploy('v1.4.2');
+  dm('plan', ID);
+  record(1, 'pass', ['--mode', 'codex']);
+  record(1, 'pass', ['--mode', 'codex']);
+  assert.equal(record(1, 'fail').code, 0);
+  assert.equal(record(1, 'pass').code, 0);
 });

@@ -5,6 +5,9 @@
 //   reality-check.js plan <bead> [--attempts <n>] [--minutes <n>]   Delivery Manager: write
 //       .delivery/reality-checks/<bead>.json (templates/reality-check.json is the format); once the story
 //       is deployed, also create its reality-check child bead for the Reality Checker
+//   reality-check.js refine <bead> [--criterion <n> (--step <k> | --add-step) | --setup <k>]
+//       [--action ..] [--expect ..] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..]
+//       [--precondition <o-id>]   Delivery Manager: edit the shared script (the only way to change it)
 //   reality-check.js show <bead>                                       the script, read only
 //   reality-check.js run-record <bead> --criterion <n> --result pass|fail --artifact <path>
 //       --observed-version <what the surface showed> [--host h] [--app a] [--mode m] [--install-artifact x]
@@ -20,8 +23,11 @@ const W = require('./lib/warnings.js');
 const { tupleOf, TUPLE } = require('./lib/surface.js');
 const { whoAmI, gateInputs, writerProblem, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
-const VALUE = ['--criterion', '--result', '--artifact', '--observed-version', '--attempts', '--minutes', '--project', '--host', '--app', '--mode', '--install-artifact'];
+const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
+const VALUE = ['--criterion', '--result', '--artifact', '--observed-version', '--attempts', '--minutes', '--project', '--host', '--app', '--mode', '--install-artifact',
+  '--step', '--setup', '--action', '--expect', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition'];
+// a test account is named, never given: anything that looks like a password or token is refused
+const SECRETISH = /pass(?:word|wd)?|secret|token|api[_-]?key|[:=]\S|\b[A-Za-z0-9+/_-]{24,}\b/i;
 const DEFAULT_CAP = { attempts: 2, minutes: 30 };
 const LABEL = 'reality-check';
 const SIGNIN = "A sign-in, consent or payment wall stops the run: message the Chief of Staff with the one exact step for the owner queue (kind signin, consent or payment), and resume when it is done. Never type a password and never use the owner's own account.";
@@ -30,7 +36,8 @@ function parse(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (VALUE.includes(a)) { if (argv[i + 1] === undefined) throw new Error(`${a} needs a value`); out[a.slice(2).replace(/-/g, '_')] = argv[++i]; }
+    if (a === '--add-step') out.add_step = true;
+    else if (VALUE.includes(a)) { if (argv[i + 1] === undefined) throw new Error(`${a} needs a value`); out[a.slice(2).replace(/-/g, '_')] = argv[++i]; }
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
     else out._.push(a);
   }
@@ -127,6 +134,53 @@ function plan(who, store, id, a, at) {
 
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, 16);
 
+// Where a capture may come from: the bead's artifacts directory in the shared project checkout (where
+// rows and scripts live), or in the checker's own project clone (<role dir>/project, where its lane
+// writes). Real paths, so `..` and symlinks cannot leave it. { real, rel, sha256 } or { problem }.
+function captureOf(who, id, file, shown) {
+  const bases = [who.root, who.roleDir ? path.join(who.roleDir, 'project') : null].filter(Boolean).map((b) => path.join(b, artifactsRel(id)));
+  let real = null;
+  try { real = fs.realpathSync(file); } catch (err) { real = null; }
+  if (!real) return { problem: `no capture at ${shown}: save the page text, DOM text, log or screenshot file there first` };
+  for (const b of bases) {
+    let base;
+    try { base = fs.realpathSync(b); } catch (err) { continue; }
+    const rel = path.relative(base, real);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) continue;
+    const stat = fs.statSync(real);
+    if (!stat.isFile() || !stat.size) return { problem: `no capture at ${shown}: save the page text, DOM text, log or screenshot file there first` };
+    return { real, rel, sha256: sha256(real) };
+  }
+  return { problem: `the capture must be under ${artifactsRel(id)} in the project checkout or your own project clone (got ${shown})` };
+}
+
+// The capture is copied into the shared store, so the row's path resolves for every reader.
+function publish(root, id, cap) {
+  const dir = path.join(root, artifactsRel(id));
+  let rel = cap.rel;
+  let dest = path.join(dir, rel);
+  const same = (() => { try { return fs.realpathSync(dest) === cap.real; } catch (err) { return false; } })();
+  if (!same) {
+    if (fs.existsSync(dest) && sha256(dest) !== cap.sha256) { rel = path.join(path.dirname(rel), `${cap.sha256.slice(0, 8)}-${path.basename(rel)}`); dest = path.join(dir, rel); }
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(cap.real, dest);
+  }
+  return { path: `artifacts/${id}/${rel.split(path.sep).join('/')}`, sha256: cap.sha256 };
+}
+
+// A row elsewhere that already cites these bytes: another bead, another criterion, or another deploy.
+function citedElsewhere(root, hash, { bead, criterion, sha }) {
+  let files = [];
+  try { files = fs.readdirSync(path.join(root, '.delivery', 'evidence')).filter((f) => f.endsWith('.ndjson')); } catch (err) { return null; }
+  for (const f of files) {
+    for (const r of G.readEvidence(root, f.replace(/\.ndjson$/, ''))) {
+      if (!r.capture || r.capture.sha256 !== hash) continue;
+      if (r.bead !== bead || Number(r.criterion) !== criterion || !G.shaMatch(r.sha, sha)) return r;
+    }
+  }
+  return null;
+}
+
 function runRecord(who, store, id, a, { cwd, env, now, verifyRecord }) {
   const wp = writerProblem(who, EVIDENCE_WRITERS);
   if (wp) return refuse(wp);
@@ -139,26 +193,31 @@ function runRecord(who, store, id, a, { cwd, env, now, verifyRecord }) {
   if (!script) return refuse(`no reality-check script for ${id}: the Delivery Manager writes it (reality-check.js plan ${id})`);
   if (!G.shaMatch(script.artifact && script.artifact.deployed_sha, m.deployed_sha)) return refuse(`the script is for ${(script.artifact && script.artifact.deployed_sha) || 'no deploy'}, not the deployed ${m.deployed_sha}: message the Delivery Manager to plan it again`);
   const n = Number(a.criterion);
-  if (!(script.criteria || []).some((g) => g.criterion === n)) return refuse(`criterion ${a.criterion} is not in the script (${(script.criteria || []).map((g) => g.criterion).join(', ') || 'none'}): its probe runs as a test`);
+  const group = (script.criteria || []).find((g) => g.criterion === n);
+  if (!group) return refuse(`criterion ${a.criterion} is not in the script (${(script.criteria || []).map((g) => g.criterion).join(', ') || 'none'}): its probe runs as a test`);
+  // the steps that were run must be the ones for this wording of the criterion
+  const inp = gateInputs(who.root, bead, { bd: store, team: who.team });
+  const current = inp.story && inp.story.criteria.find((c) => c.n === n);
+  if (!current || group.criterion_hash !== G.criterionHash(current)) return refuse(`criterion ${n} changed since the script was planned, so its steps checked another outcome.\nMessage the Delivery Manager to plan it again (reality-check.js plan ${id})`);
   // the build on screen must be the deployed one: a run on another build checks nothing here (D3)
   const seen = String(a.observed_version).trim();
   const versionOk = G.shaMatch(seen, m.deployed_sha) || (m.deployed_version && seen.toLowerCase() === String(m.deployed_version).trim().toLowerCase());
   if (!versionOk) return refuse(`the surface shows ${seen}, not the deployed ${m.deployed_version ? `${m.deployed_version} (${m.deployed_sha})` : m.deployed_sha}: that run checked another build, so nothing is recorded.\nMessage the Delivery Manager: the deploy has not reached the surface`);
-  const file = path.resolve(cwd, a.artifact);
-  const posix = file.split(path.sep).join('/');
-  const at = posix.lastIndexOf(`/${artifactsRel(id)}`);
-  if (at < 0) return refuse(`the capture must be under ${artifactsRel(id)} (got ${a.artifact})`);
-  let stat = null;
-  try { stat = fs.statSync(file); } catch (err) { stat = null; }
-  if (!stat || !stat.isFile() || !stat.size) return refuse(`no capture at ${a.artifact}: save the screenshot, page text or log there first`);
-  const capture = { path: posix.slice(at + 1 + '.delivery/evidence/'.length), sha256: sha256(file) };
-  // the run cap: attempts per criterion on this deploy; a second run after a fail is a recorded warning
-  const mine = G.readEvidence(who.root, id).filter((r) => r.type === 'row' && r.via === LABEL && Number(r.criterion) === n && G.shaMatch(r.sha, m.deployed_sha));
+  const cap0 = captureOf(who, id, path.resolve(cwd, a.artifact), a.artifact);
+  if (cap0.problem) return refuse(cap0.problem);
+  // a capture backs one run: the same bytes for another bead, criterion or deploy are not a new observation
+  const reused = citedElsewhere(who.root, cap0.sha256, { bead: id, criterion: n, sha: m.deployed_sha });
+  if (reused) return refuse(`that capture already backs ${reused.id} (criterion ${reused.criterion} of ${reused.bead} at ${String(reused.sha).slice(0, 12)}): capture this run`);
+  const capture = publish(who.root, id, cap0);
+  // the run cap: main-arm attempts per criterion on this deploy (a run on the wrong surface does not
+  // count against it); a second run after a fail is a recorded warning
+  const mine = G.readEvidence(who.root, id).filter((r) => r.type === 'row' && r.via === LABEL && r.arm !== 'side' && Number(r.criterion) === n && G.shaMatch(r.sha, m.deployed_sha));
   const cap = (script.cap && script.cap.attempts) || DEFAULT_CAP.attempts;
   if (mine.length >= cap) return refuse(`criterion ${n} already has ${mine.length} run(s) on ${String(m.deployed_sha).slice(0, 12)}, the script's cap.\nStop and message the Delivery Manager: a new run needs a new deploy or a new script`);
-  const retry = mine.some((r) => r.result === 'fail' && r.arm !== 'side');
+  const retry = mine.some((r) => r.result === 'fail');
   const argv = ['add', id, '--criterion', String(n), '--result', a.result, '--surface', script.surface.id, '--sha', m.deployed_sha, '--run', `${script.id}#${capture.path}`];
-  for (const k of TUPLE) if (a[k] !== undefined) argv.push(`--${k.replace('_', '-')}`, a[k]);
+  // the tuple observed is the script's (what was set up), overridden by what the checker saw
+  for (const k of TUPLE) { const v = a[k] !== undefined ? a[k] : script.surface[k]; if (v !== undefined) argv.push(`--${k.replace('_', '-')}`, v); }
   const r = require('./evidence.js').main(argv, { cwd, env, bd: store, now, verifyRecord, who, via: { by: LABEL, capture, observed_version: seen } });
   const out = [r.out.replace(/^evidence\.js: /, 'reality-check.js: ')];
   if (retry && r.row) {
@@ -172,13 +231,62 @@ function runRecord(who, store, id, a, { cwd, env, now, verifyRecord }) {
   return { code: r.code, out: out.join('\n'), row: r.row };
 }
 
+// The Delivery Manager's edits go through here: the script lives in the shared project checkout, which
+// run-record reads, and no lane writes it directly.
+function refine(who, id, a, at) {
+  const wp = writerProblem(who);
+  if (wp) return refuse(wp);
+  const s = readScript(who.root, id);
+  if (!s) return refuse(`no reality-check script for ${id}: plan it first (reality-check.js plan ${id})`);
+  const fields = (step) => {
+    if (a.action !== undefined) step.action = a.action;
+    if (a.expect !== undefined) step.expect = a.expect;
+    if (a.capture !== undefined) step.capture = a.capture.split(',').map((x) => x.trim()).filter(Boolean);
+  };
+  const changed = [];
+  if (a.criterion !== undefined) {
+    const g = (s.criteria || []).find((x) => x.criterion === Number(a.criterion));
+    if (!g) return refuse(`criterion ${a.criterion} is not in the script`);
+    if (a.add_step) {
+      if (!a.action || !a.expect) return { code: 2, out: 'reality-check.js: --add-step needs --action and --expect' };
+      const step = { n: g.steps.length + 1, capture: ['screenshot', 'page-text'] };
+      fields(step);
+      g.steps.push(step);
+      changed.push(`criterion ${g.criterion} step ${step.n} added`);
+    } else if (a.step !== undefined) {
+      const step = g.steps.find((x) => x.n === Number(a.step));
+      if (!step) return refuse(`criterion ${g.criterion} has no step ${a.step} (1..${g.steps.length})`);
+      fields(step);
+      changed.push(`criterion ${g.criterion} step ${step.n}`);
+    }
+    if (a.pass_rule !== undefined) { g.pass_rule = a.pass_rule; changed.push(`criterion ${g.criterion} pass rule`); }
+  } else if (a.setup !== undefined) {
+    const step = (s.setup || [])[Number(a.setup) - 1];
+    if (!step) return refuse(`no setup step ${a.setup} (1..${(s.setup || []).length})`);
+    fields(step);
+    changed.push(`setup step ${a.setup}`);
+  }
+  if (a.account !== undefined) {
+    if (SECRETISH.test(a.account)) return refuse('the test account is a name, never a secret: its sign-in is an owner-queue step');
+    s.account = { ...s.account, name: a.account };
+    changed.push('account');
+  }
+  if (a.read_on_screen !== undefined) { s.artifact = { ...s.artifact, read_on_screen: a.read_on_screen }; changed.push('version on screen'); }
+  if (a.precondition !== undefined) { s.preconditions = [...new Set([...(s.preconditions || []), a.precondition])]; changed.push('preconditions'); }
+  if (!changed.length) return { code: 2, out: USAGE };
+  s.refined_by = who.instance;
+  s.refined_at = at;
+  fs.writeFileSync(path.join(who.root, scriptRel(id)), `${JSON.stringify(s, null, 2)}\n`);
+  return { code: 0, out: `${scriptRel(id)}: ${changed.join(', ')}` };
+}
+
 // open reality-check beads, for /delivery:team
 const pending = (beads) => (beads || []).filter((b) => (b.labels || []).includes(LABEL) && b.status !== 'closed');
 
 function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, who: given } = {}) {
   const a = parse(argv);
   const [cmd, id] = a._;
-  if (!['plan', 'show', 'run-record'].includes(cmd) || !id) return { code: 2, out: USAGE };
+  if (!['plan', 'refine', 'show', 'run-record'].includes(cmd) || !id) return { code: 2, out: USAGE };
   const who = given || whoAmI({ cwd, env, project: a.project });
   if (!who.root) return { code: 2, out: 'reality-check.js: no project found; pass --project <root>' };
   if (cmd === 'show') {
@@ -188,6 +296,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
   const at = now || new Date().toISOString();
   if (cmd === 'plan') return plan(who, store, id, a, at);
+  if (cmd === 'refine') return refine(who, id, a, at);
   return runRecord(who, store, id, a, { cwd, env, now: at, verifyRecord });
 }
 
