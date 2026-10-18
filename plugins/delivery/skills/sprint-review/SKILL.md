@@ -64,7 +64,7 @@ criteria, not the builder's report" rule this whole review runs under:
   doesn't have — a claim resting on an environment nobody actually has access to is not
   evidence, and gets the same **not accepted** treatment as an untested functional claim.
 
-**3. Run the test suite yourself** and report the real output. A sprint that claimed green and is now red is the single most important thing this review can catch.
+**3. Run the test suite** and report the real output. A sprint that claimed green and is now red is the single most important thing this review can catch. In a delivery team the Delivery Manager's lane runs no product code: the independent reviewer, or a Builder asked for it, runs the suite on the commit under review and the review quotes its output; a result reported without that output is not evidence.
 
 **4. Check design system conformance.** Where a design system exists, delegate to `delivery:design-lead`: which tokens were used, which were bypassed with hardcoded values, which component states are missing, which contrast rules fail. Report file paths, not impressions.
 
