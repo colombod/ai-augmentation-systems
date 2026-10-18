@@ -603,14 +603,19 @@ const isGoalFile = (p, files) => files.includes(realish(p).toLowerCase());
 function goalShellWrite(command, { cwd, files = [] } = {}) {
   const text = String(command == null ? '' : command);
   const mentioned = GOAL_MENTION.test(text);
+  // the directory each segment runs in: a `cd <dir>` moves the ones after it (Copilot 658)
+  let base = cwd || process.cwd();
   return splitCommand(text).some((seg) => {
     const t = tokens(seg);
     if (!t.length) return false;
-    const base = cwd || process.cwd();
-    if (files.length && writeTargets(seg, t).some((x) => isGoalFile(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`, files))) return true;
-    if (!mentioned || !GOAL_MENTION.test(seg)) return false;
+    if (t[0] === 'cd') { const c = cdTarget(t); if (!c.unknown) base = path.resolve(base, c.dir); return false; }
     const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
     const first = path.basename(words[0] || '');
+    const targets = writeTargets(seg, t);
+    // in-place editors write every file argument: sed -i, perl -i
+    if ((first === 'sed' && writesFiles(['sed', ...words.slice(1)])) || (first === 'perl' && words.some((x) => /^-[a-zA-Z]*i/.test(x)))) targets.push(...words.slice(1).filter((x) => !x.startsWith('-')));
+    if (files.length && targets.some((x) => isGoalFile(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`, files))) return true;
+    if (!mentioned || !GOAL_MENTION.test(seg)) return false;
     if (hasRedirect(seg) || OPERATOR_WRITE_WORDS.includes(first)) return true;
     if (first === 'sed' && writesFiles(['sed', ...words.slice(1)])) return true;
     if (first === 'git') return GOAL_GIT_WRITES.includes(splitGlobals(['git', ...words.slice(1)]).rest[0]);

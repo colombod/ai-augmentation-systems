@@ -22,7 +22,7 @@ const COMMANDS = ['publish', 'refresh', 'sync', 'record', 'delegate', 'decide', 
 
 const USAGE = `usage: operator.js <command> [options]   (all commands: --project <root> --json)
   sync [--all] [--format-check]   (--transcript <path> and --session <id> are refused in role lanes: capture reads the session's own transcript)
-  record --cite in-N --quote "<exact words>" --statement "<what was decided>" [--scope bead:ID,label:L,initiative:I] [--answers q-N] [--supersedes ID]
+  record --cite in-N --quote "<exact words>" --statement "<what was decided>" [--scope bead:ID,label:L,initiative:I] [--answers q-N] [--supersedes ID] [--goal <field>=<value>]
   delegate --cite in-N --quote "<...>" --statement "<...>" --grant "<one sentence: what is delegated>" --scope ... [--until DATE] [--max-uses N] [--answers q-N]
   decide --under del-N --statement "<...>" --scope ... [--answers q-N]
   revoke --cite in-N --quote "<...>" --target ID
@@ -91,6 +91,15 @@ function parseScope(v) {
     out[key].push(val);
   }
   return out;
+}
+
+// --goal <field>=<value>: the decision is made for this goal-sheet change (goal.js set accepts only
+// such a record, and only when the owner's quote states the value)
+function goalLabel(v) {
+  const Goal = require('./lib/goal.js');
+  const m = /^([a-z_.]+)=(.+)$/s.exec(String(v || ''));
+  if (!m || !Goal.FIELDS[m[1]]) throw new UsageError(`--goal must be <field>=<value> with a field of ${Object.keys(Goal.FIELDS).join(', ')}`);
+  return `goal:${m[1]}=${m[2].trim()}`;
 }
 
 function parseSince(v) {
@@ -451,6 +460,7 @@ const handlers = {
   record(ctx, flags) {
     need(flags, 'cite', 'quote', 'statement');
     const scope = parseScope(flags.scope);
+    if (flags.goal !== undefined) scope.labels.push(goalLabel(flags.goal));
     requireWriter(ctx);
     needNotDiverged(ctx);
     const s = syncCurrent(ctx, flags, flags.cite);

@@ -17,7 +17,7 @@ Structure flows from the roadmap document to beads through `/delivery:materialis
 
 Set `size:` honestly in every story: S is routine, M is ordinary work, L means risky or ambiguous. Materialise turns it into a `size-S|M|L` label, and builders give L stories a stronger model; a story that needs a specific model says `model:` in its frontmatter.
 
-Ready work with nothing in progress is a defect: `team-status.js` and your Stop hook warn when the team has been idle with ready beads for 30 minutes and no owner pause holds; start the next one. Only the owner pauses work (`goal.js show` says whether a pause holds); an open andon pauses it mechanically: `node ${CLAUDE_PLUGIN_ROOT}/scripts/goal.js pause --trigger andon:<id>`.
+Ready work with nothing in progress is a defect: `team-status.js` and your Stop hook warn when the team has been idle with ready beads for 30 minutes and no owner pause holds; start the next one. Only the owner pauses work (`goal.js show` says whether a pause holds); a failed check row (an andon) pauses it until a check passes: `node ${CLAUDE_PLUGIN_ROOT}/scripts/goal.js pause --trigger andon:<the failed evidence row id>`.
 
 You assign ready beads to builders, decide on blockers, release stale claims, and re-route. A blocker reaches you once: a note in the bead and a message. You decide, re-route, or escalate through the Chief of Staff.
 

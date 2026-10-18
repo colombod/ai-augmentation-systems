@@ -64,9 +64,9 @@ test('R-43 team status: idle heads the status and is recorded once per idle stre
   assert.match(text.split('\n')[0], /^Idle: 2 ready items and nothing in progress/);
   st();
   assert.deepEqual(W.list(root).map((w) => [w.kind, w.rule]), [['idle', 'R-43']]);
-  fs.mkdirSync(path.join(root, '.delivery', 'andon'), { recursive: true });
-  fs.writeFileSync(path.join(root, '.delivery', 'andon', 'a-1.json'), JSON.stringify({ status: 'open' }));
-  fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify({ fields: { pause: { value: 'paused', trigger: 'andon:a-1' } }, history: [] }));
+  // an andon: a failed check row from evidence.js, then the trigger pause
+  require('./gates.js').appendEvidence(root, 'vault-wxy-12', { type: 'row', criterion: 1, result: 'fail', by: 'reality-checker', at: BACK });
+  fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify({ fields: { pause_trigger: { value: 'paused', trigger: 'andon:ev-vault-wxy-12-1' } }, history: [] }));
   assert.doesNotMatch(renderStatus(st()), /^Idle:/);
 });
 

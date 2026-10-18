@@ -1715,7 +1715,7 @@ function writeLedger(projectRoot) {
 }
 
 module.exports = {
-  OperatorError, normalizeWs, quoteCheck, excerptFor, highStakesLabels, machineId,
+  OperatorError, normalizeWs, quoteCheck, hasNegation, excerptFor, highStakesLabels, machineId,
   recordDecision, recordAnswer, ratify, recordDelegation, decideUnder, revoke, recordQuestion, withdraw, ack, recordRehost,
   quarantine, repairChain,
   verifyRecord, verifyRecordsFile, find, pending, ledger, renderLedger, writeLedger, listRecords, getRecord, viewProblems,
