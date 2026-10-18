@@ -87,3 +87,20 @@ test('R-43 Stop hook: the Delivery Manager\'s stop records the idle warning and 
   assert.deepEqual(W.list(projectRoot).map((w) => w.kind), ['idle']);
   assert.match(fs.readFileSync(path.join(roleDir, '.delivery-message-reminder'), 'utf8'), /^Idle: 2 ready items/);
 });
+
+test('R-43 I1: with bd hanging, the Delivery Manager\'s stop with the idle check stays under 12 s', () => {
+  const { prepareRole } = require('../prepare-role.js');
+  const projectRoot = project();
+  const git = (...a) => spawnSync('git', a, { cwd: projectRoot, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+  git('init', '-q'); git('add', '-A'); git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+  const { roleDir } = prepareRole({ projectRoot, instance: 'delivery-lead', teamDir: fs.mkdtempSync(path.join(os.tmpdir(), 'idle-team-')), pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  fs.writeFileSync(path.join(roleDir, '.delivery-turn'), '2026-10-18T00:00:00Z\n');
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'idle-slow-'));
+  fs.writeFileSync(path.join(bin, 'bd'), '#!/bin/sh\nexec sleep 20\n', { mode: 0o755 });
+  const env = { ...process.env, DELIVERY_ROLE: 'delivery-lead', PATH: `${bin}${path.delimiter}/usr/bin${path.delimiter}/bin` };
+  delete env.DELIVERY_ROLE_DIR;
+  const t0 = Date.now();
+  const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'hooks', 'scripts', 'claim-stop.js')], { input: JSON.stringify({ session_id: 's1', hook_event_name: 'Stop', stop_hook_active: false, cwd: roleDir, last_assistant_message: 'Done.' }), env, encoding: 'utf8' });
+  assert.equal(r.status, 0);
+  assert.ok(Date.now() - t0 < 12000, `the stop took ${Date.now() - t0} ms`);
+});
