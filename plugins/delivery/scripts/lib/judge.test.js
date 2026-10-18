@@ -169,7 +169,9 @@ test('ask refuses locally: off, unknown question, sensitive or missing fields; n
     };
     const more = [['credential', '{"password":"hunter22"}'], ['credential', 'the password is hunter22'], ['path', './private/config.json'],
       ['path', '.delivery/team/team.json'], ['path', '/private.env'], ['token', 'glpat-abcdefghijklmnopqrstu'], ['token', 'npm_abcdefghijklmnopqrstuvwxyz0123456789'],
-      ['token', 'xoxb-1234567890-abc'], ['token', 'hooks.slack.com/services/T0/B0/xyz'], ['token', 'ts_live_abcdefgh12'], ['url', 'www.example.com/a?sig=abc']];
+      ['token', 'xoxb-1234567890-abc'], ['token', 'hooks.slack.com/services/T0/B0/xyz'], ['token', 'ts_live_abcdefgh12'], ['url', 'www.example.com/a?sig=abc'], ['url', 'www.example.com?sig=abc'],
+      ['credential', 'DB_PASSWORD=hunter22'], ['credential', 'set api-key=abcd1234'], ['credential', 'clientSecret: abcd1234'], ['credential', 'the access_token is abcd1234'],
+      ['denylist', 'the Secret\nCodename  launch'], ['denylist', 'the SECRET\u00a0codename launch']];
     for (const [kind, message] of [...Object.entries(cases), ...more.map(([k, m]) => [k, m])]) {
       const r = await J.ask('relay_request', { ...RELAY, message }, { config: cfgFor(f.url), logDir, denylist: ['secret codename'] });
       assert.equal(r.reason, 'state_filtered', message);
@@ -177,6 +179,7 @@ test('ask refuses locally: off, unknown question, sensitive or missing fields; n
     }
     // a structured credential is seen as name: value
     assert.equal((await J.ask('is_fix', { candidate: 'c', linked_item: 'l', context: { connection: { password: 'hunter22' } } }, { config: cfgFor(f.url), logDir })).reason, 'state_filtered');
+    assert.equal((await J.ask('is_fix', { candidate: 'c', linked_item: 'l', context: { access_token: 'short-synthetic-token' } }, { config: cfgFor(f.url), logDir })).reason, 'state_filtered');
     assert.equal((await J.ask('relay_request', { ...RELAY, message: 'x'.repeat(16001) }, { config: cfgFor(f.url), logDir })).reason, 'state_too_large');
     // a denylist that exists but cannot be read refuses the call (fail closed)
     const proj = tmp();

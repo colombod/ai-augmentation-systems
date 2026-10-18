@@ -87,7 +87,7 @@ const CHECKS = [
   ['credential', new RegExp(String.raw`\b${CRED}\s+(?:is|was|reads)\s+["']?[^\s"'.,]{3,}`, 'i')],
   ['email', /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/],
   ['url', /\b[a-z][a-z0-9+.-]*:\/\/\S+/i],
-  ['url', /\b(?:[a-z0-9-]+\.)+[a-z]{2,}\/\S*\?\S*=/i],
+  ['url', /\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/\S*)?\?\S*=/i],
   ['id', /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i],
   ['ip', /\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[0-9a-f]{1,4}:){4,7}[0-9a-f]{1,4}\b/i],
   ['phone', /(?:^|[^\w#])\+\d{1,3}[\s.-]?\(?\d{1,4}\)?(?:[\s.-]?\d{2,4}){2,4}\b|\(\d{3}\)\s?\d{3}[\s.-]\d{4}\b/],
@@ -96,6 +96,10 @@ const CHECKS = [
   ['path', new RegExp(String.raw`${LEAD}(?:~[\\/]\S|\/(?:[\w.@-]+\/)+[\w.@-]*|\/[\w@-]*\.[A-Za-z0-9]{1,8}\b|[A-Za-z]:\\\S|\.{1,2}[\\/][\w.@-]+|\.[\w-]+[\\/][\w.@-]+)`)],
   ['path', /\b[\w.-]+(?:\/[\w.-]+)*\/[\w-]+\.(?:json|env|ya?ml|toml|ini|pem|key|crt|p12|js|ts|py|rb|go|md|txt|cfg|conf|sh|ndjson|log|db|sqlite)\b/i],
 ];
+// credential words are also matched as name segments: DB_PASSWORD, access_token, api-key, clientSecret
+const segments = (s) => s.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_.-]+/g, ' ');
+// denylist matching ignores case, Unicode form and runs of whitespace (a phrase wrapped across lines)
+const fold = (s) => String(s).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 // a run of 20 or more hex digits (with a digit in it) is a token or a hash
 const HEX = /\b[0-9a-fA-F]{20,}\b/g;
 // a long opaque run with letters and digits is a key, a hash or a token
@@ -123,11 +127,11 @@ function secretKind(value, denylist, secrets = []) {
   for (const s of stringsOf(value)) {
     if (s === '\u0000too-deep') return 'too_deep';
     if (secrets.some((k) => typeof k === 'string' && k.length >= 8 && s.includes(k))) return 'key';
-    for (const [kind, re] of CHECKS) if (re.test(s)) return kind;
+    for (const [kind, re] of CHECKS) if (re.test(s) || (kind === 'credential' && re.test(segments(s)))) return kind;
     for (const m of s.match(OPAQUE) || []) if (/\d/.test(m) && /[A-Za-z]/.test(m)) return 'opaque';
     for (const m of s.match(HEX) || []) if (/\d/.test(m)) return 'hex';
-    const low = s.toLowerCase();
-    if ((denylist || []).some((d) => d && low.includes(String(d).toLowerCase()))) return 'denylist';
+    const low = fold(s);
+    if ((denylist || []).some((d) => d && fold(d) && low.includes(fold(d)))) return 'denylist';
   }
   return null;
 }
