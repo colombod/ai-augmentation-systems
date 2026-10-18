@@ -234,3 +234,19 @@ test('R-42 re-review andon: a builder\'s fail row is no andon; a pass appended b
   row(root, { result: 'pass', by: 'delivery-lead' }); // appended, but the bead's head was not moved
   assert.equal(Goal.activePause(root, { beadOf: () => bead }).paused, true);
 });
+
+test('Copilot round 2: a typographic apostrophe still negates; side-arm passes and other andons do not lift a pause', () => {
+  const { root, decide } = ownerSaid(['Don’t pause the team']);
+  assert.equal(set(root, 'pause', 'paused', decide(1, 'Don’t pause the team', 'goal:pause=paused')).ok, false);
+  const r2 = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-ev-'));
+  row(r2, { result: 'fail', by: 'delivery-lead' });
+  const bead = beadWith(row(r2, { result: 'fail', by: 'delivery-lead', criterion: 2 }));
+  assert.equal(pause(r2, 'delivery-lead', `andon:ev-${BEAD}-1`, bead).code, 0);
+  assert.equal(pause(r2, 'delivery-lead', `andon:ev-${BEAD}-2`, bead).code, 0);
+  row(r2, { result: 'pass', by: 'delivery-lead', criterion: 2 });
+  assert.equal(Goal.activePause(r2).paused, true, 'the first andon is still open');
+  row(r2, { result: 'pass', by: 'delivery-lead', arm: 'side' });
+  assert.equal(Goal.activePause(r2).paused, true, 'a side-arm pass is not a check of the failure');
+  row(r2, { result: 'pass', by: 'delivery-lead' });
+  assert.equal(Goal.activePause(r2).paused, false);
+});

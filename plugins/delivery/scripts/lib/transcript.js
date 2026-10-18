@@ -151,7 +151,9 @@ function turnIn(file, size, maxBytes) {
     let rec;
     try { rec = JSON.parse(l); } catch (e) { continue; }
     const c = classifyRecord(rec);
+    // the owner's words, and every new prompt (a slash command too) starts this turn's commands
     if (c && c.source === 'human') { out.owner = c.text; out.commands = []; continue; }
+    if (c && /^\s*<command-name>/.test(c.text)) { out.commands = []; continue; }
     const content = rec && rec.type === 'assistant' && rec.message && Array.isArray(rec.message.content) ? rec.message.content : [];
     for (const b of content) if (b && b.type === 'tool_use' && b.input && typeof b.input.command === 'string') out.commands.push(b.input.command);
   }

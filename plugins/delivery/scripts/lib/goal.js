@@ -124,7 +124,8 @@ function isEnglish(q) {
 // null when the owner's quote states the value; else the reason, with language: true when only the
 // language check failed (the typed judge may then confirm it). A negation or a conditional refuses it.
 function quoteProblem(field, value, quote) {
-  const q = String(quote || '').normalize('NFKC');
+  // typographic apostrophes as operator-records reads them: Don’t is Don't (Copilot)
+  const q = String(quote || '').normalize('NFKC').replace(/[\u2018\u2019\u02BC]/g, "'");
   if (!q.trim()) return { why: 'there is no quote' };
   const f = FIELDS[field];
   let hasNegation = null;
@@ -207,7 +208,7 @@ function andonState(root, rowId, { bead, atPause } = {}) {
   const row = rows.find((r) => r.id === rowId);
   if (!row || row.type !== 'row' || row.result !== 'fail') return { open: false, why: `${rowId} is not a failed check row` };
   if (!EVIDENCE_WRITERS.includes(row.by)) return { open: false, why: `${rowId} was not recorded by the Delivery Manager or a Reality Checker` };
-  if (rows.some((r) => r.seq > row.seq && r.type === 'row' && r.criterion === row.criterion && r.result === 'pass' && EVIDENCE_WRITERS.includes(r.by))) return { open: false, why: `${rowId} was followed by a pass` };
+  if (rows.some((r) => r.seq > row.seq && r.type === 'row' && r.criterion === row.criterion && r.result === 'pass' && r.arm !== 'side' && EVIDENCE_WRITERS.includes(r.by))) return { open: false, why: `${rowId} was followed by a pass` };
   return { open: true, bead: m[1] };
 }
 
@@ -250,7 +251,8 @@ function pauseOnTrigger({ root, who, trigger, bead, now }) {
   if (!who || !TRIGGER_WRITERS.includes(who.roleId)) return { ok: false, error: 'a trigger pause is recorded by the Delivery Manager or Chief of Staff', notWriter: true };
   const t = triggerState(root, trigger, { bead, atPause: true });
   if (!t.open) return { ok: false, error: t.why };
-  return { ok: true, entry: commit(root, 'pause_trigger', { value: 'paused', trigger, by: who.instance, at: now || new Date().toISOString() }) };
+  // every open andon is kept: passing one never lifts another (Copilot)
+  return { ok: true, entry: commit(root, 'pause_triggers', { value: 'paused', trigger, by: who.instance, at: now || new Date().toISOString() }, { append: true }) };
 }
 
 // Unverified entries: a record that no longer holds, or a value written with no record. Each is
@@ -294,11 +296,13 @@ const value = (root, field, opts = {}) => resolve(root, field, opts).value;
 function activePause(root, { verifyRecord, g = read(root), warn = true, beadOf } = {}) {
   const owner = resolve(root, 'pause', { g, verifyRecord, warn });
   if (['paused', 'stopped'].includes(owner.value)) return { paused: true, by: owner.from };
-  const t = g.fields.pause_trigger;
-  let bead = null;
-  if (t && beadOf) { try { bead = beadOf(beadOfTrigger(t.trigger)); } catch (err) { bead = null; } }
-  if (t && t.trigger && triggerState(root, t.trigger, { bead }).open) return { paused: true, by: t.trigger };
-  return { paused: false, ...(owner.ignored ? { lapsed: owner.ignored } : {}), ...(t && t.trigger ? { lapsed: `${t.trigger} closed` } : {}) };
+  const triggers = [...(Array.isArray(g.fields.pause_triggers) ? g.fields.pause_triggers : []), ...(g.fields.pause_trigger ? [g.fields.pause_trigger] : [])].filter((t) => t && t.trigger);
+  for (const t of triggers) {
+    let bead = null;
+    if (beadOf) { try { bead = beadOf(beadOfTrigger(t.trigger)); } catch (err) { bead = null; } }
+    if (triggerState(root, t.trigger, { bead }).open) return { paused: true, by: t.trigger };
+  }
+  return { paused: false, ...(owner.ignored ? { lapsed: owner.ignored } : {}), ...(triggers.length ? { lapsed: `${triggers.map((t) => t.trigger).join(', ')} closed` } : {}) };
 }
 
 const SHOWN = [...Object.keys(FIELDS).filter((f) => !FIELDS[f].op), 'scope'];

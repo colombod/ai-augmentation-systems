@@ -255,3 +255,12 @@ test('currentTurn: a turn longer than the 8 MB window is read from further back'
   assert.equal(t.owner, 'is the import live?');
   assert.equal(t.commands[0], 'node /p/scripts/evidence.js check ex-1');
 });
+
+test('currentTurn: a slash-command prompt starts a new turn for the commands', () => {
+  const T = require('./transcript.js');
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'turn-')), 't.jsonl');
+  const tool = (command) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } });
+  fs.writeFileSync(f, `${[JSON.stringify({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: 'is it live?' } }), tool('node /p/scripts/evidence.js check ex-1'),
+    JSON.stringify({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: '<command-name>/delivery:status</command-name>' } }), tool('git status')].join('\n')}\n`);
+  assert.deepEqual(T.currentTurn(f).commands, ['git status']);
+});

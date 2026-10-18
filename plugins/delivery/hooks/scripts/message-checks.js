@@ -125,13 +125,26 @@ function isBriefing(text) {
 // ---- acceptance words need an evidence read this turn (R-03) ----
 const LIVE = /\b(?:is|are|now|it'?s|went|goes|been)\s+(?:live|shipped|verified)\b|\blive (?:in|on) (?:production|prod|the customer'?s?|your)\b|\bchecked on (?:the|your) (?:customer'?s?|real)\b|\bworks? (?:now )?(?:in|on) (?:your|the customer'?s?|the real)\b/i;
 const NOT_LIVE = /\bnot (?:yet )?(?:live|shipped|verified|checked)\b|\bnot checked yet\b|\bunverified\b/i;
-// a quoted script path is still a read (Copilot 697)
-const EVIDENCE_READ = /\bevidence\.js['"]?\s+(?:check|list)\b\s*['"]?([^\s'"]*)/;
+// The beads read by evidence.js check|list in command position, every segment of the command: a
+// quoted script path counts (Copilot 697); the text of an echo or a comment does not.
+function evidenceReads(command) {
+  const L = require('./lane.js');
+  const out = [];
+  try {
+    for (const seg of L.splitCommand(String(command || ''))) {
+      const t = L.tokens(seg).filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env');
+      if (!t.length || !/(?:^|\/)node$/.test(t[0])) continue;
+      const i = t.findIndex((x, k) => k > 0 && /(?:^|\/)evidence\.js$/.test(x));
+      if (i > 0 && ['check', 'list'].includes(t[i + 1])) out.push(t[i + 2] || '');
+    }
+  } catch (err) { /* nothing counts */ }
+  return out;
+}
 
 // A clause that says live, shipped or checked (not a question) needs an evidence read in this turn's
 // tool calls; when the clause names a bead, the read must be of that bead.
 function unbackedClaim(text, commands, { prefix } = {}) {
-  const reads = (commands || []).map((c) => EVIDENCE_READ.exec(c)).filter(Boolean).map((m) => m[1]);
+  const reads = (commands || []).flatMap(evidenceReads);
   const p = String(prefix || '').replace(/[^a-z0-9]/gi, '');
   const beadRe = p ? new RegExp(`\\b${p}-[a-z0-9]+(?:[.-][a-z0-9]+)*\\b`, 'gi') : null;
   for (const { raw, q } of RG.clauses(text)) {

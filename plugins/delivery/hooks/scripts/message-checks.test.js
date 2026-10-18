@@ -157,3 +157,10 @@ test('R-44 re-review I-c: an order written as a plan line still counts when it n
     'Plan for today:\nopen the Progress Observer session and type: approve']) assert.ok(M.ownerImperatives(m).length, m);
   assert.deepEqual(ORDINARY.filter((m) => M.ownerImperatives(m).length), []);
 });
+
+test('Copilot round 2: only evidence.js invocations in command position count, all of them', () => {
+  const live = 'vault-ex-1 is live in production. vault-ex-2 is live in production.';
+  assert.deepEqual(kinds(find(live, { commands: ["echo 'node evidence.js check vault-ex-1 vault-ex-2'"] })).filter((k) => k === 'claim-unchecked'), ['claim-unchecked']);
+  assert.deepEqual(kinds(find('vault-ex-1 is live in production.', { commands: ['echo done evidence.js check vault-ex-1'] })).filter((k) => k === 'claim-unchecked'), ['claim-unchecked']);
+  assert.deepEqual(kinds(find(live, { commands: ['node /p/scripts/evidence.js list vault-ex-1 && node /p/scripts/evidence.js list vault-ex-2'] })).filter((k) => k === 'claim-unchecked'), []);
+});
