@@ -9,6 +9,8 @@ const { prepareRole } = require('./prepare-role.js');
 
 const PLUGIN_ROOT = path.join(__dirname, '..');
 const TEMPLATES = path.join(PLUGIN_ROOT, 'templates');
+// the full manifest the tests run against (templates/ holds the minimal one users start from)
+const MANIFEST_FIXTURE = path.join(__dirname, 'testing', 'manifest');
 
 function git(cwd, ...args) {
   return execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString();
@@ -20,8 +22,8 @@ function scratchProjectRepo() {
   git(root, 'config', 'user.email', 't@t');
   git(root, 'config', 'user.name', 't');
   fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
-  fs.copyFileSync(path.join(TEMPLATES, 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
-  fs.copyFileSync(path.join(TEMPLATES, 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
+  fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), path.join(root, '.delivery', 'team', 'team.json'));
+  fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), path.join(root, '.delivery', 'team', 'hosts.json'));
   git(root, 'add', '-A');
   git(root, 'commit', '-q', '-m', 'init');
   return root;
@@ -54,6 +56,13 @@ test('prepareRole creates a thinking role directory without a product worktree',
   assert.equal(settings.env.DELIVERY_ROLE_DIR, roleDir);
   const brief = fs.readFileSync(path.join(roleDir, 'CLAUDE.local.md'), 'utf8');
   assert.ok(brief.startsWith('# Role: chief-of-staff (chief-of-staff) on example'));
+  // the rendered rules carry the record rule (12), never the old relay-refusing sentence
+  assert.ok(brief.includes('12. **Operator decisions are records, never relays.**'));
+  // C2: the role session's Bash has no CLAUDE_PLUGIN_ROOT, so the brief carries the absolute path
+  assert.ok(!brief.includes('${CLAUDE_PLUGIN_ROOT}'));
+  assert.ok(brief.includes(`node ${path.join(PLUGIN_ROOT, 'scripts', 'operator.js')} verify <id>`));
+  assert.ok(!brief.includes("passes as the operator's word"));
+  assert.ok(brief.includes("### The operator's time is yours to protect"));
   const marker = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8'));
   assert.equal(marker.instance, 'chief-of-staff');
   assert.equal(marker.role, 'chief-of-staff');
@@ -105,15 +114,20 @@ test('prepareRole merges settings, keeps foreign keys, sets DELIVERY_MODE and en
   const { roleDir } = prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
   const file = path.join(roleDir, '.claude', 'settings.local.json');
   const first = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.equal(first.permissions, undefined);
+  // I5: the lane's own commands are pre-allowed (no permission prompt only the operator can clear)
+  assert.ok(first.permissions.allow.includes('Bash(bd ready:*)'));
+  assert.ok(first.permissions.allow.includes(`Bash(node ${path.join(PLUGIN_ROOT, 'scripts', 'operator.js')} record:*)`));
+  assert.ok(!first.permissions.allow.some((r) => /Bash\(git push|Bash\(\*/.test(r)), 'nothing outside the chief of staff lane');
   assert.equal(first.env.DELIVERY_MODE, 'delegate');
   assert.equal(first.enabledPlugins['delivery@ai-augmentation-systems'], true);
+  const generated = first.permissions.allow.slice();
   first.permissions = { allow: ['Bash(ls)'], defaultMode: 'auto' };
   first.model = 'haiku';
   fs.writeFileSync(file, JSON.stringify(first));
   prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
   const second = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.deepEqual(second.permissions.allow, ['Bash(ls)']);
+  assert.equal(second.permissions.allow[0], 'Bash(ls)', 'a user rule is kept');
+  assert.deepEqual(second.permissions.allow.slice(1).sort(), generated.sort());
   assert.equal(second.permissions.defaultMode, undefined);
   assert.equal(second.model, 'opus');
   assert.equal(second.enabledPlugins['delivery@ai-augmentation-systems'], true);
@@ -184,4 +198,96 @@ test('C: a BEADS_DIR prepare-role wrote earlier is refreshed when the project mo
   fs.renameSync(moved, projectRoot);
   prep(projectRoot);
   assert.equal(read().env.BEADS_DIR, '/custom/beads');
+});
+
+test('I5: an unrestricted (any) lane gets no pre-allowed commands', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  const settings = JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8'));
+  assert.equal(settings.permissions.allow, undefined);
+});
+
+test('hardening a/b: native deny rules per role, idempotent, keeping the user\'s own rules', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const ASK = ['AskUserQuestion', 'PushNotification', 'SendUserFile'];
+  const settingsOf = (instance) => {
+    const { roleDir } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+    return { roleDir, s: JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')) };
+  };
+  const deny = (instance) => ((settingsOf(instance).s.permissions || {}).deny || []).slice().sort();
+  // operator-facing roles may ask; the chief of staff has no git push in its lane; only the delivery
+  // lead merges, so every other role gets the gh pr merge backstop
+  const M = 'Bash(gh pr merge:*)';
+  assert.deepEqual(deny('chief-of-staff'), ['Bash(curl:*)', M, 'Bash(git push:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
+  // the product manager, delivery lead and staffing push plan documents (git-write-project)
+  assert.deepEqual(deny('product-manager'), ['Bash(curl:*)', M, 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
+  assert.deepEqual(deny('delivery-lead'), [...ASK, 'Bash(curl:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
+  assert.ok(settingsOf('delivery-lead').s.permissions.allow.includes(M), 'the delivery lead merges without a prompt');
+  assert.deepEqual(deny('staffing'), [...ASK, 'Bash(curl:*)', M, 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
+  assert.deepEqual(deny('progress-observer'), [...ASK, 'Bash(curl:*)', M, 'Bash(git push:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
+  // workers (lane any) keep their commands but never address the operator and never merge
+  assert.deepEqual(deny('builder-1'), [...ASK, M].sort());
+  assert.deepEqual(deny('spike-researcher'), [...ASK, M].sort());
+  // idempotent; a user's own deny rule is kept, even one the plugin also manages; a rule the plugin
+  // added earlier (listed in its sidecar) is taken out once the role no longer needs it
+  const { roleDir, s } = settingsOf('chief-of-staff');
+  s.permissions.deny = [...s.permissions.deny, 'Bash(npm publish:*)', 'AskUserQuestion', 'PushNotification'];
+  fs.writeFileSync(path.join(roleDir, '.claude', 'settings.local.json'), JSON.stringify(s));
+  const sidecar = path.join(roleDir, '.claude', '.delivery-managed-deny.json');
+  fs.writeFileSync(sidecar, JSON.stringify({ deny: [...JSON.parse(fs.readFileSync(sidecar, 'utf8')).deny, 'PushNotification'] }));
+  const again = deny('chief-of-staff');
+  assert.ok(again.includes('Bash(npm publish:*)'));
+  assert.ok(again.includes('AskUserQuestion'), 'a deny the user wrote is never removed');
+  assert.ok(!again.includes('PushNotification'), 'the chief of staff may notify: the plugin-added deny is removed');
+  assert.deepEqual(deny('chief-of-staff'), again);
+});
+
+test('A5: a builder gets DELIVERY_LARGE_MODEL from its manifest large_model (default opus); a manager does not', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const envOf = (instance) => JSON.parse(fs.readFileSync(path.join(prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 't' }).roleDir, '.claude', 'settings.local.json'), 'utf8')).env;
+  assert.equal(envOf('builder-1').DELIVERY_LARGE_MODEL, 'opus');
+  assert.equal(envOf('chief-of-staff').DELIVERY_LARGE_MODEL, undefined);
+  const file = path.join(projectRoot, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.roles.find((r) => r.id === 'builder').large_model = 'sonnet';
+  fs.writeFileSync(file, JSON.stringify(team));
+  assert.equal(envOf('builder-1').DELIVERY_LARGE_MODEL, 'sonnet');
+});
+
+test('ruling 4: prepare-role --instance delivery-manager prepares the delivery-lead instance', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance: 'delivery-manager', teamDir, pluginRoot: PLUGIN_ROOT, user: 't' });
+  assert.equal(path.basename(roleDir), 'delivery-lead');
+  assert.match(fs.readFileSync(path.join(roleDir, 'CLAUDE.local.md'), 'utf8'), /Delivery Manager/);
+});
+
+test('final M6: prepare-role reports an unknown model name of the role it prepares as a warning', () => {
+  const projectRoot = scratchProjectRepo();
+  const file = path.join(projectRoot, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.roles.find((r) => r.id === 'staffing').model = 'claude-sonnet-9';
+  fs.writeFileSync(file, JSON.stringify(team));
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { files } = prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT, user: 't' });
+  assert.ok(files.some((f) => /^warning: .*"claude-sonnet-9"/.test(f)), files.join('\n'));
+  const other = prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 't' });
+  assert.ok(!other.files.some((f) => /claude-sonnet-9/.test(f)), 'only the prepared role\'s own model');
+});
+
+test('Copilot: a deny rule the user had is never removed, even one the plugin also manages', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const prep = () => prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' }).roleDir;
+  const file = (dir) => path.join(dir, '.claude', 'settings.local.json');
+  const dir = prep();
+  const s = JSON.parse(fs.readFileSync(file(dir), 'utf8'));
+  s.permissions.deny = [...s.permissions.deny, 'Bash(sudo:*)', 'Bash(rm:*)'];
+  fs.writeFileSync(file(dir), JSON.stringify(s));
+  prep();
+  const deny = JSON.parse(fs.readFileSync(file(dir), 'utf8')).permissions.deny;
+  assert.ok(deny.includes('Bash(sudo:*)') && deny.includes('Bash(rm:*)'), JSON.stringify(deny));
 });

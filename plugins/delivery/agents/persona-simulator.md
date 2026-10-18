@@ -1,5 +1,6 @@
 ---
 name: persona-simulator
+model: sonnet
 description: Embodies a specific end-user persona to react to a product, feature or journey in character. Use when running a simulated interview or walking a persona through a scenario to find friction. Read-only; produces in-character reactions clearly labelled as synthetic, never as research findings.
 disallowedTools: Write, Edit, NotebookEdit
 ---

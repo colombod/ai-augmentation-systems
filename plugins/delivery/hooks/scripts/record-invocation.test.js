@@ -18,23 +18,11 @@ const {
   recordInvocation,
 } = require('./record-invocation.js');
 
-// This exact test would have passed against the original (upward-only)
-// implementation while the real hook silently failed against this actual
-// repo — that gap was found only by running the real script against the
-// real repo, not by any unit test. It's added here so it can never happen
-// silently again.
-test('findDeliveryRoot: finds .delivery/ in a marketplace-style subdirectory below cwd', () => {
-  const root = makeScratchProject();
-  fs.mkdirSync(path.join(root, 'plugins', 'delivery', '.delivery'), { recursive: true });
-  assert.equal(
-    findDeliveryRoot(root),
-    path.join(root, 'plugins', 'delivery', '.delivery')
-  );
-});
+// the ledger is opt-in (A3); these tests exercise it switched on unless they say otherwise
+process.env.DELIVERY_LEDGER = '1';
 
 function makeScratchProject() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'record-invocation-test-'));
-  return root;
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'record-invocation-test-'));
 }
 
 test('findDeliveryRoot: finds .delivery/ in the starting directory', () => {
@@ -53,80 +41,6 @@ test('findDeliveryRoot: finds .delivery/ by walking upward from a subdirectory',
 
 test('findDeliveryRoot: returns null when no .delivery/ exists anywhere reachable', () => {
   const root = makeScratchProject();
-  assert.equal(findDeliveryRoot(root), null);
-});
-
-test('findDeliveryRoot: multiple .delivery/ found downward is ambiguous — declines rather than guessing', () => {
-  const root = makeScratchProject();
-  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
-  assert.equal(findDeliveryRoot(root), null);
-});
-
-test('recordInvocation: an ambiguous downward search still resolves for a session with an established ledger in one candidate', () => {
-  // Reproduces a real gap found live in the chief-of-staff epic's own spike: this repo is a
-  // multi-plugin monorepo (plugins/delivery/.delivery + plugins/attractor/.delivery, added
-  // after harden-02's own 21/21 verification ran, never re-tested against this shape). A
-  // session's first call can land with an unambiguous cwd and write successfully, then a
-  // LATER call in the exact same session arrives with an ambiguous cwd (e.g. a background
-  // subagent dispatch resolving to the repo root) and, before this fix, silently no-ops —
-  // even though the session already proved which root it belongs to.
-  const root = makeScratchProject();
-  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
-
-  const first = recordInvocation(
-    { session_id: 'sess-continuity', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } },
-    { cwd: path.join(root, 'plugins', 'a') }
-  );
-  assert.ok(first);
-  assert.equal(first.ledgerPath, path.join(root, 'plugins', 'a', '.delivery', 'invocations', 'sess-continuity.ndjson'));
-
-  const second = recordInvocation(
-    { session_id: 'sess-continuity', hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'delivery:chief-of-staff' } },
-    { cwd: root }
-  );
-  assert.ok(second, 'second call should not silently no-op — session already has an established ledger root');
-  assert.equal(second.ledgerPath, path.join(root, 'plugins', 'a', '.delivery', 'invocations', 'sess-continuity.ndjson'));
-
-  const lines = fs.readFileSync(second.ledgerPath, 'utf8').trim().split('\n');
-  assert.equal(lines.length, 2);
-});
-
-test('recordInvocation: a genuinely new session with an ambiguous cwd still declines to ATTRIBUTE — but records the ambiguity instead of vanishing (gy5.2)', () => {
-  // Contract changed deliberately after the 08-10..14 blackout: the old
-  // behavior here was `assert.equal(result, null)` — a silent no-op, which is
-  // exactly what made a dead observer indistinguishable from an idle session.
-  // The "no false positive" half of the old test still binds: no candidate may
-  // receive an ATTRIBUTED line. The record itself must exist, marked ambiguous.
-  const root = makeScratchProject();
-  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
-
-  const result = recordInvocation(
-    { session_id: 'sess-brand-new', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } },
-    { cwd: root }
-  );
-  assert.ok(result && result.ledgerPaths.length === 2);
-  assert.equal(result.record.attribution, 'ambiguous');
-  for (const p of ['a', 'b']) {
-    const lines = fs
-      .readFileSync(path.join(root, 'plugins', p, '.delivery', 'invocations', 'sess-brand-new.ndjson'), 'utf8')
-      .trim().split('\n').map(JSON.parse);
-    assert.ok(lines.every((l) => l.attribution === 'ambiguous'), `candidate ${p} must hold no attributed line`);
-  }
-});
-
-test('findDeliveryRoot: downward search skips node_modules', () => {
-  const root = makeScratchProject();
-  fs.mkdirSync(path.join(root, 'node_modules', 'some-pkg', '.delivery'), { recursive: true });
-  assert.equal(findDeliveryRoot(root), null);
-});
-
-test('findDeliveryRoot: downward search respects a bounded depth', () => {
-  const root = makeScratchProject();
-  // 6 levels deep — beyond DOWNWARD_SEARCH_MAX_DEPTH (4)
-  fs.mkdirSync(path.join(root, 'a', 'b', 'c', 'd', 'e', 'f', '.delivery'), { recursive: true });
   assert.equal(findDeliveryRoot(root), null);
 });
 
@@ -400,80 +314,6 @@ test('recordInvocation: a non-capture action on the browser tool is not recorded
 // it requires the very ledger file the decline prevents (bootstrap dead-end).
 // These tests pin the fix: ambiguity is recorded, not swallowed.
 
-test('recordInvocation: ambiguous with no established ledger writes an ambiguous record to EVERY candidate', () => {
-  const root = makeScratchProject();
-  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
-
-  const result = recordInvocation(
-    { session_id: 'sess-blackout', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:brief', secret: 'must-not-leak' } },
-    { cwd: root }
-  );
-
-  assert.ok(result, 'ambiguity must not be a silent no-op');
-  for (const p of ['a', 'b']) {
-    const ledger = path.join(root, 'plugins', p, '.delivery', 'invocations', 'sess-blackout.ndjson');
-    assert.ok(fs.existsSync(ledger), `candidate ${p} must carry the ambiguous record`);
-    const lines = fs.readFileSync(ledger, 'utf8').trim().split('\n').map(JSON.parse);
-    assert.equal(lines.length, 1);
-    assert.equal(lines[0].attribution, 'ambiguous');
-    assert.equal(lines[0].invoked_name, 'delivery:brief');
-    assert.equal(lines[0].candidates.length, 2);
-    assert.ok(!JSON.stringify(lines[0]).includes('must-not-leak'), 'whitelist must hold for ambiguous records');
-  }
-});
-
-test('recordInvocation: ambiguous records do not satisfy the continuity tiebreaker — next ambiguous call stays ambiguous', () => {
-  const root = makeScratchProject();
-  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
-
-  recordInvocation(
-    { session_id: 'sess-two-amb', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:brief' } },
-    { cwd: root }
-  );
-  recordInvocation(
-    { session_id: 'sess-two-amb', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:research' } },
-    { cwd: root }
-  );
-
-  for (const p of ['a', 'b']) {
-    const ledger = path.join(root, 'plugins', p, '.delivery', 'invocations', 'sess-two-amb.ndjson');
-    const lines = fs.readFileSync(ledger, 'utf8').trim().split('\n').map(JSON.parse);
-    assert.equal(lines.length, 2, `both ambiguous calls must appear in candidate ${p}`);
-    assert.ok(lines.every((l) => l.attribution === 'ambiguous'));
-  }
-});
-
-test('recordInvocation: an attributed line later in the session upgrades the tiebreaker — subsequent ambiguous cwd resolves to that root', () => {
-  const root = makeScratchProject();
-  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
-
-  // 1. bootstrap: first call ambiguous (previously the permanent dead end)
-  recordInvocation(
-    { session_id: 'sess-upgrade', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:brief' } },
-    { cwd: root }
-  );
-  // 2. session moves into candidate a and writes an attributed line
-  const attributed = recordInvocation(
-    { session_id: 'sess-upgrade', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } },
-    { cwd: path.join(root, 'plugins', 'a') }
-  );
-  assert.ok(attributed.record.attribution === undefined || attributed.record.attribution !== 'ambiguous');
-  // 3. back at the ambiguous cwd: continuity must now resolve to a, attributed
-  const third = recordInvocation(
-    { session_id: 'sess-upgrade', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:architecture' } },
-    { cwd: root }
-  );
-  assert.ok(third.ledgerPath, 'third call must resolve, not stay ambiguous');
-  assert.ok(third.ledgerPath.includes(path.join('plugins', 'a', '.delivery')));
-  const aLines = fs.readFileSync(path.join(root, 'plugins', 'a', '.delivery', 'invocations', 'sess-upgrade.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
-  assert.equal(aLines.filter((l) => l.attribution !== 'ambiguous').length, 2, 'prd + architecture attributed to a');
-  const bLines = fs.readFileSync(path.join(root, 'plugins', 'b', '.delivery', 'invocations', 'sess-upgrade.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
-  assert.ok(bLines.every((l) => l.attribution === 'ambiguous'), 'b must never receive an attributed line');
-});
-
 test('recordInvocation: zero candidates anywhere is still a no-op (nothing governed here)', () => {
   const root = makeScratchProject();
   const result = recordInvocation(
@@ -501,7 +341,7 @@ test('recordInvocation: a Write into a .delivery tree records an artifact_write 
   const result = recordInvocation(
     { session_id: 'sess-aw', hook_event_name: 'PostToolUse', tool_name: 'Write',
       tool_input: { file_path: artifact, content: 'SECRET raw input must not be stored' } },
-    { cwd: root } // ambiguous or irrelevant cwd — the artifact path decides
+    { cwd: path.join(root, 'plugins', 'a') } // a session inside the project; the artifact path picks the root
   );
 
   assert.ok(result && result.ledgerPath.includes(path.join('plugins', 'a', '.delivery', 'invocations')));
@@ -545,4 +385,61 @@ test('recordInvocation: writes outside any .delivery tree, into invocations/ its
   assert.equal(recordInvocation({ session_id: 's2', hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: ledgerFile } }, { cwd: root }), null);
   assert.equal(recordInvocation({ session_id: 's2', hook_event_name: 'PostToolUseFailure', tool_name: 'Write', tool_input: { file_path: artifact }, error_message: 'boom' }, { cwd: root }), null);
   assert.ok(!fs.existsSync(path.join(dRoot, 'invocations', 's2.ndjson')));
+});
+
+// --- gating (hook hardening c) ---------------------------------------------
+test('gating: a non-role session under a directory with no .delivery/ writes nothing and returns fast, even with projects below it', () => {
+  const root = makeScratchProject();
+  // projects below the cwd used to be found by a downward search and written to as "ambiguous"
+  fs.mkdirSync(path.join(root, 'plugins', 'a', '.delivery'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'plugins', 'b', '.delivery'), { recursive: true });
+  for (let i = 0; i < 300; i++) fs.mkdirSync(path.join(root, 'deep', String(i), 'x', 'y'), { recursive: true });
+  const prev = process.env.DELIVERY_ROLE;
+  delete process.env.DELIVERY_ROLE;
+  try {
+    const t0 = Date.now();
+    const r = recordInvocation({ session_id: 'sess-plain', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:brief' } }, { cwd: root });
+    assert.equal(r, null);
+    assert.ok(Date.now() - t0 < 200, 'no directory walk below the cwd');
+    // nor does an artifact write into a project the session is not working in
+    const artifact = path.join(root, 'plugins', 'a', '.delivery', 'brief.md');
+    fs.writeFileSync(artifact, 'x\n');
+    assert.equal(recordInvocation({ session_id: 'sess-plain', hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: artifact } }, { cwd: root }), null);
+    for (const p of ['a', 'b']) assert.ok(!fs.existsSync(path.join(root, 'plugins', p, '.delivery', 'invocations')), p);
+  } finally { if (prev === undefined) delete process.env.DELIVERY_ROLE; else process.env.DELIVERY_ROLE = prev; }
+});
+
+test('gating: a session inside a project with .delivery/ still records; a role session outside its tree records into its project', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, '.delivery'));
+  const r = recordInvocation({ session_id: 'sess-in', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } }, { cwd: path.join(root) });
+  assert.ok(r && r.ledgerPath.startsWith(path.join(root, '.delivery', 'invocations')));
+  const elsewhere = makeScratchProject();
+  const prev = { role: process.env.DELIVERY_ROLE, pr: process.env.DELIVERY_PROJECT_ROOT };
+  process.env.DELIVERY_ROLE = 'builder-1';
+  process.env.DELIVERY_PROJECT_ROOT = root;
+  try {
+    const r2 = recordInvocation({ session_id: 'sess-role', hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'delivery:feature-critic' } }, { cwd: elsewhere });
+    assert.ok(r2 && r2.ledgerPath.startsWith(path.join(root, '.delivery', 'invocations')));
+  } finally {
+    for (const [k, v] of [['DELIVERY_ROLE', prev.role], ['DELIVERY_PROJECT_ROOT', prev.pr]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+test('A3: the ledger is opt-in: without DELIVERY_LEDGER=1 nothing is recorded, even inside a project or as a role', () => {
+  const root = makeScratchProject();
+  fs.mkdirSync(path.join(root, '.delivery'));
+  const prev = { l: process.env.DELIVERY_LEDGER, r: process.env.DELIVERY_ROLE };
+  try {
+    for (const v of [undefined, '0', 'true']) {
+      if (v === undefined) delete process.env.DELIVERY_LEDGER; else process.env.DELIVERY_LEDGER = v;
+      process.env.DELIVERY_ROLE = 'builder-1';
+      assert.equal(recordInvocation({ session_id: 'off', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } }, { cwd: root }), null, String(v));
+    }
+    assert.ok(!fs.existsSync(path.join(root, '.delivery', 'invocations')));
+    process.env.DELIVERY_LEDGER = '1';
+    assert.ok(recordInvocation({ session_id: 'on', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'delivery:prd' } }, { cwd: root }));
+  } finally {
+    for (const [k, v] of [['DELIVERY_LEDGER', prev.l], ['DELIVERY_ROLE', prev.r]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
 });

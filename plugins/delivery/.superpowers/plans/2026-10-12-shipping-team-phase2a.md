@@ -57,7 +57,7 @@ Spec: `plugins/delivery/.superpowers/specs/2026-10-12-shipping-team-design.md` s
 - [ ] **Step 1: Cut the branch**
 
 ```bash
-cd /Users/colombod/private-workspaces/delivery-plugin/ai-augmentation-systems
+cd <repository root>
 git checkout -b delivery-shipping-team-2a delivery-shipping-team
 ```
 

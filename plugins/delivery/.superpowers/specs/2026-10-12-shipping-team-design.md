@@ -336,7 +336,7 @@ subagents. A PreToolUse hook enforces this from a policy each role declares.
   repo clone, `product/...` the product worktree, `scratch/...` a throwaway area; `$TMPDIR` is always
   allowed) and `lane_bash` (named command groups the role may run). Project briefs may declare their
   own. A role file without `lane_writes` may write nothing in its role directory; one without (or
-  with an empty) `lane_bash` gets `read, bd-read, git-read`. Every role may also write the harness's
+  with an empty) `lane_bash` gets `read, bd-read, git-read, operator-read`; this default is also the lane of a hired specialist whose brief declares none, so every role can verify an operator record. Every role may also write the harness's
   own plan and memory files (`~/.claude/plans/**`, `~/.claude/projects/*/memory/**`).
 - **MCP tools.** Roles with `any` use MCP tools unrestricted. For every other role an MCP tool is
   allowed when its name matches a pattern in the optional third key, `lane_mcp` (comma-separated
@@ -356,18 +356,19 @@ subagents. A PreToolUse hook enforces this from a policy each role declares.
   close), `bd-create-child` (create with `--parent` only), `bd-structure` (any create, dep add/remove,
   re-parent, materialise), `any` (unrestricted Bash, for workers). A Bash command is split on `&&`,
   `;`, `|`, `||`; every segment must belong to an allowed group or the whole call is refused.
-- **Manager lanes.** Chief of Staff: no writes; read, git-read, gh-read, bd-read, bd-notes,
-  bd-create-child. Staffing: writes `project/.delivery/team/team.json` and `project/.delivery/team/briefs/**`;
+- **Manager lanes.** Every manager lane below also includes `operator-read` and `operator-write`
+  (the `operator.js` read and writer commands, 8.6). Chief of Staff: no writes; read, git-read,
+  gh-read, bd-read, bd-notes, bd-create-child. Staffing: writes `project/.delivery/team/team.json` and `project/.delivery/team/briefs/**`;
   read, git-read, git-write-project, bd-read, bd-notes. Product Manager: writes
   `project/.delivery/initiatives/**`, `personas/**`, `interviews/**`, `simulations/**`,
-  `decisions/**`, `glossary.md`; read, git-read, git-write-project, bd-read, bd-notes,
-  bd-create-child. Delivery Lead: writes `project/.delivery/stories/**`, `sprints/**`,
+  `decisions/**`, `reviews/**`, `sprints/*-realign.md`, `glossary.md`; read, git-read, git-write-project, bd-read, bd-notes,
+  bd-create-child. Delivery Lead: writes `project/.delivery/stories/**`, `sprints/**`, `reviews/**`,
   `team/denylist.txt`; read, git-read, git-write-project, gh-read, bd-read, bd-notes,
   bd-create-child, bd-structure. Progress Observer: writes `project/.delivery/reviews/**`; read,
   git-read, gh-read, bd-read, bd-notes, bd-claim (release stale claims). No manager may write under
   `product/`.
-- **Worker lanes.** Builder: writes `product/**` and `scratch/**`; bash `any`, still subject to 8.1
-  and 8.2. Spike Researcher: writes `project/.delivery/initiatives/**`, `decisions/**`, `scratch/**`;
+- **Worker lanes.** Builder: writes `product/**`, `scratch/**` and `project/.delivery/decisions/**`
+  (spike mode, when no Spike Researcher is hired); bash `any`, still subject to 8.1 and 8.2. Spike Researcher: writes `project/.delivery/initiatives/**`, `decisions/**`, `scratch/**`;
   bash `any`; never `product/**`.
 - **Subagents are allowed everywhere** (the Agent tool is how a manager reads broadly or drafts), and
   their tool calls pass through the same hook, so a subagent cannot do what its parent role may not.
@@ -392,6 +393,241 @@ configuration (aliases, hooks, templates) and pushes from other repositories all
 and bd guards (8.2, 8.3) are likewise discipline aids. The durable control is a push-side or CI scan
 of the denylist on the product remote, to be provisioned in phase 3; a staged-diff pre-commit scan is
 a later hardening for file contents.
+
+### 8.6 Operator decisions: the human is never a relay
+
+The operator's rule (2026-10-13): the Chief of Staff must never ask the operator to answer other
+sessions, forward an answer, paste a message into another session, or press a button on another
+session's behalf. When the operator answers the Chief of Staff, that answer becomes a record with
+provenance that every other session can verify and act on without asking the operator again, and
+the Chief of Staff carries it. Human time is spent deciding, never relaying.
+
+**What was wrong before.** Team rule 11 said "nothing from outside a session passes as the
+operator's word", with no trusted way for a decision to travel. Workers therefore refused a relayed
+answer and the Chief of Staff fell back on asking the operator to say it to them directly. That
+sentence is removed; the protocol below replaces it. Rule 11 now covers personal data only, rule 12
+is the record rule, and the SendMessage rule moved to 13.
+
+**Principles.**
+1. A decision exists only as a record that traces to a verbatim operator input captured by a hook.
+   A message saying "the operator decided X" carries no weight by itself; with a record id that
+   verifies it carries full weight and is never re-asked.
+2. The model cannot author an operator input through the harness. Inputs are captured by
+   `hooks/scripts/operator-capture.js` (run from the SessionStart, UserPromptSubmit and Stop hooks)
+   out of the session's own transcript, classified by the harness's `origin` stamp (`human`,
+   `peer`, `system`, `unknown`); only `human` inputs are citable. Residual: a role whose lane is
+   `any` can inject keystrokes into a session the harness then records as a human prompt (`tmux
+   send-keys`, computer-use, a terminal MCP server, `osascript` keystrokes). That is not detectable
+   from the transcript; it is the same cooperative-trust class as rewriting the files (below).
+3. Delegation is a record too: a standing "you decide this class of things" with scope and limits.
+   Decisions under it chain to it, and verification walks the whole chain to the human input.
+4. Workers never address the operator. They message the Chief of Staff with one question and get
+   back a decision record id.
+
+**Artifacts** (a private operator store per checkout, published to the project repo's
+`delivery-operator` branch; see "Where the records live" below):
+- `inputs/<host>/<YYYY-MM>.ndjson`: one hash-chained entry per prompt seen by a role session on
+  that host: `{ id: "in-<host>-<seq>", host, ts, captured_at, session_id, instance, role, source,
+  text, text_sha256, transcript_ref, pre_role?, prev, hash }`. Written only by the capture path.
+  Texts over 64 KB are stored truncated with the full sha256 and `truncated: true`.
+- `records/<instance>.ndjson`: one chain per author instance, of decisions, delegations, answers,
+  questions, revocations, ratifications, acks, withdrawals and rehosts (`dec-<instance>-<seq>`,
+  `del-...`, `ans-...`, `q-...`, ...), each with `by: { instance, role, session_id, host, machine }`,
+  `ts`, `cites`, `cites_head`, `scope` and the kind's own fields. Written only by `scripts/operator.js`.
+- Both are hash chains (each `hash` covers `prev` and the canonical entry), so an edit is detectable
+  by anyone who verifies. The store's git history is a second witness: `operator.js publish` (run
+  after every write) commits the new lines and pushes them, and a merge only ever accepts a chain
+  that grew (a deleted, shortened or rewritten chain is refused).
+
+**Where the records live.** Never in the user's checkout. Each git checkout keeps them in a private
+git repository at `<git-common-dir>/delivery-operator/` (for a normal clone `.git/delivery-operator/`;
+a linked worktree shares its main repository's), branch `delivery-operator`, tracking only
+`operator/inputs/`, `operator/records/` and `operator/LEDGER.md`; `operator/cursors/` (heads, cursors,
+per-session role boundaries) and `operator/quarantine/` are local state, never committed. Because the
+store is inside `.git`, the user's index, working tree, `git status`, `git clean`, `git stash`,
+`git reset --hard`, `git pull` and the user's own commits never see it, in any repository state
+(detached HEAD, no upstream, a merge or rebase in progress, `pull.rebase=true`, a shallow clone).
+Every role on a host uses the store of its marker's `project_root` (the original checkout), so the
+roles of one checkout share one store and different clones have their own. The store's `origin` is
+the project's `origin` (read with `git config --get`); in the project checkout only
+`git rev-parse --git-common-dir` and that config read ever run. With no remote the store is local
+only and publish reports "no remote". A project directory outside git keeps the records in
+`<project>/.delivery/operator/` (local only); records an earlier version left there are copied into
+the store the first time. Deleting the store loses only what was not yet published; the published
+copy is the `delivery-operator` branch on the remote. Inspect it with `git -C <store> log`.
+
+**Commands** (`scripts/operator.js`; one script, all output machine-readable with `--json`):
+- `record --cite in-N --quote "<exact span>" --statement "<what is decided>" --scope bead:ID,...`:
+  verifies that the cited input exists, is `human`, that the quote is a substring of its verbatim
+  text (whitespace-normalised), and that the recorder is the Chief of Staff or the role whose session
+  captured the input; writes the record; appends `DECISION dec-N (operator in-M): <statement>` to
+  each scoped bead.
+- `delegate --cite in-N --quote ... --scope ... [--until DATE] [--max-uses N]`.
+- `decide --under del-N --statement ... --scope ...`: verifies the scope is inside the delegation,
+  not expired or revoked, uses remaining; records the chain.
+- `revoke --cite in-N --quote ... --target del-N`.
+- `ack --input in-N --reason "<why this input is not a decision>"`.
+- `verify <id>`: recomputes the chains and prints the path from the record to the verbatim human
+  input (quote shown), or fails with the reason. Exit 0 verified, 1 not.
+- `show <id>`, `pending` (human inputs with no record or ack).
+Read commands (`verify`, `show`, `pending`) are in every role's lane. Write commands are in the
+lanes of chief-of-staff, product-manager, delivery-lead, staffing and progress-observer.
+
+**Answering on the operator's behalf.** The Chief of Staff's job is to spare the operator, so it
+answers worker questions itself whenever it can prove the basis, and asks the operator only for what
+no record settles. An answer is a record too (`ans-<seq>`), citing the decisions, delegations or
+earlier answers it applies, with a `confidence`:
+- `settled`: every bead, label and initiative the answer touches lies inside the scope of a cited
+  record that has not been revoked or superseded, and the cited statement covers the question.
+  Workers treat it exactly as the operator's word.
+- `inferred`: a judgement that extends a recorded decision or delegation to a new case. Allowed only
+  for reversible, low-stakes actions (never money, security, irreversible changes, or new product
+  scope), requires a written rationale, and is listed in the next briefing as one line the operator
+  can ratify or override. Workers act on it, preferring reversible steps until it is ratified.
+- Anything else is not answered by the Chief of Staff: it goes to the operator once, batched in the
+  briefing, with options and a recommendation.
+Before escalating, the Chief of Staff searches the record (`operator.js find`) for governing
+decisions. An override is a new decision that `supersedes` the earlier record; a ratification cites
+the operator's input. `verify` walks answer, decision or delegation, to the verbatim human input,
+and re-checks scope containment for `settled` answers. Commands added: `answer`, `find`, `ratify`.
+
+**Distributed sessions.** Roles run on several hosts (the operator's PC, SSH hosts, cloud sandboxes)
+that share only the private project repository. Every chain file is designed to have one writer and
+git never merges a chain's content: operator inputs are per host, records are per author instance,
+ids embed the owner (`in-<host>-N`, `dec-<instance>-N`). Entries travel on the project remote's
+`delivery-operator` branch, which carries operator files only (repository branch rules must allow
+pushes to it). `operator.js publish` (after every write) commits the store's new lines, fetches the
+branch, merges it and pushes, retrying a rejected push up to five times. The checks:
+(1) before a commit, each changed chain still starts with its committed copy and verifies;
+(2) on every merge, every chain on either side reaches the result whole (no deletion, shortening or
+rewrite), and two copies that grew differently are a fork;
+(3) the owner rule: a chain this store writes (this host's inputs chains, a records chain whose last
+line here was written from this host, and any records chain the remote extends with lines claiming
+this host) may be behind on the remote, never ahead or different, so a second writer shows up as a
+fork instead of being merged. The exceptions: a valid rehost of the instance to the host the
+committed manifest (`team.json` in the project's HEAD) places it on, or a rehost already in this
+store's copy, so a second writer that records its own rehost is a loud fork naming the rehost record,
+not a silent merge; and a new store that neither holds nor writes the chain yet (a fresh clone adopts
+its host's published chains; a store with no HEAD fetches once before its first capture);
+(4) before every push, whatever reached the store (operator.js, a merge, a commit made by hand in the
+store), every chain that differs from the fetched remote copy must start with it and verify as
+committed. A refusal pushes nothing. Network calls are bounded (15 s per fetch or push,
+`DELIVERY_GIT_TIMEOUT_MS`; 30 s of network work per publish, not counting the store lock wait or the
+refresh before it; a remote that timed out or could not be reached is not tried again for 60 s by any
+command on the host). quarantine names every line it takes from the remote that this store did not
+write, and refuses a remote copy that only adds lines until `--adopt-remote` is given after review; the
+chain's own instance (or host, for inputs) may quarantine it, not only the chief of staff. Cooperative
+trust, as listed in the reference: anyone with push access can pre-seed a not-yet-created host's
+chains, write records citing inputs they typed, or push a line claiming a host (locking that host's
+publish until quarantine), and an offline first fetch on a re-clone forks the host's inputs chain
+(recovered with quarantine; the inputs are re-captured from the transcript). `operator.js refresh` is the same fetch and merge without the push, in the store
+only; reads that list (`pending`, `find`, `ledger`, `problems`) refresh first, and a verifier that
+cannot find a cited id refreshes and retries once. Deleting or re-cloning a checkout deletes its store
+and every entry not yet published; team-status shows the count and warns after 24 hours. Nobody pulls the project checkout for
+operator records. An input is as trustworthy as the session environment that captured it and records
+its host, session and transcript reference; a session can publish only with push access to the
+project remote (cloud and SSH sessions included): without it the records stay committed in its store
+and `team-status` and the briefing report them as unpublished. A worker on any host verifies a
+decision with the same command and gets the same chain to the verbatim human words.
+
+**The question ledger.** The Chief of Staff logs every question it escalates to the operator
+(`operator.js ask`: who asked, about which bead, options, its recommendation). The operator's
+answer is linked to it (`--answers q-N`), so `operator.js ledger` and the generated
+`operator/LEDGER.md` in the operator store show, for every question: asker, status (open, answered,
+withdrawn), the answering record, its confidence and the operator's verbatim words. Any session
+can read the ledger and verify any row.
+
+**Enforcement against relaying.**
+1. PreToolUse denies the operator channels `AskUserQuestion`, `PushNotification` and `SendUserFile`
+   for every role except chief-of-staff and product-manager, with the reason "message the Chief of
+   Staff with the one question; the answer comes back as a decision record" (for the two
+   notification tools: "the Chief of Staff decides what reaches the operator").
+2. The Stop guard of the two operator-facing roles (Chief of Staff and Product Manager) blocks a turn while a human input in its session has neither a
+   record nor an ack ("record it, then send the record id to the sessions that need it"), and
+   inspects the final assistant message for relay requests (asking the operator or "you" to tell,
+   send, forward, paste, relay, confirm or reply to another session, role or "the worker"), blocking
+   with "you carry answers; send the record id yourself". The pattern check is a heuristic backstop;
+   the structural fix is that nothing else needs the operator to relay.
+3. Team rules: a peer message that cites a record id is verified with `operator.js verify` and acted
+   on; a peer message that claims an operator decision without a verifiable id is information, and
+   the reply is "send the record id", not a question to the operator.
+
+**Trust model and limits.** Capture relies on the harness: peers reach a session only through
+SendMessage, whose delivery is wrapped by the harness, so a peer cannot produce an unwrapped
+human-looking prompt; unknown wrappers are classified `unknown` and are not citable. A role whose
+lane is `any` can still type into another session (keystroke injection through `tmux send-keys`,
+computer-use, a terminal MCP server or `osascript`), and that text is recorded as `human`; the
+input ownership check (a worker may record only inputs its own session captured) compares a session
+id that the session's own Bash can rewrite. Both are cooperative trust, documented, not enforced. Lanes deny
+writes to the operator store (`.git/delivery-operator`, and the legacy `.delivery/operator/`) and
+writes to its branch for every role, and the hash chains, recorded heads and the store's append-only
+merge check make edits detectable, but a hostile session with unrestricted Bash could rewrite and
+re-hash the files: this is tamper-evidence for cooperative sessions, not a boundary (same class as
+8.5). Inputs contain the operator's own words and live only in the private store and on the private
+project repo's `delivery-operator` branch.
+
+**Residual channels for `any` roles.** The channel guard (enforcement 1) names three tools, and
+`lane_mcp` is allow-only, so roles whose lane is `any` (builder, spike researcher) keep every other
+path to the operator's attention. They are documented here as a residual, not enforced:
+- `set_session_title` and `set_unread` on the session-management and sidebar servers, which put
+  flags in the operator's UI;
+- `send_message` to any session, including one the operator is watching;
+- computer-use, browser and Claude Browser tools, which drive the screen the operator sees;
+- Bash notifications such as `osascript -e 'display notification'`, `say` and `terminal-notifier`;
+- any messaging MCP server the host has configured (Slack, email).
+The briefs and rule 12 say workers never address the operator. The recommended later control is an
+MCP deny list for `any` lanes, with the channel guard extended to the session-management UI tools.
+
+**Ruling: harness permission prompts.** A permission prompt in a role session can only be cleared by
+the human pressing a button, which makes the operator a relay for that session. Mitigation:
+`prepare-role` writes the role's in-lane commands as prefix `permissions.allow` rules in the role's
+`settings.local.json` (unrestricted `any` lanes get none). The rules depend on the lane hook running
+first and refusing what the lane does not allow. Where a role session's marker is present but the
+lane cannot be decided (manifest unreadable, an internal exception), the hook fails closed and allows
+only restoring the manifest; where no role marker is found the hook is inert, and the allow rules
+then let a matching command through without a prompt. A prompt that still appears goes into the Chief of
+Staff's next briefing as one batched owner-side line ("approve once in session X, or extend the
+lane"); asking the operator to go and approve it is a relay request the Stop guard flags. Residual:
+after a plugin-cache version move the operator.js rules name the old path until `prepare-role` runs
+again.
+
+**Ruling: prompts from before the role.** A session resumed or adopted into a role directory has
+earlier human prompts in its transcript. The first hook that sees a session id in a role directory
+(SessionStart, with or without a transcript yet) records that session's boundary in the operator
+store's local state (`operator/cursors/role-since/<instance>.json`; the old
+`<roleDir>/.delivery-role-since.json` is still read), one entry per session id, never overwritten, written under a
+lock and pruned to the newest 32. Inputs dated earlier are stored and citable (`record --cite` works
+on request) but carry `pre_role: true` and never appear in `pending` or block a Stop. When a later
+hook creates the boundary instead (no SessionStart was seen), nothing captured in that same
+invocation is marked pre-role.
+
+**Rulings on parked items.**
+- *Rejected pushes and the user's checkout (superseded twice).* The records used to be committed in
+  the user's own checkout (`.delivery/operator/`), and every recovery scheme for a rejected push
+  (merging upstream, then plumbing commits with the checkout's branch as a parent, then staging peer
+  copies into the user's index) still left operator files in the user's index and working tree:
+  `git pull` refused in common cases, peer copies leaked into the user's commits, `git clean` or
+  `reset --hard` deleted unpublished records, and publish committed onto detached HEADs and
+  mid-rebase. Ruling: operator storage moved to the private store described under "Where the records
+  live"; nothing operator-related is ever in the user's index or working tree, so these cases do not
+  arise. Every write to the store happens under one store lock; a rejected push is fetched, merged
+  (append-only, verified) and retried up to five times with 50-250 ms jitter.
+- *Lock deadline and stale threshold.* A writer waits at most 2 s for a chain lock, and a lock is
+  treated as stale after 10 s; pid liveness is not checked (pids are host-local). A crashed writer's
+  fresh lock therefore refuses writes for up to 10 s with a retryable error; hooks fail open.
+  Accepted as is.
+- *Machine id.* `by.machine` is a hash of the hostname. It tells two machines apart that share one
+  instance id, not two clones on one machine (one working copy per host label is assumed), and a
+  renamed host needs `operator.js rehost`. It is an identifier, not a secret.
+- *`sync --all` and the roster.* `sync --all` reads other instances' transcripts from the roster's
+  `transcript_path`, which an `any`-lane session can rewrite to point at a forged file. Residual of
+  the keystroke-injection class; the recommended hardening is to accept only paths under the
+  harness's own projects directory and to restrict `--all` to the Chief of Staff.
+- *Forged or fast-clock chain entries.* A writer never stamps beyond its clock plus ten minutes and
+  orders against the previous valid record, and warns (`clock_behind_chain`). Recovery from a chain
+  whose last entry is far in the future is a new instance id in team.json (Staffing) or recording
+  through the Chief of Staff; the old instance can be retired (`"retired": true`) so its history
+  keeps verifying.
 
 ## 9. Staffing and routines
 

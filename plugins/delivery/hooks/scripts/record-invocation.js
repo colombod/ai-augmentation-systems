@@ -34,11 +34,6 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const DOWNWARD_SEARCH_MAX_DEPTH = 4;
-const DOWNWARD_SEARCH_SKIP_DIRS = new Set([
-  'node_modules', '.git', '.svn', '.hg', 'dist', 'build', '.next', '.cache',
-]);
-
 function findDeliveryRootUpward(startDir) {
   let dir = startDir;
   for (;;) {
@@ -52,64 +47,29 @@ function findDeliveryRootUpward(startDir) {
   }
 }
 
-// Bounded breadth-first search downward from startDir. A component's
-// .delivery/ (e.g. plugins/<name>/.delivery/ in a marketplace repo) sits
-// BELOW a session's cwd when the session runs from the repo root, not
-// above it — the upward walk alone misses this real, common shape,
-// confirmed by running this exact script against this exact repo.
-//
-// Returns every .delivery/ found, not just a resolved single answer —
-// findDeliveryRootDownward (below) collapses this to one-or-null for the
-// plain case; recordInvocation's session-continuity fallback (added after
-// a real gap found live in the chief-of-staff epic's own spike — see its
-// call site) needs the full candidate list to break a tie honestly.
-function findAllDeliveryRootsDownward(startDir, maxDepth) {
-  const found = [];
-  let frontier = [{ dir: startDir, depth: 0 }];
-
-  while (frontier.length > 0) {
-    const next = [];
-    for (const { dir, depth } of frontier) {
-      let entries;
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch (err) {
-        continue; // unreadable directory — skip, do not throw
-      }
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        if (entry.name === '.delivery') {
-          found.push(path.join(dir, entry.name));
-          continue; // do not descend into a found .delivery/ itself
-        }
-        if (DOWNWARD_SEARCH_SKIP_DIRS.has(entry.name)) continue;
-        if (entry.name.startsWith('.') && entry.name !== '.delivery') continue;
-        if (depth + 1 <= maxDepth) {
-          next.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
-        }
-      }
-    }
-    frontier = next;
-  }
-  return found;
-}
-
-function findDeliveryRootDownward(startDir, maxDepth) {
-  const found = findAllDeliveryRootsDownward(startDir, maxDepth);
-
-  // Exactly one candidate is usable without guessing. Zero means nothing
-  // governed here. More than one is the same "ask, don't guess" situation
-  // the skill-level resolution algorithm names — a script can't ask, so it
-  // declines rather than picking one here. (recordInvocation's caller has
-  // one more real, non-guessing tiebreaker available to it — see below.)
-  if (found.length === 1) return found[0];
-  return null;
-}
-
+// Resolution is upward only. A downward search used to find a component's .delivery/ below the
+// cwd (a marketplace repo root), but it ran a depth-4 directory walk in every session, including
+// ordinary non-role ones (3.5 s from $HOME), and appended "ambiguous" records into several unrelated
+// repositories. A session records only when it is a delivery role (DELIVERY_ROLE) or works inside a
+// project: an upward walk from its cwd finds .delivery/ (see shouldRecord).
 function findDeliveryRoot(startDir) {
   const upward = findDeliveryRootUpward(startDir);
   if (upward) return upward;
-  return findDeliveryRootDownward(startDir, DOWNWARD_SEARCH_MAX_DEPTH);
+  // a role session working outside its project tree records into its own project
+  const pr = process.env.DELIVERY_ROLE ? process.env.DELIVERY_PROJECT_ROOT : null;
+  if (pr && path.isAbsolute(pr)) {
+    const c = path.join(pr, '.delivery');
+    try { if (fs.statSync(c).isDirectory()) return c; } catch (err) { /* none */ }
+  }
+  return null;
+}
+
+// The gate: the opt-in ledger is on, and this is a delivery role session or a cwd inside a project.
+// The ledger is opt-in (DELIVERY_LEDGER=1): without it nothing is written anywhere.
+function shouldRecord(cwd) {
+  if (process.env.DELIVERY_LEDGER !== '1') return false;
+  if (process.env.DELIVERY_ROLE) return true;
+  return !!findDeliveryRootUpward(cwd);
 }
 
 // harden-03 — capture-tool discrimination (FR-9's channel cross-check).
@@ -176,31 +136,6 @@ function buildRecord(payload) {
   };
 }
 
-// A session ledger "counts" for the continuity tiebreaker only if it holds at
-// least one line this hook actually attributed to that root — ambiguous
-// records are copied into every candidate and must not vote. Read errors and
-// unparsable lines count as no-vote: this feeds an observation decision, and
-// observation never throws.
-function sessionLedgerHasAttributedLine(deliveryRoot, sessionId) {
-  const ledgerPath = path.join(deliveryRoot, 'invocations', `${sessionId}.ndjson`);
-  let raw;
-  try {
-    raw = fs.readFileSync(ledgerPath, 'utf8');
-  } catch (err) {
-    return false;
-  }
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      if (JSON.parse(line).attribution !== 'ambiguous') return true;
-    } catch (err) {
-      // unparsable line — no vote
-    }
-  }
-  return false;
-}
-
-
 // gy5.3 — per-artifact-version provenance. A Skill/Agent line proves a phase
 // ran; it cannot say which artifact version it produced. An observed Write/Edit
 // into a .delivery/ tree can: the artifact's own path picks its root by walking
@@ -259,10 +194,10 @@ function recordArtifactWrite(payload) {
 
 function recordInvocation(payload, options) {
   const cwdForResolution = (options && options.cwd) || payload.cwd || process.cwd();
+  if (!shouldRecord(cwdForResolution)) return null; // an ordinary session outside any project
 
   // Artifact writes are their own governed class (gy5.3) — resolved by the
-  // artifact's path, not the session cwd, so they short-circuit before the
-  // cwd-resolution logic below.
+  // artifact's path, not the session cwd.
   if (ARTIFACT_WRITE_TOOLS.has(payload.tool_name)) {
     return recordArtifactWrite(payload);
   }
@@ -271,10 +206,6 @@ function recordInvocation(payload, options) {
   // (FR-9's channel cross-check). Everything else is ignored even if
   // hooks.json's matcher ever widens — this is the actual filter of record.
   if (!isGovernedToolCall(payload.tool_name)) return null;
-
-  // A non-capture action on a capture-capable tool (e.g. a plain click or
-  // scroll on the browser tool) is not itself governed — only Skill/Agent
-  // calls and genuine capture actions are.
   if (
     payload.tool_name !== 'Skill' &&
     payload.tool_name !== 'Agent' &&
@@ -284,62 +215,12 @@ function recordInvocation(payload, options) {
   }
 
   const sessionId = payload.session_id || 'unknown-session';
-  let deliveryRoot = findDeliveryRoot(cwdForResolution);
-
-  // Session continuity — a real gap found live, not a hypothetical: a downward
-  // search ambiguous between multiple candidates (e.g. this repo's own
-  // plugins/delivery/.delivery + plugins/attractor/.delivery) isn't a dead end
-  // if THIS session already wrote an ATTRIBUTED ledger entry under exactly one
-  // of them earlier — that's an established fact about where this session's
-  // governed work lives, not a guess. The check must ignore ambiguous records
-  // (below), which land in every candidate by design and prove nothing about
-  // which one this session belongs to.
-  if (!deliveryRoot && !findDeliveryRootUpward(cwdForResolution)) {
-    const candidates = findAllDeliveryRootsDownward(cwdForResolution, DOWNWARD_SEARCH_MAX_DEPTH);
-    if (candidates.length > 1) {
-      const withAttributedLine = candidates.filter((candidate) =>
-        sessionLedgerHasAttributedLine(candidate, sessionId)
-      );
-      if (withAttributedLine.length === 1) {
-        deliveryRoot = withAttributedLine[0];
-      } else {
-        // Still ambiguous — record it, do not swallow it. The 2026-08-10..14
-        // blackout (context-management gy5.1): an entire pipeline ran from an
-        // ambiguous cwd, every governed call landed here, and the old
-        // `return null` made a dead observer indistinguishable from an idle
-        // session for 14+ days. Writing the record to EVERY candidate, marked
-        // `attribution: 'ambiguous'`, keeps the "ask, don't guess" rule (no
-        // candidate is claimed) while making the silence visible to
-        // /delivery:status. This also dissolves the old bootstrap dead end:
-        // the tiebreaker above keys on attributed lines, so these records
-        // never masquerade as a resolution.
-        const record = buildRecord(payload);
-        record.attribution = 'ambiguous';
-        record.candidates = candidates;
-        const ledgerPaths = [];
-        for (const candidate of candidates) {
-          try {
-            const ledgerDir = path.join(candidate, 'invocations');
-            const ledgerPath = path.join(ledgerDir, `${sessionId}.ndjson`);
-            fs.mkdirSync(ledgerDir, { recursive: true });
-            fs.appendFileSync(ledgerPath, JSON.stringify(record) + '\n');
-            ledgerPaths.push(ledgerPath);
-          } catch (err) {
-            // one unwritable candidate must not lose the others' record
-          }
-        }
-        return ledgerPaths.length > 0 ? { ledgerPaths, record } : null;
-      }
-    }
-  }
-
-  if (!deliveryRoot) return null; // nothing governed anywhere reachable — no-op, not an error
+  const deliveryRoot = findDeliveryRoot(cwdForResolution);
+  if (!deliveryRoot) return null; // nothing governed reachable — no-op, not an error
 
   const ledgerDir = path.join(deliveryRoot, 'invocations');
   const ledgerPath = path.join(ledgerDir, `${sessionId}.ndjson`);
-
   const record = buildRecord(payload);
-
   fs.mkdirSync(ledgerDir, { recursive: true });
   fs.appendFileSync(ledgerPath, JSON.stringify(record) + '\n');
   return { ledgerPath, record };
@@ -365,8 +246,7 @@ module.exports = {
   recordArtifactWrite,
   findDeliveryRoot,
   findDeliveryRootUpward,
-  findDeliveryRootDownward,
-  findAllDeliveryRootsDownward,
+  shouldRecord,
   invokedNameFrom,
   captureActionFrom,
   isGovernedToolCall,

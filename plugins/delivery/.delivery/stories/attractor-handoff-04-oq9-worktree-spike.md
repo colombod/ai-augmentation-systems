@@ -193,7 +193,7 @@ node plugins/attractor/dist/attractor.js run plugins/attractor/skills/attractori
 # (e.g. chmod -R a-w .git on a disposable throwaway repo — never the real repo's .git)
 
 # cleanup — leave no trace in the real repo:
-cd /Users/colombod/private-workspaces/delivery-plugin/ai-augmentation-systems
+cd <repository root>
 git worktree remove --force /tmp/attractor-oq9-<ts>
 git branch -D attractor-oq9-spike-<ts>
 ```

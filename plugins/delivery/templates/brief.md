@@ -9,7 +9,7 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 
 # Product brief: <feature name>
 
-> Phase 1 artifact. Owned by Product Owner and Business Analyst.
+> Written by /delivery:brief. Owned by Product Owner and Business Analyst.
 > Status: draft | agreed  ·  Last updated: <date>
 
 **Mode:** frame | assess · **Word count:** <n> (cap <n>) · overrun reason, if any

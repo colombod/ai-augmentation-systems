@@ -8,7 +8,7 @@ IDs a later phase reads. Over the cap? Say so in the document, and why.
 
 # Feature research: <topic>
 
-> Phase 2 artifact. Owned by the pipeline, informed by web research where available.
+> Written by /delivery:research. Owned by the pipeline, informed by web research where available.
 > Last updated: <date>
 > Every claim is marked **verified** (source read), **reported** (secondary), or
 > **assumed** (inference). Unmarked claims are not permitted.

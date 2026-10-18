@@ -1,5 +1,6 @@
 ---
 name: solution-architect
+model: opus
 description: Owns technical design and implementation readiness. Use when translating an approved PRD into a system design, choosing between technical approaches, recording architecture decisions, or judging whether a plan is buildable as written. Invoke after the PRD exists and before stories are written.
 ---
 

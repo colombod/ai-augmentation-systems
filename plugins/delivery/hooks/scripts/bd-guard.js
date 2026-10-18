@@ -1,5 +1,5 @@
 // hooks/scripts/bd-guard.js — the record stays honest: evidence on close, no claim-jumping,
-// structure only by the Delivery Lead.
+// structure only by the Delivery Manager.
 // A discipline aid, not a security boundary: a segment it cannot parse is allowed.
 const { splitCommand, tokens, splitBdGlobals } = require('./lane.js');
 
@@ -8,9 +8,9 @@ const TWO_WORD = new Set(['dep', 'label', 'comments', 'comment', 'dolt', 'epic',
 const BOOLEAN_FLAGS = new Set(['--claim', '--json', '--all', '--force', '--silent', '--quiet', '--verbose']);
 const CREATE = new Set(['create', 'new', 'q', 'create-form']);
 // Verbs that restructure or rename the record whatever their arguments (`link` is shorthand for
-// `dep add`; `mol` pours and bonds molecules). Only the Delivery Lead runs them.
+// `dep add`; `mol` pours and bonds molecules). Only the Delivery Manager runs them.
 const STRUCTURE_VERBS = new Set(['link', 'rename', 'rename-prefix', 'set-state', 'duplicate', 'supersede', 'todo', 'import']);
-// Only these roles may bring a closed bead back: the Delivery Lead, and the observer who found it unproven.
+// Only these roles may bring a closed bead back: the Delivery Manager, and the observer who found it unproven.
 const REOPENERS = new Set(['delivery-lead', 'progress-observer']);
 // Verbs that close a bead on the way: they answer to the same evidence and live-claim rules as `close`.
 const CLOSING = new Set(['close', 'duplicate', 'supersede']);
@@ -20,7 +20,7 @@ const DEP_READ = new Set(['list', 'tree', 'cycles']);
 const LABEL_WRITE = new Set(['add', 'remove', 'propagate']);
 const LABEL_FLAGS = ['--add-label', '--remove-label', '--set-labels'];
 const CLAIM_FLAGS = ['--claim', '--assignee', '--status', '-a', '-s'];
-const STRUCTURE = 'structure belongs to the Delivery Lead; create a child bead under the bead you hold (`bd create --parent <id>`) or message the Delivery Lead.';
+const STRUCTURE = 'structure belongs to the Delivery Manager; create a child bead under the bead you hold (`bd create --parent <id>`) or message the Delivery Manager.';
 
 function parseBd(segment) {
   const t = tokens(segment);
@@ -104,12 +104,12 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
         const bead = lookup(bd, id);
         const age = liveOther(bead, actor, staleHours, now);
         if (age !== null) {
-          return { reason: `Bead ${id} is claimed by ${bead.assignee} and live (last change ${age.toFixed(1)}h ago): a live claim cannot be released by someone else. Ask the holder or the Delivery Lead, or wait for staleness (${staleHours}h).` };
+          return { reason: `Bead ${id} is claimed by ${bead.assignee} and live (last change ${age.toFixed(1)}h ago): a live claim cannot be released by someone else. Ask the holder or the Delivery Manager, or wait for staleness (${staleHours}h).` };
         }
       }
     }
     if (p.sub === 'reopen' && !REOPENERS.has(roleId)) {
-      return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: reopening a closed bead is the Delivery Lead's or Progress Observer's call; message them with the evidence that it is not done.` };
+      return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: reopening a closed bead is the Delivery Manager's or Progress Observer's call; message them with the evidence that it is not done.` };
     }
     // `assign <id> <who>` is a claim change: the second positional is a person, not a bead.
     const assigning = p.sub === 'assign' && p.ids.length > 0;
@@ -118,7 +118,7 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
         const bead = lookup(bd, id);
         const age = liveOther(bead, actor, staleHours, now);
         if (age !== null) {
-          return { reason: `Bead ${id} is claimed by ${bead.assignee} and live (last change ${age.toFixed(1)}h ago). A claim is the only authority: do not take or release it. Ask the Delivery Lead, or wait for staleness (${staleHours}h).` };
+          return { reason: `Bead ${id} is claimed by ${bead.assignee} and live (last change ${age.toFixed(1)}h ago). A claim is the only authority: do not take or release it. Ask the Delivery Manager, or wait for staleness (${staleHours}h).` };
         }
       }
     }

@@ -1,5 +1,6 @@
 // scripts/lib/compose-brief.js — turn manifest + role file into CLAUDE.local.md text.
 const fs = require('fs');
+const { resolvePluginRoot, operatorCommand } = require('./plugin-root.js');
 const path = require('path');
 
 function parseFrontmatter(text) {
@@ -66,7 +67,7 @@ function headerLines(team, instance, role) {
 }
 
 // Short role block for hook injection (Claude Code caps injected hook output at 10,000 characters).
-function shortBrief({ team, hosts, instance, role, roleDir }) {
+function shortBrief({ team, hosts, instance, role, roleDir, pluginRoot }) {
   return [
     ...headerLines(team, instance, role),
     routingTable(team),
@@ -74,17 +75,28 @@ function shortBrief({ team, hosts, instance, role, roleDir }) {
     describeHost(role.host, hosts.hosts[role.host]),
     '',
     `Your full brief and the team rules are in ${roleDir}/CLAUDE.local.md; it is binding. Re-read it if you are unsure of your role.`,
+    ...(pluginRoot ? [`Operator commands: \`${operatorCommand(pluginRoot)} <command>\` (verify, pending, record, ack, ...).`] : []),
     '',
   ].join('\n');
 }
 
 const DELEGATE_SECTION = '# Delegate mode\n\nYou coordinate; you do not build. Do not edit files other than bead notes and, for Staffing, .delivery/team/team.json. Route work by message and report by briefing.';
 
-function composeBrief({ team, hosts, instance, role, brief, rules }) {
+// Team-conditional blocks in a role brief: `<!-- if-role: X -->...<!-- end-if -->` stays only when the
+// team has role X; `<!-- unless-role: X -->...<!-- end-unless -->` only when it does not. The markers
+// themselves never reach the session.
+function applyRoleConditions(body, team) {
+  const has = new Set(((team && team.roles) || []).filter((r) => r && !r.retired).map((r) => r.id));
+  return String(body)
+    .replace(/^<!-- if-role: ([a-z0-9-]+) -->\n([\s\S]*?)^<!-- end-if -->\n?/gm, (m, id, inner) => (has.has(id) ? inner : ''))
+    .replace(/^<!-- unless-role: ([a-z0-9-]+) -->\n([\s\S]*?)^<!-- end-unless -->\n?/gm, (m, id, inner) => (has.has(id) ? '' : inner));
+}
+
+function composeBrief({ team, hosts, instance, role, brief, rules, pluginRoot }) {
   const host = hosts.hosts[role.host];
   const actor = `<user>@${role.host}/${instance}`;
   const mode = role.mode || brief.meta.mode || 'default';
-  return [
+  const text = [
     `# Role: ${instance} (${role.id}) on ${team.project}`,
     '',
     `You are the session "${instance}". Your beads actor is \`${actor}\` (the real user name is set in your environment as BEADS_ACTOR). Bead prefix: \`${team.prefix}-\`. The bd host is \`${team.bd_host}\`.`,
@@ -101,10 +113,12 @@ function composeBrief({ team, hosts, instance, role, brief, rules }) {
     '',
     '# Your role',
     '',
-    brief.body.trim(),
+    applyRoleConditions(brief.body, team).trim(),
     '',
     ...(mode === 'delegate' ? [DELEGATE_SECTION, ''] : []),
   ].join('\n');
+  // the session's Bash has no CLAUDE_PLUGIN_ROOT: print the absolute path (re-rendered every SessionStart)
+  return pluginRoot ? resolvePluginRoot(text, pluginRoot) : text;
 }
 
-module.exports = { parseFrontmatter, loadRoleBrief, composeBrief, shortBrief, describeHost, routingTable };
+module.exports = { applyRoleConditions, parseFrontmatter, loadRoleBrief, composeBrief, shortBrief, describeHost, routingTable };

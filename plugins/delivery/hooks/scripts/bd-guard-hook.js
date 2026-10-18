@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // PreToolUse on shell tools (Bash, Monitor, PowerShell): evidence on close; no claim on a live holder;
-// structure only by the Delivery Lead.
+// structure only by the Delivery Manager.
 // Deny JSON or nothing; exit 0.
 try {
   const { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor } = require('./role-context.js');

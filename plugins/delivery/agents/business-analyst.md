@@ -1,5 +1,6 @@
 ---
 name: business-analyst
+model: sonnet
 description: Elicits and stress-tests requirements. Use when a feature request is vague, when enumerating edge cases and failure paths for user scenarios, when capturing non-functional requirements, or when mapping current-state versus target-state workflows. Invoke early, before the PRD is written.
 ---
 
