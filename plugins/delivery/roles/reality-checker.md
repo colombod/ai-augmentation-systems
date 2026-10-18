@@ -5,7 +5,7 @@ default_model: sonnet
 mode: default
 lane_reach: true
 lane_writes: project/.delivery/evidence/artifacts/**
-lane_bash: read, git-read, gh-read, bd-read, bd-notes, bd-claim, operator-read, reality-check, probe, judge
+lane_bash: read, git-read, gh-read, bd-read, bd-notes, bd-claim, operator-read, reality-check, probe, a3-draft, judge
 lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 

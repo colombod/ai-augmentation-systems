@@ -13,7 +13,7 @@
 //       --observed-version <what the surface showed> [--host h] [--app a] [--mode m] [--install-artifact x]
 //       a row through evidence.js, refused when the version on screen is not the deployed one, the
 //       capture is missing or outside .delivery/evidence/artifacts/<bead>/, or the run cap is spent.
-//       A counting fail raises the andon (goal.js pause path).
+//       A counting fail raises the andon (goal.js pause path): its area stops until an A3 closes (a3.js).
 // Exit codes: 0 done; 1 refused; 2 usage.
 const fs = require('fs');
 const path = require('path');
@@ -226,7 +226,7 @@ function runRecord(who, store, id, a, { cwd, env, now, verifyRecord }) {
   }
   if (r.code === 0 && a.result === 'fail') {
     const p = require('./lib/goal.js').pauseOnTrigger({ root: who.root, who, trigger: `andon:${r.row.id}`, bead: store.show(id), now });
-    out.push(p.ok ? `andon:${r.row.id} raised: work pauses until a pass follows; the Delivery Manager owns the fix` : `andon not raised (${p.error}): message the Delivery Manager`);
+    out.push(p.ok ? `andon:${r.row.id} raised: area ${G.areaOf(store.show(id) || bead)} stops (fixes only) until a pass on the deployed version and a closed A3; draft its problem: a3.js new --trigger andon:${r.row.id} --problem '<what the surface showed>'` : `andon not raised (${p.error}): message the Delivery Manager`);
   }
   return { code: r.code, out: out.join('\n'), row: r.row };
 }

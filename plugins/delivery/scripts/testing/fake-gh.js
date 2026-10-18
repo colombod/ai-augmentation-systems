@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/testing/fake-gh.js — a fake `gh` for tests: `pr view <n|url> --json ...` and `pr merge <n|url>
+// scripts/testing/fake-gh.js — a fake `gh` for tests: `pr view <n|url> --json ...`, `run list --branch <b>` and `pr merge <n|url>
 // --match-head-commit <sha>`, over the JSON file named in GH_FAKE_STORE ({ repo: "owner/name", prs:
 // { "<n>": view } }). Like gh outside a checkout of the product, it needs -R (or a URL target) naming
 // that repository and fails on any other. Without the store it fails the way a signed-out gh does.
@@ -19,6 +19,15 @@ for (let i = 0; i < argv.length; i++) {
   else args.push(argv[i]);
 }
 const [group, cmd, target] = args;
+if (group === 'run' && cmd === 'list') {
+  // `run list -R <repo> --branch <b> --json ...`: the store's runs on that branch, newest first
+  if (!repo) fail('failed to run git: fatal: not a git repository (or any of the parent directories): .git');
+  if (String(repo).toLowerCase() !== String(s.repo).toLowerCase()) fail(`GraphQL: Could not resolve to a Repository with the name '${repo}'.`);
+  const b = args.indexOf('--branch');
+  const runs = (s.runs || []).filter((r) => b < 0 || (r.headBranch || 'main') === args[b + 1]);
+  process.stdout.write(`${JSON.stringify(runs)}\n`);
+  process.exit(0);
+}
 if (group !== 'pr' || !['view', 'merge'].includes(cmd)) fail(`fake gh: unsupported ${args.join(' ')}`);
 const url = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(target || '');
 if (url) repo = url[1];

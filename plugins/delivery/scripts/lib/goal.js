@@ -6,7 +6,8 @@
 // on an owner decision made for that change: the record carries the field and value it decides
 // (`operator.js record --goal <field>=<value>`), and the owner's quote states that value itself, with its
 // unit, and without a negation. A keyword match is not enough: "Do not stop the builders" is no pause.
-// The mechanical path is a failed reality-check row (an andon), which lapses when a pass row follows.
+// The mechanical path is a failed reality-check row (an andon), which lapses when a pass row on the
+// deployed version follows and the failure's A3 is closed (lib/andon.js).
 // A file rather than a goal bead: the Stop hooks read it on every turn without a bd call, and bd
 // metadata is already reserved to the Delivery Manager; the goal bead (phase 6) can point here.
 //
@@ -300,8 +301,12 @@ function andonState(root, rowId, { bead, atPause } = {}) {
   const row = rows.find((r) => r.id === rowId);
   if (!row || row.type !== 'row' || row.result !== 'fail') return { open: false, why: `${rowId} is not a failed check row` };
   if (!EVIDENCE_WRITERS.includes(row.by)) return { open: false, why: `${rowId} was not recorded by the Delivery Manager or a Reality Checker` };
-  if (rows.some((r) => r.seq > row.seq && r.type === 'row' && r.criterion === row.criterion && r.result === 'pass' && r.arm !== 'side' && EVIDENCE_WRITERS.includes(r.by))) return { open: false, why: `${rowId} was followed by a pass` };
-  return { open: true, bead: m[1] };
+  // it lifts on both: a counting pass after it on the deployed version, and a closed A3 for it (R-22)
+  const deployed = bead && bead.metadata && bead.metadata.deployed_sha;
+  const passed = rows.some((r) => r.seq > row.seq && r.type === 'row' && r.criterion === row.criterion && r.result === 'pass' && r.arm !== 'side' && EVIDENCE_WRITERS.includes(r.by) && (!deployed || G.shaMatch(r.sha, deployed)));
+  const a3 = require('./andon.js').closedA3For(root, `andon:${rowId}`);
+  if (passed && a3) return { open: false, why: `${rowId} was followed by a pass on the deployed version and ${a3.id} is closed` };
+  return { open: true, bead: m[1], missing: [!passed && 'a counting pass on the deployed version', !a3 && 'a closed A3'].filter(Boolean).join(' and ') };
 }
 
 function triggerState(root, trigger, opts = {}) {

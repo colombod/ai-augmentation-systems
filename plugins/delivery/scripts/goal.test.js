@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const goal = require('./goal.js');
 const Goal = require('./lib/goal.js');
+const AN = require('./lib/andon.js');
 const log = require('./lib/operator-log.js');
 const R = require('./lib/operator-records.js');
 const W = require('./lib/warnings.js');
@@ -207,9 +208,11 @@ test('R-42: only the Chief of Staff records a constraint (the PM records scope c
 const BEAD = 'vault-0n9-3';
 const row = (root, over) => G.appendEvidence(root, BEAD, { type: 'row', criterion: 1, surface: 'S1', sha: 'd478aa11', actor: 'x', at: '2026-10-17T22:54:00Z', ...over }).head;
 const beadWith = (head) => ({ id: BEAD, metadata: { evidence_head: head } });
+// the failure's A3, opened and closed in the andon ledger the way a3.js writes it
+const closeA3 = (root, trigger) => { const o = AN.append(root, { type: 'a3-open', trigger, by: 'delivery-lead', at: '2026-10-18T09:00:00Z' }, 'delivery-lead'); AN.append(root, { type: 'a3-close', a3: `a3-${o.id.slice(3)}`, fixes: ['ex-fix'], proof: 'ev', by: 'delivery-lead', at: '2026-10-18T10:00:00Z' }, 'delivery-lead'); };
 const pause = (root, roleId, trigger, bead) => goal.main(['pause', '--trigger', trigger], { who: who(root, roleId), bd: { show: () => bead } });
 
-test('R-42 I7: an andon pause cites a failed check row from evidence.js and lapses when a check passes', () => {
+test('R-42 I7: an andon pause cites a failed check row from evidence.js and lapses when a check passes and its A3 closes', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-ev-'));
   fs.mkdirSync(path.join(root, '.delivery', 'andon'), { recursive: true });
   fs.writeFileSync(path.join(root, '.delivery', 'andon', 'a-1.json'), JSON.stringify({ status: 'open' }));
@@ -225,7 +228,9 @@ test('R-42 I7: an andon pause cites a failed check row from evidence.js and laps
   row(root, { result: 'pass', by: 'builder' });
   assert.equal(Goal.activePause(root).paused, true, 'a builder\'s pass does not close it');
   row(root, { result: 'pass', by: 'reality-checker' });
-  assert.equal(Goal.activePause(root).paused, false);
+  assert.equal(Goal.activePause(root).paused, true, 'a pass alone does not lift it: its A3 is not closed (R-22)');
+  closeA3(root, `andon:ev-${BEAD}-2`);
+  assert.equal(Goal.activePause(root).paused, false, 'the pass and the closed A3 lift it');
 });
 
 test('R-42 Copilot 726: a trigger pause never overwrites or lifts the owner pause', () => {
@@ -323,6 +328,9 @@ test('Copilot round 2: a typographic apostrophe still negates; side-arm passes a
   row(r2, { result: 'pass', by: 'delivery-lead', arm: 'side' });
   assert.equal(Goal.activePause(r2).paused, true, 'a side-arm pass is not a check of the failure');
   row(r2, { result: 'pass', by: 'delivery-lead' });
+  closeA3(r2, `andon:ev-${BEAD}-1`);
+  assert.equal(Goal.activePause(r2).paused, true, 'the second andon has its pass but no closed A3');
+  closeA3(r2, `andon:ev-${BEAD}-2`);
   assert.equal(Goal.activePause(r2).paused, false);
 });
 
@@ -343,6 +351,7 @@ test('Copilot round 3: one bd lookup per bead, and at most maxLookups', () => {
   fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify(g));
   g.fields.pause_triggers.push(...['a', 'b', 'c'].map((x) => ({ value: 'paused', trigger: `andon:ev-other-${x}-1` })));
   fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify(g));
+  closeA3(root, `andon:ev-${BEAD}-1`);
   let lookups = 0;
   assert.equal(Goal.activePause(root, { beadOf: () => { lookups++; return null; }, maxLookups: 2 }).paused, false);
   assert.equal(lookups, 2);
