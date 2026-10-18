@@ -502,6 +502,58 @@ tight; block only on serious divergence, otherwise warn (R-34, R-36, R-41, R-23,
   judge on, `builds_on_verified` and `is_fix` are asked as advisory input. `--record` writes tier,
   score and reasons on the chosen bead (`metadata.selection`) and the warnings in the ledger.
 
+### Assumptions and spikes
+
+Owner rulings: build on evidence, not on a reading of the documentation; block only on serious
+divergence, otherwise warn (R-14, R-15, R-16, R-18; D4).
+
+- **The register.** `.delivery/initiatives/<initiative>/assumptions.md` (template
+  `templates/assumptions.md`), one table row per assumption: `Id` (A-n), `Statement`, `Kind`
+  (`external-host`, `platform`, `data`, `customer`, `internal`), `Criteria` (`<story>#<n>`, space
+  separated; a bare story id is every criterion), `Status` (`assumed`, `observed`, `refuted`),
+  `Evidence` (an `ev-` row) and `Decision owner` (`DM`, `PM`, or `owner` when the answer decides
+  scope). `/delivery:architecture` writes it; the Criteria column is the only link between a story and
+  its assumptions. `node ${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js list [--plain] [--json]` reads
+  it (`--plain` is the Chief of Staff's wording: "blocked until we check whether ..."); `add` is the
+  Product or Delivery Manager's and always starts a row `assumed`. A malformed row is a warning.
+- **Spike beads.** Materialise makes one spike bead per assumed `external-host` assumption,
+  `<prefix>-<initiative>-spike-a-<n>`, blocking the stories its criteria sit on. A Spikes table row
+  naming the assumption in its `Assumption` column gives it its question, decision, decision rule,
+  decision owner and time box (the table is read by header; an older four-column table still parses);
+  a spike with no decision rule is a materialise warning, and a spike claimed without its question,
+  decision and decision rule is a claim warning.
+- **Observed means seen in the real host.** `assumptions.js probe <spike> --host <where> --observed
+  '<what was seen>' --artifact <capture>` appends a probe row to the spike's evidence chain. An
+  external host is probed by the Reality Checker (`probe` lane group); a builder holding the spike or
+  the Spike Researcher may probe the other kinds locally. `assumptions.js observe|refute <A-n>
+  --evidence <ev-id>` (Product or Delivery Manager, Spike Researcher, or the builder holding the
+  spike) refuses a row that is not an observation in the real host: anything but a probe row on that
+  assumption or a Reality Checker's run, a local probe of an external host, or a twin not built from a
+  recording. A refused settle is a warning.
+- **Twins (R-18).** A test double or twin of an external host counts as a probe only with `--twin
+  <recording>`: a JSON file with `source` (the real host it was captured from), `recorded_at` and
+  `exchanges` (request and response pairs), or a HAR file. Any other twin row is kept with `counts:
+  false`, recorded as a `twin-unrecorded` warning, and settles nothing: it is an assumption, not
+  evidence.
+- **D4 at ready and claim.** A story whose criteria sit on an `external-host` assumption still
+  `assumed` is not ready (`ready.js` reports a block and `--record` stamps nothing) and its claim is
+  refused in two lines naming the spike to run. Once observed, its claim waits for the decision
+  owner's acknowledgement of the spike result. Every other kind, still assumed or with an
+  unacknowledged spike, is a warning.
+- **The spike gate.** `assumptions.js ack <spike> --decision '<the decision taken>' [--record
+  dec-...]` (Delivery or Product Manager) needs a probe row first, and the owner's record when the
+  decision owner is the owner; that record is re-verified at every claim, so a revoked one no longer
+  counts. A spike that answers an external-host assumption closes only with a result and the
+  acknowledgement (D4); other spikes with decision fields close with a `spike-unacked` warning.
+- **Refutation and the andon.** A refuted assumption stops every story resting on it (D4) and pauses
+  their area: other non-fix stories there are refused until no story rests on it, while `bug` and
+  `security` work goes on. `ready.js --record` stamps the assumptions it was recorded on
+  (`ready_assumptions`, protected), so a story made ready on one that is later refuted is held until
+  the design changes and ready is re-recorded. `refute` writes an `assumption-refuted` warning per
+  dependent story for the Delivery Manager.
+- **Not yet.** Probe size and blind-retry warnings (R-17), the `assumption_source` judge question
+  (it needs labelled cases first), and the R-01 goal sheet's blocking unknowns.
+
 ### Owner authority and communication
 
 The owner runs the enterprise; the Chief of Staff runs the team for the owner (R-42 to R-46).
