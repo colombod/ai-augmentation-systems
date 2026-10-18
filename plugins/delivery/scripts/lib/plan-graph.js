@@ -1,6 +1,6 @@
 // scripts/lib/plan-graph.js — pure planner: documents in, deterministic bead graph out.
 const path = require('path');
-const { phaseNumber } = require('./plan-docs.js');
+const { phaseNumber, spikeKey } = require('./plan-docs.js');
 
 function escapeRegExp(text) { return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -14,7 +14,7 @@ function uniqueBeads(beads, warnings) {
   });
 }
 
-function planGraph({ prefix, initiative, sha, roadmap, stories, spikes, surfaces }) {
+function planGraph({ prefix, initiative, sha, roadmap, stories, spikes, surfaces, assumptions = [] }) {
   const beads = [];
   const deps = [];
   const warnings = [];
@@ -55,16 +55,33 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes, surfaces
     (storiesByPhase.get(s.phase) || storiesByPhase.set(s.phase, []).get(s.phase)).push(s);
   }
 
+  // The register (R-14): each external-host assumption gets a spike, keyed by its id (spike-a-8), that
+  // blocks the stories its criteria sit on, whatever its status: its evidence and acknowledgement live on
+  // that spike's chain (Copilot 952). A Spikes row naming the assumption gives it its question, decision
+  // and rule.
+  const allSpikes = spikes.map((sp) => (sp.assumption ? { ...sp, key: spikeKey(sp.assumption) } : { ...sp }));
+  for (const a of assumptions) {
+    const key = spikeKey(a.id);
+    let sp = allSpikes.find((x) => x.key === key);
+    if (!sp && a.kind !== 'external-host') continue;
+    if (!sp) { sp = { key, question: `Does this hold in the real host: ${a.statement}`, timeBox: '', blocks: '' }; allSpikes.push(sp); }
+    sp.assumption = a.id;
+    sp.stories = a.criteria.map((c) => c.story);
+    if (!sp.decisionOwner && a.owner) sp.decisionOwner = { 'delivery-lead': 'DM', 'product-manager': 'PM', owner: 'owner' }[a.owner];
+    if (!sp.decisionRule) warnings.push(`spike ${key} for ${a.id}: no decision rule (which result means build, change the design or stop) (R-16)`);
+  }
   const spikesByPhase = new Map();
   const spikeBlocks = [];
   const seenSpikes = new Set();
-  for (const sp of spikes) {
+  for (const sp of allSpikes) {
     if (seenSpikes.has(sp.key)) { warnings.push(`duplicate spike key ${sp.key}`); continue; }
     seenSpikes.add(sp.key);
     const id = `${prefix}-${initiative}-spike-${sp.key}`;
     const blocksPhase = phaseNumber(sp.blocks);
     let phase = null;
     let unmatched = false;
+    const onStories = (sp.stories || []).filter((x) => storyById.has(x));
+    for (const x of sp.stories || []) if (!storyById.has(x)) warnings.push(`spike ${sp.key}: ${sp.assumption} sits on story ${x}, which is not in the plan`);
     if (blocksPhase && phaseIds.has(blocksPhase)) {
       // A phase-blocking spike gates the phase's work itself (every story), or its review when it has none.
       phase = blocksPhase;
@@ -73,11 +90,14 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes, surfaces
     } else if (storyById.has(sp.blocks)) {
       phase = storyById.get(sp.blocks).phase;
       spikeBlocks.push({ id: `${prefix}-${sp.blocks}`, blockedBy: id });
+    } else if (onStories.length) {
+      phase = storyById.get(onStories[0]).phase;
     } else {
       phase = phases.length ? phases[0].number : null;
       unmatched = true;
       warnings.push(`spike ${sp.key}: blocks "${sp.blocks}" matched nothing`);
     }
+    for (const x of onStories) spikeBlocks.push({ id: `${prefix}-${x}`, blockedBy: id });
     if (phase === null) continue;
     (spikesByPhase.get(phase) || spikesByPhase.set(phase, []).get(phase)).push({ ...sp, id, phase, unmatched });
   }
@@ -106,7 +126,7 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes, surfaces
     }
     for (const sp of spikesByPhase.get(p.number) || []) {
       const q = sp.question.length > 120 ? `${sp.question.slice(0, 117)}...` : sp.question;
-      beads.push({ id: sp.id, title: `Spike ${sp.key}: ${q}`, type: 'task', parent: epicId, labels: ['roadmap', `phase-${p.number}`, 'spike'], metadata: { ...base(p.number, `spike-${sp.key}`), spike: sp.key, time_box: sp.timeBox }, priority: 1, docId: `spike-${sp.key}` });
+      beads.push({ id: sp.id, title: `Spike ${sp.key}: ${q}`, type: 'task', parent: epicId, labels: ['roadmap', `phase-${p.number}`, 'spike'], metadata: spikeMeta(sp, base(p.number, `spike-${sp.key}`)), priority: 1, docId: `spike-${sp.key}` });
     }
     beads.push({ id: reviewId, title: `Phase ${p.number} review: sprint-review and realign`, type: 'task', parent: epicId, labels: ['roadmap', `phase-${p.number}`, 'phase-review'], metadata: base(p.number, `phase-${p.number}-review`), priority: 1, docId: `phase-${p.number}-review` });
   }
@@ -144,6 +164,13 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes, surfaces
   });
 
   return { beads: uniqueBeads(beads, warnings), deps: uniqueDeps, warnings };
+}
+
+// the spike gate's fields (R-16) travel on the bead, so the claim and close checks read them from it
+function spikeMeta(sp, base) {
+  const m = { ...base, spike: sp.key, time_box: sp.timeBox, question: sp.question };
+  for (const [k, f] of [['decision', 'decision'], ['decision_rule', 'decisionRule'], ['decision_owner', 'decisionOwner'], ['assumption', 'assumption']]) if (sp[f]) m[k] = sp[f];
+  return m;
 }
 
 const STOPLIST = new Set(['context', 'decision', 'decisions', 'overview', 'goal', 'goals', 'non-goals', 'scope', 'out of scope', 'risks', 'risk', 'background', 'summary', 'constraints', 'requirements', 'functional requirements', 'non-functional requirements', 'assumptions', 'open questions', 'open items', 'alternatives considered', 'consequences', 'status', 'notes', 'phases', 'critical path', 'dependencies', 'buffer', 'testing', 'introduction', 'problem', 'solution']);

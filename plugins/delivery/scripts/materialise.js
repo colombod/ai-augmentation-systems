@@ -10,6 +10,7 @@ const { parseRoadmap, parseStories, parseSpikes } = require('./lib/plan-docs.js'
 const { planGraph, denylistFrom } = require('./lib/plan-graph.js');
 const { makeBd } = require('./lib/bd.js');
 const { loadSurface } = require('./lib/surface.js');
+const { loadRegister } = require('./lib/assumptions.js');
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -43,6 +44,13 @@ function surfaceIds(projectRoot, initiative, warnings) {
   return s.surfaces.map((x) => x.id);
 }
 
+// The register's rows; a malformed row is a warning, never a stop (R-14 is warn-level).
+function registerRows(projectRoot, initiative, warnings) {
+  const reg = loadRegister(projectRoot, initiative);
+  for (const p of reg.problems) warnings.push(`assumptions.md: ${p}`);
+  return reg.rows;
+}
+
 function loadInputs({ projectRoot, initiative }) {
   const { team } = loadManifest(projectRoot);
   const init = path.join(projectRoot, '.delivery', 'initiatives', initiative);
@@ -67,6 +75,7 @@ function loadInputs({ projectRoot, initiative }) {
     prdText: readIf(path.join(init, 'prd.md')),
     personaNames: personaNames(path.join(projectRoot, '.delivery', 'personas')),
     surfaces: surfaceIds(projectRoot, initiative, warnings),
+    assumptions: registerRows(projectRoot, initiative, warnings),
   };
 }
 
@@ -266,7 +275,7 @@ if (require.main === module) {
   try { inputs = loadInputs({ projectRoot: root, initiative: args.initiative }); } catch (err) { console.error(`materialise: ${err.message}`); process.exit(2); }
   const bd = makeBd({ cwd: root });
   try {
-    const plan = planGraph({ prefix: inputs.team.prefix, initiative: args.initiative, sha: inputs.sha, roadmap: inputs.roadmap, stories: inputs.stories, spikes: inputs.spikes, surfaces: inputs.surfaces });
+    const plan = planGraph({ prefix: inputs.team.prefix, initiative: args.initiative, sha: inputs.sha, roadmap: inputs.roadmap, stories: inputs.stories, spikes: inputs.spikes, surfaces: inputs.surfaces, assumptions: inputs.assumptions });
     if (args.flags.has('check')) {
       const d = reconcile({ plan, bd, roadmap: inputs.roadmap, initiative: args.initiative });
       if (hasDrift(d)) { console.log(renderDrift(d)); process.exit(1); }

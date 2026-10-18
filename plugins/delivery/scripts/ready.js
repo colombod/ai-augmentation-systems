@@ -2,7 +2,9 @@
 // scripts/ready.js — the ready gate (R-10, R-19, R-35) on one story.
 //   ready.js <bead> [--record [--owner-record dec-...]] [--json] [--project <root>]
 //   ready.js --story <story file> [--initiative <slug>] [--json] [--project <root>]
-// Missing sections and mechanism-worded criteria are warnings, a divergence (D1, D2) is a block.
+// Missing sections and mechanism-worded criteria are warnings, a divergence (D1, D2, D4) is a block:
+// criteria resting on an external-host assumption still assumed, or on a spike result its decision
+// owner has not acknowledged, or on a refuted assumption (the register, lib/assumptions.js).
 // Without --record it only reports. --record (the Delivery Manager's role session) stamps the hash of
 // the agreed criteria and requirements that the claim and close checks compare, writes what is still
 // wrong to the ledger and resolves what was fixed; re-recording changed criteria needs a verified
@@ -15,9 +17,10 @@ const G = require('./lib/gates.js');
 const W = require('./lib/warnings.js');
 const { loadSurface } = require('./lib/surface.js');
 const { whoAmI, gateInputs, writerProblem } = require('./lib/gate-context.js');
+const A = require('./lib/assumptions.js');
 
 // the warnings a ready check raises; --record resolves the ones it no longer finds
-const READY_KINDS = ['owners-ask', 'surface-missing', 'surface-unnamed', 'placeholder', 'no-criteria', 'mechanism', 'probe', 'reality-check-required', 'measurement-plan', 'shippable-unit', 'shippable-judge', 'not-ready', 'child-scope'];
+const READY_KINDS = ['owners-ask', 'surface-missing', 'surface-unnamed', 'placeholder', 'no-criteria', 'mechanism', 'probe', 'reality-check-required', 'measurement-plan', 'shippable-unit', 'shippable-judge', 'not-ready', 'child-scope', 'assumption-unobserved', 'spike-unacked', 'assumption-refuted', 'assumption-unverified'];
 
 const USAGE = 'usage: ready.js <bead> [--record [--owner-record dec-...]] [--json] | ready.js --story <file> [--initiative <slug>]';
 
@@ -58,6 +61,12 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
     const { surface } = G.storySurface(story, null, s.surfaces);
     const judged = await judgeShippable(story, surface, who, deps).catch(() => null);
     const findings = G.readyFindings({ story, surfaces: s.surfaces, surfaceMissing: s.missing || s.problems.length > 0, judged });
+    // the register too (D4): the story by its frontmatter id, in the named initiative (Copilot 964)
+    const sid = String(story.meta.id || '');
+    if (a.initiative && sid) {
+      const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
+      findings.push(...A.forStory(who.root, { id: sid, metadata: { story: sid } }, { bd: store, team: who.team, verifyRecord, initiative: a.initiative }).findings);
+    }
     return { code: findings.some((f) => f.level === 'block') ? 1 : 0, out: render(path.basename(a.story), findings, { hash: G.storyHash(story) }, a.flags.has('json')) };
   }
   const id = a._[0];
@@ -72,6 +81,8 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
   // the pre-check reports only; nothing was claimed, so not-ready and scope drift are not findings here
   const findings = [...G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead, judged }),
     ...G.claimDivergence({ story: inp.story, bead, parent: inp.parent, parentStory: inp.parentStory }).filter((f) => f.code !== 'not-ready' && f.code !== 'criteria-changed')];
+  const asm = A.forStory(who.root, bead, { bd: store, team: who.team, verifyRecord, storyId: (bead.metadata || {}).story || String(inp.story.meta.id || '') });
+  findings.push(...asm.findings);
   const extra = {};
   if (record && !findings.some((f) => f.level === 'block')) {
     const wp = writerProblem(who);
@@ -84,7 +95,9 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
       const v = a.owner_record ? require('./lib/gate-context.js').ownerRecord(who.root, a.owner_record, verifyRecord) : null;
       if (!v || !v.ok) return { code: 1, out: `ready.js: ${id}'s criteria changed since they were made ready (D1).\nRe-record with an owner record: ready.js ${id} --record --owner-record <dec-...>${v ? ` (${v.why})` : ''}` };
     }
-    store.update(id, { metadata: { ...m, ready_hash: hash, ready_at: now || new Date().toISOString(), ...(a.owner_record ? { ready_record: a.owner_record } : {}) } });
+    // the assumptions ready was recorded on: a later refutation holds the story until ready is re-recorded
+    const stamp = asm.links.length || m.ready_assumptions ? { ready_assumptions: [...new Set(asm.links.map((l) => l.a.id))] } : {};
+    store.update(id, { metadata: { ...m, ready_hash: hash, ready_at: now || new Date().toISOString(), ...(a.owner_record ? { ready_record: a.owner_record } : {}), ...stamp } });
     // new agreed criteria need new evidence: an earlier verification no longer stands
     if (changed && (bead.labels || []).includes(G.STATE.verified)) store.update(id, { removeLabels: [G.STATE.verified] });
     // what is still wrong stays in the ledger; what was fixed is resolved

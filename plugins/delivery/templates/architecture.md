@@ -70,11 +70,16 @@ Consequential choices get an ADR in `.delivery/decisions/`. Summarize here.
 ## Spikes — what must be proven before committing
 
 The most valuable output of this document. Each spike is a specific question
-with a time box, not "investigate X".
+with a time box, not "investigate X", and names the decision it informs and the
+rule that turns its result into that decision: which answer means build, which
+means change the design, which means stop. Every claim the design rests on that
+nobody has seen hold goes in the register, `assumptions.md`
+(`templates/assumptions.md`); a spike that answers one names it, and is probed in
+the real host, never on the documentation.
 
-| # | Question to answer | Time box | Blocks |
-| :-- | :-- | :-- | :-- |
-| 1 | | | |
+| # | Question to answer | Decision it informs | Decision rule | Decision owner | Time box | Blocks | Assumption |
+| :-- | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
+| 1 | | | build if ...; change the design if ...; stop if ... | DM \| PM \| owner | | | A-1 |
 
 ## Migration and rollback
 

@@ -44,7 +44,8 @@ Corrections log it writes. Never silently overwrite.
 - Interfaces and data contracts
 - How each `NFR-n` from the PRD is met, addressed one by one
 - Alternatives considered and why rejected, for every consequential decision
-- The **spike list**: assumptions that must be proven before committing, each with a specific question and a time box
+- The **spike list**: assumptions that must be proven before committing, each with a specific question, the decision it informs, a decision rule (which result means build, change the design, or stop), its decision owner (DM, PM, or the owner when it decides scope) and a time box
+- The **assumption register**: every claim the design rests on that nobody has yet seen hold, each with its kind (`external-host` for how a host we do not control behaves, else `platform`, `data`, `customer` or `internal`) and the acceptance criteria it sits on
 - Migration and rollback plan for any change to persisted data or public interfaces
 - Risk register
 
@@ -54,7 +55,9 @@ Corrections log it writes. Never silently overwrite.
 
 **5. Write the design** to `.delivery/initiatives/<initiative>/architecture.md` using `${CLAUDE_PLUGIN_ROOT}/templates/architecture.md`. Write each consequential decision as its own ADR in `.delivery/decisions/ADR-NNN-<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/adr.md`.
 
-**6. Declare the customer surface** in `.delivery/initiatives/<initiative>/surface.json` from `${CLAUDE_PLUGIN_ROOT}/templates/surface.json`: where the customer actually uses the product (host, app, mode, the install artifact they get), whether an agent can drive it by script (`scriptable`), and the host's limits as numbers (`size_budgets`). Cite the owner's decision in `owner_record`; one surface is the norm, a second only when the owner named it. Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/surface.js check <initiative>`. Every story names its surface, and evidence from any other surface does not count at the done gate, so a wrong surface here is the costliest error in the design.
+**6. Write the assumption register** to `.delivery/initiatives/<initiative>/assumptions.md` from `${CLAUDE_PLUGIN_ROOT}/templates/assumptions.md`, in a role session only through `node ${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js add` (the lanes refuse a direct edit): one row per assumption, every one `assumed` (only a probe in the real host makes one `observed`), criteria as `<story>#<n>` once the stories exist (until then, the stories' ids from the roadmap). Each `external-host` row gets a spike in the Spikes table naming it in its Assumption column; materialise turns it into a spike bead that blocks those stories, and their claims are refused until it is answered in the real host and its decision owner has acknowledged the result. An external host is observed only by the Reality Checker's probe in the real host; a documentation reading or a twin is never an observation of it. Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js list` to check the table parses.
+
+**7. Declare the customer surface** in `.delivery/initiatives/<initiative>/surface.json` from `${CLAUDE_PLUGIN_ROOT}/templates/surface.json`: where the customer actually uses the product (host, app, mode, the install artifact they get), whether an agent can drive it by script (`scriptable`), and the host's limits as numbers (`size_budgets`). Cite the owner's decision in `owner_record`; one surface is the norm, a second only when the owner named it. Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/surface.js check <initiative>`. Every story names its surface, and evidence from any other surface does not count at the done gate, so a wrong surface here is the costliest error in the design.
 
 ## Exit criteria
 
@@ -63,7 +66,8 @@ Corrections log it writes. Never silently overwrite.
 - Component structure cites real, verified file paths
 - Every `NFR-n` in the PRD is addressed explicitly, or listed as unmet with the reason
 - Every consequential decision has stated alternatives
-- The spike list exists — or the document states plainly that nothing needs proving, which is rare enough to justify
+- The spike list exists — or the document states plainly that nothing needs proving, which is rare enough to justify — and every spike names its decision, decision rule and decision owner
+- `assumptions.md` exists, every `external-host` assumption has a spike, and `assumptions.js list` reports no warnings
 - Migration and rollback are covered, or explicitly not applicable
 - Test strategy is present
 - `surface.json` exists and `surface.js check` passes
