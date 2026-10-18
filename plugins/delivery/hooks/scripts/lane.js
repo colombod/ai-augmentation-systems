@@ -882,11 +882,12 @@ function laneDecisionForHook(input, pluginRoot) {
   const groups = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'lane-groups.json'), 'utf8'));
   let d = decideLane({ toolName: input.tool_name, toolInput: input.tool_input || {}, roleDir, policy, groups, pluginRoot, cwd: input.cwd, hostHeadless: !!host.headless, hostName: role.host, desktopHosts, projectRoot: marker.project_root });
   // the Delivery Manager's merge passes only through the merge gate (R-32): a passing independent
-  // review of the current head, CI green, no conflict; an error here fails closed in role-lane.js
+  // review of the current head, CI green, no conflict, in the product repository; its GitHub approvals
+  // are refused (approvals are review rows); an error here fails closed in role-lane.js
   if (d.allow && policy.roleId === MERGER) {
     const cmd = shellCommandOf(input.tool_name, input.tool_input || {});
     if (cmd !== null && /\bgh\b/.test(cmd)) {
-      const why = require('../../scripts/merge-gate.js').mergeCommandProblem(cmd, { root: marker.project_root, team: ctx.team });
+      const why = require('../../scripts/merge-gate.js').mergeCommandProblem(cmd, { root: marker.project_root, team: ctx.team, roleDir });
       if (why) d = { allow: false, reason: `Role ${policy.roleId}: ${why}` };
     }
   }

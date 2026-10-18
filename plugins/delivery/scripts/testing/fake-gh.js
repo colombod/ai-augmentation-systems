@@ -1,21 +1,35 @@
 #!/usr/bin/env node
-// scripts/testing/fake-gh.js — a fake `gh` for tests: `pr view <n> --json ...` and `pr merge <n>
-// --match-head-commit <sha>`, over the JSON file named in GH_FAKE_STORE ({ prs: { "<n>": view } }).
-// Without the store it fails the way a signed-out gh does. Never used in production.
+// scripts/testing/fake-gh.js — a fake `gh` for tests: `pr view <n|url> --json ...` and `pr merge <n|url>
+// --match-head-commit <sha>`, over the JSON file named in GH_FAKE_STORE ({ repo: "owner/name", prs:
+// { "<n>": view } }). Like gh outside a checkout of the product, it needs -R (or a URL target) naming
+// that repository and fails on any other. Without the store it fails the way a signed-out gh does.
+// Never used in production.
 const fs = require('fs');
 
 const store = process.env.GH_FAKE_STORE;
 const fail = (msg) => { process.stderr.write(`${msg}\n`); process.exit(1); };
 if (!store || !fs.existsSync(store)) fail('gh: not logged in to any hosts (fake)');
 const s = JSON.parse(fs.readFileSync(store, 'utf8'));
-const args = process.argv.slice(2).filter((a, i, all) => a !== '-R' && all[i - 1] !== '-R');
-const [group, cmd, n] = args;
-const pr = s.prs && s.prs[n];
+const argv = process.argv.slice(2);
+let repo = null;
+const args = [];
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '-R' || argv[i] === '--repo') repo = argv[++i];
+  else if (argv[i].startsWith('--repo=')) repo = argv[i].slice(7);
+  else args.push(argv[i]);
+}
+const [group, cmd, target] = args;
 if (group !== 'pr' || !['view', 'merge'].includes(cmd)) fail(`fake gh: unsupported ${args.join(' ')}`);
+const url = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(target || '');
+if (url) repo = url[1];
+if (!repo) fail('failed to run git: fatal: not a git repository (or any of the parent directories): .git');
+if (String(repo).toLowerCase() !== String(s.repo).toLowerCase()) fail(`GraphQL: Could not resolve to a Repository with the name '${repo}'.`);
+const n = url ? url[2] : target;
+const pr = s.prs && s.prs[n];
 if (!pr) fail(`GraphQL: Could not resolve to a PullRequest with the number of ${n}.`);
 if (cmd === 'view') { process.stdout.write(`${JSON.stringify({ number: Number(n), state: 'OPEN', ...pr })}\n`); process.exit(0); }
 const at = args.indexOf('--match-head-commit');
-if (at >= 0 && args[at + 1] !== pr.headRefOid) fail(`Head branch was modified. Review and try the merge again.`);
+if (at >= 0 && args[at + 1] !== pr.headRefOid) fail('Head branch was modified. Review and try the merge again.');
 pr.state = 'MERGED';
 fs.writeFileSync(store, JSON.stringify(s, null, 2));
 process.stdout.write(`✓ Merged pull request #${n}\n`);

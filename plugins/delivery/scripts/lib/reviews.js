@@ -16,10 +16,13 @@ const G = require('./gates.js');
 const REL = path.join('.delivery', 'reviews', 'prs');
 const PR = /^[1-9]\d{0,8}$/;
 const SHA = /^[0-9a-f]{7,40}$/i;
-// reviewers whose rows are advisory: bots (GitHub's [bot] suffix, Copilot and the like)
-const BOT = /\[bot\]$|^(?:github-)?copilot\b|^coderabbit|^dependabot|^codex\b/i;
+const FULL_SHA = /^[0-9a-f]{40}$/i;
+// reviewers whose rows are advisory: bots (any [bot] or -bot name, Copilot, GitHub Actions and the like)
+const BOT = /\[bot\]$|[-_]bot$|^bot[-_]|^(?:github-)?copilot\b|^github-actions\b|^coderabbit|^dependabot|^renovate|^sonarcloud|^sonarqube|^codecov|^codex\b/i;
 // generated files do not count toward a pull request's size (R-24)
-const GENERATED = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|go\.sum|poetry\.lock|Gemfile\.lock|composer\.lock)$|(?:^|\/)(?:dist|build|vendor)\/|\.min\.(?:js|css)$|\.snap$/;
+const GENERATED = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|npm-shrinkwrap\.json|go\.sum|[^/]*\.lock)$|(?:^|\/)(?:dist|build|out|vendor|node_modules|generated|gen|__generated__|target|coverage)\/|\.min\.(?:js|css)$|\.(?:snap|map)$|\.pb\.go$|_pb2(?:_grpc)?\.py$|\.g\.dart$|\.generated\.[a-z]+$/;
+// a builder works on team/<instance> (prepare-role's worktree branch): the pull request's author
+const BRANCH = /^team\/([a-z0-9][a-z0-9-]*)(?:\/|$)/i;
 const DEFAULT_SIZE = 600;
 const sha12 = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 12);
 const ROOT_CMD = 'node ${CLAUDE_PLUGIN_ROOT}/scripts';
@@ -28,6 +31,12 @@ const cmd = (script, args) => `\`${ROOT_CMD}/${script} ${args}\``;
 const fileOf = (root, pr) => path.join(root, REL, `${pr}.ndjson`);
 const isBot = (id) => BOT.test(String(id || ''));
 const instanceOf = (actor) => String(actor || '').split('/').pop();
+// one identity, whatever its form: Builder-1, dev@pc/builder-1, builder-1@pc and the Delivery Manager alias
+function norm(id) {
+  const s = String(id || '').trim().toLowerCase().split('/').pop().replace(/@.*$/, '');
+  return s.replace(/^delivery-manager(?=$|-\d+$)/, 'delivery-lead');
+}
+const branchOwner = (ref) => { const m = BRANCH.exec(String(ref || '')); return m ? m[1].toLowerCase() : null; };
 
 // { rows, problem }: a line that breaks the chain stops the read, and the gate refuses on it
 function read(root, pr) {
@@ -82,7 +91,7 @@ function authorsOfBeads(beads, instances = []) {
   for (const b of beads) for (const a of G.authorsOf(b, instances).actors) actors.add(a);
   return [...actors];
 }
-const isAuthor = (authors, id) => !!id && authors.some((a) => a === id || instanceOf(a) === id);
+const isAuthor = (authors, id) => !!id && authors.some((a) => norm(a) === norm(id));
 
 // Changed lines that count toward the size cap: generated files are left out
 function changedLines(pr) {
@@ -125,20 +134,22 @@ const cutOf = (rows) => rows.reduce((n, r) => (r.type === 'sent-back' ? r.seq : 
 
 // The merge gate's rule. ctx: { head, ci: { state, names } | null (gh not readable), mergeable, botsCount }.
 // { ok, review, why, fix } — why and fix are the two lines of a refusal.
-function evaluate(pr, rows, { head, ci, mergeable, botsCount = false, problem } = {}) {
+function evaluate(pr, rows, { head, ci, mergeable, botsCount = false, problem, repo } = {}) {
   const req = lastRequest(rows);
   const reviewer = req ? req.reviewer : '<reviewer>';
   const again = cmd('review.js', `request ${pr} --reviewer ${reviewer}`);
   const sendBack = (reason) => cmd('review.js', `send-back ${pr} --reason ${reason}`);
   if (problem) return { ok: false, why: problem, fix: `Restore the record from git (\`git log -p -- ${REL}/${pr}.ndjson\`) or ask for a fresh review: ${again}` };
-  if (!head) return { ok: false, why: `PR ${pr}'s current head is not known (gh could not read it)`, fix: `Name it: \`gh pr merge ${pr} --match-head-commit <head sha>\`` };
+  if (!head) return { ok: false, why: `PR ${pr}'s current head is not known (gh could not read it)`, fix: `Name it: \`gh pr merge ${pr}${repo ? ` -R ${repo}` : ''} --match-head-commit <full head sha>\`` };
+  if (req && req.repo && repo && req.repo.toLowerCase() !== repo.toLowerCase()) return { ok: false, why: `PR ${pr}'s review records are for ${req.repo}, not ${repo}`, fix: `Ask for a review in ${repo}: ${again}` };
+  if (String(mergeable || '').toUpperCase() === 'UNKNOWN') return { ok: false, why: `GitHub is still computing whether PR ${pr} merges cleanly; try again in a minute`, fix: `Then: ${cmd('merge-gate.js', `check ${pr}`)}` };
   if (String(mergeable || '').toUpperCase() === 'CONFLICTING') return { ok: false, why: `PR ${pr} has conflicts with its base: its owner resolves them, never the Delivery Manager`, fix: `Send it back: ${sendBack('conflict')}; once the owner pushes the fix, ask for review again` };
   const cut = cutOf(rows);
   const live = rows.filter((r) => r.type === 'review' && r.seq > cut);
   const onHead = live.filter((r) => G.shaMatch(r.head, head));
   const counts = (r) => r.kind === 'independent' || (botsCount && r.kind === 'advisory');
   const pass = [...onHead].reverse().find((r) => counts(r) && r.result === 'pass');
-  const changes = [...onHead].reverse().find((r) => r.kind === 'independent' && r.result === 'changes');
+  const changes = [...onHead].reverse().find((r) => counts(r) && r.result === 'changes');
   if (changes && (!pass || changes.seq > pass.seq)) return { ok: false, why: `review ${changes.id} by ${changes.reviewer} asked for changes on ${short(head)}: ${String(changes.summary || '').slice(0, 120)}`, fix: `Send it back to its owner: ${sendBack('changes')}; after the fix, ask for review again: ${again}` };
   if (!pass) {
     const older = [...live].reverse().find((r) => counts(r) && r.result === 'pass');
@@ -161,19 +172,31 @@ function evaluate(pr, rows, { head, ci, mergeable, botsCount = false, problem } 
 }
 const short = (s) => String(s || '').slice(0, 12);
 
-// Where a pull request stands from its rows alone (no gh): for team-status and the plain status
-function stateOf(rows) {
+// Where a pull request stands. From the rows alone the head is the latest requested one (a late review
+// of an older head never makes it ready), and a passing review is only "passed": the gate is not
+// known. With live gh facts (view): the head moved ("stale"), the build failing, or ready to merge.
+function stateOf(rows, live) {
   if (rows.some((r) => r.type === 'merged')) return 'merged';
   const cut = cutOf(rows);
   const last = [...rows].reverse().find((r) => ['request', 'review', 'sent-back'].includes(r.type));
   if (!last) return 'waiting';
   if (last.type === 'sent-back') return 'sent-back';
-  const head = [...rows].reverse().find((r) => r.head && r.type !== 'ci');
-  const onHead = rows.filter((r) => r.type === 'review' && r.seq > cut && r.kind === 'independent' && head && G.shaMatch(r.head, head.head));
+  const req = lastRequest(rows);
+  const view = live && !live.unavailable && live.headRefOid ? live : null;
+  if (view && req && !G.shaMatch(view.headRefOid, req.head)) return 'stale';
+  const head = view ? view.headRefOid : req && req.head;
+  if (!head) return 'waiting';
+  const onHead = rows.filter((r) => r.type === 'review' && r.seq > cut && r.kind === 'independent' && G.shaMatch(r.head, head));
   const latest = onHead[onHead.length - 1];
-  if (latest && latest.result === 'pass') return 'ready';
-  if (latest && latest.result === 'changes') return 'changes';
-  return 'waiting';
+  if (!latest) return 'waiting';
+  if (latest.result === 'changes') return 'changes';
+  let ci = view ? ciOf(view.statusCheckRollup) : { state: 'none' };
+  if (ci.state === 'none') {
+    const row = [...rows].reverse().find((r) => r.type === 'ci' && r.seq > cut && G.shaMatch(r.head, head));
+    ci = row ? { state: row.result === 'pass' ? 'green' : 'red' } : { state: 'none' };
+  }
+  if (ci.state === 'red') return 'failing';
+  return view && ci.state === 'green' && String(view.mergeable || '').toUpperCase() === 'MERGEABLE' ? 'ready' : 'passed';
 }
 
-module.exports = { REL, PR, SHA, DEFAULT_SIZE, fileOf, read, append, listPrs, refsOf, storiesOf, authorsOfBeads, isAuthor, isBot, instanceOf, changedLines, scopeWarnings, ciOf, evaluate, lastRequest, stateOf, cmd, short };
+module.exports = { norm, branchOwner, BRANCH, FULL_SHA, REL, PR, SHA, DEFAULT_SIZE, fileOf, read, append, listPrs, refsOf, storiesOf, authorsOfBeads, isAuthor, isBot, instanceOf, changedLines, scopeWarnings, ciOf, evaluate, lastRequest, stateOf, cmd, short };

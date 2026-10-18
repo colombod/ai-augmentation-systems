@@ -17,7 +17,7 @@ const BEAD = 'ex-vault-0n9-3';
 const H1 = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 const H2 = 'b2c3d4e5f60718293a4b5c6d7e8f901234567890';
 const GREEN = [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }];
-const pr478 = (over = {}) => ({ headRefOid: H1, mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'src/import.js', additions: 120, deletions: 30 }],
+const pr478 = (over = {}) => ({ headRefOid: H1, headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'src/import.js', additions: 120, deletions: 30 }],
   body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, title: 'Import a dropped CSV', ...over });
 
 function setup(prs = { 478: pr478() }) {
@@ -25,7 +25,7 @@ function setup(prs = { 478: pr478() }) {
   const h = harness({ beads: { [BEAD]: bead }, prs });
   h.review = (inst, args) => h.bash(inst, `${h.script('review.js')} ${args}`);
   h.gate = (inst, args) => h.bash(inst, `${h.script('merge-gate.js')} ${args}`);
-  h.merge = (inst, args) => h.bash(inst, `gh pr merge ${args}`);
+  h.merge = (inst, args) => h.bash(inst, `gh pr merge ${args} -R example/example`);
   h.pass = (inst, head = H1, by = '') => h.review(inst, `record 478 --head ${head} --result pass --summary 'criteria 1 and 2 hold; tests 41 passed'${by ? ` --by ${by}` : ''}`);
   return h;
 }
@@ -83,6 +83,7 @@ test('R-32 #393: a review of an older head does not count after a new commit; th
 test('R-32: "changes" blocks until a newer pass on the head; CI red blocks; a Copilot pass alone is advisory', () => {
   const h = setup();
   h.review('delivery-lead', 'request 478 --reviewer agent-7f3a');
+  h.review('delivery-lead', 'request 478 --reviewer copilot-pull-request-reviewer');
   assert.match(h.review('delivery-lead', `record 478 --head ${H1} --result pass --by copilot-pull-request-reviewer --summary 'LGTM'`).out, /advisory: does not satisfy the gate alone/);
   assert.match(h.merge('delivery-lead', `478 --match-head-commit ${H1}`).deny, /only advisory reviews \(copilot-pull-request-reviewer\)/);
   h.pass('delivery-lead', H1, 'agent-7f3a');
@@ -112,7 +113,7 @@ test('R-32: a conflict goes back to its owner (bead note and message); after the
   h.review('delivery-lead', 'request 478 --reviewer builder-2');
   h.pass('builder-2', H2);
   assert.equal(h.gate('delivery-lead', 'check 478').code, 0);
-  assert.match(h.gate('delivery-lead', 'check 478').out, /Merge: `gh pr merge 478 --match-head-commit b2c3d4e5f60718293a4b5c6d7e8f901234567890 --squash`/);
+  assert.match(h.gate('delivery-lead', 'check 478').out, /Merge: `gh pr merge 478 -R example\/example --match-head-commit b2c3d4e5f60718293a4b5c6d7e8f901234567890 --squash`/);
 });
 
 test('R-24 #272: a 1,000-line pull request across two stories warns at request and at the gate, and never blocks', () => {
@@ -124,7 +125,7 @@ test('R-24 #272: a 1,000-line pull request across two stories warns at request a
   assert.equal(req.code, 0, req.out);
   assert.match(req.out, /warning w-.*: PR 272 changes 1000 lines, over 600: split it/, 'the lock file does not count');
   assert.match(req.out, /warning w-.*: PR 272 touches 2 stories \(ex-vault-0n9-3, ex-vault-0n9-4\): one story per pull request/);
-  assert.match(req.out, /Reviewer brief .*\n.*Review pull request 272 at head a1b2c3d4e5f6\S* only.*\n.*Do not modify code, push, approve on GitHub or merge/);
+  assert.match(req.out, /Reviewer brief .*\n.*Review pull request 272 of example\/example at head a1b2c3d4e5f6\S* only.*\n.*Do not modify code, push, approve on GitHub or merge/);
   h.review('builder-2', `record 272 --head ${H1} --result pass --summary 'ok'`);
   const g = h.gate('delivery-lead', 'check 272');
   assert.equal(g.code, 0);
@@ -136,13 +137,14 @@ test('R-24 #272: a 1,000-line pull request across two stories warns at request a
 
 test('R-32 R-12: the normal path: request, a pass on the current head, CI green, the merge, state-merged; status and plain words follow', () => {
   const h = setup();
-  const status = () => require('./team-status.js').renderStatus(require('./team-status.js').teamStatus(h.root, { bdCheck: () => false }), null);
+  const gh = (pr) => ({ number: Number(pr), state: 'OPEN', ...h.gh()[pr] });
+  const status = () => require('./team-status.js').renderStatus(require('./team-status.js').teamStatus(h.root, { bdCheck: () => false, gh }), null);
   assert.match(h.review('delivery-lead', 'request 478 --reviewer builder-2').out, /rv-478-1: review of PR 478 at a1b2c3d4e5f6 requested from builder-2/);
-  assert.match(status(), /Pull requests: waiting for review 1 \(#478\); ready to merge 0; sent back 0/);
+  assert.match(status(), /Pull requests: waiting for review 1 \(#478\)\n/);
   assert.match(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /^The change "Import a collection" is waiting for review$/);
   assert.match(h.pass('builder-2').out, /rv-478-2: pass by builder-2 on a1b2c3d4e5f6 \(independent\)/);
   assert.match(status(), /ready to merge 1 \(#478\)/);
-  assert.match(h.merge('delivery-lead', '478 --squash').deny, /name the reviewed head, so GitHub merges exactly that commit\.\nRun: `gh pr merge 478 --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 --squash`$/);
+  assert.match(h.merge('delivery-lead', '478 --squash').deny, /name the reviewed head, so GitHub merges exactly that commit\.\nRun: `gh pr merge 478 -R example\/example --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 --squash`$/);
   const m = h.merge('delivery-lead', `478 --match-head-commit ${H1} --squash`);
   assert.equal(m.deny, null, m.deny);
   assert.match(m.out, /Merged pull request #478/);
@@ -157,34 +159,34 @@ test('R-32 R-12: the normal path: request, a pass on the current head, CI green,
 test('R-32 without gh: the head comes from the merge command and CI from the Delivery Manager\'s recorded run', () => {
   const root = makeProject();
   const bd = memBd([storyBead({ metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } })]);
-  const team = loadManifest(root).team;
+  const team = { ...loadManifest(root).team, product_github: 'example/example' };
   const who = (instance) => ({ root, team, instance, roleId: instance.replace(/-\d+$/, ''), actor: `dev@pc/${instance}` });
   const gh = () => ({ unavailable: 'gh is not installed' });
   const call = (mod, inst, argv) => mod.main(argv, { bd, gh, who: who(inst) });
   assert.match(call(review, 'delivery-lead', ['request', '478', '--reviewer', 'agent-1']).out, /head is not known \(gh: gh is not installed\)/);
   assert.match(call(review, 'delivery-lead', ['request', '478', '--reviewer', 'agent-1', '--head', H1]).out, /names no bead/);
-  assert.equal(call(review, 'delivery-lead', ['request', '478', '--reviewer', 'agent-1', '--head', H1, '--bead', BEAD, '--lines', '120']).code, 0);
+  assert.equal(call(review, 'delivery-lead', ['request', '478', '--reviewer', 'agent-1', '--head', H1, '--branch', 'team/builder-1', '--bead', BEAD, '--lines', '120']).code, 0);
   assert.equal(call(review, 'delivery-lead', ['record', '478', '--head', H1, '--result', 'pass', '--by', 'agent-1', '--summary', 'ok']).code, 0);
   const problem = (c) => mergeGate.mergeCommandProblem(c, { root, team, gh });
-  assert.match(problem('gh pr merge 478 --squash'), /current head is not known.*\nName it: `gh pr merge 478 --match-head-commit <head sha>`/);
-  assert.match(problem(`gh pr merge 478 --match-head-commit ${H1}`), /no CI result for a1b2c3d4e5f6 \(gh could not read the checks\)\.\nRecord the run: `node \$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/review\.js ci 478 --head a1b2/);
+  assert.match(problem('gh pr merge 478 -R example/example --squash'), /current head is not known.*\nName it: `gh pr merge 478 -R example\/example --match-head-commit <full head sha>`/);
+  assert.match(problem(`gh pr merge 478 -R example/example --match-head-commit ${H1}`), /no CI result for a1b2c3d4e5f6 \(gh could not read the checks\)\.\nRecord the run: `node \$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/review\.js ci 478 --head a1b2/);
   assert.match(call(review, 'builder-2', ['ci', '478', '--head', H1, '--result', 'pass', '--run', 'r1']).out, /the Delivery Manager's to do/);
   call(review, 'delivery-lead', ['ci', '478', '--head', H1, '--result', 'pass', '--run', 'https://ci.example/run/9']);
-  assert.equal(problem(`gh pr merge 478 --match-head-commit ${H1} --squash`), null);
-  assert.match(problem(`gh pr merge 478 --match-head-commit ${H1} --admin`), /merges outside the gate \(it bypasses the branch rules\)/);
+  assert.equal(problem(`gh pr merge 478 -R example/example --match-head-commit ${H1} --squash`), null);
+  assert.match(problem(`gh pr merge 478 -R example/example --match-head-commit ${H1} --admin`), /merges outside the gate \(it bypasses the branch rules\)/);
   assert.match(problem('gh pr merge https://github.com/example/example/pull/478 --auto'), /merges outside the gate/);
   assert.match(problem('gh pr merge --squash'), /needs the pull request's number/);
   assert.equal(problem('gh pr view 478 && git status'), null, 'only merges are gated');
   // a tampered record stops the gate
   const file = R.fileOf(root, '478');
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"summary":"ok"', '"summary":"ok, edited"'));
-  assert.match(problem(`gh pr merge 478 --match-head-commit ${H1}`), /breaks PR 478's review chain/);
+  assert.match(problem(`gh pr merge 478 -R example/example --match-head-commit ${H1}`), /breaks PR 478's review chain/);
 });
 
 test('briefs: the Delivery Manager\'s loop with exact commands; builders never merge or review their own; the Chief of Staff in plain words', () => {
   const read = (r) => fs.readFileSync(path.join(__dirname, '..', 'roles', `${r}.md`), 'utf8');
   const dm = read('delivery-lead');
-  for (const step of ['review.js request <pr> --reviewer', '--by <subagent id>', 'merge-gate.js check <pr>', 'gh pr merge <pr> --match-head-commit <sha> --squash', 'merge-gate.js merged <pr>', 'review.js send-back <pr> --reason conflict|changes|ci']) assert.ok(dm.includes(step), step);
+  for (const step of ['review.js request <pr> --reviewer', '--by <subagent id>', 'merge-gate.js check <pr>', 'gh pr merge <pr> -R <owner/name> --match-head-commit <full sha> --squash', 'merge-gate.js merged <pr>', 'review.js send-back <pr> --reason conflict|changes|ci']) assert.ok(dm.includes(step), step);
   assert.match(read('builder'), /You never merge[\s\S]*never review or record a review of your own pull request/);
   assert.match(read('chief-of-staff'), /review\.js list --plain[\s\S]*reviewed and merged; checking it on the customer's app next/);
   // every review.js and merge-gate.js subcommand the briefs name is one the scripts accept

@@ -77,15 +77,25 @@ function gateStatus(projectRoot, team, { now, storyBeads, checkBeads, budget, bu
   return out;
 }
 
-// Pull requests by where they stand in review (R-32), from the review records alone (no gh call)
-function reviewStatus(projectRoot) {
+// Pull requests by where they stand in review (R-32). With gh (the product repository known) the open
+// ones are read live: a moved head needs review again, a red build is failing; without it, a passing
+// review is only "review passed" (the merge gate is not known).
+const PR_BUCKETS = [['waiting for review', ['waiting', 'stale']], ['review passed', ['passed']], ['ready to merge', ['ready']], ['changes requested', ['changes']], ['build failing', ['failing']], ['sent back', ['sent-back']]];
+function reviewStatus(projectRoot, { team, gh } = {}) {
   const R = require('./lib/reviews.js');
-  const out = { waiting: [], ready: [], sentBack: [] };
+  let live = gh || null;
+  if (!live) {
+    const P = require('./lib/gh-pr.js');
+    const repo = P.productRepoOf(team);
+    if (repo) live = (pr) => P.viewPr(pr, { repo, cwd: projectRoot });
+  }
+  const out = Object.fromEntries(PR_BUCKETS.map(([name]) => [name, []]));
   for (const pr of R.listPrs(projectRoot)) {
-    const s = R.stateOf(R.read(projectRoot, pr).rows);
-    if (s === 'waiting') out.waiting.push(pr);
-    else if (s === 'ready') out.ready.push(pr);
-    else if (s === 'sent-back' || s === 'changes') out.sentBack.push(pr);
+    const { rows } = R.read(projectRoot, pr);
+    if (rows.some((r) => r.type === 'merged')) continue;
+    const s = R.stateOf(rows, live ? live(pr) : null);
+    const bucket = PR_BUCKETS.find(([, states]) => states.includes(s));
+    if (bucket) out[bucket[0]].push(pr);
   }
   return out;
 }
@@ -100,7 +110,7 @@ function idleStatus(projectRoot, { now, idleBd } = {}) {
   return s;
 }
 
-function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, checkBeads, idleBd, budget, budgetOpts, bd } = {}) {
+function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, checkBeads, idleBd, budget, budgetOpts, bd, gh } = {}) {
   const { team, hosts } = loadManifest(projectRoot);
   const roster = readRoster(projectRoot);
   const nowMs = Date.parse(now || new Date().toISOString());
@@ -141,7 +151,7 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
   const placement = team.roles.filter((r) => r.id === 'reality-checker' && !r.retired && ((hosts && hosts.hosts) || {})[r.host] && hosts.hosts[r.host].headless)
     .map((r) => `the Reality Checker is on ${r.host}, a headless host: it cannot drive a browser or desktop app there; move it to a host with desktop apps (hosts.json)`);
   let reviews = null;
-  try { reviews = reviewStatus(projectRoot); } catch (err) { reviews = null; }
+  try { reviews = reviewStatus(projectRoot, { team, gh }); } catch (err) { reviews = null; }
   return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, reviews, warnings: [...manifestWarnings(team), ...placement] };
 }
 
@@ -203,9 +213,10 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gat
     for (const n of gates.notes) lines.push(`Note: ${n}`);
     lines.push('');
   }
-  if (reviews && (reviews.waiting.length || reviews.ready.length || reviews.sentBack.length)) {
-    const n = (ids) => `${ids.length}${ids.length ? ` (${ids.slice(0, 5).map((x) => `#${x}`).join(', ')}${ids.length > 5 ? ', ...' : ''})` : ''}`;
-    lines.push(`Pull requests: waiting for review ${n(reviews.waiting)}; ready to merge ${n(reviews.ready)}; sent back ${n(reviews.sentBack)}`, '');
+  const prs = reviews ? Object.entries(reviews).filter(([, ids]) => ids.length) : [];
+  if (prs.length) {
+    const n = (ids) => `${ids.length} (${ids.slice(0, 5).map((x) => `#${x}`).join(', ')}${ids.length > 5 ? ', ...' : ''})`;
+    lines.push(`Pull requests: ${prs.map(([name, ids]) => `${name} ${n(ids)}`).join('; ')}`, '');
   }
   if (bd_reachable === false) { lines.push('Warning: bd unreachable from role directories: run bd init in the project root, then rerun prepare-role so the roles get BEADS_DIR'); lines.push(''); }
   if (recovered_from) { lines.push(`Note: roster.json was unreadable and moved to ${recovered_from}; the roster restarts empty.`); lines.push(''); }

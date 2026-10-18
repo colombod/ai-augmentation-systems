@@ -1,6 +1,5 @@
 {
   "project": "example",
-  "product_repo": "git@github.com:example/example.git",
   "prefix": "ex",
   "bd_host": "buildbox",
   "budget": { "max_roles": 12, "builders_cap": 3, "staleness_hours": 2 },

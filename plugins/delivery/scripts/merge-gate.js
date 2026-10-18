@@ -3,40 +3,43 @@
 // independent review of the pull request's current head, with CI green and no conflict.
 //   merge-gate.js check <pr> [--head <sha>]     read only; exit 0 when the merge may go ahead
 //   merge-gate.js merged <pr> [--head <sha>]    after the merge: the merged row, and state-merged on its beads
-// The lane runs the same check before it lets the Delivery Manager's `gh pr merge` through, and asks
-// for `--match-head-commit <sha>` so GitHub merges exactly the head that was reviewed. gh supplies
-// the head, mergeable and the checks; where gh cannot read them, the head named on the command and
-// the Delivery Manager's recorded `review.js ci` row stand in. Size and scope are warnings only.
-// Exit codes: 0 passes / done; 1 refused; 2 usage.
+// The lane runs the same check before it lets the Delivery Manager's `gh pr merge` through. The merge
+// names the product repository (-R owner/name, or a URL of it) and the full reviewed head
+// (--match-head-commit <40-hex sha>), so GitHub merges exactly what was reviewed, where it was
+// reviewed. gh supplies the head, mergeable and the checks; where gh cannot read them, the head named
+// on the command and the Delivery Manager's recorded `review.js ci` row stand in. The Delivery
+// Manager's GitHub approvals (`gh pr review --approve`) are refused too: approvals are review rows.
+// Size and scope are warnings only. Exit codes: 0 passes / done; 1 refused; 2 usage.
+const path = require('path');
 const R = require('./lib/reviews.js');
 const G = require('./lib/gates.js');
 const { whoAmI, writerProblem } = require('./lib/gate-context.js');
-const { viewPr, repoOf } = require('./lib/gh-pr.js');
+const { viewPr, productRepoOf, sameRepo, repoOf, UNKNOWN } = require('./lib/gh-pr.js');
 
 const USAGE = 'usage: merge-gate.js check <pr> [--head <sha>] | merge-gate.js merged <pr> [--head <sha>]';
 
-function ghFor(team, root, gh, repo) {
+function ghFor(root, gh, repo) {
   if (gh) return gh;
-  const r = repo || repoOf(team && team.product_repo);
-  return (pr) => viewPr(pr, { repo: r, cwd: root });
+  return (pr) => viewPr(pr, { repo, cwd: root });
 }
 
 function sizeThreshold(root) {
   try { return require('./lib/goal.js').value(root, 'pr_size_lines', { warn: false }) || R.DEFAULT_SIZE; } catch (err) { return R.DEFAULT_SIZE; }
 }
+const botsCountOf = (team) => Boolean(team && team.review && team.review.bots_count === true);
+const mergeCmd = (pr, repo, head) => `\`gh pr merge ${pr} -R ${repo} --match-head-commit ${head || '<full head sha>'} --squash\``;
 
 // { ok, why, fix, head, review, warnings, view }
 function gate(root, pr, { head: named, gh, team, repo } = {}) {
-  const view = ghFor(team, root, gh, repo)(pr) || { unavailable: 'no answer' };
+  const view = ghFor(root, gh, repo)(pr) || { unavailable: 'no answer' };
   const { rows, problem } = R.read(root, pr);
   const seen = view.headRefOid || null;
   if (seen && named && !G.shaMatch(seen, named)) {
-    return { ok: false, why: `PR ${pr} is now at ${R.short(seen)}, not ${R.short(named)}: new commits arrived after the review`, fix: `Ask for review of ${R.short(seen)}: ${R.cmd('review.js', `request ${pr} --reviewer ${(R.lastRequest(rows) || {}).reviewer || '<reviewer>'}`)}`, rows };
+    return { ok: false, why: `PR ${pr} is now at ${R.short(seen)}, not ${R.short(named)}: new commits arrived after the review`, fix: `Ask for review of ${R.short(seen)}: ${R.cmd('review.js', `request ${pr} --reviewer ${(R.lastRequest(rows) || {}).reviewer || '<reviewer>'}`)}`, rows, view, warnings: [], head: seen };
   }
   const head = seen || named || null;
   const ci = view.unavailable ? null : R.ciOf(view.statusCheckRollup);
-  const botsCount = Boolean(team && team.review && team.review.bots_count === true);
-  const v = R.evaluate(pr, rows, { head, ci, mergeable: view.mergeable, botsCount, problem });
+  const v = R.evaluate(pr, rows, { head, ci, mergeable: view.mergeable, botsCount: botsCountOf(team), problem, repo });
   const req = R.lastRequest(rows);
   const lines = view.unavailable ? (req ? req.lines : null) : R.changedLines(view);
   const warnings = R.scopeWarnings({ pr, lines: lines == null ? NaN : lines, stories: req ? req.stories || [] : [], threshold: sizeThreshold(root) });
@@ -45,55 +48,73 @@ function gate(root, pr, { head: named, gh, team, repo } = {}) {
 
 function check(root, pr, opts) {
   const g = gate(root, pr, opts);
-  const warn = g.warnings.map((w) => `warning: ${w.detail}`);
+  const warn = (g.warnings || []).map((w) => `warning: ${w.detail}`);
   if (!g.ok) return { code: 1, out: [`merge-gate: refused: ${g.why}.`, g.fix, ...warn].join('\n'), gate: g };
   const via = g.view.unavailable ? ` (gh: ${g.view.unavailable}; head and CI from the record)` : '';
   return { code: 0, out: [`merge-gate: PR ${pr} passes at ${R.short(g.head)}: review ${g.review.id} by ${g.review.reviewer}, CI green${via}.`,
-    `Merge: \`gh pr merge ${pr} --match-head-commit ${g.head} --squash\`, then ${R.cmd('merge-gate.js', `merged ${pr}`)}`, ...warn].join('\n'), gate: g };
+    `Merge: ${mergeCmd(pr, opts.repo, R.FULL_SHA.test(g.head) ? g.head : null)}, then ${R.cmd('merge-gate.js', `merged ${pr}`)}`, ...warn].join('\n'), gate: g };
 }
 
-// The words of each `gh pr merge` in a command: [{ pr, head, flags, repo }]
+// gh's options that take a value; anything else starting with - is a flag
 const VALUE_FLAGS = ['--match-head-commit', '-t', '--subject', '-b', '--body', '-F', '--body-file', '-A', '--author-email', '-R', '--repo'];
-function mergeCalls(command) {
+// The `gh pr <sub>` calls in a command: [{ sub, pr, target, head, flags, repo }]. Environment
+// assignments and `env` are skipped only before the executable; every later word is an argument.
+function ghPrCalls(command) {
   const L = require('../hooks/scripts/lane.js');
   const out = [];
   for (const seg of L.splitCommand(command)) {
-    const t = L.tokens(seg).filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env');
-    if (require('path').basename(t[0] || '') !== 'gh') continue;
+    const t = L.tokens(seg);
+    let k = 0;
+    while (k < t.length && (t[k] === 'env' || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[k]))) k++;
+    if (path.basename(t[k] || '') !== 'gh') continue;
     const words = [];
+    const flags = [];
     let repo = null;
     let head = null;
-    const flags = [];
-    for (let i = 1; i < t.length; i++) {
-      const [f, inline] = t[i].startsWith('--') ? t[i].split(/=(.*)/s) : [t[i], undefined];
+    for (let i = k + 1; i < t.length; i++) {
+      const x = t[i];
+      const long = x.startsWith('--');
+      const [f, inline] = long ? x.split(/=(.*)/s) : [x, undefined];
       if (VALUE_FLAGS.includes(f)) {
         const val = inline !== undefined ? inline : t[++i];
         if (f === '-R' || f === '--repo') repo = val;
         if (f === '--match-head-commit') head = val;
         continue;
       }
-      if (t[i].startsWith('-')) { flags.push(f); continue; }
-      words.push(t[i]);
+      if (x.startsWith('-') && x !== '-') { flags.push(f); continue; }
+      words.push(x);
     }
-    if (words[0] !== 'pr' || words[1] !== 'merge') continue;
+    if (words[0] !== 'pr') continue;
     const target = words[2] || '';
     const m = /^(\d+)$/.exec(target) || /\/pull\/(\d+)(?:[/?#].*)?$/.exec(target);
-    out.push({ pr: m ? m[1] : null, target, head, flags, repo });
+    const urlRepo = /github\.com\//.test(target) ? repoOf(target) : null;
+    out.push({ sub: words[1], pr: m ? m[1] : null, target, head, flags, repo: urlRepo || repo, repoConflict: !!(urlRepo && repo && !sameRepo(urlRepo, repo)) });
   }
   return out;
 }
 
-// The lane's check for the Delivery Manager's merge: null to allow, or the two-line reason
-function mergeCommandProblem(command, { root, team, gh } = {}) {
-  for (const c of mergeCalls(command)) {
+// a short cluster carrying the letter (-a, -as), or the long name in any form (--auto, --auto=true)
+const hasFlag = (flags, long, letter) => flags.some((f) => f === long || (letter && /^-[A-Za-z]+$/.test(f) && f.includes(letter)));
+
+// The lane's check for the Delivery Manager's gh: null to allow, or the two-line reason
+function mergeCommandProblem(command, { root, team, gh, roleDir } = {}) {
+  const product = productRepoOf(team, { roleDir });
+  for (const c of ghPrCalls(command)) {
+    if (c.sub === 'review' && hasFlag(c.flags, '--approve', 'a')) return `approvals are review rows, not GitHub approvals: the gate reads the review record.\nRecord the reviewer's outcome: ${R.cmd('review.js', `record ${c.pr || '<pr>'} --head <sha> --result pass --by <subagent id> --summary '<one line>'`)}`;
+    if (c.sub !== 'merge') continue;
     const which = c.pr || '<pr number>';
-    if (!c.pr) return `merging needs the pull request's number, so its review can be checked (got ${c.target ? `"${c.target.slice(0, 60)}"` : 'none'}).\nRun: ${R.cmd('merge-gate.js', `check ${which}`)}, then \`gh pr merge ${which} --match-head-commit <head sha> --squash\``;
-    const bad = c.flags.find((f) => ['--admin', '--auto'].includes(f));
-    if (bad) return `\`gh pr merge ${bad}\` merges outside the gate (${bad === '--admin' ? 'it bypasses the branch rules' : 'it merges later, on whatever head is there'}).\nMerge now, on the reviewed head: \`gh pr merge ${c.pr} --match-head-commit <head sha> --squash\``;
+    if (!c.pr) return `merging needs the pull request's number, so its review can be checked (got ${c.target ? `"${c.target.slice(0, 60)}"` : 'none'}).\nRun: ${R.cmd('merge-gate.js', `check ${which}`)}, then ${mergeCmd(which, product || '<owner/name>')}`;
+    const bad = c.flags.find((f) => /^--(?:adm|aut)/.test(f)) || (hasFlag(c.flags, null, 'a') ? '-a' : null);
+    if (bad) return `\`gh pr merge ${bad}\` merges outside the gate (${/adm/.test(bad) ? 'it bypasses the branch rules' : 'it merges later, on whatever head is there'}).\nMerge now, on the reviewed head: ${mergeCmd(c.pr, product || '<owner/name>')}`;
+    if (!product) return `merge of PR ${c.pr} refused: ${UNKNOWN(c.pr).replace('\n', '.\n')}`;
+    if (!c.repo || c.repoConflict) return `merge of PR ${c.pr} refused: name the product repository, so the reviewed pull request is the one merged.\nRun: ${mergeCmd(c.pr, product, c.head && R.FULL_SHA.test(c.head) ? c.head : null)}`;
+    if (!sameRepo(c.repo, product)) return `merge of PR ${c.pr} refused: ${c.repo} is not the product repository (${product}), and its reviews are recorded only for that one.\nRun: ${mergeCmd(c.pr, product)}`;
     let g;
-    try { g = gate(root, c.pr, { head: c.head, gh, team, repo: c.repo }); } catch (err) { return `the merge gate could not run (${String(err.message).split('\n')[0]}), so the merge is refused.\nRun: ${R.cmd('merge-gate.js', `check ${c.pr}`)}`; }
+    try { g = gate(root, c.pr, { head: c.head, gh, team, repo: product }); } catch (err) { return `the merge gate could not run (${String(err.message).split('\n')[0]}), so the merge is refused.\nRun: ${R.cmd('merge-gate.js', `check ${c.pr}`)}`; }
     if (!g.ok) return `merge of PR ${c.pr} refused: ${g.why}.\n${g.fix}`;
-    if (!c.head) return `merge of PR ${c.pr} refused: name the reviewed head, so GitHub merges exactly that commit.\nRun: \`gh pr merge ${c.pr} --match-head-commit ${g.head} --squash\``;
+    const full = R.FULL_SHA.test(g.head || '') ? g.head : null;
+    if (!c.head) return `merge of PR ${c.pr} refused: name the reviewed head, so GitHub merges exactly that commit.\nRun: ${mergeCmd(c.pr, product, full)}`;
+    if (!R.FULL_SHA.test(c.head)) return `merge of PR ${c.pr} refused: name the full head sha (40 characters), so GitHub merges exactly that commit.\nRun: ${mergeCmd(c.pr, product, full)}`;
   }
   return null;
 }
@@ -109,42 +130,63 @@ function parse(argv) {
   return out;
 }
 
+// state-merged on each story the merge carried whose author is the pull request's owner; retry-safe:
+// a story already marked for this pull request is skipped, a failed update is reported for a retry
+function markMerged(pr, req, who, { cwd, env, bd, now }) {
+  const evidence = require('./evidence.js');
+  const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 });
+  const lines = [];
+  let failed = false;
+  for (const id of req ? (req.stories || req.beads || []) : []) {
+    let b = null;
+    try { b = store.show(id); } catch (err) { b = null; }
+    if (!b) { lines.push(`${id}: not marked merged (bd cannot read it)`); failed = true; continue; }
+    if (req.owner && !G.authorsOf(b).actors.some((a) => R.norm(a) === req.owner)) { lines.push(`${id}: not marked merged: its author is not ${req.owner}, who opened PR ${pr}`); continue; }
+    if ((b.labels || []).includes(G.STATE.merged) && String((b.metadata || {}).merged_pr) === String(pr)) { lines.push(`${id}: already marked merged (${pr})`); continue; }
+    let r;
+    try { r = evidence.main(['state', id, 'merged', '--pr', String(pr)], { cwd, env, bd: store, now, who }); } catch (err) { r = { code: 1, out: err.message }; }
+    if (r.code !== 0) { lines.push(`${id}: not marked merged (${String(r.out).replace(/^evidence\.js: /, '').split('\n')[0]})`); failed = true; } else lines.push(r.out.replace(/^evidence\.js: /, ''));
+  }
+  return { lines, failed };
+}
+
 function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: given } = {}) {
   const a = parse(argv);
   const [sub, pr] = a._;
   if (!sub || !pr || !R.PR.test(pr)) return { code: 2, out: USAGE };
   const who = given || whoAmI({ cwd, env, project: a.project });
   if (!who.root) return { code: 2, out: 'merge-gate.js: no project found; pass --project <root>' };
-  if (sub === 'check') return check(who.root, pr, { head: a.head, gh, team: who.team });
+  const repo = productRepoOf(who.team, { roleDir: who.roleDir });
+  if (!repo && (sub === 'check' || sub === 'merged')) return { code: 1, out: `merge-gate.js: ${UNKNOWN(pr)}` };
+  if (sub === 'check') return check(who.root, pr, { head: a.head, gh, team: who.team, repo });
   if (sub !== 'merged') return { code: 2, out: USAGE };
   const wp = writerProblem(who, ['delivery-lead']);
   if (wp) return { code: 1, out: `merge-gate.js: ${wp}` };
   const { rows, problem } = R.read(who.root, pr);
   if (problem) return { code: 1, out: `merge-gate.js: ${problem}.` };
-  if (rows.some((r) => r.type === 'merged')) return { code: 0, out: `PR ${pr} is already recorded as merged` };
-  const view = ghFor(who.team, who.root, gh)(pr) || { unavailable: 'no answer' };
-  if (!view.unavailable && String(view.state || '').toUpperCase() !== 'MERGED') return { code: 1, out: `merge-gate.js: PR ${pr} is ${String(view.state || 'not merged').toLowerCase()} on GitHub, not merged.\nMerge it first: \`gh pr merge ${pr} --match-head-commit <head sha> --squash\`` };
-  const head = view.headRefOid || a.head;
-  if (!head) return { code: 2, out: `merge-gate.js: gh cannot read PR ${pr} (${view.unavailable}); name the merged head: merge-gate.js merged ${pr} --head <sha>` };
   const req = R.lastRequest(rows);
-  // a merge without a passing review on its head (outside the gate) is recorded, and is a warning
-  const v = R.evaluate(pr, rows, { head, ci: { state: 'green', names: [] }, mergeable: null, botsCount: Boolean(who.team && who.team.review && who.team.review.bots_count === true) });
   const at = now || new Date().toISOString();
-  const beads = req ? req.beads || [] : [];
-  const row = R.append(who.root, pr, { type: 'merged', head, beads, gated: v.ok, by: who.roleId, actor: who.actor || who.instance, at });
-  const lines = [`${row.id}: PR ${pr} merged at ${R.short(head)}`];
-  if (!v.ok) {
-    const w = require('./lib/warnings.js').record(who.root, { kind: 'merge-ungated', rule: 'R-32', bead: beads[0] || null, detail: `PR ${pr} merged at ${R.short(head)} without a passing review of that head: ${v.why}`, raisedBy: who.instance, instance: who.instance });
-    lines.push(`warning ${w ? w.id : 'unrecorded'}: merged without a passing review of ${R.short(head)} (${v.why})`);
-  }
-  const evidence = require('./evidence.js');
-  const stories = req ? (req.stories || beads) : [];
-  for (const id of stories) {
-    const r = evidence.main(['state', id, 'merged', '--pr', String(pr)], { cwd, env, bd, now: at, who });
-    lines.push(r.out.replace(/^evidence\.js: /, ''));
-  }
-  if (!stories.length) lines.push(`no bead is recorded for PR ${pr}: set its state by hand, \`evidence.js state <bead> merged --pr ${pr}\``);
-  return { code: 0, out: lines.join('\n') };
+  let row = rows.find((r) => r.type === 'merged');
+  const out = [];
+  if (!row) {
+    const view = ghFor(who.root, gh, repo)(pr) || { unavailable: 'no answer' };
+    if (!view.unavailable && String(view.state || '').toUpperCase() !== 'MERGED') return { code: 1, out: `merge-gate.js: PR ${pr} is ${String(view.state || 'not merged').toLowerCase()} on GitHub, not merged.\nMerge it first: ${mergeCmd(pr, repo)}` };
+    const head = view.headRefOid || a.head;
+    if (!head) return { code: 2, out: `merge-gate.js: gh cannot read PR ${pr} (${view.unavailable}); name the merged head: merge-gate.js merged ${pr} --head <sha>` };
+    // a merge without a passing review on its head (outside the gate) is recorded, and is a warning
+    const v = R.evaluate(pr, rows, { head, ci: { state: 'green', names: [] }, mergeable: null, botsCount: botsCountOf(who.team), repo });
+    row = R.append(who.root, pr, { type: 'merged', repo, head, beads: req ? req.beads || [] : [], gated: v.ok, by: who.roleId, actor: who.actor || who.instance, at });
+    out.push(`${row.id}: PR ${pr} merged at ${R.short(head)}`);
+    if (!v.ok) {
+      const w = require('./lib/warnings.js').record(who.root, { kind: 'merge-ungated', rule: 'R-32', bead: (req && req.beads && req.beads[0]) || null, detail: `PR ${pr} merged at ${R.short(head)} without a passing review of that head: ${v.why}`, raisedBy: who.instance, instance: who.instance });
+      out.push(`warning ${w ? w.id : 'unrecorded'}: merged without a passing review of ${R.short(head)} (${v.why})`);
+    }
+  } else out.push(`${row.id}: PR ${pr} is recorded as merged at ${R.short(row.head)}`);
+  if (!req) return { code: 0, out: [...out, `no bead is recorded for PR ${pr}: set its state by hand, \`evidence.js state <bead> merged --pr ${pr}\``].join('\n') };
+  const m = markMerged(pr, req, who, { cwd, env, bd, now: at });
+  out.push(...m.lines);
+  if (m.failed) return { code: 1, out: `${out.join('\n')}.\nRetry: ${R.cmd('merge-gate.js', `merged ${pr}`)}` };
+  return { code: 0, out: out.join('\n') };
 }
 
 if (require.main === module) {
@@ -154,4 +196,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, gate, check, mergeCalls, mergeCommandProblem };
+module.exports = { main, gate, check, ghPrCalls, mergeCommandProblem };
