@@ -89,4 +89,9 @@ function addRow(root, bd, id, row) {
   return full;
 }
 
-module.exports = { SURFACES, STORY, makeProject, storyBead, memBd, addRow };
+// verifyRecord for tests: the listed ids are owner decisions resting on the owner's own words
+const ownerVerify = (...ids) => (root, id) => (ids.includes(id)
+  ? { ok: true, chain: [{ kind: 'decision', scope: { beads: [], labels: [] } }, { kind: 'input', source: 'human', text: '' }], notes: [] }
+  : { ok: false, error: 'not found' });
+
+module.exports = { SURFACES, STORY, makeProject, storyBead, memBd, addRow, ownerVerify };

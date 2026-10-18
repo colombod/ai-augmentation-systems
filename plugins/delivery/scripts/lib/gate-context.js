@@ -59,20 +59,33 @@ function writerProblem(who, allowed = ['delivery-lead']) {
   return null;
 }
 
-// recordOk(id) for the done gate: an owner record cited by a cut or waiver row must still verify.
+// The owner's record: it verifies, and every captured input it rests on is the owner's own words
+// (source human). A peer agent's message is captured as an input too and verifies as one, but it is
+// never the owner. { ok, why, head, text, goal } where head is the record (or the input) itself.
+function ownerRecord(root, id, verifyRecord) {
+  let v;
+  try { v = (verifyRecord || require('./operator-records.js').verifyRecord)(root, id); } catch (err) { v = null; }
+  if (!v || !v.ok) return { ok: false, why: `${id} does not verify (${v ? v.error || v.code : 'no result'})` };
+  const chain = Array.isArray(v.chain) ? v.chain : [];
+  const inputs = chain.filter((h) => h && h.kind === 'input');
+  const notOwner = inputs.find((h) => h.source !== 'human');
+  if (!inputs.length) return { ok: false, why: `${id} rests on no captured input from the owner` };
+  if (notOwner) return { ok: false, why: `${id} rests on a ${notOwner.source || 'unknown'} message, not the owner's words` };
+  const head = chain[0] || {};
+  const labels = (head.scope && head.scope.labels) || [];
+  return { ok: true, head, text: [head.quote, head.statement, head.kind === 'input' ? head.text : null, inputs[0].text].filter(Boolean).join(' '), goal: labels.some((l) => /^goal:/.test(String(l))) };
+}
+
+// recordOk(id) for the gates: a cut, waiver or reason must cite the owner's record, still verifying.
 function recordChecker(root, verifyRecord) {
   const seen = new Map();
   return (id) => {
     if (!id) return false;
-    if (!seen.has(id)) {
-      let ok = false;
-      try { const v = (verifyRecord || require('./operator-records.js').verifyRecord)(root, id); ok = Boolean(v && v.ok); } catch (err) { ok = false; }
-      seen.set(id, ok);
-    }
+    if (!seen.has(id)) seen.set(id, ownerRecord(root, id, verifyRecord).ok);
     return seen.get(id);
   };
 }
 
 const maxUnverified = (team) => { const v = team && team.budget ? team.budget.max_unverified : undefined; return Number.isInteger(v) && v >= 0 ? v : G.DEFAULT_MAX_UNVERIFIED; };
 
-module.exports = { whoAmI, readStory, gateInputs, maxUnverified, writerProblem, recordChecker, EVIDENCE_WRITERS };
+module.exports = { whoAmI, readStory, gateInputs, maxUnverified, writerProblem, recordChecker, ownerRecord, EVIDENCE_WRITERS };

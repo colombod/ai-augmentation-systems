@@ -365,7 +365,7 @@ const PARSED = G.parseStory(STORY);
 const HASH = G.storyHash(PARSED);
 const deployed = { ready_hash: HASH, deployed_sha: 'd478aa11', deployed_at: '2026-10-13T07:56:00Z' };
 const passRow = (root, bd, n, over = {}) => addRow(root, bd, 'ex-vault-0n9-3', { type: 'row', criterion: n, criterion_hash: G.criterionHash(PARSED.criteria[n - 1]), result: 'pass', surface: 'S1', tuple: { host: 'chatgpt.com', app: 'ChatGPT web', mode: 'plain chat', install_artifact: 'connector from the shipped plugin' }, sha: 'd478aa11', by: 'reality-checker', via: 'reality-check', actor: 'rc@pc/reality-checker', arm: 'main', at: '2026-10-13T09:00:00Z', ...over });
-const gate = (command, beads, root, over = {}) => gateChecks({ command, roleId: 'builder', actor: 'dev@pc/builder-1', instance: 'builder-1', bd: Array.isArray(beads) ? memBd(beads) : beads, root, verifyRecord: (r, id) => ({ ok: id === 'dec-chief-of-staff-41' }), ...over });
+const gate = (command, beads, root, over = {}) => gateChecks({ command, roleId: 'builder', actor: 'dev@pc/builder-1', instance: 'builder-1', bd: Array.isArray(beads) ? memBd(beads) : beads, root, verifyRecord: require('../../scripts/testing/gate-fixture.js').ownerVerify('dec-chief-of-staff-41'), ...over });
 const lines = (text) => text.split('\n').length;
 
 test('1a close, #478 merged 10-13 07:56 with no pass row on S1: every closing form is refused; author rows do not count; DM rows on the deployed sha pass', async () => {

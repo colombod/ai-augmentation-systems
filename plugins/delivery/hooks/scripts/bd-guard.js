@@ -107,12 +107,17 @@ const GATE_FIELDS = new Set(['ready_hash', 'ready_at', 'ready_record', 'deployed
 const PROTECTED_LABEL = /^(state-.*|story|wave-\d+)$/;
 const EXPANSION = /\$\(|\$\{|\$[A-Za-z_]|`/;
 const values = (p, f) => (p.all.get(f) || []).filter((v) => typeof v === 'string');
-function gateFieldWrite(p) {
-  if (p.sub === 'update' && p.all.has('--set-labels')) return 'replacing every label (use --add-label or --remove-label)';
+// what makes a bead a tier-1 fix (R-41): set by the Delivery Manager or the Product Manager only, so a
+// builder cannot promote its own work past the wave, lean and new-area rules
+const FIX_LABEL = /^(bug|security|finding)$/;
+const FIX_FIELDS = new Set(['fixes', 'finding']);
+const fixFieldWrite = (p) => gateFieldWrite(p, { labelRe: FIX_LABEL, fields: FIX_FIELDS });
+function gateFieldWrite(p, { labelRe = PROTECTED_LABEL, fields = GATE_FIELDS } = {}) {
+  if (labelRe === PROTECTED_LABEL && p.sub === 'update' && p.all.has('--set-labels')) return 'replacing every label (use --add-label or --remove-label)';
   const created = CREATE.has(p.sub) ? [...values(p, '--labels'), ...values(p, '-l')] : [];
   const labels = [...LABEL_FLAGS.flatMap((f) => values(p, f)), ...created, ...(['label add', 'label remove', 'tag'].includes(p.sub) ? p.ids.slice(1) : [])];
   if (labels.some((v) => EXPANSION.test(v))) return 'labels built by the shell';
-  const bad = labels.flatMap((v) => v.split(',')).map((l) => l.trim()).find((l) => PROTECTED_LABEL.test(l));
+  const bad = labels.flatMap((v) => v.split(',')).map((l) => l.trim()).find((l) => labelRe.test(l));
   if (bad) return `the label ${bad}`;
   if (p.sub !== 'update' && !CREATE.has(p.sub)) return null;
   for (const f of ['--metadata', '--set-metadata', '--unset-metadata']) {
@@ -125,7 +130,7 @@ function gateFieldWrite(p) {
         if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return '--metadata that is not a literal JSON object';
         keys = Object.keys(obj);
       } else keys = v.split(',').map((x) => x.split('=')[0].trim());
-      const hit = keys.find((k) => GATE_FIELDS.has(k));
+      const hit = keys.find((k) => fields.has(k));
       if (hit) return `the gate field ${hit}`;
     }
   }
@@ -142,6 +147,10 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
     const field = roleId !== 'delivery-lead' ? gateFieldWrite(p) : null;
     if (field) {
       return { reason: `Refused: ${field}: only materialise, ready.js and evidence.js change it, for the Delivery Manager.\nMessage the Delivery Manager with the bead id and what should change.` };
+    }
+    const fixField = !['delivery-lead', 'product-manager'].includes(roleId) ? fixFieldWrite(p) : null;
+    if (fixField) {
+      return { reason: `Refused: ${fixField}: whether a bead is a fix, and what it fixes, is the Delivery Manager's or the Product Manager's to record.\nMessage the Delivery Manager with the bead id and the defect or finding it fixes.` };
     }
     if (CLOSING.has(p.sub)) {
       for (const id of p.ids) {

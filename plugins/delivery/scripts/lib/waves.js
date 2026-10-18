@@ -72,30 +72,62 @@ function overlap(a, b) {
 }
 
 // ---- fixes and security fixes (R-41 tier 1) ----
-// { labelled, kind, link, ok, why }. A `bug` needs a `fixes` link to a merged, deployed or verified
-// story, an owner record, or a failed evidence row; a `security` bead a `finding` link to a record, a
-// bead or a review file under .delivery/. The label alone is ordinary work.
-function fixLink(bead, story, { root, beadOf = () => null, recordOk = () => false } = {}) {
+// { labelled, kind, link, ok, why }. Tier 1 skips the wave, lean and new-area rules, so the link must
+// name something a builder cannot make up (PR 54 review B-1):
+// - a `bug` with `fixes:` naming a merged, deployed or verified story; a failed check row that counts
+//   (written by the Delivery Manager or a Reality Checker, on the declared surface, in an intact
+//   chain); or the owner's own report of the defect (a record resting only on the owner's words, not a
+//   goal decision, scoped to this bead or naming it);
+// - a `security` bead with `finding:` naming a review finding by id (.delivery/reviews/<file>#<id>)
+//   or a finding bead (labelled security and finding).
+// Never the bead itself. The labels and links are the Delivery Manager's and Product Manager's to set
+// (bd-guard). The label alone is ordinary work.
+const STOP = new Set('after before every again from with this that when then them they their there have been into onto over under about fix fixes bug the and for'.split(' '));
+const words = (t) => new Set((String(t || '').toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) || []).filter((w) => w.length >= 4 && !STOP.has(w)).map((w) => w.replace(/s$/, '')));
+const namesBead = (r, b) => ((r.head.scope && r.head.scope.beads) || []).includes(b.id) || [...words(b.title)].filter((w) => words(r.text).has(w)).length >= 2;
+const EV_WRITERS = ['delivery-lead', 'reality-checker'];
+
+function fixLink(bead, story, { root, beadOf = () => null, ownerRecord = () => ({ ok: false, why: 'no record check' }) } = {}) {
   const labels = (bead && bead.labels) || [];
   const kind = FIX_LABELS.find((l) => labels.includes(l));
   if (!kind) return { labelled: false, ok: false };
   const key = kind === 'bug' ? 'fixes' : 'finding';
   const m = (bead && bead.metadata) || {};
   const link = String(m[key] || (story && story.meta && story.meta[key]) || '').replace(/\s+#.*$/, '').trim();
-  if (!link) return { labelled: true, kind, ok: false, why: `labelled ${kind} with no ${key} link` };
-  if (/^(dec|in)-/.test(link)) return recordOk(link) ? { labelled: true, kind, link, ok: true } : { labelled: true, kind, link, ok: false, why: `${key} ${link} does not verify` };
-  const ev = /^ev-(.+)-\d+$/.exec(link);
-  if (ev && kind === 'bug') {
-    const row = root ? G.readEvidence(root, ev[1]).find((r) => r.id === link) : null;
-    return row && row.result === 'fail' ? { labelled: true, kind, link, ok: true } : { labelled: true, kind, link, ok: false, why: `fixes ${link} is not a failed check row` };
+  const no = (why) => ({ labelled: true, kind, link, ok: false, why });
+  const yes = () => ({ labelled: true, kind, link, ok: true });
+  if (!link) return no(`labelled ${kind} with no ${key} link`);
+  if (link === bead.id) return no(`${key} names the bead itself`);
+  if (kind === 'bug') {
+    if (/^(dec|in)-/.test(link)) {
+      const r = ownerRecord(link);
+      if (!r.ok) return no(`fixes ${r.why}`);
+      if (r.goal) return no(`fixes ${link}, a goal decision, not a report of this defect`);
+      return namesBead(r, bead) ? yes() : no(`fixes ${link}, which does not name this defect`);
+    }
+    const ev = /^ev-(.+)-\d+$/.exec(link);
+    if (ev) {
+      const chk = root ? G.readEvidenceChecked(root, ev[1]) : { rows: [], problem: 'no project' };
+      const row = chk.rows.find((r) => r.id === link);
+      if (chk.problem || !row || row.type !== 'row' || row.result !== 'fail' || row.arm === 'side' || !EV_WRITERS.includes(row.by)) return no(`fixes ${link}, which is not a counting failed check row`);
+      return yes();
+    }
+    const target = beadOf(link);
+    if (!target || !G.isStoryBead(target)) return no(`fixes ${link}, which is not a story`);
+    return ['merged', 'deployed', 'verified'].includes(G.stateOf(target)) ? yes() : no(`fixes ${link}, which is not shipped (merged, deployed or verified)`);
   }
-  if (kind === 'security' && /^\.delivery\//.test(link) && root) {
-    return fs.existsSync(path.join(root, link.split('#')[0])) ? { labelled: true, kind, link, ok: true } : { labelled: true, kind, link, ok: false, why: `finding ${link} does not exist` };
+  const at = /^(\.delivery\/reviews\/[^#]+)#([A-Za-z][\w.-]*)$/.exec(link);
+  if (at) {
+    const rel = path.posix.normalize(at[1]);
+    if (!root || !rel.startsWith('.delivery/reviews/') || rel.includes('..')) return no(`finding ${link} is not a review finding`);
+    let text = '';
+    try { text = fs.readFileSync(path.join(root, rel), 'utf8'); } catch (err) { return no(`finding ${link} does not exist`); }
+    const esc = at[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^\\w.-])${esc}(?![\\w-])`).test(text) ? yes() : no(`finding ${link}: the review holds no finding ${at[2]}`);
   }
   const target = beadOf(link);
-  if (!target) return { labelled: true, kind, link, ok: false, why: `${key} ${link} names nothing that exists` };
-  if (kind === 'bug' && !['merged', 'deployed', 'verified'].includes(G.stateOf(target))) return { labelled: true, kind, link, ok: false, why: `fixes ${link}, which is not shipped (merged, deployed or verified)` };
-  return { labelled: true, kind, link, ok: true };
+  const tl = (target && target.labels) || [];
+  return target && tl.includes('security') && tl.includes('finding') ? yes() : no(`finding ${link} is neither a review finding (.delivery/reviews/<file>#<id>) nor a finding bead`);
 }
 
 // ---- the recorded reason for a new area (R-41) ----
@@ -122,12 +154,14 @@ function roadmapAreas(root) {
   return out;
 }
 
-function areaReason(root, area, { recordOk = () => false, ownerAreas } = {}) {
+// the roadmap row's record must be the owner's and must name the area it is cited for (review m-6)
+const namesArea = (r, area) => new RegExp(`(?<![\\p{L}\\p{N}])${String(area).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'iu').test(r.text || '');
+function areaReason(root, area, { ownerRecord = () => ({ ok: false }), ownerAreas } = {}) {
   const want = String(area).toLowerCase();
   let owned = ownerAreas;
   if (owned === undefined) { try { owned = require('./goal.js').value(root, 'areas', { warn: false }); } catch (err) { owned = null; } }
   if ((owned || []).some((a) => String(a).toLowerCase() === want)) return { by: 'the owner (goal.js area_add)' };
-  const row = roadmapAreas(root).find((r) => r.area.toLowerCase() === want && r.reason && r.record && recordOk(r.record));
+  const row = roadmapAreas(root).find((r) => { if (r.area.toLowerCase() !== want || !r.reason || !r.record) return false; const rec = ownerRecord(r.record); return rec.ok && namesArea(rec, area); });
   return row ? { by: `the ${row.initiative} roadmap, citing ${row.record}` } : null;
 }
 
@@ -264,7 +298,6 @@ function rank(candidates, { beads = [], budget = { set: false }, team, storyOf =
 // budget: a precomputed B.state (tests, a caller that has one) or undefined to compute it.
 function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now } = {}) {
   const C = require('./gate-context.js');
-  const recordOk = C.recordChecker(root, verifyRecord);
   const stories = new Map();
   const storyOf = (b) => { if (!stories.has(b.id)) stories.set(b.id, C.readStory(root, b)); return stories.get(b.id); };
   const known = new Map(beads.map((b) => [b.id, b]));
@@ -276,8 +309,8 @@ function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now } = 
   return {
     beads, team, builders, storyOf,
     budget: budget || B.state(root, { team, beads, now, verifyRecord }),
-    fixOf: (b, story) => fixLink(b, story === undefined ? storyOf(b) : story, { root, beadOf, recordOk }),
-    reasonOf: (area) => areaReason(root, area, { recordOk, ownerAreas }),
+    fixOf: (b, story) => fixLink(b, story === undefined ? storyOf(b) : story, { root, beadOf, ownerRecord: (id) => C.ownerRecord(root, id, verifyRecord) }),
+    reasonOf: (area) => areaReason(root, area, { ownerRecord: (id) => C.ownerRecord(root, id, verifyRecord), ownerAreas }),
     filesOf: (b) => ((storyOf(b) || {}).files || []),
   };
 }

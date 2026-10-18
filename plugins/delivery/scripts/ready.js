@@ -80,8 +80,9 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
     const m = bead.metadata || {};
     const changed = m.ready_hash && m.ready_hash !== hash;
     if (changed) {
-      const v = a.owner_record ? (verifyRecord || require('./lib/operator-records.js').verifyRecord)(who.root, a.owner_record) : null;
-      if (!v || !v.ok) return { code: 1, out: `ready.js: ${id}'s criteria changed since they were made ready (D1).\nRe-record with an owner record: ready.js ${id} --record --owner-record <dec-...>${v ? ` (${a.owner_record}: ${v.error || v.code})` : ''}` };
+      // the owner's record: a peer agent's message is never one (PR 54 review B-1)
+      const v = a.owner_record ? require('./lib/gate-context.js').ownerRecord(who.root, a.owner_record, verifyRecord) : null;
+      if (!v || !v.ok) return { code: 1, out: `ready.js: ${id}'s criteria changed since they were made ready (D1).\nRe-record with an owner record: ready.js ${id} --record --owner-record <dec-...>${v ? ` (${v.why})` : ''}` };
     }
     store.update(id, { metadata: { ...m, ready_hash: hash, ready_at: now || new Date().toISOString(), ...(a.owner_record ? { ready_record: a.owner_record } : {}) } });
     // new agreed criteria need new evidence: an earlier verification no longer stands

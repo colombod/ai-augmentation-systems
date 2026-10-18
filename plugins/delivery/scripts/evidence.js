@@ -68,8 +68,8 @@ function doneText(d) {
 }
 
 function unverifiedRecord(who, record, verifyRecord) {
-  const v = (verifyRecord || require('./lib/operator-records.js').verifyRecord)(who.root, record);
-  return v && v.ok ? null : `${record} does not verify (${v ? v.error || v.code : 'no result'}): cite an owner record`;
+  const r = require('./lib/gate-context.js').ownerRecord(who.root, record, verifyRecord);
+  return r.ok ? null : `${r.why}: cite the owner's record`;
 }
 
 // via: { by: 'reality-check', capture, observed_version } when reality-check.js run-record writes the row

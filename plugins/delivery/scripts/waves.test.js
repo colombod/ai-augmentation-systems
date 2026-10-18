@@ -104,8 +104,10 @@ test('R-41 replay, store submissions and landing page while the upload chain was
   // a roadmap Areas row citing an owner record that verifies is a reason too
   fs.mkdirSync(path.join(t.root, '.delivery', 'initiatives', 'vault'), { recursive: true });
   fs.writeFileSync(path.join(t.root, '.delivery', 'initiatives', 'vault', 'roadmap.md'), '## Areas\n\n| Area | Reason | Record |\n|---|---|---|\n| landing | the owner wants a page for the beta | dec-chief-of-staff-41 |\n');
-  assert.deepEqual(W.areaReason(t.root, 'landing', { recordOk: (id) => id === 'dec-chief-of-staff-41', ownerAreas: [] }), { by: 'the vault roadmap, citing dec-chief-of-staff-41' });
-  assert.equal(W.areaReason(t.root, 'landing', { recordOk: () => false, ownerAreas: [] }), null, 'a record that does not verify is no reason');
+  const rec = (text) => (id) => (id === 'dec-chief-of-staff-41' ? { ok: true, text } : { ok: false });
+  assert.deepEqual(W.areaReason(t.root, 'landing', { ownerRecord: rec('build a landing page for the beta'), ownerAreas: [] }), { by: 'the vault roadmap, citing dec-chief-of-staff-41' });
+  assert.equal(W.areaReason(t.root, 'landing', { ownerRecord: () => ({ ok: false }), ownerAreas: [] }), null, 'a record that does not verify is no reason');
+  assert.equal(W.areaReason(t.root, 'landing', { ownerRecord: rec('set the weekly budget to 100 units'), ownerAreas: [] }), null, 'a record about something else is no reason for this area');
 });
 
 test('R-41 replay, 10-12 evening at 85%: the sign-in refresh fix with its fixes link ranks first and lean mode does not hold it; an unlinked bug ranks as ordinary work with a warning', async () => {
