@@ -45,14 +45,15 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, v
     // the question is worded here, never by the session, so a yes means exactly this change
     if (!Goal.writersOf(field).includes(who.roleId) || who.roleId !== 'chief-of-staff') return { code: 1, out: 'goal.js: the Chief of Staff asks the owner about a goal change.\nMessage the Chief of Staff.' };
     const text = Goal.questionText(field, value);
+    const sh = require('./lib/plugin-root.js').shellPath;
     if (!text) return { code: 1, out: `goal.js: refused: ${field} ${value} is not a goal change (fields: ${Object.keys(Goal.FIELDS).join(', ')}).\nSee the fields: \`goal.js show\`` };
     let q;
     try { q = (recordQuestion || operatorAsk(who))({ text, field, value }); } catch (err) { return { code: 1, out: `goal.js: the question was not recorded (${String(err.message).split('\n')[0]}).\nRetry: \`goal.js ask ${field} ${value}\`` }; }
     const payload = JSON.stringify({ questions: [{ question: text, header: 'Goal change', multiSelect: false, options: [{ label: 'Yes', description: 'Make this change' }, { label: 'No', description: 'Leave it as it is' }] }] });
-    return { code: 0, out: `Ask the owner exactly: "${text}" (Yes / No). Question ${q}. AskUserQuestion input:\n${payload}\nRecord the yes: \`operator.js record --cite <in-id> --quote '<their answer>' --statement '<the change>' --answers ${q} --goal ${field}=${value}\`, then \`goal.js set ${field} ${value} --record <dec-id>\`` };
+    return { code: 0, out: `Ask the owner exactly: "${text}" (Yes / No). Question ${q}. AskUserQuestion input:\n${payload}\nRecord the yes: \`operator.js record --cite <in-id> --quote '<their answer>' --statement '<the change>' --answers ${q} --goal ${sh(`${field}=${value}`)}\`, then \`goal.js set ${field} ${sh(value)} --record <dec-id>\`` };
   }
   if (cmd === 'set' && field && value !== undefined) {
-    const fix = `ask the owner: \`goal.js ask ${field} ${value}\``;
+    const fix = `ask the owner: \`goal.js ask ${field} ${require('./lib/plugin-root.js').shellPath(value)}\``;
     if (!Goal.writersOf(field).includes(who.roleId)) return { code: 1, out: `goal.js: ${field} changes only on the owner's word, recorded by the Chief of Staff.\nMessage the Chief of Staff.` };
     if (!a.record) return { code: 1, out: `goal.js: ${field} changes only on the owner's yes to goal.js's question.\nTo change it, ${fix}` };
     const r = Goal.set({ root: who.root, who, field, value, record: a.record, verifyRecord, judged, now });

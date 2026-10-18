@@ -104,3 +104,15 @@ test('R-43 I1: with bd hanging, the Delivery Manager\'s stop with the idle check
   assert.equal(r.status, 0);
   assert.ok(Date.now() - t0 < 12000, `the stop took ${Date.now() - t0} ms`);
 });
+
+test('Copilot round 4: the idle reads share one deadline, trigger lookups included', () => {
+  const slow = (ms, v) => () => { const until = Date.now() + ms; while (Date.now() < until) { /* busy */ } return v; };
+  const calls = [];
+  const bd = { setTimeout: () => {}, list: () => { calls.push('list'); return slow(800, BEADS)(); }, ready: () => { calls.push('ready'); return slow(800, READY)(); }, show: () => { calls.push('show'); return slow(800, null)(); } };
+  const root = project();
+  fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify({ fields: { pause_triggers: [{ value: 'paused', trigger: 'andon:ev-a-1' }, { value: 'paused', trigger: 'andon:ev-b-1' }] }, history: [] }));
+  const t0 = Date.now();
+  I.readIdle(root, { bd, now: BACK, deadline: Date.now() + 2000 });
+  assert.ok(Date.now() - t0 < 2600, `took ${Date.now() - t0} ms`);
+  assert.ok(calls.length <= 3, calls.join(','));
+});

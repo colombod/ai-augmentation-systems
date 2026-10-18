@@ -395,3 +395,26 @@ test('Copilot round 3: one bd lookup per bead, and at most maxLookups', () => {
   assert.equal(Goal.activePause(root, { beadOf: () => { lookups++; return null; }, maxLookups: 2 }).paused, false);
   assert.equal(lookups, 2);
 });
+
+test('Copilot round 4: a decision taken under a delegation is no owner yes to a goal question', () => {
+  const t = project();
+  const said = t.say('you decide the team rhythm this week');
+  const del = R.recordDelegation({ projectRoot: t.root, cite: said, quote: 'you decide the team rhythm this week', statement: 'rhythm delegated', grant: 'The CoS decides the team rhythm this week.',
+    scope: { beads: [], labels: ['goal:pause=paused'], initiatives: [] }, by: COS }).id;
+  const { q, text } = t.ask('pause', 'paused');
+  t.cos(text);
+  const under = R.decideUnder({ projectRoot: t.root, under: del, statement: 'pause', scope: { beads: [], labels: ['goal:pause=paused'], initiatives: [] }, answers: [q], by: COS }).id;
+  assert.equal(set(t.root, 'pause', 'paused', under).ok, false);
+  // and by the guard itself: a record shaped like a confirmed yes, but taken under a delegation
+  const text2 = Goal.questionText('pause', 'paused');
+  const fake = () => ({ ok: true, notes: [], chain: [{ kind: 'decision', under: 'del-x-1', scope: { labels: ['goal:pause=paused'] }, answers_questions: [{ id: 'q-1', text: text2, minutes_before_answer: 1 }] },
+    { kind: 'input', text: 'Yes', asked: { question: text2, options: ['Yes', 'No'], via: 'AskUserQuestion' } }] });
+  assert.match(Goal.set({ root: t.root, who: who(t.root, 'chief-of-staff'), field: 'pause', value: 'paused', record: 'dec-x-9', verifyRecord: fake }).error, /delegation/);
+});
+
+test('Copilot round 4: goal.js ask quotes multi-word values in the commands it prints', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-'));
+  const out = goal.main(['ask', 'scope_add', 'CSV import'], { who: who(root, 'chief-of-staff'), recordQuestion: () => 'q-chief-of-staff-1' }).out;
+  assert.match(out, /--goal 'scope_add=CSV import'/);
+  assert.match(out, /goal\.js set scope_add 'CSV import' --record/);
+});

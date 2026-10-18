@@ -37,13 +37,22 @@ function recordIdle(root, s, { instance, now } = {}) {
 }
 
 // Read the beads and the pause for a project; bd is a lib/bd.js store. Fails open (not idle).
-function readIdle(root, { bd, now } = {}) {
+// deadline (ms): every bd call, the trigger lookups included, gets only what is left of it (Copilot
+// round 4), and none starts with less than 300 ms left.
+function readIdle(root, { bd, now, deadline = Infinity } = {}) {
   try {
     const Goal = require('./goal.js');
     const Q = require('./owner-queue.js');
-    const beads = bd.list({ all: true });
-    const ready = bd.ready();
-    return idleState({ beads, ready, now, idleMinutes: Goal.value(root, 'idle_minutes'), pause: Goal.activePause(root, { beadOf: (id) => bd.show(id), maxLookups: 2 }), openSteps: Q.open(root) });
+    const call = (fn) => {
+      const left = deadline - Date.now();
+      if (left < 300) throw new Error('idle check out of time');
+      if (Number.isFinite(left) && typeof bd.setTimeout === 'function') bd.setTimeout(Math.min(3000, left - 200));
+      return fn();
+    };
+    const beads = call(() => bd.list({ all: true }));
+    const ready = call(() => bd.ready());
+    const beadOf = (id) => { try { return call(() => bd.show(id)); } catch (err) { return null; } };
+    return idleState({ beads, ready, now, idleMinutes: Goal.value(root, 'idle_minutes'), pause: Goal.activePause(root, { beadOf, maxLookups: 2 }), openSteps: Q.open(root) });
   } catch (err) { return { idle: false, why: 'unreadable' }; }
 }
 

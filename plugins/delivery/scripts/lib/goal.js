@@ -171,6 +171,8 @@ function recordProblem(root, field, value, record, verifyRecord, judge) {
   if ((v.notes || []).some((n) => /revoked|superseded/.test(n))) return `${record} was revoked or superseded`;
   const head = (v.chain || [])[0] || {};
   if (head.kind !== 'decision') return `${record} is not an owner decision`;
+  // only a decision citing the owner's own words: one taken under a delegation is not the owner's yes (Copilot round 4)
+  if (head.under) return `${record} was decided under a delegation, not by the owner; ask the owner goal.js's question`;
   const g = recordedGoal(head);
   const want = parseValue(field, g && g.raw);
   if (!g || g.field !== field || want.error || !same(want.value, value)) return `${record} was not recorded for ${field} = ${shown(value)} (operator.js record --goal ${field}=<value>)`;
