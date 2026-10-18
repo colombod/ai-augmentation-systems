@@ -264,3 +264,36 @@ test('currentTurn: a slash-command prompt starts a new turn for the commands', (
     JSON.stringify({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: '<command-name>/delivery:status</command-name>' } }), tool('git status')].join('\n')}\n`);
   assert.deepEqual(T.currentTurn(f).commands, ['git status']);
 });
+
+test('readHumanInputs: an AskUserQuestion answer is an owner input bound to its question; the last assistant message is kept', () => {
+  const T = require('./transcript.js');
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ask-')), 't.jsonl');
+  const questions = [{ question: "Pause the team's work now?", header: 'Goal change', multiSelect: false, options: [{ label: 'Yes', description: 'x' }, { label: 'No', description: 'y' }] }];
+  fs.writeFileSync(f, `${[
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'One decision: Set the weekly budget to 5 units?' }] } },
+    { type: 'user', origin: { kind: 'human' }, uuid: 'u1', promptId: 'p1', message: { role: 'user', content: 'yes' } },
+    { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions } }] } },
+    { type: 'user', uuid: 'u2', sourceToolAssistantUUID: 'a2', toolUseResult: { questions, answers: { [questions[0].question]: 'Yes' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'answered' }] } },
+  ].map((r) => JSON.stringify(r)).join('\n')}\n`);
+  const r = T.readHumanInputs(f);
+  const [typed, asked] = r.inputs.filter((i) => i.source === 'human');
+  assert.equal(typed.text, 'yes');
+  assert.match(typed.after_assistant.tail, /Set the weekly budget to 5 units\?$/);
+  assert.equal(asked.text, 'Yes');
+  assert.deepEqual(asked.asked, { question: "Pause the team's work now?", options: ['Yes', 'No'], via: 'AskUserQuestion' });
+});
+
+test('readHumanInputs: the message before counts for one input only; a result that does not answer its tool_use is no input', () => {
+  const T = require('./transcript.js');
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ask-')), 't.jsonl');
+  const q = (question) => [{ question, header: 'h', multiSelect: false, options: [{ label: 'Yes' }, { label: 'No' }] }];
+  fs.writeFileSync(f, `${[
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: "Pause the team's work now?" }] } },
+    { type: 'user', origin: { kind: 'human' }, uuid: 'u1', promptId: 'p1', message: { role: 'user', content: 'hmm' } },
+    { type: 'user', origin: { kind: 'human' }, uuid: 'u2', promptId: 'p2', message: { role: 'user', content: 'yes' } },
+    { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions: q('Merge the export fix?') } }] } },
+    { type: 'user', uuid: 'u3', sourceToolAssistantUUID: 'a2', toolUseResult: { questions: q("Pause the team's work now?"), answers: { "Pause the team's work now?": 'Yes' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'x' }] } },
+  ].map((r) => JSON.stringify(r)).join('\n')}\n`);
+  const ins = T.readHumanInputs(f).inputs.filter((i) => i.source === 'human');
+  assert.deepEqual(ins.map((i) => [i.text, !!i.after_assistant]), [['hmm', true], ['yes', false]]);
+});

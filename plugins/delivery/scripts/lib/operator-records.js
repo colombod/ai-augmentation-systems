@@ -1404,6 +1404,7 @@ function verifyRecord(projectRoot, id, opts = {}) {
     return result;
   };
   const inputHop = (input, rec, excerpt) => ({ id: input.id, kind: 'input', source: input.source, text: input.text, host: input.host,
+    ...(input.asked ? { asked: input.asked } : {}), ...(input.after_assistant ? { after_assistant: input.after_assistant } : {}),
     session_id: input.session_id, ts: input.ts, transcript_ref: input.transcript_ref, truncated: input.truncated || undefined,
     excerpt: excerpt || undefined, cited_by: rec ? rec.id : undefined });
 

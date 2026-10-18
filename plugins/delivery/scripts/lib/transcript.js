@@ -74,7 +74,10 @@ function classifyRecord(record) {
 function readHumanInputs(file, opts = {}) {
   let fromLine = opts.fromLine || 0;
   let fromOffset = opts.fromOffset || 0;
-  const out = { inputs: [], lastLine: fromLine, lastOffset: fromOffset, total_user_records: 0, with_origin: 0, rescanned: false };
+  // lastAssistant: the session's last assistant text before the next owner input ({ line, sha256, tail });
+  // carried across reads by the caller's cursor, so a typed yes can be checked against what it answered
+  const out = { inputs: [], lastLine: fromLine, lastOffset: fromOffset, total_user_records: 0, with_origin: 0, rescanned: false, lastAssistant: opts.lastAssistant || null };
+  const asks = new Map(); // assistant uuid -> the AskUserQuestion questions it put
   let buf;
   try { buf = fs.readFileSync(file); } catch (e) { return out; }
   if (fromOffset > buf.length) { // rewritten smaller
@@ -97,6 +100,27 @@ function readHumanInputs(file, opts = {}) {
     let rec;
     try { rec = JSON.parse(l); } catch (e) { continue; }
     if (!rec || typeof rec !== 'object') continue;
+    if (rec.type === 'assistant' && rec.message && Array.isArray(rec.message.content)) {
+      const text = rec.message.content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n');
+      if (text.trim()) out.lastAssistant = { line: lineNo, sha256: require('crypto').createHash('sha256').update(text).digest('hex'), tail: text.trim().slice(-400) };
+      for (const b of rec.message.content) if (b && b.type === 'tool_use' && b.name === 'AskUserQuestion' && b.input && Array.isArray(b.input.questions)) asks.set(rec.uuid, b.input.questions);
+      continue;
+    }
+    // the harness's answer to AskUserQuestion: a tool_result it writes, with the owner's selection per
+    // question (toolUseResult.answers). It is an owner input bound to that exact question text.
+    const tur = rec.type === 'user' && rec.toolUseResult && typeof rec.toolUseResult === 'object' ? rec.toolUseResult : null;
+    if (tur && Array.isArray(tur.questions) && tur.answers && typeof tur.answers === 'object' && rec.sourceToolAssistantUUID) {
+      const put = asks.get(rec.sourceToolAssistantUUID);
+      tur.questions.forEach((q, i) => {
+        if (!q || typeof q.question !== 'string' || typeof tur.answers[q.question] !== 'string') return;
+        // when the tool_use is in this read, the result must answer what it asked
+        if (put && !put.some((x) => x && x.question === q.question)) return;
+        out.inputs.push({ line: lineNo, source: 'human', text: tur.answers[q.question], ext_id: `${rec.uuid || lineNo}#q${i}`, timestamp: rec.timestamp || null,
+          session_id: rec.sessionId || null, uuid: rec.uuid ? `${rec.uuid}#q${i}` : null,
+          asked: { question: q.question, options: (q.options || []).map((o) => o && o.label).filter((x) => typeof x === 'string'), via: 'AskUserQuestion' } });
+      });
+      continue;
+    }
     const c = classifyRecord(rec);
     if (rec.type === 'user' && c) {
       out.total_user_records++;
@@ -112,7 +136,10 @@ function readHumanInputs(file, opts = {}) {
       timestamp: c.timestamp,
       session_id: rec.sessionId || (att && att.sessionId) || null,
       uuid: rec.uuid || null,
+      ...(c.source === 'human' && out.lastAssistant ? { after_assistant: out.lastAssistant } : {}),
     });
+    // each owner input answers the message before it, once
+    if (c.source === 'human') out.lastAssistant = null;
   }
   if (!opts.fromOffset && fromLine > lineNo) out.lastLine = lineNo;
   return out;
