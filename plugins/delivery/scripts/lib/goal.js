@@ -21,6 +21,12 @@ const FIELDS = {
   'budget.weekly_units': { kind: 'number', unit: /^units?$/, words: /^(?:weekly|budget|allowance|units?)$/ },
   'budget.usage_envelope': { kind: 'percent', words: /^(?:usage|budget|envelope|allowance|ceiling)$/ },
   'budget.lean_at': { kind: 'percent', words: /^lean$/ },
+  // the estimate table (lib/budget.js seeds it): the owner may override any entry, as any budget figure
+  'budget.reserve': { kind: 'percent', words: /^reserve$/ },
+  'budget.unit_tokens': { kind: 'number', unit: /^tokens?$/, words: /^(?:unit|units?|per)$/ },
+  'budget.estimate_s': { kind: 'number', unit: /^units?$/, words: /^(?:small|s|estimate)$/ },
+  'budget.estimate_m': { kind: 'number', unit: /^units?$/, words: /^(?:medium|m|estimate)$/ },
+  'budget.estimate_l': { kind: 'number', unit: /^units?$/, words: /^(?:large|l|estimate)$/ },
   idle_minutes: { kind: 'number', unit: /^(?:minutes?|mins?)$/, words: /^idle$/, default: 30 },
   briefing_lines: { kind: 'number', unit: /^lines?$/, words: /^(?:briefings?|messages?|updates?)$/, default: 12 },
   answer_window_hours: { kind: 'number', unit: /^hours?$/, words: /^(?:yes|answer|window)$/, default: 24 },
@@ -28,6 +34,8 @@ const FIELDS = {
   // the scope is what the team builds toward; it changes by explicit adds and removes, never wholesale
   scope_add: { kind: 'list', op: 'add' },
   scope_remove: { kind: 'list', op: 'remove' },
+  // a product area the owner agreed to open (R-41): the recorded reason a new-area start needs
+  area_add: { kind: 'list', op: 'add', log: 'areas_log' },
   approvals: { kind: 'text', words: /\b(?:approv\w*|permission|allow\w*|sign[- ]off|consent)\b/i },
 };
 const PAUSE_VALUES = ['paused', 'stopped', 'off'];
@@ -49,7 +57,7 @@ const SCOPE_REMOVE = /\b(?:remove|drop|cut|exclude|out of (?:the )?scope|from (?
 const FOREIGN = new Set('pas ne nicht kein keine non nunca jamais nie niemals le la les des du et en une un est die der das und bitte ist el los las por para todo toda hasta que una ein eine mit'.split(' '));
 const ENGLISH = new Set('the to of and a an is are for at on all our my your until every each after keep set under with it this that we i be go call can now work team scope approval approvals merges need needs'.split(' '));
 // the role that records each field on the owner's word: the Product Manager owns scope changes only
-const WRITERS = { scope_add: ['chief-of-staff', 'product-manager'], scope_remove: ['chief-of-staff', 'product-manager'] };
+const WRITERS = { scope_add: ['chief-of-staff', 'product-manager'], scope_remove: ['chief-of-staff', 'product-manager'], area_add: ['chief-of-staff', 'product-manager'] };
 const writersOf = (field) => WRITERS[field] || ['chief-of-staff'];
 // a trigger pause needs an open andon (a failed check row), so the Reality Checker that wrote it may raise it too
 const TRIGGER_WRITERS = ['chief-of-staff', 'delivery-lead', 'reality-checker'];
@@ -234,12 +242,18 @@ function questionText(field, value) {
     'budget.weekly_units': `Set the weekly budget to ${v} units?`,
     'budget.usage_envelope': `Set the usage envelope to ${v}% of the weekly allowance?`,
     'budget.lean_at': `Switch to lean mode at ${v}% of the weekly allowance?`,
+    'budget.reserve': `Keep ${v}% of each wave's estimate in reserve for review, reality check and merge?`,
+    'budget.unit_tokens': `Count one budget unit as ${v} weighted tokens?`,
+    'budget.estimate_s': `Estimate a small story at ${v} units?`,
+    'budget.estimate_m': `Estimate a medium story at ${v} units?`,
+    'budget.estimate_l': `Estimate a large story at ${v} units?`,
     idle_minutes: `Call the team idle after ${v} minutes with ready work and nothing in progress?`,
     briefing_lines: `Keep routine briefings to ${v} lines?`,
     answer_window_hours: `Allow up to ${v} hours for your yes to a goal question?`,
     pause: { paused: "Pause the team's work now?", stopped: "Stop the team's work now?", off: "Resume the team's work now?" }[v],
     scope_add: `Add ${items} to the scope?`,
     scope_remove: `Remove ${items} from the scope?`,
+    area_add: `Open ${items} as a new product area?`,
     approvals: `Set the approval policy to: ${v}?`,
   }[field];
 }
@@ -330,7 +344,7 @@ function set({ root, who, field, value: raw, record, verifyRecord, judged, now }
   const bind = bindingOf(root, record, verifyRecord);
   const windowHours = field === 'answer_window_hours' ? 24 : answerWindowHours(root, verifyRecord);
   const entry = { value: p.value, record, ...bind, window_hours: windowHours, by: who.instance, at: now || new Date().toISOString(), ...(judge ? { judge } : {}) };
-  const r = FIELDS[field].op ? commitOnce(root, 'scope_log', { op: FIELDS[field].op, ...entry }, { append: true }) : commitOnce(root, field, entry);
+  const r = FIELDS[field].op ? commitOnce(root, FIELDS[field].log || 'scope_log', { op: FIELDS[field].op, ...entry }, { append: true }) : commitOnce(root, field, entry);
   if (!r.ok) return { ok: false, error: `${r.error}; ask the owner again (goal.js ask ${field} <value>)` };
   return { ok: true, entry: r.entry };
 }
@@ -350,15 +364,15 @@ function warnUnverified(root, field, why) {
   try { require('./warnings.js').record(root, { kind: 'goal-unverified', rule: 'R-42', detail: `${field} is ignored: ${why}` }); } catch (err) { /* best effort */ }
 }
 
-// The scope: the adds and removes whose records still hold, in order.
-function resolveScope(root, { g, verifyRecord, warn }) {
+// The scope (or the opened areas): the adds and removes whose records still hold, in order.
+function resolveScope(root, { g, verifyRecord, warn, logKey = 'scope_log', addField = 'scope_add' }) {
   // folded from the ordered history, so restoring an old projection never undoes a later change
-  const log = g.history.filter((h) => h.field === 'scope_log');
+  const log = g.history.filter((h) => h.field === logKey);
   const items = [];
   const ignored = [];
   const seen = new Set();
   for (const e of log) {
-    const field = e.op === 'remove' ? 'scope_remove' : 'scope_add';
+    const field = e.op === 'remove' ? 'scope_remove' : addField;
     // a yes applies once: a second entry on the same question or input is ignored
     const keys = [e.record, e.question, e.input].filter(Boolean);
     const dup = keys.some((x) => seen.has(x));
@@ -370,12 +384,13 @@ function resolveScope(root, { g, verifyRecord, warn }) {
       if (e.op === 'remove') { if (at >= 0) items.splice(at, 1); } else if (at < 0) items.push(it);
     }
   }
-  return { value: log.length ? items : null, from: log.length ? 'scope changes' : 'default', ...(ignored.length ? { ignored: ignored.join('; ') } : {}) };
+  return { value: log.length ? items : null, from: log.length ? `${logKey === 'scope_log' ? 'scope' : 'area'} changes` : 'default', ...(ignored.length ? { ignored: ignored.join('; ') } : {}) };
 }
 
 // { value, from, ignored? } — the owner-set value only while its record holds; else the default or null.
 function resolve(root, field, { g = read(root), verifyRecord, warn = true } = {}) {
   if (field === 'scope') return resolveScope(root, { g, verifyRecord, warn });
+  if (field === 'areas') return resolveScope(root, { g, verifyRecord, warn, logKey: 'areas_log', addField: 'area_add' });
   const e = g.fields[field];
   const fallback = FIELDS[field] && FIELDS[field].default !== undefined ? FIELDS[field].default : null;
   if (!e || e.value === undefined) return { value: fallback, from: 'default' };
@@ -407,15 +422,15 @@ function activePause(root, { verifyRecord, g = read(root), warn = true, beadOf, 
   return { paused: false, ...(owner.ignored ? { lapsed: owner.ignored } : {}), ...(triggers.length ? { lapsed: `${triggers.map((t) => t.trigger).join(', ')} closed` } : {}) };
 }
 
-const SHOWN = [...Object.keys(FIELDS).filter((f) => !FIELDS[f].op), 'scope'];
+const SHOWN = [...Object.keys(FIELDS).filter((f) => !FIELDS[f].op), 'scope', 'areas'];
 function showLines(root, opts = {}) {
   const g = read(root);
   const lines = [];
   for (const field of SHOWN) {
     const r = resolve(root, field, { ...opts, g });
-    const e = field === 'scope' ? null : g.fields[field];
+    const e = field === 'scope' || field === 'areas' ? null : g.fields[field];
     let s;
-    if (r.ignored) s = `${r.value === null ? 'not set' : `${shown(r.value)}${field === 'scope' ? '' : ' (default)'}`}; the written value is ignored: ${r.ignored}`;
+    if (r.ignored) s = `${r.value === null ? 'not set' : `${shown(r.value)}${field === 'scope' || field === 'areas' ? '' : ' (default)'}`}; the written value is ignored: ${r.ignored}`;
     else if (e) s = `${shown(r.value)} (${r.from}, ${e.at})`;
     else if (r.value === null) s = field.startsWith('budget.') ? 'not set by the owner (budget checks only warn)' : 'not set';
     else s = `${shown(r.value)} (${r.from === 'default' ? 'default' : r.from})`;

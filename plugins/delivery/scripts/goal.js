@@ -36,7 +36,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, v
   if (cmd === 'show') {
     if (a.json) {
       const g = Goal.read(who.root);
-      const values = Object.fromEntries([...Object.keys(Goal.FIELDS).filter((f) => !Goal.FIELDS[f].op), 'scope'].map((f) => [f, Goal.value(who.root, f, { g, verifyRecord, warn: false })]));
+      const values = Object.fromEntries([...Object.keys(Goal.FIELDS).filter((f) => !Goal.FIELDS[f].op), 'scope', 'areas'].map((f) => [f, Goal.value(who.root, f, { g, verifyRecord, warn: false })]));
       return { code: 0, out: JSON.stringify({ values, fields: g.fields, pause: Goal.activePause(who.root, { verifyRecord, beadOf: beadReader(who, bd) }) }, null, 2) };
     }
     return { code: 0, out: Goal.showLines(who.root, { verifyRecord, beadOf: beadReader(who, bd) }).join('\n') };
@@ -46,7 +46,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, v
     if (!Goal.writersOf(field).includes(who.roleId) || who.roleId !== 'chief-of-staff') return { code: 1, out: 'goal.js: the Chief of Staff asks the owner about a goal change.\nMessage the Chief of Staff.' };
     const text = Goal.questionText(field, value);
     const sh = require('./lib/plugin-root.js').shellPath;
-    if (!text) return { code: 1, out: `goal.js: refused: ${field} ${value} is not a goal change (fields: ${Object.keys(Goal.FIELDS).join(', ')}).\nSee the fields: \`goal.js show\`` };
+    if (!text) return { code: 1, out: `goal.js: refused: ${field} ${value} is not a goal change.\nSee the fields: \`goal.js show\`` };
     let q;
     try { q = (recordQuestion || operatorAsk(who))({ text, field, value }); } catch (err) { return { code: 1, out: `goal.js: the question was not recorded (${String(err.message).split('\n')[0]}).\nRetry: \`goal.js ask ${field} ${value}\`` }; }
     const payload = JSON.stringify({ questions: [{ question: text, header: 'Goal change', multiSelect: false, options: [{ label: 'Yes', description: 'Make this change' }, { label: 'No', description: 'Leave it as it is' }] }] });
