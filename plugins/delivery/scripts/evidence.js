@@ -1,21 +1,24 @@
 #!/usr/bin/env node
 // scripts/evidence.js — evidence rows (R-11) and the merged / deployed / verified states (R-12).
 //   evidence.js add <bead> --criterion <n> --result pass|fail --surface <id> --sha <deployed sha>
-//               [--by <role>] [--run <run id, log query or URL>] [--host h] [--app a] [--mode m] [--install-artifact x]
+//               [--run <run id, log query or URL>] [--host h] [--app a] [--mode m] [--install-artifact x]
 //   evidence.js state <bead> merged [--pr <n>] | deployed --sha <sha>
 //   evidence.js waive <bead> --criterion <n> --record <dec-...> --risk '<risk accepted>'
-//   evidence.js list <bead> | evidence.js check <bead>
-// Rows go to <project>/.delivery/evidence/<bead>.ndjson, append-only, with the writer's role, actor and
-// time. A row by the story's author is refused (authority). A row whose surface, observed tuple
-// (--host/--app/--mode override the declared one) or sha differs from the story's declared surface and
-// deployed sha is kept as a side arm and refused as verification (D2). When every criterion has a
-// counting row, the bead gets state-verified. Exit codes: 0 recorded; 1 refused; 2 usage.
+//   evidence.js cut <bead> --record <dec-...> --reason '<why the story is not delivered>'
+//   evidence.js list <bead> | evidence.js check <bead>       read only
+// Rows go to <project>/.delivery/evidence/<bead>.ndjson: append-only and hash-chained, with the
+// writer's role (from the session marker), actor, time and the criterion's own hash. Writes need a
+// role session: rows by the Delivery Manager (or a Reality Checker), never by an author of the story;
+// states, waivers and cuts by the Delivery Manager. A row whose surface or observed tuple
+// (--host/--app/--mode override the declared one) differs from the story's is kept as a side arm (D2);
+// one on another sha than the deployed one is a side arm (D3). When every criterion has a counting row
+// the bead gets state-verified. Exit codes: 0 done; 1 refused; 2 usage.
 const G = require('./lib/gates.js');
 const { tupleOf, sameTuple, describe, TUPLE } = require('./lib/surface.js');
-const { whoAmI, gateInputs } = require('./lib/gate-context.js');
+const { whoAmI, gateInputs, writerProblem, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: evidence.js add <bead> --criterion <n> --result pass|fail --surface <id> --sha <sha> [--by <role>] [--run <ref>] | state <bead> merged|deployed [--pr <n>|--sha <sha>] | waive <bead> --criterion <n> --record <dec-...> --risk <text> | list <bead> | check <bead>';
-const VALUE = ['--criterion', '--result', '--surface', '--sha', '--by', '--run', '--pr', '--record', '--risk', '--project', '--host', '--app', '--mode', '--install-artifact'];
+const USAGE = 'usage: evidence.js add <bead> --criterion <n> --result pass|fail --surface <id> --sha <sha> [--run <ref>] | state <bead> merged|deployed [--pr <n>|--sha <sha>] | waive <bead> --criterion <n> --record <dec-...> --risk <text> | cut <bead> --record <dec-...> --reason <text> | list <bead> | check <bead>';
+const VALUE = ['--criterion', '--result', '--surface', '--sha', '--run', '--pr', '--record', '--risk', '--reason', '--project', '--host', '--app', '--mode', '--install-artifact'];
 
 function parse(argv) {
   const out = { _: [] };
@@ -28,86 +31,116 @@ function parse(argv) {
   return out;
 }
 
-const DM_ONLY = (who, env, what) => (env.DELIVERY_ROLE && who.roleId !== 'delivery-lead' ? { code: 1, out: `evidence.js: ${what} is the Delivery Manager's; message the Delivery Manager.` } : null);
+const refuse = (text) => ({ code: 1, out: `evidence.js: ${text}` });
 
-function verifyIfDone(store, bead, inp) {
-  const done = G.doneCheck({ story: inp.story, bead, rows: inp.rows, surface: inp.surface, instances: inp.instances });
-  if (done.ok && !done.migrate && !(bead.labels || []).includes(G.STATE.verified)) store.update(bead.id, { addLabels: [G.STATE.verified] });
-  return done;
+function done(bead, inp) {
+  if (inp.evidenceProblem) return { ok: false, criteria: [], problem: inp.evidenceProblem };
+  if (G.scopeDrift(inp.story, bead)) return { ok: false, criteria: [], problem: 'the criteria changed since they were made ready (D1)' };
+  return G.doneCheck({ story: inp.story, bead, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances });
 }
 
-function doneText(done) {
-  if (done.migrate) return 'the story has no acceptance criteria: the done gate cannot run';
-  return done.criteria.map((c) => `criterion ${c.n}: ${c.row ? `pass ${c.row}` : c.waiver ? `waived ${c.waiver}` : c.why}`).join('\n') + (done.ok ? '\nall criteria verified: state-verified' : '');
+// state-verified follows the rows: set when every criterion counts, removed when they no longer do
+function syncVerified(store, bead, inp) {
+  const d = done(bead, inp);
+  const has = (bead.labels || []).includes(G.STATE.verified);
+  if (d.ok && !d.cut && !has) store.update(bead.id, { addLabels: [G.STATE.verified] });
+  if (!d.ok && has) store.update(bead.id, { removeLabels: [G.STATE.verified] });
+  return d;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord } = {}) {
+function doneText(d) {
+  if (d.problem) return d.problem;
+  if (d.cut) return `cut (${d.cut}): closes without verification`;
+  if (d.empty) return 'the story has no acceptance criteria';
+  return d.criteria.map((c) => `criterion ${c.n}: ${c.row ? `pass ${c.row}` : c.waiver ? `waived ${c.waiver}` : c.why}`).join('\n') + (d.ok ? '\nall criteria verified: state-verified' : '');
+}
+
+function unverifiedRecord(who, record, verifyRecord) {
+  const v = (verifyRecord || require('./lib/operator-records.js').verifyRecord)(who.root, record);
+  return v && v.ok ? null : `${record} does not verify (${v ? v.error || v.code : 'no result'}): cite an owner record`;
+}
+
+function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, who: given } = {}) {
   const a = parse(argv);
   const [cmd, id, word] = a._;
   if (!cmd || !id) return { code: 2, out: USAGE };
-  const who = whoAmI({ cwd, env, project: a.project });
+  const who = given || whoAmI({ cwd, env, project: a.project });
   if (!who.root) return { code: 2, out: 'evidence.js: no project found; pass --project <root>' };
+  // writes fail closed: the role comes from the session marker, and no marker means no write
+  const reading = cmd === 'list' || cmd === 'check';
+  const wp = reading ? null : writerProblem(who, cmd === 'add' ? EVIDENCE_WRITERS : ['delivery-lead']);
+  if (wp) return refuse(wp);
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
   const bead = store.show(id);
-  if (!bead) return { code: 1, out: `evidence.js: no bead ${id}` };
+  if (!bead) return refuse(`no bead ${id}`);
   const inp = gateInputs(who.root, bead, { bd: store, team: who.team });
   const at = now || new Date().toISOString();
   const m = bead.metadata || {};
 
   if (cmd === 'list') return { code: 0, out: inp.rows.map((r) => JSON.stringify(r)).join('\n') || `no evidence for ${id}` };
-  if (cmd === 'check') { const done = verifyIfDone(store, bead, inp); return { code: done.ok ? 0 : 1, out: doneText(done) }; }
+  if (cmd === 'check') { const d = done(bead, inp); return { code: d.ok ? 0 : 1, out: doneText(d) }; }
+
+  const by = who.roleId;
+  const actor = who.actor || who.instance;
 
   if (cmd === 'state') {
-    const refused = DM_ONLY(who, env, 'recording a state');
-    if (refused) return refused;
     if (word === 'merged') {
       store.update(id, { addLabels: [G.STATE.merged], metadata: { ...m, ...(a.pr ? { merged_pr: a.pr } : {}) } });
       return { code: 0, out: `${id}: merged${a.pr ? ` (${a.pr})` : ''}, not verified` };
     }
     if (word === 'deployed' && a.sha) {
-      // a new deploy needs its own verification: an earlier state-verified goes
-      const verified = (bead.labels || []).includes(G.STATE.verified) && m.deployed_sha !== a.sha;
-      store.update(id, { addLabels: [G.STATE.merged, G.STATE.deployed], removeLabels: verified ? [G.STATE.verified] : [], metadata: { ...m, deployed_sha: a.sha, deployed_at: at } });
-      return { code: 0, out: `${id}: deployed at ${a.sha}, not verified${verified ? ' (the earlier verification was for another sha)' : ''}` };
+      // the same sha again keeps its deploy time, so its rows still count
+      const same = G.shaMatch(m.deployed_sha, a.sha);
+      const meta = { ...m, deployed_sha: same ? m.deployed_sha : a.sha, deployed_at: same && m.deployed_at ? m.deployed_at : at };
+      store.update(id, { addLabels: [G.STATE.merged, G.STATE.deployed], metadata: meta });
+      const d = syncVerified(store, store.show(id), inp);
+      return { code: 0, out: `${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}` };
     }
     return { code: 2, out: USAGE };
   }
 
-  const by = who.roleId || a.by;
-  if (who.roleId && a.by && a.by !== who.roleId) return { code: 1, out: `evidence.js: --by ${a.by} does not match this session's role ${who.roleId}` };
-  if (!by) return { code: 2, out: 'evidence.js: --by <role> is required outside a role session' };
-  const actor = who.actor || `operator/${by}`;
+  if (cmd === 'cut') {
+    if (!a.record || !a.reason) return { code: 2, out: 'evidence.js: a cut needs --record <dec-...> and --reason <why>' };
+    const bad = unverifiedRecord(who, a.record, verifyRecord);
+    if (bad) return refuse(bad);
+    const row = G.appendEvidence(who.root, id, { type: 'cut', record: a.record, reason: a.reason, by, actor, at });
+    store.update(id, { addLabels: [G.STATE.cut], removeLabels: [G.STATE.verified] });
+    return { code: 0, out: `${row.id}: ${id} cut under ${a.record}; it may close without verification` };
+  }
+
   const criteria = inp.story ? inp.story.criteria : [];
-  if (!criteria.some((c) => String(c.n) === String(a.criterion))) return { code: 1, out: `evidence.js: ${id} has no criterion ${a.criterion} (criteria: ${criteria.map((c) => c.n).join(', ') || 'none'})` };
+  const c = criteria.find((x) => x.n === Number(a.criterion));
+  if (!c) return refuse(`${id} has no criterion ${a.criterion} (criteria: ${criteria.map((x) => x.n).join(', ') || 'none'})`);
 
   if (cmd === 'waive') {
-    const refused = DM_ONLY(who, env, 'waiving a criterion');
-    if (refused) return refused;
-    if (G.stateOf(bead) === 'deployed' || G.stateOf(bead) === 'verified' || bead.status === 'closed') return { code: 1, out: `evidence.js: refused (D3): criterion ${a.criterion} of ${id} is past its gate (${bead.status === 'closed' ? 'closed' : G.stateOf(bead)}); a waiver is recorded before the gate is due` };
+    if (['deployed', 'verified'].includes(G.stateOf(bead)) || bead.status === 'closed') return refuse(`criterion ${c.n} of ${id} is past its gate (D3); a waiver comes before the deploy. To stop the story: evidence.js cut ${id} --record <dec-...> --reason '<why>'`);
     if (!a.record || !a.risk) return { code: 2, out: 'evidence.js: a waiver needs --record <dec-...> and --risk <the risk accepted>' };
-    const v = (verifyRecord || require('./lib/operator-records.js').verifyRecord)(who.root, a.record);
-    if (!v || !v.ok) return { code: 1, out: `evidence.js: ${a.record} does not verify (${v ? v.error || v.code : 'no result'}); a waiver cites an owner record` };
-    const row = G.appendEvidence(who.root, id, { type: 'waiver', criterion: Number(a.criterion), record: a.record, risk: a.risk, by, actor, at });
-    return { code: 0, out: `${row.id}: criterion ${a.criterion} waived under ${a.record}` };
+    const bad = unverifiedRecord(who, a.record, verifyRecord);
+    if (bad) return refuse(bad);
+    const row = G.appendEvidence(who.root, id, { type: 'waiver', criterion: c.n, criterion_hash: G.criterionHash(c), record: a.record, risk: a.risk, by, actor, at });
+    return { code: 0, out: `${row.id}: criterion ${c.n} waived under ${a.record}` };
   }
 
   if (cmd !== 'add') return { code: 2, out: USAGE };
   if (!['pass', 'fail'].includes(a.result) || !a.surface || !a.sha) return { code: 2, out: USAGE };
-  const author = bead.assignee || m.author || null;
-  const authorRole = G.roleOfActor(author, inp.instances);
-  if ((author && actor === author) || (authorRole && by === authorRole)) return { code: 1, out: `evidence.js: refused: ${by} is the author's role (${author || authorRole}); the builder is not its own inspector. The Delivery Manager or a reality check records the row.` };
+  const authors = G.authorsOf(bead, inp.instances);
+  if (authors.actors.includes(actor) || authors.roles.includes(by)) return refuse(`${actor} (${by}) is among the authors of ${id}, so its rows do not count: the builder is not its own inspector.`);
+  if (!m.deployed_sha) return refuse(`${id} has no deployed sha: record the deploy first (evidence.js state ${id} deployed --sha <sha>), then the run.`);
   const declared = inp.surfaces.find((s) => s.id === a.surface) || null;
   const observed = { ...tupleOf(declared) };
   for (const k of TUPLE) if (a[k] !== undefined) observed[k] = a[k];
   let why = null;
-  if (!inp.surface) why = `the story declares no surface in surface.json`;
-  else if (!declared) why = `${a.surface} is not in surface.json`;
-  else if (a.surface !== inp.surface.id || !sameTuple(observed, tupleOf(inp.surface))) why = `observed on ${observed.app}, ${observed.mode} (${observed.host}), not ${describe(inp.surface)}`;
-  else if (m.deployed_sha && a.sha !== m.deployed_sha) why = `on ${a.sha}, not the deployed ${m.deployed_sha}`;
-  const row = G.appendEvidence(who.root, id, { type: 'row', criterion: Number(a.criterion), result: a.result, surface: a.surface, tuple: observed, sha: a.sha, run: a.run || null, by, actor, at, arm: why ? 'side' : 'main', ...(why ? { why } : {}) });
-  if (why) return { code: 1, out: `evidence.js: refused as verification of ${inp.surface ? inp.surface.id : 'the story'} (D2): ${why}. Kept as side arm ${row.id}.` };
-  const done = verifyIfDone(store, bead, { ...inp, rows: [...inp.rows, row] });
-  return { code: 0, out: `${row.id}: criterion ${a.criterion} ${a.result} on ${a.surface} at ${a.sha}${m.deployed_sha ? '' : ' (the story has no deployed sha yet: it counts once the deploy is recorded at this sha)'}\n${doneText(done)}` };
+  let gate = 'D2';
+  if (!inp.noSurface) {
+    if (!declared) why = `${a.surface} is not in surface.json`;
+    else if (a.surface !== inp.surface.id || !sameTuple(observed, tupleOf(inp.surface))) why = `observed on ${observed.app}, ${observed.mode} (${observed.host}), not ${describe(inp.surface)}`;
+  }
+  if (!why && !G.shaMatch(a.sha, m.deployed_sha)) { why = `on ${a.sha}, not the deployed ${m.deployed_sha}`; gate = 'D3'; }
+  const row = G.appendEvidence(who.root, id, { type: 'row', criterion: c.n, criterion_hash: G.criterionHash(c), result: a.result, surface: a.surface, tuple: observed, sha: a.sha, run: a.run || null, by, actor, at, arm: why ? 'side' : 'main', ...(why ? { why } : {}) });
+  if (why) return refuse(`not verification of ${id} (${gate}): ${why}. Kept as side arm ${row.id}.`);
+  const d = syncVerified(store, bead, { ...inp, rows: [...inp.rows, row] });
+  const note = inp.noSurface ? '\nwarning: the story declares no customer surface, so the surface was not checked (R-09)' : '';
+  return { code: 0, out: `${row.id}: criterion ${c.n} ${a.result} at ${a.sha}${note}\n${doneText(d)}` };
 }
 
 if (require.main === module) {
