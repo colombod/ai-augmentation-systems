@@ -116,7 +116,7 @@ test('ask refuses locally: off, unknown question, sensitive or missing fields; n
     assert.equal((await J.ask('nope', RELAY, { config: cfgFor(f.url) })).reason, 'unknown_question');
     const cases = {
       token: 'use ghp_abcdefghijklmnopqrstuvwxyz0123 now', email: 'mail someone@example.com', url: 'see https://example.com/a',
-      path: 'the file /home/someone/app/config.json', credential: 'password = hunter22', id: 'session 3f2b1c4d-1a2b-4c3d-8e9f-0123456789ab',
+      path: 'the file /srv/app/config.json', credential: 'password = hunter22', id: 'session 3f2b1c4d-1a2b-4c3d-8e9f-0123456789ab',
       opaque: 'key Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZg', denylist: 'the Secret Codename launch',
     };
     for (const [kind, message] of Object.entries(cases)) {

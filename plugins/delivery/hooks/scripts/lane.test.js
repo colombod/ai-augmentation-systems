@@ -536,7 +536,7 @@ test('B: lane_mcp allows named MCP tools regardless of verb', () => {
 });
 
 // Final wave H.1: a role file without lane keys gets read-only groups, not a full lockout and no writes.
-test('H.1: missing or empty lane_bash defaults to read, bd-read, git-read, operator-read', () => {
+test('H.1: missing or empty lane_bash defaults to read, bd-read, git-read, operator-read, judge', () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-brief-'));
   const briefs = path.join(projectRoot, '.delivery', 'team', 'briefs');
   fs.mkdirSync(briefs, { recursive: true });
@@ -544,7 +544,7 @@ test('H.1: missing or empty lane_bash defaults to read, bd-read, git-read, opera
   fs.writeFileSync(path.join(briefs, 'empty.md'), '---\nid: empty\nlane_bash:\nlane_writes:\n---\n\nEmpty keys.\n');
   for (const id of ['specialist', 'empty']) {
     const p = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot, briefRef: `project/${id}` });
-    assert.deepEqual(p.bash, ['read', 'bd-read', 'git-read', 'operator-read'], id);
+    assert.deepEqual(p.bash, ['read', 'bd-read', 'git-read', 'operator-read', 'judge'], id);
     assert.deepEqual(p.writes, [], id);
     assert.deepEqual(p.mcp, [], id);
     const d = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: p, ...ctx() }).allow;
@@ -678,6 +678,17 @@ test('operator groups per role: managers read and write, a lane without operator
   assert.match(d.reason, /allowed groups: read, operator-read/);
   const staffing = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/staffing' });
   assert.ok(staffing.bash.includes('operator-read') && staffing.bash.includes('operator-write'));
+});
+
+test('judge group: every role may ask, list and read stats; another script or subcommand is not the judge', () => {
+  const j = `${PLUGIN_ROOT}/scripts/judge.js`;
+  for (const role of Object.keys(POLICIES)) {
+    for (const command of [`node ${j} ask relay_request --state s.json`, `cat s.json | node ${j} ask divergence --state -`, `node ${j} questions`, `node ${j} stats`]) {
+      assert.equal(decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], ...ctx() }).allow, true, `${role}: ${command}`);
+    }
+  }
+  assert.ok(!classifySegment(`node ${j} purge`, GROUPS, ctx()).includes('judge'));
+  assert.ok(!classifySegment('node /tmp/judge.js ask x', GROUPS, ctx()).includes('judge'));
 });
 
 test('the operator directory is never written with file tools, by any role', () => {
