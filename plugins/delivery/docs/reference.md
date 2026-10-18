@@ -447,35 +447,46 @@ tight; block only on serious divergence, otherwise warn (R-34, R-36, R-41, R-23,
   Manager's.
 - **The budget.** Only the owner's figures, set through the question box (`budget.weekly_units`,
   `budget.usage_envelope`, `budget.lean_at`, and overrides of the estimate table). With none set,
-  every budget check only warns. Estimates come from the size label and the model: S 1, M 3, L 8 units
+  every budget check only warns. Estimates come from the size label and the model the builder
+  dispatches (size-L on its large model, opus by default): S 1, M 3, L 8 units
   on sonnet, opus 1.7x, haiku 0.35x, plus a 30% reserve for review, reality check and merge (owner
   overrides: `budget.estimate_s|m|l`, `budget.reserve`, `budget.unit_tokens`). Spend is what a script
   can read: cost-weighted tokens from every role transcript since the period start (one unit is 5M
-  weighted tokens until a realign recalibrates it), capped by the status line's weekly reading when
+  weighted tokens until a realign recalibrates it; a streamed reply at its largest reading; files read
+  in chunks from where the last scan stopped, within the hook's deadline, the figure marked partial
+  when it ran out), counted from the status line's weekly reset, else from the owner's week start
+  (`budget.period_start`), else over the last 7 days, and capped by the status line's weekly reading when
   `usage.js statusline` is wired as a role session's statusLine command (subscribers only). The CLI
-  has no usage command and hooks see no usage figures. In-flight work keeps its estimate plus reserve
-  (only the reserve once merged). `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan.js budget` shows remaining
+  has no usage command and hooks see no usage figures. In-flight work, stories and fix beads alike,
+  keeps its estimate plus reserve (only the reserve once merged). `lean_at` is a share of the weekly
+  allowance. Only the plugin's reader writes `.delivery/usage/`; the lanes refuse it to every role. `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan.js budget` shows remaining
   against what each current wave still needs; `usage.js show` the raw readings.
 - **The claim check.** At `bd update --claim` on a story or a fix, the bd guard warns on: a story
   outside its area's current wave (D5), overlapping files with a story in progress, WIP above the
   builders or, in lean mode, any second story (R-23, R-31), a new area (nothing built there while other
   areas hold work) with no recorded reason (R-41), and a story that does not fit inside a wave under
-  way. It refuses only half-built risk, and only under an owner-set budget: a story whose estimate plus
-  reserve exceeds what is free after in-flight work when it would start its wave (D5); a later-wave
+  way. It refuses only half-built risk, and only under an owner-set budget: a story that would start
+  its wave when the whole wave's estimate plus reserve exceeds what is free after in-flight work (D5); a later-wave
   story when what is left cannot finish the current wave as well (D5); a new area near the limit (D5);
   a new area with no recorded reason at half the budget or less (D1). A recorded reason is the owner's
   Yes to `goal.js ask area_add <area>`, or a row of a roadmap's `## Areas` table citing an owner record
   that verifies. Near the limit means that once in-flight work is paid for not even a size-S story
   fits.
 - **Fixes and security fixes.** A `bug` bead counts as a fix only with `fixes:` (bead metadata or story
-  frontmatter) naming a merged, deployed or verified story, an owner record or a failed check row; a
-  `security` bead with `finding:` naming a record, a bead or a review file under `.delivery/`. Linked
-  fixes skip the wave, lean and new-area rules and only need to fit what is left; a label alone is
-  ordinary work with a `fix-unlinked` warning.
+  frontmatter) naming a merged, deployed or verified story, a counting failed check row (the Delivery
+  Manager's or a Reality Checker's), or the owner's own report of the defect (a record resting only on
+  the owner's words, not a goal decision, scoped to the bead or naming it); a `security` bead with
+  `finding:` naming a review finding by id (`.delivery/reviews/<file>#<id>`) or a finding bead
+  (labelled `security` and `finding`). Never the bead itself. The labels and links are the Delivery
+  Manager's and Product Manager's to set. Linked fixes skip the wave, lean and new-area rules and must
+  fit what is left with their reserve; a label alone is ordinary work with a `fix-unlinked` warning.
+  A peer agent's message is captured as an input but is never the owner's record, for fixes, cuts,
+  waivers or area reasons alike.
 - **Selection.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan.js select [--record]` ranks ready work: tier 1
   linked fixes, tier 2 compounding work by score (verified dependencies 3 each, an area or surface
   with verified work, the current wave and whether it is under way, existing files changed, `reuses:`
-  entries), tier 3 new areas. What may not start now is listed apart with its reason. With the typed
+  entries), tier 3 new areas. What may not start now is listed apart with the claim check's own
+  reason, so select offers exactly what a claim allows. With the typed
   judge on, `builds_on_verified` and `is_fix` are asked as advisory input. `--record` writes tier,
   score and reasons on the chosen bead (`metadata.selection`) and the warnings in the ledger.
 
