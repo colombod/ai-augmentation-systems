@@ -116,16 +116,30 @@ treated as Bash when `hooks.json` routes it to the hook. For roles without `any`
 read-verb only unless the role file's `lane_mcp` names them; the managers' `lane_mcp` allows
 session messaging and listing.
 
-Browser, desktop and computer-use tools (`mcp__Claude_Browser__`, `mcp__claude-in-chrome__`,
-`mcp__computer-use__`, `mcp__Claude_Code_iOS_Simulator__`) reach the owner's apps and the customer
-surface, so only a reach lane has them: the Reality Checker's (its role file says `lane_reach: true`).
-Every other role is refused by the hook ("real-surface runs belong to the Reality Checker, with a
-script"), and `prepare-role` writes native deny rules for those servers, so the Chief of Staff and the
-Product Manager cannot drive the owner's desktop even when a hook fails open. A team that really
-needs one for another role (a builder checking its own UI on a local preview) sets `"reach": true` on
-that role's `team.json` entry and re-runs `prepare-role`; the manifest is refused when it gives reach to
-the Chief of Staff, the Product Manager, the Delivery Manager or Staffing. A headless host refuses reach
-tools to every role.
+Browser, desktop and computer-use tools reach the owner's apps and the customer surface. The reach
+servers are `Claude_Browser`, `claude-in-chrome`, `computer-use`, `Claude_Code_iOS_Simulator`,
+`playwright`, `chrome-devtools` and `puppeteer` (and, for the hook, their `plugin_<name>_` copies).
+Only a reach lane has them:
+
+- **The Reality Checker** (its role file says `lane_reach: true`) has all of them, except
+  `request_credentials`, the clipboard tools and `request_full_control` / teach access: a sign-in,
+  consent or payment step is an owner-queue step, never typed by an agent.
+- **A builder (or another non-manager) opted in** with `"reach": true` on its `team.json` entry gets
+  *local* reach (R-05): browser tools whose `url` is a local development host (`localhost`,
+  `127.0.0.1`, `::1`, `*.localhost`, `*.test`) and actions in those browsers, for its own UI work;
+  never the owner's own Chrome (`claude-in-chrome`) or desktop (`computer-use`). Re-run `prepare-role`
+  after changing it.
+- **Every other role** is refused by the hook ("real-surface runs belong to the Reality Checker, with
+  a script"). The manifest refuses `reach` for a manager by id or by brief (the Chief of Staff, the
+  Product Manager, the Delivery Manager, Staffing, or a custom id using one of their briefs), and the
+  hook ignores `reach` on a manager even when `team.json` was edited after `prepare-role`.
+
+`prepare-role` writes native deny rules for the seven server names above, so they hold where the hook
+cannot (a hook that fails open, a broken manifest). A browser or desktop MCP server with another
+name has no native rule: for a manager lane the hook's read-verb filter refuses its actions but lets
+read-shaped tools (`list_pages`, `get_page_text`) through, and for an `any` lane (builders, the Spike
+Researcher) only the hook stands, and shell routes (`osascript`, `open`, a test runner driving a
+browser) are cooperative trust, like the rest of an `any` lane.
 
 Merging is the Delivery Manager's: for every other role, `any` lanes included, the hook refuses
 `gh pr merge`, the merge endpoints through `gh api`, a push to the default branch (`main`,
@@ -263,7 +277,10 @@ Gates keep work flowing. Each check has one of three levels:
 
 - **Block: authority.** Who may do what. Only the Delivery Manager acknowledges warnings, records a
   story as ready, sets states, waives and cuts; evidence rows come from the Delivery Manager or the
-  Reality Checker (only through `reality-check.js run-record`), never from an author of the story. The scripts take the role from the
+  Reality Checker (only through `reality-check.js run-record`), never from an author of the story. A
+  criterion a reality check verifies (its probe says `by: reality-check`, or its surface is not
+  scriptable) counts only from the Reality Checker's row, or from a Delivery Manager row that cites a
+  verified owner record (`evidence.js add ... --record dec-...`); any other row is a side arm. The scripts take the role from the
   session's role marker and refuse every write without one (they fail closed). The bd guard refuses
   anyone but the Delivery Manager: the `story` and `state-*` labels, `--set-labels`, the gate fields
   (`ready_hash`, `deployed_sha`, `authors`, `story_file`, `surface`, `area`, `roadmap_ref` and the
@@ -333,7 +350,9 @@ the last one included, refuses the close. Appends take a per-bead lock, so two w
 chain. A row
 counts for a criterion when it is a pass, for that criterion's current wording, on the story's
 surface and tuple, on the deployed sha (case-insensitive; a prefix of 7 or more characters matches),
-recorded after that deploy, by a role and an actor that are not among the story's authors. Anything
+recorded after that deploy, by a role and an actor that are not among the story's authors, and, for a
+criterion a reality check verifies, from that check (or on the owner's record). Of the rows that would
+count, the latest decides: a fail after a pass un-verifies the story. Anything
 else is a side arm or does not count. A waiver counts when recorded before the deploy and a cut counts at all only while its owner record
 still verifies: the gate re-runs `operator.js verify` on it. `evidence.js check <bead>` reports the gate without changing anything.
 
@@ -353,16 +372,29 @@ step), the artifact under test (the deployed sha and the version string to read 
 `version_on_screen`), setup steps that confirm the app, mode and version, one step group per criterion
 whose probe says `by: reality-check` (every criterion on a surface that is not scriptable), each step
 with an action, the expected observation and what to capture (screenshot, page text, log), a pass
-rule per criterion, and a cap (attempts, default 2, and minutes, default 30). A refined group is kept
-on re-plan while its criterion's wording is unchanged. Once the story is deployed, plan also creates
+rule per criterion, and a cap (attempts, default 2, and minutes, default 30). Scripts live in the
+shared project checkout (the project root every role's marker names), which `run-record` reads; no
+lane writes them directly. The Delivery Manager edits one with `reality-check.js refine <bead>
+[--criterion <n> (--step <k> | --add-step) | --setup <k>] [--action ..] [--expect ..] [--capture a,b]
+[--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>]` (an account that
+looks like a secret is refused). A refined group is kept on re-plan while its criterion's wording is
+unchanged. Once the story is deployed, plan also creates
 one child bead per deployed sha (`<bead>-rc-<sha7>`, label `reality-check`, not a story) for the
 Reality Checker, which claims it from `bd ready --label reality-check`. The checker saves captures
-under `.delivery/evidence/artifacts/<bead>/` and records each criterion with
+under `.delivery/evidence/artifacts/<bead>/` in its own project clone (where its lane writes) or in the
+shared checkout; `run-record` checks the real path stays inside one of those (no `..`, no symlink
+out), copies the capture into the shared checkout's directory and records that path, so every reader
+finds it. It records each criterion with
 `reality-check.js run-record <bead> --criterion <n> --result pass|fail --artifact <path>
 --observed-version <v> [--host|--app|--mode|--install-artifact <observed>]`. It refuses a version on
 screen that is neither the deployed sha nor the deployed version, a capture that is missing or
-outside that directory, a criterion not in the script, a script planned for another deploy, and a run
-past the cap; a second run after a fail on the same sha is a `reality-retry` warning. The row goes
+outside those directories, a capture whose bytes already back a row for another bead, criterion or
+sha, a criterion not in the script or reworded since it was planned, a script planned for another
+deploy, and a run past the cap (runs on the wrong surface do not count against it); a second run
+after a fail on the same sha is a `reality-retry` warning. The observed tuple is the script's (what
+was set up) unless the checker says otherwise, so a surface declaration changed after planning makes
+the run a side arm. `deployed_version` and `evidence_head` are gate fields only the Delivery Manager's
+scripts write. The row goes
 through `evidence.js` with `via: reality-check`, the observed version and the capture's path and hash,
 so the tuple and sha rules above apply: a run on Codex mode for a plain-chat surface is a side arm. A
 counting fail raises the andon (the mechanical pause below) with no owner step. `/delivery:team`
