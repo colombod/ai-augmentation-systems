@@ -386,3 +386,25 @@ test('/delivery:team warns when the Reality Checker sits on a headless host', ()
   const text = renderStatus(teamStatus(root, { bdCheck: () => true, storyBeads: () => [], checkBeads: () => [], idleBd: { ready: () => [], list: () => [] } }));
   assert.match(text, /Warning: the Reality Checker is on buildbox, a headless host: it cannot drive a browser or desktop app there/);
 });
+
+test('R-07: the owner queue refuses paraphrases that ask the owner to check the product, and literal secrets', () => {
+  const Q = require('./lib/owner-queue.js');
+  const step = (kind, what, steps = 'open a plain chat') => Q.stepProblem({ kind, what, where: 'ChatGPT web', steps });
+  for (const [kind, what] of [
+    ['signin', 'Look at the chat and tell me if the summary appears'],
+    ['account', 'Drop the CSV and confirm the summary shows 212 cards'],
+    ['consent', 'Make sure the import works after you approve the connector'],
+    ['account', 'Open the app and check the version number'],
+    ['signin', 'Sign in, then see whether the deck list loads'],
+  ]) assert.equal(step(kind, what).team, 'check', what);
+  // real owner steps still pass
+  for (const [kind, what, steps] of [
+    ['signin', 'Sign in to the test account in ChatGPT web', 'Open chatgpt.com, choose Log in, use the vault-test-1 account'],
+    ['consent', 'Approve the connector permissions', 'Click Allow on the consent screen'],
+    ['payment', 'Confirm the plan purchase', 'Click Subscribe and confirm the card on file'],
+    ['secret', 'Paste the Microsoft client secret into the vault', 'Run `op item edit vault-ms --field secret` and paste it at the prompt'],
+  ]) assert.deepEqual(step(kind, what, steps), {}, what);
+  // a secret step names where the secret goes, never the secret itself
+  assert.match(step('secret', 'Set the API key', 'export API_KEY=sk-live-4f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c').problem, /never the secret itself/);
+  assert.match(step('signin', 'Sign in', 'use password: hunter2hunter2').problem, /never the secret itself/);
+});
