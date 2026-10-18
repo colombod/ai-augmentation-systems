@@ -17,29 +17,41 @@ const path = require('path');
 const { withLock } = require('./lock.js');
 
 const GOAL_REL = path.join('.delivery', 'goal.json');
-const NUM = (unit) => (v) => new RegExp(`(?<![0-9.,])${String(v).replace('.', '\\.')}(?![0-9]|[.,][0-9])\\s*${unit}`, 'iu');
-const PCT = String.raw`(?:%|\s?per ?cent\b)`;
 const FIELDS = {
-  'budget.weekly_units': { kind: 'number', unit: NUM(String.raw`units?\b`), words: /\b(?:week|weekly|budget|allowance)\b/i },
-  'budget.usage_envelope': { kind: 'percent', unit: NUM(PCT), words: /\b(?:usage|budget|envelope|allowance|ceiling)\b/i },
-  'budget.lean_at': { kind: 'percent', unit: NUM(PCT), words: /\blean\b/i },
-  idle_minutes: { kind: 'number', unit: NUM(String.raw`(?:minutes?|mins?)\b`), words: /\bidle\b/i, default: 30 },
-  briefing_lines: { kind: 'number', unit: NUM(String.raw`lines?\b`), words: /\b(?:briefings?|messages?|updates?)\b/i, default: 12 },
+  'budget.weekly_units': { kind: 'number', unit: /^units?$/, words: /^(?:weekly|budget|allowance|units?)$/ },
+  'budget.usage_envelope': { kind: 'percent', words: /^(?:usage|budget|envelope|allowance|ceiling)$/ },
+  'budget.lean_at': { kind: 'percent', words: /^lean$/ },
+  idle_minutes: { kind: 'number', unit: /^(?:minutes?|mins?)$/, words: /^idle$/, default: 30 },
+  briefing_lines: { kind: 'number', unit: /^lines?$/, words: /^(?:briefings?|messages?|updates?)$/, default: 12 },
   pause: { kind: 'pause', default: 'off' },
-  scope: { kind: 'list' },
+  // the scope is what the team builds toward; it changes by explicit adds and removes, never wholesale
+  scope_add: { kind: 'list', op: 'add' },
+  scope_remove: { kind: 'list', op: 'remove' },
   approvals: { kind: 'text', words: /\b(?:approv\w*|permission|allow\w*|sign[- ]off|consent)\b/i },
 };
 const PAUSE_VALUES = ['paused', 'stopped', 'off'];
+// a pause or a resume is a verb addressed to the work or the team ("freeze the design" is not one)
+const WORK = String.raw`(?:all|everything|the team|the work|work(?:ing)?|the builders?|the sessions?|all sessions|the project)`;
 const SAY = {
-  paused: /\b(?:pause[sd]?|halt|freeze|stop (?:all|everything|the team|the work|work(?:ing)?|the builders?|the sessions?))\b/i,
-  stopped: /\bstop (?:all|everything|the team|the work|work(?:ing)?|the project)\b/i,
-  off: /\b(?:resume|unpause|restart|continue|carry on|start again|back to work)\b/i,
+  paused: new RegExp(String.raw`\b(?:pause|halt|stop) ${WORK}\b`, 'i'),
+  stopped: new RegExp(String.raw`\bstop ${WORK}\b`, 'i'),
+  off: new RegExp(String.raw`\b(?:resume ${WORK}|unpause|start again|back to work|(?:the team|everyone|the builders|all sessions) (?:can|may|should) (?:continue|resume|carry on))\b`, 'i'),
 };
-// the role that records each field on the owner's word: the Product Manager owns scope only
-const WRITERS = { scope: ['chief-of-staff', 'product-manager'] };
+// a resume tied to a time or another task is about something else: refused
+const LATER = /\b(?:tomorrow|tonight|later|next (?:week|month)|on (?:mon|tues|wednes|thurs|fri|satur|sun)day|with the)\b/i;
+// a conditional instruction is not a decision to change the goal now
+const CONDITIONAL = /\b(?:only if|if|unless|when|whenever|in case|provided|as long as)\b/i;
+const SCOPE_ADD = /\b(?:add|include|build|cover|scope is|in scope|into (?:the )?scope|to (?:the )?scope)\b/i;
+const SCOPE_REMOVE = /\b(?:remove|drop|cut|exclude|out of (?:the )?scope|from (?:the )?scope|no longer in (?:the )?scope)\b/i;
+// the quote must be English for the rule to read it (the typed judge may confirm another language)
+const FOREIGN = new Set('pas ne nicht kein keine non nunca jamais nie niemals le la les des du et en une un est die der das und bitte ist el los las por para todo toda hasta que una ein eine mit'.split(' '));
+const ENGLISH = new Set('the to of and a an is are for at on all our my your until every each after keep set under with it this that we i be go call can now work team scope approval approvals merges need needs'.split(' '));
+// the role that records each field on the owner's word: the Product Manager owns scope changes only
+const WRITERS = { scope_add: ['chief-of-staff', 'product-manager'], scope_remove: ['chief-of-staff', 'product-manager'] };
 const writersOf = (field) => WRITERS[field] || ['chief-of-staff'];
 const TRIGGER_WRITERS = ['chief-of-staff', 'delivery-lead'];
 const EVIDENCE_WRITERS = ['delivery-lead', 'reality-checker'];
+const JUDGE_MIN = 0.8;
 
 const fileOf = (root) => path.join(root, GOAL_REL);
 
@@ -79,23 +91,59 @@ const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // a whole word or phrase, in any script, ignoring case ("UI" is not inside "build")
 const wholeWord = (text, w) => new RegExp(`(?<![\\p{L}\\p{N}])${esc(w).replace(/\s+/g, '\\s+')}(?![\\p{L}\\p{N}])`, 'iu').test(text);
 
-// The quote states the value: the figure in full with its unit and a word of the field; the pause or
-// resume itself; every scope item as a whole word; the approval policy word for word. A negation in
-// the quote (not, never, no, don't, ...) refuses it, whatever else it says.
-function covers(field, value, quote) {
-  const q = String(quote || '').normalize('NFKC');
-  if (!q.trim()) return false;
+// The figure is the object of the field word in the same clause: the field word up to four words
+// before it ("budget of 30%", "set the weekly units to 5") or right after its unit ("30 minutes idle").
+// The figure matches in full: 30 is not 300, 30.5 or 130.
+function figureTied(field, value, q) {
   const f = FIELDS[field];
-  let { hasNegation } = {};
-  try { ({ hasNegation } = require('./operator-records.js')); } catch (err) { hasNegation = null; }
-  // the pause words are themselves in the negation lexicon (stop, wait): judge the rest of the quote
-  const rest = f.kind === 'pause' ? q.replace(SAY.paused, ' ').replace(SAY.stopped, ' ') : q;
-  if (!hasNegation || hasNegation(rest.toLowerCase(), { before: false })) return false;
-  if (f.kind === 'number' || f.kind === 'percent') return f.unit(value).test(q) && f.words.test(q);
-  if (f.kind === 'pause') return SAY[value].test(q);
-  if (f.kind === 'list') return value.length > 0 && value.every((item) => wholeWord(q, item));
-  return f.words.test(q) && wholeWord(q, value);
+  for (const clause of q.toLowerCase().split(/[.;!?]|,\s*(?:but|and|so|yet)\b|\bbut\b/)) {
+    const t = clause.match(/\d+(?:[.,]\d+)?%?|[\p{L}'-]+|%/gu) || [];
+    for (let i = 0; i < t.length; i++) {
+      if (t[i].replace(/%$/, '') !== String(value)) continue;
+      const before = t.slice(Math.max(0, i - 4), i);
+      let after = i + 1;
+      let unit;
+      if (f.kind === 'percent') {
+        unit = t[i].endsWith('%') || t[i + 1] === '%' || t[i + 1] === 'percent' || (t[i + 1] === 'per' && t[i + 2] === 'cent');
+        after += t[i].endsWith('%') ? 0 : (t[i + 1] === 'per' ? 2 : 1);
+      } else {
+        unit = f.unit.test(t[i + 1] || '') || before.some((w) => f.unit.test(w));
+        if (f.unit.test(t[i + 1] || '')) after += 1;
+      }
+      if (unit && (before.some((w) => f.words.test(w)) || f.words.test(t[after] || ''))) return true;
+    }
+  }
+  return false;
 }
+
+function isEnglish(q) {
+  const w = q.toLowerCase().match(/[\p{L}']+/gu) || [];
+  return !w.some((x) => FOREIGN.has(x)) && w.some((x) => ENGLISH.has(x));
+}
+
+// null when the owner's quote states the value; else the reason, with language: true when only the
+// language check failed (the typed judge may then confirm it). A negation or a conditional refuses it.
+function quoteProblem(field, value, quote) {
+  const q = String(quote || '').normalize('NFKC');
+  if (!q.trim()) return { why: 'there is no quote' };
+  const f = FIELDS[field];
+  let hasNegation = null;
+  try { ({ hasNegation } = require('./operator-records.js')); } catch (err) { hasNegation = null; }
+  // the rule reads English only: another language needs the typed judge's confirmation instead
+  if (!isEnglish(q)) return { why: 'the owner\'s words are not in English; the typed judge must confirm them', language: true };
+  if (CONDITIONAL.test(q)) return { why: 'the owner\'s words are conditional, not a decision to change it now' };
+  // the pause and removal words are themselves in the negation lexicon (stop, no longer): judge the rest
+  const rest = q.replace(SAY.paused, ' ').replace(SAY.stopped, ' ').replace(f.op === 'remove' ? SCOPE_REMOVE : /$^/, ' ');
+  if (!hasNegation || hasNegation(rest.toLowerCase(), { before: false })) return { why: 'the owner\'s words carry a negation' };
+  let ok;
+  if (f.kind === 'number' || f.kind === 'percent') ok = figureTied(field, value, q);
+  else if (f.kind === 'pause') ok = SAY[value].test(q) && !(value === 'off' && LATER.test(q));
+  else if (f.kind === 'list') ok = value.length > 0 && value.every((item) => wholeWord(q, item)) && (f.op === 'add' ? SCOPE_ADD.test(q) && !SCOPE_REMOVE.test(q) : SCOPE_REMOVE.test(q));
+  else ok = f.words.test(q) && wholeWord(q, value);
+  if (!ok) return { why: `the owner's words do not state ${field} = ${shown(value)}` };
+  return null;
+}
+const covers = (field, value, quote) => !quoteProblem(field, value, quote);
 
 // The structured decision the record carries: a scope label goal:<field>=<value>.
 const GOAL_LABEL = /^goal:([a-z_.]+)=(.*)$/s;
@@ -109,7 +157,8 @@ function recordedGoal(rec) {
 
 // null when the record is an owner decision made for this change (its goal label names this field and
 // value), it verifies, is neither revoked nor superseded, and its quote states the value; else the reason.
-function recordProblem(root, field, value, record, verifyRecord) {
+// judge: the typed judge's goal_instruction answer kept with the entry ({ p, model }) or null.
+function recordProblem(root, field, value, record, verifyRecord, judge) {
   if (!/^dec-/.test(String(record || ''))) return 'it needs an owner decision record (dec-...)';
   let v;
   try { v = (verifyRecord || require('./operator-records.js').verifyRecord)(root, record); } catch (err) { v = null; }
@@ -120,8 +169,15 @@ function recordProblem(root, field, value, record, verifyRecord) {
   const g = recordedGoal(head);
   const want = parseValue(field, g && g.raw);
   if (!g || g.field !== field || want.error || !same(want.value, value)) return `${record} was not recorded for ${field} = ${shown(value)} (operator.js record --goal ${field}=<value>)`;
-  if (!covers(field, value, head.quote)) return `the owner's words in ${record} do not state ${field} = ${shown(value)}`;
+  const qp = quoteProblem(field, value, head.quote);
+  const confirmed = judge && typeof judge.p === 'number' && judge.p >= JUDGE_MIN;
+  if (qp && !(qp.language && confirmed)) return `${record}: ${qp.why}`;
+  if (judge && !confirmed) return `the typed judge does not read the owner's words in ${record} as this instruction (p ${Number(judge.p).toFixed(2)})`;
   return null;
+}
+// the quote of a record, for the CLI to ask the judge before set
+function recordQuote(root, record, verifyRecord) {
+  try { const v = (verifyRecord || require('./operator-records.js').verifyRecord)(root, record); return v && v.ok ? ((v.chain || [])[0] || {}).quote || null : null; } catch (err) { return null; }
 }
 const shown = (v) => (Array.isArray(v) ? v.join(', ') : String(v));
 
@@ -129,17 +185,29 @@ const shown = (v) => (Array.isArray(v) ? v.join(', ') : String(v));
 // andon:<ev-row-id>. The row must be a fail, written by the Delivery Manager or a Reality Checker, in an
 // evidence chain that is intact (and, when the bead is at hand, matches the head recorded in it); it
 // closes when a pass row for the same criterion follows. A hand-written file is not an andon.
-function andonState(root, rowId, { bead } = {}) {
+// At pause time (atPause) the file must match the head recorded in the bead exactly. At read time,
+// with the bead at hand, only the rows up to its recorded head count: a pass appended by hand does not
+// lift the andon, and an edited chain keeps it open. Without the bead, the chain alone is checked.
+function andonState(root, rowId, { bead, atPause } = {}) {
   const m = /^ev-(.+)-(\d+)$/.exec(String(rowId || ''));
   if (!m) return { open: false, why: `andon:${rowId} is not an evidence row id (ev-<bead>-<n>)` };
   const G = require('./gates.js');
   const ev = G.readEvidenceChecked(root, m[1]);
-  const problem = bead ? G.headProblem(ev, bead) : ev.problem;
-  if (problem) return { open: false, why: `the evidence of ${m[1]} does not verify: ${problem}` };
-  const row = ev.rows.find((r) => r.id === rowId);
+  let rows = ev.rows;
+  if (atPause || !bead) {
+    const problem = bead ? G.headProblem(ev, bead) : ev.problem;
+    if (problem) return { open: false, why: `the evidence of ${m[1]} does not verify: ${problem}` };
+  } else {
+    const want = bead.metadata && bead.metadata.evidence_head;
+    const n = want ? want.seq : 0;
+    const hashAt = n === ev.rows.length ? ev.head && ev.head.hash : (ev.rows[n] && ev.rows[n].prev);
+    if (!want || !Number.isInteger(n) || hashAt !== want.hash) return { open: true, bead: m[1], held: 'the evidence no longer matches its recorded head' };
+    rows = ev.rows.slice(0, n);
+  }
+  const row = rows.find((r) => r.id === rowId);
   if (!row || row.type !== 'row' || row.result !== 'fail') return { open: false, why: `${rowId} is not a failed check row` };
   if (!EVIDENCE_WRITERS.includes(row.by)) return { open: false, why: `${rowId} was not recorded by the Delivery Manager or a Reality Checker` };
-  if (ev.rows.some((r) => r.seq > row.seq && r.type === 'row' && r.criterion === row.criterion && r.result === 'pass' && EVIDENCE_WRITERS.includes(r.by))) return { open: false, why: `${rowId} was followed by a pass` };
+  if (rows.some((r) => r.seq > row.seq && r.type === 'row' && r.criterion === row.criterion && r.result === 'pass' && EVIDENCE_WRITERS.includes(r.by))) return { open: false, why: `${rowId} was followed by a pass` };
   return { open: true, bead: m[1] };
 }
 
@@ -149,32 +217,38 @@ function triggerState(root, trigger, opts = {}) {
   if (m && m[1] === 'ci') return { open: false, why: 'the red-CI trigger is not readable yet' };
   return { open: false, why: `unknown trigger ${trigger}; use andon:<failed evidence row id>` };
 }
+const beadOfTrigger = (trigger) => { const m = /^andon:ev-(.+)-\d+$/.exec(String(trigger || '')); return m ? m[1] : null; };
 
-function commit(root, key, entry) {
+function commit(root, key, entry, { append = false } = {}) {
   return withLock(path.join(root, '.delivery', '.goal.lock'), () => {
     const g = read(root);
-    g.fields[key] = entry;
+    if (append) g.fields[key] = [...(Array.isArray(g.fields[key]) ? g.fields[key] : []), entry];
+    else g.fields[key] = entry;
     g.history.push({ field: key, ...entry });
     write(root, g);
     return entry;
   }, { strict: true });
 }
 
-// { ok, entry } or { ok: false, error }. who: { root, roleId, instance }.
-function set({ root, who, field, value: raw, record, verifyRecord, now }) {
+// { ok, entry } or { ok: false, error }. who: { root, roleId, instance }. judged: the typed judge's
+// goal_instruction answer ({ p, model }) when the judge is on, else undefined: then the rule alone decides.
+function set({ root, who, field, value: raw, record, verifyRecord, judged, now }) {
   if (!FIELDS[field]) return { ok: false, error: `unknown field ${field}; fields: ${Object.keys(FIELDS).join(', ')}` };
   if (!who || !writersOf(field).includes(who.roleId)) return { ok: false, error: `${field} is recorded by the ${writersOf(field).length > 1 ? 'Chief of Staff or Product Manager' : 'Chief of Staff'}`, notWriter: true };
   const p = parseValue(field, raw);
   if (p.error) return { ok: false, error: p.error };
-  const why = recordProblem(root, field, p.value, record, verifyRecord);
+  const judge = judged && typeof judged.p === 'number' ? { p: judged.p, model: judged.model || null } : null;
+  const why = recordProblem(root, field, p.value, record, verifyRecord, judge);
   if (why) return { ok: false, error: why };
-  return { ok: true, entry: commit(root, field, { value: p.value, record, by: who.instance, at: now || new Date().toISOString() }) };
+  const entry = { value: p.value, record, by: who.instance, at: now || new Date().toISOString(), ...(judge ? { judge } : {}) };
+  if (FIELDS[field].op) return { ok: true, entry: commit(root, 'scope_log', { op: FIELDS[field].op, ...entry }, { append: true }) };
+  return { ok: true, entry: commit(root, field, entry) };
 }
 
 // A trigger pause is kept apart from the owner's pause: closing the andon never lifts an owner pause.
 function pauseOnTrigger({ root, who, trigger, bead, now }) {
   if (!who || !TRIGGER_WRITERS.includes(who.roleId)) return { ok: false, error: 'a trigger pause is recorded by the Delivery Manager or Chief of Staff', notWriter: true };
-  const t = triggerState(root, trigger, { bead });
+  const t = triggerState(root, trigger, { bead, atPause: true });
   if (!t.open) return { ok: false, error: t.why };
   return { ok: true, entry: commit(root, 'pause_trigger', { value: 'paused', trigger, by: who.instance, at: now || new Date().toISOString() }) };
 }
@@ -185,12 +259,30 @@ function warnUnverified(root, field, why) {
   try { require('./warnings.js').record(root, { kind: 'goal-unverified', rule: 'R-42', detail: `${field} is ignored: ${why}` }); } catch (err) { /* best effort */ }
 }
 
+// The scope: the adds and removes whose records still hold, in order.
+function resolveScope(root, { g, verifyRecord, warn }) {
+  const log = Array.isArray(g.fields.scope_log) ? g.fields.scope_log : [];
+  const items = [];
+  const ignored = [];
+  for (const e of log) {
+    const field = e.op === 'remove' ? 'scope_remove' : 'scope_add';
+    const why = e.record ? recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null) : 'no owner record';
+    if (why) { ignored.push(why); if (warn) warnUnverified(root, field, why); continue; }
+    for (const it of e.value || []) {
+      const at = items.findIndex((x) => x.toLowerCase() === String(it).toLowerCase());
+      if (e.op === 'remove') { if (at >= 0) items.splice(at, 1); } else if (at < 0) items.push(it);
+    }
+  }
+  return { value: log.length ? items : null, from: log.length ? 'scope changes' : 'default', ...(ignored.length ? { ignored: ignored.join('; ') } : {}) };
+}
+
 // { value, from, ignored? } — the owner-set value only while its record holds; else the default or null.
 function resolve(root, field, { g = read(root), verifyRecord, warn = true } = {}) {
+  if (field === 'scope') return resolveScope(root, { g, verifyRecord, warn });
   const e = g.fields[field];
   const fallback = FIELDS[field] && FIELDS[field].default !== undefined ? FIELDS[field].default : null;
   if (!e || e.value === undefined) return { value: fallback, from: 'default' };
-  const why = e.record ? recordProblem(root, field, e.value, e.record, verifyRecord) : 'no owner record';
+  const why = e.record ? recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null) : 'no owner record';
   if (!why) return { value: e.value, from: e.record };
   if (warn) warnUnverified(root, field, why);
   return { value: fallback, from: 'default', ignored: why };
@@ -198,25 +290,29 @@ function resolve(root, field, { g = read(root), verifyRecord, warn = true } = {}
 const value = (root, field, opts = {}) => resolve(root, field, opts).value;
 
 // { paused, by } — an owner pause while its record holds, or a trigger pause while its andon is open.
-function activePause(root, { verifyRecord, g = read(root), warn = true } = {}) {
+// beadOf(id) gives the bead (from bd) so the andon is read against its recorded evidence head.
+function activePause(root, { verifyRecord, g = read(root), warn = true, beadOf } = {}) {
   const owner = resolve(root, 'pause', { g, verifyRecord, warn });
   if (['paused', 'stopped'].includes(owner.value)) return { paused: true, by: owner.from };
   const t = g.fields.pause_trigger;
-  if (t && t.trigger && triggerState(root, t.trigger).open) return { paused: true, by: t.trigger };
+  let bead = null;
+  if (t && beadOf) { try { bead = beadOf(beadOfTrigger(t.trigger)); } catch (err) { bead = null; } }
+  if (t && t.trigger && triggerState(root, t.trigger, { bead }).open) return { paused: true, by: t.trigger };
   return { paused: false, ...(owner.ignored ? { lapsed: owner.ignored } : {}), ...(t && t.trigger ? { lapsed: `${t.trigger} closed` } : {}) };
 }
 
+const SHOWN = [...Object.keys(FIELDS).filter((f) => !FIELDS[f].op), 'scope'];
 function showLines(root, opts = {}) {
   const g = read(root);
   const lines = [];
-  for (const field of Object.keys(FIELDS)) {
+  for (const field of SHOWN) {
     const r = resolve(root, field, { ...opts, g });
-    const e = g.fields[field];
+    const e = field === 'scope' ? null : g.fields[field];
     let s;
-    if (r.ignored) s = `${r.value === null ? 'not set' : `${shown(r.value)} (default)`}; the written value is ignored: ${r.ignored}`;
+    if (r.ignored) s = `${r.value === null ? 'not set' : `${shown(r.value)}${field === 'scope' ? '' : ' (default)'}`}; the written value is ignored: ${r.ignored}`;
     else if (e) s = `${shown(r.value)} (${r.from}, ${e.at})`;
     else if (r.value === null) s = field.startsWith('budget.') ? 'not set by the owner (budget checks only warn)' : 'not set';
-    else s = `${shown(r.value)} (default)`;
+    else s = `${shown(r.value)} (${r.from === 'default' ? 'default' : r.from})`;
     lines.push(`${field}: ${s}`);
   }
   const p = activePause(root, { ...opts, g, warn: false });
@@ -224,4 +320,4 @@ function showLines(root, opts = {}) {
   return lines;
 }
 
-module.exports = { FIELDS, GOAL_REL, read, set, pauseOnTrigger, value, resolve, activePause, covers, showLines, triggerState, recordedGoal, writersOf, TRIGGER_WRITERS };
+module.exports = { FIELDS, GOAL_REL, read, set, pauseOnTrigger, value, resolve, activePause, covers, quoteProblem, showLines, triggerState, recordedGoal, recordQuote, writersOf, TRIGGER_WRITERS, JUDGE_MIN };

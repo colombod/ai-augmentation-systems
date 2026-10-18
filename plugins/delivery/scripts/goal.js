@@ -24,7 +24,9 @@ function parse(argv) {
   return out;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, verifyRecord, bd } = {}) {
+// judged: the typed judge's goal_instruction answer for a set ({ p, model }), asked by the CLI when the
+// judge is on (see judgeFor); undefined means the judge is off and the rule alone decides.
+function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, verifyRecord, bd, judged } = {}) {
   const a = parse(argv);
   const who = given || whoAmI({ cwd, env, project: a.project });
   if (!who.root) return { code: 2, out: 'goal.js: no project found; pass --project <root>' };
@@ -32,16 +34,16 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, v
   if (cmd === 'show') {
     if (a.json) {
       const g = Goal.read(who.root);
-      const values = Object.fromEntries(Object.keys(Goal.FIELDS).map((f) => [f, Goal.value(who.root, f, g)]));
-      return { code: 0, out: JSON.stringify({ values, fields: g.fields, pause: Goal.activePause(who.root, { verifyRecord }) }, null, 2) };
+      const values = Object.fromEntries([...Object.keys(Goal.FIELDS).filter((f) => !Goal.FIELDS[f].op), 'scope'].map((f) => [f, Goal.value(who.root, f, { g, verifyRecord, warn: false })]));
+      return { code: 0, out: JSON.stringify({ values, fields: g.fields, pause: Goal.activePause(who.root, { verifyRecord, beadOf: beadReader(who, bd) }) }, null, 2) };
     }
-    return { code: 0, out: Goal.showLines(who.root, { verifyRecord }).join('\n') };
+    return { code: 0, out: Goal.showLines(who.root, { verifyRecord, beadOf: beadReader(who, bd) }).join('\n') };
   }
   if (cmd === 'set' && field && value !== undefined) {
     const fix = `\`operator.js record --cite <in-id> --quote '<the owner's words>' --statement '<...>' --goal ${field}=${value}\`, then \`goal.js set ${field} ${value} --record <dec-id>\``;
     if (!Goal.writersOf(field).includes(who.roleId)) return { code: 1, out: `goal.js: ${field} changes only on the owner's word, recorded by the Chief of Staff.\nMessage the Chief of Staff.` };
     if (!a.record) return { code: 1, out: `goal.js: ${field} changes only on the owner's word.\nRecord it for this change: ${fix}` };
-    const r = Goal.set({ root: who.root, who, field, value, record: a.record, verifyRecord, now });
+    const r = Goal.set({ root: who.root, who, field, value, record: a.record, verifyRecord, judged, now });
     if (!r.ok) return { code: 1, out: `goal.js: refused: ${r.error}.\nAsk the owner in your next briefing; record it for this change: ${fix}` };
     return { code: 0, out: `${field} = ${Array.isArray(r.entry.value) ? r.entry.value.join(', ') : r.entry.value} under ${a.record}` };
   }
@@ -58,11 +60,33 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, v
   return { code: 2, out: USAGE };
 }
 
-if (require.main === module) {
-  let r;
-  try { r = main(process.argv.slice(2)); } catch (err) { r = { code: 2, out: `goal.js: ${err.message}\n${USAGE}` }; }
-  (r.code ? process.stderr : process.stdout).write(`${r.out}\n`);
-  process.exitCode = r.code;
+function beadReader(who, bd) {
+  return (id) => (bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 })).show(id);
 }
 
-module.exports = { main };
+// The second key (two-key rule): with the typed judge on, ask goal_instruction about the record's quote.
+// Off, refused or failed: undefined when the judge is off (the rule alone decides); a failed call counts
+// as p 0, so a change never passes on a judge that did not answer.
+async function judgeFor(argv, { cwd = process.cwd(), env = process.env } = {}) {
+  const a = parse(argv);
+  const [cmd, field, value] = a._;
+  if (cmd !== 'set' || !a.record) return undefined;
+  const who = whoAmI({ cwd, env, project: a.project });
+  const judge = require('./lib/judge.js');
+  const cfg = judge.judgeConfig(who.team, env);
+  if (!cfg.enabled) return undefined;
+  const quote = Goal.recordQuote(who.root, a.record);
+  const r = await judge.ask('goal_instruction', { quote: quote || '', field, value }, { config: cfg, env, projectRoot: who.root, gate: 'goal.js' });
+  return { p: typeof r.p === 'number' ? r.p : 0, model: r.model || null };
+}
+
+if (require.main === module) {
+  (async () => {
+    let r;
+    try { r = main(process.argv.slice(2), { judged: await judgeFor(process.argv.slice(2)) }); } catch (err) { r = { code: 2, out: `goal.js: ${err.message}\n${USAGE}` }; }
+    (r.code ? process.stderr : process.stdout).write(`${r.out}\n`);
+    process.exitCode = r.code;
+  })();
+}
+
+module.exports = { main, judgeFor };

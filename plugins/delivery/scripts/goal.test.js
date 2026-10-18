@@ -47,18 +47,18 @@ test('R-42 B1: unrelated or negated owner words never set a constraint, even on 
     ['ship the 5 fixes this week', 'budget.weekly_units', '5'],
     ['70 percent of the login tests failed this week', 'budget.lean_at', '70'],
     ['wait 600 ms before retrying', 'idle_minutes', '600'],
-    ["don't touch login", 'scope', 'login'],
+    ["don't touch login", 'scope_add', 'login'],
     ['builders may merge without review? no way, never allow it', 'approvals', 'builders may merge without review'],
     ['keep usage under 30.5% this week', 'budget.usage_envelope', '30'],
     ['keep the budget at 130% of last week', 'budget.usage_envelope', '30'],
-    ['we only build the bulk importer', 'scope', 'UI'],
+    ['we only build the bulk importer', 'scope_add', 'UI'],
   ];
   const { root, decide } = ownerSaid(cases.map((c) => c[0]));
   cases.forEach(([quote, field, v], i) => {
     const r = set(root, field, v, decide(i + 1, quote, `goal:${field}=${v}`));
     assert.equal(r.ok, false, `${quote} -> ${field}`);
   });
-  assert.equal(set(root, 'scope', ',', decide(11, 'we only build the bulk importer', 'goal:scope=,')).ok, false, 'an empty scope is refused');
+  assert.equal(set(root, 'scope_add', ',', decide(11, 'we only build the bulk importer', 'goal:scope_add=,')).ok, false, 'an empty scope is refused');
   assert.deepEqual(Goal.read(root).fields, {});
 });
 
@@ -70,7 +70,7 @@ test('R-42: one positive case per field, each on a record made for that field an
     ['call the team idle after 45 minutes', 'idle_minutes', '45'],
     ['keep each briefing to 8 lines', 'briefing_lines', '8'],
     ['pause everything until I am back', 'pause', 'paused'],
-    ['scope is the CSV import and the UI', 'scope', 'CSV import,UI'],
+    ['scope is the CSV import and the UI', 'scope_add', 'CSV import,UI'],
     ['approval: merges need an independent review', 'approvals', 'merges need an independent review'],
   ];
   const { root, decide } = ownerSaid([...cases.map((c) => c[0]), 'resume work now']);
@@ -102,11 +102,11 @@ test('R-42 I6: every field is re-checked when read: a revoked record or a hand-w
   assert.deepEqual(W.list(root).map((w) => w.kind), ['goal-unverified', 'goal-unverified']);
 });
 
-test('R-42: only the Chief of Staff records a constraint (the PM records scope only); a builder is told to message it', () => {
+test('R-42: only the Chief of Staff records a constraint (the PM records scope changes only); a builder is told to message it', () => {
   const { root, decide } = ownerSaid(['keep usage under 30% of the week for this goal', 'scope is the CSV import']);
   const id = decide(1, 'keep usage under 30% of the week for this goal', 'goal:budget.usage_envelope=30');
   for (const role of ['product-manager', 'delivery-lead', 'builder', null]) assert.equal(set(root, 'budget.usage_envelope', '30', id, role).ok, false, String(role));
-  assert.equal(set(root, 'scope', 'CSV import', decide(2, 'scope is the CSV import', 'goal:scope=CSV import'), 'product-manager').ok, true);
+  assert.equal(set(root, 'scope_add', 'CSV import', decide(2, 'scope is the CSV import', 'goal:scope_add=CSV import'), 'product-manager').ok, true);
   assert.match(goal.main(['set', 'budget.usage_envelope', '30', '--record', id], { who: who(root, 'builder') }).out, /\nMessage the Chief of Staff\.$/);
   assert.match(goal.main(['set', 'budget.usage_envelope', '30'], { who: who(root, 'chief-of-staff') }).out, /--goal budget\.usage_envelope=30/);
 });
@@ -176,4 +176,61 @@ test('R-42 lane: no role writes the goal sheet directly; sed -i from inside .del
   const script = path.join(PLUGIN_ROOT, 'scripts', 'goal.js');
   assert.equal(lane(cos, 'Bash', { command: `node ${script} set budget.usage_envelope 30 --record dec-chief-of-staff-7` }).allow, true);
   assert.equal(lane(cos, 'Bash', { command: `node ${script} show` }).allow, true);
+});
+
+test('R-42 re-review B1: resumes, conditionals, other languages, freeze and loose figures are refused', () => {
+  const cases = [
+    ['continue with the copy review tomorrow', 'pause', 'off'],
+    ['resume work tomorrow after the demo', 'pause', 'off'],
+    ['Stop work only if the build turns red.', 'pause', 'paused'],
+    ['Pause the team if the tests fail.', 'pause', 'paused'],
+    ["Ne mettez pas l'équipe en pause.", 'pause', 'paused'],
+    ['Bitte nicht pausieren, pause nein.', 'pause', 'paused'],
+    ['Pausa todo hasta el lunes.', 'pause', 'paused'],
+    ['Freeze the design for now.', 'pause', 'paused'],
+    ['the paused builds can be deleted', 'pause', 'paused'],
+    ['30% of the tests failed, but the budget is fine.', 'budget.usage_envelope', '30'],
+    ['5 units of the weekly budget went on tests.', 'budget.weekly_units', '5'],
+    ['call the team idle after 300 minutes', 'idle_minutes', '30'],
+    ['Remove login from scope.', 'scope_add', 'login'],
+    ['Add the export to scope when the import ships.', 'scope_add', 'export'],
+  ];
+  const { root, decide } = ownerSaid(cases.map((c) => c[0]));
+  cases.forEach(([quote, field, v], i) => {
+    assert.equal(set(root, field, v, decide(i + 1, quote, `goal:${field}=${v}`)).ok, false, `${quote} -> ${field}=${v}`);
+  });
+});
+
+test('R-42 re-review: scope changes are adds or removes; a removal can only remove', () => {
+  const words = ['scope is the CSV import and the login page', 'Remove login page from scope.', 'the team can continue now, resume work'];
+  const { root, decide } = ownerSaid(words);
+  assert.equal(set(root, 'scope_add', 'CSV import,login page', decide(1, words[0], 'goal:scope_add=CSV import,login page')).ok, true);
+  assert.equal(set(root, 'scope_remove', 'login page', decide(2, words[1], 'goal:scope_remove=login page')).ok, true);
+  assert.deepEqual(Goal.value(root, 'scope'), ['CSV import']);
+  assert.equal(set(root, 'scope_add', 'login page', decide(2, words[1], 'goal:scope_add=login page')).ok, false);
+  // the figures tied to their field, and a resume about the work
+  assert.equal(set(root, 'pause', 'off', decide(3, words[2], 'goal:pause=off')).ok, true);
+});
+
+test('R-42 re-review two keys: with the judge on, goal_instruction must also say yes (p >= 0.8); it can admit a non-English quote', () => {
+  const words = ['keep usage under 30% of the week for this goal', 'Pausa todo el trabajo hasta el lunes.'];
+  const { root, decide } = ownerSaid(words);
+  const id = decide(1, words[0], 'goal:budget.usage_envelope=30');
+  const judged = (p) => ({ p, model: 'jev-1.13.0' });
+  assert.match(Goal.set({ root, who: who(root, 'chief-of-staff'), field: 'budget.usage_envelope', value: '30', record: id, judged: judged(0.4) }).error, /typed judge/);
+  assert.equal(Goal.set({ root, who: who(root, 'chief-of-staff'), field: 'budget.usage_envelope', value: '30', record: id, judged: judged(0.9) }).ok, true);
+  const es = decide(2, words[1], 'goal:pause=paused');
+  assert.equal(Goal.set({ root, who: who(root, 'chief-of-staff'), field: 'pause', value: 'paused', record: es }).ok, false, 'judge off: not English, refused');
+  assert.equal(Goal.set({ root, who: who(root, 'chief-of-staff'), field: 'pause', value: 'paused', record: es, judged: judged(0.95) }).ok, true);
+  assert.equal(Goal.activePause(root).paused, true, 'the stored judge answer keeps it valid on read');
+});
+
+test('R-42 re-review andon: a builder\'s fail row is no andon; a pass appended by hand after the recorded head does not lift it', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-ev-'));
+  const byBuilder = beadWith(row(root, { result: 'fail', by: 'builder' }));
+  assert.equal(pause(root, 'delivery-lead', `andon:ev-${BEAD}-1`, byBuilder).code, 1);
+  const bead = beadWith(row(root, { result: 'fail', by: 'delivery-lead' }));
+  assert.equal(pause(root, 'delivery-lead', `andon:ev-${BEAD}-2`, bead).code, 0);
+  row(root, { result: 'pass', by: 'delivery-lead' }); // appended, but the bead's head was not moved
+  assert.equal(Goal.activePause(root, { beadOf: () => bead }).paused, true);
 });
