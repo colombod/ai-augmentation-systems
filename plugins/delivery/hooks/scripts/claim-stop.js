@@ -34,13 +34,9 @@ function idleCheckDue(roleDir) {
   return true;
 }
 
-// The harness kills a Stop hook at 15 s, and a killed hook loses the block it computed: every bd read
-// here takes its timeout from what is left before DEADLINE_MS, and the idle check is skipped when less
-// than IDLE_MIN_MS is left.
-const DEADLINE_MS = 12000;
-const IDLE_MIN_MS = 4000;
+// every bd read takes its timeout from turn.js stopBudget (12 s deadline; the idle check needs 4 s left)
 const T0 = Date.now();
-const left = () => DEADLINE_MS - (Date.now() - T0);
+const budget = () => require('./turn.js').stopBudget(Date.now() - T0);
 
 async function main() {
   const { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, JUDGE_REMINDER, MESSAGE_REMINDER } = require('./role-context.js');
@@ -104,17 +100,17 @@ async function main() {
     try {
       const { makeBd } = require('../../scripts/lib/bd.js');
       // composeStop limits repeats, so the claim check runs on a continuation too
-      const claim = decideStop({ input: { ...input, stop_hook_active: false }, roleDir: valid.roleDir, actor: actorOf(valid.marker), bd: makeBd({ ...bdOptionsFor(valid.marker, input.cwd), timeoutMs: Math.max(200, Math.min(4000, left() - 1000)) }) });
+      const claim = decideStop({ input: { ...input, stop_hook_active: false }, roleDir: valid.roleDir, actor: actorOf(valid.marker), bd: makeBd({ ...bdOptionsFor(valid.marker, input.cwd), timeoutMs: budget().claimMs }) });
       // a missing claim note is a reminder for the next prompt, not a block (A2)
       if (claim) { try { require('fs').writeFileSync(path.join(valid.roleDir, require('./role-context.js').CLAIM_REMINDER), `Reminder: ${claim.reason}`); } catch (e) { /* best effort */ } }
     } catch (err) { /* allow */ }
     // idle with ready work (R-43), for the two roles that start work: a warning and a reminder, never a
     // block. At most every 10 minutes per role (two bd reads), so the stop stays inside its timeout.
-    if (['chief-of-staff', 'delivery-lead'].includes(valid.role.id) && !valid.role.retired && !input.stop_hook_active && left() >= IDLE_MIN_MS && idleCheckDue(valid.roleDir)) {
+    if (['chief-of-staff', 'delivery-lead'].includes(valid.role.id) && !valid.role.retired && !input.stop_hook_active && budget().idle && idleCheckDue(valid.roleDir)) {
       try {
         const I = require('../../scripts/lib/idle.js');
         const { makeBd } = require('../../scripts/lib/bd.js');
-        const s = I.readIdle(valid.marker.project_root, { bd: makeBd({ ...bdOptionsFor(valid.marker, input.cwd), timeoutMs: Math.max(200, Math.min(3000, Math.floor((left() - 1000) / 2))) }) });
+        const s = I.readIdle(valid.marker.project_root, { bd: makeBd({ ...bdOptionsFor(valid.marker, input.cwd), timeoutMs: budget().idleMs }) });
         if (s.idle) {
           I.recordIdle(valid.marker.project_root, s, { instance: valid.marker.instance });
           const f = path.join(valid.roleDir, MESSAGE_REMINDER);

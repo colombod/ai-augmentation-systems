@@ -144,3 +144,13 @@ test('B1 property: random stop sequences never block more than twice per turn pe
   }
   assert.equal(maxBlocks, 2);
 });
+
+test('I1 re-review: the Stop budget: a 12 s deadline, the idle check only with 4 s left, bd reads inside it', () => {
+  const { stopBudget } = require('./turn.js');
+  assert.equal(stopBudget(0).idle, true);
+  assert.ok(stopBudget(0).claimMs <= 4000);
+  assert.equal(stopBudget(7900).idle, true);
+  assert.equal(stopBudget(8100).idle, false, 'under 4 s left of 12 s: no idle check');
+  assert.ok(stopBudget(8100).claimMs <= 2900);
+  assert.ok(stopBudget(7900).idleMs * 2 <= 12000 - 7900);
+});
