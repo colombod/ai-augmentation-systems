@@ -2,11 +2,11 @@
 // scripts/warnings.js — the warnings ledger (lib/warnings.js) at the command line.
 //   warnings.js list [--open] [--overdue] [--json] [--project <root>]
 //   warnings.js ack <w-id> --reason '<why it is resolved or accepted>' [--project <root>]
-// Only the Delivery Manager acknowledges: in a role session any other role is refused; outside a
-// role session (the owner at a terminal) the acknowledgement is recorded as the operator's.
+// Only the Delivery Manager acknowledges, from its role session (the role comes from the session
+// marker; without one the acknowledgement is refused).
 // Exit codes: 0 ok; 1 refused; 2 usage.
 const W = require('./lib/warnings.js');
-const { whoAmI } = require('./lib/gate-context.js');
+const { whoAmI, writerProblem } = require('./lib/gate-context.js');
 
 const USAGE = "usage: warnings.js list [--open] [--overdue] [--json] | warnings.js ack <w-id> --reason '<why>'";
 
@@ -24,9 +24,9 @@ function parse(argv) {
 
 const line = (w) => `${w.id}  ${w.at}  ${w.rule || '-'}  ${w.kind}  ${w.bead || '-'}  ${w.detail}${w.acked_by ? `  [acked by ${w.acked_by}: ${w.ack_reason}]` : ''}`;
 
-function main(argv, { cwd = process.cwd(), env = process.env, now } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, who: given } = {}) {
   const a = parse(argv);
-  const who = whoAmI({ cwd, env, project: a.project });
+  const who = given || whoAmI({ cwd, env, project: a.project });
   if (!who.root) return { code: 2, out: 'warnings.js: no project found; pass --project <root>' };
   const [cmd, id] = a._;
   if (cmd === 'list') {
@@ -39,8 +39,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, now } = {}) {
     return { code: 0, out: [`Warnings: ${s.open} open, ${s.acked} acknowledged; ${s.overdue.length} open over ${W.OVERDUE_HOURS} h. Open by kind: ${kinds}`, ...shown].join('\n') };
   }
   if (cmd === 'ack' && id) {
-    if (env.DELIVERY_ROLE && who.roleId !== 'delivery-lead') return { code: 1, out: `warnings.js: only the Delivery Manager acknowledges warnings (this session is ${who.roleId || env.DELIVERY_ROLE}); message the Delivery Manager with the warning id.` };
-    const r = W.ack(who.root, { id, reason: a.reason, by: who.instance || 'operator', instance: who.instance || 'operator', now });
+    const wp = writerProblem(who);
+    if (wp) return { code: 1, out: `warnings.js: ${wp}` };
+    const r = W.ack(who.root, { id, reason: a.reason, by: who.instance, instance: who.instance, now });
     return r.ok ? { code: 0, out: `acknowledged ${id}` } : { code: 1, out: `warnings.js: ${r.error}` };
   }
   return { code: 2, out: USAGE };
