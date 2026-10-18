@@ -55,7 +55,8 @@ function gateStatus(projectRoot, team, { now, storyBeads } = {}) {
   const out = { warnings: W.summary(W.list(projectRoot), now), states: null, notes: [] };
   try {
     const beads = storyBeads ? storyBeads() : require('./lib/bd.js').makeBd({ cwd: projectRoot }).list({ label: 'story', all: true });
-    out.states = G.stateCounts(beads.filter((b) => b.status !== 'closed' || G.stateOf(b) === 'verified'), maxUnverified(team));
+    // closed is not verified: a story counts by its state labels, open or closed
+    out.states = G.stateCounts(beads, maxUnverified(team));
   } catch (err) { out.notes.push(`story states unavailable: ${String(err.message).split('\n')[0]}`); }
   return out;
 }
@@ -142,7 +143,7 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gat
     lines.push(`Warnings open: ${gates.warnings.open}${kinds ? ` (${kinds})` : ''}; acknowledged: ${gates.warnings.acked}`);
     if (gates.states) {
       lines.push(`Stories: merged ${gates.states.merged}, deployed ${gates.states.deployed}, verified ${gates.states.verified} (merged and deployed are not verified)`);
-      for (const o of gates.states.overCap) lines.push(`Warning: area ${o.area} has ${o.count} merged-but-unverified stories (cap ${o.cap}): ${o.ids.join(', ')}; new work there is refused until they are verified`);
+      for (const o of gates.states.overCap) lines.push(`Warning: area ${o.area} has ${o.count} merged-but-unverified stories (cap ${o.cap}): ${o.ids.join(', ')}; verify them before new work there`);
     }
     for (const n of gates.notes) lines.push(`Note: ${n}`);
     lines.push('');

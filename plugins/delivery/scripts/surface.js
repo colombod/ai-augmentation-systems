@@ -10,7 +10,7 @@ const USAGE = 'usage: surface.js check|show <initiative> [--project <root>]';
 function main(argv, { cwd = process.cwd(), env = process.env } = {}) {
   const i = argv.indexOf('--project');
   const project = i >= 0 ? argv[i + 1] : undefined;
-  const [cmd, slug] = argv.filter((x, k) => k !== i && k !== i + 1);
+  const [cmd, slug] = i >= 0 ? argv.filter((x, k) => k !== i && k !== i + 1) : argv;
   if (!['check', 'show'].includes(cmd) || !/^[a-z0-9][a-z0-9-]*$/.test(String(slug || ''))) return { code: 2, out: USAGE };
   const who = whoAmI({ cwd, env, project });
   if (!who.root) return { code: 2, out: 'surface.js: no project found; pass --project <root>' };
