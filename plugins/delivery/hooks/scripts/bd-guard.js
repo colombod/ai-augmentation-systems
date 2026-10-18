@@ -88,6 +88,14 @@ function structural(p, actor, bd) {
   return false;
 }
 
+// A write of a state label or a gate field, which only the gate scripts set.
+const GATE_FIELDS = /\b(ready_hash|ready_at|deployed_sha|deployed_at|merged_pr)\b/;
+function gateFieldWrite(p) {
+  const labels = [...LABEL_FLAGS.map((f) => p.flags.get(f)), ...(['label add', 'label remove', 'tag'].includes(p.sub) ? p.ids.slice(1) : [])];
+  if (labels.some((v) => typeof v === 'string' && /(^|,)\s*state-/.test(v))) return true;
+  return p.sub === 'update' && ['--metadata', '--set-metadata', '--unset-metadata'].some((f) => typeof p.flags.get(f) === 'string' && GATE_FIELDS.test(p.flags.get(f)));
+}
+
 function decideBd({ command, actor, roleId, staleHours, bd, now }) {
   for (const seg of splitCommand(command)) {
     const p = parseBd(seg);
@@ -95,11 +103,10 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
     if (roleId !== 'delivery-lead' && structural(p, actor, bd)) {
       return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: ${STRUCTURE}` };
     }
+    if (roleId !== 'delivery-lead' && gateFieldWrite(p)) {
+      return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: the states (state-merged, state-deployed, state-verified) and the gate fields (ready_hash, deployed_sha) are set by ready.js and evidence.js, run by the Delivery Manager. Message the Delivery Manager.` };
+    }
     if (CLOSING.has(p.sub)) {
-      const reason = p.flags.get('--reason') || p.flags.get('-r');
-      if (typeof reason !== 'string' || !reason.startsWith('EVIDENCE:')) {
-        return { reason: `Close with evidence: bd ${p.sub} ${p.id || '<id>'} --reason "EVIDENCE: what shipped, how it was checked, link". A bead closes only when every criterion has proof.` };
-      }
       for (const id of p.ids) {
         const bead = lookup(bd, id);
         const age = liveOther(bead, actor, staleHours, now);
@@ -132,4 +139,70 @@ function staleHoursOf(team) {
   return v ?? 2;
 }
 
-module.exports = { parseBd, decideBd, staleHoursOf };
+// ---- the ready and done gates (R-10, R-11, R-12) ----
+// Async because the typed judge may be asked (advisory, warn-only). Returns { deny, warnings }:
+// deny only on a divergence (D1, D2, D3, D5); every other finding is a warning the hook records.
+// Any read that fails leaves the command allowed (fail open), like the rest of this guard.
+const CLAIMING = (p) => p.sub === 'update' && p.ids.length > 0 && (p.flags.has('--claim') || p.flags.get('--status') === 'in_progress' || p.flags.get('-s') === 'in_progress');
+
+function describeFinding(f) { return `${f.rule}: ${f.detail}`; }
+
+async function gateChecks({ command, roleId, bd, root, team, ask }) {
+  const G = require('../../scripts/lib/gates.js');
+  const { gateInputs, maxUnverified } = require('../../scripts/lib/gate-context.js');
+  const out = { deny: null, warnings: [] };
+  if (!root) return out;
+  const add = (bead, f) => out.warnings.push({ kind: f.code, rule: f.rule, bead, detail: f.detail });
+  for (const seg of splitCommand(command)) {
+    const p = parseBd(seg);
+    if (!p) continue;
+    const claiming = CLAIMING(p);
+    if (!claiming && p.sub !== 'close') continue;
+    for (const id of p.ids) {
+      const bead = lookup(bd, id);
+      if (!bead) continue;
+      const isStory = (bead.labels || []).includes('story');
+      let inp;
+      try { inp = gateInputs(root, bead, { bd, team }); } catch (err) { continue; }
+      if (claiming) {
+        const findings = [];
+        if (isStory && inp.story) {
+          let judged = null;
+          if (ask) { try { judged = await ask('shippable_unit', G.shippableState(inp.story, inp.surface)); } catch (err) { judged = null; } }
+          findings.push(...G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead, judged }));
+        }
+        let overCap = null;
+        if (isStory) { try { overCap = G.unverifiedOver(bd.list({ label: 'story' }), bead, maxUnverified(team)); } catch (err) { overCap = null; } }
+        findings.push(...G.claimDivergence({ story: isStory ? inp.story : null, bead, parent: inp.parent, parentStory: inp.parentStory, overCap }));
+        const blocks = findings.filter((f) => f.level === 'block');
+        for (const f of findings.filter((x) => x.level === 'warn')) add(id, f);
+        if (blocks.length) {
+          out.deny = `Claim of ${id} refused: it opens a divergence from what was agreed. ${blocks.map(describeFinding).join(' ')} The Delivery Manager resolves it (an owner record, a fixed story, or verifying the area first).`;
+          return out;
+        }
+        continue;
+      }
+      // close
+      const reason = p.flags.get('--reason') || p.flags.get('-r');
+      if (!isStory || !inp.story || !inp.story.criteria.length) {
+        if (isStory) add(id, { code: 'close-no-criteria', rule: 'R-11', detail: 'closed with no acceptance criteria to check: the done gate could not run (migration path)' });
+        else if (typeof reason !== 'string' || !reason.trim()) add(id, { code: 'close-no-reason', rule: 'R-11', detail: 'closed with no --reason: say what it answered or shipped and where the proof is' });
+        continue;
+      }
+      const done = G.doneCheck({ story: inp.story, bead, rows: inp.rows, surface: inp.surface, instances: inp.instances });
+      if (!done.ok) {
+        const missing = done.criteria.filter((c) => !c.row && !c.waiver).map((c) => `criterion ${c.n}: ${c.why}`).join('; ');
+        out.deny = `Close of ${id} refused (D3): every agreed criterion needs a pass row on ${inp.surface ? inp.surface.id : 'the declared surface'}, on the deployed sha, recorded by a role other than the author. Missing: ${missing}. The Delivery Manager (or the reality check) records rows with evidence.js add ${id} --criterion <n> --result pass --surface <id> --sha <deployed sha>.`;
+        return out;
+      }
+      if (ask && typeof reason === 'string' && reason.trim()) {
+        let j = null;
+        try { j = await ask('divergence', { agreed_criteria: inp.story.criteria.map((c) => `${c.n}. ${c.text}`).join('\n'), customer_surface: inp.surface ? `${inp.surface.app}, ${inp.surface.mode}` : 'not declared', change_summary: reason }); } catch (err) { j = null; }
+        if (j && j.answer === 'serious') add(id, { code: 'divergence-judge', rule: 'D1-D5', detail: `the typed judge rates this change a serious divergence (confidence ${Number(j.confidence).toFixed(2)}); warn-only until re-measured` });
+      }
+    }
+  }
+  return out;
+}
+
+module.exports = { parseBd, decideBd, staleHoursOf, gateChecks };

@@ -1,7 +1,7 @@
 // hooks/scripts/bd-guard.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseBd, decideBd } = require('./bd-guard.js');
+const { parseBd, decideBd, gateChecks } = require('./bd-guard.js');
 
 const NOW = '2026-10-12T12:00:00Z';
 const fakeBd = (beads) => ({ show: (id) => beads[id] || null });
@@ -28,14 +28,11 @@ test('parseBd handles two-word subcommands, equals form, short flags and leading
   assert.equal(parseBd('env bd close ex-1'), null);
 });
 
-test('close requires an EVIDENCE reason', () => {
+test('close: the reason text alone neither passes nor fails a close (the prefix check is gone; the done gate reads evidence rows)', () => {
   const bd = fakeBd({});
-  assert.match(decideBd({ command: 'bd close ex-1 --reason "done"', actor: 'a', staleHours: 2, bd, now: NOW }).reason, /EVIDENCE:/);
-  assert.match(decideBd({ command: 'bd close ex-1', actor: 'a', staleHours: 2, bd, now: NOW }).reason, /EVIDENCE:/);
-  assert.equal(decideBd({ command: 'bd close ex-1 --reason "EVIDENCE: shipped in PR 3"', actor: 'a', staleHours: 2, bd, now: NOW }), null);
-  assert.equal(decideBd({ command: 'bd close ex-1 --reason="EVIDENCE: shipped"', actor: 'a', staleHours: 2, bd, now: NOW }), null);
-  assert.equal(decideBd({ command: 'bd close ex-1 -r "EVIDENCE: shipped"', actor: 'a', staleHours: 2, bd, now: NOW }), null);
-  assert.match(decideBd({ command: 'echo hi && bd close ex-1 --reason "evidence: x"', actor: 'a', staleHours: 2, bd, now: NOW }).reason, /EVIDENCE:/);
+  for (const command of ['bd close ex-1 --reason "done"', 'bd close ex-1', 'bd close ex-1 --reason "EVIDENCE: shipped in PR 3"', 'echo hi && bd close ex-1 -r "evidence: x"']) {
+    assert.equal(decideBd({ command, actor: 'a', staleHours: 2, bd, now: NOW }), null, command);
+  }
 });
 
 test('claim on a live holder is refused, stale or own claims pass', () => {
@@ -90,12 +87,12 @@ test('A: bd-guard hook judges Monitor and PowerShell commands like Bash, and is 
   const { roleDir } = preparedRole('builder-1');
   const env = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
   for (const tool of ['Bash', 'Monitor', 'PowerShell']) {
-    const out = runHook('bd-guard-hook.js', { cwd: roleDir, session_id: 's', tool_name: tool, tool_input: { command: 'bd close x --reason done' } }, env);
+    const out = runHook('bd-guard-hook.js', { cwd: roleDir, session_id: 's', tool_name: tool, tool_input: { command: 'bd dep add x y' } }, env);
     const json = JSON.parse(out);
     assert.equal(json.hookSpecificOutput.permissionDecision, 'deny', tool);
-    assert.match(json.hookSpecificOutput.permissionDecisionReason, /EVIDENCE:/);
+    assert.match(json.hookSpecificOutput.permissionDecisionReason, /structure belongs to the Delivery Manager/);
   }
-  assert.equal(runHook('bd-guard-hook.js', { cwd: roleDir, session_id: 's', tool_name: 'Monitor', tool_input: { command: 'bd close x --reason done' } }, { DELIVERY_ROLE: 'other' }), '');
+  assert.equal(runHook('bd-guard-hook.js', { cwd: roleDir, session_id: 's', tool_name: 'Monitor', tool_input: { command: 'bd dep add x y' } }, { DELIVERY_ROLE: 'other' }), '');
 });
 
 // Final wave C: hooks run bd from the project root with BEADS_DIR defaulted, so bd is reachable
@@ -230,8 +227,7 @@ test('F1: link, rename, set-state, mol and the write forms of epic and swarm are
 test('F1: duplicate and supersede follow the close rules for the Delivery Manager', () => {
   const bd = fakeBd({ theirs: { id: 'theirs', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: NOW }, old: { id: 'old', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: '2026-10-12T05:00:00Z' } });
   const run = (command) => decideBd({ command, actor: 'lead@pc/delivery-lead', roleId: 'delivery-lead', staleHours: 2, bd, now: NOW });
-  assert.match(run('bd duplicate theirs --of ex-2').reason, /Close with evidence/);
-  assert.match(run('bd supersede theirs --with ex-2').reason, /Close with evidence/);
+  assert.equal(run('bd duplicate old --of ex-2'), null);
   assert.match(run('bd duplicate theirs --of ex-2 --reason "EVIDENCE: same scope"').reason, /claimed by bob@pc\/builder-2 and live/);
   assert.match(run('bd supersede theirs --with ex-2 --reason "EVIDENCE: replaced"').reason, /live/);
   assert.equal(run('bd duplicate old --of ex-2 --reason "EVIDENCE: same scope as ex-2"'), null);
@@ -298,7 +294,8 @@ test('H.2: bd global flags before the subcommand are skipped', () => {
     const p = parseBd(command);
     assert.equal(p.sub, 'close', command);
     assert.equal(p.id, 'ex-1', command);
-    assert.match(decideBd({ command, actor: 'a', roleId: 'builder', staleHours: 2, bd: fakeBd({}), now: NOW }).reason, /EVIDENCE:/, command);
+    const live = fakeBd({ 'ex-1': { id: 'ex-1', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: NOW } });
+    assert.match(decideBd({ command, actor: 'a', roleId: 'builder', staleHours: 2, bd: live, now: NOW }).reason, /live claim/, command);
   }
   assert.equal(parseBd('bd --json dep add ex-1 ex-2').sub, 'dep add');
 });
@@ -319,7 +316,7 @@ test('H.2: -a and -s count as claim changes; a live claim cannot be closed by so
   assert.match(run('bd close ex-9 ex-1 --reason "EVIDENCE: done"').reason, /a live claim cannot be released by someone else/);
   assert.equal(run('bd close ex-1 --reason "EVIDENCE: done"', 'bob@pc/builder-2'), null);
   assert.equal(run('bd close ex-2 --reason "EVIDENCE: done"'), null);
-  assert.match(run('bd close ex-1 --reason "done"').reason, /EVIDENCE:/);
+  assert.match(run('bd close ex-1 --reason "done"').reason, /live claim/);
 });
 
 test('D: the bd-guard hook passes the role, so a builder cannot add a dependency and the Delivery Manager can', () => {
@@ -344,12 +341,115 @@ test('H.4: staleHoursOf keeps a configured 0 and defaults to 2', () => {
   assert.equal(decideBd({ command: 'bd update ex-1 --claim', actor: 'me', roleId: 'builder', staleHours: staleHoursOf({ budget: { staleness_hours: 0 } }), bd: fakeBd(bead), now: NOW }), null);
 });
 
-test('final I1: the builder brief\'s spike close command passes the bd guard; a close without EVIDENCE does not', () => {
+test('final I1: the builder brief\'s spike close command passes the bd guard and its gate; a spike closed with no reason is a warning, not a block', async () => {
   const brief = fs.readFileSync(path.join(__dirname, '..', '..', 'roles', 'builder.md'), 'utf8');
-  const shape = /`(bd close <id> --reason "EVIDENCE: [^"`]*")`/.exec(brief);
+  const shape = /`(bd close <id> --reason "[^"`]*")`/.exec(brief);
   assert.ok(shape, 'the builder brief documents the spike close command');
   const command = shape[1].replace('<id>', 'ex-demo-spike-cache').replace(/<[^>]*>/g, 'Redis is not needed: Postgres LISTEN covers it');
-  const bd = fakeBd({ 'ex-demo-spike-cache': { id: 'ex-demo-spike-cache', status: 'in_progress', assignee: 'a', labels: ['spike'] } });
+  const bd = fakeBd({ 'ex-demo-spike-cache': { id: 'ex-demo-spike-cache', status: 'in_progress', assignee: 'a', labels: ['spike'], metadata: {} } });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-i1-'));
   assert.equal(decideBd({ command, actor: 'a', roleId: 'builder', staleHours: 2, bd, now: NOW }), null, command);
-  assert.match(decideBd({ command: 'bd close ex-demo-spike-cache --reason "answered"', actor: 'a', roleId: 'builder', staleHours: 2, bd, now: NOW }).reason, /EVIDENCE:/);
+  assert.deepEqual(await gateChecks({ command, roleId: 'builder', bd, root }), { deny: null, warnings: [] });
+  const g = await gateChecks({ command: 'bd close ex-demo-spike-cache', roleId: 'builder', bd, root });
+  assert.equal(g.deny, null);
+  assert.deepEqual(g.warnings.map((w) => w.kind), ['close-no-reason']);
+});
+
+// ---- phase 1a: the ready gate on claim and the done gate on close, replayed on Vault moments ----
+const http = require('http');
+const G = require('../../scripts/lib/gates.js');
+const J = require('../../scripts/lib/judge.js');
+const { STORY, makeProject, storyBead, memBd } = require('../../scripts/testing/gate-fixture.js');
+
+const HASH = G.criteriaHash(G.parseStory(STORY).criteria);
+const deployed = { ready_hash: HASH, deployed_sha: 'd478', deployed_at: '2026-10-13T07:56:00Z' };
+const passRow = (root, n, over = {}) => G.appendEvidence(root, 'ex-vault-0n9-3', { type: 'row', criterion: n, result: 'pass', surface: 'S1', tuple: { host: 'chatgpt.com', app: 'ChatGPT web', mode: 'plain chat', install_artifact: 'connector from the shipped plugin' }, sha: 'd478', by: 'delivery-lead', actor: 'lead@pc/delivery-lead', arm: 'main', at: NOW, ...over });
+
+test('1a close, #478 merged 10-13 07:56 with no pass row on S1: refused naming the criteria; author rows do not count; DM rows on the deployed sha pass', async () => {
+  const root = makeProject();
+  const bd = memBd([storyBead({ metadata: deployed })]);
+  const close = () => gateChecks({ command: 'bd close ex-vault-0n9-3 --reason "EVIDENCE: import works"', roleId: 'builder', bd, root });
+  let g = await close();
+  assert.match(g.deny, /Close of ex-vault-0n9-3 refused \(D3\)/);
+  assert.match(g.deny, /criterion 1: no pass row; criterion 2: no pass row/);
+  passRow(root, 1, { by: 'builder', actor: 'dev@pc/builder-1' });
+  passRow(root, 2);
+  assert.match((await close()).deny, /criterion 1: .* recorded by the author/);
+  passRow(root, 1);
+  g = await close();
+  assert.deepEqual(g, { deny: null, warnings: [] });
+});
+
+test('1a close: a story without criteria closes with a recorded warning (the migration path)', async () => {
+  const root = makeProject({ story: '---\nid: vault-0n9-3\n---\n# old story\n' });
+  const g = await gateChecks({ command: 'bd close ex-vault-0n9-3 --reason "EVIDENCE: done"', roleId: 'builder', bd: memBd([storyBead()]), root });
+  assert.equal(g.deny, null);
+  assert.deepEqual(g.warnings.map((w) => w.kind), ['close-no-criteria']);
+});
+
+test('1a claim: missing measurement plan is a warning; changed criteria (D1) and an area over the unverified cap (D5) are refused', async () => {
+  const root = makeProject({ story: STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, '') });
+  let g = await gateChecks({ command: 'bd update ex-vault-0n9-3 --claim', roleId: 'builder', bd: memBd([storyBead({ metadata: { ready_hash: HASH } })]), root });
+  assert.equal(g.deny, null);
+  assert.deepEqual(g.warnings.map((w) => [w.kind, w.rule]), [['measurement-plan', 'R-19']]);
+  g = await gateChecks({ command: 'bd update ex-vault-0n9-3 --claim', roleId: 'builder', bd: memBd([storyBead({ metadata: { ready_hash: 'stale0000000' } })]), root });
+  assert.match(g.deny, /D1: the story's criteria changed/);
+  const merged = ['469', '470', '471'].map((n) => storyBead({ id: `ex-${n}`, labels: ['story', G.STATE.merged] }));
+  g = await gateChecks({ command: 'bd update ex-vault-0n9-3 --claim', roleId: 'builder', bd: memBd([...merged, storyBead({ metadata: { ready_hash: HASH } })]), root });
+  assert.match(g.deny, /D5: area collection has 3 merged-but-unverified stories \(cap 2/);
+});
+
+test('1a: states and gate fields are set only through the gate scripts; a builder writing them is refused', () => {
+  const me = 'me@pc/builder-1';
+  const bd = fakeBd({ mine: { id: 'mine', status: 'in_progress', assignee: me, updated_at: NOW } });
+  const run = (command, roleId = 'builder') => decideBd({ command, actor: me, roleId, staleHours: 2, bd, now: NOW });
+  for (const command of ['bd update mine --add-label state-verified', `bd update mine --metadata '{"deployed_sha":"d478"}'`, `bd update mine --metadata '{"ready_hash":"x"}'`]) {
+    assert.match(run(command).reason, /set by ready.js and evidence.js/, command);
+    assert.equal(run(command, 'delivery-lead'), null, command);
+  }
+  assert.equal(run('bd update mine --add-label blocked'), null);
+});
+
+test('1a judge (fake provider): shippable_unit "partial" at claim and divergence "serious" at close only warn', async () => {
+  process.env.TYPESAFE_API_KEY = 'fake';
+  const answers = { shippable_unit: { type: 'choice', choice: 'partial', confidence: 0.9 }, divergence: { type: 'choice', choice: 'serious', confidence: 0.95 } };
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => { const q = Object.keys(JSON.parse(body).questions)[0]; res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ model: 'fake', answers: { [q]: answers[q] } })); });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const config = J.judgeConfig({ judge: { provider: 'typesafe' } }, { TYPESAFE_API_KEY: 'fake', DELIVERY_JUDGE_ENDPOINT: `http://127.0.0.1:${server.address().port}/v1/systemone` });
+    const root = makeProject();
+    const ask = (q, state) => J.ask(q, state, { config, env: { TYPESAFE_API_KEY: 'fake' }, projectRoot: root, gate: 'bd-guard' });
+    const bd = memBd([storyBead({ metadata: deployed })]);
+    let g = await gateChecks({ command: 'bd update ex-vault-0n9-3 --claim', roleId: 'builder', bd, root, ask });
+    assert.equal(g.deny, null);
+    assert.deepEqual(g.warnings.map((w) => w.kind), ['shippable-judge']);
+    passRow(root, 1); passRow(root, 2);
+    g = await gateChecks({ command: 'bd close ex-vault-0n9-3 --reason "Tested the import in Codex mode"', roleId: 'builder', bd, root, ask });
+    assert.equal(g.deny, null, 'divergence is warn-only until re-measured');
+    assert.deepEqual(g.warnings.map((w) => w.kind), ['divergence-judge']);
+  } finally { server.closeAllConnections(); server.close(); }
+});
+
+test('1a hook: a close without rows is denied; a claim with a gap is allowed with a warning written to the ledger', () => {
+  const { projectRoot, roleDir } = preparedRole('builder-1');
+  fs.mkdirSync(path.join(projectRoot, '.delivery', 'initiatives', 'vault'), { recursive: true });
+  const fixture = makeProject({ story: STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, '') });
+  fs.cpSync(path.join(fixture, '.delivery', 'initiatives'), path.join(projectRoot, '.delivery', 'initiatives'), { recursive: true });
+  fs.cpSync(path.join(fixture, '.delivery', 'stories'), path.join(projectRoot, '.delivery', 'stories'), { recursive: true });
+  // the probe bd answers every show with this bead, so it has no parent here
+  const bead = storyBead({ assignee: 'tester@pc/builder-1', parent: null, updated_at: NOW, metadata: { ready_hash: G.criteriaHash(G.parseStory(STORY).criteria), deployed_sha: 'd478' } });
+  const { bin } = probeBd(JSON.stringify([bead]).replace(/'/g, ''), '[]');
+  const env = { DELIVERY_ROLE: 'builder-1', BEADS_ACTOR: 'tester@pc/builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+  const hook = (command) => runHookClean('bd-guard-hook.js', { cwd: roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command } }, env, ['TYPESAFE_API_KEY']);
+  const closed = JSON.parse(hook('bd close ex-vault-0n9-3 --reason "EVIDENCE: works"'));
+  assert.equal(closed.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(closed.hookSpecificOutput.permissionDecisionReason, /criterion 1: no pass row/);
+  const claimed = JSON.parse(hook('bd update ex-vault-0n9-3 --claim'));
+  assert.equal(claimed.hookSpecificOutput.permissionDecision, undefined);
+  assert.match(claimed.systemMessage, /w-builder-1-1 R-19 ex-vault-0n9-3: no Measurement plan/);
+  assert.deepEqual(require('../../scripts/lib/warnings.js').list(projectRoot).map((w) => w.kind), ['measurement-plan']);
 });
