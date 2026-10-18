@@ -101,11 +101,12 @@ The default team (`minimal` preset) has four roles:
 - **Delivery Manager** — owns stage 3: stories, materialise, sprints, phase reviews and the bead graph; assigns work to builders; has each pull request reviewed independently and merges it on a passing review.
 - **Builder** — builds one story at a time in its own worktree of the product repo, with a runner (`plain`, `superpowers` or `attractor`); opens the pull request and hands it to the Delivery Manager, resolves conflicts when asked, and never merges.
 
-The `full` preset adds three optional roles:
+The `full` preset adds four optional roles:
 
 - **Staffing** — owns the roster (`team.json`, project briefs).
 - **Progress Observer** — keeps the record true: re-checks what is claimed merged, deployed or verified, watches liveness and releases stale claims.
 - **Spike Researcher** — answers spike beads from the architecture.
+- **Reality Checker** — runs the reality-check script for a deployed story on the real customer surface, with browser control or computer use, and records a row per criterion; the only role with those tools. It is on by default, in either preset, when a declared surface is not scriptable; opt in otherwise with `start.js --reality-checker`. The owner is never asked to run a check: see [Reality checks](docs/reference.md#ready-and-done-gates).
 
 **Ready and done gates.** A story names its customer surface (`surface.json`) and states its criteria as what the customer sees there, each with a probe; a story closes only when every criterion has a pass row on that surface, on the deployed sha, recorded by someone other than its builder. Gates block only on a divergence from what was agreed; everything else is a counted warning the Delivery Manager acknowledges. Status is merged, deployed, verified, from the record: see [Ready and done gates](docs/reference.md#ready-and-done-gates).
 
@@ -119,7 +120,7 @@ Who talks to whom: you talk to the Chief of Staff (and to the Product Manager ab
 | Product Manager | opus | keep it high: DEFINE and CONTRACT are judgement work |
 | Delivery Manager | sonnet | stories keep coming back not ready, or the plan is large |
 | Builder | sonnet | per story, through its size label (below) |
-| Staffing, Spike Researcher | sonnet | spikes are deep research |
+| Staffing, Spike Researcher, Reality Checker | sonnet | spikes are deep research |
 | Progress Observer | haiku | its sweeps miss drift |
 
 **Pick a whole-team profile** when you start: `start.js --models quality|balanced|economy` (`balanced`, the default, is this table; `quality` also puts the Delivery Manager on opus; `economy` moves the senior roles to sonnet and Staffing to haiku).
