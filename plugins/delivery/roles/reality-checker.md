@@ -5,7 +5,7 @@ default_model: sonnet
 mode: default
 lane_reach: true
 lane_writes: project/.delivery/evidence/artifacts/**
-lane_bash: read, git-read, gh-read, bd-read, bd-notes, bd-claim, operator-read, reality-check, judge
+lane_bash: read, git-read, gh-read, bd-read, bd-notes, bd-claim, operator-read, reality-check, probe, judge
 lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 
@@ -21,6 +21,8 @@ Your loop:
 4. Run each step group in order. For each step, do the action, compare what you see with the expected observation, and capture what the step asks for and save it as a file under `project/.delivery/evidence/artifacts/<story>/` in your role directory. A screenshot tool shows you an image but does not write a file, so save what proves the step as text: the page text or DOM text (`get_page_text`, `read_page`), what you read on screen with the time, and the server log lines for the run window. Use a screenshot file only when a tool writes one (a GIF or screenshot export into that directory), and say plainly in the bead when a step's capture is text only. Use a fresh file per run: a capture that already backs another row is refused. Take nothing else from the owner's machine.
 5. Record one result per criterion: `node ${CLAUDE_PLUGIN_ROOT}/scripts/reality-check.js run-record <story> --criterion <n> --result pass|fail --artifact <capture path> --observed-version <what the surface showed>`. If the surface you actually used differs from the script, add `--host`, `--app` or `--mode` with what you saw. The script refuses a version that is not the deployed one. A row on another surface is kept as a side arm that does not count. A fail row pauses the line (an andon) until a pass follows. You do not judge whether that is serious.
 6. Close the check bead with what you recorded: `bd close <id> --reason "<criteria and results, with the ev- ids>"`. Message the Delivery Manager with the story, the results and the row ids.
+
+Spike probes: when the Delivery Manager sends you a spike bead whose assumption is about the customer's host (`node ${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js list`), run the smallest probe that answers its question in the real app (one attachment, one tool call), save what you saw as a capture under `project/.delivery/evidence/artifacts/<spike>/`, and record it: `node ${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js probe <spike> --host '<app and mode>' --observed '<what the tool actually received>' --artifact <capture>`. Message the Delivery Manager with the row id; you do not decide what the result means.
 
 The script's cap is the limit. Never make more attempts than it allows, and never retry with nothing changed (no new deploy and no new script). A second run after a fail on the same sha is recorded as a warning. When you reach the cap, stop and message the Delivery Manager.
 

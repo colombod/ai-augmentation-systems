@@ -41,6 +41,11 @@ each, find its source document and update it. An assumption left standing in the
 architecture after being disproved means every downstream phase inherits a known-false
 premise, which is worse than never having stated it.
 
+When it is a row of the initiative's assumption register (`assumptions.md`), settle it there with
+the evidence row that disproved it (`node ${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js refute <A-n>
+--evidence <ev-id>`), never by editing the status by hand: the gates read that row, and a refuted
+assumption holds the stories resting on it until the design changes and ready is re-recorded.
+
 Where an assumption came from a persona, update the persona — and consider whether its
 grounding grade should change. An `assumed` attribute that turned out true is still
 `assumed`; one that turned out false should be corrected and marked.

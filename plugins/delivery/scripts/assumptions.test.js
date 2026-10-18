@@ -222,3 +222,21 @@ test('register parsing: criteria lists, malformed rows as problems, HAR recordin
   assert.match(A.observationProblem(local, { id: 'A-8', kind: 'external-host' }), /a local probe: an external host is observed by the Reality Checker/);
   assert.equal(A.observationProblem(local, { id: 'A-8', kind: 'internal' }), null);
 });
+
+test('lanes: the register is read by every role, written by the Product and Delivery Managers, probed by the Reality Checker', () => {
+  const { decideLane, loadPolicy } = require('../hooks/scripts/lane.js');
+  const pluginRoot = path.join(__dirname, '..');
+  const groups = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'lane-groups.json'), 'utf8'));
+  const roleDir = makeProject();
+  const allowed = (role, sub) => {
+    const policy = loadPolicy({ pluginRoot, projectRoot: '/nonexistent', briefRef: `delivery/${role}` });
+    const d = decideLane({ toolName: 'Bash', toolInput: { command: `node ${pluginRoot}/scripts/assumptions.js ${sub}` }, policy, roleDir, groups, pluginRoot, cwd: roleDir, projectRoot: roleDir, hostHeadless: false });
+    return !d || d.allow;
+  };
+  assert.ok(allowed('chief-of-staff', 'list --plain'));
+  assert.ok(!allowed('chief-of-staff', 'add --statement x'));
+  for (const role of ['product-manager', 'delivery-lead']) assert.ok(allowed(role, 'ack ex-s --decision d') && allowed(role, 'refute A-1 --evidence ev-x-1'), role);
+  assert.ok(allowed('reality-checker', 'probe ex-s --host h --observed o --artifact a'));
+  assert.ok(!allowed('reality-checker', 'ack ex-s --decision d'));
+  assert.ok(!allowed('progress-observer', 'observe A-1 --evidence ev-x-1'));
+});
