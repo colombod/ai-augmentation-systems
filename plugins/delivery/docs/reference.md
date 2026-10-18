@@ -243,14 +243,18 @@ Gates keep work flowing. Each check has one of three levels:
   session's role marker and refuse every write without one (they fail closed). The bd guard refuses
   anyone but the Delivery Manager: the `story` and `state-*` labels, `--set-labels`, the gate fields
   (`ready_hash`, `deployed_sha`, `authors`, `story_file`, `surface`, `area`, `roadmap_ref` and the
-  rest, judged on the parsed metadata keys; metadata built by the shell is refused), and releasing or
-  reassigning a claimed story.
+  rest, judged on the parsed metadata keys; labels and metadata built by the shell, `$VAR` included,
+  are refused; create-time `--labels` count), releasing or reassigning a claimed story (the Delivery
+  Manager may do so even while the claim is live), and the commands that write around the guard:
+  `bd batch`, `bd sql` other than a read, and `bd vc` and `bd federation` other than their status reads.
+  A claim, or work the Delivery Manager assigns, stamps the assignee in `metadata.authors`; the
+  Delivery Manager is never stamped.
 - **Block on divergence.** Only a checkable fact that opens a serious divergence from what was
   agreed: **D1** the agreed criteria or requirements changed (or were deleted) since the story was
   made ready, checked at claim and at close, or a child bead names a criterion its story does not
   have; **D2** a story or an evidence row names a surface, or a tuple, that is not the one in
-  `surface.json`; **D3** a close in any form (`bd close`, `bd update --status closed`, `duplicate`,
-  `supersede`) without a counting pass row per criterion, a waiver recorded after the deploy, or an
+  `surface.json`; **D3** a close in any form (`bd close` and its alias `bd done`, `bd update --status closed`,
+  `duplicate`, `supersede`, `bd gate resolve`) without a counting pass row per criterion, a waiver recorded after the deploy, or an
   evidence file edited by hand. The refusal is two lines: what and why, then the command for the
   Delivery Manager, or for anyone else "message the Delivery Manager".
 - **Warn and record.** Everything else, including D5 for now: more than `budget.max_unverified`
@@ -299,12 +303,15 @@ claimer in `metadata.authors`. With the typed judge on, `shippable_unit` is aske
 appends `ev-<bead>-<n>` rows to `.delivery/evidence/<bead>.ndjson` with the writer's role, actor,
 time and the criterion's own hash. Files rather than bead notes: notes are free text any role can
 append to, while a row here is structured, append-only and readable by the hook without bd. Each row
-carries `seq` and a hash of the line before it, so an edited or deleted line refuses the close. A row
+carries `seq` and a hash of the line before it, and evidence.js records the chain head (row count and
+the last line's hash) in the bead's `evidence_head`, so an edited, inserted, deleted or appended line,
+the last one included, refuses the close. Appends take a per-bead lock, so two writers never fork the
+chain. A row
 counts for a criterion when it is a pass, for that criterion's current wording, on the story's
 surface and tuple, on the deployed sha (case-insensitive; a prefix of 7 or more characters matches),
 recorded after that deploy, by a role and an actor that are not among the story's authors. Anything
-else is a side arm or does not count. A waiver counts when recorded before the deploy with a verified
-owner record. `evidence.js check <bead>` reports the gate without changing anything.
+else is a side arm or does not count. A waiver counts when recorded before the deploy and a cut counts at all only while its owner record
+still verifies: the gate re-runs `operator.js verify` on it. `evidence.js check <bead>` reports the gate without changing anything.
 
 **States.** `evidence.js state <bead> merged [--pr <n>]` and `evidence.js state <bead> deployed --sha
 <sha>` set `state-merged` and `state-deployed` (and `deployed_sha`, `deployed_at`); `state-verified`
@@ -320,15 +327,19 @@ A story never made ready (one from before 0.22, or on the old checkbox template)
 `bd supersede`.
 
 **What is cooperative trust.** The gates are discipline aids for cooperative agents, not a security
-boundary. A role whose lane is `any` (builders, the Spike Researcher) can still append a correctly
-chained row to an evidence file by hand, edit a story file, or run bd in a shape the guard does not
-parse (`env bd`, `sh -c`, a subshell), or start a script from another role's directory with that
-role's `DELIVERY_ROLE` set; `BEADS_ACTOR` is self-declared. What the gates do is make the
+boundary. A role whose lane is `any` (builders, the Spike Researcher) can still run bd in a shape
+the guard does not parse (`env bd`, `sh -c`, a subshell) and so also rewrite `evidence_head` to match
+a forged row, edit a story file (which a ready hash then refuses as D1), or start a script from
+another role's directory with that role's `DELIVERY_ROLE` set; `BEADS_ACTOR` is self-declared. What the gates do is make the
 honest path the easy one, refuse the plain shortcuts the Vault took, and leave a record that an
 independent review can check.
 
-**The judge at the gates.** Advisory only, at most once per command and only while the hook's 8 s
-budget lasts (bd calls inside the hook time out at 4 s). `shippable_unit` warns at the ready gate.
+**The hook's budget.** The bd guard keeps to one 8 s budget inside the 15 s hook timeout: every bd
+call checks the time left first and gets at most 4 s of it, bead reads are cached, and when the
+budget runs out the command is allowed with a `budget-spent` warning (fail open).
+
+**The judge at the gates.** Advisory only, at most once per command and only while 2.5 s of the
+hook's budget remain. `shippable_unit` warns at the ready gate.
 `divergence` is asked at a close that passed, with the criteria, the surface and the close reason; a
 `serious` answer is a recorded warning and never blocks until it is re-measured on real gate
 summaries. No new catalogue question was added: a criterion-kind question needs labelled cases first,
