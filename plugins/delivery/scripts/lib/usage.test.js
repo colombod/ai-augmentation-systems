@@ -60,3 +60,56 @@ test('R-31 probe: the status line weekly reading is kept, and read only while fr
   U.writeSnapshot(root, U.snapshotOf(input, '2026-10-13T11:00:00Z'));
   assert.equal(U.readSnapshot(root, '2026-10-13T12:30:00Z'), null, 'the window reset');
 });
+
+test('PR 54 I-3: a streamed reply counts at its largest reading, as Claude Code writes them (output tokens grow line by line)', () => {
+  const root = tmp();
+  const f = path.join(tmp(), 's.jsonl');
+  const at = '2026-10-12T10:00:00Z';
+  // three content blocks of one message: thinking, text, tool_use; usage grows to the final count
+  fs.writeFileSync(f, [
+    reply('msg_1', at, { input_tokens: 3, cache_creation_input_tokens: 2000, cache_read_input_tokens: 40000, output_tokens: 7 }),
+    reply('msg_1', at, { input_tokens: 3, cache_creation_input_tokens: 2000, cache_read_input_tokens: 40000, output_tokens: 312 }),
+    reply('msg_1', at, { input_tokens: 3, cache_creation_input_tokens: 2000, cache_read_input_tokens: 40000, output_tokens: 24335 }),
+  ].join('\n') + '\n');
+  const r = U.tokensSince(root, '2026-10-01T00:00:00Z', { files: [f] });
+  assert.equal(r.messages, 1);
+  assert.equal(r.tokens, 3 + 1.25 * 2000 + 0.1 * 40000 + 5 * 24335);
+});
+
+test('PR 54 Copilot 637: the period start cuts at the message time, not the hour', () => {
+  const f = path.join(tmp(), 'h.jsonl');
+  fs.writeFileSync(f, `${reply('a', '2026-10-12T12:01:00Z', { output_tokens: 100 })}\n${reply('b', '2026-10-12T12:45:00Z', { output_tokens: 1 })}\n`);
+  assert.equal(U.tokensSince(tmp(), '2026-10-12T12:30:00Z', { files: [f] }).tokens, 5);
+});
+
+test('PR 54 I-4: the scan keeps to its deadline, says the figure is partial, saves its progress and resumes; a message split across a resume counts once', () => {
+  const root = tmp();
+  const f = path.join(tmp(), 'big.jsonl');
+  const lines = [];
+  for (let i = 0; i < 400; i++) lines.push(reply(`m${i}`, '2026-10-12T10:00:00Z', { output_tokens: 1 }));
+  fs.writeFileSync(f, `${lines.join('\n')}\n`);
+  const cut = U.tokensSince(root, '2026-10-01T00:00:00Z', { files: [f], deadline: Date.now() - 1 });
+  assert.equal(cut.partial, true);
+  assert.match(cut.note, /partial/);
+  // read in small chunks: every chunk boundary splits a line, and nothing is lost or counted twice
+  const full = U.tokensSince(root, '2026-10-01T00:00:00Z', { files: [f], chunk: 97 });
+  assert.deepEqual([full.partial, full.messages, full.tokens], [false, 400, 2000]);
+  // the file grows: only the new bytes are read, and the open message keeps its largest reading
+  fs.appendFileSync(f, `${reply('m399', '2026-10-12T10:00:00Z', { output_tokens: 9 })}\n${reply('m400', '2026-10-12T10:01:00Z', { output_tokens: 1 })}\n`);
+  const more = U.tokensSince(root, '2026-10-01T00:00:00Z', { files: [f], chunk: 97 });
+  assert.deepEqual([more.messages, more.tokens], [401, 2000 - 5 + 45 + 5]);
+});
+
+test('PR 54 m-5: the spend readings are not writable from any role lane, the builder\'s included', () => {
+  const { decideLane, loadPolicy } = require('../../hooks/scripts/lane.js');
+  const plugin = path.join(__dirname, '..', '..');
+  const groups = JSON.parse(fs.readFileSync(path.join(plugin, 'hooks', 'lane-groups.json'), 'utf8'));
+  const project = tmp();
+  const roleDir = tmp();
+  const d = (toolName, toolInput) => decideLane({ toolName, toolInput, policy: loadPolicy({ pluginRoot: plugin, projectRoot: project, briefRef: 'delivery/builder' }), roleDir, groups, pluginRoot: plugin, cwd: project, projectRoot: project, hostHeadless: false });
+  const cache = path.join(project, '.delivery', 'usage', 'transcripts.json');
+  assert.match(d('Write', { file_path: cache }).reason, /spend readings/);
+  assert.match(d('Bash', { command: `echo '{}' > ${cache}` }).reason, /spend readings/);
+  assert.match(d('Bash', { command: 'rm -rf .delivery/usage' }).reason, /spend readings/);
+  assert.equal(d('Bash', { command: 'cat .delivery/usage/transcripts.json' }).allow, true);
+});

@@ -13,7 +13,6 @@
 // 0.1x, opus 1.7x, haiku 0.35x), the shape of list prices; units are those divided by unit_tokens.
 const fs = require('fs');
 const path = require('path');
-const { withLock } = require('./lock.js');
 
 const WEIGHT = { input: 1, cache_creation: 1.25, cache_read: 0.1, output: 5 };
 const MODEL = { opus: 1.7, sonnet: 1, haiku: 0.35 };
@@ -30,26 +29,55 @@ function weighted(u, model) {
     + n('cache_read_input_tokens') * WEIGHT.cache_read + n('output_tokens') * WEIGHT.output) * modelWeight(model);
 }
 
-// { hours: { 'YYYY-MM-DDTHH': weighted }, messages, unreadable } for one transcript file
-function scanFile(file) {
-  const out = { hours: {}, messages: 0, unreadable: 0 };
-  let text;
-  try { text = fs.readFileSync(file, 'utf8'); } catch (err) { out.unreadable = 1; return out; }
-  const seen = new Set();
-  for (const line of text.split('\n')) {
-    if (!line.includes('"usage"')) continue;
+// One transcript file, read in chunks from `from.offset` (transcripts only grow), never whole: a file
+// of any size is counted, and a scan cut short by the deadline resumes where it stopped. Each message
+// is [epoch seconds, weighted] at its first line's time; a streamed message repeats its id on several
+// lines whose output_tokens grow, so the largest reading per id counts (PR 54 review I-3). Lines of
+// one message are contiguous, so only the last id needs carrying across a resume.
+// Returns { offset, msgs, tailId, unreadable, done }.
+function scanFile(file, { from = null, deadline = Infinity, chunk = 1 << 20 } = {}) {
+  const st = from && Array.isArray(from.msgs) ? { offset: from.offset || 0, msgs: from.msgs.map((m) => [...m]), tailId: from.tailId || null, unreadable: from.unreadable || 0 } : { offset: 0, msgs: [], tailId: null, unreadable: 0 };
+  let fd;
+  try { fd = fs.openSync(file, 'r'); } catch (err) { return { ...st, unreadable: st.unreadable + 1, done: true }; }
+  const ids = new Map(st.tailId && st.msgs.length ? [[st.tailId, st.msgs.length - 1]] : []);
+  const take = (line) => {
+    if (!line.includes('"usage"')) return null;
     let r;
-    try { r = JSON.parse(line); } catch (err) { out.unreadable++; continue; }
+    try { r = JSON.parse(line); } catch (err) { return 'torn'; }
     const m = r && r.type === 'assistant' && r.message;
-    if (!m || !m.usage || !r.timestamp) continue;
-    const key = m.id || r.requestId || r.uuid;
-    if (key && seen.has(key)) continue;
-    if (key) seen.add(key);
-    const hour = String(r.timestamp).slice(0, 13);
-    out.hours[hour] = (out.hours[hour] || 0) + weighted(m.usage, m.model);
-    out.messages++;
-  }
-  return out;
+    if (!m || !m.usage || !r.timestamp) return null;
+    const w = weighted(m.usage, m.model);
+    const key = m.id || r.requestId || r.uuid || null;
+    if (key && ids.has(key)) { const e = st.msgs[ids.get(key)]; e[1] = Math.max(e[1], w); return null; }
+    st.msgs.push([Math.floor(Date.parse(r.timestamp) / 1000), w]);
+    if (key) { ids.set(key, st.msgs.length - 1); st.tailId = key; }
+    return null;
+  };
+  const buf = Buffer.alloc(chunk);
+  let carry = Buffer.alloc(0);
+  let pos = st.offset;
+  let done = true;
+  try {
+    for (;;) {
+      if (Date.now() > deadline) { done = false; break; }
+      const n = fs.readSync(fd, buf, 0, chunk, pos);
+      if (n <= 0) break;
+      pos += n;
+      let data = Buffer.concat([carry, buf.subarray(0, n)]);
+      let nl;
+      while ((nl = data.indexOf(10)) >= 0) {
+        const line = data.subarray(0, nl).toString('utf8');
+        data = data.subarray(nl + 1);
+        st.offset += nl + 1;
+        if (take(line) === 'torn') st.unreadable++;
+      }
+      // a partial last line is read again next time, from the offset of its start
+      carry = Buffer.from(data);
+    }
+    // a whole last line with no newline yet counts now and is read again next time (its id dedups it)
+    if (done && carry.length) take(carry.toString('utf8'));
+  } finally { fs.closeSync(fd); }
+  return { ...st, done };
 }
 
 // Every transcript beside the role sessions' known ones (earlier sessions of the same role directory
@@ -74,36 +102,60 @@ function transcriptFiles(root) {
 }
 
 const cacheFile = (root) => path.join(root, '.delivery', 'usage', 'transcripts.json');
+const CACHE_VERSION = 2;
 
-// Weighted tokens since `since` across the given files (default: the team's transcripts). Each file is
-// scanned again only when its size or mtime changed. { tokens, files, messages, unreadable, note? }
-function tokensSince(root, since, { files } = {}) {
+function saveCache(root, cache) {
+  if (!root) return;
+  try {
+    fs.mkdirSync(path.dirname(cacheFile(root)), { recursive: true });
+    const tmp = `${cacheFile(root)}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(cache));
+    fs.renameSync(tmp, cacheFile(root));
+  } catch (err) { /* a cache that cannot be written only costs a rescan */ }
+}
+
+// Weighted tokens of messages at or after `since` across the given files (default: the team's
+// transcripts). Each file resumes from its cached offset when it only grew, and is rescanned when it
+// shrank or was replaced. With a deadline (the hooks pass theirs), the scan stops in time, keeps what
+// it read, and says the figure is partial; the cache is saved as it goes.
+// { tokens, files, messages, unreadable, partial, note? }
+function tokensSince(root, since, { files, deadline = Infinity, chunk } = {}) {
   const list = files || transcriptFiles(root);
-  const t0 = Date.parse(since || 0) || 0;
-  let cache = { files: {} };
-  try { cache = JSON.parse(fs.readFileSync(cacheFile(root), 'utf8')); } catch (err) { cache = { files: {} }; }
-  if (!cache || typeof cache.files !== 'object') cache = { files: {} };
+  const t0 = (Date.parse(since || 0) || 0) / 1000;
+  let cache = { v: CACHE_VERSION, files: {} };
+  try { cache = JSON.parse(fs.readFileSync(cacheFile(root), 'utf8')); } catch (err) { cache = { v: CACHE_VERSION, files: {} }; }
+  if (!cache || cache.v !== CACHE_VERSION || typeof cache.files !== 'object') cache = { v: CACHE_VERSION, files: {} };
   let tokens = 0;
   let messages = 0;
   let unreadable = 0;
-  let changed = false;
+  let partial = false;
+  let lastSave = Date.now();
+  let dirty = false;
   for (const f of list) {
     let st;
     try { st = fs.statSync(f); } catch (err) { continue; }
-    if (st.mtimeMs < t0) continue;
     let c = cache.files[f];
-    if (!c || c.size !== st.size || c.mtimeMs !== st.mtimeMs) { c = { size: st.size, mtimeMs: st.mtimeMs, ...scanFile(f) }; cache.files[f] = c; changed = true; }
-    for (const [hour, w] of Object.entries(c.hours || {})) if (Date.parse(`${hour}:59:59Z`) >= t0) tokens += w;
-    messages += c.messages || 0;
+    const grew = c && st.size >= c.offset && st.mtimeMs >= c.mtimeMs;
+    if (!c || c.size !== st.size || c.mtimeMs !== st.mtimeMs || !c.done) {
+      if (Date.now() > deadline) partial = true;
+      else {
+        const r = scanFile(f, { from: grew ? c : null, deadline, chunk });
+        c = { size: st.size, mtimeMs: st.mtimeMs, ...r };
+        cache.files[f] = c;
+        dirty = true;
+        if (!r.done) partial = true;
+        if (Date.now() - lastSave > 300) { saveCache(root, cache); lastSave = Date.now(); dirty = false; }
+      }
+    }
+    if (!c) continue;
+    for (const [t, w] of c.msgs || []) if (t >= t0) { tokens += w; messages++; }
     unreadable += c.unreadable || 0;
   }
-  if (changed && root) {
-    try {
-      fs.mkdirSync(path.dirname(cacheFile(root)), { recursive: true });
-      withLock(`${cacheFile(root)}.lock`, () => fs.writeFileSync(cacheFile(root), JSON.stringify(cache)));
-    } catch (err) { /* a cache that cannot be written only costs a rescan */ }
-  }
-  return { tokens, files: list.length, messages, unreadable, ...(list.length ? {} : { note: 'no role transcripts are known yet (the roster records them)' }) };
+  if (dirty) saveCache(root, cache);
+  const notes = [];
+  if (!list.length) notes.push('no role transcripts are known yet (the roster records them)');
+  if (partial) notes.push('partial: the scan ran out of time; the rest is read on the next check');
+  return { tokens, files: list.length, messages, unreadable, partial, ...(notes.length ? { note: notes.join('; ') } : {}) };
 }
 
 // ---- the status line snapshot ----
