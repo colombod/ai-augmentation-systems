@@ -102,8 +102,9 @@ function structural(p, actor, bd) {
 
 // A write of a state label, the story label or a gate field, which only the gate scripts and
 // materialise set. Metadata is judged on its parsed keys, and only literal values are accepted.
-const GATE_FIELDS = new Set(['ready_hash', 'ready_at', 'ready_record', 'deployed_sha', 'deployed_at', 'deployed_version', 'evidence_head', 'merged_pr', 'authors', 'story', 'story_file', 'surface', 'area', 'roadmap_ref', 'materialised_by', 'doc_id']);
-const PROTECTED_LABEL = /^(state-.*|story)$/;
+const GATE_FIELDS = new Set(['ready_hash', 'ready_at', 'ready_record', 'deployed_sha', 'deployed_at', 'deployed_version', 'evidence_head', 'merged_pr', 'authors', 'story', 'story_file', 'surface', 'area', 'roadmap_ref', 'materialised_by', 'doc_id', 'wave', 'selection']);
+// wave labels come from the story file through materialise: a relabel would move a story out of its wave
+const PROTECTED_LABEL = /^(state-.*|story|wave-\d+)$/;
 const EXPANSION = /\$\(|\$\{|\$[A-Za-z_]|`/;
 const values = (p, f) => (p.all.get(f) || []).filter((v) => typeof v === 'string');
 function gateFieldWrite(p) {
@@ -227,6 +228,9 @@ function budgeted(bd, deadline) {
 const nextStep = (roleId, dmCommand, ask) => (roleId === 'delivery-lead' ? `Run: ${dmCommand}` : `Message the Delivery Manager: ${ask}.`);
 function claimFix(f, id) {
   if (f.rule === 'D2') return `set the story's surface: to an id in surface.json, then ${script('ready.js')} ${id} --record`;
+  if (f.code === 'outside-wave' || f.code === 'wave-half-built') return `${script('wave.js')} show, then finish the current wave or cut its rest on the owner's record (${script('evidence.js')} cut <bead> --record <dec-...> --reason '<why>')`;
+  if (f.code === 'budget-short' || f.code === 'fix-over-budget' || f.code === 'new-area-near-limit') return `${script('plan.js')} budget, then re-cut ${id} smaller or defer it`;
+  if (f.code === 'new-area') return `${script('plan.js')} select for compounding work; a new area needs the owner's reason (the Chief of Staff: goal.js ask area_add ${f.area || '<area>'})`;
   if (f.code === 'child-scope') return `bd update ${id} --metadata '{"criterion": <n>}' with a criterion its story has, or make the new scope its own story`;
   return `${script('ready.js')} ${id} --record --owner-record <dec-...> once the change is agreed`;
 }
@@ -240,7 +244,7 @@ function builderOf(p, actor, roleId, instance) {
   return { actor: who, instance: who === actor ? instance || null : String(who).split('/').pop(), role: who === actor ? roleId || null : null };
 }
 
-async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, team, ask, deadline, verifyRecord }) {
+async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, team, ask, deadline, verifyRecord, budget }) {
   const G = require('../../scripts/lib/gates.js');
   const { gateInputs, maxUnverified, recordChecker } = require('../../scripts/lib/gate-context.js');
   const out = { deny: null, warnings: [] };
@@ -278,8 +282,19 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
           findings.push(...G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead, judged }));
         }
         let overCap = null;
-        if (story) { try { overCap = G.unverifiedOver(bd.list({ label: 'story', all: true }), bead, maxUnverified(team)); } catch (err) { overCap = null; } }
+        let stories = null;
+        const fixLabelled = (bead.labels || []).some((l) => l === 'bug' || l === 'security');
+        if (story || fixLabelled) { try { stories = bd.list({ label: 'story', all: true }); } catch (err) { stories = null; } }
+        if (story && stories) overCap = G.unverifiedOver(stories, bead, maxUnverified(team));
         findings.push(...G.claimDivergence({ story: story ? inp.story : null, isStory: story, bead, parent: inp.parent, parentStory: inp.parentStory, overCap }));
+        // waves, the budget, new areas and fixes (R-34, R-36, R-41; D1 and D5 only on serious divergence)
+        if (stories) {
+          try {
+            const W = require('../../scripts/lib/waves.js');
+            const ctx = W.contextFor(root, { bd, team, beads: stories, verifyRecord, budget });
+            findings.push(...W.claimFindings(bead, { ...ctx, fix: ctx.fixOf(bead), reason: ctx.reasonOf(G.areaOf(bead)) }));
+          } catch (err) { /* fail open */ }
+        }
         const blocks = findings.filter((f) => f.level === 'block');
         for (const f of findings.filter((x) => x.level === 'warn')) add(id, f.code, f.rule, f.detail);
         if (blocks.length) {
