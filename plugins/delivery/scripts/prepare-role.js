@@ -20,6 +20,8 @@ function remoteOf(repo) {
 // operator channels only the operator-facing roles use (the ask-guard hook is the second layer)
 const OPERATOR_FACING_ROLES = new Set(['chief-of-staff', 'product-manager']);
 const OPERATOR_CHANNEL_TOOLS = ['AskUserQuestion', 'PushNotification', 'SendUserFile'];
+// merging belongs to the Delivery Manager; every other role gets the native backstop too
+const MERGE_DENY = ['Bash(gh pr merge:*)'];
 // commands no restricted lane needs; denied natively unless the role's lane allows them
 const LANE_BACKSTOP_DENY = ['Bash(git push:*)', 'Bash(sudo:*)', 'Bash(curl:*)', 'Bash(wget:*)', 'Bash(rm:*)'];
 
@@ -126,8 +128,9 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     const want = [
       ...(operatorFacing ? [] : OPERATOR_CHANNEL_TOOLS),
       ...(unrestricted ? [] : LANE_BACKSTOP_DENY.filter((r) => !rules.includes(r))),
+      ...(role.id === 'delivery-lead' ? [] : MERGE_DENY),
     ];
-    const managed = new Set([...OPERATOR_CHANNEL_TOOLS, ...LANE_BACKSTOP_DENY]);
+    const managed = new Set([...OPERATOR_CHANNEL_TOOLS, ...LANE_BACKSTOP_DENY, ...MERGE_DENY]);
     const haveDeny = Array.isArray(settings.permissions.deny) ? settings.permissions.deny : [];
     const deny = [...new Set([...haveDeny.filter((r) => !managed.has(r)), ...want])];
     if (deny.length) settings.permissions.deny = deny; else delete settings.permissions.deny;
@@ -195,4 +198,4 @@ if (require.main === module) {
   console.log(roleDir);
 }
 
-module.exports = { OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, prepareRole };
+module.exports = { OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole };

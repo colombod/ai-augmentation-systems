@@ -954,3 +954,42 @@ test('A1: every pipeline output path is writable by at least one role of the min
   assert.ok(!pathAllowed(path.join(rd, 'project/.delivery/initiatives/checkout/roadmap.md'), { roleDir: rd, writes: policies['delivery-lead'].writes }));
   assert.ok(!pathAllowed(path.join(rd, 'project/.delivery/sprints/1-checkout.md'), { roleDir: rd, writes: policies['product-manager'].writes }), 'the PM writes only the realign record under sprints/');
 });
+
+// Owner ruling 2026-10-18: builders cannot merge; the Delivery Manager merges after independent review.
+test('merging is the Delivery Manager\'s: builder and spike researcher lanes are refused every form of merge', () => {
+  const SPIKE = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/spike-researcher' });
+  const product = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-merge-'));
+  const g = (...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: product, stdio: 'ignore' });
+  g('init', '-q', '-b', 'main'); g('commit', '-q', '--allow-empty', '-m', 'init'); g('checkout', '-q', '-b', 'team/builder-1');
+  const run = (policy, command, cwd = product) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx(), cwd });
+  const refused = [
+    'gh pr merge 12 --squash',
+    'gh pr merge --auto --merge',
+    'gh -R org/repo pr merge 12',
+    'gh api -X PUT repos/org/repo/pulls/12/merge',
+    'gh api repos/org/repo/merges -f base=main -f head=team/builder-1',
+    'git push origin HEAD:main',
+    'git push origin team/builder-1:refs/heads/main',
+    'git push --force origin +HEAD:master',
+  ];
+  for (const policy of [POLICIES[BUILDER], SPIKE]) {
+    for (const cmd of refused) {
+      const d = run(policy, cmd);
+      assert.equal(d.allow, false, `${policy.roleId}: ${cmd}`);
+      assert.match(d.reason, /merging is the Delivery Manager's/, cmd);
+    }
+    // on the default branch, a bare push or a merge is a merge into it
+    g('checkout', '-q', 'main');
+    assert.equal(run(policy, 'git push').allow, false, `${policy.roleId}: git push on main`);
+    assert.equal(run(policy, 'git merge team/builder-1').allow, false, `${policy.roleId}: git merge on main`);
+    g('checkout', '-q', 'team/builder-1');
+    // their own branch is theirs to push, and merging main into it (to resolve a conflict) is fine
+    for (const ok of ['git push origin team/builder-1', 'git push -u origin HEAD', 'git push', 'git merge main', 'gh pr create --fill', 'gh pr view 12']) {
+      assert.equal(run(policy, ok).allow, true, `${policy.roleId}: ${ok}`);
+    }
+    assert.equal(decideLane({ toolName: 'mcp__github__merge_pull_request', toolInput: {}, policy, ...ctx() }).allow, false);
+  }
+  // the delivery lead merges
+  assert.equal(run(POLICIES[DL], 'gh pr merge 12 --squash').allow, true);
+  assert.equal(run(POLICIES[COS], 'gh pr merge 12').allow, false);
+});

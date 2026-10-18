@@ -217,16 +217,19 @@ test('hardening a/b: native deny rules per role, idempotent, keeping the user\'s
     return { roleDir, s: JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')) };
   };
   const deny = (instance) => ((settingsOf(instance).s.permissions || {}).deny || []).slice().sort();
-  // operator-facing roles may ask; the chief of staff has no git push in its lane
-  assert.deepEqual(deny('chief-of-staff'), ['Bash(curl:*)', 'Bash(git push:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)']);
+  // operator-facing roles may ask; the chief of staff has no git push in its lane; only the delivery
+  // lead merges, so every other role gets the gh pr merge backstop
+  const M = 'Bash(gh pr merge:*)';
+  assert.deepEqual(deny('chief-of-staff'), ['Bash(curl:*)', M, 'Bash(git push:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
   // the product manager, delivery lead and staffing push plan documents (git-write-project)
-  assert.deepEqual(deny('product-manager'), ['Bash(curl:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)']);
+  assert.deepEqual(deny('product-manager'), ['Bash(curl:*)', M, 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
   assert.deepEqual(deny('delivery-lead'), [...ASK, 'Bash(curl:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
-  assert.deepEqual(deny('staffing'), [...ASK, 'Bash(curl:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
-  assert.deepEqual(deny('progress-observer'), [...ASK, 'Bash(curl:*)', 'Bash(git push:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
-  // workers (lane any) keep their commands but still never address the operator
-  assert.deepEqual(deny('builder-1'), ASK.slice().sort());
-  assert.deepEqual(deny('spike-researcher'), ASK.slice().sort());
+  assert.ok(settingsOf('delivery-lead').s.permissions.allow.includes(M), 'the delivery lead merges without a prompt');
+  assert.deepEqual(deny('staffing'), [...ASK, 'Bash(curl:*)', M, 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
+  assert.deepEqual(deny('progress-observer'), [...ASK, 'Bash(curl:*)', M, 'Bash(git push:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
+  // workers (lane any) keep their commands but never address the operator and never merge
+  assert.deepEqual(deny('builder-1'), [...ASK, M].sort());
+  assert.deepEqual(deny('spike-researcher'), [...ASK, M].sort());
   // idempotent; a user's own deny rule is kept; managed rules a role does not need are taken out
   const { roleDir, s } = settingsOf('chief-of-staff');
   s.permissions.deny = [...s.permissions.deny, 'Bash(npm publish:*)', 'AskUserQuestion'];

@@ -98,8 +98,8 @@ The default team (`minimal` preset) has four roles:
 
 - **Chief of Staff** — your channel for decisions and logistics; every other session asks it, not you.
 - **Product Manager** — owns what to build and why: DEFINE and CONTRACT, realign and pivots; talks with you about vision.
-- **Delivery Manager** — owns stage 3: stories, materialise, sprints, phase reviews and the bead graph; assigns work to builders.
-- **Builder** — builds one story at a time in its own worktree of the product repo, with a runner (`plain`, `superpowers` or `attractor`).
+- **Delivery Manager** — owns stage 3: stories, materialise, sprints, phase reviews and the bead graph; assigns work to builders; has each pull request reviewed independently and merges it on a passing review.
+- **Builder** — builds one story at a time in its own worktree of the product repo, with a runner (`plain`, `superpowers` or `attractor`); opens the pull request and hands it to the Delivery Manager, resolves conflicts when asked, and never merges.
 
 The `full` preset adds three optional roles:
 

@@ -26,8 +26,8 @@ the commands) and they stay up.
 | :-- | :-- | :-- | :-- |
 | Chief of Staff | `chief-of-staff` | opus | your attention: records your words, answers from earlier records, one ranked briefing |
 | Product Manager | `product-manager` | opus | DEFINE and CONTRACT documents (brief to roadmap), realign and pivots |
-| Delivery Manager | `delivery-lead` | sonnet | NAVIGATE: stories, materialise, sprints, phase reviews, bead structure |
-| Builder | `builder` (`builder-2`, ... when counted) | sonnet | product code, in its own worktree of the product repo |
+| Delivery Manager | `delivery-lead` | sonnet | NAVIGATE: stories, materialise, sprints, phase reviews, bead structure; independent review requests, acceptance and merging pull requests |
+| Builder | `builder` (`builder-2`, ... when counted) | sonnet | product code, in its own worktree of the product repo; opens the pull request, never merges |
 | Staffing (optional, `full`) | `staffing` | sonnet | the roster: `team.json` and project briefs |
 | Progress Observer (optional, `full`) | `progress-observer` | haiku | the record stays true: re-checks merged/deployed/verified claims, liveness, stale claims |
 | Spike Researcher (optional, `full`) | `spike-researcher` | sonnet | answers `spike` beads from the architecture |
@@ -112,6 +112,15 @@ The lane covers every shell channel and MCP: `Monitor` commands are judged like 
 treated as Bash when `hooks.json` routes it to the hook. For roles without `any`, MCP tools are
 read-verb only unless the role file's `lane_mcp` names them; the managers' `lane_mcp` allows
 session messaging and listing.
+
+Merging is the Delivery Manager's: for every other role, `any` lanes included, the hook refuses
+`gh pr merge`, the merge endpoints through `gh api`, a push to the default branch (`main`,
+`master`, or what `origin/HEAD` names; a bare `git push` while on it), `git merge` while on it,
+and MCP merge tools; `prepare-role` adds a native `Bash(gh pr merge:*)` deny rule for those roles.
+A builder pushes its own branch and merges the default branch into it to resolve a conflict. The
+Delivery Manager requests an independent review (a reviewer subagent or another session, never the
+author) and merges only on a passing review of the pull request's current head; a conflict or new
+commits send the pull request back to its owner and to review again.
 
 ### The leak guard
 

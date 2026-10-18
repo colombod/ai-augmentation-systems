@@ -582,6 +582,65 @@ function operatorShellWrite(command, opts = {}) {
   });
 }
 
+// Merging belongs to the Delivery Manager: it requests independent review of each pull request and
+// merges on a passing review. Every other role, the unrestricted `any` lanes included, is refused a
+// merge in whatever form: `gh pr merge`, the merge endpoint through `gh api`, a push to the default
+// branch, `git merge` while on it, or an MCP merge tool.
+const MERGER = 'delivery-lead';
+const MERGE_REASON = 'merging is the Delivery Manager\'s: open the pull request, hand it to the Delivery Manager by message (it requests an independent review and merges on a passing one), and resolve conflicts when it asks';
+const DEFAULT_BRANCHES = ['main', 'master'];
+
+function gitIn(dir, args) {
+  try {
+    const r = require('child_process').spawnSync('git', args, { cwd: dir, encoding: 'utf8', timeout: 5000 });
+    return r.status === 0 ? String(r.stdout || '').trim() : null;
+  } catch (err) { return null; }
+}
+// main, master, and what origin/HEAD names, for the repository at dir
+function defaultBranches(dir) {
+  const out = new Set(DEFAULT_BRANCHES);
+  const h = gitIn(dir, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']);
+  if (h && h.includes('/')) out.add(h.slice(h.indexOf('/') + 1));
+  return out;
+}
+
+function mergeAttempt(command, cwd) {
+  const text = String(command == null ? '' : command);
+  return splitCommand(text).some((seg) => {
+    const t = tokens(seg);
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    const first = path.basename(words[0] || '');
+    if (first === 'gh') {
+      const rest = [];
+      for (let i = 1; i < words.length; i++) {
+        if (words[i] === '-R' || words[i] === '--repo') { i++; continue; }
+        if (/^--repo=/.test(words[i])) continue;
+        rest.push(words[i]);
+      }
+      if (rest[0] === 'pr' && rest[1] === 'merge') return true;
+      if (rest[0] === 'api' && rest.some((a) => /\/merges?(?:$|[/?])/.test(a))) return true;
+      return false;
+    }
+    if (first !== 'git') return false;
+    const { globals, rest } = splitGlobals(['git', ...words.slice(1)]);
+    const ci = globals.indexOf('-C');
+    const dir = ci >= 0 ? path.resolve(cwd || process.cwd(), globals[ci + 1] || '.') : (cwd || process.cwd());
+    const sub = rest[0];
+    if (sub !== 'push' && sub !== 'merge') return false;
+    const branches = defaultBranches(dir);
+    const current = gitIn(dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (sub === 'merge') return !rest.includes('--abort') && !!current && branches.has(current);
+    const args = rest.slice(1).filter((a) => !a.startsWith('-'));
+    const refspecs = args.slice(1);
+    if (!refspecs.length) return !!current && branches.has(current); // pushes the current branch
+    return refspecs.some((r) => {
+      const dst = r.includes(':') ? r.slice(r.lastIndexOf(':') + 1) : r;
+      const name = dst.replace(/^\+/, '').replace(/^refs\/heads\//, '');
+      return branches.has(name) || (dst === 'HEAD' && !!current && branches.has(current));
+    });
+  });
+}
+
 function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, cwd, hostHeadless, hostName, desktopHosts, projectRoot }) {
   const name = String(toolName || '');
   const pol = policy || { roleId: '', writes: [], bash: [] };
@@ -609,6 +668,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     }
     return { allow: true };
   }
+  if (name.startsWith('mcp__') && pol.roleId !== MERGER && /merge_pull_request|merge_pr\b|pull_request_merge/i.test(name)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
   if (name.startsWith('mcp__') && (pol.mcp || []).some((p) => mcpPatternMatches(p, name))) return { allow: true };
   if (name.startsWith('mcp__') && !bash.includes('any')) {
     const verb = name.split('__').pop();
@@ -619,6 +679,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   const command = shellCommandOf(name, toolInput);
   if (command !== null) {
     if (operatorShellWrite(command, { cwd, dirs: opDirs })) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
+    if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
       return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: they cannot be checked against the lane groups (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
@@ -677,4 +738,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
