@@ -174,7 +174,8 @@ is read from the environment only, sent only as the `Authorization` header to
 `https://api.typesafe.ai/v1/systemone`, and never logged. The manifest cannot change the endpoint; the
 only override is the `DELIVERY_JUDGE_ENDPOINT` environment variable, accepted for a loopback address
 only (the tests' fake provider). Gateways are not supported yet. Unknown keys are ignored with a
-warning. `judge.js` reads the configuration only from the project of the session's role marker (or,
+warning. `block_threshold` must be 0.5 to 0.95 and `warn_threshold` 0.2 to `block_threshold`; out of range,
+the judge stays off and the regex decides. `judge.js` reads the configuration only from the project of the session's role marker (or,
 outside a role, `DELIVERY_PROJECT_ROOT`); it takes no `--project`.
 
 The catalogue is `judge/questions.json`, versioned per question:
@@ -194,8 +195,8 @@ The catalogue is `judge/questions.json`, versioned per question:
   through it; such calls are logged with gate `cli`.
 - **Relay guard:** with the judge on, the Stop hook asks `relay_request` about the final message
   (code blocks, inline code, quoted lines and double-quoted spans removed first). When the regex
-  detector also flags a clause, the block stands unless the judge is clearly negative: p ≥
-  `warn_threshold` blocks (the clause and p quoted); below it the stop passes and the overruled hit is
+  detector also flags a clause, the block stands unless the judge is clearly negative: p ≥ the lower
+  of `warn_threshold` and 0.5 blocks (the clause and p quoted); below it the stop passes and the overruled hit is
   recorded in the judge log (`judge.js stats` counts them). Without a regex hit, p ≥ `block_threshold`
   blocks once (the message's start quoted), the band from `warn_threshold` to `block_threshold` leaves a
   one-line reminder for the next prompt, and below it passes. Off, refused locally, errored, malformed

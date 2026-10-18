@@ -433,7 +433,7 @@ function inputCheck({ projectRoot, sessionId, instance, deps, warn, op, role }) 
 // ---- the typed judge on the relay check (R-37) ----
 // The judge confirms or overrules the regex; it never lets a regex hit through unless it is clearly
 // negative. With an answer p:
-//   regex hit:  p >= warn_threshold blocks (the regex clause and p quoted); p < warn_threshold passes,
+//   regex hit:  p >= min(warn_threshold, 0.5) blocks (the regex clause and p quoted); below it passes,
 //               recorded as an overruled hit (advisory, kind relay-overruled);
 //   no hit:     p >= block_threshold blocks (the message's start and p quoted); warn_threshold <= p <
 //               block_threshold leaves a one-time reminder (advisory, kind relay-warn); below passes.
@@ -464,7 +464,8 @@ function relayCandidates(message, relay, judged) {
   if (p === null) return relay ? [{ kind: 'relay', reason: relayReason(message, relay.clause), detail: relay.phrase }] : [];
   const rated = `The typed judge rates this message p ${p.toFixed(2)} as a relay request (advisory evidence).`;
   if (relay) {
-    if (p >= judged.warn_threshold) return [{ kind: 'relay', reason: `${relayReason(message, relay.clause)} ${rated}`, detail: relay.phrase }];
+    // overruled only when clearly negative: below the warn threshold and below 0.5, whatever the manifest says
+    if (p >= Math.min(judged.warn_threshold, 0.5)) return [{ kind: 'relay', reason: `${relayReason(message, relay.clause)} ${rated}`, detail: relay.phrase }];
     return [{ kind: 'relay-overruled', advisory: true, record: true, p, reason: `The relay detector flagged "${String(relay.clause).replace(/\s+/g, ' ').slice(0, 160)}"; the typed judge overruled it at p ${p.toFixed(2)}.` }];
   }
   const start = strip(message).replace(/\s+/g, ' ').trim().slice(0, 160);

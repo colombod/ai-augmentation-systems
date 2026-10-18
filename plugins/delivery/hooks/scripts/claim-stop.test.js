@@ -297,6 +297,11 @@ test('relay rule, every cell: a regex hit blocks unless p < warn; without a hit 
   const [b] = relayCandidates(REGEX_HIT, hit, { ...t, p: 0.6 });
   assert.ok(b.reason.includes(`You wrote: "${hit.clause}"`) && /p 0\.60/.test(b.reason), 'the regex clause and p are quoted');
   assert.equal(relayCandidates(REGEX_HIT, null, { ...t, error: true }).length, 0, 'no p and no hit: nothing');
+  // a regex hit is overruled only below min(warn_threshold, 0.5), whatever the thresholds say
+  assert.deepEqual(relayCandidates(REGEX_HIT, hit, { block_threshold: 0.95, warn_threshold: 0.9, p: 0.5 }).map((c) => c.kind), ['relay']);
+  assert.deepEqual(relayCandidates(REGEX_HIT, hit, { block_threshold: 0.95, warn_threshold: 0.9, p: 0.49 }).map((c) => c.kind), ['relay-overruled']);
+  assert.deepEqual(relayCandidates(REGEX_HIT, hit, { block_threshold: 0.5, warn_threshold: 0.3, p: 0.31 }).map((c) => c.kind), ['relay']);
+  assert.deepEqual(relayCandidates(REGEX_HIT, hit, { block_threshold: 0.5, warn_threshold: 0.3, p: 0.29 }).map((c) => c.kind), ['relay-overruled']);
 });
 
 test('relay guard on the judge: the message is stripped before it is sent', async () => {

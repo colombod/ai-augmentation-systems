@@ -48,12 +48,12 @@ function configProblems(j) {
   if (j.provider !== undefined && !PROVIDERS.has(j.provider)) problems.push(`team.json: judge provider "${j.provider}", expected one of ${[...PROVIDERS].join(', ')}`);
   if (j.model !== undefined && (typeof j.model !== 'string' || !j.model.trim())) problems.push('team.json: judge model must be a non-empty string');
   if (j.key_env !== undefined && !KEY_ENV.test(String(j.key_env))) problems.push('team.json: judge key_env must be TYPESAFE_API_KEY or another TYPESAFE_* variable');
-  for (const k of ['block_threshold', 'warn_threshold']) {
-    if (j[k] !== undefined && !(typeof j[k] === 'number' && j[k] >= 0 && j[k] <= 1)) problems.push(`team.json: judge ${k} must be a number from 0 to 1`);
-  }
+  // bounded so a manifest cannot switch the relay guard off: block_threshold 0.5..0.95, warn_threshold 0.2..block_threshold
   const b = j.block_threshold === undefined ? DEFAULTS.block_threshold : j.block_threshold;
   const w = j.warn_threshold === undefined ? DEFAULTS.warn_threshold : j.warn_threshold;
-  if (typeof b === 'number' && typeof w === 'number' && w > b) problems.push('team.json: judge warn_threshold must not exceed block_threshold');
+  const num = (x) => typeof x === 'number' && Number.isFinite(x);
+  if (!num(b) || b < 0.5 || b > 0.95) problems.push(`team.json: judge block_threshold must be a number from 0.5 to 0.95 (default ${DEFAULTS.block_threshold}); the judge stays off until it is`);
+  if (!num(w) || w < 0.2 || (num(b) && w > b)) problems.push(`team.json: judge warn_threshold must be a number from 0.2 to block_threshold (default ${DEFAULTS.warn_threshold}); the judge stays off until it is`);
   return { problems, warnings };
 }
 
@@ -273,6 +273,11 @@ async function ask(questionId, state, opts = {}) {
     if (local) {
       writeLog(dir, { ...entry, outcome: 'skipped', reason: local, missing: f.missing });
       return { ...base, skipped: true, reason: local, ...extra, ...(f.missing.length ? { missing: f.missing } : {}) };
+    }
+    // under node --test nothing may reach a real provider
+    if (process.env.NODE_TEST_CONTEXT && !loopback(cfg.endpoint)) {
+      writeLog(dir, { ...entry, outcome: 'skipped', reason: 'test_no_network' });
+      return { ...base, skipped: true, reason: 'test_no_network', ...extra };
     }
     const impl = providerImpls[cfg.provider];
     const t0 = process.hrtime.bigint();

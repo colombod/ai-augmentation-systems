@@ -39,6 +39,11 @@ test('judgeConfig: off without a block, with provider none, or without the key; 
   assert.equal(J.judgeConfig({ judge: { provider: 'typesafe' } }, {}).reason, 'no_key');
   assert.equal(J.judgeConfig({ judge: { provider: 'typesafe', key_env: 'TYPESAFE_OTHER' } }, { TYPESAFE_OTHER: 'k' }).enabled, true);
   assert.equal(J.judgeConfig({ judge: { provider: 'typesafe', block_threshold: 2 } }, { TYPESAFE_API_KEY: KEY }).reason, 'judge_config_invalid');
+  // thresholds are bounded so a manifest cannot switch the relay guard off (repro: both at 1)
+  const t = (block_threshold, warn_threshold) => J.judgeConfig({ judge: { provider: 'typesafe', block_threshold, warn_threshold } }, { TYPESAFE_API_KEY: KEY }).reason;
+  for (const [bt, wt] of [[1, 1], [0.96, 0.5], [0.49, 0.2], [0.8, 0.19], [0.8, 0.81]]) assert.equal(t(bt, wt), 'judge_config_invalid', `${bt}/${wt}`);
+  for (const [bt, wt] of [[0.95, 0.95], [0.5, 0.2], [0.5, 0.5], [0.8, 0.5]]) assert.equal(t(bt, wt), null, `${bt}/${wt}`);
+  assert.match(J.configProblems({ block_threshold: 1 }).problems[0], /0\.5 to 0\.95/);
   assert.equal(JSON.stringify(J.judgeConfig({ judge: { provider: 'typesafe' } }, { TYPESAFE_API_KEY: KEY })).includes(KEY), false, 'the key is not in the config');
 });
 
@@ -55,6 +60,11 @@ test('the key variable is pinned to TYPESAFE_*, and the endpoint comes only from
   assert.equal(J.judgeConfig({ judge: { provider: 'typesafe', endpoint: 'http://127.0.0.1:9/x' } }, env).endpoint, J.TYPESAFE_URL, 'the manifest cannot set the endpoint');
   assert.equal(J.judgeConfig({ judge: { provider: 'typesafe' } }, { ...env, DELIVERY_JUDGE_ENDPOINT: 'https://example.org/x' }).endpoint, J.TYPESAFE_URL, 'a remote override is ignored');
   assert.equal(J.judgeConfig({ judge: { provider: 'typesafe' } }, { ...env, DELIVERY_JUDGE_ENDPOINT: 'http://localhost:9/x' }).endpoint, 'http://localhost:9/x');
+});
+
+test('under node --test a real provider is never called', async () => {
+  const r = await J.ask('relay_request', RELAY, { config: J.judgeConfig({ judge: { provider: 'typesafe' } }, { TYPESAFE_API_KEY: KEY }), logDir: tmp() });
+  assert.deepEqual([r.skipped, r.reason], [true, 'test_no_network']);
 });
 
 test('manifest: judge values are validated and unknown keys (endpoint included) warn', () => {
