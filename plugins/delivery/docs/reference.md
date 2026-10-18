@@ -148,7 +148,8 @@ and MCP merge tools; `prepare-role` adds a native `Bash(gh pr merge:*)` deny rul
 A builder pushes its own branch and merges the default branch into it to resolve a conflict. The
 Delivery Manager requests an independent review (a reviewer subagent or another session, never the
 author) and merges only on a passing review of the pull request's current head; a conflict or new
-commits send the pull request back to its owner and to review again.
+commits send the pull request back to its owner and to review again. Its own `gh pr merge` sits in
+the `gh-merge` group and passes only through the merge gate (below).
 
 ### The leak guard
 
@@ -584,6 +585,61 @@ divergence, otherwise warn (R-14, R-15, R-16, R-18; D4).
   (it needs labelled cases first), and the R-01 goal sheet's blocking unknowns. A program that writes
   the register or the evidence files outside a tool call is not seen by the lanes (cooperative trust,
   as for the bd guard); the gates' re-verification is what still holds then.
+
+### Review records and the merge gate
+
+Owner rulings: builders cannot merge; the Delivery Manager asks independent reviewers to review each
+pull request and, on their outcome, accepts and merges; a conflict goes back to the pull request's
+owner and is reviewed again; gates block only on authority or serious divergence (R-32, R-24, R-12).
+
+- **Review records.** `.delivery/reviews/prs/<pr>.ndjson`, one file per pull request, append-only
+  and chained like the evidence rows (`seq`, `prev`), written only by `review.js` and
+  `merge-gate.js`: every lane, the Delivery Manager's and the `any` lanes included, refuses a Write,
+  Edit, redirect, `cp` or `mv` onto it. Rows: `request`, `review`, `ci`, `sent-back`, `merged`.
+  `node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js show <pr>` and `review.js list [--plain] [--json]` read
+  them.
+- **Request.** `review.js request <pr> --reviewer <session or subagent id>` (the Delivery Manager)
+  reads the pull request through `gh pr view` (head, changed lines, `Refs <bead>` in the body; without
+  gh, `--head <sha>`, `--bead <id>` and `--lines <n>`), stamps the authors of the beads it refs (the
+  actors the claim check recorded, and the assignee), and prints the reviewer brief: review that head
+  only, run the tests and quote their output, report `pass` or `changes` with findings, never modify
+  code, push, approve or merge. A pull request that names no bead is refused: its author could not
+  be checked.
+- **Independence.** `review.js record <pr> --head <sha> --result pass|changes --by <id> --summary
+  '<line>'` refuses a reviewer who is an author (by instance or actor), a review recorded from an
+  author's session (so a subagent an author dispatched never counts), and the Delivery Manager as its
+  own reviewer. A reviewer session records only its own review; the Delivery Manager records a
+  subagent's with the subagent's id. A bot (`copilot...`, `...[bot]`, or `--advisory`) is an advisory
+  row: it never satisfies the gate alone unless `team.json` sets `"review": { "bots_count": true }`.
+- **The gate.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.js check <pr>` passes only when a
+  passing independent review of the pull request's current head exists, recorded after the last
+  send-back, with no newer `changes` on that head; CI is green (gh's `statusCheckRollup`: every check
+  completed with success, neutral or skipped; pending waits; where gh cannot read the checks, or none
+  are configured, the Delivery Manager's `review.js ci <pr> --head <sha> --result pass|fail --run <ref>`
+  row stands in); and gh does not report a conflict. A new commit changes the head, so the old review
+  no longer counts. The lane runs the same check before it allows the Delivery Manager's
+  `gh pr merge`, which must name the PR by number and `--match-head-commit <sha>` (GitHub then merges
+  exactly that head); `--admin` and `--auto` are refused. Each refusal is two lines, the second the
+  exact command to run. An error in the check fails closed.
+- **Send-back.** Changes asked, red CI, or a conflict: `review.js send-back <pr> --reason
+  conflict|changes|ci [--note '<what>']` appends a note to the beads and prints the message for the
+  owner (the builder holding the bead). The Delivery Manager never resolves a conflict itself; reviews
+  before the send-back stop counting, so the fix is reviewed again.
+- **Merged.** `merge-gate.js merged <pr>` after the merge: checks gh says merged, writes the `merged`
+  row and runs `evidence.js state <bead> merged --pr <pr>` for its stories (R-12). A merge made
+  without a passing review of its head is recorded with a `merge-ungated` warning.
+- **Size and scope (R-24).** A pull request over `pr_size_lines` changed lines (600 by default;
+  lock files, `dist/`, `build/`, `vendor/`, minified files and snapshots left out) or whose `Refs` lines
+  span more than one story is a recorded warning in `review.js request` and in `merge-gate.js check`,
+  never a refusal. The figure is a goal field: it changes only on the owner's Yes in the question box
+  (`goal.js ask pr_size_lines <n>`, then `goal.js set`).
+- **Status.** `team-status.js` shows pull requests waiting for review, ready to merge and sent back;
+  `review.js list --plain` is the Chief of Staff's wording ("The change "Import a collection" is
+  reviewed and merged; checking it on the customer's app next"), with no pull request or bead ids.
+- **Not yet.** `state-merged` is set by `merge-gate.js merged`, not by a hook after the merge; the
+  full-run receipt (lane, sha, passed count) R-32 names, 400-line caps on security paths, a story's
+  `split_plan`, and an open-PR count per builder (R-23). The chain's head is not stored outside the
+  file, so a deleted last row is caught only by git history.
 
 ### Owner authority and communication
 
