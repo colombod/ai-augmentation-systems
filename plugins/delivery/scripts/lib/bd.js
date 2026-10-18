@@ -85,7 +85,10 @@ function makeBd({ cwd, env, timeoutMs } = {}) {
     return (json(args) || []).map(normalise);
   }
 
-  return { exec, show, create, update, depAdd, depRemove, depsOf, list, setTimeout };
+  // open beads with no open blocker (bd's own readiness), for the idle alarm
+  function ready() { return (json(['ready', '--json', '--limit', '0']) || []).map(normalise); }
+
+  return { exec, show, create, update, depAdd, depRemove, depsOf, list, ready, setTimeout };
 }
 
 module.exports = { makeBd };

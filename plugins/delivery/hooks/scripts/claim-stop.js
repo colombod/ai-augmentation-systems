@@ -26,6 +26,14 @@ function judgeSummary(j) {
   return Object.fromEntries(keep.filter((k) => j[k] !== undefined).map((k) => [k, j[k]]));
 }
 
+// true at most once every 10 minutes per role directory (the stamp is the file's mtime)
+function idleCheckDue(roleDir) {
+  const f = path.join(roleDir, '.delivery-idle-check');
+  try { if (Date.now() - require('fs').statSync(f).mtimeMs < 10 * 60e3) return false; } catch (e) { /* first time */ }
+  try { require('fs').writeFileSync(f, `${new Date().toISOString()}\n`); } catch (e) { /* run anyway */ }
+  return true;
+}
+
 async function main() {
   const { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, JUDGE_REMINDER, MESSAGE_REMINDER } = require('./role-context.js');
   const input = readHookInput();
@@ -91,6 +99,22 @@ async function main() {
       // a missing claim note is a reminder for the next prompt, not a block (A2)
       if (claim) { try { require('fs').writeFileSync(path.join(valid.roleDir, require('./role-context.js').CLAIM_REMINDER), `Reminder: ${claim.reason}`); } catch (e) { /* best effort */ } }
     } catch (err) { /* allow */ }
+    // idle with ready work (R-43), for the two roles that start work: a warning and a reminder, never a
+    // block. At most every 10 minutes per role (two bd reads), so the stop stays inside its timeout.
+    if (['chief-of-staff', 'delivery-lead'].includes(valid.role.id) && !valid.role.retired && !input.stop_hook_active && idleCheckDue(valid.roleDir)) {
+      try {
+        const I = require('../../scripts/lib/idle.js');
+        const { makeBd } = require('../../scripts/lib/bd.js');
+        const s = I.readIdle(valid.marker.project_root, { bd: makeBd({ ...bdOptionsFor(valid.marker, input.cwd), timeoutMs: 3000 }) });
+        if (s.idle) {
+          I.recordIdle(valid.marker.project_root, s, { instance: valid.marker.instance });
+          const f = path.join(valid.roleDir, MESSAGE_REMINDER);
+          let prev = '';
+          try { prev = require('fs').readFileSync(f, 'utf8'); } catch (e) { /* none */ }
+          require('fs').writeFileSync(f, `${I.idleLine(s)}${prev ? `\n${prev}` : ''}`);
+        }
+      } catch (err) { /* the idle check fails open */ }
+    }
     const d = composeStop({ input, roleDir: valid.roleDir, candidates, judge: judged ? { ...judgeSummary(judged), ...(overruled ? { overruled: true } : {}) } : null });
     if (d) process.stdout.write(JSON.stringify({ decision: 'block', reason: d.reason }));
   }
