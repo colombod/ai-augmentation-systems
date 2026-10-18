@@ -583,6 +583,40 @@ function operatorShellWrite(command, opts = {}) {
   });
 }
 
+// The goal sheet (R-42): its budget, pause, scope and approval fields change only through
+// scripts/goal.js, which needs an owner record. Protected for every role, `any` included. Committing it
+// is fine; a write, a move, a delete or a checkout over it is not. Tamper-evidence by history, as above.
+const GOAL_REL = path.join('.delivery', 'goal.json');
+const GOAL_REASON = 'the goal sheet changes only on the owner\'s word: `goal.js set <field> <value> --record <dec-id>`';
+const GOAL_MENTION = /\.delivery\/+(?:\.\/+)*goal\.json\b/i;
+const GOAL_GIT_WRITES = ['checkout', 'restore', 'reset', 'rm', 'mv', 'apply', 'stash', 'switch'];
+
+function goalFiles({ projectRoot, roleDir }) {
+  const out = [];
+  if (projectRoot && path.isAbsolute(String(projectRoot))) out.push(realish(path.join(String(projectRoot), GOAL_REL)).toLowerCase());
+  if (roleDir) out.push(realish(path.join(String(roleDir), 'project', GOAL_REL)).toLowerCase());
+  return out;
+}
+const isGoalFile = (p, files) => files.includes(realish(p).toLowerCase());
+
+function goalShellWrite(command, { cwd, files = [] } = {}) {
+  const text = String(command == null ? '' : command);
+  const mentioned = GOAL_MENTION.test(text);
+  return splitCommand(text).some((seg) => {
+    const t = tokens(seg);
+    if (!t.length) return false;
+    const base = cwd || process.cwd();
+    if (files.length && writeTargets(seg, t).some((x) => isGoalFile(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`, files))) return true;
+    if (!mentioned || !GOAL_MENTION.test(seg)) return false;
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    const first = path.basename(words[0] || '');
+    if (hasRedirect(seg) || OPERATOR_WRITE_WORDS.includes(first)) return true;
+    if (first === 'sed' && writesFiles(['sed', ...words.slice(1)])) return true;
+    if (first === 'git') return GOAL_GIT_WRITES.includes(splitGlobals(['git', ...words.slice(1)]).rest[0]);
+    return false;
+  });
+}
+
 // Merging belongs to the Delivery Manager: it requests independent review of each pull request and
 // merges on a passing review. Every other role, the unrestricted `any` lanes included, is refused a
 // merge in whatever form: `gh pr merge`, the merge endpoint through `gh api`, a push to the default
@@ -660,6 +694,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     for (const fp of filePathsOf(name, toolInput)) {
       const p = path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`; // not normalised: realish applies `..` physically
       if (underOperator(p, opDirs)) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
+      if (isGoalFile(p, goalFiles({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
       if (harnessFile(p)) continue;
       if (pathAllowed(p, { roleDir, writes: pol.writes, pluginRoot: pluginRootOf({ pluginRoot }) })) continue;
       const real = realish(p);
@@ -680,6 +715,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   const command = shellCommandOf(name, toolInput);
   if (command !== null) {
     if (operatorShellWrite(command, { cwd, dirs: opDirs })) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
+    if (goalShellWrite(command, { cwd, files: goalFiles({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
@@ -739,4 +775,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { goalShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
