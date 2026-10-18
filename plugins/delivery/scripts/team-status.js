@@ -48,7 +48,7 @@ function operatorStatus(projectRoot, team, { host, deps = {} } = {}) {
 // The gates at a glance (R-12, ruling 3): open warnings by kind and those over 24 h, and the story
 // states merged / deployed / verified with any area over the unverified cap. Read-only; a failed bead
 // read becomes a note.
-function gateStatus(projectRoot, team, { now, storyBeads, checkBeads } = {}) {
+function gateStatus(projectRoot, team, { now, storyBeads, checkBeads, budget } = {}) {
   const W = require('./lib/warnings.js');
   const G = require('./lib/gates.js');
   const { maxUnverified } = require('./lib/gate-context.js');
@@ -57,6 +57,11 @@ function gateStatus(projectRoot, team, { now, storyBeads, checkBeads } = {}) {
     const beads = storyBeads ? storyBeads() : require('./lib/bd.js').makeBd({ cwd: projectRoot }).list({ label: 'story', all: true });
     // closed is not verified: a story counts by its state labels, open or closed
     out.states = G.stateCounts(beads, maxUnverified(team));
+    // the current wave per area and the budget (R-36, R-34): plain words, owner-set figures only
+    const W = require('./lib/waves.js');
+    out.waves = [...W.areas(beads).values()].map(W.waveLine).filter(Boolean);
+    const st = budget || require('./lib/budget.js').state(projectRoot, { team, beads, now });
+    out.budget = st.set ? { remaining: st.remaining, total: st.total, level: st.level, free: st.free } : { set: false };
   } catch (err) { out.notes.push(`story states unavailable: ${String(err.message).split('\n')[0]}`); }
   // reality checks dispatched and not yet closed (R-33); a caller that supplies the story beads
   // supplies these too, or they are not read
@@ -80,7 +85,7 @@ function idleStatus(projectRoot, { now, idleBd } = {}) {
   return s;
 }
 
-function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, checkBeads, idleBd } = {}) {
+function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, checkBeads, idleBd, budget } = {}) {
   const { team, hosts } = loadManifest(projectRoot);
   const roster = readRoster(projectRoot);
   const nowMs = Date.parse(now || new Date().toISOString());
@@ -115,7 +120,7 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
   let bd_reachable = false;
   try { bd_reachable = Boolean((bdCheck || bdReachable)(projectRoot)); } catch (err) { bd_reachable = false; }
   const operator = operatorStatus(projectRoot, team, { host, deps: operatorDeps });
-  const gates = gateStatus(projectRoot, team, { now, checkBeads, storyBeads: storyBeads || (bd_reachable ? undefined : () => { throw new Error('bd unreachable'); }) });
+  const gates = gateStatus(projectRoot, team, { now, checkBeads, budget, storyBeads: storyBeads || (bd_reachable ? undefined : () => { throw new Error('bd unreachable'); }) });
   const idle = bd_reachable || idleBd ? idleStatus(projectRoot, { now, idleBd }) : { idle: false, why: 'bd-unreachable' };
   // R-33: the Reality Checker drives a browser or desktop app, which a headless host cannot run
   const placement = team.roles.filter((r) => r.id === 'reality-checker' && !r.retired && ((hosts && hosts.hosts) || {})[r.host] && hosts.hosts[r.host].headless)
@@ -172,6 +177,9 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gat
         const rc = gates.realityChecks;
         lines.push(`Reality checks pending: ${rc.length}${rc.length ? ` (${rc.slice(0, 5).map((c) => `${c.id}${c.assignee ? ` with ${c.assignee}` : ', unclaimed'}`).join(', ')}${rc.length > 5 ? ', ...' : ''})` : ''}`);
       }
+      const B = gates.budget;
+      if (B) lines.push(B.set === false ? 'Budget: not set by the owner (budget checks only warn)' : `Budget: ${B.remaining.toFixed(1)} of ${B.total.toFixed(1)} units left, ${B.free.toFixed(1)} free after in-flight work (${B.level})`);
+      for (const w of gates.waves || []) lines.push(`Wave: ${w}`);
       for (const o of gates.states.overCap) lines.push(`Warning: area ${o.area} has ${o.count} merged-but-unverified stories (cap ${o.cap}): ${o.ids.join(', ')}; verify them before new work there`);
     }
     for (const n of gates.notes) lines.push(`Note: ${n}`);

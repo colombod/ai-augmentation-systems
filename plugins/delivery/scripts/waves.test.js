@@ -1,0 +1,253 @@
+// scripts/waves.test.js — phase 2 acceptance: compounding waves (R-36), budget-aware start (R-34),
+// compounding-first selection with fixes and security first (R-41), replayed on Vault moments through
+// the real claim check (bd-guard gateChecks), plan.js and wave.js.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const { gateChecks, decideBd } = require('../hooks/scripts/bd-guard.js');
+const { memBd } = require('./testing/gate-fixture.js');
+const { goalProject, ownerSets } = require('./testing/goal-fixture.js');
+const { reasonProblems } = require('./lib/short-reason.js');
+const B = require('./lib/budget.js');
+const W = require('./lib/waves.js');
+const plan = require('./plan.js');
+const wave = require('./wave.js');
+const { teamStatus, renderStatus } = require('./team-status.js');
+
+const TEAM = { project: 'vault', prefix: 'ex', roles: [{ id: 'delivery-lead', model: 'sonnet' }, { id: 'builder', model: 'sonnet', count: 2 }] };
+const NOW = '2026-10-12T23:00:00Z';
+
+// A Vault project: story files with their area, wave and files; beads as materialise stamps them.
+function vault() {
+  const t = goalProject();
+  fs.mkdirSync(path.join(t.root, '.delivery', 'stories'), { recursive: true });
+  t.story = (id, { area, wave: w, files = [], dependsOn = [], fixes, extra = '' } = {}) => {
+    const fm = [`id: ${id}`, `title: ${id}`, 'phase: 1', `area: ${area}`, ...(w ? [`wave: ${w}`] : []), `depends_on: [${dependsOn.join(', ')}]`, ...(fixes ? [`fixes: ${fixes}`] : []), extra].filter(Boolean).join('\n');
+    const table = files.length ? `\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n${files.map(([p, a]) => `| \`${p}\` | ${a} — |`).join('\n')}\n` : '';
+    fs.writeFileSync(path.join(t.root, '.delivery', 'stories', `${id}.md`), `---\n${fm}\n---\n\n# ${id}\n${table}`);
+  };
+  return t;
+}
+function bead(id, area, { wave: w, status = 'open', state, size = 'M', labels = [], metadata = {}, assignee } = {}) {
+  return { id: `ex-${id}`, title: id, status, assignee: assignee || (status === 'in_progress' ? 'dev@pc/builder-1' : ''), parent: 'ex-vault-ph1',
+    labels: ['story', `size-${size}`, ...(w ? [`wave-${w}`] : []), ...(state ? [`state-${state}`] : []), ...labels],
+    metadata: { story_file: `${id}.md`, story: id, area, ...(w ? { wave: w } : {}), ...metadata } };
+}
+// one owner-set budget of 100 weekly units, lean at 70% (set once, through the question box)
+let owner = null;
+function budgetAt(usedPct, beads) {
+  if (!owner) { owner = goalProject(); ownerSets(owner, 'budget.weekly_units', 100); ownerSets(owner, 'budget.lean_at', 70); }
+  return B.state(owner.root, { beads, usedTokens: usedPct * B.table(null).unitTokens, snapshot: null, team: TEAM });
+}
+const NO_BUDGET = { set: false, table: B.table(null) };
+const claim = (t, bd, id, budget, over = {}) => gateChecks({ command: `bd update ${id} --claim`, roleId: 'builder', actor: 'dev@pc/builder-1', instance: 'builder-1', bd, root: t.root, team: TEAM, budget, ...over });
+const kinds = (g) => g.warnings.map((w) => w.kind);
+const take = (bd, id) => { const b = bd.beads.get(id); b.status = 'in_progress'; b.assignee = 'dev@pc/builder-1'; };
+
+test('R-36/R-23 replay, 13 parallel builders across areas (AI 10-09): warnings only with no owner-set budget; near the limit, new-area starts are refused (D5)', async () => {
+  const t = vault();
+  const areas = ['collections', 'gemini', 'store', 'parity-codex', 'parity-perplexity', 'copilot', 'landing'];
+  const list = [bead('col-1', 'collections', { wave: 1, state: 'verified', status: 'closed' })];
+  t.story('col-1', { area: 'collections', wave: 1 });
+  for (let i = 0; i < 13; i++) {
+    const area = areas[i % areas.length];
+    const id = `w${i}`;
+    t.story(id, { area, wave: area === 'collections' ? 2 : 1, files: [[`src/${area}/index.ts`, 'modify']] });
+    list.push(bead(id, area, { wave: area === 'collections' ? 2 : 1 }));
+  }
+  const free = memBd(list);
+  for (let i = 0; i < 13; i++) {
+    const g = await claim(t, free, `ex-w${i}`, NO_BUDGET);
+    assert.equal(g.deny, null, `claim ${i}: no budget never blocks`);
+    if (i >= 2) assert.ok(kinds(g).includes('wip'), `claim ${i} is over the two builders`);
+    if (i >= 7) assert.ok(kinds(g).includes('file-overlap'), `claim ${i} shares files with ex-w${i - 7}`);
+    take(free, `ex-w${i}`);
+  }
+  // the new-area warning names the reason it lacks
+  const g = await claim(t, memBd(list.slice(0, 1).concat([{ ...list[1], status: 'in_progress', assignee: 'x' }, list[2]])), 'ex-w1', NO_BUDGET);
+  assert.ok(g.warnings.some((w) => w.kind === 'new-area' && /no recorded reason/.test(w.detail)));
+  // the same moment under an owner-set budget near the limit: every new area is refused, the
+  // collections wave already under way only warns (finish in-flight work)
+  const near = memBd(list.map((b, i) => (i >= 1 && i <= 3 ? { ...b, status: 'in_progress', assignee: 'x' } : b)));
+  const st = budgetAt(97, [...near.beads.values()]);
+  assert.equal(st.nearLimit, true);
+  const refused = await claim(t, near, 'ex-w3', st);
+  assert.match(refused.deny, /^Claim of ex-w3 refused \(D5: parity-codex is a new area and the budget is near the limit/);
+  assert.deepEqual(reasonProblems(refused.deny), []);
+  const inWave = await claim(t, near, 'ex-w7', st);
+  assert.equal(inWave.deny, null);
+  assert.ok(kinds(inWave).includes('budget-short'));
+});
+
+test('R-41 replay, store submissions and landing page while the upload chain was half done (AI P8, 10-10): below half the budget a new area with no recorded reason is refused (D1); the owner\'s reason lets it start', async () => {
+  const t = vault();
+  t.story('wxy-12', { area: 'upload', wave: 1 });
+  t.story('wxy-2', { area: 'upload', wave: 1 });
+  t.story('store-1', { area: 'publication', wave: 1 });
+  const beads = [bead('wxy-12', 'upload', { wave: 1, status: 'in_progress' }), bead('wxy-2', 'upload', { wave: 1, state: 'merged', status: 'closed' }), bead('store-1', 'publication', { wave: 1, size: 'S' })];
+  const bd = memBd(beads);
+  const plenty = await claim(t, bd, 'ex-store-1', budgetAt(30, beads));
+  assert.equal(plenty.deny, null, 'more than half left: a warning');
+  assert.ok(kinds(plenty).includes('new-area'));
+  const half = await claim(t, bd, 'ex-store-1', budgetAt(60, beads));
+  assert.match(half.deny, /\(D1: publication is a new area with no recorded reason and half or less of the budget is left/);
+  assert.match((await claim(t, bd, 'ex-store-1', budgetAt(60, beads), { roleId: 'delivery-lead' })).deny, /\nRun: .*plan\.js select .*goal\.js ask area_add publication/);
+  assert.deepEqual(reasonProblems(half.deny), []);
+  // the owner's Yes to "Open publication as a new product area?" is the recorded reason
+  assert.equal(ownerSets(t, 'area_add', 'publication').ok, true);
+  const agreed = await claim(t, bd, 'ex-store-1', budgetAt(60, beads));
+  assert.equal(agreed.deny, null);
+  assert.ok(!kinds(agreed).includes('new-area'));
+  // in lean mode the start still warns, reason or not (R-31)
+  assert.ok(kinds(await claim(t, bd, 'ex-store-1', budgetAt(75, beads))).includes('new-area-lean'));
+  // a roadmap Areas row citing an owner record that verifies is a reason too
+  fs.mkdirSync(path.join(t.root, '.delivery', 'initiatives', 'vault'), { recursive: true });
+  fs.writeFileSync(path.join(t.root, '.delivery', 'initiatives', 'vault', 'roadmap.md'), '## Areas\n\n| Area | Reason | Record |\n|---|---|---|\n| landing | the owner wants a page for the beta | dec-chief-of-staff-41 |\n');
+  assert.deepEqual(W.areaReason(t.root, 'landing', { recordOk: (id) => id === 'dec-chief-of-staff-41', ownerAreas: [] }), { by: 'the vault roadmap, citing dec-chief-of-staff-41' });
+  assert.equal(W.areaReason(t.root, 'landing', { recordOk: () => false, ownerAreas: [] }), null, 'a record that does not verify is no reason');
+});
+
+test('R-41 replay, 10-12 evening at 85%: the sign-in refresh fix with its fixes link ranks first and lean mode does not hold it; an unlinked bug ranks as ordinary work with a warning', async () => {
+  const t = vault();
+  t.story('wxy-1', { area: 'auth', wave: 1 });
+  t.story('wxy-12', { area: 'auth', fixes: 'ex-wxy-1' });
+  t.story('0n9-4', { area: 'import', wave: 2, dependsOn: ['0n9-3'], files: [['src/import/csv.ts', 'modify']] });
+  t.story('0n9-3', { area: 'import', wave: 2 });
+  t.story('feedback-1', { area: 'feedback', wave: 1 });
+  t.story('prerelease-1', { area: 'prerelease', wave: 1 });
+  t.story('0n9-9', { area: 'import' });
+  const beads = [
+    bead('wxy-1', 'auth', { wave: 1, state: 'verified', status: 'closed' }),
+    bead('wxy-12', 'auth', { size: 'S', labels: ['bug'], metadata: { fixes: 'ex-wxy-1' } }),
+    bead('0n9-3', 'import', { wave: 2, state: 'verified', status: 'closed' }),
+    bead('0n9-4', 'import', { wave: 2 }),
+    bead('feedback-1', 'feedback', { wave: 1 }),
+    bead('prerelease-1', 'prerelease', { wave: 1 }),
+    bead('0n9-9', 'import', { labels: ['bug'] }),
+    bead('wxy-2', 'upload', { status: 'in_progress', size: 'S' }),
+  ];
+  const st = budgetAt(85, beads);
+  assert.deepEqual([st.lean, st.half, st.nearLimit], [true, true, false]);
+  const bd = memBd(beads);
+  const who = { root: t.root, roleId: 'delivery-lead', instance: 'delivery-lead', team: TEAM };
+  const r = JSON.parse((await plan.main(['select', '--json'], { who, bd, budget: st })).out);
+  assert.equal(r.ranked[0].id, 'ex-wxy-12');
+  assert.equal(r.ranked[0].tier, 1);
+  assert.match(r.ranked[0].reasons.join(), /bug with fixes ex-wxy-1/);
+  assert.equal(r.ranked[1].id, 'ex-0n9-4', 'then compounding work on verified 0n9-3');
+  assert.match(r.ranked[1].reasons.join(), /builds on verified 0n9-3/);
+  const byId = Object.fromEntries(r.ranked.map((x) => [x.id, x]));
+  assert.match(byId['ex-feedback-1'].refused, /new area with no recorded reason, half or less of the budget left \(D1\)/);
+  assert.equal(byId['ex-0n9-9'].tier, 2, 'an unlinked bug is ordinary work');
+  assert.match(byId['ex-0n9-9'].warnings.join(), /labelled bug with no fixes link/);
+  // the claim: lean mode does not hold the linked fix; the unlinked bug is warned and checked as ordinary work
+  const fix = await claim(t, bd, 'ex-wxy-12', st);
+  assert.equal(fix.deny, null);
+  assert.ok(!kinds(fix).some((k) => ['lean-wip', 'wip', 'budget-short'].includes(k)), kinds(fix).join());
+  const plain = await claim(t, bd, 'ex-0n9-9', st);
+  assert.ok(kinds(plain).includes('fix-unlinked'));
+  assert.ok(kinds(plain).includes('lean-wip'));
+  // --record writes the score and reasons on the chosen bead, and only the Delivery Manager may
+  const rec = await plan.main(['select', '--record'], { who, bd, budget: st, now: NOW });
+  assert.match(rec.out, /Recorded the selection on ex-wxy-12/);
+  assert.deepEqual(bd.show('ex-wxy-12').metadata.selection.tier, 1);
+  const no = await plan.main(['select', '--record'], { who: { ...who, roleId: 'builder' }, bd, budget: st });
+  assert.equal(no.code, 1);
+  // with the judge on, its answers are advisory input on the record
+  const asked = [];
+  const ask = async (q) => { asked.push(q); return q === 'is_fix' ? { p: 0.2 } : { answer: 'strongly', confidence: 0.9 }; };
+  const j = JSON.parse((await plan.main(['select', '--json'], { who, bd, budget: st, ask })).out);
+  assert.equal(j.ranked[0].judge.builds_on_verified, 'strongly');
+  assert.match(j.ranked.find((x) => x.id === 'ex-0n9-9').warnings.join(), /typed judge reads this as not a fix/);
+  assert.ok(asked.includes('is_fix') && asked.includes('builds_on_verified'));
+});
+
+test('R-34/R-42 replay: with no owner-set budget nothing ever blocks on budget, even at 97% of the week', async () => {
+  const t = vault();
+  t.story('a', { area: 'upload', wave: 1 });
+  t.story('b', { area: 'gemini', wave: 1 });
+  t.story('c', { area: 'upload', wave: 2 });
+  const beads = [bead('a', 'upload', { wave: 1, status: 'in_progress' }), bead('b', 'gemini', { wave: 1, size: 'L' }), bead('c', 'upload', { wave: 2, size: 'L' })];
+  const bd = memBd(beads);
+  // what the transcripts say is spent does not matter: the owner set no figure
+  const st = B.state(t.root, { beads, usedTokens: 97 * B.table(null).unitTokens, snapshot: { usedPct: 97, periodStart: NOW } });
+  assert.equal(st.set, false);
+  for (const id of ['ex-b', 'ex-c']) assert.equal((await claim(t, bd, id, st)).deny, null, id);
+  const sel = JSON.parse((await plan.main(['select', '--json'], { who: { root: t.root, roleId: 'delivery-lead', team: TEAM }, bd, budget: st })).out);
+  assert.ok(sel.ranked.every((x) => !x.refused));
+  assert.match((await plan.main(['budget'], { who: { root: t.root, team: TEAM }, bd, budget: st })).out, /not set by the owner, so budget checks only warn/);
+});
+
+test('R-36 replay, collections W3 claimed while #478 (W2) is merged but not verified: a warning; refused (D5) only when the budget left cannot finish W2 as well', async () => {
+  const t = vault();
+  for (const id of ['478', '479', 'w3-1']) t.story(id, { area: 'collections', wave: id === 'w3-1' ? 3 : 2 });
+  const beads = [bead('478', 'collections', { wave: 2, state: 'merged', status: 'closed', size: 'L' }), bead('479', 'collections', { wave: 2, status: 'in_progress', size: 'L' }), bead('w3-1', 'collections', { wave: 3, size: 'M' })];
+  const bd = memBd(beads);
+  const warned = await claim(t, bd, 'ex-w3-1', budgetAt(20, beads));
+  assert.equal(warned.deny, null);
+  assert.ok(warned.warnings.some((w) => w.kind === 'outside-wave' && /wave 3, while wave 2 of collections is not verified \(ex-478, ex-479\)/.test(w.detail)));
+  // 80 used: 20 left; W2 still needs 8 x 1.3 + 8 x 0.3 = 12.8, W3-1 needs 3.9: it fits, so it warns
+  assert.equal((await claim(t, bd, 'ex-w3-1', budgetAt(80, beads))).deny, null);
+  // 85 used: 15 left, 15 - 3.9 < 12.8: starting it would leave W2 half-built
+  const half = await claim(t, bd, 'ex-w3-1', budgetAt(85, beads));
+  assert.match(half.deny, /\(D5: wave 3 while wave 2 of collections is unfinished: 15 units left, wave 2 needs 12\.8, this 3\.9; it would leave wave 2 half-built/);
+  assert.deepEqual(reasonProblems(half.deny), []);
+  // W2 verified or cut on the owner's record: W3 is the current wave
+  bd.beads.get('ex-478').labels.push('state-verified');
+  bd.beads.get('ex-479').labels.push('state-cut');
+  assert.ok(!kinds(await claim(t, bd, 'ex-w3-1', budgetAt(20, beads))).includes('outside-wave'));
+});
+
+test('R-34 start check: under an owner-set budget a story that does not fit is refused when it would start its wave, and only warned inside a wave under way', async () => {
+  const t = vault();
+  for (const id of ['u1', 'u2', 'n1']) t.story(id, { area: 'upload', wave: id === 'n1' ? 2 : 1 });
+  const beads = [bead('u1', 'upload', { wave: 1, status: 'in_progress', size: 'S' }), bead('u2', 'upload', { wave: 1, size: 'L' }), bead('n1', 'upload', { wave: 2, size: 'L' })];
+  const bd = memBd(beads);
+  // 90 used: 10 left, 1.3 in flight, an L needs 10.4
+  const st = budgetAt(90, beads);
+  const inWave = await claim(t, bd, 'ex-u2', st);
+  assert.equal(inWave.deny, null);
+  assert.match(inWave.warnings.find((w) => w.kind === 'budget-short').detail, /wave 1 is under way, so finish it and start nothing new/);
+  bd.beads.get('ex-u1').labels.push('state-verified');
+  bd.beads.get('ex-u2').labels.push('state-verified');
+  const fresh = await claim(t, bd, 'ex-n1', budgetAt(90, [...bd.beads.values()]));
+  assert.match(fresh.deny, /\(D5: needs 10\.4 units with the 30% reserve; .* starting it risks half-built work\)/);
+  assert.deepEqual(reasonProblems(fresh.deny), []);
+});
+
+test('R-36 waves: materialise stamps wave-<n> from the story file and protects it; wave.js shows, plans and closes per area', async () => {
+  const { planGraph } = require('./lib/plan-graph.js');
+  const p = planGraph({ prefix: 'ex', initiative: 'vault', sha: 'abc', roadmap: { phases: [{ number: '1', name: 'one', items: [] }] },
+    stories: [{ id: 'a', title: 'A', phase: '1', dependsOn: [], size: 'S', wave: '2', file: 'a.md', area: 'import' }, { id: 'b', title: 'B', phase: '1', dependsOn: [], wave: 'two', file: 'b.md' }], spikes: [], surfaces: [] });
+  const a = p.beads.find((x) => x.id === 'ex-a');
+  assert.ok(a.labels.includes('wave-2'));
+  assert.equal(a.metadata.wave, 2);
+  assert.ok(p.warnings.some((w) => /wave "two"/.test(w)));
+  // a builder cannot move a story out of its wave
+  const bdr = { show: () => ({ id: 'mine', assignee: 'me@pc/builder-1', labels: ['story', 'wave-2'], metadata: { story_file: 'a.md' } }) };
+  assert.match(decideBd({ command: 'bd update mine --remove-label wave-2', actor: 'me@pc/builder-1', roleId: 'builder', staleHours: 2, bd: bdr }).reason, /the label wave-2/);
+  assert.match(decideBd({ command: `bd update mine --metadata '{"wave":3}'`, actor: 'me@pc/builder-1', roleId: 'builder', staleHours: 2, bd: bdr }).reason, /the gate field wave/);
+
+  const t = vault();
+  for (const id of ['i1', 'i2', 'i3', 'i4', 'i5']) t.story(id, { area: 'import', wave: 2, files: id < 'i3' ? [['src/import/', 'modify']] : [] });
+  const bd = memBd([bead('i1', 'import', { wave: 2, state: 'verified', status: 'closed' }), bead('i2', 'import', { wave: 2, state: 'verified', status: 'closed' }), bead('i3', 'import', { wave: 2, state: 'verified', status: 'closed' }), bead('i4', 'import', { wave: 2, status: 'in_progress' }), bead('i5', 'import', { wave: 2 }), bead('i0', 'import', { wave: 1, state: 'verified', status: 'closed' })]);
+  const dm = { root: t.root, roleId: 'delivery-lead', instance: 'delivery-lead', team: TEAM };
+  const show = wave.main(['show'], { who: dm, bd });
+  assert.match(show.out, /^wave 2 of import: 3 of 5 stories checked on the customer's app/);
+  const planned = wave.main(['plan'], { who: dm, bd, budget: NO_BUDGET });
+  assert.match(planned.out, /wave 1 \(done, not closed: wave\.js close\)/);
+  assert.match(planned.out, /wave 2 \(current\): 5 stories/);
+  assert.match(planned.out, /warning: ex-i1 and ex-i2 touch src\/import\//);
+  assert.equal(wave.main(['plan'], { who: { ...dm, roleId: 'builder' }, bd }).code, 1);
+  const early = wave.main(['close', 'import', '2'], { who: dm, bd });
+  assert.equal(early.code, 1);
+  assert.deepEqual(reasonProblems(early.out), []);
+  assert.match(wave.main(['close', 'import', '1'], { who: dm, bd, now: NOW }).out, /wave 1 of import closed: 1 verified/);
+  assert.deepEqual(wave.readLedger(t.root).map((r) => r.type), ['plan', 'close']);
+  // the status the Chief of Staff reads: the current wave per area, and the budget when set
+  const s = teamStatus(t.root, { bdCheck: () => true, storyBeads: () => [...bd.beads.values()], checkBeads: () => [], idleBd: { list: () => [], ready: () => [] }, budget: budgetAt(40, []), now: NOW });
+  const text = renderStatus(s);
+  assert.match(text, /Wave: wave 2 of import: 3 of 5 stories checked on the customer's app/);
+  assert.match(text, /Budget: 60\.0 of 100\.0 units left/);
+});
