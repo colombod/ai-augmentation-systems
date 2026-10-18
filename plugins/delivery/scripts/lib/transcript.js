@@ -77,7 +77,8 @@ function readHumanInputs(file, opts = {}) {
   // lastAssistant: the session's last assistant text before the next owner input ({ line, sha256, tail });
   // carried across reads by the caller's cursor, so a typed yes can be checked against what it answered
   const out = { inputs: [], lastLine: fromLine, lastOffset: fromOffset, total_user_records: 0, with_origin: 0, rescanned: false, lastAssistant: opts.lastAssistant || null };
-  const asks = new Map(); // assistant uuid -> the AskUserQuestion questions it put
+  // pending AskUserQuestion invocations by tool_use id ({ uuid, questions }), carried across reads
+  const asks = new Map(Object.entries(opts.pendingAsks || {}));
   let buf;
   try { buf = fs.readFileSync(file); } catch (e) { return out; }
   if (fromOffset > buf.length) { // rewritten smaller
@@ -103,18 +104,25 @@ function readHumanInputs(file, opts = {}) {
     if (rec.type === 'assistant' && rec.message && Array.isArray(rec.message.content)) {
       const text = rec.message.content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n');
       if (text.trim()) out.lastAssistant = { line: lineNo, sha256: require('crypto').createHash('sha256').update(text).digest('hex'), tail: text.trim().slice(-400) };
-      for (const b of rec.message.content) if (b && b.type === 'tool_use' && b.name === 'AskUserQuestion' && b.input && Array.isArray(b.input.questions)) asks.set(rec.uuid, b.input.questions);
+      for (const b of rec.message.content) if (b && b.type === 'tool_use' && b.name === 'AskUserQuestion' && b.id && b.input && Array.isArray(b.input.questions)) asks.set(b.id, { uuid: rec.uuid, questions: b.input.questions });
       continue;
     }
     // the harness's answer to AskUserQuestion: a tool_result it writes, with the owner's selection per
     // question (toolUseResult.answers). It is an owner input bound to that exact question text.
     const tur = rec.type === 'user' && rec.toolUseResult && typeof rec.toolUseResult === 'object' ? rec.toolUseResult : null;
     if (tur && Array.isArray(tur.questions) && tur.answers && typeof tur.answers === 'object' && rec.sourceToolAssistantUUID) {
-      const put = asks.get(rec.sourceToolAssistantUUID);
+      // only the answer to an AskUserQuestion this session asked: the same tool_use id and assistant uuid
+      const block = (rec.message && Array.isArray(rec.message.content) ? rec.message.content : []).find((b) => b && b.type === 'tool_result');
+      const inv = block && asks.get(block.tool_use_id);
+      if (!inv || inv.uuid !== rec.sourceToolAssistantUUID) continue;
+      asks.delete(block.tool_use_id);
+      const put = inv.questions;
+      // the answer consumes the message before it, like a typed input
+      out.lastAssistant = null;
       tur.questions.forEach((q, i) => {
         if (!q || typeof q.question !== 'string' || typeof tur.answers[q.question] !== 'string') return;
         // when the tool_use is in this read, the result must answer what it asked
-        const used = put ? put.find((x) => x && x.question === q.question) : q;
+        const used = put.find((x) => x && x.question === q.question);
         if (!used) return;
         out.inputs.push({ line: lineNo, source: 'human', text: tur.answers[q.question], ext_id: `${rec.uuid || lineNo}#q${i}`, timestamp: rec.timestamp || null,
           session_id: rec.sessionId || null, uuid: rec.uuid ? `${rec.uuid}#q${i}` : null,
@@ -144,6 +152,8 @@ function readHumanInputs(file, opts = {}) {
     if (c.source === 'human') out.lastAssistant = null;
   }
   if (!opts.fromOffset && fromLine > lineNo) out.lastLine = lineNo;
+  // at most 20 pending invocations are kept for the next read
+  out.pendingAsks = Object.fromEntries([...asks.entries()].slice(-20));
   return out;
 }
 

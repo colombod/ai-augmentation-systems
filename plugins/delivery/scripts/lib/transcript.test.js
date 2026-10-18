@@ -297,3 +297,23 @@ test('readHumanInputs: the message before counts for one input only; a result th
   const ins = T.readHumanInputs(f).inputs.filter((i) => i.source === 'human');
   assert.deepEqual(ins.map((i) => [i.text, !!i.after_assistant]), [['hmm', true], ['yes', false]]);
 });
+
+test('Copilot round 5: an answer needs its AskUserQuestion tool_use (kept across reads); an answer clears the message before', () => {
+  const T = require('./transcript.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ask-'));
+  const f = path.join(dir, 't.jsonl');
+  const qs = [{ question: 'Q?', header: 'h', multiSelect: false, options: [{ label: 'Yes' }, { label: 'No' }] }];
+  const result = (id, src) => ({ type: 'user', uuid: `r${id}`, sourceToolAssistantUUID: src, toolUseResult: { questions: qs, answers: { 'Q?': 'Yes' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] } });
+  const lines = [
+    { type: 'assistant', uuid: 'a0', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'other', name: 'Bash', input: {} }] } },
+    result('other', 'a0'), // a tool result that merely carries questions/answers
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'Q?' }, { type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions: qs } }] } },
+  ];
+  fs.writeFileSync(f, `${lines.map((r) => JSON.stringify(r)).join('\n')}\n`);
+  const r1 = T.readHumanInputs(f);
+  assert.deepEqual(r1.inputs.filter((i) => i.source === 'human'), []);
+  fs.appendFileSync(f, `${[result('tu1', 'a1'), { type: 'user', origin: { kind: 'human' }, uuid: 'u9', promptId: 'p9', message: { role: 'user', content: 'yes' } }].map((r) => JSON.stringify(r)).join('\n')}\n`);
+  const r2 = T.readHumanInputs(f, { fromLine: r1.lastLine, fromOffset: r1.lastOffset, lastAssistant: r1.lastAssistant, pendingAsks: r1.pendingAsks });
+  const ins = r2.inputs.filter((i) => i.source === 'human');
+  assert.deepEqual(ins.map((i) => [i.text, !!i.asked, !!i.after_assistant]), [['Yes', true, false], ['yes', false, false]]);
+});

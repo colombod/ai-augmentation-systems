@@ -163,7 +163,7 @@ function recordedGoal(rec) {
 // null when the record is an owner decision made for this change (its goal label names this field and
 // value), it verifies, is neither revoked nor superseded, and its quote states the value; else the reason.
 // judge: the typed judge's goal_instruction answer kept with the entry ({ p, model }) or null.
-function recordProblem(root, field, value, record, verifyRecord, judge) {
+function recordProblem(root, field, value, record, verifyRecord, judge, windowHours) {
   if (!/^dec-/.test(String(record || ''))) return 'it needs an owner decision record (dec-...)';
   let v;
   try { v = (verifyRecord || require('./operator-records.js').verifyRecord)(root, record); } catch (err) { v = null; }
@@ -191,7 +191,8 @@ function recordProblem(root, field, value, record, verifyRecord, judge) {
     if (input.text !== 'Yes') return `the owner's answer in ${record} is not Yes`;
     const minutes = asked[0].minutes_before_answer;
     // the window for changing the window itself is the default, so it cannot widen its own yes
-    const hours = field === 'answer_window_hours' ? 24 : answerWindowHours(root, verifyRecord);
+    // the window a change was accepted under stays its window: a later window change never undoes it
+    const hours = Number.isFinite(windowHours) ? windowHours : (field === 'answer_window_hours' ? 24 : answerWindowHours(root, verifyRecord));
     if (!(typeof minutes === 'number' && minutes >= 0 && minutes <= hours * 60)) return `the owner's yes in ${record} came more than ${hours} h after the question; ask again`;
     return null;
   }
@@ -289,6 +290,21 @@ function triggerState(root, trigger, opts = {}) {
 }
 const beadOfTrigger = (trigger) => { const m = /^andon:ev-(.+)-\d+$/.exec(String(trigger || '')); return m ? m[1] : null; };
 
+// one change per question and per owner input: the yes is checked unused and consumed under the same
+// lock as the write, so two setters can never both apply it (B1, Copilot round 5)
+function commitOnce(root, key, entry, { append = false } = {}) {
+  return withLock(path.join(root, '.delivery', '.goal.lock'), () => {
+    const g = read(root);
+    const used = g.history.find((h) => h.record === entry.record || (entry.question && h.question === entry.question) || (entry.input && h.input === entry.input));
+    if (used) return { ok: false, error: `the owner's yes in ${entry.record} was already used for ${used.field} at ${used.at}` };
+    if (append) g.fields[key] = [...(Array.isArray(g.fields[key]) ? g.fields[key] : []), entry];
+    else g.fields[key] = entry;
+    g.history.push({ field: key, ...entry });
+    write(root, g);
+    return { ok: true, entry };
+  }, { strict: true });
+}
+
 function commit(root, key, entry, { append = false } = {}) {
   return withLock(path.join(root, '.delivery', '.goal.lock'), () => {
     const g = read(root);
@@ -310,13 +326,12 @@ function set({ root, who, field, value: raw, record, verifyRecord, judged, now }
   const judge = judged && typeof judged.p === 'number' ? { p: judged.p, model: judged.model || null } : null;
   const why = recordProblem(root, field, p.value, record, verifyRecord, judge);
   if (why) return { ok: false, error: why };
-  // one change per question and per owner input: a yes is never applied twice (B1)
   const bind = bindingOf(root, record, verifyRecord);
-  const used = read(root).history.find((h) => h.record === record || (bind.question && h.question === bind.question) || (bind.input && h.input === bind.input));
-  if (used) return { ok: false, error: `the owner's yes in ${record} was already used for ${used.field} at ${used.at}; ask the owner again (goal.js ask ${field} <value>)` };
-  const entry = { value: p.value, record, ...bind, by: who.instance, at: now || new Date().toISOString(), ...(judge ? { judge } : {}) };
-  if (FIELDS[field].op) return { ok: true, entry: commit(root, 'scope_log', { op: FIELDS[field].op, ...entry }, { append: true }) };
-  return { ok: true, entry: commit(root, field, entry) };
+  const windowHours = field === 'answer_window_hours' ? 24 : answerWindowHours(root, verifyRecord);
+  const entry = { value: p.value, record, ...bind, window_hours: windowHours, by: who.instance, at: now || new Date().toISOString(), ...(judge ? { judge } : {}) };
+  const r = FIELDS[field].op ? commitOnce(root, 'scope_log', { op: FIELDS[field].op, ...entry }, { append: true }) : commitOnce(root, field, entry);
+  if (!r.ok) return { ok: false, error: `${r.error}; ask the owner again (goal.js ask ${field} <value>)` };
+  return { ok: true, entry: r.entry };
 }
 
 // A trigger pause is kept apart from the owner's pause: closing the andon never lifts an owner pause.
@@ -336,7 +351,8 @@ function warnUnverified(root, field, why) {
 
 // The scope: the adds and removes whose records still hold, in order.
 function resolveScope(root, { g, verifyRecord, warn }) {
-  const log = Array.isArray(g.fields.scope_log) ? g.fields.scope_log : [];
+  // folded from the ordered history, so restoring an old projection never undoes a later change
+  const log = g.history.filter((h) => h.field === 'scope_log');
   const items = [];
   const ignored = [];
   const seen = new Set();
@@ -346,7 +362,7 @@ function resolveScope(root, { g, verifyRecord, warn }) {
     const keys = [e.record, e.question, e.input].filter(Boolean);
     const dup = keys.some((x) => seen.has(x));
     keys.forEach((x) => seen.add(x));
-    const why = dup ? `${e.record} was already applied` : e.record ? recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null) : 'no owner record';
+    const why = dup ? `${e.record} was already applied` : e.record ? recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null, e.window_hours) : 'no owner record';
     if (why) { ignored.push(why); if (warn) warnUnverified(root, field, why); continue; }
     for (const it of e.value || []) {
       const at = items.findIndex((x) => x.toLowerCase() === String(it).toLowerCase());
@@ -366,7 +382,7 @@ function resolve(root, field, { g = read(root), verifyRecord, warn = true } = {}
   const latest = [...g.history].reverse().find((h) => h.field === field);
   let why = e.record ? null : 'no owner record';
   if (!why && (!latest || latest.record !== e.record || latest.at !== e.at)) why = `${e.record} is not the latest change to ${field}`;
-  if (!why) why = recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null);
+  if (!why) why = recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null, e.window_hours);
   if (!why) return { value: e.value, from: e.record };
   if (warn) warnUnverified(root, field, why);
   return { value: fallback, from: 'default', ignored: why };
@@ -409,4 +425,4 @@ function showLines(root, opts = {}) {
   return lines;
 }
 
-module.exports = { questionText, affirmative, FIELDS, GOAL_REL, read, set, pauseOnTrigger, value, resolve, activePause, covers, quoteProblem, showLines, triggerState, recordedGoal, recordQuote, writersOf, TRIGGER_WRITERS, JUDGE_MIN };
+module.exports = { commitOnce, bindingOf, questionText, affirmative, FIELDS, GOAL_REL, read, set, pauseOnTrigger, value, resolve, activePause, covers, quoteProblem, showLines, triggerState, recordedGoal, recordQuote, writersOf, TRIGGER_WRITERS, JUDGE_MIN };

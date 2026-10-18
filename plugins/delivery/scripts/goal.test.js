@@ -432,3 +432,28 @@ test('R-42 last fix: only the Yes/No question box counts; a typed yes never does
   }
   assert.equal(set(t.root, 'pause', 'paused', t.confirmAsk('pause', 'paused')).ok, true);
 });
+
+test('Copilot round 5: a yes is consumed under the goal lock; a later window change never undoes an earlier yes; scope folds from history', () => {
+  const t = project();
+  const yes = t.confirmAsk('pause', 'paused');
+  // two setters that both read the yes as unused: the second write is refused inside the lock
+  const Lib = require('./lib/goal.js');
+  assert.equal(set(t.root, 'pause', 'paused', yes).ok, true);
+  const g0 = Lib.read(t.root);
+  g0.history = g0.history.filter((h) => h.record !== yes); // as if the first write was not seen yet
+  assert.equal(Lib.commitOnce(t.root, 'pause', { value: 'paused', record: yes, ...Lib.bindingOf(t.root, yes), at: new Date().toISOString() }).ok, false);
+  // the window is kept per change: a pause confirmed under 24 h stays when the owner later sets 1 h
+  const t2 = project();
+  assert.equal(set(t2.root, 'pause', 'paused', t2.confirmAsk('pause', 'paused', { laterMin: 120 })).ok, true);
+  assert.equal(set(t2.root, 'answer_window_hours', '1', t2.confirmAsk('answer_window_hours', '1')).ok, true);
+  assert.equal(Goal.activePause(t2.root).paused, true);
+  // restoring an old scope_log does not undo a later removal kept in history
+  const t3 = project();
+  assert.equal(set(t3.root, 'scope_add', 'billing', t3.confirmAsk('scope_add', 'billing')).ok, true);
+  const before = Lib.read(t3.root).fields.scope_log;
+  assert.equal(set(t3.root, 'scope_remove', 'billing', t3.confirmAsk('scope_remove', 'billing')).ok, true);
+  const g = Lib.read(t3.root);
+  g.fields.scope_log = before;
+  fs.writeFileSync(path.join(t3.root, '.delivery', 'goal.json'), JSON.stringify(g));
+  assert.deepEqual(Goal.value(t3.root, 'scope'), []);
+});

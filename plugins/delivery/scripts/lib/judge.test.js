@@ -217,3 +217,10 @@ test('the catalogue: every question has a version, a type, declared state and in
   assert.equal(cat.questions.divergence.mode, 'warn-only');
   assert.equal(cat.questions.is_fix.type, 'noul');
 });
+
+test('Copilot round 5: redaction replaces the whole path, not a prefix of it', () => {
+  for (const m of ['open C:\\Users\\Alice\\Acme\\report.txt now', 'see ~/work/acme/secret-plan.md', 'run ./scripts/acme/probe.js']) {
+    const r = J.redact(m);
+    assert.doesNotMatch(r, /Alice|acme/i, r);
+  }
+});

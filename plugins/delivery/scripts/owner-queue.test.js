@@ -61,3 +61,8 @@ test('R-44 I4: owner-only retries are steps; relays and checks in any wording ar
   assert.equal(Q.inQueue('Please run the Vault import in Edge', steps), false, 'shared place names are not the same action');
   assert.equal(Q.inQueue('open the store and connect the printer', [{ what: 'Sign in to App Store Connect' }]), false);
 });
+
+test('Copilot round 5: a relay named in --where is refused too', () => {
+  const root = project();
+  assert.equal(run(root, 'chief-of-staff', ['add', '--kind', 'account', '--what', 'Approve the edit', '--where', 'in the builder session', '--steps', 'Click Approve']).code, 1);
+});
