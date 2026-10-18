@@ -55,15 +55,15 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes, surfaces
     (storiesByPhase.get(s.phase) || storiesByPhase.set(s.phase, []).get(s.phase)).push(s);
   }
 
-  // The register (R-14): each external-host assumption still assumed gets a spike, keyed by its id
-  // (spike-a-8), that blocks the stories its criteria sit on; a Spikes row naming the assumption gives it
-  // its question, decision and rule. One answered on its own spike keeps that spike in the plan.
+  // The register (R-14): each external-host assumption gets a spike, keyed by its id (spike-a-8), that
+  // blocks the stories its criteria sit on, whatever its status: its evidence and acknowledgement live on
+  // that spike's chain (Copilot 952). A Spikes row naming the assumption gives it its question, decision
+  // and rule.
   const allSpikes = spikes.map((sp) => (sp.assumption ? { ...sp, key: spikeKey(sp.assumption) } : { ...sp }));
   for (const a of assumptions) {
     const key = spikeKey(a.id);
     let sp = allSpikes.find((x) => x.key === key);
-    const own = String(a.evidence || '').startsWith(`ev-${prefix}-${initiative}-spike-${key}-`);
-    if (!sp && (a.kind !== 'external-host' || (a.status !== 'assumed' && !own))) continue;
+    if (!sp && a.kind !== 'external-host') continue;
     if (!sp) { sp = { key, question: `Does this hold in the real host: ${a.statement}`, timeBox: '', blocks: '' }; allSpikes.push(sp); }
     sp.assumption = a.id;
     sp.stories = a.criteria.map((c) => c.story);

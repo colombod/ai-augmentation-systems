@@ -671,7 +671,20 @@ function reviewDirs({ projectRoot, roleDir }) {
   if (roleDir) out.push(realish(path.join(String(roleDir), 'project', REVIEWS_REL)));
   return out;
 }
-function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION } = {}) {
+// The assumption register (R-14): the gates read its rows, so only scripts/assumptions.js writes it (a
+// node process, not a tool call). Protected for every role, `any` included, the Product Manager too;
+// best effort, like the goal sheet. The gates also re-verify each row against its evidence.
+const REGISTER_REASON = 'the assumption register changes only through `assumptions.js` (add, observe, refute, reopen, ack)';
+const REGISTER_MENTION = /\.delivery\/+(?:\.\/+)*initiatives\/+[^/\s'"]+\/+assumptions\.md\b/i;
+const REGISTER_REL = /^\.delivery[\\/]initiatives[\\/][^\\/]+[\\/]assumptions\.md$/i;
+function registerHit({ projectRoot, roleDir }) {
+  const bases = [];
+  if (projectRoot && path.isAbsolute(String(projectRoot))) bases.push(realish(String(projectRoot)));
+  if (roleDir) bases.push(realish(path.join(String(roleDir), 'project')));
+  return (p) => { const r = realish(p); return bases.some((b) => REGISTER_REL.test(path.relative(b, r))); };
+}
+
+function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION, hit = null } = {}) {
   const text = String(command == null ? '' : command);
   let base = cwd || process.cwd();
   return splitCommand(text).some((seg) => {
@@ -683,6 +696,7 @@ function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION } = 
     const targets = writeTargets(seg, t);
     if ((first === 'sed' && writesFiles(['sed', ...words.slice(1)])) || (first === 'perl' && words.some((x) => /^-[a-zA-Z]*i/.test(x)))) targets.push(...words.slice(1).filter((x) => !x.startsWith('-')));
     if (dirs.length && targets.some((x) => underOperator(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`, dirs))) return true;
+    if (hit && targets.some((x) => hit(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`))) return true;
     if (!mention.test(seg)) return false;
     return hasRedirect(seg) || OPERATOR_WRITE_WORDS.includes(first) || (first === 'git' && GOAL_GIT_WRITES.includes(splitGlobals(['git', ...words.slice(1)]).rest[0]));
   });
@@ -775,6 +789,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       if (underOperator(p, opDirs)) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
       if (isGoalFile(p, goalFiles({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
       if (underOperator(p, usageDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
+      if (registerHit({ projectRoot, roleDir })(p)) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
       if (!REVIEW_WRITERS.includes(pol.roleId) && underOperator(p, reviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
       if (harnessFile(p)) continue;
       if (pathAllowed(p, { roleDir, writes: pol.writes, pluginRoot: pluginRootOf({ pluginRoot }) })) continue;
@@ -798,6 +813,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (operatorShellWrite(command, { cwd, dirs: opDirs })) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
     if (goalShellWrite(command, { cwd, files: goalFiles({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: usageDirs({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
+    if (usageShellWrite(command, { cwd, mention: REGISTER_MENTION, hit: registerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (bash.includes('any')) return { allow: true };
