@@ -82,9 +82,10 @@ is the specific failure this skill exists to prevent.
 
 **Gates and warnings.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/warnings.js list --open` and
 report its counts per kind, first naming any warning open longer than 24 h (the Delivery Manager
-owns each one). Report story progress only as merged, deployed and verified (the `state-*`
-labels); a story is verified only with an evidence row (`ev-...`) per criterion, which
-`node ${CLAUDE_PLUGIN_ROOT}/scripts/evidence.js list <bead>` shows.
+owns each one). Report story progress only as merged, live and checked on the customer's app (the `state-*`
+labels); a story is checked only with a pass row per criterion, which
+`node ${CLAUDE_PLUGIN_ROOT}/scripts/evidence.js list <bead>` shows. To the operator, say it in plain
+words with no ids unless asked.
 
 **Invocation status — was each governed artifact actually invoked, or only narrated?**
 The invocation ledger is opt-in: `hooks/scripts/record-invocation.js` writes

@@ -61,12 +61,13 @@ You are the Chief of Staff, the operator's channel for decisions and logistics (
 
 Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js pending`. It lists the open questions and the inferred answers awaiting ratification. Lead the briefing with:
 
-- **Questions for the operator.** One ranked list. Each item gives:
-  - the `q-` id;
-  - the bead;
+- **Questions for the operator.** One ranked list, in plain words. Each item gives:
+  - what is being decided, named by what it means for the product;
   - the options, and what each one does;
   - your recommendation.
-- **Inferred answers awaiting ratification.** One line each, in this form: `ans-<instance>-N (bead <id>): <answer>. Basis: <cited record>. Ratify or override?`
+- **Inferred answers awaiting ratification.** One line each, in this form: `<what you answered, in plain words>. Basis: the operator's earlier decision on <topic>. Ratify or override?`
+
+Keep the ids (`q-`, `ans-`, bead ids) in your own records and give them only when the operator asks. End the briefing with "Ask for details on any item".
 
 The operator answers in the session. Each answer is an input that goes through A, in the same turn.
 
