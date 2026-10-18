@@ -515,7 +515,8 @@ divergence, otherwise warn (R-14, R-15, R-16, R-18; D4).
   scope). The Criteria column is the only link between a story and its assumptions. In a role session
   only `assumptions.js` writes the file: every lane, the Product Manager's and the `any` lanes
   included, refuses a Write, Edit, redirect, `sed -i`, `cp` or `mv` onto it (best effort, like the goal
-  sheet). `node ${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js list [--plain] [--json]` reads it;
+  sheet). Every write takes a lock on the register for its read, check, id allocation and write, so
+  two sessions never lose each other's rows; a held lock refuses and asks for a retry. `node ${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js list [--plain] [--json]` reads it;
   `--plain` covers every initiative and is the Chief of Staff's wording ("blocked until we check
   whether ...", "waiting for your decision: ..."), and says "No assumptions recorded." when there is
   no register. `add` is the Product or Delivery Manager's and starts a row `assumed`.
@@ -540,7 +541,8 @@ divergence, otherwise warn (R-14, R-15, R-16, R-18; D4).
   Spike Researcher, or the builder holding the spike) refuses any other row, and a refused settle is a
   warning. A refuted assumption is not observed again by a later probe: it returns through a new design
   or the Product Manager's `assumptions.js reopen <A-n>`, which writes a reopen row on the spike's
-  chain; only a Reality Checker probe newer than that observes it.
+  chain; only a Reality Checker probe in the real host, newer than that, observes it, whatever its kind
+  (refuting it again is not restricted).
 - **The design change, by command.** The Product Manager adds the new design's assumption (`add`), or
   moves an existing one with `assumptions.js relink <A-n> --criteria '<story>#<n> ...'` (not on a
   refuted row; recorded as an `assumption-relinked` warning), and retires the refuted row with
@@ -561,7 +563,7 @@ divergence, otherwise warn (R-14, R-15, R-16, R-18; D4).
   (effectively) `assumed` is not ready (`ready.js`, by bead or with `--story <file> --initiative
   <slug>`, reports a block and `--record` stamps nothing) and its claim is refused in two lines naming
   the spike to run. A child bead of that story is refused too, for its `criterion`, or for all of them
-  when it names none. Once observed, the claim waits for the decision owner's acknowledgement of that
+  when it names none, and by its story's area pause unless the child or the story is a fix. Once observed, the claim waits for the decision owner's acknowledgement of that
   result. Every other kind, assumed, refuted or with an unacknowledged spike, is a warning.
 - **The acknowledgement.** `assumptions.js ack <spike> --result <ev-id> --decision '<the decision taken>'
   [--record dec-...]` names the counting result it approves and is newer than it; it counts only for

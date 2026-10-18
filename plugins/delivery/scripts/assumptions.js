@@ -32,6 +32,7 @@ const G = require('./lib/gates.js');
 const W = require('./lib/warnings.js');
 const { whoAmI, ownerRecord } = require('./lib/gate-context.js');
 const { parseStories } = require('./lib/plan-docs.js');
+const { withLock } = require('./lib/lock.js');
 
 const USAGE = "usage: assumptions.js list [--initiative <slug>] [--plain] [--json] | add --statement '<claim>' --kind <kind> --criteria '<story>#<n> ...' --owner DM|PM|owner | probe <spike> --host <h> --observed '<seen>' --artifact <file> [--twin <recording>] | observe|refute|reopen <A-n> [--evidence <ev-id>] | retire <A-n> --reason <text> | relink <A-n> --criteria <list> | ack <spike> --result <ev-id> --decision '<decision>' [--record dec-...]";
 const VALUE = ['--reason', '--initiative', '--statement', '--kind', '--criteria', '--owner', '--host', '--observed', '--artifact', '--twin', '--evidence', '--result', '--decision', '--record', '--project'];
@@ -178,7 +179,7 @@ function settle(root, who, store, verb, aId, a) {
   const { slug, file, text, reg, row } = L;
   if (!row) return refuse(`no ${aId} in ${path.relative(root, file)}.`, `List them: \`assumptions.js list --initiative ${slug}\`.`);
   if (verb === 'observe' && row.status === 'refuted') return refuse(`${aId} was refuted; a later probe does not observe it again.`, `The Product Manager changes the design (a new row with \`assumptions.js add\`) or reopens it: \`assumptions.js reopen ${aId}\`.`);
-  const ev = A.evidenceOf(root, store, slug, row, a.evidence);
+  const ev = A.evidenceOf(root, store, slug, row, a.evidence, { forStatus: verb === 'observe' ? 'observed' : 'refuted' });
   if (!ev.why && who.roleId === 'builder' && !holds(who, ev.bead)) return refuse(`a builder settles only the assumption of the spike it holds (${ev.bead.id}).`, `${DM} with ${a.evidence}.`);
   if (ev.why) {
     W.record(root, { kind: 'assumption-not-observed', rule: 'R-15', bead: null, detail: `${aId} not ${verb}d: ${ev.why}`, raisedBy: who.instance, instance: who.instance });
@@ -277,13 +278,22 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   if (!who.root) return { code: 2, out: 'assumptions.js: no project found; pass --project <root>' };
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
   if (cmd === 'list') return list(who.root, a, store, verifyRecord);
-  if (cmd === 'add') return add(who.root, who, a);
+  // every register write is one locked read, check, allocate and write, so two sessions never lose
+  // each other's row (Copilot 884)
+  const locked = (fn) => {
+    const slug = initiativeOf(who.root, a.initiative, { needRegister: cmd !== 'add' });
+    if (!slug) return fn();
+    try { return withLock(`${A.fileOf(who.root, slug)}.lock`, fn, { strict: true, waitMs: 1500 }); } catch (err) {
+      return refuse(`${err.message}.`, `Run it again in a moment: \`assumptions.js ${cmd} ...\`.`);
+    }
+  };
+  if (cmd === 'add') return locked(() => add(who.root, who, a));
   if (!id) return { code: 2, out: USAGE };
   if (cmd === 'probe') return probe(who.root, who, store, id, a, now);
-  if (cmd === 'observe' || cmd === 'refute') return settle(who.root, who, store, cmd, id, a);
-  if (cmd === 'reopen') return reopen(who.root, who, store, id, a, now);
-  if (cmd === 'retire') return retire(who.root, who, store, id, a, now);
-  if (cmd === 'relink') return relink(who.root, who, id, a);
+  if (cmd === 'observe' || cmd === 'refute') return locked(() => settle(who.root, who, store, cmd, id, a));
+  if (cmd === 'reopen') return locked(() => reopen(who.root, who, store, id, a, now));
+  if (cmd === 'retire') return locked(() => retire(who.root, who, store, id, a, now));
+  if (cmd === 'relink') return locked(() => relink(who.root, who, id, a));
   if (cmd === 'ack') return ack(who.root, who, store, id, a, verifyRecord, now);
   return { code: 2, out: USAGE };
 }

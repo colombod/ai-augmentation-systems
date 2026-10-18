@@ -444,6 +444,11 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
             const pm = parentStory.metadata || {};
             findings.push(...A.forStory(root, parentStory, { bd, team, regs, storyId: pm.story || (inp.parentStory && String(inp.parentStory.meta.id || '')), atClaim: true, criterion: (bead.metadata || {}).criterion })
               .findings.map((f) => ({ ...f, detail: `its story ${parentStory.id}: ${f.detail}` })));
+            // and its story's area pause: a fix label on the child or the story still goes on (Copilot 911)
+            let all = stories;
+            if (!all) { try { all = bd.list({ label: 'story', all: true }); } catch (err) { all = null; } }
+            const an = all ? A.areaAndon({ ...parentStory, labels: [...(parentStory.labels || []), ...(bead.labels || [])] }, all, (s) => regs.rowsFor(G.initiativeOf(s))) : null;
+            if (an) findings.push(an);
           }
         } catch (err) { /* fail open */ }
         if ((bead.labels || []).includes('spike')) {

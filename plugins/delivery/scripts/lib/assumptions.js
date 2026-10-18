@@ -176,7 +176,9 @@ function ackOf(rows, row, owner, { ownerOk = () => false, spikeId, aId } = {}) {
 }
 const latestResult = (rows) => [...rows].reverse().find((r) => r.type === 'probe' && r.counts !== false) || null;
 
-function evidenceOf(root, bd, slug, a, evId) {
+// forStatus: the status the row is to back; once an assumption was reopened, only the Reality Checker's
+// probe in the real host observes it again, whatever its kind (a refutation is not restricted).
+function evidenceOf(root, bd, slug, a, evId, { forStatus = a.status } = {}) {
   const m = /^ev-(.+)-\d+$/.exec(String(evId || ''));
   if (!m) return { why: `${evId || 'no evidence'} is not an evidence row id` };
   let bead = null;
@@ -190,6 +192,7 @@ function evidenceOf(root, bd, slug, a, evId) {
   const why = observationProblem(row, a);
   if (why) return { why };
   if (checked.rows.some((r) => r.type === 'reopen' && r.assumption === a.id && r.seq > row.seq)) return { why: `${a.id} was reopened after ${evId}: a new probe is needed` };
+  if (forStatus === 'observed' && checked.rows.some((r) => r.type === 'reopen' && r.assumption === a.id) && (row.by !== 'reality-checker' || row.via !== 'host')) return { why: `${a.id} was reopened: only the Reality Checker's probe in the real host observes it again` };
   return { why: null, bead, row, rows: checked.rows };
 }
 

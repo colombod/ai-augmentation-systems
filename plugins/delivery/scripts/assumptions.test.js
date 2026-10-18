@@ -324,6 +324,43 @@ test('retire: only a refuted row; a retired cell on any other row leaves its lin
   assert.ok(g.warnings.some((w) => /retired links but is assumed, so they stay live/.test(w.detail)));
 });
 
+test('Copilot 911: a child of another story in a paused area is refused too, unless it is a fix', async () => {
+  const t = setup([A8()]);
+  const p = t.rcProbe('a local path');
+  t.run('product-manager', ['refute', 'A-8', '--evidence', p.row.id]);
+  t.bd.beads.set('ex-vault-0n9-4.1', { id: 'ex-vault-0n9-4.1', title: 'part', status: 'open', parent: 'ex-vault-0n9-4', labels: [], metadata: { criterion: 1 } });
+  assert.match((await t.claim('ex-vault-0n9-4.1')).deny, /area collection is paused: ex-vault-0n9-3 rests on refuted A-8/);
+  t.bd.update('ex-vault-0n9-4.1', { addLabels: ['bug'] });
+  assert.equal((await t.claim('ex-vault-0n9-4.1')).deny, null);
+});
+
+test('Copilot 929: a reopened internal assumption is observed again only by the Reality Checker', () => {
+  const t = setup([A10()]);
+  t.bd.beads.get('ex-vault-spike-a-10').assignee = 'dev@pc/builder';
+  const local = (obs) => t.run('builder', ['probe', 'ex-vault-spike-a-10', '--host', 'localhost', '--observed', obs, '--artifact', t.capture(obs, 'ex-vault-spike-a-10')]).row;
+  t.run('builder', ['refute', 'A-10', '--evidence', local('cut at 4,096').id]);
+  assert.equal(t.run('product-manager', ['reopen', 'A-10']).code, 0);
+  const fresh = local('whole this time');
+  assert.match(t.run('builder', ['observe', 'A-10', '--evidence', fresh.id]).out, /A-10 was reopened: only the Reality Checker's probe in the real host observes it again/);
+  // refuting it again needs no Reality Checker
+  assert.equal(t.run('builder', ['refute', 'A-10', '--evidence', local('cut again').id]).code, 0);
+});
+
+test('Copilot 884: register writes are serialized; a held lock refuses rather than overwrites', () => {
+  const t = setup([A8()]);
+  const lock = `${A.fileOf(t.root, 'vault')}.lock`;
+  fs.writeFileSync(lock, '');
+  const before = fs.readFileSync(A.fileOf(t.root, 'vault'), 'utf8');
+  const r = t.run('product-manager', ['add', '--statement', 'x', '--kind', 'internal', '--criteria', 'vault-0n9-3#1', '--owner', 'DM', '--initiative', 'vault']);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /held by another writer/);
+  assert.deepEqual(reasonProblems(r.out), []);
+  assert.equal(fs.readFileSync(A.fileOf(t.root, 'vault'), 'utf8'), before);
+  fs.unlinkSync(lock);
+  assert.equal(t.run('product-manager', ['add', '--statement', 'x', '--kind', 'internal', '--criteria', 'vault-0n9-3#1', '--owner', 'DM']).code, 0);
+  assert.ok(!fs.existsSync(lock), 'the lock is released');
+});
+
 test('B2: a child bead of a story resting on an assumed external host is refused for its criterion, or for all when it names none', async () => {
   const t = setup([row('A-8', FILE_HANDOFF, 'external-host', 'vault-0n9-3#1')]);
   const child = (criterion) => ({ id: `ex-vault-0n9-3.${criterion || 'x'}`, title: 'part', status: 'open', parent: 'ex-vault-0n9-3', labels: [], metadata: criterion ? { criterion } : {} });
