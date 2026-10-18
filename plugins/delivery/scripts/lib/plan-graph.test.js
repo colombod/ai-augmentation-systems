@@ -145,3 +145,15 @@ test('denylistFrom keeps distinctive phrases, drops generic and single-word entr
   assert.ok(!list.includes('PRD'));
   assert.deepEqual(list, [...list].sort((a, b) => a.localeCompare(b)));
 });
+
+test('planGraph stamps the customer surface (the story\'s, else the only one declared) and the area on story beads', () => {
+  const st = [{ id: 'ex-01', title: 'First', status: 'ready', phase: '1', dependsOn: [], file: '/x/ex-01.md', epic: 'import' }, { id: 'ex-02', title: 'Two', status: 'ready', phase: '1', dependsOn: [], file: '/x/ex-02.md', surface: 'S9', area: 'chat' }];
+  const meta = (g, id) => g.beads.find((b) => b.id === id).metadata;
+  const one = planGraph({ ...input, stories: st, spikes: [], surfaces: ['S1'] });
+  assert.deepEqual([meta(one, 'ex-ex-01').surface, meta(one, 'ex-ex-01').area], ['S1', 'import']);
+  assert.equal(meta(one, 'ex-ex-02').surface, undefined);
+  assert.ok(one.warnings.includes('story ex-02: surface S9 is not in surface.json (S1)'));
+  const two = planGraph({ ...input, stories: st.slice(0, 1), spikes: [], surfaces: ['S1', 'S2'] });
+  assert.equal(meta(two, 'ex-ex-01').surface, undefined);
+  assert.ok(two.warnings.includes('story ex-01: names no surface; surface.json declares S1, S2'));
+});

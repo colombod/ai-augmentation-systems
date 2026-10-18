@@ -9,6 +9,7 @@ const { parseFrontmatter } = require('./lib/compose-brief.js');
 const { parseRoadmap, parseStories, parseSpikes } = require('./lib/plan-docs.js');
 const { planGraph, denylistFrom } = require('./lib/plan-graph.js');
 const { makeBd } = require('./lib/bd.js');
+const { loadSurface } = require('./lib/surface.js');
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -35,6 +36,13 @@ function personaNames(dir) {
   }).filter(Boolean);
 }
 
+// The ids in the initiative's surface.json; an invalid file is a warning and stamps nothing.
+function surfaceIds(projectRoot, initiative, warnings) {
+  const s = loadSurface(projectRoot, initiative);
+  for (const p of s.problems) warnings.push(p);
+  return s.surfaces.map((x) => x.id);
+}
+
 function loadInputs({ projectRoot, initiative }) {
   const { team } = loadManifest(projectRoot);
   const init = path.join(projectRoot, '.delivery', 'initiatives', initiative);
@@ -58,6 +66,7 @@ function loadInputs({ projectRoot, initiative }) {
     briefText: readIf(path.join(init, 'brief.md')),
     prdText: readIf(path.join(init, 'prd.md')),
     personaNames: personaNames(path.join(projectRoot, '.delivery', 'personas')),
+    surfaces: surfaceIds(projectRoot, initiative, warnings),
   };
 }
 
@@ -257,7 +266,7 @@ if (require.main === module) {
   try { inputs = loadInputs({ projectRoot: root, initiative: args.initiative }); } catch (err) { console.error(`materialise: ${err.message}`); process.exit(2); }
   const bd = makeBd({ cwd: root });
   try {
-    const plan = planGraph({ prefix: inputs.team.prefix, initiative: args.initiative, sha: inputs.sha, roadmap: inputs.roadmap, stories: inputs.stories, spikes: inputs.spikes });
+    const plan = planGraph({ prefix: inputs.team.prefix, initiative: args.initiative, sha: inputs.sha, roadmap: inputs.roadmap, stories: inputs.stories, spikes: inputs.spikes, surfaces: inputs.surfaces });
     if (args.flags.has('check')) {
       const d = reconcile({ plan, bd, roadmap: inputs.roadmap, initiative: args.initiative });
       if (hasDrift(d)) { console.log(renderDrift(d)); process.exit(1); }
