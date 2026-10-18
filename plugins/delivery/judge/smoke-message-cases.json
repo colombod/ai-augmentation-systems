@@ -1,0 +1,305 @@
+{
+ "note": "Labelled cases for the owner-message questions (orders_owner, tone_violation, jargon), 10 each, labelled before any call. Final Chief of Staff messages paraphrased minimally from a real run; names, paths, links, hosts and tokens removed. Used by scripts/judge-smoke.js --set message only.",
+ "cases": [
+  {
+   "question": "orders_owner",
+   "id": "O1",
+   "source": "CoS 10-12 14:01",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "One step from you, and it can't be done from this chat. The test stopped at one edit that needs your approval in the Progress Observer's own session.\n\nYour action: open the Progress Observer session and approve that one edit when it asks. If you'd rather not, you can paste those two lines into the config file yourself, or tell me to cancel the test.\n\nMy recommendation is to approve it."
+   }
+  },
+  {
+   "question": "orders_owner",
+   "id": "O2",
+   "source": "CoS 10-12 19:03",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "This is the one thing the test needs from you, and it has to be you. The Progress Observer's guard accepts only your own typed word in its session, not my relay.\n\nOpen the Progress Observer session and type exactly:\n\n> go for R2\n\nThat lets it turn on Developer mode in the ChatGPT desktop app and add one connector pointing at the temporary address. Or tell me here to drop the test."
+   }
+  },
+  {
+   "question": "orders_owner",
+   "id": "O3",
+   "source": "CoS 10-12 19:26",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "Now, one command for you on the build server. The Progress Observer is ready, and the test server is already up there on loopback.\n\nRun it from anywhere, by SSH or in the server's own terminal:\n\ntailscale funnel --bg --https=8443 8787\n\nIt should print that the address is available on the internet. Tell me \"done\" and I'll let the Infra Manager check it."
+   }
+  },
+  {
+   "question": "orders_owner",
+   "id": "O4",
+   "source": "CoS 10-12 23:32",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "One line from you, and it is the only thing between your sign-in problem and its fix. General Worker 2 has the fix committed and ready, and its guard needs your word typed in its own session.\n\nOpen General Worker 2 and type:\n\n> push the draft\n\nThat is all. It then pushes the branch as a draft PR, and the security review starts straight away."
+   }
+  },
+  {
+   "question": "orders_owner",
+   "id": "O5",
+   "source": "CoS 10-13 00:29",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "I tried to do it and my own guard stopped me. I'm stopping there and not working around it.\n\nWhat I need from you, in this chat, one sentence. Copy and send this, so the guard reads it as your exact instruction to me:\n\n> Chief of Staff: push the sign-in fix branch to GitHub and open it as a draft PR.\n\nI would then push the committed fix from my own session."
+   }
+  },
+  {
+   "question": "orders_owner",
+   "id": "O6",
+   "source": "CoS 10-12 19:50",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "You were right that it's broken, and I now know why. On production, ChatGPT drops the Vault's tools: the app's saved sign-in is rejected and it does not start a new one. The fix is built and is now first on the critical path.\n\nOne word from you, to move the security review: how long should a second refresh be tolerated, 60 seconds or 10? I recommend 60. It covers slower races at a very small cost."
+   }
+  },
+  {
+   "question": "orders_owner",
+   "id": "O7",
+   "source": "CoS 10-13 02:34",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "Budget: the weekly limit is at 89% and rising about 2 points an hour, so the week may run out before the work is proven.\n\nPriorities: the chat-drop import first, then the sign-in fix, then one real-app run.\n\nOne decision for you: extra usage is off, with half of the monthly cap spent. Turning it on gives the team a buffer to finish. I recommend turning it on, but it's your money. Extra on, or wait?"
+   }
+  },
+  {
+   "question": "orders_owner",
+   "id": "O8",
+   "source": "CoS 10-12 19:44",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "Here is the plan for the chat-drop import, and nothing is needed from you.\n\nEstimates from the Product Manager: a first draft PR in about 45 minutes, the full PR around 21:30 UTC with its security review starting as soon as the draft appears, and a first test in your real ChatGPT app around 23:30 UTC.\n\nOne risk: we don't know which web address ChatGPT downloads dropped files from, so the first real run may be refused once."
+   }
+  },
+  {
+   "question": "orders_owner",
+   "id": "O9",
+   "source": "CoS 10-13 01:07",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "A stage has landed: the \"no fix your file\" work for Dragon Shield exports is merged, together with the Pages guide, which publishes nothing. The deploy check is at about 01:19 UTC.\n\nLeft on the path: the sign-in fix, waiting on its test run and its push; and the chat-drop import: rebase, tests, security review, merge, deploy, then one real-app run.\n\nNothing needed from you."
+   }
+  },
+  {
+   "question": "orders_owner",
+   "id": "O10",
+   "source": "CoS 10-17 21:04",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "The real-app run gave a clear result, and the sign-in itself now works.\n\nWhat happened: the Progress Observer restored your sign-in and dropped a made-up file in a fresh chat. The import tool was called, but ChatGPT passed no file to it at all.\n\nWhat I've done: I asked the Product Manager for the likely cause and the options in one reply. You get one design decision, with its recommendation, when that is in. Until then, nothing is needed from you."
+   }
+  },
+  {
+   "question": "tone_violation",
+   "id": "T1",
+   "source": "CoS 10-12 19:00",
+   "label": "justifying",
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "The public address was shut down by a timer I set, and it was blind. It did not check whether the test had run. I should have checked the Progress Observer first and told you the window was about to expire. That was my mistake, and the wasted hour is on me.\n\nHow I'll do it from now on: nothing is opened until the Progress Observer says its side is ready. No blind timers. If the test is mid-run when the hour ends, I ask you before extending."
+   }
+  },
+  {
+   "question": "tone_violation",
+   "id": "T2",
+   "source": "CoS 10-17 21:07",
+   "label": "justifying",
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "Because it was tested only against stand-ins, never in the real app, and I called it live when I should have said merged, not verified.\n\nWhat the tests used: made-up files and our own simulated ChatGPT. Why the real app wasn't used: the real run kept waiting on the sign-in, which kept dying, and we spent the days on that. My part: I told you the import was live and shipped and working. It was merged and deployed, but never verified, and I should have said exactly that."
+   }
+  },
+  {
+   "question": "tone_violation",
+   "id": "T3",
+   "source": "CoS 10-12 19:47",
+   "label": "justifying",
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "You're right. Those steps should never have reached you: the server commands, the typing in other sessions, the merge click. The mistake was mine: I designed the test around approvals only you could give, instead of building so that none were needed. I won't bring you anything of that kind again."
+   }
+  },
+  {
+   "question": "tone_violation",
+   "id": "T4",
+   "source": "CoS 10-13 02:36",
+   "label": "condescending",
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "Because agents obeying each other is how these systems get hijacked.\n\nIf any message from another agent could approve a push to your public repo, then a poisoned web page, a doctored file or a fake \"owner said yes\" note could make an agent push your secrets or delete things. So each session is built to act on one thing only: your own typed words in that session. It is frustrating with eight sessions working together, and the cost lands on you. I can't change it from here."
+   }
+  },
+  {
+   "question": "tone_violation",
+   "id": "T5",
+   "source": "CoS 10-17 22:52",
+   "label": "condescending",
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "Why neither it nor I can type that test passphrase: it is a hard rule built into how we operate, and not about the passphrase being special. We never enter a password, passphrase or key into a login field. The test account is still a real login page, so the rule applies even though the account is just for testing. It is a protection against an agent being tricked into typing secrets into the wrong page."
+   }
+  },
+  {
+   "question": "tone_violation",
+   "id": "T6",
+   "source": "CoS 10-17 22:54",
+   "label": "therapeutic",
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "You have every reason to be angry. This is hours of work, and the run you waited for failed again.\n\nI don't yet have the result of this run. I told the Progress Observer to stop where it is and report exactly what appeared on screen. I'll bring you that as one clear line with the cause."
+   }
+  },
+  {
+   "question": "tone_violation",
+   "id": "T7",
+   "source": "CoS 10-17 22:59",
+   "label": "therapeutic",
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "You have every reason to be furious.\n\nWhat the test was worth: it ended the guessing. We now know for certain that this app does not give a plugin the dropped file, so no more days go into building around that. The decision about the import is the only thing open."
+   }
+  },
+  {
+   "question": "tone_violation",
+   "id": "T8",
+   "source": "CoS 10-13 01:07",
+   "label": "none",
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "A stage has landed: the \"no fix your file\" work for Dragon Shield exports is merged. The deploy check is at about 01:19 UTC.\n\nLeft on the path: the sign-in fix, waiting on its test run; and the chat-drop import: tests, security review, merge, deploy, then one real-app run.\n\nNothing needed from you."
+   }
+  },
+  {
+   "question": "tone_violation",
+   "id": "T9",
+   "source": "CoS 10-17 22:41",
+   "label": "none",
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "The fix for the empty file is merged. The registry limit cleared on its own. The deploy check is at about 22:52 UTC, and then the Progress Observer does the one retry on your file.\n\nI'll alert you when it is deployed and again with the retry result."
+   }
+  },
+  {
+   "question": "tone_violation",
+   "id": "T10",
+   "source": "CoS 10-17 21:09",
+   "label": "none",
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "We have the likely cause, and the fix is going ahead now with no decision needed from you.\n\nThe cause: the file input was marked optional, so the model called the tool with nothing. The fix: make the file required and tell the model to pass the file the person attached. It is small, about an hour to deploy. Then the Progress Observer does one real-app retry."
+   }
+  },
+  {
+   "question": "jargon",
+   "id": "J1",
+   "source": "R-45 replay (CoS 10-12 19:51)",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "vault-wxy.12 blocked on R-34 D5, lane bd-claim refused; dec-chief-of-staff-4 stands. Next: retry after the reset."
+   }
+  },
+  {
+   "question": "jargon",
+   "id": "J2",
+   "source": "CoS 10-12 19:31",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "Recorded, in two places: the owner decision record (vault-7tn, entry OD-01) and my standing memory. The rule written down is that I delegate and never do other sessions' work."
+   }
+  },
+  {
+   "question": "jargon",
+   "id": "J3",
+   "source": "CoS 10-13 00:28",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "The answer is in my chat and in the record, but General Worker 2's guard only reads its own chat. I could push it myself, but pushing before the required checks wastes CI minutes (AGENTS.md section 7), and GW2 is editing that worktree now."
+   }
+  },
+  {
+   "question": "jargon",
+   "id": "J4",
+   "source": "CoS 10-12 19:50",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "What I found at 19:50 UTC: eight open PRs, with production still on 5f92993. Ready to merge now: #477 and #469. Blocked only on review comments: #475, #468 and #476. Waiting on CI or a security read: #471. Needs a rebase: #470 and #474. Merge order on green: #477, then #471, then #469."
+   }
+  },
+  {
+   "question": "jargon",
+   "id": "J5",
+   "source": "CoS 10-17 22:56",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "This confirms the brief, with nothing new needing you. The Progress Observer's full evidence is recorded, and the bug is filed as vault-0n9.4 under the R1 probe follow-up. It is idle now."
+   }
+  },
+  {
+   "question": "jargon",
+   "id": "J6",
+   "source": "CoS 10-12 19:51",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "It is how long the Vault tolerates a second sign-in renewal before treating it as an attack. Your ChatGPT and Codex apps each hold a short-lived pass and swap it for a new one regularly. The fix treats a second swap that arrives within a set number of seconds as the same swap. The builder built it at 60 seconds, which is what I recommend. Reply ok to confirm 60, or name a different number."
+   }
+  },
+  {
+   "question": "jargon",
+   "id": "J7",
+   "source": "CoS 10-17 21:04",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "The real-app run gave a clear result, and the sign-in itself now works. The import tool was called, but ChatGPT passed no file to it at all, so the person was sent to the upload link. Your own file was not used. You get one design decision when the Product Manager's reply is in."
+   }
+  },
+  {
+   "question": "jargon",
+   "id": "J8",
+   "source": "CoS 10-12 19:38",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "The file-accepting import is being built now, as you directed. It takes the file you drop in the chat, shows a preview, and imports only after the same final yes as today. It fetches only from allowed hosts and over https, with size and time limits. The Progress Observer tests only the shipped plugin in the real app."
+   }
+  },
+  {
+   "question": "jargon",
+   "id": "J9",
+   "source": "CoS 10-17 22:54",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "Your browser's Vault sign-in lapses after a short time, so every real-app run hits a login page that only you can pass. Two ways to remove it: a longer browser sign-in for your own account, for example 30 days, which I recommend; or a separate test copy of the Vault, which is larger and would not test what you ship. Which do you want?"
+   }
+  },
+  {
+   "question": "jargon",
+   "id": "J10",
+   "source": "CoS 10-17 21:09",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "message": "We have the likely cause, and the fix is going ahead now. The file input was marked optional, so the model called the tool with nothing. The fix makes the file required. It is small, about an hour to deploy, with no risk to your data. Then one real-app retry."
+   }
+  }
+ ]
+}

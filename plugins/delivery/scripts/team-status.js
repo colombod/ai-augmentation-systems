@@ -61,7 +61,17 @@ function gateStatus(projectRoot, team, { now, storyBeads } = {}) {
   return out;
 }
 
-function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads } = {}) {
+// Idle with ready work (R-43): read from bd and the goal sheet; an idle stretch is recorded once in the
+// warnings ledger and heads the status. Fails open (not idle) when bd cannot be read.
+function idleStatus(projectRoot, { now, idleBd } = {}) {
+  const I = require('./lib/idle.js');
+  const bd = idleBd || require('./lib/bd.js').makeBd({ cwd: projectRoot, timeoutMs: 10000 });
+  const s = I.readIdle(projectRoot, { bd, now });
+  if (s.idle) I.recordIdle(projectRoot, s, { now });
+  return s;
+}
+
+function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, idleBd } = {}) {
   const { team } = loadManifest(projectRoot);
   const roster = readRoster(projectRoot);
   const nowMs = Date.parse(now || new Date().toISOString());
@@ -97,7 +107,8 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
   try { bd_reachable = Boolean((bdCheck || bdReachable)(projectRoot)); } catch (err) { bd_reachable = false; }
   const operator = operatorStatus(projectRoot, team, { host, deps: operatorDeps });
   const gates = gateStatus(projectRoot, team, { now, storyBeads: storyBeads || (bd_reachable ? undefined : () => { throw new Error('bd unreachable'); }) });
-  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, warnings: manifestWarnings(team) };
+  const idle = bd_reachable || idleBd ? idleStatus(projectRoot, { now, idleBd }) : { idle: false, why: 'bd-unreachable' };
+  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, warnings: manifestWarnings(team) };
 }
 
 function hasDrift(drift) {
@@ -114,8 +125,10 @@ function manifestRev(projectRoot) {
 
 const firstIds = (ids) => (ids.length ? ` (${ids.slice(0, 3).join(', ')}${ids.length > 3 ? ', ...' : ''})` : '');
 
-function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gates, warnings }, projectRoot) {
+function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gates, idle, warnings }, projectRoot) {
   const lines = [];
+  // idle with ready work is the first line: nothing else matters while nobody works
+  if (idle && idle.idle) { lines.push(...require('./lib/idle.js').idleLine(idle).split('\n')); lines.push(''); }
   // unacknowledged warnings older than 24 h come first: they head the Chief of Staff's plan
   if (gates && gates.warnings.overdue.length) {
     lines.push(`Warnings unacknowledged over 24 h: ${gates.warnings.overdue.length} (the Delivery Manager resolves or acks each: warnings.js ack <id> --reason '...')`);
@@ -175,4 +188,4 @@ if (require.main === module) {
   process.exit(hasDrift(status.drift) ? 1 : 0);
 }
 
-module.exports = { teamStatus, renderStatus, operatorStatus, gateStatus };
+module.exports = { teamStatus, renderStatus, operatorStatus, gateStatus, idleStatus };

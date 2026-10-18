@@ -335,16 +335,17 @@ function findRelayRequest(text, opts = {}) {
 }
 
 // The relay reasons quote the flagged clause from the first block on.
-const RELAY_REASON = 'You carry answers; the operator does not. Rewrite only that clause: send the record id yourself with SendMessage; keep any real decision question to the operator.';
+const RELAY_REASON = 'You carry answers; the operator does not.\nRewrite only that clause: send the record id yourself with SendMessage.';
 // the relayed thing has no record yet (a question to pass on, an answer not recorded)
-const RELAY_REASON_NO_RECORD = 'You carry answers; the operator does not. Rewrite only that clause: a decision only the operator can make goes into your next batched briefing (if it blocks work now, ask it once here yourself); record the answer, then send the record id yourself with SendMessage.';
+const RELAY_REASON_NO_RECORD = 'You carry answers; the operator does not.\nRewrite only that clause: ask an owner-only decision here yourself, record the answer, then send the record id with SendMessage.';
 const RELAY_RECORD_ID = /\b(?:dec|del|ans)-[a-z0-9-]*\d\b/i;
 
-function relayReason(message, clause) {
+// extra (the typed judge's rating) joins the first line, so the second stays the way out
+function relayReason(message, clause, extra) {
   const base = RELAY_RECORD_ID.test(String(message || '')) ? RELAY_REASON : RELAY_REASON_NO_RECORD;
-  if (!clause) return base;
-  const [head, ...tail] = base.split('. ');
-  return `${head}. You wrote: "${String(clause).replace(/\s+/g, ' ').slice(0, 160)}". ${tail.join('. ')}`;
+  const [head, tail] = base.split('\n');
+  const said = clause ? ` You wrote: "${String(clause).replace(/\s+/g, ' ').slice(0, 160)}".` : '';
+  return `${head}${said}${extra ? ` ${extra}` : ''}\n${tail}`;
 }
 
 // Commands in block reasons are the exact form the session can run (absolute path, single quotes).
@@ -353,19 +354,19 @@ function unrecordedReason(list, op) {
   const n = first.id;
   const excerpt = String(first.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   const more = list.length > 1 ? ` and ${list.length - 1} more` : '';
-  return `You have an operator input with no record: ${n} ("${excerpt}")${more}. Record the decision (\`${op} record --cite ${n} --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\`) or acknowledge it (\`${op} ack --input ${n} --reason '<why this is not a decision>'\`; for chat, \`${op} ack --pending --reason 'conversational'\` acks them all at once), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.`;
+  return `You have an operator input with no record: ${n} ("${excerpt}")${more}. Record it, or ack it (operator.js ack --input ${n} --reason '<why>'; chat: ack --pending --reason 'conversational'); SendMessage the id.\n\`${op} record --cite ${n} --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\``;
 }
 
 // What the session CAN do: no lane may write the operator records, so restoring the file from the
 // private operator store's history is an owner-side task for the briefing; the Chief of Staff can set the broken chain aside (the file
 // is kept as evidence) and keep recording; the Product Manager asks the Chief of Staff to.
 function integrityReason(instance, problem, op, role) {
-  const what = `${problem.code || 'chain_invalid'}: ${String(problem.error || '').replace(/\s+/g, ' ').slice(0, 160)}`;
+  const what = `${problem.code || 'chain_invalid'}: ${String(problem.error || '').replace(/\s+/g, ' ').slice(0, 100)}`;
   const quarantine = `\`${op} quarantine --file records/${instance}.ndjson --reason '<what failed>'\``;
   const act = role === 'chief-of-staff'
-    ? `set it aside with ${quarantine} (the file is kept as evidence) and keep recording, and put "restore operator records/${instance}.ndjson from the operator store's history (operator.js problems names the command)" in your next briefing as one owner-side line`
-    : `SendMessage the Chief of Staff with the problem; it sets the chain aside with ${quarantine} and puts the restore in its briefing`;
-  return `Your own operator records chain (records/${instance}.ndjson) fails verification (${what}). Nothing can be recorded or acknowledged on it, and no lane can write the operator directory: run \`${op} problems\` to see it, then ${act}. Do not ask the operator to relay anything meanwhile.`;
+    ? `Set it aside (kept as evidence) and keep recording: ${quarantine}`
+    : 'SendMessage the Chief of Staff with the problem; it sets the chain aside';
+  return `Your own operator records chain (records/${instance}.ndjson) fails verification (${what}); nothing can be recorded on it (\`${op} problems\` shows it).\n${act}.`;
 }
 
 function readTrim(file) {
@@ -396,7 +397,7 @@ function ownChainProblem(problems, instance) {
 }
 
 function tornTailReason(instance, problem, op) {
-  return `Your own operator records chain (records/${instance}.ndjson) has an incomplete last line (torn_tail: ${String(problem.error || '').replace(/\s+/g, ' ').slice(0, 120)}). The valid entries are used and your next record or ack repairs it; \`${op} repair --instance ${instance}\` repairs it now.`;
+  return `Your own operator records chain (records/${instance}.ndjson) has an incomplete last line (torn_tail: ${String(problem.error || '').replace(/\s+/g, ' ').slice(0, 120)}); your next record or ack repairs it.\nTo repair it now: \`${op} repair --instance ${instance}\``;
 }
 
 // [{ kind: 'unrecorded' | 'integrity', reason }] for the Chief of Staff's own inputs ([] or null when nothing applies).
@@ -465,13 +466,13 @@ function relayCandidates(message, relay, judged) {
   const rated = `The typed judge rates this message p ${p.toFixed(2)} as a relay request (advisory evidence).`;
   if (relay) {
     // overruled only when clearly negative: below the warn threshold and below 0.5, whatever the manifest says
-    if (p >= Math.min(judged.warn_threshold, 0.5)) return [{ kind: 'relay', reason: `${relayReason(message, relay.clause)} ${rated}`, detail: relay.phrase }];
+    if (p >= Math.min(judged.warn_threshold, 0.5)) return [{ kind: 'relay', reason: relayReason(message, relay.clause, rated), detail: relay.phrase }];
     return [{ kind: 'relay-overruled', advisory: true, record: true, p, reason: `The relay detector flagged "${String(relay.clause).replace(/\s+/g, ' ').slice(0, 160)}"; the typed judge overruled it at p ${p.toFixed(2)}.` }];
   }
   const start = strip(message).replace(/\s+/g, ' ').trim().slice(0, 160);
-  if (p >= judged.block_threshold) return [{ kind: 'relay', reason: `${relayReason(message, start)} ${rated}`, detail: start }];
+  if (p >= judged.block_threshold) return [{ kind: 'relay', reason: relayReason(message, start, rated), detail: start }];
   if (p >= judged.warn_threshold) {
-    return [{ kind: 'relay-warn', advisory: true, reason: `Reminder: ${rated} If your last message asked the operator to act in another session or to carry a word to another role, do it yourself with SendMessage next time; the operator does not relay.` }];
+    return [{ kind: 'relay-warn', advisory: true, reason: `Reminder: ${rated}\nIf it asked the operator to act in another session or carry a word, do it yourself next time with SendMessage.` }];
   }
   return [];
 }
@@ -500,4 +501,6 @@ function operatorChecks({ input, roleDir, projectRoot, role, instance, captureSt
   }
 }
 
-module.exports = { findRelayRequest, operatorChecks, judgeRelay, relayCandidates, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD, OPERATOR_FACING };
+// unrecordedReason and integrityReason are exported for the short-reason lint;
+// clauses, compile, addressOf and strip are shared with message-checks.js (orders to the owner)
+module.exports = { unrecordedReason, integrityReason, tornTailReason, clauses, compile, addressOf, strip, findRelayRequest, operatorChecks, judgeRelay, relayCandidates, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD, OPERATOR_FACING };

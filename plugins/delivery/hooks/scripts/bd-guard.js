@@ -152,7 +152,7 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
       }
     }
     if (p.sub === 'reopen' && !REOPENERS.has(roleId)) {
-      return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: reopening a closed bead is the Delivery Manager's or Progress Observer's call.\nMessage them with the evidence that it is not done.` };
+      return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: reopening a closed bead is the Delivery Manager's or Progress Observer's call.\nMessage the Delivery Manager or Progress Observer with the evidence that it is not done.` };
     }
     // `assign <id> <who>` is a claim change: the second positional is a person, not a bead.
     const assigning = p.sub === 'assign' && p.ids.length > 0;

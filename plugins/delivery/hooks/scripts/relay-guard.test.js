@@ -134,7 +134,7 @@ test('blocks the chief of staff with an unrecorded input of its own session, and
   const p = captured('chief-of-staff', [human('use postgres for the store, it is what ops already runs', 1)]);
   assert.equal(p.cap.status, 'ok');
   const d = decideStopForOperator(stopArgs(p));
-  assert.equal(d.reason, `You have an operator input with no record: in-pc-000001 ("use postgres for the store, it is what ops already runs"). Record the decision (\`${OP} record --cite in-pc-000001 --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\`) or acknowledge it (\`${OP} ack --input in-pc-000001 --reason '<why this is not a decision>'\`; for chat, \`${OP} ack --pending --reason 'conversational'\` acks them all at once), then send the record id to the sessions that need it with SendMessage. Do not ask the operator to relay it.`);
+  assert.equal(d.reason, `You have an operator input with no record: in-pc-000001 ("use postgres for the store, it is what ops already runs"). Record it, or ack it (operator.js ack --input in-pc-000001 --reason '<why>'; chat: ack --pending --reason 'conversational'); SendMessage the id.\n\`${OP} record --cite in-pc-000001 --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\``);
   R.ack({ projectRoot: p.projectRoot, input: 'in-pc-000001', reason: 'a preference, recorded elsewhere', by: COS_BY });
   assert.equal(decideStopForOperator(stopArgs(p)), null);
 });
@@ -143,7 +143,7 @@ test('several pending inputs: names the first, counts the rest, cuts the excerpt
   const long = `ship it ${'x'.repeat(120)}`;
   const p = captured('chief-of-staff', [human(long, 1), human('second', 2), human('third', 3)]);
   const d = decideStopForOperator(stopArgs(p));
-  assert.ok(d.reason.startsWith(`You have an operator input with no record: in-pc-000001 ("${long.slice(0, 80)}") and 2 more. Record the decision`), d.reason);
+  assert.ok(d.reason.startsWith(`You have an operator input with no record: in-pc-000001 ("${long.slice(0, 80)}") and 2 more. Record it, or ack it`), d.reason);
 });
 
 test('passes when stop_hook_active, for any other role, and on inputs of other sessions', () => {
@@ -170,11 +170,11 @@ test('blocks a relay request with the carry reason once nothing is pending', () 
   R.ack({ projectRoot: p.projectRoot, input: 'in-pc-000001', reason: 'noted', by: COS_BY });
   // round 4: the first block already quotes the flagged clause, in its own casing
   assert.deepEqual(decideStopForOperator(stopArgs(p, { last_assistant_message: 'Recorded dec-1.\n\ncan you paste this answer to the builder?' })),
-    { reason: 'You carry answers; the operator does not. You wrote: "can you paste this answer to the builder". Rewrite only that clause: send the record id yourself with SendMessage; keep any real decision question to the operator.' });
+    { reason: 'You carry answers; the operator does not. You wrote: "can you paste this answer to the builder".\nRewrite only that clause: send the record id yourself with SendMessage.' });
   assert.deepEqual(decideStopForOperator(stopArgs(p, { last_assistant_message: 'The builder asks whether to use Redis. Can you tell the builder session A or B?' })),
-    { reason: 'You carry answers; the operator does not. You wrote: "Can you tell the builder session A or B". Rewrite only that clause: a decision only the operator can make goes into your next batched briefing (if it blocks work now, ask it once here yourself); record the answer, then send the record id yourself with SendMessage.' });
-  assert.equal(RELAY_REASON_NO_RECORD, 'You carry answers; the operator does not. Rewrite only that clause: a decision only the operator can make goes into your next batched briefing (if it blocks work now, ask it once here yourself); record the answer, then send the record id yourself with SendMessage.');
-  assert.equal(RELAY_REASON, 'You carry answers; the operator does not. Rewrite only that clause: send the record id yourself with SendMessage; keep any real decision question to the operator.');
+    { reason: 'You carry answers; the operator does not. You wrote: "Can you tell the builder session A or B".\nRewrite only that clause: ask an owner-only decision here yourself, record the answer, then send the record id with SendMessage.' });
+  assert.equal(RELAY_REASON_NO_RECORD, 'You carry answers; the operator does not.\nRewrite only that clause: ask an owner-only decision here yourself, record the answer, then send the record id with SendMessage.');
+  assert.equal(RELAY_REASON, 'You carry answers; the operator does not.\nRewrite only that clause: send the record id yourself with SendMessage.');
   assert.equal(relayReason('dec-1', null), RELAY_REASON, 'no clause: the base reason');
   assert.equal(decideStopForOperator(stopArgs(p, { last_assistant_message: 'I will tell the Delivery Lead.' })), null);
 });
@@ -343,7 +343,7 @@ test("I3: a chain problem on the chief of staff's own records file replaces the 
   const torn = () => ({ inputs, problems: [{ file: 'records/chief-of-staff', code: 'truncated', error: 'records/chief-of-staff: truncated 4 entries but 5 recorded' }] });
   const found = operatorChecks(stopArgs(p, {}, { deps: { pending: torn } }));
   assert.deepEqual(found.map((f) => f.kind), ['integrity']);
-  assert.equal(found[0].reason, `Your own operator records chain (records/chief-of-staff.ndjson) fails verification (truncated: records/chief-of-staff: truncated 4 entries but 5 recorded). Nothing can be recorded or acknowledged on it, and no lane can write the operator directory: run \`${OP} problems\` to see it, then set it aside with \`${OP} quarantine --file records/chief-of-staff.ndjson --reason '<what failed>'\` (the file is kept as evidence) and keep recording, and put "restore operator records/chief-of-staff.ndjson from the operator store's history (operator.js problems names the command)" in your next briefing as one owner-side line. Do not ask the operator to relay anything meanwhile.`);
+  assert.equal(found[0].reason, `Your own operator records chain (records/chief-of-staff.ndjson) fails verification (truncated: records/chief-of-staff: truncated 4 entries but 5 recorded); nothing can be recorded on it (\`${OP} problems\` shows it).\nSet it aside (kept as evidence) and keep recording: \`${OP} quarantine --file records/chief-of-staff.ndjson --reason '<what failed>'\`.`);
   // the Product Manager cannot quarantine: it is told to ask the Chief of Staff
   const pm = operatorChecks(stopArgs(p, {}, { role: 'product-manager', instance: 'chief-of-staff', deps: { pending: torn } }));
   assert.match(pm[0].reason, /SendMessage the Chief of Staff with the problem/);
@@ -652,8 +652,8 @@ test('round 4 fixes, one by one', () => {
 test('round 4: the relay reason quotes the flagged clause on the first block, in its own casing', () => {
   const r = findRelayRequest('All good. Could you Tell the Delivery Lead to proceed?');
   assert.equal(r.clause, 'Could you Tell the Delivery Lead to proceed');
-  assert.equal(relayReason('', r.clause), 'You carry answers; the operator does not. You wrote: "Could you Tell the Delivery Lead to proceed". Rewrite only that clause: a decision only the operator can make goes into your next batched briefing (if it blocks work now, ask it once here yourself); record the answer, then send the record id yourself with SendMessage.');
-  assert.equal(relayReason('dec-3', r.clause), 'You carry answers; the operator does not. You wrote: "Could you Tell the Delivery Lead to proceed". Rewrite only that clause: send the record id yourself with SendMessage; keep any real decision question to the operator.');
+  assert.equal(relayReason('', r.clause), 'You carry answers; the operator does not. You wrote: "Could you Tell the Delivery Lead to proceed".\nRewrite only that clause: ask an owner-only decision here yourself, record the answer, then send the record id with SendMessage.');
+  assert.equal(relayReason('dec-3', r.clause), 'You carry answers; the operator does not. You wrote: "Could you Tell the Delivery Lead to proceed".\nRewrite only that clause: send the record id yourself with SendMessage.');
 });
 
 // Round 4 sets. DEV4 was written for tuning. HELDOUT4A was written after the first round 4 rule and

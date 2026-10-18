@@ -136,6 +136,30 @@ function secretKind(value, denylist, secrets = []) {
   return null;
 }
 
+// The text with every sensitive-looking span replaced by a placeholder ([path], [url], [token], ...), for
+// a gate that would rather send "run [path] on the server" than nothing. The filter still runs after it.
+function redact(text) {
+  let out = String(text == null ? '' : text);
+  // each hit takes the whole whitespace-delimited word it sits in, so no tail of a path or token is
+  // left behind (C:\Users\Alice\... is one [path], not "[path]sers\Alice\...") (Copilot round 5)
+  for (const [kind, re] of CHECKS) {
+    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
+    let m;
+    const spans = [];
+    while ((m = g.exec(out))) {
+      let a = m.index;
+      let b = m.index + m[0].length;
+      if (/^[\s"'(=:,[{]/.test(m[0])) a += 1;
+      while (a > 0 && !/[\s"'(]/.test(out[a - 1])) a--;
+      while (b < out.length && !/[\s"')]/.test(out[b])) b++;
+      spans.push([a, b]);
+      if (m[0].length === 0) g.lastIndex++;
+    }
+    for (const [a, b] of spans.reverse()) out = `${out.slice(0, a)}[${kind}]${out.slice(b)}`;
+  }
+  return out.replace(OPAQUE, (m) => (/\d/.test(m) && /[A-Za-z]/.test(m) ? '[token]' : m)).replace(HEX, (m) => (/\d/.test(m) ? '[token]' : m));
+}
+
 // { state, dropped, filtered, missing }: only declared fields pass; a declared field that looks
 // sensitive is withheld and named (field and kind, never the value).
 function filterState(question, state, { denylist, secrets } = {}) {
@@ -336,4 +360,4 @@ function stats(entries, { block = DEFAULTS.block_threshold, warn = DEFAULTS.warn
   return out;
 }
 
-module.exports = { ask, judgeConfig, secretKind, ENDPOINT_ENV, configProblems, filterState, loadCatalogue, loadDenylist, readLog, writeLog, logDirOf, stats, providerImpls, CATALOGUE_FILE, TYPESAFE_URL, DEFAULTS };
+module.exports = { ask, redact, judgeConfig, secretKind, ENDPOINT_ENV, configProblems, filterState, loadCatalogue, loadDenylist, readLog, writeLog, logDirOf, stats, providerImpls, CATALOGUE_FILE, TYPESAFE_URL, DEFAULTS };

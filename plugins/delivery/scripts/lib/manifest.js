@@ -103,6 +103,10 @@ function manifestWarnings(team) {
   }
   // the typed judge's block: unknown keys are ignored with a warning
   out.push(...require('./judge.js').configProblems(team && team.judge).warnings);
+  // R-42: usage budget figures come only from the owner, on the goal sheet; one written here is ignored
+  for (const k of ['weekly_units', 'usage_envelope', 'lean_at']) {
+    if (team && team.budget && team.budget[k] !== undefined) out.push(`team.json: budget.${k} is ignored; the owner sets it: goal.js set budget.${k} <value> --record <dec-id>`);
+  }
   return out;
 }
 

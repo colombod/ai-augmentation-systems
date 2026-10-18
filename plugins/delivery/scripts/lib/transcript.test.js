@@ -242,3 +242,78 @@ test('a leading system-reminder block does not hide the real text block', () => 
   only.message.content = [{ type: 'text', text: '<system-reminder>note</system-reminder>' }];
   assert.strictEqual(t.classifyRecord(only).source, 'system');
 });
+
+test('currentTurn: a turn longer than the 8 MB window is read from further back', () => {
+  const T = require('./transcript.js');
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'turn-')), 't.jsonl');
+  const tool = (command) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } });
+  const lines = [JSON.stringify({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: 'is the import live?' } }), tool('node /p/scripts/evidence.js check ex-1')];
+  const pad = tool(`echo ${'x'.repeat(100000)}`);
+  for (let i = 0; i < 100; i++) lines.push(pad);
+  fs.writeFileSync(f, `${lines.join('\n')}\n`);
+  const t = T.currentTurn(f, { maxBytes: 1024 * 1024 });
+  assert.equal(t.owner, 'is the import live?');
+  assert.equal(t.commands[0], 'node /p/scripts/evidence.js check ex-1');
+});
+
+test('currentTurn: a slash-command prompt starts a new turn for the commands', () => {
+  const T = require('./transcript.js');
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'turn-')), 't.jsonl');
+  const tool = (command) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } });
+  fs.writeFileSync(f, `${[JSON.stringify({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: 'is it live?' } }), tool('node /p/scripts/evidence.js check ex-1'),
+    JSON.stringify({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: '<command-name>/delivery:status</command-name>' } }), tool('git status')].join('\n')}\n`);
+  assert.deepEqual(T.currentTurn(f).commands, ['git status']);
+});
+
+test('readHumanInputs: an AskUserQuestion answer is an owner input bound to its question; the last assistant message is kept', () => {
+  const T = require('./transcript.js');
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ask-')), 't.jsonl');
+  const questions = [{ question: "Pause the team's work now?", header: 'Goal change', multiSelect: false, options: [{ label: 'Yes', description: 'x' }, { label: 'No', description: 'y' }] }];
+  fs.writeFileSync(f, `${[
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'One decision: Set the weekly budget to 5 units?' }] } },
+    { type: 'user', origin: { kind: 'human' }, uuid: 'u1', promptId: 'p1', message: { role: 'user', content: 'yes' } },
+    { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions } }] } },
+    { type: 'user', uuid: 'u2', sourceToolAssistantUUID: 'a2', toolUseResult: { questions, answers: { [questions[0].question]: 'Yes' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'answered' }] } },
+  ].map((r) => JSON.stringify(r)).join('\n')}\n`);
+  const r = T.readHumanInputs(f);
+  const [typed, asked] = r.inputs.filter((i) => i.source === 'human');
+  assert.equal(typed.text, 'yes');
+  assert.match(typed.after_assistant.tail, /Set the weekly budget to 5 units\?$/);
+  assert.equal(asked.text, 'Yes');
+  assert.deepEqual(asked.asked, { question: "Pause the team's work now?", options: ['Yes', 'No'], multiSelect: false, via: 'AskUserQuestion' });
+});
+
+test('readHumanInputs: the message before counts for one input only; a result that does not answer its tool_use is no input', () => {
+  const T = require('./transcript.js');
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ask-')), 't.jsonl');
+  const q = (question) => [{ question, header: 'h', multiSelect: false, options: [{ label: 'Yes' }, { label: 'No' }] }];
+  fs.writeFileSync(f, `${[
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: "Pause the team's work now?" }] } },
+    { type: 'user', origin: { kind: 'human' }, uuid: 'u1', promptId: 'p1', message: { role: 'user', content: 'hmm' } },
+    { type: 'user', origin: { kind: 'human' }, uuid: 'u2', promptId: 'p2', message: { role: 'user', content: 'yes' } },
+    { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions: q('Merge the export fix?') } }] } },
+    { type: 'user', uuid: 'u3', sourceToolAssistantUUID: 'a2', toolUseResult: { questions: q("Pause the team's work now?"), answers: { "Pause the team's work now?": 'Yes' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'x' }] } },
+  ].map((r) => JSON.stringify(r)).join('\n')}\n`);
+  const ins = T.readHumanInputs(f).inputs.filter((i) => i.source === 'human');
+  assert.deepEqual(ins.map((i) => [i.text, !!i.after_assistant]), [['hmm', true], ['yes', false]]);
+});
+
+test('Copilot round 5: an answer needs its AskUserQuestion tool_use (kept across reads); an answer clears the message before', () => {
+  const T = require('./transcript.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ask-'));
+  const f = path.join(dir, 't.jsonl');
+  const qs = [{ question: 'Q?', header: 'h', multiSelect: false, options: [{ label: 'Yes' }, { label: 'No' }] }];
+  const result = (id, src) => ({ type: 'user', uuid: `r${id}`, sourceToolAssistantUUID: src, toolUseResult: { questions: qs, answers: { 'Q?': 'Yes' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] } });
+  const lines = [
+    { type: 'assistant', uuid: 'a0', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'other', name: 'Bash', input: {} }] } },
+    result('other', 'a0'), // a tool result that merely carries questions/answers
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'Q?' }, { type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions: qs } }] } },
+  ];
+  fs.writeFileSync(f, `${lines.map((r) => JSON.stringify(r)).join('\n')}\n`);
+  const r1 = T.readHumanInputs(f);
+  assert.deepEqual(r1.inputs.filter((i) => i.source === 'human'), []);
+  fs.appendFileSync(f, `${[result('tu1', 'a1'), { type: 'user', origin: { kind: 'human' }, uuid: 'u9', promptId: 'p9', message: { role: 'user', content: 'yes' } }].map((r) => JSON.stringify(r)).join('\n')}\n`);
+  const r2 = T.readHumanInputs(f, { fromLine: r1.lastLine, fromOffset: r1.lastOffset, lastAssistant: r1.lastAssistant, pendingAsks: r1.pendingAsks });
+  const ins = r2.inputs.filter((i) => i.source === 'human');
+  assert.deepEqual(ins.map((i) => [i.text, !!i.asked, !!i.after_assistant]), [['Yes', true, false], ['yes', false, false]]);
+});

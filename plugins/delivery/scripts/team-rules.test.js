@@ -36,9 +36,9 @@ test('rendered rules: records, never relays; the old "passes as the operator\'s 
   }
 });
 
-test('rules are numbered 1 to 13 in order; 11 is personal data, 12 operator decisions, 13 SendMessage', () => {
+test('rules are numbered 1 to 15 in order; 11 is personal data, 12 operator decisions, 13 SendMessage', () => {
   const nums = RULES.split('\n').map((l) => /^(\d+)\. /.exec(l)).filter(Boolean).map((m) => Number(m[1]));
-  assert.deepEqual(nums, Array.from({ length: 13 }, (_, i) => i + 1));
+  assert.deepEqual(nums, Array.from({ length: 15 }, (_, i) => i + 1));
   const rule = (n) => RULES.split('\n').find((l) => l.startsWith(`${n}. `));
   assert.equal(rule(11), '11. **No personal data** in a message, a bead or a pull request.');
   assert.match(rule(12), /^12\. \*\*Operator decisions are records, never relays\.\*\*/);

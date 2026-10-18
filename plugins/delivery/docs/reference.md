@@ -187,6 +187,10 @@ The catalogue is `judge/questions.json`, versioned per question:
 | `shippable_unit` v2 | yes, partial, no | the ready gate (`ready.js`, bd guard on claim) | advisory: a warning at most |
 | `builds_on_verified` v2 | strongly, partly, new area | library and CLI only for now | advisory |
 | `is_fix` v1 | probability | library and CLI only for now | advisory (a probability, not the yes/no choice first planned) |
+| `orders_owner` v1 | probability | the Chief of Staff's and Product Manager's Stop hook | warns at 0.5; blocks once at 0.8 only with an out-of-queue order to the owner (below) |
+| `tone_violation` v1 | none, justifying, condescending, therapeutic | the same Stop hook | warn-only |
+| `jargon` v1 | probability | the same Stop hook, when the id rule finds nothing | warn-only, at 0.8 |
+| `goal_instruction` v1 | probability | `goal.js set`, free-text path only, off (`goal.free_text`) | not measured; the confirmed question is the only path until it is |
 
 - **Tool:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge.js ask <question-id> --state <file|->` prints the
   typed result as JSON (exit 0 answered, 3 skipped or failed, with the reason); `judge.js questions`
@@ -222,7 +226,15 @@ The catalogue is `judge/questions.json`, versioned per question:
   are not measured. `divergence` is re-measured on real gate summaries (about 10, at least 3 minor)
   before it may ever block.
 - **Live check:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge-smoke.js` (opt-in, not in the test suite)
-  sends the 10 labelled relay cases in `judge/smoke-relay-cases.json` and fails below 9 of 10.
+  sends the 10 labelled relay cases in `judge/smoke-relay-cases.json` and fails below 9 of 10;
+  `judge-smoke.js --set message` sends the 30 owner-message cases in `judge/smoke-message-cases.json`
+  and prints, per question, the score and any wrong answer at or above 0.8. A question may block only at
+  9 of 10 or better with no such wrong answer. Measured once (0.23.0, jev-1.13.0): `orders_owner` 10/10
+  (yes 0.79 to 0.90, no 0.06 to 0.14), `tone_violation` 8/10 (two condescending messages called
+  justifying), `jargon` 8/10 at 0.5 (negatives up to 0.62, so it warns at 0.8). On the same cases the
+  word rules find an order in all 5 order cases and in none of the 5 others, and ids in all 5 jargon
+  cases and none of the plain ones. The same caveat applies: 10 cases, labelled by someone who knew
+  them, from one team's Chief of Staff.
 
 ### Bead discipline
 
@@ -345,6 +357,111 @@ hook's budget remain. `shippable_unit` warns at the ready gate.
 summaries. No new catalogue question was added: a criterion-kind question needs labelled cases first,
 so mechanism wording is a word rule. The deployed sha is the one recorded with `evidence.js state`;
 checking it against a health URL is not done yet.
+
+### Owner authority and communication
+
+The owner runs the enterprise; the Chief of Staff runs the team for the owner (R-42 to R-46).
+
+- **Constraints only on the owner's yes.** `.delivery/goal.json` holds the fields that constrain the
+  work: `budget.weekly_units`, `budget.usage_envelope`, `budget.lean_at`, `pause` (paused, stopped,
+  off), the scope (changed by `scope_add` and `scope_remove`), `approvals`, `idle_minutes` (30) and
+  `briefing_lines` (12). The scope is the list of product areas the team builds toward: an add puts
+  items in, a remove takes them out, and a remove can never add.
+- **The confirmed question (the only path).** In plain words for the owner: the Chief of Staff asks you
+  a Yes/No question in a question box; clicking Yes is the decision. Mechanically:
+  - `node ${CLAUDE_PLUGIN_ROOT}/scripts/goal.js ask <field> <value>` words the question itself ("Pause
+    the team's work now?", "Set the weekly budget to 5 units?", "Add billing to the scope?", "Resume
+    the team's work now?"), records it with `operator.js ask`, and prints the AskUserQuestion input to
+    use: that question, the options Yes and No, single choice;
+  - the capture hooks read the session's transcript, which the harness writes: the AskUserQuestion
+    answer (the harness's tool_result) becomes an owner input bound to the question text, the options
+    and the choice mode the tool_use put, and the option chosen;
+  - the Chief of Staff records it with `operator.js record --answers <q> --goal <field>=<value>`;
+  - `goal.js set <field> <value> --record <dec-id>` accepts it only when the question is goal.js's text
+    for that field and value, the box offered exactly Yes and No as a single choice, the owner chose
+    Yes, the answer came after the question and within `answer_window_hours` (24), the record carries
+    the same field and value, it was not decided under a delegation, and it is neither revoked nor
+    superseded. A typed "yes" never counts: a question in a message can sit in a code block or a quote
+    while the owner answers something else;
+  - a yes applies once: a second change on the same question, answer or record is refused, and only the
+    latest change to a field counts on read, so an older yes never re-applies.
+  The transcript is the harness's file, but a session with unrestricted Bash could append to its own
+  transcript; like the rest of the capture, this is cooperative trust, detectable in the store's chains.
+- **Free text is off.** An instruction the owner types in their own words sets nothing until
+  `goal_instruction` is measured on labelled cases (at least 9 of 10, no wrong answer at or above 0.8).
+  The code stays behind `team.json` `"goal": { "free_text": true }` (default off): then a free-text
+  change needs the word rule as a pre-filter and the typed judge's `goal_instruction` at p ≥ 0.8. The
+  word rule refuses, whatever else is said: a negation, a conditional ("only if", "if", "unless",
+  "when", "in case"), another language, a figure that is not the object of its field word in the same
+  clause, a pause that is not a verb on the work or starts later, a resume tied to a later time. It is
+  a filter, not an understanding.
+- **Who sets what.** The Chief of Staff sets every field; the Product Manager sets scope changes only.
+  Other roles, and sessions without a role, are refused. Every read checks the record again: a revoked
+  record, or a value written by hand, falls back to unset (or the default) with a `goal-unverified`
+  warning. `goal.js show` prints each field with its record, and whether work is paused.
+- **The mechanical pause.** `goal.js pause --trigger andon:<ev-row-id>` (Delivery Manager or Chief of
+  Staff) cites a failed check row that `evidence.js add` wrote (by the Delivery Manager or a Reality
+  Checker); the Delivery Manager may pause on a fail row it recorded itself. At pause time the bead's
+  recorded evidence head must match the file. When read with bd at hand (`/delivery:team`, the Stop
+  hook's idle check, `goal.js show`), only rows up to the recorded head count, so a pass appended by
+  hand does not lift it and an edited chain keeps it open. The pause lapses when one of those writers
+  records a pass for the same criterion. It is kept apart from the owner's pause, so a closing andon
+  never lifts an owner pause. Red CI is a hook point that is not readable yet.
+- **Not gated yet: new team rules.** R-42 also asks that new process rules need an owner record; there
+  is no rules field or change log yet (deferred). Team rules change through the plugin's own release.
+- **The lane.** Every role is refused a direct write, `sed -i` or `perl -i` (also from inside
+  `.delivery`), move or `git checkout -- .delivery/goal.json`; committing it is fine. This is a
+  discipline aid, not a boundary: a role whose lane is `any` (builders, the Spike Researcher) can still
+  write the file through `python3 -c`, `node -e`, `cd .delivery && echo > goal.json`,
+  `git checkout <rev> -- .`, `git reset --hard` and similar, and can write evidence rows by hand. A
+  session can also pose as another role by running a script from that role's directory with its
+  `DELIVERY_ROLE` set. A hand-written value is inert because every read re-checks its record. A
+  hand-written evidence row is refused at pause time (no matching recorded head), but a session that
+  can also rewrite the bead's metadata can forge one. Both are cooperative trust, detectable in git
+  history.
+- **No default budget.** A budget field is unset until the owner sets it, and every budget check only
+  warns until then. A usage figure written into `team.json` (`budget.weekly_units`,
+  `usage_envelope`, `lean_at`) is ignored with a warning. `budget.builders_cap`, `staleness_hours` and
+  `max_unverified` are team settings, not budget figures.
+- **Idle is a defect.** With ready beads, nothing in progress, the last bead activity older than
+  `idle_minutes` and no pause that still holds (its record verifies or its andon is open),
+  `team-status.js` (and so `/delivery:team`) shows "Idle: ..." first and records one `idle` warning
+  per idle stretch; the Delivery Manager's and Chief of Staff's Stop does the same check at most every
+  10 minutes and says it on the next prompt. The alarm runs only when someone runs `/delivery:team`
+  or a Chief of Staff or Delivery Manager session stops: a team with no session running is not
+  flagged until the watchdog (a later phase). A stale `in_progress` bead (an abandoned claim) also
+  keeps it quiet. Telling sessions to idle is not a pause. A ready bead
+  counts as waiting for the owner only while an open owner-queue step names it.
+- **The owner queue.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/owner-queue.js add --kind
+  signin|consent|payment|secret|account|decision --what '<one action>' --where '<place>' --steps
+  '<exact steps>' [--expect '<what they see>'] [--check '<read-back>'] [--bead <id>]` (decisions also
+  `--about scope|money|irreversible --question q-...`). A check of whether something works, or a relay
+  into another session in any wording, is refused whatever the kind; retrying a sign-in or testing a
+  connection inside an owner-only step is fine. An open step exempts a message's order only for the
+  same action (the same first verb and shared words), not for a shared place name. `owner-queue.js list` is the daily batch;
+  `owner-queue.js done <id>` closes a step and prints its read-back. Only the Chief of Staff writes it;
+  rows are append-only under `.delivery/owner-queue/`.
+- **The owner-message checks** (the Chief of Staff's and Product Manager's Stop, `message-checks.js`):
+
+  | Check | Rule | Level |
+  |---|---|---|
+  | an imperative addressed to the owner (an address mark or second person, a bare imperative opening its sentence, or after a lead naming the owner) that no open queue step holds; plan lines, the list under a plan label, options and decision questions are not orders, unless the line sends someone into a session, to type or paste, or names the owner | `orders_owner` p ≥ 0.5, or the word rule with the judge off | warn; p ≥ 0.8 with such an imperative blocks once per turn (not again when a relay block already says it) |
+  | a routine briefing over `briefing_lines`; a message is a decision only when it ends with a question to the owner | line count | warn |
+  | the ids and names the plugin produces: `dec-`/`ev-`/`q-`/`ans-`/`in-`/`del-` ids, the project's bead ids, the plugin's script names, lane groups, `.delivery` and `.beads` paths | patterns; links, and replies to an owner who explicitly asked for ids, beads or links, are skipped | warn |
+  | `jargon` when the patterns find nothing (and the owner did not ask for ids); `tone_violation` justifying, condescending or therapeutic | the judge | warn |
+  | live, shipped or verified (not in a question) with no `evidence.js check` or `list` in this turn's tool calls, of the bead when one is named | word rule over the transcript (read back up to 64 MB for a long turn) | warn, unless it says "not checked yet" |
+
+  Each warning is a ledger row (rules R-44, R-45, R-03) and one two-line reminder on the next prompt.
+  The judge questions are asked in parallel with `relay_request`, 2 s each, and not at all on a
+  continuation that can no longer block. Their message is redacted first: paths, commands, links and
+  tokens become placeholders (`[path]`, `[url]`), so a concrete order still reaches the judge. The Stop
+  hook keeps a 12 s deadline inside the harness's 15 s: bd reads take what is left, and the idle check
+  runs only with 5 s left and must finish by 9.5 s, so the worst stop stays under 10 s (9.3 s measured).
+- **Short reasons.** Every block and warning reason from the hooks and these scripts is at most two
+  lines and its last line names the exact command or the role to message; `hooks/scripts/reasons.test.js`
+  checks it over the guards' refusals.
+- **Limits.** The word rules are heuristics: an order phrased as a statement, or ids in an image, pass.
+  The queue, like the warnings ledger, is tamper-evident by git history only (see the lane, above).
 
 ### Steward notes
 

@@ -59,7 +59,7 @@ try {
   if (marker && !MESSAGE_TOOLS.includes(input.tool_name) && !(input.tool_name === 'Bash' && isManifestRestore(cmd, marker, input.cwd))) {
     const why = String(err && err.message ? err.message : err).replace(/\s+/g, ' ').slice(0, 200);
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
-      permissionDecisionReason: `Role ${marker.instance}: the lane cannot be checked (${why}), so nothing that writes or runs is allowed. Restore the manifest with \`git -C ${shellPath(marker.project_root)} checkout -- .delivery/team/team.json\` (allowed), or tell the Chief of Staff by SendMessage.` } }));
+      permissionDecisionReason: `Role ${marker.instance}: the lane cannot be checked (${why}), so nothing that writes or runs is allowed.\nRestore the manifest: \`git -C ${shellPath(marker.project_root)} checkout -- .delivery/team/team.json\`, or message the Chief of Staff.` } }));
   }
 }
 process.exit(0);

@@ -222,7 +222,7 @@ function syncTranscript(opts) {
     rewritten = true; // bytes before the stored offset changed: rescan from the top (dedupe is safe)
   }
   let read = transcript.readHumanInputs(transcriptPath, rewritten
-    ? { fromLine: 0 } : { fromLine: cursor.line, fromOffset: cursor.offset || 0 });
+    ? { fromLine: 0 } : { fromLine: cursor.line, fromOffset: cursor.offset || 0, lastAssistant: cursor.last_assistant || null, pendingAsks: cursor.pending_asks || {} });
   let base = rewritten ? { total_user_records: 0, with_origin: 0 }
     : { total_user_records: cursor.total_user_records || 0, with_origin: cursor.with_origin || 0 };
   if (read.rescanned || read.lastLine < cursor.line) { // rewritten: rescan (dedupe protects)
@@ -267,6 +267,9 @@ function syncTranscript(opts) {
           transcript_ref: { file: path.basename(transcriptPath), line: inp.line },
         };
         if (t.truncated) e.truncated = true;
+        // what the owner answered: the AskUserQuestion question, or the session's message before a typed reply
+        if (inp.asked) e.asked = inp.asked;
+        if (inp.after_assistant) e.after_assistant = inp.after_assistant;
         // a prompt typed before this session became the role (a resumed or adopted session): kept
         // and citable, never pending (see roleSince)
         if (opts.roleSince && Date.parse(e.ts) < Date.parse(opts.roleSince)) e.pre_role = true;
@@ -293,6 +296,8 @@ function syncTranscript(opts) {
       transcript: transcriptPath,
       total_user_records: base.total_user_records + read.total_user_records,
       with_origin: base.with_origin + read.with_origin,
+      last_assistant: read.lastAssistant || null,
+      pending_asks: read.pendingAsks || {},
     };
     writeJsonAtomic(cursorFile, cursor);
   });

@@ -209,11 +209,18 @@ test('stats: calls, latency percentiles, tokens and the share at the thresholds 
 
 test('the catalogue: every question has a version, a type, declared state and instructions; divergence is warn-only', () => {
   const cat = J.loadCatalogue();
-  assert.deepEqual(Object.keys(cat.questions).sort(), ['builds_on_verified', 'divergence', 'is_fix', 'relay_request', 'shippable_unit']);
+  assert.deepEqual(Object.keys(cat.questions).sort(), ['builds_on_verified', 'divergence', 'goal_instruction', 'is_fix', 'jargon', 'orders_owner', 'relay_request', 'shippable_unit', 'tone_violation']);
   for (const [id, q] of Object.entries(cat.questions)) {
     assert.ok(q.version && ['noul', 'choice'].includes(q.type) && q.state.length && q.instructions, id);
     if (q.type === 'choice') assert.ok(Object.keys(q.criteria).length >= 2, id);
   }
   assert.equal(cat.questions.divergence.mode, 'warn-only');
   assert.equal(cat.questions.is_fix.type, 'noul');
+});
+
+test('Copilot round 5: redaction replaces the whole path, not a prefix of it', () => {
+  for (const m of ['open C:\\Users\\Alice\\Acme\\report.txt now', 'see ~/work/acme/secret-plan.md', 'run ./scripts/acme/probe.js']) {
+    const r = J.redact(m);
+    assert.doesNotMatch(r, /Alice|acme/i, r);
+  }
 });

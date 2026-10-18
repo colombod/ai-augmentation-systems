@@ -284,7 +284,7 @@ test('F2: todo, import and duplicates --merge are structure; plain duplicates li
 
 test('F2: reopen is refused except for the delivery-lead and the progress-observer', () => {
   const run = (roleId) => decideBd({ command: 'bd reopen ex-1', actor: 'a', roleId, staleHours: 2, bd: fakeBd({}), now: NOW });
-  for (const roleId of ['builder', 'chief-of-staff', 'product-manager', 'staffing', 'spike-researcher', undefined]) assert.match(run(roleId).reason, /reopening a closed bead is the Delivery Manager's or Progress Observer's call\.\nMessage them with the evidence that it is not done/, String(roleId));
+  for (const roleId of ['builder', 'chief-of-staff', 'product-manager', 'staffing', 'spike-researcher', undefined]) assert.match(run(roleId).reason, /reopening a closed bead is the Delivery Manager's or Progress Observer's call\.\nMessage the Delivery Manager or Progress Observer with the evidence that it is not done/, String(roleId));
   for (const roleId of ['delivery-lead', 'progress-observer']) assert.equal(run(roleId), null, roleId);
 });
 
