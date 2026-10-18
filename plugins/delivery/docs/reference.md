@@ -539,8 +539,17 @@ divergence, otherwise warn (R-14, R-15, R-16, R-18; D4).
   Researcher. `assumptions.js observe|refute <A-n> --evidence <ev-id>` (Product or Delivery Manager,
   Spike Researcher, or the builder holding the spike) refuses any other row, and a refused settle is a
   warning. A refuted assumption is not observed again by a later probe: it returns through a new design
-  (a new row) or the Product Manager's `assumptions.js reopen <A-n>`, which writes a reopen row on the
-  spike's chain; only a Reality Checker probe newer than that observes it.
+  or the Product Manager's `assumptions.js reopen <A-n>`, which writes a reopen row on the spike's
+  chain; only a Reality Checker probe newer than that observes it.
+- **The design change, by command.** The Product Manager adds the new design's assumption (`add`), or
+  moves an existing one with `assumptions.js relink <A-n> --criteria '<story>#<n> ...'` (not on a
+  refuted row; recorded as an `assumption-relinked` warning), and retires the refuted row with
+  `assumptions.js retire <A-n> --reason '<the design change>'`: its Criteria cell becomes `retired:
+  <links>`, kept as history, and a retire row goes on the spike's chain. The gates honour retired links
+  only on a refuted row with that retire row after the refutation; anywhere else they stay live. A
+  retired row is not reopened. Then the Delivery Manager re-records ready and the story and its area
+  start again. `reopen`, `retire` and `relink` are the Product Manager's (the `assumptions` lane group;
+  the script checks the role).
 - **Twins (R-18).** A test double or twin counts as a probe only for an `internal` or `platform`
   assumption, with `--twin <recording>`: a JSON object with `source`, `recorded_at`, `recorded_by` and
   `exchanges` (non-empty request and response pairs), or a HAR file. The probe row keeps the recording's

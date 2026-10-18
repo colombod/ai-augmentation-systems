@@ -1,8 +1,8 @@
 <!--
 The assumption register (R-14): every claim the design rests on that nobody has yet seen hold, one row
 each. /delivery:architecture writes it from its spike list; /delivery:challenge and /delivery:realign
-read it. In a role session it is written only by `assumptions.js` (add, observe, refute, reopen); the
-lanes refuse a direct edit, and the gates re-check every status against its evidence row. An external
+read it. In a role session it is written only by `assumptions.js` (add, observe, refute, reopen,
+retire, relink); the lanes refuse a direct edit, and the gates re-check every status against its evidence row. An external
 host is observed only by the Reality Checker's probe in the real host; internal and platform kinds also
 by a local probe, or a twin built from a recording of real traffic. Keep the table's columns as they
 are; the gates parse it.
