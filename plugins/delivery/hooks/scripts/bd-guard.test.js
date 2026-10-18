@@ -172,7 +172,7 @@ test('D: structure is refused for every role but delivery-lead, with the sanctio
   for (const command of refused) {
     const d = run(command);
     assert.ok(d, command);
-    assert.match(d.reason, /structure belongs to the Delivery Manager; create a child bead under the bead you hold \(`bd create --parent <id>`\) or message the Delivery Manager/, command);
+    assert.match(d.reason, /structure belongs to the Delivery Manager\.\nCreate a child bead under the bead you hold \(`bd create --parent <id>`\) or message the Delivery Manager/, command);
   }
   for (const roleId of ['chief-of-staff', 'product-manager', 'progress-observer', 'staffing', 'spike-researcher', undefined]) {
     assert.ok(run('bd dep add ex-1 ex-2', roleId), String(roleId));
@@ -276,7 +276,7 @@ test('F2: todo, import and duplicates --merge are structure; plain duplicates li
   const run = (command, roleId = 'builder') => decideBd({ command, actor: 'me@pc/builder-1', roleId, staleHours: 2, bd: fakeBd({}), now: NOW });
   const refused = ['bd todo add "x"', 'bd todo done ex-1', 'bd todo', 'bd import issues.jsonl', 'bd import -i issues.jsonl', 'bd duplicates --merge', 'bd duplicates --auto-merge', 'bd duplicates merge ex-1 ex-2', 'bd --json import f.jsonl'];
   for (const command of refused) {
-    assert.match(run(command).reason, /structure belongs to the Delivery Manager; create a child bead under the bead you hold/, command);
+    assert.match(run(command).reason, /structure belongs to the Delivery Manager\.\nCreate a child bead under the bead you hold/, command);
     assert.equal(run(command, 'delivery-lead'), null, `delivery-lead: ${command}`);
   }
   for (const command of ['bd duplicates', 'bd duplicates --json', 'bd duplicates --dry-run', 'bd note ex-1 "hello"']) assert.equal(run(command), null, command);
@@ -284,7 +284,7 @@ test('F2: todo, import and duplicates --merge are structure; plain duplicates li
 
 test('F2: reopen is refused except for the delivery-lead and the progress-observer', () => {
   const run = (roleId) => decideBd({ command: 'bd reopen ex-1', actor: 'a', roleId, staleHours: 2, bd: fakeBd({}), now: NOW });
-  for (const roleId of ['builder', 'chief-of-staff', 'product-manager', 'staffing', 'spike-researcher', undefined]) assert.match(run(roleId).reason, /reopening a closed bead is the Delivery Manager's or Progress Observer's call; message them with the evidence that it is not done/, String(roleId));
+  for (const roleId of ['builder', 'chief-of-staff', 'product-manager', 'staffing', 'spike-researcher', undefined]) assert.match(run(roleId).reason, /reopening a closed bead is the Delivery Manager's or Progress Observer's call\.\nMessage them with the evidence that it is not done/, String(roleId));
   for (const roleId of ['delivery-lead', 'progress-observer']) assert.equal(run(roleId), null, roleId);
 });
 
@@ -359,44 +359,59 @@ test('final I1: the builder brief\'s spike close command passes the bd guard and
 const http = require('http');
 const G = require('../../scripts/lib/gates.js');
 const J = require('../../scripts/lib/judge.js');
-const { STORY, makeProject, storyBead, memBd } = require('../../scripts/testing/gate-fixture.js');
+const { STORY, makeProject, storyBead, memBd, addRow } = require('../../scripts/testing/gate-fixture.js');
 
 const PARSED = G.parseStory(STORY);
 const HASH = G.storyHash(PARSED);
 const deployed = { ready_hash: HASH, deployed_sha: 'd478aa11', deployed_at: '2026-10-13T07:56:00Z' };
-const passRow = (root, n, over = {}) => G.appendEvidence(root, 'ex-vault-0n9-3', { type: 'row', criterion: n, criterion_hash: G.criterionHash(PARSED.criteria[n - 1]), result: 'pass', surface: 'S1', tuple: { host: 'chatgpt.com', app: 'ChatGPT web', mode: 'plain chat', install_artifact: 'connector from the shipped plugin' }, sha: 'd478aa11', by: 'delivery-lead', actor: 'lead@pc/delivery-lead', arm: 'main', at: '2026-10-13T09:00:00Z', ...over });
-const gate = (command, beads, root, over = {}) => gateChecks({ command, roleId: 'builder', actor: 'dev@pc/builder-1', instance: 'builder-1', bd: Array.isArray(beads) ? memBd(beads) : beads, root, ...over });
+const passRow = (root, bd, n, over = {}) => addRow(root, bd, 'ex-vault-0n9-3', { type: 'row', criterion: n, criterion_hash: G.criterionHash(PARSED.criteria[n - 1]), result: 'pass', surface: 'S1', tuple: { host: 'chatgpt.com', app: 'ChatGPT web', mode: 'plain chat', install_artifact: 'connector from the shipped plugin' }, sha: 'd478aa11', by: 'delivery-lead', actor: 'lead@pc/delivery-lead', arm: 'main', at: '2026-10-13T09:00:00Z', ...over });
+const gate = (command, beads, root, over = {}) => gateChecks({ command, roleId: 'builder', actor: 'dev@pc/builder-1', instance: 'builder-1', bd: Array.isArray(beads) ? memBd(beads) : beads, root, verifyRecord: (r, id) => ({ ok: id === 'dec-chief-of-staff-41' }), ...over });
 const lines = (text) => text.split('\n').length;
 
 test('1a close, #478 merged 10-13 07:56 with no pass row on S1: every closing form is refused; author rows do not count; DM rows on the deployed sha pass', async () => {
   const root = makeProject();
   const bd = memBd([storyBead({ metadata: deployed })]);
-  for (const command of ['bd close ex-vault-0n9-3 --reason "EVIDENCE: import works"', 'bd update ex-vault-0n9-3 --status closed', 'bd update ex-vault-0n9-3 -s closed', 'bd update ex-vault-0n9-3 --status=closed', 'bd supersede ex-vault-0n9-3 --with ex-2']) {
+  for (const command of ['bd close ex-vault-0n9-3 --reason "EVIDENCE: import works"', 'bd done ex-vault-0n9-3', 'bd gate resolve ex-vault-0n9-3', 'bd update ex-vault-0n9-3 --status closed', 'bd update ex-vault-0n9-3 -s closed', 'bd update ex-vault-0n9-3 --status=closed', 'bd supersede ex-vault-0n9-3 --with ex-2']) {
     const g = await gate(command, bd, root);
     assert.match(g.deny, /^Close of ex-vault-0n9-3 refused \(D3\): criteria without a counting pass row: 1: no pass row; 2: no pass row\.\nMessage the Delivery Manager: ex-vault-0n9-3 needs evidence rows\.$/, command);
   }
-  assert.match((await gate('bd close ex-vault-0n9-3', bd, root, { roleId: 'delivery-lead' })).deny, /\nRun: evidence\.js add ex-vault-0n9-3 --criterion <n>/);
-  passRow(root, 1, { by: 'builder', actor: 'dev@pc/builder-1' });
-  passRow(root, 2);
+  assert.match((await gate('bd close ex-vault-0n9-3', bd, root, { roleId: 'delivery-lead' })).deny, /\nRun: node \/\S+\/scripts\/evidence\.js add ex-vault-0n9-3 --criterion <n>/);
+  passRow(root, bd, 1, { by: 'builder', actor: 'dev@pc/builder-1' });
+  passRow(root, bd, 2);
   assert.match((await gate('bd close ex-vault-0n9-3', bd, root)).deny, /1: ev-ex-vault-0n9-3-1 was recorded by the author/);
-  passRow(root, 1);
+  passRow(root, bd, 1);
   assert.deepEqual(await gate('bd close ex-vault-0n9-3 --reason "verified ev-3, ev-2"', bd, root), { deny: null, warnings: [] });
 });
 
-test('1a close: criteria changed or deleted after ready is D1; an edited evidence file is refused; a cut story closes', async () => {
+test('1a close: a story known only by its story_file (no story label) is gated; a missing story file with a ready hash is D1', async () => {
+  const root = makeProject();
+  const unlabelled = storyBead({ labels: ['roadmap', 'phase-1'], metadata: deployed });
+  assert.match((await gate('bd close ex-vault-0n9-3', [unlabelled], root)).deny, /refused \(D3\)/);
+  fs.rmSync(path.join(root, '.delivery', 'stories', 'vault-0n9-3.md'));
+  assert.match((await gate('bd close ex-vault-0n9-3', [unlabelled], root)).deny, /refused \(D1\): the story file is missing or unreadable/);
+  assert.match((await gate('bd update ex-vault-0n9-3 --claim', [storyBead({ metadata: { ready_hash: HASH } })], root)).deny, /D1: the story file is missing or unreadable/);
+});
+
+test('1a close: criteria changed or deleted after ready is D1; an edited, appended or tail-changed evidence file is refused; a cut closes only on a record that verifies', async () => {
   const bead = storyBead({ metadata: deployed });
   const changed = makeProject({ story: STORY.replace('with the card count', 'with a reply') });
   assert.match((await gate('bd close ex-vault-0n9-3', [bead], changed)).deny, /refused \(D1\)/);
   const gone = makeProject({ story: STORY.replace(/## Acceptance criteria[\s\S]*?(?=## Measurement)/, '') });
   assert.match((await gate('bd close ex-vault-0n9-3', [bead], gone)).deny, /refused \(D1\)/);
-  const root = makeProject();
-  passRow(root, 1); passRow(root, 2);
-  const file = G.evidenceFile(root, 'ex-vault-0n9-3');
-  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').split('\n')[1] + '\n');
-  assert.match((await gate('bd close ex-vault-0n9-3', [bead], root)).deny, /evidence file was changed by hand/);
-  const cut = makeProject();
-  G.appendEvidence(cut, 'ex-vault-0n9-3', { type: 'cut', record: 'dec-x-1', reason: 'dropped', by: 'delivery-lead', at: NOW });
-  assert.equal((await gate('bd close ex-vault-0n9-3', [bead], cut)).deny, null);
+  const tamper = async (edit) => {
+    const root = makeProject();
+    const bd = memBd([storyBead({ metadata: deployed })]);
+    passRow(root, bd, 1); passRow(root, bd, 2, { result: 'fail' });
+    const file = G.evidenceFile(root, 'ex-vault-0n9-3');
+    fs.writeFileSync(file, edit(fs.readFileSync(file, 'utf8')));
+    return (await gate('bd close ex-vault-0n9-3', bd, root)).deny;
+  };
+  assert.match(await tamper((t) => `${t.split('\n')[1]}\n`), /does not match what evidence\.js wrote/, 'first row deleted');
+  assert.match(await tamper((t) => t.split('\n')[0] + '\n'), /not the recorded row 2/, 'tail row deleted');
+  assert.match(await tamper((t) => t.replace('"result":"fail"', '"result":"pass"')), /edited by hand/, 'the last row turned from fail into pass');
+  const cut = (record) => { const root = makeProject(); const bd = memBd([storyBead({ metadata: deployed })]); addRow(root, bd, 'ex-vault-0n9-3', { type: 'cut', record, reason: 'dropped', by: 'delivery-lead', at: NOW }); return gate('bd close ex-vault-0n9-3', bd, root); };
+  assert.equal((await cut('dec-chief-of-staff-41')).deny, null);
+  assert.match((await cut('dec-forged-1')).deny, /refused \(D3\)/, 'a cut citing a record that does not verify does not count');
 });
 
 test('1a close, migration and no surface: a story never made ready closes with a warning; with no surface.json rows count and warn', async () => {
@@ -405,10 +420,25 @@ test('1a close, migration and no surface: a story never made ready closes with a
   assert.equal(g.deny, null);
   assert.deepEqual(g.warnings.map((w) => w.kind), ['close-not-ready']);
   const bare = makeProject({ surfaces: null });
-  passRow(bare, 1, { surface: 'S1', tuple: null }); passRow(bare, 2, { surface: 'S1', tuple: null });
-  const n = await gate('bd close ex-vault-0n9-3', [storyBead({ metadata: deployed })], bare);
+  const bd = memBd([storyBead({ metadata: deployed })]);
+  passRow(bare, bd, 1, { tuple: null }); passRow(bare, bd, 2, { tuple: null });
+  const n = await gate('bd close ex-vault-0n9-3', bd, bare);
   assert.equal(n.deny, null);
   assert.deepEqual(n.warnings.map((w) => w.kind), ['no-surface']);
+});
+
+test('1a budget: once the hook\'s time is spent, bd is not called again and the command is allowed with a budget-spent warning', async () => {
+  const root = makeProject();
+  let calls = 0;
+  const slow = memBd([storyBead({ metadata: deployed })]);
+  const show = slow.show;
+  slow.show = (id) => { calls++; const t = Date.now(); while (Date.now() - t < 120) { /* a slow bd */ } return show(id); };
+  const g = await gate('bd close ex-vault-0n9-3 ex-a ex-b ex-c', slow, root, { deadline: Date.now() + 300 });
+  assert.equal(g.deny === null || /refused/.test(g.deny), true);
+  assert.ok(calls <= 3, `bd called ${calls} times`);
+  const spent = await gate('bd close ex-vault-0n9-3', slow, root, { deadline: Date.now() + 50 });
+  assert.equal(spent.deny, null);
+  assert.deepEqual(spent.warnings.map((w) => w.kind), ['budget-spent']);
 });
 
 test('1a claim: missing measurement plan and the unverified cap (R-12) warn; changed criteria (D1) are refused; the claim stamps the author', async () => {
@@ -452,6 +482,28 @@ test('1a authority: state and story labels, gate fields in any shape, set-labels
   assert.equal(run(`bd create --parent mine --title t --metadata '{"criterion":2}'`), null);
 });
 
+test('1a authority, round 2: bd batch, writing sql, vc and federation writes, $VAR values and create-time labels are the Delivery Manager\'s', () => {
+  const me = 'me@pc/builder-1';
+  const bd = fakeBd({ mine: { id: 'mine', status: 'in_progress', assignee: me, updated_at: NOW, labels: [], metadata: {} } });
+  const run = (command, roleId = 'builder') => decideBd({ command, actor: me, roleId, staleHours: 2, bd, now: NOW });
+  const refused = ['printf "close ex-1 ok" | bd batch', 'bd batch -f lines.txt', `bd sql "UPDATE issues SET status='closed'"`, 'bd vc merge other', 'bd vc revert HEAD', 'bd federation sync', 'bd update mine --unset-metadata "$KEY"', 'bd update mine --set-metadata "$KEY=v"', 'bd create --parent mine --title c --labels story,state-verified', 'bd create --parent mine --title c -l state-verified'];
+  for (const command of refused) assert.ok(run(command) && lines(run(command).reason) <= 2, command);
+  for (const command of refused) assert.equal(run(command, 'delivery-lead'), null, `delivery-lead: ${command}`);
+  for (const command of [`bd sql "SELECT id FROM issues"`, 'bd vc status', 'bd federation status', 'bd create --parent mine --title c --labels blocked']) assert.equal(run(command), null, command);
+});
+
+test('1a assignment: the Delivery Manager may reassign a live claim; the assignee is stamped as author, the Delivery Manager never', async () => {
+  const live = fakeBd({ s: { id: 's', status: 'in_progress', assignee: 'bob@pc/builder-2', updated_at: NOW, labels: ['story'], metadata: { story_file: 'x.md' } } });
+  assert.equal(decideBd({ command: 'bd update s --assignee me@pc/builder-1', actor: 'lead@pc/delivery-lead', roleId: 'delivery-lead', staleHours: 2, bd: live, now: NOW }), null);
+  assert.match(decideBd({ command: 'bd update s --assignee me@pc/builder-1', actor: 'me@pc/builder-1', roleId: 'builder', staleHours: 2, bd: live, now: NOW }).reason, /only the Delivery Manager reassigns/);
+  const root = makeProject();
+  const bd = memBd([storyBead({ assignee: '', metadata: { ready_hash: HASH } })]);
+  const dm = { roleId: 'delivery-lead', actor: 'lead@pc/delivery-lead', instance: 'delivery-lead' };
+  await gate('bd update ex-vault-0n9-3 --assignee dev@pc/builder-1 --status in_progress', bd, root, dm);
+  await gate('bd update ex-vault-0n9-3 --status in_progress', bd, root, dm);
+  assert.deepEqual(bd.show('ex-vault-0n9-3').metadata.authors.map((a) => a.actor), ['dev@pc/builder-1']);
+});
+
 test('1a judge (fake provider): shippable_unit "partial" at claim and divergence "serious" at close only warn; a spent deadline skips it', async () => {
   const saved = process.env.TYPESAFE_API_KEY;
   process.env.TYPESAFE_API_KEY = 'fake';
@@ -471,7 +523,7 @@ test('1a judge (fake provider): shippable_unit "partial" at claim and divergence
     assert.equal(g.deny, null);
     assert.deepEqual(g.warnings.map((w) => w.kind), ['shippable-judge']);
     assert.deepEqual((await gate('bd update ex-vault-0n9-3 --claim', bd, root, { ask, deadline: Date.now() + 1000 })).warnings, [], 'no time left: not asked');
-    passRow(root, 1); passRow(root, 2);
+    passRow(root, bd, 1); passRow(root, bd, 2);
     g = await gate('bd close ex-vault-0n9-3 --reason "Tested the import in Codex mode"', bd, root, { ask });
     assert.equal(g.deny, null, 'divergence is warn-only until re-measured');
     assert.deepEqual(g.warnings.map((w) => w.kind), ['divergence-judge']);

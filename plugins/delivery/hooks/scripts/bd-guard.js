@@ -4,7 +4,7 @@
 const { splitCommand, tokens, splitBdGlobals } = require('./lane.js');
 const { isStoryBead } = require('../../scripts/lib/gates.js');
 
-const TWO_WORD = new Set(['dep', 'label', 'comments', 'comment', 'dolt', 'epic', 'swarm']);
+const TWO_WORD = new Set(['dep', 'label', 'comments', 'comment', 'dolt', 'epic', 'swarm', 'gate', 'vc', 'federation']);
 // Flags that never take a value, so the token after them is an id, not their argument.
 const BOOLEAN_FLAGS = new Set(['--claim', '--json', '--all', '--force', '--silent', '--quiet', '--verbose']);
 const CREATE = new Set(['create', 'new', 'q', 'create-form']);
@@ -14,14 +14,18 @@ const STRUCTURE_VERBS = new Set(['link', 'rename', 'rename-prefix', 'set-state',
 // Only these roles may bring a closed bead back: the Delivery Manager, and the observer who found it unproven.
 const REOPENERS = new Set(['delivery-lead', 'progress-observer']);
 // Verbs that close a bead on the way: they answer to the same evidence and live-claim rules as `close`.
-const CLOSING = new Set(['close', 'duplicate', 'supersede']);
+// `done` is bd's alias of close; `gate resolve` closes the bead it names.
+const CLOSING = new Set(['close', 'done', 'duplicate', 'supersede', 'gate resolve']);
+// Writes outside the guarded verbs: a batch of lines, raw SQL, and history or peer merges.
+// `vc` and `federation` subcommands other than these reads rewrite history or merge peers.
+const RAW_READ = { vc: new Set(['status', 'log', 'diff', 'branch', 'history']), federation: new Set(['status', 'list-peers']) };
 // `epic` and `swarm` read through these; any other form writes (close-eligible, create, ...).
 const GROUP_READ = { epic: new Set(['status']), swarm: new Set(['status', 'validate', 'list']) };
 const DEP_READ = new Set(['list', 'tree', 'cycles']);
 const LABEL_WRITE = new Set(['add', 'remove', 'propagate']);
 const LABEL_FLAGS = ['--add-label', '--remove-label', '--set-labels'];
 const CLAIM_FLAGS = ['--claim', '--assignee', '--status', '-a', '-s'];
-const STRUCTURE = 'structure belongs to the Delivery Manager; create a child bead under the bead you hold (`bd create --parent <id>`) or message the Delivery Manager.';
+const STRUCTURE = 'structure belongs to the Delivery Manager.\nCreate a child bead under the bead you hold (`bd create --parent <id>`) or message the Delivery Manager.';
 
 function parseBd(segment) {
   const t = tokens(segment);
@@ -78,6 +82,10 @@ function structural(p, actor, bd) {
   // `tag <id> <label>` is `label add`: the second positional is the label, not a bead.
   if (p.sub === 'tag') return p.ids.length > 0 && heldByOther(p.ids.slice(0, 1), actor, bd);
   if (STRUCTURE_VERBS.has(p.sub)) return true;
+  // bd batch runs close and update lines the guard cannot see; bd sql writes rows directly
+  if (p.sub === 'batch') return true;
+  if (p.sub === 'sql') return !/^\s*(select|show|describe|explain)\b/i.test(String(p.ids[0] || ''));
+  if (RAW_READ[head] && second !== undefined) return !second.startsWith('-') && !RAW_READ[head].has(second);
   if (p.sub === 'mol' || head === 'mol') return second !== undefined || p.ids.length > 0;
   if (GROUP_READ[head] && second !== undefined) return !second.startsWith('-') && !GROUP_READ[head].has(second);
   if (head === 'dep' && second !== undefined) return !DEP_READ.has(second);
@@ -96,11 +104,13 @@ function structural(p, actor, bd) {
 // materialise set. Metadata is judged on its parsed keys, and only literal values are accepted.
 const GATE_FIELDS = new Set(['ready_hash', 'ready_at', 'ready_record', 'deployed_sha', 'deployed_at', 'merged_pr', 'authors', 'story', 'story_file', 'surface', 'area', 'roadmap_ref', 'materialised_by', 'doc_id']);
 const PROTECTED_LABEL = /^(state-.*|story)$/;
-const EXPANSION = /\$\(|\$\{|`/;
+const EXPANSION = /\$\(|\$\{|\$[A-Za-z_]|`/;
 const values = (p, f) => (p.all.get(f) || []).filter((v) => typeof v === 'string');
 function gateFieldWrite(p) {
   if (p.sub === 'update' && p.all.has('--set-labels')) return 'replacing every label (use --add-label or --remove-label)';
-  const labels = [...LABEL_FLAGS.flatMap((f) => values(p, f)), ...(['label add', 'label remove', 'tag'].includes(p.sub) ? p.ids.slice(1) : [])];
+  const created = CREATE.has(p.sub) ? [...values(p, '--labels'), ...values(p, '-l')] : [];
+  const labels = [...LABEL_FLAGS.flatMap((f) => values(p, f)), ...created, ...(['label add', 'label remove', 'tag'].includes(p.sub) ? p.ids.slice(1) : [])];
+  if (labels.some((v) => EXPANSION.test(v))) return 'labels built by the shell';
   const bad = labels.flatMap((v) => v.split(',')).map((l) => l.trim()).find((l) => PROTECTED_LABEL.test(l));
   if (bad) return `the label ${bad}`;
   if (p.sub !== 'update' && !CREATE.has(p.sub)) return null;
@@ -137,12 +147,12 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
         const bead = lookup(bd, id);
         const age = liveOther(bead, actor, staleHours, now);
         if (age !== null) {
-          return { reason: `Bead ${id} is claimed by ${bead.assignee} and live (last change ${age.toFixed(1)}h ago): a live claim cannot be released by someone else. Ask the holder or the Delivery Manager, or wait for staleness (${staleHours}h).` };
+          return { reason: `Bead ${id} is claimed by ${bead.assignee} and live (last change ${age.toFixed(1)}h ago): a live claim cannot be released by someone else.\nAsk the holder, message the Delivery Manager, or wait for staleness (${staleHours}h).` };
         }
       }
     }
     if (p.sub === 'reopen' && !REOPENERS.has(roleId)) {
-      return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: reopening a closed bead is the Delivery Manager's or Progress Observer's call; message them with the evidence that it is not done.` };
+      return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: reopening a closed bead is the Delivery Manager's or Progress Observer's call.\nMessage them with the evidence that it is not done.` };
     }
     // `assign <id> <who>` is a claim change: the second positional is a person, not a bead.
     const assigning = p.sub === 'assign' && p.ids.length > 0;
@@ -154,9 +164,10 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
         if (reassign && roleId !== 'delivery-lead' && bead && bead.assignee && isStoryBead(bead)) {
           return { reason: `Refused: ${id} is a claimed story; only the Delivery Manager reassigns or releases it.\nMessage the Delivery Manager: release ${id}.` };
         }
-        const age = liveOther(bead, actor, staleHours, now);
+        // the Delivery Manager assigns work, so it may reassign or release a live claim
+        const age = roleId === 'delivery-lead' ? null : liveOther(bead, actor, staleHours, now);
         if (age !== null) {
-          return { reason: `Bead ${id} is claimed by ${bead.assignee} and live (last change ${age.toFixed(1)}h ago). A claim is the only authority: do not take or release it. Ask the Delivery Manager, or wait for staleness (${staleHours}h).` };
+          return { reason: `Bead ${id} is claimed by ${bead.assignee} and live (last change ${age.toFixed(1)}h ago): a claim is the only authority, do not take or release it.\nMessage the Delivery Manager, or wait for staleness (${staleHours}h).` };
         }
       }
     }
@@ -174,22 +185,69 @@ function staleHoursOf(team) {
 // Async because the typed judge may be asked (advisory, warn-only). Returns { deny, warnings }:
 // deny only on a divergence (D1, D2, D3); every other finding is a warning the hook records.
 // Any read that fails leaves the command allowed (fail open), like the rest of this guard. The whole
-// check has one deadline: the judge is asked at most once per command, and only while time remains.
+// check has one deadline: every bd call checks it first (a spent budget fails open with a warning),
+// lookups are cached, and the judge is asked at most once per command while time remains.
+const path = require('path');
 const statusOf = (p) => p.flags.get('--status') || p.flags.get('-s');
-const CLAIMING = (p) => p.sub === 'update' && p.ids.length > 0 && (p.flags.has('--claim') || statusOf(p) === 'in_progress');
-// every way a bead ends up closed: close, duplicate and supersede, and a status write of closed
+const assignee = (p) => (p.sub === 'assign' ? p.ids[1] : p.flags.get('--assignee') || p.flags.get('-a'));
+// a claim, or work assigned to someone: both make the assignee the story's builder
+const CLAIMING = (p) => (p.sub === 'assign' && p.ids.length > 1) || (p.sub === 'update' && p.ids.length > 0 && (p.flags.has('--claim') || statusOf(p) === 'in_progress' || (typeof assignee(p) === 'string' && assignee(p) !== '')));
+// every way a bead ends up closed: close and its alias done, duplicate, supersede, gate resolve, and
+// a status write of closed
 const CLOSES = (p) => CLOSING.has(p.sub) || (p.sub === 'update' && p.ids.length > 0 && statusOf(p) === 'closed');
 const JUDGE_RESERVE_MS = 2500;
+const BD_CALL_MS = 4000;
+const SCRIPTS = path.join(__dirname, '..', '..', 'scripts');
+const script = (name) => `node ${path.join(SCRIPTS, name)}`;
+
+// bd held to a deadline: each call first checks the time left (and gets at most BD_CALL_MS of it when
+// the store accepts a timeout); show is cached for the hook's life. spent is set once a call is skipped.
+function budgeted(bd, deadline) {
+  if (!bd || bd.budgeted) return bd;
+  const cache = new Map();
+  const b = { budgeted: true, spent: false, deadline };
+  const left = () => deadline - Date.now();
+  const guard = (fn) => (...args) => {
+    if (left() < 200) { b.spent = true; throw new Error('hook time budget spent'); }
+    const ms = Math.min(BD_CALL_MS, left());
+    if (typeof bd.setTimeout === 'function') bd.setTimeout(ms);
+    const t0 = Date.now();
+    try { return fn(...args); } finally {
+      // a call that used its whole timeout was cut off (bd.show turns that into null): checks were skipped
+      if (Date.now() - t0 >= ms - 50) b.spent = true;
+    }
+  };
+  b.show = guard((id) => { if (!cache.has(id)) cache.set(id, bd.show(id)); return cache.get(id) && JSON.parse(JSON.stringify(cache.get(id))); });
+  b.list = guard((o) => bd.list(o));
+  b.update = guard((id, o) => { cache.delete(id); return bd.update(id, o); });
+  return b;
+}
 
 // The second line of a refusal: the command for the Delivery Manager, a message for anyone else.
 const nextStep = (roleId, dmCommand, ask) => (roleId === 'delivery-lead' ? `Run: ${dmCommand}` : `Message the Delivery Manager: ${ask}.`);
+function claimFix(f, id) {
+  if (f.rule === 'D2') return `set the story's surface: to an id in surface.json, then ${script('ready.js')} ${id} --record`;
+  if (f.code === 'child-scope') return `bd update ${id} --metadata '{"criterion": <n>}' with a criterion its story has, or make the new scope its own story`;
+  return `${script('ready.js')} ${id} --record --owner-record <dec-...> once the change is agreed`;
+}
 
-async function gateChecks({ command, roleId, actor, instance, bd, root, team, ask, deadline }) {
+// Who builds a story when this claim goes through: the --assignee target or the claimer, never the
+// Delivery Manager, who assigns work and records evidence.
+function builderOf(p, actor, roleId, instance) {
+  const target = assignee(p);
+  const who = typeof target === 'string' && target ? target : actor;
+  if (!who || (who === actor && roleId === 'delivery-lead') || /\/delivery-lead$/.test(who)) return null;
+  return { actor: who, instance: who === actor ? instance || null : String(who).split('/').pop(), role: who === actor ? roleId || null : null };
+}
+
+async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, team, ask, deadline, verifyRecord }) {
   const G = require('../../scripts/lib/gates.js');
-  const { gateInputs, maxUnverified } = require('../../scripts/lib/gate-context.js');
+  const { gateInputs, maxUnverified, recordChecker } = require('../../scripts/lib/gate-context.js');
   const out = { deny: null, warnings: [] };
   if (!root) return out;
   const end = deadline || Date.now() + 8000;
+  const bd = budgeted(rawBd, end);
+  const recordOk = recordChecker(root, verifyRecord);
   let asked = false;
   const judge = async (q, state) => {
     if (!ask || asked || Date.now() + JUDGE_RESERVE_MS > end) return null;
@@ -197,13 +255,17 @@ async function gateChecks({ command, roleId, actor, instance, bd, root, team, as
     try { return await ask(q, state); } catch (err) { return null; }
   };
   const add = (bead, code, rule, detail) => out.warnings.push({ kind: code, rule, bead, detail });
+  const finish = () => {
+    if (bd && bd.spent) add(null, 'budget-spent', 'R-11', 'the hook ran out of time and skipped part of the gate checks (allowed, fail open)');
+    return out;
+  };
   for (const seg of splitCommand(command)) {
     const p = parseBd(seg);
     if (!p) continue;
     const claiming = CLAIMING(p);
     const closing = CLOSES(p);
     if (!claiming && !closing) continue;
-    for (const id of p.ids) {
+    for (const id of p.sub === 'assign' ? p.ids.slice(0, 1) : p.ids) {
       const bead = lookup(bd, id);
       if (!bead) continue;
       const story = G.isStoryBead(bead);
@@ -217,19 +279,20 @@ async function gateChecks({ command, roleId, actor, instance, bd, root, team, as
         }
         let overCap = null;
         if (story) { try { overCap = G.unverifiedOver(bd.list({ label: 'story', all: true }), bead, maxUnverified(team)); } catch (err) { overCap = null; } }
-        findings.push(...G.claimDivergence({ story: story ? inp.story : null, bead, parent: inp.parent, parentStory: inp.parentStory, overCap }));
+        findings.push(...G.claimDivergence({ story: story ? inp.story : null, isStory: story, bead, parent: inp.parent, parentStory: inp.parentStory, overCap }));
         const blocks = findings.filter((f) => f.level === 'block');
         for (const f of findings.filter((x) => x.level === 'warn')) add(id, f.code, f.rule, f.detail);
         if (blocks.length) {
-          out.deny = `Claim of ${id} refused (${blocks.map((f) => `${f.rule}: ${f.detail}`).join('; ')}).\n${nextStep(roleId, `ready.js ${id} --record --owner-record <dec-...> after fixing the story`, `${id} ${blocks[0].code}`)}`;
-          return out;
+          out.deny = `Claim of ${id} refused (${blocks.map((f) => `${f.rule}: ${f.detail}`).join('; ')}).\n${nextStep(roleId, claimFix(blocks[0], id), `${id} ${blocks[0].code}`)}`;
+          return finish();
         }
         // stamp who builds the story, so clearing the assignee later does not make the builder a non-author
-        if (story && actor) {
+        const who = story ? builderOf(p, actor, roleId, instance) : null;
+        if (who) {
           const m = bead.metadata || {};
           const authors = Array.isArray(m.authors) ? m.authors : [];
-          if (!authors.some((a) => a && a.actor === actor)) {
-            try { bd.update(id, { metadata: { ...m, authors: [...authors, { actor, instance: instance || null, role: roleId || null }] } }); } catch (err) { /* fail open */ }
+          if (!authors.some((a) => a && a.actor === who.actor)) {
+            try { bd.update(id, { metadata: { ...m, authors: [...authors, who] } }); } catch (err) { /* fail open */ }
           }
         }
         continue;
@@ -241,16 +304,16 @@ async function gateChecks({ command, roleId, actor, instance, bd, root, team, as
         continue;
       }
       if (inp.evidenceProblem) {
-        out.deny = `Close of ${id} refused (D3): its evidence file was changed by hand: ${inp.evidenceProblem}.\n${nextStep(roleId, `git checkout -- .delivery/evidence/${id}.ndjson, then evidence.js check ${id}`, `${id} evidence-edited`)}`;
-        return out;
+        out.deny = `Close of ${id} refused (D3): its evidence file does not match what evidence.js wrote: ${inp.evidenceProblem}.\n${nextStep(roleId, `restore .delivery/evidence/${id}.ndjson to its last evidence.js write (the bead's evidence_head names the row), then ${script('evidence.js')} check ${id}`, `${id} evidence-edited`)}`;
+        return finish();
       }
-      if (inp.rows.some((r) => r.type === 'cut')) continue;
+      if (inp.rows.some((r) => r.type === 'cut' && recordOk(r.record))) continue;
       const drift = G.scopeDrift(inp.story, bead);
       if (drift) {
-        out.deny = `Close of ${id} refused (D1): ${drift.detail}.\n${nextStep(roleId, `ready.js ${id} --record --owner-record <dec-...>, then new evidence rows`, `${id} criteria-changed`)}`;
-        return out;
+        out.deny = `Close of ${id} refused (D1): ${drift.detail}.\n${nextStep(roleId, `${script('ready.js')} ${id} --record --owner-record <dec-...>, then new evidence rows`, `${id} criteria-changed`)}`;
+        return finish();
       }
-      const done = G.doneCheck({ story: inp.story, bead, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances });
+      const done = G.doneCheck({ story: inp.story, bead, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances, recordOk });
       if (!(bead.metadata || {}).ready_hash) {
         add(id, 'close-not-ready', 'R-11', 'closed without the done gate: the story was never made ready (ready.js --record), so no agreed criteria were checked');
         continue;
@@ -258,8 +321,8 @@ async function gateChecks({ command, roleId, actor, instance, bd, root, team, as
       if (!done.ok) {
         const open = done.criteria.filter((c) => !c.row && !c.waiver);
         const missing = open.slice(0, 3).map((c) => `${c.n}: ${c.why}`).join('; ') + (open.length > 3 ? `; and ${open.length - 3} more (evidence.js check ${id})` : '');
-        out.deny = `Close of ${id} refused (D3): criteria without a counting pass row: ${missing}.\n${nextStep(roleId, `evidence.js add ${id} --criterion <n> --result pass --surface <id> --sha <deployed sha> --run <ref>`, `${id} needs evidence rows`)}`;
-        return out;
+        out.deny = `Close of ${id} refused (D3): criteria without a counting pass row: ${missing}.\n${nextStep(roleId, `${script('evidence.js')} add ${id} --criterion <n> --result pass --surface <id> --sha <deployed sha> --run <ref>`, `${id} needs evidence rows`)}`;
+        return finish();
       }
       if (done.noSurface) add(id, 'no-surface', 'R-09', 'closed on evidence with no declared customer surface: the surface was not checked');
       if (typeof reason === 'string' && reason.trim()) {
@@ -268,7 +331,7 @@ async function gateChecks({ command, roleId, actor, instance, bd, root, team, as
       }
     }
   }
-  return out;
+  return finish();
 }
 
-module.exports = { parseBd, decideBd, staleHoursOf, gateChecks };
+module.exports = { parseBd, decideBd, staleHoursOf, gateChecks, budgeted };

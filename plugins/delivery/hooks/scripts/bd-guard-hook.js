@@ -5,7 +5,7 @@
 async function main() {
   const { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor } = require('./role-context.js');
   const { shellCommandOf } = require('./lane.js');
-  const { decideBd, staleHoursOf, gateChecks } = require('./bd-guard.js');
+  const { decideBd, staleHoursOf, gateChecks, budgeted } = require('./bd-guard.js');
   const { makeBd } = require('../../scripts/lib/bd.js');
   const input = readHookInput();
   const command = input && input.tool_name ? shellCommandOf(input.tool_name, input.tool_input || {}) : null;
@@ -13,9 +13,9 @@ async function main() {
   const valid = validMarker(findRoleMarker(input.cwd));
   if (!valid) return '';
   const deny = (reason) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
-  // the hook timeout is 15 s; the gates keep to 8 s and each bd call to 4 s
+  // the hook timeout is 15 s; every bd call and the gates keep to one 8 s budget (each call at most 4 s)
   const deadline = Date.now() + 8000;
-  const bd = makeBd({ ...bdOptionsFor(valid.marker, input.cwd), timeoutMs: 4000 });
+  const bd = budgeted(makeBd({ ...bdOptionsFor(valid.marker, input.cwd), timeoutMs: 4000 }), deadline);
   const d = decideBd({ command, actor: actorOf(valid.marker), roleId: valid.role.id, staleHours: staleHoursOf(valid.team), bd });
   if (d) return deny(d.reason);
   const root = valid.marker.project_root;
