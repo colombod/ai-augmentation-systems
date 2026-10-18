@@ -15,7 +15,7 @@
 // the bead gets state-verified. Exit codes: 0 done; 1 refused; 2 usage.
 const G = require('./lib/gates.js');
 const { tupleOf, sameTuple, describe, TUPLE } = require('./lib/surface.js');
-const { whoAmI, gateInputs, writerProblem, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
+const { whoAmI, gateInputs, writerProblem, recordChecker, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
 const USAGE = 'usage: evidence.js add <bead> --criterion <n> --result pass|fail --surface <id> --sha <sha> [--run <ref>] | state <bead> merged|deployed [--pr <n>|--sha <sha>] | waive <bead> --criterion <n> --record <dec-...> --risk <text> | cut <bead> --record <dec-...> --reason <text> | list <bead> | check <bead>';
 const VALUE = ['--criterion', '--result', '--surface', '--sha', '--run', '--pr', '--record', '--risk', '--reason', '--project', '--host', '--app', '--mode', '--install-artifact'];
@@ -35,8 +35,18 @@ const refuse = (text) => ({ code: 1, out: `evidence.js: ${text}` });
 
 function done(bead, inp) {
   if (inp.evidenceProblem) return { ok: false, criteria: [], problem: inp.evidenceProblem };
-  if (G.scopeDrift(inp.story, bead)) return { ok: false, criteria: [], problem: 'the criteria changed since they were made ready (D1)' };
-  return G.doneCheck({ story: inp.story, bead, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances });
+  const drift = G.scopeDrift(inp.story, bead);
+  if (drift) return { ok: false, criteria: [], problem: `${drift.detail} (D1)` };
+  return G.doneCheck({ story: inp.story, bead, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances, recordOk: inp.recordOk });
+}
+
+// Append a row and record the new chain head in the bead (evidence_head), so the gate can tell a row
+// written here from one written by hand, the last row included.
+function record(store, root, id, row) {
+  const full = G.appendEvidence(root, id, row);
+  const fresh = store.show(id) || { metadata: {} };
+  store.update(id, { metadata: { ...(fresh.metadata || {}), evidence_head: full.head } });
+  return full;
 }
 
 // state-verified follows the rows: set when every criterion counts, removed when they no longer do
@@ -73,7 +83,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
   const bead = store.show(id);
   if (!bead) return refuse(`no bead ${id}`);
-  const inp = gateInputs(who.root, bead, { bd: store, team: who.team });
+  const inp = { ...gateInputs(who.root, bead, { bd: store, team: who.team }), recordOk: recordChecker(who.root, verifyRecord) };
   const at = now || new Date().toISOString();
   const m = bead.metadata || {};
 
@@ -103,7 +113,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
     if (!a.record || !a.reason) return { code: 2, out: 'evidence.js: a cut needs --record <dec-...> and --reason <why>' };
     const bad = unverifiedRecord(who, a.record, verifyRecord);
     if (bad) return refuse(bad);
-    const row = G.appendEvidence(who.root, id, { type: 'cut', record: a.record, reason: a.reason, by, actor, at });
+    const row = record(store, who.root, id, { type: 'cut', record: a.record, reason: a.reason, by, actor, at });
     store.update(id, { addLabels: [G.STATE.cut], removeLabels: [G.STATE.verified] });
     return { code: 0, out: `${row.id}: ${id} cut under ${a.record}; it may close without verification` };
   }
@@ -117,7 +127,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
     if (!a.record || !a.risk) return { code: 2, out: 'evidence.js: a waiver needs --record <dec-...> and --risk <the risk accepted>' };
     const bad = unverifiedRecord(who, a.record, verifyRecord);
     if (bad) return refuse(bad);
-    const row = G.appendEvidence(who.root, id, { type: 'waiver', criterion: c.n, criterion_hash: G.criterionHash(c), record: a.record, risk: a.risk, by, actor, at });
+    const row = record(store, who.root, id, { type: 'waiver', criterion: c.n, criterion_hash: G.criterionHash(c), record: a.record, risk: a.risk, by, actor, at });
     return { code: 0, out: `${row.id}: criterion ${c.n} waived under ${a.record}` };
   }
 
@@ -132,11 +142,12 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   let why = null;
   let gate = 'D2';
   if (!inp.noSurface) {
+    if (!inp.surface) return refuse(`${id} names surface ${inp.surfaceId}, which is not in surface.json (D2): fix the story's surface: line, then record the run.`);
     if (!declared) why = `${a.surface} is not in surface.json`;
     else if (a.surface !== inp.surface.id || !sameTuple(observed, tupleOf(inp.surface))) why = `observed on ${observed.app}, ${observed.mode} (${observed.host}), not ${describe(inp.surface)}`;
   }
   if (!why && !G.shaMatch(a.sha, m.deployed_sha)) { why = `on ${a.sha}, not the deployed ${m.deployed_sha}`; gate = 'D3'; }
-  const row = G.appendEvidence(who.root, id, { type: 'row', criterion: c.n, criterion_hash: G.criterionHash(c), result: a.result, surface: a.surface, tuple: observed, sha: a.sha, run: a.run || null, by, actor, at, arm: why ? 'side' : 'main', ...(why ? { why } : {}) });
+  const row = record(store, who.root, id, { type: 'row', criterion: c.n, criterion_hash: G.criterionHash(c), result: a.result, surface: a.surface, tuple: observed, sha: a.sha, run: a.run || null, by, actor, at, arm: why ? 'side' : 'main', ...(why ? { why } : {}) });
   if (why) return refuse(`not verification of ${id} (${gate}): ${why}. Kept as side arm ${row.id}.`);
   const d = syncVerified(store, bead, { ...inp, rows: [...inp.rows, row] });
   const note = inp.noSurface ? '\nwarning: the story declares no customer surface, so the surface was not checked (R-09)' : '';

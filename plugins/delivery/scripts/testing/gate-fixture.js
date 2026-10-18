@@ -79,4 +79,13 @@ function memBd(list) {
   };
 }
 
-module.exports = { SURFACES, STORY, makeProject, storyBead, memBd };
+// Append an evidence row the way evidence.js does: the row, then the chain head in the bead.
+function addRow(root, bd, id, row) {
+  const G = require('../lib/gates.js');
+  const full = G.appendEvidence(root, id, row);
+  const b = bd.beads.get(id);
+  b.metadata = { ...(b.metadata || {}), evidence_head: full.head };
+  return full;
+}
+
+module.exports = { SURFACES, STORY, makeProject, storyBead, memBd, addRow };

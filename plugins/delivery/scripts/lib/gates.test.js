@@ -175,3 +175,22 @@ test('warnings ledger under parallel hooks: every id distinct, one row for one f
   assert.equal(all.filter((w) => w.detail === 'same').length, 1);
   assert.equal(all.length, 9);
 });
+
+test('criteria: an indented continuation line is part of the criterion and its hash; the probe stays apart', () => {
+  const wrapped = G.parseStory(STORY.replace('sees the import summary with the card count.', 'sees the import summary\n   with the card count.'));
+  assert.equal(wrapped.criteria[0].text, C1.text.replace('summary with', 'summary with'));
+  assert.equal(wrapped.criteria[0].probe.by, 'reality-check');
+  const reworded = G.parseStory(STORY.replace('sees the import summary with the card count.', 'sees the import summary\n   with nothing.'));
+  assert.notEqual(G.criterionHash(reworded.criteria[0]), G.criterionHash(wrapped.criteria[0]));
+  assert.notEqual(G.storyHash(reworded), G.storyHash(story));
+});
+
+test('evidence file under parallel writers: one chain, every seq once', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chain-par-'));
+  const lib = path.join(__dirname, 'gates.js');
+  const run = (n) => new Promise((resolve) => spawn(process.execPath, ['-e', `require(${JSON.stringify(lib)}).appendEvidence(${JSON.stringify(root)}, 'b', { type: 'row', criterion: 1, n: ${n} })`]).on('exit', resolve));
+  await Promise.all(Array.from({ length: 10 }, (x, i) => run(i)));
+  const c = G.readEvidenceChecked(root, 'b');
+  assert.equal(c.problem, null);
+  assert.equal(c.rows.length, 10);
+});

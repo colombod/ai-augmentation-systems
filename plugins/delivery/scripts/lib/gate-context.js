@@ -46,7 +46,7 @@ function gateInputs(root, bead, { bd, team } = {}) {
   // evidence counts without the surface check, with a warning (R-09 is warn-level)
   const noSurface = !s.surfaces.length || !surfaceId;
   return { story, initiative, surfaces: s.surfaces, surfaceMissing: s.missing || s.problems.length > 0, surfaceId, surface, noSurface,
-    rows: ev.rows, evidenceProblem: ev.problem, instances, parent, parentStory: parent ? readStory(root, parent) : null };
+    rows: ev.rows, evidenceProblem: G.headProblem(ev, bead), instances, parent, parentStory: parent ? readStory(root, parent) : null };
 }
 
 // Gate records are written only from a role session, and the role comes from its marker (an
@@ -58,6 +58,20 @@ function writerProblem(who, allowed = ['delivery-lead']) {
   return null;
 }
 
+// recordOk(id) for the done gate: an owner record cited by a cut or waiver row must still verify.
+function recordChecker(root, verifyRecord) {
+  const seen = new Map();
+  return (id) => {
+    if (!id) return false;
+    if (!seen.has(id)) {
+      let ok = false;
+      try { const v = (verifyRecord || require('./operator-records.js').verifyRecord)(root, id); ok = Boolean(v && v.ok); } catch (err) { ok = false; }
+      seen.set(id, ok);
+    }
+    return seen.get(id);
+  };
+}
+
 const maxUnverified = (team) => { const v = team && team.budget ? team.budget.max_unverified : undefined; return Number.isInteger(v) && v >= 0 ? v : G.DEFAULT_MAX_UNVERIFIED; };
 
-module.exports = { whoAmI, readStory, gateInputs, maxUnverified, writerProblem, EVIDENCE_WRITERS };
+module.exports = { whoAmI, readStory, gateInputs, maxUnverified, writerProblem, recordChecker, EVIDENCE_WRITERS };

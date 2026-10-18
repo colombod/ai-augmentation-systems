@@ -15,6 +15,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { parseFrontmatter } = require('./compose-brief.js');
 const { tupleOf, sameTuple, describe } = require('./surface.js');
+const { withLock } = require('./lock.js');
 
 const STATE = { merged: 'state-merged', deployed: 'state-deployed', verified: 'state-verified', cut: 'state-cut' };
 const DEFAULT_MAX_UNVERIFIED = 2;
@@ -60,7 +61,9 @@ function criteriaOf(section) {
       continue;
     }
     const probe = /^\s+(?:[-*]\s+)?probe:\s*(.+)$/i.exec(line);
-    if (probe && last) last.probe = probeOf(probe[1]);
+    if (probe && last) { last.probe = probeOf(probe[1]); continue; }
+    // an indented continuation line is part of the criterion (its text and its hash)
+    if (last && /^\s+\S/.test(line) && !last.probe) last.text = `${last.text} ${line.trim()}`;
   }
   return { criteria: out, placeholders };
 }
@@ -165,17 +168,18 @@ function shippableState(story, surface) {
 function scopeDrift(story, bead) {
   const recorded = bead && bead.metadata && bead.metadata.ready_hash;
   if (!recorded) return null;
-  const now = story ? storyHash(story) : 'no story file';
+  if (!story) return block('criteria-changed', 'D1', `the story file is missing or unreadable, so the agreed criteria (${recorded}) cannot be checked`);
+  const now = storyHash(story);
   return recorded === now ? null : block('criteria-changed', 'D1', `the agreed criteria changed since ready (${recorded}, now ${now})`);
 }
 
 // Checked at claim, beyond readyFindings: D1 (scope drift; a child naming a criterion its story does
 // not have) and the unverified cap (a warning until waves arrive in phase 2).
-function claimDivergence({ story, bead, parent = null, parentStory = null, overCap = null }) {
+function claimDivergence({ story, bead, isStory = Boolean(story), parent = null, parentStory = null, overCap = null }) {
   const f = [];
   const m = (bead && bead.metadata) || {};
-  if (story) {
-    if (!m.ready_hash) f.push(warn('not-ready', 'R-10', 'claimed before the Delivery Manager made it ready'));
+  if (isStory) {
+    if (!m.ready_hash) { if (story) f.push(warn('not-ready', 'R-10', 'claimed before the Delivery Manager made it ready')); }
     else { const d = scopeDrift(story, bead); if (d) f.push(d); }
   }
   if (parent && parentStory && isStoryBead(parent)) {
@@ -222,36 +226,55 @@ function stateCounts(beads, cap = DEFAULT_MAX_UNVERIFIED) {
 }
 
 // ---- evidence rows: .delivery/evidence/<bead>.ndjson, append-only, hash-chained ----
-// Each row carries seq (1..n) and prev, a hash of the line before it, so an edited or deleted line is
-// detected at the gate. A correctly chained append by hand is still possible: cooperative trust.
+// Each row carries seq (1..n) and prev, a hash of the line before it, and evidence.js records the
+// head (seq and the last line's hash) in the bead's metadata (evidence_head, a protected field). An
+// edited, inserted, deleted or appended line, the last one included, no longer matches. A writer
+// that can also set bead metadata could still forge both: cooperative trust.
 const evidenceFile = (root, bead) => path.join(root, '.delivery', 'evidence', `${bead}.ndjson`);
 
-// { rows, problem }: problem names the first line that breaks the chain
+// { rows, problem, head }: problem names the first line that breaks the chain; head is { seq, hash }
 function readEvidenceChecked(root, bead) {
   let text = '';
-  try { text = fs.readFileSync(evidenceFile(root, bead), 'utf8'); } catch (err) { return { rows: [], problem: null }; }
+  try { text = fs.readFileSync(evidenceFile(root, bead), 'utf8'); } catch (err) { return { rows: [], problem: null, head: null }; }
   const rows = [];
   let prev = 'start';
   for (const line of text.split('\n').filter((l) => l.trim())) {
     let r;
-    try { r = JSON.parse(line); } catch (err) { return { rows, problem: `line ${rows.length + 1} is not a row` }; }
-    if (r.seq !== rows.length + 1 || r.prev !== prev) return { rows, problem: `row ${r.id || rows.length + 1} breaks the chain (edited or deleted line)` };
+    try { r = JSON.parse(line); } catch (err) { return { rows, problem: `line ${rows.length + 1} is not a row`, head: null }; }
+    if (r.seq !== rows.length + 1 || r.prev !== prev) return { rows, problem: `row ${r.id || rows.length + 1} breaks the chain (edited or deleted line)`, head: null };
     rows.push(r);
     prev = sha12(line);
   }
-  return { rows, problem: null };
+  return { rows, problem: null, head: rows.length ? { seq: rows.length, hash: prev } : null };
 }
 const readEvidence = (root, bead) => readEvidenceChecked(root, bead).rows;
 
+// The file against the head recorded in the bead: rows with no recorded head, or a different head,
+// were written or changed outside evidence.js.
+function headProblem(checked, bead) {
+  if (checked.problem) return checked.problem;
+  const want = bead && bead.metadata && bead.metadata.evidence_head;
+  const have = checked.head;
+  if (!have && !want) return null;
+  if (!want) return 'rows exist that evidence.js did not write (no recorded head)';
+  if (!have || have.seq !== want.seq || have.hash !== want.hash) return `the file ends at row ${have ? have.seq : 0}, not the recorded row ${want.seq} (rows added, removed or edited by hand)`;
+  return null;
+}
+
+// Append one row under a per-bead lock (strict: never two writers on one chain); returns the row and
+// the new head for the caller to record in the bead.
 function appendEvidence(root, bead, row) {
   const file = evidenceFile(root, bead);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  let lines = [];
-  try { lines = fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim()); } catch (err) { lines = []; }
-  const seq = lines.length + 1;
-  const full = { id: `ev-${bead}-${seq}`, bead, seq, prev: lines.length ? sha12(lines[lines.length - 1]) : 'start', ...row };
-  fs.appendFileSync(file, `${JSON.stringify(full)}\n`);
-  return full;
+  return withLock(`${file}.lock`, () => {
+    let lines = [];
+    try { lines = fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim()); } catch (err) { lines = []; }
+    const seq = lines.length + 1;
+    const full = { id: `ev-${bead}-${seq}`, bead, seq, prev: lines.length ? sha12(lines[lines.length - 1]) : 'start', ...row };
+    const line = JSON.stringify(full);
+    fs.appendFileSync(file, `${line}\n`);
+    // the new head travels with the row, not in it
+    return Object.defineProperty(full, 'head', { value: { seq, hash: sha12(line) }, enumerable: false });
+  }, { strict: true, waitMs: 2000 });
 }
 
 // The role of an actor string (user@host/instance): the manifest's role for that instance, else the
@@ -295,14 +318,16 @@ function rowProblem(row, { c, surface, noSurface, sha, deployedAt, authors }) {
 }
 
 // The done gate: { ok, criteria: [{ n, row|waiver, why }], cut?, noSurface? }.
-function doneCheck({ story, bead, rows = [], surface, noSurface = false, instances = [] }) {
+// recordOk(id): whether an owner record still verifies; a cut or waiver citing one that does not is
+// ignored (re-verified at the gate, not only when it was written).
+function doneCheck({ story, bead, rows = [], surface, noSurface = false, instances = [], recordOk = () => true }) {
   const m = bead.metadata || {};
-  const cut = rows.find((r) => r.type === 'cut');
+  const cut = rows.find((r) => r.type === 'cut' && recordOk(r.record));
   if (cut) return { ok: true, cut: cut.id, criteria: [] };
   if (!story || !story.criteria.length) return { ok: false, criteria: [], empty: true };
   const ctx = { surface, noSurface, sha: m.deployed_sha || null, deployedAt: m.deployed_at || null, authors: authorsOf(bead, instances) };
   const out = story.criteria.map((c) => {
-    const waiver = rows.find((r) => r.type === 'waiver' && Number(r.criterion) === c.n && r.criterion_hash === criterionHash(c) && (!m.deployed_at || r.at < m.deployed_at));
+    const waiver = rows.find((r) => r.type === 'waiver' && Number(r.criterion) === c.n && r.criterion_hash === criterionHash(c) && (!m.deployed_at || r.at < m.deployed_at) && recordOk(r.record));
     if (waiver) return { n: c.n, waiver: waiver.id };
     const mine = rows.filter((r) => r.type === 'row' && Number(r.criterion) === c.n);
     const good = mine.find((r) => !rowProblem(r, { ...ctx, c }));
@@ -316,4 +341,4 @@ function doneCheck({ story, bead, rows = [], surface, noSurface = false, instanc
 const initiativeOf = (bead) => { const m = /^([a-z0-9][a-z0-9-]*)\//.exec(String((bead && bead.metadata && bead.metadata.roadmap_ref) || '')); return m ? m[1] : null; };
 
 module.exports = { parseStory, storyHash, criterionHash, storySurface, isStoryBead, readyFindings, shippableState, scopeDrift, claimDivergence, stateOf, stateCounts, unverifiedOver, areaOf,
-  readEvidence, readEvidenceChecked, appendEvidence, evidenceFile, roleOfActor, authorsOf, shaMatch, rowProblem, doneCheck, initiativeOf, STATE, DEFAULT_MAX_UNVERIFIED };
+  readEvidence, readEvidenceChecked, headProblem, appendEvidence, evidenceFile, roleOfActor, authorsOf, shaMatch, rowProblem, doneCheck, initiativeOf, STATE, DEFAULT_MAX_UNVERIFIED };

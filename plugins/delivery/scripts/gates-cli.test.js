@@ -134,3 +134,17 @@ test('surface.js check: finds the project from the working directory; a problem 
   fs.writeFileSync(path.join(root, '.delivery', 'initiatives', 'vault', 'surface.json'), '{"surfaces":[{"id":"S1"}]}');
   assert.equal(surface.main(['check', 'vault', '--project', root], { cwd: root, env }).code, 1);
 });
+
+test('evidence.js: a story naming a surface not in surface.json is refused clearly (D2); a hand-appended row breaks the recorded head', () => {
+  const { ev, add, root } = setup({ story: STORY.replace('surface: S1', 'surface: S9'), over: { metadata: { surface: 'S9' } } });
+  ev('state', ID, 'deployed', '--sha', 'd478aa11');
+  assert.match(add(1).out, /names surface S9, which is not in surface\.json \(D2\)/);
+  const ok = setup();
+  ok.ev('state', ID, 'deployed', '--sha', 'd478aa11');
+  ok.add(1);
+  const file = G.evidenceFile(ok.root, ID);
+  const last = fs.readFileSync(file, 'utf8').trim().split('\n').pop();
+  const forged = { ...JSON.parse(last), id: `ev-${ID}-2`, seq: 2, prev: require('crypto').createHash('sha256').update(last).digest('hex').slice(0, 12), criterion: 2 };
+  fs.appendFileSync(file, `${JSON.stringify(forged)}\n`);
+  assert.match(ok.ev('check', ID).out, /not the recorded row 1/);
+});

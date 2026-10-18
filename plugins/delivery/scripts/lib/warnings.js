@@ -11,11 +11,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { withLock } = require('./lock.js');
 
 const OVERDUE_HOURS = 24;
 const INSTANCE = /^[a-z0-9][a-z0-9-]*$/;
-const LOCK_WAIT_MS = 500;
-const LOCK_STALE_MS = 5000;
 
 function dirOf(root) { return path.join(root, '.delivery', 'warnings'); }
 const hostTag = () => crypto.createHash('sha256').update(os.hostname()).digest('hex').slice(0, 8);
@@ -54,22 +53,7 @@ function append(root, instance, row) {
   fs.appendFileSync(path.join(dirOf(root), `${instanceOf(instance)}.ndjson`), `${JSON.stringify(row)}\n`);
 }
 
-// Run fn holding <dir>/.lock (O_EXCL). A stale lock is broken; after LOCK_WAIT_MS the write goes ahead
-// unlocked (a duplicate is better than a lost warning).
-function locked(root, fn) {
-  fs.mkdirSync(dirOf(root), { recursive: true });
-  const lock = path.join(dirOf(root), '.lock');
-  const until = Date.now() + LOCK_WAIT_MS;
-  let fd = null;
-  while (fd === null) {
-    try { fd = fs.openSync(lock, 'wx'); } catch (err) {
-      try { if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) fs.unlinkSync(lock); } catch (e) { /* gone */ }
-      if (Date.now() > until) break;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-    }
-  }
-  try { return fn(); } finally { if (fd !== null) { try { fs.closeSync(fd); fs.unlinkSync(lock); } catch (e) { /* gone */ } } }
-}
+const locked = (root, fn) => withLock(path.join(dirOf(root), '.lock'), fn);
 
 // Record a warning; an open warning with the same kind, bead and detail is not repeated (a retried
 // claim must not turn one finding into ten). Returns the warning row (new or existing). Never throws.
@@ -91,12 +75,14 @@ function record(root, { kind, rule, bead, detail, raisedBy, instance, now } = {}
 // { ok, row } or { ok: false, error }
 function ack(root, { id, reason, by, instance, now } = {}) {
   if (!reason || !String(reason).trim()) return { ok: false, error: 'an acknowledgement needs --reason' };
-  const w = list(root).find((x) => x.id === id);
-  if (!w) return { ok: false, error: `no warning ${id}` };
-  if (w.acked_by) return { ok: false, error: `${id} was acknowledged by ${w.acked_by} at ${w.acked_at}` };
-  const row = { type: 'ack', id, acked_by: by, acked_at: now || new Date().toISOString(), reason: String(reason).slice(0, 500) };
-  append(root, instance, row);
-  return { ok: true, row };
+  return locked(root, () => {
+    const w = list(root).find((x) => x.id === id);
+    if (!w) return { ok: false, error: `no warning ${id}` };
+    if (w.acked_by) return { ok: false, error: `${id} was acknowledged by ${w.acked_by} at ${w.acked_at}` };
+    const row = { type: 'ack', id, acked_by: by, acked_at: now || new Date().toISOString(), reason: String(reason).slice(0, 500) };
+    append(root, instance, row);
+    return { ok: true, row };
+  });
 }
 
 // Acknowledge the open warnings on a bead whose kind is in `kinds` and whose detail is not in `still`
