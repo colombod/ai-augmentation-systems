@@ -85,7 +85,7 @@ check is cheap and it is the only part that genuinely needs the whole set in han
 
 The governing rule: **the story file is the complete context.** Someone opening one story file — a teammate who missed the planning, or an agent with no memory of it — must have everything needed to finish it. Extract the relevant slices of the PRD and architecture *into* the story. Do not link out. A story requiring three other documents to be read has failed at its one job.
 
-Each story carries: user-facing goal, real verified file paths, the interfaces and contracts it must honor, the architecture decisions that apply and why, acceptance criteria traced to `FR-n`, the test approach with the actual command to run tests in this repo, dependencies on other stories, and explicit out-of-scope notes.
+Each story carries: the owner's ask (quoted, with its `dec-` record id when there is one), its customer surface (an id from `surface.json`), acceptance criteria written as outcomes the customer sees on that surface (never a tool, endpoint, test, link or ticket), one probe per criterion (what is observed, where, by `test` or `reality-check`), a measurement plan (signal, numeric threshold, where), the shippable unit, user-facing goal, real verified file paths, the interfaces and contracts it must honor, the architecture decisions that apply and why, acceptance criteria traced to `FR-n`, the test approach with the actual command to run tests in this repo, dependencies on other stories, and explicit out-of-scope notes.
 
 **2. Each writer carries the design system into its UI story.** Where `design-system.md` exists, each story touching UI names the **tokens by their real project name**, the component states it must implement (including error and empty), and the accessibility rules that apply. An implementer who cannot find the token reaches for a raw value, and the design system erodes one commit at a time — naming them in the story is what prevents that.
 
@@ -93,7 +93,7 @@ Each story carries: user-facing goal, real verified file paths, the interfaces a
 
 **4. QA Strategist sets the test approach** per story — the level, the negative and boundary cases, and how it is verified.
 
-**5. Readiness check.** For each story confirm: acceptance criteria falsifiable, file paths verified, dependencies stated, test approach present, nothing missing. Stories passing get status `ready`; stories failing stay `draft` with the missing element named. Do not mark a story ready under schedule pressure — that is exactly when it costs the most.
+**5. Readiness check.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/ready.js --story <file> --initiative <slug>` on each story and fix what it reports: a missing section or a mechanism-worded criterion is a warning, an undeclared surface is a block. After `/delivery:materialise`, the Delivery Manager records each ready story with `node ${CLAUDE_PLUGIN_ROOT}/scripts/ready.js <bead> --record`; that stamps the criteria hash the claim check compares, so criteria changed later need an owner record. Then confirm: acceptance criteria falsifiable, file paths verified, dependencies stated, test approach present, nothing missing. Stories passing get status `ready`; stories failing stay `draft` with the missing element named. Do not mark a story ready under schedule pressure — that is exactly when it costs the most.
 
 **6. Write the stories** to `.delivery/stories/<epic>-<nn>-<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/story.md`, and update the story index at `.delivery/stories/README.md`.
 
