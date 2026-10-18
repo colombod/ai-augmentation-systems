@@ -409,9 +409,11 @@ A story never made ready (one from before 0.22, or on the old checkbox template)
 `bd supersede`.
 
 **What is cooperative trust.** The gates are discipline aids for cooperative agents, not a security
-boundary. A role whose lane is `any` (builders, the Spike Researcher) can still run bd in a shape
-the guard does not parse (`env bd`, `sh -c`, a subshell) and so also rewrite `evidence_head` to match
-a forged row, edit a story file (which a ready hash then refuses as D1), or start a script from
+boundary. The bd guard unwraps the usual wrappers (`env`, `VAR=`, `command`, an absolute path, `nice`,
+`timeout`, `exec`, `sh -c`, `eval`, subshells, command substitutions) and refuses a bd call it cannot
+read (`xargs bd`, `find -exec bd`) to every role but the Delivery Manager and Product Manager. A role
+whose lane is `any` (builders, the Spike Researcher) can still start bd from another program (a python
+or node script that spawns it) and so also rewrite `evidence_head` to match a forged row, edit a story file (which a ready hash then refuses as D1), or start a script from
 another role's directory with that role's `DELIVERY_ROLE` set; `BEADS_ACTOR` is self-declared. What the gates do is make the
 honest path the easy one, refuse the plain shortcuts the Vault took, and leave a record that an
 independent review can check.
@@ -448,7 +450,8 @@ tight; block only on serious divergence, otherwise warn (R-34, R-36, R-41, R-23,
 - **The budget.** Only the owner's figures, set through the question box (`budget.weekly_units`,
   `budget.usage_envelope`, `budget.lean_at`, and overrides of the estimate table). With none set,
   every budget check only warns. Estimates come from the size label and the model the builder
-  dispatches (size-L on its large model, opus by default): S 1, M 3, L 8 units
+  dispatches (size-L on its large model, opus by default, so a large story costs about 1.7 times more,
+  which the owner weighs when setting the weekly figure): S 1, M 3, L 8 units
   on sonnet, opus 1.7x, haiku 0.35x, plus a 30% reserve for review, reality check and merge (owner
   overrides: `budget.estimate_s|m|l`, `budget.reserve`, `budget.unit_tokens`). Spend is what a script
   can read: cost-weighted tokens from every role transcript since the period start (one unit is 5M
@@ -472,12 +475,14 @@ tight; block only on serious divergence, otherwise warn (R-34, R-36, R-41, R-23,
   Yes to `goal.js ask area_add <area>`, or a row of a roadmap's `## Areas` table citing an owner record
   that verifies. Near the limit means that once in-flight work is paid for not even a size-S story
   fits.
-- **Fixes and security fixes.** A `bug` bead counts as a fix only with `fixes:` (bead metadata or story
-  frontmatter) naming a merged, deployed or verified story, a counting failed check row (the Delivery
+- **Fixes and security fixes.** A `bug` bead counts as a fix only with `fixes:` in its bead metadata
+  (a story file's line is a note and never counts) naming a merged, deployed or verified story, a counting failed check row (the Delivery
   Manager's or a Reality Checker's), or the owner's own report of the defect (a record resting only on
   the owner's words, not a goal decision, scoped to the bead or naming it); a `security` bead with
   `finding:` naming a review finding by id (`.delivery/reviews/<file>#<id>`) or a finding bead
-  (labelled `security` and `finding`). Never the bead itself. The labels and links are the Delivery
+  (labelled `security` and `finding`); review files are written only by the Delivery Manager, Product
+  Manager and Reality Checker. Never the bead itself. The owner's report must name the defect in the
+  owner's own words, not in the recording agent's statement. The labels and links are the Delivery
   Manager's and Product Manager's to set. Linked fixes skip the wave, lean and new-area rules and must
   fit what is left with their reserve; a label alone is ordinary work with a `fix-unlinked` warning.
   A peer agent's message is captured as an input but is never the owner's record, for fixes, cuts,
