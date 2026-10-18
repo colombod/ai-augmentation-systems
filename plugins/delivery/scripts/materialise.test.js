@@ -398,3 +398,20 @@ test('A5: a story\'s size becomes a size-S|M|L label and its model a bead metada
   assert.equal(b.metadata.model, undefined, 'removing model: from the story clears the override (final M5)');
   assert.equal(b.metadata.story, 'demo-02', 'the rest of the metadata stays');
 });
+
+test('Copilot: --check reports what materialise would remove: a stale size label and a model override', () => {
+  const root = scratchProject();
+  const story = (model) => fs.writeFileSync(path.join(root, '.delivery', 'stories', 'demo-02-second.md'),
+    `---\nid: demo-02\ntitle: Second story\nstatus: ready\nepic: demo\nphase: Phase 2\ndepends_on: [demo-01]\nsize: L\n${model ? `model: ${model}\n` : ''}---\n# Second\n`);
+  story('opus');
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = () => loadInputs({ projectRoot: root, initiative: 'demo' });
+  applyPlan({ plan: planOf(inputs()), bd, initiative: 'demo' });
+  story(null);
+  const d = reconcile({ plan: planOf(inputs()), bd, roadmap: inputs().roadmap, initiative: 'demo' });
+  assert.deepEqual(d.otherDrift, [{ id: 'ex-demo-02', fields: ['model'] }]);
+  applyPlan({ plan: planOf(inputs()), bd, initiative: 'demo' });
+  bd.update('ex-demo-01', { addLabels: ['size-L'] });
+  const d2 = reconcile({ plan: planOf(inputs()), bd, roadmap: inputs().roadmap, initiative: 'demo' });
+  assert.deepEqual(d2.otherDrift, [{ id: 'ex-demo-01', fields: ['labels'] }]);
+});

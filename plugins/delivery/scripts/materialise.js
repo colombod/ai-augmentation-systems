@@ -152,9 +152,13 @@ function beadDiff(existing, planned) {
   const fields = [];
   if (existing.title !== planned.title) fields.push('title');
   if ((existing.parent || null) !== (planned.parent || null)) fields.push('parent');
-  if (planned.labels.some((l) => !(existing.labels || []).includes(l))) fields.push('labels');
+  // labels materialise would add, and the managed ones it would remove (a stale size label)
+  const have = existing.labels || [];
+  if (planned.labels.some((l) => !have.includes(l)) || have.some((l) => /^size-[SML]$/.test(l) && !planned.labels.includes(l))) fields.push('labels');
   const meta = existing.metadata || {};
   for (const k of Object.keys(planned.metadata)) if (JSON.stringify(meta[k]) !== JSON.stringify(planned.metadata[k])) fields.push(k);
+  // a story's model override materialise would unset
+  if (planned.labels.includes('story') && meta.model !== undefined && planned.metadata.model === undefined && !fields.includes('model')) fields.push('model');
   return fields;
 }
 
