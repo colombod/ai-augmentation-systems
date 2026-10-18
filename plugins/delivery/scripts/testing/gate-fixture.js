@@ -71,6 +71,7 @@ function memBd(list) {
     beads,
     show: (id) => (beads.has(id) ? JSON.parse(JSON.stringify(beads.get(id))) : null),
     list: ({ label } = {}) => [...beads.values()].filter((b) => !label || (b.labels || []).includes(label)).map((b) => JSON.parse(JSON.stringify(b))),
+    create: ({ id, title, parent, labels = [], metadata = {} }) => { beads.set(id, { id, title, parent: parent || null, status: 'open', labels, metadata }); return id; },
     update: (id, { addLabels = [], removeLabels = [], metadata } = {}) => {
       const b = beads.get(id);
       b.labels = [...new Set([...(b.labels || []).filter((l) => !removeLabels.includes(l)), ...addLabels])];

@@ -1,7 +1,8 @@
 // scripts/lib/surface.js — the customer surface of an initiative (R-09): where the customer actually
 // uses the product, as a tuple a check can compare. .delivery/initiatives/<slug>/surface.json:
 //   { "owner_record": "dec-...", "surfaces": [ { "id": "S1", "host": "...", "app": "...", "mode": "...",
-//     "install_artifact": "...", "scriptable": false, "size_budgets": { "tool_list_max": 20 } } ] }
+//     "install_artifact": "...", "scriptable": false, "size_budgets": { "tool_list_max": 20 },
+//     "test_account": "<name, never a password>", "version_on_screen": "<where the version shows>" } ] }
 // Evidence from another surface, or from the same id with a different tuple, never counts.
 const fs = require('fs');
 const path = require('path');
@@ -27,6 +28,9 @@ function validateSurface(doc) {
     seen.add(s.id);
     for (const k of TUPLE) if (typeof s[k] !== 'string' || !s[k].trim()) problems.push(`${at}: "${k}" must be a non-empty string`);
     if (typeof s.scriptable !== 'boolean') problems.push(`${at}: "scriptable" must be true or false`);
+    // optional, for the reality-check script (R-33): the test account's name (never a password) and
+    // where the surface shows the installed version
+    for (const k of ['test_account', 'version_on_screen']) if (s[k] !== undefined && (typeof s[k] !== 'string' || !s[k].trim())) problems.push(`${at}: "${k}" must be a non-empty string when given`);
     const b = s.size_budgets;
     if (b === undefined || (b && typeof b === 'object' && !Array.isArray(b) && !Object.keys(b).length)) warnings.push(`${at}: no size_budgets; state the host's limits as numbers (tool_list_max, answer_max_chars, page weight)`);
     else if (!b || typeof b !== 'object' || Array.isArray(b) || Object.values(b).some((v) => typeof v !== 'number' || !Number.isFinite(v) || v < 0)) problems.push(`${at}: "size_budgets" must map names to non-negative numbers`);

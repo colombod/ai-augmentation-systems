@@ -51,7 +51,8 @@ const ENGLISH = new Set('the to of and a an is are for at on all our my your unt
 // the role that records each field on the owner's word: the Product Manager owns scope changes only
 const WRITERS = { scope_add: ['chief-of-staff', 'product-manager'], scope_remove: ['chief-of-staff', 'product-manager'] };
 const writersOf = (field) => WRITERS[field] || ['chief-of-staff'];
-const TRIGGER_WRITERS = ['chief-of-staff', 'delivery-lead'];
+// a trigger pause needs an open andon (a failed check row), so the Reality Checker that wrote it may raise it too
+const TRIGGER_WRITERS = ['chief-of-staff', 'delivery-lead', 'reality-checker'];
 const EVIDENCE_WRITERS = ['delivery-lead', 'reality-checker'];
 const JUDGE_MIN = 0.8;
 
@@ -336,7 +337,7 @@ function set({ root, who, field, value: raw, record, verifyRecord, judged, now }
 
 // A trigger pause is kept apart from the owner's pause: closing the andon never lifts an owner pause.
 function pauseOnTrigger({ root, who, trigger, bead, now }) {
-  if (!who || !TRIGGER_WRITERS.includes(who.roleId)) return { ok: false, error: 'a trigger pause is recorded by the Delivery Manager or Chief of Staff', notWriter: true };
+  if (!who || !TRIGGER_WRITERS.includes(who.roleId)) return { ok: false, error: 'a trigger pause is recorded by the Delivery Manager, Chief of Staff or Reality Checker', notWriter: true };
   const t = triggerState(root, trigger, { bead, atPause: true });
   if (!t.open) return { ok: false, error: t.why };
   // every open andon is kept: passing one never lifts another (Copilot)

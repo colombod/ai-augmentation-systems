@@ -48,16 +48,25 @@ function operatorStatus(projectRoot, team, { host, deps = {} } = {}) {
 // The gates at a glance (R-12, ruling 3): open warnings by kind and those over 24 h, and the story
 // states merged / deployed / verified with any area over the unverified cap. Read-only; a failed bead
 // read becomes a note.
-function gateStatus(projectRoot, team, { now, storyBeads } = {}) {
+function gateStatus(projectRoot, team, { now, storyBeads, checkBeads } = {}) {
   const W = require('./lib/warnings.js');
   const G = require('./lib/gates.js');
   const { maxUnverified } = require('./lib/gate-context.js');
-  const out = { warnings: W.summary(W.list(projectRoot), now), states: null, notes: [] };
+  const out = { warnings: W.summary(W.list(projectRoot), now), states: null, realityChecks: null, notes: [] };
   try {
     const beads = storyBeads ? storyBeads() : require('./lib/bd.js').makeBd({ cwd: projectRoot }).list({ label: 'story', all: true });
     // closed is not verified: a story counts by its state labels, open or closed
     out.states = G.stateCounts(beads, maxUnverified(team));
   } catch (err) { out.notes.push(`story states unavailable: ${String(err.message).split('\n')[0]}`); }
+  // reality checks dispatched and not yet closed (R-33); a caller that supplies the story beads
+  // supplies these too, or they are not read
+  if (out.states && (checkBeads || !storyBeads)) {
+    try {
+      const RC = require('./reality-check.js');
+      out.realityChecks = RC.pending(checkBeads ? checkBeads() : require('./lib/bd.js').makeBd({ cwd: projectRoot }).list({ label: RC.LABEL }))
+        .map((b) => ({ id: b.id, assignee: b.assignee || null }));
+    } catch (err) { out.notes.push(`reality checks unavailable: ${String(err.message).split('\n')[0]}`); }
+  }
   return out;
 }
 
@@ -71,7 +80,7 @@ function idleStatus(projectRoot, { now, idleBd } = {}) {
   return s;
 }
 
-function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, idleBd } = {}) {
+function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, checkBeads, idleBd } = {}) {
   const { team } = loadManifest(projectRoot);
   const roster = readRoster(projectRoot);
   const nowMs = Date.parse(now || new Date().toISOString());
@@ -106,7 +115,7 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
   let bd_reachable = false;
   try { bd_reachable = Boolean((bdCheck || bdReachable)(projectRoot)); } catch (err) { bd_reachable = false; }
   const operator = operatorStatus(projectRoot, team, { host, deps: operatorDeps });
-  const gates = gateStatus(projectRoot, team, { now, storyBeads: storyBeads || (bd_reachable ? undefined : () => { throw new Error('bd unreachable'); }) });
+  const gates = gateStatus(projectRoot, team, { now, checkBeads, storyBeads: storyBeads || (bd_reachable ? undefined : () => { throw new Error('bd unreachable'); }) });
   const idle = bd_reachable || idleBd ? idleStatus(projectRoot, { now, idleBd }) : { idle: false, why: 'bd-unreachable' };
   return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, warnings: manifestWarnings(team) };
 }
@@ -156,6 +165,10 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gat
     lines.push(`Warnings open: ${gates.warnings.open}${kinds ? ` (${kinds})` : ''}; acknowledged: ${gates.warnings.acked}`);
     if (gates.states) {
       lines.push(`Stories: merged ${gates.states.merged}, deployed ${gates.states.deployed}, verified ${gates.states.verified} (merged and deployed are not verified)`);
+      if (gates.realityChecks) {
+        const rc = gates.realityChecks;
+        lines.push(`Reality checks pending: ${rc.length}${rc.length ? ` (${rc.slice(0, 5).map((c) => `${c.id}${c.assignee ? ` with ${c.assignee}` : ', unclaimed'}`).join(', ')}${rc.length > 5 ? ', ...' : ''})` : ''}`);
+      }
       for (const o of gates.states.overCap) lines.push(`Warning: area ${o.area} has ${o.count} merged-but-unverified stories (cap ${o.cap}): ${o.ids.join(', ')}; verify them before new work there`);
     }
     for (const n of gates.notes) lines.push(`Note: ${n}`);

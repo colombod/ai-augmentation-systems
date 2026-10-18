@@ -182,7 +182,8 @@ function claimDivergence({ story, bead, isStory = Boolean(story), parent = null,
     if (!m.ready_hash) { if (story) f.push(warn('not-ready', 'R-10', 'claimed before the Delivery Manager made it ready')); }
     else { const d = scopeDrift(story, bead); if (d) f.push(d); }
   }
-  if (parent && parentStory && isStoryBead(parent)) {
+  // a reality-check bead checks its story's criteria; it adds no scope (R-33)
+  if (parent && parentStory && isStoryBead(parent) && !(bead.labels || []).includes('reality-check')) {
     const n = m.criterion;
     if (n === undefined || n === null || n === '') f.push(warn('child-scope', 'D1', `child of ${parent.id} names no criterion it serves (metadata criterion)`));
     else if (!parentStory.criteria.some((c) => c.n === Number(n))) f.push(block('child-scope', 'D1', `names criterion ${n}, which ${parent.id} does not have (1..${parentStory.criteria.length}): new scope needs its own story`));

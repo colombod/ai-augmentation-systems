@@ -2,13 +2,14 @@
 // scripts/evidence.js — evidence rows (R-11) and the merged / deployed / verified states (R-12).
 //   evidence.js add <bead> --criterion <n> --result pass|fail --surface <id> --sha <deployed sha>
 //               [--run <run id, log query or URL>] [--host h] [--app a] [--mode m] [--install-artifact x]
-//   evidence.js state <bead> merged [--pr <n>] | deployed --sha <sha>
+//   evidence.js state <bead> merged [--pr <n>] | deployed --sha <sha> [--version <what the surface shows>]
 //   evidence.js waive <bead> --criterion <n> --record <dec-...> --risk '<risk accepted>'
 //   evidence.js cut <bead> --record <dec-...> --reason '<why the story is not delivered>'
 //   evidence.js list <bead> | evidence.js check <bead>       read only
 // Rows go to <project>/.delivery/evidence/<bead>.ndjson: append-only and hash-chained, with the
 // writer's role (from the session marker), actor, time and the criterion's own hash. Writes need a
-// role session: rows by the Delivery Manager (or a Reality Checker), never by an author of the story;
+// role session: rows by the Delivery Manager, or by a Reality Checker through reality-check.js run-record
+// (which checks the version on screen and the capture first), never by an author of the story;
 // states, waivers and cuts by the Delivery Manager. A row whose surface or observed tuple
 // (--host/--app/--mode override the declared one) differs from the story's is kept as a side arm (D2);
 // one on another sha than the deployed one is a side arm (D3). When every criterion has a counting row
@@ -17,8 +18,8 @@ const G = require('./lib/gates.js');
 const { tupleOf, sameTuple, describe, TUPLE } = require('./lib/surface.js');
 const { whoAmI, gateInputs, writerProblem, recordChecker, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: evidence.js add <bead> --criterion <n> --result pass|fail --surface <id> --sha <sha> [--run <ref>] | state <bead> merged|deployed [--pr <n>|--sha <sha>] | waive <bead> --criterion <n> --record <dec-...> --risk <text> | cut <bead> --record <dec-...> --reason <text> | list <bead> | check <bead>';
-const VALUE = ['--criterion', '--result', '--surface', '--sha', '--run', '--pr', '--record', '--risk', '--reason', '--project', '--host', '--app', '--mode', '--install-artifact'];
+const USAGE = 'usage: evidence.js add <bead> --criterion <n> --result pass|fail --surface <id> --sha <sha> [--run <ref>] | state <bead> merged|deployed [--pr <n>|--sha <sha> [--version <v>]] | waive <bead> --criterion <n> --record <dec-...> --risk <text> | cut <bead> --record <dec-...> --reason <text> | list <bead> | check <bead>';
+const VALUE = ['--criterion', '--result', '--surface', '--sha', '--run', '--pr', '--record', '--risk', '--reason', '--project', '--host', '--app', '--mode', '--install-artifact', '--version'];
 
 function parse(argv) {
   const out = { _: [] };
@@ -70,7 +71,8 @@ function unverifiedRecord(who, record, verifyRecord) {
   return v && v.ok ? null : `${record} does not verify (${v ? v.error || v.code : 'no result'}): cite an owner record`;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, who: given } = {}) {
+// via: { by: 'reality-check', capture, observed_version } when reality-check.js run-record writes the row
+function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, who: given, via } = {}) {
   const a = parse(argv);
   const [cmd, id, word] = a._;
   if (!cmd || !id) return { code: 2, out: USAGE };
@@ -102,6 +104,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       // the same sha again keeps its deploy time, so its rows still count
       const same = G.shaMatch(m.deployed_sha, a.sha);
       const meta = { ...m, deployed_sha: same ? m.deployed_sha : a.sha, deployed_at: same && m.deployed_at ? m.deployed_at : at };
+      if (a.version) meta.deployed_version = a.version;
+      else if (!same) delete meta.deployed_version;
       store.update(id, { addLabels: [G.STATE.merged, G.STATE.deployed], metadata: meta });
       const d = syncVerified(store, store.show(id), inp);
       return { code: 0, out: `${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}` };
@@ -133,6 +137,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
 
   if (cmd !== 'add') return { code: 2, out: USAGE };
   if (!['pass', 'fail'].includes(a.result) || !a.surface || !a.sha) return { code: 2, out: USAGE };
+  if (by === 'reality-checker' && !via) return refuse('a Reality Checker records through the script, which checks the version on screen and the capture: reality-check.js run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v>');
   const authors = G.authorsOf(bead, inp.instances);
   if (authors.actors.includes(actor) || authors.roles.includes(by)) return refuse(`${actor} (${by}) is among the authors of ${id}, so its rows do not count: the builder is not its own inspector.`);
   if (!m.deployed_sha) return refuse(`${id} has no deployed sha: record the deploy first (evidence.js state ${id} deployed --sha <sha>), then the run.`);
@@ -147,11 +152,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
     else if (a.surface !== inp.surface.id || !sameTuple(observed, tupleOf(inp.surface))) why = `observed on ${observed.app}, ${observed.mode} (${observed.host}), not ${describe(inp.surface)}`;
   }
   if (!why && !G.shaMatch(a.sha, m.deployed_sha)) { why = `on ${a.sha}, not the deployed ${m.deployed_sha}`; gate = 'D3'; }
-  const row = record(store, who.root, id, { type: 'row', criterion: c.n, criterion_hash: G.criterionHash(c), result: a.result, surface: a.surface, tuple: observed, sha: a.sha, run: a.run || null, by, actor, at, arm: why ? 'side' : 'main', ...(why ? { why } : {}) });
-  if (why) return refuse(`not verification of ${id} (${gate}): ${why}. Kept as side arm ${row.id}.`);
+  const row = record(store, who.root, id, { type: 'row', criterion: c.n, criterion_hash: G.criterionHash(c), result: a.result, surface: a.surface, tuple: observed, sha: a.sha, run: a.run || null, by, actor, at, arm: why ? 'side' : 'main', ...(why ? { why } : {}), ...(via ? { via: via.by, capture: via.capture, observed_version: via.observed_version } : {}) });
+  if (why) return { ...refuse(`not verification of ${id} (${gate}): ${why}. Kept as side arm ${row.id}.`), row };
   const d = syncVerified(store, bead, { ...inp, rows: [...inp.rows, row] });
   const note = inp.noSurface ? '\nwarning: the story declares no customer surface, so the surface was not checked (R-09)' : '';
-  return { code: 0, out: `${row.id}: criterion ${c.n} ${a.result} at ${a.sha}${note}\n${doneText(d)}` };
+  return { code: 0, row, out: `${row.id}: criterion ${c.n} ${a.result} at ${a.sha}${note}\n${doneText(d)}` };
 }
 
 if (require.main === module) {

@@ -47,12 +47,12 @@ const open = (root) => list(root).filter((s) => !s.done_at);
 
 // { problem } or {} for a candidate step
 function stepProblem(s, { questionExists } = {}) {
-  if (!KINDS.includes(s.kind)) return { problem: `kind ${s.kind || '(none)'} is not an owner step (kinds: ${KINDS.join(', ')}); checks go to the Reality Checker`, team: s.kind === 'verification' };
+  if (!KINDS.includes(s.kind)) return { problem: `kind ${s.kind || '(none)'} is not an owner step (kinds: ${KINDS.join(', ')}); checks go to the Reality Checker`, team: s.kind === 'verification' ? 'check' : false };
   for (const k of ['what', 'where', 'steps']) if (!s[k] || !String(s[k]).trim()) return { problem: `--${k} is required: the owner gets the exact steps, not a summary` };
   // the destination counts too: "Approve the edit" in "the builder session" is a relay (Copilot round 5)
   const text = `${s.what} ${s.where} ${s.steps}`;
   if (A_RELAY.test(text) || /\b(?:in|inside|into|on) (?:the )?(?:[\w-]+ ){0,4}(?:session|tab|pane)\b/i.test(String(s.where))) return { problem: 'that is a relay into another session, not an owner step: that session does it itself', team: true };
-  if (A_CHECK.test(text)) return { problem: 'that is a check of whether something works, not an owner step: the Reality Checker or a builder runs it', team: true };
+  if (A_CHECK.test(text)) return { problem: 'that is a check of whether something works, not an owner step: the Reality Checker or a builder runs it', team: 'check' };
   if (s.kind === 'decision') {
     if (!DECISION_ABOUT.includes(s.about)) return { problem: `a decision step names --about ${DECISION_ABOUT.join('|')}; other decisions are the team's` };
     if (!/^q-/.test(String(s.question || '')) || (questionExists && !questionExists(s.question))) return { problem: 'a decision step cites the logged question (--question q-...): log it with operator.js ask first' };
@@ -62,7 +62,7 @@ function stepProblem(s, { questionExists } = {}) {
 
 function add(root, step, { instance, now, questionExists } = {}) {
   const p = stepProblem(step, { questionExists });
-  if (p.problem) return { ok: false, error: p.problem, team: !!p.team };
+  if (p.problem) return { ok: false, error: p.problem, team: p.team || false };
   const inst = W.instanceOf(instance);
   const row = { type: 'step', id: newId(inst), kind: step.kind, what: step.what, where: step.where, steps: step.steps,
     ...(step.expect ? { expect: step.expect } : {}), ...(step.check ? { check: step.check } : {}), ...(step.bead ? { bead: step.bead } : {}),
