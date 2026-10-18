@@ -410,10 +410,17 @@ A story never made ready (one from before 0.22, or on the old checkbox template)
 
 **What is cooperative trust.** The gates are discipline aids for cooperative agents, not a security
 boundary. The bd guard unwraps the usual wrappers (`env`, `VAR=`, `command`, an absolute path, `nice`,
-`timeout`, `exec`, `sh -c`, `eval`, subshells, command substitutions) and refuses a bd call it cannot
-read (`xargs bd`, `find -exec bd`) to every role but the Delivery Manager and Product Manager. A role
-whose lane is `any` (builders, the Spike Researcher) can still start bd from another program (a python
-or node script that spawns it) and so also rewrite `evidence_head` to match a forged row, edit a story file (which a ready hash then refuses as D1), or start a script from
+`timeout`, `exec`, `sh -c` and `bash -c --`, `eval`, subshells, command substitutions) and, in a command
+that names bd, refuses to every role but the Delivery Manager and Product Manager what it cannot read: a
+command word built by the shell (`$(which bd)`, `${BD:-bd}`, `"b"d`, `b\d`, a variable), a shell
+reading its script from stdin or a file (`| sh`, `sh -s`, `bash <<EOF`), and a runner that executes an
+argument naming bd (`xargs`, `find -exec`, `parallel`, `watch`). A role whose lane is `any` (builders,
+the Spike Researcher) can always run what no guard sees: a symlink or copy of bd under another name, or
+any program (python, node) that spawns bd. Through those it can write any label or field, and rewrite
+`evidence_head` to match a forged row. The durable control is not the label: a tier-1 fix and a
+verified story also need the evidence and owner-record checks, and the done gate re-verifies a close
+from the evidence chain against its recorded head and from the owner's records, so a state label alone
+never closes a story. Beyond that, a builder could also edit a story file (which a ready hash then refuses as D1), or start a script from
 another role's directory with that role's `DELIVERY_ROLE` set; `BEADS_ACTOR` is self-declared. What the gates do is make the
 honest path the easy one, refuse the plain shortcuts the Vault took, and leave a record that an
 independent review can check.

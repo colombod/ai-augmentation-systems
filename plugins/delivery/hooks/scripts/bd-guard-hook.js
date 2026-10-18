@@ -9,7 +9,8 @@ async function main() {
   const { makeBd } = require('../../scripts/lib/bd.js');
   const input = readHookInput();
   const command = input && input.tool_name ? shellCommandOf(input.tool_name, input.tool_input || {}) : null;
-  if (command === null || !/\bbd\b/.test(command)) return '';
+  // bd named anywhere, quotes and backslashes dropped ("b"d, b\d), so a disguised call still reaches the guard
+  if (command === null || !/\bbd\b/.test(String(command).replace(/['"\\]/g, ''))) return '';
   const valid = validMarker(findRoleMarker(input.cwd));
   if (!valid) return '';
   const deny = (reason) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });

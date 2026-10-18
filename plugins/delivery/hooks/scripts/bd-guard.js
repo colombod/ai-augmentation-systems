@@ -39,16 +39,43 @@ const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
 const MENTIONS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'cat', 'less', 'head', 'tail', 'which', 'type', 'man', 'git', 'gh', 'wc', 'ls', 'true', 'test', 'whereis', 'hash']);
 const base = (w) => String(w || '').split('/').pop();
 
+// programs that run their arguments as commands: a bd inside an argument is a bd call the guard cannot read
+const RUNNERS = new Set(['parallel', 'watch', 'xargs', 'find', 'nohup', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'env', 'time', 'timeout', 'nice', 'exec', 'sudo', 'stdbuf']);
+// bd named anywhere once quotes and backslashes are dropped ("b"d, b\d)
+const mentionsBd = (text) => /(?:^|[^\w.])bd(?:$|[^\w.-])/.test(String(text || '').replace(/['"\\]/g, ''));
+// words as the shell sees them before unquoting, so a quoted or substituted command word stays visible
+const rawWords = (seg) => String(seg).match(/(?:[^\s'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+/g) || [];
+// the command word of a segment, raw: after assignments, wrappers and their options, and ( or {
+function rawCommandWord(seg) {
+  const w = rawWords(seg).map((x) => x.replace(/^[({]+/, '')).filter((x) => x !== '');
+  let i = 0;
+  for (let guard = 0; guard < 8 && i < w.length; guard++) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[i])) { i++; continue; }
+    const name = base(w[i]);
+    if (!WRAPPERS.has(name)) break;
+    i++;
+    while (i < w.length && (w[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(w[i]))) i += WRAPPER_VALUE_FLAGS.has(w[i]) ? 2 : 1;
+    if (name === 'timeout' && i < w.length) i++;
+  }
+  return w[i] || '';
+}
+
 // Each bd call in a command: { tokens } once wrappers are peeled, or { opaque, via } for one the guard
-// cannot read. Command substitutions and shell -c scripts are read recursively.
+// cannot read. Command substitutions and shell -c scripts are read recursively. In a command that
+// names bd, these cannot be read (final check, PR 54): a command word that is not literal ($, a
+// backtick, a quote or a backslash in it: $(which bd), ${BD:-bd}, "b"d, b\d); a shell reading its
+// script from stdin or a file (| sh, sh -s, sh < file, bash <<EOF); a runner that executes an argument
+// naming bd (parallel, watch, xargs sh -c, find -exec).
 function bdCalls(command, depth = 0) {
   const out = [];
   const text = String(command == null ? '' : command);
-  if (depth > 3) return /\bbd\b/.test(text) ? [{ opaque: text, via: 'nested shells' }] : [];
+  if (depth > 3) return mentionsBd(text) ? [{ opaque: text, via: 'nested shells' }] : [];
+  const named = mentionsBd(text);
   for (const m of text.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) out.push(...bdCalls(m[1] || m[2] || '', depth + 1));
   for (const seg of splitCommand(text)) {
     let t = tokens(seg);
     if (!t.length) continue;
+    if (named && /[$`'"\\]/.test(rawCommandWord(seg))) { out.push({ opaque: seg, via: 'a command word built by the shell' }); continue; }
     t = t.map((x, i) => (i === 0 ? x.replace(/^\$?\(+/, '') : x)).map((x, i, a) => (i === a.length - 1 ? x.replace(/\)+$/, '') : x)).filter((x) => x !== '');
     // peel wrappers and environment assignments
     for (let guard = 0; guard < 8 && t.length; guard++) {
@@ -65,10 +92,15 @@ function bdCalls(command, depth = 0) {
     if (isBd(t[0])) { out.push({ tokens: ['bd', ...t.slice(1)] }); continue; }
     if (SHELLS.has(first)) {
       const c = t.findIndex((x, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(x));
-      if (c > 0 && t[c + 1] !== undefined) { out.push(...bdCalls(t[c + 1], depth + 1)); continue; }
+      let k = c + 1;
+      while (c > 0 && t[k] === '--') k++;
+      if (c > 0 && t[k] !== undefined) { out.push(...bdCalls(t[k], depth + 1)); continue; }
+      // no -c: the script comes from stdin or a file
+      if (named) { out.push({ opaque: seg, via: `${first} reading its script from stdin or a file` }); continue; }
     }
     if (first === 'eval') { out.push(...bdCalls(t.slice(1).join(' '), depth + 1)); continue; }
     if (t.slice(1).some(isBd) && !MENTIONS.has(first)) out.push({ opaque: seg, via: first });
+    else if (RUNNERS.has(first) && t.slice(1).some(mentionsBd)) out.push({ opaque: seg, via: first });
   }
   return out;
 }

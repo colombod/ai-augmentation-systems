@@ -175,3 +175,27 @@ test('I-a: review finding files are written by the Delivery Manager, Product Man
   assert.equal(d('builder', 'Bash', { command: `cat ${file}` }).allow, true);
   assert.ok(!/review findings/.test(d('delivery-lead', 'Write', { file_path: file }).reason || ''));
 });
+
+test('B-b final: the reviewer\'s wrapped forms are refused to a builder, readable ones are still checked, plain mentions stay allowed', () => {
+  const me = 'me@pc/builder-1';
+  const bd = { show: () => ({ id: 'mine', status: 'in_progress', assignee: me, labels: ['story'], metadata: { story_file: 'a.md' } }) };
+  const run = (command, roleId = 'builder') => decideBd({ command, actor: me, roleId, staleHours: 2, bd });
+  const forms = [
+    // 1. a command word that is not literal
+    '$(which bd) update mine --add-label security', '`which bd` update mine --add-label security', 'b\\d update mine --add-label security',
+    '"b"d update mine --add-label security', '${BD:-bd} update mine --add-label security', 'B=bd; $B update mine --add-label security',
+    // 2. a shell reading its script from stdin or a file, and -c with --
+    'echo "bd update mine --add-label security" | sh', "printf 'bd update mine --add-label security\\n' | bash", 'sh -s < cmds.txt # bd',
+    'bash <<EOF\nbd update mine --add-label security\nEOF', 'bash -c -- "bd update mine --add-label security"',
+    // 3. a runner that executes its arguments
+    "parallel 'bd update {} --add-label security' ::: mine", "watch 'bd update mine --add-label security'", "echo mine | xargs sh -c 'bd update $0 --add-label security'",
+  ];
+  for (const c of forms) {
+    const r = run(c);
+    assert.ok(r && /Refused|Run bd directly/.test(r.reason), c);
+    assert.deepEqual(reasonProblems(r.reason), [], `${c}: ${r.reason}`);
+    assert.equal(run(c, 'delivery-lead'), null, `${c} (the Delivery Manager may)`);
+  }
+  for (const c of ['bash -c -- "bd show mine"', 'cat notes.md | grep -n bd', 'echo "bd is the tracker"', 'git log --grep bd', 'bd update mine --notes "$(cat f)"', 'ls $HOME']) assert.equal(run(c), null, c);
+  assert.match(run('bash -c -- "bd update mine --add-label security"').reason || '', /Refused/, 'a readable -c script is checked');
+});
