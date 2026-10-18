@@ -191,3 +191,54 @@ test('re-check: only the exact team/<instance> branch binds; no session pushes t
   for (const b of ['gemini-code-assist', 'claude', 'copilot', 'gemini-code-assist[bot]']) assert.ok(R.isBot(b), b);
   assert.ok(!R.isBot('agent-claude-7'), 'a subagent id that mentions claude is not a bot');
 });
+
+test('Copilot round 2 (118, 145, 157, 170, 183, 197, 218, 231)', () => {
+  const P = require('./lib/gh-pr.js');
+  // 118: only github.com remotes and URLs
+  assert.equal(P.repoOf('https://notgithub.com/acme/shop.git'), null);
+  assert.equal(P.repoOf('git@github.com.evil.io:acme/shop.git'), null);
+  assert.equal(P.repoOf('git@github.com:acme/shop.git'), 'acme/shop');
+  assert.equal(P.repoOf('https://github.com/acme/shop/pull/3'), 'acme/shop');
+  const h = setup();
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.review('delivery-lead', 'request 478 --reviewer copilot');
+  h.rec('builder-2', '');
+  assert.match(h.bash('delivery-lead', `gh pr merge https://notgithub.com/example/example/pull/478 --match-head-commit ${H1}`, { run: false }).deny, /name the product repository/);
+  // 183: the equals form of a short boolean
+  for (const f of ['-a=true', '-as=1']) assert.match(h.bash('delivery-lead', `gh pr merge 478 -R example/example --match-head-commit ${H1} ${f}`, { run: false }).deny || '', /merges outside the gate/, f);
+  // 145: an alias of a bot stays a bot
+  assert.match(h.rec('delivery-lead', '--by dev@pc/copilot').out, /\(advisory: does not satisfy the gate alone\)/);
+  assert.ok(R.isBot('scan-bot@pc'));
+  // 157: each writer appends its own chain, so checkouts on two hosts merge without forking one
+  const files = fs.readdirSync(path.join(h.root, R.REL, '478')).filter((f) => f.endsWith('.ndjson')).sort();
+  assert.deepEqual(files, ['builder-2.ndjson', 'delivery-lead.ndjson']);
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'host-b-'));
+  fs.cpSync(h.root, other, { recursive: true });
+  const who = (root, instance) => ({ root, team: loadManifest(root).team, instance, roleId: instance.replace(/-\d+$/, ''), actor: `dev@pc/${instance}` });
+  const gh = () => view();
+  const bd = memBd([authored(BEAD, 'builder-1')]);
+  review.main(['request', '478', '--reviewer', 'pm-agent'], { who: who(other, 'delivery-lead'), bd, gh });
+  review.main(['request', '478', '--reviewer', 'product-manager'], { who: who(h.root, 'delivery-lead'), bd, gh });
+  review.main(['record', '478', '--head', H1, '--result', 'changes', '--summary', 'later', '--by', 'pm-agent'], { who: who(other, 'delivery-lead'), bd, gh });
+  // host B's chain lands in host A's checkout (a git merge of separate files)
+  fs.copyFileSync(path.join(other, R.REL, '478', 'delivery-lead.ndjson'), path.join(h.root, R.REL, '478', 'delivery-lead-hostb.ndjson'));
+  const merged = R.read(h.root, '478');
+  assert.equal(merged.problem, null);
+  assert.ok(merged.rows.some((r) => r.summary === 'later') && merged.rows.some((r) => r.reviewer === 'builder-2' && r.type === 'review'));
+  // 170: rows recorded for another repository never count
+  const rows = [{ type: 'request', seq: 1, repo: 'a/one', head: H1, reviewer: 'x' }, { type: 'review', seq: 2, repo: 'a/one', head: H1, kind: 'independent', reviewer: 'x', result: 'pass' }, { type: 'request', seq: 3, repo: 'b/two', head: H1, reviewer: 'y' }];
+  assert.match(R.evaluate('478', rows, { head: H1, ci: { state: 'green', names: [] }, repo: 'b/two' }).why, /has no independent review/);
+  // 197: recovery commands name the product repository
+  const pend = R.evaluate('478', rows.slice(0, 2), { head: H1, ci: { state: 'pending', names: ['e2e'] }, repo: 'a/one' });
+  assert.match(pend.fix, /`gh pr checks 478 -R a\/one --watch`/);
+  // 218: status counts bots as the gate does
+  const bot = [{ type: 'request', seq: 1, repo: 'a/one', head: H1, reviewer: 'copilot' }, { type: 'review', seq: 2, repo: 'a/one', head: H1, kind: 'advisory', reviewer: 'copilot', result: 'pass' }];
+  assert.equal(R.stateOf(bot, null, { botsCount: true, repo: 'a/one' }), 'passed');
+  assert.equal(R.stateOf(bot, null, { botsCount: false, repo: 'a/one' }), 'waiting');
+  assert.equal(R.stateOf([...rows.slice(0, 2), { ...bot[1], seq: 3, result: 'changes' }], null, { botsCount: true, repo: 'a/one' }), 'changes');
+  // 231: a broken chain is reported, never its earlier prefix as ready
+  fs.appendFileSync(path.join(h.root, R.REL, '478', 'builder-2.ndjson'), '{"type":"review","result":"pass"}\n');
+  assert.match(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /^The change "Import a collection" has a damaged review record; the Delivery Manager restores it before anything merges$/);
+  const ts = require('./team-status.js');
+  assert.match(ts.renderStatus(ts.teamStatus(h.root, { bdCheck: () => false, gh: () => ({ unavailable: 'x' }) }), null), /Pull requests: review record damaged 1 \(#478\)/);
+});

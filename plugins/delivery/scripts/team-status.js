@@ -80,20 +80,19 @@ function gateStatus(projectRoot, team, { now, storyBeads, checkBeads, budget, bu
 // Pull requests by where they stand in review (R-32). With gh (the product repository known) the open
 // ones are read live: a moved head needs review again, a red build is failing; without it, a passing
 // review is only "review passed" (the merge gate is not known).
-const PR_BUCKETS = [['waiting for review', ['waiting', 'stale']], ['review passed', ['passed']], ['ready to merge', ['ready']], ['changes requested', ['changes']], ['build failing', ['failing']], ['sent back', ['sent-back']]];
+const PR_BUCKETS = [['waiting for review', ['waiting', 'stale']], ['review passed', ['passed']], ['ready to merge', ['ready']], ['changes requested', ['changes']], ['build failing', ['failing']], ['sent back', ['sent-back']], ['review record damaged', []]];
 function reviewStatus(projectRoot, { team, gh } = {}) {
   const R = require('./lib/reviews.js');
+  const P = require('./lib/gh-pr.js');
+  const liveRepo = P.productRepoOf(team);
   let live = gh || null;
-  if (!live) {
-    const P = require('./lib/gh-pr.js');
-    const repo = P.productRepoOf(team);
-    if (repo) live = (pr) => P.viewPr(pr, { repo, cwd: projectRoot });
-  }
+  if (!live && liveRepo) live = (pr) => P.viewPr(pr, { repo: liveRepo, cwd: projectRoot });
   const out = Object.fromEntries(PR_BUCKETS.map(([name]) => [name, []]));
   for (const pr of R.listPrs(projectRoot)) {
-    const { rows } = R.read(projectRoot, pr);
+    const { rows, problem } = R.read(projectRoot, pr);
+    if (problem) { out['review record damaged'].push(pr); continue; }
     if (rows.some((r) => r.type === 'merged')) continue;
-    const s = R.stateOf(rows, live ? live(pr) : null);
+    const s = R.stateOf(rows, live ? live(pr) : null, { botsCount: Boolean(team && team.review && team.review.bots_count === true), repo: liveRepo });
     const bucket = PR_BUCKETS.find(([, states]) => states.includes(s));
     if (bucket) out[bucket[0]].push(pr);
   }

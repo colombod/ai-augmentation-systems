@@ -74,7 +74,8 @@ function ghPrCalls(command) {
     for (let i = k + 1; i < t.length; i++) {
       const x = t[i];
       const long = x.startsWith('--');
-      const [f, inline] = long ? x.split(/=(.*)/s) : [x, undefined];
+      // the value after = is dropped for short options too: -a=true is -a (Copilot 183)
+      const [f, inline] = x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
       if (VALUE_FLAGS.includes(f)) {
         const val = inline !== undefined ? inline : t[++i];
         if (f === '-R' || f === '--repo') repo = val;
@@ -87,8 +88,10 @@ function ghPrCalls(command) {
     if (words[0] !== 'pr') continue;
     const target = words[2] || '';
     const m = /^(\d+)$/.exec(target) || /\/pull\/(\d+)(?:[/?#].*)?$/.exec(target);
-    const urlRepo = /github\.com\//.test(target) ? repoOf(target) : null;
-    out.push({ sub: words[1], pr: m ? m[1] : null, target, head, flags, repo: urlRepo || repo, repoConflict: !!(urlRepo && repo && !sameRepo(urlRepo, repo)) });
+    const isUrl = /^[a-z]+:\/\//i.test(target) || target.includes('@');
+    const urlRepo = isUrl ? repoOf(target) : null;
+    // a URL that is not a github.com pull request names no repository the gate can trust
+    out.push({ sub: words[1], pr: m ? m[1] : null, target, head, flags, repo: isUrl ? urlRepo : repo, repoConflict: !!(isUrl && (!urlRepo || (repo && !sameRepo(urlRepo, repo)))) });
   }
   return out;
 }
@@ -175,7 +178,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     if (!head) return { code: 2, out: `merge-gate.js: gh cannot read PR ${pr} (${view.unavailable}); name the merged head: merge-gate.js merged ${pr} --head <sha>` };
     // a merge without a passing review on its head (outside the gate) is recorded, and is a warning
     const v = R.evaluate(pr, rows, { head, ci: { state: 'green', names: [] }, mergeable: null, botsCount: botsCountOf(who.team), repo });
-    row = R.append(who.root, pr, { type: 'merged', repo, head, beads: req ? req.beads || [] : [], gated: v.ok, by: who.roleId, actor: who.actor || who.instance, at });
+    row = R.append(who.root, pr, { type: 'merged', repo, head, beads: req ? req.beads || [] : [], gated: v.ok, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
     out.push(`${row.id}: PR ${pr} merged at ${R.short(head)}`);
     if (!v.ok) {
       const w = require('./lib/warnings.js').record(who.root, { kind: 'merge-ungated', rule: 'R-32', bead: (req && req.beads && req.beads[0]) || null, detail: `PR ${pr} merged at ${R.short(head)} without a passing review of that head: ${v.why}`, raisedBy: who.instance, instance: who.instance });

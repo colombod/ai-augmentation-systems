@@ -58,7 +58,7 @@ test('R-32: the author never reviews: not as the requested reviewer, not from it
   assert.match(h.pass('delivery-lead').out, /does not review its own merge/);
   assert.equal(R.read(h.root, '478').rows.filter((r) => r.type === 'review').length, 0, 'nothing recorded');
   // the records are protected: no hand-written pass row, from any lane
-  const file = path.join(h.root, R.REL, '478.ndjson');
+  const file = path.join(h.root, R.REL, '478', 'builder-1.ndjson');
   assert.match(h.bash('builder-1', `echo '{"type":"review","result":"pass"}' >> ${file}`, { run: false }).deny, /written only by `review\.js`/);
   assert.match(h.tool('delivery-lead', 'Write', { file_path: file, content: '{}' }).deny, /written only by `review\.js`/);
   assert.match(h.bash('product-manager', `cp /dev/null ${file}`, { run: false }).deny || '', /written only by `review\.js`|may not run/);
@@ -95,7 +95,7 @@ test('R-32: "changes" blocks until a newer pass on the head; CI red blocks; a Co
   h.setPr(478, (p) => { p.statusCheckRollup = [{ __typename: 'CheckRun', name: 'e2e', status: 'IN_PROGRESS' }]; });
   assert.match(h.gate('delivery-lead', 'check 478').out, /CI is still running/);
   h.setPr(478, (p) => { p.statusCheckRollup = GREEN; });
-  assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6: review rv-478-\d+ by agent-7f3a, CI green/);
+  assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6: review rv-478-\S+ by agent-7f3a, CI green/);
 });
 
 test('R-32: a conflict goes back to its owner (bead note and message); after the fix only a new review counts', () => {
@@ -139,17 +139,17 @@ test('R-32 R-12: the normal path: request, a pass on the current head, CI green,
   const h = setup();
   const gh = (pr) => ({ number: Number(pr), state: 'OPEN', ...h.gh()[pr] });
   const status = () => require('./team-status.js').renderStatus(require('./team-status.js').teamStatus(h.root, { bdCheck: () => false, gh }), null);
-  assert.match(h.review('delivery-lead', 'request 478 --reviewer builder-2').out, /rv-478-1: review of PR 478 at a1b2c3d4e5f6 requested from builder-2/);
+  assert.match(h.review('delivery-lead', 'request 478 --reviewer builder-2').out, /rv-478-delivery-lead-1: review of PR 478 at a1b2c3d4e5f6 requested from builder-2/);
   assert.match(status(), /Pull requests: waiting for review 1 \(#478\)\n/);
   assert.match(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /^The change "Import a collection" is waiting for review$/);
-  assert.match(h.pass('builder-2').out, /rv-478-2: pass by builder-2 on a1b2c3d4e5f6 \(independent\)/);
+  assert.match(h.pass('builder-2').out, /rv-478-builder-2-1: pass by builder-2 on a1b2c3d4e5f6 \(independent\)/);
   assert.match(status(), /ready to merge 1 \(#478\)/);
   assert.match(h.merge('delivery-lead', '478 --squash').deny, /name the reviewed head, so GitHub merges exactly that commit\.\nRun: `gh pr merge 478 -R example\/example --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 --squash`$/);
   const m = h.merge('delivery-lead', `478 --match-head-commit ${H1} --squash`);
   assert.equal(m.deny, null, m.deny);
   assert.match(m.out, /Merged pull request #478/);
   const done = h.gate('delivery-lead', 'merged 478');
-  assert.match(done.out, /rv-478-3: PR 478 merged at a1b2c3d4e5f6\nex-vault-0n9-3: merged \(478\), not verified/);
+  assert.match(done.out, /rv-478-delivery-lead-2: PR 478 merged at a1b2c3d4e5f6\nex-vault-0n9-3: merged \(478\), not verified/);
   assert.ok(h.db().issues[BEAD].labels.includes('state-merged'));
   assert.equal(h.db().issues[BEAD].metadata.merged_pr, '478');
   assert.match(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /^The change "Import a collection" is reviewed and merged; checking it on the customer's app next$/);
@@ -178,7 +178,7 @@ test('R-32 without gh: the head comes from the merge command and CI from the Del
   assert.match(problem('gh pr merge --squash'), /needs the pull request's number/);
   assert.equal(problem('gh pr view 478 && git status'), null, 'only merges are gated');
   // a tampered record stops the gate
-  const file = R.fileOf(root, '478');
+  const file = R.fileOf(root, '478', 'delivery-lead');
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"summary":"ok"', '"summary":"ok, edited"'));
   assert.match(problem(`gh pr merge 478 -R example/example --match-head-commit ${H1}`), /breaks PR 478's review chain/);
 });

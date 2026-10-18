@@ -594,13 +594,17 @@ owner and is reviewed again; gates block only on authority or serious divergence
 
 - **The product repository.** Sessions run in the project (planning) checkout, so gh is always given
   the product repository: `team.json` `product_github` (`owner/name`), which `start.js --product-repo`
-  records from the product checkout's origin (or a role's own product worktree's origin). Without it,
+  records from the product checkout's origin when it is on `github.com` (or a role's own product
+  worktree's origin; no other host is read as GitHub). Without it,
   `review.js request`, `merge-gate.js check` and the Delivery Manager's merge are refused. The legacy
   `product_repo` field is still not read.
-- **Review records.** `.delivery/reviews/prs/<pr>.ndjson`, one file per pull request of that
-  repository (each request row names it, and the gate refuses records made for another), append-only
-  and chained like the evidence rows (`seq`, `prev`), written only by `review.js` and `merge-gate.js`.
-  Rows: `request`, `review`, `ci`, `sent-back`, `merged`. `node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js
+- **Review records.** `.delivery/reviews/prs/<pr>/<writer>.ndjson`: one chain per pull request and
+  per session that writes (the Delivery Manager, each reviewer session), append-only and chained like
+  the evidence rows (`n`, `prev`), written only by `review.js` and `merge-gate.js`. Sessions on
+  different hosts each append to their own file, so their checkouts merge in git without forking a
+  chain; a reader merges every chain of the pull request in time order (clocks are trusted to be
+  roughly right). Every row names the product repository, and rows recorded for another repository
+  never count, for the gate or for status. Rows: `request`, `review`, `ci`, `sent-back`, `merged`. `node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js
   show <pr>` and `review.js list [--plain] [--json]` read them.
 - **Who authored it.** A GitHub fact, not the body a builder wrote: the pull request's head branch,
   `team/<builder instance>` (the worktree branch prepare-role gives each builder). Every bead its
@@ -654,7 +658,9 @@ owner and is reviewed again; gates block only on authority or serious divergence
   The figure is a goal field: it changes only on the owner's Yes in the question box (`goal.js ask
   pr_size_lines <n>`, then `goal.js set`).
 - **Status.** `team-status.js` groups the open pull requests: waiting for review, review passed,
-  ready to merge, changes requested, build failing, sent back. With gh it reads each open one live: a
+  ready to merge, changes requested, build failing, sent back, review record damaged (a broken chain
+  is reported as such, never as its readable rows). Bots count for status exactly as for the gate
+  (`review.bots_count`). With gh it reads each open one live: a
   head that moved since the last request means "needs review again", red checks "build failing", and
   only green checks with a mergeable pull request "ready to merge"; without gh a passing review is
   "review passed", the gate not known. The head is the latest requested one, so a late review of an

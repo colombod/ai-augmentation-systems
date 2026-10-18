@@ -101,12 +101,12 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   const store = () => bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 });
   const repo = productRepoOf(who.team, { roleDir: who.roleDir });
 
-  if (sub === 'list') return list(who.root, a, repo ? ghFor(who, gh, repo) : null);
+  if (sub === 'list') return list(who.root, a, repo ? ghFor(who, gh, repo) : null, { botsCount: Boolean(who.team && who.team.review && who.team.review.bots_count === true), repo });
   if (!pr || !R.PR.test(pr)) return { code: 2, out: USAGE };
   const { rows, problem } = R.read(who.root, pr);
   if (sub === 'show') return { code: 0, out: rows.map((r) => JSON.stringify(r)).join('\n') + (problem ? `\nwarning: ${problem}` : '') || `no review records for PR ${pr}` };
-  if (problem) return refuse(problem, `Restore it from git: \`git log -p -- ${R.REL}/${pr}.ndjson\``);
-  const base = { by: who.roleId, actor: who.actor || who.instance, at };
+  if (problem) return refuse(problem, `Restore it from git: \`git log -p -- ${R.REL}/${pr}/\``);
+  const base = { repo, by: who.roleId, actor: who.actor || who.instance, at };
   const team = instancesOf(who);
 
   if (sub === 'request') {
@@ -132,7 +132,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     const warnings = R.scopeWarnings({ pr, lines, stories, threshold: sizeThreshold(who.root) });
     const story = got.beads.find((b) => stories.includes(b.id));
     const session = team.some((i) => R.norm(i.instance) === R.norm(a.reviewer));
-    const row = R.append(who.root, pr, { type: 'request', repo, head, branch: branch || null, owner: bound.owner, reviewer: a.reviewer, session, beads: ids, stories, authors, title: (story && story.title) || view.title || null, lines: Number.isFinite(lines) ? lines : null, ...base });
+    const row = R.append(who.root, pr, { type: 'request', head, branch: branch || null, owner: bound.owner, reviewer: a.reviewer, session, beads: ids, stories, authors, title: (story && story.title) || view.title || null, lines: Number.isFinite(lines) ? lines : null, ...base }, who.instance);
     const warned = warnings.map((w) => { const x = W.record(who.root, { ...w, bead: stories[0], raisedBy: who.instance, instance: who.instance }); return `warning ${x ? x.id : 'unrecorded'}: ${w.detail}`; });
     return { code: 0, row, out: [`${row.id}: review of PR ${pr} at ${R.short(head)} requested from ${a.reviewer}`, ...warned, ...reviewerBrief(pr, head, row)].join('\n') };
   }
@@ -157,7 +157,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     let note = '';
     const view = repo ? ghFor(who, gh, repo)(pr) : null;
     if (view && view.headRefOid && !G.shaMatch(view.headRefOid, a.head)) note = `\nnote: PR ${pr} is now at ${R.short(view.headRefOid)}, so this review of ${R.short(a.head)} will not count for the merge: review ${R.short(view.headRefOid)}`;
-    const row = R.append(who.root, pr, { type: 'review', head: a.head, result: a.result, reviewer: by, kind, summary: String(a.summary).slice(0, 500), ...(a.findings ? { findings: a.findings } : {}), recorded_by: who.instance, ...base });
+    const row = R.append(who.root, pr, { type: 'review', head: a.head, result: a.result, reviewer: by, kind, summary: String(a.summary).slice(0, 500), ...(a.findings ? { findings: a.findings } : {}), recorded_by: who.instance, ...base }, who.instance);
     const next = a.result === 'pass' ? `Next: ${R.cmd('merge-gate.js', `check ${pr}`)}` : `Next: ${R.cmd('review.js', `send-back ${pr} --reason changes --note '<the findings>'`)}`;
     return { code: 0, row, out: `${row.id}: ${a.result} by ${by} on ${R.short(a.head)} (${kind}${kind === 'advisory' ? ': does not satisfy the gate alone' : ''})${note}\n${next}` };
   }
@@ -166,7 +166,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     const wp = writerProblem(who, [DM]);
     if (wp) return refuse(wp.replace(/\.$/, ''));
     if (!a.head || !R.SHA.test(a.head) || !['pass', 'fail'].includes(a.result) || !a.run) return { code: 2, out: USAGE };
-    const row = R.append(who.root, pr, { type: 'ci', head: a.head, result: a.result, run: a.run, ...base });
+    const row = R.append(who.root, pr, { type: 'ci', head: a.head, result: a.result, run: a.run, ...base }, who.instance);
     return { code: 0, row, out: `${row.id}: CI ${a.result} on ${R.short(a.head)} (${a.run})` };
   }
 
@@ -180,7 +180,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     const head = (view && view.headRefOid) || [...rows].reverse().find((r) => r.head).head;
     const owners = req.owner ? [req.owner] : [...new Set((req.authors || []).map(R.norm))];
     const what = { conflict: 'it has conflicts with the default branch: merge or rebase the default branch into your branch and resolve them', changes: 'the review asked for changes', ci: 'CI is red' }[a.reason] || a.reason;
-    const row = R.append(who.root, pr, { type: 'sent-back', head, reason: a.reason, note: a.note || null, owners, ...base });
+    const row = R.append(who.root, pr, { type: 'sent-back', head, reason: a.reason, note: a.note || null, owners, ...base }, who.instance);
     const text = `${at.slice(0, 10)}: PR ${pr} sent back at ${R.short(head)}: ${what}${a.note ? ` (${a.note})` : ''}; a new review is needed after the fix (${row.id})`;
     for (const id of req.beads || []) { try { store().update(id, { appendNotes: text }); } catch (err) { /* the row and the message still stand */ } }
     return { code: 0, row, out: `${row.id}: PR ${pr} sent back to ${owners.join(', ') || 'its owner'}; noted in ${(req.beads || []).join(', ')}\nMessage ${owners.join(', ') || 'the owner'}: "PR ${pr}: ${what}${a.note ? `: ${a.note}` : ''}. Fix it on your branch, push, and tell me; I will ask for a new review."` };
@@ -188,7 +188,14 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   return { code: 2, out: USAGE };
 }
 
+// the raw text of a pull request's chains (for the title of a damaged record)
+function fsRead(root, pr) {
+  const fs = require('fs');
+  try { return fs.readdirSync(R.dirOf(root, pr)).filter((f) => f.endsWith('.ndjson')).map((f) => fs.readFileSync(require('path').join(R.dirOf(root, pr), f), 'utf8')).join('\n'); } catch (err) { return ''; }
+}
+
 const PLAIN = {
+  damaged: (t) => `${t} has a damaged review record; the Delivery Manager restores it before anything merges`,
   waiting: (t) => `${t} is waiting for review`,
   stale: (t) => `${t} changed after its review and needs review again`,
   changes: (t) => `${t} has changes requested by its reviewer`,
@@ -200,19 +207,24 @@ const PLAIN = {
 };
 
 // where each pull request stands; with gh (live) the head and the checks are read for the open ones
-function list(root, a, live) {
+function list(root, a, live, { botsCount = false, repo } = {}) {
   const out = R.listPrs(root).map((pr) => {
-    const { rows } = R.read(root, pr);
+    const { rows, problem } = R.read(root, pr);
+    // a broken chain is reported as such: its readable rows are not the record
+    if (problem) {
+      const req = [...String(fsRead(root, pr)).matchAll(/"title":"((?:[^"\\]|\\.)*)"/g)].map((m) => JSON.parse(`"${m[1]}"`)).pop();
+      return { pr: Number(pr), state: 'damaged', problem, title: req || null };
+    }
     const req = R.lastRequest(rows);
     const merged = rows.some((r) => r.type === 'merged');
     const view = live && !merged ? live(pr) : null;
-    return { pr: Number(pr), state: R.stateOf(rows, view), title: req && req.title, reviewer: req && req.reviewer };
+    return { pr: Number(pr), state: R.stateOf(rows, view, { botsCount, repo }), title: req && req.title, reviewer: req && req.reviewer };
   });
   if (a.json) return { code: 0, out: JSON.stringify(out) };
   if (!out.length) return { code: 0, out: 'No pull requests under review.' };
   // the Chief of Staff's wording: the change in plain words, never a bead or pull request number
   if (a.plain) return { code: 0, out: out.map((p) => PLAIN[p.state](p.title ? `The change "${p.title}"` : 'A change')).join('\n') };
-  return { code: 0, out: out.map((p) => `PR ${p.pr}: ${p.state}${p.reviewer ? ` (reviewer ${p.reviewer})` : ''}${p.title ? ` ${p.title}` : ''}`).join('\n') };
+  return { code: 0, out: out.map((p) => `PR ${p.pr}: ${p.state}${p.problem ? ` (${p.problem})` : ''}${p.reviewer ? ` (reviewer ${p.reviewer})` : ''}${p.title ? ` ${p.title}` : ''}`).join('\n') };
 }
 
 if (require.main === module) {

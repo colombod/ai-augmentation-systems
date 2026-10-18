@@ -13,7 +13,8 @@ const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 // owner/name from a GitHub remote URL (git@github.com:o/r.git, https://github.com/o/r, a PR URL)
 function repoOf(url) {
-  const m = /github\.com[:/]+([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:\/pull\/\d+.*)?\/?$/.exec(String(url || ''));
+  // the exact github.com host only: scp form, ssh:// or https:// (optionally with a user), nothing else
+  const m = /^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https?:\/\/(?:[^@/\s]+@)?github\.com\/)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/pull\/\d+(?:[/?#].*)?)?\/?$/.exec(String(url || '').trim());
   return m ? `${m[1]}/${m[2]}` : null;
 }
 

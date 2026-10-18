@@ -28,47 +28,84 @@ const sha12 = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0
 const ROOT_CMD = 'node ${CLAUDE_PLUGIN_ROOT}/scripts';
 const cmd = (script, args) => `\`${ROOT_CMD}/${script} ${args}\``;
 
-const fileOf = (root, pr) => path.join(root, REL, `${pr}.ndjson`);
-const isBot = (id) => BOT.test(String(id || ''));
+// One chain per writer (the session that ran the script), .delivery/reviews/prs/<pr>/<writer>.ndjson:
+// sessions on different hosts each append to their own file, so their checkouts merge in git without
+// forking a chain (as the operator store and the warnings ledger do). A reader merges every chain of a
+// pull request in time order and numbers the rows in that order (seq); each file's own `n` and `prev`
+// keep it tamper-evident. A file name that is not an instance id is still read (a copy from another host).
+const WRITER = /^[a-z0-9][a-z0-9-]*$/;
+const writerOf = (w) => (WRITER.test(String(w || '')) ? String(w) : 'local');
+const dirOf = (root, pr) => path.join(root, REL, String(pr));
+const fileOf = (root, pr, writer) => path.join(dirOf(root, pr), `${writerOf(writer)}.ndjson`);
+
 const instanceOf = (actor) => String(actor || '').split('/').pop();
 // one identity, whatever its form: Builder-1, dev@pc/builder-1, builder-1@pc and the Delivery Manager alias
 function norm(id) {
   const s = String(id || '').trim().toLowerCase().split('/').pop().replace(/@.*$/, '').replace(/_/g, '-').replace(/[.,;:!?)\]'"`]+$/, '');
   return s.replace(/^delivery-manager(?=$|-\d+$)/, 'delivery-lead');
 }
+// a bot under any of its names (dev@pc/copilot, scan-bot@pc) stays a bot
+const isBot = (id) => BOT.test(String(id || '').trim()) || BOT.test(norm(id));
 const branchOwner = (ref) => { const m = BRANCH.exec(String(ref || '')); return m ? m[1].toLowerCase() : null; };
 
-// { rows, problem }: a line that breaks the chain stops the read, and the gate refuses on it
-function read(root, pr) {
+
+function readChain(file, pr) {
   let text = '';
-  try { text = fs.readFileSync(fileOf(root, pr), 'utf8'); } catch (err) { return { rows: [], problem: null }; }
+  try { text = fs.readFileSync(file, 'utf8'); } catch (err) { return { rows: [], problem: null }; }
   const rows = [];
   let prev = 'start';
+  const name = path.basename(file);
   for (const line of text.split('\n').filter((l) => l.trim())) {
     let r;
-    try { r = JSON.parse(line); } catch (err) { return { rows, problem: `line ${rows.length + 1} of PR ${pr}'s review record is not a row` }; }
-    if (r.seq !== rows.length + 1 || r.prev !== prev) return { rows, problem: `row ${r.id || rows.length + 1} breaks PR ${pr}'s review chain (edited or deleted line)` };
+    try { r = JSON.parse(line); } catch (err) { return { rows, problem: `line ${rows.length + 1} of PR ${pr}'s review chain ${name} is not a row` }; }
+    if (!r || r.n !== rows.length + 1 || r.prev !== prev) return { rows, problem: `row ${(r && r.id) || rows.length + 1} breaks PR ${pr}'s review chain ${name} (edited or deleted line)` };
     rows.push(r);
     prev = sha12(line);
   }
   return { rows, problem: null };
 }
 
-function append(root, pr, row) {
-  const file = fileOf(root, pr);
+// { rows, problem }: every chain of the pull request merged in time order; a broken chain is a problem
+// (the gate refuses on it, and status reports it), never a shorter history
+function read(root, pr) {
+  let files = [];
+  try { files = fs.readdirSync(dirOf(root, pr)).filter((f) => f.endsWith('.ndjson')).sort(); } catch (err) { return { rows: [], problem: null }; }
+  const chains = [];
+  for (const f of files) {
+    const c = readChain(path.join(dirOf(root, pr), f), pr);
+    if (c.problem) return { rows: [], problem: c.problem };
+    chains.push(c.rows);
+  }
+  // k-way merge by time: each chain keeps its own order
+  const out = [];
+  const at = chains.map(() => 0);
+  for (;;) {
+    let best = -1;
+    for (let c = 0; c < chains.length; c++) {
+      const r = chains[c][at[c]];
+      if (r && (best < 0 || String(r.at) < String(chains[best][at[best]].at))) best = c;
+    }
+    if (best < 0) break;
+    out.push({ ...chains[best][at[best]++], seq: out.length + 1 });
+  }
+  return { rows: out, problem: null };
+}
+
+function append(root, pr, row, writer) {
+  const file = fileOf(root, pr, writer);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   return withLock(`${file}.lock`, () => {
     let lines = [];
     try { lines = fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim()); } catch (err) { lines = []; }
-    const seq = lines.length + 1;
-    const full = { id: `rv-${pr}-${seq}`, pr: Number(pr), seq, prev: lines.length ? sha12(lines[lines.length - 1]) : 'start', ...row };
+    const n = lines.length + 1;
+    const full = { id: `rv-${pr}-${writerOf(writer)}-${n}`, pr: Number(pr), n, prev: lines.length ? sha12(lines[lines.length - 1]) : 'start', ...row };
     fs.appendFileSync(file, `${JSON.stringify(full)}\n`);
     return full;
   }, { strict: true, waitMs: 2000 });
 }
 
 function listPrs(root) {
-  try { return fs.readdirSync(path.join(root, REL)).map((f) => /^(\d+)\.ndjson$/.exec(f)).filter(Boolean).map((m) => m[1]).sort((a, b) => a - b); } catch (err) { return []; }
+  try { return fs.readdirSync(path.join(root, REL)).filter((f) => /^\d+$/.test(f)).sort((a, b) => a - b); } catch (err) { return []; }
 }
 
 // `Refs <bead>` lines in a pull request body (the builder brief's form; "Refs: <id>" too)
@@ -134,20 +171,25 @@ const cutOf = (rows) => rows.reduce((n, r) => (r.type === 'sent-back' ? r.seq : 
 
 // The merge gate's rule. ctx: { head, ci: { state, names } | null (gh not readable), mergeable, botsCount }.
 // { ok, review, why, fix } — why and fix are the two lines of a refusal.
-function evaluate(pr, rows, { head, ci, mergeable, botsCount = false, problem, repo } = {}) {
+// rows recorded for another repository never count (a changed product_github, a fork's equal heads)
+const ofRepo = (rows, repo) => (repo ? rows.filter((r) => r.repo && String(r.repo).toLowerCase() === String(repo).toLowerCase()) : rows);
+const counter = (botsCount) => (r) => r.kind === 'independent' || (botsCount && r.kind === 'advisory');
+
+function evaluate(pr, allRows, { head, ci, mergeable, botsCount = false, problem, repo } = {}) {
+  const rows = ofRepo(allRows, repo);
   const req = lastRequest(rows);
+  const R_ = repo ? ` -R ${repo}` : '';
   const reviewer = req ? req.reviewer : '<reviewer>';
   const again = cmd('review.js', `request ${pr} --reviewer ${reviewer}`);
   const sendBack = (reason) => cmd('review.js', `send-back ${pr} --reason ${reason}`);
-  if (problem) return { ok: false, why: problem, fix: `Restore the record from git (\`git log -p -- ${REL}/${pr}.ndjson\`) or ask for a fresh review: ${again}` };
+  if (problem) return { ok: false, why: problem, fix: `Restore the record from git (\`git log -p -- ${REL}/${pr}/\`) or ask for a fresh review: ${again}` };
   if (!head) return { ok: false, why: `PR ${pr}'s current head is not known (gh could not read it)`, fix: `Name it: \`gh pr merge ${pr}${repo ? ` -R ${repo}` : ''} --match-head-commit <full head sha>\`` };
-  if (req && req.repo && repo && req.repo.toLowerCase() !== repo.toLowerCase()) return { ok: false, why: `PR ${pr}'s review records are for ${req.repo}, not ${repo}`, fix: `Ask for a review in ${repo}: ${again}` };
   if (String(mergeable || '').toUpperCase() === 'UNKNOWN') return { ok: false, why: `GitHub is still computing whether PR ${pr} merges cleanly; try again in a minute`, fix: `Then: ${cmd('merge-gate.js', `check ${pr}`)}` };
   if (String(mergeable || '').toUpperCase() === 'CONFLICTING') return { ok: false, why: `PR ${pr} has conflicts with its base: its owner resolves them, never the Delivery Manager`, fix: `Send it back: ${sendBack('conflict')}; once the owner pushes the fix, ask for review again` };
   const cut = cutOf(rows);
   const live = rows.filter((r) => r.type === 'review' && r.seq > cut);
   const onHead = live.filter((r) => G.shaMatch(r.head, head));
-  const counts = (r) => r.kind === 'independent' || (botsCount && r.kind === 'advisory');
+  const counts = counter(botsCount);
   const pass = [...onHead].reverse().find((r) => counts(r) && r.result === 'pass');
   const changes = [...onHead].reverse().find((r) => counts(r) && r.result === 'changes');
   if (changes && (!pass || changes.seq > pass.seq)) return { ok: false, why: `review ${changes.id} by ${changes.reviewer} asked for changes on ${short(head)}: ${String(changes.summary || '').slice(0, 120)}`, fix: `Send it back to its owner: ${sendBack('changes')}; after the fix, ask for review again: ${again}` };
@@ -166,7 +208,7 @@ function evaluate(pr, rows, { head, ci, mergeable, botsCount = false, problem, r
     ciState = row ? { state: row.result === 'pass' ? 'green' : 'red', names: row.result === 'pass' ? [] : [row.run || 'recorded run'], row: row.id } : null;
   }
   if (!ciState) return { ok: false, why: `no CI result for ${short(head)}${ci ? ' (the pull request reports no checks)' : ' (gh could not read the checks)'}`, fix: `Record the run: ${cmd('review.js', `ci ${pr} --head ${head} --result pass|fail --run <run id or URL>`)}` };
-  if (ciState.state === 'pending') return { ok: false, why: `CI is still running on ${short(head)} (${ciState.names.slice(0, 3).join(', ')})`, fix: `Wait for it: \`gh pr checks ${pr} --watch\`, then ${cmd('merge-gate.js', `check ${pr}`)}` };
+  if (ciState.state === 'pending') return { ok: false, why: `CI is still running on ${short(head)} (${ciState.names.slice(0, 3).join(', ')})`, fix: `Wait for it: \`gh pr checks ${pr}${R_} --watch\`, then ${cmd('merge-gate.js', `check ${pr}`)}` };
   if (ciState.state !== 'green') return { ok: false, why: `CI is red on ${short(head)} (${ciState.names.slice(0, 3).join(', ')})`, fix: `Send it back to its owner: ${sendBack('ci')}; after the fix, ask for review again` };
   return { ok: true, review: pass, ci: ciState };
 }
@@ -175,7 +217,8 @@ const short = (s) => String(s || '').slice(0, 12);
 // Where a pull request stands. From the rows alone the head is the latest requested one (a late review
 // of an older head never makes it ready), and a passing review is only "passed": the gate is not
 // known. With live gh facts (view): the head moved ("stale"), the build failing, or ready to merge.
-function stateOf(rows, live) {
+function stateOf(allRows, live, { botsCount = false, repo } = {}) {
+  const rows = ofRepo(allRows, repo);
   if (rows.some((r) => r.type === 'merged')) return 'merged';
   const cut = cutOf(rows);
   const last = [...rows].reverse().find((r) => ['request', 'review', 'sent-back'].includes(r.type));
@@ -186,10 +229,12 @@ function stateOf(rows, live) {
   if (view && req && !G.shaMatch(view.headRefOid, req.head)) return 'stale';
   const head = view ? view.headRefOid : req && req.head;
   if (!head) return 'waiting';
-  const onHead = rows.filter((r) => r.type === 'review' && r.seq > cut && r.kind === 'independent' && G.shaMatch(r.head, head));
-  const latest = onHead[onHead.length - 1];
-  if (!latest) return 'waiting';
-  if (latest.result === 'changes') return 'changes';
+  const counts = counter(botsCount);
+  const onHead = rows.filter((r) => r.type === 'review' && r.seq > cut && counts(r) && G.shaMatch(r.head, head));
+  const pass = [...onHead].reverse().find((r) => r.result === 'pass');
+  const changes = [...onHead].reverse().find((r) => r.result === 'changes');
+  if (changes && (!pass || changes.seq > pass.seq)) return 'changes';
+  if (!pass) return 'waiting';
   let ci = view ? ciOf(view.statusCheckRollup) : { state: 'none' };
   if (ci.state === 'none') {
     const row = [...rows].reverse().find((r) => r.type === 'ci' && r.seq > cut && G.shaMatch(r.head, head));
@@ -199,4 +244,4 @@ function stateOf(rows, live) {
   return view && ci.state === 'green' && String(view.mergeable || '').toUpperCase() === 'MERGEABLE' ? 'ready' : 'passed';
 }
 
-module.exports = { norm, branchOwner, BRANCH, FULL_SHA, REL, PR, SHA, DEFAULT_SIZE, fileOf, read, append, listPrs, refsOf, storiesOf, authorsOfBeads, isAuthor, isBot, instanceOf, changedLines, scopeWarnings, ciOf, evaluate, lastRequest, stateOf, cmd, short };
+module.exports = { WRITER, writerOf, dirOf, norm, branchOwner, BRANCH, FULL_SHA, REL, PR, SHA, DEFAULT_SIZE, fileOf, read, append, listPrs, refsOf, storiesOf, authorsOfBeads, isAuthor, isBot, instanceOf, changedLines, scopeWarnings, ciOf, evaluate, lastRequest, stateOf, cmd, short };
