@@ -73,7 +73,9 @@ function ownerRecord(root, id, verifyRecord) {
   if (notOwner) return { ok: false, why: `${id} rests on a ${notOwner.source || 'unknown'} message, not the owner's words` };
   const head = chain[0] || {};
   const labels = (head.scope && head.scope.labels) || [];
-  return { ok: true, head, text: [head.quote, head.statement, head.kind === 'input' ? head.text : null, inputs[0].text].filter(Boolean).join(' '), goal: labels.some((l) => /^goal:/.test(String(l))) };
+  // only the owner's own words: the verified quote and the captured input, never the statement or the
+  // scope the recording agent wrote (PR 54 re-review I-a)
+  return { ok: true, head, text: [head.quote, ...inputs.map((h) => h.text)].filter(Boolean).join(' '), goal: labels.some((l) => /^goal:/.test(String(l))) };
 }
 
 // recordOk(id) for the gates: a cut, waiver or reason must cite the owner's record, still verifying.

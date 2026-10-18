@@ -113,3 +113,11 @@ test('PR 54 m-5: the spend readings are not writable from any role lane, the bui
   assert.match(d('Bash', { command: 'rm -rf .delivery/usage' }).reason, /spend readings/);
   assert.equal(d('Bash', { command: 'cat .delivery/usage/transcripts.json' }).allow, true);
 });
+
+test('PR 54 I-b: the deadline holds inside one file\'s scan, not only between files', () => {
+  const f = path.join(tmp(), 'one.jsonl');
+  fs.writeFileSync(f, `${reply('a', '2026-10-12T10:00:00Z', { output_tokens: 1 })}\n`);
+  const r = U.scanFile(f, { deadline: Date.now() - 1 });
+  assert.deepEqual([r.done, r.msgs.length, r.offset], [false, 0, 0]);
+  assert.equal(U.scanFile(f).msgs.length, 1);
+});

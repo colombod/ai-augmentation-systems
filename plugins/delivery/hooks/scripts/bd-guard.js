@@ -1,6 +1,10 @@
 // hooks/scripts/bd-guard.js — the record stays honest: evidence on close, no claim-jumping,
 // structure only by the Delivery Manager.
-// A discipline aid, not a security boundary: a segment it cannot parse is allowed.
+// A discipline aid, not a security boundary. A bd call behind a wrapper (env, VAR=, command, an absolute
+// path, nice, timeout, exec, nohup, sh -c, eval, a subshell or a command substitution) is unwrapped and
+// checked like a plain one; a call the guard cannot read (xargs bd, find -exec bd, ...) is refused to
+// every role but the Delivery Manager and Product Manager. Known limit (cooperative trust): a program
+// that spawns bd itself (python, node) is not seen.
 const { splitCommand, tokens, splitBdGlobals } = require('./lane.js');
 const { isStoryBead } = require('../../scripts/lib/gates.js');
 
@@ -27,9 +31,50 @@ const LABEL_FLAGS = ['--add-label', '--remove-label', '--set-labels'];
 const CLAIM_FLAGS = ['--claim', '--assignee', '--status', '-a', '-s'];
 const STRUCTURE = 'structure belongs to the Delivery Manager.\nCreate a child bead under the bead you hold (`bd create --parent <id>`) or message the Delivery Manager.';
 
+const isBd = (w) => /(?:^|\/)bd(?:\.exe)?$/.test(String(w || ''));
+const WRAPPERS = new Set(['env', 'command', 'exec', 'nice', 'nohup', 'time', 'timeout', 'stdbuf', 'ionice', 'builtin', 'sudo']);
+const WRAPPER_VALUE_FLAGS = new Set(['-n', '-u', '-s', '-k', '-c', '-p', '-S', '-C', '--signal', '--kill-after', '--adjustment']);
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
+// commands that only mention bd as an argument or read about it
+const MENTIONS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'cat', 'less', 'head', 'tail', 'which', 'type', 'man', 'git', 'gh', 'wc', 'ls', 'true', 'test', 'whereis', 'hash']);
+const base = (w) => String(w || '').split('/').pop();
+
+// Each bd call in a command: { tokens } once wrappers are peeled, or { opaque, via } for one the guard
+// cannot read. Command substitutions and shell -c scripts are read recursively.
+function bdCalls(command, depth = 0) {
+  const out = [];
+  const text = String(command == null ? '' : command);
+  if (depth > 3) return /\bbd\b/.test(text) ? [{ opaque: text, via: 'nested shells' }] : [];
+  for (const m of text.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) out.push(...bdCalls(m[1] || m[2] || '', depth + 1));
+  for (const seg of splitCommand(text)) {
+    let t = tokens(seg);
+    if (!t.length) continue;
+    t = t.map((x, i) => (i === 0 ? x.replace(/^\$?\(+/, '') : x)).map((x, i, a) => (i === a.length - 1 ? x.replace(/\)+$/, '') : x)).filter((x) => x !== '');
+    // peel wrappers and environment assignments
+    for (let guard = 0; guard < 8 && t.length; guard++) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0])) { t = t.slice(1); continue; }
+      const w = base(t[0]);
+      if (!WRAPPERS.has(w)) break;
+      let i = 1;
+      while (i < t.length && (t[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]))) i += WRAPPER_VALUE_FLAGS.has(t[i]) ? 2 : 1;
+      if (w === 'timeout' && i < t.length) i++; // the duration
+      t = t.slice(i);
+    }
+    if (!t.length) continue;
+    const first = base(t[0]);
+    if (isBd(t[0])) { out.push({ tokens: ['bd', ...t.slice(1)] }); continue; }
+    if (SHELLS.has(first)) {
+      const c = t.findIndex((x, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(x));
+      if (c > 0 && t[c + 1] !== undefined) { out.push(...bdCalls(t[c + 1], depth + 1)); continue; }
+    }
+    if (first === 'eval') { out.push(...bdCalls(t.slice(1).join(' '), depth + 1)); continue; }
+    if (t.slice(1).some(isBd) && !MENTIONS.has(first)) out.push({ opaque: seg, via: first });
+  }
+  return out;
+}
+
 function parseBd(segment) {
-  const t = tokens(segment);
-  // `VAR=x bd ...` and `env bd ...` leave t[0] != 'bd': unparseable, so allowed.
+  const t = Array.isArray(segment) ? segment : tokens(segment);
   if (t[0] !== 'bd') return null;
   const { rest } = splitBdGlobals(t);
   if (!rest[0]) return null;
@@ -137,9 +182,15 @@ function gateFieldWrite(p, { labelRe = PROTECTED_LABEL, fields = GATE_FIELDS } =
   return null;
 }
 
+const UNREAD = (via) => `Refused: bd run through ${via} cannot be checked by the guard.\nRun bd directly so the guard can check it: \`bd <command>\`.`;
 function decideBd({ command, actor, roleId, staleHours, bd, now }) {
-  for (const seg of splitCommand(command)) {
-    const p = parseBd(seg);
+  for (const call of bdCalls(command)) {
+    if (call.opaque) {
+      if (!['delivery-lead', 'product-manager'].includes(roleId)) return { reason: UNREAD(call.via) };
+      continue;
+    }
+    const seg = call.tokens.join(' ');
+    const p = parseBd(call.tokens);
     if (!p) continue;
     if (roleId !== 'delivery-lead' && structural(p, actor, bd)) {
       return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: ${STRUCTURE}` };
@@ -279,8 +330,9 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
     if (bd && bd.spent) add(null, 'budget-spent', 'R-11', 'the hook ran out of time and skipped part of the gate checks (allowed, fail open)');
     return out;
   };
-  for (const seg of splitCommand(command)) {
-    const p = parseBd(seg);
+  for (const call of bdCalls(command)) {
+    if (call.opaque) continue;
+    const p = parseBd(call.tokens);
     if (!p) continue;
     const claiming = CLAIMING(p);
     const closing = CLOSES(p);
@@ -366,4 +418,4 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
   return finish();
 }
 
-module.exports = { parseBd, decideBd, staleHoursOf, gateChecks, budgeted };
+module.exports = { bdCalls, parseBd, decideBd, staleHoursOf, gateChecks, budgeted };

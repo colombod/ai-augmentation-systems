@@ -96,3 +96,82 @@ test('B-1: a peer agent\'s message is never the owner\'s record: evidence.js cut
   assert.equal(cut(w.ownerDefect).code, 0);
   assert.equal(G.stateOf(w.bd.show('ex-open')), 'cut');
 });
+
+// ---- PR 54 re-review ----
+const R = require('./lib/operator-records.js');
+const { reasonProblems } = require('./lib/short-reason.js');
+const { COS } = require('./testing/goal-fixture.js');
+
+test('B-a: a link written in the story file never makes a fix; only the bead\'s own metadata, set by the Delivery Manager or Product Manager, does', () => {
+  const w = world();
+  const b = w.bd.show('ex-fix');
+  const ctx = W.contextFor(w.t.root, { bd: w.bd, team: { roles: [] }, beads: [...w.bd.beads.values()], budget: { set: false } });
+  const viaFile = ctx.fixOf(b, { meta: { fixes: 'ex-signin' } });
+  assert.equal(viaFile.ok, false);
+  assert.match(viaFile.why, /no fixes link/);
+  assert.equal(ctx.fixOf(b, { meta: { finding: 'ex-sec-finding' } }).ok, false);
+});
+
+test('I-a and Copilot 853: only the owner\'s own words name the defect; a goal decision, the agent\'s statement or scope never do', () => {
+  const w = world();
+  const ok = (v) => w.link('ex-fix', 'fixes', v).ok;
+  // the owner said something else; the recording agent wrote the defect into the statement and scope
+  const said = w.t.say('please keep going with the plan for today');
+  const dressed = R.recordDecision({ projectRoot: w.t.root, cite: said, quote: 'please keep going with the plan for today', statement: 'owner reports the sign-in refresh race after deploys is broken', scope: { beads: ['ex-fix'], labels: [], initiatives: [] }, by: COS }).id;
+  assert.equal(ok(dressed), false, 'statement and scope are the agent\'s words');
+  // a goal decision whose words do name the defect is still not a defect report
+  const g = w.t.say('add the sign-in refresh deploys work to the scope');
+  const goal = R.recordDecision({ projectRoot: w.t.root, cite: g, quote: 'add the sign-in refresh deploys work to the scope', statement: 'scope', scope: { beads: [], labels: ['goal:scope_add=sign-in refresh'], initiatives: [] }, by: COS }).id;
+  assert.equal(ok(goal), false, 'a goal decision');
+  assert.equal(ok(w.ownerDefect), true, 'the owner\'s own report still counts');
+});
+
+test('I-b: a fix never names itself, fixes: names a story, evidence must match its recorded head, and a bead with both labels counts on either link', () => {
+  const w = world();
+  w.bd.beads.set('ex-self', bead('ex-self', { title: 'self', labels: ['story', 'bug', 'state-merged'], metadata: { fixes: 'ex-self' } }));
+  w.bd.beads.set('ex-task', { id: 'ex-task', title: 'task', status: 'closed', labels: ['state-merged'], metadata: {} });
+  w.bd.beads.set('ex-selfsec', { id: 'ex-selfsec', title: 'x', status: 'open', labels: ['security', 'finding'], metadata: { finding: 'ex-selfsec' } });
+  w.bd.beads.set('ex-both', { id: 'ex-both', title: 'Stop logging tokens', status: 'open', labels: ['bug', 'security'], metadata: { finding: '.delivery/reviews/architecture-01.md#R-architecture-3' } });
+  const ctx = W.contextFor(w.t.root, { bd: w.bd, team: { roles: [] }, beads: [...w.bd.beads.values()], budget: { set: false } });
+  assert.match(ctx.fixOf(w.bd.show('ex-self'), null).why, /itself/);
+  assert.match(ctx.fixOf(w.bd.show('ex-selfsec'), null).why, /itself/);
+  assert.match(w.link('ex-fix', 'fixes', 'ex-task').why, /not a story/);
+  const both = ctx.fixOf(w.bd.show('ex-both'), null);
+  assert.deepEqual([both.ok, both.kind], [true, 'security']);
+  // a failed row appended outside evidence.js (the bead's recorded head is older) does not count
+  G.appendEvidence(w.t.root, 'ex-signin', { type: 'row', criterion: 1, result: 'fail', by: 'delivery-lead', at: '2026-10-12T11:00:00Z' });
+  assert.equal(w.link('ex-fix', 'fixes', 'ev-ex-signin-3').ok, false);
+});
+
+test('B-b: a wrapped bd command is unwrapped and checked; one the guard cannot read is refused to everyone but the Delivery Manager and Product Manager', () => {
+  const me = 'me@pc/builder-1';
+  const bd = { show: () => ({ id: 'mine', status: 'in_progress', assignee: me, labels: ['story'], metadata: { story_file: 'a.md' } }) };
+  const run = (command, roleId = 'builder') => decideBd({ command, actor: me, roleId, staleHours: 2, bd });
+  for (const c of [
+    'env bd update mine --add-label security', 'env -i FOO=1 bd update mine --add-label state-verified', 'FOO=1 bd update mine --add-label security',
+    'command bd update mine --add-label security', '/opt/homebrew/bin/bd update mine --add-label security', 'nice -n 5 bd update mine --add-label security',
+    'timeout 5 bd update mine --add-label state-verified', 'exec bd update mine --add-label security', 'nohup bd update mine --add-label security',
+    'sh -c "bd update mine --add-label security"', "bash -lc 'bd update mine --add-label state-verified'", 'eval "bd update mine --add-label security"',
+    '(bd update mine --add-label security)', 'echo $(bd update mine --add-label security)', 'echo mine | xargs bd update --add-label security',
+  ]) {
+    const r = run(c);
+    assert.ok(r && /Refused|Run bd directly/.test(r.reason), c);
+    assert.deepEqual(reasonProblems(r.reason), [], `${c}: ${r.reason}`);
+  }
+  for (const c of ['env bd show mine', 'timeout 5 bd list', 'echo "bd is the tracker"', 'grep -n bd notes.md', "git commit -m 'bd update notes'", 'which bd']) assert.equal(run(c), null, c);
+  assert.equal(run('sh -c "bd update mine --add-label security"', 'delivery-lead'), null, 'the Delivery Manager may');
+  assert.equal(run('echo mine | xargs bd update --add-label bug', 'product-manager'), null, 'and the Product Manager');
+});
+
+test('I-a: review finding files are written by the Delivery Manager, Product Manager or Reality Checker only, so a builder cannot mint a finding id', () => {
+  const { decideLane, loadPolicy } = require('../hooks/scripts/lane.js');
+  const plugin = path.join(__dirname, '..');
+  const groups = JSON.parse(fs.readFileSync(path.join(plugin, 'hooks', 'lane-groups.json'), 'utf8'));
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-'));
+  const d = (role, toolName, toolInput) => decideLane({ toolName, toolInput, policy: loadPolicy({ pluginRoot: plugin, projectRoot: project, briefRef: `delivery/${role}` }), roleDir: fs.mkdtempSync(path.join(os.tmpdir(), 'rd-')), groups, pluginRoot: plugin, cwd: project, projectRoot: project, hostHeadless: false });
+  const file = path.join(project, '.delivery', 'reviews', 'architecture-01.md');
+  assert.match(d('builder', 'Write', { file_path: file }).reason, /review findings/);
+  assert.match(d('builder', 'Bash', { command: `echo '### R-x-1' >> ${file}` }).reason, /review findings/);
+  assert.equal(d('builder', 'Bash', { command: `cat ${file}` }).allow, true);
+  assert.ok(!/review findings/.test(d('delivery-lead', 'Write', { file_path: file }).reason || ''));
+});

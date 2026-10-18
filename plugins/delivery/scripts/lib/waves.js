@@ -84,32 +84,33 @@ function overlap(a, b) {
 // (bd-guard). The label alone is ordinary work.
 const STOP = new Set('after before every again from with this that when then them they their there have been into onto over under about fix fixes bug the and for'.split(' '));
 const words = (t) => new Set((String(t || '').toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) || []).filter((w) => w.length >= 4 && !STOP.has(w)).map((w) => w.replace(/s$/, '')));
-const namesBead = (r, b) => ((r.head.scope && r.head.scope.beads) || []).includes(b.id) || [...words(b.title)].filter((w) => words(r.text).has(w)).length >= 2;
+const namesBead = (r, b) => [...words(b.title)].filter((w) => words(r.text).has(w)).length >= 2;
 const EV_WRITERS = ['delivery-lead', 'reality-checker'];
 
-function fixLink(bead, story, { root, beadOf = () => null, ownerRecord = () => ({ ok: false, why: 'no record check' }) } = {}) {
-  const labels = (bead && bead.labels) || [];
-  const kind = FIX_LABELS.find((l) => labels.includes(l));
-  if (!kind) return { labelled: false, ok: false };
+// One link of one kind; { kind, link, ok, why }.
+function oneLink(bead, kind, { root, beadOf, ownerRecord }) {
   const key = kind === 'bug' ? 'fixes' : 'finding';
-  const m = (bead && bead.metadata) || {};
-  const link = String(m[key] || (story && story.meta && story.meta[key]) || '').replace(/\s+#.*$/, '').trim();
-  const no = (why) => ({ labelled: true, kind, link, ok: false, why });
-  const yes = () => ({ labelled: true, kind, link, ok: true });
-  if (!link) return no(`labelled ${kind} with no ${key} link`);
+  // the bead's metadata only, which the Delivery Manager or Product Manager sets; a story file is the
+  // builder's to edit, so its fixes:/finding: lines are notes and never make a fix (re-review B-a)
+  const link = String(((bead && bead.metadata) || {})[key] || '').replace(/\s+#.*$/, '').trim();
+  const no = (why) => ({ kind, link, ok: false, why });
+  const yes = () => ({ kind, link, ok: true });
+  if (!link) return no(`labelled ${kind} with no ${key} link in the bead`);
   if (link === bead.id) return no(`${key} names the bead itself`);
   if (kind === 'bug') {
     if (/^(dec|in)-/.test(link)) {
       const r = ownerRecord(link);
       if (!r.ok) return no(`fixes ${r.why}`);
       if (r.goal) return no(`fixes ${link}, a goal decision, not a report of this defect`);
-      return namesBead(r, bead) ? yes() : no(`fixes ${link}, which does not name this defect`);
+      return namesBead(r, bead) ? yes() : no(`fixes ${link}, whose owner's words do not name this defect`);
     }
     const ev = /^ev-(.+)-\d+$/.exec(link);
     if (ev) {
       const chk = root ? G.readEvidenceChecked(root, ev[1]) : { rows: [], problem: 'no project' };
+      // the file must match the head evidence.js recorded in its bead, as the done gate requires
+      const problem = chk.problem || G.headProblem(chk, beadOf(ev[1]));
       const row = chk.rows.find((r) => r.id === link);
-      if (chk.problem || !row || row.type !== 'row' || row.result !== 'fail' || row.arm === 'side' || !EV_WRITERS.includes(row.by)) return no(`fixes ${link}, which is not a counting failed check row`);
+      if (problem || !row || row.type !== 'row' || row.result !== 'fail' || row.arm === 'side' || !EV_WRITERS.includes(row.by)) return no(`fixes ${link}, which is not a counting failed check row`);
       return yes();
     }
     const target = beadOf(link);
@@ -128,6 +129,17 @@ function fixLink(bead, story, { root, beadOf = () => null, ownerRecord = () => (
   const target = beadOf(link);
   const tl = (target && target.labels) || [];
   return target && tl.includes('security') && tl.includes('finding') ? yes() : no(`finding ${link} is neither a review finding (.delivery/reviews/<file>#<id>) nor a finding bead`);
+}
+
+// { labelled, kind, link, ok, why }: a bead with both labels counts when either link holds (Copilot 915).
+// `story` is accepted for the callers' shape and ignored.
+function fixLink(bead, story, { root, beadOf = () => null, ownerRecord = () => ({ ok: false, why: 'no record check' }) } = {}) {
+  const labels = (bead && bead.labels) || [];
+  const kinds = FIX_LABELS.filter((l) => labels.includes(l));
+  if (!kinds.length) return { labelled: false, ok: false };
+  const results = kinds.map((k) => oneLink(bead, k, { root, beadOf, ownerRecord }));
+  const hit = results.find((r) => r.ok);
+  return { labelled: true, ...(hit || results[0]), ...(hit ? {} : { why: results.map((r) => r.why).join('; ') }) };
 }
 
 // ---- the recorded reason for a new area (R-41) ----
