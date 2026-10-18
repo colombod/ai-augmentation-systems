@@ -15,8 +15,13 @@ const SANCTIONED = {
   'progress-observer': 'Record what you found in the bead (`bd update <id> --append-notes "<finding>"`); fixes go to a builder bead.',
   builder: 'Product code in your worktree is yours; for plans, message the Delivery Manager.',
   'spike-researcher': 'Answers go in the bead: `bd update <id> --append-notes "<answer>"`; product code is never yours.',
+  'reality-checker': 'Captures go under `.delivery/evidence/artifacts/<bead>/` and rows through `reality-check.js run-record`; anything else, message the Delivery Manager.',
 };
+// Browser, desktop and computer-use tools reach the owner's apps and the customer surface (R-05, R-33):
+// allowed only in a reach lane (the role file's `lane_reach: true`, or `"reach": true` on its manifest
+// entry), and never on a headless host. prepare-role writes the native deny rules from the same list.
 const REACH_PREFIXES = ['mcp__Claude_Browser__', 'mcp__claude-in-chrome__', 'mcp__computer-use__', 'mcp__Claude_Code_iOS_Simulator__'];
+const REACH_REASON = 'real-surface runs belong to the Reality Checker, with a script.\nAsk the Delivery Manager for a reality check (`reality-check.js plan <bead>`); a team that needs it for this role sets `"reach": true` on its team.json entry';
 // MCP tools for allowlist roles: only read-shaped verbs, and never a name that also carries a write verb.
 const MCP_READ = /^(read|get|list|search|query|view|status|find|describe|resolve|fetch|context|ask|show|display|tabs_context|read_page|get_page_text)(_|$)/i;
 const MCP_WRITE_VERB = /(^|_)(update|upload|trash|send|set|create|delete|write|move|copy|rename|post|put|insert|append|replace|execute|run|remove|edit)(_|$)/i;
@@ -54,7 +59,7 @@ function sanctioned(roleId) { return SANCTIONED[roleId] || 'Stay in your lane: m
 function loadPolicy({ pluginRoot, projectRoot, briefRef }) {
   const { meta } = loadRoleBrief(pluginRoot, projectRoot, briefRef);
   const bash = listValue(meta.lane_bash);
-  return { roleId: String(meta.id || ''), writes: listValue(meta.lane_writes), bash: bash.length ? bash : DEFAULT_BASH.slice(), mcp: listValue(meta.lane_mcp) };
+  return { roleId: String(meta.id || ''), writes: listValue(meta.lane_writes), bash: bash.length ? bash : DEFAULT_BASH.slice(), mcp: listValue(meta.lane_mcp), reach: meta.lane_reach === true || meta.lane_reach === 'true' };
 }
 
 // Harness permission rules that pre-allow a lane's own commands, so a worker session does not stop
@@ -688,6 +693,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   const bash = pol.bash || [];
   const tail = `\n${sanctioned(pol.roleId)}`;
   if (REACH_PREFIXES.some((p) => name.startsWith(p))) {
+    if (!pol.reach) return { allow: false, reason: `Role ${pol.roleId} does not drive browsers, desktop apps or computer use: ${REACH_REASON}.` };
     if (hostHeadless) {
       const where = (desktopHosts || []).length ? `a session on ${desktopHosts.join(' or ')}` : 'a session on a host with a desktop';
       return { allow: false, reason: `Host ${hostName || 'this host'} is headless: browser, desktop-app and computer-use checks cannot run here.\nMessage the Delivery Manager: the check needs ${where}.` };
@@ -766,6 +772,7 @@ function laneDecisionForHook(input, pluginRoot) {
   if (!ctx) return null;
   const { marker, hosts, role, roleDir } = ctx;
   const policy = loadPolicy({ pluginRoot, projectRoot: marker.project_root, briefRef: role.brief });
+  if (role.reach === true) policy.reach = true; // the manifest's opt-in (validateManifest refuses it for managers)
   const hostMap = (hosts && hosts.hosts) || {};
   const host = hostMap[role.host] || {};
   const desktopHosts = Object.entries(hostMap).filter(([, h]) => h && h.desktop_apps).map(([n]) => n);
@@ -782,4 +789,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { goalShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { REACH_PREFIXES, goalShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

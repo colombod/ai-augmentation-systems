@@ -4,8 +4,8 @@
 // Only the Chief of Staff and the Product Manager reach the operator through these tools; every
 // other role messages the Chief of Staff, which decides what reaches the operator, and gets a
 // decision record id back for a question. Deny JSON or nothing; inert without a valid role marker;
-// exit 0 always. Other channels (MCP session tools, desktop and browser control, shell) are lane
-// matters; see the Task 4 report for the residual.
+// exit 0 always. Other channels are lane matters: MCP session tools and the shell by lane group, and
+// desktop and browser control only in a reach lane (the Reality Checker), refused to every other role.
 const ASKERS = new Set(['chief-of-staff', 'product-manager']);
 const path = require('path');
 const { operatorCommand } = require('../../scripts/lib/plugin-root.js');

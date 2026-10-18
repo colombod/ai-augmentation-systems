@@ -79,8 +79,8 @@ test('decideLane refuses with the sanctioned path and allows within lane', () =>
   assert.equal(decideLane({ toolName: 'Write', toolInput: { file_path: path.join(roleDir, 'project', '.delivery', 'stories', 'x.md') }, policy: builder, ...ctx() }).allow, false);
 });
 
-test('decideLane denies browser and computer tools on a headless host', () => {
-  const policy = { roleId: 'progress-observer', writes: [], bash: ['read'] };
+test('decideLane denies browser and computer tools on a headless host, even in a reach lane', () => {
+  const policy = { roleId: 'reality-checker', writes: [], bash: ['read'], reach: true };
   const d = decideLane({ toolName: 'mcp__Claude_Browser__navigate', toolInput: {}, policy, ...ctx({ hostHeadless: true, hostName: 'wintermute', desktopHosts: ['alien51'] }) });
   assert.equal(d.allow, false);
   assert.match(d.reason, /alien51/);
@@ -365,8 +365,8 @@ test('R5: MCP tools are read-only for allowlist roles', () => {
   assert.equal(allow('mcp__x__list_sessions'), true);
   assert.equal(allow('mcp__x__get_page_text'), true);
   assert.equal(allow('mcp__x__update_file', POLICIES[BUILDER]), true);
-  // browser and computer tools: the headless rule decides
-  assert.equal(allow('mcp__Claude_Browser__navigate'), true);
+  // browser and computer tools: only a reach lane, and never on a headless host
+  assert.equal(allow('mcp__Claude_Browser__navigate'), false);
   assert.equal(decideLane({ toolName: 'mcp__Claude_Browser__navigate', toolInput: {}, policy: pm, ...ctx({ hostHeadless: true }) }).allow, false);
 });
 
@@ -636,8 +636,7 @@ test('H.6: role-lane hook fails open on a thrown error, denies Bash and headless
   const { roleDir: po } = preparedRole('progress-observer');
   const b = JSON.parse(runHook('role-lane.js', { cwd: po, session_id: 's', tool_name: 'mcp__Claude_Browser__navigate', tool_input: { url: 'http://x' } }, env('progress-observer')));
   assert.equal(b.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(b.hookSpecificOutput.permissionDecisionReason, /buildbox is headless/);
-  assert.match(b.hookSpecificOutput.permissionDecisionReason, /a session on pc/);
+  assert.match(b.hookSpecificOutput.permissionDecisionReason, /real-surface runs belong to the Reality Checker/);
 });
 
 // Operator decisions: operator-read / operator-write groups and the protected operator directory.
@@ -1047,4 +1046,24 @@ test('1a acceptance group: every role reads warnings, surfaces, ready checks and
   const { laneAllowRules } = require('./lane.js');
   assert.ok(!laneAllowRules(POLICIES[COS], GROUPS, PLUGIN_ROOT).some((r) => r.includes('ready.js')));
   assert.ok(laneAllowRules(POLICIES[COS], GROUPS, PLUGIN_ROOT).some((r) => r.includes('evidence.js check')));
+});
+
+// R-05, 1b: a builder trying computer use on the owner's app is denied by the hook and natively; the
+// manifest's "reach": true is the documented opt-in, and re-preparing takes the native deny out again.
+test('1b: computer use on the owner\'s app is denied to a builder until its manifest entry opts in', () => {
+  const { projectRoot, roleDir } = preparedRole('builder-1');
+  const env = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  const call = () => runHook('role-lane.js', { cwd: roleDir, session_id: 's', tool_name: 'mcp__computer-use__app_click', tool_input: { app: 'ChatGPT' } }, env);
+  const denied = JSON.parse(call());
+  assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /Role builder does not drive browsers, desktop apps or computer use/);
+  const settings = () => JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).permissions.deny;
+  assert.ok(settings().includes('mcp__computer-use'));
+  const file = path.join(projectRoot, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.roles.find((r) => r.id === 'builder').reach = true;
+  fs.writeFileSync(file, JSON.stringify(team));
+  assert.equal(call(), '', 'allowed on a desktop host once the manifest opts in');
+  prepareRole({ projectRoot, instance: 'builder-1', teamDir: path.dirname(roleDir), pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  assert.ok(!settings().includes('mcp__computer-use'));
 });

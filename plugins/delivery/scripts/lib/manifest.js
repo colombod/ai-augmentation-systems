@@ -5,6 +5,7 @@ const path = require('path');
 const MODELS = new Set(['opus', 'sonnet', 'haiku']);
 const RUNNERS = new Set(['superpowers', 'attractor', 'plain']);
 const MODES = new Set(['default', 'delegate']);
+const NO_REACH = new Set(['chief-of-staff', 'product-manager', 'delivery-lead', 'staffing']);
 const TEAM_REL = path.join('.delivery', 'team', 'team.json');
 const HOSTS_REL = path.join('.delivery', 'team', 'hosts.json');
 
@@ -141,6 +142,10 @@ function validateManifest(team, hosts) {
     if (role.mode && !MODES.has(role.mode)) problems.push(`team.json: role "${role.id}" has mode "${role.mode}"`);
     if (role.count !== undefined && (!Number.isInteger(role.count) || role.count < 1)) problems.push(`team.json: role "${role.id}" has invalid count`);
     if (role.retired !== undefined && typeof role.retired !== 'boolean') problems.push(`team.json: role "${role.id}" has non-boolean "retired"`);
+    // reach: browser, desktop and computer-use tools for a role whose brief does not have them (R-05).
+    // Managers never drive the owner's apps; real-surface runs are the Reality Checker's.
+    if (role.reach !== undefined && typeof role.reach !== 'boolean') problems.push(`team.json: role "${role.id}" has non-boolean "reach"`);
+    else if (role.reach === true && NO_REACH.has(role.id)) problems.push(`team.json: role "${role.id}" cannot have "reach": managers never drive the owner's apps; real-surface runs are the Reality Checker's`);
     if (role.steward) stewards.add(role.host);
   }
   problems.push(...require('./judge.js').configProblems(team.judge).problems);

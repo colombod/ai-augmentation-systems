@@ -24,6 +24,8 @@ const OPERATOR_CHANNEL_TOOLS = ['AskUserQuestion', 'PushNotification', 'SendUser
 const MERGE_DENY = ['Bash(gh pr merge:*)'];
 // commands no restricted lane needs; denied natively unless the role's lane allows them
 const LANE_BACKSTOP_DENY = ['Bash(git push:*)', 'Bash(sudo:*)', 'Bash(curl:*)', 'Bash(wget:*)', 'Bash(rm:*)'];
+// browser, desktop and computer-use servers: denied natively to every role without a reach lane (R-05)
+const REACH_DENY = require('../hooks/scripts/lane.js').REACH_PREFIXES.map((p) => p.replace(/__$/, ''));
 
 function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, user, now }) {
   instance = canonicalRoleId(instance); // --instance delivery-manager means delivery-lead
@@ -129,6 +131,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
       ...(operatorFacing ? [] : OPERATOR_CHANNEL_TOOLS),
       ...(unrestricted ? [] : LANE_BACKSTOP_DENY.filter((r) => !rules.includes(r))),
       ...(role.id === 'delivery-lead' ? [] : MERGE_DENY),
+      ...(policy.reach || role.reach === true ? [] : REACH_DENY),
     ];
     // Only the rules this script added are its to take out again: they are listed in a sidecar next to
     // the settings. Any other deny rule is the user's and stays, even one the plugin also manages; a
@@ -206,4 +209,4 @@ if (require.main === module) {
   console.log(roleDir);
 }
 
-module.exports = { OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole };
+module.exports = { REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole };
