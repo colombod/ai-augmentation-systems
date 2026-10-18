@@ -45,7 +45,23 @@ function operatorStatus(projectRoot, team, { host, deps = {} } = {}) {
   return res;
 }
 
-function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps } = {}) {
+// The gates at a glance (R-12, ruling 3): open warnings by kind and those over 24 h, and the story
+// states merged / deployed / verified with any area over the unverified cap. Read-only; a failed bead
+// read becomes a note.
+function gateStatus(projectRoot, team, { now, storyBeads } = {}) {
+  const W = require('./lib/warnings.js');
+  const G = require('./lib/gates.js');
+  const { maxUnverified } = require('./lib/gate-context.js');
+  const out = { warnings: W.summary(W.list(projectRoot), now), states: null, notes: [] };
+  try {
+    const beads = storyBeads ? storyBeads() : require('./lib/bd.js').makeBd({ cwd: projectRoot }).list({ label: 'story', all: true });
+    // closed is not verified: a story counts by its state labels, open or closed
+    out.states = G.stateCounts(beads, maxUnverified(team));
+  } catch (err) { out.notes.push(`story states unavailable: ${String(err.message).split('\n')[0]}`); }
+  return out;
+}
+
+function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads } = {}) {
   const { team } = loadManifest(projectRoot);
   const roster = readRoster(projectRoot);
   const nowMs = Date.parse(now || new Date().toISOString());
@@ -80,7 +96,8 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps 
   let bd_reachable = false;
   try { bd_reachable = Boolean((bdCheck || bdReachable)(projectRoot)); } catch (err) { bd_reachable = false; }
   const operator = operatorStatus(projectRoot, team, { host, deps: operatorDeps });
-  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, warnings: manifestWarnings(team) };
+  const gates = gateStatus(projectRoot, team, { now, storyBeads: storyBeads || (bd_reachable ? undefined : () => { throw new Error('bd unreachable'); }) });
+  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, warnings: manifestWarnings(team) };
 }
 
 function hasDrift(drift) {
@@ -97,8 +114,15 @@ function manifestRev(projectRoot) {
 
 const firstIds = (ids) => (ids.length ? ` (${ids.slice(0, 3).join(', ')}${ids.length > 3 ? ', ...' : ''})` : '');
 
-function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, warnings }, projectRoot) {
-  const lines = ['| Instance | Role | Host | Model | Session | State |', '|---|---|---|---|---|---|'];
+function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gates, warnings }, projectRoot) {
+  const lines = [];
+  // unacknowledged warnings older than 24 h come first: they head the Chief of Staff's plan
+  if (gates && gates.warnings.overdue.length) {
+    lines.push(`Warnings unacknowledged over 24 h: ${gates.warnings.overdue.length} (the Delivery Manager resolves or acks each: warnings.js ack <id> --reason '...')`);
+    for (const w of gates.warnings.overdue.slice(0, 10)) lines.push(`- ${w.id} ${w.rule || ''} ${w.bead || '-'}: ${w.detail}`);
+    lines.push('');
+  }
+  lines.push('| Instance | Role | Host | Model | Session | State |', '|---|---|---|---|---|---|');
   for (const r of rows) lines.push(`| ${r.instance} | ${r.role} | ${r.host} | ${r.model} | ${r.session_id} | ${r.state} |`);
   lines.push('');
   if (projectRoot) { lines.push(`Manifest: ${projectRoot} at ${manifestRev(projectRoot)}`); lines.push(''); }
@@ -112,6 +136,16 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, war
     lines.push(`Operator inputs pending a record: ${operator.pending_inputs.length}${firstIds(operator.pending_inputs)}`);
     lines.push(`Inferred answers awaiting ratification: ${operator.unratified.length}${firstIds(operator.unratified)}`);
     for (const n of operator.notes) lines.push(`Note: ${n}`);
+    lines.push('');
+  }
+  if (gates) {
+    const kinds = Object.entries(gates.warnings.byKind).map(([k, n]) => `${k} ${n}`).join(', ');
+    lines.push(`Warnings open: ${gates.warnings.open}${kinds ? ` (${kinds})` : ''}; acknowledged: ${gates.warnings.acked}`);
+    if (gates.states) {
+      lines.push(`Stories: merged ${gates.states.merged}, deployed ${gates.states.deployed}, verified ${gates.states.verified} (merged and deployed are not verified)`);
+      for (const o of gates.states.overCap) lines.push(`Warning: area ${o.area} has ${o.count} merged-but-unverified stories (cap ${o.cap}): ${o.ids.join(', ')}; verify them before new work there`);
+    }
+    for (const n of gates.notes) lines.push(`Note: ${n}`);
     lines.push('');
   }
   if (bd_reachable === false) { lines.push('Warning: bd unreachable from role directories: run bd init in the project root, then rerun prepare-role so the roles get BEADS_DIR'); lines.push(''); }
@@ -141,4 +175,4 @@ if (require.main === module) {
   process.exit(hasDrift(status.drift) ? 1 : 0);
 }
 
-module.exports = { teamStatus, renderStatus, operatorStatus };
+module.exports = { teamStatus, renderStatus, operatorStatus, gateStatus };

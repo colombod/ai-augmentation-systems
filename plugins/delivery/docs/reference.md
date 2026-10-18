@@ -78,7 +78,7 @@ session its role and keep it:
   - UserPromptSubmit captures operator input, marks the turn and, when the claim changed, adds a
     one-line reminder of it (and, once, a reminder that the last turn left no note on its claim).
   - PreToolUse: the lane (writes, shell commands, MCP), the leak guard (product repo), the bd
-    guard (claims, EVIDENCE, structure) and the operator channel guard (`AskUserQuestion`,
+    guard (claims, structure, the ready and done gates) and the operator channel guard (`AskUserQuestion`,
     `PushNotification`, `SendUserFile` for roles other than the Chief of Staff and the Product
     Manager).
   - Stop: captures operator input, then the operator checks for the Chief of Staff and the Product
@@ -183,8 +183,8 @@ The catalogue is `judge/questions.json`, versioned per question:
 | Question | Type | Used by | Mode |
 |---|---|---|---|
 | `relay_request` v1.1 | probability | the Chief of Staff's and Product Manager's Stop hook | confirms or overrules the regex (below) |
-| `divergence` v2 | none, minor, serious | library and CLI only for now | warn-only until re-measured on real gate summaries |
-| `shippable_unit` v2 | yes, partial, no | library and CLI only for now | advisory |
+| `divergence` v2 | none, minor, serious | the done gate (bd guard on close) | warn-only until re-measured on real gate summaries |
+| `shippable_unit` v2 | yes, partial, no | the ready gate (`ready.js`, bd guard on claim) | advisory: a warning at most |
 | `builds_on_verified` v2 | strongly, partly, new area | library and CLI only for now | advisory |
 | `is_fix` v1 | probability | library and CLI only for now | advisory (a probability, not the yes/no choice first planned) |
 
@@ -226,11 +226,125 @@ The catalogue is `judge/questions.json`, versioned per question:
 
 ### Bead discipline
 
-`bd close` needs an `EVIDENCE:` reason; a live claim cannot be taken, released or closed by
-someone else; bead structure (top-level creates, re-parenting, dependencies, deletes, labels on
-beads you do not hold) changes only through the Delivery Manager; and a turn that holds a claim
-but left no note in it gets a one-line reminder on the next prompt (it is not blocked). These are
-discipline aids for cooperative agents.
+A live claim cannot be taken, released or closed by someone else; bead structure (top-level
+creates, re-parenting, dependencies, deletes, labels on beads you do not hold) changes only
+through the Delivery Manager, and so do the `state-*` labels and the gate fields (`ready_hash`,
+`deployed_sha`); and a turn that holds a claim but left no note in it gets a one-line reminder
+on the next prompt (it is not blocked). `bd close` no longer checks a reason prefix: a story
+closes on evidence rows (below). These are discipline aids for cooperative agents.
+
+### Ready and done gates
+
+Gates keep work flowing. Each check has one of three levels:
+
+- **Block: authority.** Who may do what. Only the Delivery Manager acknowledges warnings, records a
+  story as ready, sets states, waives and cuts; evidence rows come from the Delivery Manager (or a
+  Reality Checker, phase 1b), never from an author of the story. The scripts take the role from the
+  session's role marker and refuse every write without one (they fail closed). The bd guard refuses
+  anyone but the Delivery Manager: the `story` and `state-*` labels, `--set-labels`, the gate fields
+  (`ready_hash`, `deployed_sha`, `authors`, `story_file`, `surface`, `area`, `roadmap_ref` and the
+  rest, judged on the parsed metadata keys; labels and metadata built by the shell, `$VAR` included,
+  are refused; create-time `--labels` count), releasing or reassigning a claimed story (the Delivery
+  Manager may do so even while the claim is live), and the commands that write around the guard:
+  `bd batch`, `bd sql` other than a read, and `bd vc` and `bd federation` other than their status reads.
+  A claim, or work the Delivery Manager assigns, stamps the assignee in `metadata.authors`; the
+  Delivery Manager is never stamped.
+- **Block on divergence.** Only a checkable fact that opens a serious divergence from what was
+  agreed: **D1** the agreed criteria or requirements changed (or were deleted) since the story was
+  made ready, checked at claim and at close, or a child bead names a criterion its story does not
+  have; **D2** a story or an evidence row names a surface, or a tuple, that is not the one in
+  `surface.json`; **D3** a close in any form (`bd close` and its alias `bd done`, `bd update --status closed`,
+  `duplicate`, `supersede`, `bd gate resolve`) without a counting pass row per criterion, a waiver recorded after the deploy, or an
+  evidence file edited by hand. The refusal is two lines: what and why, then the command for the
+  Delivery Manager, or for anyone else "message the Delivery Manager".
+- **Warn and record.** Everything else, including D5 for now: more than `budget.max_unverified`
+  (default 2) merged-but-unverified stories in an area, open or closed, is a warning on claim; the
+  refusal for starting the next wave arrives with waves (phase 2). `bug` and `security` beads are
+  exempt.
+
+**The warnings ledger.** `.delivery/warnings/<instance>.ndjson` in the project repo, one file per
+instance (a session with no role writes `local-<host hash>.ndjson`), so sessions on different hosts
+never write the same file. Append-only: `{type: "warning", id: "w-<instance>-<time><random>", kind,
+rule, bead, detail, raised_by, at}`, and an acknowledgement is a second row
+`{type: "ack", id, acked_by, acked_at, reason}`. An open warning with the same kind, bead and detail
+is not repeated; the check and the append run under a lock file, so parallel hooks do not duplicate a
+finding. `node ${CLAUDE_PLUGIN_ROOT}/scripts/warnings.js list [--open|--overdue] [--json]` shows them
+with counts per kind; `warnings.js ack <w-id> --reason '...'` is the Delivery Manager's.
+`/delivery:team` prints warnings open longer than 24 h first, then the counts and the story states.
+A claim prints at most three warning lines; the ledger holds all of them.
+
+**The customer surface.** `.delivery/initiatives/<slug>/surface.json`, written in
+`/delivery:architecture` from `templates/surface.json`: `owner_record`, and `surfaces[]` each with
+`id`, `host`, `app`, `mode`, `install_artifact`, `scriptable` (true or false) and `size_budgets`
+(names to numbers). `node ${CLAUDE_PLUGIN_ROOT}/scripts/surface.js check <slug>` validates it.
+Materialise stamps `surface` (the story's `surface:`, else the only one declared) and `area` (the
+story's `area:`, else its epic) on each story bead, along with `story_file`, which marks the bead as
+a story whatever its labels. A story with no declared surface (no `surface.json`, or several and none
+named) is not locked out: its evidence counts without the surface check and the close records a
+`no-surface` warning.
+
+**The ready gate.** The story template has `Owner's ask` (quoted, with the `dec-` id when there is
+one), `Customer surface`, `Acceptance criteria` as outcomes the customer sees on the surface, each
+with one `Probe:` line (`what is observed; where: <surface>; by: test | reality-check`), a
+`Measurement plan` table (signal, a numeric threshold, where) and `Shippable unit`. A criterion line
+that still holds a template `<placeholder>` does not count. `node ${CLAUDE_PLUGIN_ROOT}/scripts/ready.js <bead>`
+(or `--story <file> --initiative <slug>` before materialise) reports each missing piece, a criterion
+with no outcome verb (sees, shows, reads, finds, completes: a word rule), and a `test` probe for a
+surface that is not scriptable (it needs a reality check; the Reality Checker role comes later); it
+writes nothing. `ready.js <bead> --record` stamps the hash of the criteria and the `requirements`,
+records what is still wrong as warnings and resolves the ready warnings it no longer finds;
+re-recording changed criteria needs `--owner-record <dec-...>` that `operator.js verify` accepts and
+drops an earlier `state-verified`. The bd guard runs the same check on a claim and records the
+claimer in `metadata.authors`. With the typed judge on, `shippable_unit` is asked too; a `partial` or
+`no` is a warning, never a block.
+
+**Evidence and the done gate.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/evidence.js add <bead> --criterion <n>
+--result pass|fail --surface <id> --sha <deployed sha> [--run <ref>] [--host|--app|--mode <observed>]`
+appends `ev-<bead>-<n>` rows to `.delivery/evidence/<bead>.ndjson` with the writer's role, actor,
+time and the criterion's own hash. Files rather than bead notes: notes are free text any role can
+append to, while a row here is structured, append-only and readable by the hook without bd. Each row
+carries `seq` and a hash of the line before it, and evidence.js records the chain head (row count and
+the last line's hash) in the bead's `evidence_head`, so an edited, inserted, deleted or appended line,
+the last one included, refuses the close. Appends take a per-bead lock, so two writers never fork the
+chain. A row
+counts for a criterion when it is a pass, for that criterion's current wording, on the story's
+surface and tuple, on the deployed sha (case-insensitive; a prefix of 7 or more characters matches),
+recorded after that deploy, by a role and an actor that are not among the story's authors. Anything
+else is a side arm or does not count. A waiver counts when recorded before the deploy and a cut counts at all only while its owner record
+still verifies: the gate re-runs `operator.js verify` on it. `evidence.js check <bead>` reports the gate without changing anything.
+
+**States.** `evidence.js state <bead> merged [--pr <n>]` and `evidence.js state <bead> deployed --sha
+<sha>` set `state-merged` and `state-deployed` (and `deployed_sha`, `deployed_at`); `state-verified`
+follows the rows, set when every criterion counts and removed when they no longer do (a new sha, a
+re-recorded criterion). Status words in the briefs come from these labels and the `ev-` ids, never
+from a session's say-so; closed is not verified, so team status counts closed stories by their labels.
+
+**Migration and cut stories.** The hard done gate applies to stories the Delivery Manager made ready.
+A story never made ready (one from before 0.22, or on the old checkbox template) closes with a
+`close-not-ready` warning, so in-flight work is never locked out; another bead closed with no
+`--reason` is a `close-no-reason` warning. A story that is cut or replaced closes on the owner's record:
+`evidence.js cut <bead> --record <dec-...> --reason '...'` sets `state-cut`, then `bd close` or
+`bd supersede`.
+
+**What is cooperative trust.** The gates are discipline aids for cooperative agents, not a security
+boundary. A role whose lane is `any` (builders, the Spike Researcher) can still run bd in a shape
+the guard does not parse (`env bd`, `sh -c`, a subshell) and so also rewrite `evidence_head` to match
+a forged row, edit a story file (which a ready hash then refuses as D1), or start a script from
+another role's directory with that role's `DELIVERY_ROLE` set; `BEADS_ACTOR` is self-declared. What the gates do is make the
+honest path the easy one, refuse the plain shortcuts the Vault took, and leave a record that an
+independent review can check.
+
+**The hook's budget.** The bd guard keeps to one 8 s budget inside the 15 s hook timeout: every bd
+call checks the time left first and gets at most 4 s of it, bead reads are cached, and when the
+budget runs out the command is allowed with a `budget-spent` warning (fail open).
+
+**The judge at the gates.** Advisory only, at most once per command and only while 2.5 s of the
+hook's budget remain. `shippable_unit` warns at the ready gate.
+`divergence` is asked at a close that passed, with the criteria, the surface and the close reason; a
+`serious` answer is a recorded warning and never blocks until it is re-measured on real gate
+summaries. No new catalogue question was added: a criterion-kind question needs labelled cases first,
+so mechanism wording is a word rule. The deployed sha is the one recorded with `evidence.js state`;
+checking it against a health URL is not done yet.
 
 ### Steward notes
 

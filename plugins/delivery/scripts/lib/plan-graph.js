@@ -14,7 +14,7 @@ function uniqueBeads(beads, warnings) {
   });
 }
 
-function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
+function planGraph({ prefix, initiative, sha, roadmap, stories, spikes, surfaces }) {
   const beads = [];
   const deps = [];
   const warnings = [];
@@ -91,6 +91,13 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes }) {
       const size = /^[sml]$/i.test(String(s.size || '').trim()) ? String(s.size).trim().toUpperCase() : null;
       const metadata = { ...base(p.number, s.id), story: s.id, story_file: path.basename(s.file) };
       if (s.model) metadata.model = s.model;
+      // the customer surface (R-09): the story's own, else the initiative's only one; the area for the unverified cap
+      const ids = surfaces || [];
+      const surface = s.surface || (ids.length === 1 ? ids[0] : '');
+      if (surface && ids.length && !ids.includes(surface)) warnings.push(`story ${s.id}: surface ${surface} is not in surface.json (${ids.join(', ')})`);
+      else if (surface) metadata.surface = surface;
+      else if (ids.length > 1) warnings.push(`story ${s.id}: names no surface; surface.json declares ${ids.join(', ')}`);
+      if (s.area || s.epic) metadata.area = s.area || s.epic;
       beads.push({ id: `${prefix}-${s.id}`, title: s.title, type: 'task', parent: epicId, labels: ['roadmap', `phase-${p.number}`, 'story', ...(size ? [`size-${size}`] : [])], metadata, priority: 2, docId: s.id });
     }
     for (const sp of spikesByPhase.get(p.number) || []) {

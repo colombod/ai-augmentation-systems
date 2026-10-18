@@ -1032,3 +1032,19 @@ test('Copilot: the Delivery Manager can close the phase-review bead it owns', ()
   const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[DL], ...ctx() });
   assert.equal(run('bd close ex-demo-ph1-review --reason "EVIDENCE: accepted, see .delivery/sprints/1-review.md"').allow, true);
 });
+
+test('1a acceptance group: every role reads warnings, surfaces, ready checks and evidence; only the Delivery Manager acks, records ready and writes evidence', () => {
+  const s = (f) => `${PLUGIN_ROOT}/scripts/${f}`;
+  const allow = (role, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], ...ctx() }).allow;
+  for (const role of [COS, PM, PO, DL]) {
+    for (const command of [`node ${s('warnings.js')} list --open`, `node ${s('surface.js')} check vault`, `node ${s('ready.js')} ex-1`, `node ${s('evidence.js')} list ex-1`]) assert.equal(allow(role, command), true, `${role}: ${command}`);
+  }
+  for (const command of [`node ${s('warnings.js')} ack w-x-1 --reason ok`, `node ${s('ready.js')} ex-1 --record`, `node ${s('evidence.js')} add ex-1 --criterion 1 --result pass --surface S1 --sha d1`, `node ${s('evidence.js')} state ex-1 deployed --sha d1`, `node ${s('evidence.js')} cut ex-1 --record dec-x-1 --reason r`]) {
+    assert.equal(allow(DL, command), true, command);
+    for (const role of [COS, PM, PO]) assert.equal(allow(role, command), false, `${role}: ${command}`);
+  }
+  // `Bash(node ready.js:*)` would also allow --record, so the read rule gets no native allow
+  const { laneAllowRules } = require('./lane.js');
+  assert.ok(!laneAllowRules(POLICIES[COS], GROUPS, PLUGIN_ROOT).some((r) => r.includes('ready.js')));
+  assert.ok(laneAllowRules(POLICIES[COS], GROUPS, PLUGIN_ROOT).some((r) => r.includes('evidence.js check')));
+});

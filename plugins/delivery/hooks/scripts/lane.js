@@ -66,7 +66,8 @@ function laneAllowRules(policy, groups, pluginRoot) {
   const out = new Set();
   for (const g of policy.bash) {
     for (const rule of (groups && groups[g]) || []) {
-      if (!rule || !rule.first || rule.first === '*') continue;
+      // a rule whose flags matter (native_allow: false) gets no native allow: `Bash(cmd:*)` cannot exclude a flag
+      if (!rule || !rule.first || rule.first === '*' || rule.native_allow === false) continue;
       let head = rule.first;
       if (rule.arg_prefix) {
         if (!root) continue;

@@ -24,7 +24,11 @@
     { "first": "realpath" },
     { "first": "stat" },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-status.js" },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/prepare-role.js" }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/prepare-role.js" },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/warnings.js", "sub": ["list"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/surface.js", "sub": ["check", "show"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/ready.js", "flags_none": ["--record", "--owner-record"], "native_allow": false },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/evidence.js", "sub": ["list", "check"] }
   ],
   "git-read": [
     { "first": "git", "sub": ["status", "log", "diff", "show", "rev-parse", "remote -v", "remote show", "remote get-url", "blame", "describe", "tag -l", "tag --list", "stash list", "worktree list", "merge-base", "shortlog", "cat-file", "rev-list"], "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] },
@@ -70,6 +74,11 @@
   ],
   "operator-write": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/operator.js", "sub": ["record", "delegate", "decide", "revoke", "ack", "ask", "withdraw", "answer", "ratify", "rehost", "quarantine", "repair", "publish"], "flags_none": ["--transcript", "--session"] }
+  ],
+  "acceptance": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/warnings.js", "sub": ["ack"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/ready.js" },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/evidence.js", "sub": ["add", "state", "waive", "cut"] }
   ],
   "judge": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/judge.js", "sub": ["ask", "questions", "stats"] }

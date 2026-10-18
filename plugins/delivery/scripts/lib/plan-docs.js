@@ -86,6 +86,9 @@ function listValue(value) {
   return inner.split(',').map((x) => x.trim().replace(/^(['"])(.*)\1$/, '$2')).filter(Boolean);
 }
 
+// a frontmatter value without its trailing comment or a <placeholder>
+const plain = (v) => String(v === undefined || v === null ? '' : v).replace(/\s+#.*$/, '').replace(/<[^>]*>/g, '').trim();
+
 function parseStories(dir) {
   if (!fs.existsSync(dir)) return [];
   const out = [];
@@ -99,6 +102,7 @@ function parseStories(dir) {
     out.push({
       id: String(meta.id), title: String(meta.title || meta.id), status: String(meta.status || ''), epic: String(meta.epic || ''),
       phase: phaseNumber(meta.phase), dependsOn: listValue(meta.depends_on), size: String(meta.size || ''), model: String(meta.model || '').trim(), file,
+      surface: plain(meta.surface), area: plain(meta.area),
     });
   }
   return out;

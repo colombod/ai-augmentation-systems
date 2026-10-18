@@ -1,9 +1,12 @@
 // scripts/lib/bd.js — the only place that runs the bd CLI. Argv arrays only.
 const { execFileSync } = require('child_process');
 
-function makeBd({ cwd, env } = {}) {
+function makeBd({ cwd, env, timeoutMs } = {}) {
   // `list --all` returns about 1 KB per bead; the 1 MB default buffer would fail near a thousand beads.
-  const opts = { cwd: cwd || process.cwd(), env: env || process.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000, maxBuffer: 256 * 1024 * 1024 };
+  // A hook passes a shorter timeout so its own deadline holds.
+  const opts = { cwd: cwd || process.cwd(), env: env || process.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: timeoutMs || 30000, maxBuffer: 256 * 1024 * 1024 };
+  // a hook sets the next call's timeout from what is left of its own budget
+  function setTimeout(ms) { opts.timeout = Math.max(1, Math.floor(ms)); }
 
   function exec(args) {
     try {
@@ -82,7 +85,7 @@ function makeBd({ cwd, env } = {}) {
     return (json(args) || []).map(normalise);
   }
 
-  return { exec, show, create, update, depAdd, depRemove, depsOf, list };
+  return { exec, show, create, update, depAdd, depRemove, depsOf, list, setTimeout };
 }
 
 module.exports = { makeBd };

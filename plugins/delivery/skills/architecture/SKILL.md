@@ -54,6 +54,8 @@ Corrections log it writes. Never silently overwrite.
 
 **5. Write the design** to `.delivery/initiatives/<initiative>/architecture.md` using `${CLAUDE_PLUGIN_ROOT}/templates/architecture.md`. Write each consequential decision as its own ADR in `.delivery/decisions/ADR-NNN-<slug>.md` using `${CLAUDE_PLUGIN_ROOT}/templates/adr.md`.
 
+**6. Declare the customer surface** in `.delivery/initiatives/<initiative>/surface.json` from `${CLAUDE_PLUGIN_ROOT}/templates/surface.json`: where the customer actually uses the product (host, app, mode, the install artifact they get), whether an agent can drive it by script (`scriptable`), and the host's limits as numbers (`size_budgets`). Cite the owner's decision in `owner_record`; one surface is the norm, a second only when the owner named it. Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/surface.js check <initiative>`. Every story names its surface, and evidence from any other surface does not count at the done gate, so a wrong surface here is the costliest error in the design.
+
 ## Exit criteria
 
 - Within the template's budget, or the overrun declared in the document with its reason — count the words, do not estimate
@@ -64,6 +66,7 @@ Corrections log it writes. Never silently overwrite.
 - The spike list exists — or the document states plainly that nothing needs proving, which is rare enough to justify
 - Migration and rollback are covered, or explicitly not applicable
 - Test strategy is present
+- `surface.json` exists and `surface.js check` passes
 
 ## Writing, then revising
 

@@ -1,0 +1,14 @@
+{
+  "owner_record": "dec-<instance>-<n>: the owner's decision that this is where the customer uses the product",
+  "surfaces": [
+    {
+      "id": "S1",
+      "host": "<where it runs, e.g. chatgpt.com, the iOS App Store build, a CLI on macOS>",
+      "app": "<the app the customer opens, e.g. ChatGPT web>",
+      "mode": "<the mode inside it, e.g. plain chat, not developer or code mode>",
+      "install_artifact": "<what the customer installs, e.g. the connector from the shipped plugin zip>",
+      "scriptable": false,
+      "size_budgets": { "tool_list_max": 20, "answer_max_chars": 4000 }
+    }
+  ]
+}

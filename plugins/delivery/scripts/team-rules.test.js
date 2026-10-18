@@ -237,7 +237,7 @@ test('final I1: the builder brief tells builders to take spikes first only when 
   const without = render(minimal);
   const withSr = render(full);
   assert.match(without, /Run `bd ready --label spike` first/);
-  assert.match(without, /bd close <id> --reason "EVIDENCE: <the answer in one line>"/);
+  assert.match(without, /bd close <id> --reason "<the answer in one line, and where the proof is>"/);
   assert.doesNotMatch(without, /Spike beads are the Spike Researcher's/);
   assert.doesNotMatch(withSr, /bd ready --label spike/);
   assert.match(withSr, /Spike beads are the Spike Researcher's: leave them/);

@@ -18,6 +18,8 @@ phase: <roadmap phase>
 requirements: [FR-1]
 depends_on: []
 size: S
+surface: <surface id from surface.json, e.g. S1>
+area: <product area, for the unverified cap; defaults to the epic>
 ---
 
 # <title>
@@ -27,9 +29,18 @@ size: S
 > finish the work. Extract what is needed from the PRD and architecture into
 > this document rather than linking out.
 
+## Owner's ask
+
+> "<the owner's words, verbatim>" (<dec-instance-n, when there is an operator record>)
+
 ## Goal
 
 The user-facing outcome, in one or two sentences. What becomes possible.
+
+## Customer surface
+
+<surface id>: <host, app, mode, install artifact> from the initiative's `surface.json`. Evidence
+from any other host, app or mode does not count for this story.
 
 ## Context
 
@@ -62,10 +73,28 @@ Which architecture decisions apply here and why they constrain this work.
 
 ## Acceptance criteria
 
-Traced to the PRD. Each falsifiable by someone who did not write it.
+Outcomes the customer observes on the surface, traced to the PRD, each falsifiable by someone who
+did not write it: "<persona> in <surface> does X and sees Y", never a tool, endpoint, test, link or
+ticket. One probe per criterion: what is observed, where, and by whom (`test` on a scriptable
+surface, `reality-check` on one that is not). A size S story needs one criterion and one probe.
 
-- [ ] `FR-1` — 
-- [ ] 
+1. <persona> in <surface> does <X> and sees <Y>. `FR-1`
+   - Probe: <what is observed>; where: <surface id>; by: <test | reality-check>
+
+## Measurement plan
+
+At most three signals, preferably production log lines carrying the caller's client and surface,
+in place before the first reality check.
+
+| Criterion | Signal | Threshold | Where | When | Who |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| 1 | <log line or metric> | <a number> | <surface id> | <pre-merge on a preview, or within N h of deploy> | <role> |
+
+## Shippable unit
+
+What a person on the customer surface can do or see after this story alone ships, and the probe
+that shows it. A horizontal story (backend only, scaffold, migration) names the vertical story that
+ships it.
 
 ## Test approach
 
