@@ -170,12 +170,45 @@ function recordProblem(root, field, value, record, verifyRecord, judge) {
   const g = recordedGoal(head);
   const want = parseValue(field, g && g.raw);
   if (!g || g.field !== field || want.error || !same(want.value, value)) return `${record} was not recorded for ${field} = ${shown(value)} (operator.js record --goal ${field}=<value>)`;
+  // the primary path: a yes to the question goal.js worded for exactly this change
+  const asked = Array.isArray(head.answers_questions) ? head.answers_questions : [];
+  if (asked.length) {
+    if (asked.length !== 1 || asked[0].text !== questionText(field, value)) return `${record} answers a question that is not goal.js's question for ${field} = ${shown(value)} (goal.js ask ${field} <value>)`;
+    const said = ((v.chain || []).find((h) => h.kind === 'input') || {}).text;
+    if (!affirmative(said)) return `the owner's answer in ${record} is not a yes`;
+    return null;
+  }
+  // the secondary path, free text: the word rule as pre-filter and the typed judge's yes; with the judge
+  // off, free text never sets a constraint
+  if (!judge) return `${record} is free text: with the typed judge off, only a yes to goal.js's question sets ${field} (goal.js ask ${field} <value>)`;
   const qp = quoteProblem(field, value, head.quote);
-  const confirmed = judge && typeof judge.p === 'number' && judge.p >= JUDGE_MIN;
-  if (qp && !(qp.language && confirmed)) return `${record}: ${qp.why}`;
-  if (judge && !confirmed) return `the typed judge does not read the owner's words in ${record} as this instruction (p ${Number(judge.p).toFixed(2)})`;
+  if (qp) return `${record}: ${qp.why}`;
+  if (!(typeof judge.p === 'number' && judge.p >= JUDGE_MIN)) return `the typed judge does not read the owner's words in ${record} as this instruction (p ${Number(judge.p).toFixed(2)})`;
   return null;
 }
+
+// The canonical question for a change, in plain words. The owner's whole answer must be a yes.
+function questionText(field, value) {
+  const p = parseValue(field, value);
+  if (!FIELDS[field] || p.error) return null;
+  const v = p.value;
+  const items = Array.isArray(v) ? (v.length > 1 ? `${v.slice(0, -1).join(', ')} and ${v[v.length - 1]}` : v[0]) : v;
+  return {
+    'budget.weekly_units': `Set the weekly budget to ${v} units?`,
+    'budget.usage_envelope': `Set the usage envelope to ${v}% of the weekly allowance?`,
+    'budget.lean_at': `Switch to lean mode at ${v}% of the weekly allowance?`,
+    idle_minutes: `Call the team idle after ${v} minutes with ready work and nothing in progress?`,
+    briefing_lines: `Keep routine briefings to ${v} lines?`,
+    pause: { paused: "Pause the team's work now?", stopped: "Stop the team's work now?", off: "Resume the team's work now?" }[v],
+    scope_add: `Add ${items} to the scope?`,
+    scope_remove: `Remove ${items} from the scope?`,
+    approvals: `Set the approval policy to: ${v}?`,
+  }[field];
+}
+const YES = new Set(['yes', 'y', 'ok', 'okay', 'do it', 'go', 'go ahead', 'confirmed', 'agreed', 'approve', 'approved']);
+// the whole input, ignoring case, spaces and closing punctuation
+const affirmative = (text) => YES.has(String(text || '').normalize('NFKC').toLowerCase().replace(/[\s.!]+$/u, '').replace(/^\s+/, '').replace(/\s+/g, ' '));
+
 // the quote of a record, for the CLI to ask the judge before set
 function recordQuote(root, record, verifyRecord) {
   try { const v = (verifyRecord || require('./operator-records.js').verifyRecord)(root, record); return v && v.ok ? ((v.chain || [])[0] || {}).quote || null : null; } catch (err) { return null; }
@@ -324,4 +357,4 @@ function showLines(root, opts = {}) {
   return lines;
 }
 
-module.exports = { FIELDS, GOAL_REL, read, set, pauseOnTrigger, value, resolve, activePause, covers, quoteProblem, showLines, triggerState, recordedGoal, recordQuote, writersOf, TRIGGER_WRITERS, JUDGE_MIN };
+module.exports = { questionText, affirmative, FIELDS, GOAL_REL, read, set, pauseOnTrigger, value, resolve, activePause, covers, quoteProblem, showLines, triggerState, recordedGoal, recordQuote, writersOf, TRIGGER_WRITERS, JUDGE_MIN };

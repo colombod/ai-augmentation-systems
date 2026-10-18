@@ -97,7 +97,7 @@
       "state": ["quote", "field", "value"],
       "block_at": 0.8,
       "mode": "second-key",
-      "measured": "not measured: a second key only. With the judge on, a goal-sheet change needs the rule and p >= 0.8; it can admit a quote the English rule cannot read (another language).",
+      "measured": "not measured. Used only on the free-text path of goal.js set: a change needs the word rule and p >= 0.8; the main path (a yes to goal.js's own question) does not ask it.",
       "instructions": "The quote is the human owner's own words. The field and value name a change to the project's goal sheet (a usage budget figure, a pause or resume of the work, a scope addition or removal, an approval policy, an idle or briefing limit). Does the owner's statement instruct to set this field to this value now? A condition (only if, unless, when), a negation, a statement about something else that happens to contain the figure, or a plan for later is not such an instruction."
     }
   }

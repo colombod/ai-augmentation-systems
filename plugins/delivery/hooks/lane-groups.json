@@ -83,7 +83,7 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/evidence.js", "sub": ["add", "state", "waive", "cut"] }
   ],
   "goal-write": [
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/goal.js", "sub": ["set", "pause"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/goal.js", "sub": ["ask", "set", "pause"] }
   ],
   "owner-queue": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/owner-queue.js", "sub": ["add", "done"] }
