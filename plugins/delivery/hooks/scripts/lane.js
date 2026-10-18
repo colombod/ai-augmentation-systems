@@ -773,6 +773,25 @@ function mergeAttempt(command, cwd) {
   });
 }
 
+// A push onto another builder's team/<instance> branch (or anything under it): the merge gate knows a
+// pull request's author by that branch, so only its own session pushes there (PR 56 re-check).
+function foreignTeamPush(command, instance) {
+  const me = String(instance || '').toLowerCase();
+  for (const seg of splitCommand(String(command == null ? '' : command))) {
+    const t = tokens(seg);
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    if (path.basename(words[0] || '') !== 'git') continue;
+    const { rest } = splitGlobals(['git', ...words.slice(1)]);
+    if (rest[0] !== 'push') continue;
+    for (const r of rest.slice(1).filter((x) => !x.startsWith('-')).slice(1)) {
+      const dst = (r.includes(':') ? r.slice(r.lastIndexOf(':') + 1) : r).replace(/^\+/, '').replace(/^refs\/heads\//, '');
+      const m = /^team\/([^/]+)/i.exec(dst);
+      if (m && m[1].toLowerCase() !== me) return { branch: `team/${m[1]}`, owner: m[1] };
+    }
+  }
+  return null;
+}
+
 function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, cwd, hostHeadless, hostName, desktopHosts, projectRoot }) {
   const name = String(toolName || '');
   const pol = policy || { roleId: '', writes: [], bash: [] };
@@ -891,6 +910,9 @@ function laneDecisionForHook(input, pluginRoot) {
       if (why) d = { allow: false, reason: `Role ${policy.roleId}: ${why}` };
     }
   }
+  const pushCmd = d.allow ? shellCommandOf(input.tool_name, input.tool_input || {}) : null;
+  const foreign = pushCmd !== null ? foreignTeamPush(pushCmd, marker.instance) : null;
+  if (foreign) d = { allow: false, reason: `Role ${policy.roleId}: ${foreign.branch} is ${foreign.owner}'s branch: the merge gate knows a pull request's author by it, so only ${foreign.owner} pushes there.\nPush your own: \`git push origin HEAD:team/${marker.instance}\`` };
   if (d.allow) return null;
   try {
     const ti = input.tool_input || {};
@@ -902,4 +924,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

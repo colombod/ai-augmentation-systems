@@ -177,3 +177,17 @@ test('B1: state-merged lands only on a story whose author opened the pull reques
   assert.match(r.out, /ex-vault-0n9-3: not marked merged: its author is not builder-1, who opened PR 478/);
   assert.equal(bd.show(BEAD).labels.includes('state-merged'), false);
 });
+
+test('re-check: only the exact team/<instance> branch binds; no session pushes to another builder\'s branch', () => {
+  const h = setup({ 478: view({ headRefName: 'team/builder-2/sneak', body: `Refs ${OTHER}` }) });
+  assert.match(h.review('delivery-lead', 'request 478 --reviewer agent-r1').out, /PR 478 is not on a builder's branch \(team\/builder-2\/sneak\)/);
+  for (const c of ['git push origin HEAD:team/builder-2', 'git push -f origin HEAD:refs/heads/team/builder-2', 'git push --force origin +x:team/builder-2/sneak', 'git push origin team/builder-2']) {
+    assert.match(h.bash('builder-1', c, { run: false }).deny || '', /team\/builder-2 is builder-2's branch/, c);
+  }
+  for (const c of ['git push origin team/builder-1', 'git push -u origin HEAD:team/builder-1']) assert.equal(h.bash('builder-1', c, { run: false }).deny, null, c);
+  // typed variants and more bots
+  assert.equal(R.norm('builder_1'), 'builder-1');
+  assert.equal(R.norm('Builder-1.'), 'builder-1');
+  for (const b of ['gemini-code-assist', 'claude', 'copilot', 'gemini-code-assist[bot]']) assert.ok(R.isBot(b), b);
+  assert.ok(!R.isBot('agent-claude-7'), 'a subagent id that mentions claude is not a bot');
+});

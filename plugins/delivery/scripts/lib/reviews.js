@@ -18,11 +18,11 @@ const PR = /^[1-9]\d{0,8}$/;
 const SHA = /^[0-9a-f]{7,40}$/i;
 const FULL_SHA = /^[0-9a-f]{40}$/i;
 // reviewers whose rows are advisory: bots (any [bot] or -bot name, Copilot, GitHub Actions and the like)
-const BOT = /\[bot\]$|[-_]bot$|^bot[-_]|^(?:github-)?copilot\b|^github-actions\b|^coderabbit|^dependabot|^renovate|^sonarcloud|^sonarqube|^codecov|^codex\b/i;
+const BOT = /\[bot\]$|[-_]bot$|^bot[-_]|^(?:github-)?copilot\b|^gemini-code-assist|^claude$|^github-actions\b|^coderabbit|^dependabot|^renovate|^sonarcloud|^sonarqube|^codecov|^codex\b/i;
 // generated files do not count toward a pull request's size (R-24)
 const GENERATED = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|npm-shrinkwrap\.json|go\.sum|[^/]*\.lock)$|(?:^|\/)(?:dist|build|out|vendor|node_modules|generated|gen|__generated__|target|coverage)\/|\.min\.(?:js|css)$|\.(?:snap|map)$|\.pb\.go$|_pb2(?:_grpc)?\.py$|\.g\.dart$|\.generated\.[a-z]+$/;
 // a builder works on team/<instance> (prepare-role's worktree branch): the pull request's author
-const BRANCH = /^team\/([a-z0-9][a-z0-9-]*)(?:\/|$)/i;
+const BRANCH = /^team\/([a-z0-9][a-z0-9-]*)$/i; // exactly prepare-role's branch, nothing under it
 const DEFAULT_SIZE = 600;
 const sha12 = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 12);
 const ROOT_CMD = 'node ${CLAUDE_PLUGIN_ROOT}/scripts';
@@ -33,7 +33,7 @@ const isBot = (id) => BOT.test(String(id || ''));
 const instanceOf = (actor) => String(actor || '').split('/').pop();
 // one identity, whatever its form: Builder-1, dev@pc/builder-1, builder-1@pc and the Delivery Manager alias
 function norm(id) {
-  const s = String(id || '').trim().toLowerCase().split('/').pop().replace(/@.*$/, '');
+  const s = String(id || '').trim().toLowerCase().split('/').pop().replace(/@.*$/, '').replace(/_/g, '-').replace(/[.,;:!?)\]'"`]+$/, '');
   return s.replace(/^delivery-manager(?=$|-\d+$)/, 'delivery-lead');
 }
 const branchOwner = (ref) => { const m = BRANCH.exec(String(ref || '')); return m ? m[1].toLowerCase() : null; };

@@ -618,8 +618,8 @@ owner and is reviewed again; gates block only on authority or serious divergence
   own review; the Delivery Manager records only a subagent or bot it asked, by its id, and never in a
   team session's name. Refused: an author (by instance or actor), a review recorded from an author's
   session (so a subagent an author dispatched never counts), and the Delivery Manager as its own
-  reviewer. Identities are compared normalised: case, `user@host/` and `@host` forms, and the
-  `delivery-manager` alias. A bot (`copilot`, `github-actions`, `dependabot`, `renovate`, any `[bot]`
+  reviewer. Identities are compared normalised: case, `user@host/` and `@host` forms, `_` for `-`, trailing
+  punctuation, and the `delivery-manager` alias. A bot (`copilot`, `claude`, `gemini-code-assist`, `github-actions`, `dependabot`, `renovate`, any `[bot]`
   or `-bot` name, or `--advisory`) is an advisory row: it never satisfies the gate alone unless
   `team.json` sets `"review": { "bots_count": true }`, and then its newer `changes` blocks as well.
 - **The gate.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.js check <pr>` passes only when a
@@ -667,8 +667,10 @@ owner and is reviewed again; gates block only on authority or serious divergence
   will count; that is cooperative trust, as for the rest of an `any` lane, and git history shows it.
   `git stash -u` (or a checkout) in the project checkout can also set aside uncommitted records, so
   the Delivery Manager commits them. Rows the Delivery Manager records for a subagent, a bot or a CI
-  run rest on its word: the script checks who is named, not that the subagent ran. Impersonating
-  another builder needs a push to that builder's `team/<instance>` branch, which the builder sees.
+  run rest on its word: the script checks who is named, not that the subagent ran. Only the exact
+  `team/<instance>` branch binds (nothing under it), and the lane refuses every session's push onto
+  another builder's `team/<instance>` branch, forced or not; a program run from an `any` lane is
+  cooperative trust, as above.
 - **Not yet.** `state-merged` is set by `merge-gate.js merged`, not by a hook after the merge; the
   full-run receipt (lane, sha, passed count) R-32 names, 400-line caps on security paths, a story's
   `split_plan`, and an open-PR count per builder (R-23). The chain's head is not stored outside the
