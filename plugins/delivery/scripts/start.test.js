@@ -123,7 +123,7 @@ test('minimal preset: a valid manifest, four prepared roles, BEADS_DIR, a builde
   assert.match(r.out, /Open the Chief of Staff session and talk to it/);
 });
 
-test('full preset: seven instances and a valid manifest', () => {
+test('full preset: eight instances, the Reality Checker among them, and a valid manifest', () => {
   const base = mk('start-full-');
   const project = path.join(base, 'shop');
   const r = start(['--project', project, '--host', 'box', '--preset', 'full', '--prefix', 'sh', '--runner', 'superpowers']);
@@ -133,7 +133,7 @@ test('full preset: seven instances and a valid manifest', () => {
   assert.equal(team.prefix, 'sh');
   assert.equal(team.roles.find((x) => x.id === 'builder').runner, 'superpowers');
   const ids = expandInstances(team).map((i) => i.instance);
-  assert.deepEqual(ids.slice().sort(), ['builder', 'chief-of-staff', 'delivery-lead', 'product-manager', 'progress-observer', 'spike-researcher', 'staffing']);
+  assert.deepEqual(ids.slice().sort(), ['builder', 'chief-of-staff', 'delivery-lead', 'product-manager', 'progress-observer', 'reality-checker', 'spike-researcher', 'staffing']);
   for (const i of ids) assert.ok(fs.existsSync(path.join(base, 'shop-team', i, '.delivery-role.json')), i);
   assert.match(r.out, /no product worktree/);
   assert.match(r.out, /claude --name chief-of-staff/);
@@ -215,9 +215,9 @@ test('usage errors exit 2', () => {
 test('A5: --models presets set every role\'s model and the builders\' large-bead model in the generated team.json', () => {
   const { MODEL_PRESETS, buildManifest } = require('./start.js');
   const models = (preset) => Object.fromEntries(buildManifest({ project: 'acme', prefix: 'acme', host: 'h', preset: 'full', runner: 'plain', models: preset }).team.roles.map((r) => [r.id, r.model]));
-  assert.deepEqual(models('balanced'), { 'chief-of-staff': 'opus', staffing: 'sonnet', 'product-manager': 'opus', 'delivery-lead': 'sonnet', 'progress-observer': 'haiku', 'spike-researcher': 'sonnet', builder: 'sonnet' });
-  assert.deepEqual(models('quality'), { 'chief-of-staff': 'opus', staffing: 'sonnet', 'product-manager': 'opus', 'delivery-lead': 'opus', 'progress-observer': 'haiku', 'spike-researcher': 'sonnet', builder: 'sonnet' });
-  assert.deepEqual(models('economy'), { 'chief-of-staff': 'sonnet', staffing: 'haiku', 'product-manager': 'sonnet', 'delivery-lead': 'sonnet', 'progress-observer': 'haiku', 'spike-researcher': 'sonnet', builder: 'sonnet' });
+  assert.deepEqual(models('balanced'), { 'chief-of-staff': 'opus', staffing: 'sonnet', 'product-manager': 'opus', 'delivery-lead': 'sonnet', 'progress-observer': 'haiku', 'spike-researcher': 'sonnet', 'reality-checker': 'sonnet', builder: 'sonnet' });
+  assert.deepEqual(models('quality'), { 'chief-of-staff': 'opus', staffing: 'sonnet', 'product-manager': 'opus', 'delivery-lead': 'opus', 'progress-observer': 'haiku', 'spike-researcher': 'sonnet', 'reality-checker': 'sonnet', builder: 'sonnet' });
+  assert.deepEqual(models('economy'), { 'chief-of-staff': 'sonnet', staffing: 'haiku', 'product-manager': 'sonnet', 'delivery-lead': 'sonnet', 'progress-observer': 'haiku', 'spike-researcher': 'sonnet', 'reality-checker': 'sonnet', builder: 'sonnet' });
   const builder = (preset) => buildManifest({ project: 'acme', prefix: 'acme', host: 'h', preset: 'minimal', runner: 'plain', models: preset }).team.roles.find((r) => r.id === 'builder');
   assert.equal(builder('quality').large_model, 'opus');
   assert.equal(builder('economy').large_model, 'sonnet');

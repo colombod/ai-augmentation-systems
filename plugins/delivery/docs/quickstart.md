@@ -44,7 +44,7 @@ node <plugin-root>/scripts/start.js --project <project-root> --host laptop --mod
 node <plugin-root>/scripts/start.js --project <project-root> --host laptop --models balanced --product-repo <product-checkout>
 ```
 
-Other flags: `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Manager, one builder; `full` adds Staffing, the Progress Observer and the Spike Researcher), `--models quality|balanced|economy` (default `balanced`; see the README's Models section), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default: none, so each session uses your own Claude Code default), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
+Other flags: `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Manager, one builder; `full` adds Staffing, the Progress Observer, the Spike Researcher and the Reality Checker; the Reality Checker also joins `minimal` when a declared surface is not scriptable, or with `--reality-checker`), `--models quality|balanced|economy` (default `balanced`; see the README's Models section), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default: none, so each session uses your own Claude Code default), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
 
 The real run, against a throwaway fixture (paths shortened to placeholders):
 

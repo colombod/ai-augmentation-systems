@@ -24,7 +24,8 @@ const setup = ({ story, over, dm = 'delivery-lead' } = {}) => {
   const bd = memBd([storyBead({ assignee: 't@pc/builder-1', ...over })]);
   const run = (instance, argv, now = NOW) => evidence.main([...argv], { cwd: root, env, bd, now, who: whoFor(root, instance), verifyRecord: (r, id) => ({ ok: id === 'dec-chief-of-staff-41', error: 'not found' }) });
   const ev = (...argv) => run(dm, argv);
-  const add = (n, extra = []) => ev('add', ID, '--criterion', String(n), '--result', 'pass', '--surface', 'S1', '--sha', 'd478aa11', '--run', 'rc-1', ...extra);
+  // S1 is not scriptable: a DM row counts only on the owner's record (R-33); reality-check.test.js covers the checker's rows
+  const add = (n, extra = []) => ev('add', ID, '--criterion', String(n), '--result', 'pass', '--surface', 'S1', '--sha', 'd478aa11', '--run', 'rc-1', '--record', 'dec-chief-of-staff-41', ...extra);
   return { root, bd, ev, run, add, bead: () => bd.show(ID) };
 };
 

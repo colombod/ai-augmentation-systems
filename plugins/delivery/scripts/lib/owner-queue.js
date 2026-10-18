@@ -17,6 +17,12 @@ const DECISION_ABOUT = ['scope', 'money', 'irreversible'];
 // A check of whether something works is never the owner's (the Reality Checker or a builder runs it);
 // retrying a sign-in or testing a connection that is part of an owner-only step is fine.
 const A_CHECK = /\b(?:tell me what you see|see (?:if|whether) it works|check (?:if|whether|that)|verify (?:it|that|whether|the (?:fix|import|feature|change|build))|test (?:it|that|whether|the (?!connection\b))|try (?:it|the|dropping|running)|run the (?:test|check|probe)|confirm (?:it|that) works)\b/i;
+// A check in other words: an ask to look at, confirm or report what the product does (10-17 phrasings:
+// "tell me if the summary appears", "confirm the summary shows 212 cards", "make sure the import works",
+// "check the version number")
+const A_LOOK = /\b(?:tell me|let me know|confirm|check|make sure|ensure|verify|see|look at|look for|watch)\b[^.;]{0,60}?\b(?:appears?|shows?|shown|displays?|works?|working|loads?|version|summary|results?|count|is there|is correct|succeeds?)\b/i;
+// A secret written into the step: the owner is told where it goes, never given it in the queue
+const A_SECRET = /\b(?:sk|pk|rk)[-_](?:live|test)[-_]?[A-Za-z0-9]{8,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bAKIA[A-Z0-9]{12,}|\b(?:password|passwd|pwd|secret|token|api[_-]?key)\s*[:=]\s*\S{4,}|=\s*[A-Za-z0-9+/_-]{24,}/i;
 // A relay: going into another session to act there, or carrying a word to another role
 const A_RELAY = /\b(?:open|go to|switch to)\b[^.;]{0,40}\bsession\b|\b(?:type|paste|enter|reply|approve|click|press)\b[^.;]{0,30}\b(?:in|into|inside)\s+(?:the\s+)?(?:[\w-]+\s+){0,4}(?:session|tab|pane)\b|\btell the [\w-]+|\breply in\b/i;
 
@@ -47,12 +53,13 @@ const open = (root) => list(root).filter((s) => !s.done_at);
 
 // { problem } or {} for a candidate step
 function stepProblem(s, { questionExists } = {}) {
-  if (!KINDS.includes(s.kind)) return { problem: `kind ${s.kind || '(none)'} is not an owner step (kinds: ${KINDS.join(', ')}); checks go to the Reality Checker`, team: s.kind === 'verification' };
+  if (!KINDS.includes(s.kind)) return { problem: `kind ${s.kind || '(none)'} is not an owner step (kinds: ${KINDS.join(', ')}); checks go to the Reality Checker`, team: s.kind === 'verification' ? 'check' : false };
   for (const k of ['what', 'where', 'steps']) if (!s[k] || !String(s[k]).trim()) return { problem: `--${k} is required: the owner gets the exact steps, not a summary` };
   // the destination counts too: "Approve the edit" in "the builder session" is a relay (Copilot round 5)
   const text = `${s.what} ${s.where} ${s.steps}`;
   if (A_RELAY.test(text) || /\b(?:in|inside|into|on) (?:the )?(?:[\w-]+ ){0,4}(?:session|tab|pane)\b/i.test(String(s.where))) return { problem: 'that is a relay into another session, not an owner step: that session does it itself', team: true };
-  if (A_CHECK.test(text)) return { problem: 'that is a check of whether something works, not an owner step: the Reality Checker or a builder runs it', team: true };
+  if (A_SECRET.test(text)) return { problem: 'a step names where a secret goes, never the secret itself: take it out of the step (and rotate it if it was real)' };
+  if (A_CHECK.test(text) || A_LOOK.test(text)) return { problem: 'that is a check of whether something works, not an owner step: the Reality Checker or a builder runs it', team: 'check' };
   if (s.kind === 'decision') {
     if (!DECISION_ABOUT.includes(s.about)) return { problem: `a decision step names --about ${DECISION_ABOUT.join('|')}; other decisions are the team's` };
     if (!/^q-/.test(String(s.question || '')) || (questionExists && !questionExists(s.question))) return { problem: 'a decision step cites the logged question (--question q-...): log it with operator.js ask first' };
@@ -62,7 +69,7 @@ function stepProblem(s, { questionExists } = {}) {
 
 function add(root, step, { instance, now, questionExists } = {}) {
   const p = stepProblem(step, { questionExists });
-  if (p.problem) return { ok: false, error: p.problem, team: !!p.team };
+  if (p.problem) return { ok: false, error: p.problem, team: p.team || false };
   const inst = W.instanceOf(instance);
   const row = { type: 'step', id: newId(inst), kind: step.kind, what: step.what, where: step.where, steps: step.steps,
     ...(step.expect ? { expect: step.expect } : {}), ...(step.check ? { check: step.check } : {}), ...(step.bead ? { bead: step.bead } : {}),

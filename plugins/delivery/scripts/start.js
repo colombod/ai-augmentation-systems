@@ -6,7 +6,7 @@
 //       prerequisites as a pass/fail list with the fix for each; exit 1 when a hard one is missing.
 //   start.js --project <root> [--host <name>] [--preset minimal|full] [--product-repo <path|url>]
 //            [--prefix <bd prefix>] [--runner superpowers|attractor|plain] [--permission-mode <mode>]
-//            [--models quality|balanced|economy] [--team-dir <dir>] [--user <name>] [--dry-run]
+//            [--models quality|balanced|economy] [--reality-checker] [--team-dir <dir>] [--user <name>] [--dry-run]
 //       scaffold a shipping team: manifest from the preset (never overwriting one), bd init when
 //       .beads is absent, prepare-role for every instance not yet prepared, then the command that
 //       starts each session. --dry-run prints the plan and writes nothing.
@@ -35,20 +35,36 @@ const ROLE_ENTRIES = {
   'progress-observer': { id: 'progress-observer', brief: 'delivery/progress-observer', model: 'haiku' },
   'spike-researcher': { id: 'spike-researcher', brief: 'delivery/spike-researcher', model: 'sonnet' },
   builder: { id: 'builder', brief: 'delivery/builder', model: 'sonnet', steward: true },
+  'reality-checker': { id: 'reality-checker', brief: 'delivery/reality-checker', model: 'sonnet' },
 };
 // --models: one model per role for the whole team. balanced is the role defaults (opus for the Chief
 // of Staff and the Product Manager); quality also puts the Delivery Manager on opus; economy moves
 // all three to sonnet and Staffing to haiku. Builders stay on sonnet in every preset.
 // large_model is the model a builder gives its subagents for a size-L bead (env DELIVERY_LARGE_MODEL).
 const MODEL_PRESETS = {
-  quality: { 'chief-of-staff': 'opus', 'product-manager': 'opus', 'delivery-lead': 'opus', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'sonnet', 'progress-observer': 'haiku', large_model: 'opus' },
-  balanced: { 'chief-of-staff': 'opus', 'product-manager': 'opus', 'delivery-lead': 'sonnet', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'sonnet', 'progress-observer': 'haiku', large_model: 'opus' },
-  economy: { 'chief-of-staff': 'sonnet', 'product-manager': 'sonnet', 'delivery-lead': 'sonnet', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'haiku', 'progress-observer': 'haiku', large_model: 'sonnet' },
+  quality: { 'chief-of-staff': 'opus', 'product-manager': 'opus', 'delivery-lead': 'opus', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'sonnet', 'progress-observer': 'haiku', 'reality-checker': 'sonnet', large_model: 'opus' },
+  balanced: { 'chief-of-staff': 'opus', 'product-manager': 'opus', 'delivery-lead': 'sonnet', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'sonnet', 'progress-observer': 'haiku', 'reality-checker': 'sonnet', large_model: 'opus' },
+  economy: { 'chief-of-staff': 'sonnet', 'product-manager': 'sonnet', 'delivery-lead': 'sonnet', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'haiku', 'progress-observer': 'haiku', 'reality-checker': 'sonnet', large_model: 'sonnet' },
 };
 const PRESETS = {
   minimal: ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder'],
-  full: ['chief-of-staff', 'staffing', 'product-manager', 'delivery-lead', 'progress-observer', 'spike-researcher', 'builder'],
+  full: ['chief-of-staff', 'staffing', 'product-manager', 'delivery-lead', 'progress-observer', 'spike-researcher', 'reality-checker', 'builder'],
 };
+
+// R-33: a customer surface no test reaches needs the Reality Checker, so a declared surface with
+// scriptable: false puts it in the minimal preset too. The surface ids that are not scriptable:
+function unscriptableSurfaces(projectRoot) {
+  const dir = path.join(projectRoot, '.delivery', 'initiatives');
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (err) { return []; }
+  const { loadSurface } = require('./lib/surface.js');
+  return names.flatMap((n) => loadSurface(projectRoot, n).surfaces.filter((x) => x.scriptable === false).map((x) => `${n}/${x.id}`));
+}
+function presetRoles(preset, { realityChecker = false, unscriptable = [] } = {}) {
+  const ids = PRESETS[preset].slice();
+  if (!ids.includes('reality-checker') && (realityChecker || unscriptable.length)) ids.splice(ids.indexOf('builder'), 0, 'reality-checker');
+  return ids;
+}
 
 class UsageError extends Error {}
 
@@ -180,9 +196,9 @@ function isUrl(s) {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) || /^[^/\s]+@[^:\s]+:/.test(s);
 }
 
-function buildManifest({ project, prefix, host, preset, runner, models = 'balanced' }) {
+function buildManifest({ project, prefix, host, preset, runner, models = 'balanced', roleIds }) {
   const m = MODEL_PRESETS[models];
-  const roles = PRESETS[preset].map((id) => {
+  const roles = (roleIds || PRESETS[preset]).map((id) => {
     const { id: rid, brief, ...rest } = ROLE_ENTRIES[id];
     const r = { id: rid, brief, host, ...rest, model: m[id] || rest.model };
     if (id === 'builder') { r.runner = runner; r.large_model = m.large_model; }
@@ -208,7 +224,7 @@ function startCommand(roleDir, instance, permissionMode) {
 function scaffold(opts) {
   const {
     project, host: hostFlag, preset = 'minimal', models = 'balanced', productRepo, prefix: prefixFlag, runner = 'plain', permissionMode = 'default',
-    teamDir: teamDirFlag, user, dryRun = false, env = process.env, pluginRoot = PLUGIN_ROOT,
+    teamDir: teamDirFlag, user, dryRun = false, env = process.env, pluginRoot = PLUGIN_ROOT, realityChecker = false,
   } = opts;
   if (!project) throw new UsageError('--project <root> is required');
   if (!PRESETS[preset]) throw new UsageError(`--preset must be one of ${Object.keys(PRESETS).join(', ')}`);
@@ -254,11 +270,16 @@ function scaffold(opts) {
     const st = run('git', ['status', '--porcelain', '--', TEAM_REL, HOSTS_REL], { cwd: projectRoot, env: gitEnv });
     if (st.ok && st.out) { if (dryRun) say('  manifest: would commit the uncommitted manifest files'); else wroteManifest = true; }
     say(`  manifest: keeping the existing ${TEAM_REL} and ${HOSTS_REL} (project "${team.project}", ${expandInstances(team).length} instance(s)); --preset, --models, --host, --prefix and --runner are not applied to it`);
+    const unscriptable = unscriptableSurfaces(projectRoot);
+    if (unscriptable.length && !team.roles.some((r) => r.id === 'reality-checker' && !r.retired)) say(`  manifest: warning: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'are' : 'is'} not scriptable and the team has no Reality Checker: add {"id": "reality-checker", "brief": "delivery/reality-checker", "host": "<a host with desktop apps>"} to roles`);
   } else {
     const project = slug(path.basename(projectRoot), 'project');
     const prefix = slug(prefixFlag || project, 'proj');
-    ({ team, hosts } = buildManifest({ project, prefix, host, preset, runner, models }));
-    say(`  manifest: ${w}write ${TEAM_REL} and ${HOSTS_REL}: preset ${preset}, models ${models}, host "${host}", prefix "${prefix}", roles ${PRESETS[preset].join(', ')}`);
+    const unscriptable = unscriptableSurfaces(projectRoot);
+    const roleIds = presetRoles(preset, { realityChecker, unscriptable });
+    ({ team, hosts } = buildManifest({ project, prefix, host, preset, runner, models, roleIds }));
+    say(`  manifest: ${w}write ${TEAM_REL} and ${HOSTS_REL}: preset ${preset}, models ${models}, host "${host}", prefix "${prefix}", roles ${roleIds.join(', ')}`);
+    if (unscriptable.length && !PRESETS[preset].includes('reality-checker')) say(`  manifest: the Reality Checker is added: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'are' : 'is'} not scriptable, so its checks run on the real surface`);
     if (!dryRun) {
       fs.mkdirSync(path.dirname(teamFile), { recursive: true });
       fs.writeFileSync(teamFile, formatManifestJson(team));
@@ -365,7 +386,7 @@ function scaffold(opts) {
 
 // ---- CLI ----
 
-const BOOLEAN = new Set(['check', 'dry-run', 'help']);
+const BOOLEAN = new Set(['check', 'dry-run', 'help', 'reality-checker']);
 function parseArgs(argv) {
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
@@ -380,10 +401,10 @@ function parseArgs(argv) {
 }
 
 const USAGE = `usage: start.js --check [--project <root>]
-       start.js --project <root> [--host <name>] [--preset minimal|full] [--models quality|balanced|economy] [--product-repo <path|url>] [--prefix <bd prefix>]
+       start.js --project <root> [--host <name>] [--preset minimal|full] [--models quality|balanced|economy] [--reality-checker] [--product-repo <path|url>] [--prefix <bd prefix>]
                 [--runner superpowers|attractor|plain] [--permission-mode <mode>] [--team-dir <dir>] [--user <name>] [--dry-run]`;
 
-const KNOWN = new Set(['check', 'dry-run', 'help', 'project', 'host', 'preset', 'models', 'product-repo', 'prefix', 'runner', 'permission-mode', 'team-dir', 'user']);
+const KNOWN = new Set(['check', 'dry-run', 'help', 'reality-checker', 'project', 'host', 'preset', 'models', 'product-repo', 'prefix', 'runner', 'permission-mode', 'team-dir', 'user']);
 
 function main(argv, { env = process.env, write = (s) => process.stdout.write(s) } = {}) {
   let flags;
@@ -403,7 +424,7 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
   try {
     const res = scaffold({
       project: flags.project, host: flags.host, preset: flags.preset, models: flags.models, productRepo: flags['product-repo'], prefix: flags.prefix,
-      runner: flags.runner, permissionMode: flags['permission-mode'], teamDir: flags['team-dir'], user: flags.user, dryRun: !!flags['dry-run'], env,
+      runner: flags.runner, permissionMode: flags['permission-mode'], teamDir: flags['team-dir'], user: flags.user, dryRun: !!flags['dry-run'], env, realityChecker: !!flags['reality-checker'],
     });
     write(`${res.out.join('\n')}\n`);
     return res.code;
@@ -416,4 +437,4 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };
+module.exports = { presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };

@@ -216,10 +216,15 @@ test('hardening a/b: native deny rules per role, idempotent, keeping the user\'s
     const { roleDir } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
     return { roleDir, s: JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')) };
   };
-  const deny = (instance) => ((settingsOf(instance).s.permissions || {}).deny || []).slice().sort();
+  const denyAll = (instance) => ((settingsOf(instance).s.permissions || {}).deny || []).slice().sort();
   // operator-facing roles may ask; the chief of staff has no git push in its lane; only the delivery
   // lead merges, so every other role gets the gh pr merge backstop
   const M = 'Bash(gh pr merge:*)';
+  // no role here has a reach lane: browser, desktop and computer-use servers are denied to all (R-05)
+  const R = require('./prepare-role.js').REACH_DENY;
+  assert.deepEqual(R, ['mcp__Claude_Browser', 'mcp__claude-in-chrome', 'mcp__computer-use', 'mcp__Claude_Code_iOS_Simulator', 'mcp__playwright', 'mcp__chrome-devtools', 'mcp__puppeteer']);
+  const deny = (instance) => denyAll(instance).filter((r) => !R.includes(r));
+  for (const i of ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder-1']) assert.deepEqual(denyAll(i).filter((r) => R.includes(r)), R.slice().sort(), i);
   assert.deepEqual(deny('chief-of-staff'), ['Bash(curl:*)', M, 'Bash(git push:*)', 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());
   // the product manager, delivery lead and staffing push plan documents (git-write-project)
   assert.deepEqual(deny('product-manager'), ['Bash(curl:*)', M, 'Bash(rm:*)', 'Bash(sudo:*)', 'Bash(wget:*)'].sort());

@@ -5,6 +5,14 @@ const path = require('path');
 const MODELS = new Set(['opus', 'sonnet', 'haiku']);
 const RUNNERS = new Set(['superpowers', 'attractor', 'plain']);
 const MODES = new Set(['default', 'delegate']);
+const NO_REACH = new Set(['chief-of-staff', 'product-manager', 'delivery-lead', 'staffing']);
+// a manager by id or by brief: a custom id with a manager's brief is still a manager
+const isManager = (role) => Boolean(role) && (NO_REACH.has(canonicalRoleId(role.id))
+  || NO_REACH.has(canonicalRoleId(String(role.brief || '').replace(/^delivery\//, ''))));
+// The reach a manifest entry grants (R-05): "local" (browser tools on local development hosts) for a
+// non-manager with "reach": true, else none. The lane hook calls this on the live manifest, so a hand
+// edit that gives a manager reach is ignored there too.
+const reachOf = (role) => (role && role.reach === true && !isManager(role) ? 'local' : null);
 const TEAM_REL = path.join('.delivery', 'team', 'team.json');
 const HOSTS_REL = path.join('.delivery', 'team', 'hosts.json');
 
@@ -141,6 +149,10 @@ function validateManifest(team, hosts) {
     if (role.mode && !MODES.has(role.mode)) problems.push(`team.json: role "${role.id}" has mode "${role.mode}"`);
     if (role.count !== undefined && (!Number.isInteger(role.count) || role.count < 1)) problems.push(`team.json: role "${role.id}" has invalid count`);
     if (role.retired !== undefined && typeof role.retired !== 'boolean') problems.push(`team.json: role "${role.id}" has non-boolean "retired"`);
+    // reach: browser, desktop and computer-use tools for a role whose brief does not have them (R-05).
+    // Managers never drive the owner's apps; real-surface runs are the Reality Checker's.
+    if (role.reach !== undefined && typeof role.reach !== 'boolean') problems.push(`team.json: role "${role.id}" has non-boolean "reach"`);
+    else if (role.reach === true && isManager(role)) problems.push(`team.json: role "${role.id}" cannot have "reach": managers never drive the owner's apps; real-surface runs are the Reality Checker's`);
     if (role.steward) stewards.add(role.host);
   }
   problems.push(...require('./judge.js').configProblems(team.judge).problems);
@@ -173,4 +185,4 @@ function expandInstances(team) {
   return out;
 }
 
-module.exports = { canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, expandInstances, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };
+module.exports = { reachOf, isManager, canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, expandInstances, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };

@@ -18,7 +18,7 @@ const codes = (f, level) => f.filter((x) => !level || x.level === level).map((x)
 const TUPLE = { host: S1.host, app: S1.app, mode: S1.mode, install_artifact: S1.install_artifact };
 const row = (over = {}) => {
   const c = Number(over.criterion || 1) === 2 ? C2 : C1;
-  return { type: 'row', id: 'ev-x-1', criterion: c.n, criterion_hash: G.criterionHash(c), result: 'pass', surface: 'S1', tuple: TUPLE, sha: 'd478aa11', by: 'delivery-lead', actor: 'lead@pc/delivery-lead', arm: 'main', at: '2026-10-13T09:00:00Z', ...over };
+  return { type: 'row', id: 'ev-x-1', criterion: c.n, criterion_hash: G.criterionHash(c), result: 'pass', surface: 'S1', tuple: TUPLE, sha: 'd478aa11', by: 'reality-checker', via: 'reality-check', actor: 'rc@pc/reality-checker', arm: 'main', at: '2026-10-13T09:00:00Z', ...over };
 };
 const deployed = (over = {}) => storyBead({ ...over, metadata: { ready_hash: G.storyHash(story), deployed_sha: 'd478aa11', deployed_at: '2026-10-13T08:00:00Z', ...(over.metadata || {}) } });
 

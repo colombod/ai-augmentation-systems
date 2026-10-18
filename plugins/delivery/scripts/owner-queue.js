@@ -46,7 +46,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, q
   if (cmd === 'add') {
     const r = Q.add(who.root, a, { instance: who.instance, now, questionExists: questionExists || questionChecker(who.root) });
     if (r.ok) return { code: 0, out: `${r.row.id}: queued for the owner's daily batch` };
-    return { code: 1, out: `owner-queue.js: refused: ${r.error}.\n${r.team ? 'Message the Delivery Manager: the team does it.' : "Queue it with exact steps: `owner-queue.js add --kind <kind> --what '<one action>' --where '<place>' --steps '<exact steps>'`"}` };
+    return { code: 1, out: `owner-queue.js: refused: ${r.error}.\n${r.team === 'check' ? 'Message the Delivery Manager: it plans a reality check (`reality-check.js plan <bead>`) and the Reality Checker runs it.' : r.team ? 'Message the Delivery Manager: the team does it.' : "Queue it with exact steps: `owner-queue.js add --kind <kind> --what '<one action>' --where '<place>' --steps '<exact steps>'`"}` };
   }
   const r = Q.done(who.root, id, { instance: who.instance, now });
   if (!r.ok) return { code: 1, out: `owner-queue.js: ${r.error}.\nSee the open steps: \`owner-queue.js list --all\`` };

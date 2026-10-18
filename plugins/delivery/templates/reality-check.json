@@ -1,0 +1,41 @@
+{
+  "_about": "A reality-check script (R-33): written by `reality-check.js plan <bead>` from the story's criteria and probes into .delivery/reality-checks/<bead>.json, refined by the Delivery Manager, run by the Reality Checker on the real surface. Every result goes through `reality-check.js run-record`, which refuses a version on screen that is not the deployed one. Never put a password, token or secret in this file.",
+  "id": "rc-<story bead id>",
+  "kind": "reality-check",
+  "story": "<story bead id>",
+  "story_file": "<story file under .delivery/stories/>",
+  "surface": {
+    "id": "S1",
+    "host": "<from surface.json, e.g. chatgpt.com>",
+    "app": "<e.g. ChatGPT web>",
+    "mode": "<e.g. plain chat, not code mode>",
+    "install_artifact": "<e.g. the connector from the shipped plugin zip>"
+  },
+  "account": {
+    "name": "<the test account's name: never the owner's own account, never a password>",
+    "signin": "A sign-in, consent or payment wall stops the run: message the Chief of Staff with the one exact step for the owner queue (kind signin, consent or payment), and resume when it is done."
+  },
+  "artifact": {
+    "deployed_sha": "<the sha evidence.js state deployed recorded>",
+    "version": "<the version string the deploy recorded (--version), or null>",
+    "read_on_screen": "<where the surface shows the installed version>"
+  },
+  "cap": { "attempts": 2, "minutes": 30 },
+  "preconditions": ["<owner-queue step ids that must be done first, e.g. the test account's long-lived sign-in>"],
+  "setup": [
+    { "action": "Open <app> on <host>, in <mode>, with <install artifact> installed, using the test account", "expect": "the screen shows <app> in <mode>; any other app or mode stops the run", "capture": ["screenshot"] },
+    { "action": "Read the version the surface shows", "expect": "<version or sha>; any other stops the run", "capture": ["screenshot", "page-text"] }
+  ],
+  "criteria": [
+    {
+      "criterion": 1,
+      "criterion_hash": "<written by plan; binds the group to the criterion's wording>",
+      "text": "<the criterion, as the story states it>",
+      "steps": [
+        { "n": 1, "action": "<what the persona does on the surface>", "expect": "<the observation that decides it>", "capture": ["screenshot", "page-text", "log"] }
+      ],
+      "pass_rule": "pass only when every step shows its expected observation on S1 at the version read in setup; anything else is a fail, recorded with its capture"
+    }
+  ],
+  "always_capture": ["the version as the surface shows it", "a screenshot or page text per step", "the server log lines for the run window, with the caller's client and surface"]
+}

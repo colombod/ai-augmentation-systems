@@ -44,7 +44,7 @@ Read `.delivery/personas/`.
 
 For `--journey`, also establish what is being walked through, in this order of preference:
 
-1. **A real running product** — best. Read the actual code, pages, and copy so personas react to what exists rather than what was intended. If a dev server or a deployed URL is available and browser tooling is present, use it.
+1. **A real running product** — best. Read the actual code, pages, and copy so personas react to what exists rather than what was intended. If a dev server or a deployed URL is available, read its pages through the session that may (browser and desktop tools belong to the Reality Checker, and to a builder opted in for local hosts); never drive the owner's apps from this skill.
 2. **A specified flow** — the scenarios in `.delivery/initiatives/<initiative>/prd.md`.
 3. **A proposed flow** — described in the brief.
 
