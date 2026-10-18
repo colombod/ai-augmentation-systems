@@ -27,7 +27,7 @@ function judgeSummary(j) {
 }
 
 async function main() {
-  const { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, JUDGE_REMINDER } = require('./role-context.js');
+  const { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, JUDGE_REMINDER, MESSAGE_REMINDER } = require('./role-context.js');
   const input = readHookInput();
   let cap = null;
   try {
@@ -44,11 +44,30 @@ async function main() {
     const parties = partiesOf(valid);
     let judged = null;
     let overruled = false;
+    const M = require('./message-checks.js');
+    const jargs = { input, team: valid.team, role: valid.role.id, retired: !!valid.role.retired, projectRoot: valid.marker.project_root, parties };
+    let msgJudged = {};
+    const msgCandidates = [];
     try {
-      // the typed judge, when enabled (manifest judge block and its key variable); null otherwise
-      // nothing is sent when this turn can no longer block a relay
-      if (!relayBudgetSpent({ input, roleDir: valid.roleDir })) judged = await judgeRelay({ input, team: valid.team, role: valid.role.id, retired: !!valid.role.retired, projectRoot: valid.marker.project_root, parties });
+      // the typed judge, when enabled (manifest judge block and its key variable); null otherwise.
+      // Nothing is sent when this turn can no longer block; the message questions (orders, tone,
+      // jargon) are asked at the same time as the relay question.
+      const spent = relayBudgetSpent({ input, roleDir: valid.roleDir });
+      [judged, msgJudged] = spent ? [null, {}] : await Promise.all([judgeRelay(jargs).catch(() => null), M.judgeMessage(jargs).catch(() => ({}))]);
     } catch (err) { judged = null; }
+    try {
+      // what the message tells the owner (R-03, R-44, R-45): an out-of-queue order may block once; the rest warns
+      const root = valid.marker.project_root;
+      const turn = require('../../scripts/lib/transcript.js').currentTurn(input.transcript_path);
+      const found = M.messageFindings({ message: input.last_assistant_message, owner: turn.owner, commands: turn.commands, role: valid.role.id,
+        judged: msgJudged || {}, openSteps: require('../../scripts/lib/owner-queue.js').open(root), briefingLines: require('../../scripts/lib/goal.js').value(root, 'briefing_lines'),
+        prefix: valid.team.prefix, parties, queueCmd: `node ${require('../../scripts/lib/plugin-root.js').shellPath(path.join(__dirname, '..', '..', 'scripts', 'owner-queue.js'))}` });
+      if (!valid.role.retired) msgCandidates.push(...found.candidates);
+      const W = require('../../scripts/lib/warnings.js');
+      for (const w of found.warnings) W.record(root, { ...w, raisedBy: valid.marker.instance, instance: valid.marker.instance });
+      const text = M.reminderText(found.warnings);
+      if (text) { try { require('fs').writeFileSync(path.join(valid.roleDir, MESSAGE_REMINDER), text); } catch (e) { /* best effort */ } }
+    } catch (err) { /* the message checks fail open */ }
     try {
       const found = operatorChecks({ input, roleDir: valid.roleDir, projectRoot: valid.marker.project_root, role: valid.role.id,
         instance: valid.marker.instance, captureStatus: cap && cap.status, parties, pluginRoot: path.join(__dirname, '..', '..'), retired: !!valid.role.retired, judged, deps: { warn: (m) => process.stderr.write(m) } });
@@ -64,6 +83,7 @@ async function main() {
       const advisory = found.filter((c) => c.advisory && !c.record).map((c) => c.reason).join('\n');
       if (advisory) { try { require('fs').writeFileSync(path.join(valid.roleDir, JUDGE_REMINDER), advisory); } catch (e) { /* best effort */ } }
     } catch (err) { /* the operator checks fail open */ }
+    candidates.push(...msgCandidates);
     try {
       const { makeBd } = require('../../scripts/lib/bd.js');
       // composeStop limits repeats, so the claim check runs on a continuation too

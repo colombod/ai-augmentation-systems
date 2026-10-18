@@ -122,4 +122,30 @@ function formatStatus(read) {
   return read.total_user_records >= 3 && read.with_origin === 0 ? 'format_unrecognised' : 'ok';
 }
 
-module.exports = { classifyRecord, readHumanInputs, formatStatus };
+// The current turn, for the Stop checks: the last human input's text and the shell commands the
+// session ran since (assistant tool_use blocks with a command). Reads at most the last maxBytes; a
+// partial first line is skipped. { owner: text or null, commands: [] }; never throws.
+function currentTurn(file, { maxBytes = 8 * 1024 * 1024 } = {}) {
+  const out = { owner: null, commands: [] };
+  let text;
+  try {
+    const size = fs.statSync(file).size;
+    const len = Math.min(size, maxBytes);
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(len);
+    try { fs.readSync(fd, buf, 0, len, size - len); } finally { fs.closeSync(fd); }
+    text = buf.toString('utf8');
+  } catch (e) { return out; }
+  for (const l of text.split('\n')) {
+    if (!l.trim()) continue;
+    let rec;
+    try { rec = JSON.parse(l); } catch (e) { continue; }
+    const c = classifyRecord(rec);
+    if (c && c.source === 'human') { out.owner = c.text; out.commands = []; continue; }
+    const content = rec && rec.type === 'assistant' && rec.message && Array.isArray(rec.message.content) ? rec.message.content : [];
+    for (const b of content) if (b && b.type === 'tool_use' && b.input && typeof b.input.command === 'string') out.commands.push(b.input.command);
+  }
+  return out;
+}
+
+module.exports = { classifyRecord, readHumanInputs, formatStatus, currentTurn };

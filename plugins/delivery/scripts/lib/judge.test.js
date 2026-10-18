@@ -209,7 +209,7 @@ test('stats: calls, latency percentiles, tokens and the share at the thresholds 
 
 test('the catalogue: every question has a version, a type, declared state and instructions; divergence is warn-only', () => {
   const cat = J.loadCatalogue();
-  assert.deepEqual(Object.keys(cat.questions).sort(), ['builds_on_verified', 'divergence', 'is_fix', 'relay_request', 'shippable_unit']);
+  assert.deepEqual(Object.keys(cat.questions).sort(), ['builds_on_verified', 'divergence', 'is_fix', 'jargon', 'orders_owner', 'relay_request', 'shippable_unit', 'tone_violation']);
   for (const [id, q] of Object.entries(cat.questions)) {
     assert.ok(q.version && ['noul', 'choice'].includes(q.type) && q.state.length && q.instructions, id);
     if (q.type === 'choice') assert.ok(Object.keys(q.criteria).length >= 2, id);

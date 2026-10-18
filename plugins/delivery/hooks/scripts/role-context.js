@@ -191,7 +191,7 @@ function promptSubmitText(input, deps = {}) {
   // The role line repeats only when the claim changed since the last prompt; a claim note the last
   // turn missed (the Stop hook leaves it as a reminder rather than blocking) is said once.
   const lines = [];
-  for (const name of [CLAIM_REMINDER, JUDGE_REMINDER]) {
+  for (const name of [CLAIM_REMINDER, JUDGE_REMINDER, MESSAGE_REMINDER]) {
     const reminderFile = path.join(valid.roleDir, name);
     try { const r = fs.readFileSync(reminderFile, 'utf8').trim(); if (r) lines.push(r); fs.unlinkSync(reminderFile); } catch (err) { /* none */ }
   }
@@ -209,6 +209,8 @@ function promptSubmitText(input, deps = {}) {
 const CLAIM_REMINDER = '.delivery-claim-reminder';
 // the typed judge's relay warning (below the block threshold), said once on the next prompt
 const JUDGE_REMINDER = '.delivery-judge-reminder';
+// the owner-message warnings (orders, length, ids, tone, unchecked claims) and the idle alarm, said once
+const MESSAGE_REMINDER = '.delivery-message-reminder';
 const LAST_CLAIM = '.delivery-last-claim';
 
-module.exports = { CLAIM_REMINDER, JUDGE_REMINDER, operatorCaptureNote, readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };
+module.exports = { CLAIM_REMINDER, JUDGE_REMINDER, MESSAGE_REMINDER, operatorCaptureNote, readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };

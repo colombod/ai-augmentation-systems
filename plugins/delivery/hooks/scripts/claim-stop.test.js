@@ -354,7 +354,7 @@ test('relay guard on the judge: provider down or hanging, the regex decides as w
     const h = reasonOf(await runStopAsync({ cwd: preparedRoleDir(), last_assistant_message: REGEX_HIT }, hang.url));
     assert.ok(Date.now() - t0 < 3000, `the hook took ${Date.now() - t0} ms`);
     assert.equal(h.reason, relayReason(REGEX_HIT, findRelayRequest(REGEX_HIT).clause));
-    assert.equal(hang.seen.length, 1);
+    assert.equal(hang.seen.filter((b) => b.questions.relay_request).length, 1);
   } finally { hang.close(); }
 });
 
@@ -368,3 +368,41 @@ test('relay guard on the judge: nothing is sent when the turn can no longer bloc
   } finally { f.close(); }
 });
 function preparedRoleDir() { return judgedRole().roleDir; }
+
+// ---- what the message tells the owner (R-44, R-45), through the Stop hook ----
+const { MESSAGE_REMINDER } = require('./role-context.js');
+const W = require('../../scripts/lib/warnings.js');
+// 10-12 19:27: an order with no other session in it (the relay guard does not see it)
+const UNLOCK = 'The PC is locked, so the test cannot run. Please unlock it and tell me when it is unlocked.';
+
+test('R-44 through the Stop hook: judge off, an order to the owner is recorded and reminded, never blocked', () => {
+  const { projectRoot, roleDir } = preparedRole('chief-of-staff');
+  const r = runStop('chief-of-staff', { cwd: roleDir, last_assistant_message: UNLOCK });
+  assert.equal(r.stdout, '');
+  assert.deepEqual(W.list(projectRoot).map((w) => [w.kind, w.rule]), [['orders-owner', 'R-44']]);
+  assert.match(fs.readFileSync(path.join(roleDir, MESSAGE_REMINDER), 'utf8'), /an order to the owner outside the queue/);
+});
+
+test('R-44 through the Stop hook: judge on, orders_owner p 0.9 blocks once with the queue command; tone and jargon only warn', async () => {
+  const seen = [];
+  const answers = { relay_request: { type: 'noul', noul: 0.1 }, orders_owner: { type: 'noul', noul: 0.9 }, jargon: { type: 'noul', noul: 0.2 },
+    tone_violation: { type: 'choice', choice: 'justifying', confidence: 0.9, probabilities: { none: 0.05, justifying: 0.9, condescending: 0.03, therapeutic: 0.02 } } };
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => { const q = Object.keys(JSON.parse(body).questions)[0]; seen.push(q); res.end(JSON.stringify({ model: 'jev-1.13.0', answers: { [q]: answers[q] } })); });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/v1/systemone`;
+    const { projectRoot, roleDir } = judgedRole();
+    const out = reasonOf(await runStopAsync({ cwd: roleDir, last_assistant_message: UNLOCK }, url));
+    assert.equal(out.decision, 'block');
+    assert.match(out.reason, /^You told the owner to do something: "Please unlock it and tell me when it is unlocked"\./);
+    assert.match(out.reason, /owner-queue\.js add --kind/);
+    assert.deepEqual([...new Set(seen)].sort(), ['jargon', 'orders_owner', 'relay_request', 'tone_violation']);
+    assert.deepEqual(W.list(projectRoot).map((w) => w.kind).sort(), ['tone']);
+    // the same turn's continuation does not block on it again
+    assert.equal((await runStopAsync({ cwd: roleDir, stop_hook_active: true, last_assistant_message: UNLOCK }, url)).stdout, '');
+  } finally { server.closeAllConnections(); server.close(); }
+});

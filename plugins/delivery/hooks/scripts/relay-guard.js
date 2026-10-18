@@ -500,4 +500,5 @@ function operatorChecks({ input, roleDir, projectRoot, role, instance, captureSt
   }
 }
 
-module.exports = { findRelayRequest, operatorChecks, judgeRelay, relayCandidates, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD, OPERATOR_FACING };
+// clauses, compile, addressOf and strip are shared with message-checks.js (orders to the owner)
+module.exports = { clauses, compile, addressOf, strip, findRelayRequest, operatorChecks, judgeRelay, relayCandidates, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD, OPERATOR_FACING };
