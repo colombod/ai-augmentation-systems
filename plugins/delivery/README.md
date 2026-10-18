@@ -193,6 +193,7 @@ The shipping team runs on hooks and per-role settings. These are the places wher
 - **ralph-loop and the Stop cap.** Claude Code allows at most 8 consecutive Stop blocks; the delivery Stop hook blocks at most twice per turn, but a loop plugin that also blocks Stop shares the budget.
 - **Role directories make roles.** An ordinary session started inside a role directory becomes that role, with its lane, deny rules and Stop guard.
 - **The product-repo guard is a first line.** It stops a cooperative or careless session; for the durable control, scan the denylist on the product remote ([example](docs/reference.md#the-leak-guard)).
+- **The typed judge sends text to a third party, only if you turn it on.** Off by default. With a `judge` block in `team.json` and `TYPESAFE_API_KEY` set, the Stop hook sends the Chief of Staff's or Product Manager's final message (code and quotes removed) to TypeSafe (`api.typesafe.ai`) to ask whether it asks you to relay; `judge.js ask` sends only the fields a catalogued question declares. Anything that looks like a secret, token, id, email, URL or path, or matches the denylist, is refused locally. Its answers are advisory and logged locally without the text ([details](docs/reference.md#the-typed-judge)).
 - **Cost.** Each hook is a separate `node` process, about 38 ms per delivery hook; a Bash call pays 3 (lane, leak guard, bd guard), a Write or Edit 3, and the hooks return immediately outside a role.
 
 ## Reference

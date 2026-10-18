@@ -82,7 +82,8 @@ session its role and keep it:
     `PushNotification`, `SendUserFile` for roles other than the Chief of Staff and the Product
     Manager).
   - Stop: captures operator input, then the operator checks for the Chief of Staff and the Product
-    Manager (an unrecorded input, a relay request), at most two blocking stops per turn.
+    Manager (an unrecorded input, a relay request, asked of the [typed judge](#the-typed-judge) first
+    when it is on), at most two blocking stops per turn.
   - PostToolUse and PostToolUseFailure: the invocation recorder, writing only with
     `DELIVERY_LEDGER=1`; synchronous for a successful Write, Edit or NotebookEdit (it hashes the
     file as the tool left it), async for everything else.
@@ -156,6 +157,54 @@ jobs:
             echo "plan text in commit messages"; exit 1
           fi
 ```
+
+### The typed judge
+
+An optional, advisory model that answers catalogued gate questions with a typed answer (a
+probability, or one of a fixed set of options with a confidence). It is off unless the manifest
+has a `judge` block and the key variable it names is set in the session's environment:
+
+```json
+"judge": { "provider": "typesafe", "model": "jev-latest", "key_env": "TYPESAFE_API_KEY", "block_threshold": 0.8, "warn_threshold": 0.5 }
+```
+
+`provider` is `typesafe` (TypeSafe Jev, `https://api.typesafe.ai/v1/systemone`) or `none`. The key is
+read from that variable only, never from a file, and never logged. Unknown keys are ignored with a
+warning; `endpoint` accepts only the provider's own URL or a loopback address (gateways are not
+supported yet).
+
+The catalogue is `judge/questions.json`, versioned per question:
+
+| Question | Type | Used by | Mode |
+|---|---|---|---|
+| `relay_request` v1 | probability | the Chief of Staff's and Product Manager's Stop hook | blocks at `block_threshold`, reminds at `warn_threshold` |
+| `divergence` v2 | none, minor, serious | library and CLI only for now | warn-only until re-measured on real gate summaries |
+| `shippable_unit` v2 | yes, partial, no | library and CLI only for now | advisory |
+| `builds_on_verified` v2 | strongly, partly, new area | library and CLI only for now | advisory |
+| `is_fix` v1 | probability | library and CLI only for now | advisory (a probability, not the yes/no choice first planned) |
+
+- **Tool:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge.js ask <question-id> --state <file|->` prints the
+  typed result as JSON (exit 0 answered, 3 skipped or failed, with the reason); `judge.js questions`
+  lists the catalogue; `judge.js stats` summarises the log. Every role's lane has the `judge` group.
+- **Relay guard:** with the judge on, the Stop hook asks `relay_request` about the final message
+  (code blocks, inline code, quoted lines and double-quoted spans removed first). At or above
+  `block_threshold` the stop blocks once, quoting the regex's clause or the message's start; in the
+  warn band the next prompt carries a one-line reminder; below it passes. Off, refused locally,
+  errored or timed out (2 s), the regex detector decides as before. The answer is kept in the stop
+  state; the regex result is logged next to it.
+- **What is sent:** only the question's declared state fields. A declared field that looks like a
+  secret, token, credential, id, email, URL or path, or matches `.delivery/team/denylist.txt`, refuses
+  the call locally (the result says which field and why, never the value). States over 16,000
+  characters are refused too.
+- **The log:** each call is one advisory line in `.delivery/judge/<date>.ndjson` (gitignored): question,
+  version, model, answer, probabilities, latency, tokens, the gate, and a sha256 of the state sent,
+  not the state. `judge.js stats` reports calls, latency p50/p95, tokens and the share at or above
+  each threshold per question. Agreement with later outcomes and blocks overridden as wrong are not
+  tracked yet.
+- **Advisory:** an operator record or a customer-surface evidence row always decides over the judge;
+  the judge's answer is evidence for a gate, never the proof.
+- **Live check:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge-smoke.js` (opt-in, not in the test suite)
+  sends the 10 labelled relay cases in `judge/smoke-relay-cases.json` and fails below 9 of 10.
 
 ### Bead discipline
 
