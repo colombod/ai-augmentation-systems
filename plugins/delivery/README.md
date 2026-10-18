@@ -136,7 +136,7 @@ The Chief of Staff records your exact words, links them to the question, and sen
 A worker runs `verify` and sees your words and the chain back to them.
 Nobody asks you to pass anything on.
 You get no orders: what only you can do (a sign-in, a payment, a secret, a scope or money decision) arrives once a day as exact steps (`owner-queue.js list`).
-Budgets, pauses and scope change only on your recorded words (`goal.js set ... --record <dec-id>`); idle with ready work is flagged, and messages to you are plain, short and end with "Ask for details on any item" ([details](docs/reference.md#owner-authority-and-communication)).
+Budgets, pauses and scope change only on your recorded words (a decision recorded for that change); idle with ready work is flagged, and messages to you are plain, short and end with "Ask for details on any item" ([details](docs/reference.md#owner-authority-and-communication)).
 
 **Day-one commands** (the Chief of Staff runs them; `/delivery:decision` has the loop):
 
