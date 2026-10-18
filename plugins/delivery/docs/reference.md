@@ -367,26 +367,24 @@ The owner runs the enterprise; the Chief of Staff runs the team for the owner (R
   off), the scope (changed by `scope_add` and `scope_remove`), `approvals`, `idle_minutes` (30) and
   `briefing_lines` (12). The scope is the list of product areas the team builds toward: an add puts
   items in, a remove takes them out, and a remove can never add.
-- **The confirmed question (the only path for now).** In plain words for the owner: to set a budget or
-  pause the team, the Chief of Staff asks you a yes/no question; your yes is the decision. Mechanically:
+- **The confirmed question (the only path).** In plain words for the owner: the Chief of Staff asks you
+  a Yes/No question in a question box; clicking Yes is the decision. Mechanically:
   - `node ${CLAUDE_PLUGIN_ROOT}/scripts/goal.js ask <field> <value>` words the question itself ("Pause
     the team's work now?", "Set the weekly budget to 5 units?", "Add billing to the scope?", "Resume
     the team's work now?"), records it with `operator.js ask`, and prints the AskUserQuestion input to
-    use (that question, options Yes and No);
-  - the owner answers. The capture hooks read the session's transcript, which the harness writes: an
-    AskUserQuestion answer becomes an owner input bound to that question's exact text and the option
-    chosen; a typed reply carries the session's message right before it (its last 400 characters and
-    hash);
-  - the Chief of Staff records the reply with `operator.js record --answers <q> --goal <field>=<value>`;
-  - `goal.js set <field> <value> --record <dec-id>` accepts it only when the question text is goal.js's
-    text for that field and value; the record carries the same field and value; the owner was shown that
-    exact question (the AskUserQuestion answer to it was Yes, or the typed reply came right after a
-    message containing it and is a whole yes: "yes", "y", "ok", "okay", "do it", "go", "go ahead",
-    "confirmed", "agreed", "approve", "approved"); the reply came after the question and within
-    `answer_window_hours` (24, itself set only by a confirmed question); and the record is neither
-    revoked nor superseded;
-  - a yes applies once: a second change on the same question, the same reply or the same record is
-    refused, and only the latest change to a field counts on read, so an older yes never re-applies.
+    use: that question, the options Yes and No, single choice;
+  - the capture hooks read the session's transcript, which the harness writes: the AskUserQuestion
+    answer (the harness's tool_result) becomes an owner input bound to the question text, the options
+    and the choice mode the tool_use put, and the option chosen;
+  - the Chief of Staff records it with `operator.js record --answers <q> --goal <field>=<value>`;
+  - `goal.js set <field> <value> --record <dec-id>` accepts it only when the question is goal.js's text
+    for that field and value, the box offered exactly Yes and No as a single choice, the owner chose
+    Yes, the answer came after the question and within `answer_window_hours` (24), the record carries
+    the same field and value, it was not decided under a delegation, and it is neither revoked nor
+    superseded. A typed "yes" never counts: a question in a message can sit in a code block or a quote
+    while the owner answers something else;
+  - a yes applies once: a second change on the same question, answer or record is refused, and only the
+    latest change to a field counts on read, so an older yes never re-applies.
   The transcript is the harness's file, but a session with unrestricted Bash could append to its own
   transcript; like the rest of the capture, this is cooperative trust, detectable in the store's chains.
 - **Free text is off.** An instruction the owner types in their own words sets nothing until
@@ -458,7 +456,7 @@ The owner runs the enterprise; the Chief of Staff runs the team for the owner (R
   continuation that can no longer block. Their message is redacted first: paths, commands, links and
   tokens become placeholders (`[path]`, `[url]`), so a concrete order still reaches the judge. The Stop
   hook keeps a 12 s deadline inside the harness's 15 s: bd reads take what is left, and the idle check
-  is skipped when less than 4 s remain.
+  runs only with 5 s left and must finish by 9.5 s, so the worst stop stays under 10 s (9.3 s measured).
 - **Short reasons.** Every block and warning reason from the hooks and these scripts is at most two
   lines and its last line names the exact command or the role to message; `hooks/scripts/reasons.test.js`
   checks it over the guards' refusals.
