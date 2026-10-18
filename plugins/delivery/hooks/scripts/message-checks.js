@@ -19,9 +19,10 @@
 // Every warning goes to the ledger and is said once on the next prompt. Nothing here throws.
 const RG = require('./relay-guard.js');
 
+// verbs of doing something somewhere; answering in this chat (reply, say, choose) is how the owner decides
 const ORDER_VERBS = new Set(('open type paste click run go sign log approve press enter copy restart reboot install set add create configure '
-  + 'grant accept update delete push merge review test try unlock switch reply send tell forward check drop upload download change turn '
-  + 'enable disable remove rotate generate visit start stop kill pick choose').split(' '));
+  + 'grant accept update delete push merge review test try unlock switch send tell forward check drop upload download change turn '
+  + 'enable disable remove rotate generate visit start stop kill').split(' '));
 const OFFER = /\b(?:should i|shall i|do you want me to|would you like me to|want me to|is it ok if i|can i|may i)\b/;
 const SPLIT = /\s*(?:—|–|\s-\s|→|:(?=\s|$))\s*/;
 const DECISION_Q = /\bor\b|\bwhich\b|\bdo you want\b|\bwould you (?:prefer|rather)\b/;

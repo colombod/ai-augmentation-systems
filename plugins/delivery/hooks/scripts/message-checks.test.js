@@ -22,6 +22,7 @@ test('R-44: "open session X and type" is an order to the owner; a decision quest
   assert.ok(M.ownerImperatives(OPEN_AND_TYPE).some((c) => /Open the Progress Observer session and type/.test(c)));
   assert.ok(M.ownerImperatives(PASTE_RULE).some((c) => /Add one permission rule/.test(c)));
   assert.deepEqual(M.ownerImperatives(DECISION), []);
+  assert.deepEqual(M.ownerImperatives('I recommend 60. Reply 60 or 10.'), [], 'answering here is deciding, not homework');
   assert.deepEqual(M.ownerImperatives('Merged the sign-in fix. Next: the Delivery Manager starts the import. Ask for details on any item.'), []);
   assert.deepEqual(M.ownerImperatives('Should I restart the import now?'), []);
 });
