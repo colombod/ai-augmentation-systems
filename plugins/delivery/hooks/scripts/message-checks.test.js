@@ -164,3 +164,8 @@ test('Copilot round 2: only evidence.js invocations in command position count, a
   assert.deepEqual(kinds(find('vault-ex-1 is live in production.', { commands: ['echo done evidence.js check vault-ex-1'] })).filter((k) => k === 'claim-unchecked'), ['claim-unchecked']);
   assert.deepEqual(kinds(find(live, { commands: ['node /p/scripts/evidence.js list vault-ex-1 && node /p/scripts/evidence.js list vault-ex-2'] })).filter((k) => k === 'claim-unchecked'), []);
 });
+
+test('final check: "type up the release notes" in a plan line is no order; typing into a session is', () => {
+  assert.deepEqual(M.ownerImperatives('Next: type up the release notes and send them round.'), []);
+  assert.ok(M.ownerImperatives('Next: type it in the builder session.').length);
+});

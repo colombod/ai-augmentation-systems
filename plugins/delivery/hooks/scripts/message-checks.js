@@ -39,7 +39,8 @@ const BACK_TO_ME = /^(?:(?:then|and|just|please|so),?\s+)*(?:tell|ask|let|show|s
 const OWNER_LEAD = /\b(?:you|your|yours|for you)\b/;
 // an order in a plan line still counts when it sends someone into a session, to type or paste, or
 // names the owner ("Then: open the builder session and type continue"; review I-c)
-const OWNER_MARK = /\b(?:session|sessions|type|paste|me|you|your)\b/;
+// ("type" only as typing something in somewhere: "type up the release notes" is writing, not an order)
+const OWNER_MARK = /\b(?:session|sessions|paste|me|you|your)\b|\btype\b(?=[^.;]{0,40}\b(?:in|into)\b|\s*:|\s+["'`>])/;
 const PLAN_LABEL = /\b(?:plan|plans|next|next steps?|then|todo|to-do|later|today|tonight|tomorrow|this week|steps|options?|meanwhile)\b[^.:]{0,40}:\s*$/;
 function ownerImperatives(text, { parties } = {}) {
   const out = [];
