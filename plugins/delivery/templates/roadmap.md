@@ -35,6 +35,14 @@ sits where it does. A plan that front-loads the easy work has to justify itself.
 | :-- | :-- | :-- | :-- |
 | | S / M / L | high / med / low | |
 
+**Waves** (each the smallest set of shippable stories in one product area that delivers a verified
+increment; the next starts when every story of this one is verified or cut; publication is a wave of
+its own, after the wave it publishes is verified):
+
+| Area | Wave | Stories | Verified increment on the customer surface |
+| :-- | :-- | :-- | :-- |
+| | 1 | | |
+
 **Verification in this phase:** (from the test strategy)
 
 **Cut list — dropped first if late, in this order:**
@@ -45,6 +53,15 @@ Deciding this now beats deciding it under pressure.
 ### Phase 2: <name>
 
 ...
+
+## Areas
+
+Every product area in play. A new one (nothing built there yet) needs a reason citing the owner's
+record; without one it is refused when half the budget or less is left.
+
+| Area | Reason | Record |
+| :-- | :-- | :-- |
+| | | dec-... |
 
 ## Critical path
 

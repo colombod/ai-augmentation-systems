@@ -251,3 +251,16 @@ test('R-36 waves: materialise stamps wave-<n> from the story file and protects i
   assert.match(text, /Wave: wave 2 of import: 3 of 5 stories checked on the customer's app/);
   assert.match(text, /Budget: 60\.0 of 100\.0 units left/);
 });
+
+test('R-36/R-41 lanes: every role reads waves, the budget and the selection; only the Delivery Manager plans and closes waves and records a selection', () => {
+  const { decideLane, loadPolicy } = require('../hooks/scripts/lane.js');
+  const root = path.join(__dirname, '..');
+  const groups = JSON.parse(fs.readFileSync(path.join(root, 'hooks', 'lane-groups.json'), 'utf8'));
+  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'lane-'));
+  const allowed = (role, cmd) => decideLane({ toolName: 'Bash', toolInput: { command: `node ${root}/scripts/${cmd}` }, policy: loadPolicy({ pluginRoot: root, projectRoot: '/nonexistent', briefRef: `delivery/${role}` }), roleDir: dir, groups, pluginRoot: root, cwd: dir, projectRoot: dir, hostHeadless: false }).allow;
+  for (const role of ['chief-of-staff', 'product-manager', 'delivery-lead']) for (const cmd of ['wave.js show', 'plan.js budget', 'plan.js select']) assert.equal(allowed(role, cmd), true, `${role} ${cmd}`);
+  for (const cmd of ['wave.js plan', 'wave.js close import 2', 'plan.js select --record']) {
+    assert.equal(allowed('delivery-lead', cmd), true, cmd);
+    for (const role of ['chief-of-staff', 'product-manager']) assert.equal(allowed(role, cmd), false, `${role} ${cmd}`);
+  }
+});

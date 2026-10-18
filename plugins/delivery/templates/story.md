@@ -20,6 +20,10 @@ depends_on: []
 size: S
 surface: <surface id from surface.json, e.g. S1>
 area: <product area, for the unverified cap; defaults to the epic>
+wave: 1                 # the wave of this area this story belongs to (the roadmap's Waves table)
+reuses: []              # existing code, evals or decision records this builds on, for selection
+# fixes: <bead|dec-|ev->  # a bug: the shipped story, owner record or failed check row it repairs
+# finding: <id or path>   # a security fix: the review record, threat-model entry or challenge finding
 ---
 
 # <title>

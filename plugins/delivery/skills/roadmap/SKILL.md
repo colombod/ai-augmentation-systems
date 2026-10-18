@@ -47,6 +47,7 @@ Ask the user for any constraints not given in `$ARGUMENTS`: team size and compos
 - **Sizing** in relative terms with a confidence label per item. Never a single-point date for unscoped work.
 - **Risks** with mitigations and owners
 - **Cut list per phase** — what gets dropped first if the phase runs late, decided now rather than under pressure
+- **Waves inside each phase**, per product area: the smallest set of shippable stories that delivers a verified increment on the customer surface, each wave building on the one before. Publication (store or directory submissions, a launch) is a wave of its own after the wave it publishes. Every area in play goes in the `## Areas` table; a new one carries a reason citing the owner's record. Prefer work that builds on verified work (`node ${CLAUDE_PLUGIN_ROOT}/scripts/plan.js select`)
 
 **2. Reconcile value against real cost — the second prioritisation pass.** `prioritization.md` ranked requirements on value with pre-architecture effort guesses. Now the architecture has revealed what things actually cost, so re-check the staging against real numbers.
 
@@ -69,6 +70,7 @@ Do not silently re-stage. Prioritisation is the Product Owner's call — present
 - Dependencies outside the team's control have owners and dates
 - Sizes carry confidence labels
 - Each phase has a cut list
+- Each phase is cut into waves per area, and every new area has a reason citing an owner record
 - Every `FR-n` in the PRD maps to a phase, or is explicitly deferred
 
 ## Writing, then revising
