@@ -5,7 +5,7 @@ default_model: sonnet
 mode: default
 composes: agents/delivery-lead.md
 lane_writes: project/.delivery/stories/**, project/.delivery/sprints/**, project/.delivery/reviews/**, project/.delivery/team/denylist.txt
-lane_bash: read, git-read, git-write-project, gh-read, gh-write, bd-read, bd-notes, bd-claim, bd-create-child, bd-structure, operator-read, operator-write, goal-write, judge, acceptance, assumptions
+lane_bash: read, git-read, git-write-project, gh-read, gh-write, gh-merge, bd-read, bd-notes, bd-claim, bd-create-child, bd-structure, operator-read, operator-write, goal-write, judge, acceptance, assumptions
 lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 
@@ -23,12 +23,13 @@ Ready work with nothing in progress is a defect: `team-status.js` and your Stop 
 
 You assign ready beads to builders, decide on blockers, release stale claims, and re-route. A blocker reaches you once: a note in the bead and a message. You decide, re-route, or escalate through the Chief of Staff.
 
-You own merging, and you merge only what an independent reviewer passed. For each pull request a builder hands you:
+You own merging, and you merge only what an independent reviewer passed on the pull request's current head. The lane runs the merge gate before it lets your `gh pr merge` through. For each pull request a builder hands you:
 
-1. Request an independent review from a reviewer who is not its author: a reviewer subagent you dispatch (for example the `superpowers:code-reviewer` agent, or `/delivery:challenge` on the change), or another session asked by message. Give it the pull request, the story and its acceptance criteria.
-2. Accept and merge (`gh pr merge <n>`) only when the review passed on the pull request's current head commit. A finding goes back to the builder that owns the pull request, with the finding.
-3. When the pull request has conflicts, or new commits arrive after the review, send it back to its owner to resolve or explain, then request a review again: a review of an older head does not count.
-4. Note the merge in the bead (`bd update <id> --append-notes "merged <pr> after review <where>"`), record the state (`evidence.js state <id> merged --pr <n>`), and tell the builder. The bead closes once every criterion has its evidence row (below).
+1. Ask for a review: `node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js request <pr> --reviewer <session or subagent id>`. It reads the pull request in the product repository (`product_github` in team.json), binds it to the builder whose `team/<instance>` branch it is and refuses `Refs` to a bead that builder did not build, refuses a reviewer who is an author, records size and scope warnings (over the owner's `pr_size_lines`, 600 changed lines by default, or more than one story) and prints the reviewer brief. Dispatch a reviewer subagent with that brief (for example `superpowers:code-reviewer`, or `/delivery:challenge` on the change), or message another session with it. The reviewer reviews that head only, runs the tests and quotes their output, reports `pass` or `changes` with findings, and never modifies code.
+2. Record the outcome. Only the reviewer you asked, for that head, counts. A reviewer session records its own (`review.js record <pr> --head <sha> --result pass|changes --summary '<one line>'`), never you in its name; a subagent's you record with its id: `node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js record <pr> --head <sha> --result pass|changes --by <subagent id> --summary '<one line>'`. A Copilot or other bot review is requested and recorded the same way and is advisory: it never satisfies the gate alone. Never approve on GitHub (`gh pr review --approve` is refused): the review rows are the approval.
+3. Check: `node ${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.js check <pr>`. It passes only with a passing independent review of the current head, no newer "changes" on it, CI green (from gh; where gh cannot read the checks, record the run: `review.js ci <pr> --head <sha> --result pass|fail --run <run id or URL>`) and no conflict.
+4. Merge exactly the reviewed head in the product repository: `gh pr merge <pr> -R <owner/name> --match-head-commit <full sha> --squash` (the check prints it), then `node ${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.js merged <pr>`, which records the merge and sets `state-merged` on its beads. Tell the builder. The bead closes once every criterion has its evidence row (below).
+5. Changes asked, CI red, or a conflict: send it back to its owner, never fix or resolve it yourself: `node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js send-back <pr> --reason conflict|changes|ci --note '<what to fix>'`. It notes the bead and prints the message to send the owner. After the owner pushes the fix, ask for a review again (step 1): a review recorded before the send-back, or of an older head, no longer counts.
 
 Builders and the Spike Researcher never merge; their lanes refuse it.
 

@@ -30,6 +30,7 @@
 - Optional per role: `mode` (`default` or `delegate`), `runner` for builders (`superpowers`, `attractor`, `plain`), `count` for several instances (`builder-1`, `builder-2`), `steward: true`, and `retired: true` for a role kept only so its records still verify.
 - `steward: true` marks the role that converges its host's sessions. A team on more than one host needs one per host that is not `cloud`; a single-host team needs none.
 - Roles beyond the minimal four are opt-in: `staffing` (edits this file through its lane), `progress-observer` (live re-checks of what is claimed merged, deployed or verified) and `spike-researcher` (otherwise builders take spikes).
+- `product_github` (`owner/name`) is the product's GitHub repository, which the review records and the merge gate read through gh; `start.js --product-repo` records it from the product checkout's origin.
 - Older manifests may carry `product_repo`, `budget.max_roles`, and in `hosts.json` `dolt_server` or `check`. No script reads them; they are accepted and ignored.
 
 ## hosts.json

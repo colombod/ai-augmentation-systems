@@ -209,6 +209,14 @@ function buildManifest({ project, prefix, host, preset, runner, models = 'balanc
   return { team, hosts };
 }
 
+// owner/name of a checkout's origin on GitHub, or null
+function githubOf(checkout) {
+  try {
+    const url = require('child_process').execFileSync('git', ['-C', checkout, 'remote', 'get-url', 'origin'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
+    return require('./lib/gh-pr.js').repoOf(url);
+  } catch (err) { return null; }
+}
+
 function formatManifestJson(team) {
   // one role per line, like templates/team.json, so a human can read and edit it
   const { roles, ...rest } = team;
@@ -313,6 +321,19 @@ function scaffold(opts) {
     }
   } else {
     say('  product repo: none given; a builder prepared in this run gets no product worktree (pass --product-repo <path|url>)');
+  }
+  // the GitHub repository the review records and the merge gate read (R-32): from the checkout's origin
+  const github = productCheckout && fs.existsSync(path.join(productCheckout, '.git')) ? githubOf(productCheckout) : (productRepo && isUrl(productRepo) ? require('./lib/gh-pr.js').repoOf(productRepo) : null);
+  if (github) {
+    const same = team.product_github === github;
+    say(`  product repo: GitHub ${github}${same ? '' : `; ${w}record it as product_github in ${TEAM_REL}`}`);
+    if (!same && !dryRun) {
+      const raw = JSON.parse(fs.readFileSync(teamFile, 'utf8'));
+      raw.product_github = github;
+      team.product_github = github;
+      fs.writeFileSync(teamFile, formatManifestJson(raw));
+      wroteManifest = true;
+    }
   }
 
   // 4. commit the manifest this run wrote, so the role clones carry it
@@ -437,4 +458,4 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };
+module.exports = { githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };

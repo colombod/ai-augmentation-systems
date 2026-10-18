@@ -35,7 +35,9 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/wave.js", "sub": ["show"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/plan.js", "sub": ["budget", "select"], "flags_none": ["--record"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/usage.js", "sub": ["show"] },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js", "sub": ["list"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js", "sub": ["list"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/review.js", "sub": ["list", "show"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.js", "sub": ["check"] }
   ],
   "git-read": [
     { "first": "git", "sub": ["status", "log", "diff", "show", "rev-parse", "remote -v", "remote show", "remote get-url", "blame", "describe", "tag -l", "tag --list", "stash list", "worktree list", "merge-base", "shortlog", "cat-file", "rev-list"], "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] },
@@ -55,7 +57,10 @@
     { "first": "gh", "sub": ["pr view", "pr list", "pr checks", "pr diff", "pr status", "issue view", "issue list", "run view", "run list", "run watch", "repo view", "release list", "release view"] }
   ],
   "gh-write": [
-    { "first": "gh", "sub": ["pr create", "pr edit", "pr comment", "pr merge", "pr ready", "pr review", "issue comment", "release create", "workflow run"] }
+    { "first": "gh", "sub": ["pr create", "pr edit", "pr comment", "pr ready", "pr review", "issue comment", "release create", "workflow run"] }
+  ],
+  "gh-merge": [
+    { "first": "gh", "sub": ["pr merge"] }
   ],
   "bd-read": [
     { "first": "bd", "sub": ["list", "show", "ready", "prime", "where", "dep list", "dep tree", "dep cycles", "label list", "label list-all", "stats", "help", "comments list"] }
@@ -88,7 +93,9 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/evidence.js", "sub": ["add", "state", "waive", "cut"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/reality-check.js", "sub": ["plan", "refine"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/wave.js", "sub": ["plan", "close"] },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/plan.js", "sub": ["select"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/plan.js", "sub": ["select"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/review.js", "sub": ["request", "record", "ci", "send-back"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.js", "sub": ["merged"] }
   ],
   "reality-check": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/reality-check.js", "sub": ["run-record"] }
@@ -98,6 +105,9 @@
   ],
   "probe": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js", "sub": ["probe"] }
+  ],
+  "review-record": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/review.js", "sub": ["record"] }
   ],
   "goal-write": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/goal.js", "sub": ["ask", "set", "pause"] }

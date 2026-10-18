@@ -671,6 +671,18 @@ function reviewDirs({ projectRoot, roleDir }) {
   if (roleDir) out.push(realish(path.join(String(roleDir), 'project', REVIEWS_REL)));
   return out;
 }
+// Pull request review records (.delivery/reviews/prs/, R-32): the merge gate reads them, so only
+// review.js and merge-gate.js write them (node processes, not tool calls). Protected for every role,
+// the Delivery Manager and the `any` lanes included; best effort, and the rows are chained.
+const PR_REVIEWS_REL = path.join('.delivery', 'reviews', 'prs');
+const PR_REVIEWS_REASON = 'review records in .delivery/reviews/prs/ are written only by `review.js`; read them with `review.js show <pr>`';
+const PR_REVIEWS_MENTION = /\.delivery\/+(?:\.\/+)*reviews\/+(?:\.\/+)*prs(?=\/|[\s'";|&)>]|$)/i;
+function prReviewDirs({ projectRoot, roleDir }) {
+  const out = [];
+  if (projectRoot && path.isAbsolute(String(projectRoot))) out.push(realish(path.join(String(projectRoot), PR_REVIEWS_REL)));
+  if (roleDir) out.push(realish(path.join(String(roleDir), 'project', PR_REVIEWS_REL)));
+  return out;
+}
 // The assumption register (R-14): the gates read its rows, so only scripts/assumptions.js writes it (a
 // node process, not a tool call). Protected for every role, `any` included, the Product Manager too;
 // best effort, like the goal sheet. The gates also re-verify each row against its evidence.
@@ -761,6 +773,25 @@ function mergeAttempt(command, cwd) {
   });
 }
 
+// A push onto another builder's team/<instance> branch (or anything under it): the merge gate knows a
+// pull request's author by that branch, so only its own session pushes there (PR 56 re-check).
+function foreignTeamPush(command, instance) {
+  const me = String(instance || '').toLowerCase();
+  for (const seg of splitCommand(String(command == null ? '' : command))) {
+    const t = tokens(seg);
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    if (path.basename(words[0] || '') !== 'git') continue;
+    const { rest } = splitGlobals(['git', ...words.slice(1)]);
+    if (rest[0] !== 'push') continue;
+    for (const r of rest.slice(1).filter((x) => !x.startsWith('-')).slice(1)) {
+      const dst = (r.includes(':') ? r.slice(r.lastIndexOf(':') + 1) : r).replace(/^\+/, '').replace(/^refs\/heads\//, '');
+      const m = /^team\/([^/]+)/i.exec(dst);
+      if (m && m[1].toLowerCase() !== me) return { branch: `team/${m[1]}`, owner: m[1] };
+    }
+  }
+  return null;
+}
+
 function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, cwd, hostHeadless, hostName, desktopHosts, projectRoot }) {
   const name = String(toolName || '');
   const pol = policy || { roleId: '', writes: [], bash: [] };
@@ -790,6 +821,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       if (isGoalFile(p, goalFiles({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
       if (underOperator(p, usageDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
       if (registerHit({ projectRoot, roleDir })(p)) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
+      if (underOperator(p, prReviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
       if (!REVIEW_WRITERS.includes(pol.roleId) && underOperator(p, reviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
       if (harnessFile(p)) continue;
       if (pathAllowed(p, { roleDir, writes: pol.writes, pluginRoot: pluginRootOf({ pluginRoot }) })) continue;
@@ -814,6 +846,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (goalShellWrite(command, { cwd, files: goalFiles({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: usageDirs({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
     if (usageShellWrite(command, { cwd, mention: REGISTER_MENTION, hit: registerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
+    if (usageShellWrite(command, { cwd, dirs: prReviewDirs({ projectRoot, roleDir }), mention: PR_REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (bash.includes('any')) return { allow: true };
@@ -866,7 +899,20 @@ function laneDecisionForHook(input, pluginRoot) {
   const host = hostMap[role.host] || {};
   const desktopHosts = Object.entries(hostMap).filter(([, h]) => h && h.desktop_apps).map(([n]) => n);
   const groups = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'lane-groups.json'), 'utf8'));
-  const d = decideLane({ toolName: input.tool_name, toolInput: input.tool_input || {}, roleDir, policy, groups, pluginRoot, cwd: input.cwd, hostHeadless: !!host.headless, hostName: role.host, desktopHosts, projectRoot: marker.project_root });
+  let d = decideLane({ toolName: input.tool_name, toolInput: input.tool_input || {}, roleDir, policy, groups, pluginRoot, cwd: input.cwd, hostHeadless: !!host.headless, hostName: role.host, desktopHosts, projectRoot: marker.project_root });
+  // the Delivery Manager's merge passes only through the merge gate (R-32): a passing independent
+  // review of the current head, CI green, no conflict, in the product repository; its GitHub approvals
+  // are refused (approvals are review rows); an error here fails closed in role-lane.js
+  if (d.allow && policy.roleId === MERGER) {
+    const cmd = shellCommandOf(input.tool_name, input.tool_input || {});
+    if (cmd !== null && /\bgh\b/.test(cmd)) {
+      const why = require('../../scripts/merge-gate.js').mergeCommandProblem(cmd, { root: marker.project_root, team: ctx.team, roleDir });
+      if (why) d = { allow: false, reason: `Role ${policy.roleId}: ${why}` };
+    }
+  }
+  const pushCmd = d.allow ? shellCommandOf(input.tool_name, input.tool_input || {}) : null;
+  const foreign = pushCmd !== null ? foreignTeamPush(pushCmd, marker.instance) : null;
+  if (foreign) d = { allow: false, reason: `Role ${policy.roleId}: ${foreign.branch} is ${foreign.owner}'s branch: the merge gate knows a pull request's author by it, so only ${foreign.owner} pushes there.\nPush your own: \`git push origin HEAD:team/${marker.instance}\`` };
   if (d.allow) return null;
   try {
     const ti = input.tool_input || {};
@@ -878,4 +924,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

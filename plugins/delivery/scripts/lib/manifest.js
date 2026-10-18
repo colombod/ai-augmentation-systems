@@ -127,6 +127,8 @@ function validateManifest(team, hosts) {
   for (const field of ['project', 'prefix', 'bd_host']) {
     if (!team[field]) problems.push(`team.json: missing "${field}"`);
   }
+  // the product's GitHub repository (owner/name), which start.js records and the merge gate reads
+  if (team.product_github !== undefined && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(team.product_github))) problems.push(`team.json: "product_github" must be owner/name, not "${String(team.product_github).slice(0, 80)}"`);
   if (!Array.isArray(team.roles) || team.roles.length === 0) {
     problems.push('team.json: "roles" must be a non-empty array');
     return problems;
