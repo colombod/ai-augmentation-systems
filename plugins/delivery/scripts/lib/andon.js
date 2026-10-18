@@ -1,4 +1,4 @@
-// scripts/lib/andon.js — stop the line (R-22).
+// scripts/lib/andon.js — stop the line (R-22) and flow limits (R-23).
 //
 // The andon ledger, <project>/.delivery/andon/<writer>.ndjson: append-only and chained (n, prev = sha12
 // of the previous line) like the review records, written only by a3.js, andon.js and merge-gate.js
@@ -267,9 +267,10 @@ function fixChain(root, { pr, bd, now, who }) {
 // ---- the claim check ----
 const warn = (code, rule, detail, extra = {}) => ({ level: 'warn', code, rule, detail, ...extra });
 const block = (code, rule, detail, extra = {}) => ({ level: 'block', code, rule, detail, ...extra });
+const norm = (id) => String(id || '').trim().toLowerCase().split('/').pop().replace(/@.*$/, '');
 
-// Findings for claiming `bead`. ctx: { root, parent, fix (fixLink), beadOf, team, now, ci }
-function claimFindings(bead, { root, parent = null, fix = { ok: false }, beadOf = () => null, team, now, ci } = {}) {
+// Findings for claiming `bead`. ctx: { root, parent, fix (fixLink), stories, beadOf, team, now, ci, builder, starts, wipPerSession }
+function claimFindings(bead, { root, parent = null, fix = { ok: false }, stories = [], beadOf = () => null, team, now, ci, builder, starts = true, wipPerSession } = {}) {
   const f = [];
   if (!root || !bead) return f;
   const rows = read(root).rows;
@@ -303,6 +304,15 @@ function claimFindings(bead, { root, parent = null, fix = { ok: false }, beadOf 
   for (const ch of chains(root, { rows, beadOf })) {
     if (ch.acked || !mine.includes(ch.symptom)) continue;
     f.push(warn('fix-on-fix', 'R-22', `${ch.symptom.replace(/^(fixes|class) /, '')} already had fixes in PRs ${ch.prs.join(', ')} within 48 h: spike ${ch.spike} looks for the cause first (andon.js ack ${ch.id} once its answer is in)`));
+  }
+  // per-session WIP (R-23): one story in progress and one queued
+  if (builder && G.isStoryBead(bead)) {
+    const limit = Number.isInteger(wipPerSession) && wipPerSession > 0 ? wipPerSession : 1;
+    // merged, deployed, verified or cut work has left the builder's hands
+    const held = stories.filter((s) => s.id !== bead.id && s.status !== 'closed' && !G.stateOf(s) && s.assignee && norm(s.assignee) === norm(builder));
+    const going = held.filter((s) => s.status === 'in_progress').length + (starts ? 1 : 0);
+    const queued = held.filter((s) => s.status !== 'in_progress').length + (starts ? 0 : 1);
+    if (going > limit || queued > 1) f.push(warn('wip-session', 'R-23', `${norm(builder)} would hold ${going} in progress and ${queued} queued (limit ${limit} in progress and 1 queued): finish one first`));
   }
   return f;
 }
