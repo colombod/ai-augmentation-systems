@@ -48,7 +48,7 @@ function operatorStatus(projectRoot, team, { host, deps = {} } = {}) {
 // The gates at a glance (R-12, ruling 3): open warnings by kind and those over 24 h, and the story
 // states merged / deployed / verified with any area over the unverified cap. Read-only; a failed bead
 // read becomes a note.
-function gateStatus(projectRoot, team, { now, storyBeads, checkBeads, budget } = {}) {
+function gateStatus(projectRoot, team, { now, storyBeads, checkBeads, budget, budgetOpts, bd } = {}) {
   const W = require('./lib/warnings.js');
   const G = require('./lib/gates.js');
   const { maxUnverified } = require('./lib/gate-context.js');
@@ -60,8 +60,10 @@ function gateStatus(projectRoot, team, { now, storyBeads, checkBeads, budget } =
     // the current wave per area and the budget (R-36, R-34): plain words, owner-set figures only
     const W = require('./lib/waves.js');
     out.waves = [...W.areas(beads).values()].map(W.waveLine).filter(Boolean);
-    const st = budget || require('./lib/budget.js').state(projectRoot, { team, beads, now });
-    out.budget = st.set ? { remaining: st.remaining, total: st.total, level: st.level, free: st.free, source: st.source } : { set: false };
+    // fix beads in flight count as in plan.js (re-review m-a); bd is read only when the caller gave none
+    const fixBd = bd || (storyBeads ? null : require('./lib/bd.js').makeBd({ cwd: projectRoot }));
+    const st = budget || W.contextFor(projectRoot, { bd: fixBd, team, beads, now, budgetOpts }).budget;
+    out.budget = st.set ? { remaining: st.remaining, total: st.total, level: st.level, free: st.free, source: st.source, partial: Boolean(st.partial) } : { set: false };
   } catch (err) { out.notes.push(`story states unavailable: ${String(err.message).split('\n')[0]}`); }
   // reality checks dispatched and not yet closed (R-33); a caller that supplies the story beads
   // supplies these too, or they are not read
@@ -85,7 +87,7 @@ function idleStatus(projectRoot, { now, idleBd } = {}) {
   return s;
 }
 
-function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, checkBeads, idleBd, budget } = {}) {
+function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, checkBeads, idleBd, budget, budgetOpts, bd } = {}) {
   const { team, hosts } = loadManifest(projectRoot);
   const roster = readRoster(projectRoot);
   const nowMs = Date.parse(now || new Date().toISOString());
@@ -120,7 +122,7 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
   let bd_reachable = false;
   try { bd_reachable = Boolean((bdCheck || bdReachable)(projectRoot)); } catch (err) { bd_reachable = false; }
   const operator = operatorStatus(projectRoot, team, { host, deps: operatorDeps });
-  const gates = gateStatus(projectRoot, team, { now, checkBeads, budget, storyBeads: storyBeads || (bd_reachable ? undefined : () => { throw new Error('bd unreachable'); }) });
+  const gates = gateStatus(projectRoot, team, { now, checkBeads, budget, budgetOpts, bd, storyBeads: storyBeads || (bd_reachable ? undefined : () => { throw new Error('bd unreachable'); }) });
   const idle = bd_reachable || idleBd ? idleStatus(projectRoot, { now, idleBd }) : { idle: false, why: 'bd-unreachable' };
   // R-33: the Reality Checker drives a browser or desktop app, which a headless host cannot run
   const placement = team.roles.filter((r) => r.id === 'reality-checker' && !r.retired && ((hosts && hosts.hosts) || {})[r.host] && hosts.hosts[r.host].headless)
@@ -179,7 +181,7 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gat
       }
       const B = gates.budget;
       const U = require('./lib/budget.js').units;
-      if (B) lines.push(B.set === false ? 'Budget: not set by the owner (budget checks only warn)' : `Budget: ${U(B.remaining)} of ${B.total.toFixed(1)} left, ${U(B.free)} free after work already started (${B.level}; counted ${B.source})`);
+      if (B) lines.push(B.set === false ? 'Budget: not set by the owner (budget checks only warn)' : `Budget: ${U(B.remaining)} of ${B.total.toFixed(1)} left, ${U(B.free)} free after work already started (${B.level}; counted ${B.source})${B.partial ? '; the spend reading is partial, the scan finishes on the next check' : ''}`);
       for (const w of gates.waves || []) lines.push(`Wave: ${w}`);
       for (const o of gates.states.overCap) lines.push(`Warning: area ${o.area} has ${o.count} merged-but-unverified stories (cap ${o.cap}): ${o.ids.join(', ')}; verify them before new work there`);
     }

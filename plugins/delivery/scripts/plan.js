@@ -38,7 +38,7 @@ function budgetLines(st, A, team) {
   return lines;
 }
 
-async function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: givenBd, now, budget, ask } = {}) {
+async function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: givenBd, now, budget, budgetOpts, ask } = {}) {
   const args = argv.filter((a) => !['--json', '--record'].includes(a));
   const json = argv.includes('--json');
   const recordIt = argv.includes('--record');
@@ -52,7 +52,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, who: given, 
   const bd = givenBd || require('./lib/bd.js').makeBd({ cwd: who.root });
   let stories;
   try { stories = bd.list({ label: 'story', all: true }); } catch (err) { return { code: 1, out: `plan.js: bd could not be read (${String(err.message).split('\n')[0]}).\nCheck: \`bd where\`` }; }
-  const ctx = W.contextFor(who.root, { bd, team: who.team, beads: stories, budget, now });
+  const ctx = W.contextFor(who.root, { bd, team: who.team, beads: stories, budget, now, budgetOpts });
   const st = ctx.budget;
   const A = W.areas(stories);
 

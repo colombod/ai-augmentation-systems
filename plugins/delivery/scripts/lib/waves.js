@@ -191,25 +191,35 @@ function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = 
   const need = est.units * (1 + t.reserve);
   const tier1 = Boolean(fix.ok);
   if (fix.labelled && !fix.ok) f.push(warn('fix-unlinked', 'R-41', `${fix.why}: checked and ranked as ordinary work`));
-  const A = areas(beads, { except: bead.id });
+  if (budget.set && budget.partial) f.push(warn('spend-partial', 'R-34', 'the spend reading is partial (the transcript scan ran out of time); the budget checks used what was read'));
+  // a story already started (the Delivery Manager handing it to another builder) is not a new start:
+  // its share is held, and it counts as built in its own area and wave (Copilot 449)
+  const already = built(bead);
+  const A = areas(beads, { except: already ? null : bead.id });
   const area = areaOf(bead);
   const x = A.get(area) || { waves: new Map(), order: [], current: null, built: false };
   const w = waveOf(bead);
   const own = w ? (x.waves.get(w) || []) : [];
   // the bead's own wave has begun (in-flight work to finish) when another of its stories is built
-  const waveStarted = started(own, bead.id);
+  const waveStarted = already || started(own, bead.id);
   const others = beads.filter((b) => b.id !== bead.id && G.isStoryBead(b) && b.status === 'in_progress');
 
   // waves (R-36, D5)
-  if (x.order.length && !tier1) {
+  const fullNeed = (list) => list.filter((b) => !finished(b)).reduce((n, b) => n + B.estimate(b, { t, team }).units * (1 + t.reserve), 0);
+  if (x.order.length && !tier1 && !already) {
     const cur = x.current;
     if (cur && (!w || w > cur)) {
       const curStories = x.waves.get(cur);
       const halfBuilt = started(curStories, bead.id);
       const curNeed = curStories.reduce((n, b) => n + B.stillNeeds(b, B.estimate(b, { t, team }), t), 0);
+      // what the current wave's own in-flight stories hold is already in inflightNeed: count it once
+      const curHeld = curStories.filter(B.inFlight).reduce((n, b) => n + B.stillNeeds(b, B.estimate(b, { t, team }), t), 0);
+      // the later wave this claim starts, whole (Copilot 896)
+      const laterNeed = w && !waveStarted ? fullNeed(own) : need;
+      const available = budget.set ? budget.remaining - (budget.inflightNeed - curHeld) : 0;
       const open = curStories.filter((b) => !finished(b)).map((b) => b.id);
       const what = `${w ? `wave ${w}` : 'no wave'}, while wave ${cur} of ${area} is not verified (${open.slice(0, 3).join(', ')}${open.length > 3 ? ', ...' : ''})`;
-      if (halfBuilt && budget.set && budget.remaining - need < curNeed) f.push(block('wave-half-built', 'D5', `${w ? `wave ${w}` : 'unwaved work'} while wave ${cur} of ${area} is unfinished: ${B.units(budget.remaining)} left, wave ${cur} needs ${u(curNeed)}, this ${u(need)}; it would leave wave ${cur} half-built`));
+      if (halfBuilt && budget.set && laterNeed + curNeed > available) f.push(block('wave-half-built', 'D5', `${w ? `wave ${w}` : 'unwaved work'} while wave ${cur} of ${area} is unfinished: ${B.units(available)} available, wave ${cur} needs ${u(curNeed)}, ${w ? `wave ${w}` : 'this'} needs ${u(laterNeed)}; it would leave wave ${cur} half-built`));
       else f.push(warn('outside-wave', 'D5', `${what}: finish or cut wave ${cur} first`));
     }
   }
@@ -225,14 +235,14 @@ function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = 
   const areaF = [];
   // new areas (R-41): only when other areas already hold built work (front-hopping)
   const elsewhere = [...A.values()].some((y) => y.area !== area && y.built);
-  if (!x.built && elsewhere && !tier1) {
+  if (!x.built && elsewhere && !tier1 && !already) {
     if (budget.set && budget.nearLimit) areaF.push(block('new-area-near-limit', 'D5', `${area} is a new area and the budget is near the limit (${B.units(budget.remaining)} of ${u(budget.total)} left): only linked fixes start`));
     else if (!reason && budget.set && budget.half) areaF.push({ ...block('new-area', 'D1', `${area} is a new area with no recorded reason and half or less of the budget is left (${B.units(budget.remaining)} of ${u(budget.total)})`), area });
     else if (!reason) areaF.push(warn('new-area', 'R-41', `${area} is a new area with no recorded reason (goal.js ask area_add ${area}, or a roadmap Areas row citing an owner record)`));
     else if (budget.lean) areaF.push(warn('new-area-lean', 'R-31', `${area} is a new area (reason: ${reason.by}) started in lean mode`));
   }
   // budget-aware start (R-34): only an owner-set budget can refuse
-  if (budget.set) {
+  if (budget.set && !already) {
     if (est.unsized) f.push(warn('no-size', 'R-34', `no size label: estimated as ${est.size} (${u(est.units)} units)`));
     const pct = Math.round(t.reserve * 100);
     const free = `${B.units(budget.free)} are free after in-flight work`;
@@ -244,7 +254,7 @@ function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = 
         if (need > budget.free) f.push(warn('budget-short', 'R-34', `needs ${u(need)} units with the ${pct}% reserve; ${free}: wave ${w} is under way, so finish it and start nothing new`));
       } else if (w) {
         // this claim starts its wave: the whole wave must fit, or it ends half-built (review I-1)
-        const waveNeed = own.filter((b) => !finished(b)).reduce((n, b) => n + B.estimate(b, { t, team }).units * (1 + t.reserve), 0);
+        const waveNeed = fullNeed(own);
         if (waveNeed > budget.free) f.push(block('budget-short', 'D5', `wave ${w} of ${area} needs ${u(waveNeed)} units with the ${pct}% reserve to finish; ${free}: starting it risks half-built work`));
       } else if (need > budget.free) f.push(block('budget-short', 'D5', `needs ${u(need)} units with the ${pct}% reserve; ${free}: starting it risks half-built work`));
     }
@@ -258,7 +268,7 @@ function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = 
 // Ranks ready candidates: tier 1 linked fixes, tier 2 compounding work by score, tier 3 new areas;
 // budget-scaled admission refuses what may not start now. ctx as claimFindings plus storyOf(bead),
 // fixOf(bead), reasonOf(area). Returns [{ id, tier, score, reasons, refused, warnings }].
-function rank(candidates, { beads = [], budget = { set: false }, team, storyOf = () => null, fixOf = () => ({ ok: false }), reasonOf = () => null } = {}) {
+function rank(candidates, { beads = [], budget = { set: false }, team, storyOf = () => null, fixOf = () => ({ ok: false }), reasonOf = () => null, gateBlocks = () => [] } = {}) {
   const t = budget.table || B.table(null);
   const A = areas(beads);
   const verified = beads.filter((b) => G.stateOf(b) === 'verified');
@@ -299,7 +309,7 @@ function rank(candidates, { beads = [], budget = { set: false }, team, storyOf =
     // it allows (review I-5)
     const reason = isNew ? reasonOf(area) : null;
     const found = claimFindings(c, { beads, budget, team, fix, reason, builders: Infinity });
-    const blocks = found.filter((x) => x.level === 'block');
+    const blocks = [...gateBlocks(c), ...found.filter((x) => x.level === 'block')];
     const refused = blocks.length ? blocks.map((x) => `${x.detail} (${x.rule})`).join('; ') : null;
     if (!refused) for (const x of found) if (['new-area', 'new-area-lean', 'outside-wave'].includes(x.code)) warnings.push(x.detail);
     if (reason) reasons.push(`area reason: ${reason.by}`);
@@ -310,9 +320,16 @@ function rank(candidates, { beads = [], budget = { set: false }, team, storyOf =
 }
 
 // Fix beads in progress that are not stories: they hold budget too (Copilot 726)
+// in progress, or closed merged or deployed and not yet verified (Copilot 947)
 function activeFixes(bd, known) {
   if (!bd) return [];
-  try { return bd.list({ status: 'in_progress' }).filter((b) => b.status === 'in_progress' && !known.has(b.id) && !G.isStoryBead(b) && B.isWork(b)); } catch (err) { return []; }
+  const out = new Map();
+  for (const label of FIX_LABELS) {
+    let list = [];
+    try { list = bd.list({ label, all: true }) || []; } catch (err) { list = []; }
+    for (const b of list) if (!known.has(b.id) && !G.isStoryBead(b) && B.inFlight(b)) out.set(b.id, b);
+  }
+  return [...out.values()];
 }
 
 // The reads claimFindings and rank need, from the project: story files, owner records, the budget.
@@ -330,6 +347,16 @@ function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now, dea
   return {
     beads, team, builders, storyOf,
     budget: budget || B.state(root, { team, beads: [...beads, ...activeFixes(bd, known)], now, verifyRecord, deadline, ...budgetOpts }),
+    // the claim check's own deterministic refusals (changed criteria, an unknown surface), so select
+    // lists such work under Not now (Copilot 929)
+    gateBlocks: (b) => {
+      try {
+        const inp = C.gateInputs(root, b, { bd, team });
+        const isStory = G.isStoryBead(b);
+        return [...(isStory && inp.story ? G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead: b }) : []),
+          ...G.claimDivergence({ story: isStory ? inp.story : null, isStory, bead: b, parent: inp.parent, parentStory: inp.parentStory })].filter((x) => x.level === 'block');
+      } catch (err) { return []; }
+    },
     fixOf: (b, story) => fixLink(b, story === undefined ? storyOf(b) : story, { root, beadOf, ownerRecord: (id) => C.ownerRecord(root, id, verifyRecord) }),
     reasonOf: (area) => areaReason(root, area, { ownerRecord: (id) => C.ownerRecord(root, id, verifyRecord), ownerAreas }),
     filesOf: (b) => ((storyOf(b) || {}).files || []),

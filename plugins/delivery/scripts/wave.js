@@ -27,7 +27,7 @@ function append(root, row) {
 
 const stateWord = (b) => G.stateOf(b) || (b.status === 'in_progress' ? 'in progress' : b.status);
 
-function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: givenBd, now, budget } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: givenBd, now, budget, budgetOpts } = {}) {
   const args = argv.filter((a) => a !== '--json');
   const json = argv.includes('--json');
   const pi = args.indexOf('--project');
@@ -59,7 +59,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: gi
   }
 
   if (cmd === 'plan') {
-    const st = budget || B.state(who.root, { team: who.team, beads, now });
+    // fix beads in flight count as in plan.js (re-review m-a)
+    const st = budget || W.contextFor(who.root, { bd, team: who.team, beads, now, budgetOpts }).budget;
     const t = st.table;
     const out = [];
     const rows = [];

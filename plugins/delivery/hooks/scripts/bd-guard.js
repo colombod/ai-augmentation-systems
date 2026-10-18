@@ -315,6 +315,9 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
   const G = require('../../scripts/lib/gates.js');
   const { gateInputs, maxUnverified, recordChecker } = require('../../scripts/lib/gate-context.js');
   const out = { deny: null, warnings: [] };
+  // the budget is read once per command; each start that passes is held for the next (Copilot 827)
+  let base = budget;
+  const projected = new Map();
   if (!root) return out;
   const end = deadline || Date.now() + 8000;
   const bd = budgeted(rawBd, end);
@@ -356,12 +359,20 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
         if (story && stories) overCap = G.unverifiedOver(stories, bead, maxUnverified(team));
         findings.push(...G.claimDivergence({ story: story ? inp.story : null, isStory: story, bead, parent: inp.parent, parentStory: inp.parentStory, overCap }));
         // waves, the budget, new areas and fixes (R-34, R-36, R-41; D1 and D5 only on serious divergence)
+        let started = null;
         if (stories) {
           try {
             const W = require('../../scripts/lib/waves.js');
+            const B = require('../../scripts/lib/budget.js');
+            // starts earlier in this command are budgeted with this one (Copilot 827)
+            const seen = stories.map((s) => (projected.has(s.id) ? { ...s, status: 'in_progress' } : s));
             // the transcript scan keeps to the hook's own deadline, leaving room for the rest of the checks
-            const ctx = W.contextFor(root, { bd, team, beads: stories, verifyRecord, budget, deadline: end - JUDGE_RESERVE_MS });
-            findings.push(...W.claimFindings(bead, { ...ctx, fix: ctx.fixOf(bead), reason: ctx.reasonOf(G.areaOf(bead)) }));
+            const ctx = W.contextFor(root, { bd, team, beads: seen, verifyRecord, budget: base, deadline: end - JUDGE_RESERVE_MS });
+            if (!base) base = ctx.budget;
+            const extra = [...projected.values()].reduce((n, x) => n + x, 0);
+            const st = base.set && extra ? { ...base, inflightNeed: base.inflightNeed + extra, free: base.free - extra, nearLimit: base.free - extra < base.table.units.S * (1 + base.table.reserve) } : base;
+            findings.push(...W.claimFindings(bead, { ...ctx, beads: seen, budget: st, fix: ctx.fixOf(bead), reason: ctx.reasonOf(G.areaOf(bead)) }));
+            if (st.set && !W.built(bead)) started = B.estimate(bead, { t: st.table, team }).units * (1 + st.table.reserve);
           } catch (err) { /* fail open */ }
         }
         const blocks = findings.filter((f) => f.level === 'block');
@@ -370,6 +381,7 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
           out.deny = `Claim of ${id} refused (${blocks.map((f) => `${f.rule}: ${f.detail}`).join('; ')}).\n${nextStep(roleId, claimFix(blocks[0], id), PLAIN[blocks[0].code] ? `${id} cannot start, ${PLAIN[blocks[0].code]}` : `${id} ${blocks[0].code}`)}`;
           return finish();
         }
+        if (started !== null) projected.set(id, started);
         // stamp who builds the story, so clearing the assignee later does not make the builder a non-author
         const who = story ? builderOf(p, actor, roleId, instance) : null;
         if (who) {

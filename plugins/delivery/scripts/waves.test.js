@@ -194,7 +194,7 @@ test('R-36 replay, collections W3 claimed while #478 (W2) is merged but not veri
   assert.equal((await claim(t, bd, 'ex-w3-1', budgetAt(80, beads))).deny, null);
   // 85 used: 15 left, 15 - 3.9 < 12.8: starting it would leave W2 half-built
   const half = await claim(t, bd, 'ex-w3-1', budgetAt(85, beads));
-  assert.match(half.deny, /\(D5: wave 3 while wave 2 of collections is unfinished: 15 units left, wave 2 needs 12\.8, this 3\.9; it would leave wave 2 half-built/);
+  assert.match(half.deny, /\(D5: wave 3 while wave 2 of collections is unfinished: 15 units available, wave 2 needs 12\.8, wave 3 needs 3\.9; it would leave wave 2 half-built/);
   assert.deepEqual(reasonProblems(half.deny), []);
   // W2 verified or cut on the owner's record: W3 is the current wave
   bd.beads.get('ex-478').labels.push('state-verified');
@@ -385,4 +385,87 @@ test('PR 54 m-1: every refusal the Delivery Manager gets fits the reason rule', 
     assert.ok(g.deny, `${id} at ${used}%`);
     assert.deepEqual(reasonProblems(g.deny), [], g.deny);
   }
+});
+
+// ---- PR 54 re-review ----
+test('Copilot 435: the status line\'s weekly reading is taken from the owner\'s envelope, not the whole week', () => {
+  const g = goalProject();
+  ownerSets(g, 'budget.weekly_units', 100);
+  ownerSets(g, 'budget.usage_envelope', 80);
+  const st = B.state(g.root, { usedTokens: 0, snapshot: { usedPct: 70, periodStart: NOW } });
+  assert.equal(Math.round(st.remaining), 10);
+});
+
+test('Copilot 449: the Delivery Manager handing a started story to a new builder is not a new start', async () => {
+  const t = vault();
+  t.story('m1', { area: 'upload', wave: 1 });
+  t.story('x1', { area: 'other', wave: 1 });
+  const beads = [bead('m1', 'upload', { wave: 1, status: 'in_progress', size: 'M' }), bead('x1', 'other', { wave: 1, state: 'verified', status: 'closed' })];
+  const bd = memBd(beads);
+  // 95 used: 5 left, the story's own 3.9 already held: 1.1 free
+  const g = await gateChecks({ command: 'bd update ex-m1 --assignee dev@pc/builder-2', roleId: 'delivery-lead', actor: 'dm@pc/delivery-lead', instance: 'delivery-lead', bd, root: t.root, team: TEAM, budget: budgetAt(95, beads) });
+  assert.equal(g.deny, null);
+  assert.ok(!kinds(g).includes('new-area'));
+});
+
+test('Copilot 827: two starts in one command are budgeted together', async () => {
+  const t = vault();
+  for (const id of ['a1', 'b1', 'v1', 'v2']) t.story(id, { area: id[0] === 'a' || id === 'v1' ? 'alpha' : 'beta', wave: id.startsWith('v') ? 1 : 2 });
+  const beads = [bead('v1', 'alpha', { wave: 1, state: 'verified', status: 'closed' }), bead('v2', 'beta', { wave: 1, state: 'verified', status: 'closed' }), bead('a1', 'alpha', { wave: 2 }), bead('b1', 'beta', { wave: 2 })];
+  const bd = memBd(beads);
+  // 94 used: 6 free; each M wave needs 3.9, both 7.8
+  const st = budgetAt(94, beads);
+  assert.equal((await claim(t, bd, 'ex-a1', st)).deny, null);
+  const both = await gateChecks({ command: 'bd update ex-a1 --claim && bd update ex-b1 --claim', roleId: 'builder', actor: 'dev@pc/builder-1', instance: 'builder-1', bd, root: t.root, team: TEAM, budget: st });
+  assert.match(both.deny, /^Claim of ex-b1 refused \(D5: wave 2 of beta needs 3\.9 units/);
+});
+
+test('Copilot 896: starting a later wave while the current one is under way needs both to fit', async () => {
+  const t = vault();
+  for (const id of ['478', '479', 'w3-1', 'w3-2']) t.story(id, { area: 'collections', wave: id.startsWith('w3') ? 3 : 2 });
+  const beads = [bead('478', 'collections', { wave: 2, state: 'merged', status: 'closed', size: 'L' }), bead('479', 'collections', { wave: 2, status: 'in_progress', size: 'L' }), bead('w3-1', 'collections', { wave: 3 }), bead('w3-2', 'collections', { wave: 3 })];
+  const bd = memBd(beads);
+  // 80 used: 20 left; wave 2 still needs 12.8, wave 3 needs 7.8: 20.6 in all
+  const g = await claim(t, bd, 'ex-w3-1', budgetAt(80, beads));
+  assert.match(g.deny, /D5: wave 3 while wave 2 of collections is unfinished: .*wave 2 needs 12\.8, wave 3 needs 7\.8/);
+  assert.deepEqual(reasonProblems(g.deny), []);
+  assert.equal((await claim(t, bd, 'ex-w3-1', budgetAt(75, beads))).deny, null, '25 left: both fit');
+});
+
+test('Copilot 929: select lists under Not now a story the claim refuses for changed criteria (D1)', async () => {
+  const t = vault();
+  t.story('c1', { area: 'upload', wave: 1 });
+  const bd = memBd([bead('c1', 'upload', { wave: 1, metadata: { ready_hash: 'stale0000000' } })]);
+  const sel = JSON.parse((await plan.main(['select', '--json'], { who: { root: t.root, roleId: 'delivery-lead', team: TEAM }, bd, budget: NO_BUDGET })).out);
+  assert.match(sel.ranked[0].refused, /criteria changed since ready.*\(D1\)/);
+  assert.match((await claim(t, bd, 'ex-c1', NO_BUDGET)).deny, /D1: the agreed criteria changed/);
+});
+
+test('Copilot 947 and m-a: a fix merged but not verified keeps its reserve, in plan.js, wave.js and team-status alike', async () => {
+  const t = vault();
+  ownerSets(t, 'budget.weekly_units', 100);
+  t.story('i1', { area: 'import', wave: 1 });
+  const fix = { id: 'ex-fx', title: 'fix', status: 'closed', labels: ['bug', 'size-L', 'state-merged'], metadata: { area: 'import' } };
+  const beads = [bead('i1', 'import', { wave: 1 })];
+  const bd = memBd([...beads, fix]);
+  const used = { usedTokens: 50 * B.table(null).unitTokens, snapshot: null };
+  const ctx = W.contextFor(t.root, { bd, team: TEAM, beads, budgetOpts: used });
+  assert.equal(Math.round(ctx.budget.inflightNeed * 10) / 10, 2.4, 'merged L fix: its 30% reserve on sonnet');
+  const who = { root: t.root, roleId: 'delivery-lead', instance: 'delivery-lead', team: TEAM };
+  assert.match((await plan.main(['budget'], { who, bd, budgetOpts: used })).out, /so 47\.6 units free/);
+  assert.match(wave.main(['plan'], { who, bd, budgetOpts: used }).out, /47\.6 units free/);
+  const s = renderStatus(teamStatus(t.root, { bdCheck: () => true, bd, storyBeads: () => beads, checkBeads: () => [], idleBd: { list: () => [], ready: () => [] }, budgetOpts: used, now: NOW }));
+  // team-status reads the project's own team.json, which has no builder: size-L costs on opus there
+  assert.match(s, /45\.9 units free/);
+});
+
+test('m-b: a partial spend reading is flagged in the claim warnings and in team-status', async () => {
+  const t = vault();
+  t.story('p1', { area: 'upload', wave: 1 });
+  const beads = [bead('p1', 'upload', { wave: 1, size: 'S' })];
+  const st = { ...budgetAt(10, beads), partial: true };
+  const g = await claim(t, memBd(beads), 'ex-p1', st);
+  assert.ok(g.warnings.some((w) => w.kind === 'spend-partial' && /partial/.test(w.detail)));
+  const s = renderStatus(teamStatus(t.root, { bdCheck: () => true, storyBeads: () => beads, checkBeads: () => [], idleBd: { list: () => [], ready: () => [] }, budget: st, now: NOW }));
+  assert.match(s, /spend reading is partial/);
 });

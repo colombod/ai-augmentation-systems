@@ -101,7 +101,8 @@ function state(root, { team, beads = [], now, verifyRecord, usedTokens, snapshot
   if (snap) {
     weeklyPct = Math.max(weeklyPct, snap.usedPct);
     // the weekly window binds the whole account: never claim more room than it leaves
-    const weeklyLeft = weekly * (1 - snap.usedPct / 100);
+    // ...taken from the owner's envelope, not from the whole week (Copilot 435)
+    const weeklyLeft = total - weekly * (snap.usedPct / 100);
     if (weeklyLeft < remaining) { remaining = weeklyLeft; used = total - remaining; source = `the status line's weekly reading (${snap.usedPct}% used)`; }
   }
   const inflightNeed = beads.filter(inFlight).reduce((n, b) => n + stillNeeds(b, estimate(b, { t, team }), t), 0);
