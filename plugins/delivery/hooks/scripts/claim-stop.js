@@ -5,6 +5,7 @@
 // operator relay something) and the claim note (turn.js: a session holding a claim leaves a note).
 // turn.composeStop joins them into one block, each kind at most once per turn and never a third
 // blocking stop, so a relay request is not masked by another reason and the hook cannot loop.
+// With the typed judge on, relay_request is asked first (2 s timeout) and the regex is the fallback.
 // Block JSON or nothing; exit 0.
 const path = require('path');
 
@@ -18,8 +19,15 @@ function partiesOf(valid) {
   } catch (err) { return []; }
 }
 
-try {
-  const { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor } = require('./role-context.js');
+// The judge summary kept in the stop state: what it answered, or why it did not.
+function judgeSummary(j) {
+  if (!j) return null;
+  const keep = ['question', 'version', 'model', 'answer', 'p', 'latencyMs', 'skipped', 'error', 'reason', 'regex'];
+  return Object.fromEntries(keep.filter((k) => j[k] !== undefined).map((k) => [k, j[k]]));
+}
+
+async function main() {
+  const { readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, JUDGE_REMINDER } = require('./role-context.js');
   const input = readHookInput();
   let cap = null;
   try {
@@ -30,12 +38,22 @@ try {
   let valid = null;
   try { valid = input ? validMarker(findRoleMarker(input.cwd)) : null; } catch (err) { valid = null; }
   if (valid) {
-    const { operatorChecks } = require('./relay-guard.js');
+    const { operatorChecks, judgeRelay } = require('./relay-guard.js');
     const { decideStop, composeStop } = require('./turn.js');
     const candidates = [];
+    const parties = partiesOf(valid);
+    let judged = null;
     try {
-      candidates.push(...operatorChecks({ input, roleDir: valid.roleDir, projectRoot: valid.marker.project_root, role: valid.role.id,
-        instance: valid.marker.instance, captureStatus: cap && cap.status, parties: partiesOf(valid), pluginRoot: path.join(__dirname, '..', '..'), retired: !!valid.role.retired, deps: { warn: (m) => process.stderr.write(m) } }));
+      // the typed judge, when enabled (manifest judge block and its key variable); null otherwise
+      judged = await judgeRelay({ input, team: valid.team, role: valid.role.id, retired: !!valid.role.retired, projectRoot: valid.marker.project_root, parties });
+    } catch (err) { judged = null; }
+    try {
+      const found = operatorChecks({ input, roleDir: valid.roleDir, projectRoot: valid.marker.project_root, role: valid.role.id,
+        instance: valid.marker.instance, captureStatus: cap && cap.status, parties, pluginRoot: path.join(__dirname, '..', '..'), retired: !!valid.role.retired, judged, deps: { warn: (m) => process.stderr.write(m) } });
+      candidates.push(...found.filter((c) => !c.advisory));
+      // a warning-band judge answer does not block: it is said once on the next prompt
+      const advisory = found.filter((c) => c.advisory).map((c) => c.reason).join('\n');
+      if (advisory) { try { require('fs').writeFileSync(path.join(valid.roleDir, JUDGE_REMINDER), advisory); } catch (e) { /* best effort */ } }
     } catch (err) { /* the operator checks fail open */ }
     try {
       const { makeBd } = require('../../scripts/lib/bd.js');
@@ -44,8 +62,9 @@ try {
       // a missing claim note is a reminder for the next prompt, not a block (A2)
       if (claim) { try { require('fs').writeFileSync(path.join(valid.roleDir, require('./role-context.js').CLAIM_REMINDER), `Reminder: ${claim.reason}`); } catch (e) { /* best effort */ } }
     } catch (err) { /* allow */ }
-    const d = composeStop({ input, roleDir: valid.roleDir, candidates });
+    const d = composeStop({ input, roleDir: valid.roleDir, candidates, judge: judgeSummary(judged) });
     if (d) process.stdout.write(JSON.stringify({ decision: 'block', reason: d.reason }));
   }
-} catch (err) { /* allow */ }
-process.exit(0);
+}
+
+main().catch(() => { /* allow */ }).finally(() => process.exit(0));

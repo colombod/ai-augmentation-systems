@@ -7,7 +7,8 @@
 //   2. a final message that asks the operator to carry something to another session (tell, send,
 //      forward, paste, reply in ... session) blocks the turn: send the record id yourself.
 // The relay check is a heuristic backstop, not a boundary: it prefers missing a relay request over
-// flagging a question about the operator's own decision. Everything here fails open (returns null).
+// flagging a question about the operator's own decision. With the typed judge on (scripts/lib/judge.js),
+// its relay_request answer decides and the regex is the fallback. Everything here fails open.
 const fs = require('fs');
 const path = require('path');
 const { operatorCommand } = require('../../scripts/lib/plugin-root.js');
@@ -429,9 +430,49 @@ function inputCheck({ projectRoot, sessionId, instance, deps, warn, op, role }) 
   return out;
 }
 
+// ---- the typed judge on the relay check (R-37) ----
+// With the judge on, its relay_request answer decides: p >= block_threshold blocks (quoting the
+// regex's clause when it found one, else the message's start), warn_threshold <= p < block_threshold
+// is a non-blocking reminder (advisory: true), below passes. With the judge off, or on any skip,
+// error or timeout, the regex detector decides exactly as before.
+const ROLE_NAMES = { 'chief-of-staff': 'Chief of Staff', 'product-manager': 'Product Manager' };
+
+// null when the judge is off or the role does not address the operator; else the typed result,
+// the thresholds in force and whether the regex found a clause (logged next to the judge's answer).
+async function judgeRelay({ input, team, role, retired, projectRoot, parties, deps = {} } = {}) {
+  try {
+    if (!OPERATOR_FACING.has(role) || retired) return null;
+    const judge = require('../../scripts/lib/judge.js');
+    const env = deps.env || process.env;
+    const cfg = judge.judgeConfig(team, env);
+    if (!cfg.enabled) return null;
+    const raw = input && input.last_assistant_message;
+    const message = typeof raw === 'string' ? strip(raw).trim() : '';
+    if (!message) return null;
+    const regex = !!findRelayRequest(raw, { parties });
+    const r = await judge.ask('relay_request', { sender_role: ROLE_NAMES[role], recipient: 'owner', message },
+      { config: cfg, env, projectRoot, gate: 'relay-guard', timeoutMs: deps.timeoutMs || 2000, logExtra: { regex: regex ? 'hit' : 'miss' } });
+    return { ...r, block_threshold: cfg.block_threshold, warn_threshold: cfg.warn_threshold, regex };
+  } catch (err) { return null; }
+}
+
+function relayCandidates(message, relay, judged) {
+  const p = judged && typeof judged.p === 'number' ? judged.p : null;
+  if (p === null) return relay ? [{ kind: 'relay', reason: relayReason(message, relay.clause), detail: relay.phrase }] : [];
+  const start = strip(message).replace(/\s+/g, ' ').trim().slice(0, 160);
+  const rated = `The typed judge rates this message p ${p.toFixed(2)} as a relay request (advisory evidence).`;
+  if (p >= judged.block_threshold) {
+    return [{ kind: 'relay', reason: `${relayReason(message, relay ? relay.clause : start)} ${rated}`, detail: relay ? relay.phrase : start }];
+  }
+  if (p >= judged.warn_threshold) {
+    return [{ kind: 'relay-warn', advisory: true, reason: `Reminder: ${rated} If your last message asked the operator to act in another session or to carry a word to another role, do it yourself with SendMessage next time; the operator does not relay.` }];
+  }
+  return [];
+}
+
 // Every operator check that applies to this stop, ignoring stop_hook_active (claim-stop.js limits
 // repeats per turn, per session). [] for roles that do not address the operator, and on any failure.
-function operatorChecks({ input, roleDir, projectRoot, role, instance, captureStatus, parties, pluginRoot, retired, deps = {} } = {}) {
+function operatorChecks({ input, roleDir, projectRoot, role, instance, captureStatus, parties, pluginRoot, retired, judged, deps = {} } = {}) {
   try {
     // a retired instance records nothing new (operator.js refuses), so its guard stands down
     if (!OPERATOR_FACING.has(role) || retired) return [];
@@ -446,12 +487,11 @@ function operatorChecks({ input, roleDir, projectRoot, role, instance, captureSt
     }
     const out = [];
     out.push(...(inputCheck({ projectRoot, sessionId, instance, deps, warn, op, role }) || []));
-    const relay = findRelayRequest(inp.last_assistant_message, { parties });
-    if (relay) out.push({ kind: 'relay', reason: relayReason(inp.last_assistant_message, relay.clause), detail: relay.phrase });
+    out.push(...relayCandidates(inp.last_assistant_message, findRelayRequest(inp.last_assistant_message, { parties }), judged));
     return out;
   } catch (err) {
     return [];
   }
 }
 
-module.exports = { findRelayRequest, operatorChecks, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD, OPERATOR_FACING };
+module.exports = { findRelayRequest, operatorChecks, judgeRelay, relayCandidates, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD, OPERATOR_FACING };

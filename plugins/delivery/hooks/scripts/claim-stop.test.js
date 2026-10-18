@@ -239,3 +239,62 @@ test('without a role, an unloadable manifest or garbage input, the stop hook all
   assert.equal(g.status, 0);
   assert.equal(g.stdout, '');
 });
+
+// ---- the relay guard on the typed judge, against a local fake provider (never the real API) ----
+const http = require('http');
+const { spawn } = require('child_process');
+const { findRelayRequest } = require('./relay-guard.js');
+const { stopStateFile } = require('./turn.js');
+const { JUDGE_REMINDER } = require('./role-context.js');
+
+function judgedRole(endpoint) {
+  const p = preparedRole('chief-of-staff');
+  const f = path.join(p.projectRoot, '.delivery', 'team', 'team.json');
+  fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), judge: { provider: 'typesafe', model: 'jev-latest', endpoint } }));
+  return p;
+}
+// async: the fake provider runs in this process, so the hook must not block the event loop
+function runStopAsync(input) {
+  const env = { ...process.env, DELIVERY_ROLE: 'chief-of-staff', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, TYPESAFE_API_KEY: 'test-key-not-real', PATH: `${fs.mkdtempSync(path.join(os.tmpdir(), 'stop-nobd-'))}${path.delimiter}/usr/bin${path.delimiter}/bin` };
+  delete env.DELIVERY_ROLE_DIR;
+  return new Promise((resolve) => {
+    const c = spawn(process.execPath, [path.join(__dirname, 'claim-stop.js')], { env });
+    let stdout = '';
+    c.stdout.on('data', (d) => { stdout += d; });
+    c.on('close', (status) => resolve({ status, stdout }));
+    c.stdin.end(JSON.stringify({ session_id: SID, hook_event_name: 'Stop', stop_hook_active: false, ...input }));
+  });
+}
+const REGEX_HIT = 'Please tell the builder session to use postgres.';
+const REGEX_MISS = 'Good night. One thing waits for you in the morning: the sign-in fix is committed and reviewed but not pushed yet.';
+
+test('relay guard on the judge: p 0.9 blocks quoting the message start, 0.6 leaves a reminder, 0.2 passes a regex hit', async () => {
+  let p = 0.9;
+  const server = http.createServer((req, res) => { req.resume(); req.on('end', () => res.end(JSON.stringify({ model: 'jev-1.13.0', answers: { relay_request: { type: 'noul', noul: p } }, usage: { input_tokens: 580 } }))); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const { roleDir } = judgedRole(`http://127.0.0.1:${server.address().port}/v1/systemone`);
+    assert.equal(findRelayRequest(REGEX_MISS), null, 'the regex misses this one');
+    const blocked = reasonOf(await runStopAsync({ cwd: roleDir, last_assistant_message: REGEX_MISS }));
+    assert.equal(blocked.decision, 'block');
+    assert.ok(blocked.reason.includes(`You wrote: "${REGEX_MISS.slice(0, 160)}"`));
+    assert.match(blocked.reason, /typed judge rates this message p 0\.90/);
+    const st = JSON.parse(fs.readFileSync(stopStateFile(roleDir, SID), 'utf8'));
+    assert.deepEqual({ p: st.judge.p, model: st.judge.model, regex: st.judge.regex, blocks: st.blocks.relay }, { p: 0.9, model: 'jev-1.13.0', regex: false, blocks: 1 });
+
+    p = 0.6;
+    assert.equal((await runStopAsync({ cwd: roleDir, last_assistant_message: REGEX_MISS })).stdout, '');
+    assert.match(fs.readFileSync(path.join(roleDir, JUDGE_REMINDER), 'utf8'), /^Reminder: The typed judge rates this message p 0\.60/);
+
+    p = 0.2;
+    assert.equal((await runStopAsync({ cwd: roleDir, last_assistant_message: REGEX_HIT })).stdout, '', 'the judge overrules a regex hit below the warn threshold');
+  } finally { server.closeAllConnections(); server.close(); }
+});
+
+test('relay guard on the judge: with the provider down, the regex decides exactly as without the judge', async () => {
+  const { roleDir } = judgedRole('http://127.0.0.1:1/v1/systemone');
+  const r = reasonOf(await runStopAsync({ cwd: roleDir, last_assistant_message: REGEX_HIT }));
+  assert.equal(r.reason, relayReason(REGEX_HIT, findRelayRequest(REGEX_HIT).clause));
+  assert.equal(JSON.parse(fs.readFileSync(stopStateFile(roleDir, SID), 'utf8')).judge.reason, 'network');
+  assert.equal((await runStopAsync({ cwd: roleDir, last_assistant_message: REGEX_MISS })).stdout, '');
+});
