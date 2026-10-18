@@ -29,7 +29,7 @@ function fakeServer(reply) {
     close: () => { server.closeAllConnections(); server.close(); } })));
 }
 const noul = (p) => (body) => ({ json: { model: 'jev-1.13.0', answers: { [Object.keys(body.questions)[0]]: { type: 'noul', noul: p } }, usage: { input_tokens: 581, output_tokens: 21 } } });
-const cfgFor = (url, extra = {}) => J.judgeConfig({ judge: { provider: 'typesafe', model: 'jev-latest', endpoint: url, ...extra } }, { TYPESAFE_API_KEY: KEY });
+const cfgFor = (url, extra = {}) => J.judgeConfig({ judge: { provider: 'typesafe', model: 'jev-latest', ...extra } }, { TYPESAFE_API_KEY: KEY, DELIVERY_JUDGE_ENDPOINT: url });
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'judge-'));
 const RELAY = { sender_role: 'Chief of Staff', recipient: 'owner', message: 'Open the builder session and approve the push.' };
 
@@ -37,35 +37,50 @@ test('judgeConfig: off without a block, with provider none, or without the key; 
   assert.equal(J.judgeConfig({}, { TYPESAFE_API_KEY: KEY }).reason, 'judge_not_configured');
   assert.equal(J.judgeConfig({ judge: { provider: 'none' } }, { TYPESAFE_API_KEY: KEY }).reason, 'provider_none');
   assert.equal(J.judgeConfig({ judge: { provider: 'typesafe' } }, {}).reason, 'no_key');
-  assert.equal(J.judgeConfig({ judge: { provider: 'typesafe', key_env: 'OTHER' } }, { OTHER: 'k' }).enabled, true);
+  assert.equal(J.judgeConfig({ judge: { provider: 'typesafe', key_env: 'TYPESAFE_OTHER' } }, { TYPESAFE_OTHER: 'k' }).enabled, true);
   assert.equal(J.judgeConfig({ judge: { provider: 'typesafe', block_threshold: 2 } }, { TYPESAFE_API_KEY: KEY }).reason, 'judge_config_invalid');
   assert.equal(JSON.stringify(J.judgeConfig({ judge: { provider: 'typesafe' } }, { TYPESAFE_API_KEY: KEY })).includes(KEY), false, 'the key is not in the config');
 });
 
-test('manifest: judge values are validated, unknown keys warn, a remote endpoint is refused', () => {
+test('the key variable is pinned to TYPESAFE_*, and the endpoint comes only from a loopback DELIVERY_JUDGE_ENDPOINT', async () => {
+  const f = await fakeServer(noul(0.9));
+  try {
+    // repro: a manifest naming another secret as the key never sends it
+    const gh = J.judgeConfig({ judge: { provider: 'typesafe', key_env: 'GITHUB_TOKEN' } }, { GITHUB_TOKEN: 'fake-gh-secret', DELIVERY_JUDGE_ENDPOINT: f.url });
+    assert.equal(gh.reason, 'judge_config_invalid');
+    assert.equal((await J.ask('relay_request', RELAY, { config: gh, env: { GITHUB_TOKEN: 'fake-gh-secret' }, logDir: tmp() })).reason, 'judge_config_invalid');
+    assert.equal(f.seen.length, 0);
+  } finally { f.close(); }
+  const env = { TYPESAFE_API_KEY: KEY };
+  assert.equal(J.judgeConfig({ judge: { provider: 'typesafe', endpoint: 'http://127.0.0.1:9/x' } }, env).endpoint, J.TYPESAFE_URL, 'the manifest cannot set the endpoint');
+  assert.equal(J.judgeConfig({ judge: { provider: 'typesafe' } }, { ...env, DELIVERY_JUDGE_ENDPOINT: 'https://example.org/x' }).endpoint, J.TYPESAFE_URL, 'a remote override is ignored');
+  assert.equal(J.judgeConfig({ judge: { provider: 'typesafe' } }, { ...env, DELIVERY_JUDGE_ENDPOINT: 'http://localhost:9/x' }).endpoint, 'http://localhost:9/x');
+});
+
+test('manifest: judge values are validated and unknown keys (endpoint included) warn', () => {
   const team = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'testing', 'manifest', 'team.json'), 'utf8'));
   const hosts = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'testing', 'manifest', 'hosts.json'), 'utf8'));
   const base = validateManifest(JSON.parse(JSON.stringify(team)), hosts);
-  const ok = { ...team, judge: { provider: 'typesafe', model: 'jev-latest', key_env: 'TYPESAFE_API_KEY', block_threshold: 0.8, warn_threshold: 0.5, colour: 'x' } };
+  const ok = { ...team, judge: { provider: 'typesafe', model: 'jev-latest', key_env: 'TYPESAFE_API_KEY', block_threshold: 0.8, warn_threshold: 0.5, endpoint: 'x' } };
   assert.deepEqual(validateManifest(ok, hosts), base);
-  assert.ok(manifestWarnings(ok).some((w) => /judge key "colour" is not known/.test(w)));
-  const bad = { ...team, judge: { provider: 'gpt', warn_threshold: 0.9, block_threshold: 0.8, key_env: 'lower', endpoint: 'https://example.org/x' } };
+  assert.ok(manifestWarnings(ok).some((w) => /judge key "endpoint" is not known/.test(w)));
+  const bad = { ...team, judge: { provider: 'gpt', warn_threshold: 0.9, block_threshold: 0.8, key_env: 'GITHUB_TOKEN' } };
   const p = validateManifest(bad, hosts).filter((x) => /judge/.test(x));
-  assert.equal(p.length, 4, p.join('\n'));
+  assert.equal(p.length, 3, p.join('\n'));
 });
 
 test('ask: a noul answer is typed, the key goes only in the header, and the log line has no state', async () => {
   const f = await fakeServer(noul(0.91));
   const logDir = tmp();
   try {
-    const r = await J.ask('relay_request', { ...RELAY, extra: 'dropped' }, { config: cfgFor(f.url), logDir, gate: 'test' });
+    const r = await J.ask('relay_request', { ...RELAY, extra: 'dropped', ghp_abcdefghijklmnopqrstuvwxyz0123: 1 }, { config: cfgFor(f.url), logDir, gate: 'test' });
     assert.equal(r.answer, 'yes');
     assert.equal(r.p, 0.91);
     assert.equal(r.model, 'jev-1.13.0');
-    assert.equal(r.version, '1');
+    assert.equal(r.version, '1.1');
     assert.equal(r.inputTokens, 581);
     assert.ok(r.latencyMs >= 0);
-    assert.deepEqual(r.dropped, ['extra']);
+    assert.deepEqual([r.dropped, r.dropped_count], [['extra'], 2], 'a token-like dropped name is counted, not named');
     assert.ok(f.seen[0].auth === `Bearer ${KEY}`, 'the key is sent as a bearer header');
     assert.deepEqual(Object.keys(f.seen[0].body.state).sort(), ['message', 'recipient', 'sender_role']);
     assert.equal(f.seen[0].body.questions.relay_request.type, 'noul');
@@ -74,7 +89,8 @@ test('ask: a noul answer is typed, the key goes only in the header, and the log 
     assert.equal(line.advisory, true);
     assert.equal(line.p, 0.91);
     assert.match(line.state_sha256, /^[0-9a-f]{64}$/);
-    assert.ok(!text.includes('approve the push') && !text.includes(KEY), 'neither the state nor the key is logged');
+    assert.ok(!text.includes('approve the push') && !text.includes(KEY) && !text.includes('ghp_'), 'neither the state, the key nor a dropped name is logged');
+    assert.equal(line.dropped, 2);
     assert.equal(fs.readFileSync(path.join(logDir, '.gitignore'), 'utf8'), '*\n');
   } finally { f.close(); }
 });
@@ -108,26 +124,58 @@ test('ask fails open: timeout, 401, 429, a closed port and a bad body give a rea
   } finally { f.close(); }
 });
 
+test('ask rejects malformed answers as bad_response and does not follow a redirect', async () => {
+  const bad = {
+    'noul -1': { type: 'noul', noul: -1 }, 'noul 7': { type: 'noul', noul: 7 }, 'wrong type': { type: 'choice', choice: 'yes', confidence: 0.9 },
+  };
+  const f = await fakeServer((b) => ({ json: { model: 'm', answers: { [Object.keys(b.questions)[0]]: bad[b.state.message] || b.state.answer } } }));
+  const other = await fakeServer(noul(0.9));
+  const redirect = http.createServer((req, res) => { req.resume(); res.writeHead(302, { Location: other.url }); res.end(); });
+  await new Promise((r) => redirect.listen(0, '127.0.0.1', r));
+  try {
+    for (const m of Object.keys(bad)) assert.equal((await J.ask('relay_request', { ...RELAY, message: m }, { config: cfgFor(f.url), logDir: tmp() })).reason, 'bad_response', m);
+    const div = (answer) => J.ask('divergence', { agreed_criteria: ['a'], customer_surface: 'web', change_summary: 'x', answer }, { config: cfgFor(f.url), logDir: tmp(),
+      catalogue: { questions: { divergence: { ...J.loadCatalogue().questions.divergence, state: ['agreed_criteria', 'customer_surface', 'change_summary', 'answer'] } } } });
+    assert.equal((await div({ type: 'choice', choice: 'awful', confidence: 0.9 })).reason, 'bad_response', 'undeclared choice');
+    assert.equal((await div({ type: 'choice', choice: 'minor' })).reason, 'bad_response', 'missing confidence');
+    assert.equal((await div({ type: 'choice', choice: 'minor', confidence: 0.9, probabilities: { minor: 2 } })).reason, 'bad_response', 'probability out of range');
+    const r = await J.ask('relay_request', RELAY, { config: cfgFor(`http://127.0.0.1:${redirect.address().port}/v1/systemone`), logDir: tmp() });
+    assert.equal(r.reason, 'http_302');
+    assert.equal(other.seen.length, 0, 'the redirect target received nothing');
+  } finally { f.close(); other.close(); redirect.closeAllConnections(); redirect.close(); }
+});
+
 test('ask refuses locally: off, unknown question, sensitive or missing fields; nothing is sent', async () => {
   const f = await fakeServer(noul(0.9));
   const logDir = tmp();
   try {
-    assert.deepEqual(await J.ask('relay_request', RELAY, { config: J.judgeConfig({ judge: { provider: 'typesafe' } }, {}), logDir }), { question: 'relay_request', version: '1', skipped: true, reason: 'no_key' });
+    assert.deepEqual(await J.ask('relay_request', RELAY, { config: J.judgeConfig({ judge: { provider: 'typesafe' } }, {}), logDir }), { question: 'relay_request', version: '1.1', skipped: true, reason: 'no_key' });
     assert.equal((await J.ask('nope', RELAY, { config: cfgFor(f.url) })).reason, 'unknown_question');
     const cases = {
       token: 'use ghp_abcdefghijklmnopqrstuvwxyz0123 now', email: 'mail someone@example.com', url: 'see https://example.com/a',
       path: 'the file /srv/app/config.json', credential: 'password = hunter22', id: 'session 3f2b1c4d-1a2b-4c3d-8e9f-0123456789ab',
-      opaque: 'key Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZg', denylist: 'the Secret Codename launch',
+      opaque: 'key Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZg', denylist: 'the Secret Codename launch', key: `it is ${KEY} there`,
+      hex: 'sha deadbeef0123456789abcd', ip: 'on 10.0.0.12 now', phone: 'call +44 7700 900123',
     };
-    for (const [kind, message] of Object.entries(cases)) {
+    const more = [['credential', '{"password":"hunter22"}'], ['credential', 'the password is hunter22'], ['path', './private/config.json'],
+      ['path', '.delivery/team/team.json'], ['path', '/private.env'], ['token', 'glpat-abcdefghijklmnopqrstu'], ['token', 'npm_abcdefghijklmnopqrstuvwxyz0123456789'],
+      ['token', 'xoxb-1234567890-abc'], ['token', 'hooks.slack.com/services/T0/B0/xyz'], ['token', 'ts_live_abcdefgh12'], ['url', 'www.example.com/a?sig=abc']];
+    for (const [kind, message] of [...Object.entries(cases), ...more.map(([k, m]) => [k, m])]) {
       const r = await J.ask('relay_request', { ...RELAY, message }, { config: cfgFor(f.url), logDir, denylist: ['secret codename'] });
-      assert.equal(r.reason, 'state_filtered', kind);
-      assert.deepEqual(r.filtered, [{ field: 'message', kind }], kind);
+      assert.equal(r.reason, 'state_filtered', message);
+      assert.deepEqual(r.filtered, [{ field: 'message', kind }], message);
     }
+    // a structured credential is seen as name: value
+    assert.equal((await J.ask('is_fix', { candidate: 'c', linked_item: 'l', context: { connection: { password: 'hunter22' } } }, { config: cfgFor(f.url), logDir })).reason, 'state_filtered');
+    assert.equal((await J.ask('relay_request', { ...RELAY, message: 'x'.repeat(16001) }, { config: cfgFor(f.url), logDir })).reason, 'state_too_large');
+    // a denylist that exists but cannot be read refuses the call (fail closed)
+    const proj = tmp();
+    fs.mkdirSync(path.join(proj, '.delivery', 'team', 'denylist.txt'), { recursive: true });
+    assert.equal((await J.ask('relay_request', RELAY, { config: cfgFor(f.url), projectRoot: proj, logDir })).reason, 'denylist_unreadable');
     assert.deepEqual((await J.ask('relay_request', { message: 'hi' }, { config: cfgFor(f.url), logDir })).missing, ['sender_role', 'recipient']);
     assert.equal(f.seen.length, 0, 'nothing reached the provider');
     const text = fs.readFileSync(path.join(logDir, fs.readdirSync(logDir).find((x) => x.endsWith('.ndjson'))), 'utf8');
-    assert.ok(!text.includes('ghp_') && !text.includes('example.com'), 'the filtered value is not logged');
+    assert.ok(!text.includes('ghp_') && !text.includes('example.com') && !text.includes('hunter22'), 'the filtered value is not logged');
     // ordinary briefing text passes
     assert.deepEqual(J.filterState(J.loadCatalogue().questions.relay_request, { ...RELAY, message: 'Run /delivery:status, then merge #477 and A/B the copy.' }).filtered, []);
   } finally { f.close(); }

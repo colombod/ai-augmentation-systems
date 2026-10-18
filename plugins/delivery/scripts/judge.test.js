@@ -28,23 +28,36 @@ test('judge.js questions lists the catalogue; a bad command is a usage error', (
   const out = JSON.parse(r.stdout);
   assert.deepEqual(out.questions.find((q) => q.id === 'divergence').options, ['none', 'minor', 'serious']);
   assert.equal(out.questions.find((q) => q.id === 'divergence').mode, 'warn-only');
-  assert.equal(spawnSync(process.execPath, [CLI, 'ask'], { encoding: 'utf8' }).status, 2);
+  assert.equal(spawnSync(process.execPath, [CLI, 'ask'], { encoding: 'utf8', env: { ...process.env, ...ENV } }).status, 2);
+  // the caller cannot choose the manifest
+  assert.equal(spawnSync(process.execPath, [CLI, 'ask', 'relay_request', '--state', '-', '--project', '/tmp'], { input: '{}', encoding: 'utf8', env: { ...process.env, ...ENV } }).status, 2);
+  // a parse error does not echo the state
+  const bad = spawnSync(process.execPath, [CLI, 'ask', 'relay_request', '--state', '-'], { input: 'not json sk-secretvalue', encoding: 'utf8', env: { ...process.env, ...ENV } });
+  assert.equal(bad.status, 2);
+  assert.ok(!bad.stderr.includes('sk-secret'));
 });
 
 test('judge.js ask: off without a judge block (exit 3, skipped); answered from stdin when on; stats reads the log', async () => {
-  const off = spawnSync(process.execPath, [CLI, 'ask', 'relay_request', '--state', '-', '--project', project(null)], { input: JSON.stringify(STATE), encoding: 'utf8', env: { ...process.env, ...ENV } });
+  const off = spawnSync(process.execPath, [CLI, 'ask', 'relay_request', '--state', '-'], { input: JSON.stringify(STATE), encoding: 'utf8', env: { ...process.env, ...ENV, DELIVERY_PROJECT_ROOT: project(null) } });
   assert.equal(off.status, 3);
   assert.equal(JSON.parse(off.stdout).reason, 'judge_not_configured');
 
-  const server = http.createServer((req, res) => { req.resume(); req.on('end', () => res.end(JSON.stringify({ model: 'jev-1.13.0', answers: { relay_request: { type: 'noul', noul: 0.93 } }, usage: { input_tokens: 590, output_tokens: 21 } }))); });
+  let seen = 0;
+  const server = http.createServer((req, res) => { seen++; req.resume(); req.on('end', () => res.end(JSON.stringify({ model: 'jev-1.13.0', answers: { relay_request: { type: 'noul', noul: 0.93 } }, usage: { input_tokens: 590, output_tokens: 21 } }))); });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   try {
-    const root = project({ provider: 'typesafe', endpoint: `http://127.0.0.1:${server.address().port}/v1/systemone` });
-    const r = await main(['ask', 'relay_request', '--state', '-'], { cwd: root, env: ENV, stdin: () => JSON.stringify(STATE) });
+    const endpoint = `http://127.0.0.1:${server.address().port}/v1/systemone`;
+    // repro: a manifest naming another secret is refused before anything is sent
+    const gh = project({ provider: 'typesafe', key_env: 'GITHUB_TOKEN' });
+    const g = await main(['ask', 'relay_request', '--state', '-'], { cwd: gh, env: { GITHUB_TOKEN: 'fake-gh-secret', DELIVERY_PROJECT_ROOT: gh, DELIVERY_JUDGE_ENDPOINT: endpoint }, stdin: () => JSON.stringify(STATE) });
+    assert.deepEqual([g.code, g.out.reason, seen], [3, 'judge_config_invalid', 0]);
+    const root = project({ provider: 'typesafe' });
+    const env = { ...ENV, DELIVERY_PROJECT_ROOT: root, DELIVERY_JUDGE_ENDPOINT: endpoint };
+    const r = await main(['ask', 'relay_request', '--state', '-'], { cwd: os.tmpdir(), env, stdin: () => JSON.stringify(STATE) });
     assert.equal(r.code, 0);
     assert.equal(r.out.answer, 'yes');
     assert.equal(r.out.p, 0.93);
-    const s = await main(['stats'], { cwd: root, env: ENV });
+    const s = await main(['stats'], { cwd: os.tmpdir(), env });
     assert.equal(s.out.questions.relay_request.answered, 1);
     assert.equal(s.out.questions.relay_request.share_at_block, 1);
     assert.equal(s.out.questions.relay_request.input_tokens, 590);

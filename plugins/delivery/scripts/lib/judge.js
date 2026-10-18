@@ -2,11 +2,14 @@
 //
 // Advisory evidence, never the proof: a gate decides, the judge informs it. Off unless the manifest
 // has a `judge` block naming a provider AND the key variable it names is set in the environment.
-// The state sent is the question's declared fields only; a declared field that looks like a secret,
-// token, credential, id, email, URL or path (or matches the leak guard's denylist) refuses the call
-// locally. Calls time out (2 s default) and fail open: ask() never throws and never logs the key or
-// the state; each call is one advisory line in .delivery/judge/<date>.ndjson with a sha256 of the
-// state sent, not the state itself.
+// The state sent is the question's declared fields only; a best-effort pattern filter refuses the call
+// locally when a declared field looks like a secret, token, credential, id, email, URL, path, IP
+// address or phone number, carries the key's own value, or matches the leak guard's denylist (names
+// and other personal data are not reliably detected: callers send only the declared minimum). The key
+// comes only from TYPESAFE_API_KEY (or another TYPESAFE_* variable) and goes only to the provider's
+// URL; the endpoint override is DELIVERY_JUDGE_ENDPOINT, loopback only, for tests. Calls time out
+// (2 s default) and fail open: ask() never throws and never logs the key or the state; each call is
+// one advisory line in .delivery/judge/<date>.ndjson with a sha256 of the state sent, not the state.
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -17,18 +20,20 @@ const CATALOGUE_FILE = path.join(__dirname, '..', '..', 'judge', 'questions.json
 const TYPESAFE_URL = 'https://api.typesafe.ai/v1/systemone';
 const DEFAULTS = { provider: 'none', model: 'jev-latest', key_env: 'TYPESAFE_API_KEY', block_threshold: 0.8, warn_threshold: 0.5 };
 const PROVIDERS = new Set(['typesafe', 'none']);
-const KNOWN_KEYS = new Set([...Object.keys(DEFAULTS), 'endpoint']);
+const KNOWN_KEYS = new Set(Object.keys(DEFAULTS));
+// the key variable: only a TypeSafe one, so a manifest edit cannot turn another secret into the bearer token
+const KEY_ENV = /^TYPESAFE_[A-Z0-9_]+$/;
+const ENDPOINT_ENV = 'DELIVERY_JUDGE_ENDPOINT';
 const MAX_STATE_CHARS = 16000;
 
 function loadCatalogue(file = CATALOGUE_FILE) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
-// the endpoint override exists for tests and local gateways only: loopback, or the provider's own host
-function endpointOk(u) {
+// the endpoint override (DELIVERY_JUDGE_ENDPOINT, for tests) is a loopback address only; never the manifest
+function loopback(u) {
   try {
     const x = new URL(u);
-    if (x.href === TYPESAFE_URL) return true;
     return (x.protocol === 'http:' || x.protocol === 'https:') && ['127.0.0.1', 'localhost', '[::1]'].includes(x.hostname);
   } catch (err) { return false; }
 }
@@ -42,14 +47,13 @@ function configProblems(j) {
   for (const k of Object.keys(j)) if (!KNOWN_KEYS.has(k)) warnings.push(`team.json: judge key "${k}" is not known and is ignored`);
   if (j.provider !== undefined && !PROVIDERS.has(j.provider)) problems.push(`team.json: judge provider "${j.provider}", expected one of ${[...PROVIDERS].join(', ')}`);
   if (j.model !== undefined && (typeof j.model !== 'string' || !j.model.trim())) problems.push('team.json: judge model must be a non-empty string');
-  if (j.key_env !== undefined && !/^[A-Z_][A-Z0-9_]*$/.test(String(j.key_env))) problems.push('team.json: judge key_env must name an environment variable (A-Z, 0-9, _)');
+  if (j.key_env !== undefined && !KEY_ENV.test(String(j.key_env))) problems.push('team.json: judge key_env must be TYPESAFE_API_KEY or another TYPESAFE_* variable');
   for (const k of ['block_threshold', 'warn_threshold']) {
     if (j[k] !== undefined && !(typeof j[k] === 'number' && j[k] >= 0 && j[k] <= 1)) problems.push(`team.json: judge ${k} must be a number from 0 to 1`);
   }
   const b = j.block_threshold === undefined ? DEFAULTS.block_threshold : j.block_threshold;
   const w = j.warn_threshold === undefined ? DEFAULTS.warn_threshold : j.warn_threshold;
   if (typeof b === 'number' && typeof w === 'number' && w > b) problems.push('team.json: judge warn_threshold must not exceed block_threshold');
-  if (j.endpoint !== undefined && !endpointOk(j.endpoint)) problems.push('team.json: judge endpoint must be the provider\'s own URL or a loopback address');
   return { problems, warnings };
 }
 
@@ -57,8 +61,9 @@ function configProblems(j) {
 // none, and the key variable is set. The key itself is never part of the result.
 function judgeConfig(team, env = process.env) {
   const j = team && team.judge;
-  const cfg = { ...DEFAULTS, ...(j && typeof j === 'object' && !Array.isArray(j) ? j : {}) };
-  cfg.endpoint = cfg.endpoint || TYPESAFE_URL;
+  const cfg = { ...DEFAULTS };
+  for (const k of KNOWN_KEYS) if (j && typeof j === 'object' && j[k] !== undefined) cfg[k] = j[k];
+  cfg.endpoint = loopback(env[ENDPOINT_ENV]) ? env[ENDPOINT_ENV] : TYPESAFE_URL;
   let reason = null;
   if (!j) reason = 'judge_not_configured';
   else if (configProblems(j).problems.length) reason = 'judge_config_invalid';
@@ -68,31 +73,59 @@ function judgeConfig(team, env = process.env) {
 }
 
 // ---- the state filter ----
+// A best-effort pattern filter, conservative by design: a false refusal costs one regex fallback.
+const CRED = String.raw`(?:password|passwd|passphrase|passcode|pin|secret|token|api[_ -]?key|access[_ -]?key|client[_ -]?secret|private[_ -]?key|credentials?)`;
+const LEAD = String.raw`(?:^|[\s"'(=:,\[{])`;
 const CHECKS = [
   ['private_key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
-  ['token', /\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{16}|AIza[\w-]{30,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]*)/],
+  ['token', /\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{20,}|npm_[A-Za-z0-9]{30,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{16}|AIza[\w-]{30,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]*)/],
+  ['token', /\b[A-Za-z0-9]+_(?:live|test|prod)_[A-Za-z0-9]{8,}/],
   ['token', /\bbearer\s+[\w.~+/-]{12,}/i],
-  ['credential', /\b(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)\b\s*[:=]\s*\S{4,}/i],
+  ['token', /hooks\.slack\.com\/\S+/i],
+  // assignments, quoted JSON keys ("password":"x") and flattened objects (password: x)
+  ['credential', new RegExp(String.raw`\b${CRED}\b["']?\s*[:=]\s*["']?[^\s"']{3,}`, 'i')],
+  ['credential', new RegExp(String.raw`\b${CRED}\s+(?:is|was|reads)\s+["']?[^\s"'.,]{3,}`, 'i')],
   ['email', /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/],
   ['url', /\b[a-z][a-z0-9+.-]*:\/\/\S+/i],
+  ['url', /\b(?:[a-z0-9-]+\.)+[a-z]{2,}\/\S*\?\S*=/i],
   ['id', /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i],
-  ['path', /(?:^|[\s"'(=:])(?:~[\\/]\S|\/(?:[\w.@-]+\/)+[\w.@-]*|[A-Za-z]:\\\S)/],
+  ['ip', /\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[0-9a-f]{1,4}:){4,7}[0-9a-f]{1,4}\b/i],
+  ['phone', /(?:^|[^\w#])\+\d{1,3}[\s.-]?\(?\d{1,4}\)?(?:[\s.-]?\d{2,4}){2,4}\b|\(\d{3}\)\s?\d{3}[\s.-]\d{4}\b/],
+  // absolute and home paths (two segments, or one with an extension: /private.env), ./ and ../ paths,
+  // dot-directories (.delivery/team), and relative paths that end in a file name with an extension
+  ['path', new RegExp(String.raw`${LEAD}(?:~[\\/]\S|\/(?:[\w.@-]+\/)+[\w.@-]*|\/[\w@-]*\.[A-Za-z0-9]{1,8}\b|[A-Za-z]:\\\S|\.{1,2}[\\/][\w.@-]+|\.[\w-]+[\\/][\w.@-]+)`)],
+  ['path', /\b[\w.-]+(?:\/[\w.-]+)*\/[\w-]+\.(?:json|env|ya?ml|toml|ini|pem|key|crt|p12|js|ts|py|rb|go|md|txt|cfg|conf|sh|ndjson|log|db|sqlite)\b/i],
 ];
+// a run of 20 or more hex digits (with a digit in it) is a token or a hash
+const HEX = /\b[0-9a-fA-F]{20,}\b/g;
 // a long opaque run with letters and digits is a key, a hash or a token
 const OPAQUE = /[A-Za-z0-9+/_-]{32,}={0,2}/g;
 
-function stringsOf(v, out = []) {
+// every string in a value: names and values, and each scalar pair flattened as "name: value", so a
+// structured credential ({connection: {password: 'x'}}) is seen the way the text form is
+function stringsOf(v, out = [], depth = 0) {
+  if (depth > 20) { out.push('\u0000too-deep'); return out; }
   if (typeof v === 'string') out.push(v);
-  else if (Array.isArray(v)) v.forEach((x) => stringsOf(x, out));
-  else if (v && typeof v === 'object') Object.entries(v).forEach(([k, x]) => { out.push(k); stringsOf(x, out); });
-  else if (v !== undefined && v !== null) out.push(String(v));
+  else if (Array.isArray(v)) v.forEach((x) => stringsOf(x, out, depth + 1));
+  else if (v && typeof v === 'object') {
+    for (const [k, x] of Object.entries(v)) {
+      out.push(k);
+      if (x === null || typeof x !== 'object') out.push(`${k}: ${x}`);
+      stringsOf(x, out, depth + 1);
+    }
+  } else if (v !== undefined && v !== null) out.push(String(v));
   return out;
 }
 
-function secretKind(value, denylist) {
+// the kind of the first sensitive-looking string in value, or null. secrets: literal values never to
+// send (the key itself).
+function secretKind(value, denylist, secrets = []) {
   for (const s of stringsOf(value)) {
+    if (s === '\u0000too-deep') return 'too_deep';
+    if (secrets.some((k) => typeof k === 'string' && k.length >= 8 && s.includes(k))) return 'key';
     for (const [kind, re] of CHECKS) if (re.test(s)) return kind;
     for (const m of s.match(OPAQUE) || []) if (/\d/.test(m) && /[A-Za-z]/.test(m)) return 'opaque';
+    for (const m of s.match(HEX) || []) if (/\d/.test(m)) return 'hex';
     const low = s.toLowerCase();
     if ((denylist || []).some((d) => d && low.includes(String(d).toLowerCase()))) return 'denylist';
   }
@@ -101,14 +134,14 @@ function secretKind(value, denylist) {
 
 // { state, dropped, filtered, missing }: only declared fields pass; a declared field that looks
 // sensitive is withheld and named (field and kind, never the value).
-function filterState(question, state, { denylist } = {}) {
+function filterState(question, state, { denylist, secrets } = {}) {
   const declared = (question && question.state) || [];
   const src = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
   const out = {};
   const filtered = [];
   for (const f of declared) {
     if (src[f] === undefined) continue;
-    const kind = secretKind(src[f], denylist);
+    const kind = secretKind(src[f], denylist, secrets);
     if (kind) filtered.push({ field: f, kind });
     else out[f] = src[f];
   }
@@ -120,11 +153,12 @@ function filterState(question, state, { denylist } = {}) {
   };
 }
 
+// [] when there is no denylist; null when one exists but cannot be read (the call is then refused)
 function loadDenylist(projectRoot) {
   if (!projectRoot) return [];
   try {
     return fs.readFileSync(path.join(projectRoot, '.delivery', 'team', 'denylist.txt'), 'utf8').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
-  } catch (err) { return []; }
+  } catch (err) { return err && err.code === 'ENOENT' ? [] : null; }
 }
 
 // ---- providers ----
@@ -165,8 +199,15 @@ const providerImpls = {
       const a = json && json.answers && json.answers[id];
       const usage = (json && json.usage) || {};
       const model = (json && json.model) || null;
-      if (a && a.type === 'noul' && typeof a.noul === 'number') return { answer: a.noul >= 0.5 ? 'yes' : 'no', p: a.noul, model, usage };
-      if (a && a.type === 'choice' && typeof a.choice === 'string') return { answer: a.choice, confidence: a.confidence, probabilities: a.probabilities, model, usage };
+      // only an answer of the requested type, inside its declared domain, is an answer
+      const unit = (x) => typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= 1;
+      if (question.type === 'noul' && a && a.type === 'noul' && unit(a.noul)) return { answer: a.noul >= 0.5 ? 'yes' : 'no', p: a.noul, model, usage };
+      const options = Object.keys(question.criteria || {});
+      const probsOk = a && (a.probabilities === undefined || (a.probabilities && typeof a.probabilities === 'object'
+        && Object.entries(a.probabilities).every(([k, v]) => options.includes(k) && unit(v))));
+      if (question.type === 'choice' && a && a.type === 'choice' && options.includes(a.choice) && unit(a.confidence) && probsOk) {
+        return { answer: a.choice, confidence: a.confidence, probabilities: a.probabilities, model, usage };
+      }
       return { error: true, reason: 'bad_response' };
     },
   },
@@ -212,15 +253,19 @@ async function ask(questionId, state, opts = {}) {
     base = { question: questionId, version: question.version || null };
     if (!cfg.enabled) return { ...base, skipped: true, reason: cfg.reason || 'judge_off' };
     const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : 2000;
-    const f = filterState(question, state, { denylist: opts.denylist || loadDenylist(opts.projectRoot) });
+    const denylist = opts.denylist || loadDenylist(opts.projectRoot);
+    if (denylist === null) return { ...base, skipped: true, reason: 'denylist_unreadable' };
+    const f = filterState(question, state, { denylist, secrets: [env[cfg.key_env]] });
     const sent = JSON.stringify(f.state);
     const entry = {
       time: new Date().toISOString(), advisory: true, question: questionId, version: base.version, catalogue: cat.version || null,
       gate: opts.gate || 'cli', provider: cfg.provider, state_sha256: crypto.createHash('sha256').update(sent).digest('hex'),
-      dropped: f.dropped, filtered: f.filtered, ...(opts.logExtra || {}),
+      dropped: f.dropped.length, filtered: f.filtered, ...(opts.logExtra || {}),
     };
     const dir = opts.logDir || logDirOf(opts.projectRoot);
-    const extra = { ...(f.filtered.length ? { filtered: f.filtered } : {}), ...(f.dropped.length ? { dropped: f.dropped } : {}) };
+    // dropped field names are the caller's own, so only short, unremarkable ones are named back
+    const named = f.dropped.filter((k) => k.length <= 40 && !secretKind(k, [], [env[cfg.key_env]])).slice(0, 10);
+    const extra = { ...(f.filtered.length ? { filtered: f.filtered } : {}), ...(f.dropped.length ? { dropped: named, dropped_count: f.dropped.length } : {}) };
     let local = null;
     if (f.filtered.length) local = 'state_filtered';
     else if (f.missing.length) local = 'state_incomplete';
@@ -256,7 +301,8 @@ function stats(entries, { block = DEFAULTS.block_threshold, warn = DEFAULTS.warn
   const by = {};
   for (const e of entries) {
     if (!e || !e.question) continue;
-    const s = by[e.question] || (by[e.question] = { calls: 0, answered: 0, skipped: 0, errors: 0, reasons: {}, latency: [], input_tokens: 0, output_tokens: 0, at_block: 0, at_warn: 0 });
+    const s = by[e.question] || (by[e.question] = { calls: 0, answered: 0, skipped: 0, errors: 0, reasons: {}, latency: [], input_tokens: 0, output_tokens: 0, at_block: 0, at_warn: 0, regex_overruled: 0 });
+    if (e.event === 'regex_overruled') { s.regex_overruled++; continue; }
     s.calls++;
     if (e.outcome === 'answer') {
       s.answered++;
@@ -276,9 +322,9 @@ function stats(entries, { block = DEFAULTS.block_threshold, warn = DEFAULTS.warn
     const lat = s.latency.sort((a, b) => a - b);
     out[q] = { calls: s.calls, answered: s.answered, skipped: s.skipped, errors: s.errors, reasons: s.reasons,
       latency_p50_ms: pct(lat, 0.5), latency_p95_ms: pct(lat, 0.95), input_tokens: s.input_tokens, output_tokens: s.output_tokens,
-      share_at_block: s.answered ? s.at_block / s.answered : null, share_at_warn: s.answered ? s.at_warn / s.answered : null };
+      share_at_block: s.answered ? s.at_block / s.answered : null, share_at_warn: s.answered ? s.at_warn / s.answered : null, regex_overruled: s.regex_overruled };
   }
   return out;
 }
 
-module.exports = { ask, judgeConfig, configProblems, filterState, loadCatalogue, loadDenylist, readLog, writeLog, logDirOf, stats, providerImpls, CATALOGUE_FILE, TYPESAFE_URL, DEFAULTS };
+module.exports = { ask, judgeConfig, secretKind, ENDPOINT_ENV, configProblems, filterState, loadCatalogue, loadDenylist, readLog, writeLog, logDirOf, stats, providerImpls, CATALOGUE_FILE, TYPESAFE_URL, DEFAULTS };

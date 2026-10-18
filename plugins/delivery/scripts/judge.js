@@ -4,24 +4,37 @@
 //   judge.js ask <question-id> --state <file|->   JSON state from a file or stdin; prints the typed result
 //   judge.js questions                            the catalogue: id, version, type, mode, state fields, options
 //   judge.js stats                                per question: calls, latency p50/p95, tokens, share at the thresholds
-// Options: --project <root>. Exit codes: 0 answered (or listed); 3 skipped or failed (the result says why);
+// The configuration is read only from the project of this session's role marker (or, outside a role,
+// DELIVERY_PROJECT_ROOT); the caller cannot point it at another manifest. Exit codes: 0 answered (or listed); 3 skipped or failed (the result says why);
 // 2 usage error. The judge is advisory: its answer informs a gate, it never decides one.
 const fs = require('fs');
 const path = require('path');
 const J = require('./lib/judge.js');
-const { findProjectRoot, loadManifest } = require('./lib/manifest.js');
+const { loadManifest, TEAM_REL } = require('./lib/manifest.js');
+const { findRoleMarker } = require('../hooks/scripts/role-context.js');
 
-const USAGE = 'usage: judge.js ask <question-id> --state <file|-> | judge.js questions | judge.js stats   [--project <root>]';
+const USAGE = 'usage: judge.js ask <question-id> --state <file|-> | judge.js questions | judge.js stats';
 
 function parse(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--state' || a === '--project') out[a.slice(2)] = argv[++i];
+    if (a === '--state') out.state = argv[++i];
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
     else out._.push(a);
   }
   return out;
+}
+
+// the role marker's project, else DELIVERY_PROJECT_ROOT; null when neither names a project
+function configRoot(cwd, env) {
+  try {
+    const found = findRoleMarker(cwd);
+    const root = found && found.marker && found.marker.project_root;
+    if (typeof root === 'string' && path.isAbsolute(root)) return root;
+  } catch (err) { /* no usable marker */ }
+  const r = env.DELIVERY_PROJECT_ROOT;
+  return typeof r === 'string' && path.isAbsolute(r) && fs.existsSync(path.join(r, TEAM_REL)) ? r : null;
 }
 
 function teamOf(root) {
@@ -32,7 +45,7 @@ function teamOf(root) {
 async function main(argv, { stdin = () => fs.readFileSync(0, 'utf8'), cwd = process.cwd(), env = process.env } = {}) {
   const args = parse(argv);
   const [cmd, id] = args._;
-  const root = args.project ? path.resolve(args.project) : findProjectRoot(cwd);
+  const root = configRoot(cwd, env);
   if (cmd === 'questions') {
     const cat = J.loadCatalogue();
     const list = Object.entries(cat.questions).map(([qid, q]) => ({ id: qid, version: q.version, type: q.type, mode: q.mode || 'advisory', state: q.state,
@@ -46,7 +59,8 @@ async function main(argv, { stdin = () => fs.readFileSync(0, 'utf8'), cwd = proc
   }
   if (cmd === 'ask' && id && args.state) {
     let state;
-    try { state = JSON.parse(args.state === '-' ? stdin() : fs.readFileSync(path.resolve(cwd, args.state), 'utf8')); } catch (err) { throw new Error(`--state: not readable JSON (${err.message})`); }
+    // the error never echoes the state's content
+    try { state = JSON.parse(args.state === '-' ? stdin() : fs.readFileSync(path.resolve(cwd, args.state), 'utf8')); } catch (err) { throw new Error('--state: not readable JSON'); }
     const r = await J.ask(id, state, { config: J.judgeConfig(teamOf(root), env), env, projectRoot: root, gate: 'cli' });
     return { code: r.skipped || r.error ? 3 : 0, out: r };
   }
