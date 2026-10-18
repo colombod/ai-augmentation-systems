@@ -190,6 +190,7 @@ The catalogue is `judge/questions.json`, versioned per question:
 | `orders_owner` v1 | probability | the Chief of Staff's and Product Manager's Stop hook | warns at 0.5; blocks once at 0.8 only with an out-of-queue order to the owner (below) |
 | `tone_violation` v1 | none, justifying, condescending, therapeutic | the same Stop hook | warn-only |
 | `jargon` v1 | probability | the same Stop hook, when the id rule finds nothing | warn-only, at 0.8 |
+| `goal_instruction` v1 | probability | `goal.js set` | second key: a change needs the rule and p ≥ 0.8 (not measured) |
 
 - **Tool:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge.js ask <question-id> --state <file|->` prints the
   typed result as JSON (exit 0 answered, 3 skipped or failed, with the reason); `judge.js questions`
@@ -363,27 +364,42 @@ The owner runs the enterprise; the Chief of Staff runs the team for the owner (R
 
 - **Constraints only on the owner's word.** `.delivery/goal.json` holds the fields that constrain the
   work: `budget.weekly_units`, `budget.usage_envelope`, `budget.lean_at`, `pause` (paused, stopped,
-  off), `scope`, `approvals`, `idle_minutes` (30) and `briefing_lines` (12). A change needs an owner
-  decision made for it: the Chief of Staff records the owner's words with
-  `operator.js record ... --goal <field>=<value>`, then runs
-  `node ${CLAUDE_PLUGIN_ROOT}/scripts/goal.js set <field> <value> --record <dec-id>`. It is accepted only
-  when the record verifies, is not revoked or superseded, carries that same field and value, and the
-  owner's quote states the value without a negation:
-  - a figure in full with its unit and a word of the field: `30%` with "usage" or "budget" for the
-    envelope; `45 minutes` with "idle"; `8 lines` with "briefing"; `120 units` with "weekly" or "budget";
-  - a pause or resume word for `pause` ("pause", "halt", "stop the team", "resume");
-  - every scope item as a whole word, in any script;
+  off), the scope (changed by `scope_add` and `scope_remove`), `approvals`, `idle_minutes` (30) and
+  `briefing_lines` (12). The scope is the list of product areas the team builds toward: an add puts
+  items in, a remove takes them out, and a remove can never add. A change needs an owner decision made
+  for it: the Chief of Staff records the owner's words with `operator.js record ... --goal
+  <field>=<value>`, then runs `node ${CLAUDE_PLUGIN_ROOT}/scripts/goal.js set <field> <value> --record
+  <dec-id>`. It is accepted only when the record verifies, is not revoked or superseded, carries that
+  same field and value, and the owner's quote states the value:
+  - a figure in full (30 is not 300, 30.5 or 130) with its unit, as the object of the field word in the
+    same clause: "a usage budget of 30%", "set the weekly units to 5", "45 minutes idle". "30% of the
+    tests failed, but the budget is fine" is refused;
+  - a pause as a verb on the work or the team ("pause the team", "stop all work", "halt the builders";
+    not "freeze the design" or "the paused builds"); a resume about the work ("resume work", "unpause",
+    "the team can continue"), never tied to a later time or another task;
+  - every scope item as a whole word, with an add word for an add ("add", "include", "scope is") and a
+    remove word for a remove ("remove", "drop", "out of scope");
   - the approval policy word for word.
-  "Do not stop the builders" is no pause and "Set the idle limit to 30 minutes" is no usage envelope.
-  The Chief of Staff sets every field; the Product Manager sets `scope` only; other roles, and sessions
-  without a role, are refused. Every read checks the record again: a revoked record, or a value written
-  by hand, falls back to unset (or the default) with a `goal-unverified` warning. `goal.js show` prints
-  each field with its record, and whether work is paused.
+  Refused whatever else it says: a negation, a conditional ("only if", "if", "unless", "when", "in
+  case"), and a quote that is not English (the rule reads English only).
+- **Two keys with the typed judge.** With the judge on, `goal.js set` also asks `goal_instruction` ("does
+  the owner's statement instruct to set <field> to <value> now?", state: quote, field, value). The
+  change passes only when the rule passes and p ≥ 0.8; a failed call counts as no. The judge's yes can
+  admit a quote the rule cannot read (another language), never one the rule refused for its content.
+  The answer is kept with the entry, so the re-check on read honours it. With the judge off, the rule
+  alone decides.
+- **Who sets what.** The Chief of Staff sets every field; the Product Manager sets scope changes only.
+  Other roles, and sessions without a role, are refused. Every read checks the record again: a revoked
+  record, or a value written by hand, falls back to unset (or the default) with a `goal-unverified`
+  warning. `goal.js show` prints each field with its record, and whether work is paused.
 - **The mechanical pause.** `goal.js pause --trigger andon:<ev-row-id>` (Delivery Manager or Chief of
   Staff) cites a failed check row that `evidence.js add` wrote (by the Delivery Manager or a Reality
-  Checker). At pause time the bead's recorded evidence head must match the file. The pause lapses when
-  one of those writers records a pass for the same criterion. It is kept apart from the owner's pause,
-  so a closing andon never lifts an owner pause. Red CI is a hook point that is not readable yet.
+  Checker); the Delivery Manager may pause on a fail row it recorded itself. At pause time the bead's
+  recorded evidence head must match the file. When read with bd at hand (`/delivery:team`, the Stop
+  hook's idle check, `goal.js show`), only rows up to the recorded head count, so a pass appended by
+  hand does not lift it and an edited chain keeps it open. The pause lapses when one of those writers
+  records a pass for the same criterion. It is kept apart from the owner's pause, so a closing andon
+  never lifts an owner pause. Red CI is a hook point that is not readable yet.
 - **Not gated yet: new team rules.** R-42 also asks that new process rules need an owner record; there
   is no rules field or change log yet (deferred). Team rules change through the plugin's own release.
 - **The lane.** Every role is refused a direct write, `sed -i` or `perl -i` (also from inside
@@ -422,7 +438,7 @@ The owner runs the enterprise; the Chief of Staff runs the team for the owner (R
 
   | Check | Rule | Level |
   |---|---|---|
-  | an imperative addressed to the owner (an address mark or second person, a bare imperative opening its sentence, or after a lead naming the owner) that no open queue step holds; plan lines, the list under a plan label, options and decision questions are not orders | `orders_owner` p ≥ 0.5, or the word rule with the judge off | warn; p ≥ 0.8 with such an imperative blocks once per turn (not again when a relay block already says it) |
+  | an imperative addressed to the owner (an address mark or second person, a bare imperative opening its sentence, or after a lead naming the owner) that no open queue step holds; plan lines, the list under a plan label, options and decision questions are not orders, unless the line sends someone into a session, to type or paste, or names the owner | `orders_owner` p ≥ 0.5, or the word rule with the judge off | warn; p ≥ 0.8 with such an imperative blocks once per turn (not again when a relay block already says it) |
   | a routine briefing over `briefing_lines`; a message is a decision only when it ends with a question to the owner | line count | warn |
   | the ids and names the plugin produces: `dec-`/`ev-`/`q-`/`ans-`/`in-`/`del-` ids, the project's bead ids, the plugin's script names, lane groups, `.delivery` and `.beads` paths | patterns; links, and replies to an owner who explicitly asked for ids, beads or links, are skipped | warn |
   | `jargon` when the patterns find nothing (and the owner did not ask for ids); `tone_violation` justifying, condescending or therapeutic | the judge | warn |
