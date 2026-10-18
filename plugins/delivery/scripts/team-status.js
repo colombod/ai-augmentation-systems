@@ -81,7 +81,7 @@ function idleStatus(projectRoot, { now, idleBd } = {}) {
 }
 
 function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, checkBeads, idleBd } = {}) {
-  const { team } = loadManifest(projectRoot);
+  const { team, hosts } = loadManifest(projectRoot);
   const roster = readRoster(projectRoot);
   const nowMs = Date.parse(now || new Date().toISOString());
   const staleMs = (staleHours ?? (team.budget && team.budget.staleness_hours) ?? 2) * 3600 * 1000;
@@ -117,7 +117,10 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
   const operator = operatorStatus(projectRoot, team, { host, deps: operatorDeps });
   const gates = gateStatus(projectRoot, team, { now, checkBeads, storyBeads: storyBeads || (bd_reachable ? undefined : () => { throw new Error('bd unreachable'); }) });
   const idle = bd_reachable || idleBd ? idleStatus(projectRoot, { now, idleBd }) : { idle: false, why: 'bd-unreachable' };
-  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, warnings: manifestWarnings(team) };
+  // R-33: the Reality Checker drives a browser or desktop app, which a headless host cannot run
+  const placement = team.roles.filter((r) => r.id === 'reality-checker' && !r.retired && ((hosts && hosts.hosts) || {})[r.host] && hosts.hosts[r.host].headless)
+    .map((r) => `the Reality Checker is on ${r.host}, a headless host: it cannot drive a browser or desktop app there; move it to a host with desktop apps (hosts.json)`);
+  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, warnings: [...manifestWarnings(team), ...placement] };
 }
 
 function hasDrift(drift) {

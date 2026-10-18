@@ -327,3 +327,62 @@ test('a side-arm run does not use up the cap', () => {
   assert.equal(record(1, 'fail').code, 0);
   assert.equal(record(1, 'pass').code, 0);
 });
+
+test('reach: refused by manager brief as well as id; the hook ignores reach on a manager even after a hand edit', () => {
+  const { team, hosts } = loadManifest(makeProject());
+  const cos2 = { ...team, roles: [...team.roles, { id: 'cos2', brief: 'delivery/chief-of-staff', host: 'pc', model: 'opus', reach: true }] };
+  assert.ok(validateManifest(cos2, hosts).some((p) => /"cos2" cannot have "reach"/.test(p)));
+  const { reachOf } = require('./lib/manifest.js');
+  assert.equal(reachOf({ id: 'chief-of-staff', brief: 'delivery/chief-of-staff', reach: true }), null);
+  assert.equal(reachOf({ id: 'x', brief: 'delivery/product-manager', reach: true }), null);
+  assert.equal(reachOf({ id: 'builder', brief: 'delivery/builder', reach: true }), 'local');
+  assert.equal(reachOf({ id: 'builder', brief: 'delivery/builder' }), null);
+});
+
+test('R-05: a builder\'s opted-in reach is local only: localhost URLs and the preview browser, never the owner\'s Chrome or desktop', () => {
+  const groups = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'lane-groups.json'), 'utf8'));
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-lane-'));
+  const policy = { ...loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/builder' }), reach: 'local' };
+  const d = (toolName, toolInput = {}) => decideLane({ toolName, toolInput, policy, roleDir, groups, pluginRoot: PLUGIN_ROOT, hostHeadless: false });
+  for (const url of ['http://localhost:3000/', 'http://127.0.0.1:8080/x', 'https://app.localhost/', 'http://shop.test/', 'http://[::1]:5173/']) assert.equal(d('mcp__Claude_Browser__navigate', { url }).allow, true, url);
+  assert.equal(d('mcp__playwright__browser_navigate', { url: 'http://localhost:3000' }).allow, true);
+  const out = d('mcp__Claude_Browser__navigate', { url: 'https://chatgpt.com/' });
+  assert.equal(out.allow, false);
+  assert.match(out.reason, /local development hosts/);
+  assert.equal(d('mcp__playwright__browser_navigate', { url: 'https://localhost.evil.com/' }).allow, false);
+  assert.equal(d('mcp__Claude_Browser__computer', { action: 'screenshot' }).allow, true, 'acting in the preview browser');
+  assert.equal(d('mcp__claude-in-chrome__navigate', { url: 'http://localhost:3000' }).allow, false, "the owner's own Chrome");
+  assert.equal(d('mcp__computer-use__app_click', {}).allow, false, "the owner's desktop");
+  // other browser servers are reach tools too, for the hook and the native deny
+  const pm = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/product-manager' });
+  for (const t of ['mcp__playwright__browser_navigate', 'mcp__chrome-devtools__list_pages', 'mcp__puppeteer__puppeteer_navigate', 'mcp__plugin_x_playwright__browser_snapshot']) {
+    assert.equal(decideLane({ toolName: t, toolInput: {}, policy: pm, roleDir, groups, pluginRoot: PLUGIN_ROOT, hostHeadless: false }).allow, false, t);
+  }
+  assert.ok(require('./prepare-role.js').REACH_DENY.includes('mcp__playwright'));
+});
+
+test('the Reality Checker never handles credentials or the clipboard, and never takes full control: sign-in is an owner-queue step', () => {
+  const groups = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'lane-groups.json'), 'utf8'));
+  const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/reality-checker' });
+  const d = (toolName) => decideLane({ toolName, toolInput: {}, policy, roleDir: os.tmpdir(), groups, pluginRoot: PLUGIN_ROOT, hostHeadless: false });
+  for (const t of ['mcp__claude-in-chrome__request_credentials', 'mcp__computer-use__read_clipboard', 'mcp__computer-use__write_clipboard', 'mcp__computer-use__request_full_control', 'mcp__computer-use__request_teach_access']) {
+    const r = d(t);
+    assert.equal(r.allow, false, t);
+    assert.match(r.reason, /owner queue/);
+  }
+  assert.equal(d('mcp__computer-use__request_access').allow, true, 'per-app access is how computer use starts');
+  const { reachDeny } = require('./prepare-role.js');
+  assert.ok(reachDeny(true).includes('mcp__claude-in-chrome__request_credentials'), 'natively too');
+  assert.deepEqual(reachDeny('local'), ['mcp__claude-in-chrome', 'mcp__computer-use']);
+});
+
+test('/delivery:team warns when the Reality Checker sits on a headless host', () => {
+  const { teamStatus, renderStatus } = require('./team-status.js');
+  const root = makeProject();
+  const file = path.join(root, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.roles.push({ id: 'reality-checker', brief: 'delivery/reality-checker', host: 'buildbox', model: 'sonnet' });
+  fs.writeFileSync(file, JSON.stringify(team));
+  const text = renderStatus(teamStatus(root, { bdCheck: () => true, storyBeads: () => [], checkBeads: () => [], idleBd: { ready: () => [], list: () => [] } }));
+  assert.match(text, /Warning: the Reality Checker is on buildbox, a headless host: it cannot drive a browser or desktop app there/);
+});

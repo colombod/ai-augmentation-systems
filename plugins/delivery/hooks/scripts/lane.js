@@ -20,7 +20,25 @@ const SANCTIONED = {
 // Browser, desktop and computer-use tools reach the owner's apps and the customer surface (R-05, R-33):
 // allowed only in a reach lane (the role file's `lane_reach: true`, or `"reach": true` on its manifest
 // entry), and never on a headless host. prepare-role writes the native deny rules from the same list.
-const REACH_PREFIXES = ['mcp__Claude_Browser__', 'mcp__claude-in-chrome__', 'mcp__computer-use__', 'mcp__Claude_Code_iOS_Simulator__'];
+const REACH_SERVERS = ['Claude_Browser', 'claude-in-chrome', 'computer-use', 'Claude_Code_iOS_Simulator', 'playwright', 'chrome-devtools', 'puppeteer'];
+const REACH_PREFIXES = REACH_SERVERS.map((s) => `mcp__${s}__`);
+// a plugin-provided copy of one of these servers carries a plugin_<plugin>_ prefix
+const REACH_RE = new RegExp(`^mcp__(?:plugin_[A-Za-z0-9-]+_)?(${REACH_SERVERS.map((s) => s.replace(/[-]/g, '\\-')).join('|')})__`);
+// a builder's opted-in ("local") reach never touches the owner's own Chrome or desktop
+const OWNER_SERVERS = ['claude-in-chrome', 'computer-use'];
+// credentials, the clipboard and full control are never an agent's: sign-in is an owner-queue step
+const REACH_NEVER = /(^|_)(request_credentials|read_clipboard|write_clipboard|request_full_control|request_teach_access|teach_batch|teach_step)$/;
+const LOCAL_HOST = (h) => ['localhost', '127.0.0.1', '[::1]', '::1'].includes(h) || h.endsWith('.localhost') || h.endsWith('.test');
+function nonLocalUrl(input) {
+  for (const k of ['url', 'uri', 'href']) {
+    const v = input && input[k];
+    if (typeof v !== 'string' || !v) continue;
+    let host = null;
+    try { host = new URL(v).hostname.toLowerCase(); } catch (err) { return v; }
+    if (!LOCAL_HOST(host)) return v;
+  }
+  return null;
+}
 const REACH_REASON = 'real-surface runs belong to the Reality Checker, with a script.\nAsk the Delivery Manager for a reality check (`reality-check.js plan <bead>`); a team that needs it for this role sets `"reach": true` on its team.json entry';
 // MCP tools for allowlist roles: only read-shaped verbs, and never a name that also carries a write verb.
 const MCP_READ = /^(read|get|list|search|query|view|status|find|describe|resolve|fetch|context|ask|show|display|tabs_context|read_page|get_page_text)(_|$)/i;
@@ -692,11 +710,18 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   const pol = policy || { roleId: '', writes: [], bash: [] };
   const bash = pol.bash || [];
   const tail = `\n${sanctioned(pol.roleId)}`;
-  if (REACH_PREFIXES.some((p) => name.startsWith(p))) {
+  const reach = REACH_RE.exec(name);
+  if (reach) {
     if (!pol.reach) return { allow: false, reason: `Role ${pol.roleId} does not drive browsers, desktop apps or computer use: ${REACH_REASON}.` };
     if (hostHeadless) {
       const where = (desktopHosts || []).length ? `a session on ${desktopHosts.join(' or ')}` : 'a session on a host with a desktop';
       return { allow: false, reason: `Host ${hostName || 'this host'} is headless: browser, desktop-app and computer-use checks cannot run here.\nMessage the Delivery Manager: the check needs ${where}.` };
+    }
+    if (REACH_NEVER.test(name.split('__').pop())) return { allow: false, reason: `Role ${pol.roleId} never handles credentials, the clipboard or full control: a sign-in, consent or payment step goes to the owner queue.\nMessage the Chief of Staff with the one exact step.` };
+    if (pol.reach === 'local') {
+      if (OWNER_SERVERS.includes(reach[1])) return { allow: false, reason: `Role ${pol.roleId}'s reach covers its own UI on local development hosts, not the owner's Chrome or desktop: ${REACH_REASON}.` };
+      const url = nonLocalUrl(toolInput);
+      if (url) return { allow: false, reason: `Role ${pol.roleId} opens only local development hosts (localhost, 127.0.0.1, *.localhost, *.test), not ${String(url).slice(0, 80)}: ${REACH_REASON}.` };
     }
     return { allow: true };
   }
@@ -772,7 +797,9 @@ function laneDecisionForHook(input, pluginRoot) {
   if (!ctx) return null;
   const { marker, hosts, role, roleDir } = ctx;
   const policy = loadPolicy({ pluginRoot, projectRoot: marker.project_root, briefRef: role.brief });
-  if (role.reach === true) policy.reach = true; // the manifest's opt-in (validateManifest refuses it for managers)
+  // the manifest's opt-in: local reach only, and never for a manager even when team.json was edited by hand
+  const granted = require('../../scripts/lib/manifest.js').reachOf(role);
+  if (granted && !policy.reach) policy.reach = granted;
   const hostMap = (hosts && hosts.hosts) || {};
   const host = hostMap[role.host] || {};
   const desktopHosts = Object.entries(hostMap).filter(([, h]) => h && h.desktop_apps).map(([n]) => n);
@@ -789,4 +816,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { REACH_PREFIXES, goalShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

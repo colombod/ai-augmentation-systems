@@ -1063,7 +1063,18 @@ test('1b: computer use on the owner\'s app is denied to a builder until its mani
   const team = JSON.parse(fs.readFileSync(file, 'utf8'));
   team.roles.find((r) => r.id === 'builder').reach = true;
   fs.writeFileSync(file, JSON.stringify(team));
-  assert.equal(call(), '', 'allowed on a desktop host once the manifest opts in');
+  // the opt-in is local reach: its own UI on a local development host, never the owner's desktop
+  assert.equal(runHook('role-lane.js', { cwd: roleDir, session_id: 's', tool_name: 'mcp__Claude_Browser__navigate', tool_input: { url: 'http://localhost:5173/' } }, env), '');
+  assert.match(JSON.parse(call()).hookSpecificOutput.permissionDecisionReason, /not the owner's Chrome or desktop/);
   prepareRole({ projectRoot, instance: 'builder-1', teamDir: path.dirname(roleDir), pluginRoot: PLUGIN_ROOT, user: 'tester' });
-  assert.ok(!settings().includes('mcp__computer-use'));
+  assert.ok(!settings().includes('mcp__Claude_Browser'));
+  assert.ok(settings().includes('mcp__computer-use'));
+  // a hand edit that gives the Chief of Staff reach after prepare is ignored by the hook
+  const cos = preparedRole('chief-of-staff');
+  const tf = path.join(cos.projectRoot, '.delivery', 'team', 'team.json');
+  const t2 = JSON.parse(fs.readFileSync(tf, 'utf8'));
+  t2.roles.find((r) => r.id === 'chief-of-staff').reach = true;
+  fs.writeFileSync(tf, JSON.stringify(t2));
+  const c = JSON.parse(runHook('role-lane.js', { cwd: cos.roleDir, session_id: 's', tool_name: 'mcp__claude-in-chrome__navigate', tool_input: { url: 'https://chatgpt.com' } }, { DELIVERY_ROLE: 'chief-of-staff', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT }));
+  assert.equal(c.hookSpecificOutput.permissionDecision, 'deny');
 });
