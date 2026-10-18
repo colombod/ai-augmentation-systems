@@ -126,4 +126,11 @@ function inQueue(clause, steps) {
   });
 }
 
-module.exports = { KINDS, DECISION_ABOUT, list, open, add, done, batchLines, inQueue, stepProblem, dirOf };
+// true when every action in the clause ("sign in ... and then run the import") is an open step's
+// action; a queued first action does not exempt the others (Copilot round 3)
+function allQueued(clause, steps) {
+  const parts = String(clause || '').split(/\b(?:and then|then|and|also)\b|[,;]/i).filter((p) => allWords(p).some((w) => VERBS.has(w)));
+  return parts.length > 0 && parts.every((p) => inQueue(p, steps));
+}
+
+module.exports = { allQueued, KINDS, DECISION_ABOUT, list, open, add, done, batchLines, inQueue, stepProblem, dirOf };

@@ -313,3 +313,25 @@ test('Copilot round 2: a typographic apostrophe still negates; side-arm passes a
   row(r2, { result: 'pass', by: 'delivery-lead' });
   assert.equal(Goal.activePause(r2).paused, false);
 });
+
+test('Copilot round 3: the word rule (now only a pre-filter for the judge) keeps decimals, start times and scope conflicts', () => {
+  assert.equal(Goal.covers('budget.usage_envelope', 5, 'Set a 30.5% budget for the team.'), false);
+  assert.equal(Goal.covers('budget.usage_envelope', 30.5, 'Set the usage budget to 30.5%.'), true);
+  assert.equal(Goal.covers('pause', 'paused', 'Pause the team tomorrow.'), false);
+  assert.equal(Goal.covers('pause', 'paused', 'Pause the team until tomorrow.'), true);
+  assert.equal(Goal.covers('scope_remove', ['login'], 'Remove billing from scope; keep login in scope.'), false);
+});
+
+test('Copilot round 3: one bd lookup per bead, and at most maxLookups', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-ev-'));
+  row(root, { result: 'fail', by: 'delivery-lead' });
+  row(root, { result: 'pass', by: 'delivery-lead' });
+  const g = { fields: { pause_triggers: Array.from({ length: 6 }, () => ({ value: 'paused', trigger: `andon:ev-${BEAD}-1` })) }, history: [] };
+  fs.mkdirSync(path.join(root, '.delivery'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify(g));
+  g.fields.pause_triggers.push(...['a', 'b', 'c'].map((x) => ({ value: 'paused', trigger: `andon:ev-other-${x}-1` })));
+  fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify(g));
+  let lookups = 0;
+  assert.equal(Goal.activePause(root, { beadOf: () => { lookups++; return null; }, maxLookups: 2 }).paused, false);
+  assert.equal(lookups, 2);
+});

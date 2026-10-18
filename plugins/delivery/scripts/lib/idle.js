@@ -43,7 +43,7 @@ function readIdle(root, { bd, now } = {}) {
     const Q = require('./owner-queue.js');
     const beads = bd.list({ all: true });
     const ready = bd.ready();
-    return idleState({ beads, ready, now, idleMinutes: Goal.value(root, 'idle_minutes'), pause: Goal.activePause(root, { beadOf: (id) => bd.show(id) }), openSteps: Q.open(root) });
+    return idleState({ beads, ready, now, idleMinutes: Goal.value(root, 'idle_minutes'), pause: Goal.activePause(root, { beadOf: (id) => bd.show(id), maxLookups: 2 }), openSteps: Q.open(root) });
   } catch (err) { return { idle: false, why: 'unreadable' }; }
 }
 

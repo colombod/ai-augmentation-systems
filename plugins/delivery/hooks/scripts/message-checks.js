@@ -194,7 +194,7 @@ function messageFindings({ message, owner, commands, role, judged = {}, openStep
   const warnings = [];
   if (!RG.OPERATOR_FACING.has(role) || typeof message !== 'string' || !message.trim()) return { candidates, warnings };
   const Q = require('../../scripts/lib/owner-queue.js');
-  const orders = ownerImperatives(message, { parties }).filter((c) => !Q.inQueue(c, openSteps));
+  const orders = ownerImperatives(message, { parties }).filter((c) => !Q.allQueued(c, openSteps));
   const o = judged.orders_owner;
   const p = o && typeof o.p === 'number' ? o.p : null;
   const block = judged.block_threshold || 0.8;

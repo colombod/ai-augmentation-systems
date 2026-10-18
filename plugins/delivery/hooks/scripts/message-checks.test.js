@@ -169,3 +169,9 @@ test('final check: "type up the release notes" in a plan line is no order; typin
   assert.deepEqual(M.ownerImperatives('Next: type up the release notes and send them round.'), []);
   assert.ok(M.ownerImperatives('Next: type it in the builder session.').length);
 });
+
+test('Copilot round 3: a queued first action does not exempt the other actions in the same clause', () => {
+  const steps = [{ id: 'o-1', kind: 'signin', what: 'Sign in to Vault in Edge', where: 'Edge', steps: 'x' }];
+  assert.deepEqual(kinds(find('Please sign in to Vault in Edge and then run the import and paste the output.', { openSteps: steps })), ['orders-owner']);
+  assert.deepEqual(find('Please sign in to Vault in Edge.', { openSteps: steps }).warnings, []);
+});

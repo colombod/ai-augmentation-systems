@@ -38,6 +38,7 @@ const SAY = {
   off: new RegExp(String.raw`\b(?:resume ${WORK}|unpause|start again|back to work|(?:the team|everyone|the builders|all sessions) (?:can|may|should) (?:continue|resume|carry on))\b`, 'i'),
 };
 // a resume tied to a time or another task is about something else: refused
+const LATER_START = /\b(?:tomorrow|tonight|later|next (?:week|month)|on (?:mon|tues|wednes|thurs|fri|satur|sun)day|after|at \d)\b/i;
 const LATER = /\b(?:tomorrow|tonight|later|next (?:week|month)|on (?:mon|tues|wednes|thurs|fri|satur|sun)day|with the)\b/i;
 // a conditional instruction is not a decision to change the goal now
 const CONDITIONAL = /\b(?:only if|if|unless|when|whenever|in case|provided|as long as)\b/i;
@@ -96,7 +97,8 @@ const wholeWord = (text, w) => new RegExp(`(?<![\\p{L}\\p{N}])${esc(w).replace(/
 // The figure matches in full: 30 is not 300, 30.5 or 130.
 function figureTied(field, value, q) {
   const f = FIELDS[field];
-  for (const clause of q.toLowerCase().split(/[.;!?]|,\s*(?:but|and|so|yet)\b|\bbut\b/)) {
+  // a period between digits is a decimal point, not a clause end (Copilot round 3)
+  for (const clause of q.toLowerCase().split(/(?<!\d)\.|\.(?!\d)|[;!?]|,\s*(?:but|and|so|yet)\b|\bbut\b/)) {
     const t = clause.match(/\d+(?:[.,]\d+)?%?|[\p{L}'-]+|%/gu) || [];
     for (let i = 0; i < t.length; i++) {
       if (t[i].replace(/%$/, '') !== String(value)) continue;
@@ -138,8 +140,9 @@ function quoteProblem(field, value, quote) {
   if (!hasNegation || hasNegation(rest.toLowerCase(), { before: false })) return { why: 'the owner\'s words carry a negation' };
   let ok;
   if (f.kind === 'number' || f.kind === 'percent') ok = figureTied(field, value, q);
-  else if (f.kind === 'pause') ok = SAY[value].test(q) && !(value === 'off' && LATER.test(q));
-  else if (f.kind === 'list') ok = value.length > 0 && value.every((item) => wholeWord(q, item)) && (f.op === 'add' ? SCOPE_ADD.test(q) && !SCOPE_REMOVE.test(q) : SCOPE_REMOVE.test(q));
+  // a pause starting later is not a pause now; "until tomorrow" only ends it (Copilot round 3)
+  else if (f.kind === 'pause') ok = SAY[value].test(q) && !(value === 'off' ? LATER.test(q) : LATER_START.test(q.replace(/\buntil\b.*$/is, ' ')));
+  else if (f.kind === 'list') ok = value.length > 0 && value.every((item) => wholeWord(q, item)) && (f.op === 'add' ? SCOPE_ADD.test(q) && !SCOPE_REMOVE.test(q) : SCOPE_REMOVE.test(q) && !SCOPE_ADD.test(q) && !/\bkeep\b/i.test(q));
   else ok = f.words.test(q) && wholeWord(q, value);
   if (!ok) return { why: `the owner's words do not state ${field} = ${shown(value)}` };
   return null;
@@ -326,14 +329,17 @@ const value = (root, field, opts = {}) => resolve(root, field, opts).value;
 
 // { paused, by } — an owner pause while its record holds, or a trigger pause while its andon is open.
 // beadOf(id) gives the bead (from bd) so the andon is read against its recorded evidence head.
-function activePause(root, { verifyRecord, g = read(root), warn = true, beadOf } = {}) {
+function activePause(root, { verifyRecord, g = read(root), warn = true, beadOf, maxLookups = Infinity } = {}) {
   const owner = resolve(root, 'pause', { g, verifyRecord, warn });
   if (['paused', 'stopped'].includes(owner.value)) return { paused: true, by: owner.from };
   const triggers = [...(Array.isArray(g.fields.pause_triggers) ? g.fields.pause_triggers : []), ...(g.fields.pause_trigger ? [g.fields.pause_trigger] : [])].filter((t) => t && t.trigger);
-  for (const t of triggers) {
-    let bead = null;
-    if (beadOf) { try { bead = beadOf(beadOfTrigger(t.trigger)); } catch (err) { bead = null; } }
-    if (triggerState(root, t.trigger, { bead }).open) return { paused: true, by: t.trigger };
+  // each distinct trigger once, each bead looked up once, and at most maxLookups bd calls, so the Stop
+  // hook's time budget holds (Copilot round 3); past the cap the chain alone is read
+  const beads = new Map();
+  for (const trigger of [...new Set(triggers.map((t) => t.trigger))]) {
+    const id = beadOfTrigger(trigger);
+    if (beadOf && id && !beads.has(id) && beads.size < maxLookups) { let b = null; try { b = beadOf(id); } catch (err) { b = null; } beads.set(id, b); }
+    if (triggerState(root, trigger, { bead: beads.get(id) || null }).open) return { paused: true, by: trigger };
   }
   return { paused: false, ...(owner.ignored ? { lapsed: owner.ignored } : {}), ...(triggers.length ? { lapsed: `${triggers.map((t) => t.trigger).join(', ')} closed` } : {}) };
 }
