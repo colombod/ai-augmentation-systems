@@ -9,8 +9,8 @@
 const ASKERS = new Set(['chief-of-staff', 'product-manager']);
 const path = require('path');
 const { operatorCommand } = require('../../scripts/lib/plugin-root.js');
-const REASON = `You do not address the operator. Message the Chief of Staff with the one question (SendMessage to the chief-of-staff session); the answer comes back to you as a decision record id you verify with \`${operatorCommand(path.join(__dirname, '..', '..'))} verify <id>\`.`;
-const CHANNEL_REASON = 'You do not address the operator. Message the Chief of Staff; the Chief of Staff decides what reaches the operator.';
+const REASON = `You do not address the operator: message the Chief of Staff with the one question.\nThe answer comes back as a record id; verify it with \`${operatorCommand(path.join(__dirname, '..', '..'))} verify <id>\`.`;
+const CHANNEL_REASON = 'You do not address the operator.\nMessage the Chief of Staff; it decides what reaches the operator.';
 const CHANNELS = { AskUserQuestion: REASON, PushNotification: CHANNEL_REASON, SendUserFile: CHANNEL_REASON };
 
 // null (allow) or { reason } (deny). Never throws.

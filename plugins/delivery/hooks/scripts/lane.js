@@ -6,14 +6,15 @@ const path = require('path');
 const { loadRoleBrief } = require('../../scripts/lib/compose-brief.js');
 const { listValue } = require('../../scripts/lib/plan-docs.js');
 
+// The second line of a lane refusal (R-46: two lines, ending with the way out).
 const SANCTIONED = {
-  'chief-of-staff': 'route it: create a child bead for the right role (`bd create --parent <id> ...`) and message that session',
-  staffing: 'only team.json and briefs are yours; anything else goes to the Delivery Manager',
-  'product-manager': 'product documents are yours; building goes to a builder bead, plan structure to the Delivery Manager',
-  'delivery-lead': 'stories, sprints and bead structure are yours; building goes to a builder bead',
-  'progress-observer': 'record evidence in reviews and beads; fixes go to a builder bead',
-  builder: 'product code in your worktree is yours; plans belong to the Delivery Manager',
-  'spike-researcher': 'answers go in the bead and the ADR or roadmap; product code is never yours',
+  'chief-of-staff': 'Route it to the right role: `bd create --parent <id> --title "<the ask>"`, then message that session.',
+  staffing: 'Only team.json and briefs are yours: message the Delivery Manager for anything else.',
+  'product-manager': 'Product documents are yours; for building or plan structure, message the Delivery Manager.',
+  'delivery-lead': 'Building goes to a builder bead: `bd create --parent <story> --title "<the change>"`.',
+  'progress-observer': 'Record what you found in the bead (`bd update <id> --append-notes "<finding>"`); fixes go to a builder bead.',
+  builder: 'Product code in your worktree is yours; for plans, message the Delivery Manager.',
+  'spike-researcher': 'Answers go in the bead: `bd update <id> --append-notes "<answer>"`; product code is never yours.',
 };
 const REACH_PREFIXES = ['mcp__Claude_Browser__', 'mcp__claude-in-chrome__', 'mcp__computer-use__', 'mcp__Claude_Code_iOS_Simulator__'];
 // MCP tools for allowlist roles: only read-shaped verbs, and never a name that also carries a write verb.
@@ -48,7 +49,7 @@ const HARNESS_WRITES = ['plans/**', 'projects/*/memory/**'];
 // A separator after which a failed or skipped `cd` no longer stops the commands that follow.
 const RESUME_OPS = [';', '||', '&', '\n'];
 
-function sanctioned(roleId) { return SANCTIONED[roleId] || 'stay in your lane; ask the Delivery Manager'; }
+function sanctioned(roleId) { return SANCTIONED[roleId] || 'Stay in your lane: message the Delivery Manager.'; }
 
 function loadPolicy({ pluginRoot, projectRoot, briefRef }) {
   const { meta } = loadRoleBrief(pluginRoot, projectRoot, briefRef);
@@ -622,7 +623,7 @@ function goalShellWrite(command, { cwd, files = [] } = {}) {
 // merge in whatever form: `gh pr merge`, the merge endpoint through `gh api`, a push to the default
 // branch, `git merge` while on it, or an MCP merge tool.
 const MERGER = 'delivery-lead';
-const MERGE_REASON = 'merging is the Delivery Manager\'s: open the pull request, hand it to the Delivery Manager by message (it requests an independent review and merges on a passing one), and resolve conflicts when it asks';
+const MERGE_REASON = 'merging is the Delivery Manager\'s.\nOpen the pull request and message the Delivery Manager; resolve conflicts when it asks';
 const DEFAULT_BRANCHES = ['main', 'master'];
 
 function gitIn(dir, args) {
@@ -680,11 +681,11 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   const name = String(toolName || '');
   const pol = policy || { roleId: '', writes: [], bash: [] };
   const bash = pol.bash || [];
-  const tail = ` Sanctioned path for ${pol.roleId}: ${sanctioned(pol.roleId)}.`;
+  const tail = `\n${sanctioned(pol.roleId)}`;
   if (REACH_PREFIXES.some((p) => name.startsWith(p))) {
     if (hostHeadless) {
       const where = (desktopHosts || []).length ? `a session on ${desktopHosts.join(' or ')}` : 'a session on a host with a desktop';
-      return { allow: false, reason: `Host ${hostName || 'this host'} is headless: browser, desktop-app and computer-use checks cannot run here. Hand the check to ${where} and record it as owner-side in the bead.` };
+      return { allow: false, reason: `Host ${hostName || 'this host'} is headless: browser, desktop-app and computer-use checks cannot run here.\nMessage the Delivery Manager: the check needs ${where}.` };
     }
     return { allow: true };
   }
@@ -719,7 +720,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
-      return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: they cannot be checked against the lane groups (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
+      return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
     }
     const segs = splitWithOps(command);
     let live = [cwd ? path.resolve(cwd) : path.resolve(process.cwd())];
@@ -730,8 +731,9 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       const names = classifySegment(text, groups, { roleDir, pluginRoot, dirs: live });
       if (!names.some((x) => bash.includes(x))) {
         const construct = expansionConstruct(text);
-        const why = construct ? ` Refused construct: ${construct}; the lane cannot check what the shell would expand it to. If the text is meant literally, put it in single quotes.` : '';
-        return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\` (allowed groups: ${bash.join(', ') || 'none'}).${why}${tail}` };
+        // a refused construct is the whole story; otherwise the allowed groups say what the lane runs
+        const why = construct ? `. Refused construct: ${construct}; put literal text in single quotes.` : ` (allowed groups: ${bash.join(', ') || 'none'}).`;
+        return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`${why}${tail}` };
       }
       const t = tokens(text);
       if (t[0] !== 'cd') continue;

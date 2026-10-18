@@ -42,7 +42,7 @@ test('denies AskUserQuestion for builder, delivery-lead and progress-observer wi
     const out = JSON.parse(r.stdout);
     assert.deepEqual(out, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: REASON } }, instance);
   }
-  assert.equal(REASON, `You do not address the operator. Message the Chief of Staff with the one question (SendMessage to the chief-of-staff session); the answer comes back to you as a decision record id you verify with \`node ${path.join(__dirname, '..', '..', 'scripts', 'operator.js')} verify <id>\`.`);
+  assert.equal(REASON, `You do not address the operator: message the Chief of Staff with the one question.\nThe answer comes back as a record id; verify it with \`node ${path.join(__dirname, '..', '..', 'scripts', 'operator.js')} verify <id>\`.`);
 });
 
 test('allows the chief of staff and the product manager', () => {
@@ -72,7 +72,7 @@ test('inert without a marker, with a marker of another session, with an unloadab
 });
 
 test('PushNotification and SendUserFile are operator channels too: denied for workers, allowed for the askers', () => {
-  assert.equal(CHANNEL_REASON, 'You do not address the operator. Message the Chief of Staff; the Chief of Staff decides what reaches the operator.');
+  assert.equal(CHANNEL_REASON, 'You do not address the operator.\nMessage the Chief of Staff; it decides what reaches the operator.');
   for (const instance of ['builder-1', 'spike-researcher', 'delivery-lead', 'staffing', 'progress-observer']) {
     const { roleDir } = preparedRole(instance);
     for (const tool of ['PushNotification', 'SendUserFile']) {

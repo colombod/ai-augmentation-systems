@@ -68,7 +68,7 @@ test('decideLane refuses with the sanctioned path and allows within lane', () =>
   const d1 = decideLane({ toolName: 'Edit', toolInput: { file_path: path.join(roleDir, 'product', 'a.js') }, policy, ...ctx() });
   assert.equal(d1.allow, false);
   assert.match(d1.reason, /chief-of-staff/);
-  assert.match(d1.reason, /create a child bead/);
+  assert.match(d1.reason, /bd create --parent <id>/);
   const d2 = decideLane({ toolName: 'Bash', toolInput: { command: 'git status && bd list --json' }, policy, ...ctx() });
   assert.equal(d2.allow, true);
   const d3 = decideLane({ toolName: 'Bash', toolInput: { command: 'bd list && npm test' }, policy, ...ctx() });
@@ -480,13 +480,13 @@ test('A: Monitor is judged like Bash, PowerShell needs any, an unknown tool with
   const m = d('Monitor', { command: 'npm test' }, COS);
   assert.equal(m.allow, false);
   assert.match(m.reason, /npm test/);
-  assert.match(m.reason, /create a child bead/);
+  assert.match(m.reason, /bd create --parent <id>/);
   assert.equal(d('Monitor', { command: 'git status && bd list --json' }, COS).allow, true);
   assert.equal(d('Monitor', { command: 'npm test' }, BUILDER).allow, true);
   const ps = d('PowerShell', { command: 'Get-ChildItem' }, DL);
   assert.equal(ps.allow, false);
   assert.match(ps.reason, /PowerShell/);
-  assert.match(ps.reason, /Sanctioned path for delivery-lead/);
+  assert.match(ps.reason, /Building goes to a builder bead/);
   assert.equal(d('PowerShell', { command: 'Get-ChildItem' }, BUILDER).allow, true);
   const u = d('ShellRunner', { command: 'npm test' }, DL);
   assert.equal(u.allow, false);
@@ -581,7 +581,7 @@ test('H.6: role-lane hook fails open on a thrown error, denies Bash and headless
   fs.writeFileSync(path.join(broken.projectRoot, '.delivery', 'team', 'team.json'), '{ not json');
   const closed = JSON.parse(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, env('chief-of-staff')));
   assert.equal(closed.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(closed.hookSpecificOutput.permissionDecisionReason, /the lane cannot be checked .*checkout -- \.delivery\/team\/team\.json/);
+  assert.match(closed.hookSpecificOutput.permissionDecisionReason, /the lane cannot be checked [\s\S]*checkout -- \.delivery\/team\/team\.json/);
   assert.equal(JSON.parse(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Write', tool_input: { file_path: path.join(broken.roleDir, 'x') } }, env('chief-of-staff'))).hookSpecificOutput.permissionDecision, 'deny');
   const restore = `git -C '${broken.projectRoot}' checkout -- .delivery/team/team.json`;
   assert.equal(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: restore } }, env('chief-of-staff')), '');
@@ -897,7 +897,7 @@ test('F2: ? ! * [ ] { } inside double quotes are literal; $ and backticks are re
   const sub = run(`node ${op} ask --text "Which DB $(id)?" --asker builder-1`);
   assert.equal(sub.allow, false);
   assert.match(sub.reason, /Refused construct: command substitution/);
-  assert.match(sub.reason, /put it in single quotes/);
+  assert.match(sub.reason, /put literal text in single quotes/);
   const tick = run(`node ${op} ask --text "Which DB \`id\`?" --asker builder-1`);
   assert.equal(tick.allow, false);
   assert.match(tick.reason, /command substitution/);

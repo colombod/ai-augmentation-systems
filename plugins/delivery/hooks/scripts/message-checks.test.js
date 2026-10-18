@@ -89,6 +89,6 @@ test('R-03 10-13 08:07: "live" without an evidence read this turn warns; with th
 test('the next-prompt reminder is two lines and ends with the plain-words instruction', () => {
   const text = M.reminderText(find(`${'x\n'.repeat(20)}vault-wxy.12 is live`).warnings);
   assert.equal(text.split('\n').length, 2);
-  assert.match(text, /Ask for details on any item"\.$/);
+  assert.match(text.split('\n')[1], /Ask for details on any item"/);
   assert.equal(M.reminderText([]), '');
 });

@@ -34,7 +34,7 @@ function decideStop({ input, roleDir, actor, bd }) {
   const stale = held.filter((b) => !b.updated_at || Date.parse(b.updated_at) < Date.parse(start));
   if (!stale.length) return null;
   const id = stale[0].id;
-  return { reason: `You hold ${id} and this turn left no note in it. Append one now: bd update ${id} --append-notes "<date>: what was done, where, proof" (or release the claim if you stopped working on it). Then finish.` };
+  return { reason: `You hold ${id} and this turn left no note in it (or release the claim if you stopped).\nAppend one: \`bd update ${id} --append-notes "<date>: what was done, where, proof"\`` };
 }
 
 // Joins every applicable stop reason into one block, limited per turn and per session so a stop

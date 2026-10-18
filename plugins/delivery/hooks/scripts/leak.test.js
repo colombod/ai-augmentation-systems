@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { loadDenylist, inProductWorktree, extractMessages, scanText, decideLeak } = require('./leak.js');
+const { loadDenylist, inProductWorktree, extractMessages, scanText, decideLeak, UNANALYSABLE } = require('./leak.js');
 const { prepareRole } = require('../../scripts/prepare-role.js');
 
 const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-'));
@@ -354,13 +354,13 @@ test('leak-guard fails closed in product when the guard itself errors, and stays
   const input = (cwd) => ({ cwd, session_id: 's', tool_name: 'Bash', tool_input: { command: 'git status' } });
   const json = JSON.parse(runHook('leak-guard.js', input(path.join(b.roleDir, 'product')), env));
   assert.equal(json.hookSpecificOutput.permissionDecision, 'deny');
-  assert.equal(json.hookSpecificOutput.permissionDecisionReason, 'leak guard could not analyse this command; run git and gh as plain commands with inline text');
+  assert.equal(json.hookSpecificOutput.permissionDecisionReason, UNANALYSABLE);
   assert.equal(runHook('leak-guard.js', input(path.join(b.roleDir, 'project')), env), '');
 });
 
 test('unparseable commands in product name the reason', () => {
   const d = decideLeak({ toolName: 'Bash', toolInput: { command: 'git commit -m "ok' }, cwd: product, roleDir, denylist });
-  assert.match(d.reason, /^leak guard could not analyse this command; run git and gh as plain commands with inline text \(unbalanced double quote\)\.$/);
+  assert.match(d.reason, /^leak guard could not analyse this command \(unbalanced double quote\)\.\nRun git and gh as plain commands with inline text/);
 });
 
 test('bounded analysis: oversized or deeply nested commands are refused quickly and fail closed', () => {

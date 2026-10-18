@@ -594,8 +594,9 @@ function scanText(text, denylist) {
   return null;
 }
 
-const UNANALYSABLE = 'leak guard could not analyse this command; run git and gh as plain commands with inline text';
-const RULE = ' Only Refs <bead id> is allowed; describe the change to the product, never the plan.';
+const UNANALYSABLE = 'leak guard could not analyse this command.\nRun git and gh as plain commands with inline text: `git commit -m \'<the change>\'`';
+const ISSUE_REASON = 'GitHub issues in the product repo are for users.\nRecord internal work in a bead: `bd create --parent <your bead> --title "<the work>"`.';
+const RULE = '\nDescribe the change to the product, never the plan: `git commit -m \'<the change>\' -m \'Refs <bead id>\'`.';
 
 function filePathsOf(input) {
   const i = input || {};
@@ -640,7 +641,7 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId }) {
   const base = path.resolve(cwd || process.cwd());
   const name = String(toolName || '');
   if (name.startsWith('mcp__') && MCP_PUBLIC.test(name) && touchesProduct(roleDir, roleId)) {
-    if (mcpCreatesIssue(name, toolInput)) return { reason: 'GitHub issues in the product repo are for users; record internal work in beads.' };
+    if (mcpCreatesIssue(name, toolInput)) return { reason: ISSUE_REASON };
     for (const m of mcpStrings(toolInput)) {
       if (BIDI.test(m)) return { reason: `Public text must not contain bidirectional control characters (${name}).${RULE}` };
       const hit = scanText(m, denylist || []);
@@ -653,14 +654,14 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId }) {
     const cmd = shell;
     for (const item of walk(cmd, base)) {
       if (!item.maybeProduct && !anyInProduct(item.dirs, roleDir, base)) continue;
-      if (item.prog === 'unparsed') return { reason: `${UNANALYSABLE} (${item.why}).` };
-      if (item.prog === 'subst') return { reason: 'Run git and gh as plain commands so the text can be checked; command substitution hides it.' };
+      if (item.prog === 'unparsed') return { reason: `${UNANALYSABLE.replace('command.\n', `command (${item.why}).\n`)}.` };
+      if (item.prog === 'subst') return { reason: 'Command substitution hides the text from the leak check.\nRun git and gh as plain commands: `git commit -m \'<the change>\'`.' };
       if (item.prog === 'shell') {
-        if (/\b(git|gh)\s/.test(item.str)) return { reason: 'Run git and gh directly so the text can be checked; wrapping them in a shell -c string hides it.' };
+        if (/\b(git|gh)\s/.test(item.str)) return { reason: 'A shell -c string hides the text from the leak check.\nRun git and gh directly: `git commit -m \'<the change>\'`.' };
         continue;
       }
-      if (item.prog === 'gh' && item.sub === 'issue create') return { reason: 'GitHub issues in the product repo are for users; record internal work in beads.' };
-      if (item.prog === 'gh' && item.sub === 'api' && ghApiWrite(item.args)) return { reason: 'Public writes through gh api cannot be checked; use the checked gh commands (pr, issue comment) with inline text.' };
+      if (item.prog === 'gh' && item.sub === 'issue create') return { reason: ISSUE_REASON };
+      if (item.prog === 'gh' && item.sub === 'api' && ghApiWrite(item.args)) return { reason: 'Public writes through gh api cannot be checked.\nUse a checked command with inline text: `gh pr comment <n> --body \'<text>\'`.' };
       const writes = (item.prog === 'git' && ['commit', 'merge', 'tag', 'notes', 'push'].includes(item.sub)) || (item.prog === 'gh' && (GH_WRITES.includes(item.sub) || item.sub === 'issue create' || item.sub === 'api'));
       const injected = !writes ? undefined : item.prog === 'git' && item.sub === 'push' ? pushOptionExpanded(item.args) : item.args.find((x) => /[$`]/.test(x));
       if (injected !== undefined) return { reason: `Write arguments inline, without $ or backticks, so they can be checked (${unsent(injected).slice(0, 60)}).${RULE}` };
@@ -681,7 +682,7 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId }) {
       if (!under(abs, prod)) continue;
       const parts = path.relative(prod, abs).split(path.sep);
       if (parts.includes(fold('.delivery')) || parts.includes(fold('.beads')) || parts[parts.length - 1] === 'team.json') {
-        return { reason: `Plan files (${fp}) never live in the product repo (.delivery, .beads, team.json); they belong in the project repo.` };
+        return { reason: `Plan files (${fp}) never live in the product repo (.delivery, .beads, team.json).\nWrite it in the project repo, or message the Delivery Manager.` };
       }
     }
   }

@@ -37,14 +37,14 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, v
     return { code: 0, out: Goal.showLines(who.root, { verifyRecord }).join('\n') };
   }
   if (cmd === 'set' && field && value !== undefined) {
-    if (!a.record) return { code: 1, out: `goal.js: ${field} changes only on the owner's word.\nRecord it first, then: goal.js set ${field} ${value} --record <dec-id>` };
+    if (!a.record) return { code: 1, out: `goal.js: ${field} changes only on the owner's word.\nRecord it first, then: \`goal.js set ${field} ${value} --record <dec-id>\`` };
     const r = Goal.set({ root: who.root, who, field, value, record: a.record, verifyRecord, now });
-    if (!r.ok) return { code: 1, out: `goal.js: refused: ${r.error}.\nAsk the owner in your next briefing, record the answer, then: goal.js set ${field} <value> --record <dec-id>` };
+    if (!r.ok) return { code: 1, out: `goal.js: refused: ${r.error}.\nAsk the owner in your next briefing, record the answer, then: \`goal.js set ${field} <value> --record <dec-id>\`` };
     return { code: 0, out: `${field} = ${Array.isArray(r.entry.value) ? r.entry.value.join(', ') : r.entry.value} under ${a.record}` };
   }
   if (cmd === 'pause' && a.trigger) {
     const r = Goal.pauseOnTrigger({ root: who.root, who, trigger: a.trigger, now });
-    if (!r.ok) return { code: 1, out: `goal.js: refused: ${r.error}.\nA pause needs an open andon or the owner's word: goal.js set pause paused --record <dec-id>` };
+    if (!r.ok) return { code: 1, out: `goal.js: refused: ${r.error}.\nA pause needs an open andon or the owner's word: \`goal.js set pause paused --record <dec-id>\`` };
     return { code: 0, out: `paused on ${a.trigger}; it lifts when the trigger closes` };
   }
   return { code: 2, out: USAGE };

@@ -154,7 +154,7 @@ function messageFindings({ message, owner, commands, role, judged = {}, openStep
 function reminderText(warnings) {
   if (!warnings.length) return '';
   const what = [...new Set(warnings.map((w) => ({ 'orders-owner': 'an order to the owner outside the queue', 'briefing-length': 'a long briefing', jargon: 'internal ids or jargon', tone: 'justifying or condescending tone', 'claim-unchecked': 'live or checked with no evidence read' }[w.kind] || w.kind)))];
-  return `Your last owner message had ${what.join('; ')} (recorded as warnings).\nNext time: the outcome in plain words, one line of reason at most, no ids; end with "Ask for details on any item".`;
+  return `Your last owner message had ${what.join('; ')} (recorded as warnings).\nNext time: outcome first in plain words, no ids, end with "Ask for details on any item"; owner steps go through \`owner-queue.js add\`.`;
 }
 
 module.exports = { ownerImperatives, idTokens, lineCount, isBriefing, unbackedClaim, judgeMessage, messageFindings, reminderText, MESSAGE_QUESTIONS };
