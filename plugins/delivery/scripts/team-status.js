@@ -77,6 +77,19 @@ function gateStatus(projectRoot, team, { now, storyBeads, checkBeads, budget, bu
   return out;
 }
 
+// Pull requests by where they stand in review (R-32), from the review records alone (no gh call)
+function reviewStatus(projectRoot) {
+  const R = require('./lib/reviews.js');
+  const out = { waiting: [], ready: [], sentBack: [] };
+  for (const pr of R.listPrs(projectRoot)) {
+    const s = R.stateOf(R.read(projectRoot, pr).rows);
+    if (s === 'waiting') out.waiting.push(pr);
+    else if (s === 'ready') out.ready.push(pr);
+    else if (s === 'sent-back' || s === 'changes') out.sentBack.push(pr);
+  }
+  return out;
+}
+
 // Idle with ready work (R-43): read from bd and the goal sheet; an idle stretch is recorded once in the
 // warnings ledger and heads the status. Fails open (not idle) when bd cannot be read.
 function idleStatus(projectRoot, { now, idleBd } = {}) {
@@ -127,7 +140,9 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
   // R-33: the Reality Checker drives a browser or desktop app, which a headless host cannot run
   const placement = team.roles.filter((r) => r.id === 'reality-checker' && !r.retired && ((hosts && hosts.hosts) || {})[r.host] && hosts.hosts[r.host].headless)
     .map((r) => `the Reality Checker is on ${r.host}, a headless host: it cannot drive a browser or desktop app there; move it to a host with desktop apps (hosts.json)`);
-  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, warnings: [...manifestWarnings(team), ...placement] };
+  let reviews = null;
+  try { reviews = reviewStatus(projectRoot); } catch (err) { reviews = null; }
+  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, reviews, warnings: [...manifestWarnings(team), ...placement] };
 }
 
 function hasDrift(drift) {
@@ -144,7 +159,7 @@ function manifestRev(projectRoot) {
 
 const firstIds = (ids) => (ids.length ? ` (${ids.slice(0, 3).join(', ')}${ids.length > 3 ? ', ...' : ''})` : '');
 
-function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gates, idle, warnings }, projectRoot) {
+function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gates, idle, reviews, warnings }, projectRoot) {
   const lines = [];
   // idle with ready work is the first line: nothing else matters while nobody works
   if (idle && idle.idle) { lines.push(...require('./lib/idle.js').idleLine(idle).split('\n')); lines.push(''); }
@@ -188,6 +203,10 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gat
     for (const n of gates.notes) lines.push(`Note: ${n}`);
     lines.push('');
   }
+  if (reviews && (reviews.waiting.length || reviews.ready.length || reviews.sentBack.length)) {
+    const n = (ids) => `${ids.length}${ids.length ? ` (${ids.slice(0, 5).map((x) => `#${x}`).join(', ')}${ids.length > 5 ? ', ...' : ''})` : ''}`;
+    lines.push(`Pull requests: waiting for review ${n(reviews.waiting)}; ready to merge ${n(reviews.ready)}; sent back ${n(reviews.sentBack)}`, '');
+  }
   if (bd_reachable === false) { lines.push('Warning: bd unreachable from role directories: run bd init in the project root, then rerun prepare-role so the roles get BEADS_DIR'); lines.push(''); }
   if (recovered_from) { lines.push(`Note: roster.json was unreadable and moved to ${recovered_from}; the roster restarts empty.`); lines.push(''); }
   for (const w of warnings || []) lines.push(`Warning: ${w}`);
@@ -215,4 +234,4 @@ if (require.main === module) {
   process.exit(hasDrift(status.drift) ? 1 : 0);
 }
 
-module.exports = { teamStatus, renderStatus, operatorStatus, gateStatus, idleStatus };
+module.exports = { teamStatus, renderStatus, operatorStatus, gateStatus, idleStatus, reviewStatus };

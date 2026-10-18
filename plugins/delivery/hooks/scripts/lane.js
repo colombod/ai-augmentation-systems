@@ -671,6 +671,18 @@ function reviewDirs({ projectRoot, roleDir }) {
   if (roleDir) out.push(realish(path.join(String(roleDir), 'project', REVIEWS_REL)));
   return out;
 }
+// Pull request review records (.delivery/reviews/prs/, R-32): the merge gate reads them, so only
+// review.js and merge-gate.js write them (node processes, not tool calls). Protected for every role,
+// the Delivery Manager and the `any` lanes included; best effort, and the rows are chained.
+const PR_REVIEWS_REL = path.join('.delivery', 'reviews', 'prs');
+const PR_REVIEWS_REASON = 'review records in .delivery/reviews/prs/ are written only by `review.js`; read them with `review.js show <pr>`';
+const PR_REVIEWS_MENTION = /\.delivery\/+(?:\.\/+)*reviews\/+(?:\.\/+)*prs(?=\/|[\s'";|&)>]|$)/i;
+function prReviewDirs({ projectRoot, roleDir }) {
+  const out = [];
+  if (projectRoot && path.isAbsolute(String(projectRoot))) out.push(realish(path.join(String(projectRoot), PR_REVIEWS_REL)));
+  if (roleDir) out.push(realish(path.join(String(roleDir), 'project', PR_REVIEWS_REL)));
+  return out;
+}
 // The assumption register (R-14): the gates read its rows, so only scripts/assumptions.js writes it (a
 // node process, not a tool call). Protected for every role, `any` included, the Product Manager too;
 // best effort, like the goal sheet. The gates also re-verify each row against its evidence.
@@ -790,6 +802,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       if (isGoalFile(p, goalFiles({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
       if (underOperator(p, usageDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
       if (registerHit({ projectRoot, roleDir })(p)) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
+      if (underOperator(p, prReviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
       if (!REVIEW_WRITERS.includes(pol.roleId) && underOperator(p, reviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
       if (harnessFile(p)) continue;
       if (pathAllowed(p, { roleDir, writes: pol.writes, pluginRoot: pluginRootOf({ pluginRoot }) })) continue;
@@ -814,6 +827,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (goalShellWrite(command, { cwd, files: goalFiles({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: usageDirs({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
     if (usageShellWrite(command, { cwd, mention: REGISTER_MENTION, hit: registerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
+    if (usageShellWrite(command, { cwd, dirs: prReviewDirs({ projectRoot, roleDir }), mention: PR_REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (bash.includes('any')) return { allow: true };
@@ -866,7 +880,16 @@ function laneDecisionForHook(input, pluginRoot) {
   const host = hostMap[role.host] || {};
   const desktopHosts = Object.entries(hostMap).filter(([, h]) => h && h.desktop_apps).map(([n]) => n);
   const groups = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'lane-groups.json'), 'utf8'));
-  const d = decideLane({ toolName: input.tool_name, toolInput: input.tool_input || {}, roleDir, policy, groups, pluginRoot, cwd: input.cwd, hostHeadless: !!host.headless, hostName: role.host, desktopHosts, projectRoot: marker.project_root });
+  let d = decideLane({ toolName: input.tool_name, toolInput: input.tool_input || {}, roleDir, policy, groups, pluginRoot, cwd: input.cwd, hostHeadless: !!host.headless, hostName: role.host, desktopHosts, projectRoot: marker.project_root });
+  // the Delivery Manager's merge passes only through the merge gate (R-32): a passing independent
+  // review of the current head, CI green, no conflict; an error here fails closed in role-lane.js
+  if (d.allow && policy.roleId === MERGER) {
+    const cmd = shellCommandOf(input.tool_name, input.tool_input || {});
+    if (cmd !== null && /\bgh\b/.test(cmd)) {
+      const why = require('../../scripts/merge-gate.js').mergeCommandProblem(cmd, { root: marker.project_root, team: ctx.team });
+      if (why) d = { allow: false, reason: `Role ${policy.roleId}: ${why}` };
+    }
+  }
   if (d.allow) return null;
   try {
     const ti = input.tool_input || {};

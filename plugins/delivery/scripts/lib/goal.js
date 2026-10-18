@@ -32,6 +32,8 @@ const FIELDS = {
   idle_minutes: { kind: 'number', unit: /^(?:minutes?|mins?)$/, words: /^idle$/, default: 30 },
   briefing_lines: { kind: 'number', unit: /^lines?$/, words: /^(?:briefings?|messages?|updates?)$/, default: 12 },
   answer_window_hours: { kind: 'number', unit: /^hours?$/, words: /^(?:yes|answer|window)$/, default: 24 },
+  // the pull request size over which review.js and merge-gate.js warn (R-24); never a block
+  pr_size_lines: { kind: 'number', unit: /^lines?$/, words: /^(?:pr|prs|pull|requests?|size|cap|limit|changed|warn|over)$/, default: 600 },
   pause: { kind: 'pause', default: 'off' },
   // the scope is what the team builds toward; it changes by explicit adds and removes, never wholesale
   scope_add: { kind: 'list', op: 'add' },
@@ -254,6 +256,7 @@ function questionText(field, value) {
     idle_minutes: `Call the team idle after ${v} minutes with ready work and nothing in progress?`,
     briefing_lines: `Keep routine briefings to ${v} lines?`,
     answer_window_hours: `Allow up to ${v} hours for your yes to a goal question?`,
+    pr_size_lines: `Warn when a pull request changes more than ${v} lines?`,
     pause: { paused: "Pause the team's work now?", stopped: "Stop the team's work now?", off: "Resume the team's work now?" }[v],
     scope_add: `Add ${items} to the scope?`,
     scope_remove: `Remove ${items} from the scope?`,
