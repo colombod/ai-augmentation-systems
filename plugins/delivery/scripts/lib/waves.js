@@ -197,7 +197,7 @@ function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = 
       const curNeed = curStories.reduce((n, b) => n + B.stillNeeds(b, B.estimate(b, { t, team }), t), 0);
       const open = curStories.filter((b) => !finished(b)).map((b) => b.id);
       const what = `${w ? `wave ${w}` : 'no wave'}, while wave ${cur} of ${area} is not verified (${open.slice(0, 3).join(', ')}${open.length > 3 ? ', ...' : ''})`;
-      if (halfBuilt && budget.set && budget.remaining - need < curNeed) f.push(block('wave-half-built', 'D5', `${w ? `wave ${w}` : 'unwaved work'} while wave ${cur} of ${area} is unfinished: ${u(budget.remaining)} units left, wave ${cur} needs ${u(curNeed)}, this ${u(need)}; it would leave wave ${cur} half-built`));
+      if (halfBuilt && budget.set && budget.remaining - need < curNeed) f.push(block('wave-half-built', 'D5', `${w ? `wave ${w}` : 'unwaved work'} while wave ${cur} of ${area} is unfinished: ${B.units(budget.remaining)} left, wave ${cur} needs ${u(curNeed)}, this ${u(need)}; it would leave wave ${cur} half-built`));
       else f.push(warn('outside-wave', 'D5', `${what}: finish or cut wave ${cur} first`));
     }
   }
@@ -207,27 +207,34 @@ function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = 
     const hit = overlap(mine, filesOf(o));
     if (hit.length) f.push(warn('file-overlap', 'R-23', `touches ${hit.slice(0, 3).join(', ')}, as ${o.id} in progress does: parallel builders take file-disjoint stories`));
   }
-  if (budget.lean && others.length && !tier1) f.push(warn('lean-wip', 'R-31', `lean mode (${u(budget.usedPct)}% used, lean at ${budget.leanAt}%): one story at a time team-wide; ${others.length} already in progress`));
+  if (budget.lean && others.length && !tier1) f.push(warn('lean-wip', 'R-31', `lean mode (${u(budget.weeklyPct)}% of the week used, lean at ${budget.leanAt}%): one story at a time team-wide; ${others.length} already in progress`));
   else if (others.length >= builders) f.push(warn('wip', 'R-23', `${others.length} stories in progress for ${builders} builder(s)`));
 
   const areaF = [];
   // new areas (R-41): only when other areas already hold built work (front-hopping)
   const elsewhere = [...A.values()].some((y) => y.area !== area && y.built);
   if (!x.built && elsewhere && !tier1) {
-    if (budget.set && budget.nearLimit) areaF.push(block('new-area-near-limit', 'D5', `${area} is a new area and the budget is near the limit (${u(budget.remaining)} of ${u(budget.total)} units left): only linked fixes start`));
-    else if (!reason && budget.set && budget.half) areaF.push({ ...block('new-area', 'D1', `${area} is a new area with no recorded reason and half or less of the budget is left (${u(budget.remaining)} of ${u(budget.total)} units)`), area });
+    if (budget.set && budget.nearLimit) areaF.push(block('new-area-near-limit', 'D5', `${area} is a new area and the budget is near the limit (${B.units(budget.remaining)} of ${u(budget.total)} left): only linked fixes start`));
+    else if (!reason && budget.set && budget.half) areaF.push({ ...block('new-area', 'D1', `${area} is a new area with no recorded reason and half or less of the budget is left (${B.units(budget.remaining)} of ${u(budget.total)})`), area });
     else if (!reason) areaF.push(warn('new-area', 'R-41', `${area} is a new area with no recorded reason (goal.js ask area_add ${area}, or a roadmap Areas row citing an owner record)`));
     else if (budget.lean) areaF.push(warn('new-area-lean', 'R-31', `${area} is a new area (reason: ${reason.by}) started in lean mode`));
   }
   // budget-aware start (R-34): only an owner-set budget can refuse
   if (budget.set) {
     if (est.unsized) f.push(warn('no-size', 'R-34', `no size label: estimated as ${est.size} (${u(est.units)} units)`));
+    const pct = Math.round(t.reserve * 100);
+    const free = `${B.units(budget.free)} are free after in-flight work`;
     if (tier1) {
-      if (budget.nearLimit && est.units > budget.remaining) f.push(block('fix-over-budget', 'D5', `a linked fix of ${u(est.units)} units does not fit the ${u(budget.remaining)} units left, reserve included`));
-    } else if (need > budget.free && !areaF.some((x) => x.level === 'block')) {
-      const short = `needs ${u(need)} units with the ${Math.round(t.reserve * 100)}% reserve; ${u(budget.free)} are free after in-flight work (short by ${u(need - budget.free)})`;
-      if (waveStarted) f.push(warn('budget-short', 'R-34', `${short}: wave ${w} is under way, so finish it and start nothing new`));
-      else f.push(block('budget-short', 'D5', `${short}: starting it risks half-built work`));
+      // a linked fix may use what in-flight work holds, but it must fit what is left (review I-2)
+      if (need > budget.remaining) f.push(block('fix-over-budget', 'D5', `the linked fix needs ${u(need)} units with the ${pct}% reserve; ${B.units(budget.remaining)} are left`));
+    } else if (![...f, ...areaF].some((y) => y.level === 'block')) {
+      if (waveStarted) {
+        if (need > budget.free) f.push(warn('budget-short', 'R-34', `needs ${u(need)} units with the ${pct}% reserve; ${free}: wave ${w} is under way, so finish it and start nothing new`));
+      } else if (w) {
+        // this claim starts its wave: the whole wave must fit, or it ends half-built (review I-1)
+        const waveNeed = own.filter((b) => !finished(b)).reduce((n, b) => n + B.estimate(b, { t, team }).units * (1 + t.reserve), 0);
+        if (waveNeed > budget.free) f.push(block('budget-short', 'D5', `wave ${w} of ${area} needs ${u(waveNeed)} units with the ${pct}% reserve to finish; ${free}: starting it risks half-built work`));
+      } else if (need > budget.free) f.push(block('budget-short', 'D5', `needs ${u(need)} units with the ${pct}% reserve; ${free}: starting it risks half-built work`));
     }
   }
 
@@ -276,27 +283,29 @@ function rank(candidates, { beads = [], budget = { set: false }, team, storyOf =
     const reuses = require('./plan-docs.js').listValue(story && story.meta && story.meta.reuses);
     if (reuses.length) { score += Math.min(2, reuses.length); reasons.push(`reuses ${reuses.join(', ')}`); }
     if (isNew) reasons.push(`new area ${area}`);
-    // admission, scaled by the budget (owner-set only)
-    const est = B.estimate(c, { t, team });
-    const need = est.units * (1 + t.reserve);
-    let refused = null;
+    // admission: the claim check itself, so select never offers what a claim refuses, nor hides what
+    // it allows (review I-5)
     const reason = isNew ? reasonOf(area) : null;
-    if (budget.set && budget.nearLimit) {
-      if (!fix.ok) refused = `near the limit (${B.n1(budget.remaining)} units left): only linked fixes start (D5)`;
-      else if (est.units > budget.remaining) refused = `a ${B.n1(est.units)}-unit fix does not fit the ${B.n1(budget.remaining)} units left (D5)`;
-    } else if (tier === 3 && !reason && budget.set && budget.half) refused = 'new area with no recorded reason, half or less of the budget left (D1)';
-    else if (budget.set && tier !== 1 && need > budget.free && !waveStarted) refused = `needs ${B.n1(need)} units, ${B.n1(budget.free)} free after in-flight work (D5)`;
-    if (!refused && tier === 3 && !reason) warnings.push(`new area ${area} with no recorded reason`);
-    if (!refused && tier === 3 && reason && budget.lean) warnings.push(`new area ${area} in lean mode`);
+    const found = claimFindings(c, { beads, budget, team, fix, reason, builders: Infinity });
+    const blocks = found.filter((x) => x.level === 'block');
+    const refused = blocks.length ? blocks.map((x) => `${x.detail} (${x.rule})`).join('; ') : null;
+    if (!refused) for (const x of found) if (['new-area', 'new-area-lean', 'outside-wave'].includes(x.code)) warnings.push(x.detail);
     if (reason) reasons.push(`area reason: ${reason.by}`);
+    const est = B.estimate(c, { t, team });
     return { id: c.id, title: c.title, tier, score, reasons, refused, warnings, estimate: est.units };
   });
   return out.sort((p, q) => (Boolean(p.refused) - Boolean(q.refused)) || (p.tier - q.tier) || (q.score - p.score) || String(p.id).localeCompare(String(q.id)));
 }
 
+// Fix beads in progress that are not stories: they hold budget too (Copilot 726)
+function activeFixes(bd, known) {
+  if (!bd) return [];
+  try { return bd.list({ status: 'in_progress' }).filter((b) => b.status === 'in_progress' && !known.has(b.id) && !G.isStoryBead(b) && B.isWork(b)); } catch (err) { return []; }
+}
+
 // The reads claimFindings and rank need, from the project: story files, owner records, the budget.
 // budget: a precomputed B.state (tests, a caller that has one) or undefined to compute it.
-function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now } = {}) {
+function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now, deadline, budgetOpts = {} } = {}) {
   const C = require('./gate-context.js');
   const stories = new Map();
   const storyOf = (b) => { if (!stories.has(b.id)) stories.set(b.id, C.readStory(root, b)); return stories.get(b.id); };
@@ -308,7 +317,7 @@ function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now } = 
   try { ownerAreas = require('./goal.js').value(root, 'areas', { warn: false, verifyRecord }); } catch (err) { ownerAreas = null; }
   return {
     beads, team, builders, storyOf,
-    budget: budget || B.state(root, { team, beads, now, verifyRecord }),
+    budget: budget || B.state(root, { team, beads: [...beads, ...activeFixes(bd, known)], now, verifyRecord, deadline, ...budgetOpts }),
     fixOf: (b, story) => fixLink(b, story === undefined ? storyOf(b) : story, { root, beadOf, ownerRecord: (id) => C.ownerRecord(root, id, verifyRecord) }),
     reasonOf: (area) => areaReason(root, area, { ownerRecord: (id) => C.ownerRecord(root, id, verifyRecord), ownerAreas }),
     filesOf: (b) => ((storyOf(b) || {}).files || []),

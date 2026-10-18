@@ -64,7 +64,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: gi
     const out = [];
     const rows = [];
     for (const x of A.values()) {
-      if (!x.order.length) continue;
+      // an area of unwaved stories only is listed too, with its warning (Copilot 670)
+      if (!x.order.length && !x.unwaved.some((b) => !W.finished(b))) continue;
       const waves = x.order.map((k) => {
         const s = x.waves.get(k);
         const units = s.reduce((m, b) => m + B.stillNeeds(b, B.estimate(b, { t, team: who.team }), t), 0);
@@ -89,7 +90,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: gi
       }
       if (r.unwaved.length) out.push(`  warning: no wave: ${r.unwaved.join(', ')} (give each a wave: in its story file)`);
     }
-    out.push(st.set ? `Budget: ${B.n1(st.remaining)} units left, ${B.n1(st.free)} free after in-flight work (${st.level}).` : 'Budget: not set by the owner (budget checks only warn).');
+    out.push(st.set ? `Budget: ${B.units(st.remaining)} left, ${B.units(st.free)} free after work already started (${st.level}).` : 'Budget: not set by the owner (budget checks only warn).');
     return { code: 0, out: out.join('\n') };
   }
 

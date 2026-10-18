@@ -61,7 +61,7 @@ function gateStatus(projectRoot, team, { now, storyBeads, checkBeads, budget } =
     const W = require('./lib/waves.js');
     out.waves = [...W.areas(beads).values()].map(W.waveLine).filter(Boolean);
     const st = budget || require('./lib/budget.js').state(projectRoot, { team, beads, now });
-    out.budget = st.set ? { remaining: st.remaining, total: st.total, level: st.level, free: st.free } : { set: false };
+    out.budget = st.set ? { remaining: st.remaining, total: st.total, level: st.level, free: st.free, source: st.source } : { set: false };
   } catch (err) { out.notes.push(`story states unavailable: ${String(err.message).split('\n')[0]}`); }
   // reality checks dispatched and not yet closed (R-33); a caller that supplies the story beads
   // supplies these too, or they are not read
@@ -178,7 +178,8 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gat
         lines.push(`Reality checks pending: ${rc.length}${rc.length ? ` (${rc.slice(0, 5).map((c) => `${c.id}${c.assignee ? ` with ${c.assignee}` : ', unclaimed'}`).join(', ')}${rc.length > 5 ? ', ...' : ''})` : ''}`);
       }
       const B = gates.budget;
-      if (B) lines.push(B.set === false ? 'Budget: not set by the owner (budget checks only warn)' : `Budget: ${B.remaining.toFixed(1)} of ${B.total.toFixed(1)} units left, ${B.free.toFixed(1)} free after in-flight work (${B.level})`);
+      const U = require('./lib/budget.js').units;
+      if (B) lines.push(B.set === false ? 'Budget: not set by the owner (budget checks only warn)' : `Budget: ${U(B.remaining)} of ${B.total.toFixed(1)} left, ${U(B.free)} free after work already started (${B.level}; counted ${B.source})`);
       for (const w of gates.waves || []) lines.push(`Wave: ${w}`);
       for (const o of gates.states.overCap) lines.push(`Warning: area ${o.area} has ${o.count} merged-but-unverified stories (cap ${o.cap}): ${o.ids.join(', ')}; verify them before new work there`);
     }

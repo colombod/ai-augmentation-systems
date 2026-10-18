@@ -19,15 +19,20 @@ function budgetLines(st, A, team) {
   const t = st.table;
   const lines = [];
   if (st.set) {
-    lines.push(`Budget: ${n1(st.remaining)} of ${n1(st.total)} units left (${n1(st.usedPct)}% used, from ${st.source}); in-flight work needs ${n1(st.inflightNeed)}, so ${n1(st.free)} are free. Level: ${st.level}${st.leanAt !== null ? `; lean at ${st.leanAt}%` : ''}.`);
+    lines.push(`Budget: ${B.units(st.remaining)} of ${n1(st.total)} left (${n1(st.weeklyPct)}% of the week used; counted from ${st.source}); work already started holds ${n1(st.inflightNeed)}, so ${B.units(st.free)} free. Level: ${st.level}${st.leanAt !== null ? `; lean at ${st.leanAt}% of the week` : ''}.`);
+    if (st.partial) lines.push('The spend figure is partial: the transcript scan ran out of time and finishes on the next check.');
     if (st.nearLimit) lines.push('Near the limit: finish what is in flight; only linked fixes that fit start.');
     else if (st.lean) lines.push('Lean mode: one story at a time team-wide, no new builders, finish the current wave.');
   } else lines.push('Budget: not set by the owner, so budget checks only warn (the Chief of Staff asks: goal.js ask budget.weekly_units <n>).');
   lines.push(`Estimates: S ${t.units.S}, M ${t.units.M}, L ${t.units.L} units on sonnet (opus x1.7, haiku x0.35), reserve ${Math.round(t.reserve * 100)}%${t.overridden.length ? ` (owner-set: ${t.overridden.join(', ')})` : ' (seed values)'}.`);
   for (const x of A.values()) {
     if (!x.current) continue;
-    const need = x.waves.get(x.current).reduce((m, b) => m + B.stillNeeds(b, B.estimate(b, { t, team }), t), 0);
-    const fit = !st.set ? '' : need <= st.remaining ? ': fits' : `: does not fit (short by ${n1(need - st.remaining)})`;
+    const stories = x.waves.get(x.current);
+    const need = stories.reduce((m, b) => m + (B.inFlight(b) ? B.stillNeeds(b, B.estimate(b, { t, team }), t) : B.estimate(b, { t, team }).units * (1 + t.reserve) * (W.finished(b) ? 0 : 1)), 0);
+    // what other areas' work in flight already holds is not available to this wave (Copilot 660)
+    const own = stories.filter(B.inFlight).reduce((m, b) => m + B.stillNeeds(b, B.estimate(b, { t, team }), t), 0);
+    const available = st.set ? st.remaining - (st.inflightNeed - own) : 0;
+    const fit = !st.set ? '' : need <= available ? ': fits' : `: does not fit (short by ${n1(need - Math.max(0, available))})`;
     lines.push(`- ${W.waveLine(x)}; still needs ${n1(need)} units with the reserve${fit}`);
   }
   return lines;
@@ -105,7 +110,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, who: given, 
     }
   }
   if (json) return { code: 0, out: JSON.stringify({ budget: st.set ? { level: st.level, remaining: st.remaining, free: st.free } : null, chosen: chosen && chosen.id, recorded, ranked }, null, 2) };
-  const lines = [`Selection (${st.set ? `budget ${st.level}, ${n1(st.free)} units free` : 'no owner-set budget: nothing is refused on budget'}):`];
+  const lines = [`Selection (${st.set ? `budget ${st.level}, ${B.units(st.free)} free` : 'no owner-set budget: nothing is refused on budget'}):`];
   const tierName = { 1: 'fix', 2: 'compounding', 3: 'new area' };
   ranked.filter((r) => !r.refused).forEach((r, i) => lines.push(`${i + 1}. ${r.id} tier ${r.tier} (${tierName[r.tier]}), score ${r.score}${r.reasons.length ? `: ${r.reasons.join('; ')}` : ''}`));
   const refused = ranked.filter((r) => r.refused);

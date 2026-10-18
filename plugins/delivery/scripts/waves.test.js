@@ -15,7 +15,8 @@ const plan = require('./plan.js');
 const wave = require('./wave.js');
 const { teamStatus, renderStatus } = require('./team-status.js');
 
-const TEAM = { project: 'vault', prefix: 'ex', roles: [{ id: 'delivery-lead', model: 'sonnet' }, { id: 'builder', model: 'sonnet', count: 2 }] };
+// builders here dispatch size-L on sonnet too, so the figures below stay on one model
+const TEAM = { project: 'vault', prefix: 'ex', roles: [{ id: 'delivery-lead', model: 'sonnet' }, { id: 'builder', model: 'sonnet', large_model: 'sonnet', count: 2 }] };
 const NOW = '2026-10-12T23:00:00Z';
 
 // A Vault project: story files with their area, wave and files; beads as materialise stamps them.
@@ -140,7 +141,7 @@ test('R-41 replay, 10-12 evening at 85%: the sign-in refresh fix with its fixes 
   assert.equal(r.ranked[1].id, 'ex-0n9-4', 'then compounding work on verified 0n9-3');
   assert.match(r.ranked[1].reasons.join(), /builds on verified 0n9-3/);
   const byId = Object.fromEntries(r.ranked.map((x) => [x.id, x]));
-  assert.match(byId['ex-feedback-1'].refused, /new area with no recorded reason, half or less of the budget left \(D1\)/);
+  assert.match(byId['ex-feedback-1'].refused, /new area with no recorded reason and half or less of the budget is left .*\(D1\)/);
   assert.equal(byId['ex-0n9-9'].tier, 2, 'an unlinked bug is ordinary work');
   assert.match(byId['ex-0n9-9'].warnings.join(), /labelled bug with no fixes link/);
   // the claim: lean mode does not hold the linked fix; the unlinked bug is warned and checked as ordinary work
@@ -214,7 +215,7 @@ test('R-34 start check: under an owner-set budget a story that does not fit is r
   bd.beads.get('ex-u1').labels.push('state-verified');
   bd.beads.get('ex-u2').labels.push('state-verified');
   const fresh = await claim(t, bd, 'ex-n1', budgetAt(90, [...bd.beads.values()]));
-  assert.match(fresh.deny, /\(D5: needs 10\.4 units with the 30% reserve; .* starting it risks half-built work\)/);
+  assert.match(fresh.deny, /\(D5: wave 2 of upload needs 10\.4 units with the 30% reserve to finish; .* starting it risks half-built work\)/);
   assert.deepEqual(reasonProblems(fresh.deny), []);
 });
 
@@ -251,7 +252,7 @@ test('R-36 waves: materialise stamps wave-<n> from the story file and protects i
   const s = teamStatus(t.root, { bdCheck: () => true, storyBeads: () => [...bd.beads.values()], checkBeads: () => [], idleBd: { list: () => [], ready: () => [] }, budget: budgetAt(40, []), now: NOW });
   const text = renderStatus(s);
   assert.match(text, /Wave: wave 2 of import: 3 of 5 stories checked on the customer's app/);
-  assert.match(text, /Budget: 60\.0 of 100\.0 units left/);
+  assert.match(text, /Budget: 60 units of 100\.0 left/);
 });
 
 test('R-36/R-41 lanes: every role reads waves, the budget and the selection; only the Delivery Manager plans and closes waves and records a selection', () => {
@@ -264,5 +265,124 @@ test('R-36/R-41 lanes: every role reads waves, the budget and the selection; onl
   for (const cmd of ['wave.js plan', 'wave.js close import 2', 'plan.js select --record']) {
     assert.equal(allowed('delivery-lead', cmd), true, cmd);
     for (const role of ['chief-of-staff', 'product-manager']) assert.equal(allowed(role, cmd), false, `${role} ${cmd}`);
+  }
+});
+
+// ---- PR 54 review, round 1 ----
+const dmClaim = (t, bd, id, budget) => claim(t, bd, id, budget, { roleId: 'delivery-lead', actor: 'dm@pc/delivery-lead', instance: 'delivery-lead' });
+
+test('PR 54 I-1: starting a wave needs the whole wave to fit, with its reserve, not only the first story', async () => {
+  const t = vault();
+  for (const id of ['l1', 'l2', 'l3']) t.story(id, { area: 'upload', wave: 1 });
+  const beads = ['l1', 'l2', 'l3'].map((id) => bead(id, 'upload', { wave: 1, size: 'L' }));
+  const bd = memBd(beads);
+  // 80% used: 20 left; one L needs 10.4, the wave of three 31.2
+  const g = await claim(t, bd, 'ex-l1', budgetAt(80, beads));
+  assert.match(g.deny, /D5: wave 1 of upload needs 31\.2 units with the 30% reserve to finish; 20 units are free/);
+  assert.deepEqual(reasonProblems(g.deny), []);
+  assert.ok(!/[a-z]+-[a-z]+-[a-z]+\.$/.test(g.deny.split('\n')[1]), 'the builder is told in plain words, not a code name');
+  assert.equal((await claim(t, bd, 'ex-l1', budgetAt(60, beads))).deny, null, '40 free: the wave fits');
+});
+
+test('PR 54 I-2, Copilot 581 and 726: a linked fix must fit what is left with its reserve, and a fix in progress holds its share', async () => {
+  const t = vault();
+  t.story('wxy-1', { area: 'auth', wave: 1 });
+  t.story('a1', { area: 'auth', wave: 2 });
+  const shipped = bead('wxy-1', 'auth', { wave: 1, state: 'verified', status: 'closed' });
+  const big = { id: 'ex-fix-l', title: 'sign-in refresh race', status: 'open', parent: 'ex-vault-ph1', labels: ['bug', 'size-L'], metadata: { area: 'auth', fixes: 'ex-wxy-1' } };
+  const small = { ...big, id: 'ex-fix-s', labels: ['bug', 'size-S'] };
+  const bd = memBd([shipped, big, small]);
+  // 95% used, nothing in flight: 5 left; an L fix needs 10.4, an S fix 1.3
+  const st = budgetAt(95, [shipped]);
+  assert.equal(st.nearLimit, false);
+  const over = await dmClaim(t, bd, 'ex-fix-l', st);
+  assert.match(over.deny, /D5: the linked fix needs 10\.4 units with the 30% reserve; 5 units are left/);
+  assert.deepEqual(reasonProblems(over.deny), []);
+  assert.equal((await claim(t, bd, 'ex-fix-s', st)).deny, null);
+  // a claimed fix that is not a story still holds its estimate and reserve
+  const busy = memBd([shipped, { ...big, status: 'in_progress', assignee: 'dev@pc/builder-2' }, bead('a1', 'auth', { wave: 2, size: 'S' })]);
+  const withFix = budgetAt(85, [...busy.beads.values()]);
+  assert.equal(Math.round(withFix.inflightNeed * 10) / 10, 10.4);
+  // the claim check lists stories; it must still find the fix in progress
+  ownerSets(t, 'budget.weekly_units', 100);
+  const viaHook = W.contextFor(t.root, { bd: busy, team: TEAM, beads: [shipped, bead('a1', 'auth', { wave: 2, size: 'S' })], budgetOpts: { usedTokens: 85 * B.table(null).unitTokens, snapshot: null } });
+  assert.equal(Math.round(viaHook.budget.inflightNeed * 10) / 10, 10.4, 'the claim check counts the fix bead it did not list as a story');
+});
+
+test('PR 54 I-5, Copilot 599: select offers exactly what the claim check lets start', async () => {
+  const t = vault();
+  for (const id of ['478', '479', 'w3-1']) t.story(id, { area: 'collections', wave: id === 'w3-1' ? 3 : 2 });
+  const beads = [bead('478', 'collections', { wave: 2, state: 'merged', status: 'closed', size: 'L' }), bead('479', 'collections', { wave: 2, status: 'in_progress', size: 'L' }), bead('w3-1', 'collections', { wave: 3, size: 'M' }), bead('480', 'collections', { wave: 2, size: 'S' })];
+  t.story('480', { area: 'collections', wave: 2 });
+  const bd = memBd(beads);
+  const who = { root: t.root, roleId: 'delivery-lead', instance: 'delivery-lead', team: TEAM };
+  for (const used of [20, 85, 97]) {
+    const st = budgetAt(used, beads);
+    const sel = JSON.parse((await plan.main(['select', '--json'], { who, bd, budget: st })).out);
+    for (const r of sel.ranked) {
+      const g = await claim(t, bd, r.id, st);
+      assert.equal(Boolean(r.refused), Boolean(g.deny), `${used}%: ${r.id} select ${r.refused} / claim ${g.deny}`);
+    }
+  }
+});
+
+test('PR 54 Copilot 608 and 620: a size-L story is estimated on the large model; lean mode reads the weekly allowance, not the envelope', () => {
+  const team = { roles: [{ id: 'builder', model: 'sonnet' }] };
+  const L = { id: 'x', labels: ['story', 'size-L'], metadata: {} };
+  assert.equal(B.estimate(L, { team }).model, 'opus', 'the builder dispatches size-L on its large model (DELIVERY_LARGE_MODEL), opus by default');
+  assert.equal(B.estimate(L, { team: { roles: [{ id: 'builder', model: 'sonnet', large_model: 'haiku' }] } }).model, 'haiku');
+  assert.equal(B.estimate({ ...L, labels: ['story', 'size-M'] }, { team }).model, 'sonnet');
+  assert.equal(B.estimate({ ...L, metadata: { model: 'sonnet' } }, { team }).model, 'sonnet', 'a story model override wins');
+  const g = goalProject();
+  ownerSets(g, 'budget.weekly_units', 100);
+  ownerSets(g, 'budget.usage_envelope', 50);
+  ownerSets(g, 'budget.lean_at', 70);
+  const st = B.state(g.root, { usedTokens: 40 * B.table(null).unitTokens, snapshot: null });
+  assert.deepEqual([st.total, st.lean, st.weeklyPct], [50, false, 40]);
+  assert.equal(B.state(g.root, { usedTokens: 72 * B.table(null).unitTokens, snapshot: null }).lean, true);
+});
+
+test('PR 54 I-7: without the status line, spend counts from the owner-set week start, and the budget says which basis it uses', () => {
+  const g = goalProject();
+  ownerSets(g, 'budget.weekly_units', 100);
+  const now = '2026-10-15T12:00:00.000Z';
+  const unknown = B.state(g.root, { usedTokens: 0, snapshot: null, now });
+  assert.match(unknown.source, /over the last 7 days \(reset time unknown/);
+  assert.equal(ownerSets(g, 'budget.period_start', '2026-10-01T09:00:00Z').ok, true);
+  const owned = B.state(g.root, { usedTokens: 0, snapshot: null, now });
+  assert.equal(owned.periodStart, '2026-10-15T09:00:00.000Z', 'the most recent weekly reset from the owner\'s start');
+  assert.match(owned.source, /since the weekly reset the owner set/);
+});
+
+test('PR 54 Copilot 644, 660, 670 and m-2: commented lists, wave fit after other areas\' commitments, unwaved areas in the plan, no negative figures', async () => {
+  const { listValue } = require('./lib/plan-docs.js');
+  assert.deepEqual(listValue('[]   # existing code, evals'), []);
+  assert.deepEqual(listValue('[evals/import, dec-x-1] # why'), ['evals/import', 'dec-x-1']);
+  const t = vault();
+  t.story('o1', { area: 'other', wave: 1 });
+  t.story('i1', { area: 'import', wave: 1 });
+  t.story('u1', { area: 'loose' });
+  const beads = [bead('o1', 'other', { wave: 1, status: 'in_progress', size: 'L' }), bead('i1', 'import', { wave: 1, size: 'M' }), bead('u1', 'loose', {})];
+  const bd = memBd(beads);
+  const who = { root: t.root, roleId: 'delivery-lead', instance: 'delivery-lead', team: TEAM };
+  // 85 used: 15 left, 10.4 held by other; import's wave needs 3.9: 4.6 available, it fits; at 90 it does not
+  assert.match((await plan.main(['budget'], { who, bd, budget: budgetAt(85, beads) })).out, /wave 1 of import: .*still needs 3\.9 units with the reserve: fits/);
+  const tight = (await plan.main(['budget'], { who, bd, budget: budgetAt(92, beads) })).out;
+  assert.match(tight, /wave 1 of import: .*does not fit/);
+  assert.match(tight, /no units free/);
+  assert.ok(!/-\d/.test(tight), tight);
+  assert.match(wave.main(['plan'], { who, bd, budget: NO_BUDGET }).out, /loose:\n {2}warning: no wave: ex-u1/);
+});
+
+test('PR 54 m-1: every refusal the Delivery Manager gets fits the reason rule', async () => {
+  const t = vault();
+  for (const id of ['478', '479', 'w3-1']) t.story(id, { area: 'collections', wave: id === 'w3-1' ? 3 : 2 });
+  t.story('pub', { area: 'publication', wave: 1 });
+  const beads = [bead('478', 'collections', { wave: 2, state: 'merged', status: 'closed', size: 'L' }), bead('479', 'collections', { wave: 2, status: 'in_progress', size: 'L' }), bead('w3-1', 'collections', { wave: 3 }), bead('pub', 'publication', { wave: 1 })];
+  const bd = memBd(beads);
+  for (const [id, used] of [['ex-w3-1', 85], ['ex-pub', 60], ['ex-pub', 97]]) {
+    const g = await dmClaim(t, bd, id, budgetAt(used, beads));
+    assert.ok(g.deny, `${id} at ${used}%`);
+    assert.deepEqual(reasonProblems(g.deny), [], g.deny);
   }
 });

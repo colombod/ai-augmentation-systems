@@ -237,12 +237,19 @@ function budgeted(bd, deadline) {
 const nextStep = (roleId, dmCommand, ask) => (roleId === 'delivery-lead' ? `Run: ${dmCommand}` : `Message the Delivery Manager: ${ask}.`);
 function claimFix(f, id) {
   if (f.rule === 'D2') return `set the story's surface: to an id in surface.json, then ${script('ready.js')} ${id} --record`;
-  if (f.code === 'outside-wave' || f.code === 'wave-half-built') return `${script('wave.js')} show, then finish the current wave or cut its rest on the owner's record (${script('evidence.js')} cut <bead> --record <dec-...> --reason '<why>')`;
+  if (f.code === 'outside-wave' || f.code === 'wave-half-built') return `${script('wave.js')} show, then finish the current wave or cut its rest on the owner's record (evidence.js cut)`;
   if (f.code === 'budget-short' || f.code === 'fix-over-budget' || f.code === 'new-area-near-limit') return `${script('plan.js')} budget, then re-cut ${id} smaller or defer it`;
   if (f.code === 'new-area') return `${script('plan.js')} select for compounding work; a new area needs the owner's reason (the Chief of Staff: goal.js ask area_add ${f.area || '<area>'})`;
   if (f.code === 'child-scope') return `bd update ${id} --metadata '{"criterion": <n>}' with a criterion its story has, or make the new scope its own story`;
   return `${script('ready.js')} ${id} --record --owner-record <dec-...> once the change is agreed`;
 }
+
+// what a builder tells the Delivery Manager, in plain words rather than a check's code name (review m-3)
+const PLAIN = {
+  'wave-half-built': 'it would leave the current wave half-built', 'outside-wave': 'its wave has not started',
+  'budget-short': 'it does not fit the budget left', 'fix-over-budget': 'the fix does not fit the budget left',
+  'new-area': "a new area needs the owner's reason", 'new-area-near-limit': 'the budget is near its limit',
+};
 
 // Who builds a story when this claim goes through: the --assignee target or the claimer, never the
 // Delivery Manager, who assigns work and records evidence.
@@ -300,14 +307,15 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
         if (stories) {
           try {
             const W = require('../../scripts/lib/waves.js');
-            const ctx = W.contextFor(root, { bd, team, beads: stories, verifyRecord, budget });
+            // the transcript scan keeps to the hook's own deadline, leaving room for the rest of the checks
+            const ctx = W.contextFor(root, { bd, team, beads: stories, verifyRecord, budget, deadline: end - JUDGE_RESERVE_MS });
             findings.push(...W.claimFindings(bead, { ...ctx, fix: ctx.fixOf(bead), reason: ctx.reasonOf(G.areaOf(bead)) }));
           } catch (err) { /* fail open */ }
         }
         const blocks = findings.filter((f) => f.level === 'block');
         for (const f of findings.filter((x) => x.level === 'warn')) add(id, f.code, f.rule, f.detail);
         if (blocks.length) {
-          out.deny = `Claim of ${id} refused (${blocks.map((f) => `${f.rule}: ${f.detail}`).join('; ')}).\n${nextStep(roleId, claimFix(blocks[0], id), `${id} ${blocks[0].code}`)}`;
+          out.deny = `Claim of ${id} refused (${blocks.map((f) => `${f.rule}: ${f.detail}`).join('; ')}).\n${nextStep(roleId, claimFix(blocks[0], id), PLAIN[blocks[0].code] ? `${id} cannot start, ${PLAIN[blocks[0].code]}` : `${id} ${blocks[0].code}`)}`;
           return finish();
         }
         // stamp who builds the story, so clearing the assignee later does not make the builder a non-author
