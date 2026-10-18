@@ -23,6 +23,7 @@ const FIELDS = {
   'budget.lean_at': { kind: 'percent', words: /^lean$/ },
   idle_minutes: { kind: 'number', unit: /^(?:minutes?|mins?)$/, words: /^idle$/, default: 30 },
   briefing_lines: { kind: 'number', unit: /^lines?$/, words: /^(?:briefings?|messages?|updates?)$/, default: 12 },
+  answer_window_hours: { kind: 'number', unit: /^hours?$/, words: /^(?:yes|answer|window)$/, default: 24 },
   pause: { kind: 'pause', default: 'off' },
   // the scope is what the team builds toward; it changes by explicit adds and removes, never wholesale
   scope_add: { kind: 'list', op: 'add' },
@@ -173,21 +174,49 @@ function recordProblem(root, field, value, record, verifyRecord, judge) {
   const g = recordedGoal(head);
   const want = parseValue(field, g && g.raw);
   if (!g || g.field !== field || want.error || !same(want.value, value)) return `${record} was not recorded for ${field} = ${shown(value)} (operator.js record --goal ${field}=<value>)`;
-  // the primary path: a yes to the question goal.js worded for exactly this change
+  // the primary path: a yes to the question goal.js worded for exactly this change, which the owner saw
   const asked = Array.isArray(head.answers_questions) ? head.answers_questions : [];
   if (asked.length) {
-    if (asked.length !== 1 || asked[0].text !== questionText(field, value)) return `${record} answers a question that is not goal.js's question for ${field} = ${shown(value)} (goal.js ask ${field} <value>)`;
-    const said = ((v.chain || []).find((h) => h.kind === 'input') || {}).text;
-    if (!affirmative(said)) return `the owner's answer in ${record} is not a yes`;
+    const text = questionText(field, value);
+    if (asked.length !== 1 || asked[0].text !== text) return `${record} answers a question that is not goal.js's question for ${field} = ${shown(value)} (goal.js ask ${field} <value>)`;
+    const input = (v.chain || []).find((h) => h.kind === 'input') || {};
+    // the proof the owner was shown it: the harness's AskUserQuestion answer to that exact text, or a
+    // typed reply right after the session's message that contains it (both captured from the transcript)
+    const viaAsk = input.asked && input.asked.via === 'AskUserQuestion' && input.asked.question === text;
+    const viaTyped = !input.asked && input.after_assistant && typeof input.after_assistant.tail === 'string' && input.after_assistant.tail.includes(text);
+    if (!viaAsk && !viaTyped) return `the owner did not see goal.js's question before the answer in ${record}: ask it with AskUserQuestion, or put it in your message right before the owner's reply`;
+    if (viaAsk ? input.text !== 'Yes' : !affirmative(input.text)) return `the owner's answer in ${record} is not a yes`;
+    const minutes = asked[0].minutes_before_answer;
+    // the window for changing the window itself is the default, so it cannot widen its own yes
+    const hours = field === 'answer_window_hours' ? 24 : answerWindowHours(root, verifyRecord);
+    if (!(typeof minutes === 'number' && minutes >= 0 && minutes <= hours * 60)) return `the owner's yes in ${record} came more than ${hours} h after the question; ask again`;
     return null;
   }
-  // the secondary path, free text: the word rule as pre-filter and the typed judge's yes; with the judge
-  // off, free text never sets a constraint
+  // the secondary path, free text: off until goal_instruction is measured (team.json goal.free_text);
+  // when on, the word rule as pre-filter and the typed judge's yes
+  if (!freeTextOn(root)) return `${record} is free text, which sets nothing for now: ask the owner goal.js's question (goal.js ask ${field} <value>)`;
   if (!judge) return `${record} is free text: with the typed judge off, only a yes to goal.js's question sets ${field} (goal.js ask ${field} <value>)`;
   const qp = quoteProblem(field, value, head.quote);
   if (qp) return `${record}: ${qp.why}`;
   if (!(typeof judge.p === 'number' && judge.p >= JUDGE_MIN)) return `the typed judge does not read the owner's words in ${record} as this instruction (p ${Number(judge.p).toFixed(2)})`;
   return null;
+}
+
+// The yes must come within this many hours of its question (an owner-set field; 24 by default).
+const answerWindowHours = (root, verifyRecord) => Number(resolve(root, 'answer_window_hours', { warn: false, verifyRecord }).value) || 24;
+// free text authorises nothing until goal_instruction is measured: team.json "goal": { "free_text": true }
+function freeTextOn(root) {
+  try { const t = require('./manifest.js').loadManifest(root).team; return Boolean(t && t.goal && t.goal.free_text === true); } catch (err) { return false; }
+}
+
+// The proof's identity: the question and the input a record binds; one change per pair.
+function bindingOf(root, record, verifyRecord) {
+  try {
+    const v = (verifyRecord || require('./operator-records.js').verifyRecord)(root, record);
+    const head = (v && v.chain || [])[0] || {};
+    const input = (v && v.chain || []).find((h) => h.kind === 'input') || {};
+    return { question: ((head.answers_questions || [])[0] || {}).id || null, input: input.id || null };
+  } catch (err) { return { question: null, input: null }; }
 }
 
 // The canonical question for a change, in plain words. The owner's whole answer must be a yes.
@@ -202,6 +231,7 @@ function questionText(field, value) {
     'budget.lean_at': `Switch to lean mode at ${v}% of the weekly allowance?`,
     idle_minutes: `Call the team idle after ${v} minutes with ready work and nothing in progress?`,
     briefing_lines: `Keep routine briefings to ${v} lines?`,
+    answer_window_hours: `Allow up to ${v} hours for your yes to a goal question?`,
     pause: { paused: "Pause the team's work now?", stopped: "Stop the team's work now?", off: "Resume the team's work now?" }[v],
     scope_add: `Add ${items} to the scope?`,
     scope_remove: `Remove ${items} from the scope?`,
@@ -277,7 +307,11 @@ function set({ root, who, field, value: raw, record, verifyRecord, judged, now }
   const judge = judged && typeof judged.p === 'number' ? { p: judged.p, model: judged.model || null } : null;
   const why = recordProblem(root, field, p.value, record, verifyRecord, judge);
   if (why) return { ok: false, error: why };
-  const entry = { value: p.value, record, by: who.instance, at: now || new Date().toISOString(), ...(judge ? { judge } : {}) };
+  // one change per question and per owner input: a yes is never applied twice (B1)
+  const bind = bindingOf(root, record, verifyRecord);
+  const used = read(root).history.find((h) => h.record === record || (bind.question && h.question === bind.question) || (bind.input && h.input === bind.input));
+  if (used) return { ok: false, error: `the owner's yes in ${record} was already used for ${used.field} at ${used.at}; ask the owner again (goal.js ask ${field} <value>)` };
+  const entry = { value: p.value, record, ...bind, by: who.instance, at: now || new Date().toISOString(), ...(judge ? { judge } : {}) };
   if (FIELDS[field].op) return { ok: true, entry: commit(root, 'scope_log', { op: FIELDS[field].op, ...entry }, { append: true }) };
   return { ok: true, entry: commit(root, field, entry) };
 }
@@ -302,9 +336,14 @@ function resolveScope(root, { g, verifyRecord, warn }) {
   const log = Array.isArray(g.fields.scope_log) ? g.fields.scope_log : [];
   const items = [];
   const ignored = [];
+  const seen = new Set();
   for (const e of log) {
     const field = e.op === 'remove' ? 'scope_remove' : 'scope_add';
-    const why = e.record ? recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null) : 'no owner record';
+    // a yes applies once: a second entry on the same question or input is ignored
+    const keys = [e.record, e.question, e.input].filter(Boolean);
+    const dup = keys.some((x) => seen.has(x));
+    keys.forEach((x) => seen.add(x));
+    const why = dup ? `${e.record} was already applied` : e.record ? recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null) : 'no owner record';
     if (why) { ignored.push(why); if (warn) warnUnverified(root, field, why); continue; }
     for (const it of e.value || []) {
       const at = items.findIndex((x) => x.toLowerCase() === String(it).toLowerCase());
@@ -320,7 +359,11 @@ function resolve(root, field, { g = read(root), verifyRecord, warn = true } = {}
   const e = g.fields[field];
   const fallback = FIELDS[field] && FIELDS[field].default !== undefined ? FIELDS[field].default : null;
   if (!e || e.value === undefined) return { value: fallback, from: 'default' };
-  const why = e.record ? recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null) : 'no owner record';
+  // only the latest change to a field counts: an older entry put back by hand never re-applies
+  const latest = [...g.history].reverse().find((h) => h.field === field);
+  let why = e.record ? null : 'no owner record';
+  if (!why && (!latest || latest.record !== e.record || latest.at !== e.at)) why = `${e.record} is not the latest change to ${field}`;
+  if (!why) why = recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null);
   if (!why) return { value: e.value, from: e.record };
   if (warn) warnUnverified(root, field, why);
   return { value: fallback, from: 'default', ignored: why };

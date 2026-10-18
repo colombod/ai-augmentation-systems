@@ -22,27 +22,56 @@ const SID = 's1';
 const COS = { instance: 'chief-of-staff', role: 'chief-of-staff', session_id: SID, host: 'pc' };
 const who = (root, roleId) => ({ root, roleId, instance: roleId });
 
-// A project whose owner said each of `words`; decide(n, quote, label) records a decision citing word n.
-function ownerSaid(words, { early = [] } = {}) {
+// A project and the Chief of Staff's session transcript. Owner inputs are captured the way the hooks
+// capture them (operator-log syncTranscript), timestamped a minute after now so that a question
+// recorded now comes before them, one second apart.
+function project({ freeText = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-'));
   fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
   fs.writeFileSync(path.join(root, '.delivery', 'team', 'team.json'), JSON.stringify({ project: 'x', prefix: 'x', bd_host: 'pc', roles: [
-    { id: 'chief-of-staff', brief: 'delivery/chief-of-staff', host: 'pc', model: 'opus' }, { id: 'product-manager', brief: 'delivery/product-manager', host: 'pc', model: 'opus' }] }));
+    { id: 'chief-of-staff', brief: 'delivery/chief-of-staff', host: 'pc', model: 'opus' }, { id: 'product-manager', brief: 'delivery/product-manager', host: 'pc', model: 'opus' }],
+    ...(freeText ? { goal: { free_text: true } } : {}) }));
   fs.writeFileSync(path.join(root, '.delivery', 'team', 'hosts.json'), JSON.stringify({ hosts: { pc: { kind: 'pc' } } }));
-  const human = (t, n) => ({ type: 'user', origin: { kind: 'human' }, promptId: `p${n}`, uuid: `u${n}`, timestamp: early.includes(n) ? `2020-01-01T00:00:${String(n).padStart(2, '0')}.000Z` : `2099-10-13T10:00:${String(n).padStart(2, '0')}.000Z`, sessionId: SID, message: { role: 'user', content: t } });
   const tr = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'goal-tr-')), 't.jsonl');
-  fs.writeFileSync(tr, `${words.map((w, i) => JSON.stringify(human(w, i + 1))).join('\n')}\n`);
-  log.syncTranscript({ projectRoot: root, transcriptPath: tr, sessionId: SID, instance: 'chief-of-staff', role: 'chief-of-staff', host: 'pc', now: new Date('2026-10-13T12:00:00Z') });
-  const decide = (n, quote, label, answers) => R.recordDecision({ projectRoot: root, cite: `in-pc-${String(n).padStart(6, '0')}`, quote, statement: 'owner decision',
+  fs.writeFileSync(tr, '');
+  const t0 = Date.now() + 60e3;
+  let k = 0;
+  const ts = (laterMin = 0) => new Date(t0 + (k++) * 1000 + laterMin * 60e3).toISOString();
+  const push = (r) => fs.appendFileSync(tr, `${JSON.stringify({ sessionId: SID, ...r })}\n`);
+  const sync = () => {
+    log.syncTranscript({ projectRoot: root, transcriptPath: tr, sessionId: SID, instance: 'chief-of-staff', role: 'chief-of-staff', host: 'pc', now: new Date() });
+    const all = log.listInputs(root, { source: 'human' });
+    return all[all.length - 1].id;
+  };
+  const say = (text, { laterMin } = {}) => { push({ type: 'user', origin: { kind: 'human' }, promptId: `p${k}`, uuid: `u${k}`, timestamp: ts(laterMin), message: { role: 'user', content: text } }); return sync(); };
+  const cos = (text) => push({ type: 'assistant', uuid: `a${k}`, timestamp: ts(), message: { role: 'assistant', content: [{ type: 'text', text }] } });
+  // the harness's AskUserQuestion: the tool_use, then its tool_result with the owner's selection
+  const askUser = (question, answer, { laterMin } = {}) => {
+    const n = k;
+    const questions = [{ question, header: 'Goal change', multiSelect: false, options: [{ label: 'Yes', description: 'Make this change' }, { label: 'No', description: 'Leave it as it is' }] }];
+    push({ type: 'assistant', uuid: `ask${n}`, timestamp: ts(), message: { role: 'assistant', content: [{ type: 'tool_use', id: `tu${n}`, name: 'AskUserQuestion', input: { questions } }] } });
+    push({ type: 'user', uuid: `res${n}`, promptId: `pr${n}`, timestamp: ts(laterMin), sourceToolAssistantUUID: `ask${n}`, toolUseResult: { questions, answers: { [question]: answer } },
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `tu${n}`, content: `The user answered: "${question}"="${answer}".` }] } });
+    return sync();
+  };
+  const ask = (field, value, { text } = {}) => {
+    const t = text || Goal.questionText(field, value);
+    return { q: R.recordQuestion({ projectRoot: root, text: t, asker: { instance: 'chief-of-staff' }, options: ['Yes', 'No'], by: COS }).id, text: t };
+  };
+  const decide = (input, quote, label, answers) => R.recordDecision({ projectRoot: root, cite: input, quote, statement: 'owner decision',
     scope: { beads: [], labels: label ? [label] : [], initiatives: [] }, by: COS, ...(answers ? { answers } : {}) }).id;
-  // the question goal.js asks, recorded the way goal.js ask records it (text given to override it)
-  const ask = (field, value, { text, now } = {}) => R.recordQuestion({ projectRoot: root, text: text || Goal.questionText(field, value), asker: { instance: 'chief-of-staff' },
-    options: ['Yes', 'No'], scope: { beads: [], labels: [`goal:${field}=${value}`], initiatives: [] }, by: COS, ...(now ? { now } : {}) }).id;
-  // the owner's input n answers question q; the record is made for that change
-  const confirm = (n, field, value, q) => decide(n, words[n - 1], `goal:${field}=${value}`, [q]);
-  return { root, decide, ask, confirm };
+  // the two proofs that the owner saw the question: AskUserQuestion, or typed after the CoS's message
+  const confirmAsk = (field, value, { answer = 'Yes', laterMin } = {}) => { const { q, text } = ask(field, value); return decide(askUser(text, answer, { laterMin }), answer, `goal:${field}=${value}`, [q]); };
+  const confirmTyped = (field, value, { reply = 'yes', shown, laterMin } = {}) => {
+    const { q, text } = ask(field, value);
+    cos(shown === undefined ? `One decision for you. ${text}` : shown);
+    return decide(say(reply, { laterMin }), reply, `goal:${field}=${value}`, [q]);
+  };
+  return { root, say, cos, askUser, ask, decide, confirmAsk, confirmTyped };
 }
-const set = (root, field, value, record, roleId = 'chief-of-staff') => Goal.set({ root, who: who(root, roleId), field, value, record });
+// a free-text decision: the owner's own words, recorded for the change
+const freeText = (t, quote, field, v) => t.decide(t.say(quote), quote, `goal:${field}=${v}`);
+const set = (root, field, value, record, roleId = 'chief-of-staff', extra = {}) => Goal.set({ root, who: who(root, roleId), field, value, record, ...extra });
 
 test('R-42 B1: unrelated or negated owner words never set a constraint, even on a record made for it', () => {
   const cases = [
@@ -58,15 +87,15 @@ test('R-42 B1: unrelated or negated owner words never set a constraint, even on 
     ['keep the budget at 130% of last week', 'budget.usage_envelope', '30'],
     ['we only build the bulk importer', 'scope_add', 'UI'],
   ];
-  const { root, decide } = ownerSaid(cases.map((c) => c[0]));
-  cases.forEach(([quote, field, v], i) => {
-    const id = decide(i + 1, quote, `goal:${field}=${v}`);
-    assert.equal(set(root, field, v, id).ok, false, `${quote} -> ${field}`);
+  const t = project({ freeText: true });
+  cases.forEach(([quote, field, v]) => {
+    const id = freeText(t, quote, field, v);
+    assert.equal(set(t.root, field, v, id).ok, false, `${quote} -> ${field}`);
     // the word rule stays the pre-filter when the judge says yes
-    assert.equal(Goal.set({ root, who: who(root, 'chief-of-staff'), field, value: v, record: id, judged: { p: 0.95 } }).ok, false, `${quote} -> ${field} (judge yes)`);
+    assert.equal(set(t.root, field, v, id, 'chief-of-staff', { judged: { p: 0.95 } }).ok, false, `${quote} -> ${field} (judge yes)`);
   });
-  assert.equal(set(root, 'scope_add', ',', decide(11, 'we only build the bulk importer', 'goal:scope_add=,')).ok, false, 'an empty scope is refused');
-  assert.deepEqual(Goal.read(root).fields, {});
+  assert.equal(set(t.root, 'scope_add', ',', freeText(t, 'we only build the bulk importer', 'scope_add', ',')).ok, false, 'an empty scope is refused');
+  assert.deepEqual(Goal.read(t.root).fields, {});
 });
 
 const FIELDS_AND_VALUES = [
@@ -74,41 +103,69 @@ const FIELDS_AND_VALUES = [
   ['pause', 'paused'], ['scope_add', 'CSV import,UI'], ['approvals', 'merges need an independent review'],
 ];
 
-test('R-42 confirmed question: each field is set by a yes to the question goal.js words for it', () => {
-  const { root, ask, confirm } = ownerSaid(FIELDS_AND_VALUES.map(() => 'yes'));
+test('R-42 confirmed question: each field is set by a yes to goal.js\'s question, through AskUserQuestion or typed after it', () => {
+  const t = project();
   FIELDS_AND_VALUES.forEach(([field, v], i) => {
-    const r = set(root, field, v, confirm(i + 1, field, v, ask(field, v)));
+    const r = set(t.root, field, v, i % 2 ? t.confirmTyped(field, v) : t.confirmAsk(field, v));
     assert.equal(r.ok, true, `${field}: ${r.error}`);
   });
-  assert.equal(Goal.value(root, 'budget.usage_envelope'), 30);
-  assert.deepEqual(Goal.value(root, 'scope'), ['CSV import', 'UI']);
-  assert.equal(Goal.activePause(root).paused, true);
+  assert.equal(Goal.value(t.root, 'budget.usage_envelope'), 30);
+  assert.deepEqual(Goal.value(t.root, 'scope'), ['CSV import', 'UI']);
+  assert.equal(Goal.activePause(t.root).paused, true);
   assert.equal(Goal.questionText('pause', 'paused'), "Pause the team's work now?");
   assert.equal(Goal.questionText('budget.weekly_units', '5'), 'Set the weekly budget to 5 units?');
   assert.equal(Goal.questionText('scope_add', 'billing'), 'Add billing to the scope?');
   assert.equal(Goal.questionText('pause', 'off'), "Resume the team's work now?");
 });
 
-test('R-42 confirmed question: other answers, a yes to another question, a loosely worded question, a yes before the question are refused', () => {
-  const words = ['no', 'not now', 'later', 'why?', 'yes but only on Monday', 'yes', 'yes', 'Yes', 'ok'];
-  const { root, ask, confirm, decide } = ownerSaid(words, { early: [8] });
-  // refused at goal.js set, or already at operator.js record (a question back cannot be recorded as a decision)
-  const refused = (f) => { try { return f().ok === false; } catch (err) { return true; } };
-  for (let n = 1; n <= 5; n++) assert.ok(refused(() => set(root, 'pause', 'paused', decide(n, words[n - 1], 'goal:pause=paused', [ask('pause', 'paused')]))), words[n - 1]);
-  // a yes to the question about another value or field
-  assert.ok(refused(() => set(root, 'budget.weekly_units', '5', confirm(6, 'budget.weekly_units', '5', ask('budget.weekly_units', '6')))));
-  // the same, with the question asked without a scope (as goal.js ask records it): refused at goal.js set
-  const bare = R.recordQuestion({ projectRoot: root, text: Goal.questionText('budget.weekly_units', '6'), asker: { instance: 'chief-of-staff' }, options: ['Yes', 'No'], by: COS }).id;
-  assert.match(set(root, 'budget.weekly_units', '5', confirm(6, 'budget.weekly_units', '5', bare)).error, /not goal\.js's question/);
-  // a question worded by hand, not by goal.js
-  assert.equal(set(root, 'pause', 'paused', confirm(7, 'pause', 'paused', ask('pause', 'paused', { text: 'Shall we take a break from the notifications?' }))).ok, false);
-  // a yes said before the question was asked cannot answer it
-  assert.throws(() => confirm(8, 'pause', 'paused', ask('pause', 'paused')), /before question/);
-  // the option the question offered for yes counts
-  assert.equal(set(root, 'pause', 'paused', confirm(9, 'pause', 'paused', ask('pause', 'paused'))).ok, true);
+test('R-42 B2: a yes the owner gave to something else never binds a goal question', () => {
+  const t = project();
+  // the CoS logs the question but shows the owner another one; the owner's "yes" answers that
+  assert.match(set(t.root, 'budget.usage_envelope', '30', t.confirmTyped('budget.usage_envelope', '30', { shown: 'Shall I merge the export fix?' })).error, /did not see/);
+  // nothing shown at all before the yes
+  const { q } = t.ask('pause', 'paused');
+  assert.match(set(t.root, 'pause', 'paused', t.decide(t.say('yes'), 'yes', 'goal:pause=paused', [q])).error, /did not see/);
+  // AskUserQuestion with another question text, or a No
+  const other = t.ask('pause', 'paused');
+  assert.match(set(t.root, 'pause', 'paused', t.decide(t.askUser('Pause the notifications?', 'Yes'), 'Yes', 'goal:pause=paused', [other.q])).error, /did not see/);
+  assert.equal(set(t.root, 'pause', 'paused', t.confirmAsk('pause', 'paused', { answer: 'No' })).ok, false);
 });
 
-test('R-42 final check: free text never sets a constraint with the judge off, whatever it says', () => {
+test('R-42 B1: a yes authorises one change only, a later change supersedes it, and it expires after 24 h', () => {
+  const t = project();
+  const pauseYes = t.confirmAsk('pause', 'paused');
+  assert.equal(set(t.root, 'pause', 'paused', pauseYes).ok, true);
+  assert.equal(set(t.root, 'pause', 'off', t.confirmAsk('pause', 'off')).ok, true);
+  // the CoS re-applies the earlier yes, as is or re-recorded from the same input
+  assert.match(set(t.root, 'pause', 'paused', pauseYes).error, /already used/);
+  assert.equal(Goal.activePause(t.root).paused, false);
+  // an old entry put back by hand does not re-apply: the latest change to the field wins
+  const g = Goal.read(t.root);
+  g.fields.pause = g.history.find((h) => h.record === pauseYes);
+  fs.writeFileSync(path.join(t.root, '.delivery', 'goal.json'), JSON.stringify(g));
+  assert.equal(Goal.activePause(t.root).paused, false);
+  // a yes more than 24 h after its question
+  assert.match(set(t.root, 'budget.weekly_units', '5', t.confirmAsk('budget.weekly_units', '5', { laterMin: 25 * 60 })).error, /24 h/);
+});
+
+test('R-42 confirmed question: other answers, a hand-worded question and a yes before the question are refused', () => {
+  const t = project();
+  const refused = (f) => { try { return f().ok === false; } catch (err) { return true; } };
+  for (const reply of ['no', 'not now', 'later', 'why?', 'yes but only on Monday']) assert.ok(refused(() => set(t.root, 'pause', 'paused', t.confirmTyped('pause', 'paused', { reply }))), reply);
+  // a question goal.js did not word
+  const loose = t.ask('pause', 'paused', { text: 'Shall we take a break from the notifications?' });
+  t.cos(loose.text);
+  assert.ok(refused(() => set(t.root, 'pause', 'paused', t.decide(t.say('yes'), 'yes', 'goal:pause=paused', [loose.q]))));
+  // the yes to the question about another value
+  const six = t.ask('budget.weekly_units', '6');
+  t.cos(six.text);
+  assert.match(set(t.root, 'budget.weekly_units', '5', t.decide(t.say('yes'), 'yes', 'goal:budget.weekly_units=5', [six.q])).error, /not goal\.js's question/);
+  // a yes said before the question was asked
+  const early = t.say('yes', { laterMin: -10 });
+  assert.throws(() => t.decide(early, 'yes', 'goal:pause=paused', [t.ask('pause', 'paused').q]), /before question/);
+});
+
+test('R-42 final check: free text never sets a constraint while the free-text flag is off, even with the judge saying yes', () => {
   const quotes = [
     ['stop the team from asking me questions', 'pause', 'paused'], ['halt the team chatter', 'pause', 'paused'],
     ["Pause the team's notifications", 'pause', 'paused'], ['Last week I told you to pause the team', 'pause', 'paused'],
@@ -116,36 +173,39 @@ test('R-42 final check: free text never sets a constraint with the judge off, wh
     ['The budget was 30% last week', 'budget.usage_envelope', '30'], ['the message about line 40 of the briefing', 'briefing_lines', '40'],
     ['Pause the team now.', 'pause', 'paused'], ['Set the weekly budget to 5 units.', 'budget.weekly_units', '5'],
   ];
-  const { root, decide } = ownerSaid(quotes.map((c) => c[0]));
-  quotes.forEach(([quote, field, v], i) => assert.equal(set(root, field, v, decide(i + 1, quote, `goal:${field}=${v}`)).ok, false, quote));
+  const t = project();
+  for (const [quote, field, v] of quotes) {
+    const id = freeText(t, quote, field, v);
+    assert.equal(set(t.root, field, v, id).ok, false, quote);
+    assert.equal(set(t.root, field, v, id, 'chief-of-staff', { judged: { p: 0.99 } }).ok, false, `${quote} (judge yes, flag off)`);
+  }
 });
 
-test('R-42 free text with the judge: the word rule as pre-filter and goal_instruction p >= 0.8; 0.5 or an error refused', () => {
-  const words = ['Pause the team now.', 'Pausa todo el trabajo hasta el lunes.', 'Do not stop the builders, keep going'];
-  const { root, decide } = ownerSaid(words);
-  const id = decide(1, words[0], 'goal:pause=paused');
-  const viaJudge = (record, judged, field = 'pause', v = 'paused') => Goal.set({ root, who: who(root, 'chief-of-staff'), field, value: v, record, judged });
+test('R-42 free text with the flag on: the word rule as pre-filter and goal_instruction p >= 0.8; 0.5 or an error refused', () => {
+  const t = project({ freeText: true });
+  const id = freeText(t, 'Pause the team now.', 'pause', 'paused');
+  const viaJudge = (record, judged) => set(t.root, 'pause', 'paused', record, 'chief-of-staff', { judged });
   assert.equal(viaJudge(id, { p: 0.5 }).ok, false);
   assert.equal(viaJudge(id, { p: 0 }).ok, false, 'a failed call counts as no');
-  assert.equal(viaJudge(decide(3, words[2], 'goal:pause=paused'), { p: 0.95 }).ok, false, 'the word rule still filters');
+  assert.equal(set(t.root, 'pause', 'paused', id).ok, false, 'no judge answer: refused');
+  assert.equal(viaJudge(freeText(t, 'Do not stop the builders, keep going', 'pause', 'paused'), { p: 0.95 }).ok, false, 'the word rule still filters');
   assert.equal(viaJudge(id, { p: 0.9 }).ok, true);
-  assert.equal(viaJudge(decide(2, words[1], 'goal:pause=paused'), { p: 0.95 }).ok, false, 'another language goes through the confirmed question');
-  assert.equal(Goal.activePause(root).paused, true, 'the stored judge answer keeps it valid on read');
+  assert.equal(Goal.activePause(t.root).paused, true, 'the stored judge answer keeps it valid on read');
 });
 
-test('R-42 free text through goal.js with a fake judge: 0.9 sets it, 0.5 and an error refuse', async () => {
+test('R-42 free text through goal.js with a fake judge (flag on): 0.9 sets it, 0.5 and an error refuse', async () => {
   const http = require('http');
   let reply = { type: 'noul', noul: 0.9 };
   const server = http.createServer((req, res) => { req.resume(); req.on('end', () => { if (reply === 'error') { res.statusCode = 500; res.end('{}'); return; } res.end(JSON.stringify({ model: 'jev-1.13.0', answers: { goal_instruction: reply } })); }); });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   try {
-    const { root, decide } = ownerSaid(['Pause the team now.']);
-    const f = path.join(root, '.delivery', 'team', 'team.json');
+    const t = project({ freeText: true });
+    const f = path.join(t.root, '.delivery', 'team', 'team.json');
     fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), judge: { provider: 'typesafe', model: 'jev-latest' } }));
-    const id = decide(1, 'Pause the team now.', 'goal:pause=paused');
+    const id = freeText(t, 'Pause the team now.', 'pause', 'paused');
     const env = { ...process.env, TYPESAFE_API_KEY: 'test-key-not-real', DELIVERY_JUDGE_ENDPOINT: `http://127.0.0.1:${server.address().port}/v1/systemone` };
-    const argv = ['set', 'pause', 'paused', '--record', id, '--project', root];
-    const run = async () => goal.main(argv, { who: { ...who(root, 'chief-of-staff'), team: JSON.parse(fs.readFileSync(f, 'utf8')) }, judged: await goal.judgeFor(argv, { env, cwd: root }) });
+    const argv = ['set', 'pause', 'paused', '--record', id, '--project', t.root];
+    const run = async () => goal.main(argv, { who: { ...who(t.root, 'chief-of-staff'), team: JSON.parse(fs.readFileSync(f, 'utf8')) }, judged: await goal.judgeFor(argv, { env, cwd: t.root }) });
     reply = 'error';
     assert.equal((await run()).code, 1);
     reply = { type: 'noul', noul: 0.5 };
@@ -155,38 +215,40 @@ test('R-42 free text through goal.js with a fake judge: 0.9 sets it, 0.5 and an 
   } finally { server.closeAllConnections(); server.close(); }
 });
 
-test('R-42 goal.js ask prints the canonical question and records it through operator.js ask', () => {
+test('R-42 goal.js ask prints the AskUserQuestion payload and records the question through operator.js ask', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-'));
   const calls = [];
   const r = goal.main(['ask', 'budget.weekly_units', '5'], { who: who(root, 'chief-of-staff'), recordQuestion: (args) => { calls.push(args); return 'q-chief-of-staff-3'; } });
   assert.equal(r.code, 0);
-  assert.match(r.out, /^Ask the owner exactly: "Set the weekly budget to 5 units\?" \(Yes \/ No\)\. Question q-chief-of-staff-3/);
+  const payload = JSON.parse(r.out.split('\n').find((l) => l.startsWith('{')));
+  assert.deepEqual(payload.questions[0].options.map((o) => o.label), ['Yes', 'No']);
+  assert.equal(payload.questions[0].question, 'Set the weekly budget to 5 units?');
   assert.deepEqual(calls, [{ text: 'Set the weekly budget to 5 units?', field: 'budget.weekly_units', value: '5' }]);
   assert.equal(goal.main(['ask', 'budget.weekly_units', 'lots'], { who: who(root, 'chief-of-staff'), recordQuestion: () => 'q' }).code, 1);
   assert.equal(goal.main(['ask', 'budget.weekly_units', '5'], { who: who(root, 'builder'), recordQuestion: () => 'q' }).code, 1);
 });
 
 test('R-42 I6: every field is re-checked when read: a revoked record or a hand-written value falls back with a warning', () => {
-  const { root, ask, confirm } = ownerSaid(['yes', 'forget the envelope']);
-  const id = confirm(1, 'budget.usage_envelope', '30', ask('budget.usage_envelope', '30'));
-  assert.equal(set(root, 'budget.usage_envelope', '30', id).ok, true);
-  R.revoke({ projectRoot: root, target: id, cite: 'in-pc-000002', quote: 'forget the envelope', statement: 'revoked', by: COS });
-  assert.equal(Goal.value(root, 'budget.usage_envelope'), null);
-  assert.match(goal.main(['show'], { who: who(root, null), bd: { show: () => null } }).out, /budget\.usage_envelope: not set; the written value is ignored: .*revoked/);
-  const g = Goal.read(root);
+  const t = project();
+  const id = t.confirmAsk('budget.usage_envelope', '30');
+  assert.equal(set(t.root, 'budget.usage_envelope', '30', id).ok, true);
+  R.revoke({ projectRoot: t.root, target: id, cite: t.say('forget the envelope'), quote: 'forget the envelope', statement: 'revoked', by: COS });
+  assert.equal(Goal.value(t.root, 'budget.usage_envelope'), null);
+  assert.match(goal.main(['show'], { who: who(t.root, null), bd: { show: () => null } }).out, /budget\.usage_envelope: not set; the written value is ignored: .*revoked/);
+  const g = Goal.read(t.root);
   g.fields.idle_minutes = { value: 999999 };
-  fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify(g));
-  assert.equal(Goal.value(root, 'idle_minutes'), 30, 'a value written by hand is inert');
-  assert.deepEqual(W.list(root).map((w) => w.kind), ['goal-unverified', 'goal-unverified']);
+  fs.writeFileSync(path.join(t.root, '.delivery', 'goal.json'), JSON.stringify(g));
+  assert.equal(Goal.value(t.root, 'idle_minutes'), 30, 'a value written by hand is inert');
+  assert.deepEqual(W.list(t.root).map((w) => w.kind), ['goal-unverified', 'goal-unverified']);
 });
 
 test('R-42: only the Chief of Staff records a constraint (the PM records scope changes only); a builder is told to message it', () => {
-  const { root, ask, confirm } = ownerSaid(['yes', 'yes']);
-  const id = confirm(1, 'budget.usage_envelope', '30', ask('budget.usage_envelope', '30'));
-  for (const role of ['product-manager', 'delivery-lead', 'builder', null]) assert.equal(set(root, 'budget.usage_envelope', '30', id, role).ok, false, String(role));
-  assert.equal(set(root, 'scope_add', 'CSV import', confirm(2, 'scope_add', 'CSV import', ask('scope_add', 'CSV import')), 'product-manager').ok, true);
-  assert.match(goal.main(['set', 'budget.usage_envelope', '30', '--record', id], { who: who(root, 'builder') }).out, /\nMessage the Chief of Staff\.$/);
-  assert.match(goal.main(['set', 'budget.usage_envelope', '30'], { who: who(root, 'chief-of-staff') }).out, /goal\.js ask budget\.usage_envelope 30/);
+  const t = project();
+  const id = t.confirmAsk('budget.usage_envelope', '30');
+  for (const role of ['product-manager', 'delivery-lead', 'builder', null]) assert.equal(set(t.root, 'budget.usage_envelope', '30', id, role).ok, false, String(role));
+  assert.equal(set(t.root, 'scope_add', 'CSV import', t.confirmAsk('scope_add', 'CSV import'), 'product-manager').ok, true);
+  assert.match(goal.main(['set', 'budget.usage_envelope', '30', '--record', id], { who: who(t.root, 'builder') }).out, /\nMessage the Chief of Staff\.$/);
+  assert.match(goal.main(['set', 'budget.usage_envelope', '30'], { who: who(t.root, 'chief-of-staff') }).out, /goal\.js ask budget\.usage_envelope 30/);
 });
 
 // evidence rows written the way evidence.js writes them; the head is recorded in the bead
@@ -215,8 +277,9 @@ test('R-42 I7: an andon pause cites a failed check row from evidence.js and laps
 });
 
 test('R-42 Copilot 726: a trigger pause never overwrites or lifts the owner pause', () => {
-  const { root, ask, confirm } = ownerSaid(['yes']);
-  assert.equal(set(root, 'pause', 'paused', confirm(1, 'pause', 'paused', ask('pause', 'paused'))).ok, true);
+  const t = project();
+  const root = t.root;
+  assert.equal(set(root, 'pause', 'paused', t.confirmAsk('pause', 'paused')).ok, true);
   const bead = beadWith(row(root, { result: 'fail', by: 'reality-checker' }));
   assert.equal(pause(root, 'delivery-lead', `andon:ev-${BEAD}-1`, bead).code, 0);
   assert.match(Goal.read(root).fields.pause.record, /^dec-/, 'the owner pause is untouched');
@@ -273,19 +336,16 @@ test('R-42 re-review B1: resumes, conditionals, other languages, freeze and loos
     ['Remove login from scope.', 'scope_add', 'login'],
     ['Add the export to scope when the import ships.', 'scope_add', 'export'],
   ];
-  const { root, decide } = ownerSaid(cases.map((c) => c[0]));
-  cases.forEach(([quote, field, v], i) => {
-    assert.equal(set(root, field, v, decide(i + 1, quote, `goal:${field}=${v}`)).ok, false, `${quote} -> ${field}=${v}`);
-  });
+  const t = project({ freeText: true });
+  for (const [quote, field, v] of cases) assert.equal(set(t.root, field, v, freeText(t, quote, field, v), 'chief-of-staff', { judged: { p: 0.95 } }).ok, false, `${quote} -> ${field}=${v}`);
 });
 
 test('R-42 re-review: scope changes are adds or removes; a removal can only remove', () => {
-  const { root, ask, confirm } = ownerSaid(['yes', 'yes', 'yes']);
-  assert.equal(set(root, 'scope_add', 'CSV import,login page', confirm(1, 'scope_add', 'CSV import,login page', ask('scope_add', 'CSV import,login page'))).ok, true);
-  assert.equal(set(root, 'scope_remove', 'login page', confirm(2, 'scope_remove', 'login page', ask('scope_remove', 'login page'))).ok, true);
-  assert.deepEqual(Goal.value(root, 'scope'), ['CSV import']);
+  const t = project();
+  assert.equal(set(t.root, 'scope_add', 'CSV import,login page', t.confirmAsk('scope_add', 'CSV import,login page')).ok, true);
+  assert.equal(set(t.root, 'scope_remove', 'login page', t.confirmTyped('scope_remove', 'login page')).ok, true);
+  assert.deepEqual(Goal.value(t.root, 'scope'), ['CSV import']);
   assert.equal(Goal.questionText('scope_remove', 'login page'), 'Remove login page from the scope?');
-  assert.equal(set(root, 'pause', 'off', confirm(3, 'pause', 'off', ask('pause', 'off'))).ok, true);
 });
 
 test('R-42 re-review andon: a builder\'s fail row is no andon; a pass appended by hand after the recorded head does not lift it', () => {
@@ -299,8 +359,8 @@ test('R-42 re-review andon: a builder\'s fail row is no andon; a pass appended b
 });
 
 test('Copilot round 2: a typographic apostrophe still negates; side-arm passes and other andons do not lift a pause', () => {
-  const { root, decide } = ownerSaid(['Don’t pause the team']);
-  assert.equal(Goal.set({ root, who: who(root, 'chief-of-staff'), field: 'pause', value: 'paused', record: decide(1, 'Don’t pause the team', 'goal:pause=paused'), judged: { p: 0.95 } }).ok, false);
+  const t = project({ freeText: true });
+  assert.equal(set(t.root, 'pause', 'paused', freeText(t, 'Don’t pause the team', 'pause', 'paused'), 'chief-of-staff', { judged: { p: 0.95 } }).ok, false);
   const r2 = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-ev-'));
   row(r2, { result: 'fail', by: 'delivery-lead' });
   const bead = beadWith(row(r2, { result: 'fail', by: 'delivery-lead', criterion: 2 }));
