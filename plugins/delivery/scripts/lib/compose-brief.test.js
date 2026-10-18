@@ -102,3 +102,19 @@ test('shortBrief is header, routing table, host and pointer, with no rules or ro
   assert.ok(!out.includes('# Team rules'));
   assert.ok(!out.includes('You build.'));
 });
+
+test('the chief of staff\'s routing table renders its optional rows only for roles the team has', () => {
+  const { applyRoleConditions } = require('./compose-brief.js');
+  const brief = loadRoleBrief(PLUGIN_ROOT, '/nonexistent', 'delivery/chief-of-staff');
+  const body = brief.body;
+  const rows = (team) => applyRoleConditions(body, team).split('\n').filter((l) => /^\| .* \| .* \|$/.test(l) && !/^\|---/.test(l) && !/The ask is about/.test(l)).map((l) => l.split('|')[2].trim());
+  const minimal = { roles: ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder'].map((id) => ({ id })) };
+  const full = { roles: [...minimal.roles, { id: 'staffing' }, { id: 'progress-observer' }, { id: 'spike-researcher' }] };
+  const m = rows(minimal);
+  assert.ok(!m.includes('Spike Researcher') && !m.includes('Staffing') && !m.includes('Progress Observer'), m.join(', '));
+  assert.ok(m.includes('Product Manager') && m.includes('Delivery Manager') && m.includes('you'));
+  assert.ok(m.some((r) => r.startsWith('Delivery Manager, who')), 'spikes go to the Delivery Manager without a Spike Researcher');
+  const f = rows(full);
+  for (const r of ['Spike Researcher', 'Staffing', 'Progress Observer']) assert.ok(f.includes(r), r);
+  assert.ok(!applyRoleConditions(body, full).includes('<!--'), 'no markers are left');
+});
