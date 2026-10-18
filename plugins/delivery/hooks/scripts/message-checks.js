@@ -37,6 +37,9 @@ const BACK_TO_ME = /^(?:(?:then|and|just|please|so),?\s+)*(?:tell|ask|let|show|s
 // Not orders: plan lines ("Next: review ...", "Plan for today: start ...") and the list under them,
 // options ("A: keep ... B: switch ..."), decision questions, offers, and asks back to the sender.
 const OWNER_LEAD = /\b(?:you|your|yours|for you)\b/;
+// an order in a plan line still counts when it sends someone into a session, to type or paste, or
+// names the owner ("Then: open the builder session and type continue"; review I-c)
+const OWNER_MARK = /\b(?:session|sessions|type|paste|me|you|your)\b/;
 const PLAN_LABEL = /\b(?:plan|plans|next|next steps?|then|todo|to-do|later|today|tonight|tomorrow|this week|steps|options?|meanwhile)\b[^.:]{0,40}:\s*$/;
 function ownerImperatives(text, { parties } = {}) {
   const out = [];
@@ -53,8 +56,11 @@ function ownerImperatives(text, { parties } = {}) {
       let label = lead !== null && lead.split(/\s+/).length <= 7;
       let x = label ? rest : c;
       if (label && !OWNER_LEAD.test(lead)) {
-        // "Type this:" is an order of its own; "Next:", "A:" and "Plan for today:" are not
+        // "Type this:" is an order of its own; "Next:", "A:" and "Plan for today:" are not, unless what
+        // follows them carries an owner mark
         const l = RG.addressOf(lead, re);
+        const r = RG.addressOf(rest, re);
+        if (rest && OWNER_MARK.test(rest) && r.imperative && ORDER_VERBS.has(r.verb)) { out.push(raw.replace(/\s+/g, ' ').slice(0, 200)); continue; }
         if (!(l.imperative && ORDER_VERBS.has(l.verb)) || PLAN_LABEL.test(`${lead}:`)) { if (!rest) underPlan = PLAN_LABEL.test(`${lead}:`); continue; }
         label = false;
         x = lead;
@@ -65,7 +71,7 @@ function ownerImperatives(text, { parties } = {}) {
       let hit;
       if (q) hit = marked && !DECISION_Q.test(x);
       else if (marked) hit = true;
-      else hit = a.imperative && ORDER_VERBS.has(a.verb) && (second || label || !underPlan);
+      else hit = a.imperative && ORDER_VERBS.has(a.verb) && (second || label || !underPlan || OWNER_MARK.test(x));
       if (hit) out.push(raw.replace(/\s+/g, ' ').slice(0, 200));
     }
   } catch (err) { /* a heuristic never fails the stop */ }

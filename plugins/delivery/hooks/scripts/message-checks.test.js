@@ -151,3 +151,9 @@ test('R-44 I2: an order carrying a path, a command or a link reaches the judge r
     assert.equal(find(message, { judged }).candidates[0].kind, 'orders');
   } finally { server.closeAllConnections(); server.close(); }
 });
+
+test('R-44 re-review I-c: an order written as a plan line still counts when it names a session, typing, pasting or the owner', () => {
+  for (const m of ['Then: open the builder session and type continue.', 'Next step: run node scripts/probe.js on the build server and paste me the output.',
+    'Plan for today:\nopen the Progress Observer session and type: approve']) assert.ok(M.ownerImperatives(m).length, m);
+  assert.deepEqual(ORDINARY.filter((m) => M.ownerImperatives(m).length), []);
+});
