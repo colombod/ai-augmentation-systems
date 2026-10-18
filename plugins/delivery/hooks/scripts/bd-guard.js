@@ -6,7 +6,8 @@
 // every role but the Delivery Manager and Product Manager. Known limit (cooperative trust): a program
 // that spawns bd itself (python, node) is not seen.
 const { splitCommand, tokens, splitBdGlobals } = require('./lane.js');
-const { isStoryBead } = require('../../scripts/lib/gates.js');
+const G0 = require('../../scripts/lib/gates.js');
+const { isStoryBead } = G0;
 
 const TWO_WORD = new Set(['dep', 'label', 'comments', 'comment', 'dolt', 'epic', 'swarm', 'gate', 'vc', 'federation']);
 // Flags that never take a value, so the token after them is an id, not their argument.
@@ -214,6 +215,11 @@ function gateFieldWrite(p, { labelRe = PROTECTED_LABEL, fields = GATE_FIELDS } =
   return null;
 }
 
+function spikeUnlabel(p) {
+  const removed = [...values(p, '--remove-label'), ...(p.sub === 'label remove' ? p.ids.slice(1) : [])];
+  return removed.some((v) => EXPANSION.test(v) || v.split(',').some((l) => l.trim() === 'spike'));
+}
+
 const UNREAD = (via) => `Refused: bd run through ${via} cannot be checked by the guard.\nRun bd directly so the guard can check it: \`bd <command>\`.`;
 function decideBd({ command, actor, roleId, staleHours, bd, now }) {
   for (const call of bdCalls(command)) {
@@ -231,6 +237,8 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
     if (field) {
       return { reason: `Refused: ${field}: only materialise, ready.js and evidence.js change it, for the Delivery Manager.\nMessage the Delivery Manager with the bead id and what should change.` };
     }
+    // the spike label marks the spike gate's beads: only the Delivery Manager removes it (review I2)
+    if (roleId !== 'delivery-lead' && spikeUnlabel(p)) return { reason: 'Refused: removing the spike label: the spike gate keys on it, so only the Delivery Manager changes it.\nMessage the Delivery Manager with the bead id.' };
     const fixField = !['delivery-lead', 'product-manager'].includes(roleId) ? fixFieldWrite(p) : null;
     if (fixField) {
       return { reason: `Refused: ${fixField}: whether a bead is a fix, and what it fixes, is the Delivery Manager's or the Product Manager's to record.\nMessage the Delivery Manager with the bead id and the defect or finding it fixes.` };
@@ -324,7 +332,7 @@ function claimFix(f, id) {
   if (f.code === 'budget-short' || f.code === 'fix-over-budget' || f.code === 'new-area-near-limit') return `${script('plan.js')} budget, then re-cut ${id} smaller or defer it`;
   if (f.code === 'new-area') return `${script('plan.js')} select for compounding work; a new area needs the owner's reason (the Chief of Staff: goal.js ask area_add ${f.area || '<area>'})`;
   if (f.code === 'assumption-unobserved') return `bd show ${f.spike}, then dispatch it to the Reality Checker to probe the real host (assumptions.js probe)`;
-  if (f.code === 'spike-unacked') return `${script('assumptions.js')} ack ${f.spike} --decision '<the decision taken>'`;
+  if (f.code === 'spike-unacked') return `${script('assumptions.js')} ack ${f.spike} --result <ev-id> --decision '<the decision taken>' (its decision owner)`;
   if (f.code === 'assumption-refuted' || f.code === 'area-andon') return `${script('ready.js')} ${id} --record, once the Product Manager has changed the design and the register`;
   if (f.code === 'child-scope') return `bd update ${id} --metadata '{"criterion": <n>}' with a criterion its story has, or make the new scope its own story`;
   return `${script('ready.js')} ${id} --record --owner-record <dec-...> once the change is agreed`;
@@ -349,6 +357,24 @@ function builderOf(p, actor, roleId, instance) {
   const who = typeof target === 'string' && target ? target : actor;
   if (!who || (who === actor && roleId === 'delivery-lead') || /\/delivery-lead$/.test(who)) return null;
   return { actor: who, instance: who === actor ? instance || null : String(who).split('/').pop(), role: who === actor ? roleId || null : null };
+}
+
+// A spike answering an assumption is not deleted while a story resting on it is open, by anyone: the
+// story's D4 reads the evidence on the spike's chain, and the spike is where its answer goes.
+function spikeDelete(p, { bd, root }) {
+  const A = require('../../scripts/lib/assumptions.js');
+  for (const id of p.ids) {
+    const bead = lookup(bd, id);
+    const m = (bead && bead.metadata) || {};
+    if (!m.assumption) continue;
+    const slug = G0.initiativeOf(bead);
+    const row = slug ? A.loadRegister(root, slug).rows.find((r) => r.id === m.assumption) : null;
+    const stories = new Set(((row && row.criteria) || []).map((c) => c.story));
+    let open = [];
+    try { open = bd.list({ label: 'story', all: true }).filter((s) => s.status !== 'closed' && stories.has(String((s.metadata || {}).story || ''))); } catch (err) { open = []; }
+    if (open.length) return `Delete of ${id} refused (D4): ${open.map((s) => s.id).join(', ')} still rest on ${m.assumption}, which it answers.\nClose or cut those stories first, or message the Delivery Manager.`;
+  }
+  return null;
 }
 
 async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, team, ask, deadline, verifyRecord, budget }) {
@@ -379,6 +405,11 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
     if (!p) continue;
     const claiming = CLAIMING(p);
     const closing = CLOSES(p);
+    if (p.sub === 'delete') {
+      const held = spikeDelete(p, { bd, root });
+      if (held) { out.deny = held; return finish(); }
+      continue;
+    }
     if (!claiming && !closing) continue;
     for (const id of p.sub === 'assign' ? p.ids.slice(0, 1) : p.ids) {
       const bead = lookup(bd, id);
@@ -398,16 +429,23 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
         if (story || fixLabelled) { try { stories = bd.list({ label: 'story', all: true }); } catch (err) { stories = null; } }
         if (story && stories) overCap = G.unverifiedOver(stories, bead, maxUnverified(team));
         findings.push(...G.claimDivergence({ story: story ? inp.story : null, isStory: story, bead, parent: inp.parent, parentStory: inp.parentStory, overCap }));
-        // the assumption register (R-15, R-16): D4 on an external host, a warning for the rest
-        if (story) {
-          try {
-            const A = require('../../scripts/lib/assumptions.js');
-            const asm = A.forStory(root, bead, { bd, team, recordOk, storyId: (bead.metadata || {}).story || (inp.story && String(inp.story.meta.id || '')), atClaim: true });
-            findings.push(...asm.findings);
-            const an = stories && asm.rows.length ? A.areaAndon(bead, stories, asm.rows) : null;
+        // the assumption register (R-15, R-16): D4 on an external host, a warning for the rest. A child
+        // of a story answers to its parent's assumptions, for its criterion or, naming none, for all.
+        try {
+          const A = require('../../scripts/lib/assumptions.js');
+          const regs = A.registers(root, { bd, verifyRecord });
+          const parentStory = !story && inp.parent && G.isStoryBead(inp.parent) ? inp.parent : null;
+          if (story) {
+            findings.push(...A.forStory(root, bead, { bd, team, regs, storyId: (bead.metadata || {}).story || (inp.story && String(inp.story.meta.id || '')), atClaim: true }).findings);
+            // each story in the area is read against its own initiative's register (Copilot 864)
+            const an = stories ? A.areaAndon(bead, stories, (s) => regs.rowsFor(G.initiativeOf(s))) : null;
             if (an) findings.push(an);
-          } catch (err) { /* fail open */ }
-        }
+          } else if (parentStory) {
+            const pm = parentStory.metadata || {};
+            findings.push(...A.forStory(root, parentStory, { bd, team, regs, storyId: pm.story || (inp.parentStory && String(inp.parentStory.meta.id || '')), atClaim: true, criterion: (bead.metadata || {}).criterion })
+              .findings.map((f) => ({ ...f, detail: `its story ${parentStory.id}: ${f.detail}` })));
+          }
+        } catch (err) { /* fail open */ }
         if ((bead.labels || []).includes('spike')) {
           const m = bead.metadata || {};
           const miss = ['question', 'decision', 'decision_rule'].filter((k) => !m[k]);
@@ -453,15 +491,17 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
       const reason = p.flags.get('--reason') || p.flags.get('-r');
       if (!story) {
         const sm = bead.metadata || {};
-        if ((bead.labels || []).includes('spike') && (sm.assumption || sm.decision_rule)) {
-          // the spike gate (R-16): a result, then the decision owner's acknowledgement
+        // the spike gate (R-16): a result, then the decision owner's acknowledgement of that result. Keyed
+        // on the protected assumption field too, so dropping the spike label does not skip it (Copilot 888)
+        if (sm.assumption || ((bead.labels || []).includes('spike') && sm.decision_rule)) {
           const A = require('../../scripts/lib/assumptions.js');
           const slug = G.initiativeOf(bead);
-          const asm = sm.assumption && slug ? A.loadRegister(root, slug).rows.find((r) => r.id === sm.assumption) : null;
-          const st = A.spikeState(root, bead, { recordOk, owner: asm ? asm.owner : null });
+          const regs = A.registers(root, { bd, verifyRecord });
+          const asm = sm.assumption && slug ? regs.rowsFor(slug).find((r) => r.id === sm.assumption) : null;
+          const st = A.spikeState(root, bead, { a: asm, slug, bd, ownerOk: regs.ownerOk });
           const missing = !st.result ? 'it has no result row' : !st.acked ? 'its decision owner has not acknowledged the result' : null;
           if (missing && asm && asm.kind === 'external-host') {
-            const way = !st.result ? `Run: ${script('assumptions.js')} probe ${id} --host <h> --observed '<what was seen>' --artifact <capture>` : `Message the Delivery Manager: ${id} needs the decision owner's acknowledgement.`;
+            const way = !st.result ? `Message the Delivery Manager: ${id} needs the Reality Checker's probe (\`assumptions.js probe\`).` : `Message the Delivery Manager: ${id} needs its decision owner's acknowledgement of ${st.result.id}.`;
             out.deny = `Close of ${id} refused (D4): ${missing}, and it answers ${asm.id}, an external host on a criterion's path.\n${way}`;
             return finish();
           }

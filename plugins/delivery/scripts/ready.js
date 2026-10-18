@@ -16,11 +16,11 @@ const path = require('path');
 const G = require('./lib/gates.js');
 const W = require('./lib/warnings.js');
 const { loadSurface } = require('./lib/surface.js');
-const { whoAmI, gateInputs, writerProblem, recordChecker } = require('./lib/gate-context.js');
+const { whoAmI, gateInputs, writerProblem } = require('./lib/gate-context.js');
 const A = require('./lib/assumptions.js');
 
 // the warnings a ready check raises; --record resolves the ones it no longer finds
-const READY_KINDS = ['owners-ask', 'surface-missing', 'surface-unnamed', 'placeholder', 'no-criteria', 'mechanism', 'probe', 'reality-check-required', 'measurement-plan', 'shippable-unit', 'shippable-judge', 'not-ready', 'child-scope', 'assumption-unobserved', 'spike-unacked'];
+const READY_KINDS = ['owners-ask', 'surface-missing', 'surface-unnamed', 'placeholder', 'no-criteria', 'mechanism', 'probe', 'reality-check-required', 'measurement-plan', 'shippable-unit', 'shippable-judge', 'not-ready', 'child-scope', 'assumption-unobserved', 'spike-unacked', 'assumption-refuted', 'assumption-unverified'];
 
 const USAGE = 'usage: ready.js <bead> [--record [--owner-record dec-...]] [--json] | ready.js --story <file> [--initiative <slug>]';
 
@@ -61,6 +61,12 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
     const { surface } = G.storySurface(story, null, s.surfaces);
     const judged = await judgeShippable(story, surface, who, deps).catch(() => null);
     const findings = G.readyFindings({ story, surfaces: s.surfaces, surfaceMissing: s.missing || s.problems.length > 0, judged });
+    // the register too (D4): the story by its frontmatter id, in the named initiative (Copilot 964)
+    const sid = String(story.meta.id || '');
+    if (a.initiative && sid) {
+      const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
+      findings.push(...A.forStory(who.root, { id: sid, metadata: { story: sid } }, { bd: store, team: who.team, verifyRecord, initiative: a.initiative }).findings);
+    }
     return { code: findings.some((f) => f.level === 'block') ? 1 : 0, out: render(path.basename(a.story), findings, { hash: G.storyHash(story) }, a.flags.has('json')) };
   }
   const id = a._[0];
@@ -75,7 +81,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
   // the pre-check reports only; nothing was claimed, so not-ready and scope drift are not findings here
   const findings = [...G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead, judged }),
     ...G.claimDivergence({ story: inp.story, bead, parent: inp.parent, parentStory: inp.parentStory }).filter((f) => f.code !== 'not-ready' && f.code !== 'criteria-changed')];
-  const asm = A.forStory(who.root, bead, { bd: store, team: who.team, recordOk: recordChecker(who.root, verifyRecord), storyId: (bead.metadata || {}).story || String(inp.story.meta.id || '') });
+  const asm = A.forStory(who.root, bead, { bd: store, team: who.team, verifyRecord, storyId: (bead.metadata || {}).story || String(inp.story.meta.id || '') });
   findings.push(...asm.findings);
   const extra = {};
   if (record && !findings.some((f) => f.level === 'block')) {
