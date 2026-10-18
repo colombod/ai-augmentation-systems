@@ -250,3 +250,18 @@ test('Copilot: when the unpublished count is not available, the status says why 
   assert.equal(s.operator.unpublished_reason, 'not a git repository');
   assert.ok(renderStatus(s, root).includes('Operator entries unpublished: 0 (not a git repository: the records stay on this host)'));
 });
+
+test('1a: warnings over 24 h head the status; counts and story states use merged / deployed / verified, with the unverified cap', () => {
+  const root = scratchProject();
+  const W = require('./lib/warnings.js');
+  W.record(root, { kind: 'mechanism', rule: 'R-10', bead: 'ex-wxy-6', detail: 'criterion 1 names a mechanism', instance: 'builder-1', now: '2026-10-11T08:01:00Z' });
+  W.record(root, { kind: 'probe', rule: 'R-10', bead: 'ex-wxy-7', detail: 'no probe', instance: 'builder-1', now: NOW });
+  const story = (id, state) => ({ id, status: 'open', labels: ['story', `state-${state}`], metadata: { area: 'collection' } });
+  const s = teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => true, storyBeads: () => ['469', '470', '471'].map((n) => story(`ex-${n}`, 'merged')).concat([story('ex-478', 'deployed'), story('ex-1', 'verified')]) });
+  const text = renderStatus(s);
+  assert.ok(text.startsWith('Warnings unacknowledged over 24 h: 1'), text.slice(0, 80));
+  assert.match(text, /- w-builder-1-1 R-10 ex-wxy-6/);
+  assert.match(text, /Warnings open: 2 \(mechanism 1, probe 1\); acknowledged: 0/);
+  assert.match(text, /Stories: merged 3, deployed 1, verified 1/);
+  assert.match(text, /area collection has 4 merged-but-unverified stories \(cap 2\)/);
+});
