@@ -409,9 +409,18 @@ A story never made ready (one from before 0.22, or on the old checkbox template)
 `bd supersede`.
 
 **What is cooperative trust.** The gates are discipline aids for cooperative agents, not a security
-boundary. A role whose lane is `any` (builders, the Spike Researcher) can still run bd in a shape
-the guard does not parse (`env bd`, `sh -c`, a subshell) and so also rewrite `evidence_head` to match
-a forged row, edit a story file (which a ready hash then refuses as D1), or start a script from
+boundary. The bd guard unwraps the usual wrappers (`env`, `VAR=`, `command`, an absolute path, `nice`,
+`timeout`, `exec`, `sh -c` and `bash -c --`, `eval`, subshells, command substitutions) and, in a command
+that names bd, refuses to every role but the Delivery Manager and Product Manager what it cannot read: a
+command word built by the shell (`$(which bd)`, `${BD:-bd}`, `"b"d`, `b\d`, a variable), a shell
+reading its script from stdin or a file (`| sh`, `sh -s`, `bash <<EOF`), and a runner that executes an
+argument naming bd (`xargs`, `find -exec`, `parallel`, `watch`). A role whose lane is `any` (builders,
+the Spike Researcher) can always run what no guard sees: a symlink or copy of bd under another name, or
+any program (python, node) that spawns bd. Through those it can write any label or field, and rewrite
+`evidence_head` to match a forged row. The durable control is not the label: a tier-1 fix and a
+verified story also need the evidence and owner-record checks, and the done gate re-verifies a close
+from the evidence chain against its recorded head and from the owner's records, so a state label alone
+never closes a story. Beyond that, a builder could also edit a story file (which a ready hash then refuses as D1), or start a script from
 another role's directory with that role's `DELIVERY_ROLE` set; `BEADS_ACTOR` is self-declared. What the gates do is make the
 honest path the easy one, refuse the plain shortcuts the Vault took, and leave a record that an
 independent review can check.
@@ -428,12 +437,79 @@ summaries. No new catalogue question was added: a criterion-kind question needs 
 so mechanism wording is a word rule. The deployed sha is the one recorded with `evidence.js state`;
 checking it against a health URL is not done yet.
 
+### Waves, budget and selection
+
+Owner rulings: never start what cannot be completed within the budget; half-built products are the
+worst outcome; build in compounding waves, each shipped and verified before the next builds on it;
+prefer work that builds on what is already verified; fixes and security first when the budget is
+tight; block only on serious divergence, otherwise warn (R-34, R-36, R-41, R-23, R-31).
+
+- **Waves.** A wave is a set of stories in one product area that together deliver a verified
+  increment. Each story names `area:` and `wave:` in its frontmatter (the roadmap's Waves table) and
+  materialise stamps a protected `wave-<n>` label and `metadata.wave`. A label, not a wave epic: a
+  story's one parent is its phase epic, which carries the phase-review chain. The current wave of an
+  area is its lowest wave with a story neither verified nor cut (a cut is the owner's, through
+  `evidence.js cut`). `node ${CLAUDE_PLUGIN_ROOT}/scripts/wave.js show [<area>]` says it in plain
+  words ("wave 2 of import: 3 of 5 stories checked on the customer's app"); `wave.js plan` lists each
+  area's waves with what they still need and file overlaps inside a wave, and `wave.js close <area>
+  <n>` records a finished wave; both append to `.delivery/waves.ndjson` and are the Delivery
+  Manager's.
+- **The budget.** Only the owner's figures, set through the question box (`budget.weekly_units`,
+  `budget.usage_envelope`, `budget.lean_at`, and overrides of the estimate table). With none set,
+  every budget check only warns. Estimates come from the size label and the model the builder
+  dispatches (size-L on its large model, opus by default, so a large story costs about 1.7 times more,
+  which the owner weighs when setting the weekly figure): S 1, M 3, L 8 units
+  on sonnet, opus 1.7x, haiku 0.35x, plus a 30% reserve for review, reality check and merge (owner
+  overrides: `budget.estimate_s|m|l`, `budget.reserve`, `budget.unit_tokens`). Spend is what a script
+  can read: cost-weighted tokens from every role transcript since the period start (one unit is 5M
+  weighted tokens until a realign recalibrates it; a streamed reply at its largest reading; files read
+  in chunks from where the last scan stopped, within the hook's deadline, the figure marked partial
+  when it ran out), counted from the status line's weekly reset, else from the owner's week start
+  (`budget.period_start`), else over the last 7 days, and capped by the status line's weekly reading when
+  `usage.js statusline` is wired as a role session's statusLine command (subscribers only). The CLI
+  has no usage command and hooks see no usage figures. In-flight work, stories and fix beads alike,
+  keeps its estimate plus reserve (only the reserve once merged). `lean_at` is a share of the weekly
+  allowance. Only the plugin's reader writes `.delivery/usage/`; the lanes refuse it to every role. `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan.js budget` shows remaining
+  against what each current wave still needs; `usage.js show` the raw readings.
+- **The claim check.** At `bd update --claim` on a story or a fix, the bd guard warns on: a story
+  outside its area's current wave (D5), overlapping files with a story in progress, WIP above the
+  builders or, in lean mode, any second story (R-23, R-31), a new area (nothing built there while other
+  areas hold work) with no recorded reason (R-41), and a story that does not fit inside a wave under
+  way. It refuses only half-built risk, and only under an owner-set budget: a story that would start
+  its wave when the whole wave's estimate plus reserve exceeds what is free after in-flight work (D5); a later-wave
+  story when what is left cannot finish the current wave as well (D5); a new area near the limit (D5);
+  a new area with no recorded reason at half the budget or less (D1). A recorded reason is the owner's
+  Yes to `goal.js ask area_add <area>`, or a row of a roadmap's `## Areas` table citing an owner record
+  that verifies. Near the limit means that once in-flight work is paid for not even a size-S story
+  fits.
+- **Fixes and security fixes.** A `bug` bead counts as a fix only with `fixes:` in its bead metadata
+  (a story file's line is a note and never counts) naming a merged, deployed or verified story, a counting failed check row (the Delivery
+  Manager's or a Reality Checker's), or the owner's own report of the defect (a record resting only on
+  the owner's words, not a goal decision, scoped to the bead or naming it); a `security` bead with
+  `finding:` naming a review finding by id (`.delivery/reviews/<file>#<id>`) or a finding bead
+  (labelled `security` and `finding`); review files are written only by the Delivery Manager, Product
+  Manager and Reality Checker. Never the bead itself. The owner's report must name the defect in the
+  owner's own words, not in the recording agent's statement. The labels and links are the Delivery
+  Manager's and Product Manager's to set. Linked fixes skip the wave, lean and new-area rules and must
+  fit what is left with their reserve; a label alone is ordinary work with a `fix-unlinked` warning.
+  A peer agent's message is captured as an input but is never the owner's record, for fixes, cuts,
+  waivers or area reasons alike.
+- **Selection.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan.js select [--record]` ranks ready work: tier 1
+  linked fixes, tier 2 compounding work by score (verified dependencies 3 each, an area or surface
+  with verified work, the current wave and whether it is under way, existing files changed, `reuses:`
+  entries), tier 3 new areas. What may not start now is listed apart with the claim check's own
+  reason, so select offers exactly what a claim allows. With the typed
+  judge on, `builds_on_verified` and `is_fix` are asked as advisory input. `--record` writes tier,
+  score and reasons on the chosen bead (`metadata.selection`) and the warnings in the ledger.
+
 ### Owner authority and communication
 
 The owner runs the enterprise; the Chief of Staff runs the team for the owner (R-42 to R-46).
 
 - **Constraints only on the owner's yes.** `.delivery/goal.json` holds the fields that constrain the
-  work: `budget.weekly_units`, `budget.usage_envelope`, `budget.lean_at`, `pause` (paused, stopped,
+  work: `budget.weekly_units`, `budget.usage_envelope`, `budget.lean_at`, the estimate overrides
+  (`budget.estimate_s|m|l`, `budget.reserve`, `budget.unit_tokens`), `area_add` (a product area the
+  owner agreed to open), `pause` (paused, stopped,
   off), the scope (changed by `scope_add` and `scope_remove`), `approvals`, `idle_minutes` (30) and
   `briefing_lines` (12). The scope is the list of product areas the team builds toward: an add puts
   items in, a remove takes them out, and a remove can never add.

@@ -80,7 +80,8 @@ function parseRoadmap(markdown) {
 
 function listValue(value) {
   if (value === undefined || value === null) return [];
-  const s = String(value).trim();
+  // an inline comment is not a value: `reuses: [] # existing code` is empty (Copilot 644)
+  const s = String(value).replace(/\s+#.*$/, '').trim();
   if (!s || s === '[]') return [];
   const inner = s.startsWith('[') && s.endsWith(']') ? s.slice(1, -1) : s;
   return inner.split(',').map((x) => x.trim().replace(/^(['"])(.*)\1$/, '$2')).filter(Boolean);
@@ -102,7 +103,7 @@ function parseStories(dir) {
     out.push({
       id: String(meta.id), title: String(meta.title || meta.id), status: String(meta.status || ''), epic: String(meta.epic || ''),
       phase: phaseNumber(meta.phase), dependsOn: listValue(meta.depends_on), size: String(meta.size || ''), model: String(meta.model || '').trim(), file,
-      surface: plain(meta.surface), area: plain(meta.area),
+      surface: plain(meta.surface), area: plain(meta.area), wave: plain(meta.wave),
     });
   }
   return out;

@@ -115,11 +115,11 @@ function applyPlanSteps({ plan, bd, dryRun, initiative, result }) {
     const parentChanged = (existing.parent || null) !== (b.parent || null);
     const staleLabels = [
       ...(parentChanged ? existing.labels.filter((l) => /^phase-\d+[a-z]?$/.test(l) && !b.labels.includes(l)) : []),
-      // a story re-sized in its file: the old size label goes
-      ...existing.labels.filter((l) => /^size-[SML]$/.test(l) && !b.labels.includes(l)),
+      // a story re-sized or moved to another wave in its file: the old size or wave label goes
+      ...existing.labels.filter((l) => /^(size-[SML]|wave-\d+)$/.test(l) && !b.labels.includes(l)),
     ];
     // a story that no longer names a model: the bead's model override goes too
-    const unsetMetadata = b.labels.includes('story') && (existing.metadata || {}).model !== undefined && b.metadata.model === undefined ? ['model'] : [];
+    const unsetMetadata = ['model', 'wave'].filter((k) => b.labels.includes('story') && (existing.metadata || {})[k] !== undefined && b.metadata[k] === undefined);
     if (!missingLabels.length && !staleLabels.length && !metaDrift && !titleChanged && !parentChanged && !unsetMetadata.length) continue;
     result.commands.push(`update ${b.id}`);
     if (!dryRun) bd.update(b.id, { title: titleChanged ? b.title : undefined, parent: parentChanged ? b.parent : undefined, addLabels: missingLabels, removeLabels: staleLabels, metadata: metaDrift ? b.metadata : undefined, unsetMetadata });
@@ -163,7 +163,7 @@ function beadDiff(existing, planned) {
   if ((existing.parent || null) !== (planned.parent || null)) fields.push('parent');
   // labels materialise would add, and the managed ones it would remove (a stale size label)
   const have = existing.labels || [];
-  if (planned.labels.some((l) => !have.includes(l)) || have.some((l) => /^size-[SML]$/.test(l) && !planned.labels.includes(l))) fields.push('labels');
+  if (planned.labels.some((l) => !have.includes(l)) || have.some((l) => /^(size-[SML]|wave-\d+)$/.test(l) && !planned.labels.includes(l))) fields.push('labels');
   const meta = existing.metadata || {};
   for (const k of Object.keys(planned.metadata)) if (JSON.stringify(meta[k]) !== JSON.stringify(planned.metadata[k])) fields.push(k);
   // a story's model override materialise would unset

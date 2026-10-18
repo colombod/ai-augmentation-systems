@@ -646,6 +646,48 @@ function goalShellWrite(command, { cwd, files = [] } = {}) {
   });
 }
 
+// The spend readings (R-34): .delivery/usage/ holds the transcript cache the budget trusts by size and
+// mtime and the status line's weekly reading. A forged cache would hide spend, so only the plugin's own
+// readers write it (lib/usage.js runs inside the hooks and scripts, not through a tool call).
+// Protected for every role, `any` included; best effort, like the goal sheet.
+const USAGE_REL = path.join('.delivery', 'usage');
+const USAGE_REASON = 'the spend readings in .delivery/usage/ are written only by the plugin\'s usage reader; read them with `usage.js show`';
+const USAGE_MENTION = /\.delivery\/+(?:\.\/+)*usage(?=\/|[\s'";|&)>]|$)/i;
+function usageDirs({ projectRoot, roleDir }) {
+  const out = [];
+  if (projectRoot && path.isAbsolute(String(projectRoot))) out.push(realish(path.join(String(projectRoot), USAGE_REL)));
+  if (roleDir) out.push(realish(path.join(String(roleDir), 'project', USAGE_REL)));
+  return out;
+}
+// Review findings (.delivery/reviews/): a security fix links to a finding by id, so only the roles that
+// run reviews write them (re-review I-a): the Delivery Manager, Product Manager and Reality Checker.
+const REVIEWS_REL = path.join('.delivery', 'reviews');
+const REVIEW_WRITERS = ['delivery-lead', 'product-manager', 'reality-checker'];
+const REVIEWS_REASON = 'review findings in .delivery/reviews/ are written by the Delivery Manager, Product Manager or Reality Checker; message the Delivery Manager with the finding';
+const REVIEWS_MENTION = /\.delivery\/+(?:\.\/+)*reviews(?=\/|[\s'";|&)>]|$)/i;
+function reviewDirs({ projectRoot, roleDir }) {
+  const out = [];
+  if (projectRoot && path.isAbsolute(String(projectRoot))) out.push(realish(path.join(String(projectRoot), REVIEWS_REL)));
+  if (roleDir) out.push(realish(path.join(String(roleDir), 'project', REVIEWS_REL)));
+  return out;
+}
+function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION } = {}) {
+  const text = String(command == null ? '' : command);
+  let base = cwd || process.cwd();
+  return splitCommand(text).some((seg) => {
+    const t = tokens(seg);
+    if (!t.length) return false;
+    if (t[0] === 'cd') { const c = cdTarget(t); if (!c.unknown) base = path.resolve(base, c.dir); return false; }
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    const first = path.basename(words[0] || '');
+    const targets = writeTargets(seg, t);
+    if ((first === 'sed' && writesFiles(['sed', ...words.slice(1)])) || (first === 'perl' && words.some((x) => /^-[a-zA-Z]*i/.test(x)))) targets.push(...words.slice(1).filter((x) => !x.startsWith('-')));
+    if (dirs.length && targets.some((x) => underOperator(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`, dirs))) return true;
+    if (!mention.test(seg)) return false;
+    return hasRedirect(seg) || OPERATOR_WRITE_WORDS.includes(first) || (first === 'git' && GOAL_GIT_WRITES.includes(splitGlobals(['git', ...words.slice(1)]).rest[0]));
+  });
+}
+
 // Merging belongs to the Delivery Manager: it requests independent review of each pull request and
 // merges on a passing review. Every other role, the unrestricted `any` lanes included, is refused a
 // merge in whatever form: `gh pr merge`, the merge endpoint through `gh api`, a push to the default
@@ -732,6 +774,8 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       const p = path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`; // not normalised: realish applies `..` physically
       if (underOperator(p, opDirs)) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
       if (isGoalFile(p, goalFiles({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
+      if (underOperator(p, usageDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
+      if (!REVIEW_WRITERS.includes(pol.roleId) && underOperator(p, reviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
       if (harnessFile(p)) continue;
       if (pathAllowed(p, { roleDir, writes: pol.writes, pluginRoot: pluginRootOf({ pluginRoot }) })) continue;
       const real = realish(p);
@@ -753,6 +797,8 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   if (command !== null) {
     if (operatorShellWrite(command, { cwd, dirs: opDirs })) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
     if (goalShellWrite(command, { cwd, files: goalFiles({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
+    if (usageShellWrite(command, { cwd, dirs: usageDirs({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
+    if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
@@ -816,4 +862,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

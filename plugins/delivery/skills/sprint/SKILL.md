@@ -46,8 +46,11 @@ Write `.delivery/sprints/<n>-<slug>.md` from `${CLAUDE_PLUGIN_ROOT}/templates/sp
 The package must be **self-sufficient**: the runner should need nothing but this file and
 the repository. Assume it has no memory of the planning and cannot ask you questions.
 
-**1. Scope and order.** Which stories, in dependency order, with the reasoning. Name any
-story deliberately excluded and why, so the runner does not helpfully add it.
+**1. Scope and order.** One package per wave: the stories of one area's current wave, in
+dependency order, with the reasoning. Name any story deliberately excluded and why, so the
+runner does not helpfully add it. Before it starts, `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan.js budget`
+must show the wave fits what is left with its reserve when the owner set a budget; if it does
+not, re-cut the wave smaller or defer it. Stories built in parallel must touch disjoint files.
 
 **2. The stories themselves**, or exact paths to them. Each already carries its own full
 context by construction — verify that is still true rather than assuming it.

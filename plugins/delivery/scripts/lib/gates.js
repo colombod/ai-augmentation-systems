@@ -4,8 +4,8 @@
 //
 // Enforcement (ruling 3): a missing section or a mechanism-worded criterion is a finding with
 // level 'warn' (recorded in the warnings ledger, never blocking); only a checkable divergence (D1 scope,
-// D2 surface, D3 criteria) has level 'block'. D5 waits for waves (phase 2): an area over the
-// unverified cap is a warning here. The judge is advisory and never blocks.
+// D2 surface, D3 criteria) has level 'block'. D5 (half-built risk) lives in lib/waves.js with the
+// budget; an area over the unverified cap is a warning here. The judge is advisory and never blocks.
 //
 // The hard done gate applies to a story the Delivery Manager made ready (metadata.ready_hash): its
 // agreed criteria. A story never made ready (one written before 0.22, or on the old template) closes
@@ -86,6 +86,19 @@ function planRows(section) {
   return rows.filter((r) => placeholderFree(r.signal) && /\d/.test(placeholderFree(r.threshold)) && placeholderFree(r.where));
 }
 
+// The story's "Files and modules" table: { path, action } per row (paths in backticks or plain).
+function filesOf(section) {
+  const out = [];
+  for (const l of String(section || '').split(/\r?\n/)) {
+    if (!l.trim().startsWith('|')) continue;
+    const cells = l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+    const p = (cells[0] || '').replace(/`/g, '').trim();
+    if (!p || /^:?-+:?$/.test(p) || /^path$/i.test(p) || p.includes('...') || PLACEHOLDER.test(p)) continue;
+    out.push({ path: p.replace(/^\.\//, ''), action: (/^(modify|create|delete|add|edit)/i.exec(cells[1] || '') || [''])[0].toLowerCase() });
+  }
+  return out;
+}
+
 function parseStory(text) {
   const raw = String(text || '').replace(/^<!--[\s\S]*?-->\s*/, '');
   const { meta, body } = parseFrontmatter(raw);
@@ -100,6 +113,7 @@ function parseStory(text) {
     measurement: s.has('measurement plan') ? planRows(s.get('measurement plan')) : null,
     shippable: s.get('shippable unit'),
     goal: s.get('goal'),
+    files: filesOf(s.get('files and modules')),
   };
 }
 

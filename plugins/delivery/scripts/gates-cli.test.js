@@ -22,7 +22,7 @@ const whoFor = (root, instance) => ({ root, team: loadManifest(root).team, insta
 const setup = ({ story, over, dm = 'delivery-lead' } = {}) => {
   const root = makeProject(story ? { story } : {});
   const bd = memBd([storyBead({ assignee: 't@pc/builder-1', ...over })]);
-  const run = (instance, argv, now = NOW) => evidence.main([...argv], { cwd: root, env, bd, now, who: whoFor(root, instance), verifyRecord: (r, id) => ({ ok: id === 'dec-chief-of-staff-41', error: 'not found' }) });
+  const run = (instance, argv, now = NOW) => evidence.main([...argv], { cwd: root, env, bd, now, who: whoFor(root, instance), verifyRecord: require('./testing/gate-fixture.js').ownerVerify('dec-chief-of-staff-41') });
   const ev = (...argv) => run(dm, argv);
   // S1 is not scriptable: a DM row counts only on the owner's record (R-33); reality-check.test.js covers the checker's rows
   const add = (n, extra = []) => ev('add', ID, '--criterion', String(n), '--result', 'pass', '--surface', 'S1', '--sha', 'd478aa11', '--run', 'rc-1', '--record', 'dec-chief-of-staff-41', ...extra);
@@ -43,9 +43,9 @@ test('ready.js, vault-0n9.3 without a measurement plan: the pre-check only repor
   assert.deepEqual(W.list(root).map((w) => w.kind), ['measurement-plan']);
   // fixed and re-recorded with an owner record: the warning resolves itself
   fs.writeFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-3.md'), STORY.replace('with the card count', 'with the card count and the deck name'));
-  const again = (extra) => ready.main([ID, '--record', ...extra], { cwd: root, env, bd, who: dm, verifyRecord: (x, id) => ({ ok: id === 'dec-chief-of-staff-50', error: 'not found' }) });
+  const again = (extra) => ready.main([ID, '--record', ...extra], { cwd: root, env, bd, who: dm, verifyRecord: require('./testing/gate-fixture.js').ownerVerify('dec-chief-of-staff-50') });
   assert.match((await again([])).out, /changed since they were made ready \(D1\)\.\nRe-record with an owner record/);
-  assert.match((await again(['--owner-record', 'dec-x-1'])).out, /dec-x-1: not found/);
+  assert.match((await again(['--owner-record', 'dec-x-1'])).out, /dec-x-1 does not verify \(not found\)/);
   assert.equal((await again(['--owner-record', 'dec-chief-of-staff-50'])).code, 0);
   assert.equal(W.summary(W.list(root)).open, 0);
 });

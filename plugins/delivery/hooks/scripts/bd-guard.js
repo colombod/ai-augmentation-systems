@@ -1,6 +1,10 @@
 // hooks/scripts/bd-guard.js — the record stays honest: evidence on close, no claim-jumping,
 // structure only by the Delivery Manager.
-// A discipline aid, not a security boundary: a segment it cannot parse is allowed.
+// A discipline aid, not a security boundary. A bd call behind a wrapper (env, VAR=, command, an absolute
+// path, nice, timeout, exec, nohup, sh -c, eval, a subshell or a command substitution) is unwrapped and
+// checked like a plain one; a call the guard cannot read (xargs bd, find -exec bd, ...) is refused to
+// every role but the Delivery Manager and Product Manager. Known limit (cooperative trust): a program
+// that spawns bd itself (python, node) is not seen.
 const { splitCommand, tokens, splitBdGlobals } = require('./lane.js');
 const { isStoryBead } = require('../../scripts/lib/gates.js');
 
@@ -27,9 +31,82 @@ const LABEL_FLAGS = ['--add-label', '--remove-label', '--set-labels'];
 const CLAIM_FLAGS = ['--claim', '--assignee', '--status', '-a', '-s'];
 const STRUCTURE = 'structure belongs to the Delivery Manager.\nCreate a child bead under the bead you hold (`bd create --parent <id>`) or message the Delivery Manager.';
 
+const isBd = (w) => /(?:^|\/)bd(?:\.exe)?$/.test(String(w || ''));
+const WRAPPERS = new Set(['env', 'command', 'exec', 'nice', 'nohup', 'time', 'timeout', 'stdbuf', 'ionice', 'builtin', 'sudo']);
+const WRAPPER_VALUE_FLAGS = new Set(['-n', '-u', '-s', '-k', '-c', '-p', '-S', '-C', '--signal', '--kill-after', '--adjustment']);
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
+// commands that only mention bd as an argument or read about it
+const MENTIONS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'cat', 'less', 'head', 'tail', 'which', 'type', 'man', 'git', 'gh', 'wc', 'ls', 'true', 'test', 'whereis', 'hash']);
+const base = (w) => String(w || '').split('/').pop();
+
+// programs that run their arguments as commands: a bd inside an argument is a bd call the guard cannot read
+const RUNNERS = new Set(['parallel', 'watch', 'xargs', 'find', 'nohup', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'env', 'time', 'timeout', 'nice', 'exec', 'sudo', 'stdbuf']);
+// bd named anywhere once quotes and backslashes are dropped ("b"d, b\d)
+const mentionsBd = (text) => /(?:^|[^\w.])bd(?:$|[^\w.-])/.test(String(text || '').replace(/['"\\]/g, ''));
+// words as the shell sees them before unquoting, so a quoted or substituted command word stays visible
+const rawWords = (seg) => String(seg).match(/(?:[^\s'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+/g) || [];
+// the command word of a segment, raw: after assignments, wrappers and their options, and ( or {
+function rawCommandWord(seg) {
+  const w = rawWords(seg).map((x) => x.replace(/^[({]+/, '')).filter((x) => x !== '');
+  let i = 0;
+  for (let guard = 0; guard < 8 && i < w.length; guard++) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[i])) { i++; continue; }
+    const name = base(w[i]);
+    if (!WRAPPERS.has(name)) break;
+    i++;
+    while (i < w.length && (w[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(w[i]))) i += WRAPPER_VALUE_FLAGS.has(w[i]) ? 2 : 1;
+    if (name === 'timeout' && i < w.length) i++;
+  }
+  return w[i] || '';
+}
+
+// Each bd call in a command: { tokens } once wrappers are peeled, or { opaque, via } for one the guard
+// cannot read. Command substitutions and shell -c scripts are read recursively. In a command that
+// names bd, these cannot be read (final check, PR 54): a command word that is not literal ($, a
+// backtick, a quote or a backslash in it: $(which bd), ${BD:-bd}, "b"d, b\d); a shell reading its
+// script from stdin or a file (| sh, sh -s, sh < file, bash <<EOF); a runner that executes an argument
+// naming bd (parallel, watch, xargs sh -c, find -exec).
+function bdCalls(command, depth = 0) {
+  const out = [];
+  const text = String(command == null ? '' : command);
+  if (depth > 3) return mentionsBd(text) ? [{ opaque: text, via: 'nested shells' }] : [];
+  const named = mentionsBd(text);
+  for (const m of text.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) out.push(...bdCalls(m[1] || m[2] || '', depth + 1));
+  for (const seg of splitCommand(text)) {
+    let t = tokens(seg);
+    if (!t.length) continue;
+    if (named && /[$`'"\\]/.test(rawCommandWord(seg))) { out.push({ opaque: seg, via: 'a command word built by the shell' }); continue; }
+    t = t.map((x, i) => (i === 0 ? x.replace(/^\$?\(+/, '') : x)).map((x, i, a) => (i === a.length - 1 ? x.replace(/\)+$/, '') : x)).filter((x) => x !== '');
+    // peel wrappers and environment assignments
+    for (let guard = 0; guard < 8 && t.length; guard++) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0])) { t = t.slice(1); continue; }
+      const w = base(t[0]);
+      if (!WRAPPERS.has(w)) break;
+      let i = 1;
+      while (i < t.length && (t[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]))) i += WRAPPER_VALUE_FLAGS.has(t[i]) ? 2 : 1;
+      if (w === 'timeout' && i < t.length) i++; // the duration
+      t = t.slice(i);
+    }
+    if (!t.length) continue;
+    const first = base(t[0]);
+    if (isBd(t[0])) { out.push({ tokens: ['bd', ...t.slice(1)] }); continue; }
+    if (SHELLS.has(first)) {
+      const c = t.findIndex((x, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(x));
+      let k = c + 1;
+      while (c > 0 && t[k] === '--') k++;
+      if (c > 0 && t[k] !== undefined) { out.push(...bdCalls(t[k], depth + 1)); continue; }
+      // no -c: the script comes from stdin or a file
+      if (named) { out.push({ opaque: seg, via: `${first} reading its script from stdin or a file` }); continue; }
+    }
+    if (first === 'eval') { out.push(...bdCalls(t.slice(1).join(' '), depth + 1)); continue; }
+    if (t.slice(1).some(isBd) && !MENTIONS.has(first)) out.push({ opaque: seg, via: first });
+    else if (RUNNERS.has(first) && t.slice(1).some(mentionsBd)) out.push({ opaque: seg, via: first });
+  }
+  return out;
+}
+
 function parseBd(segment) {
-  const t = tokens(segment);
-  // `VAR=x bd ...` and `env bd ...` leave t[0] != 'bd': unparseable, so allowed.
+  const t = Array.isArray(segment) ? segment : tokens(segment);
   if (t[0] !== 'bd') return null;
   const { rest } = splitBdGlobals(t);
   if (!rest[0]) return null;
@@ -102,16 +179,22 @@ function structural(p, actor, bd) {
 
 // A write of a state label, the story label or a gate field, which only the gate scripts and
 // materialise set. Metadata is judged on its parsed keys, and only literal values are accepted.
-const GATE_FIELDS = new Set(['ready_hash', 'ready_at', 'ready_record', 'deployed_sha', 'deployed_at', 'deployed_version', 'evidence_head', 'merged_pr', 'authors', 'story', 'story_file', 'surface', 'area', 'roadmap_ref', 'materialised_by', 'doc_id']);
-const PROTECTED_LABEL = /^(state-.*|story)$/;
+const GATE_FIELDS = new Set(['ready_hash', 'ready_at', 'ready_record', 'deployed_sha', 'deployed_at', 'deployed_version', 'evidence_head', 'merged_pr', 'authors', 'story', 'story_file', 'surface', 'area', 'roadmap_ref', 'materialised_by', 'doc_id', 'wave', 'selection']);
+// wave labels come from the story file through materialise: a relabel would move a story out of its wave
+const PROTECTED_LABEL = /^(state-.*|story|wave-\d+)$/;
 const EXPANSION = /\$\(|\$\{|\$[A-Za-z_]|`/;
 const values = (p, f) => (p.all.get(f) || []).filter((v) => typeof v === 'string');
-function gateFieldWrite(p) {
-  if (p.sub === 'update' && p.all.has('--set-labels')) return 'replacing every label (use --add-label or --remove-label)';
+// what makes a bead a tier-1 fix (R-41): set by the Delivery Manager or the Product Manager only, so a
+// builder cannot promote its own work past the wave, lean and new-area rules
+const FIX_LABEL = /^(bug|security|finding)$/;
+const FIX_FIELDS = new Set(['fixes', 'finding']);
+const fixFieldWrite = (p) => gateFieldWrite(p, { labelRe: FIX_LABEL, fields: FIX_FIELDS });
+function gateFieldWrite(p, { labelRe = PROTECTED_LABEL, fields = GATE_FIELDS } = {}) {
+  if (labelRe === PROTECTED_LABEL && p.sub === 'update' && p.all.has('--set-labels')) return 'replacing every label (use --add-label or --remove-label)';
   const created = CREATE.has(p.sub) ? [...values(p, '--labels'), ...values(p, '-l')] : [];
   const labels = [...LABEL_FLAGS.flatMap((f) => values(p, f)), ...created, ...(['label add', 'label remove', 'tag'].includes(p.sub) ? p.ids.slice(1) : [])];
   if (labels.some((v) => EXPANSION.test(v))) return 'labels built by the shell';
-  const bad = labels.flatMap((v) => v.split(',')).map((l) => l.trim()).find((l) => PROTECTED_LABEL.test(l));
+  const bad = labels.flatMap((v) => v.split(',')).map((l) => l.trim()).find((l) => labelRe.test(l));
   if (bad) return `the label ${bad}`;
   if (p.sub !== 'update' && !CREATE.has(p.sub)) return null;
   for (const f of ['--metadata', '--set-metadata', '--unset-metadata']) {
@@ -124,16 +207,22 @@ function gateFieldWrite(p) {
         if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return '--metadata that is not a literal JSON object';
         keys = Object.keys(obj);
       } else keys = v.split(',').map((x) => x.split('=')[0].trim());
-      const hit = keys.find((k) => GATE_FIELDS.has(k));
+      const hit = keys.find((k) => fields.has(k));
       if (hit) return `the gate field ${hit}`;
     }
   }
   return null;
 }
 
+const UNREAD = (via) => `Refused: bd run through ${via} cannot be checked by the guard.\nRun bd directly so the guard can check it: \`bd <command>\`.`;
 function decideBd({ command, actor, roleId, staleHours, bd, now }) {
-  for (const seg of splitCommand(command)) {
-    const p = parseBd(seg);
+  for (const call of bdCalls(command)) {
+    if (call.opaque) {
+      if (!['delivery-lead', 'product-manager'].includes(roleId)) return { reason: UNREAD(call.via) };
+      continue;
+    }
+    const seg = call.tokens.join(' ');
+    const p = parseBd(call.tokens);
     if (!p) continue;
     if (roleId !== 'delivery-lead' && structural(p, actor, bd)) {
       return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: ${STRUCTURE}` };
@@ -141,6 +230,10 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
     const field = roleId !== 'delivery-lead' ? gateFieldWrite(p) : null;
     if (field) {
       return { reason: `Refused: ${field}: only materialise, ready.js and evidence.js change it, for the Delivery Manager.\nMessage the Delivery Manager with the bead id and what should change.` };
+    }
+    const fixField = !['delivery-lead', 'product-manager'].includes(roleId) ? fixFieldWrite(p) : null;
+    if (fixField) {
+      return { reason: `Refused: ${fixField}: whether a bead is a fix, and what it fixes, is the Delivery Manager's or the Product Manager's to record.\nMessage the Delivery Manager with the bead id and the defect or finding it fixes.` };
     }
     if (CLOSING.has(p.sub)) {
       for (const id of p.ids) {
@@ -227,9 +320,19 @@ function budgeted(bd, deadline) {
 const nextStep = (roleId, dmCommand, ask) => (roleId === 'delivery-lead' ? `Run: ${dmCommand}` : `Message the Delivery Manager: ${ask}.`);
 function claimFix(f, id) {
   if (f.rule === 'D2') return `set the story's surface: to an id in surface.json, then ${script('ready.js')} ${id} --record`;
+  if (f.code === 'outside-wave' || f.code === 'wave-half-built') return `${script('wave.js')} show, then finish the current wave or cut its rest on the owner's record (evidence.js cut)`;
+  if (f.code === 'budget-short' || f.code === 'fix-over-budget' || f.code === 'new-area-near-limit') return `${script('plan.js')} budget, then re-cut ${id} smaller or defer it`;
+  if (f.code === 'new-area') return `${script('plan.js')} select for compounding work; a new area needs the owner's reason (the Chief of Staff: goal.js ask area_add ${f.area || '<area>'})`;
   if (f.code === 'child-scope') return `bd update ${id} --metadata '{"criterion": <n>}' with a criterion its story has, or make the new scope its own story`;
   return `${script('ready.js')} ${id} --record --owner-record <dec-...> once the change is agreed`;
 }
+
+// what a builder tells the Delivery Manager, in plain words rather than a check's code name (review m-3)
+const PLAIN = {
+  'wave-half-built': 'it would leave the current wave half-built', 'outside-wave': 'its wave has not started',
+  'budget-short': 'it does not fit the budget left', 'fix-over-budget': 'the fix does not fit the budget left',
+  'new-area': "a new area needs the owner's reason", 'new-area-near-limit': 'the budget is near its limit',
+};
 
 // Who builds a story when this claim goes through: the --assignee target or the claimer, never the
 // Delivery Manager, who assigns work and records evidence.
@@ -240,10 +343,13 @@ function builderOf(p, actor, roleId, instance) {
   return { actor: who, instance: who === actor ? instance || null : String(who).split('/').pop(), role: who === actor ? roleId || null : null };
 }
 
-async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, team, ask, deadline, verifyRecord }) {
+async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, team, ask, deadline, verifyRecord, budget }) {
   const G = require('../../scripts/lib/gates.js');
   const { gateInputs, maxUnverified, recordChecker } = require('../../scripts/lib/gate-context.js');
   const out = { deny: null, warnings: [] };
+  // the budget is read once per command; each start that passes is held for the next (Copilot 827)
+  let base = budget;
+  const projected = new Map();
   if (!root) return out;
   const end = deadline || Date.now() + 8000;
   const bd = budgeted(rawBd, end);
@@ -259,8 +365,9 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
     if (bd && bd.spent) add(null, 'budget-spent', 'R-11', 'the hook ran out of time and skipped part of the gate checks (allowed, fail open)');
     return out;
   };
-  for (const seg of splitCommand(command)) {
-    const p = parseBd(seg);
+  for (const call of bdCalls(command)) {
+    if (call.opaque) continue;
+    const p = parseBd(call.tokens);
     if (!p) continue;
     const claiming = CLAIMING(p);
     const closing = CLOSES(p);
@@ -278,14 +385,35 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
           findings.push(...G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead, judged }));
         }
         let overCap = null;
-        if (story) { try { overCap = G.unverifiedOver(bd.list({ label: 'story', all: true }), bead, maxUnverified(team)); } catch (err) { overCap = null; } }
+        let stories = null;
+        const fixLabelled = (bead.labels || []).some((l) => l === 'bug' || l === 'security');
+        if (story || fixLabelled) { try { stories = bd.list({ label: 'story', all: true }); } catch (err) { stories = null; } }
+        if (story && stories) overCap = G.unverifiedOver(stories, bead, maxUnverified(team));
         findings.push(...G.claimDivergence({ story: story ? inp.story : null, isStory: story, bead, parent: inp.parent, parentStory: inp.parentStory, overCap }));
+        // waves, the budget, new areas and fixes (R-34, R-36, R-41; D1 and D5 only on serious divergence)
+        let started = null;
+        if (stories) {
+          try {
+            const W = require('../../scripts/lib/waves.js');
+            const B = require('../../scripts/lib/budget.js');
+            // starts earlier in this command are budgeted with this one (Copilot 827)
+            const seen = stories.map((s) => (projected.has(s.id) ? { ...s, status: 'in_progress' } : s));
+            // the transcript scan keeps to the hook's own deadline, leaving room for the rest of the checks
+            const ctx = W.contextFor(root, { bd, team, beads: seen, verifyRecord, budget: base, deadline: end - JUDGE_RESERVE_MS });
+            if (!base) base = ctx.budget;
+            const extra = [...projected.values()].reduce((n, x) => n + x, 0);
+            const st = base.set && extra ? { ...base, inflightNeed: base.inflightNeed + extra, free: base.free - extra, nearLimit: base.free - extra < base.table.units.S * (1 + base.table.reserve) } : base;
+            findings.push(...W.claimFindings(bead, { ...ctx, beads: seen, budget: st, fix: ctx.fixOf(bead), reason: ctx.reasonOf(G.areaOf(bead)) }));
+            if (st.set && !W.built(bead)) started = B.estimate(bead, { t: st.table, team }).units * (1 + st.table.reserve);
+          } catch (err) { /* fail open */ }
+        }
         const blocks = findings.filter((f) => f.level === 'block');
         for (const f of findings.filter((x) => x.level === 'warn')) add(id, f.code, f.rule, f.detail);
         if (blocks.length) {
-          out.deny = `Claim of ${id} refused (${blocks.map((f) => `${f.rule}: ${f.detail}`).join('; ')}).\n${nextStep(roleId, claimFix(blocks[0], id), `${id} ${blocks[0].code}`)}`;
+          out.deny = `Claim of ${id} refused (${blocks.map((f) => `${f.rule}: ${f.detail}`).join('; ')}).\n${nextStep(roleId, claimFix(blocks[0], id), PLAIN[blocks[0].code] ? `${id} cannot start, ${PLAIN[blocks[0].code]}` : `${id} ${blocks[0].code}`)}`;
           return finish();
         }
+        if (started !== null) projected.set(id, started);
         // stamp who builds the story, so clearing the assignee later does not make the builder a non-author
         const who = story ? builderOf(p, actor, roleId, instance) : null;
         if (who) {
@@ -334,4 +462,4 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
   return finish();
 }
 
-module.exports = { parseBd, decideBd, staleHoursOf, gateChecks, budgeted };
+module.exports = { bdCalls, parseBd, decideBd, staleHoursOf, gateChecks, budgeted };

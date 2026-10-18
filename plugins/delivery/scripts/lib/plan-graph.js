@@ -98,7 +98,11 @@ function planGraph({ prefix, initiative, sha, roadmap, stories, spikes, surfaces
       else if (surface) metadata.surface = surface;
       else if (ids.length > 1) warnings.push(`story ${s.id}: names no surface; surface.json declares ${ids.join(', ')}`);
       if (s.area || s.epic) metadata.area = s.area || s.epic;
-      beads.push({ id: `${prefix}-${s.id}`, title: s.title, type: 'task', parent: epicId, labels: ['roadmap', `phase-${p.number}`, 'story', ...(size ? [`size-${size}`] : [])], metadata, priority: 2, docId: s.id });
+      // the wave (R-36): a label and a number, so the claim check reads it from the bead alone
+      const wave = /^\d+$/.test(String(s.wave || '')) && Number(s.wave) > 0 ? Number(s.wave) : null;
+      if (s.wave && !wave) warnings.push(`story ${s.id}: wave "${s.wave}" is not a positive whole number`);
+      if (wave) metadata.wave = wave;
+      beads.push({ id: `${prefix}-${s.id}`, title: s.title, type: 'task', parent: epicId, labels: ['roadmap', `phase-${p.number}`, 'story', ...(size ? [`size-${size}`] : []), ...(wave ? [`wave-${wave}`] : [])], metadata, priority: 2, docId: s.id });
     }
     for (const sp of spikesByPhase.get(p.number) || []) {
       const q = sp.question.length > 120 ? `${sp.question.slice(0, 117)}...` : sp.question;

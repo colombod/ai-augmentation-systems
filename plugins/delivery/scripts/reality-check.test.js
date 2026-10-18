@@ -215,7 +215,7 @@ test('the Reality Checker brief renders with the plugin path and tells it to sto
 test('R-11: a Delivery Manager pass on a reality-check criterion is a side arm unless it cites a verified owner record', () => {
   const { root, bd, deploy, call } = setup();
   deploy('v1.4.2');
-  const add = (n, extra = []) => evidence.main(['add', ID, '--criterion', String(n), '--result', 'pass', '--surface', 'S1', '--sha', SHA, ...extra], { cwd: root, env: {}, bd, now: T.run, who: whoFor(root, 'delivery-lead'), verifyRecord: (r, id) => ({ ok: id === 'dec-chief-of-staff-41' }) });
+  const add = (n, extra = []) => evidence.main(['add', ID, '--criterion', String(n), '--result', 'pass', '--surface', 'S1', '--sha', SHA, ...extra], { cwd: root, env: {}, bd, now: T.run, who: whoFor(root, 'delivery-lead'), verifyRecord: require('./testing/gate-fixture.js').ownerVerify('dec-chief-of-staff-41') });
   const r = add(1);
   assert.equal(r.code, 1);
   assert.match(r.out, /criterion 1 is verified by a reality check \(R-33\)/);
