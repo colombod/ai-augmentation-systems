@@ -190,7 +190,7 @@ The catalogue is `judge/questions.json`, versioned per question:
 | `orders_owner` v1 | probability | the Chief of Staff's and Product Manager's Stop hook | warns at 0.5; blocks once at 0.8 only with an out-of-queue order to the owner (below) |
 | `tone_violation` v1 | none, justifying, condescending, therapeutic | the same Stop hook | warn-only |
 | `jargon` v1 | probability | the same Stop hook, when the id rule finds nothing | warn-only, at 0.8 |
-| `goal_instruction` v1 | probability | `goal.js set` | second key: a change needs the rule and p ≥ 0.8 (not measured) |
+| `goal_instruction` v1 | probability | `goal.js set`, free-text path only | a free-text change needs it at p ≥ 0.8 with the word rule; without the judge only the confirmed question sets a field (not measured) |
 
 - **Tool:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge.js ask <question-id> --state <file|->` prints the
   typed result as JSON (exit 0 answered, 3 skipped or failed, with the reason); `judge.js questions`
@@ -362,32 +362,32 @@ checking it against a health URL is not done yet.
 
 The owner runs the enterprise; the Chief of Staff runs the team for the owner (R-42 to R-46).
 
-- **Constraints only on the owner's word.** `.delivery/goal.json` holds the fields that constrain the
+- **Constraints only on the owner's yes.** `.delivery/goal.json` holds the fields that constrain the
   work: `budget.weekly_units`, `budget.usage_envelope`, `budget.lean_at`, `pause` (paused, stopped,
   off), the scope (changed by `scope_add` and `scope_remove`), `approvals`, `idle_minutes` (30) and
   `briefing_lines` (12). The scope is the list of product areas the team builds toward: an add puts
-  items in, a remove takes them out, and a remove can never add. A change needs an owner decision made
-  for it: the Chief of Staff records the owner's words with `operator.js record ... --goal
-  <field>=<value>`, then runs `node ${CLAUDE_PLUGIN_ROOT}/scripts/goal.js set <field> <value> --record
-  <dec-id>`. It is accepted only when the record verifies, is not revoked or superseded, carries that
-  same field and value, and the owner's quote states the value:
-  - a figure in full (30 is not 300, 30.5 or 130) with its unit, as the object of the field word in the
-    same clause: "a usage budget of 30%", "set the weekly units to 5", "45 minutes idle". "30% of the
-    tests failed, but the budget is fine" is refused;
-  - a pause as a verb on the work or the team ("pause the team", "stop all work", "halt the builders";
-    not "freeze the design" or "the paused builds"); a resume about the work ("resume work", "unpause",
-    "the team can continue"), never tied to a later time or another task;
-  - every scope item as a whole word, with an add word for an add ("add", "include", "scope is") and a
-    remove word for a remove ("remove", "drop", "out of scope");
-  - the approval policy word for word.
-  Refused whatever else it says: a negation, a conditional ("only if", "if", "unless", "when", "in
-  case"), and a quote that is not English (the rule reads English only).
-- **Two keys with the typed judge.** With the judge on, `goal.js set` also asks `goal_instruction` ("does
-  the owner's statement instruct to set <field> to <value> now?", state: quote, field, value). The
-  change passes only when the rule passes and p ≥ 0.8; a failed call counts as no. The judge's yes can
-  admit a quote the rule cannot read (another language), never one the rule refused for its content.
-  The answer is kept with the entry, so the re-check on read honours it. With the judge off, the rule
-  alone decides.
+  items in, a remove takes them out, and a remove can never add.
+- **The confirmed question (the main path).** In plain words for the owner: to set a budget or pause
+  the team, the Chief of Staff asks you a yes/no question; your yes is the decision. Mechanically:
+  - `node ${CLAUDE_PLUGIN_ROOT}/scripts/goal.js ask <field> <value>` words the question itself ("Pause
+    the team's work now?", "Set the weekly budget to 5 units?", "Add billing to the scope?", "Resume
+    the team's work now?") and records it with `operator.js ask` (options Yes and No);
+  - the Chief of Staff asks exactly that text (AskUserQuestion, Yes/No) and records the owner's reply
+    with `operator.js record --answers <q> --goal <field>=<value>`;
+  - `goal.js set <field> <value> --record <dec-id>` accepts it only when the question text is
+    goal.js's text for that field and value, the record carries the same field and value, the owner's
+    whole reply is a yes ("yes", "y", "ok", "okay", "do it", "go", "go ahead", "confirmed", "agreed",
+    "approve", "approved"; anything else, a no, "not now", a question back, is not), the reply came
+    after the question (one question per reply), and the record is neither revoked nor superseded.
+- **Free text (the second path).** An instruction the owner types in their own words ("Pause the team
+  now") sets a field only when the typed judge is on and its `goal_instruction` answer is p ≥ 0.8, and
+  the plugin's word rule passes as a pre-filter; a failed call counts as no. With the judge off, free
+  text never sets a field: the plugin does not understand free-text instructions on its own. The word
+  rule refuses, whatever else is said: a negation, a conditional ("only if", "if", "unless", "when",
+  "in case"), another language, a figure that is not the object of its field word in the same clause,
+  a pause that is not a verb on the work, a resume tied to a later time. It is a filter, not an
+  understanding: it still lets through words that do not instruct ("halt the team chatter"), which is
+  why it never decides alone.
 - **Who sets what.** The Chief of Staff sets every field; the Product Manager sets scope changes only.
   Other roles, and sessions without a role, are refused. Every read checks the record again: a revoked
   record, or a value written by hand, falls back to unset (or the default) with a `goal-unverified`
