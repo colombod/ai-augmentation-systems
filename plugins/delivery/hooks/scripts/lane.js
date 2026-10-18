@@ -674,7 +674,7 @@ function reviewDirs({ projectRoot, roleDir }) {
 // The assumption register (R-14): the gates read its rows, so only scripts/assumptions.js writes it (a
 // node process, not a tool call). Protected for every role, `any` included, the Product Manager too;
 // best effort, like the goal sheet. The gates also re-verify each row against its evidence.
-const REGISTER_REASON = 'the assumption register changes only through `assumptions.js` (add, observe, refute, reopen, ack)';
+const REGISTER_REASON = 'the assumption register changes only through `assumptions.js` (add, observe, refute, reopen, retire, relink)';
 const REGISTER_MENTION = /\.delivery\/+(?:\.\/+)*initiatives\/+[^/\s'"]+\/+assumptions\.md\b/i;
 const REGISTER_REL = /^\.delivery[\\/]initiatives[\\/][^\\/]+[\\/]assumptions\.md$/i;
 function registerHit({ projectRoot, roleDir }) {

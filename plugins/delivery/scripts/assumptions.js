@@ -15,6 +15,11 @@
 //       assumption is not observed again: it returns only through a new design (a new row) or reopen.
 //   assumptions.js reopen <A-n> [--initiative <slug>]   Product Manager: a refuted assumption back to
 //       assumed; only a Reality Checker probe newer than the reopen observes it again
+//   assumptions.js retire <A-n> --reason '<the design change>'   Product Manager: a refuted row's criteria
+//       links become retired (kept in the cell as history) and a retire row goes on the spike's chain, so
+//       the stories and the area recover once ready is re-recorded on the new design
+//   assumptions.js relink <A-n> --criteria '<story>#<n> ...'   Product Manager: the criteria a row that is
+//       not refuted sits on (the new design's assumption); recorded as a warning for the Delivery Manager
 //   assumptions.js ack <spike bead> --result <ev-id> --decision '<the decision taken>' [--record dec-...]
 //       the decision owner's acknowledgement of that result: the Delivery or Product Manager named as
 //       its owner, or either citing the owner's record scoped to the spike when the owner decides
@@ -28,8 +33,8 @@ const W = require('./lib/warnings.js');
 const { whoAmI, ownerRecord } = require('./lib/gate-context.js');
 const { parseStories } = require('./lib/plan-docs.js');
 
-const USAGE = "usage: assumptions.js list [--initiative <slug>] [--plain] [--json] | add --statement '<claim>' --kind <kind> --criteria '<story>#<n> ...' --owner DM|PM|owner | probe <spike> --host <h> --observed '<seen>' --artifact <file> [--twin <recording>] | observe|refute|reopen <A-n> [--evidence <ev-id>] | ack <spike> --result <ev-id> --decision '<decision>' [--record dec-...]";
-const VALUE = ['--initiative', '--statement', '--kind', '--criteria', '--owner', '--host', '--observed', '--artifact', '--twin', '--evidence', '--result', '--decision', '--record', '--project'];
+const USAGE = "usage: assumptions.js list [--initiative <slug>] [--plain] [--json] | add --statement '<claim>' --kind <kind> --criteria '<story>#<n> ...' --owner DM|PM|owner | probe <spike> --host <h> --observed '<seen>' --artifact <file> [--twin <recording>] | observe|refute|reopen <A-n> [--evidence <ev-id>] | retire <A-n> --reason <text> | relink <A-n> --criteria <list> | ack <spike> --result <ev-id> --decision '<decision>' [--record dec-...]";
+const VALUE = ['--reason', '--initiative', '--statement', '--kind', '--criteria', '--owner', '--host', '--observed', '--artifact', '--twin', '--evidence', '--result', '--decision', '--record', '--project'];
 const ROLE_WORD = { 'delivery-lead': 'Delivery Manager', 'product-manager': 'Product Manager', 'reality-checker': 'Reality Checker', 'spike-researcher': 'Spike Researcher', builder: 'builder' };
 const DM = 'Message the Delivery Manager';
 
@@ -87,7 +92,8 @@ function list(root, a, store, verifyRecord) {
   if (!slug) return withRegister(root).length ? noInitiative : { code: 0, out: 'No assumptions recorded.' };
   const reg = A.loadRegister(root, slug);
   if (a.flags.has('json')) return { code: 0, out: JSON.stringify({ initiative: slug, rows: reg.rows.map(({ line, ...r }) => r), problems: reg.problems }, null, 2) };
-  const out = reg.rows.map((r) => `${r.id} ${r.kind} ${r.status}: ${r.statement} (on ${r.criteria.map((c) => (c.ns.length ? `${c.story}#${c.ns.join('#')}` : c.story)).join(' ') || 'nothing'}; evidence ${r.evidence || '-'}; owner ${A.OWNER_WORD[r.owner] || '-'})`);
+  const links = (cs) => cs.map((c) => (c.ns.length ? c.ns.map((n) => `${c.story}#${n}`).join(' ') : c.story)).join(' ');
+  const out = reg.rows.map((r) => `${r.id} ${r.kind} ${r.status}: ${r.statement} (on ${links(r.criteria) || 'nothing'}${r.retired.length ? `; retired from ${links(r.retired)}` : ''}; evidence ${r.evidence || '-'}; owner ${A.OWNER_WORD[r.owner] || '-'})`);
   for (const p of reg.problems) out.push(`warning: ${p}`);
   return { code: 0, out: out.join('\n') || `no assumptions in ${path.relative(root, A.fileOf(root, slug))}` };
 }
@@ -195,6 +201,7 @@ function reopen(root, who, store, aId, a, now) {
   const L = loadRow(root, a, aId);
   if (L.usage) return L.usage;
   const { slug, file, text, reg, row } = L;
+  if (row && row.retired.length) return refuse(`${aId} was retired: the design moved on, so it is not reopened.`, 'Add the assumption the new design rests on: `assumptions.js add ...`.');
   if (!row || row.status !== 'refuted') return refuse(`only a refuted assumption is reopened (${aId} is ${row ? row.status : 'not in the register'}).`, `List them: \`assumptions.js list --initiative ${slug}\`.`);
   const ev = /^ev-(.+)-\d+$/.exec(row.evidence || '');
   const spike = ev ? showOf(store, ev[1]) : null;
@@ -203,6 +210,40 @@ function reopen(root, who, store, aId, a, now) {
   const full = appendRow(root, store, spike.id, { type: 'reopen', assumption: aId, after: row.evidence, by: who.roleId, actor: who.actor || who.instance, at: now || new Date().toISOString() });
   fs.writeFileSync(file, A.writeRow(text, reg, { ...row, status: 'assumed', evidence: '' }));
   return { code: 0, out: `${aId} reopened (${full.id}): assumed again; only a Reality Checker probe newer than this observes it.\n${DM} to dispatch ${spike.id}.` };
+}
+
+// A refuted row stops resting on its criteria only through a retire row on its spike's chain, which the
+// gates look for; the links stay in the cell as history.
+function retire(root, who, store, aId, a, now) {
+  const wp = roleProblem(who, ['product-manager']);
+  if (wp) return refuse(wp, 'Message the Product Manager, who runs `assumptions.js retire`.');
+  if (!a.reason) return { code: 2, out: "assumptions.js: retire needs --reason '<the design change>'" };
+  const L = loadRow(root, a, aId);
+  if (L.usage) return L.usage;
+  const { slug, file, text, reg, row } = L;
+  if (!row || row.status !== 'refuted' || row.retired.length) return refuse(`only a refuted assumption with live links is retired (${aId} is ${row ? (row.retired.length ? 'retired already' : row.status) : 'not in the register'}).`, `List them: \`assumptions.js list --initiative ${slug}\`.`);
+  const ev = A.evidenceOf(root, store, slug, row, row.evidence);
+  if (ev.why) return refuse(`${aId}'s refutation does not verify: ${ev.why}.`, `${DM} to dispatch a probe of the real host (\`assumptions.js probe <spike> ...\`).`);
+  const was = row.criteria.map((c) => (c.ns.length ? c.ns.map((n) => `${c.story}#${n}`).join(' ') : c.story)).join(' ');
+  const full = appendRow(root, store, ev.bead.id, { type: 'retire', assumption: aId, criteria: was, reason: a.reason, by: who.roleId, actor: who.actor || who.instance, at: now || new Date().toISOString() });
+  fs.writeFileSync(file, A.writeRow(text, reg, { ...row, criteria: [], retired: row.criteria }));
+  return { code: 0, out: `${aId} retired (${full.id}): ${was} no longer rest on it.\nThe Delivery Manager re-records ready on the changed stories: ready.js <story> --record` };
+}
+
+function relink(root, who, aId, a) {
+  const wp = roleProblem(who, ['product-manager']);
+  if (wp) return refuse(wp, 'Message the Product Manager, who runs `assumptions.js relink`.');
+  if (!A.criteriaOf(a.criteria).length) return { code: 2, out: "assumptions.js: relink needs --criteria '<story>#<n> ...'" };
+  const L = loadRow(root, a, aId);
+  if (L.usage) return L.usage;
+  const { slug, file, text, reg, row } = L;
+  if (!row) return refuse(`no ${aId} in ${path.relative(root, file)}.`, `List them: \`assumptions.js list --initiative ${slug}\`.`);
+  if (row.status === 'refuted' || row.retired.length) return refuse(`${aId} is refuted: it is retired, not relinked.`, `Retire it and add the new design's assumption: \`assumptions.js retire ${aId} --reason '...'\`.`);
+  const before = row.criteria.map((c) => c.story).join(' ') || 'nothing';
+  const next = A.criteriaOf(a.criteria);
+  fs.writeFileSync(file, A.writeRow(text, reg, { ...row, criteria: next }));
+  W.record(root, { kind: 'assumption-relinked', rule: 'R-14', bead: null, detail: `${aId} (${row.kind}, ${row.status}) moved from ${before} to ${next.map((c) => c.story).join(' ')}`, raisedBy: who.instance, instance: who.instance });
+  return { code: 0, out: `${aId} now sits on ${a.criteria}; re-record ready on the stories it left and joined.` };
 }
 
 function ack(root, who, store, id, a, verifyRecord, now) {
@@ -241,6 +282,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   if (cmd === 'probe') return probe(who.root, who, store, id, a, now);
   if (cmd === 'observe' || cmd === 'refute') return settle(who.root, who, store, cmd, id, a);
   if (cmd === 'reopen') return reopen(who.root, who, store, id, a, now);
+  if (cmd === 'retire') return retire(who.root, who, store, id, a, now);
+  if (cmd === 'relink') return relink(who.root, who, id, a);
   if (cmd === 'ack') return ack(who.root, who, store, id, a, verifyRecord, now);
   return { code: 2, out: USAGE };
 }

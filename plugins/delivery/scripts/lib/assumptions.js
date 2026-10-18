@@ -69,13 +69,16 @@ function parseRegister(text) {
     r.kind = r.kind.toLowerCase();
     r.status = r.status.toLowerCase();
     r.owner = ownerOf(r.owner);
-    r.criteria = criteriaOf(r.criteria);
+    // a refuted row's links, once the Product Manager retires it: kept in the cell as history
+    const retired = /^retired:\s*(.*)$/i.exec(r.criteria);
+    r.retired = retired ? criteriaOf(retired[1]) : [];
+    r.criteria = retired ? [] : criteriaOf(r.criteria);
     r.line = end;
     if (!/^A-\d+$/.test(r.id)) problems.push(`assumption "${r.id}": the id is not A-<n>`);
     if (!KINDS.includes(r.kind)) problems.push(`${r.id}: kind "${r.kind}" is not one of ${KINDS.join(', ')}`);
     if (!STATUSES.includes(r.status)) problems.push(`${r.id}: status "${r.status}" is not one of ${STATUSES.join(', ')}`);
     if (r.status !== 'assumed' && !/^ev-/.test(r.evidence)) problems.push(`${r.id} is ${r.status} with no ev- evidence row`);
-    if (!r.criteria.length) problems.push(`${r.id} sits on no criteria (<story>#<n>)`);
+    if (!r.criteria.length && !r.retired.length) problems.push(`${r.id} sits on no criteria (<story>#<n>)`);
     rows.push(r);
   }
   return { rows, problems, table: { start, end }, lines };
@@ -85,7 +88,8 @@ const loadRegister = (root, slug) => { try { return parseRegister(fs.readFileSyn
 
 const esc = (s) => String(s || '').replace(/\|/g, '\\|');
 const renderCriteria = (cs) => cs.map((c) => (c.ns.length ? c.ns.map((n) => `${c.story}#${n}`).join(' ') : c.story)).join(' ');
-const renderRow = (r) => `| ${[r.id, esc(r.statement), r.kind, renderCriteria(r.criteria), r.status, r.evidence || '', OWNER_WORD[r.owner] || ''].join(' | ')} |`;
+const criteriaCell = (r) => ((r.retired || []).length ? `retired: ${renderCriteria(r.retired)}` : renderCriteria(r.criteria));
+const renderRow = (r) => `| ${[r.id, esc(r.statement), r.kind, criteriaCell(r), r.status, r.evidence || '', OWNER_WORD[r.owner] || ''].join(' | ')} |`;
 
 // the register's text with one row replaced (patch) or appended (row without a line)
 function writeRow(text, reg, row) {
@@ -190,11 +194,16 @@ function evidenceOf(root, bd, slug, a, evId) {
 }
 
 // rows as the gates see them: status re-verified, acked for observed ones. ownerOk(record, spikeId, aId)
+// Retired links count as retired only on a refuted row whose chain holds a retire row after the
+// refutation (assumptions.js retire); anywhere else they are live links again.
 function verifyRows(root, bd, slug, rows, { ownerOk } = {}) {
-  return rows.map((a) => {
-    if (a.status !== 'observed' && a.status !== 'refuted') return { ...a };
-    const ev = evidenceOf(root, bd, slug, a, a.evidence);
-    if (ev.why) return { ...a, status: 'assumed', unverified: `${a.id} says ${a.status}, but ${ev.why}` };
+  return rows.map((a0) => {
+    const live = { ...a0, criteria: [...a0.criteria, ...(a0.retired || [])], retired: [] };
+    if (a0.status !== 'observed' && a0.status !== 'refuted') return (a0.retired || []).length ? { ...live, unverified: `${a0.id} has retired links but is ${a0.status}, so they stay live` } : { ...a0 };
+    const ev = evidenceOf(root, bd, slug, a0, a0.evidence);
+    const retiredOk = a0.status === 'refuted' && !ev.why && ev.rows.some((r) => r.type === 'retire' && r.assumption === a0.id && r.seq > ev.row.seq);
+    const a = (a0.retired || []).length && !retiredOk ? { ...live, unverified: `${a0.id}'s links are marked retired with no retire row, so they stay live` } : { ...a0 };
+    if (ev.why) return { ...a, status: 'assumed', unverified: `${a.id} says ${a.status}, but ${ev.why}; treated as assumed` };
     const owner = decisionOwner(a, ev.bead);
     return { ...a, owner, spike: ev.bead.id, acked: Boolean(ackOf(ev.rows, ev.row, owner, { ownerOk, spikeId: ev.bead.id, aId: a.id })) };
   });
@@ -229,7 +238,7 @@ const ext = (a) => a.kind === 'external-host';
 function storyFindings({ links, spikeOf = () => null, stamp = null, rows = [] }) {
   const f = [];
   for (const { a, ns } of links) {
-    if (a.unverified) f.push(warn('assumption-unverified', 'R-15', `${a.unverified}; treated as assumed`, { assumption: a.id }));
+    if (a.unverified) f.push(warn('assumption-unverified', 'R-15', a.unverified, { assumption: a.id }));
     if (a.status === 'refuted') {
       if (ext(a)) f.push(block('assumption-refuted', 'D4', `${where(ns)} on ${a.id}, refuted by ${a.evidence}`, { assumption: a.id }));
       else f.push(warn('assumption-refuted', 'R-15', `${where(ns)} on ${a.id} (${a.kind}), refuted by ${a.evidence}: change the design`, { assumption: a.id }));

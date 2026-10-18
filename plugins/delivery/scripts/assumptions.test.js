@@ -154,11 +154,12 @@ test('R-16/R-15 replay: R1 shows a local path; A-8 is refuted; the intake stops 
   assert.match(o.out, /A-8 was refuted; a later probe does not observe it again/);
   assert.deepEqual(reasonProblems(o.out), []);
   // the design changes: the intake asks the player to paste the CSV, resting on an internal choice
-  t.write(row('A-8', FILE_HANDOFF, 'external-host', 'vault-0n9-9', 'refuted', p.row.id), A10());
+  assert.equal(t.run('product-manager', ['retire', 'A-8', '--reason', 'paste-in replaces the file hand-off']).code, 0);
+  assert.equal(t.run('product-manager', ['add', '--statement', PASTE, '--kind', 'internal', '--criteria', 'vault-0n9-3#1', '--owner', 'DM']).code, 0);
   assert.equal((await t.claim('ex-vault-0n9-4')).deny, null, 'the area resumes once no story rests on the refuted assumption');
   const rr = await t.ready('ex-vault-0n9-3');
   assert.equal(rr.code, 0, rr.out);
-  assert.deepEqual(t.bd.show('ex-vault-0n9-3').metadata.ready_assumptions, ['A-10']);
+  assert.deepEqual(t.bd.show('ex-vault-0n9-3').metadata.ready_assumptions, ['A-9']);
   assert.ok(!W.list(t.root).some((w) => w.kind === 'assumption-refuted' && w.bead === 'ex-vault-0n9-3' && !w.acked_by), 'the re-recorded ready resolves the hold (Copilot 986)');
   assert.equal((await t.claim('ex-vault-0n9-3')).deny, null);
 });
@@ -183,7 +184,7 @@ test('D4 andon: a story made ready on A-8, refuted later, stays held until ready
   assert.deepEqual(t.bd.show('ex-vault-0n9-3').metadata.ready_assumptions, ['A-8']);
   const p2 = t.rcProbe('a local path after their update');
   assert.equal(t.run('product-manager', ['refute', 'A-8', '--evidence', p2.row.id]).code, 0);
-  t.write(row('A-8', FILE_HANDOFF, 'external-host', 'vault-0n9-9', 'refuted', p2.row.id), A10());
+  assert.equal(t.run('product-manager', ['retire', 'A-8', '--reason', 'paste-in']).code, 0);
   assert.match((await t.claim('ex-vault-0n9-3')).deny, /ready was recorded on A-8, since refuted/);
   assert.match((await t.claim('ex-vault-0n9-4')).deny, /area collection is paused/);
   assert.equal((await t.ready('ex-vault-0n9-3')).code, 0);
@@ -230,6 +231,9 @@ test('R-16: a spike that decides scope is acknowledged only on the owner\'s reco
   assert.equal(ack('dec-chief-of-staff-30').code, 0);
   assert.equal((await t.claim('ex-vault-0n9-3')).deny, null);
   assert.equal(t.run('chief-of-staff', ['list', '--plain']).out, 'Nothing is waiting on a check of the outside world or on a decision about one.');
+  // the record still verifies but is no longer scoped to this spike: it no longer counts at the claim
+  t.verify = () => scoped(['ex-vault-spike-other']);
+  assert.match((await t.claim('ex-vault-0n9-3')).deny, /no acknowledgement of its result from its decision owner \(owner\)/);
   t.verify = () => ({ ok: false, error: 'revoked' });
   assert.match((await t.claim('ex-vault-0n9-3')).deny, /no acknowledgement of its result from its decision owner \(owner\)/);
 });
@@ -309,6 +313,17 @@ test('B1: the gates re-verify the register: a status without a valid evidence ro
   assert.match(A.observationProblem({ id: 'ev-x-1', type: 'row', by: 'reality-checker', via: 'reality-check' }, { id: 'A-8', kind: 'external-host' }), /not a probe in the real host/);
 });
 
+test('retire: only a refuted row; a retired cell on any other row leaves its links live', async () => {
+  const t = setup([A8()]);
+  const r = t.run('product-manager', ['retire', 'A-8', '--reason', 'skip the spike']);
+  assert.match(r.out, /only a refuted assumption with live links is retired \(A-8 is assumed\)/);
+  assert.deepEqual(reasonProblems(r.out), []);
+  t.write(row('A-8', FILE_HANDOFF, 'external-host', 'retired: vault-0n9-3#1', 'assumed'));
+  const g = await t.claim('ex-vault-0n9-3');
+  assert.match(g.deny, /not yet observed in the real host/);
+  assert.ok(g.warnings.some((w) => /retired links but is assumed, so they stay live/.test(w.detail)));
+});
+
 test('B2: a child bead of a story resting on an assumed external host is refused for its criterion, or for all when it names none', async () => {
   const t = setup([row('A-8', FILE_HANDOFF, 'external-host', 'vault-0n9-3#1')]);
   const child = (criterion) => ({ id: `ex-vault-0n9-3.${criterion || 'x'}`, title: 'part', status: 'open', parent: 'ex-vault-0n9-3', labels: [], metadata: criterion ? { criterion } : {} });
@@ -323,7 +338,7 @@ test('Copilot 864: each story in an area is read against its own initiative\'s r
   const t = setup([A8()]);
   const p = t.rcProbe('a local path');
   t.run('product-manager', ['refute', 'A-8', '--evidence', p.row.id]);
-  t.write(row('A-8', FILE_HANDOFF, 'external-host', 'vault-0n9-9', 'refuted', p.row.id));
+  t.run('product-manager', ['retire', 'A-8', '--reason', 'moved on']);
   // another initiative's story, ready on its own A-8 (an internal choice there), shares the area
   fs.mkdirSync(path.join(t.root, '.delivery', 'initiatives', 'shop'), { recursive: true });
   fs.writeFileSync(A.fileOf(t.root, 'shop'), register(row('A-8', 'Shop claim', 'internal', 'shop-1')));
@@ -373,6 +388,7 @@ test('lanes: the register is read by every role, written by the Product and Deli
   assert.ok(!allowed('chief-of-staff', 'add --statement x'));
   for (const role of ['product-manager', 'delivery-lead']) assert.ok(allowed(role, 'ack ex-s --decision d') && allowed(role, 'refute A-1 --evidence ev-x-1'), role);
   assert.ok(allowed('reality-checker', 'probe ex-s --host h --observed o --artifact a'));
+  for (const sub of ['reopen A-8', "retire A-8 --reason 'paste-in'", 'relink A-9 --criteria s-1#1']) assert.ok(allowed('product-manager', sub) && !allowed('reality-checker', sub) && !allowed('chief-of-staff', sub), sub);
   assert.ok(!allowed('reality-checker', 'ack ex-s --decision d'));
   assert.ok(!allowed('progress-observer', 'observe A-1 --evidence ev-x-1'));
   // B1: nobody writes the register except through the script, the Product Manager and the any-lanes included

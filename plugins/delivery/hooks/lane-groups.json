@@ -94,7 +94,7 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/reality-check.js", "sub": ["run-record"] }
   ],
   "assumptions": [
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js", "sub": ["add", "observe", "refute", "ack"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js", "sub": ["add", "observe", "refute", "ack", "reopen", "retire", "relink"] }
   ],
   "probe": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/assumptions.js", "sub": ["probe"] }
