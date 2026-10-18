@@ -187,6 +187,9 @@ The catalogue is `judge/questions.json`, versioned per question:
 | `shippable_unit` v2 | yes, partial, no | the ready gate (`ready.js`, bd guard on claim) | advisory: a warning at most |
 | `builds_on_verified` v2 | strongly, partly, new area | library and CLI only for now | advisory |
 | `is_fix` v1 | probability | library and CLI only for now | advisory (a probability, not the yes/no choice first planned) |
+| `orders_owner` v1 | probability | the Chief of Staff's and Product Manager's Stop hook | warns at 0.5; blocks once at 0.8 only with an out-of-queue order to the owner (below) |
+| `tone_violation` v1 | none, justifying, condescending, therapeutic | the same Stop hook | warn-only |
+| `jargon` v1 | probability | the same Stop hook, when the id rule finds nothing | warn-only, at 0.8 |
 
 - **Tool:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge.js ask <question-id> --state <file|->` prints the
   typed result as JSON (exit 0 answered, 3 skipped or failed, with the reason); `judge.js questions`
@@ -222,7 +225,13 @@ The catalogue is `judge/questions.json`, versioned per question:
   are not measured. `divergence` is re-measured on real gate summaries (about 10, at least 3 minor)
   before it may ever block.
 - **Live check:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge-smoke.js` (opt-in, not in the test suite)
-  sends the 10 labelled relay cases in `judge/smoke-relay-cases.json` and fails below 9 of 10.
+  sends the 10 labelled relay cases in `judge/smoke-relay-cases.json` and fails below 9 of 10;
+  `judge-smoke.js --set message` sends the 30 owner-message cases in `judge/smoke-message-cases.json`
+  and prints, per question, the score and any wrong answer at or above 0.8. A question may block only at
+  9 of 10 or better with no such wrong answer. Measured once (0.23.0, jev-1.13.0): `orders_owner` 10/10
+  (yes 0.79 to 0.90, no 0.06 to 0.14), `tone_violation` 8/10 (two condescending messages called
+  justifying), `jargon` 8/10 at 0.5 (negatives up to 0.62, so it warns at 0.8). The same caveat applies:
+  10 cases, labelled by someone who knew them, from one team's Chief of Staff.
 
 ### Bead discipline
 
@@ -345,6 +354,58 @@ hook's budget remain. `shippable_unit` warns at the ready gate.
 summaries. No new catalogue question was added: a criterion-kind question needs labelled cases first,
 so mechanism wording is a word rule. The deployed sha is the one recorded with `evidence.js state`;
 checking it against a health URL is not done yet.
+
+### Owner authority and communication
+
+The owner runs the enterprise; the Chief of Staff runs the team for the owner (R-42 to R-46).
+
+- **Constraints only on the owner's word.** `.delivery/goal.json` holds the fields that constrain the
+  work: `budget.weekly_units`, `budget.usage_envelope`, `budget.lean_at`, `pause` (paused, stopped,
+  off), `scope`, `approvals`, `idle_minutes` (30) and `briefing_lines` (12).
+  `node ${CLAUDE_PLUGIN_ROOT}/scripts/goal.js set <field> <value> --record <dec-id>` changes one only
+  when the record is an owner decision that verifies, is not revoked or superseded, and its quote
+  covers the change (the figure with a word of the field; every scope item; a pause or resume word).
+  Only a Chief of Staff or Product Manager session sets a field; outside a role session it is refused.
+  The mechanical path is `goal.js pause --trigger andon:<id>` (Delivery Manager or Chief of Staff),
+  which holds while `.delivery/andon/<id>.json` says `open`; red CI is a hook point not readable yet.
+  The lane refuses every role, unrestricted ones included, a direct write, edit, move or checkout of
+  the file; committing it is fine. `goal.js show` prints each field with its record.
+- **No default budget.** A budget field is unset until the owner sets it, and every budget check only
+  warns until then. A usage figure written into `team.json` (`budget.weekly_units`,
+  `usage_envelope`, `lean_at`) is ignored with a warning. `budget.builders_cap`, `staleness_hours` and
+  `max_unverified` are team settings, not budget figures.
+- **Idle is a defect.** With ready beads, nothing in progress, the last bead activity older than
+  `idle_minutes` and no pause that still holds (its record verifies or its andon is open),
+  `team-status.js` (and so `/delivery:team`) shows "Idle: ..." first and records one `idle` warning
+  per idle stretch; the Delivery Manager's and Chief of Staff's Stop does the same check at most every
+  10 minutes and says it on the next prompt. Telling sessions to idle is not a pause. A ready bead
+  counts as waiting for the owner only while an open owner-queue step names it.
+- **The owner queue.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/owner-queue.js add --kind
+  signin|consent|payment|secret|account|decision --what '<one action>' --where '<place>' --steps
+  '<exact steps>' [--expect '<what they see>'] [--check '<read-back>'] [--bead <id>]` (decisions also
+  `--about scope|money|irreversible --question q-...`). A check of whether something works, or a relay
+  into another session, is refused whatever the kind. `owner-queue.js list` is the daily batch;
+  `owner-queue.js done <id>` closes a step and prints its read-back. Only the Chief of Staff writes it;
+  rows are append-only under `.delivery/owner-queue/`.
+- **The owner-message checks** (the Chief of Staff's and Product Manager's Stop, `message-checks.js`):
+
+  | Check | Rule | Level |
+  |---|---|---|
+  | an imperative to the owner that no open queue step holds | `orders_owner` p ≥ 0.5, or the word rule with the judge off | warn; p ≥ 0.8 with such an imperative blocks once per turn |
+  | a routine briefing (no question to the owner) over `briefing_lines` | line count | warn |
+  | internal ids and names: `R-34`, `D5`, bead ids with the project prefix, `dec-`/`ev-`/`q-` ids, paths, script, lane and hook names, shas | patterns; links and replies to an owner who asked for ids are skipped | warn |
+  | `jargon` when the patterns find nothing; `tone_violation` justifying, condescending or therapeutic | the judge | warn |
+  | live, shipped or verified with no `evidence.js check` or `list` in this turn's tool calls | word rule over the transcript | warn, unless it says "not checked yet" |
+
+  Each warning is a ledger row (rules R-44, R-45, R-03) and one two-line reminder on the next prompt.
+  The judge questions are asked in parallel with `relay_request`, 2 s each, and not at all on a
+  continuation that can no longer block.
+- **Short reasons.** Every block and warning reason from the hooks and these scripts is at most two
+  lines and its last line names the exact command or the role to message; `hooks/scripts/reasons.test.js`
+  checks it over the guards' refusals.
+- **Limits.** The word rules are heuristics: an order phrased as a statement, or ids in an image, pass.
+  The goal file and the queue are tamper-evident by git history only, like the warnings ledger; a role
+  with unrestricted Bash can still write them in a shape the lane does not parse.
 
 ### Steward notes
 
