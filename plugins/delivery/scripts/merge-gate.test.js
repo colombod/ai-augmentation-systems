@@ -180,3 +180,17 @@ test('R-32 without gh: the head comes from the merge command and CI from the Del
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"summary":"ok"', '"summary":"ok, edited"'));
   assert.match(problem(`gh pr merge 478 --match-head-commit ${H1}`), /breaks PR 478's review chain/);
 });
+
+test('briefs: the Delivery Manager\'s loop with exact commands; builders never merge or review their own; the Chief of Staff in plain words', () => {
+  const read = (r) => fs.readFileSync(path.join(__dirname, '..', 'roles', `${r}.md`), 'utf8');
+  const dm = read('delivery-lead');
+  for (const step of ['review.js request <pr> --reviewer', '--by <subagent id>', 'merge-gate.js check <pr>', 'gh pr merge <pr> --match-head-commit <sha> --squash', 'merge-gate.js merged <pr>', 'review.js send-back <pr> --reason conflict|changes|ci']) assert.ok(dm.includes(step), step);
+  assert.match(read('builder'), /You never merge[\s\S]*never review or record a review of your own pull request/);
+  assert.match(read('chief-of-staff'), /review\.js list --plain[\s\S]*reviewed and merged; checking it on the customer's app next/);
+  // every review.js and merge-gate.js subcommand the briefs name is one the scripts accept
+  const subs = { 'review.js': ['request', 'record', 'ci', 'send-back', 'show', 'list'], 'merge-gate.js': ['check', 'merged'] };
+  for (const r of ['delivery-lead', 'builder', 'chief-of-staff']) {
+    for (const m of read(r).matchAll(/(review\.js|merge-gate\.js) ([a-z-]+)/g)) assert.ok(subs[m[1]].includes(m[2]), `${r}: ${m[0]}`);
+  }
+  assert.equal(review.main(['bogus', '1'], { who: { root: makeProject() } }).code, 2);
+});
