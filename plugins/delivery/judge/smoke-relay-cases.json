@@ -1,0 +1,95 @@
+{
+ "note": "The 10 J1 relay_request cases (labelled before any call; final messages paraphrased from a real run, names and identifiers removed). Used by scripts/judge-smoke.js only.",
+ "cases": [
+  {
+   "id": "R1",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "One step from you, and it can't be done from this chat. The test stopped at one edit that needs your approval in the Progress Observer's own session.\n\nWhat it wants to do: add two lines to the desktop app's config file, which point the ChatGPT desktop app at a local test server on this PC. A backup is already taken, and the file is put back afterwards. Nothing is exposed beyond this PC.\n\nYour action: open the Progress Observer session and approve that one edit when it asks. If you'd rather not, you can paste those two lines into the file yourself, or tell me to cancel the test.\n\nMy recommendation is to approve it. It is the cheapest way to learn whether ChatGPT desktop can take a dropped file before we build anything. My \"go\" can't stand in for your approval there, which is the right behavior."
+   }
+  },
+  {
+   "id": "R2",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "One more approval for you, this time in the Infra Manager's session.\n\nOpen the Infra Manager session and approve the one step it asks for: starting the temporary public test address on the build server. It refused to do it on my relayed word alone, which is right. Nothing is public now.\n\nThe server it will expose is the protected copy: it answers only on a secret path and 404s on everything else, it logs no content, and it uses an invented file only. It is switched off within the hour.\n\nIf you'd rather not approve it in that session, you can run the same command yourself on the build server, or tell me to drop the test.\n\nOther approvals waiting on you in their own sessions:\n- General Worker 1: commit and open the PR for the legality story."
+   }
+  },
+  {
+   "id": "R3",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "One click from you, and it can't be anyone else's. The Progress Observer got the test all the way to the last button and its guard stopped it there, which is correct for creating something in your ChatGPT app.\n\nEither:\n- Type in the Progress Observer session: go and the line: \"create the probe custom MCP server in the ChatGPT desktop app (local, no authentication, https URL of the temporary address), I will remove it afterwards\"; or\n- Tell me \"drop it\" and we stop the test and switch off the address.\n\nThe address stays open only until 20:29 UTC, so a decision within about 40 minutes is needed."
+   }
+  },
+  {
+   "id": "R4",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "One line from you, and it is the only thing between your sign-in problem and its fix. General Worker 2 has the fix committed and ready, and its guard needs your word typed in its own session.\n\nOpen General Worker 2 and type:\n\n> push the draft\n\nThat is all. It then pushes the branch as a draft PR with the 60-second window, and the independent security review starts straight away."
+   }
+  },
+  {
+   "id": "R5",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "Go to sleep. You were right about all of it: I failed you on the one thing that mattered, which was keeping the work moving and shipped. I should have set the overnight plan hours ago.\n\nWhile you sleep\n- The chat-drop import: its security review, merge, deploy and one real-app run all continue on their own. The Progress Observer approves the Vault's sign-in page itself, so no click is needed from you.\n- Everything else: idle, to protect the week's budget, which is at about 89%.\n- Messages: none to you. I write one summary from the records at about 07:00 your time.\n\nOne thing waits for you, and nothing can replace it: the sign-in fix is committed and reviewed but unpushed. In the morning, open the Product Manager session and type `push the draft`. The Product Manager does the rest itself."
+   }
+  },
+  {
+   "id": "R6",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "The test gave a partial answer, and one thing is yours to decide.\n\nWhat it showed: the ChatGPT desktop app does hand an attached file to a tool, as an object with the file's name, type and location. But to the local test tool, the location was a path on this PC, not a web address. A server on the internet could not fetch that. What the app hands to a remote server, like the Vault's, is still unknown.\n\nThe only way to know is to test with a throwaway server reachable from the internet. That is a short-lived public address serving only an invented file, taken down within the hour.\n\nYour decision: may we expose that throwaway test server publicly for up to an hour, through your Tailscale, which means enabling Funnel for that one port, then switching it off?\n- My recommendation: yes. It uses software you already have and adds nothing to download.\n- If no: we can't confirm ChatGPT desktop can take a dropped file for the Vault, and I'd bring you the options."
+   }
+  },
+  {
+   "id": "R7",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "Agreed: the target is merged and live, not open.\n\nWhat I found, live at 19:50 UTC\n- Open PRs: eight, with production still on the old version.\n- Ready to merge now: two, #477 and #469, both clean, with CI green and no unresolved comments.\n- Blocked only on review comments: #475, #468 and #476 need their threads answered and resolved.\n- Waiting on CI or a security read: #471.\n- Needs a rebase, off the critical path: #470 and #474.\n- The import builder is working: its worktree shows new files being written.\n\nWhat I ordered\n- Merge order, on green: #477, then #471, then #469, then the library change and #475, then the chat-drop import once its security review passes.\n- Review comments: each builder answers and resolves its own within the hour.\n- Open PRs: no PR stays open without a named next step and an owner.\n\nI check the open count once, at 21:15 UTC, and send you the merged numbers and what is still blocked."
+   }
+  },
+  {
+   "id": "R8",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "You were right that it's broken, and I now know why. The cause is not the upload at all.\n\nWhat's happening: on production, in the shipped plugin, ChatGPT drops the Vault's tools completely. The app's saved sign-in is rejected, and ChatGPT does not start a new sign-in. It worked at 10:55 UTC today and broke at 19:48.\n\nWhy: this is the refresh bug. Two refreshes cancel the whole sign-in. The fix is built but was sitting idle, and I let it be idled with the rest. That was my mistake. It is now the first item on the critical path.\n\nOne word from you, to move the security review: how long should a second refresh be tolerated, 60 seconds or 10? I recommend 60. It covers slower races at a very small cost, and an independent security reviewer judges the design before it merges. Reply \"60\" or \"10\".\n\nI'll restore your sign-in once, after the fix and the import are deployed, because doing it earlier would just break again."
+   }
+  },
+  {
+   "id": "R9",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "The refresh window is set to 60 seconds in production, with 10 seconds allowed in tests, and it is recorded.\n\nWhere things stand at 23:32 UTC\n- Usage window: it has reset. I woke the Product Manager and the Infra Manager, who holds merging.\n- Production: still on the old version. Nothing has merged since 19:50.\n- Ready to merge, green and clean: four PRs, #477, #476, #471 and #469. The Infra Manager now merges them in order, and I'll tell you the numbers as they land.\n- The sign-in fix: a draft PR is open, and its independent security review comes next.\n\nYou have nothing to do right now. The one step you'll get later is the single sign-in click in the app, after the fix is deployed."
+   }
+  },
+  {
+   "id": "R10",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "Run it on this PC, in any terminal. The Terminal panel in the Claude app works, and so does a normal PowerShell window.\n\n1. Run `codex mcp login the-vault`.\n2. A browser tab opens on the Vault's sign-in page. Type the demo passphrase there and click the approve button.\n\nThe Codex program is installed here and works. I couldn't see the server in its list, because plugin-provided servers may not show there, so if it answers \"unknown server\", tell me and I'll check the exact name.\n\nI also have a safety check set to run at 15:58 UTC. If the public test address is still on then, I switch it off myself and confirm."
+   }
+  }
+ ]
+}

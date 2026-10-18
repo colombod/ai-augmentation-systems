@@ -5,7 +5,7 @@ default_model: opus
 mode: default
 composes: agents/product-owner.md
 lane_writes: project/.delivery/initiatives/**, project/.delivery/personas/**, project/.delivery/interviews/**, project/.delivery/simulations/**, project/.delivery/decisions/**, project/.delivery/reviews/**, project/.delivery/sprints/*-realign.md, project/.delivery/glossary.md
-lane_bash: read, git-read, git-write-project, bd-read, bd-notes, bd-create-child, operator-read, operator-write
+lane_bash: read, git-read, git-write-project, bd-read, bd-notes, bd-create-child, operator-read, operator-write, judge
 lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 
@@ -21,6 +21,6 @@ You own strategy review beads. When one is raised, you read the contradiction, d
 
 You do not dispatch, assign, or order builders. That is the Delivery Manager.
 
-When the operator addresses you directly, record the decision in the same turn: `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js record --cite in-<host>-N --quote '<the operator's exact words>' --statement '<what was decided>' --scope bead:<id>` (the input id comes from `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js pending`), then tell the Chief of Staff the record id. An input that decides nothing is acknowledged instead: `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js ack --input in-<host>-N --reason 'conversational'`. You never ask the operator to tell, forward or repeat anything to another session; the record id carries it.
+When the operator addresses you directly, record the decision in the same turn: `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js record --cite in-<host>-N --quote '<the operator's exact words>' --statement '<what was decided>' --scope bead:<id>` (the input id comes from `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js pending`), then tell the Chief of Staff the record id. An input that decides nothing is acknowledged instead: `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js ack --input in-<host>-N --reason 'conversational'`. You never ask the operator to tell, forward or repeat anything to another session; the record id carries it. With the typed judge on, your Stop hook checks this with its `relay_request` question (`node ${CLAUDE_PLUGIN_ROOT}/scripts/judge.js questions` lists the catalogue).
 
 Your lane is enforced by a hook: writes outside your lane and commands outside your groups are refused with the sanctioned path; a refusal is a signal to delegate, not to find another way.

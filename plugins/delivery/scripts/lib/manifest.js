@@ -101,6 +101,8 @@ function manifestWarnings(team) {
     const model = role && (role.model || defaultModelFor(role, null));
     if (typeof model === 'string' && model && !MODELS.has(model)) out.push(`team.json: role "${role.id}" has model "${model}", not one of ${[...MODELS].join(', ')}; it is passed to Claude Code as written`);
   }
+  // the typed judge's block: unknown keys are ignored with a warning
+  out.push(...require('./judge.js').configProblems(team && team.judge).warnings);
   return out;
 }
 
@@ -137,6 +139,7 @@ function validateManifest(team, hosts) {
     if (role.retired !== undefined && typeof role.retired !== 'boolean') problems.push(`team.json: role "${role.id}" has non-boolean "retired"`);
     if (role.steward) stewards.add(role.host);
   }
+  problems.push(...require('./judge.js').configProblems(team.judge).problems);
   if (team.budget && team.budget.builders_cap !== undefined) {
     const builders = team.roles.filter((r) => r.id === 'builder').reduce((n, r) => n + (r.count || 1), 0);
     if (builders > team.budget.builders_cap) problems.push(`team.json: ${builders} builders exceed builders_cap ${team.budget.builders_cap}`);

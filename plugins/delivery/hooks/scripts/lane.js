@@ -42,7 +42,7 @@ const BD_GLOBAL_FLAG = ['--json'];
 const BD_ALL_GLOBAL_FLAG = ['--json', '-q', '--quiet', '--no-color', '-v', '--verbose', '--global', '--ignore-schema-skew', '--profile', '--readonly', '--sandbox'];
 const BD_ALL_GLOBAL_ARG = ['--actor', '--db', '-C', '--directory', '--dolt-auto-commit'];
 // A role file without lane_bash (a hired specialist) may read, never write.
-const DEFAULT_BASH = ['read', 'bd-read', 'git-read', 'operator-read'];
+const DEFAULT_BASH = ['read', 'bd-read', 'git-read', 'operator-read', 'judge'];
 // The harness's own plan and memory files, relative to ~/.claude: writable for every role.
 const HARNESS_WRITES = ['plans/**', 'projects/*/memory/**'];
 // A separator after which a failed or skipped `cd` no longer stops the commands that follow.

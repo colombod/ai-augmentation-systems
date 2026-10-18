@@ -82,7 +82,8 @@ session its role and keep it:
     `PushNotification`, `SendUserFile` for roles other than the Chief of Staff and the Product
     Manager).
   - Stop: captures operator input, then the operator checks for the Chief of Staff and the Product
-    Manager (an unrecorded input, a relay request), at most two blocking stops per turn.
+    Manager (an unrecorded input, a relay request, asked of the [typed judge](#the-typed-judge) first
+    when it is on), at most two blocking stops per turn.
   - PostToolUse and PostToolUseFailure: the invocation recorder, writing only with
     `DELIVERY_LEDGER=1`; synchronous for a successful Write, Edit or NotebookEdit (it hashes the
     file as the tool left it), async for everything else.
@@ -156,6 +157,72 @@ jobs:
             echo "plan text in commit messages"; exit 1
           fi
 ```
+
+### The typed judge
+
+An optional, advisory model that answers catalogued gate questions with a typed answer (a
+probability, or one of a fixed set of options with a confidence). It is off unless the manifest
+has a `judge` block and the key variable is set in the session's environment:
+
+```json
+"judge": { "provider": "typesafe", "model": "jev-latest", "key_env": "TYPESAFE_API_KEY", "block_threshold": 0.8, "warn_threshold": 0.5 }
+```
+
+`provider` is `typesafe` (TypeSafe Jev) or `none`. `key_env` must be `TYPESAFE_API_KEY` or another
+`TYPESAFE_*` variable, so a manifest edit cannot turn another secret into the bearer token. The key
+is read from the environment only, sent only as the `Authorization` header to
+`https://api.typesafe.ai/v1/systemone`, and never logged. The manifest cannot change the endpoint; the
+only override is the `DELIVERY_JUDGE_ENDPOINT` environment variable, accepted for a loopback address
+only (the tests' fake provider). Gateways are not supported yet. Unknown keys are ignored with a
+warning. `block_threshold` must be 0.5 to 0.95 and `warn_threshold` 0.2 to `block_threshold`; out of range,
+the judge stays off and the regex decides. `judge.js` reads the configuration only from the project of the session's role marker (or,
+outside a role, `DELIVERY_PROJECT_ROOT`); it takes no `--project`.
+
+The catalogue is `judge/questions.json`, versioned per question:
+
+| Question | Type | Used by | Mode |
+|---|---|---|---|
+| `relay_request` v1.1 | probability | the Chief of Staff's and Product Manager's Stop hook | confirms or overrules the regex (below) |
+| `divergence` v2 | none, minor, serious | library and CLI only for now | warn-only until re-measured on real gate summaries |
+| `shippable_unit` v2 | yes, partial, no | library and CLI only for now | advisory |
+| `builds_on_verified` v2 | strongly, partly, new area | library and CLI only for now | advisory |
+| `is_fix` v1 | probability | library and CLI only for now | advisory (a probability, not the yes/no choice first planned) |
+
+- **Tool:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge.js ask <question-id> --state <file|->` prints the
+  typed result as JSON (exit 0 answered, 3 skipped or failed, with the reason); `judge.js questions`
+  lists the catalogue; `judge.js stats` summarises the log. Every role's lane has the `judge` group, so
+  once the judge is enabled any role can send up to 16,000 characters of filtered text to the provider
+  through it; such calls are logged with gate `cli`.
+- **Relay guard:** with the judge on, the Stop hook asks `relay_request` about the final message
+  (code blocks, inline code, quoted lines and double-quoted spans removed first). When the regex
+  detector also flags a clause, the block stands unless the judge is clearly negative: p ≥ the lower
+  of `warn_threshold` and 0.5 blocks (the clause and p quoted); below it the stop passes and the overruled hit is
+  recorded in the judge log (`judge.js stats` counts them). Without a regex hit, p ≥ `block_threshold`
+  blocks once (the message's start quoted), the band from `warn_threshold` to `block_threshold` leaves a
+  one-line reminder for the next prompt, and below it passes. Off, refused locally, errored, malformed
+  or timed out (2 s), the regex detector decides as before. A continuation that can no longer block
+  asks nothing. The answer is kept in the stop state.
+- **What is sent:** only the question's declared state fields. A best-effort pattern filter refuses the
+  call locally when a declared field (names and values, nested objects flattened) looks like a token,
+  key, credential, id, email, URL, path, IP address or phone number, contains the key's own value, or
+  matches `.delivery/team/denylist.txt` (a denylist that exists but cannot be read refuses every call).
+  The result names the field and the kind, never the value. States over 16,000 characters are refused.
+  Names and other personal data are not reliably detected: send only the declared minimum.
+- **The log:** each call is one advisory line in `.delivery/judge/<date>.ndjson` (gitignored): question,
+  version, model, answer, probabilities, latency, tokens, the gate, how many undeclared fields were
+  dropped, and a sha256 of the state sent, not the state. `judge.js stats` reports calls, latency
+  p50/p95, tokens, overruled regex hits and the share at or above each threshold per question.
+  Agreement with later outcomes and blocks overridden as wrong are not tracked yet.
+- **Advisory:** an operator record or a customer-surface evidence row always decides over the judge;
+  the judge's answer is evidence for a gate, never the proof. A malformed answer (a probability outside
+  0 to 1, an undeclared option, no confidence) is an error, never a "no".
+- **What the numbers are worth:** the J1 probe had 10 relay cases and 5 for each other question, all
+  written by someone who knew the labels; 10 of 10 has a 95% lower bound of about 72%. The
+  role-neutral v1.1 wording was re-checked live on the same 10 relay cases; Product Manager messages
+  are not measured. `divergence` is re-measured on real gate summaries (about 10, at least 3 minor)
+  before it may ever block.
+- **Live check:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge-smoke.js` (opt-in, not in the test suite)
+  sends the 10 labelled relay cases in `judge/smoke-relay-cases.json` and fails below 9 of 10.
 
 ### Bead discipline
 

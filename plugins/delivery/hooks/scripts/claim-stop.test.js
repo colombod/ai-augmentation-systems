@@ -239,3 +239,132 @@ test('without a role, an unloadable manifest or garbage input, the stop hook all
   assert.equal(g.status, 0);
   assert.equal(g.stdout, '');
 });
+
+// ---- the relay guard on the typed judge, against a local fake provider (never the real API) ----
+const http = require('http');
+const { spawn } = require('child_process');
+const { findRelayRequest, relayCandidates, judgeRelay } = require('./relay-guard.js');
+const { stopStateFile } = require('./turn.js');
+const { JUDGE_REMINDER } = require('./role-context.js');
+
+function judgedRole() {
+  const p = preparedRole('chief-of-staff');
+  const f = path.join(p.projectRoot, '.delivery', 'team', 'team.json');
+  fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), judge: { provider: 'typesafe', model: 'jev-latest' } }));
+  return p;
+}
+// a fake provider answering p (a function of the request, or a number); null p hangs
+async function fakeJudge(pOf) {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const b = JSON.parse(body);
+      seen.push(b);
+      const p = typeof pOf === 'function' ? pOf(b) : pOf;
+      if (p === null) return;
+      res.end(JSON.stringify({ model: 'jev-1.13.0', answers: { relay_request: { type: 'noul', noul: p } }, usage: { input_tokens: 580 } }));
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return { seen, url: `http://127.0.0.1:${server.address().port}/v1/systemone`, close: () => { server.closeAllConnections(); server.close(); } };
+}
+// async: the fake provider runs in this process, so the hook must not block the event loop
+function runStopAsync(input, endpoint) {
+  const env = { ...process.env, DELIVERY_ROLE: 'chief-of-staff', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, TYPESAFE_API_KEY: 'test-key-not-real', DELIVERY_JUDGE_ENDPOINT: endpoint, PATH: `${fs.mkdtempSync(path.join(os.tmpdir(), 'stop-nobd-'))}${path.delimiter}/usr/bin${path.delimiter}/bin` };
+  delete env.DELIVERY_ROLE_DIR;
+  return new Promise((resolve) => {
+    const c = spawn(process.execPath, [path.join(__dirname, 'claim-stop.js')], { env });
+    let stdout = '';
+    c.stdout.on('data', (d) => { stdout += d; });
+    c.on('close', (status) => resolve({ status, stdout }));
+    c.stdin.end(JSON.stringify({ session_id: SID, hook_event_name: 'Stop', stop_hook_active: false, ...input }));
+  });
+}
+const REGEX_HIT = 'Please tell the builder session to use postgres.';
+const REGEX_MISS = 'Good night. One thing waits for you in the morning: the sign-in fix is committed and reviewed but not pushed yet.';
+const stateOf = (roleDir) => JSON.parse(fs.readFileSync(stopStateFile(roleDir, SID), 'utf8'));
+
+test('relay rule, every cell: a regex hit blocks unless p < warn; without a hit p >= block blocks, the warn band reminds', () => {
+  const t = { block_threshold: 0.8, warn_threshold: 0.5 };
+  const hit = findRelayRequest(REGEX_HIT);
+  const kinds = (relay, p) => relayCandidates(relay ? REGEX_HIT : REGEX_MISS, relay ? hit : null, p === null ? null : { ...t, p }).map((c) => c.kind);
+  for (const [relay, p, want] of [[true, null, ['relay']], [false, null, []], [true, 0.9, ['relay']], [true, 0.8, ['relay']], [true, 0.5, ['relay']],
+    [true, 0.49, ['relay-overruled']], [false, 0.8, ['relay']], [false, 0.79, ['relay-warn']], [false, 0.5, ['relay-warn']], [false, 0.49, []]]) {
+    assert.deepEqual(kinds(relay, p), want, `regex ${relay ? 'hit' : 'miss'}, p ${p}`);
+  }
+  const [b] = relayCandidates(REGEX_HIT, hit, { ...t, p: 0.6 });
+  assert.ok(b.reason.includes(`You wrote: "${hit.clause}"`) && /p 0\.60/.test(b.reason), 'the regex clause and p are quoted');
+  assert.equal(relayCandidates(REGEX_HIT, null, { ...t, error: true }).length, 0, 'no p and no hit: nothing');
+  // a regex hit is overruled only below min(warn_threshold, 0.5), whatever the thresholds say
+  assert.deepEqual(relayCandidates(REGEX_HIT, hit, { block_threshold: 0.95, warn_threshold: 0.9, p: 0.5 }).map((c) => c.kind), ['relay']);
+  assert.deepEqual(relayCandidates(REGEX_HIT, hit, { block_threshold: 0.95, warn_threshold: 0.9, p: 0.49 }).map((c) => c.kind), ['relay-overruled']);
+  assert.deepEqual(relayCandidates(REGEX_HIT, hit, { block_threshold: 0.5, warn_threshold: 0.3, p: 0.31 }).map((c) => c.kind), ['relay']);
+  assert.deepEqual(relayCandidates(REGEX_HIT, hit, { block_threshold: 0.5, warn_threshold: 0.3, p: 0.29 }).map((c) => c.kind), ['relay-overruled']);
+});
+
+test('relay guard on the judge: the message is stripped before it is sent', async () => {
+  const f = await fakeJudge(0.1);
+  try {
+    const msg = 'Status: all green.\n```\nsecret code block\n```\nRun `inline code` later.\n> a quoted line\nHe said "a quoted span" today.';
+    const r = await judgeRelay({ input: { last_assistant_message: msg }, team: { judge: { provider: 'typesafe' } }, role: 'chief-of-staff', projectRoot: null,
+      deps: { env: { TYPESAFE_API_KEY: 'test-key-not-real', DELIVERY_JUDGE_ENDPOINT: f.url } } });
+    assert.equal(r.p, 0.1);
+    const sent = f.seen[0].state.message;
+    for (const gone of ['secret code block', 'inline code', 'a quoted line', 'a quoted span']) assert.ok(!sent.includes(gone), gone);
+    assert.match(sent, /Status: all green/);
+    assert.deepEqual(Object.keys(f.seen[0].state).sort(), ['message', 'recipient', 'sender_role']);
+  } finally { f.close(); }
+});
+
+test('relay guard on the judge through the Stop hook: miss at 0.9 blocks, 0.6 reminds; hit at 0.6 blocks, at 0.2 passes and is recorded', async () => {
+  let p = 0.9;
+  const f = await fakeJudge(() => p);
+  try {
+    const { projectRoot, roleDir } = judgedRole();
+    assert.equal(findRelayRequest(REGEX_MISS), null, 'the regex misses this one');
+    const blocked = reasonOf(await runStopAsync({ cwd: roleDir, last_assistant_message: REGEX_MISS }, f.url));
+    assert.equal(blocked.decision, 'block');
+    assert.ok(blocked.reason.includes(`You wrote: "${REGEX_MISS.slice(0, 160)}"`));
+    assert.match(blocked.reason, /typed judge rates this message p 0\.90/);
+    assert.deepEqual((({ p: q, model, regex }) => ({ q, model, regex }))(stateOf(roleDir).judge), { q: 0.9, model: 'jev-1.13.0', regex: false });
+
+    p = 0.6;
+    assert.equal((await runStopAsync({ cwd: roleDir, last_assistant_message: REGEX_MISS }, f.url)).stdout, '');
+    assert.match(fs.readFileSync(path.join(roleDir, JUDGE_REMINDER), 'utf8'), /^Reminder: The typed judge rates this message p 0\.60/);
+    assert.match(reasonOf(await runStopAsync({ cwd: roleDir, last_assistant_message: REGEX_HIT }, f.url)).reason, /You wrote: .*p 0\.60/);
+
+    p = 0.2;
+    assert.equal((await runStopAsync({ cwd: roleDir, last_assistant_message: REGEX_HIT }, f.url)).stdout, '', 'a clearly negative judge overrules the regex');
+    assert.equal(stateOf(roleDir).judge.overruled, true);
+    const log = require('../../scripts/lib/judge.js').readLog(path.join(projectRoot, '.delivery', 'judge'));
+    assert.deepEqual(log.filter((e) => e.event === 'regex_overruled').map((e) => e.p), [0.2]);
+  } finally { f.close(); }
+});
+
+test('relay guard on the judge: provider down or hanging, the regex decides as without the judge, inside 3 s', async () => {
+  const { roleDir } = judgedRole();
+  const r = reasonOf(await runStopAsync({ cwd: roleDir, last_assistant_message: REGEX_HIT }, 'http://127.0.0.1:1/v1/systemone'));
+  assert.equal(r.reason, relayReason(REGEX_HIT, findRelayRequest(REGEX_HIT).clause));
+  assert.equal(stateOf(roleDir).judge.reason, 'network');
+  const hang = await fakeJudge(null);
+  try {
+    const t0 = Date.now();
+    const h = reasonOf(await runStopAsync({ cwd: preparedRoleDir(), last_assistant_message: REGEX_HIT }, hang.url));
+    assert.ok(Date.now() - t0 < 3000, `the hook took ${Date.now() - t0} ms`);
+    assert.equal(h.reason, relayReason(REGEX_HIT, findRelayRequest(REGEX_HIT).clause));
+    assert.equal(hang.seen.length, 1);
+  } finally { hang.close(); }
+});
+
+test('relay guard on the judge: nothing is sent when the turn can no longer block', async () => {
+  const f = await fakeJudge(0.9);
+  try {
+    const { roleDir } = judgedRole();
+    // a continuation with no trustworthy state is exhausted
+    assert.equal((await runStopAsync({ cwd: roleDir, stop_hook_active: true, last_assistant_message: REGEX_MISS }, f.url)).stdout, '');
+    assert.equal(f.seen.length, 0);
+  } finally { f.close(); }
+});
+function preparedRoleDir() { return judgedRole().roleDir; }

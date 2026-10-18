@@ -45,7 +45,7 @@ function decideStop({ input, roleDir, actor, bd }) {
 // State is per session (input.session_id) in its own file, written atomically. A first stop
 // (stop_hook_active false) starts a fresh state. On a continuation, a missing, unreadable or
 // foreign state counts as exhausted and the stop passes, and so does a state that cannot be saved.
-// candidates: [{ kind, reason, detail? }]. Returns null or { reason, kinds }.
+// candidates: [{ kind, reason, detail? }]; judge: an optional summary kept in the state. Returns null or { reason, kinds }.
 const LIMITS = { relay: 2 };
 const MAX_BLOCKING_STOPS = 2;
 
@@ -77,7 +77,7 @@ function writeAtomic(file, text) {
 
 // sessionId is a fallback for callers whose input carries no session_id; the hook input wins. It is
 // never .delivery-session, which capture rewrites on every stop of any session in the role dir.
-function composeStop({ input, roleDir, candidates, sessionId: fallbackSession }) {
+function composeStop({ input, roleDir, candidates, sessionId: fallbackSession, judge }) {
   const active = !!(input && input.stop_hook_active);
   const sessionId = (input && typeof input.session_id === 'string' && input.session_id)
     || (typeof fallbackSession === 'string' && fallbackSession) || 'unknown';
@@ -89,6 +89,8 @@ function composeStop({ input, roleDir, candidates, sessionId: fallbackSession })
   } else {
     st = { session_id: sessionId, turn: readTurnStart(roleDir), blocks: {}, blocking_stops: 0 };
   }
+  // the typed judge's answer on this stop, for diagnostics only (it does not change the limits)
+  if (judge) st.judge = judge; else delete st.judge;
   st.last_message_hash = crypto.createHash('sha256').update(String((input && input.last_assistant_message) || '')).digest('hex');
   const fresh = st.blocking_stops >= MAX_BLOCKING_STOPS ? []
     : (candidates || []).filter((c) => c && c.kind && c.reason && (Number(st.blocks[c.kind]) || 0) < (LIMITS[c.kind] || 1));
@@ -106,4 +108,13 @@ function composeStop({ input, roleDir, candidates, sessionId: fallbackSession })
   return { reason: reasons.join('\n\n'), kinds: fresh.map((c) => c.kind) };
 }
 
-module.exports = { markTurnStart, readTurnStart, decideStop, composeStop, stopStateFile, STOP_STATE };
+// True on a continuation whose turn can no longer block a relay (state missing, two blocking stops
+// already, or the relay limit reached): the typed judge is then not asked at all.
+function relayBudgetSpent({ input, roleDir }) {
+  if (!(input && input.stop_hook_active)) return false;
+  const sessionId = (typeof input.session_id === 'string' && input.session_id) || 'unknown';
+  const st = readStopState(stopStateFile(roleDir, sessionId), sessionId);
+  return !st || st.blocking_stops >= MAX_BLOCKING_STOPS || (Number(st.blocks.relay) || 0) >= LIMITS.relay;
+}
+
+module.exports = { markTurnStart, readTurnStart, decideStop, composeStop, relayBudgetSpent, stopStateFile, STOP_STATE };
