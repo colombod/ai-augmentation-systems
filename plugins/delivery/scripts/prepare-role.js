@@ -130,10 +130,18 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
       ...(unrestricted ? [] : LANE_BACKSTOP_DENY.filter((r) => !rules.includes(r))),
       ...(role.id === 'delivery-lead' ? [] : MERGE_DENY),
     ];
-    const managed = new Set([...OPERATOR_CHANNEL_TOOLS, ...LANE_BACKSTOP_DENY, ...MERGE_DENY]);
+    // Only the rules this script added are its to take out again: they are listed in a sidecar next to
+    // the settings. Any other deny rule is the user's and stays, even one the plugin also manages; a
+    // role directory without the sidecar (an earlier version) keeps every existing rule.
+    const ownedFile = path.join(roleDir, '.claude', '.delivery-managed-deny.json');
+    let owned = [];
+    try { owned = JSON.parse(fs.readFileSync(ownedFile, 'utf8')).deny || []; } catch (e) { owned = []; }
     const haveDeny = Array.isArray(settings.permissions.deny) ? settings.permissions.deny : [];
-    const deny = [...new Set([...haveDeny.filter((r) => !managed.has(r)), ...want])];
+    const users = haveDeny.filter((r) => !owned.includes(r));
+    const deny = [...new Set([...users, ...want])];
     if (deny.length) settings.permissions.deny = deny; else delete settings.permissions.deny;
+    fs.mkdirSync(path.dirname(ownedFile), { recursive: true });
+    fs.writeFileSync(ownedFile, JSON.stringify({ deny: want.filter((r) => !users.includes(r)) }, null, 2) + '\n');
   } catch (err) {
     files.push(`warning: lane permission rules not written (${err.message})`);
   }

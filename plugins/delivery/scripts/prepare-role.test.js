@@ -230,13 +230,17 @@ test('hardening a/b: native deny rules per role, idempotent, keeping the user\'s
   // workers (lane any) keep their commands but never address the operator and never merge
   assert.deepEqual(deny('builder-1'), [...ASK, M].sort());
   assert.deepEqual(deny('spike-researcher'), [...ASK, M].sort());
-  // idempotent; a user's own deny rule is kept; managed rules a role does not need are taken out
+  // idempotent; a user's own deny rule is kept, even one the plugin also manages; a rule the plugin
+  // added earlier (listed in its sidecar) is taken out once the role no longer needs it
   const { roleDir, s } = settingsOf('chief-of-staff');
-  s.permissions.deny = [...s.permissions.deny, 'Bash(npm publish:*)', 'AskUserQuestion'];
+  s.permissions.deny = [...s.permissions.deny, 'Bash(npm publish:*)', 'AskUserQuestion', 'PushNotification'];
   fs.writeFileSync(path.join(roleDir, '.claude', 'settings.local.json'), JSON.stringify(s));
+  const sidecar = path.join(roleDir, '.claude', '.delivery-managed-deny.json');
+  fs.writeFileSync(sidecar, JSON.stringify({ deny: [...JSON.parse(fs.readFileSync(sidecar, 'utf8')).deny, 'PushNotification'] }));
   const again = deny('chief-of-staff');
   assert.ok(again.includes('Bash(npm publish:*)'));
-  assert.ok(!again.includes('AskUserQuestion'), 'the chief of staff may ask: the managed deny is removed');
+  assert.ok(again.includes('AskUserQuestion'), 'a deny the user wrote is never removed');
+  assert.ok(!again.includes('PushNotification'), 'the chief of staff may notify: the plugin-added deny is removed');
   assert.deepEqual(deny('chief-of-staff'), again);
 });
 
@@ -272,4 +276,18 @@ test('final M6: prepare-role reports an unknown model name of the role it prepar
   assert.ok(files.some((f) => /^warning: .*"claude-sonnet-9"/.test(f)), files.join('\n'));
   const other = prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 't' });
   assert.ok(!other.files.some((f) => /claude-sonnet-9/.test(f)), 'only the prepared role\'s own model');
+});
+
+test('Copilot: a deny rule the user had is never removed, even one the plugin also manages', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const prep = () => prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' }).roleDir;
+  const file = (dir) => path.join(dir, '.claude', 'settings.local.json');
+  const dir = prep();
+  const s = JSON.parse(fs.readFileSync(file(dir), 'utf8'));
+  s.permissions.deny = [...s.permissions.deny, 'Bash(sudo:*)', 'Bash(rm:*)'];
+  fs.writeFileSync(file(dir), JSON.stringify(s));
+  prep();
+  const deny = JSON.parse(fs.readFileSync(file(dir), 'utf8')).permissions.deny;
+  assert.ok(deny.includes('Bash(sudo:*)') && deny.includes('Bash(rm:*)'), JSON.stringify(deny));
 });
