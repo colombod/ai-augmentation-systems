@@ -110,7 +110,7 @@ async function main() {
       try {
         const I = require('../../scripts/lib/idle.js');
         const { makeBd } = require('../../scripts/lib/bd.js');
-        const s = I.readIdle(valid.marker.project_root, { bd: makeBd({ ...bdOptionsFor(valid.marker, input.cwd), timeoutMs: budget().idleMs }), deadline: T0 + require('./turn.js').STOP_DEADLINE_MS - 500 });
+        const s = I.readIdle(valid.marker.project_root, { bd: makeBd({ ...bdOptionsFor(valid.marker, input.cwd), timeoutMs: budget().idleMs }), deadline: T0 + require('./turn.js').IDLE_DEADLINE_MS });
         if (s.idle) {
           I.recordIdle(valid.marker.project_root, s, { instance: valid.marker.instance });
           const f = path.join(valid.roleDir, MESSAGE_REMINDER);

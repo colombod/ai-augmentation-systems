@@ -280,7 +280,7 @@ test('readHumanInputs: an AskUserQuestion answer is an owner input bound to its 
   assert.equal(typed.text, 'yes');
   assert.match(typed.after_assistant.tail, /Set the weekly budget to 5 units\?$/);
   assert.equal(asked.text, 'Yes');
-  assert.deepEqual(asked.asked, { question: "Pause the team's work now?", options: ['Yes', 'No'], via: 'AskUserQuestion' });
+  assert.deepEqual(asked.asked, { question: "Pause the team's work now?", options: ['Yes', 'No'], multiSelect: false, via: 'AskUserQuestion' });
 });
 
 test('readHumanInputs: the message before counts for one input only; a result that does not answer its tool_use is no input', () => {

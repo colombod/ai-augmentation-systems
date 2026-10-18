@@ -114,10 +114,12 @@ function readHumanInputs(file, opts = {}) {
       tur.questions.forEach((q, i) => {
         if (!q || typeof q.question !== 'string' || typeof tur.answers[q.question] !== 'string') return;
         // when the tool_use is in this read, the result must answer what it asked
-        if (put && !put.some((x) => x && x.question === q.question)) return;
+        const used = put ? put.find((x) => x && x.question === q.question) : q;
+        if (!used) return;
         out.inputs.push({ line: lineNo, source: 'human', text: tur.answers[q.question], ext_id: `${rec.uuid || lineNo}#q${i}`, timestamp: rec.timestamp || null,
           session_id: rec.sessionId || null, uuid: rec.uuid ? `${rec.uuid}#q${i}` : null,
-          asked: { question: q.question, options: (q.options || []).map((o) => o && o.label).filter((x) => typeof x === 'string'), via: 'AskUserQuestion' } });
+          // the options and choice mode as the tool_use put them (the result's copy when it is not in this read)
+          asked: { question: q.question, options: (used.options || []).map((o) => o && o.label).filter((x) => typeof x === 'string'), multiSelect: used.multiSelect === true, via: 'AskUserQuestion' } });
       });
       continue;
     }

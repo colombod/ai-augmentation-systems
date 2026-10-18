@@ -50,7 +50,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, v
     let q;
     try { q = (recordQuestion || operatorAsk(who))({ text, field, value }); } catch (err) { return { code: 1, out: `goal.js: the question was not recorded (${String(err.message).split('\n')[0]}).\nRetry: \`goal.js ask ${field} ${value}\`` }; }
     const payload = JSON.stringify({ questions: [{ question: text, header: 'Goal change', multiSelect: false, options: [{ label: 'Yes', description: 'Make this change' }, { label: 'No', description: 'Leave it as it is' }] }] });
-    return { code: 0, out: `Ask the owner exactly: "${text}" (Yes / No). Question ${q}. AskUserQuestion input:\n${payload}\nRecord the yes: \`operator.js record --cite <in-id> --quote '<their answer>' --statement '<the change>' --answers ${q} --goal ${sh(`${field}=${value}`)}\`, then \`goal.js set ${field} ${sh(value)} --record <dec-id>\`` };
+    return { code: 0, out: `Ask with AskUserQuestion, exactly this input (only the owner's click on Yes counts). Question ${q}:\n${payload}\nRecord the yes: \`operator.js record --cite <in-id> --quote '<their answer>' --statement '<the change>' --answers ${q} --goal ${sh(`${field}=${value}`)}\`, then \`goal.js set ${field} ${sh(value)} --record <dec-id>\`` };
   }
   if (cmd === 'set' && field && value !== undefined) {
     const fix = `ask the owner: \`goal.js ask ${field} ${require('./lib/plugin-root.js').shellPath(value)}\``;

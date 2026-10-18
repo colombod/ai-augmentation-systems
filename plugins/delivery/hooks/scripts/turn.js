@@ -120,11 +120,13 @@ function relayBudgetSpent({ input, roleDir }) {
 // The Stop hook's time budget (review I1). The harness kills a Stop hook at 15 s and a killed hook loses
 // the block it computed: keep 12 s, give the claim read at most 4 s of what is left, run the idle check
 // only with 4 s left, and split what remains between its two bd reads (at most 3 s each).
+// The idle check runs only with 5 s left and must finish by 9.5 s, so the worst stop stays under 10 s.
 const STOP_DEADLINE_MS = 12000;
-const IDLE_MIN_MS = 4000;
+const IDLE_MIN_MS = 5000;
+const IDLE_DEADLINE_MS = 9500;
 function stopBudget(elapsedMs) {
   const left = STOP_DEADLINE_MS - elapsedMs;
-  return { left, claimMs: Math.max(200, Math.min(4000, left - 1000)), idle: left >= IDLE_MIN_MS, idleMs: Math.max(200, Math.min(3000, Math.floor((left - 1000) / 2))) };
+  return { left, claimMs: Math.max(200, Math.min(4000, left - 1000)), idle: left >= IDLE_MIN_MS, idleMs: Math.max(200, Math.min(3000, Math.floor((IDLE_DEADLINE_MS - elapsedMs - 500) / 2))) };
 }
 
-module.exports = { stopBudget, STOP_DEADLINE_MS, markTurnStart, readTurnStart, decideStop, composeStop, relayBudgetSpent, stopStateFile, STOP_STATE };
+module.exports = { stopBudget, STOP_DEADLINE_MS, IDLE_DEADLINE_MS, markTurnStart, readTurnStart, decideStop, composeStop, relayBudgetSpent, stopStateFile, STOP_STATE };

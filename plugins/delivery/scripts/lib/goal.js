@@ -182,12 +182,13 @@ function recordProblem(root, field, value, record, verifyRecord, judge) {
     const text = questionText(field, value);
     if (asked.length !== 1 || asked[0].text !== text) return `${record} answers a question that is not goal.js's question for ${field} = ${shown(value)} (goal.js ask ${field} <value>)`;
     const input = (v.chain || []).find((h) => h.kind === 'input') || {};
-    // the proof the owner was shown it: the harness's AskUserQuestion answer to that exact text, or a
-    // typed reply right after the session's message that contains it (both captured from the transcript)
-    const viaAsk = input.asked && input.asked.via === 'AskUserQuestion' && input.asked.question === text;
-    const viaTyped = !input.asked && input.after_assistant && typeof input.after_assistant.tail === 'string' && input.after_assistant.tail.includes(text);
-    if (!viaAsk && !viaTyped) return `the owner did not see goal.js's question before the answer in ${record}: ask it with AskUserQuestion, or put it in your message right before the owner's reply`;
-    if (viaAsk ? input.text !== 'Yes' : !affirmative(input.text)) return `the owner's answer in ${record} is not a yes`;
+    // the only proof the owner was shown it: the harness's AskUserQuestion answer to that exact text, in
+    // a box with exactly the options Yes and No, single choice, and Yes chosen. A typed yes never counts:
+    // the question in a message can sit in a code block or a quote while the owner answers something else.
+    const a = input.asked || {};
+    const box = a.via === 'AskUserQuestion' && a.question === text && same(a.options, ['Yes', 'No']) && a.multiSelect === false;
+    if (!box) return `the owner did not answer goal.js's question in a Yes/No question box (AskUserQuestion with the input goal.js ask prints) in ${record}`;
+    if (input.text !== 'Yes') return `the owner's answer in ${record} is not Yes`;
     const minutes = asked[0].minutes_before_answer;
     // the window for changing the window itself is the default, so it cannot widen its own yes
     const hours = field === 'answer_window_hours' ? 24 : answerWindowHours(root, verifyRecord);

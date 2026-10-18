@@ -102,7 +102,7 @@ test('R-43 I1: with bd hanging, the Delivery Manager\'s stop with the idle check
   const t0 = Date.now();
   const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'hooks', 'scripts', 'claim-stop.js')], { input: JSON.stringify({ session_id: 's1', hook_event_name: 'Stop', stop_hook_active: false, cwd: roleDir, last_assistant_message: 'Done.' }), env, encoding: 'utf8' });
   assert.equal(r.status, 0);
-  assert.ok(Date.now() - t0 < 12000, `the stop took ${Date.now() - t0} ms`);
+  assert.ok(Date.now() - t0 < 10000, `the stop took ${Date.now() - t0} ms`);
 });
 
 test('Copilot round 4: the idle reads share one deadline, trigger lookups included', () => {

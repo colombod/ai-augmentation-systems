@@ -46,9 +46,9 @@ function project({ freeText = false } = {}) {
   const say = (text, { laterMin } = {}) => { push({ type: 'user', origin: { kind: 'human' }, promptId: `p${k}`, uuid: `u${k}`, timestamp: ts(laterMin), message: { role: 'user', content: text } }); return sync(); };
   const cos = (text) => push({ type: 'assistant', uuid: `a${k}`, timestamp: ts(), message: { role: 'assistant', content: [{ type: 'text', text }] } });
   // the harness's AskUserQuestion: the tool_use, then its tool_result with the owner's selection
-  const askUser = (question, answer, { laterMin } = {}) => {
+  const askUser = (question, answer, { laterMin, options = ['Yes', 'No'], multiSelect = false } = {}) => {
     const n = k;
-    const questions = [{ question, header: 'Goal change', multiSelect: false, options: [{ label: 'Yes', description: 'Make this change' }, { label: 'No', description: 'Leave it as it is' }] }];
+    const questions = [{ question, header: 'Goal change', multiSelect, options: options.map((label) => ({ label, description: label })) }];
     push({ type: 'assistant', uuid: `ask${n}`, timestamp: ts(), message: { role: 'assistant', content: [{ type: 'tool_use', id: `tu${n}`, name: 'AskUserQuestion', input: { questions } }] } });
     push({ type: 'user', uuid: `res${n}`, promptId: `pr${n}`, timestamp: ts(laterMin), sourceToolAssistantUUID: `ask${n}`, toolUseResult: { questions, answers: { [question]: answer } },
       message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `tu${n}`, content: `The user answered: "${question}"="${answer}".` }] } });
@@ -61,7 +61,7 @@ function project({ freeText = false } = {}) {
   const decide = (input, quote, label, answers) => R.recordDecision({ projectRoot: root, cite: input, quote, statement: 'owner decision',
     scope: { beads: [], labels: label ? [label] : [], initiatives: [] }, by: COS, ...(answers ? { answers } : {}) }).id;
   // the two proofs that the owner saw the question: AskUserQuestion, or typed after the CoS's message
-  const confirmAsk = (field, value, { answer = 'Yes', laterMin } = {}) => { const { q, text } = ask(field, value); return decide(askUser(text, answer, { laterMin }), answer, `goal:${field}=${value}`, [q]); };
+  const confirmAsk = (field, value, { answer = 'Yes', laterMin, options, multiSelect } = {}) => { const { q, text } = ask(field, value); return decide(askUser(text, answer, { laterMin, options, multiSelect }), answer, `goal:${field}=${value}`, [q]); };
   const confirmTyped = (field, value, { reply = 'yes', shown, laterMin } = {}) => {
     const { q, text } = ask(field, value);
     cos(shown === undefined ? `One decision for you. ${text}` : shown);
@@ -103,10 +103,10 @@ const FIELDS_AND_VALUES = [
   ['pause', 'paused'], ['scope_add', 'CSV import,UI'], ['approvals', 'merges need an independent review'],
 ];
 
-test('R-42 confirmed question: each field is set by a yes to goal.js\'s question, through AskUserQuestion or typed after it', () => {
+test('R-42 confirmed question: each field is set by a Yes to goal.js\'s question in an AskUserQuestion box', () => {
   const t = project();
   FIELDS_AND_VALUES.forEach(([field, v], i) => {
-    const r = set(t.root, field, v, i % 2 ? t.confirmTyped(field, v) : t.confirmAsk(field, v));
+    const r = set(t.root, field, v, t.confirmAsk(field, v));
     assert.equal(r.ok, true, `${field}: ${r.error}`);
   });
   assert.equal(Goal.value(t.root, 'budget.usage_envelope'), 30);
@@ -121,13 +121,13 @@ test('R-42 confirmed question: each field is set by a yes to goal.js\'s question
 test('R-42 B2: a yes the owner gave to something else never binds a goal question', () => {
   const t = project();
   // the CoS logs the question but shows the owner another one; the owner's "yes" answers that
-  assert.match(set(t.root, 'budget.usage_envelope', '30', t.confirmTyped('budget.usage_envelope', '30', { shown: 'Shall I merge the export fix?' })).error, /did not see/);
+  assert.match(set(t.root, 'budget.usage_envelope', '30', t.confirmTyped('budget.usage_envelope', '30', { shown: 'Shall I merge the export fix?' })).error, /question box/);
   // nothing shown at all before the yes
   const { q } = t.ask('pause', 'paused');
-  assert.match(set(t.root, 'pause', 'paused', t.decide(t.say('yes'), 'yes', 'goal:pause=paused', [q])).error, /did not see/);
+  assert.match(set(t.root, 'pause', 'paused', t.decide(t.say('yes'), 'yes', 'goal:pause=paused', [q])).error, /question box/);
   // AskUserQuestion with another question text, or a No
   const other = t.ask('pause', 'paused');
-  assert.match(set(t.root, 'pause', 'paused', t.decide(t.askUser('Pause the notifications?', 'Yes'), 'Yes', 'goal:pause=paused', [other.q])).error, /did not see/);
+  assert.match(set(t.root, 'pause', 'paused', t.decide(t.askUser('Pause the notifications?', 'Yes'), 'Yes', 'goal:pause=paused', [other.q])).error, /question box/);
   assert.equal(set(t.root, 'pause', 'paused', t.confirmAsk('pause', 'paused', { answer: 'No' })).ok, false);
 });
 
@@ -343,7 +343,7 @@ test('R-42 re-review B1: resumes, conditionals, other languages, freeze and loos
 test('R-42 re-review: scope changes are adds or removes; a removal can only remove', () => {
   const t = project();
   assert.equal(set(t.root, 'scope_add', 'CSV import,login page', t.confirmAsk('scope_add', 'CSV import,login page')).ok, true);
-  assert.equal(set(t.root, 'scope_remove', 'login page', t.confirmTyped('scope_remove', 'login page')).ok, true);
+  assert.equal(set(t.root, 'scope_remove', 'login page', t.confirmAsk('scope_remove', 'login page')).ok, true);
   assert.deepEqual(Goal.value(t.root, 'scope'), ['CSV import']);
   assert.equal(Goal.questionText('scope_remove', 'login page'), 'Remove login page from the scope?');
 });
@@ -417,4 +417,18 @@ test('Copilot round 4: goal.js ask quotes multi-word values in the commands it p
   const out = goal.main(['ask', 'scope_add', 'CSV import'], { who: who(root, 'chief-of-staff'), recordQuestion: () => 'q-chief-of-staff-1' }).out;
   assert.match(out, /--goal 'scope_add=CSV import'/);
   assert.match(out, /goal\.js set scope_add 'CSV import' --record/);
+});
+
+test('R-42 last fix: only the Yes/No question box counts; a typed yes never does, however the question was shown', () => {
+  const t = project();
+  const text = Goal.questionText('pause', 'paused');
+  for (const shown of [`Status first.\n\n\`\`\`\n${text}\n\`\`\`\n\nShall I merge the export fix?`, `> ${text}\n\nAnyway: shall I merge the export fix?`,
+    `${text} And shall I merge the export fix?`, `One decision for you. ${text}`]) {
+    assert.equal(set(t.root, 'pause', 'paused', t.confirmTyped('pause', 'paused', { shown })).ok, false, shown);
+  }
+  // the box with other options, a third option, or several choices allowed
+  for (const opt of [{ options: ['Yes', 'Later'] }, { options: ['Yes', 'No', 'Later'] }, { options: ['Yes', 'No'], multiSelect: true }]) {
+    assert.match(set(t.root, 'pause', 'paused', t.confirmAsk('pause', 'paused', opt)).error, /question box/, JSON.stringify(opt));
+  }
+  assert.equal(set(t.root, 'pause', 'paused', t.confirmAsk('pause', 'paused')).ok, true);
 });
