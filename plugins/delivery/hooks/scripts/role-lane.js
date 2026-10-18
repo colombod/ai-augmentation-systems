@@ -43,17 +43,20 @@ function ownMarker(input) {
   } catch (err) { return null; }
 }
 
+// The input is read before lane.js is loaded: if that module fails to load, the fail-closed path below
+// still sees the role marker.
 let input = null;
+try { input = require('./role-context.js').readHookInput(); } catch (err) { input = null; }
+// While the lane cannot be checked, the session may still tell the Chief of Staff (the advised way out).
+const MESSAGE_TOOLS = ['SendMessage', 'mcp__ccd_session_mgmt__send_message'];
 try {
-  const { readHookInput } = require('./role-context.js');
   const { laneDecisionForHook } = require('./lane.js');
-  input = readHookInput();
   const d = input && input.tool_name ? laneDecisionForHook(input, path.join(__dirname, '..', '..')) : null;
   if (d) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.reason } }));
 } catch (err) {
   const marker = input && input.tool_name ? ownMarker(input) : null;
   const cmd = input && input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : '';
-  if (marker && !(input.tool_name === 'Bash' && isManifestRestore(cmd, marker, input.cwd))) {
+  if (marker && !MESSAGE_TOOLS.includes(input.tool_name) && !(input.tool_name === 'Bash' && isManifestRestore(cmd, marker, input.cwd))) {
     const why = String(err && err.message ? err.message : err).replace(/\s+/g, ' ').slice(0, 200);
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
       permissionDecisionReason: `Role ${marker.instance}: the lane cannot be checked (${why}), so nothing that writes or runs is allowed. Restore the manifest with \`git -C ${shellPath(marker.project_root)} checkout -- .delivery/team/team.json\` (allowed), or tell the Chief of Staff by SendMessage.` } }));

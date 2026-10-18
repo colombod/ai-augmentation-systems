@@ -993,3 +993,31 @@ test('merging is the Delivery Manager\'s: builder and spike researcher lanes are
   assert.equal(run(POLICIES[DL], 'gh pr merge 12 --squash').allow, true);
   assert.equal(run(POLICIES[COS], 'gh pr merge 12').allow, false);
 });
+
+// Copilot review of PR 49
+test('Copilot: the fail-closed path still sees the role marker when lane.js itself fails to load', () => {
+  const { roleDir } = preparedRole('builder-1');
+  const pre = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lane-preload-')), 'break-lane.js');
+  fs.writeFileSync(pre, `const M = require('module'); const load = M._load; M._load = function (req, ...a) { if (/[\\\\/]lane\\.js$|^\\.\\/lane\\.js$/.test(req)) throw new Error('simulated load failure'); return load.call(this, req, ...a); };`);
+  const out = runHook('role-lane.js', { cwd: roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } },
+    { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, NODE_OPTIONS: `--require ${pre}` });
+  const j = JSON.parse(out);
+  assert.equal(j.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(j.hookSpecificOutput.permissionDecisionReason, /simulated load failure/);
+});
+
+test('Copilot: with the manifest unreadable, messaging the Chief of Staff stays allowed; other MCP writes do not', () => {
+  const broken = preparedRole('builder-1');
+  fs.writeFileSync(path.join(broken.projectRoot, '.delivery', 'team', 'team.json'), '{ not json');
+  const e = { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  for (const tool of ['mcp__ccd_session_mgmt__send_message', 'SendMessage']) {
+    assert.equal(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: tool, tool_input: { to: 'chief-of-staff', message: 'the manifest is broken' } }, e), '', tool);
+  }
+  const other = runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'mcp__github__create_issue', tool_input: {} }, e);
+  assert.equal(JSON.parse(other).hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('Copilot: the Delivery Manager can close the phase-review bead it owns', () => {
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[DL], ...ctx() });
+  assert.equal(run('bd close ex-demo-ph1-review --reason "EVIDENCE: accepted, see .delivery/sprints/1-review.md"').allow, true);
+});
