@@ -34,9 +34,10 @@ function tableRows(lines, startIndex) {
   // Returns the cells of the first markdown table starting at or after startIndex,
   // skipping the header and separator rows. Stops at the first non-table line after the table began.
   const rows = [];
+  let header = [];
   let i = startIndex;
   while (i < lines.length && !lines[i].trim().startsWith('|')) {
-    if (/^#{2,3}\s/.test(lines[i])) return { rows, end: i };
+    if (/^#{2,3}\s/.test(lines[i])) return { rows, header, end: i };
     i++;
   }
   let seenHeader = false;
@@ -44,11 +45,11 @@ function tableRows(lines, startIndex) {
     const line = lines[i].trim();
     if (!line.startsWith('|')) break;
     const cells = splitCells(line);
-    if (!seenHeader) { seenHeader = true; continue; }
+    if (!seenHeader) { seenHeader = true; header = cells; continue; }
     if (cells.every((c) => /^:?-+:?$/.test(c))) continue;
     rows.push(cells);
   }
-  return { rows, end: i };
+  return { rows, header, end: i };
 }
 
 function parseRoadmap(markdown) {
@@ -113,12 +114,26 @@ function spikeKey(raw) {
   return String(raw).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
+// The spike gate's fields (R-16) are read by header, so an older four-column table (# | question |
+// time box | blocks) still parses by position.
+const SPIKE_COLS = { question: [/question|^q$/i, 1], decision: [/decision (?:it )?inform|^decision$/i, -1], decisionRule: [/rule/i, -1],
+  decisionOwner: [/owner/i, -1], timeBox: [/time|box/i, 2], blocks: [/^blocks/i, 3], assumption: [/assumption/i, -1] };
 function parseSpikes(markdown) {
   const lines = markdown.split(/\r?\n/);
   const start = lines.findIndex((l) => /^##\s+Spikes/i.test(l));
   if (start < 0) return [];
-  const { rows } = tableRows(lines, start + 1);
-  return rows.filter((c) => c[0]).map((c) => ({ key: spikeKey(c[0]), question: c[1] || '', timeBox: c[2] || '', blocks: c[3] || '' }));
+  const { rows, header } = tableRows(lines, start + 1);
+  const at = {};
+  for (const [k, [re, pos]] of Object.entries(SPIKE_COLS)) {
+    const i = header.findIndex((h, n) => n > 0 && re.test(h));
+    at[k] = i > 0 ? i : (header.length === 4 ? pos : -1);
+  }
+  const cell = (c, k) => (at[k] > 0 ? (c[at[k]] || '').trim() : '');
+  return rows.filter((c) => c[0]).map((c) => {
+    const sp = { key: spikeKey(c[0]), question: cell(c, 'question'), timeBox: cell(c, 'timeBox'), blocks: cell(c, 'blocks') };
+    for (const k of ['decision', 'decisionRule', 'decisionOwner', 'assumption']) if (cell(c, k)) sp[k] = cell(c, k);
+    return sp;
+  });
 }
 
-module.exports = { phaseNumber, parseRoadmap, parseStories, parseSpikes, spikeKey, listValue };
+module.exports = { phaseNumber, parseRoadmap, parseStories, parseSpikes, spikeKey, listValue, splitCells, tableRows };
