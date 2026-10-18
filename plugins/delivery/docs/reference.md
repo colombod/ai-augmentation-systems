@@ -83,8 +83,9 @@ session its role and keep it:
     Manager).
   - Stop: captures operator input, then the operator checks for the Chief of Staff and the Product
     Manager (an unrecorded input, a relay request), at most two blocking stops per turn.
-  - PostToolUse and PostToolUseFailure: the invocation recorder, async, writing only with
-    `DELIVERY_LEDGER=1`.
+  - PostToolUse and PostToolUseFailure: the invocation recorder, writing only with
+    `DELIVERY_LEDGER=1`; synchronous for a successful Write, Edit or NotebookEdit (it hashes the
+    file as the tool left it), async for everything else.
 - **`/delivery:team`** compares the roster with the manifest (live, stale, missing, wrong model),
   warns when bd cannot find a database, and counts operator entries not yet pushed, inputs waiting
   for a record and inferred answers waiting for ratification. `/delivery:team join` confirms a

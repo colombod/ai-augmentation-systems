@@ -35,11 +35,22 @@ test('bd guard, operator channel guard and invocation recorder match their exact
   // the post-push re-scan was removed (A2): the durable control is a push-side scan in CI
   assert.ok(!JSON.stringify(hooks).includes('leak-post-push'));
   for (const ev of ['PostToolUse', 'PostToolUseFailure']) {
-    const rec = matcherFor(ev, 'record-invocation.js');
+    // PostToolUse has two recorder entries (artifact writes synchronous, the rest async)
+    const entries = hooks[ev].filter((x) => x.hooks.some((y) => (y.args || []).some((a) => a.endsWith('record-invocation.js'))));
+    const rec = { test: (t) => entries.some((x) => new RegExp(x.matcher).test(t)) };
     for (const t of ['Skill', 'Agent', 'Write', 'Edit', 'NotebookEdit', 'mcp__Claude_Browser__computer']) assert.ok(rec.test(t), t);
     for (const t of NEVER) assert.ok(!rec.test(t), t);
-    const h = hooks[ev].find((x) => x.hooks.some((y) => (y.args || []).some((a) => a.endsWith('record-invocation.js')))).hooks[0];
-    assert.equal(h.async, true);
-    assert.equal(h.timeout, 5);
+    for (const e of entries) assert.equal(e.hooks[0].timeout, 5);
+    if (ev === 'PostToolUseFailure') assert.equal(entries[0].hooks[0].async, true);
   }
+});
+
+test('Copilot: a successful write is recorded synchronously, so the hash is of the version the tool wrote', () => {
+  const entries = hooks.PostToolUse.filter((x) => x.hooks.some((y) => (y.args || []).some((a) => a.endsWith('record-invocation.js'))));
+  for (const t of ['Write', 'Edit', 'NotebookEdit']) {
+    const e = entries.filter((x) => new RegExp(x.matcher).test(t));
+    assert.equal(e.length, 1, t);
+    assert.notEqual(e[0].hooks[0].async, true, t);
+  }
+  for (const t of ['Skill', 'Agent']) assert.equal(entries.find((x) => new RegExp(x.matcher).test(t)).hooks[0].async, true, t);
 });
