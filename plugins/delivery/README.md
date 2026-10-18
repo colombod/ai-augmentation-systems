@@ -107,6 +107,8 @@ The `full` preset adds three optional roles:
 - **Progress Observer** — keeps the record true: re-checks what is claimed merged, deployed or verified, watches liveness and releases stale claims.
 - **Spike Researcher** — answers spike beads from the architecture.
 
+**Ready and done gates.** A story names its customer surface (`surface.json`) and states its criteria as what the customer sees there, each with a probe; a story closes only when every criterion has a pass row on that surface, on the deployed sha, recorded by someone other than its builder. Gates block only on a divergence from what was agreed; everything else is a counted warning the Delivery Manager acknowledges. Status is merged, deployed, verified, from the record: see [Ready and done gates](docs/reference.md#ready-and-done-gates).
+
 Who talks to whom: you talk to the Chief of Staff (and to the Product Manager about vision); every session messages the Chief of Staff with questions for you; work moves between roles as beads, and the Delivery Manager alone changes their structure. The agents in `agents/` are reviewer lenses that skills call, not sessions: see [Sessions you run vs reviewers they call](docs/reference.md#sessions-you-run-vs-reviewers-they-call).
 
 ## Models

@@ -36,7 +36,7 @@ Where the runner used its own task IDs rather than `FR-n` (superpowers does), us
 
 ## Run
 
-**1. Verify acceptance criteria independently.** Delegate to `delivery:qa-strategist` (via the Agent tool; if subagents are unavailable, adopt the persona from `${CLAUDE_PLUGIN_ROOT}/agents/`). Read the criteria first, then check each against the current code — not against the sprint log. Every criterion gets met / not-met / partially-met with concrete evidence: the test that covers it, or the behavior observed.
+**1. Verify acceptance criteria independently.** Delegate to `delivery:qa-strategist` (via the Agent tool; if subagents are unavailable, adopt the persona from `${CLAUDE_PLUGIN_ROOT}/agents/`). Read the criteria first, then check each against the current code — not against the sprint log. Every criterion gets met / not-met / partially-met with concrete evidence: the test that covers it, or the behavior observed. For a story bead, a criterion counts as met on the customer surface only with its evidence row (`node ${CLAUDE_PLUGIN_ROOT}/scripts/evidence.js list <bead>`): a pass on the surface in `surface.json`, on the deployed sha, by a role other than the author. Cite the `ev-` ids; a criterion without one is not met, whatever the code says.
 
 For any criterion describing behavior a real user would see or get back — rendered GUI
 behavior, a CLI's real output, or a TUI's rendered state — this delegation applies
