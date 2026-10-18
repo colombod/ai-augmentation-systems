@@ -141,9 +141,12 @@ function validateManifest(team, hosts) {
     const builders = team.roles.filter((r) => r.id === 'builder').reduce((n, r) => n + (r.count || 1), 0);
     if (builders > team.budget.builders_cap) problems.push(`team.json: ${builders} builders exceed builders_cap ${team.budget.builders_cap}`);
   }
-  // a steward converges a host's sessions; a team on one host needs none
-  const stewardHosts = [...new Set(team.roles.map((r) => r.host))].filter((h) => hostNames.has(h) && hosts.hosts[h].kind !== 'cloud');
-  for (const host of stewardHosts.length > 1 ? stewardHosts : []) {
+  // a steward converges a host's sessions; a team whose active roles are on one host needs none. The
+  // count is of every active host, cloud included (a PC-plus-cloud team needs the PC steward); a cloud
+  // host itself has no steward, and a retired role does not run, so its host does not count
+  const activeHosts = [...new Set(team.roles.filter((r) => !r.retired).map((r) => r.host))].filter((h) => hostNames.has(h));
+  const stewardHosts = activeHosts.filter((h) => hosts.hosts[h].kind !== 'cloud');
+  for (const host of activeHosts.length > 1 ? stewardHosts : []) {
     if (!stewards.has(host)) {
       problems.push(`team.json: no steward for host "${host}"`);
     }

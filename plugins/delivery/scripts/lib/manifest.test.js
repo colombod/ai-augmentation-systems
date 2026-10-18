@@ -159,3 +159,13 @@ test('ruling 4: "delivery-manager" is accepted wherever a role id is typed and m
   assert.equal(team.roles[0].id, 'delivery-lead');
   assert.deepEqual(expandInstances(team).map((i) => i.instance), ['delivery-lead']);
 });
+
+test('Copilot: the single-host exemption counts every active host, cloud included, and ignores retired roles', () => {
+  const hosts = { hosts: { pc: { kind: 'pc' }, cloud: { kind: 'cloud' }, box: { kind: 'ssh' } } };
+  const role = (id, host, extra = {}) => ({ id, brief: `delivery/${id}`, host, model: 'sonnet', ...extra });
+  const pcCloud = { project: 'x', prefix: 'x', bd_host: 'pc', roles: [role('chief-of-staff', 'pc'), role('builder', 'cloud')] };
+  assert.ok(validateManifest(pcCloud, hosts).some((p) => p.includes('no steward for host "pc"')), 'a PC-plus-cloud team needs the PC steward');
+  assert.ok(!validateManifest(pcCloud, hosts).some((p) => p.includes('"cloud"')), 'a cloud host has no steward');
+  const retiredBox = { project: 'x', prefix: 'x', bd_host: 'pc', roles: [role('chief-of-staff', 'pc'), role('builder', 'pc'), role('spike-researcher', 'box', { retired: true })] };
+  assert.deepEqual(validateManifest(retiredBox, hosts), [], 'a retired role on another host does not make the team multi-host');
+});
