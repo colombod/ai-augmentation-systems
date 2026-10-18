@@ -431,10 +431,13 @@ function inputCheck({ projectRoot, sessionId, instance, deps, warn, op, role }) 
 }
 
 // ---- the typed judge on the relay check (R-37) ----
-// With the judge on, its relay_request answer decides: p >= block_threshold blocks (quoting the
-// regex's clause when it found one, else the message's start), warn_threshold <= p < block_threshold
-// is a non-blocking reminder (advisory: true), below passes. With the judge off, or on any skip,
-// error or timeout, the regex detector decides exactly as before.
+// The judge confirms or overrules the regex; it never lets a regex hit through unless it is clearly
+// negative. With an answer p:
+//   regex hit:  p >= warn_threshold blocks (the regex clause and p quoted); p < warn_threshold passes,
+//               recorded as an overruled hit (advisory, kind relay-overruled);
+//   no hit:     p >= block_threshold blocks (the message's start and p quoted); warn_threshold <= p <
+//               block_threshold leaves a one-time reminder (advisory, kind relay-warn); below passes.
+// With the judge off, or on any skip, local refusal, error or timeout, the regex decides exactly as before.
 const ROLE_NAMES = { 'chief-of-staff': 'Chief of Staff', 'product-manager': 'Product Manager' };
 
 // null when the judge is off or the role does not address the operator; else the typed result,
@@ -459,11 +462,13 @@ async function judgeRelay({ input, team, role, retired, projectRoot, parties, de
 function relayCandidates(message, relay, judged) {
   const p = judged && typeof judged.p === 'number' ? judged.p : null;
   if (p === null) return relay ? [{ kind: 'relay', reason: relayReason(message, relay.clause), detail: relay.phrase }] : [];
-  const start = strip(message).replace(/\s+/g, ' ').trim().slice(0, 160);
   const rated = `The typed judge rates this message p ${p.toFixed(2)} as a relay request (advisory evidence).`;
-  if (p >= judged.block_threshold) {
-    return [{ kind: 'relay', reason: `${relayReason(message, relay ? relay.clause : start)} ${rated}`, detail: relay ? relay.phrase : start }];
+  if (relay) {
+    if (p >= judged.warn_threshold) return [{ kind: 'relay', reason: `${relayReason(message, relay.clause)} ${rated}`, detail: relay.phrase }];
+    return [{ kind: 'relay-overruled', advisory: true, record: true, p, reason: `The relay detector flagged "${String(relay.clause).replace(/\s+/g, ' ').slice(0, 160)}"; the typed judge overruled it at p ${p.toFixed(2)}.` }];
   }
+  const start = strip(message).replace(/\s+/g, ' ').trim().slice(0, 160);
+  if (p >= judged.block_threshold) return [{ kind: 'relay', reason: `${relayReason(message, start)} ${rated}`, detail: start }];
   if (p >= judged.warn_threshold) {
     return [{ kind: 'relay-warn', advisory: true, reason: `Reminder: ${rated} If your last message asked the operator to act in another session or to carry a word to another role, do it yourself with SendMessage next time; the operator does not relay.` }];
   }

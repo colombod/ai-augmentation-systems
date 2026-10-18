@@ -39,20 +39,29 @@ async function main() {
   try { valid = input ? validMarker(findRoleMarker(input.cwd)) : null; } catch (err) { valid = null; }
   if (valid) {
     const { operatorChecks, judgeRelay } = require('./relay-guard.js');
-    const { decideStop, composeStop } = require('./turn.js');
+    const { decideStop, composeStop, relayBudgetSpent } = require('./turn.js');
     const candidates = [];
     const parties = partiesOf(valid);
     let judged = null;
+    let overruled = false;
     try {
       // the typed judge, when enabled (manifest judge block and its key variable); null otherwise
-      judged = await judgeRelay({ input, team: valid.team, role: valid.role.id, retired: !!valid.role.retired, projectRoot: valid.marker.project_root, parties });
+      // nothing is sent when this turn can no longer block a relay
+      if (!relayBudgetSpent({ input, roleDir: valid.roleDir })) judged = await judgeRelay({ input, team: valid.team, role: valid.role.id, retired: !!valid.role.retired, projectRoot: valid.marker.project_root, parties });
     } catch (err) { judged = null; }
     try {
       const found = operatorChecks({ input, roleDir: valid.roleDir, projectRoot: valid.marker.project_root, role: valid.role.id,
         instance: valid.marker.instance, captureStatus: cap && cap.status, parties, pluginRoot: path.join(__dirname, '..', '..'), retired: !!valid.role.retired, judged, deps: { warn: (m) => process.stderr.write(m) } });
       candidates.push(...found.filter((c) => !c.advisory));
-      // a warning-band judge answer does not block: it is said once on the next prompt
-      const advisory = found.filter((c) => c.advisory).map((c) => c.reason).join('\n');
+      // an overruled regex hit is recorded in the judge log; a warning-band answer is said once on the next prompt
+      for (const c of found.filter((x) => x.advisory && x.record)) {
+        overruled = true;
+        try {
+          const judge = require('../../scripts/lib/judge.js');
+          judge.writeLog(judge.logDirOf(valid.marker.project_root), { time: new Date().toISOString(), advisory: true, event: 'regex_overruled', question: 'relay_request', version: judged && judged.version, gate: 'relay-guard', p: c.p });
+        } catch (e) { /* best effort */ }
+      }
+      const advisory = found.filter((c) => c.advisory && !c.record).map((c) => c.reason).join('\n');
       if (advisory) { try { require('fs').writeFileSync(path.join(valid.roleDir, JUDGE_REMINDER), advisory); } catch (e) { /* best effort */ } }
     } catch (err) { /* the operator checks fail open */ }
     try {
@@ -62,7 +71,7 @@ async function main() {
       // a missing claim note is a reminder for the next prompt, not a block (A2)
       if (claim) { try { require('fs').writeFileSync(path.join(valid.roleDir, require('./role-context.js').CLAIM_REMINDER), `Reminder: ${claim.reason}`); } catch (e) { /* best effort */ } }
     } catch (err) { /* allow */ }
-    const d = composeStop({ input, roleDir: valid.roleDir, candidates, judge: judgeSummary(judged) });
+    const d = composeStop({ input, roleDir: valid.roleDir, candidates, judge: judged ? { ...judgeSummary(judged), ...(overruled ? { overruled: true } : {}) } : null });
     if (d) process.stdout.write(JSON.stringify({ decision: 'block', reason: d.reason }));
   }
 }

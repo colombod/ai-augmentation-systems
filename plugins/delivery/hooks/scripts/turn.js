@@ -108,4 +108,13 @@ function composeStop({ input, roleDir, candidates, sessionId: fallbackSession, j
   return { reason: reasons.join('\n\n'), kinds: fresh.map((c) => c.kind) };
 }
 
-module.exports = { markTurnStart, readTurnStart, decideStop, composeStop, stopStateFile, STOP_STATE };
+// True on a continuation whose turn can no longer block a relay (state missing, two blocking stops
+// already, or the relay limit reached): the typed judge is then not asked at all.
+function relayBudgetSpent({ input, roleDir }) {
+  if (!(input && input.stop_hook_active)) return false;
+  const sessionId = (typeof input.session_id === 'string' && input.session_id) || 'unknown';
+  const st = readStopState(stopStateFile(roleDir, sessionId), sessionId);
+  return !st || st.blocking_stops >= MAX_BLOCKING_STOPS || (Number(st.blocks.relay) || 0) >= LIMITS.relay;
+}
+
+module.exports = { markTurnStart, readTurnStart, decideStop, composeStop, relayBudgetSpent, stopStateFile, STOP_STATE };
