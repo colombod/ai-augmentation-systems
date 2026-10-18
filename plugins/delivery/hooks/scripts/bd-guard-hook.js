@@ -13,7 +13,9 @@ async function main() {
   const valid = validMarker(findRoleMarker(input.cwd));
   if (!valid) return '';
   const deny = (reason) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
-  const bd = makeBd(bdOptionsFor(valid.marker, input.cwd));
+  // the hook timeout is 15 s; the gates keep to 8 s and each bd call to 4 s
+  const deadline = Date.now() + 8000;
+  const bd = makeBd({ ...bdOptionsFor(valid.marker, input.cwd), timeoutMs: 4000 });
   const d = decideBd({ command, actor: actorOf(valid.marker), roleId: valid.role.id, staleHours: staleHoursOf(valid.team), bd });
   if (d) return deny(d.reason);
   const root = valid.marker.project_root;
@@ -23,7 +25,7 @@ async function main() {
     const config = J.judgeConfig(valid.team);
     if (config.enabled) ask = (q, state) => J.ask(q, state, { config, projectRoot: root, gate: 'bd-guard' });
   } catch (err) { ask = null; }
-  const g = await gateChecks({ command, roleId: valid.role.id, bd, root, team: valid.team, ask });
+  const g = await gateChecks({ command, roleId: valid.role.id, actor: actorOf(valid.marker), instance: valid.marker.instance, bd, root, team: valid.team, ask, deadline });
   if (g.deny) return deny(g.deny);
   if (!g.warnings.length) return '';
   const W = require('../../scripts/lib/warnings.js');
@@ -31,7 +33,9 @@ async function main() {
     const row = W.record(root, { ...w, raisedBy: valid.marker.instance, instance: valid.marker.instance });
     return `${row ? row.id : 'unrecorded'} ${w.rule} ${w.bead}: ${w.detail}`;
   });
-  const text = `delivery: allowed with ${lines.length} warning(s), recorded for the Delivery Manager:\n${lines.join('\n')}`;
+  // at most three lines in the session; the ledger holds them all
+  const more = lines.length > 3 ? `\n... and ${lines.length - 3} more: warnings.js list --open` : '';
+  const text = `delivery: allowed with ${lines.length} warning(s), recorded for the Delivery Manager:\n${lines.slice(0, 3).join('\n')}${more}`;
   return JSON.stringify({ systemMessage: text, hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
 }
 

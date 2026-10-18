@@ -361,56 +361,99 @@ const G = require('../../scripts/lib/gates.js');
 const J = require('../../scripts/lib/judge.js');
 const { STORY, makeProject, storyBead, memBd } = require('../../scripts/testing/gate-fixture.js');
 
-const HASH = G.criteriaHash(G.parseStory(STORY).criteria);
-const deployed = { ready_hash: HASH, deployed_sha: 'd478', deployed_at: '2026-10-13T07:56:00Z' };
-const passRow = (root, n, over = {}) => G.appendEvidence(root, 'ex-vault-0n9-3', { type: 'row', criterion: n, result: 'pass', surface: 'S1', tuple: { host: 'chatgpt.com', app: 'ChatGPT web', mode: 'plain chat', install_artifact: 'connector from the shipped plugin' }, sha: 'd478', by: 'delivery-lead', actor: 'lead@pc/delivery-lead', arm: 'main', at: NOW, ...over });
+const PARSED = G.parseStory(STORY);
+const HASH = G.storyHash(PARSED);
+const deployed = { ready_hash: HASH, deployed_sha: 'd478aa11', deployed_at: '2026-10-13T07:56:00Z' };
+const passRow = (root, n, over = {}) => G.appendEvidence(root, 'ex-vault-0n9-3', { type: 'row', criterion: n, criterion_hash: G.criterionHash(PARSED.criteria[n - 1]), result: 'pass', surface: 'S1', tuple: { host: 'chatgpt.com', app: 'ChatGPT web', mode: 'plain chat', install_artifact: 'connector from the shipped plugin' }, sha: 'd478aa11', by: 'delivery-lead', actor: 'lead@pc/delivery-lead', arm: 'main', at: '2026-10-13T09:00:00Z', ...over });
+const gate = (command, beads, root, over = {}) => gateChecks({ command, roleId: 'builder', actor: 'dev@pc/builder-1', instance: 'builder-1', bd: Array.isArray(beads) ? memBd(beads) : beads, root, ...over });
+const lines = (text) => text.split('\n').length;
 
-test('1a close, #478 merged 10-13 07:56 with no pass row on S1: refused naming the criteria; author rows do not count; DM rows on the deployed sha pass', async () => {
+test('1a close, #478 merged 10-13 07:56 with no pass row on S1: every closing form is refused; author rows do not count; DM rows on the deployed sha pass', async () => {
   const root = makeProject();
   const bd = memBd([storyBead({ metadata: deployed })]);
-  const close = () => gateChecks({ command: 'bd close ex-vault-0n9-3 --reason "EVIDENCE: import works"', roleId: 'builder', bd, root });
-  let g = await close();
-  assert.match(g.deny, /Close of ex-vault-0n9-3 refused \(D3\)/);
-  assert.match(g.deny, /criterion 1: no pass row; criterion 2: no pass row/);
+  for (const command of ['bd close ex-vault-0n9-3 --reason "EVIDENCE: import works"', 'bd update ex-vault-0n9-3 --status closed', 'bd update ex-vault-0n9-3 -s closed', 'bd update ex-vault-0n9-3 --status=closed', 'bd supersede ex-vault-0n9-3 --with ex-2']) {
+    const g = await gate(command, bd, root);
+    assert.match(g.deny, /^Close of ex-vault-0n9-3 refused \(D3\): criteria without a counting pass row: 1: no pass row; 2: no pass row\.\nMessage the Delivery Manager: ex-vault-0n9-3 needs evidence rows\.$/, command);
+  }
+  assert.match((await gate('bd close ex-vault-0n9-3', bd, root, { roleId: 'delivery-lead' })).deny, /\nRun: evidence\.js add ex-vault-0n9-3 --criterion <n>/);
   passRow(root, 1, { by: 'builder', actor: 'dev@pc/builder-1' });
   passRow(root, 2);
-  assert.match((await close()).deny, /criterion 1: .* recorded by the author/);
+  assert.match((await gate('bd close ex-vault-0n9-3', bd, root)).deny, /1: ev-ex-vault-0n9-3-1 was recorded by the author/);
   passRow(root, 1);
-  g = await close();
-  assert.deepEqual(g, { deny: null, warnings: [] });
+  assert.deepEqual(await gate('bd close ex-vault-0n9-3 --reason "verified ev-3, ev-2"', bd, root), { deny: null, warnings: [] });
 });
 
-test('1a close: a story without criteria closes with a recorded warning (the migration path)', async () => {
-  const root = makeProject({ story: '---\nid: vault-0n9-3\n---\n# old story\n' });
-  const g = await gateChecks({ command: 'bd close ex-vault-0n9-3 --reason "EVIDENCE: done"', roleId: 'builder', bd: memBd([storyBead()]), root });
+test('1a close: criteria changed or deleted after ready is D1; an edited evidence file is refused; a cut story closes', async () => {
+  const bead = storyBead({ metadata: deployed });
+  const changed = makeProject({ story: STORY.replace('with the card count', 'with a reply') });
+  assert.match((await gate('bd close ex-vault-0n9-3', [bead], changed)).deny, /refused \(D1\)/);
+  const gone = makeProject({ story: STORY.replace(/## Acceptance criteria[\s\S]*?(?=## Measurement)/, '') });
+  assert.match((await gate('bd close ex-vault-0n9-3', [bead], gone)).deny, /refused \(D1\)/);
+  const root = makeProject();
+  passRow(root, 1); passRow(root, 2);
+  const file = G.evidenceFile(root, 'ex-vault-0n9-3');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').split('\n')[1] + '\n');
+  assert.match((await gate('bd close ex-vault-0n9-3', [bead], root)).deny, /evidence file was changed by hand/);
+  const cut = makeProject();
+  G.appendEvidence(cut, 'ex-vault-0n9-3', { type: 'cut', record: 'dec-x-1', reason: 'dropped', by: 'delivery-lead', at: NOW });
+  assert.equal((await gate('bd close ex-vault-0n9-3', [bead], cut)).deny, null);
+});
+
+test('1a close, migration and no surface: a story never made ready closes with a warning; with no surface.json rows count and warn', async () => {
+  const old = makeProject({ story: '---\nid: vault-0n9-3\n---\n## Acceptance criteria\n\n- [ ] `FR-1` — the import works\n' });
+  const g = await gate('bd close ex-vault-0n9-3 --reason done', [storyBead()], old);
   assert.equal(g.deny, null);
-  assert.deepEqual(g.warnings.map((w) => w.kind), ['close-no-criteria']);
+  assert.deepEqual(g.warnings.map((w) => w.kind), ['close-not-ready']);
+  const bare = makeProject({ surfaces: null });
+  passRow(bare, 1, { surface: 'S1', tuple: null }); passRow(bare, 2, { surface: 'S1', tuple: null });
+  const n = await gate('bd close ex-vault-0n9-3', [storyBead({ metadata: deployed })], bare);
+  assert.equal(n.deny, null);
+  assert.deepEqual(n.warnings.map((w) => w.kind), ['no-surface']);
 });
 
-test('1a claim: missing measurement plan is a warning; changed criteria (D1) and an area over the unverified cap (D5) are refused', async () => {
+test('1a claim: missing measurement plan and the unverified cap (R-12) warn; changed criteria (D1) are refused; the claim stamps the author', async () => {
   const root = makeProject({ story: STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, '') });
-  let g = await gateChecks({ command: 'bd update ex-vault-0n9-3 --claim', roleId: 'builder', bd: memBd([storyBead({ metadata: { ready_hash: HASH } })]), root });
+  const merged = ['469', '470', '471'].map((n) => storyBead({ id: `ex-${n}`, status: n === '469' ? 'closed' : 'open', labels: ['story', G.STATE.merged] }));
+  const bd = memBd([...merged, storyBead({ assignee: '', metadata: { ready_hash: G.storyHash(G.parseStory(STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, ''))) } })]);
+  const g = await gate('bd update ex-vault-0n9-3 --claim', bd, root);
   assert.equal(g.deny, null);
-  assert.deepEqual(g.warnings.map((w) => [w.kind, w.rule]), [['measurement-plan', 'R-19']]);
-  g = await gateChecks({ command: 'bd update ex-vault-0n9-3 --claim', roleId: 'builder', bd: memBd([storyBead({ metadata: { ready_hash: 'stale0000000' } })]), root });
-  assert.match(g.deny, /D1: the story's criteria changed/);
-  const merged = ['469', '470', '471'].map((n) => storyBead({ id: `ex-${n}`, labels: ['story', G.STATE.merged] }));
-  g = await gateChecks({ command: 'bd update ex-vault-0n9-3 --claim', roleId: 'builder', bd: memBd([...merged, storyBead({ metadata: { ready_hash: HASH } })]), root });
-  assert.match(g.deny, /D5: area collection has 3 merged-but-unverified stories \(cap 2/);
+  assert.deepEqual(g.warnings.map((w) => [w.kind, w.rule]), [['measurement-plan', 'R-19'], ['unverified-cap', 'R-12']]);
+  assert.deepEqual(bd.show('ex-vault-0n9-3').metadata.authors, [{ actor: 'dev@pc/builder-1', instance: 'builder-1', role: 'builder' }]);
+  const stale = await gate('bd update ex-vault-0n9-3 --claim', [storyBead({ metadata: { ready_hash: 'stale0000000' } })], root);
+  assert.match(stale.deny, /^Claim of ex-vault-0n9-3 refused \(D1: the agreed criteria changed/);
+  assert.equal(lines(stale.deny), 2);
 });
 
-test('1a: states and gate fields are set only through the gate scripts; a builder writing them is refused', () => {
+test('1a authority: state and story labels, gate fields in any shape, set-labels and reassigning a claimed story are the Delivery Manager\'s', () => {
   const me = 'me@pc/builder-1';
-  const bd = fakeBd({ mine: { id: 'mine', status: 'in_progress', assignee: me, updated_at: NOW } });
+  const bd = fakeBd({ mine: { id: 'mine', status: 'in_progress', assignee: me, updated_at: NOW, labels: ['story'], metadata: { story_file: 'x.md' } } });
   const run = (command, roleId = 'builder') => decideBd({ command, actor: me, roleId, staleHours: 2, bd, now: NOW });
-  for (const command of ['bd update mine --add-label state-verified', `bd update mine --metadata '{"deployed_sha":"d478"}'`, `bd update mine --metadata '{"ready_hash":"x"}'`]) {
-    assert.match(run(command).reason, /set by ready.js and evidence.js/, command);
-    assert.equal(run(command, 'delivery-lead'), null, command);
+  const refused = [
+    'bd update mine --add-label blocked --add-label state-verified',
+    'bd update mine --remove-label story',
+    'bd update mine --set-labels story,blocked',
+    'bd label remove mine story',
+    `bd update mine --metadata '{"deployed_sha":"d478"}'`,
+    `bd update mine --metadata '{"deployed\\u005fsha":"d478"}'`,
+    `bd update mine --metadata '{"criterion":1}' --metadata '{"story_file":"other.md"}'`,
+    'bd update mine --metadata "$(cat f)"',
+    'bd update mine --metadata not-json',
+    'bd update mine --unset-metadata ready_hash',
+    'bd update mine --set-metadata surface=S2',
+    'bd update mine --assignee ""',
+    'bd assign mine someone',
+  ];
+  for (const command of refused) {
+    const r = run(command);
+    assert.ok(r && lines(r.reason) <= 2 && /message the Delivery Manager/i.test(r.reason), command);
   }
+  for (const command of refused.slice(0, 11)) assert.equal(run(command, 'delivery-lead'), null, command);
   assert.equal(run('bd update mine --add-label blocked'), null);
+  assert.equal(run(`bd create --parent mine --title t --metadata '{"criterion":2}'`), null);
 });
 
-test('1a judge (fake provider): shippable_unit "partial" at claim and divergence "serious" at close only warn', async () => {
+test('1a judge (fake provider): shippable_unit "partial" at claim and divergence "serious" at close only warn; a spent deadline skips it', async () => {
+  const saved = process.env.TYPESAFE_API_KEY;
   process.env.TYPESAFE_API_KEY = 'fake';
   const answers = { shippable_unit: { type: 'choice', choice: 'partial', confidence: 0.9 }, divergence: { type: 'choice', choice: 'serious', confidence: 0.95 } };
   const server = http.createServer((req, res) => {
@@ -424,32 +467,35 @@ test('1a judge (fake provider): shippable_unit "partial" at claim and divergence
     const root = makeProject();
     const ask = (q, state) => J.ask(q, state, { config, env: { TYPESAFE_API_KEY: 'fake' }, projectRoot: root, gate: 'bd-guard' });
     const bd = memBd([storyBead({ metadata: deployed })]);
-    let g = await gateChecks({ command: 'bd update ex-vault-0n9-3 --claim', roleId: 'builder', bd, root, ask });
+    let g = await gate('bd update ex-vault-0n9-3 --claim', bd, root, { ask });
     assert.equal(g.deny, null);
     assert.deepEqual(g.warnings.map((w) => w.kind), ['shippable-judge']);
+    assert.deepEqual((await gate('bd update ex-vault-0n9-3 --claim', bd, root, { ask, deadline: Date.now() + 1000 })).warnings, [], 'no time left: not asked');
     passRow(root, 1); passRow(root, 2);
-    g = await gateChecks({ command: 'bd close ex-vault-0n9-3 --reason "Tested the import in Codex mode"', roleId: 'builder', bd, root, ask });
+    g = await gate('bd close ex-vault-0n9-3 --reason "Tested the import in Codex mode"', bd, root, { ask });
     assert.equal(g.deny, null, 'divergence is warn-only until re-measured');
     assert.deepEqual(g.warnings.map((w) => w.kind), ['divergence-judge']);
-  } finally { server.closeAllConnections(); server.close(); }
+  } finally {
+    server.closeAllConnections(); server.close();
+    if (saved === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = saved;
+  }
 });
 
 test('1a hook: a close without rows is denied; a claim with a gap is allowed with a warning written to the ledger', () => {
   const { projectRoot, roleDir } = preparedRole('builder-1');
-  fs.mkdirSync(path.join(projectRoot, '.delivery', 'initiatives', 'vault'), { recursive: true });
   const fixture = makeProject({ story: STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, '') });
   fs.cpSync(path.join(fixture, '.delivery', 'initiatives'), path.join(projectRoot, '.delivery', 'initiatives'), { recursive: true });
   fs.cpSync(path.join(fixture, '.delivery', 'stories'), path.join(projectRoot, '.delivery', 'stories'), { recursive: true });
   // the probe bd answers every show with this bead, so it has no parent here
-  const bead = storyBead({ assignee: 'tester@pc/builder-1', parent: null, updated_at: NOW, metadata: { ready_hash: G.criteriaHash(G.parseStory(STORY).criteria), deployed_sha: 'd478' } });
+  const bead = storyBead({ assignee: 'tester@pc/builder-1', parent: null, updated_at: NOW, metadata: { ready_hash: G.storyHash(G.parseStory(STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, ''))), deployed_sha: 'd478aa11' } });
   const { bin } = probeBd(JSON.stringify([bead]).replace(/'/g, ''), '[]');
-  const env = { DELIVERY_ROLE: 'builder-1', BEADS_ACTOR: 'tester@pc/builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
-  const hook = (command) => runHookClean('bd-guard-hook.js', { cwd: roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command } }, env, ['TYPESAFE_API_KEY']);
+  const env = { DELIVERY_ROLE: 'builder-1', BEADS_ACTOR: 'tester@pc/builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, PATH: `${bin}${path.delimiter}${process.env.PATH}`, TYPESAFE_API_KEY: 'fake', DELIVERY_JUDGE_ENDPOINT: 'http://127.0.0.1:9' };
+  const hook = (command) => runHookClean('bd-guard-hook.js', { cwd: roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command } }, env);
   const closed = JSON.parse(hook('bd close ex-vault-0n9-3 --reason "EVIDENCE: works"'));
   assert.equal(closed.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(closed.hookSpecificOutput.permissionDecisionReason, /criterion 1: no pass row/);
+  assert.match(closed.hookSpecificOutput.permissionDecisionReason, /1: no pass row/);
   const claimed = JSON.parse(hook('bd update ex-vault-0n9-3 --claim'));
   assert.equal(claimed.hookSpecificOutput.permissionDecision, undefined);
-  assert.match(claimed.systemMessage, /w-builder-1-1 R-19 ex-vault-0n9-3: no Measurement plan/);
+  assert.match(claimed.systemMessage, /w-builder-1-[a-z0-9]+ R-19 ex-vault-0n9-3: no Measurement plan/);
   assert.deepEqual(require('../../scripts/lib/warnings.js').list(projectRoot).map((w) => w.kind), ['measurement-plan']);
 });

@@ -41,10 +41,23 @@ function gateInputs(root, bead, { bd, team } = {}) {
   try { instances = team ? expandInstances(team) : []; } catch (err) { instances = []; }
   let parent = null;
   if (bead.parent && bd) { try { parent = bd.show(bead.parent); } catch (err) { parent = null; } }
-  return { story, initiative, surfaces: s.surfaces, surfaceMissing: s.missing || s.problems.length > 0, surfaceId, surface,
-    rows: G.readEvidence(root, bead.id), instances, parent, parentStory: parent ? readStory(root, parent) : null };
+  const ev = G.readEvidenceChecked(root, bead.id);
+  // no surface declared for this story (no surface.json, no initiative, several and none named):
+  // evidence counts without the surface check, with a warning (R-09 is warn-level)
+  const noSurface = !s.surfaces.length || !surfaceId;
+  return { story, initiative, surfaces: s.surfaces, surfaceMissing: s.missing || s.problems.length > 0, surfaceId, surface, noSurface,
+    rows: ev.rows, evidenceProblem: ev.problem, instances, parent, parentStory: parent ? readStory(root, parent) : null };
+}
+
+// Gate records are written only from a role session, and the role comes from its marker (an
+// environment variable alone is not enough). Fails closed: no valid marker, no write.
+const EVIDENCE_WRITERS = ['delivery-lead', 'reality-checker'];
+function writerProblem(who, allowed = ['delivery-lead']) {
+  if (!who.roleId) return 'this writes a gate record and needs the Delivery Manager\'s role session; none is active here.';
+  if (!allowed.includes(who.roleId)) return `this is the Delivery Manager's to do (this session is ${who.roleId}); message the Delivery Manager.`;
+  return null;
 }
 
 const maxUnverified = (team) => { const v = team && team.budget ? team.budget.max_unverified : undefined; return Number.isInteger(v) && v >= 0 ? v : G.DEFAULT_MAX_UNVERIFIED; };
 
-module.exports = { whoAmI, readStory, gateInputs, maxUnverified };
+module.exports = { whoAmI, readStory, gateInputs, maxUnverified, writerProblem, EVIDENCE_WRITERS };

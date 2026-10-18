@@ -2,6 +2,7 @@
 // structure only by the Delivery Manager.
 // A discipline aid, not a security boundary: a segment it cannot parse is allowed.
 const { splitCommand, tokens, splitBdGlobals } = require('./lane.js');
+const { isStoryBead } = require('../../scripts/lib/gates.js');
 
 const TWO_WORD = new Set(['dep', 'label', 'comments', 'comment', 'dolt', 'epic', 'swarm']);
 // Flags that never take a value, so the token after them is an id, not their argument.
@@ -33,16 +34,19 @@ function parseBd(segment) {
   if (TWO_WORD.has(rest[0]) && rest[1]) { sub = `${rest[0]} ${rest[1]}`; i = 2; }
   const ids = [];
   const flags = new Map();
+  // every occurrence of a repeated flag (--add-label a --add-label b); flags keeps the last
+  const all = new Map();
+  const put = (k, v) => { flags.set(k, v); (all.get(k) || all.set(k, []).get(k)).push(v); };
   for (; i < rest.length; i++) {
     const tok = rest[i];
     if (tok.length > 1 && tok.startsWith('-')) {
       const eq = tok.indexOf('=');
-      if (eq > 0) { flags.set(tok.slice(0, eq), tok.slice(eq + 1)); continue; }
+      if (eq > 0) { put(tok.slice(0, eq), tok.slice(eq + 1)); continue; }
       const next = rest[i + 1];
-      if (!BOOLEAN_FLAGS.has(tok) && next !== undefined && !(next.length > 1 && next.startsWith('-'))) { flags.set(tok, next); i++; } else flags.set(tok, true);
+      if (!BOOLEAN_FLAGS.has(tok) && next !== undefined && !(next.length > 1 && next.startsWith('-'))) { put(tok, next); i++; } else put(tok, true);
     } else ids.push(tok);
   }
-  return { sub, id: ids.length ? ids[0] : null, ids, flags };
+  return { sub, id: ids.length ? ids[0] : null, ids, flags, all };
 }
 
 function hoursBetween(a, b) { return (Date.parse(b) - Date.parse(a)) / 3600000; }
@@ -88,12 +92,33 @@ function structural(p, actor, bd) {
   return false;
 }
 
-// A write of a state label or a gate field, which only the gate scripts set.
-const GATE_FIELDS = /\b(ready_hash|ready_at|deployed_sha|deployed_at|merged_pr)\b/;
+// A write of a state label, the story label or a gate field, which only the gate scripts and
+// materialise set. Metadata is judged on its parsed keys, and only literal values are accepted.
+const GATE_FIELDS = new Set(['ready_hash', 'ready_at', 'ready_record', 'deployed_sha', 'deployed_at', 'merged_pr', 'authors', 'story', 'story_file', 'surface', 'area', 'roadmap_ref', 'materialised_by', 'doc_id']);
+const PROTECTED_LABEL = /^(state-.*|story)$/;
+const EXPANSION = /\$\(|\$\{|`/;
+const values = (p, f) => (p.all.get(f) || []).filter((v) => typeof v === 'string');
 function gateFieldWrite(p) {
-  const labels = [...LABEL_FLAGS.map((f) => p.flags.get(f)), ...(['label add', 'label remove', 'tag'].includes(p.sub) ? p.ids.slice(1) : [])];
-  if (labels.some((v) => typeof v === 'string' && /(^|,)\s*state-/.test(v))) return true;
-  return p.sub === 'update' && ['--metadata', '--set-metadata', '--unset-metadata'].some((f) => typeof p.flags.get(f) === 'string' && GATE_FIELDS.test(p.flags.get(f)));
+  if (p.sub === 'update' && p.all.has('--set-labels')) return 'replacing every label (use --add-label or --remove-label)';
+  const labels = [...LABEL_FLAGS.flatMap((f) => values(p, f)), ...(['label add', 'label remove', 'tag'].includes(p.sub) ? p.ids.slice(1) : [])];
+  const bad = labels.flatMap((v) => v.split(',')).map((l) => l.trim()).find((l) => PROTECTED_LABEL.test(l));
+  if (bad) return `the label ${bad}`;
+  if (p.sub !== 'update' && !CREATE.has(p.sub)) return null;
+  for (const f of ['--metadata', '--set-metadata', '--unset-metadata']) {
+    for (const v of values(p, f)) {
+      if (EXPANSION.test(v)) return `metadata built by the shell (${f} must be a literal)`;
+      let keys;
+      if (f === '--metadata') {
+        let obj;
+        try { obj = JSON.parse(v); } catch (err) { return '--metadata that is not a literal JSON object'; }
+        if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return '--metadata that is not a literal JSON object';
+        keys = Object.keys(obj);
+      } else keys = v.split(',').map((x) => x.split('=')[0].trim());
+      const hit = keys.find((k) => GATE_FIELDS.has(k));
+      if (hit) return `the gate field ${hit}`;
+    }
+  }
+  return null;
 }
 
 function decideBd({ command, actor, roleId, staleHours, bd, now }) {
@@ -103,8 +128,9 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
     if (roleId !== 'delivery-lead' && structural(p, actor, bd)) {
       return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: ${STRUCTURE}` };
     }
-    if (roleId !== 'delivery-lead' && gateFieldWrite(p)) {
-      return { reason: `Role ${roleId || 'unknown'} may not run \`${seg.slice(0, 80)}\`: the states (state-merged, state-deployed, state-verified) and the gate fields (ready_hash, deployed_sha) are set by ready.js and evidence.js, run by the Delivery Manager. Message the Delivery Manager.` };
+    const field = roleId !== 'delivery-lead' ? gateFieldWrite(p) : null;
+    if (field) {
+      return { reason: `Refused: ${field}: only materialise, ready.js and evidence.js change it, for the Delivery Manager.\nMessage the Delivery Manager with the bead id and what should change.` };
     }
     if (CLOSING.has(p.sub)) {
       for (const id of p.ids) {
@@ -123,6 +149,11 @@ function decideBd({ command, actor, roleId, staleHours, bd, now }) {
     if (assigning || (p.sub === 'update' && p.ids.length && CLAIM_FLAGS.some((f) => p.flags.has(f)))) {
       for (const id of assigning ? p.ids.slice(0, 1) : p.ids) {
         const bead = lookup(bd, id);
+        // who built a story is evidence for the done gate: only the Delivery Manager reassigns it
+        const reassign = assigning || p.flags.has('--assignee') || p.flags.has('-a');
+        if (reassign && roleId !== 'delivery-lead' && bead && bead.assignee && isStoryBead(bead)) {
+          return { reason: `Refused: ${id} is a claimed story; only the Delivery Manager reassigns or releases it.\nMessage the Delivery Manager: release ${id}.` };
+        }
         const age = liveOther(bead, actor, staleHours, now);
         if (age !== null) {
           return { reason: `Bead ${id} is claimed by ${bead.assignee} and live (last change ${age.toFixed(1)}h ago). A claim is the only authority: do not take or release it. Ask the Delivery Manager, or wait for staleness (${staleHours}h).` };
@@ -141,64 +172,99 @@ function staleHoursOf(team) {
 
 // ---- the ready and done gates (R-10, R-11, R-12) ----
 // Async because the typed judge may be asked (advisory, warn-only). Returns { deny, warnings }:
-// deny only on a divergence (D1, D2, D3, D5); every other finding is a warning the hook records.
-// Any read that fails leaves the command allowed (fail open), like the rest of this guard.
-const CLAIMING = (p) => p.sub === 'update' && p.ids.length > 0 && (p.flags.has('--claim') || p.flags.get('--status') === 'in_progress' || p.flags.get('-s') === 'in_progress');
+// deny only on a divergence (D1, D2, D3); every other finding is a warning the hook records.
+// Any read that fails leaves the command allowed (fail open), like the rest of this guard. The whole
+// check has one deadline: the judge is asked at most once per command, and only while time remains.
+const statusOf = (p) => p.flags.get('--status') || p.flags.get('-s');
+const CLAIMING = (p) => p.sub === 'update' && p.ids.length > 0 && (p.flags.has('--claim') || statusOf(p) === 'in_progress');
+// every way a bead ends up closed: close, duplicate and supersede, and a status write of closed
+const CLOSES = (p) => CLOSING.has(p.sub) || (p.sub === 'update' && p.ids.length > 0 && statusOf(p) === 'closed');
+const JUDGE_RESERVE_MS = 2500;
 
-function describeFinding(f) { return `${f.rule}: ${f.detail}`; }
+// The second line of a refusal: the command for the Delivery Manager, a message for anyone else.
+const nextStep = (roleId, dmCommand, ask) => (roleId === 'delivery-lead' ? `Run: ${dmCommand}` : `Message the Delivery Manager: ${ask}.`);
 
-async function gateChecks({ command, roleId, bd, root, team, ask }) {
+async function gateChecks({ command, roleId, actor, instance, bd, root, team, ask, deadline }) {
   const G = require('../../scripts/lib/gates.js');
   const { gateInputs, maxUnverified } = require('../../scripts/lib/gate-context.js');
   const out = { deny: null, warnings: [] };
   if (!root) return out;
-  const add = (bead, f) => out.warnings.push({ kind: f.code, rule: f.rule, bead, detail: f.detail });
+  const end = deadline || Date.now() + 8000;
+  let asked = false;
+  const judge = async (q, state) => {
+    if (!ask || asked || Date.now() + JUDGE_RESERVE_MS > end) return null;
+    asked = true;
+    try { return await ask(q, state); } catch (err) { return null; }
+  };
+  const add = (bead, code, rule, detail) => out.warnings.push({ kind: code, rule, bead, detail });
   for (const seg of splitCommand(command)) {
     const p = parseBd(seg);
     if (!p) continue;
     const claiming = CLAIMING(p);
-    if (!claiming && p.sub !== 'close') continue;
+    const closing = CLOSES(p);
+    if (!claiming && !closing) continue;
     for (const id of p.ids) {
       const bead = lookup(bd, id);
       if (!bead) continue;
-      const isStory = (bead.labels || []).includes('story');
+      const story = G.isStoryBead(bead);
       let inp;
       try { inp = gateInputs(root, bead, { bd, team }); } catch (err) { continue; }
       if (claiming) {
         const findings = [];
-        if (isStory && inp.story) {
-          let judged = null;
-          if (ask) { try { judged = await ask('shippable_unit', G.shippableState(inp.story, inp.surface)); } catch (err) { judged = null; } }
+        if (story && inp.story) {
+          const judged = await judge('shippable_unit', G.shippableState(inp.story, inp.surface));
           findings.push(...G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead, judged }));
         }
         let overCap = null;
-        if (isStory) { try { overCap = G.unverifiedOver(bd.list({ label: 'story' }), bead, maxUnverified(team)); } catch (err) { overCap = null; } }
-        findings.push(...G.claimDivergence({ story: isStory ? inp.story : null, bead, parent: inp.parent, parentStory: inp.parentStory, overCap }));
+        if (story) { try { overCap = G.unverifiedOver(bd.list({ label: 'story', all: true }), bead, maxUnverified(team)); } catch (err) { overCap = null; } }
+        findings.push(...G.claimDivergence({ story: story ? inp.story : null, bead, parent: inp.parent, parentStory: inp.parentStory, overCap }));
         const blocks = findings.filter((f) => f.level === 'block');
-        for (const f of findings.filter((x) => x.level === 'warn')) add(id, f);
+        for (const f of findings.filter((x) => x.level === 'warn')) add(id, f.code, f.rule, f.detail);
         if (blocks.length) {
-          out.deny = `Claim of ${id} refused: it opens a divergence from what was agreed. ${blocks.map(describeFinding).join(' ')} The Delivery Manager resolves it (an owner record, a fixed story, or verifying the area first).`;
+          out.deny = `Claim of ${id} refused (${blocks.map((f) => `${f.rule}: ${f.detail}`).join('; ')}).\n${nextStep(roleId, `ready.js ${id} --record --owner-record <dec-...> after fixing the story`, `${id} ${blocks[0].code}`)}`;
           return out;
+        }
+        // stamp who builds the story, so clearing the assignee later does not make the builder a non-author
+        if (story && actor) {
+          const m = bead.metadata || {};
+          const authors = Array.isArray(m.authors) ? m.authors : [];
+          if (!authors.some((a) => a && a.actor === actor)) {
+            try { bd.update(id, { metadata: { ...m, authors: [...authors, { actor, instance: instance || null, role: roleId || null }] } }); } catch (err) { /* fail open */ }
+          }
         }
         continue;
       }
-      // close
+      // closing
       const reason = p.flags.get('--reason') || p.flags.get('-r');
-      if (!isStory || !inp.story || !inp.story.criteria.length) {
-        if (isStory) add(id, { code: 'close-no-criteria', rule: 'R-11', detail: 'closed with no acceptance criteria to check: the done gate could not run (migration path)' });
-        else if (typeof reason !== 'string' || !reason.trim()) add(id, { code: 'close-no-reason', rule: 'R-11', detail: 'closed with no --reason: say what it answered or shipped and where the proof is' });
+      if (!story) {
+        if (typeof reason !== 'string' || !reason.trim()) add(id, 'close-no-reason', 'R-11', 'closed with no --reason: say what it answered or shipped and where the proof is');
         continue;
       }
-      const done = G.doneCheck({ story: inp.story, bead, rows: inp.rows, surface: inp.surface, instances: inp.instances });
-      if (!done.ok) {
-        const missing = done.criteria.filter((c) => !c.row && !c.waiver).map((c) => `criterion ${c.n}: ${c.why}`).join('; ');
-        out.deny = `Close of ${id} refused (D3): every agreed criterion needs a pass row on ${inp.surface ? inp.surface.id : 'the declared surface'}, on the deployed sha, recorded by a role other than the author. Missing: ${missing}. The Delivery Manager (or the reality check) records rows with evidence.js add ${id} --criterion <n> --result pass --surface <id> --sha <deployed sha>.`;
+      if (inp.evidenceProblem) {
+        out.deny = `Close of ${id} refused (D3): its evidence file was changed by hand: ${inp.evidenceProblem}.\n${nextStep(roleId, `git checkout -- .delivery/evidence/${id}.ndjson, then evidence.js check ${id}`, `${id} evidence-edited`)}`;
         return out;
       }
-      if (ask && typeof reason === 'string' && reason.trim()) {
-        let j = null;
-        try { j = await ask('divergence', { agreed_criteria: inp.story.criteria.map((c) => `${c.n}. ${c.text}`).join('\n'), customer_surface: inp.surface ? `${inp.surface.app}, ${inp.surface.mode}` : 'not declared', change_summary: reason }); } catch (err) { j = null; }
-        if (j && j.answer === 'serious') add(id, { code: 'divergence-judge', rule: 'D1-D5', detail: `the typed judge rates this change a serious divergence (confidence ${Number(j.confidence).toFixed(2)}); warn-only until re-measured` });
+      if (inp.rows.some((r) => r.type === 'cut')) continue;
+      const drift = G.scopeDrift(inp.story, bead);
+      if (drift) {
+        out.deny = `Close of ${id} refused (D1): ${drift.detail}.\n${nextStep(roleId, `ready.js ${id} --record --owner-record <dec-...>, then new evidence rows`, `${id} criteria-changed`)}`;
+        return out;
+      }
+      const done = G.doneCheck({ story: inp.story, bead, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances });
+      if (!(bead.metadata || {}).ready_hash) {
+        add(id, 'close-not-ready', 'R-11', 'closed without the done gate: the story was never made ready (ready.js --record), so no agreed criteria were checked');
+        continue;
+      }
+      if (!done.ok) {
+        const open = done.criteria.filter((c) => !c.row && !c.waiver);
+        const missing = open.slice(0, 3).map((c) => `${c.n}: ${c.why}`).join('; ') + (open.length > 3 ? `; and ${open.length - 3} more (evidence.js check ${id})` : '');
+        out.deny = `Close of ${id} refused (D3): criteria without a counting pass row: ${missing}.\n${nextStep(roleId, `evidence.js add ${id} --criterion <n> --result pass --surface <id> --sha <deployed sha> --run <ref>`, `${id} needs evidence rows`)}`;
+        return out;
+      }
+      if (done.noSurface) add(id, 'no-surface', 'R-09', 'closed on evidence with no declared customer surface: the surface was not checked');
+      if (typeof reason === 'string' && reason.trim()) {
+        const j = await judge('divergence', { agreed_criteria: inp.story.criteria.map((c) => `${c.n}. ${c.text}`).join('\n'), customer_surface: inp.surface ? `${inp.surface.app}, ${inp.surface.mode}` : 'not declared', change_summary: reason });
+        if (j && j.answer === 'serious') add(id, 'divergence-judge', 'D1-D5', `the typed judge rates this change a serious divergence (confidence ${Number(j.confidence).toFixed(2)}); warn-only until re-measured`);
       }
     }
   }
