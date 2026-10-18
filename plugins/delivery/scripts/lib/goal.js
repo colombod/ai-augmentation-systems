@@ -23,6 +23,8 @@ const FIELDS = {
   'budget.lean_at': { kind: 'percent', words: /^lean$/ },
   // the estimate table (lib/budget.js seeds it): the owner may override any entry, as any budget figure
   'budget.reserve': { kind: 'percent', words: /^reserve$/ },
+  // when the weekly allowance resets, for spend counted without the status line (a date and time)
+  'budget.period_start': { kind: 'time', words: /\b(?:week|weekly|reset|resets|start)\b/i },
   'budget.unit_tokens': { kind: 'number', unit: /^tokens?$/, words: /^(?:unit|units?|per)$/ },
   'budget.estimate_s': { kind: 'number', unit: /^units?$/, words: /^(?:small|s|estimate)$/ },
   'budget.estimate_m': { kind: 'number', unit: /^units?$/, words: /^(?:medium|m|estimate)$/ },
@@ -90,6 +92,7 @@ function parseValue(field, raw) {
     if (!Number.isFinite(n) || n <= 0 || (f.kind === 'percent' && n > 100)) return { error: `${field} must be a positive number${f.kind === 'percent' ? ' up to 100 (a percentage)' : ''}` };
     return { value: n };
   }
+  if (f.kind === 'time') { const t = Date.parse(s); return Number.isFinite(t) ? { value: new Date(t).toISOString() } : { error: `${field} must be a date and time (2026-10-13T12:00:00Z)` }; }
   if (f.kind === 'pause') return PAUSE_VALUES.includes(s) ? { value: s } : { error: `pause is one of ${PAUSE_VALUES.join(', ')}` };
   if (f.kind === 'list') {
     const items = s.split(',').map((x) => x.trim()).filter(Boolean);
@@ -244,6 +247,7 @@ function questionText(field, value) {
     'budget.lean_at': `Switch to lean mode at ${v}% of the weekly allowance?`,
     'budget.reserve': `Keep ${v}% of each wave's estimate in reserve for review, reality check and merge?`,
     'budget.unit_tokens': `Count one budget unit as ${v} weighted tokens?`,
+    'budget.period_start': `Count the budget week from ${v}, resetting every seven days?`,
     'budget.estimate_s': `Estimate a small story at ${v} units?`,
     'budget.estimate_m': `Estimate a medium story at ${v} units?`,
     'budget.estimate_l': `Estimate a large story at ${v} units?`,

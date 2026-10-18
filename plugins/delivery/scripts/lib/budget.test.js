@@ -30,7 +30,8 @@ test('R-34: on the owner\'s weekly units, remaining is what the transcripts leav
   ];
   const plenty = B.state(t.root, { beads, usedTokens: unitsOf(40), snapshot: null });
   assert.deepEqual([plenty.set, plenty.total, Math.round(plenty.remaining), plenty.half, plenty.lean, plenty.nearLimit], [true, 100, 60, false, false, false]);
-  assert.equal(Math.round(plenty.inflightNeed * 10) / 10, 3.9 + 2.4);
+  // size-L is dispatched on the large model, opus by default: 8 x 1.7 x 0.3 once merged
+  assert.equal(Math.round(plenty.inflightNeed * 100) / 100, 3.9 + 4.08);
   assert.equal(plenty.level, 'more than half left');
   // 10-12 23:00, about 85% of the week used: lean, and half or less left
   const late = B.state(t.root, { beads, usedTokens: unitsOf(85), snapshot: null });
