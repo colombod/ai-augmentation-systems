@@ -125,11 +125,21 @@ function formatStatus(read) {
 // The current turn, for the Stop checks: the last human input's text and the shell commands the
 // session ran since (assistant tool_use blocks with a command). Reads at most the last maxBytes; a
 // partial first line is skipped. { owner: text or null, commands: [] }; never throws.
-function currentTurn(file, { maxBytes = 8 * 1024 * 1024 } = {}) {
+// A turn longer than the window is read again from further back (doubling, up to capBytes), so the
+// owner's words and an early evidence read are not lost.
+function currentTurn(file, { maxBytes = 8 * 1024 * 1024, capBytes = 64 * 1024 * 1024 } = {}) {
+  let size = 0;
+  try { size = fs.statSync(file).size; } catch (e) { return { owner: null, commands: [] }; }
+  for (let n = maxBytes; ; n *= 2) {
+    const r = turnIn(file, size, n);
+    if (r.owner !== null || n >= size || n >= capBytes) return r;
+  }
+}
+
+function turnIn(file, size, maxBytes) {
   const out = { owner: null, commands: [] };
   let text;
   try {
-    const size = fs.statSync(file).size;
     const len = Math.min(size, maxBytes);
     const fd = fs.openSync(file, 'r');
     const buf = Buffer.alloc(len);

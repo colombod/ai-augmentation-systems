@@ -242,3 +242,16 @@ test('a leading system-reminder block does not hide the real text block', () => 
   only.message.content = [{ type: 'text', text: '<system-reminder>note</system-reminder>' }];
   assert.strictEqual(t.classifyRecord(only).source, 'system');
 });
+
+test('currentTurn: a turn longer than the 8 MB window is read from further back', () => {
+  const T = require('./transcript.js');
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'turn-')), 't.jsonl');
+  const tool = (command) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } });
+  const lines = [JSON.stringify({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: 'is the import live?' } }), tool('node /p/scripts/evidence.js check ex-1')];
+  const pad = tool(`echo ${'x'.repeat(100000)}`);
+  for (let i = 0; i < 100; i++) lines.push(pad);
+  fs.writeFileSync(f, `${lines.join('\n')}\n`);
+  const t = T.currentTurn(f, { maxBytes: 1024 * 1024 });
+  assert.equal(t.owner, 'is the import live?');
+  assert.equal(t.commands[0], 'node /p/scripts/evidence.js check ex-1');
+});

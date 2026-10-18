@@ -136,6 +136,17 @@ function secretKind(value, denylist, secrets = []) {
   return null;
 }
 
+// The text with every sensitive-looking span replaced by a placeholder ([path], [url], [token], ...), for
+// a gate that would rather send "run [path] on the server" than nothing. The filter still runs after it.
+function redact(text) {
+  let out = String(text == null ? '' : text);
+  for (const [kind, re] of CHECKS) out = out.replace(new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`), (m) => {
+    const lead = /^[\s"'(=:,[{]/.test(m) ? m[0] : '';
+    return `${lead}[${kind}]`;
+  });
+  return out.replace(OPAQUE, (m) => (/\d/.test(m) && /[A-Za-z]/.test(m) ? '[token]' : m)).replace(HEX, (m) => (/\d/.test(m) ? '[token]' : m));
+}
+
 // { state, dropped, filtered, missing }: only declared fields pass; a declared field that looks
 // sensitive is withheld and named (field and kind, never the value).
 function filterState(question, state, { denylist, secrets } = {}) {
@@ -336,4 +347,4 @@ function stats(entries, { block = DEFAULTS.block_threshold, warn = DEFAULTS.warn
   return out;
 }
 
-module.exports = { ask, judgeConfig, secretKind, ENDPOINT_ENV, configProblems, filterState, loadCatalogue, loadDenylist, readLog, writeLog, logDirOf, stats, providerImpls, CATALOGUE_FILE, TYPESAFE_URL, DEFAULTS };
+module.exports = { ask, redact, judgeConfig, secretKind, ENDPOINT_ENV, configProblems, filterState, loadCatalogue, loadDenylist, readLog, writeLog, logDirOf, stats, providerImpls, CATALOGUE_FILE, TYPESAFE_URL, DEFAULTS };

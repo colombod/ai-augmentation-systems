@@ -99,7 +99,8 @@ async function main() {
       const advisory = found.filter((c) => c.advisory && !c.record).map((c) => c.reason).join('\n');
       if (advisory) { try { require('fs').writeFileSync(path.join(valid.roleDir, JUDGE_REMINDER), advisory); } catch (e) { /* best effort */ } }
     } catch (err) { /* the operator checks fail open */ }
-    candidates.push(...msgCandidates);
+    // a relay block already says it: an order to the owner in the same message is not said twice
+    candidates.push(...msgCandidates.filter((c) => !(c.kind === 'orders' && candidates.some((x) => x.kind === 'relay'))));
     try {
       const { makeBd } = require('../../scripts/lib/bd.js');
       // composeStop limits repeats, so the claim check runs on a continuation too

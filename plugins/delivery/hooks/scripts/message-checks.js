@@ -30,23 +30,42 @@ const NO_ASK = /\b(?:no need to|nothing (?:is )?needed|nothing for you|no action
 // asked back to the sender ("tell me when it is done", "ask for details"): not an order
 const BACK_TO_ME = /^(?:(?:then|and|just|please|so),?\s+)*(?:tell|ask|let|show|send|give|message|ping)\s+(?:me|us)\b|^ask for (?:details|more)\b/;
 
-// Clauses that tell the owner to do something: an address mark ("please", "you need to", "can you")
-// or a bare imperative with an action verb. A decision question ("A or B?") and an offer are not orders.
+// Clauses that tell the owner to do something (review I3: only what is addressed to the owner):
+// - an address mark ("please", "you need to", "can you") or second person with an action verb;
+// - a bare imperative with an action verb that starts its own sentence ("Open the X session and type");
+// - after a short lead that addresses the owner ("Your action: open ...", "For you: sign in ...").
+// Not orders: plan lines ("Next: review ...", "Plan for today: start ...") and the list under them,
+// options ("A: keep ... B: switch ..."), decision questions, offers, and asks back to the sender.
+const OWNER_LEAD = /\b(?:you|your|yours|for you)\b/;
+const PLAN_LABEL = /\b(?:plan|plans|next|next steps?|then|todo|to-do|later|today|tonight|tomorrow|this week|steps|options?|meanwhile)\b[^.:]{0,40}:\s*$/;
 function ownerImperatives(text, { parties } = {}) {
   const out = [];
   try {
     const re = RG.compile(parties || []);
-    for (const { raw, c, q } of RG.clauses(text)) {
-      if (OFFER.test(c) || NO_ASK.test(c) || BACK_TO_ME.test(c)) continue;
-      // "One step for you: sign in ..." — after a short lead, the rest is a clause of its own
+    let underPlan = false;
+    for (const { raw, c, q, ctx } of RG.clauses(text)) {
+      if (!ctx) underPlan = false; // a new paragraph ends a plan list
+      const planHere = PLAN_LABEL.test(c);
+      if (OFFER.test(c) || NO_ASK.test(c) || BACK_TO_ME.test(c)) { if (planHere) underPlan = true; continue; }
       const sp = SPLIT.exec(c);
-      const parts = [c, ...(sp && sp.index <= 60 ? [c.slice(sp.index + sp[0].length)] : [])];
-      const hit = parts.some((x) => {
-        const a = RG.addressOf(x, re);
-        const marked = a.explicit || a.strong;
-        if (q && (!marked || DECISION_Q.test(x))) return false;
-        return marked || (a.imperative && ORDER_VERBS.has(a.verb));
-      });
+      const lead = sp && sp.index <= 60 ? c.slice(0, sp.index).trim() : null;
+      const rest = lead !== null ? c.slice(sp.index + sp[0].length).trim() : c;
+      let label = lead !== null && lead.split(/\s+/).length <= 7;
+      let x = label ? rest : c;
+      if (label && !OWNER_LEAD.test(lead)) {
+        // "Type this:" is an order of its own; "Next:", "A:" and "Plan for today:" are not
+        const l = RG.addressOf(lead, re);
+        if (!(l.imperative && ORDER_VERBS.has(l.verb)) || PLAN_LABEL.test(`${lead}:`)) { if (!rest) underPlan = PLAN_LABEL.test(`${lead}:`); continue; }
+        label = false;
+        x = lead;
+      }
+      const a = RG.addressOf(x, re);
+      const marked = a.explicit || a.strong;
+      const second = /\b(?:you|your)\b/.test(x);
+      let hit;
+      if (q) hit = marked && !DECISION_Q.test(x);
+      else if (marked) hit = true;
+      else hit = a.imperative && ORDER_VERBS.has(a.verb) && (second || label || !underPlan);
       if (hit) out.push(raw.replace(/\s+/g, ' ').slice(0, 200));
     }
   } catch (err) { /* a heuristic never fails the stop */ }
@@ -54,24 +73,35 @@ function ownerImperatives(text, { parties } = {}) {
 }
 
 // ---- id-like tokens (owner ruling 10) ----
+// Only the shapes the plugin itself produces: record, evidence, question and input ids, the project's
+// bead ids, the plugin's script and hook names, lane groups and the .delivery and .beads paths. Product
+// words (COVID-19, F-150, Node.js, config.yaml) are not internal ids.
+const PLUGIN_NAMES = (() => {
+  const out = new Set();
+  const fs = require('fs');
+  const path = require('path');
+  for (const d of [path.join(__dirname), path.join(__dirname, '..', '..', 'scripts')]) {
+    try { for (const f of fs.readdirSync(d)) if (/\.js$/.test(f) && !/\.test\.js$/.test(f)) out.add(f); } catch (err) { /* none */ }
+  }
+  return [...out];
+})();
 const ID_PATTERNS = [
-  /\b[A-Z]{1,5}-\d+(?:\.\d+)*\b/g, // R-34, OD-01, J-2
-  /\bD[1-5]\b/g, // divergence codes
-  /\b(?:dec|ev|q|ans|in|del|w|o)-[a-z0-9-]*\d[a-z0-9-]*\b/g, // record, evidence, question, warning ids
-  /(?:^|[\s(`'"])(?:~|\.{1,2})?\/?(?:[\w.@-]+\/)+[\w.@-]+\.\w{1,8}\b/g, // file paths
-  /\b[A-Za-z]:\\[^\s]+/g, // windows paths
-  /\b[\w-]+\.(?:js|ts|py|sh|json|ndjson|toml|ya?ml|md|ps1)\b/g, // script, config and doc names
+  /\b(?:dec|ev|q|ans|in|del)-[a-z0-9-]*\d[a-z0-9-]*\b/g, // record, evidence, question and input ids
+  /(?:^|[\s(`'"])\.(?:delivery|beads)\/[\w./-]*/g, // the plugin's own paths
   /\b(?:bd|git|gh|operator|goal)-(?:read|write|claim|notes|structure|create-child|write-project|write-product)\b/g, // lane groups
-  /\b[a-z]+-guard\b|\b(?:Stop|PreToolUse|PostToolUse|UserPromptSubmit) hook\b/g, // hook names
-  /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/g, // commit shas
+  /\b(?:Stop|PreToolUse|PostToolUse|UserPromptSubmit) hook\b/g, // hook events
 ];
-const ASKED_FOR_IDS = /\b(?:ids?|bead|beads|record|records|pr|prs|pull requests?|commit|sha|links?|path|paths|file|files|evidence|proof|details?|which one)\b/i;
+// the owner asked for ids: an id, bead, record or link named in a question or a request for them
+const ASKED_FOR_IDS = /\b(?:ids?|bead ids?|beads?|record ids?|records|links?|pull requests?)\b/i;
+const ASKS = /\?|^\s*(?:give|send|show|list|share|paste|which|what)\b/i;
+const ownerAskedIds = (owner) => Boolean(owner && ASKED_FOR_IDS.test(owner) && ASKS.test(owner));
 
 function idTokens(text, { prefix, owner } = {}) {
-  if (owner && ASKED_FOR_IDS.test(owner)) return [];
+  if (ownerAskedIds(owner)) return [];
   const body = String(text || '').replace(/\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\bhttps?:\/\/\S+/g, ' ');
   const p = String(prefix || '').replace(/[^a-z0-9]/gi, '');
-  const pats = [new RegExp(`\\b(?:vault${p ? `|${p}` : ''})-[a-z0-9]+(?:\\.[a-z0-9]+)*\\b`, 'g'), ...ID_PATTERNS];
+  const pats = [...(p ? [new RegExp(`\\b${p}-[a-z0-9]+(?:\\.[a-z0-9]+)*\\b`, 'g')] : []), ...ID_PATTERNS,
+    new RegExp(`(?<![\\w.-])(?:${PLUGIN_NAMES.map((n) => n.replace(/[.-]/g, (ch) => `\\${ch}`)).join('|')})(?![\\w-])`, 'g')];
   const found = new Set();
   for (const re of pats) for (const m of body.match(re) || []) found.add(m.trim());
   return [...found];
@@ -79,17 +109,30 @@ function idTokens(text, { prefix, owner } = {}) {
 
 // ---- routine briefing length ----
 function lineCount(text) { return String(text || '').split('\n').filter((l) => l.trim()).length; }
-// a briefing asks the owner nothing (a question to the owner may run longer, with its options)
-function isBriefing(text) { return !RG.clauses(text).some((x) => x.q); }
+// a briefing asks the owner nothing: a message is a decision only when it ends with a question to the
+// owner (a rhetorical "?" inside a long justification does not make it one)
+function isBriefing(text) {
+  const list = RG.clauses(text).filter((x) => !/^ask for (?:details|more)\b/.test(x.c));
+  return !(list.length && list[list.length - 1].q);
+}
 
 // ---- acceptance words need an evidence read this turn (R-03) ----
 const LIVE = /\b(?:is|are|now|it'?s|went|goes|been)\s+(?:live|shipped|verified)\b|\blive (?:in|on) (?:production|prod|the customer'?s?|your)\b|\bchecked on (?:the|your) (?:customer'?s?|real)\b|\bworks? (?:now )?(?:in|on) (?:your|the customer'?s?|the real)\b/i;
 const NOT_LIVE = /\bnot (?:yet )?(?:live|shipped|verified|checked)\b|\bnot checked yet\b|\bunverified\b/i;
-const EVIDENCE_READ = /\bevidence\.js\s+(?:check|list)\b/;
+// a quoted script path is still a read (Copilot 697)
+const EVIDENCE_READ = /\bevidence\.js['"]?\s+(?:check|list)\b\s*['"]?([^\s'"]*)/;
 
-function unbackedClaim(text, commands) {
-  for (const { raw } of RG.clauses(text)) {
-    if (LIVE.test(raw) && !NOT_LIVE.test(raw)) return (commands || []).some((c) => EVIDENCE_READ.test(c)) ? null : raw.replace(/\s+/g, ' ').slice(0, 120);
+// A clause that says live, shipped or checked (not a question) needs an evidence read in this turn's
+// tool calls; when the clause names a bead, the read must be of that bead.
+function unbackedClaim(text, commands, { prefix } = {}) {
+  const reads = (commands || []).map((c) => EVIDENCE_READ.exec(c)).filter(Boolean).map((m) => m[1]);
+  const p = String(prefix || '').replace(/[^a-z0-9]/gi, '');
+  const beadRe = p ? new RegExp(`\\b${p}-[a-z0-9]+(?:[.-][a-z0-9]+)*\\b`, 'gi') : null;
+  for (const { raw, q } of RG.clauses(text)) {
+    if (q || !LIVE.test(raw) || NOT_LIVE.test(raw)) continue;
+    const named = beadRe ? (raw.match(beadRe) || []) : [];
+    const ok = named.length ? named.every((b) => reads.some((r) => r.toLowerCase() === b.toLowerCase())) : reads.length > 0;
+    if (!ok) return raw.replace(/\s+/g, ' ').slice(0, 120);
   }
   return null;
 }
@@ -107,7 +150,9 @@ async function judgeMessage({ input, team, role, retired, projectRoot, deps = {}
     const env = deps.env || process.env;
     const cfg = judge.judgeConfig(team, env);
     if (!cfg.enabled) return none;
-    const message = RG.strip(String((input && input.last_assistant_message) || '')).trim();
+    // paths, commands, links and tokens become placeholders, so the concrete orders ("run node x.js",
+    // "open https://...") reach the judge instead of being refused by its state filter (review I2)
+    const message = judge.redact(RG.strip(String((input && input.last_assistant_message) || ''))).trim();
     if (!message) return none;
     const state = { sender_role: ROLE_NAMES[role], message };
     const answers = await Promise.all(MESSAGE_QUESTIONS.map((q) => judge.ask(q, state, { config: cfg, env, projectRoot, gate: 'message-checks', timeoutMs: deps.timeoutMs || 2000 })));
@@ -143,10 +188,10 @@ function messageFindings({ message, owner, commands, role, judged = {}, openStep
   const ids = idTokens(message, { prefix, owner });
   if (ids.length) warnings.push({ kind: 'jargon', rule: 'R-45', detail: `internal ids or names in an owner message: ${ids.slice(0, 8).join(', ')}` });
   const j = judged.jargon;
-  if (!ids.length && j && typeof j.p === 'number' && j.p >= (catalogueField('jargon', 'warn_at') || 0.5)) warnings.push({ kind: 'jargon', rule: 'R-45', detail: `the judge rates the owner message as jargon (p ${j.p.toFixed(2)})` });
+  if (!ids.length && !ownerAskedIds(owner) && j && typeof j.p === 'number' && j.p >= (catalogueField('jargon', 'warn_at') || 0.5)) warnings.push({ kind: 'jargon', rule: 'R-45', detail: `the judge rates the owner message as jargon (p ${j.p.toFixed(2)})` });
   const t = judged.tone_violation;
   if (t && t.answer && t.answer !== 'none' && (t.confidence || 0) >= 0.5) warnings.push({ kind: 'tone', rule: 'R-45', detail: `the owner message reads as ${t.answer} (judge ${Number(t.confidence).toFixed(2)})` });
-  const claim = unbackedClaim(message, commands);
+  const claim = unbackedClaim(message, commands, { prefix });
   if (claim) warnings.push({ kind: 'claim-unchecked', rule: 'R-03', detail: `"${claim}" with no evidence read this turn` });
   return { candidates, warnings };
 }
