@@ -16,7 +16,7 @@ test('R-07 10-17 21:00: "run the CSV drop and tell me what you see" is refused; 
   const root = project();
   const r = run(root, 'chief-of-staff', ['add', '--kind', 'account', '--what', 'run the CSV drop in ChatGPT and tell me what you see', '--where', 'ChatGPT', '--steps', 'drop the file']);
   assert.equal(r.code, 1);
-  assert.match(r.out, /check or a relay/);
+  assert.match(r.out, /a check of whether something works[\s\S]*\nMessage the Delivery Manager/);
   assert.equal(run(root, 'chief-of-staff', ['add', '--kind', 'verification', '--what', 'x', '--where', 'y', '--steps', 'z']).code, 1);
   // "open session X and type" is a relay, whatever the kind
   assert.equal(run(root, 'chief-of-staff', ['add', '--kind', 'account', '--what', 'approve the push', '--where', 'builder', '--steps', 'open the General Worker 2 session and type push the draft']).code, 1);
@@ -46,4 +46,18 @@ test('R-44: a decision step is scope, money or irreversible and cites a logged q
   assert.equal(run(root, 'chief-of-staff', [...decision, '--about', 'money', '--question', 'q-chief-of-staff-3']).code, 0);
   for (const role of ['product-manager', 'delivery-lead', null]) assert.equal(run(root, role, SIGN_IN).code, 1, String(role));
   assert.equal(run(root, null, ['list']).code, 0, 'anyone may read the batch');
+});
+
+test('R-44 I4: owner-only retries are steps; relays and checks in any wording are not; queue matching needs the same action', () => {
+  const root = project();
+  const add = (what, steps, kind = 'signin') => run(root, 'chief-of-staff', ['add', '--kind', kind, '--what', what, '--where', 'Edge', '--steps', steps]);
+  assert.equal(add('Sign in to the Vault website', 'Sign in; if it times out, try again').code, 0);
+  assert.equal(add('Connect the bank account', 'Log in to the bank, then test the connection with the Test button', 'account').code, 0);
+  assert.equal(add('Approve the push', 'Type it in the builder session', 'account').code, 1);
+  assert.equal(add('Look at the CI page', 'check that the badge is green', 'account').code, 1);
+  const Q = require('./lib/owner-queue.js');
+  const steps = [{ what: 'Sign in to Vault in Edge' }];
+  assert.equal(Q.inQueue('Please sign in to Vault in Edge today', steps), true);
+  assert.equal(Q.inQueue('Please run the Vault import in Edge', steps), false, 'shared place names are not the same action');
+  assert.equal(Q.inQueue('open the store and connect the printer', [{ what: 'Sign in to App Store Connect' }]), false);
 });

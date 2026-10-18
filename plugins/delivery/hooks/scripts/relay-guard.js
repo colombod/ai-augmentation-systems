@@ -354,14 +354,14 @@ function unrecordedReason(list, op) {
   const n = first.id;
   const excerpt = String(first.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   const more = list.length > 1 ? ` and ${list.length - 1} more` : '';
-  return `You have an operator input with no record: ${n} ("${excerpt}")${more}. Record the decision or ack it (operator.js ack --input ${n}; for chat, ack --pending), then SendMessage the record id.\n\`${op} record --cite ${n} --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\``;
+  return `You have an operator input with no record: ${n} ("${excerpt}")${more}. Record it, or ack it (operator.js ack --input ${n} --reason '<why>'; chat: ack --pending --reason 'conversational'); SendMessage the id.\n\`${op} record --cite ${n} --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\``;
 }
 
 // What the session CAN do: no lane may write the operator records, so restoring the file from the
 // private operator store's history is an owner-side task for the briefing; the Chief of Staff can set the broken chain aside (the file
 // is kept as evidence) and keep recording; the Product Manager asks the Chief of Staff to.
 function integrityReason(instance, problem, op, role) {
-  const what = `${problem.code || 'chain_invalid'}: ${String(problem.error || '').replace(/\s+/g, ' ').slice(0, 160)}`;
+  const what = `${problem.code || 'chain_invalid'}: ${String(problem.error || '').replace(/\s+/g, ' ').slice(0, 100)}`;
   const quarantine = `\`${op} quarantine --file records/${instance}.ndjson --reason '<what failed>'\``;
   const act = role === 'chief-of-staff'
     ? `Set it aside (kept as evidence) and keep recording: ${quarantine}`
@@ -501,5 +501,6 @@ function operatorChecks({ input, roleDir, projectRoot, role, instance, captureSt
   }
 }
 
+// unrecordedReason and integrityReason are exported for the short-reason lint;
 // clauses, compile, addressOf and strip are shared with message-checks.js (orders to the owner)
-module.exports = { clauses, compile, addressOf, strip, findRelayRequest, operatorChecks, judgeRelay, relayCandidates, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD, OPERATOR_FACING };
+module.exports = { unrecordedReason, integrityReason, tornTailReason, clauses, compile, addressOf, strip, findRelayRequest, operatorChecks, judgeRelay, relayCandidates, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD, OPERATOR_FACING };

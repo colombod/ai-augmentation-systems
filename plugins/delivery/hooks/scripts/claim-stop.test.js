@@ -73,7 +73,7 @@ test('the chief of staff\'s stop captures the operator\'s words, then blocks unt
   assert.equal(first.status, 0);
   const out = reasonOf(first);
   assert.equal(out.decision, 'block');
-  assert.match(out.reason, /^You have an operator input with no record: in-pc-000001 \("go with option B for the importer"\)\. Record the decision/);
+  assert.match(out.reason, /^You have an operator input with no record: in-pc-000001 \("go with option B for the importer"\)\. Record it, or ack it/);
   // the continuation is not blocked again for the same kind
   assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: 'Noted.' }).stdout, '');
   R.ack({ projectRoot, input: 'in-pc-000001', reason: 'recorded as a decision in another way', by: COS_BY });

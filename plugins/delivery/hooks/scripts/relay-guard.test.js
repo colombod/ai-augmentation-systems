@@ -134,7 +134,7 @@ test('blocks the chief of staff with an unrecorded input of its own session, and
   const p = captured('chief-of-staff', [human('use postgres for the store, it is what ops already runs', 1)]);
   assert.equal(p.cap.status, 'ok');
   const d = decideStopForOperator(stopArgs(p));
-  assert.equal(d.reason, `You have an operator input with no record: in-pc-000001 ("use postgres for the store, it is what ops already runs"). Record the decision or ack it (operator.js ack --input in-pc-000001; for chat, ack --pending), then SendMessage the record id.\n\`${OP} record --cite in-pc-000001 --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\``);
+  assert.equal(d.reason, `You have an operator input with no record: in-pc-000001 ("use postgres for the store, it is what ops already runs"). Record it, or ack it (operator.js ack --input in-pc-000001 --reason '<why>'; chat: ack --pending --reason 'conversational'); SendMessage the id.\n\`${OP} record --cite in-pc-000001 --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\``);
   R.ack({ projectRoot: p.projectRoot, input: 'in-pc-000001', reason: 'a preference, recorded elsewhere', by: COS_BY });
   assert.equal(decideStopForOperator(stopArgs(p)), null);
 });
@@ -143,7 +143,7 @@ test('several pending inputs: names the first, counts the rest, cuts the excerpt
   const long = `ship it ${'x'.repeat(120)}`;
   const p = captured('chief-of-staff', [human(long, 1), human('second', 2), human('third', 3)]);
   const d = decideStopForOperator(stopArgs(p));
-  assert.ok(d.reason.startsWith(`You have an operator input with no record: in-pc-000001 ("${long.slice(0, 80)}") and 2 more. Record the decision`), d.reason);
+  assert.ok(d.reason.startsWith(`You have an operator input with no record: in-pc-000001 ("${long.slice(0, 80)}") and 2 more. Record it, or ack it`), d.reason);
 });
 
 test('passes when stop_hook_active, for any other role, and on inputs of other sessions', () => {

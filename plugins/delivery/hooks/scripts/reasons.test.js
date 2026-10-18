@@ -86,6 +86,17 @@ function scriptReasons() {
     goal.main(['set', 'budget.usage_envelope', '30', '--record', 'dec-x-1'], { who: who('chief-of-staff'), verifyRecord: () => ({ ok: false, code: 'not_found' }) }).out,
     goal.main(['pause', '--trigger', 'andon:a-1'], { who: who('delivery-lead') }).out,
     oq.main(['add', '--kind', 'signin', '--what', 'x', '--where', 'y', '--steps', 'z'], { who: who('builder') }).out,
+    oq.main(['add', '--kind', 'verification', '--what', 'x', '--where', 'y', '--steps', 'z'], { who: who('chief-of-staff') }).out,
+    oq.main(['add', '--kind', 'account', '--what', 'run the CSV drop and tell me what you see', '--where', 'y', '--steps', 'z'], { who: who('chief-of-staff') }).out,
+    oq.main(['add', '--kind', 'signin', '--what', 'x', '--where', 'y'], { who: who('chief-of-staff') }).out,
+    oq.main(['done', 'o-none-1'], { who: who('chief-of-staff') }).out,
+    goal.main(['set', 'budget.usage_envelope', '30'], { who: who('builder') }).out,
+    goal.main(['pause', '--trigger', 'andon:ev-x-1'], { who: who('builder') }).out,
+    goal.main(['pause', '--trigger', 'andon:ev-x-1'], { who: who('delivery-lead'), bd: { show: () => ({ id: 'x', metadata: {} }) } }).out,
+    RG.unrecordedReason([{ id: 'in-pc-000001', text: 'x'.repeat(200) }, { id: 'in-pc-000002' }], 'node /a/rather/long/plugin/cache/path/delivery/0.23.0/scripts/operator.js'),
+    RG.integrityReason('chief-of-staff', { code: 'truncated', error: 'x'.repeat(200) }, 'node /p/scripts/operator.js', 'chief-of-staff'),
+    RG.integrityReason('product-manager', { code: 'truncated', error: 'x' }, 'node /p/scripts/operator.js', 'product-manager'),
+    RG.tornTailReason('chief-of-staff', { error: 'x' }, 'node /p/scripts/operator.js'),
   ].map((r) => ['script', r]);
 }
 
