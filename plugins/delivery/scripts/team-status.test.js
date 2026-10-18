@@ -239,3 +239,14 @@ test('A5: /delivery:team says how to change a model, and warns on a model name i
   assert.ok(text.includes('To change a model: edit roles[].model in .delivery/team/team.json, rerun prepare-role for that instance, restart its session.'));
   assert.match(text, /Warning: team.json: role "chief-of-staff" has model "claude-opus-9"/);
 });
+
+test('Copilot: when the unpublished count is not available, the status says why instead of a bare 0', () => {
+  const log = require('./lib/operator-log.js');
+  const root = scratchProject(); // not a git repository: the records are local only
+  const tr = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'status-tr-')), 't.jsonl');
+  fs.writeFileSync(tr, JSON.stringify({ type: 'user', origin: { kind: 'human' }, promptId: 'p1', uuid: 'u1', timestamp: '2026-10-13T10:00:00.000Z', sessionId: 's', message: { role: 'user', content: 'Ship it.' } }) + '\n');
+  log.syncTranscript({ projectRoot: root, transcriptPath: tr, sessionId: 's', instance: 'chief-of-staff', role: 'chief-of-staff', host: 'pc' });
+  const s = teamStatus(root, { now: NOW, staleHours: 2, bdCheck: () => true, host: 'pc' });
+  assert.equal(s.operator.unpublished_reason, 'not a git repository');
+  assert.ok(renderStatus(s, root).includes('Operator entries unpublished: 0 (not a git repository: the records stay on this host)'));
+});

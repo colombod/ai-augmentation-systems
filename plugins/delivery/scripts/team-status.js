@@ -33,6 +33,8 @@ function operatorStatus(projectRoot, team, { host, deps = {} } = {}) {
     res.unpublished = u.count || 0;
     if (u.no_remote && u.reason === 'no remote') res.no_remote = true;
     if (res.unpublished && u.oldest) res.unpublished_since = u.oldest;
+    // a count that could not be taken (not a git repository, an error) is not "all published"
+    if (!res.no_remote && u.reason && !/^not pushed/.test(u.reason)) res.unpublished_reason = u.reason;
   } catch (err) { res.notes.push(`unpublished count unavailable: ${err.message}`); }
   try {
     const p = R.pending(projectRoot, {});
@@ -101,7 +103,10 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, war
   lines.push('');
   if (projectRoot) { lines.push(`Manifest: ${projectRoot} at ${manifestRev(projectRoot)}`); lines.push(''); }
   if (operator) {
-    lines.push(`Operator entries unpublished: ${operator.unpublished}${operator.no_remote ? ' (no remote: the operator store is local only)' : ''}`);
+    const why = operator.no_remote ? ' (no remote: the operator store is local only)'
+      : operator.unpublished_reason === 'not a git repository' ? ' (not a git repository: the records stay on this host)'
+        : operator.unpublished_reason ? ` (count unavailable: ${operator.unpublished_reason})` : '';
+    lines.push(`Operator entries unpublished: ${operator.unpublished}${why}`);
     const hours = operator.unpublished_since ? Math.floor((Date.now() - Date.parse(operator.unpublished_since)) / 3600e3) : 0;
     if (hours >= 24 && !operator.no_remote) lines.push(`Warning: operator entries unpublished for ${hours} hours: run operator.js publish, or check the remote (push access, the delivery-operator branch rules)`);
     lines.push(`Operator inputs pending a record: ${operator.pending_inputs.length}${firstIds(operator.pending_inputs)}`);
