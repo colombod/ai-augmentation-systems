@@ -231,7 +231,8 @@ function flakyOpen(root, { now, rows = read(root).rows } = {}) {
 }
 
 // ---- fix on fix: two merged fixes on one symptom within 48 h ----
-const FIX = ['bug', 'security'];
+// the fix labels, review findings included (bd-guard's tier-1 fix labels)
+const FIX = ['bug', 'security', 'finding'];
 function symptomsOf(root, bead) {
   const m = (bead && bead.metadata) || {};
   if (!(bead && (bead.labels || []).some((l) => FIX.includes(l)))) return [];
@@ -242,14 +243,12 @@ function symptomsOf(root, bead) {
   return out;
 }
 
-// chains with acknowledged folded in: { id, symptom, prs, beads, spike, at, acked }
-function chains(root, { rows = read(root).rows, beadOf = () => null } = {}) {
-  const acks = new Set(rows.filter((r) => r.type === 'ack').map((r) => r.target));
-  return rows.filter((r) => r.type === 'chain').map((r) => {
-    let spike = null;
-    try { spike = r.spike ? beadOf(r.spike) : null; } catch (err) { spike = null; }
-    return { ...r, acked: acks.has(r.id) || Boolean(spike && spike.status === 'closed') };
-  });
+// chains with their acknowledgement folded in: { id, symptom, prs, beads, spike, at, acked, ackedAt }.
+// Only the Delivery Manager's ack answers a spike: closing the spike bead alone does not (beadOf is kept
+// for the callers' shape).
+function chains(root, { rows = read(root).rows } = {}) {
+  const acks = new Map(rows.filter((r) => r.type === 'ack').map((r) => [r.target, r.at]));
+  return rows.filter((r) => r.type === 'chain').map((r) => ({ ...r, acked: acks.has(r.id), ackedAt: acks.get(r.id) || null }));
 }
 
 // After a merge (merge-gate.js merged): each symptom of the merged PR's fix beads that another fix
@@ -271,10 +270,12 @@ function fixChain(root, { pr, bd, now, who }) {
   const known = chains(root, { rows, beadOf: show });
   const lines = [];
   for (const [symptom, beadId] of mine) {
-    // one open spike per symptom; once it is answered, only fixes merged after the answer count again
+    // one open spike per symptom; once it is answered, only fixes merged after the answer count again,
+    // this one included (a re-run of merged for an older pull request pairs with nothing)
     const prior = known.filter((c) => c.symptom === symptom);
     if (prior.some((c) => !c.acked)) continue;
-    const since = prior.map((c) => (rows.find((r) => r.type === 'ack' && r.target === c.id) || c).at).sort().pop() || '';
+    const since = prior.map((c) => c.ackedAt).sort().pop() || '';
+    if (String(self.at) <= since) continue;
     const others = merged.filter((m) => m.pr !== self.pr && String(m.at) > since && Math.abs(Date.parse(m.at) - Date.parse(self.at)) <= CHAIN_HOURS * H && keysOf(m).has(symptom));
     if (!others.length) continue;
     const prs = [...others.map((m) => m.pr), self.pr].sort((a, b) => a - b);

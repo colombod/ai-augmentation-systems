@@ -228,3 +228,35 @@ test('I1: a flaky test only warns until the Delivery Manager confirms it, its ar
   assert.equal(c.deny, null);
   assert.match(c.ctx, /all\.spec is flaky/);
 });
+
+// two fixes merged on one symptom: the merged rows and beads fixChain reads
+function chainKit() {
+  const root = makeProject();
+  const R = require('./lib/reviews.js');
+  const mem = new Map();
+  const bd = { show: (id) => mem.get(id) || null, create: ({ id, labels, metadata }) => { mem.set(id, { id, labels, metadata, status: 'open' }); return id; } };
+  const merge = (n, at, labels, meta) => { mem.set(`ex-${n}`, { id: `ex-${n}`, labels, metadata: meta }); R.append(root, String(n), { type: 'merged', beads: [`ex-${n}`], at }, 'delivery-lead'); return AN.fixChain(root, { pr: n, bd, now: at, who: DM }); };
+  return { root, mem, bd, merge };
+}
+
+test('Copilot 888 and M2: only the acknowledgement answers a spike, merges before it never pair again, and finding fixes count', () => {
+  const k = chainKit();
+  const desk = (n, at) => k.merge(n, at, ['bug'], { fixes: 'ex-desk' });
+  desk(1, '2026-10-10T00:00:00Z');
+  assert.equal(desk(2, '2026-10-10T05:00:00Z').length, 1);
+  const chain = AN.chains(k.root, { beadOf: k.bd.show })[0];
+  k.mem.get(chain.spike).status = 'closed';
+  assert.equal(AN.chains(k.root, { beadOf: k.bd.show })[0].acked, false, 'a spike closed without the acknowledgement is no answer');
+  desk(3, '2026-10-10T06:00:00Z');
+  AN.append(k.root, { type: 'ack', target: chain.id, reason: 'the loader raced the window', at: '2026-10-10T07:00:00Z' }, 'delivery-lead');
+  assert.deepEqual(desk(4, '2026-10-10T08:00:00Z'), [], 'PR 3 merged before the answer does not pair with PR 4');
+  assert.deepEqual(AN.fixChain(k.root, { pr: 3, bd: k.bd, now: '2026-10-10T09:00:00Z', who: DM }), [], 'nor does re-running merged for PR 3');
+  assert.equal(desk(5, '2026-10-10T09:00:00Z').length, 1, 'two fixes after the answer are a new chain');
+  // security fixes on one review finding
+  const f = (n, at) => k.merge(n, at, ['security', 'finding'], { finding: '.delivery/reviews/sec.md#F1' });
+  f(11, '2026-10-12T00:00:00Z');
+  assert.match(f(12, '2026-10-12T01:00:00Z').join('\n'), /\.delivery\/reviews\/sec\.md#F1 was fixed in PRs 11, 12 within 48 h/);
+  assert.match(f(13, '2026-10-12T02:00:00Z').join(''), /^$/);
+  k.mem.set('ex-14', { id: 'ex-14', labels: ['finding'], metadata: { finding: '.delivery/reviews/sec.md#F1' } });
+  assert.deepEqual(AN.symptomsOf(k.root, k.mem.get('ex-14')), ['fixes .delivery/reviews/sec.md#F1'], 'a finding bead counts too');
+});
