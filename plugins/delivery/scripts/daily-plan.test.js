@@ -97,6 +97,30 @@ test('R-05 (10-12 09:39, 10-13 11:35): the Chief of Staff still cannot build, co
   assert.match(h.tool('delivery-lead', 'Write', { file_path: path.join(h.roleDir('delivery-lead'), 'project', '.delivery', 'plans', '2026-10-19.ndjson'), content: '{}' }).deny, /plan\.js today/);
 });
 
+test('R-06 (10-12 19:48): an acceptance item sent to the Product Manager warns; plan.js routed lists it until it reaches the Delivery Manager', () => {
+  const h = vault();
+  require('./lib/reviews.js').append(h.root, '478', { type: 'request', head: 'a'.repeat(40), beads: ['ex-vault-0n9-4'], reviewer: 'reviewer-1', title: 'Show the collection summary', at: new Date().toISOString() }, 'delivery-lead');
+  h.plan(COS, 'today');
+  const pr = DP.latest(h.root, DP.today()).items.find((x) => x.kind === 'pr');
+  assert.equal(pr.role, 'delivery-lead', JSON.stringify(pr));
+  const sent = (to, message) => h.send(COS, 'SendMessage', { to, message });
+  const wrong = sent('product-manager', 'Please get the summary change reviewed [#478].');
+  assert.equal(wrong.deny, null);
+  assert.match(wrong.ctx, /^Misrouted \(recorded as a warning\): pr:#478 is acceptance work, routed to the Delivery Manager; it was sent to the Product Manager\.\nSend it to delivery-lead/);
+  assert.equal(Wn.list(h.root).filter((w) => w.kind === 'misroute' && w.rule === 'R-06').length, 1);
+  let routed = h.plan(COS, 'routed').out;
+  assert.match(routed, /^\d+ of \d+ items not sent yet:/);
+  assert.match(routed, /Delivery Manager \(delivery-lead\): dispatch an independent review of PR #478.*\[#478\]/);
+  assert.match(routed, /Misrouted: pr:#478 went to product-manager/);
+  // implementation sent to the Product Manager warns too; sent right, the item leaves the list
+  assert.match(sent('product-manager', 'Start [ex-vault-0n9-4]').ctx, /ex-vault-0n9-4 is implementation work, routed to the Delivery Manager/);
+  assert.equal(sent('delivery-lead', 'Review dispatch for [#478]; assign [ex-vault-0n9-4]; probe [A-8].').ctx, '');
+  routed = h.plan(COS, 'routed').out;
+  assert.doesNotMatch(routed, /not sent yet[\s\S]*(#478|0n9-4)/);
+  // a message from another role is not the Chief of Staff's routing
+  assert.equal(h.send('delivery-lead', 'SendMessage', { to: 'product-manager', message: '[#478]' }).ctx, '');
+});
+
 test('R-45 (10-17 23:07): a long briefing or one with ids still warns; plan.js brief stays within the limit, plain and backed', () => {
   const h = vault();
   const long = Array.from({ length: 14 }, (_, i) => `Line ${i + 1}: vault-0n9.3 waits on dec-chief-of-staff-12.`).join('\n');
@@ -164,4 +188,15 @@ test('R-02: the brief says what changed since yesterday\'s plan; the plan is app
   assert.equal(dm.code, 1);
   assert.match(dm.out, /^plan\.js: the Chief of Staff writes the day's plan\.\nMessage the Chief of Staff/);
   assert.equal((await plan.main(['routed'], { ...deps, now: '2026-10-20T08:00:00Z' })).out, 'No plan for today yet: `plan.js today`');
+});
+
+test('routing table: each function has one owning role, with the fallback when it is not on the team', () => {
+  const team = who(makeProject()).team;
+  assert.deepEqual(DP.routeOf('merge', team), { role: 'delivery-lead', instance: 'delivery-lead' });
+  assert.deepEqual(DP.routeOf('spike', team), { role: 'spike-researcher', instance: 'spike-researcher' });
+  assert.deepEqual(DP.routeOf('reality_check', team), { role: 'delivery-lead', instance: 'delivery-lead' }, 'no Reality Checker on this team');
+  assert.deepEqual(DP.recipient(makeProject(), team, 'builder-2 [3fa9c1]'), { instance: 'builder-2', role: 'builder' });
+  assert.deepEqual(DP.recipient(makeProject(), team, 'Delivery Manager'), { instance: 'delivery-lead', role: 'delivery-lead' });
+  assert.equal(DP.carries('see [#47]', { match: ['#478'] }), false);
+  assert.equal(DP.carries('see ex-vault-0n9-4.', { match: ['ex-vault-0n9-4'] }), true);
 });

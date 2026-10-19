@@ -37,9 +37,9 @@ function harness({ root = makeProject(), beads = {}, deps = [], prs = null, runs
   };
   const env = (inst) => ({ ...process.env, DELIVERY_ROLE: inst, DELIVERY_ROLE_DIR: roleDir(inst), BD_FAKE_STORE: store, GH_FAKE_STORE: ghStore, PATH: `${__dirname}${path.delimiter}${process.env.PATH}`,
     BEADS_ACTOR: `dev@pc/${inst}`, CLAUDE_PLUGIN_ROOT: P, TYPESAFE_API_KEY: 'fake', DELIVERY_JUDGE_ENDPOINT: 'http://127.0.0.1:9' });
-  const hook = (script, inst, toolName, toolInput) => {
+  const hook = (script, inst, toolName, toolInput, event = 'PreToolUse') => {
     const cwd = roleDir(inst);
-    const r = spawnSync('node', [path.join(P, 'hooks', 'scripts', script)], { input: JSON.stringify({ tool_name: toolName, tool_input: toolInput, cwd, hook_event_name: 'PreToolUse' }), env: env(inst), cwd, encoding: 'utf8', timeout: 30000 });
+    const r = spawnSync('node', [path.join(P, 'hooks', 'scripts', script)], { input: JSON.stringify({ tool_name: toolName, tool_input: toolInput, cwd, hook_event_name: event }), env: env(inst), cwd, encoding: 'utf8', timeout: 30000 });
     let j = null;
     try { j = r.stdout.trim() ? JSON.parse(r.stdout) : null; } catch (err) { j = null; }
     const h = (j && j.hookSpecificOutput) || {};
@@ -61,7 +61,9 @@ function harness({ root = makeProject(), beads = {}, deps = [], prs = null, runs
   const gh = () => (fs.existsSync(ghStore) ? JSON.parse(fs.readFileSync(ghStore, 'utf8')).prs : {});
   const setPr = (n, f) => { const s = JSON.parse(fs.readFileSync(ghStore, 'utf8')); f(s.prs[n]); fs.writeFileSync(ghStore, JSON.stringify(s, null, 2)); };
   const setRuns = (list) => { const g = JSON.parse(fs.readFileSync(ghStore, 'utf8')); g.runs = list; fs.writeFileSync(ghStore, JSON.stringify(g, null, 2)); };
-  return { root, store, roleDir, gh, setPr, setRuns, bash, tool: (inst, name, input) => hook('role-lane.js', inst, name, input), script, db, setBead };
+  return { root, store, roleDir, gh, setPr, setRuns, bash, tool: (inst, name, input) => hook('role-lane.js', inst, name, input), script,
+    // a sent message as the session's hooks see it: the lane first, then the PostToolUse route check
+    send: (inst, toolName, input) => { const lane = hook('role-lane.js', inst, toolName, input); return lane.deny ? { deny: `lane: ${lane.deny}` } : { deny: null, ctx: hook('route-check.js', inst, toolName, input, 'PostToolUse').ctx }; }, db, setBead };
 }
 
 const evIdOf = (out) => (/(ev-[a-z0-9.-]+-\d+)/.exec(out || '') || [])[1];
