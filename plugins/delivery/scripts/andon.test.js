@@ -72,9 +72,10 @@ test('R-22 10-17: the intake fails in the real app; the area stops, the fix goes
   assert.match(h.bash('chief-of-staff', `${h.script('andon.js')} show --plain`).out, /; the fix is in review\.$/);
   const bd = { show: (x) => h.db().issues[x] || null, list: ({ label }) => Object.values(h.db().issues).filter((b) => (b.labels || []).includes(label)) };
   assert.match(renderStatus(teamStatus(h.root, { bdCheck: () => false, bd }), null), /^Stopped: area collection \(ev-ex-vault-0n9-3-1 failed on the customer's app\); needs a fix deployed and passing its check, then a closed A3; A3 a3-reality-checker-1 open; the fix is in review\nA3 open: 1 \(a3-reality-checker-1\)/m);
+  require('./lib/reviews.js').append(h.root, '501', { type: 'merged', head: H(501), beads: ['ex-fix-intake'], at: new Date().toISOString() }, 'delivery-lead');
   // no close without the proving pass; the pass alone does not lift it
-  const sections = "--cause 'The connector read only https links; plain chat hands the tool a local path.' --class 'Every tool that takes a file assumed an https link.' --countermeasure 'All file tools take both forms; a contract test feeds each a local path.' --check 'The reality check on the deployed build.'";
-  assert.match(h.a3('delivery-lead', `close ${a3} --fix ex-fix-intake --proof ${ev} ${sections}`).out, /is not a counting pass of criterion 1 of ex-vault-0n9-3 after ev-ex-vault-0n9-3-1/);
+  const sections = "--cause 'The connector read only https links; plain chat hands the tool a local path.' --class 'Every tool that takes a file assumed an https link.' --countermeasure 'All file tools take both forms; a contract test feeds each a local path.' --check 'The reality check on the deployed build passed.'";
+  assert.match(h.a3('delivery-lead', `close ${a3} --fix ex-fix-intake --proof ${ev} ${sections}`).out, /is not a pass of criterion 1 of ex-vault-0n9-3 after ev-ex-vault-0n9-3-1/);
   h.deploy('e5550000', 'v1.4.3');
   const pass = h.run(1, 'pass', 'v1.4.3');
   assert.equal(pass.code, 0, pass.out);
@@ -115,16 +116,22 @@ test('R-22 #195: two days of red nightly on main stop new claims across the prod
   assert.equal(claim(h, 'builder-1', 'ex-a').deny, null, 'green again: the product resumes');
 });
 
-test('R-22: where gh cannot read CI, the Delivery Manager\'s `ci main red` row stops claims; a closed A3 or green lifts it', () => {
+test('R-22: where gh cannot read CI, the Delivery Manager\'s `ci main red` row stops claims; the A3\'s work goes on; green lifts it', () => {
   const h = harness({ beads: { 'ex-a': story('ex-a'), 'ex-b': story('ex-b'), 'ex-fix': { id: 'ex-fix', title: 'fix' } } });
   const ci = (args) => h.bash('delivery-lead', `${h.script('andon.js')} ci ${args}`);
   assert.match(h.bash('builder-1', `${h.script('andon.js')} ci red --sha c195aa00 --run 195`).out, /the Delivery Manager's to do/);
   assert.match(ci('red --sha c195aa00 --run 195').out, /new claims across the product stop/);
   assert.match(claim(h, 'builder-1', 'ex-a').deny, /CI on main is red since/);
   const a3 = /^(a3-[a-z0-9-]+):/.exec(h.bash('delivery-lead', `${h.script('a3.js')} new --trigger ci:main`).out)[1];
-  const close = h.bash('delivery-lead', `${h.script('a3.js')} close ${a3} --fix ex-fix --proof 'run 196 green' --problem 'nightly red' --evidence 'run 195' --expected 'green' --cause 'a fixture clock' --class 'tests on the wall clock' --countermeasure 'one injected clock' --check 'run 196'`);
-  assert.equal(close.code, 0, close.out);
-  assert.equal(claim(h, 'builder-1', 'ex-a').deny, null, 'an A3 closed after it went red lifts it');
+  h.bash('delivery-lead', `bd update ex-fix --metadata '{"a3":"${a3}"}'`);
+  assert.equal(claim(h, 'builder-2', 'ex-fix').deny, null, 'the A3\'s own work');
+  h.bash('delivery-lead', 'bd update ex-fix --add-label state-merged');
+  const sections = "--problem 'The nightly run fails on main.' --evidence 'Run 195 failed on main at c195aa00.' --expected 'Every run on main is green.' --cause 'A fixture read the wall clock and broke at midnight.' --class 'Tests that read the wall clock directly.' --countermeasure 'One injected clock for every test that needs time.' --check 'Run 196 on main passed.'";
+  const close = (proof) => h.bash('delivery-lead', `${h.script('a3.js')} close ${a3} --fix ex-fix --proof '${proof}' ${sections}`);
+  assert.match(close('run 196 green').out, /is not a green CI run on main after the red run: gh cannot read CI here/);
+  const green = /^(an-[a-z0-9-]+):/.exec(ci('green --sha c196aa00 --run 196').out)[1];
+  assert.equal(claim(h, 'builder-1', 'ex-a').deny, null, 'green lifts it');
+  assert.equal(close(green).code, 0);
   ci('red --sha c197aa00 --run 197');
   assert.match(claim(h, 'builder-2', 'ex-b').deny, /CI on main is red since/, 'a new red after the close stops again');
   ci('green --sha c198aa00 --run 198');

@@ -95,6 +95,19 @@ function sectionsOf(text) {
   return out;
 }
 const missingSections = (text) => { const s = sectionsOf(text); return SECTIONS.filter(([k]) => !s[k]).map(([, h]) => h); };
+// filled with a placeholder (TBD, TODO, n/a, -) or fewer than MIN_WORDS words: not an answer
+const MIN_WORDS = 4;
+const PLACEHOLDER = /^(?:tbd|tba|todo|fixme|wip|n\/?a|none|unknown|-+|\.+|\?+|x+)[.!]?$/i;
+function weakSections(text) {
+  const s = sectionsOf(text);
+  return SECTIONS.filter(([k]) => s[k] && (PLACEHOLDER.test(s[k].trim()) || (s[k].match(/[\p{L}\p{N}]+/gu) || []).length < MIN_WORDS)).map(([, h]) => h);
+}
+// a fix bead is merged: its state label, or a merged review record that carried it
+function mergedBead(root, bead) {
+  if (['merged', 'deployed', 'verified'].includes(G.stateOf(bead))) return true;
+  const R = require('./reviews.js');
+  return R.listPrs(root).some((p) => R.read(root, p).rows.some((r) => r.type === 'merged' && (r.beads || []).includes(bead.id)));
+}
 
 // Every A3 with its close folded in: { id, trigger, area, at, by, closed: row|null }
 function a3s(root, rows = read(root).rows) {
@@ -358,4 +371,4 @@ function plainLines(s) {
   return out;
 }
 
-module.exports = { REL, SECTIONS, read, append, a3File, a3s, openA3For, closedA3For, sectionsOf, missingSections, classOf, areaStops, ciState, redFromRuns, ghRuns, flakyOpen, symptomsOf, chains, fixChain, claimFindings, summary, plainLines, FLAKY_HOURS, CHAIN_HOURS };
+module.exports = { MIN_WORDS, weakSections, mergedBead, REL, SECTIONS, read, append, a3File, a3s, openA3For, closedA3For, sectionsOf, missingSections, classOf, areaStops, ciState, redFromRuns, ghRuns, flakyOpen, symptomsOf, chains, fixChain, claimFindings, summary, plainLines, FLAKY_HOURS, CHAIN_HOURS, FAILED };

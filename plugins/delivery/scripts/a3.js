@@ -17,6 +17,7 @@ const crypto = require('crypto');
 const A = require('./lib/andon.js');
 const G = require('./lib/gates.js');
 const { whoAmI } = require('./lib/gate-context.js');
+const { withLock } = require('./lib/lock.js');
 
 const USAGE = 'usage: a3.js new --trigger andon:<ev row>|ci:main|flaky:<test> [--title t] [--problem t] [--evidence t] [--expected t] [--cause t] [--class t] [--countermeasure t] [--check t] | close <a3> --fix <bead>... --proof <ev row|run> [section flags] | show <a3> | list [--json]';
 const SECTION_FLAGS = A.SECTIONS.map(([k]) => `--${k}`);
@@ -67,7 +68,63 @@ function failedRow(root, store, rowId) {
   return { row, bead, beadId: m[1] };
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: given } = {}) {
+// the proof of a failed check: a counting pass of the current wording of its criterion, on the sha
+// deployed now, which is a later build than the one that failed. [why, fix] or null
+function andonProof(who, store, f, proof) {
+  const C = require('./lib/gate-context.js');
+  const m = EV.exec(proof);
+  const pass = m && m[1] === f.beadId ? G.readEvidence(who.root, m[1]).find((r) => r.id === proof) : null;
+  const again = 'Prove it on the customer\'s app: the Reality Checker runs the check on the deploy of the fix (reality-check.js run-record), then close with that row';
+  if (!pass || pass.type !== 'row' || pass.result !== 'pass' || Number(pass.criterion) !== Number(f.row.criterion) || pass.seq <= f.row.seq) return [`${proof} is not a pass of criterion ${f.row.criterion} of ${f.beadId} after ${f.row.id}`, again];
+  if (G.shaMatch(pass.sha, f.row.sha)) return [`${proof} ran on ${String(pass.sha).slice(0, 12)}, the build that failed: deploy the fix, then check it again`, again];
+  const inp = C.gateInputs(who.root, f.bead || { id: f.beadId }, { bd: store(), team: who.team });
+  const c = inp.story && inp.story.criteria.find((x) => x.n === Number(f.row.criterion));
+  if (!c) return [`criterion ${f.row.criterion} of ${f.beadId} is not in its story any more`, 'Message the Delivery Manager: the failure needs re-reading against the story'];
+  const bm = (f.bead && f.bead.metadata) || {};
+  const why = G.rowProblem(pass, { c, surface: inp.surface, noSurface: inp.noSurface, sha: bm.deployed_sha, deployedAt: bm.deployed_at, authors: G.authorsOf(f.bead || {}, inp.instances), recordOk: C.recordChecker(who.root) });
+  return why ? [why, again] : null;
+}
+
+// the runs gh lists for the product's main: { runs, repo, branch } or { unavailable }
+function mainRuns(who, gh) {
+  const repo = require('./lib/gh-pr.js').productRepoOf(who.team);
+  const branch = (who.team && typeof who.team.product_branch === 'string' && who.team.product_branch) || 'main';
+  if (!repo) return { unavailable: 'no product repository', branch };
+  const r = gh ? gh(repo, branch) : A.ghRuns(repo, branch, { cwd: who.root });
+  return { ...r, repo, branch };
+}
+
+// a ci:main A3: a green run of main newer than the last red one of its workflow (through gh), or where gh
+// cannot read, the Delivery Manager's ci green row after the last red one
+function ciProof(who, rows, proof, gh) {
+  const live = mainRuns(who, gh);
+  const how = `name its run id (gh run list -R ${live.repo || '<product_github>'} --branch ${live.branch})`;
+  if (live.runs) {
+    const run = live.runs.find((r) => String(r.databaseId) === String(proof).trim());
+    const done = (r) => String(r.status).toLowerCase() === 'completed';
+    const lastRed = run ? live.runs.filter((r) => r.workflowName === run.workflowName && done(r) && A.FAILED.has(String(r.conclusion).toLowerCase())).map((r) => r.createdAt).sort().pop() : null;
+    if (!run || !done(run) || String(run.conclusion).toLowerCase() !== 'success' || !lastRed || String(run.createdAt) <= String(lastRed)) return [`${proof} is not a green CI run on ${live.branch} after the red run: ${how}`, 'Close the A3 once main is green again'];
+    return null;
+  }
+  const ci = rows.filter((r) => r.type === 'ci');
+  const row = ci.find((r) => r.id === proof);
+  const lastRed = ci.filter((r) => r.result === 'red').map((r) => r.at).sort().pop();
+  if (!row || row.result !== 'green' || !lastRed || String(row.at) <= String(lastRed)) return [`${proof} is not a green CI run on ${live.branch} after the red run: gh cannot read CI here, so name the Delivery Manager's ci green row (andon.js ci green --sha <sha> --run <ref>)`, 'Record the green run first, then close the A3'];
+  return null;
+}
+
+// a flaky A3: a green run of the test other than the runs recorded as its failure and pass; a run gh
+// lists must be green
+function flakyProof(who, rows, test, proof, gh) {
+  const seen = rows.filter((r) => r.type === 'flaky' && r.test === test).flatMap((r) => [r.fail_run, r.pass_run].map(String));
+  if (seen.includes(String(proof).trim())) return [`${proof} is one of the runs recorded for the flaky test: name a later green run of ${test}`, 'Run the test again on the fix (several times), then close with that run'];
+  const live = mainRuns(who, gh);
+  const run = live.runs && live.runs.find((r) => String(r.databaseId) === String(proof).trim());
+  if (run && String(run.conclusion).toLowerCase() !== 'success') return [`${proof} is not a green run (${run.conclusion})`, 'Close the A3 on a green run of the test'];
+  return null;
+}
+
+function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: given, gh } = {}) {
   const a = parse(argv);
   const [sub, id] = a._;
   if (!sub) return { code: 2, out: USAGE };
@@ -118,9 +175,14 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: give
       title = title || `${fl.test} is flaky`;
       draft.evidence = `${fl.test} failed (${fl.fail_run}) then passed (${fl.pass_run}) on ${String(fl.sha).slice(0, 12)}.`;
     } else return { code: 2, out: USAGE };
-    const open = A.openA3For(who.root, t, rows);
-    if (open) return refuse(`${open.id} is already open for ${t}`, `Fill it in (.delivery/reviews/${open.id}.md) and close it: a3.js close ${open.id} --fix <bead> --proof <row>`);
-    const row = A.append(who.root, { type: 'a3-open', trigger: t, area, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
+    // one open A3 per trigger: the check and the open row under one lock, the ledger re-read inside (Copilot 816)
+    const opened = withLock(path.join(who.root, A.REL, '.a3-new.lock'), () => {
+      const open = A.openA3For(who.root, t, A.read(who.root).rows);
+      if (open) return { open };
+      return { row: A.append(who.root, { type: 'a3-open', trigger: t, area, by: who.roleId, actor: who.actor || who.instance, at }, who.instance) };
+    }, { strict: true, waitMs: 3000 });
+    if (opened.open) return refuse(`${opened.open.id} is already open for ${t}`, `Fill it in (.delivery/reviews/${opened.open.id}.md) and close it: a3.js close ${opened.open.id} --fix <bead> --proof <row>`);
+    const { row } = opened;
     const a3 = `a3-${row.id.replace(/^an-/, '')}`;
     // the ledger row names its A3 by its own id: an-<writer>-<n> opens a3-<writer>-<n>
     const tpl = fs.readFileSync(TEMPLATE, 'utf8').replace(/\{\{id\}\}/g, a3).replace(/\{\{trigger\}\}/g, t).replace(/\{\{area\}\}/g, area || 'product').replace(/\{\{opened\}\}/g, at).replace(/\{\{title\}\}/g, title);
@@ -141,22 +203,24 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: give
     text = fill(text, a);
     const missing = A.missingSections(text);
     if (missing.length) return refuse(`${id} has no ${missing.join(', ')}`, `Fill it in (.delivery/reviews/${id}.md, or a3.js close ${id} --${A.SECTIONS.find(([, h]) => h === missing[0])[0]} '...'), then close it`);
+    const weak = A.weakSections(text);
+    if (weak.length) return refuse(`${id}: ${weak.join(', ')} ${weak.length > 1 ? 'are' : 'is'} placeholders or under ${A.MIN_WORDS} words`, 'Write what was found: the cause in a paragraph, the class of defect, the fix across it and the check that ran');
     if (!a.fix.length || !a.proof) return refuse('a close links the fix bead(s) and the proving check', `a3.js close ${id} --fix <bead> --proof <ev row or run>`);
+    const f = /^andon:/.test(x.trigger) ? failedRow(who.root, store, x.trigger.slice(6)) : null;
+    if (f && f.why) return refuse(f.why);
+    // the fix beads exist, are linked to this failure, and are merged
+    const links = f ? [f.row.id, f.beadId, f.bead && String((f.bead.metadata || {}).story || '')].filter(Boolean) : [];
     for (const b of a.fix) {
       let bead = null;
       try { bead = store().show(b); } catch (err) { bead = null; }
       if (!bead) return refuse(`no bead ${b}`, `Name the fix: \`bd show ${b}\``);
+      const m = bead.metadata || {};
+      const fixes = String(m.fixes || '').replace(/\s+#.*$/, '').trim();
+      if (!links.includes(fixes) && String(m.a3 || '') !== id) return refuse(`${b} is not linked to this failure (${links.length ? `fixes: ${[...new Set(links)].join(', ').replace(/, ([^,]*)$/, ' or $1')}, or ` : ''}a3: ${id})`, `The Delivery Manager links it: bd update ${b} --metadata '{"a3":"${id}"}'`);
+      if (!A.mergedBead(who.root, bead)) return refuse(`${b} is not merged yet`, `Merge its pull request first (merge-gate.js merged <pr>), then close ${id}`);
     }
-    if (/^andon:/.test(x.trigger)) {
-      const f = failedRow(who.root, store, x.trigger.slice(6));
-      if (f.why) return refuse(f.why);
-      const m = EV.exec(a.proof);
-      const deployed = f.bead && f.bead.metadata && f.bead.metadata.deployed_sha;
-      const pass = m && m[1] === f.beadId ? G.readEvidence(who.root, m[1]).find((r) => r.id === a.proof) : null;
-      const ok = pass && pass.type === 'row' && pass.result === 'pass' && pass.arm !== 'side' && pass.criterion === f.row.criterion && pass.seq > f.row.seq && ['delivery-lead', 'reality-checker'].includes(pass.by);
-      if (!ok) return refuse(`${a.proof} is not a counting pass of criterion ${f.row.criterion} of ${f.beadId} after ${f.row.id}`, 'Prove it on the customer\'s app first: the Reality Checker runs the check on the new deploy (reality-check.js run-record), then close with that row');
-      if (deployed && !G.shaMatch(pass.sha, deployed)) return refuse(`${a.proof} passed on ${pass.sha}, not the deployed ${deployed}`, 'Check the deployed version again, then close with that row');
-    }
+    const proofWhy = f ? andonProof(who, store, f, a.proof) : x.trigger === 'ci:main' ? ciProof(who, rows, a.proof, gh) : flakyProof(who, rows, x.trigger.slice(6), a.proof, gh);
+    if (proofWhy) return refuse(proofWhy[0], proofWhy[1]);
     fs.writeFileSync(fileOf(who.root, id), text.replace(/^(---[\s\S]*?\n)(---)/, `$1closed: ${at}\n$2`));
     const row = A.append(who.root, { type: 'a3-close', a3: id, fixes: a.fix, proof: a.proof, hash: sha12(text), by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
     return { code: 0, row, out: `${id}: closed (${row.id}); fixes ${a.fix.join(', ')}, proved by ${a.proof}. The stop on ${x.trigger} lifts once nothing else holds it.` };
