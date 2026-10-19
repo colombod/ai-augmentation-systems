@@ -789,7 +789,13 @@ const nonLiteral = (w) => /[$`]/.test(String(w || ''));
 function commandWords(t) {
   let i = 0;
   for (;;) {
-    while (i < t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i])) i++;
+    // leading assignments and redirections (2>/dev/null, > f, <f, 2>&1, &>f) come before the command word
+    for (;;) {
+      if (i < t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i])) { i++; continue; }
+      const r = i < t.length ? /^(?:\d*|&)(?:>>?|<<?|>&|<&|&>>?|>\|)(.*)$/.exec(t[i]) : null;
+      if (r) { i += r[1] ? 1 : 2; continue; }
+      break;
+    }
     if (i < t.length && WRAPPERS.has(baseOf(t[i]))) {
       i++;
       while (i < t.length && (t[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]) || /^\d+(?:\.\d+)?[smhd]?$/.test(t[i]))) { i += WRAPPER_VALUE_FLAGS.has(t[i]) ? 2 : 1; }

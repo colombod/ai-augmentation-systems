@@ -177,3 +177,32 @@ test('a repository flag before the subcommand is its value, not the read', () =>
   assert.equal(WT.readProblem(['--repo', 'o/r', 'pr', 'checks', '1']), null);
   assert.match(WT.readProblem(['-R', 'o/r', 'pr', 'merge', '1']), /only gh reads/);
 });
+
+test('review 1 on e3a7b28: an implicit-PR read keeps its checkout in the key even with -R; an explicit PR is shared', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-'));
+  let n = 0;
+  const run = () => { n++; return { code: 0, out: String(n) }; };
+  const a = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-a-'));
+  const b = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-b-'));
+  const read = (args, cwd) => WT.ghRead(root, args, { run, now: 0, cwd });
+  read(['pr', 'checks', '-R', 'o/r'], a);
+  assert.equal(read(['pr', 'checks', '-R', 'o/r'], b).cached, false, 'another checkout: another branch, another PR');
+  assert.equal(read(['pr', 'checks', '-R', 'o/r'], a).cached, true);
+  read(['pr', 'checks', '12', '-R', 'o/r', '--json', 'state'], a);
+  assert.equal(read(['pr', 'checks', '12', '-R', 'o/r', '--json', 'state'], b).cached, true, 'an explicit PR is the same everywhere');
+  assert.equal(read(['pr', 'view', '-R', 'o/r', '--json', 'state'], a).cached, false);
+  assert.equal(read(['pr', 'view', '-R', 'o/r', '--json', 'state'], b).cached, false);
+});
+
+test('review 2 on e3a7b28: a large read is not truncated, and a failed or cut read is never cached', () => {
+  const h = harness({ prs: { 7: { headRefOid: 'abc', body: 'x'.repeat(3 * 1024 * 1024) } } });
+  const r = watch.main(['gh', 'pr', 'view', '7', '-R', 'example/example', '--json', 'body'], { cwd: h.root, env: fakeEnv(h) });
+  assert.equal(r.code, 0);
+  assert.ok(r.out.length > 3 * 1024 * 1024, 'the whole body');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-'));
+  let n = 0;
+  const run = () => { n++; return { code: 1, out: 'spawnSync gh ENOBUFS', nocache: true }; };
+  WT.ghRead(root, ['run', 'view', '1', '--log'], { run, now: 0, cwd: root });
+  WT.ghRead(root, ['run', 'view', '1', '--log'], { run, now: 1000, cwd: root });
+  assert.equal(n, 2);
+});

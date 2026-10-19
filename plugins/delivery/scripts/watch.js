@@ -16,7 +16,9 @@ const { whoAmI } = require('./lib/gate-context.js');
 
 const USAGE = 'usage: watch.js gh <gh read args...> | watch.js until <text> --every <5m> --max <2h> -- gh <gh read args...>';
 const ghRun = (env) => (args) => {
-  const r = spawnSync('gh', args, { env, encoding: 'utf8', timeout: 60000 });
+  // a large read (gh run view --log) fits; one cut short is reported and not cached
+  const r = spawnSync('gh', args, { env, encoding: 'utf8', timeout: 60000, maxBuffer: 256 * 1024 * 1024 });
+  if (r.error) return { code: 1, out: `gh could not be read (${r.error.code || r.error.message})`, nocache: true };
   return { code: r.status === null ? 1 : r.status, out: `${r.stdout || ''}${r.status ? r.stderr || '' : ''}`.trim() };
 };
 const sleepSync = (s) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, s * 1000);

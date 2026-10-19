@@ -716,3 +716,56 @@ test('reviews 3 to 5: a quoted watcher path, sleep suffixes, quoted loop text, a
   const files = fs.readdirSync(Wn.dirOf(h.root)).filter((f) => f.endsWith('.ndjson'));
   assert.deepEqual(files.map((f) => /^local-[0-9a-f]{8}\.ndjson$/.test(f)), [true], files.join(','));
 });
+
+// ---- Copilot on e3a7b28 ----
+test('Copilot 512: a leading redirection is not the command word', () => {
+  const h = harness({});
+  const wd = h.script('watchdog.js');
+  for (const no of ['2>/dev/null claude --resume s -p go', '>f claude -c', '<f claude --resume s', '2>&1 claude --continue', '&>f claude --resume s', '> /tmp/x claude -c', `2> /dev/null ${wd} run`, '>>log 2>&1 claude --resume s']) {
+    assert.ok(h.bash('builder-1', no, { run: false }).deny, no);
+  }
+  assert.equal(h.bash('builder-1', 'claude -p "hi" 2>/dev/null', { run: false }).deny, null);
+  assert.equal(h.bash('builder-1', `2>/dev/null ${wd} check`, { run: false }).deny, null);
+});
+
+test('Copilot 583: a watchdog fork records and reads its own session, never the owner\'s primary one', () => {
+  const h = harness({});
+  const dir = h.roleDir('builder-1');
+  fs.writeFileSync(path.join(dir, '.delivery-session'), 'primary-1');
+  fs.writeFileSync(path.join(dir, '.delivery-transcript'), '/tmp/primary-1.jsonl');
+  const tx = transcript([reply(iso(Date.now()))], Date.now());
+  const cap = require('../hooks/scripts/operator-capture.js');
+  withEnv({ DELIVERY_WAKE: 'fork', DELIVERY_WAKE_ID: 'w1', DELIVERY_ROLE: 'builder-1', DELIVERY_ROLE_DIR: dir, BD_FAKE_STORE: h.store }, () => cap.captureFromHookInput({ session_id: 'fork-1', transcript_path: tx, cwd: dir, hook_event_name: 'Stop' }, path.join(__dirname, '..')));
+  assert.equal(fs.readFileSync(path.join(dir, '.delivery-session'), 'utf8').trim(), 'primary-1', 'the primary locator is unchanged');
+  const R = require('./lib/roster.js');
+  const loc = R.sessionLocator(dir, { DELIVERY_WAKE: 'fork', DELIVERY_WAKE_ID: 'w1' });
+  assert.equal(fs.readFileSync(loc.session, 'utf8').trim(), 'fork-1');
+  assert.equal(fs.readFileSync(loc.transcript, 'utf8').trim(), tx);
+  assert.equal(R.sessionLocator(dir, {}).session, path.join(dir, '.delivery-session'));
+  // operator.js inside the fork knows the fork's id: --session primary-1 is not its own
+  const op = h.script('operator.js');
+  const mine = h.bash('builder-1', `DELIVERY_WAKE=fork DELIVERY_WAKE_ID=w1 ${op} sync --session primary-1`);
+  assert.match(mine.out, /--session primary-1 is not this session's own id/);
+  const own = h.bash('builder-1', `DELIVERY_WAKE=fork DELIVERY_WAKE_ID=w1 ${op} sync --session fork-1`);
+  assert.doesNotMatch(own.out, /is not this session's own id/);
+  // a fork with no locator yet never takes the owner's transcript on the roster as its own
+  const ptx = transcript([reply(iso(Date.now()))], Date.now());
+  registerInstance(h.root, { instance: 'builder-1', session_id: 'primary-1', host: 'pc', model: 'sonnet', role_dir: dir, now: iso(Date.now()), transcript_path: ptx });
+  fs.unlinkSync(path.join(dir, '.delivery-transcript'));
+  const theirs = h.bash('builder-1', `DELIVERY_WAKE=fork DELIVERY_WAKE_ID=w2 ${op} sync --transcript ${ptx}`);
+  assert.match(theirs.out, /is not this session's own transcript \(none is registered yet\)/);
+  // the wake hands each fork its own id
+  const spawn = spawner();
+  const hw = harness({ beads: { 'ex-p': { id: 'ex-p', status: 'open', priority: 0, created_at: iso(Date.now() - 3 * H) }, 'ex-b': { id: 'ex-b', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(Date.now()) } } });
+  session(hw, DM, { seen: iso(Date.now() - 2 * H) });
+  const ids = [];
+  at(hw, iso(Date.now()), ['wake'], { spawn: (bin, args, o) => { ids.push(o.env.DELIVERY_WAKE_ID); return 1; }, live: [{ sessionId: `sess-${DM}`, status: 'idle' }] });
+  assert.match(ids[0] || '', /^[a-z0-9-]{8,}$/);
+});
+
+test('review 3 on e3a7b28: a % in the project path, PATH or CLAUDE_CONFIG_DIR is escaped for cron', () => {
+  const j = watchdog.jobFiles('/srv/100%/proj', { platform: 'linux', home: '/srv/h', sec: 900, env: { PATH: '/opt/50%/bin', CLAUDE_CONFIG_DIR: '/srv/c%fg' }, has: () => false });
+  assert.doesNotMatch(j.cron.line.replace(/\\%/g, ''), /%/, 'every % escaped');
+  const asCronRuns = j.cron.line.replace(/\\%/g, '%');
+  for (const want of ["'/srv/100%/proj'", "/opt/50%/bin", "'/srv/c%fg'"]) assert.ok(asCronRuns.includes(want), want);
+});

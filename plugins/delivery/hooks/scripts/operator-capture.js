@@ -48,9 +48,10 @@ function captureFromHookInput(input, pluginRoot, deps = {}) {
     const problems = [];
 
     try {
-      const fork = process.env.DELIVERY_WAKE === 'fork';
-      if (transcriptPath && !fork) writeIfChanged(path.join(roleDir, '.delivery-transcript'), transcriptPath);
-      if (sessionId && !fork) writeIfChanged(path.join(roleDir, '.delivery-session'), sessionId);
+      // a watchdog fork writes its own locator; the owner's session keeps .delivery-session
+      const loc = require('../../scripts/lib/roster.js').sessionLocator(roleDir, process.env);
+      if (transcriptPath) writeIfChanged(loc.transcript, transcriptPath);
+      if (sessionId) writeIfChanged(loc.session, sessionId);
     } catch (err) { problems.push(`cannot write the session files in ${roleDir} (${err.message})`); }
 
     // a watchdog fork never takes the open session's place on the roster

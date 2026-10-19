@@ -80,8 +80,16 @@ function contextOf(args, { cwd = process.cwd(), env = process.env } = {}) {
   }
   if (!repo && /github\.com\/[^/]+\/[^/]+/.test(list.join(' '))) repo = 'url';
   repo = repo || env.GH_REPO || null;
+  // a read with no PR named (`pr checks`, `pr view`) answers for the checkout's branch: its checkout
+  // stays in the key even with -R; a PR named by number, URL or branch is the same for every role
+  const VALUE = new Set(['-R', '--repo', '--json', '-q', '--jq', '-t', '--template', '-w', '--web', '-i', '--interval', '-L', '--limit', '-s', '--state', '-b', '--branch', '-a', '--author', '-l', '--label', '-A', '--app', '-H', '--head', '-B', '--base', '-S', '--search']);
+  const pos = list.filter((a, i) => !a.startsWith('-') && !VALUE.has(list[i - 1]));
+  const implicit = ['pr view', 'pr checks', 'pr diff', 'pr status'].includes(pos.slice(0, 2).join(' ')) && pos.length === 2;
   let where = null;
-  if (!repo) { try { where = fs.realpathSync(cwd); } catch (err) { where = path.resolve(cwd); } }
+  if (!repo || implicit) { try { where = fs.realpathSync(cwd); } catch (err) { where = path.resolve(cwd); } }
+  if (implicit) {
+    try { where = `${where}@${require('child_process').execFileSync('git', ['-C', where, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).trim()}`; } catch (err) { /* not a checkout: the folder alone */ }
+  }
   return { repo: repo ? repo.toLowerCase() : null, host: (env.GH_HOST || 'github.com').toLowerCase(), cwd: where };
 }
 const keyOf = (args, ctx = {}) => crypto.createHash('sha256').update(JSON.stringify({ args, repo: ctx.repo || null, host: ctx.host || 'github.com', cwd: ctx.cwd || null })).digest('hex').slice(0, 16);
@@ -132,6 +140,8 @@ function ghRead(root, args, { run, now = Date.now(), ttl = TTL_MS, cwd, env, wai
     c = fresh(file, now, ttl);
     if (c) return hit(c);
     const r = run(args);
+    // a read cut short (ENOBUFS, a spawn error) is returned but never shared
+    if (r.nocache) return { code: r.code, out: r.out, cached: false, age: 0 };
     try {
       const tmp = `${file}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify({ at: now, args, code: r.code, out: r.out }), { mode: 0o600 });

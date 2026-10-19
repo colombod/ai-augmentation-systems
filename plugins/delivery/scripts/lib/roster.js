@@ -102,6 +102,15 @@ function setTranscriptPath(projectRoot, { instance, session_id, transcript_path 
   });
 }
 
+// Where a session's own id and transcript are kept in its role directory: .delivery-session and
+// .delivery-transcript for the owner's session; a watchdog fork (DELIVERY_WAKE=fork with its
+// DELIVERY_WAKE_ID) has its own pair, so its records, syncs and acks are its own (Copilot 583).
+function sessionLocator(roleDir, env = process.env) {
+  const id = env && env.DELIVERY_WAKE === 'fork' && /^[A-Za-z0-9-]{1,64}$/.test(String(env.DELIVERY_WAKE_ID || '')) ? env.DELIVERY_WAKE_ID : null;
+  const tag = id ? `.fork-${id}` : '';
+  return { fork: Boolean(id), session: path.join(roleDir, `.delivery-session${tag}`), transcript: path.join(roleDir, `.delivery-transcript${tag}`) };
+}
+
 // A copy of an open session the watchdog started (`--fork-session`, DELIVERY_WAKE=fork) is recorded
 // beside the instance, never in its place: the owner's open session stays the one the roster reads.
 // Copies older than a day are dropped from the list (their transcripts stay on disk).
@@ -130,4 +139,4 @@ function touchInstance(projectRoot, { instance, now }) {
   });
 }
 
-module.exports = { recordFork, readRoster, writeRoster, registerInstance, touchInstance, setTranscriptPath, withRosterLock, ROSTER_REL };
+module.exports = { sessionLocator, recordFork, readRoster, writeRoster, registerInstance, touchInstance, setTranscriptPath, withRosterLock, ROSTER_REL };

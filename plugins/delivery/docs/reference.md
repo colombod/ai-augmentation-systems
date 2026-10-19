@@ -1009,7 +1009,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   takes a lock (`.delivery/watchdog/run.lock`), so concurrent runs wake once.
 - **Forks.** A fork's SessionStart (with `DELIVERY_WAKE=fork`) is recorded in the roster entry's
   `forks` list, never in place of the owner's open session, which stays the one the watchdog reads;
-  operator capture leaves the roster alone for a fork. The forks' transcripts count with the primary's
+  operator capture leaves the roster alone for a fork, and a fork keeps its own session id and
+  transcript locator (`.delivery-session.fork-<wake id>`), so `operator.js` records, syncs and acks as the
+  fork, never as the owner's session. The forks' transcripts count with the primary's
   for activity and the usage limit, so a fork on the limit holds the next wake until its reset. Forks
   older than a day drop off the list; their transcripts stay on disk.
 - **The log.** Every wake, skip (at most one an hour per session) and scheduled wake is a row in
@@ -1043,7 +1045,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
     (`OnUnitActiveSec`, `Persistent=true`), enabled with `systemctl --user enable --now`. A user timer
     runs only while you are logged in unless lingering is on: `loginctl enable-linger $USER`.
   - Linux without systemd: one crontab line marked `# delivery-watchdog <hash>` (a second install
-    replaces it; a crontab that cannot be read is never replaced, only "no crontab" counts as empty). Cron runs on clock minutes, so `--every` must divide the hour there (5m, 10m, 12m, 15m,
+    replaces it; every `%` is escaped for cron; a crontab that cannot be read is never replaced, only "no crontab" counts as empty). Cron runs on clock minutes, so `--every` must divide the hour there (5m, 10m, 12m, 15m,
     20m, 30m, 1h).
   `--every` is 5m to 1h. The machine must be on and the owner signed in to Claude Code for a wake to run.
   Each scheduler keeps the installing shell's `CLAUDE_CONFIG_DIR`, and the shim restores it before it
@@ -1058,7 +1060,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `--interval`, `-i`). `watch.js gh <read>` is one read. Both go through `.delivery/cache/gh/`
   (gitignored), shared by every role on the host and fresh for 4 minutes (the one query per 4 minutes
   of R-25), keyed by the read, its repository (`-R`, `GH_REPO`, else the working directory gh resolves
-  it from) and its host (`GH_HOST`), with its exit status, so a pending check or a rate-limit error is
+  it from) and its host (`GH_HOST`); a read that names no PR (`pr checks`, `pr view`) keeps its
+  checkout and branch in the key even with `-R`. It is kept with its exit status (a read cut short is
+  never kept), so a pending check or a rate-limit error is
   shared for the window too; one caller refreshes an entry while the others wait for its result;
   entries older than an hour go and at most 500 stay. The briefs tell roles to use it instead of
   `while ... sleep`, `watch -n` or a polling Monitor. `watch.js` is in the `gh-read` lane.

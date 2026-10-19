@@ -40,7 +40,8 @@ if (String(repo).toLowerCase() !== String(s.repo).toLowerCase()) fail(`GraphQL: 
 const n = url ? url[2] : target;
 const pr = s.prs && s.prs[n];
 if (!pr) fail(`GraphQL: Could not resolve to a PullRequest with the number of ${n}.`);
-if (cmd === 'view') { process.stdout.write(`${JSON.stringify({ number: Number(n), state: 'OPEN', ...pr })}\n`); process.exit(0); }
+// written synchronously: process.exit would cut an asynchronous write to a pipe short
+if (cmd === 'view') { fs.writeSync(1, `${JSON.stringify({ number: Number(n), state: 'OPEN', ...pr })}\n`); process.exit(0); }
 const at = args.indexOf('--match-head-commit');
 if (at >= 0 && args[at + 1] !== pr.headRefOid) fail('Head branch was modified. Review and try the merge again.');
 pr.state = 'MERGED';

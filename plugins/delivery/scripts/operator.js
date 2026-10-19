@@ -126,7 +126,7 @@ function buildContext(flags) {
   if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) throw new UsageError(`project root ${projectRoot} does not exist`);
   let sessionId = 'unknown';
   if (valid) {
-    try { sessionId = fs.readFileSync(path.join(valid.roleDir, '.delivery-session'), 'utf8').trim() || 'unknown'; } catch (e) { /* none yet */ }
+    try { sessionId = fs.readFileSync(require('./lib/roster.js').sessionLocator(valid.roleDir).session, 'utf8').trim() || 'unknown'; } catch (e) { /* none yet */ }
   }
   const ctx = {
     projectRoot,
@@ -260,10 +260,13 @@ function cursorStatus(projectRoot, sessionId) {
 // roster entry of this instance.
 function registeredTranscript(ctx) {
   if (!ctx.roleDir) return null;
+  const loc = require('./lib/roster.js').sessionLocator(ctx.roleDir);
   try {
-    const t = fs.readFileSync(path.join(ctx.roleDir, '.delivery-transcript'), 'utf8').trim();
+    const t = fs.readFileSync(loc.transcript, 'utf8').trim();
     if (t) return t;
   } catch (e) { /* fall back to the roster */ }
+  // the roster names the owner's session: a fork never reads it as its own
+  if (loc.fork) return null;
   try {
     const e = (readRoster(ctx.projectRoot).instances || {})[ctx.instance];
     return e && typeof e.transcript_path === 'string' && e.transcript_path ? e.transcript_path : null;

@@ -129,8 +129,10 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     const logPath = path.join(root, WD.REL, 'logs', `${w.target}-${at.replace(/[:.]/g, '-')}.log`);
     // DELIVERY_WAKE tells the session's hooks this is the watchdog's: a fork is recorded beside the
     // owner's open session, never in its place
-    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: { ...env, DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode }, logPath });
-    WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, prompt: w.prompt, pid, log: path.relative(root, logPath) });
+    // each wake has its own id: a fork records its session under it (lib/roster.js sessionLocator)
+    const wakeId = crypto.randomBytes(6).toString('hex');
+    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: { ...env, DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId }, logPath });
+    WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
     lines.push(`Woke ${w.target} (${c.mode}${s.session ? ` of ${s.session}` : ''}): ${w.lines.join(' ')}`);
   }
   for (const h of p.held) lines.push(`Alarm only: ${h.target}: ${h.reason}. ${h.lines[0]}`);
@@ -271,7 +273,8 @@ function jobFiles(root, { platform, home, sec, env, has }) {
   const marker = `# delivery-watchdog ${tag}`;
   const when = sec === 3600 ? '0 * * * *' : `*/${sec / 60} * * * *`;
   const line = `${when} cd ${sq(root)} && PATH=${sq(PATH)}${config ? ` CLAUDE_CONFIG_DIR=${sq(config)}` : ''} ${argv.map(sq).join(' ')} >> ${sq(logPath)} 2>&1 ${marker}`;
-  return { ...base, kind: 'cron', file: null, cron: { line, marker }, files: [], commands: [], removeCommands: [] };
+  // cron reads an unescaped % as a newline: every one in the command is escaped (\%), which cron removes
+  return { ...base, kind: 'cron', file: null, cron: { line: line.replace(/%/g, '\\%'), marker }, files: [], commands: [], removeCommands: [] };
 }
 
 // The current crontab: '' only when there is none (or no crontab command at all); any other failure is
