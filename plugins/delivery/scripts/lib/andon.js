@@ -279,15 +279,14 @@ function claimFindings(bead, { root, parent = null, fix = { ok: false }, stories
   const area = story ? G.areaOf(story) : G.areaOf(bead);
   const tagged = (a3) => Boolean(a3 && m.a3 && String(m.a3) === a3.id);
   const link = String(m.fixes || '').replace(/\s+#.*$/, '').trim();
-  // an area stopped on a failed check: only that failure's fixes, its own story and its A3's work go on (D3c)
-  for (const s of areaStops(root, { beadOf })) {
-    if (s.area !== area) continue;
-    const own = bead.id === s.bead || bead.parent === s.bead;
-    const linked = fix.ok && [s.row, s.bead, s.story].includes(link);
-    if (own || linked || tagged(s.a3)) continue;
+  // an area stopped on a failed check: only the recovery work of a failure there goes on (D3c): a fix
+  // linked to it, its own story, or its A3's work; recovery for one failure is never held by another
+  const here = areaStops(root, { beadOf }).filter((s) => s.area === area);
+  const recovery = (s) => bead.id === s.bead || bead.parent === s.bead || (fix.ok && [s.row, s.bead, s.story].includes(link)) || tagged(s.a3);
+  if (here.length && !here.some(recovery)) {
+    const s = here[0];
     const next = s.a3 ? `its A3 ${s.a3.id} is open` : `no A3 yet (a3.js new --trigger ${s.trigger})`;
-    f.push(block('area-stopped', 'D3', `area ${area} is stopped: ${s.row} failed criterion ${s.criterion} of ${s.bead} on the customer's app; fixes only until a counting pass on the deployed version and a closed A3 (${next})`, { stop: s }));
-    break;
+    f.push(block('area-stopped', 'D3', `area ${area} is stopped: ${s.row} failed criterion ${s.criterion} of ${s.bead} on the customer's app; fixes only until its A3 closes on a passing check of the fix (${next})`, { stop: s }));
   }
   // a red main stops new claims across the product, until green or an A3 closed after it went red
   const c = ci || ciState(root, { team, rows });

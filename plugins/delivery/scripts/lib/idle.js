@@ -3,7 +3,8 @@
 // In the Vault the team sat idle for 4 days after the weekly usage reset (10-13 to 10-17) and GW1 for
 // 4.5 hours waiting for a bead; nothing noticed. The team is idle when ready work exists, nothing is in
 // progress, the last bead activity is older than idle_minutes (30; the owner may change it on the goal
-// sheet), and no pause holds (a pause counts only while its owner record verifies or its andon is open).
+// sheet), and no pause holds (a pause counts only while its owner record verifies). Ready work in an
+// area stopped on a failed check (an open andon) does not count.
 // "Waiting for the owner" excuses a ready bead only when an open owner-queue step names it.
 const W = require('./warnings.js');
 
@@ -13,8 +14,12 @@ const stamp = (b) => Math.max(...['closed_at', 'updated_at', 'created_at'].map((
 function idleState({ beads = [], ready = [], now, idleMinutes = 30, pause = { paused: false }, openSteps = [] }) {
   if (beads.some((b) => b && b.status === 'in_progress')) return { idle: false, why: 'in-progress' };
   const owners = new Set(openSteps.map((s) => s && s.bead).filter(Boolean));
-  const work = ready.filter((b) => b && b.id && !owners.has(b.id) && b.status !== 'closed');
-  if (!work.length) return { idle: false, why: ready.length ? 'waiting-owner' : 'no-ready-work' };
+  const open = ready.filter((b) => b && b.id && !owners.has(b.id) && b.status !== 'closed');
+  if (!open.length) return { idle: false, why: ready.length ? 'waiting-owner' : 'no-ready-work' };
+  // ready work in an area stopped on a failed check waits for its fix (R-22); other areas still count
+  const stopped = new Set((pause.stops || []).map((s) => s.area).filter(Boolean));
+  const work = open.filter((b) => !stopped.has(require('./gates.js').areaOf(b)));
+  if (!work.length) return { idle: false, why: 'stopped' };
   const last = Math.max(...[...beads, ...ready].map(stamp));
   const t = Date.parse(now || new Date().toISOString());
   const minutes = Number.isFinite(last) ? Math.floor((t - last) / 60000) : Infinity;

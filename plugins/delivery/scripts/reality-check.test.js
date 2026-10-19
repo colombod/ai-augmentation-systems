@@ -125,12 +125,12 @@ test('#478 on 10-13: a fail row raises the andon with no owner involvement; a bl
   const fail = record(1, 'fail');
   assert.equal(fail.code, 0, fail.out);
   assert.match(fail.out, /andon:ev-ex-vault-0n9-3-1 raised: area collection stops \(fixes only\) until a pass on the deployed version and a closed A3; draft its problem: a3\.js new --trigger andon:ev-ex-vault-0n9-3-1/);
-  assert.equal(Goal.activePause(root, { beadOf: () => bead() }).paused, true);
+  assert.deepEqual(Goal.activePause(root, { beadOf: () => bead() }).stops, [{ trigger: 'andon:ev-ex-vault-0n9-3-1', area: 'collection' }], 'its area stops; the team is not paused');
   assert.deepEqual(fs.readdirSync(path.join(root, '.delivery')).filter((f) => f === 'owner-queue'), [], 'the owner is asked for nothing');
   const retry = record(1, 'pass');
   assert.match(retry.out, /warning w-.*a second run after a fail on the same sha/);
   assert.deepEqual(W.list(root).map((w) => w.kind), ['reality-retry']);
-  assert.equal(Goal.activePause(root, { beadOf: () => bead() }).paused, true, 'a pass alone does not lift the andon: its A3 is not closed (R-22)');
+  assert.equal(Goal.activePause(root, { beadOf: () => bead() }).stops.length, 1, 'a pass alone does not lift the andon: its A3 is not closed (R-22)');
   assert.match(record(1, 'pass').out, /already has 2 run\(s\) on d478aa11, the script's cap/);
 });
 

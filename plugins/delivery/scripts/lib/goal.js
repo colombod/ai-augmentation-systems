@@ -301,12 +301,12 @@ function andonState(root, rowId, { bead, atPause } = {}) {
   const row = rows.find((r) => r.id === rowId);
   if (!row || row.type !== 'row' || row.result !== 'fail') return { open: false, why: `${rowId} is not a failed check row` };
   if (!EVIDENCE_WRITERS.includes(row.by)) return { open: false, why: `${rowId} was not recorded by the Delivery Manager or a Reality Checker` };
-  // it lifts on both: a counting pass after it on the deployed version, and a closed A3 for it (R-22)
-  const deployed = bead && bead.metadata && bead.metadata.deployed_sha;
-  const passed = rows.some((r) => r.seq > row.seq && r.type === 'row' && r.criterion === row.criterion && r.result === 'pass' && r.arm !== 'side' && EVIDENCE_WRITERS.includes(r.by) && (!deployed || G.shaMatch(r.sha, deployed)));
+  // it lifts when the failure's A3 closes (R-22): a3.js close proves the fix first (a counting pass on a
+  // later deploy), so the lift is final; a later regression is a new fail row and a new stop
   const a3 = require('./andon.js').closedA3For(root, `andon:${rowId}`);
-  if (passed && a3) return { open: false, why: `${rowId} was followed by a pass on the deployed version and ${a3.id} is closed` };
-  return { open: true, bead: m[1], missing: [!passed && 'a counting pass on the deployed version', !a3 && 'a closed A3'].filter(Boolean).join(' and ') };
+  if (a3) return { open: false, why: `${a3.id} closed it, proved by ${a3.closed.proof}` };
+  const passed = rows.some((r) => r.seq > row.seq && r.type === 'row' && r.criterion === row.criterion && r.result === 'pass' && r.arm !== 'side' && EVIDENCE_WRITERS.includes(r.by));
+  return { open: true, bead: m[1], missing: passed ? 'a closed A3' : 'a fix deployed and passing its check, then a closed A3' };
 }
 
 function triggerState(root, trigger, opts = {}) {
@@ -417,7 +417,8 @@ function resolve(root, field, { g = read(root), verifyRecord, warn = true } = {}
 }
 const value = (root, field, opts = {}) => resolve(root, field, opts).value;
 
-// { paused, by } — an owner pause while its record holds, or a trigger pause while its andon is open.
+// { paused, by, stops } — an owner pause while its record holds. An open andon stops only its area (R-22),
+// never the whole team: it is listed in stops ({ trigger, area }) and does not pause.
 // beadOf(id) gives the bead (from bd) so the andon is read against its recorded evidence head.
 function activePause(root, { verifyRecord, g = read(root), warn = true, beadOf, maxLookups = Infinity } = {}) {
   const owner = resolve(root, 'pause', { g, verifyRecord, warn });
@@ -426,12 +427,15 @@ function activePause(root, { verifyRecord, g = read(root), warn = true, beadOf, 
   // each distinct trigger once, each bead looked up once, and at most maxLookups bd calls, so the Stop
   // hook's time budget holds (Copilot round 3); past the cap the chain alone is read
   const beads = new Map();
+  const stops = [];
   for (const trigger of [...new Set(triggers.map((t) => t.trigger))]) {
     const id = beadOfTrigger(trigger);
     if (beadOf && id && !beads.has(id) && beads.size < maxLookups) { let b = null; try { b = beadOf(id); } catch (err) { b = null; } beads.set(id, b); }
-    if (triggerState(root, trigger, { bead: beads.get(id) || null }).open) return { paused: true, by: trigger };
+    const bead = beads.get(id) || null;
+    if (triggerState(root, trigger, { bead }).open) stops.push({ trigger, area: bead ? require('./gates.js').areaOf(bead) : null });
   }
-  return { paused: false, ...(owner.ignored ? { lapsed: owner.ignored } : {}), ...(triggers.length ? { lapsed: `${triggers.map((t) => t.trigger).join(', ')} closed` } : {}) };
+  const closed = triggers.filter((t) => !stops.some((s) => s.trigger === t.trigger));
+  return { paused: false, stops, ...(owner.ignored ? { lapsed: owner.ignored } : {}), ...(closed.length ? { lapsed: `${[...new Set(closed.map((t) => t.trigger))].join(', ')} closed` } : {}) };
 }
 
 const SHOWN = [...Object.keys(FIELDS).filter((f) => !FIELDS[f].op), 'scope', 'areas'];
@@ -449,7 +453,8 @@ function showLines(root, opts = {}) {
     lines.push(`${field}: ${s}`);
   }
   const p = activePause(root, { ...opts, g, warn: false });
-  lines.push(`work: ${p.paused ? `paused (${p.by})` : 'not paused'}`);
+  const stopped = (p.stops || []).map((s) => `${s.area ? `area ${s.area}` : 'an area'} stopped (${s.trigger})`);
+  lines.push(`work: ${p.paused ? `paused (${p.by})` : 'not paused'}${stopped.length ? `; ${stopped.join('; ')}` : ''}`);
   return lines;
 }
 

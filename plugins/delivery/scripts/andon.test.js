@@ -71,7 +71,7 @@ test('R-22 10-17: the intake fails in the real app; the area stops, the fix goes
   require('./lib/reviews.js').append(h.root, '501', { type: 'request', head: H(501), owner: 'builder-1', beads: ['ex-fix-intake'], at: new Date().toISOString() }, 'delivery-lead');
   assert.match(h.bash('chief-of-staff', `${h.script('andon.js')} show --plain`).out, /; the fix is in review\.$/);
   const bd = { show: (x) => h.db().issues[x] || null, list: ({ label }) => Object.values(h.db().issues).filter((b) => (b.labels || []).includes(label)) };
-  assert.match(renderStatus(teamStatus(h.root, { bdCheck: () => false, bd }), null), /^Stopped: area collection \(ev-ex-vault-0n9-3-1 failed on the customer's app\); needs a counting pass on the deployed version and a closed A3; A3 a3-reality-checker-1 open; the fix is in review\nA3 open: 1 \(a3-reality-checker-1\)/m);
+  assert.match(renderStatus(teamStatus(h.root, { bdCheck: () => false, bd }), null), /^Stopped: area collection \(ev-ex-vault-0n9-3-1 failed on the customer's app\); needs a fix deployed and passing its check, then a closed A3; A3 a3-reality-checker-1 open; the fix is in review\nA3 open: 1 \(a3-reality-checker-1\)/m);
   // no close without the proving pass; the pass alone does not lift it
   const sections = "--cause 'The connector read only https links; plain chat hands the tool a local path.' --class 'Every tool that takes a file assumed an https link.' --countermeasure 'All file tools take both forms; a contract test feeds each a local path.' --check 'The reality check on the deployed build.'";
   assert.match(h.a3('delivery-lead', `close ${a3} --fix ex-fix-intake --proof ${ev} ${sections}`).out, /is not a counting pass of criterion 1 of ex-vault-0n9-3 after ev-ex-vault-0n9-3-1/);

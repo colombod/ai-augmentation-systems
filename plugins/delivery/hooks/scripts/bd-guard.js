@@ -484,7 +484,8 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
           const AN = require('../../scripts/lib/andon.js');
           const C = require('../../scripts/lib/gate-context.js');
           const beadOf = (x) => lookup(bd, x);
-          const fix = require('../../scripts/lib/waves.js').fixLink(bead, null, { root, beadOf, ownerRecord: (r) => C.ownerRecord(root, r, verifyRecord) });
+          const byStoryId = (sid) => (stories || []).find((s) => String((s.metadata || {}).story || '') === sid) || null;
+          const fix = require('../../scripts/lib/waves.js').fixLink(bead, null, { root, beadOf, ownerRecord: (r) => C.ownerRecord(root, r, verifyRecord), byStoryId });
           if (!ci) {
             const left = end - Date.now() - JUDGE_RESERVE_MS;
             ci = AN.ciState(root, { team, gh: (repo, branch) => (left > 1000 ? AN.ghRuns(repo, branch, { cwd: root, timeoutMs: Math.min(4000, left - 500) }) : { unavailable: 'no time left' }) });
