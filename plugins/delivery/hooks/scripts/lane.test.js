@@ -712,9 +712,11 @@ test('the operator directory is never written with file tools, by any role', () 
   assert.equal(deny(BUILDER, 'Write', { file_path: path.join(link, 'inputs', 'x.ndjson') }).allow, false);
   // the role's own clone of the project is protected too
   assert.equal(deny(BUILDER, 'Write', { file_path: path.join(roleDir, 'project', '.delivery', 'operator', 'records', 'b.ndjson') }).allow, false);
-  // neighbours stay as they were: builder's product lane, and tmp
+  // neighbours stay as they were: builder's product lane, and tmp outside any project; a neighbour in
+  // the project is the lane patterns' to decide, not the tmp exemption's (PR 58 I3)
   assert.equal(deny(BUILDER, 'Write', { file_path: path.join(roleDir, 'product', 'a.js') }).allow, true);
-  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(projectRoot, '.delivery', 'operator-notes.md') }).allow, true);
+  assert.equal(deny(BUILDER, 'Write', { file_path: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lane-scratch-')), 'operator-notes.md') }).allow, true);
+  assert.match(deny(BUILDER, 'Write', { file_path: path.join(projectRoot, '.delivery', 'operator-notes.md') }).reason, /^Role builder does not edit /);
 });
 
 test('shell writes into the operator directory are denied; reads are not', () => {

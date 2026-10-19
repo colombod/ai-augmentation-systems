@@ -459,19 +459,30 @@ function realish(p) {
   return cur;
 }
 
-function pathAllowed(filePath, { roleDir, writes, pluginRoot } = {}) {
+function pathAllowed(filePath, { roleDir, writes, pluginRoot, projectRoot } = {}) {
   const abs = realish(filePath);
+  const allowed = (posix) => (writes || []).some((w) => globToRegExp(String(w)).test(posix));
   // Inside the role directory the lane patterns decide, even when the role directory sits under tmp.
   if (roleDir) {
     const rd = realish(roleDir);
-    if (under(abs, rd)) {
-      const posix = path.relative(rd, abs).split(path.sep).join('/');
-      return (writes || []).some((w) => globToRegExp(String(w)).test(posix));
-    }
+    if (under(abs, rd)) return allowed(path.relative(rd, abs).split(path.sep).join('/'));
+  }
+  // The project root is the role's project/ (a clone of it, or a link to it): the same patterns decide,
+  // and the temporary-directory exemption never applies there, wherever the checkout lives (PR 58 I3)
+  if (projectRoot && path.isAbsolute(String(projectRoot))) {
+    const pr = realish(String(projectRoot));
+    if (under(abs, pr) || abs === pr) return allowed(`project/${path.relative(pr, abs).split(path.sep).join('/')}`);
   }
   if (pluginRoot && under(abs, realish(pluginRoot))) return false;
   const tmp = [os.tmpdir(), process.env.TMPDIR].filter(Boolean).map(realish);
-  return tmp.some((t) => under(abs, t));
+  // nor inside another role's directory (one holding a role marker)
+  return tmp.some((t) => under(abs, t)) && !inRoleDir(abs);
+}
+function inRoleDir(abs) {
+  for (let d = path.dirname(abs); d !== path.dirname(d); d = path.dirname(d)) {
+    try { if (fs.existsSync(path.join(d, '.delivery-role.json'))) return true; } catch (err) { return true; }
+  }
+  return false;
 }
 
 // Under ~/.claude/plans/** or ~/.claude/projects/*/memory/**, by real path (symlinks and `..` resolved).
@@ -881,7 +892,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       if (underOperator(p, planDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
       if (!REVIEW_WRITERS.includes(pol.roleId) && underOperator(p, reviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
       if (harnessFile(p)) continue;
-      if (pathAllowed(p, { roleDir, writes: pol.writes, pluginRoot: pluginRootOf({ pluginRoot }) })) continue;
+      if (pathAllowed(p, { roleDir, writes: pol.writes, pluginRoot: pluginRootOf({ pluginRoot }), projectRoot })) continue;
       const real = realish(p);
       const rd = roleDir ? realish(roleDir) : null;
       const shown = rd && under(real, rd) ? path.relative(rd, real) : real;
