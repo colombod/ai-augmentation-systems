@@ -78,6 +78,8 @@ function andonProof(who, store, f, proof) {
   if (!pass || pass.type !== 'row' || pass.result !== 'pass' || Number(pass.criterion) !== Number(f.row.criterion) || pass.seq <= f.row.seq) return [`${proof} is not a pass of criterion ${f.row.criterion} of ${f.beadId} after ${f.row.id}`, again];
   if (G.shaMatch(pass.sha, f.row.sha)) return [`${proof} ran on ${String(pass.sha).slice(0, 12)}, the build that failed: deploy the fix, then check it again`, again];
   const inp = C.gateInputs(who.root, f.bead || { id: f.beadId }, { bd: store(), team: who.team });
+  // the done gate's own check: rows past the head evidence.js recorded do not count
+  if (inp.evidenceProblem) return [`the evidence of ${f.beadId} does not match what evidence.js wrote: ${inp.evidenceProblem}`, `Restore .delivery/evidence/${f.beadId}.ndjson to its last evidence.js write, then close`];
   const c = inp.story && inp.story.criteria.find((x) => x.n === Number(f.row.criterion));
   if (!c) return [`criterion ${f.row.criterion} of ${f.beadId} is not in its story any more`, 'Message the Delivery Manager: the failure needs re-reading against the story'];
   const bm = (f.bead && f.bead.metadata) || {};
@@ -106,8 +108,10 @@ function ciProof(who, rows, proof, gh) {
   if (live.runs) {
     const run = live.runs.find((r) => String(r.databaseId) === String(proof).trim());
     const done = (r) => String(r.status).toLowerCase() === 'completed';
-    const lastRed = run ? live.runs.filter((r) => r.workflowName === run.workflowName && done(r) && A.FAILED.has(String(r.conclusion).toLowerCase())).map((r) => r.createdAt).sort().pop() : null;
-    if (!run || !done(run) || String(run.conclusion).toLowerCase() !== 'success' || !lastRed || String(run.createdAt) <= String(lastRed)) return [`${proof} is not a green CI run on ${live.branch} after the red run: ${how}`, 'Close the A3 once main is green again'];
+    // completion times, as ciState reads them
+    const at = (r) => r.updatedAt || r.createdAt;
+    const lastRed = run ? live.runs.filter((r) => r.workflowName === run.workflowName && done(r) && A.FAILED.has(String(r.conclusion).toLowerCase())).map(at).sort().pop() : null;
+    if (!run || !done(run) || String(run.conclusion).toLowerCase() !== 'success' || !lastRed || String(at(run)) <= String(lastRed)) return [`${proof} is not a green CI run on ${live.branch} after the red run: ${how}`, 'Close the A3 once main is green again'];
     return null;
   }
   const row0 = rows.find((r) => r.type === 'ci' && r.id === proof);

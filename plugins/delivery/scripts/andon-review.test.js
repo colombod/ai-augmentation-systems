@@ -327,3 +327,54 @@ test('without gh: the proof row is green for its own workflow; another workflow 
   const sections = "--problem 'The ci and lint workflows both fail on every push to main.' --evidence 'Runs 1 and 2 failed on main at sha c1aa0000 this morning.' --expected 'Every required workflow on main finishes green on each push.' " + SECTIONS;
   assert.equal(h.bash('delivery-lead', `${h.script('a3.js')} close ${a3} --fix ex-fix --proof ${lint} ${sections}`).code, 0);
 });
+
+test('Copilot round 2: shell globs that reach the ledger ([!x], */*.ndjson) are refused', () => {
+  const h = harness({ beads: {} });
+  AN.append(h.root, { type: 'ci', result: 'red', sha: 'c195aa00', run: '195', at: '2026-10-09T00:00:00Z' }, 'delivery-lead');
+  for (const cmd of [`rm -rf ${h.root}/.delivery/[!x]*`, `rm ${h.root}/.delivery/*/*.ndjson`, `cp /dev/null ${h.root}/.delivery/*/delivery-lead.ndjson`]) assert.match(h.bash('builder-1', cmd, { run: false }).deny || '', /andon ledger/, cmd);
+});
+
+test('Copilot round 2: the singular pause_trigger is an area stop too; default CI verdicts are push runs only; overdue flaky lines say stop only when they do', () => {
+  const root = makeProject();
+  const beads = {};
+  stopIn(root, 'ex-col-1', 'collection', beads);
+  const g = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'goal.json'), 'utf8'));
+  g.fields.pause_trigger = g.fields.pause_triggers[0];
+  delete g.fields.pause_triggers;
+  fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify(g));
+  assert.equal(AN.areaStops(root, { beadOf: (id) => beads[id] }).length, 1);
+  const runs = [run(1, 'ci', 'failure', '2026-10-09T00:00:00Z', { sha: 'h1' }), run(2, 'ci', 'success', '2026-10-09T01:00:00Z', { sha: 'h1', event: 'workflow_dispatch' })];
+  assert.equal(ciOf(root, runs).red, true, 'a manual success does not clear a failed push');
+  assert.equal(ciOf(root, [run(3, 'ci', 'success', '2026-10-09T00:00:00Z', { sha: 'h1' }), run(4, 'ci', 'failure', '2026-10-09T01:00:00Z', { sha: 'h1', event: 'workflow_dispatch' })]).red, false, 'nor does a manual failure stop the product');
+  const { renderStatus: rs } = require('./team-status.js');
+  const flaky = { test: 'a.spec', sha: 'c1', due: '2026-10-09T00:00:00Z', overdue: true, area: null, confirmed: false, a3Opened: false };
+  const text = rs({ rows: [], drift: { missing: [], extra: [], wrong_model: [], stale: [] }, andon: { stops: [], ci: { red: false }, flaky: [flaky], a3s: [], chains: [], flow: {} } }, null);
+  assert.doesNotMatch(text, /claims there stop/);
+});
+
+test('Copilot round 2: the A3 proof is refused while the evidence file disagrees with its recorded head; ci proof uses completion times', () => {
+  const h = intake();
+  const { ev, a3 } = h.fail();
+  h.bash('delivery-lead', `bd create --id ex-fix-intake --title 'Files do not arrive' --labels bug --metadata '{"fixes":"${ev}","area":"collection"}'`);
+  h.merged('ex-fix-intake', 501);
+  h.deploy('e5550000', 'v1.4.3');
+  const pass = evIdOf(h.run(1, 'pass', 'v1.4.3').out);
+  h.setBead(ID, (b) => { b.metadata.evidence_head = { seq: 1, hash: 'x' }; });
+  assert.match(h.a3('delivery-lead', `close ${a3} --fix ex-fix-intake --proof ${pass} ${SECTIONS}`).out, /evidence of ex-vault-0n9-3 does not match what evidence\.js wrote/);
+  // a green run that finished before the red one finished proves nothing
+  const runs = [run(1, 'ci', 'failure', '2026-10-09T09:00:00Z', { done: '2026-10-09T12:00:00Z' }), run(2, 'ci', 'success', '2026-10-09T10:00:00Z', { done: '2026-10-09T11:00:00Z' }), run(3, 'ci', 'success', '2026-10-09T13:00:00Z')];
+  const h2 = harness({ beads: { 'ex-fix': { id: 'ex-fix', title: 'fix', labels: ['bug', 'state-merged'] } }, runs });
+  const id = /^(a3-[a-z0-9-]+):/.exec(h2.bash('delivery-lead', `${h2.script('a3.js')} new --trigger ci:main`).out)[1];
+  h2.bash('delivery-lead', `bd update ex-fix --metadata '{"a3":"${id}"}'`);
+  const sections = "--problem 'The ci workflow fails on every push to main since yesterday.' --evidence 'Run 1 of the ci workflow failed on main this morning.' --expected 'Every push to main finishes the ci workflow green.' " + SECTIONS;
+  assert.match(h2.bash('delivery-lead', `${h2.script('a3.js')} close ${id} --fix ex-fix --proof 2 ${sections}`).out, /2 is not a green CI run on main after the red run/);
+});
+
+test('Copilot round 2: the Reality Checker, Progress Observer and Staffing may record a flaky test', () => {
+  const h = harness({ beads: {} });
+  for (const inst of ['reality-checker', 'progress-observer', 'staffing']) {
+    const r = h.bash(inst, `${h.script('andon.js')} flaky t-${inst}.spec --sha c195aa00 --fail-run 1 --pass-run 2 --area collection`);
+    assert.equal(r.deny, null, inst);
+    assert.match(r.out, /unconfirmed until the Delivery Manager confirms it/, inst);
+  }
+});

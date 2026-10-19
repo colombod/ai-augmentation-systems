@@ -134,7 +134,9 @@ function classOf(root, id) {
 function areaStops(root, { beadOf = () => null, g } = {}) {
   const Goal = require('./goal.js');
   const sheet = g || Goal.read(root);
-  const triggers = [...new Set((Array.isArray(sheet.fields.pause_triggers) ? sheet.fields.pause_triggers : []).map((t) => t && t.trigger).filter((t) => /^andon:ev-/.test(String(t))))];
+  // both stored forms: the list, and the singular pause_trigger goal.js still reads
+  const stored = [...(Array.isArray(sheet.fields.pause_triggers) ? sheet.fields.pause_triggers : []), ...(sheet.fields.pause_trigger ? [sheet.fields.pause_trigger] : [])];
+  const triggers = [...new Set(stored.map((t) => t && t.trigger).filter((t) => /^andon:ev-/.test(String(t))))];
   const rows = read(root).rows;
   const out = [];
   for (const trigger of triggers) {
@@ -169,14 +171,18 @@ const doneAt = (r) => r.updatedAt || r.createdAt;
 function redFromRuns(runs, { required } = {}) {
   const done = runs.filter((x) => String(x.status).toLowerCase() === 'completed' && !NO_VERDICT.has(String(x.conclusion || '').toLowerCase()));
   let names;
+  let verdicts = done;
+  const isPush = (x) => !x.event || x.event === 'push';
   if (Array.isArray(required) && required.length) names = new Set(required);
   else {
-    const push = runs.filter((x) => !x.event || x.event === 'push');
+    // by default only push runs give a verdict: a manual run neither clears nor breaks main
+    verdicts = done.filter(isPush);
+    const push = runs.filter(isPush);
     const head = [...push].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
     names = new Set(head ? push.filter((x) => x.headSha === head.headSha).map((x) => x.workflowName) : []);
   }
   const by = new Map();
-  for (const r of done.filter((x) => names.has(x.workflowName))) (by.get(r.workflowName) || by.set(r.workflowName, []).get(r.workflowName)).push(r);
+  for (const r of verdicts.filter((x) => names.has(x.workflowName))) (by.get(r.workflowName) || by.set(r.workflowName, []).get(r.workflowName)).push(r);
   const red = [];
   for (const [name, list] of by) {
     list.sort((a, b) => String(doneAt(b)).localeCompare(String(doneAt(a))));

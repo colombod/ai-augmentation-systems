@@ -711,17 +711,34 @@ function registerHit({ projectRoot, roleDir }) {
 // folder or names files in it (rm -rf .delivery/an*, rm .delivery/andon/*.ndjson), counts as a write too
 const GLOB = /[*?[]/;
 const REMOVERS = ['rm', 'mv', 'rmdir', 'unlink'];
+// one glob segment as the shell reads it: *, ?, [abc] and [!abc]
+function segRe(seg) {
+  let out = '';
+  for (let k = 0; k < seg.length; k++) {
+    const c = seg[k];
+    if (c === '*') out += '[^/]*';
+    else if (c === '?') out += '[^/]';
+    else if (c === '[') { const e = seg.indexOf(']', k + 2); if (e < 0) { out += '\\['; continue; } out += `[${seg.slice(k + 1, e).replace(/^!/, '^').replace(/\\/g, '\\\\')}]`; k = e; }
+    else out += c.replace(/[.+^${}()|\\/]/g, '\\$&');
+  }
+  return new RegExp(`^${out}$`, 'i');
+}
 function deepHit(x, dirs, remover) {
   const ds = dirs.map((d) => d.toLowerCase());
   const i = x.search(GLOB);
   if (i < 0) { const r = realish(x).toLowerCase(); return remover && ds.some((d) => under(d, r)); }
   const cut = x.lastIndexOf(path.sep, i);
   const base = realish(x.slice(0, cut) || path.sep).toLowerCase();
-  if (ds.some((d) => under(base, d))) return true;
-  const esc = (s) => s.replace(/[.+^${}()|\\]/g, '\\$&');
-  const re = new RegExp(`^${esc(base)}${esc(path.sep)}${esc(x.slice(cut + 1).toLowerCase()).replace(/\\?\*/g, '[^/]*').replace(/\?/g, '[^/]')}$`);
-  // the glob names the folder or one of its parents
-  return ds.some((d) => { for (let p = d; p && p !== path.dirname(p); p = path.dirname(p)) { if (re.test(p) && (remover || p === d)) return true; } return false; });
+  const globs = x.slice(cut + 1).split(path.sep).filter(Boolean).map(segRe);
+  return ds.some((d) => {
+    if (under(base, d)) return true;
+    if (!under(d, base)) return false;
+    const segs = path.relative(base, d).split(path.sep).filter(Boolean);
+    const n = Math.min(globs.length, segs.length);
+    for (let k = 0; k < n; k++) if (!globs[k].test(segs[k])) return false;
+    // the glob reaches into the folder, names it, or (for rm and mv) names one of its parents
+    return globs.length > segs.length || globs.length === segs.length || remover;
+  });
 }
 
 function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION, hit = null, deep = false } = {}) {
