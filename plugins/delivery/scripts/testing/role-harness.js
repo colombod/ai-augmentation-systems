@@ -13,7 +13,9 @@ const P = path.join(__dirname, '..', '..');
 // prs: { "<n>": gh pr view fields } for the fake gh (testing/fake-gh.js) on repo, which also becomes the
 // manifest's product_github; without prs gh is signed out
 // runs: CI runs for `gh run list` (with prs, or alone)
-function harness({ root = makeProject(), beads = {}, deps = [], prs = null, runs = null, repo = 'example/example' } = {}) {
+// clone: each role's project/ is its own copy of the project, as prepare-role's clone is (default: a link
+// to the shared root, which the lane refuses to write)
+function harness({ root = makeProject(), beads = {}, deps = [], prs = null, runs = null, repo = 'example/example', clone = false } = {}) {
   const tj = path.join(root, '.delivery', 'team', 'team.json');
   const team = JSON.parse(fs.readFileSync(tj, 'utf8'));
   if (!team.roles.some((r) => r.id === 'reality-checker')) team.roles.push({ id: 'reality-checker', brief: 'delivery/reality-checker', host: 'pc', model: 'sonnet' });
@@ -30,7 +32,7 @@ function harness({ root = makeProject(), beads = {}, deps = [], prs = null, runs
     const d = path.join(rolesDir, inst);
     if (!fs.existsSync(d)) {
       fs.mkdirSync(path.join(d, 'product'), { recursive: true });
-      fs.symlinkSync(root, path.join(d, 'project'));
+      if (clone) fs.cpSync(root, path.join(d, 'project'), { recursive: true }); else fs.symlinkSync(root, path.join(d, 'project'));
       fs.writeFileSync(path.join(d, '.delivery-role.json'), JSON.stringify({ instance: inst, project_root: root, actor: `dev@pc/${inst}` }));
     }
     return d;

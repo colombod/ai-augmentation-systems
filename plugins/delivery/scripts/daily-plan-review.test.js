@@ -116,9 +116,18 @@ test('I3: the temporary-directory exemption never covers the project or a role d
   assert.match(h.tool(COS, 'Edit', { file_path: path.join(h.root, 'AGENTS.md'), old_string: 'a', new_string: 'b' }).deny, /^Role chief-of-staff does not edit /);
   assert.match(h.tool('builder-1', 'Write', { file_path: path.join(h.root, '.delivery', 'team', 'team.json'), content: '{}' }).deny, /^Role builder does not edit /);
   assert.match(h.tool(COS, 'Write', { file_path: path.join(h.roleDir('builder-1'), 'product', 'src', 'x.js'), content: 'x' }).deny, /^Role chief-of-staff does not edit /);
-  // the lane's own patterns still decide inside the project: the Delivery Manager writes stories
-  assert.equal(h.tool('delivery-lead', 'Write', { file_path: proj('delivery-lead', '.delivery', 'stories', 'y.md'), content: 'y' }).deny, null);
   assert.equal(h.tool('delivery-lead', 'Write', { file_path: path.join(require('os').tmpdir(), 'scratch-note.txt'), content: 'y' }).deny, null);
+});
+
+test('I3 final: the shared checkout root is refused to every role, under tmp or not; each role writes its own clone', () => {
+  const h = harness({ root: makeProject(), clone: true });
+  const root = (...p) => path.join(h.root, ...p);
+  const clone = (inst, ...p) => path.join(h.roleDir(inst), 'project', ...p);
+  assert.match(h.tool('product-manager', 'Write', { file_path: root('.delivery', 'initiatives', 'x.md'), content: 'x' }).deny, /^Role product-manager does not edit /);
+  assert.equal(h.tool('product-manager', 'Write', { file_path: clone('product-manager', '.delivery', 'initiatives', 'x.md'), content: 'x' }).deny, null);
+  assert.match(h.tool('builder-1', 'Write', { file_path: root('src', 'x'), content: 'x' }).deny, /^Role builder does not edit /);
+  assert.match(h.tool('delivery-lead', 'Write', { file_path: root('.delivery', 'stories', 'y.md'), content: 'y' }).deny, /^Role delivery-lead does not edit /);
+  assert.equal(h.tool('delivery-lead', 'Write', { file_path: clone('delivery-lead', '.delivery', 'stories', 'y.md'), content: 'y' }).deny, null);
 });
 
 test('I4: reading plan.js brief backs only the claims that appear in its output this turn', () => {

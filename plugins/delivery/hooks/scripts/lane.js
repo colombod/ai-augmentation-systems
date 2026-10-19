@@ -467,11 +467,12 @@ function pathAllowed(filePath, { roleDir, writes, pluginRoot, projectRoot } = {}
     const rd = realish(roleDir);
     if (under(abs, rd)) return allowed(path.relative(rd, abs).split(path.sep).join('/'));
   }
-  // The project root is the role's project/ (a clone of it, or a link to it): the same patterns decide,
-  // and the temporary-directory exemption never applies there, wherever the checkout lives (PR 58 I3)
+  // The shared checkout is no role's to write: each role works in its own clone (<roleDir>/project), so a
+  // path under the project root is refused, and the temporary-directory exemption never applies there,
+  // wherever the checkout lives (PR 58 I3)
   if (projectRoot && path.isAbsolute(String(projectRoot))) {
     const pr = realish(String(projectRoot));
-    if (under(abs, pr) || abs === pr) return allowed(`project/${path.relative(pr, abs).split(path.sep).join('/')}`);
+    if (under(abs, pr) || abs === pr) return false;
   }
   if (pluginRoot && under(abs, realish(pluginRoot))) return false;
   const tmp = [os.tmpdir(), process.env.TMPDIR].filter(Boolean).map(realish);

@@ -927,8 +927,8 @@ judgement in between (`scripts/lib/daily-plan.js`).
 - **The lane.** `plan.js today|brief|routed` are in the Chief of Staff's `plan-cos` group; every role is
   refused a hand write to `.delivery/plans/`, by file tool and by shell, `any` lanes included. The Chief
   of Staff still has no build, commit, push, merge, infra or app tools. The lane's temporary-directory
-  exemption (scratch files) no longer applies under the project root or inside a role directory, so a
-  checkout that lives under tmp is held to the lane patterns like any other.
+  exemption (scratch files) no longer applies under the project root or inside a role directory: the
+  shared checkout is refused to every role, under tmp or not, and each role writes its own clone.
 - **What rests on trust.** Plan rows are not chained (tamper-evident by git history, like warnings). A
   sent row means the message tool returned, not that the session acted. The plan says what to do, not
   whether it was done: status still comes from beads, evidence and review records.
