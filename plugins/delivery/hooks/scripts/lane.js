@@ -759,6 +759,27 @@ function namesWatchdog(word) {
   const b = segRe(baseOf(w));
   return b.test('watchdog.js') || b.test('watchdog') || (b.test('job.js') && /delivery|watch|[*?[]/i.test(w.slice(0, -baseOf(w).length)));
 }
+// the job shim always starts `watchdog.js run`, whatever its arguments (Copilot 749)
+function isShim(word) {
+  const w = String(word || '');
+  if (/\.delivery\/+(?:\.\/+)*watchdog\/+job\.js$/i.test(w)) return true;
+  return GLOB.test(w) && segRe(baseOf(w)).test('job.js') && /delivery|watch|[*?[]/i.test(w.slice(0, -baseOf(w).length));
+}
+// the CLI, whose `check` alone a role may run
+const isCli = (w) => namesWatchdog(w) && !isShim(w) && !/\.delivery\/+(?:\.\/+)*watchdog\//i.test(String(w || ''));
+// shell grammar words before a command: if/then/do/!, a brace or subshell, a function header, a case pattern
+const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', '}', '(', ')', 'fi', 'done', 'esac', 'time', 'coproc']);
+function stripGrammar(t) {
+  const out = [...t];
+  for (;;) {
+    if (!out.length) return out;
+    if (KEYWORDS.has(out[0]) || /^[A-Za-z_][\w-]*\(\)$/.test(out[0])) { out.shift(); continue; }
+    if (out[0] === 'case') { const k = out.findIndex((x) => /\)$/.test(x)); out.splice(0, k >= 0 ? k + 1 : out.length); continue; }
+    if (/^[({]+./.test(out[0])) { out[0] = out[0].replace(/^[({]+/, ''); continue; }
+    if (out[0] === 'for' || out[0] === 'select') return [];
+    return out.map((x) => x.replace(/[)}]+$/, '')).filter((x) => x !== '');
+  }
+}
 const namesClaude = (w) => baseOf(w) === 'claude' || (GLOB.test(String(w || '')) && segRe(baseOf(w)).test('claude'));
 const nonLiteral = (w) => /[$`]/.test(String(w || ''));
 // the words that run: assignments and wrappers (with their flags) skipped
@@ -791,7 +812,15 @@ function refusedRun(text, depth = 0) {
   String(text).replace(/\$\(([^()]*)\)|`([^`]*)`|<\(([^()]*)\)/g, (m, a, b, c) => { subs.push(a || b || c || ''); return m; });
   for (const sub of subs) { const r = refusedRun(sub, depth + 1); if (r) return r; }
   for (const seg of splitWithOps(text)) {
-    const t = commandWords(tokens(seg.text));
+    const all = tokens(seg.text);
+    // a backstop over every unquoted word: a protected invocation in a form the walk below does not
+    // parse (a compound command, a case arm) is still found (Copilot 716)
+    for (let k = 0; k < all.length; k++) {
+      if (namesClaude(all[k]) && claudeResumes(all.slice(k + 1))) return 'resume';
+      if (isShim(all[k]) && (k === 0 || all.slice(0, k).some((x) => INTERPRETERS.has(baseOf(x)) || KEYWORDS.has(x)))) return 'watchdog';
+      if (namesWatchdog(all[k]) && WATCHDOG_VERBS.has(all[k + 1])) return 'watchdog';
+    }
+    const t = commandWords(stripGrammar(all));
     if (!t.length) continue;
     const w = t[0];
     const args = t.slice(1);
@@ -817,10 +846,10 @@ function refusedRun(text, depth = 0) {
         script = i;
         break;
       }
-      if (script !== null && namesWatchdog(args[script]) && !checkOnly(args.slice(script + 1))) return 'watchdog';
+      if (script !== null && namesWatchdog(args[script]) && !(isCli(args[script]) && checkOnly(args.slice(script + 1)))) return 'watchdog';
       continue;
     }
-    if (namesWatchdog(w) && !checkOnly(args)) return 'watchdog';
+    if (namesWatchdog(w) && !(isCli(w) && checkOnly(args))) return 'watchdog';
     if (namesClaude(w) && claudeResumes(args)) return 'resume';
     if (nonLiteral(w) && (claudeResumes(args) || WATCHDOG_VERBS.has(args[0]))) return 'resume';
   }

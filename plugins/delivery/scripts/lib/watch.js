@@ -53,6 +53,22 @@ function readProblem(args) {
 }
 
 const cacheDir = (root) => path.join(root, '.delivery', 'cache', 'gh');
+// The cache folder for reads outside a project: <tmp>/delivery-watch-<uid>, created 0700. An existing one
+// is used only when it is a real folder (not a link), owned by this user and closed to everyone else;
+// otherwise null, and reads run uncached.
+function privateRoot(tmp) {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+  const dir = path.join(tmp, `delivery-watch-${uid === null ? 'user' : uid}`);
+  try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (err) { if (err.code !== 'EEXIST') return null; }
+  try {
+    const st = fs.lstatSync(dir);
+    if (st.isSymbolicLink() || !st.isDirectory()) return null;
+    if (uid !== null && st.uid !== uid) return null;
+    if (st.mode & 0o077) return null;
+    return dir;
+  } catch (err) { return null; }
+}
+
 // what gh answers depends on more than its arguments (Copilot 305)
 function contextOf(args, { cwd = process.cwd(), env = process.env } = {}) {
   const list = (args || []).map(String);
@@ -85,14 +101,15 @@ function prune(dir, now) {
 // One gh read through the shared cache, its exit status kept with it: a pending check or a rate-limit
 // error is shared for the window too (Copilot 065). run(args) -> { code, out }. A cold or stale entry is refreshed
 // by one caller at a time: the others wait for its result (Copilot 374). { code, out, cached, age }
-function ghRead(root, args, { run, now = Date.now(), ttl = TTL_MS, cwd, env, waitMs = 60e3 } = {}) {
+function ghRead(root, args, { run, now = Date.now(), ttl = TTL_MS, cwd, env, waitMs = 60e3, cache = true } = {}) {
+  if (!cache || !root) { const r = run(args); return { code: r.code, out: r.out, cached: false, age: 0 }; }
   const dir = cacheDir(root);
   const file = path.join(dir, `${keyOf(args, contextOf(args, { cwd, env }))}.json`);
   const hit = (c) => ({ code: c.code, out: c.out, cached: true, age: Math.max(0, Math.round((now - c.at) / 1000)) });
   let c = fresh(file, now, ttl);
   if (c) return hit(c);
   try {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const ig = path.join(root, '.delivery', 'cache', '.gitignore');
     if (!fs.existsSync(ig)) fs.writeFileSync(ig, '*\n');
   } catch (err) { /* uncached below */ }
@@ -116,7 +133,7 @@ function ghRead(root, args, { run, now = Date.now(), ttl = TTL_MS, cwd, env, wai
     const r = run(args);
     try {
       const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ at: now, args, code: r.code, out: r.out }));
+      fs.writeFileSync(tmp, JSON.stringify({ at: now, args, code: r.code, out: r.out }), { mode: 0o600 });
       fs.renameSync(tmp, file);
       prune(dir, now);
     } catch (err) { /* a cache that cannot be written only costs a call */ }
@@ -142,4 +159,4 @@ function watch({ read, until, every, max, sleep, clock = () => Date.now() }) {
   }
 }
 
-module.exports = { contextOf, keyOf, prune, MAX_ENTRIES, MIN_GH_S, TTL_MS, MAX_HOURS, READS, seconds, budgetProblem, readProblem, ghRead, watch, cacheDir };
+module.exports = { privateRoot, contextOf, keyOf, prune, MAX_ENTRIES, MIN_GH_S, TTL_MS, MAX_HOURS, READS, seconds, budgetProblem, readProblem, ghRead, watch, cacheDir };

@@ -23,9 +23,10 @@ const sleepSync = (s) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 
 
 function main(argv, { cwd = process.cwd(), env = process.env, run, sleep = sleepSync, clock, now } = {}) {
   const who = whoAmI({ cwd, env });
-  // outside a project the cache lives in a private temporary folder, never in the working directory
-  const root = who.root || path.join(os.tmpdir(), `delivery-watch-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`);
-  const read = (args) => WT.ghRead(root, args, { run: run || ghRun(env), now: now ? now() : Date.now(), cwd, env });
+  // outside a project the cache lives in a private temporary folder (0700, files 0600), never in the
+  // working directory; a folder there that is not ours alone, or is a link, is not used (Copilot 786)
+  const root = who.root || WT.privateRoot(os.tmpdir());
+  const read = (args) => WT.ghRead(root, args, { run: run || ghRun(env), now: now ? now() : Date.now(), cwd, env, cache: Boolean(root) });
   const [cmd, ...rest] = argv;
   if (cmd === 'gh') {
     const bad = WT.readProblem(rest);

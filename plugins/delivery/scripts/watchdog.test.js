@@ -332,7 +332,13 @@ test('B2: a wake whose process still runs is not started again; concurrent host-
   const h = harness({ beads: { 'ex-p': { id: 'ex-p', status: 'open', priority: 0, created_at: iso(now - 3 * H) }, 'ex-b': { id: 'ex-b', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(now) } } });
   session(h, DM, { seen: iso(now - 2 * H) });
   WD.log(h.root, { type: 'wake', at: iso(now - 2 * H), keys: ['p0:other'], instance: DM, pid: process.pid });
-  assert.match(WD.plan(WD.read(h.root, { bd: require('./lib/bd.js').makeBd({ cwd: h.root, env: fakeEnv(h) }), now: iso(now) }), { root: h.root, now: iso(now) }).held[0].reason, /still running/);
+  assert.match(WD.plan(WD.read(h.root, { bd: require('./lib/bd.js').makeBd({ cwd: h.root, env: fakeEnv(h) }), now: iso(now) }), { root: h.root, now: iso(now), alive: (p) => p === process.pid }).held[0].reason, /still running/);
+  // the default check: alive and still a wake supervisor (a reused pid is not ours)
+  assert.equal(WD.pidAlive(process.pid), false, 'this test process is no wake-run.js');
+  const sup = require('child_process').spawn(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), '60000', process.execPath, '-e', 'setTimeout(() => {}, 5000)'], { stdio: 'ignore', detached: true });
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  assert.equal(WD.pidAlive(sup.pid), true);
+  process.kill(-sup.pid, 'SIGKILL');
   fs.writeFileSync(path.join(h.root, WD.REL, 'wakes.ndjson'), '');
   const log = scratchLog();
   const env = { ...fakeEnv(h, claudeEnv(log)), TYPESAFE_API_KEY: 'fake', DELIVERY_JUDGE_ENDPOINT: 'http://127.0.0.1:9' };
@@ -584,6 +590,84 @@ test('Copilot 144: a wake is stopped after its limit, and the guard covers it wh
   const res = { stalls: [{ kind: 'p0', key: 'p0:x', target: DM, due: true, line: 'Unclaimed: x', prompt: 'go' }], sessions: [] };
   WD.log(h.root, { type: 'wake', at: iso(now - 2.5 * H), keys: ['p0:y'], instance: DM, pid: 12345 });
   assert.match(WD.plan(res, { root: h.root, now: iso(now), alive: () => true }).held[0].reason, /still running/);
-  assert.equal(WD.plan(res, { root: h.root, now: iso(now + 1.5 * H), alive: () => true }).wakes.length, 1, 'past the limit plus an hour the pid is someone else\'s');
+  assert.equal(WD.plan(res, { root: h.root, now: iso(now + 1.5 * H), alive: () => false }).wakes.length, 1, 'a supervisor gone frees the session');
   assert.equal(WD.WAKE_TIMEOUT_H, 2);
+});
+
+// ---- Copilot on 1336e29 ----
+test('Copilot 716 and 749: compound commands and the job shim are judged too; the CLI check still passes', () => {
+  const h = harness({});
+  const wd = h.script('watchdog.js');
+  const shim = `${h.root}/.delivery/watchdog/job.js`;
+  for (const f of ['if true; then claude --resume s -p go; fi', `while true; do ${wd} run; done`, '{ claude -c -p x; }', '(claude --resume s)', `f() { ${wd} wake; }; f`,
+    '! claude --resume s', 'for i in 1; do claude --continue; done', 'if claude --resume s; then true; fi', 'case x in x) claude -c ;; esac',
+    'function f { claude --resume s; }', `function g { node ${shim}; }`,
+    `node ${shim} check`, `cd ${h.root} && env -u DELIVERY_ROLE -u DELIVERY_ROLE_ID -u DELIVERY_ROLE_DIR node ${shim} check`, `${shim} check --json`]) {
+    assert.ok(h.bash('builder-1', f, { run: false }).deny, f);
+  }
+  assert.equal(h.bash('builder-1', `${wd} check`, { run: false }).deny, null);
+  assert.equal(h.bash('builder-1', `if true; then ${wd} check; fi`, { run: false }).deny, null, 'the CLI check inside a compound command');
+});
+
+test('Copilot 144 again: no replacement wake while the last wake\'s process group lives, however long ago it started', () => {
+  const h = harness({});
+  const now = Date.parse('2026-10-13T12:00:00Z');
+  const res = { stalls: [{ kind: 'p0', key: 'p0:x', target: DM, due: true, line: 'Unclaimed: x', prompt: 'go' }], sessions: [] };
+  WD.log(h.root, { type: 'wake', at: iso(now - 10 * H), keys: ['p0:y'], instance: DM, pid: 4242 });
+  assert.match(WD.plan(res, { root: h.root, now: iso(now), alive: () => true }).held[0].reason, /still running/);
+  assert.equal(WD.plan(res, { root: h.root, now: iso(now), alive: () => false }).wakes.length, 1);
+});
+
+test('Copilot 857: a timed-out wake is stopped with its whole process group, its tool subprocesses included', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wake-'));
+  const pidFile = path.join(dir, 'grandchild');
+  const code = `const c = require('child_process').spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], { stdio: 'ignore' }); require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); setInterval(() => {}, 1000);`;
+  const t0 = Date.now();
+  const r = spawnSync('node', [path.join(__dirname, 'lib', 'wake-run.js'), '500', process.execPath, '-e', code], { encoding: 'utf8', env: { ...process.env, DELIVERY_WAKE_KILL_GRACE_MS: '300' }, detached: true });
+  assert.notEqual(r.status, 0);
+  assert.ok(Date.now() - t0 < 15000);
+  const gc = Number(fs.readFileSync(pidFile, 'utf8'));
+  const alive = (p) => { try { process.kill(p, 0); return true; } catch (e) { return false; } };
+  const until = Date.now() + 3000;
+  while (alive(gc) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  assert.equal(alive(gc), false, 'the subprocess that ignored SIGTERM was killed');
+  // SIGTERM goes to the whole group first: a subprocess that honours it is gone well before the SIGKILL
+  const pid3 = path.join(dir, 'gc3');
+  const polite = `const c = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); require('fs').writeFileSync(${JSON.stringify(pid3)}, String(c.pid)); setInterval(() => {}, 1000);`;
+  const t1 = Date.now();
+  spawnSync('node', [path.join(__dirname, 'lib', 'wake-run.js'), '500', process.execPath, '-e', polite], { env: { ...process.env, DELIVERY_WAKE_KILL_GRACE_MS: '20000' }, detached: true });
+  assert.ok(Date.now() - t1 < 8000, 'the group took SIGTERM; no wait for the SIGKILL');
+  assert.equal(alive(Number(fs.readFileSync(pid3, 'utf8'))), false);
+  // a wake that exits at once leaves no subprocess behind either
+  const pid2 = path.join(dir, 'gc2');
+  const left = `const c = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); require('fs').writeFileSync(${JSON.stringify(pid2)}, String(c.pid)); c.unref();`;
+  assert.equal(spawnSync('node', [path.join(__dirname, 'lib', 'wake-run.js'), '60000', process.execPath, '-e', left], { env: { ...process.env, DELIVERY_WAKE_KILL_GRACE_MS: '300' }, detached: true }).status, 0);
+  const g2 = Number(fs.readFileSync(pid2, 'utf8'));
+  const until2 = Date.now() + 3000;
+  while (alive(g2) && Date.now() < until2) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  assert.equal(alive(g2), false);
+});
+
+test('Copilot 829: a crontab that cannot be read is never replaced; only "no crontab" counts as empty', () => {
+  const h = harness({});
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'home-'));
+  const writes = [];
+  const fail = (stderr) => (cmd, args, input) => { if (cmd === 'crontab' && args[0] === '-l') { const e = new Error('crontab failed'); e.stderr = stderr; e.status = 1; throw e; } if (cmd === 'crontab') writes.push(input); return ''; };
+  const env = { ...process.env, DELIVERY_ROLE: '' };
+  const r = watchdog.main(['install', '--apply'], { cwd: h.root, env, home, platform: 'linux', has: () => false, exec: fail('crontab: cannot open your crontab: Permission denied') });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /crontab could not be read/);
+  assert.deepEqual(writes, []);
+  assert.equal(watchdog.main(['uninstall'], { cwd: h.root, env, home, platform: 'linux', has: () => false, exec: fail('crontab: cannot open your crontab: Permission denied') }).code, 1);
+  assert.deepEqual(writes, []);
+  assert.equal(watchdog.main(['install', '--apply'], { cwd: h.root, env, home, platform: 'linux', has: () => false, exec: fail('no crontab for dev') }).code, 0);
+  assert.equal(writes.length, 1);
+});
+
+test('review: `gh run watch` with no interval polls every 3 s; the documented resume bound is the grace plus one job interval', () => {
+  const p = (command) => WD.tightPolls([reply(iso(Date.now()), [{ type: 'tool_use', input: { command } }])]).map((x) => x.every);
+  assert.deepEqual(p('gh run watch 123'), [3]);
+  assert.deepEqual(p('gh run watch 123 --interval 300'), []);
+  const ref = fs.readFileSync(path.join(__dirname, '..', 'docs', 'reference.md'), 'utf8');
+  assert.match(ref, /within\s+the\s+5-minute\s+grace\s+plus\s+one\s+job\s+interval\s+of\s+the\s+reset\s+\(at\s+most\s+20\s+minutes\s+at\s+the\s+default\s+`--every 15m`/);
 });

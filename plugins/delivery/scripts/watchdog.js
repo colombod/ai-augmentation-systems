@@ -274,6 +274,15 @@ function jobFiles(root, { platform, home, sec, env, has }) {
   return { ...base, kind: 'cron', file: null, cron: { line, marker }, files: [], commands: [], removeCommands: [] };
 }
 
+// The current crontab: '' only when there is none (or no crontab command at all); any other failure is
+// an error, so the table is never replaced by our line alone (Copilot 829).
+function readCrontab(run) {
+  try { return { text: run('crontab', ['-l']) || '' }; } catch (err) {
+    const why = `${err && err.stderr ? err.stderr : ''} ${err && err.message ? err.message : ''}`;
+    if (/no crontab for/i.test(why) || (err && err.code === 'ENOENT')) return { text: '' };
+    return { error: String(err && err.stderr ? err.stderr : err && err.message).trim().split('\n')[0] || 'unknown error' };
+  }
+}
 const runner = (exec) => exec || ((cmd, args, input) => require('child_process').execFileSync(cmd, args, { encoding: 'utf8', input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] }));
 const whichOf = (has) => has || ((cmd) => { try { require('child_process').execFileSync('which', [cmd], { stdio: 'ignore' }); return true; } catch (err) { return false; } });
 
@@ -301,8 +310,9 @@ function install(root, o, { platform = process.platform, home = os.homedir(), en
     fs.writeFileSync(j.shim, j.shimBody, { mode: 0o755 });
     for (const f of j.files) { fs.mkdirSync(path.dirname(f.file), { recursive: true }); fs.writeFileSync(f.file, f.body); lines.push(`Wrote ${f.file}`); }
     if (j.cron) {
-      let cur = '';
-      try { cur = run('crontab', ['-l']); } catch (err) { cur = ''; }
+      const r = readCrontab(run);
+      if (r.error) throw new Error(`the crontab could not be read (${r.error}); nothing was changed`);
+      const cur = r.text;
       const kept = cur.split('\n').filter((l) => l.trim() && !l.includes(j.cron.marker));
       run('crontab', ['-'], `${[...kept, j.cron.line].join('\n')}\n`);
       lines.push('Added the watchdog line to your crontab.');
@@ -332,8 +342,9 @@ function uninstall(root, { platform = process.platform, home = os.homedir(), env
     lines.push(`Removed ${f.file}`);
   }
   if (platform !== 'darwin') {
-    let cur = null;
-    try { cur = run('crontab', ['-l']); } catch (err) { cur = null; }
+    const r = readCrontab(run);
+    if (r.error) return { code: 1, out: `${lines.length ? `${lines.join('\n')}\n` : ''}watchdog.js: the crontab could not be read (${r.error}); it was left as it is` };
+    const cur = r.text;
     const marker = `# delivery-watchdog ${tagOf(root)}`;
     if (cur && cur.includes(marker)) {
       const kept = cur.split('\n').filter((l) => l.trim() && !l.includes(marker));

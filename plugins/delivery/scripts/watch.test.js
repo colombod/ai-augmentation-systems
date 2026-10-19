@@ -141,3 +141,33 @@ test('Copilot 065: a failed or pending read is shared for its window too', () =>
   WT.ghRead(root, ['pr', 'checks', '-R', 'o/r', '5'], { run, now: 241e3 });
   assert.equal(n, 2);
 });
+
+test('Copilot 786: outside a project the cache is private, and a shared, foreign or linked folder is never reused', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tmpdir-'));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'nowhere-'));
+  let n = 0;
+  const run = () => { n++; return { code: 0, out: 'secret issue text' }; };
+  const read = () => withEnv({ TMPDIR: tmp }, () => watch.main(['gh', 'issue', 'view', '9', '-R', 'o/r'], { cwd, env: { ...process.env, DELIVERY_ROLE: '' }, run }));
+  read();
+  const dir = fs.readdirSync(tmp).map((d) => path.join(tmp, d)).find((d) => /delivery-watch-/.test(d));
+  assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+  const files = [];
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) { assert.equal(fs.statSync(p).mode & 0o077, 0, p); walk(p); } else if (p.endsWith('.json')) files.push(p); } };
+  walk(dir);
+  assert.ok(files.length >= 1);
+  for (const f of files) assert.equal(fs.statSync(f).mode & 0o777, 0o600, f);
+  read();
+  assert.equal(n, 1, 'reused when private');
+  // loosened by someone: not reused, the read still runs
+  fs.chmodSync(dir, 0o755);
+  read();
+  assert.equal(n, 2);
+  // a symlink in its place: not followed
+  fs.rmSync(dir, { recursive: true });
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'elsewhere-'));
+  fs.symlinkSync(elsewhere, dir);
+  read();
+  read();
+  assert.equal(n, 4);
+  assert.deepEqual(fs.readdirSync(elsewhere), [], 'nothing written through the link');
+});

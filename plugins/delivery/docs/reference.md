@@ -997,10 +997,13 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   only, never a fork), or when its role directory is not on this host.
 - **The wake's limits.** At most one wake per session an hour whatever the stalls; at most 6 a day per
   session; each stall waits 1, 2, 4, 8 ... hours after each wake that carried it; never while that
-  session's last wake process still runs (each wake runs under `lib/wake-run.js`, which stops it after
-  2 hours, and the guard holds for 3); never before the session's own usage limit resets (then once,
+  session's last wake still runs, however long ago it started (each wake runs in its own process group
+  under `lib/wake-run.js`, which stops the whole group after 2 hours, SIGTERM then SIGKILL, and lives
+  until the group is gone; the guard checks that the logged pid is alive and is still that supervisor); never before the session's own usage limit resets (then once,
   for everything due). Past a limit the stall stays an alarm: "Alarm only: <session>: <reason>". A usage
-  limit with no known reset keeps one key and one warning however often a wake is rejected again. `run`
+  limit with no known reset keeps one key and one warning however often a wake is rejected again. A
+  usage-limit wake starts within the 5-minute grace plus one job interval of the reset (at most 20 minutes at
+  the default `--every 15m`; `--every 5m` keeps it within 10). `run`
   takes a lock (`.delivery/watchdog/run.lock`), so concurrent runs wake once.
 - **Forks.** A fork's SessionStart (with `DELIVERY_WAKE=fork`) is recorded in the roster entry's
   `forks` list, never in place of the owner's open session, which stays the one the watchdog reads;
@@ -1016,7 +1019,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   what it would write and how to remove it; `--apply` writes it; `watchdog.js uninstall` removes it in
   every form (running it again says "Nothing to remove"). Nothing installs it for you. `wake`, `run`,
   `install` and `uninstall` are refused to every role session, `any` lanes included and whatever the
-  form (a chain, a wrapper such as `env`, `nohup` or `timeout`, `bash -c`, `eval`, `$(...)`, `node -e`,
+  form (the job shim with any arguments, a compound command such as `if ...; then ...; fi`, a chain, a wrapper such as `env`, `nohup` or `timeout`, `bash -c`, `eval`, `$(...)`, `node -e`,
   the shim, a quote-split or glob word, a command word built from a variable), and so is
   `claude --resume`/`--continue` by hand. Only what runs is judged: a note, a commit message or
   `git diff -- scripts/watchdog.js` that names the file or a flag is not refused; the
@@ -1036,7 +1039,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
     (`OnUnitActiveSec`, `Persistent=true`), enabled with `systemctl --user enable --now`. A user timer
     runs only while you are logged in unless lingering is on: `loginctl enable-linger $USER`.
   - Linux without systemd: one crontab line marked `# delivery-watchdog <hash>` (a second install
-    replaces it). Cron runs on clock minutes, so `--every` must divide the hour there (5m, 10m, 12m, 15m,
+    replaces it; a crontab that cannot be read is never replaced, only "no crontab" counts as empty). Cron runs on clock minutes, so `--every` must divide the hour there (5m, 10m, 12m, 15m,
     20m, 30m, 1h).
   `--every` is 5m to 1h. The machine must be on and the owner signed in to Claude Code for a wake to run.
   Each scheduler keeps the installing shell's `CLAUDE_CONFIG_DIR`, and the shim restores it before it
@@ -1045,7 +1048,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   while it and the job file exist. An operator's own `watchdog.js wake` works without the job.
 - **Watching GitHub within a budget (R-25).** `watch.js until <text> --every <5m> --max <2h> -- gh <read>`
   repeats a gh read until its output shows `<text>` (a pattern, any case), exit 0, or the time limit
-  passes, exit 1. It refuses a watcher with no exit condition, no time limit, a limit over 6 hours or
+  passes, exit 1. Outside a project its cache is a private folder in the temporary directory (0700,
+  files 0600), not reused when it is a link, another user's or open to others. It refuses a watcher with no exit condition, no time limit, a limit over 6 hours or
   an interval under 4 minutes, anything but a gh read, and gh's own polling flags (`--watch`, `-w`,
   `--interval`, `-i`). `watch.js gh <read>` is one read. Both go through `.delivery/cache/gh/`
   (gitignored), shared by every role on the host and fresh for 4 minutes (the one query per 4 minutes

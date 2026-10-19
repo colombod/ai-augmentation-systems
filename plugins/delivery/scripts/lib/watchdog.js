@@ -36,9 +36,9 @@ const DAILY_CAP = 6;
 const RESET_GRACE_MIN = 5;
 const TAIL_BYTES = 512 * 1024;
 const MIN_POLL_S = 240;
-// a wake runs under a supervisor that stops it after WAKE_TIMEOUT_H; the guard holds an hour longer
+// a wake runs under a supervisor (lib/wake-run.js) that stops its process group after WAKE_TIMEOUT_H and
+// lives until the group is gone; the guard holds while that supervisor lives, whatever the clock says
 const WAKE_TIMEOUT_H = 2;
-const RUNNING_MAX_MS = (WAKE_TIMEOUT_H + 1) * 3600e3;
 const LOG_MAX_BYTES = 1 << 20;
 const DM = 'delivery-lead';
 
@@ -129,6 +129,8 @@ function pollEvery(cmd) {
   const g = /\bgh\s+(?:run|pr)\s+(?:watch|checks)\b[^;&|]*?(?:-i|--interval)[ =](\d+)/.exec(cmd);
   if (g) return Number(g[1]);
   if (/\bgh\s+pr\s+checks\b[^;&|]*\s--watch\b/.test(cmd)) return 10;
+  // gh's own default intervals: `run watch` 3 s
+  if (/\bgh\s+run\s+watch\b/.test(cmd)) return 3;
   return NaN;
 }
 function tightPolls(rows) {
@@ -324,7 +326,15 @@ function log(root, row) {
   return row;
 }
 
-const pidAlive = (pid) => { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } };
+// alive, and still a wake supervisor: a pid the system gave to another program since is not ours
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); } catch (err) { if (err.code !== 'EPERM') return false; }
+  try {
+    const cmd = require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
+    return !cmd.trim() || /wake-run\.js/.test(cmd);
+  } catch (err) { return true; }
+}
 
 // The wakes due now, one per target session, carrying the stall lines it may still be woken for.
 // { wakes: [{ target, keys, lines, prompt }], waiting: [stall], held: [{ target, lines, reason }] }
@@ -350,7 +360,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     const lines = w.stalls.map((s) => s.line);
     let reason = null;
     if (last && t - ms(last.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(last.at))}; one wake an hour`;
-    else if (last && t - ms(last.at) < RUNNING_MAX_MS && alive(last.pid)) reason = 'its last wake is still running';
+    else if (last && alive(last.pid)) reason = 'its last wake is still running';
     else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
     // each stall waits 1, 2, 4 ... hours after each wake that carried it
     const ok = reason ? [] : w.stalls.filter((s) => {
