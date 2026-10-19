@@ -19,7 +19,7 @@ const W = require('./lib/waves.js');
 const B = require('./lib/budget.js');
 const { whoAmI, writerProblem } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: plan.js budget [--json] | plan.js select [--record] [--json] | plan.js today [--json] | plan.js brief | plan.js routed [--json]';
+const USAGE = 'usage: plan.js budget [--json] | plan.js select [--record] [--json] | plan.js today [--json] | plan.js brief [--limit <lines>] | plan.js routed [--json]';
 const n1 = B.n1;
 
 function budgetLines(st, A, team) {
@@ -51,10 +51,15 @@ async function main(argv, { cwd = process.cwd(), env = process.env, who: given, 
   const recordIt = argv.includes('--record');
   const pi = args.indexOf('--project');
   const project = pi >= 0 ? args.splice(pi, 2)[1] : undefined;
+  const li = args.indexOf('--limit');
+  const limit = li >= 0 ? Number(args.splice(li, 2)[1]) : undefined;
+  if (limit !== undefined && !(Number.isInteger(limit) && limit > 0)) return { code: 2, out: `plan.js: --limit needs a whole number of lines\n${USAGE}` };
   const [cmd] = args;
   const who = given || whoAmI({ cwd, env, project });
   if (!who.root) return { code: 2, out: 'plan.js: no project found; pass --project <root>' };
-  if (['today', 'brief', 'routed'].includes(cmd)) return daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json });
+  // the day's plan is the Chief of Staff's own project's: never another one named on the command line
+  if (cmd === 'today' && project !== undefined && require('path').resolve(project) !== require('path').resolve(who.root)) return { code: 1, out: 'plan.js: the plan is for your own project.\nRun it there: `plan.js today`' };
+  if (['today', 'brief', 'routed'].includes(cmd)) return daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json, limit });
   if (!['budget', 'select'].includes(cmd)) return { code: 2, out: USAGE };
   if (recordIt) { const p = writerProblem(who); if (p) return { code: 1, out: `plan.js: ${p}` }; }
   const bd = givenBd || require('./lib/bd.js').makeBd({ cwd: who.root });
@@ -123,7 +128,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, who: given, 
 
 // ---- the Chief of Staff's day (lib/daily-plan.js) ----
 const ROUTE_HINT = 'Send each item to its role with SendMessage, carrying its reference in [brackets]; `plan.js routed` lists what is not sent yet.';
-function daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json }) {
+function daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json, limit: asked }) {
   const DP = require('./lib/daily-plan.js');
   if (cmd === 'routed') {
     const u = DP.unrouted(who.root, { now });
@@ -136,10 +141,15 @@ function daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json })
   }
   if (cmd === 'today' && who.roleId !== 'chief-of-staff') return { code: 1, out: 'plan.js: the Chief of Staff writes the day\'s plan.\nMessage the Chief of Staff, or read it: `plan.js routed`' };
   const bd = givenBd || require('./lib/bd.js').makeBd({ cwd: who.root });
-  const f = DP.facts(who.root, { bd, team: who.team, now, gh, ci, budget, budgetOpts });
+  let f;
+  // a record that cannot be read refuses the plan and the brief: no snapshot from a failed read (B2)
+  try { f = DP.facts(who.root, { bd, team: who.team, now, gh, ci, budget, budgetOpts }); } catch (err) {
+    if (!(err instanceof DP.ReadError)) throw err;
+    return { code: 1, out: `plan.js: ${err.message}.\nCheck: \`bd where\`` };
+  }
   if (cmd === 'brief') {
-    const limit = require('./lib/goal.js').value(who.root, 'briefing_lines', { warn: false }) || 12;
-    return { code: 0, out: DP.brief(f, { prev: DP.previous(who.root, DP.today(now)), limit }).join('\n') };
+    const own = require('./lib/goal.js').value(who.root, 'briefing_lines', { warn: false }) || 12;
+    return { code: 0, out: DP.brief(f, { prev: DP.previous(who.root, DP.today(now)), limit: asked ? Math.min(asked, own) : own }).join('\n') };
   }
   let row;
   try { row = DP.record(who.root, f, { by: who.instance, now }); } catch (err) { return { code: 1, out: `plan.js: the plan was not recorded (${String(err.message).split('\n')[0]}).\nRetry: \`plan.js today\`` }; }

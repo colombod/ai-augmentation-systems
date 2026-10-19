@@ -144,8 +144,13 @@ function areaStops(root, { beadOf = () => null, g } = {}) {
     const beadId = /^ev-(.+)-\d+$/.exec(rowId)[1];
     let bead = null;
     try { bead = beadOf(beadId); } catch (err) { bead = null; }
-    // without the bead its area is not known: fail open
-    if (!bead) continue;
+    // without the bead its area is not known: the claim check cannot place it (it fails open there), but
+    // the status keeps it, read on its chain alone, so a stop never disappears from view (fail closed)
+    if (!bead) {
+      const alone = Goal.triggerState(root, trigger, {});
+      if (alone.open) out.push({ trigger, row: rowId, bead: beadId, story: '', area: null, areaName: null, unreadable: true, criterion: null, title: beadId, a3: openA3For(root, trigger, rows), missing: alone.missing || null });
+      continue;
+    }
     const st = Goal.triggerState(root, trigger, { bead });
     if (!st.open) continue;
     const row = G.readEvidence(root, beadId).find((r) => r.id === rowId) || {};
@@ -387,7 +392,8 @@ function plainLines(s) {
   const out = [];
   const lower = (t) => t.charAt(0).toLowerCase() + t.slice(1);
   // the area's own name, never a bead id (a story with no area falls back to its parent's id for matching)
-  for (const x of s.stops) out.push(`${x.areaName ? `The ${x.areaName} area` : 'An unassigned area'} is stopped until we fix why ${x.what ? lower(x.what) : `"${x.title}" failed on the customer's app`}; ${x.stage}.`);
+  if (s.stops.some((y) => y.unreadable)) out.push('A stop could not be read; the Delivery Manager checks it.');
+  for (const x of s.stops.filter((y) => !y.unreadable)) out.push(`${x.areaName ? `The ${x.areaName} area` : 'An unassigned area'} is stopped until we fix why ${x.what ? lower(x.what) : `"${x.title}" failed on the customer's app`}; ${x.stage}.`);
   if (s.ci.red) out.push(`New work is paused across the product: the main build has been failing since ${String(s.ci.since).slice(0, 10)}; only fixes go on.`);
   for (const r of s.flaky) out.push(`A test that passes and fails on the same code is being looked into${r.area ? ` (${r.area})` : ''}${r.overdue && r.area && r.confirmed && !r.a3Opened ? '; its cause is overdue, so new work there waits' : ''}.`);
   for (const c of s.chains) out.push('One problem needed two fixes in two days; we are looking for its cause before fixing it again.');

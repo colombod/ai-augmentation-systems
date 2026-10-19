@@ -48,7 +48,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, v
   if (cmd === 'sheet') {
     const DP = require('./lib/daily-plan.js');
     const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 });
-    const rows = DP.sheet(DP.facts(who.root, { bd: store, team: who.team, now, gh, ci, budget, verifyRecord }), { verifyRecord });
+    let rows;
+    try { rows = DP.sheet(DP.facts(who.root, { bd: store, team: who.team, now, gh, ci, budget, verifyRecord }), { verifyRecord }); } catch (err) {
+      if (!(err instanceof DP.ReadError)) throw err;
+      return { code: 1, out: `goal.js: ${err.message}.\nCheck: \`bd where\`` };
+    }
     if (a.json) return { code: 0, out: JSON.stringify(rows, null, 2) };
     const lines = [];
     for (const r of rows) {

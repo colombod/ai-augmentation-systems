@@ -57,20 +57,29 @@ function initiatives(root) {
   return safe(() => fs.readdirSync(dir).filter((d) => fs.statSync(path.join(dir, d)).isDirectory()).sort(), []);
 }
 
+// A read the views cannot do without: its failure is the command's, never an empty record (B2).
+class ReadError extends Error {}
+function must(fn, what) {
+  try { const v = fn(); return v === undefined || v === null ? [] : v; } catch (err) { throw new ReadError(`${what} could not be read (${String(err && err.message ? err.message : err).split('\n')[0]})`); }
+}
+
 // Everything the sheet, the plan and the brief read. deps: bd (lib/bd.js store), team, now, gh (for
-// pull requests), ci (the main build state), budget, verifyRecord.
+// pull requests), ci (the main build state), budget, verifyRecord. Throws a ReadError when bd, the owner
+// queue, the operator records or the review records cannot be read, so no view stands on a guess.
 function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord } = {}) {
   const W = require('./waves.js');
   const A = require('./assumptions.js');
   const AN = require('./andon.js');
+  const C = require('./gate-context.js');
   const Q = require('./owner-queue.js');
-  const stories = safe(() => bd.list({ label: 'story', all: true }), []) || [];
+  const stories = must(() => bd.list({ label: 'story', all: true }), 'bd');
   const known = new Map(stories.map((b) => [b.id, b]));
   const beadOf = (id) => known.get(id) || safe(() => bd.show(id), null);
-  const spikes = safe(() => bd.list({ label: 'spike', all: true }), []) || [];
-  const checks = require('../reality-check.js').pending(safe(() => bd.list({ label: 'reality-check' }), []) || []);
-  const fixBeads = ['bug', 'security'].flatMap((l) => safe(() => bd.list({ label: l, all: true }), []) || []);
-  const andon = safe(() => AN.summary(root, { beadOf, team, now, ci: ci || AN.ciState(root, { team }), fixBeads }), { stops: [], ci: { red: false }, flaky: [], a3s: [], chains: [] });
+  const spikes = must(() => bd.list({ label: 'spike', all: true }), 'bd');
+  const checks = require('../reality-check.js').pending(must(() => bd.list({ label: 'reality-check' }), 'bd'));
+  const fixBeads = ['bug', 'security'].flatMap((l) => must(() => bd.list({ label: l, all: true }), 'bd'));
+  const ciState = ci || AN.ciState(root, { team });
+  const andon = AN.summary(root, { beadOf, team, now, ci: ciState, fixBeads });
   const titles = new Map(require('./plan-docs.js').parseStories(path.join(root, '.delivery', 'stories')).map((s) => [s.id, s.title]));
   // what waits on the outside world: external-host assumptions not observed and acknowledged
   const regs = A.registers(root, { bd, verifyRecord });
@@ -78,19 +87,39 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord }
   for (const slug of initiatives(root)) {
     for (const a of regs.rowsFor(slug).filter((x) => x.kind === 'external-host' && (x.status !== 'observed' || !x.acked) && x.criteria.length)) {
       const spike = a.spike || A.spikeIdFor((team && team.prefix) || 'x', slug, a.id);
+      // assumption ids restart per initiative: the item is <initiative>/<id>, its spike an alias
       unknowns.push({ a, slug, spike, plain: a.criteria.map((c) => A.plainLine(titles.get(c.story) || 'A story not yet written up', a)) });
     }
   }
   const covered = new Set(unknowns.map((u) => u.spike));
   const openSpikes = spikes.filter((b) => b.status !== 'closed' && !covered.has(b.id));
-  const queue = safe(() => Q.open(root), []);
-  const questions = safe(() => require('./operator-records.js').pending(root, {}).open_questions, []) || [];
+  const queue = must(() => Q.open(root), 'the owner queue');
+  const questions = must(() => require('./operator-records.js').pending(root, {}).open_questions, 'the operator records');
   const ctx = W.contextFor(root, { bd, team, beads: stories, now, verifyRecord, budget, budgetOpts });
-  const { ranked } = W.selectRanked(bd, stories, ctx);
-  const stopped = new Set(andon.stops.map((s) => s.area));
-  const next = ranked.filter((r) => !r.refused && !stopped.has(G.areaOf(known.get(r.id) || {}))).slice(0, 3);
-  const prs = safe(() => require('../team-status.js').reviewStatus(root, { team, gh }), {});
-  return { root, now, team, stories, titles, spikes: openSpikes, checks, andon, unknowns, queue, questions, budget: ctx.budget, areas: W.areas(stories), next, known, prs, storyOf: ctx.storyOf };
+  must(() => bd.ready && bd.ready(), 'bd');
+  const { ranked, byId } = W.selectRanked(bd, stories, ctx);
+  // admission as the claim check decides it (bd-guard): the stop-the-line findings and the assumption
+  // gate on top of select's own, so the plan never offers a claim the hook refuses, nor hides recovery
+  // work the hook allows (Copilot 459)
+  const regsAt = A.registers(root, { bd, verifyRecord });
+  const admitted = (r) => {
+    const b = byId.get(r.id) || known.get(r.id);
+    if (!b) return false;
+    const blocks = [...AN.claimFindings(b, { root, parent: b.parent ? beadOf(b.parent) : null, fix: ctx.fixOf(b), stories, beadOf, team, now, ci: ciState }),
+      ...(G.isStoryBead(b) ? A.forStory(root, b, { bd, team, verifyRecord, atClaim: true, regs: regsAt }).findings : [])].filter((x) => x.level === 'block');
+    return !blocks.length;
+  };
+  const next = ranked.filter((r) => !r.refused && admitted(r)).slice(0, 3);
+  const prs = must(() => require('../team-status.js').reviewStatus(root, { team, gh }), 'the review records');
+  // checked on the customer's app: the done gate's own verdict on the evidence (B1)
+  const recordOk = C.recordChecker(root, verifyRecord);
+  const checked = (b) => G.stateOf(b) === 'verified' && safe(() => {
+    const inp = C.gateInputs(root, b, { team });
+    if (inp.evidenceProblem || G.scopeDrift(inp.story, b)) return false;
+    const d = G.doneCheck({ story: inp.story, bead: b, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances, recordOk });
+    return d.ok && !d.cut;
+  }, false);
+  return { root, now, team, stories, titles, spikes: openSpikes, checks, andon, unknowns, queue, questions, budget: ctx.budget, areas: W.areas(stories), next, known, prs, storyOf: ctx.storyOf, checked };
 }
 
 // ---- the plan for the day ----
@@ -103,15 +132,19 @@ function items(f) {
   for (const s of f.queue) out.push(item(1, 'owner-step', 'owner_steps', s.id, `give the owner today's batch (owner-queue.js list): ${s.what}`, s.what, t));
   for (const q of f.questions) out.push(item(1, 'owner-question', 'owner_questions', q.id, `put the question to the owner once, with options: ${q.text}`, q.text, t));
   const AN = require('./andon.js');
-  for (const s of f.andon.stops) out.push(item(2, 'stop', 'stops', s.row, `the ${s.areaName || s.area} area is stopped on ${s.row}: ${s.a3 ? `finish A3 ${s.a3.id}` : 'open the A3'} and route the linked fix (a3.js, andon.js show)`, AN.plainLines({ stops: [s], ci: {}, flaky: [], chains: [] })[0], t, [s.row, s.bead]));
+  for (const s of f.andon.stops) {
+    const what = s.unreadable ? `a stop on ${s.row} could not be read: check it (bd show ${s.bead})` : `the ${s.areaName || s.area} area is stopped on ${s.row}: ${s.a3 ? `finish A3 ${s.a3.id}` : 'open the A3'} and route the linked fix (a3.js, andon.js show)`;
+    out.push(item(2, 'stop', 'stops', s.row, what, AN.plainLines({ stops: [s], ci: {}, flaky: [], chains: [] })[0], t, [s.row, s.bead]));
+  }
   if (f.andon.ci && f.andon.ci.red) out.push(item(2, 'stop', 'stops', 'ci:main', `main is red since ${String(f.andon.ci.since).slice(0, 16)}: fixes only, A3 on ci:main`, 'The main build is failing; only fixes go on.', t));
   for (const u of f.unknowns) {
     const a = u.a;
-    if (a.status === 'refuted') out.push(item(3, 'unknown', 'design', a.id, `${a.id} was refuted: change the design (assumptions.js add, retire, relink), then ask the Delivery Manager to materialise`, u.plain[0], t, [a.id, u.spike]));
+    const ref = `${u.slug}/${a.id}`;
+    if (a.status === 'refuted') out.push(item(3, 'unknown', 'design', ref, `${a.id} of ${u.slug} was refuted: change the design (assumptions.js add, retire, relink --initiative ${u.slug}), then ask the Delivery Manager to materialise`, u.plain[0], t, [ref, u.spike]));
     else if (a.status === 'observed') {
       const fn = a.owner === 'owner' ? 'decide_spike' : a.owner === 'product-manager' ? 'decide_pm' : 'decide';
-      out.push(item(3, 'unknown', fn, a.id, `${a.id} was observed on ${u.spike}: its decision owner acknowledges the result (assumptions.js ack)`, u.plain[0], t, [a.id, u.spike]));
-    } else out.push(item(3, 'unknown', 'probe', a.id, `${a.id} is still assumed: dispatch the Reality Checker's probe in the real host on spike ${u.spike} before any story on it`, u.plain[0], t, [a.id, u.spike]));
+      out.push(item(3, 'unknown', fn, ref, `${a.id} of ${u.slug} was observed on ${u.spike}: its decision owner acknowledges the result (assumptions.js ack)`, u.plain[0], t, [ref, u.spike]));
+    } else out.push(item(3, 'unknown', 'probe', ref, `${a.id} of ${u.slug} is still assumed: dispatch the Reality Checker's probe in the real host on spike ${u.spike} before any story on it`, u.plain[0], t, [ref, u.spike]));
   }
   for (const b of f.spikes) out.push(item(3, 'spike', 'spike', b.id, `run spike ${b.id}: ${b.title || ''}`.trim(), `${b.title || 'A technical question'}: being checked`, t));
   for (const r of f.next) {
@@ -122,6 +155,9 @@ function items(f) {
   const prs = f.prs || {};
   for (const n of [...(prs['waiting for review'] || [])]) out.push(item(5, 'pr', 'review', `#${n}`, `dispatch an independent review of PR #${n} (review.js request)`, 'a change waiting for review', t));
   for (const n of [...(prs['ready to merge'] || []), ...(prs['review passed'] || [])]) out.push(item(5, 'pr', 'merge', `#${n}`, `merge PR #${n} through the merge gate`, 'a reviewed change waiting to be merged', t));
+  for (const n of prs['changes requested'] || []) out.push(item(5, 'pr', 'review', `#${n}`, `PR #${n} has changes requested: send the findings to its builder (review.js send-back)`, 'a change going back to its builder', t));
+  for (const n of prs['build failing'] || []) out.push(item(5, 'pr', 'review', `#${n}`, `the build of PR #${n} is failing: route it to its builder`, 'a change whose build is failing', t));
+  for (const n of prs['review record damaged'] || []) out.push(item(5, 'pr', 'review', `#${n}`, `the review record of PR #${n} is damaged: check it (review.js show ${n})`, 'a change whose review record needs a check', t));
   for (const b of f.checks) out.push(item(6, 'check', 'reality_check', b.id, `run the reality check ${b.id}`, b.title || 'a check on the customer\'s app', t));
   return out;
 }
@@ -159,7 +195,8 @@ function record(root, f, { by, now } = {}) {
 }
 
 // ---- routing: which plan items a message carries, and to whom ----
-const NAMES = Object.fromEntries(Object.entries(ROLE_WORD).map(([id, w]) => [w.toLowerCase(), id]));
+// display names and the short names the register uses (DM, PM)
+const NAMES = { ...Object.fromEntries(Object.entries(ROLE_WORD).map(([id, w]) => [w.toLowerCase(), id])), dm: DM, pm: 'product-manager', cos: COS, rc: 'reality-checker' };
 // { instance, role } for a SendMessage `to` or a session id, from the manifest and the roster
 function recipient(root, team, to) {
   const name = String(to || '').replace(/\s*\[[^\]]*\]\s*$/, '').trim();
@@ -175,7 +212,8 @@ function recipient(root, team, to) {
 }
 
 const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const carries = (message, it) => (it.match || [it.ref]).some((m) => m && new RegExp(`(?<![\\w.-])${esc(m)}(?![\\w-])`, 'i').test(String(message || '')));
+// only a reference written as [ref] carries an item: a plain mention for context is no send (I2)
+const carries = (message, it) => (it.match || [it.ref]).some((m) => m && new RegExp(`\\[\\s*${esc(m)}\\s*\\]`, 'i').test(String(message || '')));
 
 function misrouteText(it, to) {
   const owner = ROLE_WORD[it.role] || it.role;
@@ -219,10 +257,7 @@ function unrouted(root, { now } = {}) {
 
 // ---- the owner's briefing (R-45): outcome first, plain words, no ids, at most briefing_lines ----
 const RANK = { open: 0, closed: 0, merged: 1, deployed: 2, verified: 3, cut: -1 };
-// "checked" only when the story's evidence chain verifies and holds a pass row
-function checked(root, id) {
-  return safe(() => { const ev = G.readEvidenceChecked(root, id); return !ev.problem && ev.rows.some((r) => r.type === 'row' && r.result === 'pass'); }, false);
-}
+const DAY = 86400e3;
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function brief(f, { prev, limit = 12 } = {}) {
@@ -237,13 +272,16 @@ function brief(f, { prev, limit = 12 } = {}) {
     const was = RANK[before[b.id] || 'open'] || 0;
     if (now >= 1 && was < 1) merged++;
     if (now >= 2 && was < 2) live++;
-    if (now === 3 && was < 3 && checked(f.root, b.id)) { done++; doneTitle = doneTitle || f.titles.get(String((b.metadata || {}).story || '')) || b.title; }
+    if (now === 3 && was < 3 && f.checked(b)) { done++; doneTitle = doneTitle || f.titles.get(String((b.metadata || {}).story || '')) || b.title; }
   }
-  const since = prev ? 'Since yesterday' : 'So far';
+  // a plan more than a day before today is named by its date (M1)
+  const gap = prev ? Date.parse(today(f.now)) - Date.parse(today(prev.at)) : 0;
+  const since = !prev ? 'So far' : gap <= DAY ? 'Since yesterday' : `Since ${today(prev.at)}`;
   lines.push(merged || live || done
     ? `${since}: ${plural(merged, 'change')} merged, ${live} live, ${done} checked on the customer's app${doneTitle && done ? ` (${doneTitle})` : ''}.`
     : `${since}: nothing new merged, live or checked on the customer's app.`);
-  for (const u of f.unknowns.slice(0, 2)) lines.push(`${u.plain[0]}.`);
+  // the plan's blocking unknowns in the owner's words: assumptions and open technical spikes (Copilot 509)
+  for (const p of items(f).filter((x) => x.section === 3).map((x) => x.plain).slice(0, 2)) lines.push(`${p}.`);
   const waits = [];
   if (f.queue.length) waits.push(`${plural(f.queue.length, 'step')} only you can take, in one list`);
   if (f.questions.length) waits.push(`${plural(f.questions.length, 'decision')} for you`);
@@ -254,8 +292,9 @@ function brief(f, { prev, limit = 12 } = {}) {
   if (prs) lines.push(`${plural(prs, 'change')} waiting for review or merge.`);
   if (f.checks.length) lines.push(`${plural(f.checks.length, 'check')} on the customer's app planned.`);
   const end = 'Ask for details on any item';
-  const body = lines.slice(0, Math.max(1, limit - 1));
-  return [...body, end];
+  // one line: the most important one, ending with the offer
+  if (limit <= 1) return [`${lines[0]} ${end}`];
+  return [...lines.slice(0, limit - 1), end];
 }
 
 // ---- the goal sheet (R-01): one page from the records, each line with the ids it comes from ----
@@ -278,8 +317,9 @@ function sheet(f, { verifyRecord } = {}) {
   const line = (section, text, sources) => out.push({ section, text, sources: sources.filter(Boolean) });
   for (const slug of initiatives(root)) {
     const dir = path.join(root, '.delivery', 'initiatives', slug);
-    const outcome = firstSentence(path.join(dir, 'brief.md'), 'What changes if we solve it') || firstSentence(path.join(dir, 'prd.md'), 'Summary');
-    if (outcome) line('Outcome', outcome, [`${slug}/brief.md`]);
+    const fromBrief = firstSentence(path.join(dir, 'brief.md'), 'What changes if we solve it');
+    const outcome = fromBrief || firstSentence(path.join(dir, 'prd.md'), 'Summary');
+    if (outcome) line('Outcome', outcome, [`${slug}/${fromBrief ? 'brief.md' : 'prd.md'}`]);
     const sf = S.loadSurface(root, slug);
     const used = new Set(f.stories.filter((b) => G.initiativeOf(b) === slug || !G.initiativeOf(b)).map((b) => (b.metadata || {}).surface).filter(Boolean));
     for (const s of sf.surfaces.filter((x) => !used.size || used.has(x.id))) line('Customer surface', `${s.app} in ${s.mode}, on ${s.host}`, [sf.doc && sf.doc.owner_record, `surface ${s.id}`]);
@@ -290,7 +330,7 @@ function sheet(f, { verifyRecord } = {}) {
   // done: every criterion of every story passes on the customer's app
   const crit = f.stories.filter((b) => G.stateOf(b) !== 'cut').map((b) => ({ b, n: ((f.storyOf(b) || {}).criteria || []).length }));
   const n = crit.reduce((m, x) => m + x.n, 0);
-  const verified = f.stories.filter((b) => G.stateOf(b) === 'verified');
+  const verified = f.stories.filter(f.checked);
   line('Done means', crit.length ? `each of ${plural(n, 'criterion', 'criteria')} across ${plural(crit.length, 'story', 'stories')} passes on the customer's app; ${verified.length} ${verified.length === 1 ? 'story is' : 'stories are'} checked so far` : 'no stories yet, so nothing defines done', crit.map((x) => x.b.id));
   const units = Goal.resolve(root, 'budget.weekly_units', { verifyRecord, warn: false });
   line('Budget', units.value !== null ? `${units.value} units a week, set by the owner${f.budget && f.budget.set ? `; ${require('./budget.js').units(f.budget.remaining)} left` : ''}` : 'not set by the owner, so budget checks only warn', [units.value !== null ? units.from : null]);
@@ -310,4 +350,4 @@ function sheet(f, { verifyRecord } = {}) {
   return out;
 }
 
-module.exports = { REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };
+module.exports = { ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };

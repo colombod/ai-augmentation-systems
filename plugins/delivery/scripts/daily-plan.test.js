@@ -13,7 +13,7 @@ const Wn = require('./lib/warnings.js');
 const MC = require('../hooks/scripts/message-checks.js');
 const { planGraph } = require('./lib/plan-graph.js');
 const { parseSpikes } = require('./lib/plan-docs.js');
-const { STORY, makeProject, storyBead, memBd } = require('./testing/gate-fixture.js');
+const { STORY, SURFACES, makeProject, storyBead, memBd } = require('./testing/gate-fixture.js');
 const { harness, evIdOf } = require('./testing/role-harness.js');
 const plan = require('./plan.js');
 
@@ -51,16 +51,16 @@ test('R1 (10-12 14:09): the local-path probe result puts the file hand-off in th
   const today = h.plan(COS, 'today');
   assert.equal(today.code, 0, today.deny || today.out);
   const lines = today.out.split('\n');
-  const unknown = lines.findIndex((l) => /Product Manager \(product-manager\): A-8 was refuted: change the design/.test(l));
+  const unknown = lines.findIndex((l) => /Product Manager \(product-manager\): A-8 of vault was refuted: change the design.*\[vault\/A-8\]$/.test(l));
   assert.ok(unknown > 0, today.out);
   assert.ok(lines.findIndex((l) => /^3\. Blocking unknowns/.test(l)) < unknown);
   assert.ok(!lines.some((l) => /ex-vault-0n9-3\]/.test(l)), 'the intake story is not offered while its unknown is open');
   assert.ok(lines.findIndex((l) => /\[ex-vault-0n9-4\]/.test(l)) > unknown, 'stories come after the unknown');
   // the record: a dated plan row the brief and status read back
   const row = DP.latest(h.root, DP.today());
-  assert.deepEqual(row.items.find((x) => x.ref === 'A-8').match, ['A-8', 'ex-vault-spike-a-8']);
+  assert.deepEqual(row.items.find((x) => x.ref === 'vault/A-8').match, ['vault/A-8', 'ex-vault-spike-a-8']);
   const brief = h.plan(COS, 'brief');
-  assert.match(brief.out, /Import a collection by dropping a CSV in the chat: on hold until the design changes, because it turned out that it is not so that the ChatGPT app passes an attached file/);
+  assert.match(brief.out, /Import a collection by dropping a CSV in the chat: on hold until the design changes: we checked, and it is not true that the ChatGPT app passes an attached file/);
   assert.deepEqual(MC.idTokens(brief.out, { prefix: 'ex' }), []);
   const sheet = h.bash(COS, `${h.script('goal.js')} sheet`);
   assert.equal(sheet.code, 0, sheet.deny || sheet.out);
@@ -77,14 +77,11 @@ test('R1 (10-12 14:09): the local-path probe result puts the file hand-off in th
 
 test('R-05 (10-12 09:39, 10-13 11:35): the Chief of Staff still cannot build, commit, push, merge, run infra or drive the owner\'s apps; its plan commands pass the lane', () => {
   const h = vault();
-  // the lane lets anyone write under the temporary directory, where test projects live: point the hook's
-  // temporary directory elsewhere so the project is an ordinary one
-  const tmp = process.env.TMPDIR;
-  process.env.TMPDIR = fs.mkdtempSync(path.join(require('os').tmpdir(), 'elsewhere-'));
-  try {
+  // the project lives under the temporary directory here; the lane's tmp exemption never covers it
+  {
     assert.match(h.tool(COS, 'Edit', { file_path: path.join(h.roleDir(COS), 'project', 'AGENTS.md'), old_string: 'a', new_string: 'b' }).deny, /does not edit/);
     assert.match(h.tool(COS, 'Write', { file_path: path.join(h.roleDir(COS), 'product', 'src', 'x.js'), content: 'x' }).deny, /does not edit/);
-  } finally { if (tmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = tmp; }
+  }
   for (const cmd of ['git push origin HEAD:team/gw2', 'git commit -m section-10', 'gh pr merge 465', 'npm test', 'tailscale funnel 443', `echo x > ${path.join(h.root, '.delivery', 'plans', 'x.ndjson')}`]) {
     assert.match(h.bash(COS, cmd, { run: false }).deny || '', /^lane: /, cmd);
   }
@@ -114,7 +111,7 @@ test('R-06 (10-12 19:48): an acceptance item sent to the Product Manager warns; 
   assert.match(routed, /Misrouted: pr:#478 went to product-manager/);
   // implementation sent to the Product Manager warns too; sent right, the item leaves the list
   assert.match(sent('product-manager', 'Start [ex-vault-0n9-4]').ctx, /ex-vault-0n9-4 is implementation work, routed to the Delivery Manager/);
-  assert.equal(sent('delivery-lead', 'Review dispatch for [#478]; assign [ex-vault-0n9-4]; probe [A-8].').ctx, '');
+  assert.equal(sent('delivery-lead', 'Review dispatch for [#478]; assign [ex-vault-0n9-4]; probe [vault/A-8].').ctx, '');
   routed = h.plan(COS, 'routed').out;
   assert.doesNotMatch(routed, /not sent yet[\s\S]*(#478|0n9-4)/);
   // a message from another role is not the Chief of Staff's routing
@@ -127,7 +124,13 @@ test('R-45 (10-17 23:07): a long briefing or one with ids still warns; plan.js b
   const w = MC.messageFindings({ message: long, role: COS, commands: [], prefix: 'ex' }).warnings.map((x) => x.kind);
   assert.ok(w.includes('briefing-length') && w.includes('jargon'), w.join());
   // a verified story with its pass row: the brief says checked, and reading the brief backs the word
-  h.setBead('ex-vault-0n9-4', (b) => { b.labels.push(G.STATE.merged, G.STATE.deployed, G.STATE.verified); b.metadata.evidence_head = G.appendEvidence(h.root, 'ex-vault-0n9-4', { type: 'row', criterion: 1, result: 'pass', by: 'reality-checker', surface: 'S1', sha: 'd478aa11', actor: 'x', at: new Date().toISOString() }).head; });
+  // (the Reality Checker's pass rows on both criteria, on the deployed sha, as run-record writes them)
+  const story = G.parseStory(fs.readFileSync(path.join(h.root, '.delivery', 'stories', 'vault-0n9-4.md'), 'utf8'));
+  h.setBead('ex-vault-0n9-4', (b) => {
+    b.labels.push(G.STATE.merged, G.STATE.deployed, G.STATE.verified);
+    b.metadata.deployed_sha = 'd478aa11';
+    for (const c of story.criteria) b.metadata.evidence_head = G.appendEvidence(h.root, 'ex-vault-0n9-4', { type: 'row', criterion: c.n, criterion_hash: G.criterionHash(c), result: 'pass', by: 'reality-checker', via: 'reality-check', surface: 'S1', tuple: require('./lib/surface.js').tupleOf(SURFACES.surfaces[0]), sha: 'd478aa11', actor: 'dev@pc/reality-checker', at: new Date().toISOString() }).head;
+  });
   for (let i = 0; i < 6; i++) require('./lib/owner-queue.js').add(h.root, { kind: 'signin', what: `Sign in to provider ${i}`, where: 'the browser', steps: 'open the page and sign in' }, { instance: COS });
   const b = h.plan(COS, 'brief');
   const lines = b.out.split('\n');
@@ -136,7 +139,7 @@ test('R-45 (10-17 23:07): a long briefing or one with ids still warns; plan.js b
   assert.match(b.out, /^So far: 1 change merged, 1 live, 1 checked on the customer's app \(Show the collection summary\)\.$/m);
   assert.match(b.out, /^Waiting on you: 6 steps only you can take, in one list\.$/m);
   const cmd = `node ${h.script('plan.js').split(' ')[1]} brief`;
-  assert.deepEqual(MC.messageFindings({ message: b.out, role: COS, commands: [cmd], prefix: 'ex' }).warnings, []);
+  assert.deepEqual(MC.messageFindings({ message: b.out, role: COS, commands: [cmd], outputs: [{ command: cmd, text: b.out }], prefix: 'ex' }).warnings, []);
   assert.equal(MC.messageFindings({ message: b.out, role: COS, commands: [], prefix: 'ex' }).warnings[0].kind, 'claim-unchecked');
   // the owner's lower limit holds
   const few = DP.brief(DP.facts(h.root, { bd: memBd(Object.values(h.db().issues)), team: JSON.parse(fs.readFileSync(path.join(h.root, '.delivery', 'team', 'team.json'), 'utf8')), budget: { set: false } }), { limit: 3 });
@@ -198,7 +201,8 @@ test('routing table: each function has one owning role, with the fallback when i
   assert.deepEqual(DP.recipient(makeProject(), team, 'builder-2 [3fa9c1]'), { instance: 'builder-2', role: 'builder' });
   assert.deepEqual(DP.recipient(makeProject(), team, 'Delivery Manager'), { instance: 'delivery-lead', role: 'delivery-lead' });
   assert.equal(DP.carries('see [#47]', { match: ['#478'] }), false);
-  assert.equal(DP.carries('see ex-vault-0n9-4.', { match: ['ex-vault-0n9-4'] }), true);
+  assert.equal(DP.carries('see [ex-vault-0n9-4].', { match: ['ex-vault-0n9-4'] }), true);
+  assert.equal(DP.carries('see ex-vault-0n9-4.', { match: ['ex-vault-0n9-4'] }), false);
 });
 
 test('briefs: the Chief of Staff\'s loop names the commands its lane runs; the Delivery and Product Managers receive plan items', () => {
