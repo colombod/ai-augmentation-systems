@@ -728,6 +728,31 @@ function registerHit({ projectRoot, roleDir }) {
   return (p) => { const r = realish(p); return bases.some((b) => REGISTER_REL.test(path.relative(b, r))); };
 }
 
+// The watchdog's wake, run, install and uninstall are the host job's, installed by the owner (R-04,
+// R-42): refused to every role, `any` included, in any form (a chain, a wrapper, `node -e`, its shim),
+// and so is resuming or continuing another Claude session by hand. Only `node .../watchdog.js check`
+// runs in a role session; the script refuses the rest inside a role directory as well.
+const WATCHDOG_REASON = 'the watchdog\'s wake, run, install and uninstall are the host job\'s, which the owner installs from a shell outside any role directory; read the stalls with `watchdog.js check`';
+const RESUME_REASON = 'resuming or continuing a Claude session is the watchdog host job\'s; message the session instead';
+const WATCHDOG_NAMED = /watchdog\.js|lib\/+watchdog\b|\.delivery\/+(?:\.\/+)*watchdog\b|scripts\/+watchdog\b/i;
+const WATCHDOG_LOADED = /(?:^|[\s'"`(/=])watchdog(?:\.js)?(?=$|[\s'"`)])/i;
+const CHECK_FLAGS = new Set(['--json']);
+function watchdogAction(command) {
+  const c = String(command || '');
+  if (!WATCHDOG_NAMED.test(c) && !(WATCHDOG_LOADED.test(c) && /\b(?:node|require|import|deno|bun)\b/.test(c))) return false;
+  const segs = splitWithOps(c);
+  if (segs.length !== 1) return true;
+  const t = tokens(segs[0].text);
+  if (t[0] !== 'node' || !/(?:^|\/)scripts\/watchdog\.js$/.test(t[1] || '') || t[2] !== 'check') return true;
+  for (let i = 3; i < t.length; i++) {
+    if (CHECK_FLAGS.has(t[i])) continue;
+    if (t[i] === '--project' && t[i + 1] && !t[i + 1].startsWith('-')) { i++; continue; }
+    return true;
+  }
+  return false;
+}
+const CLAUDE_RESUME = /(?:^|[;&|(`\s])(?:\S*\/)?claude\s+(?:[^;&|\n]*\s)?(?:-r|--resume|-c|--continue|--fork-session|--teleport|--from-pr)(?=$|[\s=])|(?:^|[;&|(`\s])(?:\S*\/)?claude\s+(?:respawn|attach)\b/;
+
 // deep: a deletion or move of a protected folder's parent (rm -rf .delivery), or a glob that reaches the
 // folder or names files in it (rm -rf .delivery/an*, rm .delivery/andon/*.ndjson), counts as a write too
 const GLOB = /[*?[]/;
@@ -920,6 +945,8 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (usageShellWrite(command, { cwd, dirs: planDirs({ projectRoot, roleDir }), mention: PLANS_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
+    if (watchdogAction(command)) return { allow: false, reason: `Role ${pol.roleId}: ${WATCHDOG_REASON}.` };
+    if (CLAUDE_RESUME.test(command)) return { allow: false, reason: `Role ${pol.roleId}: ${RESUME_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
       return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
@@ -995,4 +1022,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
