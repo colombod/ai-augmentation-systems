@@ -81,10 +81,16 @@ function liveSessions(bin, env) {
   } catch (err) { return null; }
 }
 
+// The wake runs under lib/wake-run.js, which stops it after WAKE_TIMEOUT_H (DELIVERY_WAKE_TIMEOUT_MIN may
+// only shorten it); the pid logged is the supervisor's, alive exactly as long as the wake.
+function wakeLimitMs(env) {
+  const asked = Number(env.DELIVERY_WAKE_TIMEOUT_MIN) * 60e3;
+  return Number.isFinite(asked) && asked > 0 ? Math.min(asked, WD.WAKE_TIMEOUT_H * 3600e3) : WD.WAKE_TIMEOUT_H * 3600e3;
+}
 function spawnWake(bin, args, { cwd, env, logPath }) {
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
   const fd = fs.openSync(logPath, 'a');
-  const child = require('child_process').spawn(bin, args, { cwd, env, detached: true, stdio: ['ignore', fd, fd] });
+  const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(wakeLimitMs(env)), bin, ...args], { cwd, env, detached: true, stdio: ['ignore', fd, fd] });
   child.on('error', (err) => { try { fs.appendFileSync(logPath, `watchdog: could not start ${bin}: ${err.message}\n`); } catch (e) { /* the log is best effort */ } });
   child.unref();
   fs.closeSync(fd);
@@ -164,6 +170,10 @@ function everySeconds(s, { cron = false } = {}) {
 
 const tagOf = (root) => crypto.createHash('sha256').update(root).digest('hex').slice(0, 8);
 const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// systemd: each word in double quotes with \\ and " escaped, and % doubled (its specifier sign), so a
+// path with spaces stays one argument (Copilot 984)
+const sdPct = (a) => String(a).replace(/%/g, '%%');
+const sdq = (a) => `"${sdPct(a).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 const sq = (a) => `'${String(a).replace(/'/g, "'\\''")}'`;
 // the installing shell's PATH, then the usual places for node, bd and claude: nothing versioned is pinned
 function jobPath(env, home) {
@@ -173,7 +183,7 @@ function jobPath(env, home) {
 
 // The job runs this shim, which finds the plugin at run time: a checkout stays where it is; a plugin
 // installed by Claude Code is looked up in installed_plugins.json, so an update is picked up.
-function shimBody(root, pluginRoot) {
+function shimBody(root, pluginRoot, configDir) {
   return `#!/usr/bin/env node
 // written by watchdog.js install for ${root}; finds the delivery plugin each run, then runs watchdog.js run
 const fs = require('fs');
@@ -181,6 +191,9 @@ const os = require('os');
 const path = require('path');
 const PROJECT = ${JSON.stringify(root)};
 const AT_INSTALL = ${JSON.stringify(pluginRoot)};
+// the Claude configuration the installing shell used: the plugin lookup and every wake use it too
+const AT_CONFIG = ${JSON.stringify(configDir || null)};
+if (AT_CONFIG && !process.env.CLAUDE_CONFIG_DIR) process.env.CLAUDE_CONFIG_DIR = AT_CONFIG;
 const ok = (p) => p && fs.existsSync(path.join(p, 'scripts', 'watchdog.js'));
 function pluginRoot() {
   const cache = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'plugins');
@@ -210,11 +223,12 @@ function jobFiles(root, { platform, home, sec, env, has }) {
   const shim = path.join(root, WD.REL, 'job.js');
   const argv = ['/usr/bin/env', 'node', shim];
   const PATH = jobPath(env, home);
-  const base = { shim, shimBody: shimBody(root, PLUGIN_ROOT) };
+  const config = env.CLAUDE_CONFIG_DIR || null;
+  const base = { shim, shimBody: shimBody(root, PLUGIN_ROOT, config) };
   if (platform === 'darwin') {
     const label = `com.delivery-plugin.watchdog.${tag}`;
     const file = path.join(home, 'Library', 'LaunchAgents', `${label}.plist`);
-    const vars = { PATH, HOME: home, ...(env.DELIVERY_HOST ? { DELIVERY_HOST: env.DELIVERY_HOST } : {}), ...(env.TZ ? { TZ: env.TZ } : {}) };
+    const vars = { PATH, HOME: home, ...(env.DELIVERY_HOST ? { DELIVERY_HOST: env.DELIVERY_HOST } : {}), ...(env.TZ ? { TZ: env.TZ } : {}), ...(config ? { CLAUDE_CONFIG_DIR: config } : {}) };
     const body = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -247,7 +261,7 @@ function jobFiles(root, { platform, home, sec, env, has }) {
       kind: 'systemd',
       file: timer,
       files: [
-        { file: service, body: `[Unit]\nDescription=delivery watchdog for ${root}\n\n[Service]\nType=oneshot\nKillMode=process\nWorkingDirectory=${root}\nEnvironment="PATH=${PATH}"\nExecStart=${argv.join(' ')}\nStandardOutput=append:${logPath}\nStandardError=append:${logPath}\n` },
+        { file: service, body: `[Unit]\nDescription=delivery watchdog for ${sdPct(root)}\n\n[Service]\nType=oneshot\nKillMode=process\nWorkingDirectory=${sdPct(root)}\nEnvironment=${sdq(`PATH=${PATH}`)}\n${config ? `Environment=${sdq(`CLAUDE_CONFIG_DIR=${config}`)}\n` : ''}ExecStart=${argv[0]} ${argv.slice(1).map(sdq).join(' ')}\nStandardOutput=append:${sdPct(logPath)}\nStandardError=append:${sdPct(logPath)}\n` },
         { file: timer, body: `[Unit]\nDescription=delivery watchdog every ${sec / 60} min for ${root}\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=${sec}s\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n` },
       ],
       commands: [['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', '--now', `${name}.timer`]]],
@@ -256,7 +270,7 @@ function jobFiles(root, { platform, home, sec, env, has }) {
   }
   const marker = `# delivery-watchdog ${tag}`;
   const when = sec === 3600 ? '0 * * * *' : `*/${sec / 60} * * * *`;
-  const line = `${when} cd ${sq(root)} && PATH=${sq(PATH)} ${argv.map(sq).join(' ')} >> ${sq(logPath)} 2>&1 ${marker}`;
+  const line = `${when} cd ${sq(root)} && PATH=${sq(PATH)}${config ? ` CLAUDE_CONFIG_DIR=${sq(config)}` : ''} ${argv.map(sq).join(' ')} >> ${sq(logPath)} 2>&1 ${marker}`;
   return { ...base, kind: 'cron', file: null, cron: { line, marker }, files: [], commands: [], removeCommands: [] };
 }
 

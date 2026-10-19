@@ -227,14 +227,19 @@ test('B1: no role, `any` lanes included, can run the wake, the job or a resume i
   const wd = h.script('watchdog.js');
   const forms = [`${wd} run --project ${h.root}`, `DELIVERY_ROLE= ${wd} wake`, `env -u DELIVERY_ROLE_DIR ${wd} install --apply`, `${wd} uninstall`,
     `true && ${wd} run`, `${wd} check; ${wd} wake`, `bash -c "${wd} run"`, `cd ${path.join(__dirname)} && node -e "require('./watchdog').main(['run'])"`,
-    `cd ${__dirname} && node watchdog run`, `node ${h.root}/.delivery/watchdog/job.js`, `${wd} check && bd ready`,
+    `cd ${__dirname} && node watchdog run`, `node ${h.root}/.delivery/watchdog/job.js`, `${h.root}/.delivery/watchdog/job.js`,
+    // quote-split, glob and variable command words, wrappers, substitutions and shells (re-check)
+    `cla""ude --resume s -p go`, `node ${__dirname}/watchd?g.js run`, `node ${__dirname}/wat*.js wake`, 'c=claude; $c --resume s', `echo $(${wd} run)`, `timeout 5 ${wd} run`, `nohup ${wd} wake`, 'claude -cp go', 'sh -lc "claude --continue"', `eval "${wd} run"`,
     'claude --resume sess-delivery-lead -p "go"', 'claude -c -p go', '/usr/local/bin/claude --resume s --fork-session -p x', 'claude respawn all'];
   for (const role of ['builder-1', 'spike-researcher', DM, COS, 'progress-observer']) {
     for (const f of forms) assert.ok(h.bash(role, f, { run: false }).deny, `${role}: ${f}`);
     assert.equal(h.bash(role, `${wd} check`, { run: false }).deny, null, `${role} may check`);
     assert.equal(h.bash(role, `${wd} check --json`, { run: false }).deny, null);
+    assert.equal(h.bash(role, `${wd} check && bd ready`, { run: false }).deny, null, 'a check chained to a read');
   }
-  assert.equal(h.bash('builder-1', 'claude -p "summarise the diff"', { run: false }).deny, null, 'a fresh claude -p worker is still the builder\'s');
+  // naming the file or the flag is not running it (Copilot 039 and the re-check's false refusals)
+  for (const ok of ['claude -p "summarise the diff"', 'claude -p "fix the -c flag and the --resume text"', 'git commit -m "use claude -c to continue"',
+    'bd update ex-1 --append-notes "watchdog.js check reports a stall"', `git diff -- ${wd.split(' ')[1]}`, `grep -n wake ${wd.split(' ')[1]}`]) assert.equal(h.bash('builder-1', ok, { run: false }).deny, null, ok);
   // the script refuses too: a role directory in or above the working directory, or a role environment
   const log = scratchLog();
   const fromRole = spawnSync('node', [path.join(__dirname, 'watchdog.js'), 'run', '--project', h.root], { cwd: h.roleDir('builder-1'), encoding: 'utf8', env: { ...fakeEnv(h, claudeEnv(log)), DELIVERY_ROLE: '' } });
@@ -474,7 +479,7 @@ test('install: dry run by default; --apply writes a job with no versioned path, 
   assert.match(linux.out, /loginctl enable-linger/);
   const unit = path.join(home, '.config', 'systemd', 'user');
   const service = fs.readFileSync(path.join(unit, fs.readdirSync(unit).find((f) => f.endsWith('.service'))), 'utf8');
-  for (const re of [/^KillMode=process$/m, /^Environment="PATH=\/opt\/bin:/m, /^ExecStart=\/usr\/bin\/env node .*job\.js$/m]) assert.match(service, re);
+  for (const re of [/^KillMode=process$/m, /^Environment="PATH=\/opt\/bin:/m, /^ExecStart=\/usr\/bin\/env "node" ".*job\.js"$/m]) assert.match(service, re);
   assert.equal(main(['uninstall'], { platform: 'linux', has: () => true }).code, 0);
   assert.deepEqual(fs.readdirSync(unit), []);
   // cron: only an interval that divides the hour keeps its cadence (Copilot 471)
@@ -496,4 +501,89 @@ test('the wake log, the job log and the wake logs stay bounded', () => {
   WD.log(h.root, { type: 'skip', at: iso(Date.now()) });
   assert.ok(fs.existsSync(path.join(h.root, WD.REL, 'wakes.ndjson.1')));
   assert.equal(WD.logRows(h.root).length, 1);
+});
+
+// ---- Copilot on 7f0af37 ----
+test('Copilot 984 and 169: a project path with spaces runs from every scheduler, with the installer\'s CLAUDE_CONFIG_DIR', () => {
+  const now = Date.now();
+  const spaced = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'spaces-')), 'My Project');
+  fs.cpSync(require('./testing/gate-fixture.js').makeProject(), spaced, { recursive: true });
+  const h = harness({ root: spaced, beads: { 'ex-p': { id: 'ex-p', status: 'open', priority: 0, created_at: iso(now - 3 * H) }, 'ex-b': { id: 'ex-b', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(now) } } });
+  session(h, DM, { seen: iso(now - 2 * H) });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'home-'));
+  const cfg = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-')), 'claude config');
+  let tab = '';
+  const exec = (cmd, args, input) => { if (cmd === 'crontab' && args[0] === '-l') return tab; if (cmd === 'crontab') tab = input; return ''; };
+  const env = { ...fakeEnv(h), CLAUDE_CONFIG_DIR: cfg };
+  assert.equal(watchdog.main(['install', '--apply'], { cwd: h.root, env, home, exec, platform: 'linux', has: () => true }).code, 0);
+  const unit = path.join(home, '.config', 'systemd', 'user');
+  const service = fs.readFileSync(path.join(unit, fs.readdirSync(unit).find((f) => f.endsWith('.service'))), 'utf8');
+  assert.match(service, new RegExp(`^ExecStart=/usr/bin/env "node" "${spaced.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.delivery/watchdog/job\\.js"$`, 'm'));
+  assert.match(service, /^Environment="CLAUDE_CONFIG_DIR=.*\/claude config"$/m);
+  assert.equal(watchdog.main(['install', '--apply', '--every', '15m'], { cwd: h.root, env, home, exec, platform: 'darwin' }).code, 0);
+  const plist = fs.readFileSync(path.join(home, 'Library', 'LaunchAgents', fs.readdirSync(path.join(home, 'Library', 'LaunchAgents'))[0]), 'utf8');
+  assert.match(plist, /<key>CLAUDE_CONFIG_DIR<\/key><string>[^<]*\/claude config<\/string>/);
+  assert.equal(watchdog.main(['install', '--apply'], { cwd: h.root, env, home, exec, platform: 'linux', has: () => false }).code, 0);
+  // run the cron line as cron would, with no CLAUDE_CONFIG_DIR in its environment: the job still uses the installer's
+  const log = scratchLog();
+  const line = tab.trim().replace(/^\S+ \S+ \S+ \S+ \S+ /, '').replace(/ # delivery-watchdog \w+$/, '');
+  const cronEnv = { ...fakeEnv(h, claudeEnv(log)), TYPESAFE_API_KEY: 'fake', DELIVERY_JUDGE_ENDPOINT: 'http://127.0.0.1:9', HOME: home };
+  delete cronEnv.CLAUDE_CONFIG_DIR;
+  const ran = spawnSync('bash', ['-c', line.replace(/PATH='[^']*'/, `PATH='${cronEnv.PATH}'`)], { env: cronEnv, encoding: 'utf8' });
+  assert.equal(ran.status, 0, ran.stderr);
+  const [c] = calls(log);
+  assert.equal(c.role, DM);
+  assert.equal(c.config, cfg, 'the wake uses the installer\'s Claude configuration');
+  assert.match(fs.readFileSync(path.join(h.root, WD.REL, 'job.log'), 'utf8'), /Woke delivery-lead/);
+  // the shim alone, from an environment with no CLAUDE_CONFIG_DIR, restores the installer's
+  fs.writeFileSync(path.join(h.root, WD.REL, 'wakes.ndjson'), '');
+  const shim = spawnSync('node', [path.join(h.root, WD.REL, 'job.js')], { cwd: h.root, env: cronEnv, encoding: 'utf8' });
+  assert.equal(shim.status, 0, shim.stderr);
+  assert.equal(calls(log, 2)[1].config, cfg);
+});
+
+test('Copilot 092: a watchdog fork on the usage limit holds the next wake until its reset; a later reply clears it', () => {
+  const now = Date.parse('2026-10-13T14:00:00Z');
+  const h = harness({ beads: { 'ex-next': { id: 'ex-next', status: 'open', updated_at: '2026-10-13T10:00:00Z' } } });
+  markInstalled(h);
+  session(h, DM, { seen: '2026-10-13T11:00:00Z', rows: [reply('2026-10-13T11:00:00Z')] });
+  const forkTx = transcript([reply('2026-10-13T12:00:00Z'), limitRow('2026-10-13T12:10:00Z', '2026-10-13T17:00:00Z', 'five_hour')], Date.parse('2026-10-13T12:10:00Z'));
+  require('./lib/roster.js').recordFork(h.root, { instance: DM, session_id: 'fork-1', transcript_path: forkTx, now: '2026-10-13T12:00:00Z' });
+  const spawn = spawner();
+  const out = at(h, iso(now), ['run'], { spawn, bd: memStore(h) }).out;
+  assert.equal(spawn.list.length, 0, out);
+  assert.match(out, /^Scheduled: delivery-lead at 2026-10-13 17:05 UTC\. Idle:/m);
+  // the owner's primary session went on after the fork's limit row: no limit any more
+  const primary = require('./lib/roster.js').readRoster(h.root).instances[DM].transcript_path;
+  fs.appendFileSync(primary, `${JSON.stringify(reply('2026-10-13T13:00:00Z'))}\n`);
+  fs.utimesSync(primary, Date.parse('2026-10-13T13:00:00Z') / 1000, Date.parse('2026-10-13T13:00:00Z') / 1000);
+  at(h, iso(now), ['run'], { spawn, bd: memStore(h) });
+  assert.equal(spawn.list.length, 1);
+});
+
+test('Copilot 118: an operator\'s own watchdog.js wake resumes a session after its reset without the installed job', () => {
+  const h = vaultLimit();
+  fs.unlinkSync(WD.installedFile(h.root));
+  const spawn = spawner();
+  const c = at(h, '2026-10-13T12:30:00Z', ['check']).out;
+  assert.match(c, /^Stalled: builder-1 stopped .*; the watchdog is not installed, so nothing restarts it/m);
+  const w = at(h, '2026-10-17T15:15:00Z', ['wake'], { spawn });
+  assert.match(w.out, /^Woke builder-1 \(resume of sess-builder-1\)/m);
+  assert.equal(spawn.list.length, 2);
+});
+
+test('Copilot 144: a wake is stopped after its limit, and the guard covers it while it runs', () => {
+  const t0 = Date.now();
+  const r = spawnSync('node', [path.join(__dirname, 'lib', 'wake-run.js'), '300', process.execPath, '-e', 'setTimeout(() => {}, 20000)'], { encoding: 'utf8' });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /ran past its limit/);
+  assert.ok(Date.now() - t0 < 10000);
+  assert.equal(spawnSync('node', [path.join(__dirname, 'lib', 'wake-run.js'), '5000', process.execPath, '-e', 'process.exit(3)']).status, 3, 'the wake\'s own exit');
+  const h = harness({});
+  const now = Date.parse('2026-10-13T12:00:00Z');
+  const res = { stalls: [{ kind: 'p0', key: 'p0:x', target: DM, due: true, line: 'Unclaimed: x', prompt: 'go' }], sessions: [] };
+  WD.log(h.root, { type: 'wake', at: iso(now - 2.5 * H), keys: ['p0:y'], instance: DM, pid: 12345 });
+  assert.match(WD.plan(res, { root: h.root, now: iso(now), alive: () => true }).held[0].reason, /still running/);
+  assert.equal(WD.plan(res, { root: h.root, now: iso(now + 1.5 * H), alive: () => true }).wakes.length, 1, 'past the limit plus an hour the pid is someone else\'s');
+  assert.equal(WD.WAKE_TIMEOUT_H, 2);
 });

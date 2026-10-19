@@ -734,24 +734,99 @@ function registerHit({ projectRoot, roleDir }) {
 // runs in a role session; the script refuses the rest inside a role directory as well.
 const WATCHDOG_REASON = 'the watchdog\'s wake, run, install and uninstall are the host job\'s, which the owner installs from a shell outside any role directory; read the stalls with `watchdog.js check`';
 const RESUME_REASON = 'resuming or continuing a Claude session is the watchdog host job\'s; message the session instead';
-const WATCHDOG_NAMED = /watchdog\.js|lib\/+watchdog\b|\.delivery\/+(?:\.\/+)*watchdog\b|scripts\/+watchdog\b/i;
-const WATCHDOG_LOADED = /(?:^|[\s'"`(/=])watchdog(?:\.js)?(?=$|[\s'"`)])/i;
+// Only what runs is judged: the command word of each segment (after VAR=x assignments and wrappers such
+// as env, nohup, timeout), the script an interpreter runs or the code it evaluates, the command a shell
+// runs with -c or eval, and what $(...) and backticks run. A note, a commit message or
+// `git diff -- scripts/watchdog.js` names the file without running it. Quote-split (wat""chdog.js) and
+// glob (watchd?g.js) words are matched as the shell would expand them; a command word built from a
+// variable ($c) is refused when its arguments are a resume flag or a watchdog verb.
+const WRAPPERS = new Set(['env', 'nohup', 'exec', 'command', 'builtin', 'time', 'nice', 'sudo', 'doas', 'xargs', 'timeout', 'stdbuf', 'caffeinate', 'setsid', 'ionice', 'chrt']);
+const WRAPPER_VALUE_FLAGS = new Set(['-u', '-g', '-C', '-n', '-k', '-s', '-S', '--signal', '--kill-after', '--unset', '--chdir', '-P', '-I', '-L']);
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
+const INTERPRETERS = new Set(['node', 'nodejs', 'bun', 'deno', 'tsx', 'ts-node']);
+const CODE_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-r', '--require', '--import', '--loader', '-i']);
+const WATCHDOG_VERBS = new Set(['wake', 'run', 'install', 'uninstall']);
 const CHECK_FLAGS = new Set(['--json']);
-function watchdogAction(command) {
-  const c = String(command || '');
-  if (!WATCHDOG_NAMED.test(c) && !(WATCHDOG_LOADED.test(c) && /\b(?:node|require|import|deno|bun)\b/.test(c))) return false;
-  const segs = splitWithOps(c);
-  if (segs.length !== 1) return true;
-  const t = tokens(segs[0].text);
-  if (t[0] !== 'node' || !/(?:^|\/)scripts\/watchdog\.js$/.test(t[1] || '') || t[2] !== 'check') return true;
-  for (let i = 3; i < t.length; i++) {
-    if (CHECK_FLAGS.has(t[i])) continue;
-    if (t[i] === '--project' && t[i + 1] && !t[i + 1].startsWith('-')) { i++; continue; }
-    return true;
-  }
-  return false;
+const RESUME_FLAGS = new Set(['-r', '--resume', '-c', '--continue', '--fork-session', '--teleport', '--from-pr']);
+const CLAUDE_RESUME = /(?:^|[;&|(`\s'"])(?:\S*\/)?claude\s+(?:[^;&|\n]*\s)?(?:-r|--resume|-c|--continue|--fork-session|--teleport|--from-pr)(?=$|[\s=])|(?:^|[;&|(`\s'"])(?:\S*\/)?claude\s+(?:respawn|attach)\b/;
+const WATCHDOG_TEXT = /watchdog/i;
+const baseOf = (w) => String(w || '').split('/').pop();
+// a word that names the watchdog script, its shim, or a glob the shell may expand to one of them
+function namesWatchdog(word) {
+  const w = String(word || '');
+  if (/(?:^|\/)watchdog(?:\.js)?$/i.test(w) || /\.delivery\/+(?:\.\/+)*watchdog\//i.test(w)) return true;
+  if (!GLOB.test(w)) return false;
+  const b = segRe(baseOf(w));
+  return b.test('watchdog.js') || b.test('watchdog') || (b.test('job.js') && /delivery|watch|[*?[]/i.test(w.slice(0, -baseOf(w).length)));
 }
-const CLAUDE_RESUME = /(?:^|[;&|(`\s])(?:\S*\/)?claude\s+(?:[^;&|\n]*\s)?(?:-r|--resume|-c|--continue|--fork-session|--teleport|--from-pr)(?=$|[\s=])|(?:^|[;&|(`\s])(?:\S*\/)?claude\s+(?:respawn|attach)\b/;
+const namesClaude = (w) => baseOf(w) === 'claude' || (GLOB.test(String(w || '')) && segRe(baseOf(w)).test('claude'));
+const nonLiteral = (w) => /[$`]/.test(String(w || ''));
+// the words that run: assignments and wrappers (with their flags) skipped
+function commandWords(t) {
+  let i = 0;
+  for (;;) {
+    while (i < t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i])) i++;
+    if (i < t.length && WRAPPERS.has(baseOf(t[i]))) {
+      i++;
+      while (i < t.length && (t[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]) || /^\d+(?:\.\d+)?[smhd]?$/.test(t[i]))) { i += WRAPPER_VALUE_FLAGS.has(t[i]) ? 2 : 1; }
+      continue;
+    }
+    return t.slice(i);
+  }
+}
+function checkOnly(args) {
+  if (args[0] !== 'check') return false;
+  for (let i = 1; i < args.length; i++) {
+    if (CHECK_FLAGS.has(args[i])) continue;
+    if (args[i] === '--project' && args[i + 1] && !args[i + 1].startsWith('-')) { i++; continue; }
+    return false;
+  }
+  return true;
+}
+const claudeResumes = (args) => ['respawn', 'attach'].includes(args[0]) || args.some((a) => RESUME_FLAGS.has(a) || /^--(?:resume|continue|teleport|from-pr)=/.test(a) || (/^-[A-Za-z]{2,}$/.test(a) && /[cr]/.test(a.slice(1))));
+// 'watchdog', 'resume' or null for one command line, depth-limited
+function refusedRun(text, depth = 0) {
+  if (depth > 4) return null;
+  const subs = [];
+  String(text).replace(/\$\(([^()]*)\)|`([^`]*)`|<\(([^()]*)\)/g, (m, a, b, c) => { subs.push(a || b || c || ''); return m; });
+  for (const sub of subs) { const r = refusedRun(sub, depth + 1); if (r) return r; }
+  for (const seg of splitWithOps(text)) {
+    const t = commandWords(tokens(seg.text));
+    if (!t.length) continue;
+    const w = t[0];
+    const args = t.slice(1);
+    const name = baseOf(w);
+    if (SHELLS.has(name) || name === 'eval') {
+      const inner = name === 'eval' ? args.join(' ') : (() => { const k = args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a)); return k >= 0 ? args[k + 1] || '' : ''; })();
+      const r = inner ? refusedRun(inner, depth + 1) : null;
+      if (r) return r;
+      if (name !== 'eval' && args.some(namesWatchdog)) return 'watchdog';
+      continue;
+    }
+    if ((name === 'source' || name === '.') && args.some(namesWatchdog)) return 'watchdog';
+    if (INTERPRETERS.has(name)) {
+      let script = null;
+      for (let i = 0; i < args.length; i++) {
+        if (CODE_FLAGS.has(args[i]) || /^--(?:eval|print|require|import)=/.test(args[i])) {
+          const code = args[i].includes('=') ? args[i].slice(args[i].indexOf('=') + 1) : args[++i] || '';
+          if (WATCHDOG_TEXT.test(code)) return 'watchdog';
+          if (CLAUDE_RESUME.test(code)) return 'resume';
+          continue;
+        }
+        if (args[i].startsWith('-')) continue;
+        script = i;
+        break;
+      }
+      if (script !== null && namesWatchdog(args[script]) && !checkOnly(args.slice(script + 1))) return 'watchdog';
+      continue;
+    }
+    if (namesWatchdog(w) && !checkOnly(args)) return 'watchdog';
+    if (namesClaude(w) && claudeResumes(args)) return 'resume';
+    if (nonLiteral(w) && (claudeResumes(args) || WATCHDOG_VERBS.has(args[0]))) return 'resume';
+  }
+  return null;
+}
+const watchdogAction = (command) => refusedRun(command) === 'watchdog';
 
 // deep: a deletion or move of a protected folder's parent (rm -rf .delivery), or a glob that reaches the
 // folder or names files in it (rm -rf .delivery/an*, rm .delivery/andon/*.ndjson), counts as a write too
@@ -945,8 +1020,8 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (usageShellWrite(command, { cwd, dirs: planDirs({ projectRoot, roleDir }), mention: PLANS_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
-    if (watchdogAction(command)) return { allow: false, reason: `Role ${pol.roleId}: ${WATCHDOG_REASON}.` };
-    if (CLAUDE_RESUME.test(command)) return { allow: false, reason: `Role ${pol.roleId}: ${RESUME_REASON}.` };
+    const run = refusedRun(command);
+    if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : RESUME_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
       return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
@@ -1022,4 +1097,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

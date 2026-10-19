@@ -997,14 +997,16 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   only, never a fork), or when its role directory is not on this host.
 - **The wake's limits.** At most one wake per session an hour whatever the stalls; at most 6 a day per
   session; each stall waits 1, 2, 4, 8 ... hours after each wake that carried it; never while that
-  session's last wake process still runs; never before the session's own usage limit resets (then once,
+  session's last wake process still runs (each wake runs under `lib/wake-run.js`, which stops it after
+  2 hours, and the guard holds for 3); never before the session's own usage limit resets (then once,
   for everything due). Past a limit the stall stays an alarm: "Alarm only: <session>: <reason>". A usage
   limit with no known reset keeps one key and one warning however often a wake is rejected again. `run`
   takes a lock (`.delivery/watchdog/run.lock`), so concurrent runs wake once.
 - **Forks.** A fork's SessionStart (with `DELIVERY_WAKE=fork`) is recorded in the roster entry's
   `forks` list, never in place of the owner's open session, which stays the one the watchdog reads;
-  operator capture leaves the roster alone for a fork. Forks older than a day drop off the list; their
-  transcripts stay on disk.
+  operator capture leaves the roster alone for a fork. The forks' transcripts count with the primary's
+  for activity and the usage limit, so a fork on the limit holds the next wake until its reset. Forks
+  older than a day drop off the list; their transcripts stay on disk.
 - **The log.** Every wake, skip (at most one an hour per session) and scheduled wake is a row in
   `.delivery/watchdog/wakes.ndjson`, rotated to `wakes.ndjson.1` past 1 MB; each wake's output goes to
   `.delivery/watchdog/logs/` (the newest 50 kept); the job's own output to `job.log` (rotated past 1 MB).
@@ -1014,7 +1016,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   what it would write and how to remove it; `--apply` writes it; `watchdog.js uninstall` removes it in
   every form (running it again says "Nothing to remove"). Nothing installs it for you. `wake`, `run`,
   `install` and `uninstall` are refused to every role session, `any` lanes included and whatever the
-  form (a chain, `bash -c`, `node -e`, the shim), and so is `claude --resume`/`--continue` by hand; the
+  form (a chain, a wrapper such as `env`, `nohup` or `timeout`, `bash -c`, `eval`, `$(...)`, `node -e`,
+  the shim, a quote-split or glob word, a command word built from a variable), and so is
+  `claude --resume`/`--continue` by hand. Only what runs is judged: a note, a commit message or
+  `git diff -- scripts/watchdog.js` that names the file or a flag is not refused; the
   script itself refuses them inside a role directory or with a role session's environment
   (`DELIVERY_ROLE`, `DELIVERY_ROLE_ID`, `DELIVERY_ROLE_DIR`). Only `check` runs in a role session. What
   `--apply` writes:
@@ -1034,8 +1039,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
     replaces it). Cron runs on clock minutes, so `--every` must divide the hour there (5m, 10m, 12m, 15m,
     20m, 30m, 1h).
   `--every` is 5m to 1h. The machine must be on and the owner signed in to Claude Code for a wake to run.
+  Each scheduler keeps the installing shell's `CLAUDE_CONFIG_DIR`, and the shim restores it before it
+  looks up the plugin or wakes anyone. Paths with spaces are quoted for each scheduler.
   `.delivery/watchdog/installed.json` records the install; the plan and the brief promise a restart only
-  while it and the job file exist.
+  while it and the job file exist. An operator's own `watchdog.js wake` works without the job.
 - **Watching GitHub within a budget (R-25).** `watch.js until <text> --every <5m> --max <2h> -- gh <read>`
   repeats a gh read until its output shows `<text>` (a pattern, any case), exit 0, or the time limit
   passes, exit 1. It refuses a watcher with no exit condition, no time limit, a limit over 6 hours or
@@ -1043,7 +1050,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `--interval`, `-i`). `watch.js gh <read>` is one read. Both go through `.delivery/cache/gh/`
   (gitignored), shared by every role on the host and fresh for 4 minutes (the one query per 4 minutes
   of R-25), keyed by the read, its repository (`-R`, `GH_REPO`, else the working directory gh resolves
-  it from) and its host (`GH_HOST`); one caller refreshes an entry while the others wait for its result;
+  it from) and its host (`GH_HOST`), with its exit status, so a pending check or a rate-limit error is
+  shared for the window too; one caller refreshes an entry while the others wait for its result;
   entries older than an hour go and at most 500 stay. The briefs tell roles to use it instead of
   `while ... sleep`, `watch -n` or a polling Monitor. `watch.js` is in the `gh-read` lane.
 - **What rests on trust.** The transcript format and the `claude agents --json` fields are

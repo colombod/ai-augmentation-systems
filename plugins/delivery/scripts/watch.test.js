@@ -129,3 +129,15 @@ test('the cache drops entries older than an hour and keeps at most its cap', () 
   assert.equal(fs.existsSync(stale), false);
   assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith('.json')).length, WT.MAX_ENTRIES);
 });
+
+test('Copilot 065: a failed or pending read is shared for its window too', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-'));
+  let n = 0;
+  const run = () => { n++; return { code: 8, out: 'some checks are still pending' }; };
+  const a = WT.ghRead(root, ['pr', 'checks', '-R', 'o/r', '5'], { run, now: 0 });
+  const b = WT.ghRead(root, ['pr', 'checks', '-R', 'o/r', '5'], { run, now: 200e3 });
+  assert.equal(n, 1);
+  assert.deepEqual([a.code, b.code, b.cached], [8, 8, true]);
+  WT.ghRead(root, ['pr', 'checks', '-R', 'o/r', '5'], { run, now: 241e3 });
+  assert.equal(n, 2);
+});

@@ -70,7 +70,7 @@ function contextOf(args, { cwd = process.cwd(), env = process.env } = {}) {
 const keyOf = (args, ctx = {}) => crypto.createHash('sha256').update(JSON.stringify({ args, repo: ctx.repo || null, host: ctx.host || 'github.com', cwd: ctx.cwd || null })).digest('hex').slice(0, 16);
 
 const fresh = (file, now, ttl) => {
-  try { const c = JSON.parse(fs.readFileSync(file, 'utf8')); return c && now - c.at < ttl && c.code === 0 ? c : null; } catch (err) { return null; }
+  try { const c = JSON.parse(fs.readFileSync(file, 'utf8')); return c && now - c.at < ttl ? c : null; } catch (err) { return null; }
 };
 const sleepMs = (n) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, n);
 
@@ -82,7 +82,8 @@ function prune(dir, now) {
   } catch (err) { /* nothing to prune */ }
 }
 
-// One gh read through the shared cache. run(args) -> { code, out }. A cold or stale entry is refreshed
+// One gh read through the shared cache, its exit status kept with it: a pending check or a rate-limit
+// error is shared for the window too (Copilot 065). run(args) -> { code, out }. A cold or stale entry is refreshed
 // by one caller at a time: the others wait for its result (Copilot 374). { code, out, cached, age }
 function ghRead(root, args, { run, now = Date.now(), ttl = TTL_MS, cwd, env, waitMs = 60e3 } = {}) {
   const dir = cacheDir(root);

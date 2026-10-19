@@ -36,7 +36,9 @@ const DAILY_CAP = 6;
 const RESET_GRACE_MIN = 5;
 const TAIL_BYTES = 512 * 1024;
 const MIN_POLL_S = 240;
-const RUNNING_MAX_MS = 6 * 3600e3;
+// a wake runs under a supervisor that stops it after WAKE_TIMEOUT_H; the guard holds an hour longer
+const WAKE_TIMEOUT_H = 2;
+const RUNNING_MAX_MS = (WAKE_TIMEOUT_H + 1) * 3600e3;
 const LOG_MAX_BYTES = 1 << 20;
 const DM = 'delivery-lead';
 
@@ -143,12 +145,25 @@ function sessions(root, { team, rows = tailRows } = {}) {
     const role = roles.get(instance);
     const base = { instance, role: role ? role.id : null, retired: Boolean(role && role.retired), session: (e && e.session_id) || null, roleDir: (e && e.role_dir) || null, host: (e && e.host) || null };
     // one session's unreadable transcript costs only its own reading
+    // the owner's primary session routes the wake; its watchdog forks (a day at most) count for the
+    // activity and the quota state, so a fork on the usage limit holds the next wake too (Copilot 092);
+    // activity in any of them after the limit row clears it (stalls() compares lastActive with it)
     try {
       const t = e && typeof e.transcript_path === 'string' ? e.transcript_path : null;
-      let mtime = -Infinity;
-      if (t) { try { mtime = fs.statSync(t).mtimeMs; } catch (err) { mtime = -Infinity; } }
-      const tail = t ? rows(t) : null;
-      return { ...base, lastActive: Math.max(ms(e && e.last_seen), mtime), transcript: t, limit: limitOf(tail), waitUntil: waitingUntil(tail), polls: tightPolls(tail) };
+      const forks = (Array.isArray(e && e.forks) ? e.forks : []).map((f) => f && f.transcript_path).filter((p) => typeof p === 'string' && p);
+      let lastActive = ms(e && e.last_seen);
+      let limit = null;
+      let waitUntil = -Infinity;
+      const polls = [];
+      for (const f of [t, ...forks].filter(Boolean)) {
+        try { lastActive = Math.max(lastActive, fs.statSync(f).mtimeMs); } catch (err) { /* not on disk */ }
+        const tail = rows(f);
+        const l = limitOf(tail);
+        if (l && (!limit || ms(l.at) > ms(limit.at))) limit = l;
+        waitUntil = Math.max(waitUntil, waitingUntil(tail));
+        if (f === t) polls.push(...tightPolls(tail));
+      }
+      return { ...base, lastActive, transcript: t, forks, limit, waitUntil, polls };
     } catch (err) { return { ...base, lastActive: ms(e && e.last_seen), transcript: null, limit: null, waitUntil: -Infinity, polls: [] }; }
   }).filter((s) => !s.retired);
 }
@@ -187,13 +202,16 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
     const known = Number.isFinite(reset);
     const wakeAt = known ? reset + RESET_GRACE_MIN * 60e3 : t;
     const held = beads.filter((b) => b.status === 'in_progress' && holderOf(b, [s])).map((b) => b.id);
-    const due = installed && t >= wakeAt;
+    // due from the reset alone: an operator's own `watchdog.js wake` works without the job (Copilot 118);
+    // the job only decides whether the plan may promise the restart
+    const due = t >= wakeAt;
     const scheduled = installed && known && !due;
     const what = `${s.instance} stopped on the ${s.limit.window ? `${s.limit.window.replace('_', '-')} ` : ''}usage limit at ${clock(ms(s.limit.at))}`;
     let line;
     let plain;
     if (!installed) {
-      line = `Stalled: ${what}${known ? `; it resets at ${clock(reset)}` : ''}; the watchdog is not installed, so nothing restarts it (watchdog.js install).`;
+      line = due ? `Resume now: ${what}${known ? `; it reset at ${clock(reset)}` : ''}; the watchdog is not installed, so only an operator's watchdog.js wake restarts it.`
+        : `Stalled: ${what}${known ? `; it resets at ${clock(reset)}` : ''}; the watchdog is not installed, so nothing restarts it (watchdog.js install).`;
       plain = `The team is stalled; the watchdog is not installed${known ? `: the usage limit resets at ${clock(reset)}` : ''}.`;
     } else if (scheduled) {
       line = `The team resumes at ${clock(wakeAt)}: ${what}, which resets at ${clock(reset)} (restart scheduled).`;
@@ -361,4 +379,4 @@ function wakeCommand(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
