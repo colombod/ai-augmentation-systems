@@ -2,7 +2,8 @@
 // scripts/merge-gate.js — the merge gate (R-32): the Delivery Manager merges only on a passing
 // independent review of the pull request's current head, with CI green and no conflict.
 //   merge-gate.js check <pr> [--head <sha>]     read only; exit 0 when the merge may go ahead
-//   merge-gate.js merged <pr> [--head <sha>]    after the merge: the merged row, and state-merged on its beads
+//   merge-gate.js merged <pr> [--head <sha>]    after the merge: the merged row, state-merged on its beads, and
+//                                               the fix-on-fix check (two fixes on one symptom in 48 h: a spike)
 // The lane runs the same check before it lets the Delivery Manager's `gh pr merge` through. The merge
 // names the product repository (-R owner/name, or a URL of it) and the full reviewed head
 // (--match-head-commit <40-hex sha>), so GitHub merges exactly what was reviewed, where it was
@@ -188,6 +189,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   if (!req) return { code: 0, out: [...out, `no bead is recorded for PR ${pr}: set its state by hand, \`evidence.js state <bead> merged --pr ${pr}\``].join('\n') };
   const m = markMerged(pr, req, who, { cwd, env, bd, now: at });
   out.push(...m.lines);
+  // fix on fix (R-22): a second fix on the same symptom within 48 h opens a spike for its cause
+  try { out.push(...require('./lib/andon.js').fixChain(who.root, { pr, bd: bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 }), now: at, who })); } catch (err) { out.push(`note: the fix-on-fix check did not run (${err.message})`); }
   if (m.failed) return { code: 1, out: `${out.join('\n')}.\nRetry: ${R.cmd('merge-gate.js', `merged ${pr}`)}` };
   return { code: 0, out: out.join('\n') };
 }

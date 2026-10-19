@@ -88,7 +88,7 @@ const namesBead = (r, b) => [...words(b.title)].filter((w) => words(r.text).has(
 const EV_WRITERS = ['delivery-lead', 'reality-checker'];
 
 // One link of one kind; { kind, link, ok, why }.
-function oneLink(bead, kind, { root, beadOf, ownerRecord }) {
+function oneLink(bead, kind, { root, beadOf, ownerRecord, byStoryId = () => null }) {
   const key = kind === 'bug' ? 'fixes' : 'finding';
   // the bead's metadata only, which the Delivery Manager or Product Manager sets; a story file is the
   // builder's to edit, so its fixes:/finding: lines are notes and never make a fix (re-review B-a)
@@ -113,7 +113,8 @@ function oneLink(bead, kind, { root, beadOf, ownerRecord }) {
       if (problem || !row || row.type !== 'row' || row.result !== 'fail' || row.arm === 'side' || !EV_WRITERS.includes(row.by)) return no(`fixes ${link}, which is not a counting failed check row`);
       return yes();
     }
-    const target = beadOf(link);
+    // a story bead by its id, or by its story id (fixes: vault-0n9-3 for bead ex-vault-0n9-3)
+    const target = beadOf(link) || byStoryId(link);
     if (!target || !G.isStoryBead(target)) return no(`fixes ${link}, which is not a story`);
     return ['merged', 'deployed', 'verified'].includes(G.stateOf(target)) ? yes() : no(`fixes ${link}, which is not shipped (merged, deployed or verified)`);
   }
@@ -133,11 +134,11 @@ function oneLink(bead, kind, { root, beadOf, ownerRecord }) {
 
 // { labelled, kind, link, ok, why }: a bead with both labels counts when either link holds (Copilot 915).
 // `story` is accepted for the callers' shape and ignored.
-function fixLink(bead, story, { root, beadOf = () => null, ownerRecord = () => ({ ok: false, why: 'no record check' }) } = {}) {
+function fixLink(bead, story, { root, beadOf = () => null, ownerRecord = () => ({ ok: false, why: 'no record check' }), byStoryId } = {}) {
   const labels = (bead && bead.labels) || [];
   const kinds = FIX_LABELS.filter((l) => labels.includes(l));
   if (!kinds.length) return { labelled: false, ok: false };
-  const results = kinds.map((k) => oneLink(bead, k, { root, beadOf, ownerRecord }));
+  const results = kinds.map((k) => oneLink(bead, k, { root, beadOf, ownerRecord, byStoryId }));
   const hit = results.find((r) => r.ok);
   return { labelled: true, ...(hit || results[0]), ...(hit ? {} : { why: results.map((r) => r.why).join('; ') }) };
 }
@@ -357,7 +358,7 @@ function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now, dea
           ...G.claimDivergence({ story: isStory ? inp.story : null, isStory, bead: b, parent: inp.parent, parentStory: inp.parentStory })].filter((x) => x.level === 'block');
       } catch (err) { return []; }
     },
-    fixOf: (b, story) => fixLink(b, story === undefined ? storyOf(b) : story, { root, beadOf, ownerRecord: (id) => C.ownerRecord(root, id, verifyRecord) }),
+    fixOf: (b, story) => fixLink(b, story === undefined ? storyOf(b) : story, { root, beadOf, ownerRecord: (id) => C.ownerRecord(root, id, verifyRecord), byStoryId: (sid) => beads.find((x) => G.isStoryBead(x) && String((x.metadata || {}).story || '') === sid) || null }),
     reasonOf: (area) => areaReason(root, area, { ownerRecord: (id) => C.ownerRecord(root, id, verifyRecord), ownerAreas }),
     filesOf: (b) => ((storyOf(b) || {}).files || []),
   };

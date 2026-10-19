@@ -678,9 +678,91 @@ owner and is reviewed again; gates block only on authority or serious divergence
   another builder's `team/<instance>` branch, forced or not; a program run from an `any` lane is
   cooperative trust, as above.
 - **Not yet.** `state-merged` is set by `merge-gate.js merged`, not by a hook after the merge; the
-  full-run receipt (lane, sha, passed count) R-32 names, 400-line caps on security paths, a story's
-  `split_plan`, and an open-PR count per builder (R-23). The chain's head is not stored outside the
+  full-run receipt (lane, sha, passed count) R-32 names, 400-line caps on security paths, and a story's
+  `split_plan`. The chain's head is not stored outside the
   file, so a deleted last row is caught only by git history.
+
+### Stop the line and flow
+
+Owner rulings: block only on authority or serious divergence, otherwise warn; the owner is never
+asked to verify (R-22, R-23, R-24; D3).
+
+- **Area stop (D3).** A counting fail row from a reality check (`reality-check.js run-record`, the
+  mechanical pause above) stops its area, never the team: `goal.js show` says "area X stopped", and
+  the idle alarm still counts ready work in other areas. A claim there is refused unless it is
+  recovery work for a failure in that area: a fix linked to it (a `bug` bead whose `fixes:` names the
+  failed row, the failed story's bead or its story id), work on the failed story itself, or the A3's
+  own work (`a3: <id>`, which only the Delivery Manager or Product Manager sets). Linked fixes start at
+  once. The stop lifts when the failure's A3 closes, and the lift is final: the close already proved
+  the fix on a later deploy, so a deploy after it stops nothing. A regression is a new fail row and a
+  new stop.
+- **The A3.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/a3.js new --trigger andon:<ev row>|ci:main|flaky:<test>`
+  writes `.delivery/reviews/<a3>.md` from `templates/a3.md`: the problem as observed on the surface,
+  the evidence row (filled from the row), what was expected (filled from the criterion), the root cause
+  in one paragraph, the class of defect, the fix across the class and the check that proves it. The
+  Delivery Manager and the Product Manager write it (by editing the file or with the section flags);
+  the Reality Checker may open one and draft the problem, evidence and expected sections only. One
+  open A3 per trigger (checked and opened under one lock). `a3.js close <a3> --fix <bead>... --proof
+  <ref>` refuses:
+  - a section that is a placeholder (TBD, TODO, n/a, -), under eight words, or single letters only;
+  - a fix bead that does not exist, is not linked to the failure (`fixes:` as above, or `a3: <id>`),
+    or is not merged (its state label, or a merged review record that carried it);
+  - for a failed check, a proof that is not a counting pass (the done gate's row rule, so the
+    criterion's current wording) on the sha deployed now, a later build than the one that failed;
+  - for `ci:main`, any required workflow still red (every one that went red must be green again), or a
+    proof that is not a green run of main newer than its workflow's last red run, read through gh
+    (where gh cannot read CI, the Delivery Manager's `ci green --workflow <w>` row after that
+    workflow's last red one);
+  - for `flaky:`, a proof that is one of the runs recorded for the test, or a run gh lists as not green.
+  `a3.js show <a3>` and `a3.js list` read them.
+- **Red main (D3).** The claim check reads CI on the product's main (`gh run list -R <product_github>
+  --branch main`; `team.json` `product_branch` overrides the branch) for the required workflows only:
+  `team.json` `required_workflows`, or by default the push-triggered workflows that ran on the newest
+  main sha (so a manual release or a scheduled job counts only when the team names it). Each counts by
+  its latest run with a verdict (cancelled and skipped runs are none) and by when runs finished. When
+  one failed, new claims across the product are refused, except linked fixes and the `ci:main` A3's
+  own work, until every required workflow is green again; an A3 never lifts a red main. The refusal
+  and the status name the repository, branch and red workflows. Where gh cannot read CI, the Delivery
+  Manager records one row per workflow:
+  `node ${CLAUDE_PLUGIN_ROOT}/scripts/andon.js ci red|green --sha <sha> --run <ref> [--workflow <w>]`.
+- **Flaky test (a warning).** `andon.js flaky <test> --sha <sha> --fail-run <ref> --pass-run <ref>
+  [--area <a>]` (any session but the Chief of Staff): the same test failed then passed on one sha. It
+  warns at each claim in its area (or everywhere, with no area) and wants an A3 within 24 h. A record
+  is confirmed when the Delivery Manager made it or confirms it (`andon.js flaky confirm <test>`).
+  Only a confirmed record that names its area, with no A3 opened within 24 h, refuses claims in that
+  area (D3), until an A3 is opened; it never stops the whole product.
+- **Fix on fix (a warning).** `merge-gate.js merged <pr>` checks each fix bead the pull request
+  carried (labels `bug`, `security` or `finding`): when another merged fix shares its symptom (the
+  same `fixes:` or `finding:` target, or an A3 whose class of defect reads the same) within 48 h, it
+  creates a spike bead (`<bead>-spike`, label `spike`, with its question, decision and decision rule),
+  records a `chain` row and a `fix-on-fix` warning. Later fix claims on that symptom warn until the
+  Delivery Manager acknowledges it (`andon.js ack <chain row> --reason '<the spike's answer>'`); closing
+  the spike bead alone is not an answer. After the answer only fixes merged later pair again. A merge
+  recorded without `merge-gate.js merged` is not seen.
+- **The ledger.** `.delivery/andon/<writer>.ndjson`, append-only and chained like the review records
+  (`n`, `prev`), written only by `a3.js`, `andon.js` and `merge-gate.js`. Every lane refuses a hand
+  write, and a deletion or move of the folder, of its parent, or by a glob that reaches it. A chain
+  broken in the middle is reported, and its closes and acknowledgements stop counting. Not detected:
+  rows cut off the end of a file, or a whole writer's file deleted by a program; git history shows
+  both. `andon.js show [--plain] [--json]` reads it.
+- **Flow (R-23, warnings only).** At a claim or assignment of a story: one story in progress and one
+  queued per session (`team.json` `budget.wip_per_session`, default 1 in progress), counted with the
+  status the story ends with and with the earlier stories of the same command; merged, deployed,
+  verified or cut stories have left the builder's hands. In-progress stories at most the team's
+  builders. At `review.js request`, more than `budget.open_prs_per_builder` (default 2) pull requests
+  that GitHub still has open for the builder (where gh cannot read them, unmerged requests from the
+  last 14 days); one story per pull request and the size cap (R-24) as before.
+- **Status.** `team-status.js` puts stopped areas, a red main, flaky tests, open A3s, fix-on-fix
+  spikes and the open flow warnings right after the idle line. `andon.js show --plain` is the Chief
+  of Staff's wording: "The import area is stopped until we fix why files dropped in plain chat did not
+  arrive; the fix is in review." (the area's own name, or "an unassigned area"; the A3's first problem
+  sentence; where the linked fix stands).
+- **What rests on trust.** The A3's prose is the Delivery Manager's word; the close row keeps a hash
+  of it. CI read from gh is what GitHub reports for the newest 30 runs on the branch, for the
+  repository named in `product_github`. A program run from an `any` lane (`node -e` calling the
+  library) could append a chained ledger row or cut rows off a file's end, as for the review records.
+- **Not yet.** Stall and production-probe triggers (R-04); a `split_plan` that waives the size
+  warning; flaky run references are checked against gh only when gh lists the run.
 
 ### Owner authority and communication
 
@@ -730,9 +812,9 @@ The owner runs the enterprise; the Chief of Staff runs the team for the owner (R
   Checker); the Delivery Manager may pause on a fail row it recorded itself. At pause time the bead's
   recorded evidence head must match the file. When read with bd at hand (`/delivery:team`, the Stop
   hook's idle check, `goal.js show`), only rows up to the recorded head count, so a pass appended by
-  hand does not lift it and an edited chain keeps it open. The pause lapses when one of those writers
-  records a pass for the same criterion. It is kept apart from the owner's pause, so a closing andon
-  never lifts an owner pause. Red CI is a hook point that is not readable yet.
+  hand does not lift it and an edited chain keeps it open. It stops only its area, never the team,
+  and lapses when the failure's A3 closes on a proved fix (see Stop the line below). It is kept apart
+  from the owner's pause, so a closing andon never lifts an owner pause. Red CI is read by the claim check (Stop the line), not by this pause.
 - **Not gated yet: new team rules.** R-42 also asks that new process rules need an owner record; there
   is no rules field or change log yet (deferred). Team rules change through the plugin's own release.
 - **The lane.** Every role is refused a direct write, `sed -i` or `perl -i` (also from inside

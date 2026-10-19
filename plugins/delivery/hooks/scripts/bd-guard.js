@@ -188,7 +188,7 @@ const values = (p, f) => (p.all.get(f) || []).filter((v) => typeof v === 'string
 // what makes a bead a tier-1 fix (R-41): set by the Delivery Manager or the Product Manager only, so a
 // builder cannot promote its own work past the wave, lean and new-area rules
 const FIX_LABEL = /^(bug|security|finding)$/;
-const FIX_FIELDS = new Set(['fixes', 'finding']);
+const FIX_FIELDS = new Set(['fixes', 'finding', 'a3']);
 const fixFieldWrite = (p) => gateFieldWrite(p, { labelRe: FIX_LABEL, fields: FIX_FIELDS });
 function gateFieldWrite(p, { labelRe = PROTECTED_LABEL, fields = GATE_FIELDS } = {}) {
   if (labelRe === PROTECTED_LABEL && p.sub === 'update' && p.all.has('--set-labels')) return 'replacing every label (use --add-label or --remove-label)';
@@ -334,6 +334,9 @@ function claimFix(f, id) {
   if (f.code === 'assumption-unobserved') return `bd show ${f.spike}, then dispatch it to the Reality Checker to probe the real host (assumptions.js probe)`;
   if (f.code === 'spike-unacked') return `${script('assumptions.js')} ack ${f.spike} --result <ev-id> --decision '<the decision taken>' (its decision owner)`;
   if (f.code === 'assumption-refuted' || f.code === 'area-andon') return `${script('ready.js')} ${id} --record, once the Product Manager has changed the design and the register`;
+  if (f.code === 'area-stopped') return `${script('andon.js')} show, then fix the failure (a bug bead with fixes: ${f.stop.row}), prove it on the deployed version and close its A3 (${script('a3.js')} close <a3> --fix <bead> --proof <pass row>)`;
+  if (f.code === 'ci-red') return `${script('andon.js')} show, then fix main (a bug bead, or a bead with a3: <the ci:main A3>) until CI is green, or close the A3 (${script('a3.js')} close <a3> --fix <bead> --proof <green run>)`;
+  if (f.code === 'flaky-overdue') return `${script('a3.js')} new --trigger flaky:<test>, then close it with the fix and the run that proves it`;
   if (f.code === 'child-scope') return `bd update ${id} --metadata '{"criterion": <n>}' with a criterion its story has, or make the new scope its own story`;
   return `${script('ready.js')} ${id} --record --owner-record <dec-...> once the change is agreed`;
 }
@@ -347,6 +350,8 @@ const PLAIN = {
   'spike-unacked': (f) => `spike ${f.spike} needs its decision owner's acknowledgement`,
   'assumption-refuted': (f) => `${f.assumption} was refuted, so its design changes first`,
   'area-andon': (f) => `its area is paused on refuted ${f.assumption}`,
+  'area-stopped': (f) => `area ${f.stop.area} is stopped until the failed check's cause is fixed and proved`,
+  'ci-red': 'the main build is red, so only fixes start', 'flaky-overdue': "a flaky test's root-cause note is late",
 };
 const plainOf = (f) => (typeof PLAIN[f.code] === 'function' ? PLAIN[f.code](f) : PLAIN[f.code]);
 
@@ -389,6 +394,9 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
   const bd = budgeted(rawBd, end);
   const recordOk = recordChecker(root, verifyRecord);
   let asked = false;
+  let ci = null;
+  // who holds which story after the earlier claims of this command (R-23 WIP, Copilot 884)
+  const held = new Map();
   const judge = async (q, state) => {
     if (!ask || asked || Date.now() + JUDGE_RESERVE_MS > end) return null;
     asked = true;
@@ -473,6 +481,25 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
             if (st.set && !W.built(bead)) started = B.estimate(bead, { t: st.table, team }).units * (1 + st.table.reserve);
           } catch (err) { /* fail open */ }
         }
+        // stop the line and per-session WIP (R-22, R-23): D3 on a stopped area, a red main or a late flaky A3
+        try {
+          const AN = require('../../scripts/lib/andon.js');
+          const C = require('../../scripts/lib/gate-context.js');
+          const beadOf = (x) => lookup(bd, x);
+          const byStoryId = (sid) => (stories || []).find((s) => String((s.metadata || {}).story || '') === sid) || null;
+          const fix = require('../../scripts/lib/waves.js').fixLink(bead, null, { root, beadOf, ownerRecord: (r) => C.ownerRecord(root, r, verifyRecord), byStoryId });
+          if (!ci) {
+            const left = end - Date.now() - JUDGE_RESERVE_MS;
+            ci = AN.ciState(root, { team, gh: (repo, branch) => (left > 1000 ? AN.ghRuns(repo, branch, { cwd: root, timeoutMs: Math.min(4000, left - 500) }) : { unavailable: 'no time left' }) });
+          }
+          const who = story ? builderOf(p, actor, roleId, instance) : null;
+          // the status the story ends with: the one written, else in progress on a claim, else as it is (Copilot 864)
+          const status = p.sub === 'update' && statusOf(p) ? statusOf(p) : p.sub === 'update' && p.flags.has('--claim') ? 'in_progress' : bead.status;
+          const starts = status === 'in_progress';
+          const seen = (stories || []).map((s) => (held.has(s.id) ? { ...s, ...held.get(s.id) } : s));
+          findings.push(...AN.claimFindings(bead, { root, parent: inp.parent, fix, stories: seen, beadOf, team, ci, builder: who && who.actor, starts, wipPerSession: team && team.budget && team.budget.wip_per_session }));
+          if (who) held.set(id, { assignee: who.actor, status: starts ? 'in_progress' : 'open' });
+        } catch (err) { /* fail open */ }
         const blocks = findings.filter((f) => f.level === 'block');
         for (const f of findings.filter((x) => x.level === 'warn')) add(id, f.code, f.rule, f.detail);
         if (blocks.length) {

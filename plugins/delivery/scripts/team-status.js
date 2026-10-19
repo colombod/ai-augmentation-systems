@@ -109,7 +109,24 @@ function idleStatus(projectRoot, { now, idleBd } = {}) {
   return s;
 }
 
-function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, checkBeads, idleBd, budget, budgetOpts, bd, gh } = {}) {
+// What stops the line (R-22) and the flow warnings (R-23, R-24). bd gives the beads (fail open); ciGh
+// stands in for `gh run list`, and a caller that injects gh for the pull requests gets no live CI read.
+const FLOW = ['wip', 'wip-session', 'lean-wip', 'file-overlap', 'open-prs', 'pr-scope', 'pr-size'];
+function andonStatus(projectRoot, team, { bd, gh, ciGh, now, reachable } = {}) {
+  const AN = require('./lib/andon.js');
+  const store = bd || (reachable ? require('./lib/bd.js').makeBd({ cwd: projectRoot, timeoutMs: 10000 }) : null);
+  const beadOf = (id) => { try { return store ? store.show(id) : null; } catch (err) { return null; } };
+  let fixBeads = [];
+  try { fixBeads = store ? ['bug', 'security'].flatMap((l) => store.list({ label: l, all: true }) || []) : []; } catch (err) { fixBeads = []; }
+  const ci = AN.ciState(projectRoot, { team, gh: ciGh || (gh ? () => ({ unavailable: 'not read here' }) : undefined) });
+  const s = AN.summary(projectRoot, { beadOf, team, now, ci, fixBeads });
+  const open = require('./lib/warnings.js').list(projectRoot).filter((w) => !w.acked_by && FLOW.includes(w.kind));
+  const flow = {};
+  for (const w of open) flow[w.kind] = (flow[w.kind] || 0) + 1;
+  return { ...s, flow, plain: AN.plainLines(s) };
+}
+
+function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps, storyBeads, checkBeads, idleBd, budget, budgetOpts, bd, gh, ciGh } = {}) {
   const { team, hosts } = loadManifest(projectRoot);
   const roster = readRoster(projectRoot);
   const nowMs = Date.parse(now || new Date().toISOString());
@@ -151,7 +168,9 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
     .map((r) => `the Reality Checker is on ${r.host}, a headless host: it cannot drive a browser or desktop app there; move it to a host with desktop apps (hosts.json)`);
   let reviews = null;
   try { reviews = reviewStatus(projectRoot, { team, gh }); } catch (err) { reviews = null; }
-  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, reviews, warnings: [...manifestWarnings(team), ...placement] };
+  let andon = null;
+  try { andon = andonStatus(projectRoot, team, { bd, gh, ciGh, now, reachable: bd_reachable }); } catch (err) { andon = null; }
+  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, reviews, andon, warnings: [...manifestWarnings(team), ...placement] };
 }
 
 function hasDrift(drift) {
@@ -168,10 +187,24 @@ function manifestRev(projectRoot) {
 
 const firstIds = (ids) => (ids.length ? ` (${ids.slice(0, 3).join(', ')}${ids.length > 3 ? ', ...' : ''})` : '');
 
-function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gates, idle, reviews, warnings }, projectRoot) {
+function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gates, idle, reviews, andon, warnings }, projectRoot) {
   const lines = [];
   // idle with ready work is the first line: nothing else matters while nobody works
   if (idle && idle.idle) { lines.push(...require('./lib/idle.js').idleLine(idle).split('\n')); lines.push(''); }
+  // a stopped line comes next: what is stopped, why, and where its fix stands (R-22)
+  if (andon) {
+    const out = [];
+    for (const x of andon.stops) out.push(`Stopped: area ${x.area} (${x.row} failed on the customer's app); needs ${x.missing}; ${x.a3 ? `A3 ${x.a3.id} open` : 'no A3 yet'}; ${x.stage}`);
+    if (andon.ci.red) out.push(`Stopped: CI on ${andon.ci.repo ? `${andon.ci.repo} ` : ''}${andon.ci.branch} red since ${String(andon.ci.since).slice(0, 16)}${andon.ci.workflows && andon.ci.workflows.length ? ` (${andon.ci.workflows.join(', ')})` : ''}; fixes only until every required workflow is green`);
+    for (const r of andon.flaky) out.push(`Flaky: ${r.test}; A3 due ${r.due.slice(0, 16)}${r.overdue && r.area && r.confirmed && !r.a3Opened ? ' (late: claims there stop)' : r.overdue ? ' (late)' : ''}`);
+    const a3 = andon.a3s.map((a) => a.id);
+    if (a3.length) out.push(`A3 open: ${a3.length} (${a3.slice(0, 5).join(', ')}${a3.length > 5 ? ', ...' : ''})`);
+    for (const c of andon.chains) out.push(`Fix on fix: ${c.symptom} (PRs ${c.prs.join(', ')}): spike ${c.spike} before another fix`);
+    const flow = Object.entries(andon.flow).map(([k, n]) => `${k} ${n}`).join(', ');
+    if (flow) out.push(`Flow warnings open: ${flow}`);
+    if (andon.problem) out.push(`Warning: ${andon.problem}`);
+    if (out.length) lines.push(...out, '');
+  }
   // unacknowledged warnings older than 24 h come first: they head the Chief of Staff's plan
   if (gates && gates.warnings.overdue.length) {
     lines.push(`Warnings unacknowledged over 24 h: ${gates.warnings.overdue.length} (the Delivery Manager resolves or acks each: warnings.js ack <id> --reason '...')`);
@@ -244,4 +277,4 @@ if (require.main === module) {
   process.exit(hasDrift(status.drift) ? 1 : 0);
 }
 
-module.exports = { teamStatus, renderStatus, operatorStatus, gateStatus, idleStatus, reviewStatus };
+module.exports = { teamStatus, renderStatus, operatorStatus, gateStatus, idleStatus, reviewStatus, andonStatus };

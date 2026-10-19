@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const goal = require('./goal.js');
 const Goal = require('./lib/goal.js');
+const AN = require('./lib/andon.js');
 const log = require('./lib/operator-log.js');
 const R = require('./lib/operator-records.js');
 const W = require('./lib/warnings.js');
@@ -207,9 +208,13 @@ test('R-42: only the Chief of Staff records a constraint (the PM records scope c
 const BEAD = 'vault-0n9-3';
 const row = (root, over) => G.appendEvidence(root, BEAD, { type: 'row', criterion: 1, surface: 'S1', sha: 'd478aa11', actor: 'x', at: '2026-10-17T22:54:00Z', ...over }).head;
 const beadWith = (head) => ({ id: BEAD, metadata: { evidence_head: head } });
+// the failure's A3, opened and closed in the andon ledger the way a3.js writes it
+const closeA3 = (root, trigger) => { const o = AN.append(root, { type: 'a3-open', trigger, by: 'delivery-lead', at: '2026-10-18T09:00:00Z' }, 'delivery-lead'); AN.append(root, { type: 'a3-close', a3: `a3-${o.id.slice(3)}`, fixes: ['ex-fix'], proof: 'ev', by: 'delivery-lead', at: '2026-10-18T10:00:00Z' }, 'delivery-lead'); };
+// an open andon stops its area; it is listed in stops and never pauses the team
+const stopped = (root, opts) => { const p = Goal.activePause(root, opts); assert.equal(p.paused, false); return p.stops.length > 0; };
 const pause = (root, roleId, trigger, bead) => goal.main(['pause', '--trigger', trigger], { who: who(root, roleId), bd: { show: () => bead } });
 
-test('R-42 I7: an andon pause cites a failed check row from evidence.js and lapses when a check passes', () => {
+test('R-42 I7: an andon pause cites a failed check row from evidence.js and lapses when its A3 closes', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-ev-'));
   fs.mkdirSync(path.join(root, '.delivery', 'andon'), { recursive: true });
   fs.writeFileSync(path.join(root, '.delivery', 'andon', 'a-1.json'), JSON.stringify({ status: 'open' }));
@@ -221,11 +226,13 @@ test('R-42 I7: an andon pause cites a failed check row from evidence.js and laps
   assert.equal(pause(root, 'delivery-lead', `andon:ev-${BEAD}-1`, bead).code, 1, 'a pass row is not an andon');
   assert.equal(pause(root, 'delivery-lead', `andon:ev-${BEAD}-2`, { id: BEAD, metadata: {} }).code, 1, 'rows evidence.js did not record do not count');
   assert.equal(pause(root, 'delivery-lead', `andon:ev-${BEAD}-2`, bead).code, 0);
-  assert.deepEqual(Goal.activePause(root), { paused: true, by: `andon:ev-${BEAD}-2` });
+  assert.deepEqual(Goal.activePause(root), { paused: false, stops: [{ trigger: `andon:ev-${BEAD}-2`, area: null }] });
   row(root, { result: 'pass', by: 'builder' });
-  assert.equal(Goal.activePause(root).paused, true, 'a builder\'s pass does not close it');
+  assert.equal(stopped(root), true, 'a builder\'s pass does not close it');
   row(root, { result: 'pass', by: 'reality-checker' });
-  assert.equal(Goal.activePause(root).paused, false);
+  assert.equal(stopped(root), true, 'a pass alone does not lift it: its A3 is not closed (R-22)');
+  closeA3(root, `andon:ev-${BEAD}-2`);
+  assert.equal(stopped(root), false, 'the closed A3 lifts it');
 });
 
 test('R-42 Copilot 726: a trigger pause never overwrites or lifts the owner pause', () => {
@@ -307,7 +314,7 @@ test('R-42 re-review andon: a builder\'s fail row is no andon; a pass appended b
   const bead = beadWith(row(root, { result: 'fail', by: 'delivery-lead' }));
   assert.equal(pause(root, 'delivery-lead', `andon:ev-${BEAD}-2`, bead).code, 0);
   row(root, { result: 'pass', by: 'delivery-lead' }); // appended, but the bead's head was not moved
-  assert.equal(Goal.activePause(root, { beadOf: () => bead }).paused, true);
+  assert.equal(stopped(root, { beadOf: () => bead }), true);
 });
 
 test('Copilot round 2: a typographic apostrophe still negates; side-arm passes and other andons do not lift a pause', () => {
@@ -319,11 +326,14 @@ test('Copilot round 2: a typographic apostrophe still negates; side-arm passes a
   assert.equal(pause(r2, 'delivery-lead', `andon:ev-${BEAD}-1`, bead).code, 0);
   assert.equal(pause(r2, 'delivery-lead', `andon:ev-${BEAD}-2`, bead).code, 0);
   row(r2, { result: 'pass', by: 'delivery-lead', criterion: 2 });
-  assert.equal(Goal.activePause(r2).paused, true, 'the first andon is still open');
+  assert.equal(stopped(r2), true, 'the first andon is still open');
   row(r2, { result: 'pass', by: 'delivery-lead', arm: 'side' });
-  assert.equal(Goal.activePause(r2).paused, true, 'a side-arm pass is not a check of the failure');
+  assert.equal(stopped(r2), true, 'a side-arm pass is not a check of the failure');
   row(r2, { result: 'pass', by: 'delivery-lead' });
-  assert.equal(Goal.activePause(r2).paused, false);
+  closeA3(r2, `andon:ev-${BEAD}-1`);
+  assert.equal(stopped(r2), true, 'the second andon has its pass but no closed A3');
+  closeA3(r2, `andon:ev-${BEAD}-2`);
+  assert.equal(stopped(r2), false);
 });
 
 test('Copilot round 3: the word rule (now only a pre-filter for the judge) keeps decimals, start times and scope conflicts', () => {
@@ -343,8 +353,9 @@ test('Copilot round 3: one bd lookup per bead, and at most maxLookups', () => {
   fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify(g));
   g.fields.pause_triggers.push(...['a', 'b', 'c'].map((x) => ({ value: 'paused', trigger: `andon:ev-other-${x}-1` })));
   fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify(g));
+  closeA3(root, `andon:ev-${BEAD}-1`);
   let lookups = 0;
-  assert.equal(Goal.activePause(root, { beadOf: () => { lookups++; return null; }, maxLookups: 2 }).paused, false);
+  assert.equal(stopped(root, { beadOf: () => { lookups++; return null; }, maxLookups: 2 }), false);
   assert.equal(lookups, 2);
 });
 

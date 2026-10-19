@@ -12,18 +12,19 @@ const P = path.join(__dirname, '..', '..');
 // root: a project from gate-fixture (or makeProject()); beads: { id: bead } for the fake bd; deps: [{ id, blockedBy }];
 // prs: { "<n>": gh pr view fields } for the fake gh (testing/fake-gh.js) on repo, which also becomes the
 // manifest's product_github; without prs gh is signed out
-function harness({ root = makeProject(), beads = {}, deps = [], prs = null, repo = 'example/example' } = {}) {
+// runs: CI runs for `gh run list` (with prs, or alone)
+function harness({ root = makeProject(), beads = {}, deps = [], prs = null, runs = null, repo = 'example/example' } = {}) {
   const tj = path.join(root, '.delivery', 'team', 'team.json');
   const team = JSON.parse(fs.readFileSync(tj, 'utf8'));
   if (!team.roles.some((r) => r.id === 'reality-checker')) team.roles.push({ id: 'reality-checker', brief: 'delivery/reality-checker', host: 'pc', model: 'sonnet' });
-  if (prs && repo) team.product_github = repo;
+  if ((prs || runs) && repo) team.product_github = repo;
   fs.writeFileSync(tj, JSON.stringify(team, null, 2));
   const store = path.join(root, 'bd-store.json');
   const issues = {};
   for (const b of Object.values(beads)) issues[b.id] = { title: b.id, status: 'open', type: 'task', notes: '', priority: 1, description: '', assignee: '', updated_at: new Date().toISOString(), labels: [], metadata: {}, ...b };
   fs.writeFileSync(store, JSON.stringify({ issues, deps: deps.map((d) => ({ id: d.id, blocked_by: d.blockedBy })) }, null, 2));
   const ghStore = path.join(root, 'gh-store.json');
-  if (prs) fs.writeFileSync(ghStore, JSON.stringify({ repo, prs }, null, 2));
+  if (prs || runs) fs.writeFileSync(ghStore, JSON.stringify({ repo, prs: prs || {}, runs: runs || [] }, null, 2));
   const rolesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roles-'));
   const roleDir = (inst) => {
     const d = path.join(rolesDir, inst);
@@ -59,7 +60,8 @@ function harness({ root = makeProject(), beads = {}, deps = [], prs = null, repo
   const setBead = (id, f) => { const s = db(); f(s.issues[id]); fs.writeFileSync(store, JSON.stringify(s, null, 2)); };
   const gh = () => (fs.existsSync(ghStore) ? JSON.parse(fs.readFileSync(ghStore, 'utf8')).prs : {});
   const setPr = (n, f) => { const s = JSON.parse(fs.readFileSync(ghStore, 'utf8')); f(s.prs[n]); fs.writeFileSync(ghStore, JSON.stringify(s, null, 2)); };
-  return { root, store, roleDir, gh, setPr, bash, tool: (inst, name, input) => hook('role-lane.js', inst, name, input), script, db, setBead };
+  const setRuns = (list) => { const g = JSON.parse(fs.readFileSync(ghStore, 'utf8')); g.runs = list; fs.writeFileSync(ghStore, JSON.stringify(g, null, 2)); };
+  return { root, store, roleDir, gh, setPr, setRuns, bash, tool: (inst, name, input) => hook('role-lane.js', inst, name, input), script, db, setBead };
 }
 
 const evIdOf = (out) => (/(ev-[a-z0-9.-]+-\d+)/.exec(out || '') || [])[1];

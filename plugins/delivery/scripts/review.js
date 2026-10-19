@@ -62,6 +62,24 @@ function sizeThreshold(root) {
   try { return require('./lib/goal.js').value(root, 'pr_size_lines', { warn: false }) || R.DEFAULT_SIZE; } catch (err) { return R.DEFAULT_SIZE; }
 }
 
+// open pull requests per builder (R-23): more than the limit (team.json budget.open_prs_per_builder, 2) warns.
+// Open on GitHub (a pull request closed without merging stops counting, Copilot 925); where gh cannot
+// read it, an unmerged request from the last 14 days counts
+const STALE_DAYS = 14;
+function openPrsWarning(who, pr, owner, view, at) {
+  const v = who.team && who.team.budget && who.team.budget.open_prs_per_builder;
+  const limit = Number.isInteger(v) && v > 0 ? v : 2;
+  const open = R.listPrs(who.root).filter((p) => p !== String(pr)).filter((p) => {
+    const { rows } = R.read(who.root, p);
+    const req = R.lastRequest(rows);
+    if (!req || req.owner !== owner || rows.some((r) => r.type === 'merged')) return false;
+    const live = view ? view(p) : null;
+    if (live && !live.unavailable && live.state) return String(live.state).toUpperCase() === 'OPEN';
+    return Date.parse(at) - Date.parse(req.at) < STALE_DAYS * 86400e3;
+  });
+  return open.length >= limit ? [{ kind: 'open-prs', rule: 'R-23', detail: `${owner} already has ${open.length} open pull request(s) (${open.map((p) => `PR ${p}`).join(', ')}), the limit is ${limit}: get those merged before opening more` }] : [];
+}
+
 function instancesOf(who) {
   try { return who.team ? require('./lib/manifest.js').expandInstances(who.team) : []; } catch (err) { return []; }
 }
@@ -129,7 +147,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     if (isManager(who, a.reviewer)) return refuse('the Delivery Manager asks for the review and merges on it; it does not review its own merge', `Ask a reviewer subagent or another session: ${R.cmd('review.js', `request ${pr} --reviewer <id>`)}`);
     const stories = R.storiesOf(got.beads.filter((b) => ids.includes(b.id)));
     const lines = !view.unavailable ? R.changedLines(view) : Number(a.lines);
-    const warnings = R.scopeWarnings({ pr, lines, stories, threshold: sizeThreshold(who.root) });
+    const warnings = [...R.scopeWarnings({ pr, lines, stories, threshold: sizeThreshold(who.root) }), ...openPrsWarning(who, pr, bound.owner, ghFor(who, gh, repo), at)];
     const story = got.beads.find((b) => stories.includes(b.id));
     const session = team.some((i) => R.norm(i.instance) === R.norm(a.reviewer));
     const row = R.append(who.root, pr, { type: 'request', head, branch: branch || null, owner: bound.owner, reviewer: a.reviewer, session, beads: ids, stories, authors, title: (story && story.title) || view.title || null, lines: Number.isFinite(lines) ? lines : null, ...base }, who.instance);

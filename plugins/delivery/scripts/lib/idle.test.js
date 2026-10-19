@@ -57,7 +57,7 @@ function project() {
   return root;
 }
 
-test('R-43 team status: idle heads the status and is recorded once per idle stretch; an open andon pause silences it', () => {
+test('R-43 team status: idle heads the status and is recorded once per idle stretch; an open andon quiets it only for the stopped area', () => {
   const root = project();
   const st = () => teamStatus(root, { now: BACK, idleBd: memBd(BEADS, READY) });
   const text = renderStatus(st());
@@ -67,7 +67,12 @@ test('R-43 team status: idle heads the status and is recorded once per idle stre
   // an andon: a failed check row from evidence.js, then the trigger pause
   require('./gates.js').appendEvidence(root, 'vault-wxy-12', { type: 'row', criterion: 1, result: 'fail', by: 'reality-checker', at: BACK });
   fs.writeFileSync(path.join(root, '.delivery', 'goal.json'), JSON.stringify({ fields: { pause_trigger: { value: 'paused', trigger: 'andon:ev-vault-wxy-12-1' } }, history: [] }));
-  assert.doesNotMatch(renderStatus(st()), /^Idle:/);
+  // the andon stops the ready beads' area ('none': no area, no parent), so nothing ready may start
+  const withShow = { ...memBd(BEADS, READY), show: (id) => ({ id, metadata: {} }) };
+  assert.doesNotMatch(renderStatus(teamStatus(root, { now: BACK, idleBd: withShow })), /^Idle:/);
+  // ready work in another area still alarms: an andon stops its area, not the team (R-22)
+  const other = [...READY, { id: 'vault-trade-1', status: 'open', updated_at: LAST, metadata: { area: 'trade' } }];
+  assert.match(renderStatus(teamStatus(root, { now: BACK, idleBd: { ...withShow, ready: () => other } })).split('\n')[0], /^Idle: 1 ready item and nothing in progress/);
 });
 
 test('R-43 Stop hook: the Delivery Manager\'s stop records the idle warning and says it on the next prompt', () => {
