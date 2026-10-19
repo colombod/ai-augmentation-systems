@@ -33,7 +33,7 @@ test('R-25 (the Observer polled 30 pull requests every 90 s): the watcher refuse
     assert.match(w('progress-observer', 'until MERGED --every 5m -- gh pr view 472 -R example/example').out, /needs a time limit/);
     const noExit = w('progress-observer', '--every 5m --max 1h -- gh pr view 472 -R example/example');
     assert.ok(noExit.deny || noExit.code === 2, 'no exit condition');
-    assert.match(watch.main(['until', '', '--every', '5m', '--max', '1h', '--', 'gh', 'pr', 'view', '1'], { cwd: os.tmpdir(), env: process.env }).out, /needs an exit condition/);
+    assert.match(watch.main(['until', '', '--every', '5m', '--max', '1h', '--', 'gh', 'pr', 'view', '1'], { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'watch-')), env: process.env }).out, /needs an exit condition/);
     assert.match(w('progress-observer', 'until x --every 5m --max 7h -- gh pr view 472 -R example/example').out, /over the 6 h limit/);
     assert.match(w('builder-1', 'gh pr merge 471 -R example/example').out, /only gh reads can be watched/);
     assert.equal(calls(log).length, 0, 'a refused watcher costs no call');
@@ -51,7 +51,7 @@ test('R-25 (the Observer polled 30 pull requests every 90 s): the watcher refuse
   });
 });
 
-test('R-25: the watcher stops at its time limit, re-reading only once the shared cache is two minutes old', () => {
+test('R-25: the watcher stops at its time limit, re-reading only once the shared cache is four minutes old', () => {
   let t = 0;
   const reads = [];
   const r = watch.main(['until', 'MERGED', '--every', '4m', '--max', '15m', '--', 'gh', 'pr', 'view', '9'], {
@@ -64,8 +64,68 @@ test('R-25: the watcher stops at its time limit, re-reading only once the shared
   let n = 0;
   const run = () => { n++; return { code: 0, out: 'x' }; };
   WT.ghRead(root, ['pr', 'view', '1'], { run, now: 0 });
-  assert.equal(WT.ghRead(root, ['pr', 'view', '1'], { run, now: 119e3 }).cached, true);
-  WT.ghRead(root, ['pr', 'view', '1'], { run, now: 121e3 });
+  assert.equal(WT.ghRead(root, ['pr', 'view', '1'], { run, now: 239e3 }).cached, true, 'one read per 4 minutes for the team (R-25)');
+  WT.ghRead(root, ['pr', 'view', '1'], { run, now: 241e3 });
   assert.equal(n, 2);
   assert.equal(fs.readFileSync(path.join(root, '.delivery', 'cache', '.gitignore'), 'utf8'), '*\n');
+});
+
+test('Copilot 305: a cached read is shared only for the same read on the same repository and host', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-'));
+  let n = 0;
+  const run = () => { n++; return { code: 0, out: String(n) }; };
+  const read = (args, more = {}) => WT.ghRead(root, args, { run, now: 0, ...more });
+  const a = fs.mkdtempSync(path.join(os.tmpdir(), 'checkout-a-'));
+  const b = fs.mkdtempSync(path.join(os.tmpdir(), 'checkout-b-'));
+  read(['pr', 'checks', '-R', 'o/one', '12']);
+  assert.equal(read(['pr', 'checks', '-R', 'o/one', '12']).cached, true);
+  assert.equal(read(['pr', 'checks', '-R', 'o/two', '12']).cached, false, 'another repository');
+  assert.equal(read(['pr', 'checks', '-R', 'o/one', '12'], { env: { GH_HOST: 'ghe.example.com' } }).cached, false, 'another host');
+  read(['pr', 'checks'], { cwd: a });
+  assert.equal(read(['pr', 'checks'], { cwd: a }).cached, true);
+  assert.equal(read(['pr', 'checks'], { cwd: b }).cached, false, 'without -R, each checkout resolves its own pull request');
+  assert.equal(read(['pr', 'checks'], { cwd: b, env: { GH_REPO: 'o/one' } }).cached, false);
+});
+
+test('Copilot 349: gh\'s own polling flags are refused, so only watch.js until repeats a read', () => {
+  for (const flags of [['--watch'], ['--watch', '--interval', '1'], ['-w'], ['-wi', '1'], ['--interval=1']]) {
+    const r = watch.main(['gh', 'pr', 'checks', '471', ...flags], { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'watch-')), env: { ...process.env, DELIVERY_ROLE: '' }, run: () => ({ code: 0, out: '' }) });
+    assert.equal(r.code, 2, flags.join(' '));
+    assert.match(r.out, /gh's own polling .* is not allowed/);
+  }
+  assert.match(watch.main(['until', 'pass', '--every', '5m', '--max', '1h', '--', 'gh', 'pr', 'checks', '1', '--watch'], { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'watch-')), env: process.env }).out, /not allowed/);
+});
+
+test('Copilot 374: concurrent cold reads make one gh call; the others take its result', () => {
+  const h = harness({ prs: { 471: { headRefOid: 'abc' } } });
+  const log = scratchLog();
+  const env = fakeEnv(h, { GH_FAKE_LOG: log, GH_FAKE_DELAY_MS: '400' });
+  const { spawn } = require('child_process');
+  const runs = Array.from({ length: 6 }, () => spawn('node', [path.join(__dirname, 'watch.js'), 'gh', 'pr', 'view', '471', '-R', 'example/example', '--json', 'state'], { cwd: h.root, env, stdio: ['ignore', 'pipe', 'ignore'] }));
+  const outs = runs.map((c) => { let o = ''; c.stdout.on('data', (d) => { o += d; }); return new Promise((r) => c.on('exit', (code) => r({ code, o }))); });
+  return Promise.all(outs).then((rs) => {
+    assert.deepEqual(rs.map((r) => r.code), [0, 0, 0, 0, 0, 0]);
+    for (const r of rs) assert.match(r.o, /"state":"OPEN"/);
+    assert.equal(calls(log).length, 1);
+  });
+});
+
+test('the cache drops entries older than an hour and keeps at most its cap', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-'));
+  const dir = WT.cacheDir(root);
+  fs.mkdirSync(dir, { recursive: true });
+  const now = Date.now();
+  for (let i = 0; i < WT.MAX_ENTRIES + 5; i++) { const f = path.join(dir, `e${i}.json`); fs.writeFileSync(f, '{}'); fs.utimesSync(f, (now - i * 1000) / 1000, (now - i * 1000) / 1000); }
+  const stale = path.join(dir, 'old.json');
+  fs.writeFileSync(stale, '{}');
+  fs.utimesSync(stale, (now - 2 * 3600e3) / 1000, (now - 2 * 3600e3) / 1000);
+  WT.prune(dir, now);
+  // a fresh read prunes as it writes
+  const old = path.join(dir, 'old2.json');
+  fs.writeFileSync(old, '{}');
+  fs.utimesSync(old, (now - 2 * 3600e3) / 1000, (now - 2 * 3600e3) / 1000);
+  WT.ghRead(root, ['pr', 'view', '7'], { run: () => ({ code: 0, out: 'x' }), now, cwd: root });
+  assert.equal(fs.existsSync(old), false);
+  assert.equal(fs.existsSync(stale), false);
+  assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith('.json')).length, WT.MAX_ENTRIES);
 });

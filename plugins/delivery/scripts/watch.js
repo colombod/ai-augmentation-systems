@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // scripts/watch.js — watch GitHub within the polling budget (R-25); lib/watch.js holds the rules.
-//   watch.js gh <gh read args...>                   one gh read through the team's 2-minute cache
+//   watch.js gh <gh read args...>                   one gh read through the team's 4-minute cache
 //   watch.js until <text> --every <5m> --max <2h> -- gh <gh read args...>
 //                                                   repeat the read until its output shows <text> (a
 //                                                   regular expression, any case), at most --max (6 h),
 //                                                   at least every 4 minutes. Exit 0 when it shows,
 //                                                   1 when the time limit passes first.
-// Use this instead of a `while ... sleep` loop, `watch -n` or a Monitor that polls gh. Exit 2: refused.
+// Use this instead of a `while ... sleep` loop, `watch -n`, gh's --watch or a Monitor that polls gh.
+// Reads are shared through a 4-minute cache keyed by the read, its repository and host. Exit 2: refused.
+const os = require('os');
+const path = require('path');
 const { spawnSync } = require('child_process');
 const WT = require('./lib/watch.js');
 const { whoAmI } = require('./lib/gate-context.js');
@@ -20,8 +23,9 @@ const sleepSync = (s) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 
 
 function main(argv, { cwd = process.cwd(), env = process.env, run, sleep = sleepSync, clock, now } = {}) {
   const who = whoAmI({ cwd, env });
-  const root = who.root || cwd;
-  const read = (args) => WT.ghRead(root, args, { run: run || ghRun(env), now: now ? now() : Date.now() });
+  // outside a project the cache lives in a private temporary folder, never in the working directory
+  const root = who.root || path.join(os.tmpdir(), `delivery-watch-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`);
+  const read = (args) => WT.ghRead(root, args, { run: run || ghRun(env), now: now ? now() : Date.now(), cwd, env });
   const [cmd, ...rest] = argv;
   if (cmd === 'gh') {
     const bad = WT.readProblem(rest);

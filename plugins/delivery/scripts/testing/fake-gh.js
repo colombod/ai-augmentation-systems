@@ -12,6 +12,8 @@ if (!store || !fs.existsSync(store)) fail('gh: not logged in to any hosts (fake)
 const s = JSON.parse(fs.readFileSync(store, 'utf8'));
 // GH_FAKE_LOG: each call appends its arguments, so a test can count the calls that reached gh
 if (process.env.GH_FAKE_LOG) fs.appendFileSync(process.env.GH_FAKE_LOG, `${JSON.stringify(process.argv.slice(2))}\n`);
+// GH_FAKE_DELAY_MS: a slow GitHub, so concurrent callers overlap
+if (process.env.GH_FAKE_DELAY_MS) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.GH_FAKE_DELAY_MS));
 const argv = process.argv.slice(2);
 let repo = null;
 const args = [];
