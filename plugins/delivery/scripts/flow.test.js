@@ -40,3 +40,25 @@ test('R-23: a third open pull request from one builder warns at review request',
   assert.equal(third.code, 0);
   assert.match(third.out, /warning w-.*: builder-1 already has 2 open pull request\(s\) \(PR 1, PR 2\), the limit is 2/);
 });
+
+test('Copilot 864 884: a reassigned in-progress story and each story of a bulk claim count toward the session\'s WIP', () => {
+  const h = harness({ beads: { 'ex-a': story('ex-a', { status: 'in_progress', assignee: 'dev@pc/builder-1' }), 'ex-b': story('ex-b', { status: 'in_progress', assignee: 'dev@pc/builder-2' }), 'ex-c': story('ex-c'), 'ex-d': story('ex-d') } });
+  const moved = h.bash('delivery-lead', 'bd update ex-b --assignee dev@pc/builder-1');
+  assert.equal(moved.deny, null);
+  assert.match(moved.ctx, /builder-1 would hold 2 in progress and 0 queued/);
+  const bulk = h.bash('builder-2', 'bd update ex-c ex-d --claim');
+  assert.equal(bulk.deny, null);
+  assert.match(bulk.ctx, /ex-d: builder-2 would hold 2 in progress and 0 queued/);
+  assert.doesNotMatch(bulk.ctx, /ex-c: builder-2 would hold/);
+});
+
+test('Copilot 925: a pull request closed on GitHub without merging no longer counts as open', () => {
+  const pr = (n, state) => ({ headRefOid: H(n), headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: `a${n}.js`, additions: 5, deletions: 0 }], body: `Refs ex-col-${n}`, title: `t${n}`, ...(state ? { state } : {}) });
+  const beads = Object.fromEntries([1, 2, 3].map((n) => [`ex-col-${n}`, story(`ex-col-${n}`, { assignee: 'dev@pc/builder-1', status: 'in_progress' })]));
+  const h = harness({ beads, prs: { 1: pr(1), 2: pr(2), 3: pr(3) } });
+  const req = (n) => h.bash('delivery-lead', `${h.script('review.js')} request ${n} --reviewer builder-2`);
+  req(1); req(2);
+  h.setPr(1, (p) => { p.state = 'CLOSED'; });
+  h.setPr(2, (p) => { p.state = 'CLOSED'; });
+  assert.doesNotMatch(req(3).out, /open pull request/);
+});

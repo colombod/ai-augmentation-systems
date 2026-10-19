@@ -395,6 +395,8 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
   const recordOk = recordChecker(root, verifyRecord);
   let asked = false;
   let ci = null;
+  // who holds which story after the earlier claims of this command (R-23 WIP, Copilot 884)
+  const held = new Map();
   const judge = async (q, state) => {
     if (!ask || asked || Date.now() + JUDGE_RESERVE_MS > end) return null;
     asked = true;
@@ -491,8 +493,12 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
             ci = AN.ciState(root, { team, gh: (repo, branch) => (left > 1000 ? AN.ghRuns(repo, branch, { cwd: root, timeoutMs: Math.min(4000, left - 500) }) : { unavailable: 'no time left' }) });
           }
           const who = story ? builderOf(p, actor, roleId, instance) : null;
-          const starts = p.sub === 'update' && (p.flags.has('--claim') || statusOf(p) === 'in_progress');
-          findings.push(...AN.claimFindings(bead, { root, parent: inp.parent, fix, stories: stories || [], beadOf, team, ci, builder: who && who.actor, starts, wipPerSession: team && team.budget && team.budget.wip_per_session }));
+          // the status the story ends with: the one written, else in progress on a claim, else as it is (Copilot 864)
+          const status = p.sub === 'update' && statusOf(p) ? statusOf(p) : p.sub === 'update' && p.flags.has('--claim') ? 'in_progress' : bead.status;
+          const starts = status === 'in_progress';
+          const seen = (stories || []).map((s) => (held.has(s.id) ? { ...s, ...held.get(s.id) } : s));
+          findings.push(...AN.claimFindings(bead, { root, parent: inp.parent, fix, stories: seen, beadOf, team, ci, builder: who && who.actor, starts, wipPerSession: team && team.budget && team.budget.wip_per_session }));
+          if (who) held.set(id, { assignee: who.actor, status: starts ? 'in_progress' : 'open' });
         } catch (err) { /* fail open */ }
         const blocks = findings.filter((f) => f.level === 'block');
         for (const f of findings.filter((x) => x.level === 'warn')) add(id, f.code, f.rule, f.detail);
