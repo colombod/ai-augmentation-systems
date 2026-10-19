@@ -148,13 +148,14 @@ function evidenceReads(command) {
 function briefTexts(outputs) {
   const L = require('./lane.js');
   const norm = (x) => String(x || '').replace(/\s+/g, ' ').trim();
+  // the call must be the brief alone: in `plan.js brief && echo '...'` the output is not the brief's
+  // (Copilot 719); no other segment, pipe or redirect
   return (outputs || []).filter((o) => {
     try {
-      return L.splitCommand(String(o.command || '')).some((seg) => {
-        const t = L.tokens(seg);
-        const k = t.findIndex((x, n) => n > 0 && /(?:^|\/)plan\.js$/.test(x));
-        return /(?:^|\/)node$/.test(t[0] || '') && k > 0 && t[k + 1] === 'brief';
-      });
+      const segs = L.splitCommand(String(o.command || ''));
+      if (segs.length !== 1 || /[|<>`]|\$\(/.test(segs[0])) return false;
+      const t = L.tokens(segs[0]);
+      return t.length >= 3 && /(?:^|\/)node$/.test(t[0]) && /(?:^|\/)plan\.js$/.test(t[1]) && t[2] === 'brief';
     } catch (err) { return false; }
   }).map((o) => norm(o.text));
 }

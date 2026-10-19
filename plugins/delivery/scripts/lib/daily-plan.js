@@ -58,15 +58,27 @@ function initiatives(root) {
 }
 
 // A read the views cannot do without: its failure is the command's, never an empty record (B2).
-class ReadError extends Error {}
+// hint: the command that shows the problem (bd where by default)
+class ReadError extends Error { constructor(message, hint = 'bd where') { super(message); this.hint = hint; } }
 function must(fn, what) {
   try { const v = fn(); return v === undefined || v === null ? [] : v; } catch (err) { throw new ReadError(`${what} could not be read (${String(err && err.message ? err.message : err).split('\n')[0]})`); }
+}
+// open owner questions; a broken or missing chain hides its questions, so it refuses the view (Copilot 741)
+function ownerQuestions(root, pending) {
+  const p = must(() => (pending || ((r) => require('./operator-records.js').pending(r, {})))(root), 'the operator records');
+  const problems = p.problems || [];
+  if (problems.length) {
+    const first = problems[0];
+    const text = typeof first === 'string' ? first : first.problem || first.error || first.message || JSON.stringify(first);
+    throw new ReadError(`the operator records could not be read (${problems.length} problem${problems.length > 1 ? 's' : ''}: ${String(text).split('\n')[0]})`, 'operator.js problems');
+  }
+  return p.open_questions || [];
 }
 
 // Everything the sheet, the plan and the brief read. deps: bd (lib/bd.js store), team, now, gh (for
 // pull requests), ci (the main build state), budget, verifyRecord. Throws a ReadError when bd, the owner
 // queue, the operator records or the review records cannot be read, so no view stands on a guess.
-function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord } = {}) {
+function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord, pending } = {}) {
   const W = require('./waves.js');
   const A = require('./assumptions.js');
   const AN = require('./andon.js');
@@ -94,7 +106,7 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord }
   const covered = new Set(unknowns.map((u) => u.spike));
   const openSpikes = spikes.filter((b) => b.status !== 'closed' && !covered.has(b.id));
   const queue = must(() => Q.open(root), 'the owner queue');
-  const questions = must(() => require('./operator-records.js').pending(root, {}).open_questions, 'the operator records');
+  const questions = ownerQuestions(root, pending);
   const ctx = W.contextFor(root, { bd, team, beads: stories, now, verifyRecord, budget, budgetOpts });
   must(() => bd.ready && bd.ready(), 'bd');
   const { ranked, byId } = W.selectRanked(bd, stories, ctx);
@@ -106,7 +118,9 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord }
     const b = byId.get(r.id) || known.get(r.id);
     if (!b) return false;
     const blocks = [...AN.claimFindings(b, { root, parent: b.parent ? beadOf(b.parent) : null, fix: ctx.fixOf(b), stories, beadOf, team, now, ci: ciState }),
-      ...(G.isStoryBead(b) ? A.forStory(root, b, { bd, team, verifyRecord, atClaim: true, regs: regsAt }).findings : [])].filter((x) => x.level === 'block');
+      ...(G.isStoryBead(b) ? A.forStory(root, b, { bd, team, verifyRecord, atClaim: true, regs: regsAt }).findings : []),
+      // the area pause on a refuted external assumption, each story read against its own initiative (Copilot 778)
+      ...(G.isStoryBead(b) ? [A.areaAndon(b, stories, (s) => regsAt.rowsFor(G.initiativeOf(s)))].filter(Boolean) : [])].filter((x) => x.level === 'block');
     return !blocks.length;
   };
   const next = ranked.filter((r) => !r.refused && admitted(r)).slice(0, 3);
@@ -141,9 +155,14 @@ function items(f) {
     const a = u.a;
     const ref = `${u.slug}/${a.id}`;
     if (a.status === 'refuted') out.push(item(3, 'unknown', 'design', ref, `${a.id} of ${u.slug} was refuted: change the design (assumptions.js add, retire, relink --initiative ${u.slug}), then ask the Delivery Manager to materialise`, u.plain[0], t, [ref, u.spike]));
-    else if (a.status === 'observed') {
-      const fn = a.owner === 'owner' ? 'decide_spike' : a.owner === 'product-manager' ? 'decide_pm' : 'decide';
-      out.push(item(3, 'unknown', fn, ref, `${a.id} of ${u.slug} was observed on ${u.spike}: its decision owner acknowledges the result (assumptions.js ack)`, u.plain[0], t, [ref, u.spike]));
+    else if (a.status === 'observed' && a.owner === 'owner') {
+      // the owner decides: the Chief of Staff asks in the question box and records it; the Delivery
+      // Manager, who can run assumptions.js ack, acknowledges citing that record (Copilot 800)
+      out.push(item(3, 'owner-decision', 'decide_spike', ref, `ask the owner to decide on the result of ${a.id} of ${u.slug} in a question box (operator.js ask), record the answer scoped to ${u.spike}, then send the record to the Delivery Manager`, u.plain[0], t, [ref, u.spike]));
+      out.push(item(3, 'unknown', 'decide', ref, `once the Chief of Staff sends the owner's record: assumptions.js ack ${u.spike} --result ${a.evidence} --decision '<the owner's decision>' --record <dec-id>`, u.plain[0], t, [ref, u.spike]));
+    } else if (a.status === 'observed') {
+      const fn = a.owner === 'product-manager' ? 'decide_pm' : 'decide';
+      out.push(item(3, 'unknown', fn, ref, `${a.id} of ${u.slug} was observed on ${u.spike}: its decision owner acknowledges the result (assumptions.js ack ${u.spike} --result ${a.evidence} --decision '<decision>')`, u.plain[0], t, [ref, u.spike]));
     } else out.push(item(3, 'unknown', 'probe', ref, `${a.id} of ${u.slug} is still assumed: dispatch the Reality Checker's probe in the real host on spike ${u.spike} before any story on it`, u.plain[0], t, [ref, u.spike]));
   }
   for (const b of f.spikes) out.push(item(3, 'spike', 'spike', b.id, `run spike ${b.id}: ${b.title || ''}`.trim(), `${b.title || 'A technical question'}: being checked`, t));
@@ -336,9 +355,11 @@ function sheet(f, { verifyRecord } = {}) {
   line('Budget', units.value !== null ? `${units.value} units a week, set by the owner${f.budget && f.budget.set ? `; ${require('./budget.js').units(f.budget.remaining)} left` : ''}` : 'not set by the owner, so budget checks only warn', [units.value !== null ? units.from : null]);
   const env = Goal.resolve(root, 'budget.usage_envelope', { verifyRecord, warn: false });
   if (env.value !== null) line('Budget', `at most ${env.value}% of the weekly allowance, set by the owner`, [env.from]);
+  // waves counted by the same evidence-backed rule as "checked" above (Copilot 810)
   for (const x of f.areas.values()) {
-    const w = W.waveLine(x);
-    if (w) line('Current wave', w, x.current ? x.waves.get(x.current).map((b) => b.id) : []);
+    const w = W.waveLine(x, { checked: f.checked });
+    const cur = W.currentWave(x, { checked: f.checked });
+    if (w) line('Current wave', w, cur ? x.waves.get(cur).map((b) => b.id) : []);
   }
   for (const u of f.unknowns) for (const p of u.plain) line('Blocking unknowns', p, [u.a.id, u.spike]);
   for (const b of f.spikes) line('Blocking unknowns', `${b.title || 'A technical question'}: being checked`, [b.id]);

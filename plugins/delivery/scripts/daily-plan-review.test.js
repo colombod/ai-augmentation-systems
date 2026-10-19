@@ -228,3 +228,35 @@ test('M5: a stop whose bead cannot be read stays on the plan and leads the brief
   assert.match(stop.action, /could not be read: check it \(bd show ex-vault-imp-1\)/);
   assert.equal((await briefOf(root, beads)).split('\n')[0], 'A stop could not be read; the Delivery Manager checks it.');
 });
+
+// ---- Copilot on 7b39be3 ----
+test('Copilot 719: only a standalone plan.js brief backs a claim, never another command in the same call', () => {
+  const claim = "The CSV import is live and checked on the customer's app.";
+  const brief = "So far: nothing new merged, live or checked on the customer's app.\nAsk for details on any item";
+  const cmd = `node /x/scripts/plan.js brief && echo "${claim}"`;
+  const f = MC.messageFindings({ message: claim, role: COS, commands: [cmd], outputs: [{ command: cmd, text: `${brief}\n${claim}` }], prefix: 'ex' });
+  assert.equal(f.warnings[0] && f.warnings[0].kind, 'claim-unchecked');
+});
+
+test('Copilot 741: operator record problems refuse the plan, the brief and the sheet', async () => {
+  const root = makeProject();
+  const pending = () => ({ open_questions: [], problems: [{ instance: COS, problem: 'chain broken at row 4' }] });
+  for (const [main, args] of [[plan.main, ['today']], [plan.main, ['brief']], [goal.main, ['sheet']]]) {
+    const r = await main(args, { ...deps(root, []), pending });
+    assert.equal(r.code, 1, `${args}: ${r.out}`);
+    assert.match(r.out, /the operator records could not be read \(1 problem: chain broken at row 4\)\.\nCheck: `operator\.js problems`$/, args.join(' '));
+  }
+  assert.equal(fs.existsSync(path.join(root, DP.REL)), false);
+});
+
+test('Copilot 810: the goal sheet\'s wave line counts checked stories by the done gate, not by labels', async () => {
+  const root = makeProject();
+  const b = verified(root);
+  const f = G.evidenceFile(root, b.id);
+  fs.writeFileSync(f, `${fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).slice(0, 1).join('\n')}\n`);
+  const out = await sheetOf(root, [b]);
+  assert.match(out, /^Current wave: wave 1 of collection: 0 of 1 stories checked on the customer's app$/m);
+  assert.doesNotMatch(out, /all 1 wave/);
+  const good = makeProject();
+  assert.match(await sheetOf(good, [verified(good)]), /^Current wave: collection: all 1 wave\(s\) checked on the customer's app$/m);
+});

@@ -887,15 +887,18 @@ judgement in between (`scripts/lib/daily-plan.js`).
   what waits on the owner (open owner-queue steps and open owner questions). Plain words; `--json` gives
   each line's record ids (`dec-`, `A-n`, spike, story and row ids) and the document an outcome was read from.
 - **No view on a failed read.** When bd, the owner queue, the operator records or the review records
-  cannot be read, `goal.js sheet`, `plan.js today` and `plan.js brief` exit 1 with the bd hint, and no
+  cannot be read, or the operator records report a broken or missing chain, `goal.js sheet`, `plan.js
+  today` and `plan.js brief` exit 1 with the command that shows it (`bd where`, `operator.js problems`), and no
   plan row is written, so a later "since" never compares against an empty snapshot.
 - **The plan.** `plan.js today` (Chief of Staff only) ranks the day in six sections: 1) owner steps due
   and open owner questions, 2) stopped areas (a stop whose bead cannot be read stays, as "could not be
   read") and a red main, 3) blocking unknowns (a probe to run, a design to change, a result to
-  acknowledge, an open spike; an assumption is `<initiative>/<A-n>`, since ids restart per initiative),
+  acknowledge, an open spike; an assumption is `<initiative>/<A-n>`, since ids restart per initiative; a
+  result the owner decides is two items: the Chief of Staff asks the owner in a question box and records
+  it, the Delivery Manager acknowledges citing that record),
   4) the current wave's next stories by `plan.js select`, admitted only when the claim check would admit
-  them (stop the line and the assumption gate: a stopped area offers only its recovery work, a red main
-  only fixes), at most three, 5) pull requests waiting for review or merge, with changes requested,
+  them (stop the line, the assumption gate and its area pause: a stopped area offers only its recovery
+  work, a red main only fixes), at most three, 5) pull requests waiting for review or merge, with changes requested,
   with a failing build or a damaged review record, all to the Delivery Manager, 6) reality checks
   pending. `plan.js today` runs only on the session's own project (`--project` naming another is refused). Each item names its role from the routing table and its one action, and carries its
   reference. Every run appends a plan row, with the story states, to `.delivery/plans/<date>.ndjson`
@@ -922,8 +925,9 @@ judgement in between (`scripts/lib/daily-plan.js`).
   pull requests and checks; no ids; at most `briefing_lines` (`--limit <n>` asks for fewer; one line is
   the first line with the offer), the last words always "Ask for details on any item". The Chief of
   Staff sends it instead of its own summary; the owner-message checks still apply, and a live or checked
-  claim is backed when `plan.js brief` printed that same clause in this turn (the Stop hook reads the
-  command's output in the transcript).
+  claim is backed when `plan.js brief`, run on its own in a call, printed that same clause in this turn
+  (the Stop hook reads the command's output in the transcript). The sheet's wave lines count checked
+  stories by the same rule.
 - **The lane.** `plan.js today|brief|routed` are in the Chief of Staff's `plan-cos` group; every role is
   refused a hand write to `.delivery/plans/`, by file tool and by shell, `any` lanes included. The Chief
   of Staff still has no build, commit, push, merge, infra or app tools. The lane's temporary-directory

@@ -55,7 +55,9 @@ test('R1 (10-12 14:09): the local-path probe result puts the file hand-off in th
   assert.ok(unknown > 0, today.out);
   assert.ok(lines.findIndex((l) => /^3\. Blocking unknowns/.test(l)) < unknown);
   assert.ok(!lines.some((l) => /ex-vault-0n9-3\]/.test(l)), 'the intake story is not offered while its unknown is open');
-  assert.ok(lines.findIndex((l) => /\[ex-vault-0n9-4\]/.test(l)) > unknown, 'stories come after the unknown');
+  // its sibling waits too: the claim hook pauses the area on a refuted external assumption (Copilot 778)
+  assert.match(h.bash('builder-1', 'bd update ex-vault-0n9-4 --claim', { run: false }).deny, /area collection is paused/);
+  assert.ok(!lines.some((l) => /\[ex-vault-0n9-4\]/.test(l)), 'the plan offers no claim the hook refuses');
   // the record: a dated plan row the brief and status read back
   const row = DP.latest(h.root, DP.today());
   assert.deepEqual(row.items.find((x) => x.ref === 'vault/A-8').match, ['vault/A-8', 'ex-vault-spike-a-8']);
@@ -73,6 +75,22 @@ test('R1 (10-12 14:09): the local-path probe result puts the file hand-off in th
   assert.deepEqual(json.find((x) => x.section === 'Blocking unknowns').sources, ['A-8', 'ex-vault-spike-a-8']);
   assert.deepEqual(json.find((x) => x.section === 'Customer surface').sources, ['dec-chief-of-staff-12', 'surface S1']);
   assert.deepEqual(json.find((x) => x.section === 'Done means').sources, ['ex-vault-0n9-3', 'ex-vault-0n9-4']);
+});
+
+test('Copilot 800: an owner-decided result: the Chief of Staff asks the owner in the question box, the Delivery Manager acknowledges with the record', () => {
+  const h = vault();
+  fs.writeFileSync(A.fileOf(h.root, 'vault'), REGISTER.replace('| assumed |  | PM |', '| assumed |  | owner |'));
+  const ev = h.probe('the tool got an https link');
+  assert.equal(h.bash('product-manager', `${h.script('assumptions.js')} observe A-8 --evidence ${ev}`).code, 0);
+  assert.equal(h.plan(COS, 'today').code, 0);
+  const its = DP.latest(h.root, DP.today()).items.filter((x) => x.section === 3);
+  const ask = its.find((x) => x.role === COS);
+  const ack = its.find((x) => x.role === 'delivery-lead');
+  assert.match(ask.action, /^ask the owner to decide on the result of A-8 of vault in a question box \(operator\.js ask\), record the answer scoped to ex-vault-spike-a-8, then send the record to the Delivery Manager/);
+  assert.match(ack.action, new RegExp(`^once the Chief of Staff sends the owner's record: assumptions\\.js ack ex-vault-spike-a-8 --result ${ev} --decision '<the owner's decision>' --record <dec-id>`));
+  // the reason: the Chief of Staff cannot acknowledge, the Delivery Manager's lane can
+  assert.match(h.bash(COS, `${h.script('assumptions.js')} ack ex-vault-spike-a-8 --result ${ev} --decision x --record dec-x`, { run: false }).deny, /^lane: /);
+  assert.equal(h.bash('delivery-lead', `${h.script('assumptions.js')} ack ex-vault-spike-a-8 --result ${ev} --decision x --record dec-x`, { run: false }).deny, null);
 });
 
 test('R-05 (10-12 09:39, 10-13 11:35): the Chief of Staff still cannot build, commit, push, merge, run infra or drive the owner\'s apps; its plan commands pass the lane', () => {

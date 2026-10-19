@@ -32,7 +32,7 @@ function parse(argv) {
 
 // judged: the typed judge's goal_instruction answer for a set ({ p, model }), asked by the CLI when the
 // judge is on (see judgeFor); undefined means the judge is off and the rule alone decides.
-function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, verifyRecord, bd, judged, recordQuestion, gh, ci, budget } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, verifyRecord, bd, judged, recordQuestion, gh, ci, budget, pending } = {}) {
   const a = parse(argv);
   const who = given || whoAmI({ cwd, env, project: a.project });
   if (!who.root) return { code: 2, out: 'goal.js: no project found; pass --project <root>' };
@@ -49,9 +49,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, v
     const DP = require('./lib/daily-plan.js');
     const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 });
     let rows;
-    try { rows = DP.sheet(DP.facts(who.root, { bd: store, team: who.team, now, gh, ci, budget, verifyRecord }), { verifyRecord }); } catch (err) {
+    try { rows = DP.sheet(DP.facts(who.root, { bd: store, team: who.team, now, gh, ci, budget, verifyRecord, pending }), { verifyRecord }); } catch (err) {
       if (!(err instanceof DP.ReadError)) throw err;
-      return { code: 1, out: `goal.js: ${err.message}.\nCheck: \`bd where\`` };
+      return { code: 1, out: `goal.js: ${err.message}.\nCheck: \`${err.hint}\`` };
     }
     if (a.json) return { code: 0, out: JSON.stringify(rows, null, 2) };
     const lines = [];

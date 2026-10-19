@@ -45,7 +45,7 @@ function budgetLines(st, A, team) {
   return lines;
 }
 
-async function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: givenBd, now, budget, budgetOpts, ask, gh, ci } = {}) {
+async function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: givenBd, now, budget, budgetOpts, ask, gh, ci, pending } = {}) {
   const args = argv.filter((a) => !['--json', '--record'].includes(a));
   const json = argv.includes('--json');
   const recordIt = argv.includes('--record');
@@ -59,7 +59,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, who: given, 
   if (!who.root) return { code: 2, out: 'plan.js: no project found; pass --project <root>' };
   // the day's plan is the Chief of Staff's own project's: never another one named on the command line
   if (cmd === 'today' && project !== undefined && require('path').resolve(project) !== require('path').resolve(who.root)) return { code: 1, out: 'plan.js: the plan is for your own project.\nRun it there: `plan.js today`' };
-  if (['today', 'brief', 'routed'].includes(cmd)) return daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json, limit });
+  if (['today', 'brief', 'routed'].includes(cmd)) return daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json, limit, pending });
   if (!['budget', 'select'].includes(cmd)) return { code: 2, out: USAGE };
   if (recordIt) { const p = writerProblem(who); if (p) return { code: 1, out: `plan.js: ${p}` }; }
   const bd = givenBd || require('./lib/bd.js').makeBd({ cwd: who.root });
@@ -128,7 +128,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, who: given, 
 
 // ---- the Chief of Staff's day (lib/daily-plan.js) ----
 const ROUTE_HINT = 'Send each item to its role with SendMessage, carrying its reference in [brackets]; `plan.js routed` lists what is not sent yet.';
-function daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json, limit: asked }) {
+function daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json, limit: asked, pending }) {
   const DP = require('./lib/daily-plan.js');
   if (cmd === 'routed') {
     const u = DP.unrouted(who.root, { now });
@@ -143,9 +143,9 @@ function daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json, l
   const bd = givenBd || require('./lib/bd.js').makeBd({ cwd: who.root });
   let f;
   // a record that cannot be read refuses the plan and the brief: no snapshot from a failed read (B2)
-  try { f = DP.facts(who.root, { bd, team: who.team, now, gh, ci, budget, budgetOpts }); } catch (err) {
+  try { f = DP.facts(who.root, { bd, team: who.team, now, gh, ci, budget, budgetOpts, pending }); } catch (err) {
     if (!(err instanceof DP.ReadError)) throw err;
-    return { code: 1, out: `plan.js: ${err.message}.\nCheck: \`bd where\`` };
+    return { code: 1, out: `plan.js: ${err.message}.\nCheck: \`${err.hint}\`` };
   }
   if (cmd === 'brief') {
     const own = require('./lib/goal.js').value(who.root, 'briefing_lines', { warn: false }) || 12;

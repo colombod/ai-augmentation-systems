@@ -49,14 +49,22 @@ function areas(beads, { except } = {}) {
 }
 const started = (stories, except) => stories.some((b) => b.id !== except && built(b));
 
+// checked(b): an evidence-backed check (the daily plan's, from the done gate); by default the
+// state-verified label. The current wave is the lowest with a story neither checked nor cut.
+const isChecked = (checked) => checked || ((b) => G.stateOf(b) === 'verified');
+function currentWave(x, { checked } = {}) {
+  if (!checked) return x.current;
+  return (x.order || []).find((n) => x.waves.get(n).some((b) => G.stateOf(b) !== 'cut' && !checked(b))) || null;
+}
 // "wave 2 of import: 3 of 5 stories checked on the customer's app"
-function waveLine(x) {
+function waveLine(x, { checked } = {}) {
   if (!x.order || !x.order.length) return null;
-  if (!x.current) return `${x.area}: all ${x.order.length} wave(s) checked on the customer's app`;
-  const s = x.waves.get(x.current);
-  const done = s.filter((b) => G.stateOf(b) === 'verified').length;
+  const cur = currentWave(x, { checked });
+  if (!cur) return `${x.area}: all ${x.order.length} wave(s) checked on the customer's app`;
+  const s = x.waves.get(cur);
+  const done = s.filter((b) => G.stateOf(b) !== 'cut' && isChecked(checked)(b)).length;
   const cut = s.filter((b) => G.stateOf(b) === 'cut').length;
-  return `wave ${x.current} of ${x.area}: ${done} of ${s.length - cut} stories checked on the customer's app${cut ? ` (${cut} cut)` : ''}`;
+  return `wave ${cur} of ${x.area}: ${done} of ${s.length - cut} stories checked on the customer's app${cut ? ` (${cut} cut)` : ''}`;
 }
 
 // ---- files touched (parallel builders take file-disjoint stories, R-23) ----
@@ -380,4 +388,4 @@ function selectRanked(bd, stories, ctx) {
   return { ranked: rank(candidates, ctx), byId: new Map(candidates.map((b) => [b.id, b])) };
 }
 
-module.exports = { selectRanked, contextFor, waveOf, areas, waveLine, overlap, fixLink, roadmapAreas, areaReason, claimFindings, rank, candidate, FIX_LABELS, finished, built };
+module.exports = { currentWave, selectRanked, contextFor, waveOf, areas, waveLine, overlap, fixLink, roadmapAreas, areaReason, claimFindings, rank, candidate, FIX_LABELS, finished, built };
