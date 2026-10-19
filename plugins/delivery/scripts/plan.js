@@ -6,13 +6,20 @@
 //                                      compounding work by score, then new areas; the budget decides
 //                                      what may start now. --record (the Delivery Manager) writes the
 //                                      score and reasons on the chosen bead and the warnings in the ledger
+//   plan.js today [--json]             the Chief of Staff's ranked plan for the day, from the record only:
+//                                      owner steps due, stops, blocking unknowns, the current wave's next
+//                                      stories (select), pull requests waiting, reality checks pending; each
+//                                      item names its role and its one action. Appends the dated plan record
+//   plan.js brief                      the owner's briefing in plain words: outcome first, no ids, at most
+//                                      briefing_lines, ending "Ask for details on any item"
+//   plan.js routed [--json]            today's items not yet sent to their role, and any sent to the wrong one
 // With the typed judge on, builds_on_verified and is_fix are asked as advisory input.
 // Exit codes: 0 ok; 1 refused; 2 usage.
 const W = require('./lib/waves.js');
 const B = require('./lib/budget.js');
 const { whoAmI, writerProblem } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: plan.js budget [--json] | plan.js select [--record] [--json]';
+const USAGE = 'usage: plan.js budget [--json] | plan.js select [--record] [--json] | plan.js today [--json] | plan.js brief | plan.js routed [--json]';
 const n1 = B.n1;
 
 function budgetLines(st, A, team) {
@@ -38,7 +45,7 @@ function budgetLines(st, A, team) {
   return lines;
 }
 
-async function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: givenBd, now, budget, budgetOpts, ask } = {}) {
+async function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: givenBd, now, budget, budgetOpts, ask, gh, ci } = {}) {
   const args = argv.filter((a) => !['--json', '--record'].includes(a));
   const json = argv.includes('--json');
   const recordIt = argv.includes('--record');
@@ -47,6 +54,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, who: given, 
   const [cmd] = args;
   const who = given || whoAmI({ cwd, env, project });
   if (!who.root) return { code: 2, out: 'plan.js: no project found; pass --project <root>' };
+  if (['today', 'brief', 'routed'].includes(cmd)) return daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json });
   if (!['budget', 'select'].includes(cmd)) return { code: 2, out: USAGE };
   if (recordIt) { const p = writerProblem(who); if (p) return { code: 1, out: `plan.js: ${p}` }; }
   const bd = givenBd || require('./lib/bd.js').makeBd({ cwd: who.root });
@@ -62,16 +70,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, who: given, 
   }
 
   // select
-  // bd's own readiness (no open blocker) when the store has it; fix beads need not be stories
-  let pool;
-  let readyIds = null;
-  try {
-    if (typeof bd.ready === 'function') { pool = bd.ready(); readyIds = new Set(pool.map((b) => b.id)); } else pool = bd.list({});
-  } catch (err) { pool = []; readyIds = new Set(); }
-  const seen = new Set(stories.map((b) => b.id));
-  const candidates = [...stories, ...pool.filter((b) => !seen.has(b.id))].filter(W.candidate).filter((b) => !readyIds || readyIds.has(b.id));
-  const ranked = W.rank(candidates, ctx);
-  const byId = new Map(candidates.map((b) => [b.id, b]));
+  const { ranked, byId } = W.selectRanked(bd, stories, ctx);
   // the typed judge, advisory: is_fix on labelled fixes, builds_on_verified on the top three
   const J = require('./lib/judge.js');
   const cfg = J.judgeConfig(who.team, env);
@@ -119,6 +118,39 @@ async function main(argv, { cwd = process.cwd(), env = process.env, who: given, 
   if (warns.length) { lines.push('Warnings:'); for (const w of warns) lines.push(`- ${w}`); }
   if (!ranked.length) lines.push('Nothing ready.');
   if (recorded) lines.push(`Recorded the selection on ${recorded}.`);
+  return { code: 0, out: lines.join('\n') };
+}
+
+// ---- the Chief of Staff's day (lib/daily-plan.js) ----
+const ROUTE_HINT = 'Send each item to its role with SendMessage, carrying its reference in [brackets]; `plan.js routed` lists what is not sent yet.';
+function daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json }) {
+  const DP = require('./lib/daily-plan.js');
+  if (cmd === 'routed') {
+    const u = DP.unrouted(who.root, { now });
+    if (json) return { code: 0, out: JSON.stringify(u, null, 2) };
+    if (!u.plan) return { code: 0, out: 'No plan for today yet: `plan.js today`' };
+    const lines = [u.open.length ? `${u.open.length} of ${u.total} items not sent yet:` : `All ${u.total} items sent to their roles.`];
+    for (const it of u.open) lines.push(`- ${DP.ROLE_WORD[it.role] || it.role} (${it.instance}): ${it.action} [${it.ref}]`);
+    for (const m of u.misroutes) lines.push(`Misrouted: ${m.key} went to ${m.to || 'an unknown session'}; send it to its role.`);
+    return { code: 0, out: lines.join('\n') };
+  }
+  if (cmd === 'today' && who.roleId !== 'chief-of-staff') return { code: 1, out: 'plan.js: the Chief of Staff writes the day\'s plan.\nMessage the Chief of Staff, or read it: `plan.js routed`' };
+  const bd = givenBd || require('./lib/bd.js').makeBd({ cwd: who.root });
+  const f = DP.facts(who.root, { bd, team: who.team, now, gh, ci, budget, budgetOpts });
+  if (cmd === 'brief') {
+    const limit = require('./lib/goal.js').value(who.root, 'briefing_lines', { warn: false }) || 12;
+    return { code: 0, out: DP.brief(f, { prev: DP.previous(who.root, DP.today(now)), limit }).join('\n') };
+  }
+  let row;
+  try { row = DP.record(who.root, f, { by: who.instance, now }); } catch (err) { return { code: 1, out: `plan.js: the plan was not recorded (${String(err.message).split('\n')[0]}).\nRetry: \`plan.js today\`` }; }
+  if (json) return { code: 0, out: JSON.stringify(row, null, 2) };
+  const lines = [`Plan for ${DP.today(row.at)}: ${row.items.length} item${row.items.length === 1 ? '' : 's'}, from the record.`];
+  DP.SECTIONS.forEach((name, i) => {
+    const its = row.items.filter((x) => x.section === i + 1);
+    lines.push(`${i + 1}. ${name}: ${its.length ? '' : 'none'}`.trimEnd());
+    for (const it of its) lines.push(`   - ${it.role === 'chief-of-staff' ? 'you' : `${DP.ROLE_WORD[it.role] || it.role} (${it.instance})`}: ${it.action} [${it.ref}]`);
+  });
+  lines.push(ROUTE_HINT);
   return { code: 0, out: lines.join('\n') };
 }
 

@@ -367,4 +367,17 @@ function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now, dea
 // Open, unclaimed story or fix beads that are not finished: what select ranks.
 const candidate = (b) => b && b.status === 'open' && !b.assignee && !finished(b) && (G.isStoryBead(b) || FIX_LABELS.some((l) => (b.labels || []).includes(l)));
 
-module.exports = { contextFor, waveOf, areas, waveLine, overlap, fixLink, roadmapAreas, areaReason, claimFindings, rank, candidate, FIX_LABELS, finished, built };
+// What select ranks: bd's own readiness (no open blocker) when the store has it; fix beads need not be
+// stories. { ranked, byId }; plan.js select and the daily plan (lib/daily-plan.js) read the same ranking.
+function selectRanked(bd, stories, ctx) {
+  let pool;
+  let readyIds = null;
+  try {
+    if (typeof bd.ready === 'function') { pool = bd.ready(); readyIds = new Set(pool.map((b) => b.id)); } else pool = bd.list({});
+  } catch (err) { pool = []; readyIds = new Set(); }
+  const seen = new Set(stories.map((b) => b.id));
+  const candidates = [...stories, ...pool.filter((b) => !seen.has(b.id))].filter(candidate).filter((b) => !readyIds || readyIds.has(b.id));
+  return { ranked: rank(candidates, ctx), byId: new Map(candidates.map((b) => [b.id, b])) };
+}
+
+module.exports = { selectRanked, contextFor, waveOf, areas, waveLine, overlap, fixLink, roadmapAreas, areaReason, claimFindings, rank, candidate, FIX_LABELS, finished, built };

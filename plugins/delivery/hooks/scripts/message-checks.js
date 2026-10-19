@@ -14,7 +14,7 @@
 //   ids      internal ids and codes (R-34, D5, bead ids, dec-/ev-/q- ids, paths, script and hook names,
 //            commit shas), except in links and when the owner's last message asked for them: warn.
 //   tone     the judge's tone_violation (justifying, condescending, therapeutic) and jargon: warn.
-//   claim    live, shipped or verified without an evidence read (evidence.js check or list) in this turn's
+//   claim    live, shipped or verified without an evidence read (evidence.js check or list, plan.js brief) in this turn's
 //            commands, unless the message says "not checked yet": warn.
 // Every warning goes to the ledger and is said once on the next prompt. Nothing here throws.
 const RG = require('./relay-guard.js');
@@ -137,6 +137,10 @@ function evidenceReads(command) {
       if (!t.length || !/(?:^|\/)node$/.test(t[0])) continue;
       const i = t.findIndex((x, k) => k > 0 && /(?:^|\/)evidence\.js$/.test(x));
       if (i > 0 && ['check', 'list'].includes(t[i + 1])) out.push(t[i + 2] || '');
+      // plan.js brief says "checked on the customer's app" only for stories whose evidence chain
+      // verifies with a pass row, so reading it counts as an evidence read (no bead named)
+      const k = t.findIndex((x, n) => n > 0 && /(?:^|\/)plan\.js$/.test(x));
+      if (k > 0 && t[k + 1] === 'brief') out.push('');
     }
   } catch (err) { /* nothing counts */ }
   return out;

@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 // scripts/goal.js — the goal sheet's constraint fields (lib/goal.js) at the command line (R-42).
 //   goal.js show [--json] [--project <root>]
+//   goal.js sheet [--json]                             the one-page goal from the records (R-01): outcome,
+//                                                       customer surface, done, budget, current waves,
+//                                                       blocking unknowns, what waits on the owner; --json
+//                                                       gives each line's record ids
 //   goal.js ask <field> <value>                        records goal.js's own question for the change (Yes/No)
 //   goal.js set <field> <value> --record <dec-id>     on the owner's yes to that question, recorded with
 //                                                       operator.js record --answers <q> --goal <field>=<value>;
@@ -12,7 +16,7 @@
 const Goal = require('./lib/goal.js');
 const { whoAmI } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: goal.js show [--json] | goal.js ask <field> <value> | goal.js set <field> <value> --record <dec-id> | goal.js pause --trigger andon:<failed evidence row id>';
+const USAGE = 'usage: goal.js show [--json] | goal.js sheet [--json] | goal.js ask <field> <value> | goal.js set <field> <value> --record <dec-id> | goal.js pause --trigger andon:<failed evidence row id>';
 
 function parse(argv) {
   const out = { _: [], json: false };
@@ -28,7 +32,7 @@ function parse(argv) {
 
 // judged: the typed judge's goal_instruction answer for a set ({ p, model }), asked by the CLI when the
 // judge is on (see judgeFor); undefined means the judge is off and the rule alone decides.
-function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, verifyRecord, bd, judged, recordQuestion } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, verifyRecord, bd, judged, recordQuestion, gh, ci, budget } = {}) {
   const a = parse(argv);
   const who = given || whoAmI({ cwd, env, project: a.project });
   if (!who.root) return { code: 2, out: 'goal.js: no project found; pass --project <root>' };
@@ -40,6 +44,18 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given, v
       return { code: 0, out: JSON.stringify({ values, fields: g.fields, pause: Goal.activePause(who.root, { verifyRecord, beadOf: beadReader(who, bd) }) }, null, 2) };
     }
     return { code: 0, out: Goal.showLines(who.root, { verifyRecord, beadOf: beadReader(who, bd) }).join('\n') };
+  }
+  if (cmd === 'sheet') {
+    const DP = require('./lib/daily-plan.js');
+    const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 });
+    const rows = DP.sheet(DP.facts(who.root, { bd: store, team: who.team, now, gh, ci, budget, verifyRecord }), { verifyRecord });
+    if (a.json) return { code: 0, out: JSON.stringify(rows, null, 2) };
+    const lines = [];
+    for (const r of rows) {
+      if (!lines.length || lines[lines.length - 1].section !== r.section) lines.push({ section: r.section, items: [] });
+      lines[lines.length - 1].items.push(r.text);
+    }
+    return { code: 0, out: lines.map((g) => (g.items.length === 1 ? `${g.section}: ${g.items[0]}` : `${g.section}:\n${g.items.map((t) => `- ${t}`).join('\n')}`)).join('\n') };
   }
   if (cmd === 'ask' && field && value !== undefined) {
     // the question is worded here, never by the session, so a yes means exactly this change

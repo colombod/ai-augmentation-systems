@@ -4,7 +4,7 @@ touches_code: false
 default_model: opus
 mode: delegate
 composes: agents/chief-of-staff.md
-lane_bash: read, git-read, gh-read, bd-read, bd-notes, bd-create-child, operator-read, operator-write, goal-write, owner-queue, judge
+lane_bash: read, git-read, gh-read, bd-read, bd-notes, bd-create-child, operator-read, operator-write, goal-write, owner-queue, plan-cos, judge
 lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 

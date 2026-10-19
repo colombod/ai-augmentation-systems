@@ -29,7 +29,7 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/surface.js", "sub": ["check", "show"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/ready.js", "flags_none": ["--record", "--owner-record"], "native_allow": false },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/evidence.js", "sub": ["list", "check"] },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/goal.js", "sub": ["show"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/goal.js", "sub": ["show", "sheet"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/owner-queue.js", "sub": ["list"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/reality-check.js", "sub": ["show"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/wave.js", "sub": ["show"] },
@@ -125,6 +125,9 @@
   ],
   "goal-write": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/goal.js", "sub": ["ask", "set", "pause"] }
+  ],
+  "plan-cos": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/plan.js", "sub": ["today", "brief", "routed"] }
   ],
   "owner-queue": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/owner-queue.js", "sub": ["add", "done"] }

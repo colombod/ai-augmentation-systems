@@ -694,6 +694,15 @@ function andonDirs({ projectRoot, roleDir }) {
   if (roleDir) out.push(realish(path.join(String(roleDir), 'project', ANDON_REL)));
   return out;
 }
+// The day's plans (.delivery/plans/, R-02): written only by plan.js today and the route check (node
+// processes), so what was planned and sent stays the record. Protected for every role, `any` included.
+const PLANS_REL = path.join('.delivery', 'plans');
+const PLANS_REASON = 'the day\'s plans in .delivery/plans/ are written only by `plan.js today`; read them with `plan.js routed`';
+const PLANS_MENTION = /\.delivery\/+(?:\.\/+)*plans(?=\/|[\s'";|&)>]|$)/i;
+const planDirs = ({ projectRoot, roleDir }) => [
+  ...(projectRoot && path.isAbsolute(String(projectRoot)) ? [realish(path.join(String(projectRoot), PLANS_REL))] : []),
+  ...(roleDir ? [realish(path.join(String(roleDir), 'project', PLANS_REL))] : []),
+];
 // The assumption register (R-14): the gates read its rows, so only scripts/assumptions.js writes it (a
 // node process, not a tool call). Protected for every role, `any` included, the Product Manager too;
 // best effort, like the goal sheet. The gates also re-verify each row against its evidence.
@@ -869,6 +878,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       if (registerHit({ projectRoot, roleDir })(p)) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
       if (underOperator(p, prReviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
       if (underOperator(p, andonDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${ANDON_REASON}.` };
+      if (underOperator(p, planDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
       if (!REVIEW_WRITERS.includes(pol.roleId) && underOperator(p, reviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
       if (harnessFile(p)) continue;
       if (pathAllowed(p, { roleDir, writes: pol.writes, pluginRoot: pluginRootOf({ pluginRoot }) })) continue;
@@ -895,6 +905,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (usageShellWrite(command, { cwd, mention: REGISTER_MENTION, hit: registerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: prReviewDirs({ projectRoot, roleDir }), mention: PR_REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: andonDirs({ projectRoot, roleDir }), mention: ANDON_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${ANDON_REASON}.` };
+    if (usageShellWrite(command, { cwd, dirs: planDirs({ projectRoot, roleDir }), mention: PLANS_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (bash.includes('any')) return { allow: true };
