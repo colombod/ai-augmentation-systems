@@ -344,7 +344,7 @@ What `verify` proves and what it does not is listed under **Limits** in the READ
 
 - **Provisioning and deploy are manual.** `/delivery:start` writes the manifest and prepares the roles on this host, but you still start each session yourself, and adding a host or a role later means editing `team.json` and running `start.js` (or `prepare-role`) again.
 - **The roster is per host.** `/delivery:team` reports only the roles on the host it runs on.
-- **Nothing restarts a session for you.** When a session ends, start it again in its role directory; the SessionStart hook restores the role.
+- **The watchdog is yours to install.** A session that stopped (a usage limit, a closed terminal) is woken by a host job only if you install it once per host: `node <plugin-root>/scripts/watchdog.js install` shows what it writes, `--apply` writes it ([details](reference.md#the-watchdog-stalls-and-the-wake)). Without it, start a stopped session again in its role directory; the SessionStart hook restores the role.
 
 ## Troubleshooting
 

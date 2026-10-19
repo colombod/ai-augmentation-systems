@@ -138,7 +138,7 @@ The Chief of Staff records your exact words, links them to the question, and sen
 A worker runs `verify` and sees your words and the chain back to them.
 Nobody asks you to pass anything on.
 You get no orders: what only you can do (a sign-in, a payment, a secret, a scope or money decision) arrives once a day as exact steps (`owner-queue.js list`).
-To set a budget or pause the team, the Chief of Staff asks you a Yes/No question in a question box; clicking Yes is the decision; idle with ready work is flagged, and messages to you are plain, short and end with "Ask for details on any item" ([details](docs/reference.md#owner-authority-and-communication)).
+To set a budget or pause the team, the Chief of Staff asks you a Yes/No question in a question box; clicking Yes is the decision; idle with ready work, a stalled bead or a session stopped on a usage limit is flagged, and a host job you install once wakes the stopped sessions ([the watchdog](docs/reference.md#the-watchdog-stalls-and-the-wake)), and messages to you are plain, short and end with "Ask for details on any item" ([details](docs/reference.md#owner-authority-and-communication)).
 
 **Day-one commands** (the Chief of Staff runs them; `/delivery:decision` has the loop):
 
