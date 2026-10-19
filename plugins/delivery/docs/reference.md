@@ -857,7 +857,7 @@ The owner runs the enterprise; the Chief of Staff runs the team for the owner (R
   | a routine briefing over `briefing_lines`; a message is a decision only when it ends with a question to the owner | line count | warn |
   | the ids and names the plugin produces: `dec-`/`ev-`/`q-`/`ans-`/`in-`/`del-` ids, the project's bead ids, the plugin's script names, lane groups, `.delivery` and `.beads` paths | patterns; links, and replies to an owner who explicitly asked for ids, beads or links, are skipped | warn |
   | `jargon` when the patterns find nothing (and the owner did not ask for ids); `tone_violation` justifying, condescending or therapeutic | the judge | warn |
-  | live, shipped or verified (not in a question) with no `evidence.js check` or `list` (or `plan.js brief`, which says checked only on a pass row) in this turn's tool calls, of the bead when one is named | word rule over the transcript (read back up to 64 MB for a long turn) | warn, unless it says "not checked yet" |
+  | live, shipped or verified (not in a question) with no `evidence.js check` or `list` in this turn's tool calls (a clause `plan.js brief` printed this turn is backed), of the bead when one is named | word rule over the transcript (read back up to 64 MB for a long turn) | warn, unless it says "not checked yet" |
 
   Each warning is a ledger row (rules R-44, R-45, R-03) and one two-line reminder on the next prompt.
   The judge questions are asked in parallel with `relay_request`, 2 s each, and not at all on a
@@ -880,16 +880,24 @@ judgement in between (`scripts/lib/daily-plan.js`).
 - **The goal sheet.** `goal.js sheet [--json]` (every role reads it) assembles one page from existing
   records: the outcome (the brief's "What changes if we solve it", else the PRD summary) and the scope
   the owner set; the customer surface (`surface.json`, the surfaces the stories name); what done means
-  (every criterion of every story passes on the customer's app, and how many stories are checked); the
+  (every criterion of every story passes on the customer's app, and how many stories are checked, by
+  the done gate's own verdict, as in the brief); the
   owner-set budget and its basis, or "not set by the owner"; the current wave per area; the blocking
   unknowns (external-host assumptions not observed and acknowledged, open spike beads, stopped areas);
   what waits on the owner (open owner-queue steps and open owner questions). Plain words; `--json` gives
-  each line's record ids (`dec-`, `A-n`, spike, story and row ids).
+  each line's record ids (`dec-`, `A-n`, spike, story and row ids) and the document an outcome was read from.
+- **No view on a failed read.** When bd, the owner queue, the operator records or the review records
+  cannot be read, `goal.js sheet`, `plan.js today` and `plan.js brief` exit 1 with the bd hint, and no
+  plan row is written, so a later "since" never compares against an empty snapshot.
 - **The plan.** `plan.js today` (Chief of Staff only) ranks the day in six sections: 1) owner steps due
-  and open owner questions, 2) stopped areas and a red main, 3) blocking unknowns (a probe to run, a design
-  to change, a result to acknowledge, an open spike), 4) the current wave's next stories by `plan.js
-  select`, outside stopped areas, at most three, 5) pull requests waiting for review or merge, 6) reality
-  checks pending. Each item names its role from the routing table and its one action, and carries its
+  and open owner questions, 2) stopped areas (a stop whose bead cannot be read stays, as "could not be
+  read") and a red main, 3) blocking unknowns (a probe to run, a design to change, a result to
+  acknowledge, an open spike; an assumption is `<initiative>/<A-n>`, since ids restart per initiative),
+  4) the current wave's next stories by `plan.js select`, admitted only when the claim check would admit
+  them (stop the line and the assumption gate: a stopped area offers only its recovery work, a red main
+  only fixes), at most three, 5) pull requests waiting for review or merge, with changes requested,
+  with a failing build or a damaged review record, all to the Delivery Manager, 6) reality checks
+  pending. `plan.js today` runs only on the session's own project (`--project` naming another is refused). Each item names its role from the routing table and its one action, and carries its
   reference. Every run appends a plan row, with the story states, to `.delivery/plans/<date>.ndjson`
   (UTC date); the latest of the day counts.
 - **The routing table.** Owner steps and questions: the Chief of Staff. Stops, probes, stories to
@@ -897,23 +905,30 @@ judgement in between (`scripts/lib/daily-plan.js`).
   changes after a refuted assumption and spike results the Product Manager owns: the Product Manager.
   Spikes: the Spike Researcher, else the Delivery Manager. Reality checks: the Reality Checker, else the
   Delivery Manager.
-- **Routing.** The Chief of Staff sends each item with `SendMessage`, carrying its reference. A PostToolUse
-  hook (`route-check.js`) appends a sent row for each of today's items a Chief of Staff message carries,
+- **Routing.** The Chief of Staff sends each item with `SendMessage`, carrying its reference in brackets
+  (`[ex-vault-0n9-4]`, `[vault/A-8]` or its spike, `[#478]`); a plain mention is context, not a send. A
+  PostToolUse hook (`route-check.js`) appends a sent row for each of today's items a Chief of Staff message carries,
   and records a `misroute` warning (R-06) with one line of context when the recipient's role is not the
   item's: acceptance to anyone but the Delivery Manager, implementation to the Product Manager, any other
   mismatch. Warn only. `plan.js routed [--json]` lists today's items not yet sent to their role, and the
-  misroutes. The recipient is read from the manifest's instance names, the roster's session ids, or a
-  role's display name; anything else is an unknown session.
+  misroutes. The recipient is read from the manifest's instance names, the roster's session ids, a
+  role's display name, or DM, PM, CoS and RC; anything else is an unknown session.
 - **The briefing.** `plan.js brief` renders the owner's briefing: a stopped area first ("The import area
-  is stopped until we fix why ..."), then what changed since the last plan of an earlier day (merged,
-  live, checked on the customer's app; checked only for a verified story whose evidence chain is intact
-  and holds a pass row), up to two blocking unknowns in the owner's words, what waits on the owner,
-  today's stories, pull requests and checks; no ids; at most `briefing_lines`, the last line always "Ask
-  for details on any item". The Chief of Staff sends it instead of its own summary; the owner-message
-  checks still apply, and reading `plan.js brief` counts as the evidence read behind "checked".
+  is stopped until we fix why ..."), then what changed since the last plan of an earlier day ("since
+  yesterday", or "since <date>" when that plan is older; merged, live, checked on the customer's app,
+  checked only on the done gate's own verdict: the file matches the recorded evidence head, and the
+  latest counting row of every criterion on the deployed sha is a pass), up to two blocking unknowns in
+  the owner's words (assumptions and open technical spikes), what waits on the owner, today's stories,
+  pull requests and checks; no ids; at most `briefing_lines` (`--limit <n>` asks for fewer; one line is
+  the first line with the offer), the last words always "Ask for details on any item". The Chief of
+  Staff sends it instead of its own summary; the owner-message checks still apply, and a live or checked
+  claim is backed when `plan.js brief` printed that same clause in this turn (the Stop hook reads the
+  command's output in the transcript).
 - **The lane.** `plan.js today|brief|routed` are in the Chief of Staff's `plan-cos` group; every role is
-  refused a hand write to `.delivery/plans/`. The Chief of Staff still has no build, commit, push, merge,
-  infra or app tools.
+  refused a hand write to `.delivery/plans/`, by file tool and by shell, `any` lanes included. The Chief
+  of Staff still has no build, commit, push, merge, infra or app tools. The lane's temporary-directory
+  exemption (scratch files) no longer applies under the project root or inside a role directory, so a
+  checkout that lives under tmp is held to the lane patterns like any other.
 - **What rests on trust.** Plan rows are not chained (tamper-evident by git history, like warnings). A
   sent row means the message tool returned, not that the session acted. The plan says what to do, not
   whether it was done: status still comes from beads, evidence and review records.
