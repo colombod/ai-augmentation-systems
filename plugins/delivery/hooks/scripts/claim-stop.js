@@ -71,7 +71,7 @@ async function main() {
       // what the message tells the owner (R-03, R-44, R-45): an out-of-queue order may block once; the rest warns
       const root = valid.marker.project_root;
       const turn = require('../../scripts/lib/transcript.js').currentTurn(input.transcript_path);
-      const found = M.messageFindings({ message: input.last_assistant_message, owner: turn.owner, commands: turn.commands, role: valid.role.id,
+      const found = M.messageFindings({ message: input.last_assistant_message, owner: turn.owner, commands: turn.commands, outputs: turn.outputs, role: valid.role.id,
         judged: msgJudged || {}, openSteps: require('../../scripts/lib/owner-queue.js').open(root), briefingLines: require('../../scripts/lib/goal.js').value(root, 'briefing_lines'),
         prefix: valid.team.prefix, parties, queueCmd: `node ${require('../../scripts/lib/plugin-root.js').shellPath(path.join(__dirname, '..', '..', 'scripts', 'owner-queue.js'))}` });
       if (!valid.role.retired) msgCandidates.push(...found.candidates);
