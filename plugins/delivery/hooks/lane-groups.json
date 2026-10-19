@@ -39,7 +39,8 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/review.js", "sub": ["list", "show"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.js", "sub": ["check"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/a3.js", "sub": ["show", "list"] },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/andon.js", "sub": ["show"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/andon.js", "sub": ["show"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watchdog.js", "sub": ["check"] }
   ],
   "git-read": [
     { "first": "git", "sub": ["status", "log", "diff", "show", "rev-parse", "remote -v", "remote show", "remote get-url", "blame", "describe", "tag -l", "tag --list", "stash list", "worktree list", "merge-base", "shortlog", "cat-file", "rev-list"], "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] },
@@ -56,7 +57,8 @@
     { "first": "git", "sub": ["rebase"], "scope": "product", "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "-x"] }
   ],
   "gh-read": [
-    { "first": "gh", "sub": ["pr view", "pr list", "pr checks", "pr diff", "pr status", "issue view", "issue list", "run view", "run list", "run watch", "repo view", "release list", "release view"] }
+    { "first": "gh", "sub": ["pr view", "pr list", "pr checks", "pr diff", "pr status", "issue view", "issue list", "run view", "run list", "run watch", "repo view", "release list", "release view"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watch.js", "sub": ["gh", "until"] }
   ],
   "gh-write": [
     { "first": "gh", "sub": ["pr create", "pr edit", "pr comment", "pr ready", "pr review", "issue comment", "release create", "workflow run"] }

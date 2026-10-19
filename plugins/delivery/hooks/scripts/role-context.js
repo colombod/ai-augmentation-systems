@@ -148,7 +148,9 @@ function sessionStartText(input, pluginRoot, deps = {}) {
   }
   const freshStart = input.source === 'startup' || input.source === 'resume';
   try {
-    registerInstance(marker.project_root, {
+    // a watchdog fork of an open session is recorded beside it; the open session stays on the roster
+    if (process.env.DELIVERY_WAKE === 'fork') require('../../scripts/lib/roster.js').recordFork(marker.project_root, { instance: marker.instance, session_id: input.session_id || 'unknown', now, transcript_path: typeof input.transcript_path === 'string' && path.isAbsolute(input.transcript_path) ? input.transcript_path : undefined });
+    else registerInstance(marker.project_root, {
       instance: marker.instance,
       session_id: input.session_id || 'unknown',
       host: marker.host,

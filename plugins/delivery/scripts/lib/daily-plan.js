@@ -27,7 +27,7 @@ const ROLE_WORD = { 'chief-of-staff': 'Chief of Staff', 'delivery-lead': 'Delive
 // fallback: the role that takes the function when the first is not on the team
 const ROUTES = {
   owner_steps: [COS], owner_questions: [COS], decide_spike: [COS],
-  stops: [DM], probe: [DM], assign: [DM], review: [DM], merge: [DM], decide: [DM],
+  stops: [DM], stall: [DM], probe: [DM], assign: [DM], review: [DM], merge: [DM], decide: [DM],
   design: ['product-manager'], decide_pm: ['product-manager'],
   spike: ['spike-researcher', DM], reality_check: ['reality-checker', DM],
 };
@@ -133,15 +133,33 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord, 
     const d = G.doneCheck({ story: inp.story, bead: b, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances, recordOk });
     return d.ok && !d.cut;
   }, false);
-  return { root, now, team, stories, titles, spikes: openSpikes, checks, andon, unknowns, queue, questions, budget: ctx.budget, areas: W.areas(stories), next, known, prs, storyOf: ctx.storyOf, checked };
+  // stalls first (R-04, R-43): the watchdog's own reading of the record; it fails open, never refuses the view
+  const watch = safe(() => require('./watchdog.js').read(root, { bd, now, team }), { stalls: [] });
+  return { root, now, team, stalls: (watch && watch.stalls) || [], stalls_paused: (watch && watch.paused) || null, stories, titles, spikes: openSpikes, checks, andon, unknowns, queue, questions, budget: ctx.budget, areas: W.areas(stories), next, known, prs, storyOf: ctx.storyOf, checked };
 }
 
 // ---- the plan for the day ----
 const item = (section, kind, fn, ref, action, plain, team, match = [ref]) => ({ section, kind, fn, ref, key: `${kind}:${ref}`, ...routeOf(fn, team), action, plain, match });
 
+// the role of an instance named by the watchdog (a builder's own session, or the Delivery Manager)
+function roleOfInstance(team, instance) {
+  const i = instancesOf(team).find((x) => x.instance === instance);
+  return i ? i.role.id : DM;
+}
+// section 0: stalls due now, each routed to the session the watchdog wakes for it
+const stallRef = (s) => s.bead || (s.kind === 'limit' ? `limit:${s.target}` : s.kind);
+function stallItems(f) {
+  return (f.stalls || []).filter((s) => !s.scheduled).map((s) => ({ section: 0, kind: 'stall', fn: 'stall', ref: stallRef(s), key: `stall:${stallRef(s)}`, role: roleOfInstance(f.team, s.target), instance: s.target, action: s.line, plain: s.plain, match: [stallRef(s)] }));
+}
+// when the team resumes after a usage limit: the earliest scheduled wake
+function resumesAt(f) {
+  const w = (f.stalls || []).filter((s) => s.kind === 'limit' && s.scheduled).map((s) => s.wakeAt).sort();
+  return w.length ? w[0] : null;
+}
+
 function items(f) {
   const t = f.team;
-  const out = [];
+  const out = [...stallItems(f)];
   const W = require('./waves.js');
   for (const s of f.queue) out.push(item(1, 'owner-step', 'owner_steps', s.id, `give the owner today's batch (owner-queue.js list): ${s.what}`, s.what, t));
   for (const q of f.questions) out.push(item(1, 'owner-question', 'owner_questions', q.id, `put the question to the owner once, with options: ${q.text}`, q.text, t));
@@ -251,7 +269,8 @@ function noteSent(root, { team, to, message, now, by } = {}) {
   const sent = [];
   const misroutes = [];
   for (const it of plan.items.filter((x) => x.role !== COS && carries(message, x))) {
-    const wrong = r.role !== it.role;
+    // a stall names its session: another instance of the same role is not it (review on aaea37c)
+    const wrong = r.role !== it.role || (it.kind === 'stall' && r.instance !== it.instance);
     sent.push(append(root, today(at), { type: 'sent', at, by: by || null, plan: plan.seq, key: it.key, to: r.instance, role: r.role, ...(wrong ? { misroute: true } : {}) }));
     if (wrong) {
       const detail = misrouteText(it, r);
@@ -269,7 +288,7 @@ function unrouted(root, { now } = {}) {
   const plan = lastPlan(rows);
   if (!plan) return { plan: null, open: [], misroutes: [] };
   const sent = rows.filter((r) => r.type === 'sent' && r.seq > plan.seq);
-  const ok = (it) => sent.some((s) => s.key === it.key && s.role === it.role);
+  const ok = (it) => sent.some((s) => s.key === it.key && s.role === it.role && (it.kind !== 'stall' || s.to === it.instance));
   const routed = plan.items.filter((x) => x.role !== COS);
   return { plan, open: routed.filter((x) => !ok(x)), misroutes: sent.filter((s) => s.misroute), total: routed.length };
 }
@@ -282,6 +301,10 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 function brief(f, { prev, limit = 12 } = {}) {
   const lines = [];
   const AN = require('./andon.js');
+  // a stall or the resume time first: nothing else matters while nobody works (R-43)
+  const r = resumesAt(f);
+  if (r) lines.push(`The team resumes at ${require('./watchdog.js').clock(Date.parse(r))}, when the usage limit resets (restart scheduled).`);
+  lines.push(...[...new Set(stallItems(f).map((x) => x.plain))].slice(0, r ? 1 : 2));
   lines.push(...AN.plainLines(f.andon).slice(0, 2));
   // what changed since yesterday's plan, by the story states on the record
   const before = (prev && prev.states) || {};
@@ -371,4 +394,4 @@ function sheet(f, { verifyRecord } = {}) {
   return out;
 }
 
-module.exports = { ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };
+module.exports = { resumesAt, stallItems, ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };

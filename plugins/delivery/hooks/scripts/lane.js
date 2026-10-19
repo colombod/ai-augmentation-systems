@@ -728,6 +728,171 @@ function registerHit({ projectRoot, roleDir }) {
   return (p) => { const r = realish(p); return bases.some((b) => REGISTER_REL.test(path.relative(b, r))); };
 }
 
+// The watchdog's wake, run, install and uninstall are the host job's, installed by the owner (R-04,
+// R-42): refused to every role, `any` included, in any form (a chain, a wrapper, `node -e`, its shim),
+// and so is resuming or continuing another Claude session by hand. Only `node .../watchdog.js check`
+// runs in a role session; the script refuses the rest inside a role directory as well.
+const WATCHDOG_REASON = 'the watchdog\'s wake, run, install and uninstall are the host job\'s, which the owner installs from a shell outside any role directory; read the stalls with `watchdog.js check`';
+const RESUME_REASON = 'resuming or continuing a Claude session is the watchdog host job\'s; message the session instead';
+// Only what runs is judged: the command word of each segment (after VAR=x assignments and wrappers such
+// as env, nohup, timeout), the script an interpreter runs or the code it evaluates, the command a shell
+// runs with -c or eval, and what $(...) and backticks run. A note, a commit message or
+// `git diff -- scripts/watchdog.js` names the file without running it. Quote-split (wat""chdog.js) and
+// glob (watchd?g.js) words are matched as the shell would expand them; a command word built from a
+// variable ($c) is refused when its arguments are a resume flag or a watchdog verb.
+const WRAPPERS = new Set(['env', 'nohup', 'exec', 'command', 'builtin', 'time', 'nice', 'sudo', 'doas', 'xargs', 'timeout', 'stdbuf', 'caffeinate', 'setsid', 'ionice', 'chrt']);
+const WRAPPER_VALUE_FLAGS = new Set(['-u', '-g', '-C', '-n', '-k', '-s', '-S', '--signal', '--kill-after', '--unset', '--chdir', '-P', '-I', '-L']);
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
+const INTERPRETERS = new Set(['node', 'nodejs', 'bun', 'deno', 'tsx', 'ts-node']);
+const CODE_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-r', '--require', '--import', '--loader', '-i']);
+const WATCHDOG_VERBS = new Set(['wake', 'run', 'install', 'uninstall']);
+const CHECK_FLAGS = new Set(['--json']);
+const RESUME_FLAGS = new Set(['-r', '--resume', '-c', '--continue', '--fork-session', '--teleport', '--from-pr']);
+const CLAUDE_RESUME = /(?:^|[;&|(`\s'"])(?:\S*\/)?claude\s+(?:[^;&|\n]*\s)?(?:-r|--resume|-c|--continue|--fork-session|--teleport|--from-pr)(?=$|[\s=])|(?:^|[;&|(`\s'"])(?:\S*\/)?claude\s+(?:respawn|attach)\b/;
+const WATCHDOG_TEXT = /watchdog/i;
+const baseOf = (w) => String(w || '').split('/').pop();
+// a word that names the watchdog script, its shim, or a glob the shell may expand to one of them
+function namesWatchdog(word) {
+  const w = String(word || '');
+  if (/(?:^|\/)watchdog(?:\.js)?$/i.test(w) || /\.delivery\/+(?:\.\/+)*watchdog\//i.test(w)) return true;
+  if (!GLOB.test(w)) return false;
+  const b = segRe(baseOf(w));
+  return b.test('watchdog.js') || b.test('watchdog') || (b.test('job.js') && /delivery|watch|[*?[]/i.test(w.slice(0, -baseOf(w).length)));
+}
+// the job shim always starts `watchdog.js run`, whatever its arguments (Copilot 749)
+function isShim(word) {
+  const w = String(word || '');
+  if (/\.delivery\/+(?:\.\/+)*watchdog\/+job\.js$/i.test(w)) return true;
+  return GLOB.test(w) && segRe(baseOf(w)).test('job.js') && /delivery|watch|[*?[]/i.test(w.slice(0, -baseOf(w).length));
+}
+// the CLI, whose `check` alone a role may run
+const isCli = (w) => namesWatchdog(w) && !isShim(w) && !/\.delivery\/+(?:\.\/+)*watchdog\//i.test(String(w || ''));
+// shell grammar words before a command: if/then/do/!, a brace or subshell, a function header, a case pattern
+const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', '}', '(', ')', 'fi', 'done', 'esac', 'time', 'coproc']);
+function stripGrammar(t) {
+  const out = [...t];
+  for (;;) {
+    if (!out.length) return out;
+    if (KEYWORDS.has(out[0]) || /^[A-Za-z_][\w-]*\(\)$/.test(out[0])) { out.shift(); continue; }
+    // `function name {` and a case arm's pattern (`x)`) after the first one
+    if (out[0] === 'function') { out.splice(0, 2); continue; }
+    if (/^[^()\s]+\)$/.test(out[0])) { out.shift(); continue; }
+    if (out[0] === 'case') { const k = out.findIndex((x) => /\)$/.test(x)); out.splice(0, k >= 0 ? k + 1 : out.length); continue; }
+    if (/^[({]+./.test(out[0])) { out[0] = out[0].replace(/^[({]+/, ''); continue; }
+    if (out[0] === 'for' || out[0] === 'select') return [];
+    return out.map((x) => x.replace(/[)}]+$/, '')).filter((x) => x !== '');
+  }
+}
+const namesClaude = (w) => baseOf(w) === 'claude' || (GLOB.test(String(w || '')) && segRe(baseOf(w)).test('claude'));
+const nonLiteral = (w) => /[$`]/.test(String(w || ''));
+// the words that run: assignments and wrappers (with their flags) skipped
+function commandWords(t) {
+  let i = 0;
+  for (;;) {
+    // leading assignments and redirections (2>/dev/null, > f, <f, 2>&1, &>f) come before the command word
+    for (;;) {
+      if (i < t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i])) { i++; continue; }
+      const r = i < t.length ? /^(?:\d*|&)(?:>>?|<<?|>&|<&|&>>?|>\|)(.*)$/.exec(t[i]) : null;
+      if (r) { i += r[1] ? 1 : 2; continue; }
+      break;
+    }
+    if (i < t.length && WRAPPERS.has(baseOf(t[i]))) {
+      i++;
+      while (i < t.length && (t[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]) || /^\d+(?:\.\d+)?[smhd]?$/.test(t[i]))) { i += WRAPPER_VALUE_FLAGS.has(t[i]) ? 2 : 1; }
+      continue;
+    }
+    return t.slice(i);
+  }
+}
+function checkOnly(args) {
+  if (args[0] !== 'check') return false;
+  for (let i = 1; i < args.length; i++) {
+    if (CHECK_FLAGS.has(args[i])) continue;
+    if (args[i] === '--project' && args[i + 1] && !args[i + 1].startsWith('-')) { i++; continue; }
+    return false;
+  }
+  return true;
+}
+const claudeResumes = (args) => ['respawn', 'attach'].includes(args[0]) || args.some((a) => RESUME_FLAGS.has(a) || /^--(?:resume|continue|teleport|from-pr)=/.test(a) || (/^-[A-Za-z]{2,}$/.test(a) && /[cr]/.test(a.slice(1))));
+// 'watchdog', 'resume' or null for one command line, depth-limited
+// What $(...), backticks and <(...) run, read as the shell does: nothing inside single quotes, an
+// escaped backtick or dollar is a literal, double quotes still expand (review on aaea37c).
+function substitutions(text) {
+  const s = String(text || '');
+  const out = [];
+  let q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q === "'") { if (c === "'") q = null; continue; }
+    if (c === '\\') { i++; continue; }
+    if (c === "'" && !q) { q = "'"; continue; }
+    if (c === '"') { q = q === '"' ? null : '"'; continue; }
+    if (c === '`') {
+      let j = i + 1;
+      let body = '';
+      for (; j < s.length && s[j] !== '`'; j++) { if (s[j] === '\\' && j + 1 < s.length) { body += s[++j]; continue; } body += s[j]; }
+      out.push(body);
+      i = j;
+      continue;
+    }
+    if ((c === '$' || (c === '<' && !q)) && s[i + 1] === '(') {
+      let depth = 1;
+      let j = i + 2;
+      for (; j < s.length && depth; j++) { if (s[j] === '(') depth++; else if (s[j] === ')') depth--; }
+      out.push(s.slice(i + 2, j - 1));
+      i = j - 1;
+    }
+  }
+  return out;
+}
+// The first argument that is not a flag: the script a shell or `source` runs.
+const firstOperand = (args) => args.find((a) => !a.startsWith('-'));
+
+// 'watchdog', 'resume' or null for one command line, depth-limited. Each segment is judged at its
+// command position (after shell grammar, assignments and wrappers); the words after it are arguments.
+function refusedRun(text, depth = 0) {
+  if (depth > 4) return null;
+  for (const sub of substitutions(text)) { const r = refusedRun(sub, depth + 1); if (r) return r; }
+  for (const seg of splitWithOps(text)) {
+    const t = commandWords(stripGrammar(tokens(seg.text)));
+    if (!t.length) continue;
+    const w = t[0];
+    const args = t.slice(1);
+    const name = baseOf(w);
+    if (SHELLS.has(name) || name === 'eval') {
+      const k = args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a));
+      const inner = name === 'eval' ? args.join(' ') : k >= 0 ? args[k + 1] || '' : '';
+      const r = inner ? refusedRun(inner, depth + 1) : null;
+      if (r) return r;
+      // `bash script.sh`: the script runs; its own arguments do not
+      if (name !== 'eval' && k < 0 && namesWatchdog(firstOperand(args)) && !(isCli(firstOperand(args)) && checkOnly(args.slice(args.indexOf(firstOperand(args)) + 1)))) return 'watchdog';
+      continue;
+    }
+    if ((name === 'source' || name === '.') && namesWatchdog(firstOperand(args))) return 'watchdog';
+    if (INTERPRETERS.has(name)) {
+      let script = null;
+      for (let i = 0; i < args.length; i++) {
+        if (CODE_FLAGS.has(args[i]) || /^--(?:eval|print|require|import)=/.test(args[i])) {
+          const code = args[i].includes('=') ? args[i].slice(args[i].indexOf('=') + 1) : args[++i] || '';
+          if (WATCHDOG_TEXT.test(code)) return 'watchdog';
+          if (CLAUDE_RESUME.test(code)) return 'resume';
+          continue;
+        }
+        if (args[i].startsWith('-')) continue;
+        script = i;
+        break;
+      }
+      if (script !== null && namesWatchdog(args[script]) && !(isCli(args[script]) && checkOnly(args.slice(script + 1)))) return 'watchdog';
+      continue;
+    }
+    if (namesWatchdog(w) && !(isCli(w) && checkOnly(args))) return 'watchdog';
+    if (namesClaude(w) && claudeResumes(args)) return 'resume';
+    if (nonLiteral(w) && (claudeResumes(args) || WATCHDOG_VERBS.has(args[0]))) return 'resume';
+  }
+  return null;
+}
+const watchdogAction = (command) => refusedRun(command) === 'watchdog';
+
 // deep: a deletion or move of a protected folder's parent (rm -rf .delivery), or a glob that reaches the
 // folder or names files in it (rm -rf .delivery/an*, rm .delivery/andon/*.ndjson), counts as a write too
 const GLOB = /[*?[]/;
@@ -920,6 +1085,8 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (usageShellWrite(command, { cwd, dirs: planDirs({ projectRoot, roleDir }), mention: PLANS_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
+    const run = refusedRun(command);
+    if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : RESUME_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
       return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
@@ -995,4 +1162,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

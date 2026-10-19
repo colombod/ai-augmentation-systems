@@ -31,6 +31,8 @@ const FIELDS = {
   'budget.estimate_m': { kind: 'number', unit: /^units?$/, words: /^(?:medium|m|estimate)$/ },
   'budget.estimate_l': { kind: 'number', unit: /^units?$/, words: /^(?:large|l|estimate)$/ },
   idle_minutes: { kind: 'number', unit: /^(?:minutes?|mins?)$/, words: /^idle$/, default: 30 },
+  // how long a bead in progress may sit with no note and no session activity before it is a stall (R-04)
+  stall_hours: { kind: 'number', unit: /^hours?$/, words: /^(?:stall|stalled|stuck|quiet|silent)$/, default: 2 },
   briefing_lines: { kind: 'number', unit: /^lines?$/, words: /^(?:briefings?|messages?|updates?)$/, default: 12 },
   answer_window_hours: { kind: 'number', unit: /^hours?$/, words: /^(?:yes|answer|window)$/, default: 24 },
   // the pull request size over which review.js and merge-gate.js warn (R-24); never a block
@@ -255,6 +257,7 @@ function questionText(field, value) {
     'budget.estimate_m': `Estimate a medium story at ${v} units?`,
     'budget.estimate_l': `Estimate a large story at ${v} units?`,
     idle_minutes: `Call the team idle after ${v} minutes with ready work and nothing in progress?`,
+    stall_hours: `Call a started item stalled after ${v} hours with no bead update and no activity in its holder's session?`,
     briefing_lines: `Keep routine briefings to ${v} lines?`,
     answer_window_hours: `Allow up to ${v} hours for your yes to a goal question?`,
     pr_size_lines: `Warn when a pull request changes more than ${v} lines?`,

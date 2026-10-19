@@ -10,6 +10,10 @@ const store = process.env.GH_FAKE_STORE;
 const fail = (msg) => { process.stderr.write(`${msg}\n`); process.exit(1); };
 if (!store || !fs.existsSync(store)) fail('gh: not logged in to any hosts (fake)');
 const s = JSON.parse(fs.readFileSync(store, 'utf8'));
+// GH_FAKE_LOG: each call appends its arguments, so a test can count the calls that reached gh
+if (process.env.GH_FAKE_LOG) fs.appendFileSync(process.env.GH_FAKE_LOG, `${JSON.stringify(process.argv.slice(2))}\n`);
+// GH_FAKE_DELAY_MS: a slow GitHub, so concurrent callers overlap
+if (process.env.GH_FAKE_DELAY_MS) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.GH_FAKE_DELAY_MS));
 const argv = process.argv.slice(2);
 let repo = null;
 const args = [];
@@ -36,7 +40,8 @@ if (String(repo).toLowerCase() !== String(s.repo).toLowerCase()) fail(`GraphQL: 
 const n = url ? url[2] : target;
 const pr = s.prs && s.prs[n];
 if (!pr) fail(`GraphQL: Could not resolve to a PullRequest with the number of ${n}.`);
-if (cmd === 'view') { process.stdout.write(`${JSON.stringify({ number: Number(n), state: 'OPEN', ...pr })}\n`); process.exit(0); }
+// written synchronously: process.exit would cut an asynchronous write to a pipe short
+if (cmd === 'view') { fs.writeSync(1, `${JSON.stringify({ number: Number(n), state: 'OPEN', ...pr })}\n`); process.exit(0); }
 const at = args.indexOf('--match-head-commit');
 if (at >= 0 && args[at + 1] !== pr.headRefOid) fail('Head branch was modified. Review and try the merge again.');
 pr.state = 'MERGED';

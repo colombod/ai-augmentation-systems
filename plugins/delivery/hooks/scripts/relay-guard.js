@@ -374,7 +374,7 @@ function readTrim(file) {
 }
 
 function sessionIdOf(roleDir, input) {
-  return (roleDir && readTrim(path.join(roleDir, '.delivery-session'))) || (input && typeof input.session_id === 'string' && input.session_id) || null;
+  return (roleDir && readTrim(require('../../scripts/lib/roster.js').sessionLocator(roleDir).session)) || (input && typeof input.session_id === 'string' && input.session_id) || null;
 }
 
 function formatUnrecognised(projectRoot, sessionId) {

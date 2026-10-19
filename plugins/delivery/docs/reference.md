@@ -936,8 +936,145 @@ judgement in between (`scripts/lib/daily-plan.js`).
 - **What rests on trust.** Plan rows are not chained (tamper-evident by git history, like warnings). A
   sent row means the message tool returned, not that the session acted. The plan says what to do, not
   whether it was done: status still comes from beads, evidence and review records.
-- **Not yet.** The Stop reminder when the day's plan is missing (R-02), `team.json` `owners` with its
-  validation (R-06), and the watchdog that wakes the team (R-04).
+- **Not yet.** The Stop reminder when the day's plan is missing (R-02) and `team.json` `owners` with its
+  validation (R-06). Stalls come first in the plan: see [The watchdog](#the-watchdog-stalls-and-the-wake).
+
+### The watchdog: stalls and the wake
+
+In the Vault nothing woke the team for four days after the weekly usage reset (the owner typed "Try
+again" twice), a top-priority bead sat unclaimed 15.5 hours overnight, and a watcher polled 30 pull
+requests every 90 seconds until GitHub's rate limit failed a deploy.
+
+- **What can wake a stopped session (the probe, Claude Code 2.1.287).** Checked against `claude --help`
+  and the Claude Code docs, with one `claude -p --model haiku` run in a scratch directory:
+  - `claude --resume <session-id> -p "<prompt>"` continues that conversation non-interactively, under the
+    same id, with its model and permission mode; run in the role directory, the role's
+    `.claude/settings.local.json` (model, `DELIVERY_ROLE`, lane permissions) and the plugin's hooks load
+    (the scratch run fired SessionStart; `--resume` with an unknown id exits 1, "No conversation found",
+    without calling the API). The resume of a real role session was not exercised live. A `-p` prompt is
+    written to the transcript as an SDK prompt, not a typed one, so operator capture never takes it for
+    the owner's words.
+  - A session still open in another process cannot be resumed in place (documented as a conflict).
+    `--fork-session` continues a copy under a new id. `claude agents --json` lists the open sessions with
+    `status` busy, waiting or idle (its field names are read as the 2.1.287 output shows them).
+  - A message from another session wakes an idle open session, but only from inside a session: a host
+    job cannot send one, and a closed session has no inbox.
+  - Hooks cannot wake anything later (a Stop hook only keeps the current turn going); `/loop` and
+    `CronCreate` run only inside a live session and stop with it; cloud routines run on a fresh clone in
+    the cloud and cannot reach a local session; during a usage limit their runs are rejected too.
+  - A usage limit is written to the transcript as an assistant row with `error: "rate_limit"`,
+    `apiError: "usage_limit_reached"` and `quotaLimits.resetsAt` (epoch seconds; milliseconds are read
+    as such) and `rateLimitType` (`five_hour`, `seven_day`), text "You've hit your weekly limit · resets
+    ...". The row is not documented: the reader fails open, line by line (a torn or empty line is
+    skipped; an impossible reset time is "not known").
+- **The stalls.** `watchdog.js check [--json]` reads beads, the goal sheet, the owner queue, the roster
+  and each role's transcript on this host, and reports, in plain lines:
+  - idle: ready work and nothing in progress for more than `idle_minutes`, as above;
+  - a bead in progress with no bead update and no activity of its holder's session (roster `last_seen`,
+    transcript time) for more than `stall_hours` (a goal field, 2 by default, owner-set like the others;
+    `goal.js ask stall_hours <n>`), unless the holder is inside a `watch.js until` wait within the
+    `--max` it declared;
+  - a top-priority (P0) bead that can be taken now (in `bd ready`: open, not blocked, not an epic) and
+    unclaimed for more than an hour;
+  - a session stopped on a usage limit: "The team resumes at <reset + 5 min> (restart scheduled)" once the
+    job is installed, else "the team is stalled; the watchdog is not installed", and "Resume now" once it
+    has reset (its held beads are not also reported as stalled);
+  - a role whose transcript polls gh in a loop (gh and a sleep, with its s/m/h/d unit, inside one
+    `while`, `until` or `for` that runs, not loop text quoted as an argument;
+    `watch -n`, gh's own `--watch`/`--interval`) more often than every 4 minutes (R-25).
+  Each is a warning in the ledger (`idle`, `stall`, `p0-unclaimed`, `usage-limit`, `tight-poll`), once per
+  stall, in this host's own ledger file. Nothing is paused or blocked. An owner pause that verifies silences all of it, the polling
+  warnings included; an open andon (a failed check row) silences idle, quiet and P0 stalls for beads in
+  its area only (they wait for its fix); a message telling the team to stop is not a pause. `plan.js
+  today` lists stalls first ("0. Stalls first"), each routed to the session the watchdog wakes for it
+  (sending it to another instance of the same role is a misroute, and it stays unrouted),
+  and the resume time when a restart is scheduled; `plan.js brief` leads with them in plain words;
+  `team-status.js` lists them under the idle line. Times are the host's local time with its zone.
+- **The wake.** `watchdog.js wake [--dry-run]` wakes, for each due stall, its session: the holder of a
+  stalled bead or of a bead stopped by the usage limit, else the Delivery Manager. One run carries every
+  line for that session in one prompt. The command, in the session's role directory with
+  `DELIVERY_ROLE` and `DELIVERY_WAKE` set: `claude --resume <id> -p "<prompt>"` when the session is not
+  open; with `--fork-session` when it is open and idle; `claude -c -p` when the roster has no session id;
+  nothing when it is busy, when open sessions cannot be listed (`claude agents --json` failed: alarm
+  only, never a fork), or when its role directory is not on this host.
+- **The wake's limits.** At most one wake per session an hour whatever the stalls; at most 6 a day per
+  session; each stall waits 1, 2, 4, 8 ... hours after each wake that carried it; never while that
+  session's last wake still runs, however long ago it started (each wake runs in its own process group
+  under `lib/wake-run.js`, which stops the whole group after 2 hours, SIGTERM then SIGKILL, and lives
+  until the group is gone; the guard checks that the logged pid is alive and is still that supervisor); never before the session's own usage limit resets (then once,
+  for everything due). Past a limit the stall stays an alarm: "Alarm only: <session>: <reason>". A usage
+  limit with no known reset keeps one key and one warning however often a wake is rejected again. A
+  usage-limit wake starts within the 5-minute grace plus one job interval of the reset (at most 20 minutes at
+  the default `--every 15m`; `--every 5m` keeps it within 10). `run`
+  takes a lock (`.delivery/watchdog/run.lock`), so concurrent runs wake once.
+- **Forks.** A fork's SessionStart (with `DELIVERY_WAKE=fork`) is recorded in the roster entry's
+  `forks` list, never in place of the owner's open session, which stays the one the watchdog reads;
+  operator capture leaves the roster alone for a fork, and a fork keeps its own session id and
+  transcript locator (`.delivery-session.fork-<wake id>`), so `operator.js` records, syncs and acks as the
+  fork, never as the owner's session. The forks' transcripts count with the primary's
+  for activity and the usage limit, so a fork on the limit holds the next wake until its reset. Forks
+  older than a day drop off the list; their transcripts stay on disk.
+- **The log.** Every wake, skip (at most one an hour per session) and scheduled wake is a row in
+  `.delivery/watchdog/wakes.ndjson`, rotated to `wakes.ndjson.1` past 1 MB; each wake's output goes to
+  `.delivery/watchdog/logs/` (the newest 50 kept); the job's own output to `job.log` (rotated past 1 MB).
+  All of `.delivery/watchdog/` is gitignored: it is this host's. Each wake is one turn of that session;
+  the next run checks again. `DELIVERY_CLAUDE_BIN` names another `claude`.
+- **The host job: installed by the owner, once per host.** `watchdog.js install [--every 15m]` prints
+  what it would write and how to remove it; `--apply` writes it; `watchdog.js uninstall` removes it in
+  every form (running it again says "Nothing to remove"). Nothing installs it for you. `wake`, `run`,
+  `install` and `uninstall` are refused to every role session, `any` lanes included and whatever the
+  form (the job shim with any arguments, a compound command such as `if ...; then ...; fi`, a chain, a wrapper such as `env`, `nohup` or `timeout`, `bash -c`, `eval`, `$(...)`, `node -e`,
+  the shim, a quote-split or glob word, a command word built from a variable), and so is
+  `claude --resume`/`--continue` by hand. Only what runs is judged, at each command position after
+  shell grammar, assignments and wrappers, and inside `$(...)` or backticks the shell would expand (not
+  inside single quotes, not escaped): a note, a commit message, `rg claude -c src`, `printf ... watchdog.js
+  run` or `git diff -- scripts/watchdog.js` that names the file or a flag is not refused; the
+  script itself refuses them inside a role directory or with a role session's environment
+  (`DELIVERY_ROLE`, `DELIVERY_ROLE_ID`, `DELIVERY_ROLE_DIR`). Only `check` runs in a role session. What
+  `--apply` writes:
+  - `.delivery/watchdog/job.js`, a shim the job runs with `/usr/bin/env node`: it finds the plugin each
+    run (a checkout stays where it is; a plugin installed by Claude Code is looked up in
+    `~/.claude/plugins/installed_plugins.json`, so an update is picked up), then runs
+    `watchdog.js run --project <root>`. No node or plugin version is pinned in the job.
+  - macOS: `~/Library/LaunchAgents/com.delivery-plugin.watchdog.<hash>.plist`, a launchd agent every 15
+    minutes and at load, in the project root, with the installing shell's `PATH` followed by
+    `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin` and `~/.local/bin`, output to
+    `.delivery/watchdog/job.log`, loaded with `launchctl bootstrap gui/<uid>`.
+  - Linux with systemd: `~/.config/systemd/user/delivery-watchdog-<hash>.service` (`Type=oneshot`,
+    `KillMode=process` so a wake outlives the run, `Environment="PATH=..."`) and `.timer`
+    (`OnUnitActiveSec`, `Persistent=true`), enabled with `systemctl --user enable --now`. A user timer
+    runs only while you are logged in unless lingering is on: `loginctl enable-linger $USER`.
+  - Linux without systemd: one crontab line marked `# delivery-watchdog <hash>` (a second install
+    replaces it; every `%` is escaped for cron; a crontab that cannot be read is never replaced, only "no crontab" counts as empty). Cron runs on clock minutes, so `--every` must divide the hour there (5m, 10m, 12m, 15m,
+    20m, 30m, 1h).
+  `--every` is 5m to 1h. The machine must be on and the owner signed in to Claude Code for a wake to run.
+  Each scheduler keeps the installing shell's `CLAUDE_CONFIG_DIR`, and the shim restores it before it
+  looks up the plugin or wakes anyone. Paths with spaces are quoted for each scheduler.
+  `.delivery/watchdog/installed.json` records the install; the plan and the brief promise a restart only
+  while it and the job file exist. An operator's own `watchdog.js wake` works without the job.
+- **Watching GitHub within a budget (R-25).** `watch.js until <text> --every <5m> --max <2h> -- gh <read>`
+  repeats a gh read until its output shows `<text>` (a pattern, any case), exit 0, or the time limit
+  passes, exit 1. Outside a project its cache is a private folder in the temporary directory (0700,
+  files 0600), not reused when it is a link, another user's or open to others. It refuses a watcher with no exit condition, no time limit, a limit over 6 hours or
+  an interval under 4 minutes, anything but a gh read, and gh's own polling flags (`--watch`, `-w`,
+  `--interval`, `-i`). `watch.js gh <read>` is one read. Both go through `.delivery/cache/gh/`
+  (gitignored), shared by every role on the host and fresh for 4 minutes (the one query per 4 minutes
+  of R-25), keyed by the read, its repository (`-R`, `GH_REPO`, else the working directory gh resolves
+  it from) and its host (`GH_HOST`); a read that names no PR (`pr checks`, `pr view`) keeps its
+  checkout and branch in the key even with `-R`. It is kept with its exit status (a read cut short is
+  never kept), so a pending check or a rate-limit error is
+  shared for the window too; one caller refreshes an entry while the others wait for its result;
+  entries older than an hour go and at most 500 stay. The briefs tell roles to use it instead of
+  `while ... sleep`, `watch -n` or a polling Monitor. `watch.js` is in the `gh-read` lane.
+- **What rests on trust.** The transcript format and the `claude agents --json` fields are
+  undocumented; a change in them makes the limit stall silent or a wake an alarm only, not wrong. The
+  wake log is not chained. A wake means the command started, not that the session acted: the next check
+  still reads the beads. A builder's `any` lane still runs arbitrary code on the host; the lane and the
+  script stop the watchdog paths, not a builder determined to start a session another way.
+- **Not yet.** The typed judge's `stalled` score on notes that do not move (R-04), merged-not-deployed
+  over 20 minutes as a stall, a red main as a reason to hold the P0 alarm, a polling warning when the
+  command starts rather than from the transcript, and a wake across hosts (each host's job wakes its own
+  roles).
 
 ### Steward notes
 
