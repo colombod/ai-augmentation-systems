@@ -102,6 +102,24 @@ function setTranscriptPath(projectRoot, { instance, session_id, transcript_path 
   });
 }
 
+// A copy of an open session the watchdog started (`--fork-session`, DELIVERY_WAKE=fork) is recorded
+// beside the instance, never in its place: the owner's open session stays the one the roster reads.
+// Copies older than a day are dropped from the list (their transcripts stay on disk).
+const FORK_KEEP_MS = 24 * 3600e3;
+function recordFork(projectRoot, { instance, session_id, transcript_path, now }) {
+  return withRosterLock(projectRoot, () => {
+    const roster = readRoster(projectRoot);
+    const cur = roster.instances[instance];
+    if (!cur) return false;
+    const t = Date.parse(now || new Date().toISOString());
+    const forks = (Array.isArray(cur.forks) ? cur.forks : []).filter((f) => f && f.session_id !== session_id && t - Date.parse(f.at) < FORK_KEEP_MS);
+    forks.push({ session_id, ...(transcript_path ? { transcript_path } : {}), at: now || new Date(t).toISOString() });
+    cur.forks = forks;
+    writeRoster(projectRoot, roster);
+    return true;
+  });
+}
+
 function touchInstance(projectRoot, { instance, now }) {
   return withRosterLock(projectRoot, () => {
     const roster = readRoster(projectRoot);
@@ -112,4 +130,4 @@ function touchInstance(projectRoot, { instance, now }) {
   });
 }
 
-module.exports = { readRoster, writeRoster, registerInstance, touchInstance, setTranscriptPath, withRosterLock, ROSTER_REL };
+module.exports = { recordFork, readRoster, writeRoster, registerInstance, touchInstance, setTranscriptPath, withRosterLock, ROSTER_REL };

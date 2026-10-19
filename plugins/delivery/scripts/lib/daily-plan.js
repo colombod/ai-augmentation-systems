@@ -149,11 +149,11 @@ function roleOfInstance(team, instance) {
 // section 0: stalls due now, each routed to the session the watchdog wakes for it
 const stallRef = (s) => s.bead || (s.kind === 'limit' ? `limit:${s.target}` : s.kind);
 function stallItems(f) {
-  return (f.stalls || []).filter((s) => s.due).map((s) => ({ section: 0, kind: 'stall', fn: 'stall', ref: stallRef(s), key: `stall:${stallRef(s)}`, role: roleOfInstance(f.team, s.target), instance: s.target, action: s.line, plain: s.plain, match: [stallRef(s)] }));
+  return (f.stalls || []).filter((s) => !s.scheduled).map((s) => ({ section: 0, kind: 'stall', fn: 'stall', ref: stallRef(s), key: `stall:${stallRef(s)}`, role: roleOfInstance(f.team, s.target), instance: s.target, action: s.line, plain: s.plain, match: [stallRef(s)] }));
 }
 // when the team resumes after a usage limit: the earliest scheduled wake
 function resumesAt(f) {
-  const w = (f.stalls || []).filter((s) => s.kind === 'limit' && !s.due).map((s) => s.wakeAt).sort();
+  const w = (f.stalls || []).filter((s) => s.kind === 'limit' && s.scheduled).map((s) => s.wakeAt).sort();
   return w.length ? w[0] : null;
 }
 
@@ -302,7 +302,7 @@ function brief(f, { prev, limit = 12 } = {}) {
   const AN = require('./andon.js');
   // a stall or the resume time first: nothing else matters while nobody works (R-43)
   const r = resumesAt(f);
-  if (r) lines.push(`The team resumes at ${require('./watchdog.js').clock(Date.parse(r))}, when the usage limit resets.`);
+  if (r) lines.push(`The team resumes at ${require('./watchdog.js').clock(Date.parse(r))}, when the usage limit resets (restart scheduled).`);
   lines.push(...[...new Set(stallItems(f).map((x) => x.plain))].slice(0, r ? 1 : 2));
   lines.push(...AN.plainLines(f.andon).slice(0, 2));
   // what changed since yesterday's plan, by the story states on the record

@@ -157,7 +157,7 @@ function daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json, l
   const lines = [`Plan for ${DP.today(row.at)}: ${row.items.length} item${row.items.length === 1 ? '' : 's'}, from the record.`];
   // stalls first, and when the team resumes after a usage limit (R-04, R-43); the plan never pauses work
   const resumes = DP.resumesAt(f);
-  if (resumes) lines.push(`The team resumes at ${require('./lib/watchdog.js').clock(Date.parse(resumes))}, when the usage limit resets (the watchdog wakes each stopped session then).`);
+  if (resumes) lines.push(`The team resumes at ${require('./lib/watchdog.js').clock(Date.parse(resumes))}, when the usage limit resets (restart scheduled: the watchdog wakes each stopped session then).`);
   const stalls = row.items.filter((x) => x.section === 0);
   if (stalls.length) {
     lines.push('0. Stalls first:');

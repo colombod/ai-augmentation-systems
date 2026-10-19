@@ -1,20 +1,22 @@
 #!/usr/bin/env node
 // scripts/watchdog.js — the stall alarm and the wake (R-04, R-43, R-25); lib/watchdog.js holds the rules.
 //   watchdog.js check [--json] [--project <root>]   the stalls in plain lines (an idle team, a bead in
-//                                                   progress with nothing moving, a P0 unclaimed over an
-//                                                   hour, a session stopped on a usage limit and when it
+//                                                   progress with nothing moving, a ready P0 unclaimed over
+//                                                   an hour, a session stopped on a usage limit and when it
 //                                                   resumes) and tight gh polling; each is a warning in
 //                                                   the ledger. Never pauses or blocks anything.
-//   watchdog.js wake [--dry-run] [--project <root>] wakes the session each due stall names, at most once
-//                                                   an hour per stall; a usage-limit wake waits for the
-//                                                   reset. `claude --resume <id> -p` in the role directory,
-//                                                   or a fork when the session is open; logged in
-//                                                   .delivery/watchdog/wakes.ndjson
-//   watchdog.js run [--project <root>]              check, then wake: what the host job runs
+//   watchdog.js wake [--dry-run] [--project <root>] wakes the session each due stall names, within the
+//                                                   caps (one wake per session an hour, six a day, a doubling
+//                                                   wait per stall); a usage-limit wake waits for the reset.
+//                                                   `claude --resume <id> -p` in the role directory, or a fork
+//                                                   when the session is open; logged in .delivery/watchdog/
+//   watchdog.js run [--project <root>]              check, then wake, under one lock: what the host job runs
 //   watchdog.js install [--every 15m] [--apply] [--project <root>]
 //                                                   the host job (launchd on macOS, a systemd user timer
 //                                                   or cron on Linux) that runs `run`; prints what it would
 //                                                   write unless --apply. Never installed automatically.
+//   watchdog.js uninstall [--project <root>]        removes that job; nothing to remove is not an error
+// wake, run, install and uninstall are refused inside a role directory or a role session's environment.
 // Exit codes: 0 ok (a stall is not an error); 1 refused; 2 usage.
 const fs = require('fs');
 const os = require('os');
@@ -23,8 +25,10 @@ const crypto = require('crypto');
 const WD = require('./lib/watchdog.js');
 const { whoAmI } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: watchdog.js check [--json] | watchdog.js wake [--dry-run] | watchdog.js run | watchdog.js install [--every 15m] [--apply]   (each takes --project <root>)';
-const SELF = path.resolve(__filename);
+const USAGE = 'usage: watchdog.js check [--json] | watchdog.js wake [--dry-run] | watchdog.js run | watchdog.js install [--every 15m] [--apply] | watchdog.js uninstall   (each takes --project <root>)';
+const PLUGIN_ROOT = path.resolve(__dirname, '..');
+const RUN_LOCK_STALE_MS = 20 * 60e3;
+const KEEP_WAKE_LOGS = 50;
 
 function parse(argv) {
   const o = { _: [], json: false, apply: false, dryRun: false };
@@ -38,6 +42,19 @@ function parse(argv) {
     else o._.push(a);
   }
   return o;
+}
+
+// A role session never wakes another session or installs a job (R-42): a role marker in or above the
+// working directory, or a role session's environment, refuses it whatever DELIVERY_ROLE says.
+function roleContext(cwd, env) {
+  for (const k of ['DELIVERY_ROLE', 'DELIVERY_ROLE_ID', 'DELIVERY_ROLE_DIR']) if (env[k]) return `${k} is set`;
+  let d = path.resolve(cwd);
+  for (;;) {
+    if (fs.existsSync(path.join(d, '.delivery-role.json'))) return `${d} is a role directory`;
+    const up = path.dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
 }
 
 function check(root, { bd, now, team, rows, record = true }) {
@@ -74,6 +91,15 @@ function spawnWake(bin, args, { cwd, env, logPath }) {
   return child.pid || null;
 }
 
+// the newest KEEP_WAKE_LOGS wake logs stay; the rest go
+function pruneWakeLogs(root) {
+  const dir = path.join(root, WD.REL, 'logs');
+  try {
+    const files = fs.readdirSync(dir).map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs })).sort((a, b) => b.t - a.t);
+    for (const x of files.slice(KEEP_WAKE_LOGS)) fs.unlinkSync(path.join(dir, x.f));
+  } catch (err) { /* no logs yet */ }
+}
+
 function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
@@ -81,48 +107,114 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
   const lines = [];
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const open = p.wakes.length ? (live !== undefined ? live : liveSessions(bin, env)) : null;
+  const rows = WD.logRows(root);
   for (const w of p.wakes) {
     const s = res.sessions.find((x) => x.instance === w.target) || null;
     const c = WD.wakeCommand(s, w.prompt, open);
     if (c.skip) {
       lines.push(`Not woken: ${w.target}: ${c.skip}. ${w.lines[0]}`);
-      if (!dryRun) WD.log(root, { type: 'skip', at, keys: w.keys, instance: w.target, reason: c.skip });
+      // one skip row an hour per session keeps the log short while a session is busy
+      const lastSkip = rows.filter((r) => r.type === 'skip' && r.instance === w.target).pop();
+      if (!dryRun && (!lastSkip || Date.parse(at) - Date.parse(lastSkip.at) >= WD.WAKE_EVERY_MS)) WD.log(root, { type: 'skip', at, keys: w.keys, instance: w.target, reason: c.skip });
       continue;
     }
     const shown = `${bin} ${c.args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`;
     if (dryRun) { lines.push(`Would wake ${w.target} (${c.mode}) in ${s.roleDir}: ${shown}`); continue; }
     const logPath = path.join(root, WD.REL, 'logs', `${w.target}-${at.replace(/[:.]/g, '-')}.log`);
-    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: { ...env, DELIVERY_ROLE: w.target }, logPath });
+    // DELIVERY_WAKE tells the session's hooks this is the watchdog's: a fork is recorded beside the
+    // owner's open session, never in its place
+    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: { ...env, DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode }, logPath });
     WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, prompt: w.prompt, pid, log: path.relative(root, logPath) });
     lines.push(`Woke ${w.target} (${c.mode}${s.session ? ` of ${s.session}` : ''}): ${w.lines.join(' ')}`);
   }
-  const logged = new Set(WD.logRows(root).filter((r) => r.type === 'scheduled').map((r) => r.key));
+  for (const h of p.held) lines.push(`Alarm only: ${h.target}: ${h.reason}. ${h.lines[0]}`);
+  const logged = new Set(rows.filter((r) => r.type === 'scheduled').map((r) => r.key));
   for (const s of p.waiting) {
     lines.push(`Scheduled: ${s.target} at ${WD.clock(Date.parse(s.wakeAt))}. ${s.line}`);
-    if (!dryRun && !logged.has(s.key)) WD.log(root, { type: 'scheduled', at, key: s.key, instance: s.target, due: s.wakeAt });
+    if (!dryRun && s.kind === 'limit' && !logged.has(s.key)) WD.log(root, { type: 'scheduled', at, key: s.key, instance: s.target, due: s.wakeAt });
   }
+  if (!dryRun) pruneWakeLogs(root);
   return lines.length ? lines : ['Nothing to wake.'];
 }
 
+// One run at a time: a second run while one holds the lock does nothing (a lock older than 20 min is stale).
+function withRunLock(root, fn) {
+  WD.ensureDir(root);
+  const lock = path.join(root, WD.REL, 'run.lock');
+  let fd = null;
+  try { fd = fs.openSync(lock, 'wx'); } catch (err) {
+    let age = 0;
+    try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch (e) { age = Infinity; }
+    if (age < RUN_LOCK_STALE_MS) return null;
+    try { fs.unlinkSync(lock); fd = fs.openSync(lock, 'wx'); } catch (e) { return null; }
+  }
+  try { fs.writeSync(fd, String(process.pid)); return fn(); } finally { try { fs.closeSync(fd); fs.unlinkSync(lock); } catch (e) { /* gone */ } }
+}
+
 // ---- the host job ----
-function everySeconds(s) {
+// cron runs on clock minutes, so only an interval that divides the hour keeps its cadence there (Copilot 471)
+function everySeconds(s, { cron = false } = {}) {
   const m = /^(\d+)(m|h)$/.exec(String(s || '15m'));
   if (!m) return { error: '--every takes minutes or hours, as 15m or 1h' };
   const sec = Number(m[1]) * (m[2] === 'h' ? 3600 : 60);
   if (sec < 300 || sec > 3600) return { error: '--every must be between 5m and 1h (15m is the default)' };
+  if (cron && 3600 % sec) return { error: `cron runs on clock minutes, so --every must divide the hour (5m, 10m, 12m, 15m, 20m, 30m or 1h), not ${s}` };
   return { sec };
 }
 
+const tagOf = (root) => crypto.createHash('sha256').update(root).digest('hex').slice(0, 8);
 const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-function jobFiles(root, { platform, home, sec, env, node = process.execPath, has }) {
-  const tag = crypto.createHash('sha256').update(root).digest('hex').slice(0, 8);
+const sq = (a) => `'${String(a).replace(/'/g, "'\\''")}'`;
+// the installing shell's PATH, then the usual places for node, bd and claude: nothing versioned is pinned
+function jobPath(env, home) {
+  const parts = [...String(env.PATH || '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', path.join(home, '.local', 'bin')].filter(Boolean);
+  return [...new Set(parts)].join(path.delimiter);
+}
+
+// The job runs this shim, which finds the plugin at run time: a checkout stays where it is; a plugin
+// installed by Claude Code is looked up in installed_plugins.json, so an update is picked up.
+function shimBody(root, pluginRoot) {
+  return `#!/usr/bin/env node
+// written by watchdog.js install for ${root}; finds the delivery plugin each run, then runs watchdog.js run
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const PROJECT = ${JSON.stringify(root)};
+const AT_INSTALL = ${JSON.stringify(pluginRoot)};
+const ok = (p) => p && fs.existsSync(path.join(p, 'scripts', 'watchdog.js'));
+function pluginRoot() {
+  const cache = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'plugins');
+  if (ok(AT_INSTALL) && !AT_INSTALL.startsWith(cache + path.sep)) return AT_INSTALL;
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(cache, 'installed_plugins.json'), 'utf8'));
+    for (const [k, v] of Object.entries(j.plugins || j)) {
+      if (!/^delivery@/.test(k)) continue;
+      const found = (Array.isArray(v) ? v : [v]).map((e) => e && e.installPath).filter(ok);
+      if (found.length) return found[found.length - 1];
+    }
+  } catch (err) { /* fall back below */ }
+  return ok(AT_INSTALL) ? AT_INSTALL : null;
+}
+const root = pluginRoot();
+if (!root) { console.error(new Date().toISOString() + ' watchdog job: the delivery plugin was not found; install it, then run watchdog.js install --apply again'); process.exit(1); }
+const log = path.join(PROJECT, '.delivery', 'watchdog', 'job.log');
+try { if (fs.statSync(log).size > ${WD.LOG_MAX_BYTES}) fs.renameSync(log, log + '.1'); } catch (err) { /* no log yet */ }
+const r = require('child_process').spawnSync(process.execPath, [path.join(root, 'scripts', 'watchdog.js'), 'run', '--project', PROJECT], { stdio: 'inherit' });
+process.exit(r.status === null ? 1 : r.status);
+`;
+}
+
+function jobFiles(root, { platform, home, sec, env, has }) {
+  const tag = tagOf(root);
   const logPath = path.join(root, WD.REL, 'job.log');
-  const argv = [node, SELF, 'run', '--project', root];
-  const PATH = env.PATH || '/usr/bin:/bin';
+  const shim = path.join(root, WD.REL, 'job.js');
+  const argv = ['/usr/bin/env', 'node', shim];
+  const PATH = jobPath(env, home);
+  const base = { shim, shimBody: shimBody(root, PLUGIN_ROOT) };
   if (platform === 'darwin') {
     const label = `com.delivery-plugin.watchdog.${tag}`;
     const file = path.join(home, 'Library', 'LaunchAgents', `${label}.plist`);
-    const vars = { PATH, HOME: home, ...(env.DELIVERY_HOST ? { DELIVERY_HOST: env.DELIVERY_HOST } : {}) };
+    const vars = { PATH, HOME: home, ...(env.DELIVERY_HOST ? { DELIVERY_HOST: env.DELIVERY_HOST } : {}), ...(env.TZ ? { TZ: env.TZ } : {}) };
     const body = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -141,45 +233,58 @@ function jobFiles(root, { platform, home, sec, env, node = process.execPath, has
 </plist>
 `;
     const uid = typeof process.getuid === 'function' ? process.getuid() : 501;
-    return { kind: 'launchd', files: [{ file, body }], commands: [['launchctl', ['bootout', `gui/${uid}`, file], true], ['launchctl', ['bootstrap', `gui/${uid}`, file]]], remove: `launchctl bootout gui/${uid} ${file} && rm ${file}` };
+    return { ...base, kind: 'launchd', file, files: [{ file, body }], commands: [['launchctl', ['bootout', `gui/${uid}`, file], true], ['launchctl', ['bootstrap', `gui/${uid}`, file]]],
+      removeCommands: [['launchctl', ['bootout', `gui/${uid}`, file], true]] };
   }
-  const q = (a) => `'${String(a).replace(/'/g, "'\\''")}'`;
   if (has('systemctl')) {
     const name = `delivery-watchdog-${tag}`;
     const dir = path.join(home, '.config', 'systemd', 'user');
+    const service = path.join(dir, `${name}.service`);
+    const timer = path.join(dir, `${name}.timer`);
+    // KillMode=process: the wake started by the run outlives the oneshot service (Copilot 440)
     return {
+      ...base,
       kind: 'systemd',
+      file: timer,
       files: [
-        { file: path.join(dir, `${name}.service`), body: `[Unit]\nDescription=delivery watchdog for ${root}\n\n[Service]\nType=oneshot\nWorkingDirectory=${root}\nEnvironment=PATH=${PATH}\nExecStart=${argv.map(q).join(' ')}\nStandardOutput=append:${logPath}\nStandardError=append:${logPath}\n` },
-        { file: path.join(dir, `${name}.timer`), body: `[Unit]\nDescription=delivery watchdog every ${sec / 60} min for ${root}\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=${sec}s\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n` },
+        { file: service, body: `[Unit]\nDescription=delivery watchdog for ${root}\n\n[Service]\nType=oneshot\nKillMode=process\nWorkingDirectory=${root}\nEnvironment="PATH=${PATH}"\nExecStart=${argv.join(' ')}\nStandardOutput=append:${logPath}\nStandardError=append:${logPath}\n` },
+        { file: timer, body: `[Unit]\nDescription=delivery watchdog every ${sec / 60} min for ${root}\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=${sec}s\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n` },
       ],
       commands: [['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', '--now', `${name}.timer`]]],
-      remove: `systemctl --user disable --now ${name}.timer && rm ${path.join(dir, name)}.service ${path.join(dir, name)}.timer`,
+      removeCommands: [['systemctl', ['--user', 'disable', '--now', `${name}.timer`], true], ['systemctl', ['--user', 'daemon-reload'], true]],
     };
   }
   const marker = `# delivery-watchdog ${tag}`;
-  const line = `*/${sec / 60} * * * * cd ${q(root)} && PATH=${q(PATH)} ${argv.map(q).join(' ')} >> ${q(logPath)} 2>&1 ${marker}`;
-  return { kind: 'cron', cron: { line, marker }, files: [], commands: [], remove: `crontab -l | grep -v '${marker}' | crontab -` };
+  const when = sec === 3600 ? '0 * * * *' : `*/${sec / 60} * * * *`;
+  const line = `${when} cd ${sq(root)} && PATH=${sq(PATH)} ${argv.map(sq).join(' ')} >> ${sq(logPath)} 2>&1 ${marker}`;
+  return { ...base, kind: 'cron', file: null, cron: { line, marker }, files: [], commands: [], removeCommands: [] };
 }
 
+const runner = (exec) => exec || ((cmd, args, input) => require('child_process').execFileSync(cmd, args, { encoding: 'utf8', input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] }));
+const whichOf = (has) => has || ((cmd) => { try { require('child_process').execFileSync('which', [cmd], { stdio: 'ignore' }); return true; } catch (err) { return false; } });
+
 function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has } = {}) {
-  const e = everySeconds(o.every);
+  const which = whichOf(has);
+  const cron = platform !== 'darwin' && !which('systemctl');
+  const e = everySeconds(o.every, { cron });
   if (e.error) return { code: 2, out: `watchdog.js: ${e.error}\n${USAGE}` };
-  const run = exec || ((cmd, args, input) => require('child_process').execFileSync(cmd, args, { encoding: 'utf8', input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] }));
-  const which = has || ((cmd) => { try { require('child_process').execFileSync('which', [cmd], { stdio: 'ignore' }); return true; } catch (err) { return false; } });
+  const run = runner(exec);
   const j = jobFiles(root, { platform, home, sec: e.sec, env, has: which });
   const lines = [];
-  const head = `The ${j.kind} job runs \`watchdog.js run --project ${root}\` every ${e.sec / 60} min on this host: it checks for stalls and wakes the role session each one names. Its log: ${path.join(root, WD.REL, 'job.log')}.`;
+  const head = `The ${j.kind} job runs \`watchdog.js run --project ${root}\` every ${e.sec / 60} min on this host, through ${j.shim}, which finds the plugin each run: it checks for stalls and wakes the role session each one names. Its log: ${path.join(root, WD.REL, 'job.log')}.`;
+  const removal = `To remove it: node ${path.join(PLUGIN_ROOT, 'scripts', 'watchdog.js')} uninstall --project ${root}`;
   if (!o.apply) {
-    lines.push(`Dry run. ${head}`);
+    lines.push(`Dry run. ${head}`, `Would write ${j.shim} (the shim).`);
     for (const f of j.files) lines.push(`Would write ${f.file}:`, f.body.trimEnd());
     if (j.cron) lines.push('Would add this line to your crontab:', j.cron.line);
     for (const [cmd, args] of j.commands) lines.push(`Would run: ${cmd} ${args.join(' ')}`);
-    lines.push('Nothing was written. To install it: watchdog.js install --apply' + (o.every ? ` --every ${o.every}` : ''));
+    if (j.kind === 'systemd') lines.push('A user timer runs only while you are logged in, unless lingering is on: loginctl enable-linger $USER.');
+    lines.push(`Nothing was written. To install it: watchdog.js install --apply${o.every ? ` --every ${o.every}` : ''}`, removal);
     return { code: 0, out: lines.join('\n') };
   }
   try {
-    fs.mkdirSync(path.join(root, WD.REL), { recursive: true });
+    WD.ensureDir(root);
+    fs.writeFileSync(j.shim, j.shimBody, { mode: 0o755 });
     for (const f of j.files) { fs.mkdirSync(path.dirname(f.file), { recursive: true }); fs.writeFileSync(f.file, f.body); lines.push(`Wrote ${f.file}`); }
     if (j.cron) {
       let cur = '';
@@ -191,28 +296,67 @@ function install(root, o, { platform = process.platform, home = os.homedir(), en
     for (const [cmd, args, mayFail] of j.commands) {
       try { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); } catch (err) { if (!mayFail) throw err; }
     }
-  } catch (err) { return { code: 1, out: `${lines.join('\n')}\nwatchdog.js: the job was not installed (${String(err.message).split('\n')[0]})`.trim() }; }
-  lines.push(`Installed. ${head}`, `To remove it: ${j.remove}`);
+    fs.writeFileSync(WD.installedFile(root), `${JSON.stringify({ kind: j.kind, file: j.file, every_s: e.sec, at: new Date().toISOString() })}\n`);
+  } catch (err) { return { code: 1, out: `${lines.join('\n')}\nwatchdog.js: the job was not installed (${String(err.message).split('\n')[0]})\n${removal}`.trim() }; }
+  lines.push(`Installed. ${head}`);
+  if (j.kind === 'systemd') lines.push('A user timer runs only while you are logged in, unless lingering is on: loginctl enable-linger $USER.');
+  lines.push(removal);
   return { code: 0, out: lines.join('\n') };
+}
+
+// Removes the job this project installed on this host, in every form it may have taken; running it
+// again finds nothing and says so.
+function uninstall(root, { platform = process.platform, home = os.homedir(), env = process.env, exec, has } = {}) {
+  const run = runner(exec);
+  const which = whichOf(has);
+  const j = jobFiles(root, { platform, home, sec: 900, env, has: which });
+  const lines = [];
+  for (const f of j.files) {
+    if (!fs.existsSync(f.file)) continue;
+    if (f === j.files[0]) for (const [cmd, args] of j.removeCommands) { try { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); } catch (err) { /* already stopped */ } }
+    fs.unlinkSync(f.file);
+    lines.push(`Removed ${f.file}`);
+  }
+  if (platform !== 'darwin') {
+    let cur = null;
+    try { cur = run('crontab', ['-l']); } catch (err) { cur = null; }
+    const marker = `# delivery-watchdog ${tagOf(root)}`;
+    if (cur && cur.includes(marker)) {
+      const kept = cur.split('\n').filter((l) => l.trim() && !l.includes(marker));
+      run('crontab', ['-'], kept.length ? `${kept.join('\n')}\n` : '');
+      lines.push('Removed the watchdog line from your crontab.');
+    }
+  }
+  for (const f of [j.shim, WD.installedFile(root)]) if (fs.existsSync(f)) { fs.unlinkSync(f); lines.push(`Removed ${f}`); }
+  return { code: 0, out: lines.length ? `${lines.join('\n')}\nThe watchdog job for ${root} is removed from this host.` : `Nothing to remove: no watchdog job for ${root} on this host.` };
 }
 
 function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform, home, exec, has } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
-  if (!['check', 'wake', 'run', 'install'].includes(cmd)) return { code: 2, out: USAGE };
+  if (!['check', 'wake', 'run', 'install', 'uninstall'].includes(cmd)) return { code: 2, out: USAGE };
+  if (cmd !== 'check') {
+    const role = roleContext(cwd, env);
+    if (role) return { code: 1, out: `watchdog.js: ${cmd} is the host job's, installed by the owner from a shell outside any role directory (${role}); a role session reads the stalls with \`watchdog.js check\` and acts on its own items.` };
+  }
   const who = whoAmI({ cwd, env, project: o.project });
   if (!who.root) return { code: 2, out: 'watchdog.js: no project found; pass --project <root>' };
-  if (who.roleId && cmd !== 'check') return { code: 1, out: `watchdog.js: ${cmd} is the host job's (the owner installs it once); a role session reads the stalls with \`watchdog.js check\` and acts on its own items.` };
   if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has });
-  const res = check(who.root, { bd, now, team: who.team, rows, record: !(cmd === 'wake' && o.dryRun) });
-  if (cmd === 'check') {
-    if (o.json) return { code: 0, out: JSON.stringify({ paused: res.paused || null, stalls: res.stalls, polls: res.polls, unreadable: res.unreadable || null }, null, 2) };
-    return { code: 0, out: checkLines(res).join('\n') };
-  }
-  const woke = wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn });
-  const out = cmd === 'run' ? [`${now || new Date().toISOString()} watchdog`, ...checkLines(res), ...woke] : (woke.length ? woke : checkLines(res));
-  return { code: 0, out: out.join('\n') };
+  if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
+  const go = () => {
+    const res = check(who.root, { bd, now, team: who.team, rows, record: !(cmd === 'wake' && o.dryRun) });
+    if (cmd === 'check') {
+      if (o.json) return { code: 0, out: JSON.stringify({ paused: res.paused || null, stalls: res.stalls, polls: res.polls, unreadable: res.unreadable || null }, null, 2) };
+      return { code: 0, out: checkLines(res).join('\n') };
+    }
+    const woke = wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn });
+    const out = cmd === 'run' ? [`${now || new Date().toISOString()} watchdog`, ...checkLines(res), ...woke] : (woke.length ? woke : checkLines(res));
+    return { code: 0, out: out.join('\n') };
+  };
+  if (cmd === 'check' || o.dryRun) return go();
+  const r = withRunLock(who.root, go);
+  return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
 if (require.main === module) {
@@ -222,4 +366,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, checkLines, jobFiles, everySeconds };
+module.exports = { main, checkLines, jobFiles, everySeconds, roleContext };

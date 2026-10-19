@@ -1,6 +1,8 @@
 // scripts/watchdog.test.js — the stall alarm and the wake (R-04, R-43; tight gh polling, R-25), replayed
 // on Vault moments through the real lane and bd-guard hooks (testing/role-harness.js), through the host
 // job's command line, and through main().
+// owner-facing times are the host's local time: the tests read them in UTC
+process.env.TZ = 'UTC';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -55,6 +57,14 @@ function calls(log, n = 1) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
   }
 }
+// the host job as `watchdog.js install --apply` records it, so a restart can be promised
+function markInstalled(h) {
+  const job = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'job-')), 'job.plist');
+  fs.writeFileSync(job, '');
+  WD.ensureDir(h.root);
+  fs.writeFileSync(WD.installedFile(h.root), JSON.stringify({ kind: 'launchd', file: job }));
+  return job;
+}
 const scratchLog = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-log-')), 'calls.ndjson');
 
 // 10-13 12:06: the weekly limit stops builder-1 on vault-wxy.12 and builder-2 on vault-0n9; it resets 10-17 15:01
@@ -69,6 +79,7 @@ function vaultLimit() {
   session(h, 'builder-1', { seen: LIMIT, rows: [reply('2026-10-13T12:05:00Z'), limitRow(LIMIT, RESET)] });
   session(h, 'builder-2', { seen: LIMIT, rows: [reply('2026-10-13T12:04:00Z'), limitRow(LIMIT, RESET)] });
   session(h, DM, { seen: '2026-10-13T12:00:00Z' });
+  markInstalled(h);
   return h;
 }
 const fakeEnv = (h, more = {}) => ({ ...process.env, DELIVERY_ROLE: '', BD_FAKE_STORE: h.store, GH_FAKE_STORE: path.join(h.root, 'gh-store.json'), PATH: `${path.join(__dirname, 'testing')}${path.delimiter}${process.env.PATH}`, ...more });
@@ -79,7 +90,7 @@ test('R-04 (10-13 12:06 to 10-17 15:01): the weekly limit schedules each holder\
   const spawned = [];
   const spawn = (bin, args, o) => { spawned.push({ args, cwd: o.cwd, role: o.env.DELIVERY_ROLE }); return 1; };
   const c = at(h, '2026-10-13T12:30:00Z', ['check']);
-  assert.match(c.out, /^The team resumes at 2026-10-17 15:06 UTC: builder-1 stopped on the seven-day usage limit at 2026-10-13 12:06 UTC, which resets at 2026-10-17 15:01 UTC\.$/m);
+  assert.match(c.out, /^The team resumes at 2026-10-17 15:06 UTC: builder-1 stopped on the seven-day usage limit at 2026-10-13 12:06 UTC, which resets at 2026-10-17 15:01 UTC \(restart scheduled\)\.$/m);
   assert.doesNotMatch(c.out, /Stalled: ex-wxy-12/, 'a holder stopped on the limit is the limit stall, not a second one');
   assert.ok(Wn.list(h.root).some((w) => w.kind === 'usage-limit' && /builder-1 stopped/.test(w.detail)), 'a warning in the ledger');
   // during the 4 days: scheduled, nobody is woken (the owner typed "Try again" twice)
@@ -105,18 +116,19 @@ test('R-04 through the lane: the Chief of Staff\'s plan and the owner\'s brief l
   const now = Date.now();
   const h = harness({ beads: { 'ex-wxy-12': { id: 'ex-wxy-12', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(now - 2 * H) } } });
   session(h, 'builder-1', { seen: iso(now - H), rows: [limitRow(iso(now - H), iso(now + 3 * H))] });
+  markInstalled(h);
   const today = h.bash(COS, `${h.script('plan.js')} today`);
   assert.equal(today.code, 0, today.deny || today.out);
   const resumes = WD.clock(now + 3 * H + WD.RESET_GRACE_MIN * 60e3);
-  assert.equal(today.out.split('\n')[1], `The team resumes at ${resumes}, when the usage limit resets (the watchdog wakes each stopped session then).`);
+  assert.equal(today.out.split('\n')[1], `The team resumes at ${resumes}, when the usage limit resets (restart scheduled: the watchdog wakes each stopped session then).`);
   const brief = h.bash(COS, `${h.script('plan.js')} brief`);
-  assert.equal(brief.out.split('\n')[0], `The team resumes at ${resumes}, when the usage limit resets.`);
+  assert.equal(brief.out.split('\n')[0], `The team resumes at ${resumes}, when the usage limit resets (restart scheduled).`);
   assert.deepEqual(MC.idTokens(brief.out, { prefix: 'ex' }), []);
   const check = h.bash(DM, `${h.script('watchdog.js')} check`);
   assert.equal(check.code, 0, check.deny || check.out);
   assert.match(check.out, new RegExp(`^The team resumes at ${resumes}`, 'm'));
   // the wake and the host job are the owner's install, never a session's own move (R-42)
-  for (const role of [COS, DM]) for (const cmd of ['wake', 'run', 'install --apply']) assert.ok(h.bash(role, `${h.script('watchdog.js')} ${cmd}`, { run: false }).deny, `${role} ${cmd}`);
+  for (const role of [COS, DM]) for (const cmd of ['wake', 'run', 'install --apply', 'uninstall']) assert.ok(h.bash(role, `${h.script('watchdog.js')} ${cmd}`, { run: false }).deny, `${role} ${cmd}`);
   assert.match(withEnv({ DELIVERY_ROLE: DM }, () => watchdog.main(['wake'], { cwd: h.roleDir(DM), env: process.env })).out, /the host job's/);
 });
 
@@ -165,7 +177,8 @@ test('R-43 and R-42: idle with ready work wakes the Delivery Manager; a busy ses
   assert.deepEqual(WD.stalls({ beads, ready: beads, now: iso(now), sessions, pause: { paused: true, by: 'dec-chief-of-staff-31' } }), { paused: 'dec-chief-of-staff-31', stalls: [] });
   assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'busy' }]), { skip: 'it is working (busy)' });
   assert.deepEqual(WD.wakeCommand(sessions[0], 'go', []).args, ['--resume', 's-dm', '-p', 'go']);
-  assert.equal(WD.wakeCommand(sessions[0], 'go', null).mode, 'fork', 'open sessions unknown: a copy never collides');
+  assert.match(WD.wakeCommand(sessions[0], 'go', null).skip, /could not be listed.*alarm only/, 'open sessions unknown: never a fork, never a resume');
+  assert.equal(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'idle' }]).mode, 'fork');
   assert.deepEqual(WD.wakeCommand({ ...sessions[0], session: null }, 'go', []).args, ['-c', '-p', 'go']);
   assert.match(WD.wakeCommand({ ...sessions[0], roleDir: '/nowhere/role' }, 'go', []).skip, /not on this host/);
 });
@@ -206,31 +219,281 @@ test('R-25: a role whose transcript polls gh every 90 s gets a polling warning',
   assert.deepEqual(WD.tightPolls([reply(iso(now), [{ type: 'tool_use', input: { command: 'while true; do gh run list; sleep 300; done' } }])]), [], 'every 5 minutes is within the budget');
 });
 
-test('install: dry run by default; --apply writes the launchd job, the systemd timer or the cron line, and nothing else', () => {
+
+// ---- PR 59 review: role sessions never wake anyone (B1) ----
+test('B1: no role, `any` lanes included, can run the wake, the job or a resume in any form; only check passes', () => {
+  const h = harness({});
+  session(h, DM, { seen: iso(Date.now() - 9 * H) });
+  const wd = h.script('watchdog.js');
+  const forms = [`${wd} run --project ${h.root}`, `DELIVERY_ROLE= ${wd} wake`, `env -u DELIVERY_ROLE_DIR ${wd} install --apply`, `${wd} uninstall`,
+    `true && ${wd} run`, `${wd} check; ${wd} wake`, `bash -c "${wd} run"`, `cd ${path.join(__dirname)} && node -e "require('./watchdog').main(['run'])"`,
+    `cd ${__dirname} && node watchdog run`, `node ${h.root}/.delivery/watchdog/job.js`, `${wd} check && bd ready`,
+    'claude --resume sess-delivery-lead -p "go"', 'claude -c -p go', '/usr/local/bin/claude --resume s --fork-session -p x', 'claude respawn all'];
+  for (const role of ['builder-1', 'spike-researcher', DM, COS, 'progress-observer']) {
+    for (const f of forms) assert.ok(h.bash(role, f, { run: false }).deny, `${role}: ${f}`);
+    assert.equal(h.bash(role, `${wd} check`, { run: false }).deny, null, `${role} may check`);
+    assert.equal(h.bash(role, `${wd} check --json`, { run: false }).deny, null);
+  }
+  assert.equal(h.bash('builder-1', 'claude -p "summarise the diff"', { run: false }).deny, null, 'a fresh claude -p worker is still the builder\'s');
+  // the script refuses too: a role directory in or above the working directory, or a role environment
+  const log = scratchLog();
+  const fromRole = spawnSync('node', [path.join(__dirname, 'watchdog.js'), 'run', '--project', h.root], { cwd: h.roleDir('builder-1'), encoding: 'utf8', env: { ...fakeEnv(h, claudeEnv(log)), DELIVERY_ROLE: '' } });
+  assert.equal(fromRole.status, 1);
+  assert.match(fromRole.stderr, /is a role directory/);
+  const sub = path.join(h.roleDir('builder-1'), 'product');
+  assert.equal(watchdog.main(['install', '--apply'], { cwd: sub, env: { ...process.env, DELIVERY_ROLE: '' } }).code, 1);
+  assert.match(watchdog.main(['wake'], { cwd: h.root, env: { ...process.env, DELIVERY_ROLE: '', DELIVERY_ROLE_DIR: h.roleDir('builder-1') } }).out, /DELIVERY_ROLE_DIR is set/);
+  assert.equal(calls(log, 0).length, 0, 'nobody was woken');
+});
+
+// ---- the wake is bounded (B2) ----
+// the beads the harness wrote, read without a bd process per run (the long replays run every 15 min for days)
+const memStore = (h) => { const b = Object.values(h.db().issues).map((x) => ({ ...x, type: x.type })); return { list: () => b, ready: () => b.filter((x) => x.status === 'open'), show: (id) => b.find((x) => x.id === id) || null }; };
+const spawner = () => { const list = []; const fn = (bin, args, o) => { list.push({ args, role: o.env.DELIVERY_ROLE, wake: o.env.DELIVERY_WAKE }); return 999999999; }; fn.list = list; return fn; };
+const every15 = (from, hours) => Array.from({ length: hours * 4 + 1 }, (_, i) => iso(Date.parse(from) + i * 15 * 60e3));
+
+test('B2: staggered P0s wake the Delivery Manager once an hour at most, whatever the number of stalls', () => {
+  const t0 = '2026-10-12T22:00:00Z';
+  const beads = {};
+  for (let i = 0; i < 4; i++) beads[`ex-p${i}`] = { id: `ex-p${i}`, status: 'open', priority: 0, created_at: iso(Date.parse(t0) - H + i * 15 * 60e3) };
+  beads['ex-busy'] = { id: 'ex-busy', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(Date.parse(t0) + 10 * H) };
+  const h = harness({ beads });
+  session(h, DM, { seen: t0 });
+  const spawn = spawner();
+  const bd = memStore(h);
+  for (const now of every15(t0, 3)) at(h, now, ['run'], { spawn, bd });
+  assert.ok(spawn.list.length <= 4 && spawn.list.length >= 3, `woken ${spawn.list.length} times in 3 h`);
+  const first = spawn.list[0].args[3];
+  assert.match(first, /ex-p0/);
+});
+
+test('B2: an idle stall nobody resolves is retried with a doubling wait and a daily cap, then only alarmed', () => {
+  const t0 = '2026-10-13T12:00:00Z';
+  const h = harness({ beads: { 'ex-next': { id: 'ex-next', status: 'open', updated_at: iso(Date.parse(t0) - H) } } });
+  session(h, DM, { seen: t0 });
+  const spawn = spawner();
+  let held = '';
+  const bd = memStore(h);
+  for (const now of every15(t0, 48)) { const r = at(h, now, ['run'], { spawn, bd }); if (/Alarm only/.test(r.out)) held = r.out; }
+  const times = WD.logRows(h.root).filter((r) => r.type === 'wake').map((r) => (Date.parse(r.at) - Date.parse(t0)) / H);
+  assert.deepEqual(times, [0, 1, 3, 7, 15, 31], 'waits of 1, 2, 4, 8, 16 h');
+  assert.match(held, /^Alarm only: delivery-lead: (?:woken at .*; one wake an hour|woken for these already; waiting longer before the next try)\./m);
+  // the daily cap: six wakes in a day, whatever the keys
+  const many = harness({});
+  session(many, DM, { seen: t0 });
+  for (let i = 0; i < WD.DAILY_CAP; i++) WD.log(many.root, { type: 'wake', at: iso(Date.parse(t0) - (23 - i * 3) * H), keys: [`k${i}`], instance: DM, pid: null });
+  const res = { stalls: [{ kind: 'p0', key: 'p0:new', target: DM, due: true, line: 'Unclaimed: new', prompt: 'go' }], sessions: [] };
+  assert.match(WD.plan(res, { root: many.root, now: t0 }).held[0].reason, /woken 6 times in a day; alarm only/);
+});
+
+test('B2: a usage limit with no known reset keeps one key and one warning however often the wake is rejected again', () => {
+  const t0 = '2026-10-13T12:10:00Z';
+  const h = harness({ beads: { 'ex-wxy-12': { id: 'ex-wxy-12', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: '2026-10-13T11:00:00Z' } } });
+  markInstalled(h);
+  const unknown = (when) => ({ ...limitRow(when, RESET), quotaLimits: { status: 'rejected' } });
+  const rows = [reply('2026-10-13T12:00:00Z'), unknown('2026-10-13T12:06:00Z')];
+  session(h, 'builder-1', { seen: '2026-10-13T12:06:00Z', rows });
+  const tx = require('./lib/roster.js').readRoster(h.root).instances['builder-1'].transcript_path;
+  const spawn = spawner();
+  for (const now of every15(t0, 24)) {
+    const before = spawn.list.length;
+    at(h, now, ['run'], { spawn, bd: memStore(h) });
+    // each wake is rejected by the limit again: a new limit row in the transcript
+    if (spawn.list.length > before) { fs.appendFileSync(tx, `${JSON.stringify(unknown(now))}\n`); fs.utimesSync(tx, Date.parse(now) / 1000, Date.parse(now) / 1000); }
+  }
+  assert.ok(spawn.list.length <= 5, `woken ${spawn.list.length} times in 24 h`);
+  assert.equal(Wn.list(h.root).filter((w) => w.kind === 'usage-limit').length, 1);
+  assert.deepEqual([...new Set(WD.logRows(h.root).filter((r) => r.type === 'wake').flatMap((r) => r.keys))], ['limit:builder-1:unknown']);
+});
+
+test('B2 and Copilot 416: a session on its own usage limit is woken for nothing before its reset, then once for all of it', () => {
+  const t0 = '2026-10-13T12:00:00Z';
+  const reset = '2026-10-13T16:00:00Z';
+  const h = harness({ beads: { 'ex-next': { id: 'ex-next', status: 'open', updated_at: '2026-10-13T10:00:00Z' } } });
+  markInstalled(h);
+  session(h, DM, { seen: '2026-10-13T11:50:00Z', rows: [reply('2026-10-13T11:49:00Z'), limitRow('2026-10-13T11:50:00Z', reset, 'five_hour')] });
+  const spawn = spawner();
+  const bd = memStore(h);
+  for (const now of every15(t0, 4)) at(h, now, ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 0, 'not before 16:05');
+  assert.match(at(h, '2026-10-13T16:00:00Z', ['wake'], { spawn }).out, /^Scheduled: delivery-lead at 2026-10-13 16:05 UTC\. Idle:/m);
+  at(h, '2026-10-13T16:10:00Z', ['run'], { spawn });
+  assert.equal(spawn.list.length, 1);
+  assert.match(spawn.list[0].args[3], /The usage limit has reset\..*Nothing is in progress although 1 item is ready/);
+});
+
+test('B2: a wake whose process still runs is not started again; concurrent host-job runs wake once', () => {
+  const now = Date.now();
+  const h = harness({ beads: { 'ex-p': { id: 'ex-p', status: 'open', priority: 0, created_at: iso(now - 3 * H) }, 'ex-b': { id: 'ex-b', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(now) } } });
+  session(h, DM, { seen: iso(now - 2 * H) });
+  WD.log(h.root, { type: 'wake', at: iso(now - 2 * H), keys: ['p0:other'], instance: DM, pid: process.pid });
+  assert.match(WD.plan(WD.read(h.root, { bd: require('./lib/bd.js').makeBd({ cwd: h.root, env: fakeEnv(h) }), now: iso(now) }), { root: h.root, now: iso(now) }).held[0].reason, /still running/);
+  fs.writeFileSync(path.join(h.root, WD.REL, 'wakes.ndjson'), '');
+  const log = scratchLog();
+  const env = { ...fakeEnv(h, claudeEnv(log)), TYPESAFE_API_KEY: 'fake', DELIVERY_JUDGE_ENDPOINT: 'http://127.0.0.1:9' };
+  const { spawn } = require('child_process');
+  const runs = Array.from({ length: 4 }, () => spawn('node', [path.join(__dirname, 'watchdog.js'), 'run', '--project', h.root], { cwd: h.root, env, stdio: 'ignore' }));
+  return Promise.all(runs.map((c) => new Promise((r) => c.on('exit', r)))).then(() => {
+    calls(log, 2);
+    assert.equal(calls(log, 1).length, 1, 'four concurrent runs, one wake');
+  });
+});
+
+// ---- false alarms (Important 3) and the two surviving mutants ----
+test('no false alarm: a blocked P0, a P0 epic, a claimed P0, beads in a stopped area, a holder inside its watch.js wait', () => {
+  const now = Date.parse('2026-10-13T08:00:00Z');
+  const old = iso(now - 16 * H);
+  const p0 = (id, extra = {}) => ({ id, status: 'open', priority: 0, created_at: old, ...extra });
+  const stopArea = { paused: false, stops: [{ trigger: 'andon:ev-x-1', area: 'import' }] };
+  const busy = { id: 'ex-busy', status: 'in_progress', assignee: 'dev@pc/builder-2', updated_at: iso(now - 60e3) };
+  const st = (beads, ready, more = {}) => WD.stalls({ beads: [...beads, busy], ready, now: iso(now), ...more }).stalls.map((s) => s.kind);
+  assert.deepEqual(st([p0('ex-a')], [p0('ex-a')]), ['p0'], 'the ready P0 counts');
+  assert.deepEqual(st([p0('ex-b')], []), [], 'blocked: not in bd ready');
+  assert.deepEqual(st([p0('ex-e', { type: 'epic' })], [p0('ex-e', { type: 'epic' })]), [], 'an epic is not claimed');
+  assert.deepEqual(st([p0('ex-c', { assignee: 'dev@pc/builder-1' })], [p0('ex-c', { assignee: 'dev@pc/builder-1' })]), [], 'assigned is claimed');
+  const inImport = p0('ex-i', { metadata: { area: 'import' } });
+  assert.deepEqual(st([inImport], [inImport], { pause: stopArea }), [], 'a P0 in a stopped area waits for its fix');
+  const quiet = { id: 'ex-q', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(now - 5 * H), metadata: { area: 'import' } };
+  const b1 = (rows) => ({ instance: 'builder-1', role: 'builder', session: 'b1', roleDir: os.tmpdir(), lastActive: now - 3 * H, limit: WD.limitOf(rows), waitUntil: WD.waitingUntil(rows) });
+  assert.deepEqual(st([quiet], [], { sessions: [b1([])] }), ['quiet']);
+  assert.deepEqual(st([quiet], [], { sessions: [b1([])], pause: stopArea }), [], 'quiet in a stopped area is the stop, not a stall');
+  const waitCmd = (maxH) => [reply(iso(now - 3 * H), [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: `node /p/scripts/watch.js until MERGED --every 5m --max ${maxH}h -- gh pr view 9` } }])];
+  assert.deepEqual(st([quiet], [], { sessions: [b1(waitCmd(6))] }), [], 'inside its declared 6 h wait');
+  assert.deepEqual(st([quiet], [], { sessions: [b1(waitCmd(2))] }), ['quiet'], 'past its declared limit');
+  const ended = [...waitCmd(6), { type: 'user', timestamp: iso(now - 2.9 * H), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'Done' }] } }];
+  assert.deepEqual(st([quiet], [], { sessions: [b1(ended)] }), ['quiet'], 'the wait ended');
+  // a session that went on after its limit row (activity later than the row) is not on the limit
+  const lim = [reply(iso(now - 5 * H)), limitRow(iso(now - 4 * H), iso(now + H))];
+  const on = { instance: 'builder-1', role: 'builder', session: 'b1', roleDir: os.tmpdir(), lastActive: now - 4 * H, limit: WD.limitOf(lim), waitUntil: -Infinity };
+  assert.deepEqual(WD.stalls({ now: iso(now), sessions: [on] }).stalls.map((s) => s.kind), ['limit']);
+  assert.deepEqual(WD.stalls({ now: iso(now), sessions: [{ ...on, lastActive: now - 10 * 60e3 }] }).stalls, [], 'active after the limit row');
+});
+
+test('one bad transcript line never silences the watchdog; a reset in milliseconds is read as seconds', () => {
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tx-')), 's.jsonl');
+  fs.writeFileSync(f, ['{"type":"assistant","timestamp":"2026-10-13T12:00:00Z","message":{"content":[]}}', JSON.stringify(limitRow(LIMIT, RESET)), 'null', '42', '{torn'].join('\n'));
+  assert.equal(WD.tailRows(f).length, 2, 'null, a number and a torn line are skipped');
+  assert.equal(WD.limitOf(WD.tailRows(f)).resetsAt, '2026-10-17T15:01:00.000Z');
+  const msRow = { ...limitRow(LIMIT, RESET), quotaLimits: { resetsAt: Date.parse(RESET) } };
+  assert.equal(WD.limitOf([msRow]).resetsAt, '2026-10-17T15:01:00.000Z');
+  assert.equal(WD.limitOf([{ ...msRow, quotaLimits: { resetsAt: 1e16 } }]).resetsAt, null, 'out of range: unknown, not a crash');
+  assert.equal(WD.clock(NaN), 'an unknown time');
+  const london = withEnv({ TZ: 'Europe/London' }, () => WD.clock(Date.parse(RESET)));
+  assert.equal(london, '2026-10-17 16:01 BST', 'the owner reads the host\'s local time');
+});
+
+test('the brief promises a restart only when the job is installed', () => {
+  const now = Date.now();
+  const h = harness({ beads: { 'ex-w': { id: 'ex-w', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(now - 2 * H) } } });
+  session(h, 'builder-1', { seen: iso(now - H), rows: [limitRow(iso(now - H), iso(now + 3 * H))] });
+  const brief = h.bash(COS, `${h.script('plan.js')} brief`).out.split('\n')[0];
+  assert.equal(brief, `The team is stalled; the watchdog is not installed: the usage limit resets at ${WD.clock(now + 3 * H)}.`);
+  assert.doesNotMatch(h.bash(COS, `${h.script('plan.js')} today`).out, /resumes at/);
+  assert.match(h.bash(DM, `${h.script('watchdog.js')} check`).out, /^Stalled: builder-1 stopped on the seven-day usage limit .*; the watchdog is not installed, so nothing restarts it \(watchdog\.js install\)\.$/m);
+  const job = markInstalled(h);
+  assert.match(h.bash(COS, `${h.script('plan.js')} brief`).out, /^The team resumes at .* \(restart scheduled\)\.$/m);
+  fs.unlinkSync(job);
+  assert.match(h.bash(COS, `${h.script('plan.js')} brief`).out, /^The team is stalled; the watchdog is not installed/m, 'a job file removed by hand is no promise');
+});
+
+test('a watchdog fork is recorded beside the owner\'s open session, which stays primary; old forks drop off', () => {
+  const h = harness({});
+  session(h, DM, { seen: iso(Date.now() - H) });
+  const hook = (env) => spawnSync('node', [path.join(__dirname, '..', 'hooks', 'scripts', 'role-session-start.js')], { cwd: h.roleDir(DM), encoding: 'utf8',
+    input: JSON.stringify({ session_id: 'fork-1', transcript_path: '/tmp/fork-1.jsonl', cwd: h.roleDir(DM), source: 'resume', hook_event_name: 'SessionStart' }),
+    env: { ...fakeEnv(h), DELIVERY_ROLE: DM, DELIVERY_ROLE_DIR: h.roleDir(DM), CLAUDE_PLUGIN_ROOT: path.join(__dirname, '..'), ...env } });
+  hook({ DELIVERY_WAKE: 'fork' });
+  const R = require('./lib/roster.js');
+  let e = R.readRoster(h.root).instances[DM];
+  assert.equal(e.session_id, `sess-${DM}`);
+  assert.deepEqual(e.forks.map((f) => f.session_id), ['fork-1']);
+  R.recordFork(h.root, { instance: DM, session_id: 'fork-2', now: iso(Date.now() + 25 * H) });
+  e = R.readRoster(h.root).instances[DM];
+  assert.deepEqual(e.forks.map((f) => f.session_id), ['fork-2'], 'a fork older than a day drops off the roster');
+});
+
+test('Copilot 395: a verified pause silences the polling warnings as well', () => {
+  const now = Date.now();
+  const h = harness({});
+  const loop = { type: 'tool_use', name: 'Bash', input: { command: 'while true; do gh pr view 471; sleep 90; done' } };
+  session(h, 'progress-observer', { seen: iso(now - 60e3), rows: [reply(iso(now - 120e3), [loop])] });
+  const bd = require('./lib/bd.js').makeBd({ cwd: h.root, env: fakeEnv(h) });
+  assert.equal(WD.read(h.root, { bd, now: iso(now) }).polls.length, 1);
+  assert.deepEqual(WD.read(h.root, { bd, now: iso(now), pause: { paused: true, by: 'dec-chief-of-staff-9' } }).polls, []);
+});
+
+test('polling warnings flag only gh called and slept on inside a loop', () => {
+  const cmds = (list) => WD.tightPolls([reply(iso(Date.now()), list.map((command) => ({ type: 'tool_use', input: { command } })))]).map((p) => p.every);
+  assert.deepEqual(cmds(['git commit -m "wait for gh cache" && sleep 2', 'for f in a b; do echo $f; done; gh pr create; sleep 5; gh pr view', 'grep -n watch README.md -n 3; gh pr view 1',
+    'while read l; do echo $l; done < x; gh issue list; sleep 10', 'echo "waiting for CI"; gh pr checks 12; sleep 60', 'for i in 1 2; do gh pr view $i; done']), []);
+  assert.deepEqual(cmds(['while true; do gh pr view 471; sleep 90; done', 'until gh pr checks 9 | grep -q pass; do sleep 30; done', 'watch -n 20 gh pr list', 'gh run watch 123 --interval 5', 'gh pr checks 12 --watch']), [90, 30, 20, 5, 10]);
+});
+
+test('install: dry run by default; --apply writes a job with no versioned path, the shim finds the plugin each run, uninstall removes it all', () => {
   const h = harness({});
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'home-'));
   const ran = [];
-  const exec = (cmd, args, input) => { ran.push([cmd, ...args].join(' ')); if (cmd === 'crontab' && args[0] === '-l') return 'MAILTO=x\n'; if (input !== undefined) ran.push(input); return ''; };
+  let tab = 'MAILTO=x\n';
+  const exec = (cmd, args, input) => { ran.push([cmd, ...args].join(' ')); if (cmd === 'crontab' && args[0] === '-l') return tab; if (cmd === 'crontab' && args[0] === '-') tab = input; return ''; };
   const env = { ...process.env, DELIVERY_ROLE: '', PATH: '/opt/bin:/usr/bin' };
-  const dry = watchdog.main(['install'], { cwd: h.root, env, platform: 'darwin', home, exec });
+  const main = (argv, more) => watchdog.main(argv, { cwd: h.root, env, home, exec, ...more });
+  const dry = main(['install'], { platform: 'darwin' });
   assert.equal(dry.code, 0);
   assert.match(dry.out, /^Dry run\. The launchd job runs `watchdog\.js run --project .*` every 15 min/);
-  assert.match(dry.out, /<key>StartInterval<\/key><integer>900<\/integer>/);
+  assert.match(dry.out, /^To remove it: node .*watchdog\.js uninstall --project /m);
   assert.equal(fs.existsSync(path.join(home, 'Library')), false, 'nothing written');
+  assert.equal(fs.existsSync(path.join(h.root, WD.REL, 'job.js')), false);
   assert.deepEqual(ran, []);
-  const mac = watchdog.main(['install', '--apply', '--every', '10m'], { cwd: h.root, env, platform: 'darwin', home, exec });
+  const mac = main(['install', '--apply', '--every', '10m'], { platform: 'darwin' });
   assert.equal(mac.code, 0, mac.out);
-  const plist = fs.readdirSync(path.join(home, 'Library', 'LaunchAgents'));
-  assert.equal(plist.length, 1);
-  const body = fs.readFileSync(path.join(home, 'Library', 'LaunchAgents', plist[0]), 'utf8');
-  for (const re of [/<integer>600<\/integer>/, /<string>run<\/string><string>--project<\/string>/, /<key>PATH<\/key><string>\/opt\/bin:\/usr\/bin<\/string>/]) assert.match(body, re);
+  assert.match(mac.out, /^To remove it: /m);
+  const plist = path.join(home, 'Library', 'LaunchAgents', fs.readdirSync(path.join(home, 'Library', 'LaunchAgents'))[0]);
+  const body = fs.readFileSync(plist, 'utf8');
+  const shim = path.join(h.root, WD.REL, 'job.js');
+  assert.match(body, new RegExp(`<array><string>/usr/bin/env</string><string>node</string><string>${shim.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</string></array>`));
+  assert.doesNotMatch(body, new RegExp(process.execPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'no pinned node');
+  assert.match(body, /<key>PATH<\/key><string>\/opt\/bin:\/usr\/bin:\/opt\/homebrew\/bin:\/usr\/local\/bin:\/bin:/);
+  assert.ok(WD.installedJob(h.root), 'the install is recorded, so the brief may promise a restart');
   assert.ok(ran.some((c) => /^launchctl bootstrap gui\/\d+ /.test(c)));
-  const linux = watchdog.main(['install', '--apply'], { cwd: h.root, env, platform: 'linux', home, exec, has: () => true });
-  assert.equal(linux.code, 0, linux.out);
-  assert.match(fs.readFileSync(path.join(home, '.config', 'systemd', 'user', fs.readdirSync(path.join(home, '.config', 'systemd', 'user')).find((f) => f.endsWith('.timer'))), 'utf8'), /OnUnitActiveSec=900s/);
+  // the shim: from a checkout, the checkout; from Claude Code's plugin cache, installed_plugins.json each run
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-'));
+  const job = spawnSync('node', [shim], { cwd: h.root, encoding: 'utf8', env: { ...fakeEnv(h, claudeEnv(scratchLog())), CLAUDE_CONFIG_DIR: cfg, TYPESAFE_API_KEY: 'fake', DELIVERY_JUDGE_ENDPOINT: 'http://127.0.0.1:9' } });
+  assert.equal(job.status, 0, job.stderr);
+  assert.match(job.stdout, / watchdog\n/);
+  const shimText = fs.readFileSync(shim, 'utf8');
+  assert.match(shimText, /installed_plugins\.json/);
+  // uninstall, twice
   ran.length = 0;
-  assert.equal(watchdog.main(['install', '--apply'], { cwd: h.root, env, platform: 'linux', home, exec, has: () => false }).code, 0);
-  const tab = ran[ran.length - 1];
-  assert.match(tab, /^MAILTO=x\n\*\/15 \* \* \* \* cd .* 'run' '--project' .* # delivery-watchdog [0-9a-f]{8}\n$/);
-  assert.equal(watchdog.main(['install', '--every', '1m'], { cwd: h.root, env, platform: 'darwin', home }).code, 2, 'under 5 minutes is refused');
+  const un = main(['uninstall'], { platform: 'darwin' });
+  assert.match(un.out, /^Ran: launchctl bootout gui\/\d+ /m);
+  for (const f of [plist, shim, WD.installedFile(h.root)]) assert.equal(fs.existsSync(f), false, f);
+  assert.match(main(['uninstall'], { platform: 'darwin' }).out, /^Nothing to remove: no watchdog job for /);
+  // systemd: KillMode=process so the wake outlives the oneshot run (Copilot 440); PATH quoted
+  const linux = main(['install', '--apply'], { platform: 'linux', has: () => true });
+  assert.equal(linux.code, 0, linux.out);
+  assert.match(linux.out, /loginctl enable-linger/);
+  const unit = path.join(home, '.config', 'systemd', 'user');
+  const service = fs.readFileSync(path.join(unit, fs.readdirSync(unit).find((f) => f.endsWith('.service'))), 'utf8');
+  for (const re of [/^KillMode=process$/m, /^Environment="PATH=\/opt\/bin:/m, /^ExecStart=\/usr\/bin\/env node .*job\.js$/m]) assert.match(service, re);
+  assert.equal(main(['uninstall'], { platform: 'linux', has: () => true }).code, 0);
+  assert.deepEqual(fs.readdirSync(unit), []);
+  // cron: only an interval that divides the hour keeps its cadence (Copilot 471)
+  assert.equal(main(['install', '--apply', '--every', '45m'], { platform: 'linux', has: () => false }).code, 2);
+  assert.match(main(['install', '--every', '7m'], { platform: 'linux', has: () => false }).out, /must divide the hour/);
+  assert.equal(main(['install', '--apply', '--every', '1h'], { platform: 'linux', has: () => false }).code, 0);
+  assert.match(tab, /^MAILTO=x\n0 \* \* \* \* cd .* '\/usr\/bin\/env' 'node' '.*job\.js' >> .* # delivery-watchdog [0-9a-f]{8}\n$/);
+  assert.equal(main(['install', '--apply', '--every', '20m'], { platform: 'linux', has: () => false }).code, 0);
+  assert.equal(tab.split('\n').filter((l) => l.includes('# delivery-watchdog')).length, 1, 'a second install replaces the line');
+  main(['uninstall'], { platform: 'linux', has: () => false });
+  assert.equal(tab, 'MAILTO=x\n');
+  assert.equal(main(['install', '--every', '1m'], { platform: 'darwin' }).code, 2, 'under 5 minutes is refused');
+});
+
+test('the wake log, the job log and the wake logs stay bounded', () => {
+  const h = harness({});
+  WD.ensureDir(h.root);
+  fs.writeFileSync(path.join(h.root, WD.REL, 'wakes.ndjson'), 'x'.repeat(WD.LOG_MAX_BYTES + 1));
+  WD.log(h.root, { type: 'skip', at: iso(Date.now()) });
+  assert.ok(fs.existsSync(path.join(h.root, WD.REL, 'wakes.ndjson.1')));
+  assert.equal(WD.logRows(h.root).length, 1);
 });

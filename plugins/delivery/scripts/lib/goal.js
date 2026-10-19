@@ -257,6 +257,7 @@ function questionText(field, value) {
     'budget.estimate_m': `Estimate a medium story at ${v} units?`,
     'budget.estimate_l': `Estimate a large story at ${v} units?`,
     idle_minutes: `Call the team idle after ${v} minutes with ready work and nothing in progress?`,
+    stall_hours: `Call a started item stalled after ${v} hours with no bead update and no activity in its holder's session?`,
     briefing_lines: `Keep routine briefings to ${v} lines?`,
     answer_window_hours: `Allow up to ${v} hours for your yes to a goal question?`,
     pr_size_lines: `Warn when a pull request changes more than ${v} lines?`,
