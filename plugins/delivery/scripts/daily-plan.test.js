@@ -200,3 +200,13 @@ test('routing table: each function has one owning role, with the fallback when i
   assert.equal(DP.carries('see [#47]', { match: ['#478'] }), false);
   assert.equal(DP.carries('see ex-vault-0n9-4.', { match: ['ex-vault-0n9-4'] }), true);
 });
+
+test('briefs: the Chief of Staff\'s loop names the commands its lane runs; the Delivery and Product Managers receive plan items', () => {
+  const h = vault();
+  const brief = fs.readFileSync(path.join(__dirname, '..', 'roles', 'chief-of-staff.md'), 'utf8');
+  const cmds = [...brief.matchAll(/`node \$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/((?:plan|goal)\.js [a-z]+)`/g)].map((m) => m[1]);
+  for (const c of ['goal.js sheet', 'plan.js brief', 'plan.js routed', 'plan.js today']) assert.ok(cmds.includes(c), c);
+  for (const c of cmds) assert.equal(h.bash(COS, `${h.script(c.split(' ')[0])} ${c.split(' ')[1]}`, { run: false }).deny, null, c);
+  assert.match(brief, /Send that output as it is; do not write your own summary/);
+  for (const role of ['delivery-lead', 'product-manager']) assert.match(fs.readFileSync(path.join(__dirname, '..', 'roles', `${role}.md`), 'utf8'), /items of its day's plan that are yours/);
+});
