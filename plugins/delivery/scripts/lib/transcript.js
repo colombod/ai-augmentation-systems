@@ -163,12 +163,13 @@ function formatStatus(read) {
 
 // The current turn, for the Stop checks: the last human input's text and the shell commands the
 // session ran since (assistant tool_use blocks with a command). Reads at most the last maxBytes; a
-// partial first line is skipped. { owner: text or null, commands: [] }; never throws.
+// partial first line is skipped. { owner: text or null, commands: [], outputs: [{ command, text }] };
+// never throws. outputs: each command's tool result text, for checks that need what a command printed.
 // A turn longer than the window is read again from further back (doubling, up to capBytes), so the
 // owner's words and an early evidence read are not lost.
 function currentTurn(file, { maxBytes = 8 * 1024 * 1024, capBytes = 64 * 1024 * 1024 } = {}) {
   let size = 0;
-  try { size = fs.statSync(file).size; } catch (e) { return { owner: null, commands: [] }; }
+  try { size = fs.statSync(file).size; } catch (e) { return { owner: null, commands: [], outputs: [] }; }
   for (let n = maxBytes; ; n *= 2) {
     const r = turnIn(file, size, n);
     if (r.owner !== null || n >= size || n >= capBytes) return r;
@@ -176,7 +177,8 @@ function currentTurn(file, { maxBytes = 8 * 1024 * 1024, capBytes = 64 * 1024 * 
 }
 
 function turnIn(file, size, maxBytes) {
-  const out = { owner: null, commands: [] };
+  const out = { owner: null, commands: [], outputs: [] };
+  const byId = new Map();
   let text;
   try {
     const len = Math.min(size, maxBytes);
@@ -191,10 +193,18 @@ function turnIn(file, size, maxBytes) {
     try { rec = JSON.parse(l); } catch (e) { continue; }
     const c = classifyRecord(rec);
     // the owner's words, and every new prompt (a slash command too) starts this turn's commands
-    if (c && c.source === 'human') { out.owner = c.text; out.commands = []; continue; }
-    if (c && /^\s*<command-name>/.test(c.text)) { out.commands = []; continue; }
-    const content = rec && rec.type === 'assistant' && rec.message && Array.isArray(rec.message.content) ? rec.message.content : [];
-    for (const b of content) if (b && b.type === 'tool_use' && b.input && typeof b.input.command === 'string') out.commands.push(b.input.command);
+    if (c && c.source === 'human') { out.owner = c.text; out.commands = []; out.outputs = []; continue; }
+    if (c && /^\s*<command-name>/.test(c.text)) { out.commands = []; out.outputs = []; continue; }
+    const content = rec && rec.message && Array.isArray(rec.message.content) ? rec.message.content : [];
+    if (rec.type === 'assistant') {
+      for (const b of content) if (b && b.type === 'tool_use' && b.input && typeof b.input.command === 'string') { out.commands.push(b.input.command); if (b.id) byId.set(b.id, b.input.command); }
+    } else if (rec.type === 'user') {
+      for (const b of content) {
+        if (!b || b.type !== 'tool_result' || !byId.has(b.tool_use_id)) continue;
+        const text = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.filter((x) => x && x.type === 'text').map((x) => x.text).join('\n') : '';
+        out.outputs.push({ command: byId.get(b.tool_use_id), text });
+      }
+    }
   }
   return out;
 }

@@ -265,12 +265,12 @@ test('R-42 lane: no role writes the goal sheet directly; sed -i from inside .del
   const cos = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/chief-of-staff' });
   const lane = (policy, toolName, toolInput, cwd = projectRoot) => decideLane({ toolName, toolInput, policy, roleDir, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd, projectRoot });
   const file = path.join(projectRoot, '.delivery', 'goal.json');
-  assert.equal(lane(builder, 'Write', { file_path: file }).allow, false);
-  assert.equal(lane(builder, 'Bash', { command: 'echo {} > .delivery/goal.json' }).allow, false);
-  assert.equal(lane(builder, 'Bash', { command: `sed -i s/30/90/ ${file}` }).allow, false);
-  assert.equal(lane(builder, 'Bash', { command: 'sed -i s/30/90/ goal.json' }, path.join(projectRoot, '.delivery')).allow, false);
-  assert.equal(lane(builder, 'Bash', { command: 'cd .delivery && sed -i s/30/90/ goal.json' }).allow, false);
-  assert.equal(lane(builder, 'Bash', { command: 'git checkout -- .delivery/goal.json' }).allow, false);
+  assert.match(lane(builder, 'Write', { file_path: file }).reason, /the goal sheet changes only on the owner's word/);
+  assert.match(lane(builder, 'Bash', { command: 'echo {} > .delivery/goal.json' }).reason, /the goal sheet changes only on the owner's word/);
+  assert.match(lane(builder, 'Bash', { command: `sed -i s/30/90/ ${file}` }).reason, /the goal sheet changes only on the owner's word/);
+  assert.match(lane(builder, 'Bash', { command: 'sed -i s/30/90/ goal.json' }, path.join(projectRoot, '.delivery')).reason, /the goal sheet changes only on the owner's word/);
+  assert.match(lane(builder, 'Bash', { command: 'cd .delivery && sed -i s/30/90/ goal.json' }).reason, /the goal sheet changes only on the owner's word/);
+  assert.match(lane(builder, 'Bash', { command: 'git checkout -- .delivery/goal.json' }).reason, /the goal sheet changes only on the owner's word/);
   assert.equal(lane(builder, 'Bash', { command: 'git add .delivery/goal.json' }).allow, true);
   assert.equal(lane(builder, 'Bash', { command: 'sed -n 1p goal.json' }, path.join(projectRoot, '.delivery')).allow, true);
   const script = path.join(PLUGIN_ROOT, 'scripts', 'goal.js');

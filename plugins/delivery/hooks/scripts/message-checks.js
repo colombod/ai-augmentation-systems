@@ -15,7 +15,8 @@
 //            commit shas), except in links and when the owner's last message asked for them: warn.
 //   tone     the judge's tone_violation (justifying, condescending, therapeutic) and jargon: warn.
 //   claim    live, shipped or verified without an evidence read (evidence.js check or list) in this turn's
-//            commands, unless the message says "not checked yet": warn.
+//            commands, unless the message says "not checked yet" or plan.js brief printed that clause in
+//            this turn: warn.
 // Every warning goes to the ledger and is said once on the next prompt. Nothing here throws.
 const RG = require('./relay-guard.js');
 
@@ -142,14 +143,34 @@ function evidenceReads(command) {
   return out;
 }
 
+// The text plan.js brief printed in this turn: it says checked only on the done gate's verdict, so a
+// claim it printed is backed; one the session wrote itself is not (PR 58 I4)
+function briefTexts(outputs) {
+  const L = require('./lane.js');
+  const norm = (x) => String(x || '').replace(/\s+/g, ' ').trim();
+  // the call must be the brief alone: in `plan.js brief && echo '...'` the output is not the brief's
+  // (Copilot 719); no other segment, pipe or redirect
+  return (outputs || []).filter((o) => {
+    try {
+      const segs = L.splitCommand(String(o.command || ''));
+      if (segs.length !== 1 || /[|<>`]|\$\(/.test(segs[0])) return false;
+      const t = L.tokens(segs[0]);
+      return t.length >= 3 && /(?:^|\/)node$/.test(t[0]) && /(?:^|\/)plan\.js$/.test(t[1]) && t[2] === 'brief';
+    } catch (err) { return false; }
+  }).map((o) => norm(o.text));
+}
+
 // A clause that says live, shipped or checked (not a question) needs an evidence read in this turn's
-// tool calls; when the clause names a bead, the read must be of that bead.
-function unbackedClaim(text, commands, { prefix } = {}) {
+// tool calls, or must appear in what plan.js brief printed in this turn; when the clause names a bead,
+// the read must be of that bead.
+function unbackedClaim(text, commands, { prefix, outputs } = {}) {
+  const briefs = briefTexts(outputs);
   const reads = (commands || []).flatMap(evidenceReads);
   const p = String(prefix || '').replace(/[^a-z0-9]/gi, '');
   const beadRe = p ? new RegExp(`\\b${p}-[a-z0-9]+(?:[.-][a-z0-9]+)*\\b`, 'gi') : null;
   for (const { raw, q } of RG.clauses(text)) {
     if (q || !LIVE.test(raw) || NOT_LIVE.test(raw)) continue;
+    if (briefs.some((b) => b.includes(raw.replace(/\s+/g, ' ').trim()))) continue;
     const named = beadRe ? (raw.match(beadRe) || []) : [];
     const ok = named.length ? named.every((b) => reads.some((r) => r.toLowerCase() === b.toLowerCase())) : reads.length > 0;
     if (!ok) return raw.replace(/\s+/g, ' ').slice(0, 120);
@@ -189,7 +210,7 @@ function catalogueField(q, k) {
 const catalogueMode = (q) => catalogueField(q, 'mode') || 'warn-only';
 
 // { candidates: [{ kind: 'orders', reason }], warnings: [{ kind, rule, detail }] }
-function messageFindings({ message, owner, commands, role, judged = {}, openSteps = [], briefingLines = 12, prefix, parties, queueCmd = 'owner-queue.js', ordersMode }) {
+function messageFindings({ message, owner, commands, outputs, role, judged = {}, openSteps = [], briefingLines = 12, prefix, parties, queueCmd = 'owner-queue.js', ordersMode }) {
   const candidates = [];
   const warnings = [];
   if (!RG.OPERATOR_FACING.has(role) || typeof message !== 'string' || !message.trim()) return { candidates, warnings };
@@ -211,7 +232,7 @@ function messageFindings({ message, owner, commands, role, judged = {}, openStep
   if (!ids.length && !ownerAskedIds(owner) && j && typeof j.p === 'number' && j.p >= (catalogueField('jargon', 'warn_at') || 0.5)) warnings.push({ kind: 'jargon', rule: 'R-45', detail: `the judge rates the owner message as jargon (p ${j.p.toFixed(2)})` });
   const t = judged.tone_violation;
   if (t && t.answer && t.answer !== 'none' && (t.confidence || 0) >= 0.5) warnings.push({ kind: 'tone', rule: 'R-45', detail: `the owner message reads as ${t.answer} (judge ${Number(t.confidence).toFixed(2)})` });
-  const claim = unbackedClaim(message, commands, { prefix });
+  const claim = unbackedClaim(message, commands, { prefix, outputs });
   if (claim) warnings.push({ kind: 'claim-unchecked', rule: 'R-03', detail: `"${claim}" with no evidence read this turn` });
   return { candidates, warnings };
 }

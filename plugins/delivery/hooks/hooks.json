@@ -56,6 +56,19 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "^(SendMessage|mcp__ccd_session_mgmt__send_message)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/route-check.js"
+            ],
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [

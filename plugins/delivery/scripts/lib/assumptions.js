@@ -328,7 +328,7 @@ function forStory(root, bead, { bd, team, verifyRecord, storyId, atClaim = false
 const lowerFirst = (s) => (/^[A-Z][a-z]*(?=\s|$)/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
 function plainLine(title, a) {
   const what = lowerFirst(String(a.statement || '').replace(/\.\s*$/, ''));
-  if (a.status === 'refuted') return `${title}: on hold until the design changes, because it turned out that it is not so that ${what}`;
+  if (a.status === 'refuted') return `${title}: on hold until the design changes: we checked, and it is not true that ${what}`;
   if (a.status === 'observed') return a.owner === 'owner' ? `${title}: waiting for your decision: we checked whether ${what}, and what to do next is your call` : `${title}: waiting for the team's decision on the check of whether ${what}`;
   return `${title}: blocked until we check whether ${what}`;
 }
