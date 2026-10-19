@@ -226,7 +226,7 @@ function runRecord(who, store, id, a, { cwd, env, now, verifyRecord }) {
   }
   if (r.code === 0 && a.result === 'fail') {
     const p = require('./lib/goal.js').pauseOnTrigger({ root: who.root, who, trigger: `andon:${r.row.id}`, bead: store.show(id), now });
-    out.push(p.ok ? `andon:${r.row.id} raised: area ${G.areaOf(store.show(id) || bead)} stops (fixes only) until a pass on the deployed version and a closed A3; draft its problem: a3.js new --trigger andon:${r.row.id} --problem '<what the surface showed>'` : `andon not raised (${p.error}): message the Delivery Manager`);
+    out.push(p.ok ? `andon:${r.row.id} raised: area ${G.areaOf(store.show(id) || bead)} stops (fixes only) until its A3 closes on a proved fix; draft its problem: a3.js new --trigger andon:${r.row.id} --problem '<what the surface showed>'` : `andon not raised (${p.error}): message the Delivery Manager`);
   }
   return { code: r.code, out: out.join('\n'), row: r.row };
 }

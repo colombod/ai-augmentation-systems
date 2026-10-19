@@ -707,7 +707,24 @@ function registerHit({ projectRoot, roleDir }) {
   return (p) => { const r = realish(p); return bases.some((b) => REGISTER_REL.test(path.relative(b, r))); };
 }
 
-function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION, hit = null } = {}) {
+// deep: a deletion or move of a protected folder's parent (rm -rf .delivery), or a glob that reaches the
+// folder or names files in it (rm -rf .delivery/an*, rm .delivery/andon/*.ndjson), counts as a write too
+const GLOB = /[*?[]/;
+const REMOVERS = ['rm', 'mv', 'rmdir', 'unlink'];
+function deepHit(x, dirs, remover) {
+  const ds = dirs.map((d) => d.toLowerCase());
+  const i = x.search(GLOB);
+  if (i < 0) { const r = realish(x).toLowerCase(); return remover && ds.some((d) => under(d, r)); }
+  const cut = x.lastIndexOf(path.sep, i);
+  const base = realish(x.slice(0, cut) || path.sep).toLowerCase();
+  if (ds.some((d) => under(base, d))) return true;
+  const esc = (s) => s.replace(/[.+^${}()|\\]/g, '\\$&');
+  const re = new RegExp(`^${esc(base)}${esc(path.sep)}${esc(x.slice(cut + 1).toLowerCase()).replace(/\\?\*/g, '[^/]*').replace(/\?/g, '[^/]')}$`);
+  // the glob names the folder or one of its parents
+  return ds.some((d) => { for (let p = d; p && p !== path.dirname(p); p = path.dirname(p)) { if (re.test(p) && (remover || p === d)) return true; } return false; });
+}
+
+function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION, hit = null, deep = false } = {}) {
   const text = String(command == null ? '' : command);
   let base = cwd || process.cwd();
   return splitCommand(text).some((seg) => {
@@ -719,6 +736,7 @@ function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION, hit
     const targets = writeTargets(seg, t);
     if ((first === 'sed' && writesFiles(['sed', ...words.slice(1)])) || (first === 'perl' && words.some((x) => /^-[a-zA-Z]*i/.test(x)))) targets.push(...words.slice(1).filter((x) => !x.startsWith('-')));
     if (dirs.length && targets.some((x) => underOperator(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`, dirs))) return true;
+    if (deep && dirs.length && targets.some((x) => deepHit(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`, dirs, REMOVERS.includes(first)))) return true;
     if (hit && targets.some((x) => hit(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`))) return true;
     if (!mention.test(seg)) return false;
     return hasRedirect(seg) || OPERATOR_WRITE_WORDS.includes(first) || (first === 'git' && GOAL_GIT_WRITES.includes(splitGlobals(['git', ...words.slice(1)]).rest[0]));
@@ -859,7 +877,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (usageShellWrite(command, { cwd, dirs: usageDirs({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
     if (usageShellWrite(command, { cwd, mention: REGISTER_MENTION, hit: registerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: prReviewDirs({ projectRoot, roleDir }), mention: PR_REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
-    if (usageShellWrite(command, { cwd, dirs: andonDirs({ projectRoot, roleDir }), mention: ANDON_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${ANDON_REASON}.` };
+    if (usageShellWrite(command, { cwd, dirs: andonDirs({ projectRoot, roleDir }), mention: ANDON_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${ANDON_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (bash.includes('any')) return { allow: true };

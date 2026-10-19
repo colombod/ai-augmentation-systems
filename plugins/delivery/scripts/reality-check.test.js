@@ -124,7 +124,7 @@ test('#478 on 10-13: a fail row raises the andon with no owner involvement; a bl
   dm('plan', ID);
   const fail = record(1, 'fail');
   assert.equal(fail.code, 0, fail.out);
-  assert.match(fail.out, /andon:ev-ex-vault-0n9-3-1 raised: area collection stops \(fixes only\) until a pass on the deployed version and a closed A3; draft its problem: a3\.js new --trigger andon:ev-ex-vault-0n9-3-1/);
+  assert.match(fail.out, /andon:ev-ex-vault-0n9-3-1 raised: area collection stops \(fixes only\) until its A3 closes on a proved fix; draft its problem: a3\.js new --trigger andon:ev-ex-vault-0n9-3-1/);
   assert.deepEqual(Goal.activePause(root, { beadOf: () => bead() }).stops, [{ trigger: 'andon:ev-ex-vault-0n9-3-1', area: 'collection' }], 'its area stops; the team is not paused');
   assert.deepEqual(fs.readdirSync(path.join(root, '.delivery')).filter((f) => f === 'owner-queue'), [], 'the owner is asked for nothing');
   const retry = record(1, 'pass');

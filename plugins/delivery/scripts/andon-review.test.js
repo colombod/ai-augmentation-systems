@@ -260,3 +260,17 @@ test('Copilot 888 and M2: only the acknowledgement answers a spike, merges befor
   k.mem.set('ex-14', { id: 'ex-14', labels: ['finding'], metadata: { finding: '.delivery/reviews/sec.md#F1' } });
   assert.deepEqual(AN.symptomsOf(k.root, k.mem.get('ex-14')), ['fixes .delivery/reviews/sec.md#F1'], 'a finding bead counts too');
 });
+
+test('M1: a lane refuses deleting the andon ledger by a glob or by its parent folder', () => {
+  const h = harness({ beads: {} });
+  AN.append(h.root, { type: 'ci', result: 'red', sha: 'c195aa00', run: '195', at: '2026-10-09T00:00:00Z' }, 'delivery-lead');
+  for (const cmd of [`cd ${h.root}/.delivery && rm -rf an*`, `rm -rf ${h.root}/.delivery`, `rm ${h.root}/.delivery/andon/*.ndjson`, `mv ${h.root}/.delivery/a?don /tmp/x`]) {
+    assert.match(h.bash('builder-1', cmd, { run: false }).deny || '', /andon ledger in \.delivery\/andon\/ is written only by/, cmd);
+  }
+  assert.equal(h.bash('builder-1', `rm -rf ${h.root}/.delivery/scratch-notes`, { run: false }).deny, null, 'other folders are the lane\'s own business');
+});
+
+test('M3: the plain line names the area or says unassigned, never an id; the flaky line says which area waits', () => {
+  const s = { stops: [{ area: 'ex-vault-ph1', areaName: null, title: 'Import', what: null, stage: 'the cause is being looked into' }], ci: { red: false }, flaky: [{ test: 'a.spec', area: 'collection', overdue: false }], chains: [] };
+  assert.deepEqual(AN.plainLines(s), ['An unassigned area is stopped until we fix why "Import" failed on the customer\'s app; the cause is being looked into.', 'A test that passes and fails on the same code is being looked into (collection).']);
+});

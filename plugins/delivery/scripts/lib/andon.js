@@ -11,8 +11,9 @@
 //   ack      { target, reason }                       the Delivery Manager acknowledged a chain's spike
 // Triggers an A3 answers: andon:<failed ev row> (an area stop), ci:main (a red main), flaky:<test>.
 // What stops a claim (D3, serious divergence): an area whose agreed criterion failed its reality
-// check, until a counting pass on the deployed version exists AND that failure's A3 is closed; a red
-// main, until green or an A3 closed after it went red; a flaky test whose A3 is over 24 h late. Linked
+// check, until that failure's A3 closes on a proved fix (final: a later deploy stops nothing); a red
+// main (its required workflows), until green or an A3 closed after it went red; a confirmed flaky test
+// in a named area with no A3 opened within 24 h. Linked
 // fixes and the A3's own work (a3: <id> in the bead's metadata, set by the Delivery Manager or Product
 // Manager) always go on. Everything else here is a warning.
 const fs = require('fs');
@@ -145,7 +146,7 @@ function areaStops(root, { beadOf = () => null, g } = {}) {
     const st = Goal.triggerState(root, trigger, { bead });
     if (!st.open) continue;
     const row = G.readEvidence(root, beadId).find((r) => r.id === rowId) || {};
-    out.push({ trigger, row: rowId, bead: beadId, story: String((bead.metadata || {}).story || ''), area: G.areaOf(bead), criterion: row.criterion, title: bead.title || beadId, a3: openA3For(root, trigger, rows), missing: st.missing || st.held || null });
+    out.push({ trigger, row: rowId, bead: beadId, story: String((bead.metadata || {}).story || ''), area: G.areaOf(bead), areaName: (bead.metadata || {}).area || null, criterion: row.criterion, title: bead.title || beadId, a3: openA3For(root, trigger, rows), missing: st.missing || st.held || null });
   }
   return out;
 }
@@ -381,9 +382,10 @@ function summary(root, { beadOf = () => null, team, now, ci, fixBeads = [] } = {
 function plainLines(s) {
   const out = [];
   const lower = (t) => t.charAt(0).toLowerCase() + t.slice(1);
-  for (const x of s.stops) out.push(`The ${x.area} area is stopped until we fix why ${x.what ? lower(x.what) : `"${x.title}" failed on the customer's app`}; ${x.stage}.`);
+  // the area's own name, never a bead id (a story with no area falls back to its parent's id for matching)
+  for (const x of s.stops) out.push(`${x.areaName ? `The ${x.areaName} area` : 'An unassigned area'} is stopped until we fix why ${x.what ? lower(x.what) : `"${x.title}" failed on the customer's app`}; ${x.stage}.`);
   if (s.ci.red && !s.ci.lifted) out.push(`New work is paused across the product: the main build has been failing since ${String(s.ci.since).slice(0, 10)}; only fixes go on.`);
-  for (const r of s.flaky) out.push(`A test that passes and fails on the same code is being looked into${r.overdue ? '; its cause is overdue, so new work there waits' : ''}.`);
+  for (const r of s.flaky) out.push(`A test that passes and fails on the same code is being looked into${r.area ? ` (${r.area})` : ''}${r.overdue && r.area && r.confirmed && !r.a3Opened ? '; its cause is overdue, so new work there waits' : ''}.`);
   for (const c of s.chains) out.push('One problem needed two fixes in two days; we are looking for its cause before fixing it again.');
   return out;
 }
