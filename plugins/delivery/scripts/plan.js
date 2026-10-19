@@ -155,6 +155,14 @@ function daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json, l
   try { row = DP.record(who.root, f, { by: who.instance, now }); } catch (err) { return { code: 1, out: `plan.js: the plan was not recorded (${String(err.message).split('\n')[0]}).\nRetry: \`plan.js today\`` }; }
   if (json) return { code: 0, out: JSON.stringify(row, null, 2) };
   const lines = [`Plan for ${DP.today(row.at)}: ${row.items.length} item${row.items.length === 1 ? '' : 's'}, from the record.`];
+  // stalls first, and when the team resumes after a usage limit (R-04, R-43); the plan never pauses work
+  const resumes = DP.resumesAt(f);
+  if (resumes) lines.push(`The team resumes at ${require('./lib/watchdog.js').clock(Date.parse(resumes))}, when the usage limit resets (the watchdog wakes each stopped session then).`);
+  const stalls = row.items.filter((x) => x.section === 0);
+  if (stalls.length) {
+    lines.push('0. Stalls first:');
+    for (const it of stalls) lines.push(`   - ${DP.ROLE_WORD[it.role] || it.role} (${it.instance}): ${it.action} [${it.ref}]`);
+  }
   DP.SECTIONS.forEach((name, i) => {
     const its = row.items.filter((x) => x.section === i + 1);
     lines.push(`${i + 1}. ${name}: ${its.length ? '' : 'none'}`.trimEnd());

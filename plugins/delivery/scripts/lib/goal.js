@@ -31,6 +31,8 @@ const FIELDS = {
   'budget.estimate_m': { kind: 'number', unit: /^units?$/, words: /^(?:medium|m|estimate)$/ },
   'budget.estimate_l': { kind: 'number', unit: /^units?$/, words: /^(?:large|l|estimate)$/ },
   idle_minutes: { kind: 'number', unit: /^(?:minutes?|mins?)$/, words: /^idle$/, default: 30 },
+  // how long a bead in progress may sit with no note and no session activity before it is a stall (R-04)
+  stall_hours: { kind: 'number', unit: /^hours?$/, words: /^(?:stall|stalled|stuck|quiet|silent)$/, default: 2 },
   briefing_lines: { kind: 'number', unit: /^lines?$/, words: /^(?:briefings?|messages?|updates?)$/, default: 12 },
   answer_window_hours: { kind: 'number', unit: /^hours?$/, words: /^(?:yes|answer|window)$/, default: 24 },
   // the pull request size over which review.js and merge-gate.js warn (R-24); never a block

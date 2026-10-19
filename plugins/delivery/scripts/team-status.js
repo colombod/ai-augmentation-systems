@@ -163,6 +163,16 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
   const operator = operatorStatus(projectRoot, team, { host, deps: operatorDeps });
   const gates = gateStatus(projectRoot, team, { now, checkBeads, budget, budgetOpts, bd, storyBeads: storyBeads || (bd_reachable ? undefined : () => { throw new Error('bd unreachable'); }) });
   const idle = bd_reachable || idleBd ? idleStatus(projectRoot, { now, idleBd }) : { idle: false, why: 'bd-unreachable' };
+  // the other stalls (R-04): a bead in progress with nothing moving, a P0 unclaimed, a usage limit and its resume time
+  let stalls = [];
+  if (bd_reachable || idleBd) {
+    try {
+      const WD = require('./lib/watchdog.js');
+      const res = WD.read(projectRoot, { bd: idleBd || require('./lib/bd.js').makeBd({ cwd: projectRoot, timeoutMs: 10000 }), now, team });
+      if (!res.unreadable) WD.recordAll(projectRoot, res, res.polls, { now });
+      stalls = [...res.stalls.filter((s) => s.kind !== 'idle').map((s) => s.line), ...res.polls.map((p) => p.line)];
+    } catch (err) { stalls = []; }
+  }
   // R-33: the Reality Checker drives a browser or desktop app, which a headless host cannot run
   const placement = team.roles.filter((r) => r.id === 'reality-checker' && !r.retired && ((hosts && hosts.hosts) || {})[r.host] && hosts.hosts[r.host].headless)
     .map((r) => `the Reality Checker is on ${r.host}, a headless host: it cannot drive a browser or desktop app there; move it to a host with desktop apps (hosts.json)`);
@@ -170,7 +180,7 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
   try { reviews = reviewStatus(projectRoot, { team, gh }); } catch (err) { reviews = null; }
   let andon = null;
   try { andon = andonStatus(projectRoot, team, { bd, gh, ciGh, now, reachable: bd_reachable }); } catch (err) { andon = null; }
-  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, reviews, andon, warnings: [...manifestWarnings(team), ...placement] };
+  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, stalls, reviews, andon, warnings: [...manifestWarnings(team), ...placement] };
 }
 
 function hasDrift(drift) {
@@ -187,10 +197,11 @@ function manifestRev(projectRoot) {
 
 const firstIds = (ids) => (ids.length ? ` (${ids.slice(0, 3).join(', ')}${ids.length > 3 ? ', ...' : ''})` : '');
 
-function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gates, idle, reviews, andon, warnings }, projectRoot) {
+function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gates, idle, stalls, reviews, andon, warnings }, projectRoot) {
   const lines = [];
   // idle with ready work is the first line: nothing else matters while nobody works
   if (idle && idle.idle) { lines.push(...require('./lib/idle.js').idleLine(idle).split('\n')); lines.push(''); }
+  if (stalls && stalls.length) lines.push(...stalls, '');
   // a stopped line comes next: what is stopped, why, and where its fix stands (R-22)
   if (andon) {
     const out = [];
