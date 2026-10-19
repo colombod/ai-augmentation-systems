@@ -2,7 +2,7 @@
 // scripts/andon.js — what stops the line, and its records (R-22).
 //   andon.js show [--plain] [--json]                         read only: stopped areas, a red main, flaky tests,
 //                                                            open A3s, fix-on-fix spikes
-//   andon.js ci red|green --sha <sha> --run <ref>            Delivery Manager: CI on the product's main, where gh
+//   andon.js ci red|green --sha <sha> --run <ref> [--workflow <w>]   Delivery Manager, one row per workflow: CI on the product's main, where gh
 //                                                            cannot read it (gh run list -R product_github first)
 //   andon.js flaky <test> --sha <sha> --fail-run <ref> --pass-run <ref> [--area <area>]
 //                                                            a reviewer or the Delivery Manager: one test failed then
@@ -15,8 +15,8 @@ const A = require('./lib/andon.js');
 const W = require('./lib/warnings.js');
 const { whoAmI, writerProblem } = require('./lib/gate-context.js');
 
-const USAGE = "usage: andon.js show [--plain] [--json] | ci red|green --sha <sha> --run <ref> | flaky <test> --sha <sha> --fail-run <ref> --pass-run <ref> [--area <a>] | flaky confirm <test> | ack <chain row> --reason '<text>'";
-const VALUE = ['--sha', '--run', '--fail-run', '--pass-run', '--area', '--reason', '--project'];
+const USAGE = "usage: andon.js show [--plain] [--json] | ci red|green --sha <sha> --run <ref> [--workflow <w>] | flaky <test> --sha <sha> --fail-run <ref> --pass-run <ref> [--area <a>] | flaky confirm <test> | ack <chain row> --reason '<text>'";
+const VALUE = ['--sha', '--run', '--workflow', '--fail-run', '--pass-run', '--area', '--reason', '--project'];
 const SHA = /^[0-9a-f]{7,40}$/i;
 
 function parse(argv) {
@@ -35,7 +35,7 @@ const refuse = (why, fix) => ({ code: 1, out: `andon.js: ${why}.${fix ? `\n${fix
 function lines(s) {
   const out = [];
   for (const x of s.stops) out.push(`Stopped: area ${x.area} on ${x.row} (criterion ${x.criterion} of ${x.bead}); needs ${x.missing || 'nothing'}; ${x.a3 ? `A3 ${x.a3.id} open` : `no A3 (a3.js new --trigger ${x.trigger})`}; ${x.stage}`);
-  if (s.ci.red) out.push(`${s.ci.lifted ? 'Lifted' : 'Stopped'}: CI on ${s.ci.repo ? `${s.ci.repo} ` : ''}${s.ci.branch} red since ${s.ci.since} (${s.ci.source}${s.ci.run ? `, ${s.ci.run}` : ''})${s.ci.lifted ? ` by ${s.ci.lifted}` : `; fixes only until green or an A3 closes (${s.ci.a3 ? `${s.ci.a3.id} open` : 'a3.js new --trigger ci:main'})`}`);
+  if (s.ci.red) out.push(`Stopped: CI on ${s.ci.repo ? `${s.ci.repo} ` : ''}${s.ci.branch} red since ${s.ci.since} (${s.ci.source}${s.ci.workflows && s.ci.workflows.length ? `: ${s.ci.workflows.join(', ')}` : ''}${s.ci.run ? `, ${s.ci.run}` : ''}); fixes only until every required workflow is green (${s.ci.a3 ? `${s.ci.a3.id} open` : 'a3.js new --trigger ci:main'})`);
   for (const r of s.flaky) out.push(`Flaky: ${r.test} on ${String(r.sha).slice(0, 12)}; A3 due ${r.due.slice(0, 16)}${r.overdue ? ' (late: claims there stop)' : ''}${r.a3 ? `; ${r.a3.id} open` : `; a3.js new --trigger flaky:${r.test}`}`);
   for (const a of s.a3s) out.push(`A3 open: ${a.id} for ${a.trigger}`);
   for (const c of s.chains) out.push(`Fix on fix: ${c.symptom} in PRs ${c.prs.join(', ')}; spike ${c.spike}; fix claims on it warn until andon.js ack ${c.id}`);
@@ -67,8 +67,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: give
     const wp = writerProblem(who, ['delivery-lead']);
     if (wp) return refuse(wp.replace(/\.$/, ''));
     if (!['red', 'green'].includes(arg) || !a.sha || !SHA.test(a.sha) || !a.run) return { code: 2, out: USAGE };
-    const row = A.append(who.root, { type: 'ci', result: arg, sha: a.sha, run: a.run, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
-    return { code: 0, row, out: arg === 'red' ? `${row.id}: CI on main red at ${a.sha.slice(0, 12)} (${a.run}): new claims across the product stop; fixes go on until it is green or an A3 closes (a3.js new --trigger ci:main)` : `${row.id}: CI on main green at ${a.sha.slice(0, 12)}` };
+    const wf = a.workflow || 'main';
+    const row = A.append(who.root, { type: 'ci', result: arg, workflow: wf, sha: a.sha, run: a.run, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
+    return { code: 0, row, out: arg === 'red' ? `${row.id}: CI on main red at ${a.sha.slice(0, 12)} (${wf}, ${a.run}): new claims across the product stop; fixes go on until every required workflow is green (a3.js new --trigger ci:main)` : `${row.id}: CI on main green at ${a.sha.slice(0, 12)} (${wf})` };
   }
 
   if (sub === 'flaky' && arg === 'confirm') {

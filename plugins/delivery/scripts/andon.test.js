@@ -114,7 +114,7 @@ test('R-22 #195: two days of red nightly on main stop new claims across the prod
   const a3 = /^(a3-[a-z0-9-]+):/.exec(h.bash('delivery-lead', `${h.script('a3.js')} new --trigger ci:main --problem 'The nightly fails on main.'`).out)[1];
   h.bash('delivery-lead', `bd create --id ex-nightly --title 'Make the nightly green' --metadata '{"a3":"${a3}"}'`);
   assert.equal(claim(h, 'builder-2', 'ex-nightly').deny, null, 'the A3\'s own work');
-  assert.match(h.bash('delivery-lead', `${h.script('andon.js')} show`).out, /Stopped: CI on example\/example main red since 2026-10-09T02:00:00Z \(gh, https:\/\/github\.com\/example\/example\/actions\/runs\/3\); fixes only until green or an A3 closes \(a3-delivery-lead-1 open\)/);
+  assert.match(h.bash('delivery-lead', `${h.script('andon.js')} show`).out, /Stopped: CI on example\/example main red since 2026-10-09T02:00:00Z \(gh: nightly, https:\/\/github\.com\/example\/example\/actions\/runs\/3\); fixes only until every required workflow is green \(a3-delivery-lead-1 open\)/);
   h.setRuns([OK('nightly', '11', 5), RED('09', 2), RED('10', 3)]);
   assert.equal(claim(h, 'builder-1', 'ex-a').deny, null, 'green again: the product resumes');
 });
@@ -129,10 +129,11 @@ test('R-22: where gh cannot read CI, the Delivery Manager\'s `ci main red` row s
   h.bash('delivery-lead', `bd update ex-fix --metadata '{"a3":"${a3}"}'`);
   assert.equal(claim(h, 'builder-2', 'ex-fix').deny, null, 'the A3\'s own work');
   h.bash('delivery-lead', 'bd update ex-fix --add-label state-merged');
-  const sections = "--problem 'The nightly run fails on main.' --evidence 'Run 195 failed on main at c195aa00.' --expected 'Every run on main is green.' --cause 'A fixture read the wall clock and broke at midnight.' --class 'Tests that read the wall clock directly.' --countermeasure 'One injected clock for every test that needs time.' --check 'Run 196 on main passed.'";
+  const sections = "--problem 'The nightly run fails on main every night since the 9th.' --evidence 'Run 195 failed on main at c195aa00 in the fixture step.' --expected 'Every run of every required workflow on main is green.' --cause 'A fixture read the wall clock and broke at midnight in UTC.' --class 'Tests that read the wall clock directly instead of an injected one.' --countermeasure 'One injected clock for every test that needs time, and a lint rule.' --check 'Run 196 on main passed with the injected clock in place.'";
   const close = (proof) => h.bash('delivery-lead', `${h.script('a3.js')} close ${a3} --fix ex-fix --proof '${proof}' ${sections}`);
-  assert.match(close('run 196 green').out, /is not a green CI run on main after the red run: gh cannot read CI here/);
+  assert.match(close('run 196 green').out, /CI is still red on main: every required workflow must be green again/);
   const green = /^(an-[a-z0-9-]+):/.exec(ci('green --sha c196aa00 --run 196').out)[1];
+  assert.match(close('run 196 green').out, /is not a green CI run on main after the red run: gh cannot read CI here/);
   assert.equal(claim(h, 'builder-1', 'ex-a').deny, null, 'green lifts it');
   assert.equal(close(green).code, 0);
   ci('red --sha c197aa00 --run 197');
@@ -202,17 +203,16 @@ test('R-22: fixes on one symptom 49 h apart are no chain; the same A3 class is o
   assert.match(lines.join('\n'), /every tool that takes a file assumed an https link was fixed in PRs 3, 4 within 48 h/);
 });
 
-test('R-22: a hand-edited ledger line is reported and its closes stop counting; the stop holds', () => {
+test('R-22: a hand-edited ledger line is reported and the rows after it stop counting; the stop holds', () => {
   const root = makeProject();
-  const o = AN.append(root, { type: 'a3-open', trigger: 'ci:main', at: '2026-10-10T00:00:00Z' }, 'delivery-lead');
   AN.append(root, { type: 'ci', result: 'red', sha: 'c195aa00', run: '195', at: '2026-10-09T00:00:00Z' }, 'delivery-lead');
-  AN.append(root, { type: 'a3-close', a3: `a3-${o.id.slice(3)}`, fixes: ['x'], proof: 'run', at: '2026-10-10T01:00:00Z' }, 'delivery-lead');
-  assert.equal(AN.ciState(root, {}).lifted, 'a3-delivery-lead-1');
+  AN.append(root, { type: 'ci', result: 'green', sha: 'c196aa00', run: '196', at: '2026-10-10T01:00:00Z' }, 'delivery-lead');
+  assert.equal(AN.ciState(root, {}).red, false);
   const file = path.join(root, '.delivery', 'andon', 'delivery-lead.ndjson');
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"run":"195"', '"run":"196"'));
   const { problem } = AN.read(root);
   assert.match(problem, /breaks the andon chain delivery-lead\.ndjson/);
   const st = AN.ciState(root, {});
-  assert.deepEqual([st.red, st.lifted], [true, null]);
+  assert.equal(st.red, true, 'the green row after the edit no longer counts');
   assert.deepEqual(AN.redFromRuns([{ workflowName: 'x', status: 'in_progress', conclusion: '' }]), [], 'a run in progress is not red');
 });

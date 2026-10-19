@@ -96,12 +96,13 @@ function sectionsOf(text) {
   return out;
 }
 const missingSections = (text) => { const s = sectionsOf(text); return SECTIONS.filter(([k]) => !s[k]).map(([, h]) => h); };
-// filled with a placeholder (TBD, TODO, n/a, -) or fewer than MIN_WORDS words: not an answer
-const MIN_WORDS = 4;
+// filled with a placeholder (TBD, TODO, n/a, -), fewer than MIN_WORDS words or single letters only: not an answer
+const MIN_WORDS = 8;
 const PLACEHOLDER = /^(?:tbd|tba|todo|fixme|wip|n\/?a|none|unknown|-+|\.+|\?+|x+)[.!]?$/i;
 function weakSections(text) {
   const s = sectionsOf(text);
-  return SECTIONS.filter(([k]) => s[k] && (PLACEHOLDER.test(s[k].trim()) || (s[k].match(/[\p{L}\p{N}]+/gu) || []).length < MIN_WORDS)).map(([, h]) => h);
+  const words = (t) => t.match(/[\p{L}\p{N}]+/gu) || [];
+  return SECTIONS.filter(([k]) => s[k] && (PLACEHOLDER.test(s[k].trim()) || words(s[k]).length < MIN_WORDS || words(s[k]).every((w) => w.length < 2))).map(([, h]) => h);
 }
 // a fix bead is merged: its state label, or a merged review record that carried it
 function mergedBead(root, bead) {
@@ -186,7 +187,7 @@ function redFromRuns(runs, { required } = {}) {
   return red;
 }
 
-// { red, since, sha, run, source, workflows, lifted } — gh first; the Delivery Manager's ci rows where gh cannot read
+// { red, since, sha, run, source, workflows, a3 } — gh first; the Delivery Manager's ci rows where gh cannot read
 function ciState(root, { team, gh, rows = read(root).rows, cwd } = {}) {
   const repo = require('./gh-pr.js').productRepoOf(team);
   const branch = (team && typeof team.product_branch === 'string' && team.product_branch) || 'main';
@@ -194,25 +195,22 @@ function ciState(root, { team, gh, rows = read(root).rows, cwd } = {}) {
   const live = repo ? (gh ? gh(repo, branch) : ghRuns(repo, branch, { cwd: cwd || root })) : { unavailable: 'the product repository is not known' };
   if (live && live.runs) {
     const red = redFromRuns(live.runs, { required: team && team.required_workflows });
-    st = red.length ? { red: true, source: 'gh', since: red.map((x) => x.since).sort()[0], sha: red[0].sha, run: red[0].run, workflows: red.map((x) => x.workflow), reds: red.flatMap((x) => x.reds) } : { red: false, source: 'gh' };
+    st = red.length ? { red: true, source: 'gh', since: red.map((x) => x.since).sort()[0], sha: red[0].sha, run: red[0].run, workflows: red.map((x) => x.workflow) } : { red: false, source: 'gh' };
   } else {
+    // the Delivery Manager's rows, one chain of verdicts per workflow (a row with none is "main")
     const ci = rows.filter((r) => r.type === 'ci');
-    const last = ci[ci.length - 1];
-    if (last && last.result === 'red') {
-      let k = ci.length - 1;
-      while (k > 0 && ci[k - 1].result === 'red') k--;
-      st = { red: true, source: 'recorded', since: ci[k].at, sha: last.sha, run: last.run, workflows: [], reds: ci.slice(k).map((r) => r.at) };
-    } else st = { red: false, source: last ? 'recorded' : null };
+    const by = new Map();
+    for (const r of ci) (by.get(r.workflow || 'main') || by.set(r.workflow || 'main', []).get(r.workflow || 'main')).push(r);
+    const red = [];
+    for (const [name, list] of by) {
+      let k = list.length;
+      while (k > 0 && list[k - 1].result === 'red') k--;
+      if (k < list.length) red.push({ workflow: name, since: list[k].at, sha: list[list.length - 1].sha, run: list[list.length - 1].run });
+    }
+    st = red.length ? { red: true, source: 'recorded', since: red.map((x) => x.since).sort()[0], sha: red[0].sha, run: red[0].run, workflows: red.map((x) => x.workflow) } : { red: false, source: ci.length ? 'recorded' : null };
   }
-  if (st.red) {
-    // an A3 closed after it went red lifts it; a red run after that close is a new stop
-    const a3 = closedA3For(root, 'ci:main', { after: st.since, rows });
-    const later = a3 ? st.reds.filter((t) => String(t) > String(a3.closed.at)).sort()[0] : null;
-    if (later) st.since = later;
-    st.lifted = a3 && !later ? a3.id : null;
-    delete st.reds;
-    st.a3 = openA3For(root, 'ci:main', rows);
-  }
+  // the stop holds while any required workflow is red, whatever the A3 (the owner: red main stops new work)
+  if (st.red) st.a3 = openA3For(root, 'ci:main', rows);
   return { ...st, branch, repo: repo || null };
 }
 
@@ -320,7 +318,7 @@ function claimFindings(bead, { root, parent = null, fix = { ok: false }, stories
   }
   // a red main stops new claims across the product, until green or an A3 closed after it went red
   const c = ci || ciState(root, { team, rows });
-  if (c.red && !c.lifted && !fix.ok && !tagged(c.a3)) f.push(block('ci-red', 'D3', `CI on ${c.repo ? `${c.repo} ` : ''}${c.branch} is red since ${String(c.since).slice(0, 16)}${c.workflows && c.workflows.length ? ` (${c.workflows.join(', ')})` : ''}: fixes only until it is green or an A3 is closed (${c.a3 ? `A3 ${c.a3.id} is open` : 'a3.js new --trigger ci:main'})`));
+  if (c.red && !fix.ok && !tagged(c.a3)) f.push(block('ci-red', 'D3', `CI on ${c.repo ? `${c.repo} ` : ''}${c.branch} is red since ${String(c.since).slice(0, 16)}${c.workflows && c.workflows.length ? ` (${c.workflows.join(', ')})` : ''}: fixes only until every required workflow is green (${c.a3 ? `A3 ${c.a3.id} is open` : 'a3.js new --trigger ci:main'})`));
   // a flaky test wants an A3 within 24 h: a warning; a stop (D3) only on a named area, once the Delivery
   // Manager confirmed the record and no A3 was opened within 24 h; never the whole product
   for (const r of flakyOpen(root, { now, rows })) {
@@ -384,7 +382,7 @@ function plainLines(s) {
   const lower = (t) => t.charAt(0).toLowerCase() + t.slice(1);
   // the area's own name, never a bead id (a story with no area falls back to its parent's id for matching)
   for (const x of s.stops) out.push(`${x.areaName ? `The ${x.areaName} area` : 'An unassigned area'} is stopped until we fix why ${x.what ? lower(x.what) : `"${x.title}" failed on the customer's app`}; ${x.stage}.`);
-  if (s.ci.red && !s.ci.lifted) out.push(`New work is paused across the product: the main build has been failing since ${String(s.ci.since).slice(0, 10)}; only fixes go on.`);
+  if (s.ci.red) out.push(`New work is paused across the product: the main build has been failing since ${String(s.ci.since).slice(0, 10)}; only fixes go on.`);
   for (const r of s.flaky) out.push(`A test that passes and fails on the same code is being looked into${r.area ? ` (${r.area})` : ''}${r.overdue && r.area && r.confirmed && !r.a3Opened ? '; its cause is overdue, so new work there waits' : ''}.`);
   for (const c of s.chains) out.push('One problem needed two fixes in two days; we are looking for its cause before fixing it again.');
   return out;

@@ -195,7 +195,7 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gat
   if (andon) {
     const out = [];
     for (const x of andon.stops) out.push(`Stopped: area ${x.area} (${x.row} failed on the customer's app); needs ${x.missing}; ${x.a3 ? `A3 ${x.a3.id} open` : 'no A3 yet'}; ${x.stage}`);
-    if (andon.ci.red && !andon.ci.lifted) out.push(`Stopped: CI on ${andon.ci.repo ? `${andon.ci.repo} ` : ''}${andon.ci.branch} red since ${String(andon.ci.since).slice(0, 16)}; fixes only until green or an A3 closes`);
+    if (andon.ci.red) out.push(`Stopped: CI on ${andon.ci.repo ? `${andon.ci.repo} ` : ''}${andon.ci.branch} red since ${String(andon.ci.since).slice(0, 16)}${andon.ci.workflows && andon.ci.workflows.length ? ` (${andon.ci.workflows.join(', ')})` : ''}; fixes only until every required workflow is green`);
     for (const r of andon.flaky) out.push(`Flaky: ${r.test}; A3 due ${r.due.slice(0, 16)}${r.overdue ? ' (late: claims there stop)' : ''}`);
     const a3 = andon.a3s.map((a) => a.id);
     if (a3.length) out.push(`A3 open: ${a3.length} (${a3.slice(0, 5).join(', ')}${a3.length > 5 ? ', ...' : ''})`);

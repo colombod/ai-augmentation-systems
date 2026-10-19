@@ -704,13 +704,15 @@ asked to verify (R-22, R-23, R-24; D3).
   the Reality Checker may open one and draft the problem, evidence and expected sections only. One
   open A3 per trigger (checked and opened under one lock). `a3.js close <a3> --fix <bead>... --proof
   <ref>` refuses:
-  - a section that is a placeholder (TBD, TODO, n/a, -) or under four words;
+  - a section that is a placeholder (TBD, TODO, n/a, -), under eight words, or single letters only;
   - a fix bead that does not exist, is not linked to the failure (`fixes:` as above, or `a3: <id>`),
     or is not merged (its state label, or a merged review record that carried it);
   - for a failed check, a proof that is not a counting pass (the done gate's row rule, so the
     criterion's current wording) on the sha deployed now, a later build than the one that failed;
-  - for `ci:main`, a proof that is not a green run of main newer than its workflow's last red run, read
-    through gh (where gh cannot read CI, the Delivery Manager's `ci green` row after the last red one);
+  - for `ci:main`, any required workflow still red (every one that went red must be green again), or a
+    proof that is not a green run of main newer than its workflow's last red run, read through gh
+    (where gh cannot read CI, the Delivery Manager's `ci green --workflow <w>` row after that
+    workflow's last red one);
   - for `flaky:`, a proof that is one of the runs recorded for the test, or a run gh lists as not green.
   `a3.js show <a3>` and `a3.js list` read them.
 - **Red main (D3).** The claim check reads CI on the product's main (`gh run list -R <product_github>
@@ -719,10 +721,10 @@ asked to verify (R-22, R-23, R-24; D3).
   main sha (so a manual release or a scheduled job counts only when the team names it). Each counts by
   its latest run with a verdict (cancelled and skipped runs are none) and by when runs finished. When
   one failed, new claims across the product are refused, except linked fixes and the `ci:main` A3's
-  own work, until it is green again or an A3 for `ci:main` closes after it went red (a run that fails
-  after that close stops again). The refusal and the status name the repository and branch read.
-  Where gh cannot read CI, the Delivery Manager records it:
-  `node ${CLAUDE_PLUGIN_ROOT}/scripts/andon.js ci red|green --sha <sha> --run <ref>`.
+  own work, until every required workflow is green again; an A3 never lifts a red main. The refusal
+  and the status name the repository, branch and red workflows. Where gh cannot read CI, the Delivery
+  Manager records one row per workflow:
+  `node ${CLAUDE_PLUGIN_ROOT}/scripts/andon.js ci red|green --sha <sha> --run <ref> [--workflow <w>]`.
 - **Flaky test (a warning).** `andon.js flaky <test> --sha <sha> --fail-run <ref> --pass-run <ref>
   [--area <a>]` (any session but the Chief of Staff): the same test failed then passed on one sha. It
   warns at each claim in its area (or everywhere, with no area) and wants an A3 within 24 h. A record

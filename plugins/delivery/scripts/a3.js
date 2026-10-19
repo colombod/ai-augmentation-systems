@@ -99,6 +99,10 @@ function mainRuns(who, gh) {
 function ciProof(who, rows, proof, gh) {
   const live = mainRuns(who, gh);
   const how = `name its run id (gh run list -R ${live.repo || '<product_github>'} --branch ${live.branch})`;
+  // every required workflow that went red is green again: none is red now
+  const now = A.ciState(who.root, { team: who.team, rows, gh: () => (live.runs ? { runs: live.runs } : { unavailable: live.unavailable || 'no runs' }) });
+  const named = (now.workflows || []).filter((w) => w !== 'main');
+  if (now.red) return [`${named.length ? `${named.join(', ')} ${named.length > 1 ? 'are' : 'is'}` : 'CI is'} still red on ${live.branch}: every required workflow must be green again before the A3 closes`, 'Fix and re-run each red workflow, then close with a green run'];
   if (live.runs) {
     const run = live.runs.find((r) => String(r.databaseId) === String(proof).trim());
     const done = (r) => String(r.status).toLowerCase() === 'completed';
@@ -106,8 +110,9 @@ function ciProof(who, rows, proof, gh) {
     if (!run || !done(run) || String(run.conclusion).toLowerCase() !== 'success' || !lastRed || String(run.createdAt) <= String(lastRed)) return [`${proof} is not a green CI run on ${live.branch} after the red run: ${how}`, 'Close the A3 once main is green again'];
     return null;
   }
-  const ci = rows.filter((r) => r.type === 'ci');
-  const row = ci.find((r) => r.id === proof);
+  const row0 = rows.find((r) => r.type === 'ci' && r.id === proof);
+  const ci = rows.filter((r) => r.type === 'ci' && (r.workflow || 'main') === ((row0 && row0.workflow) || 'main'));
+  const row = row0;
   const lastRed = ci.filter((r) => r.result === 'red').map((r) => r.at).sort().pop();
   if (!row || row.result !== 'green' || !lastRed || String(row.at) <= String(lastRed)) return [`${proof} is not a green CI run on ${live.branch} after the red run: gh cannot read CI here, so name the Delivery Manager's ci green row (andon.js ci green --sha <sha> --run <ref>)`, 'Record the green run first, then close the A3'];
   return null;
