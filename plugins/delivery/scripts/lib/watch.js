@@ -46,7 +46,8 @@ const POLLING_FLAG = /^(?:--watch|--interval)(?:=.*)?$|^-[A-Za-z]*[wi][A-Za-z]*$
 // null when args are a gh read a watcher may repeat; else the reason
 function readProblem(args) {
   const list = (args || []).map(String);
-  const words = list.filter((a) => !a.startsWith('-')).slice(0, 2).join(' ');
+  // the value of -R/--repo is not the subcommand (gh -R o/r pr view 1)
+  const words = list.filter((a, i) => !a.startsWith('-') && !['-R', '--repo'].includes(list[i - 1])).slice(0, 2).join(' ');
   if (!READS.includes(words)) return `only gh reads can be watched (${READS.join(', ')}); got gh ${list.join(' ')}`;
   const poll = list.find((a) => POLLING_FLAG.test(a));
   return poll ? `gh's own polling (${poll}) is not allowed: watch.js until repeats the read, at most every ${MIN_GH_S / 60} min` : null;

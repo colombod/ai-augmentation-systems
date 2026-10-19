@@ -671,3 +671,48 @@ test('review: `gh run watch` with no interval polls every 3 s; the documented re
   const ref = fs.readFileSync(path.join(__dirname, '..', 'docs', 'reference.md'), 'utf8');
   assert.match(ref, /within\s+the\s+5-minute\s+grace\s+plus\s+one\s+job\s+interval\s+of\s+the\s+reset\s+\(at\s+most\s+20\s+minutes\s+at\s+the\s+default\s+`--every 15m`/);
 });
+
+// ---- Copilot on aaea37c ----
+test('Copilot 068 and review 1: only execution positions and real substitutions are judged; literals and passive arguments pass', () => {
+  const h = harness({});
+  const wd = h.script('watchdog.js');
+  for (const ok of ['rg claude -c src', "printf '%s\\n' watchdog.js run", "bd update ex-1 --append-notes 'Use `claude --resume sess` after the reset'",
+    "git commit -m 'docs: `claude -c` continues a session'", 'echo "\\`claude -c\\` is escaped"', 'echo \\`claude --resume s\\`', 'bash -x build.sh watchdog.js run', 'grep -rn "claude --resume" docs']) {
+    assert.equal(h.bash('builder-1', ok, { run: false }).deny, null, ok);
+  }
+  for (const no of ['git commit -m "docs: `claude -c`"', 'echo "$(claude --resume s)"', `bash ${wd.split(' ')[1]} run`, 'case x in y) true ;; x) claude -c ;; esac',
+    `function g { ${wd} wake; }`, 'echo x | xargs claude --resume']) {
+    assert.ok(h.bash('builder-1', no, { run: false }).deny, no);
+  }
+});
+
+test('review 2: a stall item sent to another builder is a misroute and stays unrouted', () => {
+  const DP = require('./lib/daily-plan.js');
+  const h = harness({});
+  const team = JSON.parse(fs.readFileSync(path.join(h.root, '.delivery', 'team', 'team.json'), 'utf8'));
+  const at0 = new Date().toISOString();
+  fs.mkdirSync(path.join(h.root, DP.REL), { recursive: true });
+  const it = { section: 0, kind: 'stall', fn: 'stall', ref: 'ex-q', key: 'stall:ex-q', role: 'builder', instance: 'builder-1', action: 'Stalled: ex-q', plain: 'x', match: ['ex-q'] };
+  fs.writeFileSync(path.join(h.root, DP.REL, `${DP.today(at0)}.ndjson`), `${JSON.stringify({ seq: 1, type: 'plan', at: at0, items: [it], states: {} })}\n`);
+  const wrong = DP.noteSent(h.root, { team, to: 'builder-2', message: 'please [ex-q]', now: at0 });
+  assert.equal(wrong.misroutes.length, 1);
+  assert.deepEqual(DP.unrouted(h.root, { now: at0 }).open.map((x) => x.key), ['stall:ex-q']);
+  assert.equal(DP.noteSent(h.root, { team, to: 'builder-1', message: 'please [ex-q]', now: at0 }).misroutes.length, 0);
+  assert.deepEqual(DP.unrouted(h.root, { now: at0 }).open, []);
+});
+
+test('reviews 3 to 5: a quoted watcher path, sleep suffixes, quoted loop text, and host-sharded ledger files', () => {
+  const now = Date.parse('2026-10-13T12:00:00Z');
+  const use = (command, at = iso(now)) => [reply(at, [{ type: 'tool_use', id: 'w1', input: { command } }])];
+  assert.equal(WD.waitingUntil(use("node '/opt/My Plugins/scripts/watch.js' until MERGED --every 5m --max 6h -- gh pr view 9")), now + 6 * H);
+  const p = (command) => WD.tightPolls(use(command)).map((x) => x.every);
+  assert.deepEqual(p('while true; do gh pr view 1; sleep 5m; done'), [], '5 minutes');
+  assert.deepEqual(p('while true; do gh pr view 1; sleep 0.5m; done'), [30]);
+  assert.deepEqual(p('while true; do gh pr view 1; sleep 1h; done'), []);
+  assert.deepEqual(p('echo "while true; do gh pr view; sleep 5; done"'), [], 'loop text in a quoted argument is not a loop');
+  assert.deepEqual(p("bash -c 'while true; do gh pr view 1; sleep 5; done'"), [5], 'a loop a shell runs is');
+  const h = harness({});
+  WD.recordAll(h.root, { stalls: [{ kind: 'p0', bead: 'ex-1', detail: 'P0 open and unclaimed since x' }] }, [], { now: iso(now) });
+  const files = fs.readdirSync(Wn.dirOf(h.root)).filter((f) => f.endsWith('.ndjson'));
+  assert.deepEqual(files.map((f) => /^local-[0-9a-f]{8}\.ndjson$/.test(f)), [true], files.join(','));
+});

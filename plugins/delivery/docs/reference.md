@@ -979,13 +979,15 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   - a session stopped on a usage limit: "The team resumes at <reset + 5 min> (restart scheduled)" once the
     job is installed, else "the team is stalled; the watchdog is not installed", and "Resume now" once it
     has reset (its held beads are not also reported as stalled);
-  - a role whose transcript polls gh in a loop (gh and a sleep inside one `while`, `until` or `for`,
+  - a role whose transcript polls gh in a loop (gh and a sleep, with its s/m/h/d unit, inside one
+    `while`, `until` or `for` that runs, not loop text quoted as an argument;
     `watch -n`, gh's own `--watch`/`--interval`) more often than every 4 minutes (R-25).
   Each is a warning in the ledger (`idle`, `stall`, `p0-unclaimed`, `usage-limit`, `tight-poll`), once per
-  stall. Nothing is paused or blocked. An owner pause that verifies silences all of it, the polling
+  stall, in this host's own ledger file. Nothing is paused or blocked. An owner pause that verifies silences all of it, the polling
   warnings included; an open andon (a failed check row) silences idle, quiet and P0 stalls for beads in
   its area only (they wait for its fix); a message telling the team to stop is not a pause. `plan.js
-  today` lists stalls first ("0. Stalls first"), each routed to the session the watchdog wakes for it,
+  today` lists stalls first ("0. Stalls first"), each routed to the session the watchdog wakes for it
+  (sending it to another instance of the same role is a misroute, and it stays unrouted),
   and the resume time when a restart is scheduled; `plan.js brief` leads with them in plain words;
   `team-status.js` lists them under the idle line. Times are the host's local time with its zone.
 - **The wake.** `watchdog.js wake [--dry-run]` wakes, for each due stall, its session: the holder of a
@@ -1021,8 +1023,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `install` and `uninstall` are refused to every role session, `any` lanes included and whatever the
   form (the job shim with any arguments, a compound command such as `if ...; then ...; fi`, a chain, a wrapper such as `env`, `nohup` or `timeout`, `bash -c`, `eval`, `$(...)`, `node -e`,
   the shim, a quote-split or glob word, a command word built from a variable), and so is
-  `claude --resume`/`--continue` by hand. Only what runs is judged: a note, a commit message or
-  `git diff -- scripts/watchdog.js` that names the file or a flag is not refused; the
+  `claude --resume`/`--continue` by hand. Only what runs is judged, at each command position after
+  shell grammar, assignments and wrappers, and inside `$(...)` or backticks the shell would expand (not
+  inside single quotes, not escaped): a note, a commit message, `rg claude -c src`, `printf ... watchdog.js
+  run` or `git diff -- scripts/watchdog.js` that names the file or a flag is not refused; the
   script itself refuses them inside a role directory or with a role session's environment
   (`DELIVERY_ROLE`, `DELIVERY_ROLE_ID`, `DELIVERY_ROLE_DIR`). Only `check` runs in a role session. What
   `--apply` writes:

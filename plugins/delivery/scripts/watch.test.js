@@ -171,3 +171,9 @@ test('Copilot 786: outside a project the cache is private, and a shared, foreign
   assert.equal(n, 4);
   assert.deepEqual(fs.readdirSync(elsewhere), [], 'nothing written through the link');
 });
+
+test('a repository flag before the subcommand is its value, not the read', () => {
+  assert.equal(WT.readProblem(['-R', 'o/r', 'pr', 'view', '1']), null);
+  assert.equal(WT.readProblem(['--repo', 'o/r', 'pr', 'checks', '1']), null);
+  assert.match(WT.readProblem(['-R', 'o/r', 'pr', 'merge', '1']), /only gh reads/);
+});

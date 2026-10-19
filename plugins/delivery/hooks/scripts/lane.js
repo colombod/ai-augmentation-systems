@@ -774,6 +774,9 @@ function stripGrammar(t) {
   for (;;) {
     if (!out.length) return out;
     if (KEYWORDS.has(out[0]) || /^[A-Za-z_][\w-]*\(\)$/.test(out[0])) { out.shift(); continue; }
+    // `function name {` and a case arm's pattern (`x)`) after the first one
+    if (out[0] === 'function') { out.splice(0, 2); continue; }
+    if (/^[^()\s]+\)$/.test(out[0])) { out.shift(); continue; }
     if (out[0] === 'case') { const k = out.findIndex((x) => /\)$/.test(x)); out.splice(0, k >= 0 ? k + 1 : out.length); continue; }
     if (/^[({]+./.test(out[0])) { out[0] = out[0].replace(/^[({]+/, ''); continue; }
     if (out[0] === 'for' || out[0] === 'select') return [];
@@ -806,33 +809,60 @@ function checkOnly(args) {
 }
 const claudeResumes = (args) => ['respawn', 'attach'].includes(args[0]) || args.some((a) => RESUME_FLAGS.has(a) || /^--(?:resume|continue|teleport|from-pr)=/.test(a) || (/^-[A-Za-z]{2,}$/.test(a) && /[cr]/.test(a.slice(1))));
 // 'watchdog', 'resume' or null for one command line, depth-limited
+// What $(...), backticks and <(...) run, read as the shell does: nothing inside single quotes, an
+// escaped backtick or dollar is a literal, double quotes still expand (review on aaea37c).
+function substitutions(text) {
+  const s = String(text || '');
+  const out = [];
+  let q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q === "'") { if (c === "'") q = null; continue; }
+    if (c === '\\') { i++; continue; }
+    if (c === "'" && !q) { q = "'"; continue; }
+    if (c === '"') { q = q === '"' ? null : '"'; continue; }
+    if (c === '`') {
+      let j = i + 1;
+      let body = '';
+      for (; j < s.length && s[j] !== '`'; j++) { if (s[j] === '\\' && j + 1 < s.length) { body += s[++j]; continue; } body += s[j]; }
+      out.push(body);
+      i = j;
+      continue;
+    }
+    if ((c === '$' || (c === '<' && !q)) && s[i + 1] === '(') {
+      let depth = 1;
+      let j = i + 2;
+      for (; j < s.length && depth; j++) { if (s[j] === '(') depth++; else if (s[j] === ')') depth--; }
+      out.push(s.slice(i + 2, j - 1));
+      i = j - 1;
+    }
+  }
+  return out;
+}
+// The first argument that is not a flag: the script a shell or `source` runs.
+const firstOperand = (args) => args.find((a) => !a.startsWith('-'));
+
+// 'watchdog', 'resume' or null for one command line, depth-limited. Each segment is judged at its
+// command position (after shell grammar, assignments and wrappers); the words after it are arguments.
 function refusedRun(text, depth = 0) {
   if (depth > 4) return null;
-  const subs = [];
-  String(text).replace(/\$\(([^()]*)\)|`([^`]*)`|<\(([^()]*)\)/g, (m, a, b, c) => { subs.push(a || b || c || ''); return m; });
-  for (const sub of subs) { const r = refusedRun(sub, depth + 1); if (r) return r; }
+  for (const sub of substitutions(text)) { const r = refusedRun(sub, depth + 1); if (r) return r; }
   for (const seg of splitWithOps(text)) {
-    const all = tokens(seg.text);
-    // a backstop over every unquoted word: a protected invocation in a form the walk below does not
-    // parse (a compound command, a case arm) is still found (Copilot 716)
-    for (let k = 0; k < all.length; k++) {
-      if (namesClaude(all[k]) && claudeResumes(all.slice(k + 1))) return 'resume';
-      if (isShim(all[k]) && (k === 0 || all.slice(0, k).some((x) => INTERPRETERS.has(baseOf(x)) || KEYWORDS.has(x)))) return 'watchdog';
-      if (namesWatchdog(all[k]) && WATCHDOG_VERBS.has(all[k + 1])) return 'watchdog';
-    }
-    const t = commandWords(stripGrammar(all));
+    const t = commandWords(stripGrammar(tokens(seg.text)));
     if (!t.length) continue;
     const w = t[0];
     const args = t.slice(1);
     const name = baseOf(w);
     if (SHELLS.has(name) || name === 'eval') {
-      const inner = name === 'eval' ? args.join(' ') : (() => { const k = args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a)); return k >= 0 ? args[k + 1] || '' : ''; })();
+      const k = args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a));
+      const inner = name === 'eval' ? args.join(' ') : k >= 0 ? args[k + 1] || '' : '';
       const r = inner ? refusedRun(inner, depth + 1) : null;
       if (r) return r;
-      if (name !== 'eval' && args.some(namesWatchdog)) return 'watchdog';
+      // `bash script.sh`: the script runs; its own arguments do not
+      if (name !== 'eval' && k < 0 && namesWatchdog(firstOperand(args)) && !(isCli(firstOperand(args)) && checkOnly(args.slice(args.indexOf(firstOperand(args)) + 1)))) return 'watchdog';
       continue;
     }
-    if ((name === 'source' || name === '.') && args.some(namesWatchdog)) return 'watchdog';
+    if ((name === 'source' || name === '.') && namesWatchdog(firstOperand(args))) return 'watchdog';
     if (INTERPRETERS.has(name)) {
       let script = null;
       for (let i = 0; i < args.length; i++) {

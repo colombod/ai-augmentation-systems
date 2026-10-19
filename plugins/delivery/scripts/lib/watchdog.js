@@ -107,7 +107,7 @@ function waitingUntil(rows) {
   const done = resultIds(rows);
   let until = -Infinity;
   for (const u of toolUses(rows)) {
-    if (!/\bwatch\.js\s+until\b/.test(u.command) || (u.id && done.has(u.id))) continue;
+    if (!/\bwatch\.js['"]?\s+until\b/.test(u.command) || (u.id && done.has(u.id))) continue;
     const m = /--max\s+(\d+(?:\.\d+)?)(s|m|h)?\b/.exec(u.command);
     if (m) until = Math.max(until, ms(u.at) + Number(m[1]) * { s: 1, m: 60, h: 3600 }[m[2] || 's'] * 1000);
   }
@@ -121,8 +121,8 @@ function pollEvery(cmd) {
   let m;
   LOOP_BODY.lastIndex = 0;
   while ((m = LOOP_BODY.exec(cmd))) {
-    const s = /\bsleep\s+(\d+)/.exec(m[1]);
-    if (s && /(?:^|[\s;|&(])gh\s+\w/.test(m[1])) return Number(s[1]);
+    const s = /\bsleep\s+(\d+(?:\.\d+)?)([smhd])?\b/.exec(m[1]);
+    if (s && /(?:^|[\s;|&(])gh\s+\w/.test(m[1])) return Number(s[1]) * { s: 1, m: 60, h: 3600, d: 86400 }[s[2] || 's'];
   }
   const w = /(?:^|[;&|(]\s*)watch\s+(?:-\w+\s+)*-n\s*(\d+)\s[^;&|]*\bgh\s/.exec(cmd);
   if (w) return Number(w[1]);
@@ -133,8 +133,10 @@ function pollEvery(cmd) {
   if (/\bgh\s+run\s+watch\b/.test(cmd)) return 3;
   return NaN;
 }
+// Quoted text is an argument, not a loop (`echo "while ... done"`), unless a shell runs it (`bash -c '...'`).
+const executed = (cmd) => String(cmd).replace(/(\b(?:bash|sh|zsh|dash|ksh)\s+(?:-\w+\s+)*-\w*c\w*\s+)?('[^']*'|"(?:[^"\\]|\\.)*")/g, (m, sh, q) => (sh ? `${sh}${q.slice(1, -1)}` : ' '));
 function tightPolls(rows) {
-  return toolUses(rows).map((u) => ({ at: u.at || null, every: pollEvery(u.command), command: u.command.slice(0, 120) })).filter((p) => Number.isFinite(p.every) && p.every < MIN_POLL_S);
+  return toolUses(rows).map((u) => ({ at: u.at || null, every: pollEvery(executed(u.command)), command: u.command.slice(0, 120) })).filter((p) => Number.isFinite(p.every) && p.every < MIN_POLL_S);
 }
 
 // ---- the sessions on the roster, with their last activity and their transcript's word ----
@@ -269,12 +271,13 @@ function pollWarnings(list) {
 }
 
 const KIND = { idle: 'idle', quiet: 'stall', p0: 'p0-unclaimed', limit: 'usage-limit' };
-function recordAll(root, res, polls, { now, instance = 'watchdog' } = {}) {
+// no fixed instance: each host appends to its own ledger file, as team-status does (review on aaea37c)
+function recordAll(root, res, polls, { now, instance } = {}) {
   for (const s of res.stalls) {
     if (s.kind === 'idle') I.recordIdle(root, s.idle, { now, instance });
-    else W.record(root, { kind: KIND[s.kind], rule: 'R-04', bead: s.bead, detail: s.detail, raisedBy: instance, instance, now });
+    else W.record(root, { kind: KIND[s.kind], rule: 'R-04', bead: s.bead, detail: s.detail, raisedBy: instance || 'watchdog', instance, now });
   }
-  for (const p of polls) W.record(root, { kind: 'tight-poll', rule: 'R-25', detail: `${p.instance} polled gh every ${p.every} s`, raisedBy: instance, instance, now });
+  for (const p of polls) W.record(root, { kind: 'tight-poll', rule: 'R-25', detail: `${p.instance} polled gh every ${p.every} s`, raisedBy: instance || 'watchdog', instance, now });
 }
 
 // ---- the host job's install record: whether a restart can be promised ----

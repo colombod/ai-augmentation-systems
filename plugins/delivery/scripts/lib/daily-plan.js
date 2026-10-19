@@ -269,7 +269,8 @@ function noteSent(root, { team, to, message, now, by } = {}) {
   const sent = [];
   const misroutes = [];
   for (const it of plan.items.filter((x) => x.role !== COS && carries(message, x))) {
-    const wrong = r.role !== it.role;
+    // a stall names its session: another instance of the same role is not it (review on aaea37c)
+    const wrong = r.role !== it.role || (it.kind === 'stall' && r.instance !== it.instance);
     sent.push(append(root, today(at), { type: 'sent', at, by: by || null, plan: plan.seq, key: it.key, to: r.instance, role: r.role, ...(wrong ? { misroute: true } : {}) }));
     if (wrong) {
       const detail = misrouteText(it, r);
@@ -287,7 +288,7 @@ function unrouted(root, { now } = {}) {
   const plan = lastPlan(rows);
   if (!plan) return { plan: null, open: [], misroutes: [] };
   const sent = rows.filter((r) => r.type === 'sent' && r.seq > plan.seq);
-  const ok = (it) => sent.some((s) => s.key === it.key && s.role === it.role);
+  const ok = (it) => sent.some((s) => s.key === it.key && s.role === it.role && (it.kind !== 'stall' || s.to === it.instance));
   const routed = plan.items.filter((x) => x.role !== COS);
   return { plan, open: routed.filter((x) => !ok(x)), misroutes: sent.filter((s) => s.misroute), total: routed.length };
 }
