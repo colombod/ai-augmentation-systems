@@ -57,7 +57,8 @@
     { "first": "git", "sub": ["rebase"], "scope": "product", "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "-x"] }
   ],
   "gh-read": [
-    { "first": "gh", "sub": ["pr view", "pr list", "pr checks", "pr diff", "pr status", "issue view", "issue list", "run view", "run list", "run watch", "repo view", "release list", "release view"] }
+    { "first": "gh", "sub": ["pr view", "pr list", "pr checks", "pr diff", "pr status", "issue view", "issue list", "run view", "run list", "run watch", "repo view", "release list", "release view"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watch.js", "sub": ["gh", "until"] }
   ],
   "gh-write": [
     { "first": "gh", "sub": ["pr create", "pr edit", "pr comment", "pr ready", "pr review", "issue comment", "release create", "workflow run"] }
