@@ -33,7 +33,7 @@ const refuse = (why, fix) => ({ code: 1, out: `andon.js: ${why}.${fix ? `\n${fix
 function lines(s) {
   const out = [];
   for (const x of s.stops) out.push(`Stopped: area ${x.area} on ${x.row} (criterion ${x.criterion} of ${x.bead}); needs ${x.missing || 'nothing'}; ${x.a3 ? `A3 ${x.a3.id} open` : `no A3 (a3.js new --trigger ${x.trigger})`}; ${x.stage}`);
-  if (s.ci.red) out.push(`${s.ci.lifted ? 'Lifted' : 'Stopped'}: CI on ${s.ci.branch} red since ${s.ci.since} (${s.ci.source}${s.ci.run ? `, ${s.ci.run}` : ''})${s.ci.lifted ? ` by ${s.ci.lifted}` : `; fixes only until green or an A3 closes (${s.ci.a3 ? `${s.ci.a3.id} open` : 'a3.js new --trigger ci:main'})`}`);
+  if (s.ci.red) out.push(`${s.ci.lifted ? 'Lifted' : 'Stopped'}: CI on ${s.ci.repo ? `${s.ci.repo} ` : ''}${s.ci.branch} red since ${s.ci.since} (${s.ci.source}${s.ci.run ? `, ${s.ci.run}` : ''})${s.ci.lifted ? ` by ${s.ci.lifted}` : `; fixes only until green or an A3 closes (${s.ci.a3 ? `${s.ci.a3.id} open` : 'a3.js new --trigger ci:main'})`}`);
   for (const r of s.flaky) out.push(`Flaky: ${r.test} on ${String(r.sha).slice(0, 12)}; A3 due ${r.due.slice(0, 16)}${r.overdue ? ' (late: claims there stop)' : ''}${r.a3 ? `; ${r.a3.id} open` : `; a3.js new --trigger flaky:${r.test}`}`);
   for (const a of s.a3s) out.push(`A3 open: ${a.id} for ${a.trigger}`);
   for (const c of s.chains) out.push(`Fix on fix: ${c.symptom} in PRs ${c.prs.join(', ')}; spike ${c.spike}; fix claims on it warn until andon.js ack ${c.id}`);

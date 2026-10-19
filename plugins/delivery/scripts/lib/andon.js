@@ -153,21 +153,34 @@ function areaStops(root, { beadOf = () => null, g } = {}) {
 // ---- CI on the product's main ----
 function ghRuns(repo, branch, { cwd, timeoutMs = 4000 } = {}) {
   let r;
-  try { r = spawnSync('gh', ['run', 'list', '-R', repo, '--branch', branch, '--limit', '30', '--json', 'databaseId,workflowName,status,conclusion,headSha,createdAt,url'], { cwd, encoding: 'utf8', timeout: timeoutMs }); } catch (err) { return { unavailable: err.message }; }
+  try { r = spawnSync('gh', ['run', 'list', '-R', repo, '--branch', branch, '--limit', '30', '--json', 'databaseId,workflowName,event,status,conclusion,headSha,createdAt,updatedAt,url'], { cwd, encoding: 'utf8', timeout: timeoutMs }); } catch (err) { return { unavailable: err.message }; }
   if (r.error || r.status !== 0) return { unavailable: r.error ? r.error.message : String(r.stderr || '').trim().split('\n')[0] };
   try { const runs = JSON.parse(r.stdout); return Array.isArray(runs) ? { runs } : { unavailable: 'no runs' }; } catch (err) { return { unavailable: 'gh run list returned no JSON' }; }
 }
 
-// per workflow, the latest completed run; red when any is a failure, since its first failing run in a row
-function redFromRuns(runs) {
+// The required workflows (team.json required_workflows; by default the push-triggered workflows that ran on
+// the newest main sha, so a manual or scheduled job does not stop the product), each by its latest run
+// with a verdict (a cancelled or skipped run is none); red when one failed, since its first failure in a
+// row. Times are when a run finished (updatedAt), so a run that started earlier and failed later counts late.
+const NO_VERDICT = new Set(['cancelled', 'skipped', 'neutral', 'stale', 'action_required', '']);
+const doneAt = (r) => r.updatedAt || r.createdAt;
+function redFromRuns(runs, { required } = {}) {
+  const done = runs.filter((x) => String(x.status).toLowerCase() === 'completed' && !NO_VERDICT.has(String(x.conclusion || '').toLowerCase()));
+  let names;
+  if (Array.isArray(required) && required.length) names = new Set(required);
+  else {
+    const push = runs.filter((x) => !x.event || x.event === 'push');
+    const head = [...push].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+    names = new Set(head ? push.filter((x) => x.headSha === head.headSha).map((x) => x.workflowName) : []);
+  }
   const by = new Map();
-  for (const r of runs.filter((x) => String(x.status).toLowerCase() === 'completed')) (by.get(r.workflowName) || by.set(r.workflowName, []).get(r.workflowName)).push(r);
+  for (const r of done.filter((x) => names.has(x.workflowName))) (by.get(r.workflowName) || by.set(r.workflowName, []).get(r.workflowName)).push(r);
   const red = [];
   for (const [name, list] of by) {
-    list.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    list.sort((a, b) => String(doneAt(b)).localeCompare(String(doneAt(a))));
     let k = 0;
     while (k < list.length && FAILED.has(String(list[k].conclusion).toLowerCase())) k++;
-    if (k) red.push({ workflow: name, since: list[k - 1].createdAt, sha: list[0].headSha, run: list[0].url || String(list[0].databaseId), reds: list.slice(0, k).map((x) => x.createdAt) });
+    if (k) red.push({ workflow: name, since: doneAt(list[k - 1]), sha: list[0].headSha, run: list[0].url || String(list[0].databaseId), reds: list.slice(0, k).map(doneAt) });
   }
   return red;
 }
@@ -179,7 +192,7 @@ function ciState(root, { team, gh, rows = read(root).rows, cwd } = {}) {
   let st = null;
   const live = repo ? (gh ? gh(repo, branch) : ghRuns(repo, branch, { cwd: cwd || root })) : { unavailable: 'the product repository is not known' };
   if (live && live.runs) {
-    const red = redFromRuns(live.runs);
+    const red = redFromRuns(live.runs, { required: team && team.required_workflows });
     st = red.length ? { red: true, source: 'gh', since: red.map((x) => x.since).sort()[0], sha: red[0].sha, run: red[0].run, workflows: red.map((x) => x.workflow), reds: red.flatMap((x) => x.reds) } : { red: false, source: 'gh' };
   } else {
     const ci = rows.filter((r) => r.type === 'ci');
@@ -199,7 +212,7 @@ function ciState(root, { team, gh, rows = read(root).rows, cwd } = {}) {
     delete st.reds;
     st.a3 = openA3For(root, 'ci:main', rows);
   }
-  return { ...st, branch };
+  return { ...st, branch, repo: repo || null };
 }
 
 // ---- flaky tests: an A3 within 24 h ----
@@ -303,7 +316,7 @@ function claimFindings(bead, { root, parent = null, fix = { ok: false }, stories
   }
   // a red main stops new claims across the product, until green or an A3 closed after it went red
   const c = ci || ciState(root, { team, rows });
-  if (c.red && !c.lifted && !fix.ok && !tagged(c.a3)) f.push(block('ci-red', 'D3', `CI on ${c.branch} is red since ${String(c.since).slice(0, 16)}${c.workflows && c.workflows.length ? ` (${c.workflows.join(', ')})` : ''}: fixes only until it is green or an A3 is closed (${c.a3 ? `A3 ${c.a3.id} is open` : 'a3.js new --trigger ci:main'})`));
+  if (c.red && !c.lifted && !fix.ok && !tagged(c.a3)) f.push(block('ci-red', 'D3', `CI on ${c.repo ? `${c.repo} ` : ''}${c.branch} is red since ${String(c.since).slice(0, 16)}${c.workflows && c.workflows.length ? ` (${c.workflows.join(', ')})` : ''}: fixes only until it is green or an A3 is closed (${c.a3 ? `A3 ${c.a3.id} is open` : 'a3.js new --trigger ci:main'})`));
   // a flaky test needs an A3 within 24 h: a warning, then a stop on its area (or the product) when late
   for (const r of flakyOpen(root, { now, rows })) {
     if (r.area && r.area !== area) continue;

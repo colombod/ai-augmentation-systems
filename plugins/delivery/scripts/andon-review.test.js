@@ -174,3 +174,35 @@ test('Copilot 816: two sessions opening an A3 for one failure at once make exact
     assert.equal(AN.a3s(h.root).filter((x) => x.trigger === `andon:${ev}`).length, 1);
   });
 });
+
+// a completed run on main: workflow, event, conclusion, created and finished times
+const run = (n, wf, conclusion, created, { event = 'push', sha = `c${n}aa000`, done } = {}) => ({ databaseId: n, workflowName: wf, event, status: 'completed', conclusion, headSha: sha, createdAt: created, updatedAt: done || created, url: `u/${n}`, headBranch: 'main' });
+const ciOf = (root, runs, team = { product_github: 'example/example' }) => AN.ciState(root, { team, gh: () => ({ runs }) });
+
+test('I2: only the required workflows count: a stale manual release or a scheduled job does not stop the product', () => {
+  const root = makeProject();
+  const runs = [run(1, 'release', 'failure', '2026-09-01T00:00:00Z', { event: 'workflow_dispatch' }), run(2, 'stale', 'failure', '2026-10-09T00:00:00Z', { event: 'schedule' }),
+    run(3, 'ci', 'success', '2026-10-10T00:00:00Z', { sha: 'head1' }), run(4, 'lint', 'success', '2026-10-10T00:01:00Z', { sha: 'head1' })];
+  assert.equal(ciOf(root, runs).red, false, 'by default: the push workflows on the newest main sha');
+  assert.equal(ciOf(root, [...runs, run(5, 'lint', 'failure', '2026-10-10T00:05:00Z', { sha: 'head1' })]).red, true);
+  // the team names its required workflows: a scheduled nightly then counts
+  const team = { product_github: 'example/example', required_workflows: ['ci', 'stale'] };
+  assert.deepEqual([ciOf(root, runs, team).red, ciOf(root, runs, team).workflows], [true, ['stale']]);
+});
+
+test('Copilot 837 848: a cancelled retry keeps main red; a run that finishes red after the A3 close stops it again', () => {
+  const root = makeProject();
+  const red = run(1, 'ci', 'failure', '2026-10-09T00:00:00Z');
+  assert.equal(ciOf(root, [red, run(2, 'ci', 'cancelled', '2026-10-09T01:00:00Z')]).red, true, 'cancelled is no recovery');
+  const o = AN.append(root, { type: 'a3-open', trigger: 'ci:main', at: '2026-10-09T02:00:00Z' }, 'delivery-lead');
+  AN.append(root, { type: 'a3-close', a3: `a3-${o.id.slice(3)}`, fixes: ['x'], proof: '3', at: '2026-10-09T05:00:00Z' }, 'delivery-lead');
+  assert.equal(ciOf(root, [red]).lifted, 'a3-delivery-lead-1');
+  // started before the close, failed after it
+  const late = run(4, 'ci', 'failure', '2026-10-09T04:00:00Z', { done: '2026-10-09T06:00:00Z' });
+  assert.deepEqual([ciOf(root, [red, late]).lifted, ciOf(root, [red, late]).since], [null, '2026-10-09T06:00:00Z']);
+});
+
+test('M4: the red-main refusal names the repository and branch it read', () => {
+  const h = harness({ beads: { 'ex-a': story('ex-a') }, runs: [run(1, 'ci', 'failure', '2026-10-09T00:00:00Z')] });
+  assert.match(claim(h, 'builder-1', 'ex-a').deny, /D3: CI on example\/example main is red since 2026-10-09T00:00 \(ci\)/);
+});

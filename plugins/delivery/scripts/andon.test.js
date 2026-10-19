@@ -107,11 +107,14 @@ const OK = (name, day, n) => ({ databaseId: n, workflowName: name, status: 'comp
 
 test('R-22 #195: two days of red nightly on main stop new claims across the product until green; the A3\'s own work goes on', () => {
   const h = harness({ beads: { 'ex-a': story('ex-a'), 'ex-b': story('ex-b', { metadata: { area: 'trade' } }) }, runs: [OK('nightly', '08', 1), RED('09', 2), RED('10', 3), OK('test', '10', 4)] });
-  for (const id of ['ex-a', 'ex-b']) assert.match(claim(h, 'builder-1', id).deny || '', /D3: CI on main is red since 2026-10-09T02:00 \(nightly\): fixes only/, id);
+  // the nightly is scheduled: the team names it among its required workflows
+  const tj = path.join(h.root, '.delivery', 'team', 'team.json');
+  fs.writeFileSync(tj, JSON.stringify({ ...JSON.parse(fs.readFileSync(tj, 'utf8')), required_workflows: ['nightly', 'test'] }));
+  for (const id of ['ex-a', 'ex-b']) assert.match(claim(h, 'builder-1', id).deny || '', /D3: CI on example\/example main is red since 2026-10-09T02:00 \(nightly\): fixes only/, id);
   const a3 = /^(a3-[a-z0-9-]+):/.exec(h.bash('delivery-lead', `${h.script('a3.js')} new --trigger ci:main --problem 'The nightly fails on main.'`).out)[1];
   h.bash('delivery-lead', `bd create --id ex-nightly --title 'Make the nightly green' --metadata '{"a3":"${a3}"}'`);
   assert.equal(claim(h, 'builder-2', 'ex-nightly').deny, null, 'the A3\'s own work');
-  assert.match(h.bash('delivery-lead', `${h.script('andon.js')} show`).out, /Stopped: CI on main red since 2026-10-09T02:00:00Z \(gh, https:\/\/github\.com\/example\/example\/actions\/runs\/3\); fixes only until green or an A3 closes \(a3-delivery-lead-1 open\)/);
+  assert.match(h.bash('delivery-lead', `${h.script('andon.js')} show`).out, /Stopped: CI on example\/example main red since 2026-10-09T02:00:00Z \(gh, https:\/\/github\.com\/example\/example\/actions\/runs\/3\); fixes only until green or an A3 closes \(a3-delivery-lead-1 open\)/);
   h.setRuns([OK('nightly', '11', 5), RED('09', 2), RED('10', 3)]);
   assert.equal(claim(h, 'builder-1', 'ex-a').deny, null, 'green again: the product resumes');
 });
