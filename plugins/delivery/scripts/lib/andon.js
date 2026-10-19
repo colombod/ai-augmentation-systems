@@ -224,8 +224,10 @@ function flakyOpen(root, { now, rows = read(root).rows } = {}) {
     const done = closedA3For(root, `flaky:${r.test}`, { rows });
     if (!seen.has(r.test) && !(done && String(done.closed.at) >= String(r.at))) seen.set(r.test, r);
   }
-  return [...seen.values()]
-    .map((r) => ({ ...r, due: new Date(Date.parse(r.at) + FLAKY_HOURS * H).toISOString(), overdue: t - Date.parse(r.at) > FLAKY_HOURS * H, a3: openA3For(root, `flaky:${r.test}`, rows) }));
+  // confirmed: recorded by the Delivery Manager, or confirmed by it since (andon.js flaky confirm)
+  return [...seen.values()].map((r) => ({ ...r, due: new Date(Date.parse(r.at) + FLAKY_HOURS * H).toISOString(), overdue: t - Date.parse(r.at) > FLAKY_HOURS * H, a3: openA3For(root, `flaky:${r.test}`, rows),
+    confirmed: r.by === 'delivery-lead' || rows.some((x) => x.type === 'flaky-confirm' && x.test === r.test && String(x.at) >= String(r.at)),
+    a3Opened: a3s(root, rows).some((a) => a.trigger === `flaky:${r.test}` && String(a.at) >= String(r.at)) }));
 }
 
 // ---- fix on fix: two merged fixes on one symptom within 48 h ----
@@ -317,12 +319,13 @@ function claimFindings(bead, { root, parent = null, fix = { ok: false }, stories
   // a red main stops new claims across the product, until green or an A3 closed after it went red
   const c = ci || ciState(root, { team, rows });
   if (c.red && !c.lifted && !fix.ok && !tagged(c.a3)) f.push(block('ci-red', 'D3', `CI on ${c.repo ? `${c.repo} ` : ''}${c.branch} is red since ${String(c.since).slice(0, 16)}${c.workflows && c.workflows.length ? ` (${c.workflows.join(', ')})` : ''}: fixes only until it is green or an A3 is closed (${c.a3 ? `A3 ${c.a3.id} is open` : 'a3.js new --trigger ci:main'})`));
-  // a flaky test needs an A3 within 24 h: a warning, then a stop on its area (or the product) when late
+  // a flaky test wants an A3 within 24 h: a warning; a stop (D3) only on a named area, once the Delivery
+  // Manager confirmed the record and no A3 was opened within 24 h; never the whole product
   for (const r of flakyOpen(root, { now, rows })) {
     if (r.area && r.area !== area) continue;
     if (fix.ok || tagged(r.a3)) continue;
-    if (r.overdue) f.push(block('flaky-overdue', 'D3', `${r.test} failed then passed on ${String(r.sha).slice(0, 12)} and its A3 is over 24 h late (due ${r.due.slice(0, 16)}): ${r.area ? `area ${r.area}` : 'the product'} takes fixes only until it is closed`));
-    else f.push(warn('flaky-a3', 'R-22', `${r.test} is flaky (failed then passed on ${String(r.sha).slice(0, 12)}): its A3 is due by ${r.due.slice(0, 16)}, then ${r.area ? `area ${r.area}` : 'the product'} stops`));
+    if (r.overdue && r.area && r.confirmed && !r.a3Opened) f.push(block('flaky-overdue', 'D3', `${r.test} failed then passed on ${String(r.sha).slice(0, 12)}, confirmed, and no A3 was opened within 24 h (due ${r.due.slice(0, 16)}): area ${r.area} takes fixes only until one is (a3.js new --trigger flaky:${r.test})`));
+    else f.push(warn('flaky-a3', 'R-22', `${r.test} is flaky (failed then passed on ${String(r.sha).slice(0, 12)}${r.confirmed ? '' : ', unconfirmed'}): its A3 is ${r.overdue && !r.a3Opened ? 'overdue' : `due by ${r.due.slice(0, 16)}`}`));
   }
   // fix on fix: a fix on a symptom with an unacknowledged spike warns
   const mine = symptomsOf(root, bead);

@@ -6,14 +6,16 @@
 //                                                            cannot read it (gh run list -R product_github first)
 //   andon.js flaky <test> --sha <sha> --fail-run <ref> --pass-run <ref> [--area <area>]
 //                                                            a reviewer or the Delivery Manager: one test failed then
-//                                                            passed on the same sha; its A3 is due within 24 h
+//                                                            passed on the same sha; its A3 is due within 24 h. A warning;
+//                                                            a stop on the named area only once confirmed and late
+//   andon.js flaky confirm <test>                            Delivery Manager: confirms another session's record
 //   andon.js ack <chain row> --reason '<the spike's answer>' Delivery Manager: a fix-on-fix spike was answered
 // Exit codes: 0 done; 1 refused; 2 usage.
 const A = require('./lib/andon.js');
 const W = require('./lib/warnings.js');
 const { whoAmI, writerProblem } = require('./lib/gate-context.js');
 
-const USAGE = "usage: andon.js show [--plain] [--json] | ci red|green --sha <sha> --run <ref> | flaky <test> --sha <sha> --fail-run <ref> --pass-run <ref> [--area <a>] | ack <chain row> --reason '<text>'";
+const USAGE = "usage: andon.js show [--plain] [--json] | ci red|green --sha <sha> --run <ref> | flaky <test> --sha <sha> --fail-run <ref> --pass-run <ref> [--area <a>] | flaky confirm <test> | ack <chain row> --reason '<text>'";
 const VALUE = ['--sha', '--run', '--fail-run', '--pass-run', '--area', '--reason', '--project'];
 const SHA = /^[0-9a-f]{7,40}$/i;
 
@@ -69,13 +71,24 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: give
     return { code: 0, row, out: arg === 'red' ? `${row.id}: CI on main red at ${a.sha.slice(0, 12)} (${a.run}): new claims across the product stop; fixes go on until it is green or an A3 closes (a3.js new --trigger ci:main)` : `${row.id}: CI on main green at ${a.sha.slice(0, 12)}` };
   }
 
+  if (sub === 'flaky' && arg === 'confirm') {
+    const wp = writerProblem(who, ['delivery-lead']);
+    if (wp) return refuse(wp.replace(/\.$/, ''));
+    const test = a._[2];
+    if (!test) return { code: 2, out: USAGE };
+    if (!A.flakyOpen(who.root, { now: at }).some((r) => r.test === test)) return refuse(`no open flaky record for ${test}`, 'See them: andon.js show');
+    const row = A.append(who.root, { type: 'flaky-confirm', test, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
+    return { code: 0, row, out: `${row.id}: ${test} confirmed flaky: without an A3 opened within 24 h of its record, its area takes fixes only` };
+  }
   if (sub === 'flaky') {
     if (who.roleId === 'chief-of-staff') return refuse('a flaky test is recorded by its reviewer or the Delivery Manager', 'Message the Delivery Manager with the test and the two runs.');
     if (!arg || !a.sha || !SHA.test(a.sha) || !a.fail_run || !a.pass_run) return { code: 2, out: USAGE };
     if (a.fail_run === a.pass_run) return refuse('the failing and the passing run are the same run', 'Name both runs on the same sha');
     const row = A.append(who.root, { type: 'flaky', test: arg, sha: a.sha, fail_run: a.fail_run, pass_run: a.pass_run, area: a.area || null, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
     const w = W.record(who.root, { kind: 'flaky', rule: 'R-22', bead: null, detail: `${arg} failed then passed on ${a.sha.slice(0, 12)}: an A3 is due within 24 h`, raisedBy: who.instance, instance: who.instance, now: at });
-    return { code: 0, row, out: `${row.id}: ${arg} is flaky on ${a.sha.slice(0, 12)}; warning ${w ? w.id : 'unrecorded'}. Its A3 is due by ${new Date(Date.parse(at) + A.FLAKY_HOURS * 3600e3).toISOString().slice(0, 16)} (a3.js new --trigger flaky:${arg}); after that ${a.area ? `area ${a.area}` : 'the product'} takes fixes only` };
+    const due = new Date(Date.parse(at) + A.FLAKY_HOURS * 3600e3).toISOString().slice(0, 16);
+    const then = !a.area ? 'with no area named it only warns' : who.roleId === 'delivery-lead' ? `if none is opened by then, area ${a.area} takes fixes only` : `it is unconfirmed until the Delivery Manager confirms it (andon.js flaky confirm ${arg}); it only warns until then`;
+    return { code: 0, row, out: `${row.id}: ${arg} is flaky on ${a.sha.slice(0, 12)}; warning ${w ? w.id : 'unrecorded'}. Its A3 is due by ${due} (a3.js new --trigger flaky:${arg}); ${then}` };
   }
 
   if (sub === 'ack') {

@@ -141,18 +141,18 @@ test('R-22: where gh cannot read CI, the Delivery Manager\'s `ci main red` row s
   assert.equal(claim(h, 'builder-2', 'ex-b').deny, null);
 });
 
-test('R-22: a flaky test warns and wants an A3 within 24 h; past that its area stops (D3)', () => {
+test('R-22: a flaky test warns and wants an A3 within 24 h; a confirmed one with none opened stops its area (D3)', () => {
   const root = makeProject();
   const h = harness({ root, beads: { 'ex-a': story('ex-a'), 'ex-b': story('ex-b'), 'ex-c': story('ex-c', { metadata: { area: 'trade' } }) } });
   const r = h.bash('builder-2', `${h.script('andon.js')} flaky import.spec --sha c195aa00 --fail-run 201 --pass-run 202 --area collection`);
-  assert.match(r.out, /import\.spec is flaky on c195aa00; warning w-.*Its A3 is due by .*after that area collection takes fixes only/);
+  assert.match(r.out, /import\.spec is flaky on c195aa00; warning w-.*Its A3 is due by .*it is unconfirmed until the Delivery Manager confirms it/);
   const warned = claim(h, 'builder-1', 'ex-a');
   assert.equal(warned.deny, null);
-  assert.match(warned.ctx, /import\.spec is flaky \(failed then passed on c195aa00\): its A3 is due by/);
+  assert.match(warned.ctx, /import\.spec is flaky \(failed then passed on c195aa00, unconfirmed\): its A3 is due by/);
   // 25 hours later, with no A3
   const andon = require('./andon.js');
   andon.main(['flaky', 'search.spec', '--sha', 'c195aa00', '--fail-run', '1', '--pass-run', '2', '--area', 'collection'], { who: { root, roleId: 'delivery-lead', instance: 'delivery-lead' }, now: new Date(Date.now() - 25 * 3600e3).toISOString() });
-  assert.match(claim(h, 'builder-2', 'ex-b').deny, /D3: search\.spec failed then passed on c195aa00 and its A3 is over 24 h late/);
+  assert.match(claim(h, 'builder-2', 'ex-b').deny, /D3: search\.spec failed then passed on c195aa00, confirmed, and no A3 was opened within 24 h/);
   assert.equal(claim(h, 'builder-2', 'ex-c').deny, null, 'another area goes on');
 });
 

@@ -206,3 +206,25 @@ test('M4: the red-main refusal names the repository and branch it read', () => {
   const h = harness({ beads: { 'ex-a': story('ex-a') }, runs: [run(1, 'ci', 'failure', '2026-10-09T00:00:00Z')] });
   assert.match(claim(h, 'builder-1', 'ex-a').deny, /D3: CI on example\/example main is red since 2026-10-09T00:00 \(ci\)/);
 });
+
+test('I1: a flaky test only warns until the Delivery Manager confirms it, its area is named and no A3 is opened in 24 h', () => {
+  const root = makeProject();
+  const h = harness({ root, beads: { 'ex-a': story('ex-a'), 'ex-b': story('ex-b'), 'ex-c': story('ex-c') } });
+  const andon = require('./andon.js');
+  const ago = new Date(Date.now() - 25 * 3600e3).toISOString();
+  const rec = andon.main(['flaky', 'search.spec', '--sha', 'c195aa00', '--fail-run', '1', '--pass-run', '2', '--area', 'collection'], { who: { root, roleId: 'builder', instance: 'builder-2' }, now: ago });
+  assert.match(rec.out, /unconfirmed until the Delivery Manager confirms it \(andon\.js flaky confirm search\.spec\)/);
+  const warned = claim(h, 'builder-1', 'ex-a');
+  assert.equal(warned.deny, null, 'a builder\'s record alone never stops an area');
+  assert.match(warned.ctx, /search\.spec is flaky .*its A3 is overdue/);
+  assert.match(h.bash('builder-1', `${h.script('andon.js')} flaky confirm search.spec`).out, /the Delivery Manager's to do/);
+  assert.equal(h.bash('delivery-lead', `${h.script('andon.js')} flaky confirm search.spec`).code, 0);
+  assert.match(claim(h, 'builder-1', 'ex-b').deny, /D3: search\.spec failed then passed on c195aa00, confirmed, and no A3 was opened within 24 h/);
+  h.bash('delivery-lead', `${h.script('a3.js')} new --trigger flaky:search.spec`);
+  assert.equal(claim(h, 'builder-1', 'ex-b').deny, null, 'an A3 opened (late) lifts the stop; the warning stays until it closes');
+  // with no area named, never a product-wide stop
+  andon.main(['flaky', 'all.spec', '--sha', 'c195aa00', '--fail-run', '3', '--pass-run', '4'], { who: { root, ...DM }, now: ago });
+  const c = claim(h, 'builder-2', 'ex-c');
+  assert.equal(c.deny, null);
+  assert.match(c.ctx, /all\.spec is flaky/);
+});
