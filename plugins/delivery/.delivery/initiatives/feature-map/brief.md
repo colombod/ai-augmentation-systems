@@ -1,9 +1,9 @@
-# Product brief: feature map, from shape to blast radius to retirement
+# Product brief: feature map, from what is shipped to blast radius to retirement
 
 > Written by /delivery:brief. Owned by Product Owner and Business Analyst.
-> Status: draft · Last updated: 2026-10-24
+> Status: draft (revision 2, after `reviews/feature-map-brief-01.md`) · Last updated: 2026-10-24
 
-**Mode:** frame · **Word count:** 581 (cap 900, tables excluded, measured with
+**Mode:** frame · **Word count:** 654 (cap 900, tables excluded, measured with
 `grep -v '^|' | wc -w`).
 
 ## Owner's ask
@@ -12,107 +12,108 @@
 
 > "[MJ's skills] help bringing the product taste decision early and help customers managing the product shape and knowing when and how to delete feature is a massive utility"
 
-No operator record exists for either yet (this session ran outside a team).
+> "this is where we need to have the system I was asking to track feature against actual code artefacts and graphs a real view into what is shipped, what is the backing tech or artefacts and how all integrates"
+
+No operator record exists yet (this session ran outside a team). Defaults below that stand in
+for an owner decision are labelled **default**, never presented as decided.
 
 ## Coverage
 
 | Lens | Ran | Found nothing others did? |
 | :-- | :-- | :-- |
-| value (product-owner) | yes, isolated subagent | yes: the invocation-ledger break caused by another plugin (F3) |
-| precision (business-analyst) | yes, isolated subagent | yes: "feature" has no key; FR ids collide (F1); hub files (F9) |
-| absence (feature-critic) | yes, isolated subagent | yes: planners cannot read code (F6); the leak guard (F7); call graphs miss markdown links (F8); verified waves never re-checked (F10) |
+| value (product-owner) | yes, isolated | yes: the ledger break caused by another plugin (F3) |
+| precision (business-analyst) | yes, isolated | yes: no feature key; FR ids collide (F1); hubs (F9) |
+| absence (feature-critic) | yes, isolated | yes: planners cannot read code (F6); leak guard (F7); markdown calls (F8); stale verified waves (F10) |
 
-**Findings by convergence:** 3 found by all three lenses · 4 by two · 4 by one only. Each lens
-found material the others missed: **the space is not exhausted.** F11 came from the owner
-and five source reads (`notes.md`), not from a lens.
+**Findings by convergence:** 3 by all three lenses · 4 by two · 4 by one only; F11 from the owner.
+Each lens found material the others missed: **not exhausted.** The challenge panel
+(`reviews/feature-map-brief-01.md`) and the spike (`research.md`) changed F3, F5 and F8 below.
 
 ## Problem
 
-The plugin plans and gates work per story and per file path. It has no persistent idea of a
-*feature*: what the owner can name, where it lives in code, what else it reaches, and when it
-should go. So reach is discovered after the change, by a break.
+The plugin plans and gates per story and per path. It has no persistent, checked view of what
+is shipped, what backs each shipped thing, and how the pieces reach each other. So reach is
+discovered by a break, and features never leave.
 
-| # | Finding | Lenses | Evidence |
-| :-- | :-- | :-- | :-- |
-| F1 | No feature identity. The glossary has no "feature"; `FR-9` exists in 4 PRDs; 0 of 29 stories set `area:` | 3 | `.delivery/glossary.md`; `grep -l 'FR-9\b' initiatives/*/prd.md`; `grep -l '^area:' stories/*` |
-| F4 | Declared files are never reconciled with what merged. `reviews.js` fetches `pr.files` only to count lines | 3 | `scripts/lib/reviews.js:133-145` |
-| F5 | Declared paths rot: 22 of 54 distinct paths in story tables do not resolve today (some are planned creates) | 3 | `gates.js parseStory` over `.delivery/stories/` |
-| F2 | Overlap is string matching. `agents/chief-of-staff.md` is spelled two ways (10 stories vs 5) and never matched; read-only rows count as touched | 2 | `scripts/lib/waves.js:72-78`; `gates.js:90-100` |
-| F3 | Cross-plugin reach is undeclared. Adding attractor (`6883fee`) silently stopped the invocation ledger for 23 hours until `604d508`; it recurred (`29b0129`) | 2 | `git log` |
-| F7 | Where a map may live is constrained: feature words next to paths are what the leak guard denies in the product repo | 2 | `scripts/lib/plan-graph.js:188-207`; `leak.js` |
-| F12 | This repo is a weak test bed: one repo plays project and product, history squashes several stories per commit | 2 | `89b6597` (40 files, 4 features) |
-| F6 | The roles that need reach before code (PM, DM) have no product checkout; only builders have `touches_code: true` | 1 | `roles/*.md:3`; `scripts/prepare-role.js:61-73` |
-| F8 | A code-to-code graph misses 68 `${CLAUDE_PLUGIN_ROOT}/scripts/...` calls written in skills, roles and hooks | 1 | `grep -c` over `skills roles hooks/hooks.json` |
-| F9 | Hub files (`gates.js`) shared by many features would light up every blast radius without a fan-in rule | 1 | precision lens |
-| F10 | Nothing sends a verified wave back to the Reality Checker when code behind it changes | 1 | `docs/reference.md:697` |
-| F11 | The plugin cannot retire a feature. Personas and assumptions retire in place; features have only `supersedes` | owner | `skills/personas/SKILL.md:52`; `templates/story.md:12-16` |
+| # | Finding | Lenses | Evidence | Smallest fix alone |
+| :-- | :-- | :-- | :-- | :-- |
+| F1 | No feature identity. No glossary entry; `FR-9` in 4 PRDs; `area` groups waves but 0 of 29 story files set it | 3 | `.delivery/glossary.md`; `gates.js:219` | none: needs a definition |
+| F4 | Declared files never reconciled with merged files; `pr.files` used only for line counts | 3 | `reviews.js:133-145` | ~10 lines in `reviews.js` |
+| F5 | Story path tables rot: of 22 unresolved paths in 54, ~3 are prose rows, ~11 planned creates, ~8 real rot | 3 | `gates.js parseStory` over `.delivery/stories/` | none: seed from history instead |
+| F2 | Overlap is string matching: `agents/chief-of-staff.md` spelled two ways (10 vs 5 stories) never matches | 2 | `waves.js:72-78` | path normalisation in `norm` |
+| F3 | Undeclared reach breaks silently. `6883fee` (2026-08-06 18:02) created `plugins/attractor/.delivery/`; the ledger stopped until `604d508` (08-07 17:11, 23 h). It is **runtime reach**: `record-invocation.js` searched for directories named `.delivery` | 2 | `git log`; `604d508` body | none: no code edge exists |
+| F7 | Feature words beside paths are what the leak guard denies in the product repo | 2 | `plan-graph.js:188-207` | n/a: a constraint |
+| F12 | This repo is a weak test bed: one repo plays both roles; commits carry several stories | 2 | `89b6597` | n/a |
+| F6 | Only builders have a product checkout | 1 | `roles/*.md:3` | n/a: a constraint |
+| F8 | 100 `${CLAUDE_PLUGIN_ROOT}/scripts/` calls on 68 lines of markdown and JSON; a code-only graph sees none | 1 | `grep -o` over `skills roles hooks/hooks.json` | none |
+| F9 | Hubs: 20 backing files are reached by 20+ of 71 shipped entry points | 1 | `research.md` spike | none |
+| F10 | Nothing flags code changing behind a verified wave (absence; no line describes it) | 1 | `scripts/lib/waves.js` (no such check) | none |
+| F11 | Features cannot be retired; personas and assumptions retire in place | owner | `skills/personas/SKILL.md:52` | none |
+
+The two smallest fixes (F2, F4) are worth shipping regardless; they do not deliver the view,
+the runtime reach or retirement, which is what justifies the map.
 
 ## Who has it
 
-The **operator** running one or more delivery initiatives on a product with several areas, and
-the **Product Manager** and **Delivery Manager** sessions who shape and order work for them.
-Count unknown beyond this repository's own operator.
+The **operator**, and the **Product Manager** and **Delivery Manager** (`roles/product-manager.md`,
+`agents/delivery-lead.md`) who shape and order work for them, on a product with several areas.
+Count beyond this repository's operator: unknown.
 
 ## Cost of the status quo
 
-- Silent breaks across plugins: two in this repo, 23 hours and roughly 13 days to detect.
-- Four chief-of-staff spike trials re-run after the ledger gap (`604d508` body).
-- Parallel builders on the same file go unwarned when paths are spelled differently.
-- Features accrete: with no retirement path, nothing tells the owner a feature has stopped earning its place.
-
-Workaround today: hand-written file tables and memory.
+- Silent breaks across plugins: 23 h (`6883fee` to `604d508`), and 13 to 17 days for the
+  ambiguous-cwd gap (calls lost 08-10 to 08-14, fixed `29b0129` on 08-27).
+- Four chief-of-staff spike trials re-run (`604d508` body).
+- A shipped defect nobody saw: claim-guard's MCP server bundle is not in git (`research.md`).
+- Features accrete with no signal that one has stopped earning its place.
 
 ## What changes if we solve it
 
-Before code, the owner and planners see, for one named feature: the code it lives in, the other
-features and customer surfaces that code reaches, the stories in flight there, and the verified
-waves at risk, each tagged by how it was found (declared, merged, call graph). Shape and
-removal become decisions made early, with the owner's words on record, and a retired feature
-leaves a checklist instead of a guess.
+Anyone can ask, before code: what is shipped, what backs it, what it reaches, and what a
+change or a removal would touch, each answer tagged by how it was found and what it cannot see.
 
 ## Success signals
 
 | Signal | How measured | Current | Target |
 | :-- | :-- | :-- | :-- |
-| Undeclared reach caught before merge | fix commits whose cause sits in another feature | 2 found after the fact | caught at plan or merge gate |
-| Detection latency | breaking commit to fix | 23 h; ~13 days | same day |
-| Collision recall | same-file declarations flagged by the overlap check | spelling pairs missed | all flagged |
-| Map freshness | declared anchors that resolve at HEAD | 32 of 54 | all resolve or are marked stale |
-| Declared vs merged | undeclared files per story-PR | not measured | reported on every merge |
-| Retirement | features retired with a record and a clean blast radius | impossible today | first one done |
+| Reach seen before code | stories whose `impact` output is recorded at the ready gate | 0 | every story claimed in a wave |
+| Prediction holds | files merged outside the story's predicted reach, per story PR | not measured | falls over the first 10 story PRs |
+| Replayed breaks caught | known breaks replayed against the map at their parent commit | 1 of 1 (`6883fee`, spike) | every new incident replayed, caught or the gap named |
+| Noise | features reached per commit, hubs excluded | p90 7 with hubs | p90 3 or fewer |
+| Shipped truth | references from manifests, hooks and prose to files absent from git | 1 found | 0 on main |
+| Retirement candidates | candidates raised per realign with usage evidence and window | impossible | raised, or "instrument first" stated |
 
 ## MVP boundary
 
-1. A feature register keyed `<initiative>/<feature-id>`, each feature with code anchors
-   (path, optional symbol), relation (changes, reads, tests), source and last-confirmed commit.
-2. Seeded from story tables, reconciled on every merged story PR, stale anchors marked, never dropped.
-3. `impact <feature|story>`: other features, surfaces, in-flight stories and verified waves
-   reached, at file level, stating its level. A call graph (Trail-Code) is an optional depth.
-4. A retire path: a feature marked retired in place with an owner record, its exclusive anchors
-   as the deletion checklist.
+1. **What is shipped:** a view of every shipped entry point per plugin (skills, roles, hooks,
+   CLIs, MCP servers), the files backing each, and typed edges between them, built from git.
+2. **Feature register:** named features (project-wide id) grouping entry points, each tied to
+   one `area`; written only by one script; anchors confirmed against a commit, stale ones marked.
+3. **`impact`:** for a story, feature or commit, the features, areas and verified waves reached,
+   including runtime reach, hubs reported separately, blind spots stated.
+4. **Ready-gate warning** when a story's predicted reach crosses another area or a verified wave.
+5. **Retire path:** a feature retired in place, citing an operator record scoped
+   irreversible; exclusive anchors only after a reference check at HEAD; staged.
 
 ## Explicitly out of scope
 
-- Building our own call-graph parser.
-- Making Trail-Code, Decisioncraft or Amplifier required.
-- Scoring features numerically or ranking them by a combined score.
-- Deleting code automatically.
-- Changing the attractor-handoff plan (a separate initiative).
+- Our own language parser; Trail-Code, Decisioncraft or Amplifier as requirements.
+- Combined scores; automatic code deletion.
+- MJ-skill doctrine (storyboard, usefulness card, leftover-stone test): a separate initiative.
+- The attractor-handoff plan (separate; spike 01 is draft PR #61).
 
 ## Current-state workflow
 
-The PM writes architecture "Codebase context" by hand; the DM writes each story's "Files and
-modules" table; `waves.js` warns on exact path matches at claim time; a builder discovers reach
-while editing; a break is found by whoever next looks.
+The Product Manager writes "Codebase context" by hand; the Delivery Manager writes each story's
+"Files and modules"; `waves.js` warns on exact path matches; a builder discovers reach while
+editing; a break is found by whoever next looks.
 
 ## Open questions
 
-| # | Question | Owner | Blocks |
-| :-- | :-- | :-- | :-- |
-| 1 | What is a feature to you: one requirement, a product area, or a capability you name (for example "the invocation ledger")? | operator | register key |
-| 2 | Who looks at blast radius, and when: you approving a story, the PM in architecture, or a builder claiming one? | operator | where `impact` runs |
-| 3 | Is a missed feature worse than a false alarm? | operator | file vs call-graph depth |
-| 4 | May feature names appear in the product repo, even in an ignored cache? | operator | where the map lives (F7) |
-| 5 | Should a change behind a verified wave send it back to the Reality Checker automatically? | operator | F10 |
-| 6 | Is a file-level map worth shipping if Trail-Code cannot be installed here? | operator | MVP depth |
-| 7 | Which project should prove the two-repo case, since this repo merges both? | operator | test bed (F12) |
+| # | Question | Owner | Blocks | Default until answered |
+| :-- | :-- | :-- | :-- | :-- |
+| 1 | Is a feature a capability you name ("the invocation ledger"), grouped under a product area, or is the area itself the feature? | operator | register key | a named capability inside one area |
+| 2 | When a story's reach crosses another area, should the ready gate warn or refuse? | operator | gate behaviour | warn |
+| 3 | Should a change behind a verified wave send it back to the Reality Checker? | operator | F10 | warn and name the wave |
+| 4 | Which product repo should prove the two-repo case? | operator | test bed (F12) | none |
+| 5 | Which logs show a product feature is used, for retirement? | operator | retire evidence | instrument first |
