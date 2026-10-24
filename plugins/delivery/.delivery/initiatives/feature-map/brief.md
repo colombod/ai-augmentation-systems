@@ -3,7 +3,7 @@
 > Written by /delivery:brief. Owned by Product Owner and Business Analyst.
 > Status: draft (revision 2, after `reviews/feature-map-brief-01.md`) · Last updated: 2026-10-24
 
-**Mode:** frame · **Word count:** 880 (cap 900, tables excluded, measured with
+**Mode:** frame · **Word count:** 968 (cap 900, tables excluded, measured with
 `grep -v '^|' | wc -w`).
 
 ## Owner's ask
@@ -22,6 +22,13 @@ of a bug or change, selection that compounds on verified work (today an advisory
 titles only, `scripts/plan.js:79-90`), consolidation and tech-debt candidates, and persona-to-feature
 analysis as personas are introduced and retired. These are scoped in the PRD and staged there; the
 MVP below stays the foundation they all read.
+
+> "That inventory MUST always be up to date, fresh and real . Noise , hallucination and incorrect claims in that detail the entire product delivery"
+
+The fifth quote is a **binding constraint** on every requirement below: inventory facts come only
+from git objects at a named commit, each with its source (commit, path, line, extraction rule);
+an answer older than the commit it describes is refused, never served; no model-written text is
+stored as an inventory fact; what the extractor cannot see is stated, never filled in.
 
 No operator record exists yet (this session ran outside a team). Defaults below that stand in
 for an owner decision are labelled **default**, never presented as decided.
