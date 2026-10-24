@@ -180,6 +180,69 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
 
 const SETUP_DOC = 'docs/quickstart.md, "Setting up beads"';
 
+// Dolt names git remotes with a git+ prefix; the project repo's origin is the sync remote (beads
+// stores issue history there under refs/dolt/data), so no server and no database password exist.
+function doltUrlOf(url) {
+  if (/^git\+/.test(url)) return url;
+  if (/^(https?|ssh|file):\/\//.test(url)) return `git+${url}`;
+  const scp = /^([^@\s]+@)?([^:\s/]+):(.+)$/.exec(url);
+  if (scp) return `git+ssh://${scp[1] || ''}${scp[2]}/${scp[3]}`;
+  if (path.isAbsolute(url)) return `git+file://${url}`;
+  return null;
+}
+
+// Beads for any project, on any machine, with nothing for the customer to run by hand:
+//   no .beads              -> bd init (bd wires the project's origin as the sync remote), publish
+//   .beads, no database    -> bd bootstrap: a second machine's fresh clone carries .beads/config.yaml
+//                             but never the database, and bd init there would fork the history
+//   database, no remote    -> add the project's origin as the sync remote, publish
+//   database and remote    -> nothing
+// A failed publish is reported with its fix and does not stop the scaffold: the database works
+// locally, and the --check "beads sync" row keeps saying what is missing.
+function setUpBeads({ projectRoot, prefix, env, dryRun, w, say }) {
+  const bd = (args, timeout = 120000) => run('bd', args, { cwd: projectRoot, env, timeout });
+  const hasBeads = fs.existsSync(path.join(projectRoot, '.beads'));
+  const hasDb = hasBeads && bd(['stats'], 30000).ok;
+  // the project repo already holds the team's issues even when this clone has no .beads yet
+  // (another machine published them before pushing its commit): fetch them, never init a second history
+  const published = !hasDb && run('git', ['ls-remote', 'origin', 'refs/dolt/data'], { cwd: projectRoot, env, timeout: 30000 }).out.trim() !== '';
+  if (!hasBeads && !published) {
+    say(`  beads: ${w}run bd init --prefix ${prefix}`);
+    if (dryRun) return;
+    const b = bd(['init', '--prefix', prefix, '--non-interactive', '-q']);
+    if (!b.ok) { say(`  beads: bd init failed: ${(b.err || b.out).slice(0, 300)}`); return; }
+  } else if (!hasDb) {
+    say(`  beads: ${hasBeads ? '.beads is here but this machine has no database (a fresh clone)' : 'the project repo already holds the team\'s issues'}; ${w}run bd bootstrap to fetch them from the project repo`);
+    if (dryRun) return;
+    const b = bd(['bootstrap', '--yes']);
+    if (!b.ok) { say(`  beads: bd bootstrap failed: ${(b.err || b.out).slice(0, 300)}. Fix: ${SETUP_DOC}`); return; }
+    if (!bd(['stats'], 30000).ok) { say(`  beads: bd bootstrap ran but there is still no database. Fix: ${SETUP_DOC}`); return; }
+    say('  beads: database fetched from the project repo');
+    return;
+  } else {
+    say('  beads: database present');
+  }
+  const remotes = bd(['dolt', 'remote', 'list', '--json'], 30000);
+  let list = [];
+  try { list = remotes.ok ? JSON.parse(remotes.out || '[]') : []; } catch (e) { list = []; }
+  if (!list.length) {
+    const origin = run('git', ['remote', 'get-url', 'origin'], { cwd: projectRoot, env });
+    const url = origin.ok && doltUrlOf(origin.out);
+    if (!url) { say(`  beads: no sync remote, and the project repo has no origin to sync through: its issues stay on this machine. Fix: add a private remote, then run start.js again (${SETUP_DOC})`); return; }
+    say(`  beads: ${w}set the sync remote to the project repo (${url})`);
+    if (dryRun) return;
+    const a = bd(['dolt', 'remote', 'add', 'origin', url], 30000);
+    if (!a.ok) { say(`  beads: could not set the sync remote: ${(a.err || a.out).slice(0, 300)}. Fix: ${SETUP_DOC}`); return; }
+  } else if (hasDb) {
+    return;
+  }
+  if (dryRun) { say(`  beads: ${w}publish the issues to the project repo (bd dolt push)`); return; }
+  const p = bd(['dolt', 'push']);
+  say(p.ok
+    ? '  beads: issues published to the project repo; other machines get them from a clone with `bd bootstrap` (start.js does it)'
+    : `  beads: publish failed: ${(p.err || p.out).slice(0, 300)}. The database works here; run \`bd dolt push\` in ${projectRoot} once the project repo accepts pushes`);
+}
+
 // Smart App Control state from the registry value Windows keeps it in: 0 off, 1 on (enforcing),
 // 2 evaluation. Read with reg.exe so no PowerShell module is needed; anything unreadable is unknown.
 function smartAppControl(env) {
@@ -400,16 +463,13 @@ function scaffold(opts) {
   }
 
   // 5. beads, before prepare-role so it writes BEADS_DIR into each role's settings
-  if (fs.existsSync(path.join(projectRoot, '.beads'))) {
-    say('  beads: .beads exists; bd init skipped');
-  } else if (!run('bd', ['version'], { env }).ok) {
-    say(`  beads: skipped: bd is not on PATH. Install it, run \`bd init --prefix ${team.prefix}\` in ${projectRoot}, then run start.js again: it re-prepares the roles so each gets BEADS_DIR`);
+  if (!run('bd', ['version'], { env }).ok) {
+    say(`  beads: skipped: bd is not on PATH. Install it (${SETUP_DOC}), then run start.js again: it sets up beads and re-prepares the roles so each gets BEADS_DIR`);
   } else {
-    say(`  beads: ${w}run bd init --prefix ${team.prefix}`);
-    if (!dryRun) {
-      const b = run('bd', ['init', '--prefix', team.prefix, '--non-interactive', '-q'], { cwd: projectRoot, env, timeout: 120000 });
-      if (!b.ok) say(`  beads: bd init failed: ${(b.err || b.out).slice(0, 300)}`);
-    }
+    setUpBeads({ projectRoot, prefix: team.prefix, env, dryRun, w, say });
+  }
+  if (productCheckout && fs.existsSync(path.join(productCheckout, '.beads'))) {
+    say(`  beads: the product repo has its own beads workspace (${path.join(productCheckout, '.beads')}); it is not imported and nothing waits on it. The team's work items live in ${projectRoot}`);
   }
 
   // 6. one prepared directory per instance; an already prepared one is left as it is
@@ -507,4 +567,4 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };
+module.exports = { doltUrlOf, githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };

@@ -39,14 +39,28 @@ All hard prerequisites are met.
 
 beads keeps the team's work items in a database inside the project repo (`.beads/`). Every
 machine that runs role sessions has its own copy; machines share it through the project repo's
-own git remote, so there is no database server to run and no database password. `start.js
---check` reports each of the cases below with its fix.
+own git remote, so there is no database server to run and no database password.
 
-**One machine.** `bd init --prefix <prefix>` in `<project-root>` (step 2 below). Then add a sync
-remote anyway: until you do, the issues exist on that disk only.
+**`start.js` does this on every machine; you run nothing by hand.** On each run it:
 
-**Several machines, or cloud sessions.** The project repo must be **private**: syncing writes the
-issue history into it, under `refs/dolt/data` and a branch named `__dolt_remote_info__`.
+- creates the database when the project has none (`bd init`), sets the project repo's `origin`
+  as the sync remote, and publishes the issues (`bd dolt push`);
+- on a fresh clone, where `.beads/` came with the repo but the database did not, or where the
+  project repo already holds the issues, fetches them (`bd bootstrap`) and never runs `bd init`,
+  which would start a second, separate history;
+- connects an existing database that has no sync remote to the project repo, and publishes it;
+- leaves a database that is already connected alone;
+- notes a product repo that has its own beads workspace, without importing it: the team's work
+  items live in the project repo, and nothing waits on the product's old tracker.
+
+A failed publish is reported with its fix and does not stop the run. `start.js --check` reports
+the same state (`beads sync`).
+
+The project repo must be **private**: syncing writes the issue history into it, under
+`refs/dolt/data` and a branch named `__dolt_remote_info__`. Once a machine is set up, sessions
+run `bd dolt pull` before work and `bd dolt push` after.
+
+**By hand**, when you are not using `start.js`:
 
 1. On the machine that has the database: `bd dolt remote list`. A repo that already had an
    `origin` when `bd init` ran is wired already. Otherwise:
@@ -61,9 +75,9 @@ push is refused, and its pull stops on a conflict that needs a person. A claim m
 `bd dolt pull` is refused when someone holds it. Until the plugin's own claim step pulls and
 pushes around the claim, keep the sessions that claim work on one machine, or pull first.
 
-**An existing database with no sync remote** (`[warn] beads sync: no sync remote`): run steps 1
-and 2 on the machine that holds it, after `bd export -o .beads/issues.pre-remote.jsonl` as an
-audit copy. Do not `bd init` again over it.
+**An existing database with no sync remote** (`[warn] beads sync: no sync remote`): `start.js`
+connects and publishes it; by hand, run steps 1 and 2 on the machine that holds it, after
+`bd export -o .beads/issues.pre-remote.jsonl` as an audit copy. Do not `bd init` again over it.
 
 **Windows.** The released `bd.exe` is not code-signed, and Windows 11's Smart App Control blocks
 unsigned programs, a local build included, with no per-program exception. `start.js --check`
@@ -107,6 +121,7 @@ delivery start: <project-root>
   product repo: using the checkout at <product-checkout>
   manifest: committed (6380dab)
   beads: run bd init --prefix acme
+  beads: no sync remote, and the project repo has no origin to sync through: its issues stay on this machine. Fix: add a private remote, then run start.js again (docs/quickstart.md, "Setting up beads")
   roles (in <team-dir>):
     chief-of-staff: prepared (opus)
     product-manager: prepared (opus)
@@ -126,7 +141,7 @@ Then:
   3. /delivery:team shows who is live; ask the Chief of Staff for the question ledger to see every decision.
 ```
 
-The dry run prints the same plan with "would" in front of each write, and writes nothing. Running it again is safe: an existing manifest is kept as it is (and `--preset`, `--models`, `--host`, `--prefix` and `--runner` are not applied to it; if it is uncommitted, for example after a refused run, just those two files are committed), `bd init` runs only when `.beads` is absent, and only roles without a prepared directory are prepared (plus, once `.beads` exists, any prepared role still missing `BEADS_DIR`, which is re-prepared):
+The dry run prints the same plan with "would" in front of each write, and writes nothing. Running it again is safe: an existing manifest is kept as it is (and `--preset`, `--models`, `--host`, `--prefix` and `--runner` are not applied to it; if it is uncommitted, for example after a refused run, just those two files are committed), beads is set up as [Setting up beads](#setting-up-beads) describes (an existing database is never re-created), and only roles without a prepared directory are prepared (plus, once `.beads` exists, any prepared role still missing `BEADS_DIR`, which is re-prepared):
 
 ```
 delivery start: <project-root>
@@ -134,7 +149,8 @@ delivery start: <project-root>
   manifest: keeping the existing .delivery/team/team.json and .delivery/team/hosts.json (project "acme", 4 instance(s)); --preset, --models, --host, --prefix and --runner are not applied to it
   manifest: valid
   product repo: none given; a builder prepared in this run gets no product worktree (pass --product-repo <path|url>)
-  beads: .beads exists; bd init skipped
+  beads: database present
+  beads: no sync remote, and the project repo has no origin to sync through: its issues stay on this machine. Fix: add a private remote, then run start.js again (docs/quickstart.md, "Setting up beads")
   roles (in <team-dir>):
     chief-of-staff: already prepared
     product-manager: already prepared
@@ -142,7 +158,7 @@ delivery start: <project-root>
     builder: already prepared
 ```
 
-When `bd` is missing, `start.js` still prepares the roles and says how to finish: install `bd`, run `bd init --prefix <prefix>` in `<project-root>`, then run `start.js` again: it re-prepares each role that lacks `BEADS_DIR`. The steps below are what `start.js` does, for doing them by hand.
+When `bd` is missing, `start.js` still prepares the roles and says how to finish: install `bd` ([Setting up beads](#setting-up-beads)), then run `start.js` again: it sets up beads and re-prepares each role that lacks `BEADS_DIR`. The steps below are what `start.js` does, for doing them by hand.
 
 ## 1. Write the team manifest
 
@@ -188,7 +204,7 @@ Commit the manifest. The hooks read it from this checkout, so keep it pulled (`g
 
 ## 2. Create the beads database
 
-In `<project-root>`, run `bd init --prefix acme` with the same prefix as `team.json`. Do this before step 3: `prepare-role` sets `BEADS_DIR` for a role only when `<project-root>/.beads` already exists, and `bd` cannot find the database from a role directory without it.
+`start.js` does this ([Setting up beads](#setting-up-beads)). By hand: in `<project-root>`, run `bd init --prefix acme` with the same prefix as `team.json` on the first machine, and `bd bootstrap` on every other one. Do this before step 3: `prepare-role` sets `BEADS_DIR` for a role only when `<project-root>/.beads` already exists, and `bd` cannot find the database from a role directory without it.
 
 ## 3. Prepare one directory per role
 

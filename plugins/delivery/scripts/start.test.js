@@ -149,7 +149,7 @@ test('a second run changes nothing; it prepares only a missing role', () => {
   const again = start(['--project', project, '--host', 'other', '--preset', 'full']);
   assert.equal(again.status, 0, again.out);
   assert.match(again.out, /keeping the existing/);
-  assert.match(again.out, /bd init skipped/);
+  assert.match(again.out, /beads: database present/);
   assert.equal((again.out.match(/already prepared/g) || []).length, 4);
   assert.equal(fs.readFileSync(path.join(project, '.delivery/team/team.json'), 'utf8'), before);
   fs.rmSync(path.join(base, 'acme-team', 'delivery-lead'), { recursive: true, force: true });
@@ -188,7 +188,7 @@ test('without bd the scaffold still prepares the roles and says how to finish', 
   const project = path.join(base, 'acme');
   const r = start(['--project', project, '--host', 'laptop'], { path: bin({ bd: false }) });
   assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /beads: skipped: bd is not on PATH\. Install it, run `bd init --prefix acme`/);
+  assert.match(r.out, /beads: skipped: bd is not on PATH\. Install it \(docs\/quickstart\.md, "Setting up beads"\), then run start\.js again/);
   assert.ok(!fs.existsSync(path.join(project, '.beads')));
   const settings = readJson(path.join(base, 'acme-team', 'builder', '.claude', 'settings.local.json'));
   assert.equal(settings.env.BEADS_DIR, undefined);
@@ -259,7 +259,7 @@ test('final I3: after bd is installed and .beads exists, a re-run re-prepares th
   const project = path.join(mk('start-i3-'), 'acme');
   const first = start(['--project', project, '--host', 'laptop'], { path: bin({ bd: false }) });
   assert.equal(first.status, 0, first.out);
-  assert.match(first.out, /then run start\.js again: it re-prepares the roles/);
+  assert.match(first.out, /then run start\.js again: it sets up beads and re-prepares the roles/);
   const teamDir = path.join(path.dirname(project), 'acme-team');
   const envOf = (i) => readJson(path.join(teamDir, i, '.claude', 'settings.local.json')).env;
   assert.equal(envOf('chief-of-staff').BEADS_DIR, undefined);
@@ -359,4 +359,112 @@ test('--check: a beads sync remote passes; an unreadable answer is unknown; no .
   assert.match(syncLine(start(['--check', '--project', beadsProject()], { env: { BD_FAKE_DOLT_REMOTES: 'fail' } }).out),
     /^\[\?\?\?\?\] beads sync: `bd dolt remote list --json` could not be read: fake-bd: dolt remote list failed/);
   assert.equal(syncLine(start(['--check', '--project', productRepo()]).out), '');
+});
+
+// ---- beads set up by start.js for any project, on any machine ----
+
+const { doltUrlOf } = require('./start.js');
+const fakeCfg = (root) => { const f = path.join(root, '.beads', 'fake-config.json'); return fs.existsSync(f) ? readJson(f) : null; };
+function projectWithOrigin() {
+  const root = productRepo();
+  const bare = mk('start-origin-');
+  cp.execFileSync(GIT, ['init', '-q', '--bare', bare]);
+  cp.execFileSync(GIT, ['remote', 'add', 'origin', bare], { cwd: root });
+  return { root, bare };
+}
+const scaffold = (root, opts = {}) => start(['--project', root, '--host', 'laptop'], opts);
+
+test('doltUrlOf: https, scp-style ssh, ssh, absolute paths and git+ URLs; anything else is null', () => {
+  assert.equal(doltUrlOf('https://github.com/acme/plan.git'), 'git+https://github.com/acme/plan.git');
+  assert.equal(doltUrlOf('git@github.com:acme/plan.git'), 'git+ssh://git@github.com/acme/plan.git');
+  assert.equal(doltUrlOf('ssh://git@gitea.local:2222/acme/plan.git'), 'git+ssh://git@gitea.local:2222/acme/plan.git');
+  assert.equal(doltUrlOf('/srv/git/plan.git'), 'git+file:///srv/git/plan.git');
+  assert.equal(doltUrlOf('git+https://x.test/a.git'), 'git+https://x.test/a.git');
+  assert.equal(doltUrlOf('relative/dir'), null);
+});
+
+test('start: a new project with an origin gets beads, the origin as sync remote, and a publish', () => {
+  const { root, bare } = projectWithOrigin();
+  const r = scaffold(root);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: run bd init --prefix /);
+  assert.match(r.out, new RegExp(`beads: set the sync remote to the project repo \\(git\\+file://${bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`));
+  assert.match(r.out, /beads: issues published to the project repo/);
+  const cfg = fakeCfg(root);
+  assert.deepEqual(cfg.remotes.map((x) => x.url), [`git+file://${bare}`]);
+  assert.equal(cfg.pushes, 1);
+});
+
+test('start: a new project with no origin keeps beads local and says so; nothing is pushed', () => {
+  const root = productRepo();
+  const r = scaffold(root);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: no sync remote, and the project repo has no origin to sync through: its issues stay on this machine/);
+  assert.equal(fakeCfg(root).pushes, undefined);
+});
+
+test('start: a fresh clone (.beads without a database) is bootstrapped, never re-initialised', () => {
+  const root = productRepo();
+  fs.mkdirSync(path.join(root, '.beads'));
+  fs.writeFileSync(path.join(root, '.beads', 'config.yaml'), 'sync.remote: "x"\n');
+  const r = scaffold(root);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: \.beads is here but this machine has no database \(a fresh clone\); run bd bootstrap to fetch them/);
+  assert.match(r.out, /beads: database fetched from the project repo/);
+  assert.doesNotMatch(r.out, /bd init/);
+  assert.equal(fakeCfg(root).bootstrapped, true);
+  assert.equal(readJson(path.join(path.dirname(root), `${path.basename(root).toLowerCase()}-team`, 'builder', '.claude', 'settings.local.json')).env.BEADS_DIR, path.join(root, '.beads'));
+});
+
+test('start: a bootstrap that fails is reported with the fix and does not stop the scaffold', () => {
+  const root = productRepo();
+  fs.mkdirSync(path.join(root, '.beads'));
+  const r = scaffold(root, { env: { BD_FAKE_BOOTSTRAP: 'fail' } });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: bd bootstrap failed: fake-bd: nothing to bootstrap from\. Fix: docs\/quickstart\.md/);
+  assert.equal(fakeCfg(root), null);
+});
+
+test('start: an existing database with no remote is connected and published; one with a remote is left alone', () => {
+  const { root, bare } = projectWithOrigin();
+  fs.mkdirSync(path.join(root, '.beads'));
+  fs.writeFileSync(path.join(root, '.beads', 'fake-config.json'), JSON.stringify({ prefix: 'acme' }));
+  const r = scaffold(root);
+  assert.match(r.out, /beads: database present/);
+  assert.match(r.out, /beads: issues published to the project repo/);
+  assert.equal(fakeCfg(root).pushes, 1);
+  assert.equal(fakeCfg(root).remotes[0].url, `git+file://${bare}`);
+  const again = scaffold(root);
+  assert.doesNotMatch(again.out, /set the sync remote|published/);
+  assert.equal(fakeCfg(root).pushes, 1);
+});
+
+test('start: a refused publish is reported; the scaffold still completes', () => {
+  const { root } = projectWithOrigin();
+  const r = scaffold(root, { env: { BD_FAKE_PUSH: 'fail' } });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: publish failed: fake-bd: push refused\. The database works here; run `bd dolt push`/);
+});
+
+test('start: a product repo with its own beads is noted as not imported; one without is not mentioned', () => {
+  const project = productRepo();
+  const product = productRepo();
+  fs.mkdirSync(path.join(product, '.beads'));
+  const r = start(['--project', project, '--host', 'laptop', '--product-repo', product]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: the product repo has its own beads workspace .*; it is not imported and nothing waits on it/);
+  const plain = start(['--project', productRepo(), '--host', 'laptop', '--product-repo', productRepo()]);
+  assert.doesNotMatch(plain.out, /its own beads workspace/);
+});
+
+test('start: a clone without .beads whose project repo already holds issues is bootstrapped, not initialised', () => {
+  const { root, bare } = projectWithOrigin();
+  const sha = cp.execFileSync(GIT, ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  cp.execFileSync(GIT, ['push', '-q', 'origin', 'HEAD:main'], { cwd: root });
+  cp.execFileSync(GIT, ['update-ref', 'refs/dolt/data', sha], { cwd: bare });
+  const r = scaffold(root);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: the project repo already holds the team's issues; run bd bootstrap to fetch them/);
+  assert.doesNotMatch(r.out, /bd init/);
+  assert.equal(fakeCfg(root).bootstrapped, true);
 });
