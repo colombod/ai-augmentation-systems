@@ -2,13 +2,13 @@
 
 ## Start here
 
-delivery gives you a team of Claude Code sessions, one per role, that plan and ship a product while you talk mainly to one of them, the **Chief of Staff** (and to the Product Manager about product vision). You decide once: your exact words are recorded with proof that every session can check, so nobody asks you to repeat or pass anything on. Without a team, the same plugin is a planning pipeline that turns your intent into a brief, a PRD, an architecture, a roadmap and stories.
+delivery gives you a team of Claude Code sessions, one per role, that plan and ship a product while you talk mainly to one of them, the **Chief of Staff** (and to the Product Manager about product vision). You decide once: your exact words are recorded with proof that every session can check, so nobody asks you to repeat or pass anything on. **You are never the messenger.** Sessions carry every message, file and result between themselves; when one cannot reach another, it commits the result to the project repo and the other reads it there. You are asked only for what no agent can do (a sign-in, a consent, a payment, a secret, a product decision), once, through the Chief of Staff. Every role's brief carries this as team rule 0, and every role's Stop hook blocks a turn that asks you to relay something. Without a team, the same plugin is a planning pipeline that turns your intent into a brief, a PRD, an architecture, a roadmap and stories.
 
 ### Prerequisites
 
-- Claude Code v2.1.224 or later, on macOS or Linux (the sessions message each other).
+- Claude Code v2.1.224 or later, on macOS or Linux; on Windows, inside WSL2 (the sessions message each other).
 - Node 18 or later, and git.
-- beads: `bd` on the PATH. **Beads** are the team's work items.
+- beads: `bd` on the PATH. **Beads** are the team's work items; `/delivery:start` sets them up on every machine, synced through the project repo ([Setting up beads](docs/quickstart.md#setting-up-beads)).
 - A private **project repo** (the plan, the team manifest, your decisions) and, for an existing product, its **product repo** (code only).
 - This plugin installed: `/plugin install delivery@ai-augmentation-systems`.
 
