@@ -5,13 +5,15 @@
 > Depends on: `initiatives/feature-map/` (the inventory, held to its freshness constraint)
 
 **Mode:** frame (a new capability; the Vault is the grounding example and future test bed) ·
-**Word count:** 756 (cap 900, tables excluded, `grep -v '^|' | wc -w`).
+**Word count:** 906 (cap 900; declared overrun: the owner's three statements are kept verbatim, 240 words; without them 666), tables excluded.
 
 ## Owner's ask
 
 > "A feature I need you to shape is how to onboard brown field projects onto delivery plugin customer will need that to work on products and make sure the delivery plugin can handle products that spans many components and repo. How to decide when an unbrella space is needed to model the product and work progress while working on each individual parts . The example I want to use later to work on is the vault project which is not performing well as delivery and this plugin will help me manage that product"
 
 > "Check my private repo there is a private repo https://github.com/colombod-personal/the-vault-planning that might be the right umbrella ?"
+
+> "For question 1 yes I confirm the umbrella for both repos, the vault ai agents should be coming now from the delivery plush in but since there are special thing to this system ther should be the “bespoke” infra manager” for the vault, remember that to simplify and focus work the delivery plugin should have the handful of subagents definiton that live in the product repos (or the umbrella ? That is usually private and might be a better place) to handle the specific of the product requirements in infra security and scalability for example"
 
 No operator record exists; defaults are labelled **default**.
 
@@ -44,6 +46,7 @@ with history, a tracker, CI, users, plan text already public, and several compon
 | B8 | "Deployed" is one sha per surface; the Vault ships a site, an MCP remote and assistant plugins by separate paths, and installed plugins depend on the MCP tool contract | 1 | `docs/reference.md:344-362`; the-vault `plugins/the-vault/.mcp.json`, `server.json` |
 | B9 | Surfaces are declared per initiative; the Vault's surfaces are product-wide | 1 | `scripts/lib/surface.js:13` |
 | B10 | Onboarding cannot be undone: nothing restores an in-repo process or exports beads and decisions back | 1 | absence |
+| B11 | No slot for a product's own agents: role sessions get the plugin's reviewer agents only; a product's infra, security or scalability specialists have nowhere to live (the Vault has an Infra Manager role the plugin lacks) | owner | `scripts/prepare-role.js`; the-vault `AGENTS.md:267`; trial in `the-vault-planning` (G9) |
 
 The plugin was extracted from the Vault's own practice (`.superpowers/specs/2026-10-12-shipping-team-design.md:40`,
 "The Vault is not migrated as part of this work"). Onboarding recovers what was already built.
@@ -105,6 +108,10 @@ cross-component bead or PR, or a per-component setup sees a forced co-release.
    invariants (prepush passes, tests and deploy green, `bd ready` unchanged, site up).
 5. Rollback: a tagged snapshot of in-repo rules and a beads export, revert tested on a clone;
    owner decisions already made in prose ratified once as operator records.
+6. Bespoke agents: a handful (default at most 5) of product-specific agent definitions in the
+   project repo's `.delivery/agents/`, each naming its area (infra, security, scalability) and
+   the gate or role that calls it; `prepare-role` installs them into every role session; each
+   cites the product files it was written from, so a stale one is detectable.
 
 **Release 2, gated on the verdict:** several components in one team, or several teams under one
 umbrella briefing (open question 2); per-component and whole-product progress.
@@ -124,9 +131,10 @@ server; the plugin sits unused beside it.
 
 | # | Question | Owner | Blocks | Default |
 | :-- | :-- | :-- | :-- | :-- |
-| 1 | Is `mtg-toolkits` work on the Vault's board, or a library you only bump? | operator | criterion (b) | only bumped |
+| 1 | ~~Is `mtg-toolkits` work on the Vault's board?~~ **Answered 2026-10-24:** umbrella confirmed for both repos | operator | criterion (b) | answered |
 | 2 | One team across the components, or one team per component under one briefing? | operator | release 2 | decided by the release 1 verdict |
-| 3 | `the-vault-planning` is private and empty (GitHub API: "Git Repository is empty", 0 branches): use it as the umbrella project repo? | operator | release 1 setup | yes |
+| 3 | ~~Use `the-vault-planning` as the umbrella?~~ **Answered:** the owner allowed it for this experiment; it now holds the scaffold, inventory and the bespoke Infra Manager | operator | release 1 setup | answered |
+| 7 | Bespoke agents in the private umbrella repo or the product repo? | operator | MVP 6 | the umbrella (private; the agents encode hosts and data stores) |
 | 4 | What hurts most: broken things reaching users, work stopping unnoticed, or your time steering sessions? | operator | signal priority | work stopping |
 | 5 | Does the Vault team keep working during onboarding? | operator | drain list | yes, read-only adopt |
 | 6 | If it is not helping after a month, what must you get back? | operator | rollback | in-repo rules and beads |
