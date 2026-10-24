@@ -48,3 +48,30 @@ allow rules for the roles that query the map, written by `prepare-role.js` and c
 
 **Still needed:** the same run with the plugin installed (plugin-scoped tool name, the lane hook),
 on pc, wintermute and cloud, in a session where installing the plugin is allowed.
+
+## Spikes 2 and 6: cloud host, from Vault onboarding day one
+
+**Source:** `colombod-personal/the-vault-planning` at `9604199`,
+`.delivery/initiatives/onboarding/day-one-cloud.md` (a separate cloud session, 2026-10-24 13:55-13:57
+UTC, Node v22.22.0, git 2.43.0). The rows below were re-checked in this session at about 14:05 UTC
+where marked.
+
+| Check | Result | Re-checked here |
+| :-- | :-- | :-- |
+| spike 6: `node:sqlite` on Node 22.22.0 | SQLite 3.50.4, FTS5 present, ExperimentalWarning printed | yes: `3.50.4`, FTS5 table created |
+| spike 6: `node:sqlite` on Node 20.20.0 | `ERR_UNKNOWN_BUILTIN_MODULE` | no |
+| spike 2: full clone, the-vault (316 commits, 35 MiB `.git`) | 3.73 s | count yes (316) |
+| spike 2: full clone, mtg-toolkits (7 commits) | 0.55 s | no |
+| spike 2: no-op fetch, three samples each | the-vault 0.31-0.47 s; mtg-toolkits 0.29-0.34 s | no |
+| spike 2: credentials for clone and fetch | none; both repos are public | no |
+| spike 2: deployment record | `/api/health` `commit` `2f01eab`, equal to `origin/main` | yes: `2f01eab` both |
+| spike 2: GitHub deployments API (A-15) | 403 from the session proxy; not answered | no |
+
+**New finding:** the health response's `deployment` field changed between the two checks
+(`the-vault-5o309mo5l-...` at 13:56, `the-vault-532iolc5s-...` at about 14:05) while `commit`
+stayed `2f01eab`. "Shipped" keys on `commit` only; the deployment id is not a stable identity.
+
+**Not measured:** fetch p90 (three samples give a max, not a p90); spike 1 with the plugin installed
+(the plugin install and its scripts were refused by that session's permission checks); every
+Wintermute and PC row. The Wintermute steps are in the-vault-planning
+`.delivery/initiatives/onboarding/day-one-wintermute-runbook.md` (`cb149fd`).
