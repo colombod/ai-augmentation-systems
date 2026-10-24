@@ -1,0 +1,42 @@
+// adr-011-hang-variant.dot -- open-risk probe for notes.md cross-story finding 1.
+// Identical to adr-011-fix-gate-bounded.dot except the gate's tool_command first
+// runs a stand-in "compiled check" that hangs (sleep 30) on every check invocation
+// numbered from ${hang_from} to ${hang_to} inclusive, and the gate declares timeout="2s" (README: "the
+// in-flight ... shell command is aborted and the node's outcome becomes FAIL").
+// The hang happens BEFORE the ADR-011 counter/label logic, exactly the case the
+// finding names. The check keeps its own invocation counter (check-n) so the
+// probe can choose which attempt hangs; the ADR-011 counter (count-s3c2) is
+// untouched by a hung attempt because the shell is killed before reaching it.
+
+digraph fix_gate_hang {
+    start [shape=Mdiamond, label="Start"]
+
+    s3_c2__fix [
+        shape=box,
+        label="Fix",
+        prompt="Fix criterion FR-9. (Informational only.)"
+    ]
+
+    s3_c2__gate [
+        shape=parallelogram,
+        label="Gate",
+        goal_gate=true,
+        timeout="2s",
+        tool_command="mkdir -p .attractor-demo; h=$(( $(cat .attractor-demo/check-n 2>/dev/null || echo 0) + 1 )); echo $h > .attractor-demo/check-n; if [ \"$h\" -ge \"${hang_from}\" ] && [ \"$h\" -le \"${hang_to}\" ]; then sleep 30; fi; c=$(( $(cat .attractor-demo/count-s3c2 2>/dev/null || echo 0) + 1 )); echo $c > .attractor-demo/count-s3c2; if [ \"$c\" -ge \"${pass_at}\" ]; then printf gate_pass; elif [ \"$c\" -ge \"${bound}\" ]; then printf gate_giveup; else printf gate_retry; fi",
+        outputs="s3_c2.result"
+    ]
+
+    non_convergent [
+        shape=parallelogram,
+        label="Record non-convergent",
+        tool_command="mkdir -p .attractor-demo; echo 'FR-9 s3_c2 Outcome=non-convergent' >> .attractor-demo/outcomes.log; printf recorded"
+    ]
+
+    done [shape=Msquare, label="Done"]
+
+    start -> s3_c2__fix -> s3_c2__gate
+    s3_c2__gate -> done            [label="pass",   condition="context.tool.last_line=gate_pass"]
+    s3_c2__gate -> s3_c2__fix      [label="retry",  condition="context.tool.last_line=gate_retry"]
+    s3_c2__gate -> non_convergent  [label="giveup", condition="context.tool.last_line=gate_giveup"]
+    non_convergent -> done
+}
