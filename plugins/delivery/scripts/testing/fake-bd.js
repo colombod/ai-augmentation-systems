@@ -151,13 +151,56 @@ switch (cmd) {
     process.stdout.write(`closed ${id}\n`);
     break;
   }
+  case 'dolt': {
+    // The database "exists" when .beads/fake-config.json does (fake init and bootstrap write it).
+    // `dolt remote list --json` prints what real bd 1.1.2 prints: [] or [{name, url, ...}].
+    // BD_FAKE_DOLT_REMOTES overrides the list verbatim ("fail" makes it fail); BD_FAKE_PUSH=fail
+    // makes `dolt push` fail; a push with no remote fails as real bd does.
+    const cfgPath = require('path').join(process.cwd(), '.beads', 'fake-config.json');
+    const cfg = fs.existsSync(cfgPath) ? JSON.parse(fs.readFileSync(cfgPath, 'utf8')) : null;
+    const sub = `${pos[0]} ${pos[1] || ''}`.trim();
+    if (sub === 'remote list') {
+      const raw = process.env.BD_FAKE_DOLT_REMOTES;
+      if (raw === 'fail') { process.stderr.write('fake-bd: dolt remote list failed\n'); process.exit(1); }
+      process.stdout.write(`${raw || JSON.stringify((cfg && cfg.remotes) || [])}\n`);
+    } else if (sub === 'remote add') {
+      if (!cfg) { process.stderr.write('Error: no beads database found\n'); process.exit(1); }
+      cfg.remotes = [...(cfg.remotes || []), { name: pos[2], url: pos[3], status: 'ok' }];
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+      // real bd persists the remote as sync.remote in .beads/config.yaml
+      fs.appendFileSync(require('path').join(process.cwd(), '.beads', 'config.yaml'), `sync.remote: "${pos[3]}"\n`);
+      process.stdout.write(`Added remote ${pos[2]}\n`);
+    } else if (sub === 'push') {
+      if (process.env.BD_FAKE_PUSH === 'fail') { process.stderr.write('fake-bd: push refused\n'); process.exit(1); }
+      if (process.env.BD_FAKE_PUSH === '403') { process.stderr.write('error: RPC failed; HTTP 403 curl 22 The requested URL returned error: 403\n'); process.exit(1); }
+      if (!cfg || !(cfg.remotes || []).length) { process.stderr.write('Error: no remote configured\n'); process.exit(1); }
+      cfg.pushes = (cfg.pushes || 0) + 1;
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+      process.stdout.write('Push complete.\n');
+    } else { process.stderr.write('fake-bd: unknown dolt subcommand\n'); process.exit(2); }
+    break;
+  }
+  case 'stats': {
+    if (!fs.existsSync(require('path').join(process.cwd(), '.beads', 'fake-config.json'))) { process.stderr.write('Error: no beads database found\n'); process.exit(1); }
+    process.stdout.write(`Total issues: ${Object.keys(s.issues).length}\n`);
+    break;
+  }
+  case 'bootstrap': {
+    // a fresh clone fetching the team's database; BD_FAKE_BOOTSTRAP=fail when the remote has none
+    if (process.env.BD_FAKE_BOOTSTRAP === 'fail') { process.stderr.write('fake-bd: nothing to bootstrap from\n'); process.exit(1); }
+    const dir = require('path').join(process.cwd(), '.beads');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(require('path').join(dir, 'fake-config.json'), JSON.stringify({ prefix: null, bootstrapped: true, remotes: [{ name: 'origin', url: 'git+file:///fake-origin', status: 'ok' }] }));
+    process.stdout.write('Synced database\n');
+    break;
+  }
   case 'prime': process.stdout.write('fake-bd prime\n'); break;
   case 'version': process.stdout.write('bd version 0.0.0-fake\n'); break;
   case 'init': {
     // what start.js relies on: a .beads directory in the working directory
     const dir = require('path').join(process.cwd(), '.beads');
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(require('path').join(dir, 'fake-config.json'), JSON.stringify({ prefix: flags.prefix || null }));
+    fs.writeFileSync(require('path').join(dir, 'fake-config.json'), JSON.stringify({ prefix: flags.prefix || null, skipAgents: flags['skip-agents'] === true }));
     process.stdout.write(`fake-bd init ${flags.prefix || ''}\n`);
     break;
   }

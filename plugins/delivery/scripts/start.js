@@ -107,10 +107,14 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
     : { name: 'git', status: 'fail', detail: 'not found on PATH', fix: 'install git', hard: true });
 
   const bd = run('bd', ['version'], { env: runEnv });
-  rows.push(bd.ok
-    ? { name: 'bd (beads)', status: 'pass', detail: bd.out.split('\n')[0], hard: true }
-    : { name: 'bd (beads)', status: 'fail', detail: bd.missing ? 'not found on PATH' : `\`bd version\` failed: ${bd.err.slice(0, 120)}`,
-      fix: 'install beads so `bd` is on PATH (https://github.com/gastownhall/beads)', hard: true });
+  if (bd.ok) {
+    rows.push({ name: 'bd (beads)', status: 'pass', detail: bd.out.split('\n')[0], hard: true });
+  } else if (platform === 'win32') {
+    rows.push(windowsBdRow(bd, smartAppControl(runEnv)));
+  } else {
+    rows.push({ name: 'bd (beads)', status: 'fail', detail: bd.missing ? 'not found on PATH' : `\`bd version\` failed: ${bd.err.slice(0, 120)}`,
+      fix: `install beads so \`bd\` is on PATH (${SETUP_DOC})`, hard: true });
+  }
 
   const claude = run('claude', ['--version'], { env: runEnv });
   const need = MIN_CLAUDE.join('.');
@@ -129,7 +133,8 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
     }
   }
   if (platform !== 'darwin' && platform !== 'linux') {
-    rows.push({ name: 'platform', status: 'warn', detail: `${platform}: cross-session messaging is documented for macOS and Linux`, fix: 'run the team on macOS or Linux', hard: false });
+    rows.push({ name: 'platform', status: 'warn', detail: `${platform}: cross-session messaging is documented for macOS and Linux`,
+      fix: platform === 'win32' ? `run the team inside WSL2 (${SETUP_DOC}, Windows)` : 'run the team on macOS or Linux', hard: false });
   }
 
   const configDir = claudeConfigDir(env);
@@ -168,8 +173,138 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
         ? { name: 'project repo remote', status: 'pass', detail: remote.out, hard: false }
         : { name: 'project repo remote', status: 'warn', detail: 'no origin remote', fix: 'add a private remote (`git remote add origin <url>`) so plans are pushed and operator records travel on its delivery-operator branch (sessions need push access to publish them)', hard: false });
     }
+    if (bd.ok && fs.existsSync(path.join(root, '.beads'))) rows.push(beadsSyncRow(run('bd', ['dolt', 'remote', 'list', '--json'], { cwd: root, env: runEnv })));
   }
   return rows;
+}
+
+const SETUP_DOC = 'docs/quickstart.md, "Setting up beads"';
+
+// Dolt names git remotes with a git+ prefix; the project repo's origin is the sync remote (beads
+// stores issue history there under refs/dolt/data), so no server and no database password exist.
+function doltUrlOf(url) {
+  if (/^git\+/.test(url)) return url;
+  if (/^(https?|ssh|file):\/\//.test(url)) return `git+${url}`;
+  const scp = /^([^@\s]+@)?([^:\s/]+):(.+)$/.exec(url);
+  if (scp) return `git+ssh://${scp[1] || ''}${scp[2]}/${scp[3]}`;
+  if (path.isAbsolute(url)) return `git+file://${url}`;
+  return null;
+}
+
+// Beads for any project, on any machine, with nothing for the customer to run by hand:
+//   no .beads              -> bd init (bd wires the project's origin as the sync remote), publish
+//   .beads, no database    -> bd bootstrap: a second machine's fresh clone carries .beads/config.yaml
+//                             but never the database, and bd init there would fork the history
+//   database, no remote    -> add the project's origin as the sync remote, publish
+//   database and remote    -> nothing
+// A failed publish is reported with its fix and does not stop the scaffold: the database works
+// locally, and the --check "beads sync" row keeps saying what is missing.
+// Commit only the named beads paths, never anything else the customer has staged.
+function commitBeadsFiles({ projectRoot, env, say, paths, message }) {
+  const existing = paths.filter((p) => fs.existsSync(path.join(projectRoot, p)));
+  if (!existing.length) return;
+  run('git', ['add', '--', ...existing], { cwd: projectRoot, env });
+  if (run('git', ['diff', '--cached', '--quiet', '--', ...existing], { cwd: projectRoot, env }).ok) return;
+  const c = run('git', ['commit', '-q', '-m', message, '--', ...existing], { cwd: projectRoot, env });
+  say(c.ok ? `  beads: committed ${existing.join(', ')} (${run('git', ['rev-parse', '--short', 'HEAD'], { cwd: projectRoot, env }).out})` : `  beads: could not commit ${existing.join(', ')}: ${(c.err || c.out).slice(0, 200)}`);
+}
+
+function setUpBeads({ projectRoot, prefix, env, dryRun, w, say }) {
+  const bd = (args, timeout = 120000) => run('bd', args, { cwd: projectRoot, env, timeout });
+  const hasBeads = fs.existsSync(path.join(projectRoot, '.beads'));
+  const hasDb = hasBeads && bd(['stats'], 30000).ok;
+  // the project repo already holds the team's issues even when this clone has no .beads yet
+  // (another machine published them before pushing its commit): fetch them, never init a second history
+  const published = !hasDb && run('git', ['ls-remote', 'origin', 'refs/dolt/data'], { cwd: projectRoot, env, timeout: 30000 }).out.trim() !== '';
+  if (!hasBeads && !published) {
+    say(`  beads: ${w}run bd init --prefix ${prefix}`);
+    if (dryRun) { say(`  beads: ${w}set the project repo's origin as the sync remote and publish the issues (bd dolt push)`); return; }
+    // --skip-agents: without it bd init also writes and commits AGENTS.md, CLAUDE.md,
+    // .claude/settings.json, .codex/ and .agents/skills/ into the customer's project repo (bd 1.1.2),
+    // over their own files; the plugin brings its own role instructions.
+    const gitignoreWasClean = run('git', ['status', '--porcelain', '--', '.gitignore'], { cwd: projectRoot, env }).out === '';
+    const b = bd(['init', '--prefix', prefix, '--non-interactive', '-q', '--skip-agents']);
+    if (!b.ok) { say(`  beads: bd init failed: ${(b.err || b.out).slice(0, 300)}`); return; }
+    commitBeadsFiles({ projectRoot, env, say, paths: gitignoreWasClean ? ['.beads', '.gitignore'] : ['.beads'], message: 'beads: initialise issue tracking (start.js, bd init)' });
+  } else if (!hasDb) {
+    say(`  beads: ${hasBeads ? '.beads is here but this machine has no database (a fresh clone)' : 'the project repo already holds the team\'s issues'}; ${w}run bd bootstrap to fetch them from the project repo`);
+    if (dryRun) return;
+    const b = bd(['bootstrap', '--yes']);
+    if (!b.ok) { say(`  beads: bd bootstrap failed: ${(b.err || b.out).slice(0, 300)}. Fix: ${SETUP_DOC}`); return; }
+    if (!bd(['stats'], 30000).ok) { say(`  beads: bd bootstrap ran but there is still no database. Fix: ${SETUP_DOC}`); return; }
+    say('  beads: database fetched from the project repo');
+    return;
+  } else {
+    say('  beads: database present');
+  }
+  const remotes = bd(['dolt', 'remote', 'list', '--json'], 30000);
+  let list = [];
+  try { list = remotes.ok ? JSON.parse(remotes.out || '[]') : []; } catch (e) { list = []; }
+  if (!list.length) {
+    const origin = run('git', ['remote', 'get-url', 'origin'], { cwd: projectRoot, env });
+    const url = origin.ok && doltUrlOf(origin.out);
+    if (!url) { say(`  beads: no sync remote, and the project repo has no origin to sync through: its issues stay on this machine. Fix: add a private remote, then run start.js again (${SETUP_DOC})`); return; }
+    say(`  beads: ${w}set the sync remote to the project repo (${url})`);
+    if (dryRun) return;
+    const a = bd(['dolt', 'remote', 'add', 'origin', url], 30000);
+    if (!a.ok) { say(`  beads: could not set the sync remote: ${(a.err || a.out).slice(0, 300)}. Fix: ${SETUP_DOC}`); return; }
+    // bd writes sync.remote into .beads/config.yaml; committed, a fresh clone knows where to bootstrap from
+    commitBeadsFiles({ projectRoot, env, say, paths: ['.beads/config.yaml'], message: 'beads: sync through the project repo (start.js)' });
+  } else if (hasDb) {
+    return;
+  }
+  if (dryRun) { say(`  beads: ${w}publish the issues to the project repo (bd dolt push)`); return; }
+  const p = bd(['dolt', 'push']);
+  // A Claude Code cloud session's git proxy refuses pushes to refs outside refs/heads (measured:
+  // HTTP 403 for refs/dolt/data, while branch pushes pass), so the first publish must come from a
+  // machine with ordinary git access to the project repo.
+  const refused = !p.ok && /HTTP 403|returned error: 403/.test(`${p.err} ${p.out}`);
+  say(p.ok
+    ? '  beads: issues published to the project repo; other machines get them from a clone with `bd bootstrap` (start.js does it)'
+    : refused
+      ? `  beads: publish refused (HTTP 403): this machine's network does not allow pushing beads' refs/dolt/data (a Claude Code cloud session's proxy refuses refs outside branches). The database works here; publish once from a machine with ordinary git access by running start.js there`
+      : `  beads: publish failed: ${(p.err || p.out).slice(0, 300)}. The database works here; run \`bd dolt push\` in ${projectRoot} once the project repo accepts pushes`);
+}
+
+// Smart App Control state from the registry value Windows keeps it in: 0 off, 1 on (enforcing),
+// 2 evaluation. Read with reg.exe so no PowerShell module is needed; anything unreadable is unknown.
+function smartAppControl(env) {
+  const r = run('reg', ['query', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy', '/v', 'VerifiedAndReputablePolicyState'], { env });
+  const m = r.ok && /VerifiedAndReputablePolicyState\s+REG_DWORD\s+0x([0-9a-f]+)/i.exec(r.out);
+  return m ? ({ 0: 'off', 1: 'on', 2: 'evaluation' })[parseInt(m[1], 16)] || 'unknown' : 'unknown';
+}
+
+// Why the Windows row is its own: the released bd.exe is not code-signed (1.1.2 has an empty
+// certificate table), and Smart App Control blocks unsigned programs, a local build included, with
+// no per-app exception. Telling a Windows user to "install beads" sends them into that wall.
+function windowsBdRow(bd, sac) {
+  const wsl = 'run the team inside WSL2 and install the Linux bd there (recommended: cross-session messaging is also documented only for macOS and Linux)';
+  const off = 'or turn Smart App Control off (machine-wide; it can be turned back on only on Windows 11 25H2 with the April 2026 update or later)';
+  const detail = bd.missing ? 'not found on PATH' : `\`bd version\` failed: ${bd.err.slice(0, 120)}`;
+  if (sac === 'on' || sac === 'evaluation') {
+    return { name: 'bd (beads)', status: 'fail', hard: true,
+      detail: `${detail}; Smart App Control is ${sac === 'on' ? 'on' : 'in evaluation mode'}, and it blocks unsigned programs such as bd.exe`,
+      fix: `${wsl}, ${off}. See ${SETUP_DOC}, Windows` };
+  }
+  return { name: 'bd (beads)', status: 'fail', hard: true,
+    detail: `${detail}; Smart App Control is ${sac}`,
+    fix: `${wsl}; or install bd.exe with beads' checksum-verified PowerShell installer. See ${SETUP_DOC}, Windows` };
+}
+
+// A beads database with no sync remote lives on one machine only: no other host or cloud session
+// sees its issues, and losing that disk loses them. beads syncs through the project repo's own git
+// remote (refs/dolt/data), so the fix needs no server.
+function beadsSyncRow(r) {
+  let remotes;
+  try { remotes = r.ok ? JSON.parse(r.out || '[]') : null; } catch (e) { remotes = null; }
+  if (!Array.isArray(remotes)) {
+    return { name: 'beads sync', status: 'unknown', detail: `\`bd dolt remote list --json\` could not be read${r.err ? `: ${r.err.slice(0, 120)}` : ''}`, fix: `check with \`bd dolt remote list\` (${SETUP_DOC})`, hard: false };
+  }
+  if (!remotes.length) {
+    return { name: 'beads sync', status: 'warn', detail: 'no sync remote: these issues exist on this machine only, and no other host or cloud session sees them',
+      fix: `in the project repo: \`bd dolt remote add origin <its private git URL>\`, then \`bd dolt push\` and commit .beads/config.yaml (${SETUP_DOC})`, hard: false };
+  }
+  return { name: 'beads sync', status: 'pass', detail: remotes.map((x) => `${x.name} ${x.url}`).join(', '), hard: false };
 }
 
 function formatCheck(rows) {
@@ -351,16 +486,13 @@ function scaffold(opts) {
   }
 
   // 5. beads, before prepare-role so it writes BEADS_DIR into each role's settings
-  if (fs.existsSync(path.join(projectRoot, '.beads'))) {
-    say('  beads: .beads exists; bd init skipped');
-  } else if (!run('bd', ['version'], { env }).ok) {
-    say(`  beads: skipped: bd is not on PATH. Install it, run \`bd init --prefix ${team.prefix}\` in ${projectRoot}, then run start.js again: it re-prepares the roles so each gets BEADS_DIR`);
+  if (!run('bd', ['version'], { env }).ok) {
+    say(`  beads: skipped: bd is not on PATH. Install it (${SETUP_DOC}), then run start.js again: it sets up beads and re-prepares the roles so each gets BEADS_DIR`);
   } else {
-    say(`  beads: ${w}run bd init --prefix ${team.prefix}`);
-    if (!dryRun) {
-      const b = run('bd', ['init', '--prefix', team.prefix, '--non-interactive', '-q'], { cwd: projectRoot, env, timeout: 120000 });
-      if (!b.ok) say(`  beads: bd init failed: ${(b.err || b.out).slice(0, 300)}`);
-    }
+    setUpBeads({ projectRoot, prefix: team.prefix, env, dryRun, w, say });
+  }
+  if (productCheckout && fs.existsSync(path.join(productCheckout, '.beads'))) {
+    say(`  beads: the product repo has its own beads workspace (${path.join(productCheckout, '.beads')}); it is not imported and nothing waits on it. The team's work items live in ${projectRoot}`);
   }
 
   // 6. one prepared directory per instance; an already prepared one is left as it is
@@ -458,4 +590,4 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };
+module.exports = { doltUrlOf, githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };

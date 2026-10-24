@@ -36,9 +36,9 @@ test('rendered rules: records, never relays; the old "passes as the operator\'s 
   }
 });
 
-test('rules are numbered 1 to 15 in order; 11 is personal data, 12 operator decisions, 13 SendMessage', () => {
+test('rules are numbered 0 to 15 in order (0 was added in front so earlier rule numbers hold); 11 is personal data, 12 operator decisions, 13 SendMessage', () => {
   const nums = RULES.split('\n').map((l) => /^(\d+)\. /.exec(l)).filter(Boolean).map((m) => Number(m[1]));
-  assert.deepEqual(nums, Array.from({ length: 15 }, (_, i) => i + 1));
+  assert.deepEqual(nums, Array.from({ length: 16 }, (_, i) => i));
   const rule = (n) => RULES.split('\n').find((l) => l.startsWith(`${n}. `));
   assert.equal(rule(11), '11. **No personal data** in a message, a bead or a pull request.');
   assert.match(rule(12), /^12\. \*\*Operator decisions are records, never relays\.\*\*/);
@@ -242,4 +242,17 @@ test('final I1: the builder brief tells builders to take spikes first only when 
   assert.doesNotMatch(withSr, /bd ready --label spike/);
   assert.match(withSr, /Spike beads are the Spike Researcher's: leave them/);
   for (const t of [without, withSr]) assert.ok(!/<!-- (if|unless|end)/.test(t), 'no markers reach the session');
+});
+
+test('rule 0: every role brief carries "the operator is never the messenger", ahead of rule 1', () => {
+  const rendered = renderAll();
+  assert.ok(rendered.length >= 7);
+  for (const { instance, text } of rendered) {
+    const zero = text.indexOf('0. **The operator is never the messenger.**');
+    assert.ok(zero > 0, `${instance}: rule 0 missing`);
+    assert.ok(zero < text.indexOf('1. **Beads is where all work is tracked'), `${instance}: rule 0 must come first`);
+    assert.match(text, /when a message cannot be delivered, commit the result to the project repo/, instance);
+    assert.match(text, /moving a result between sessions, and running a command an agent can run are never the operator's \(rule 0\)/, instance);
+  }
+  assert.doesNotMatch(RULES, /is one request with the exact steps/);
 });

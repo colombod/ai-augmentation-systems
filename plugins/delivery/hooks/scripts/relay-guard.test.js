@@ -146,10 +146,10 @@ test('several pending inputs: names the first, counts the rest, cuts the excerpt
   assert.ok(d.reason.startsWith(`You have an operator input with no record: in-pc-000001 ("${long.slice(0, 80)}") and 2 more. Record it, or ack it`), d.reason);
 });
 
-test('passes when stop_hook_active, for any other role, and on inputs of other sessions', () => {
+test('passes when stop_hook_active, for another role with nothing to relay, and on inputs of other sessions', () => {
   const p = captured('chief-of-staff', [human('use postgres', 1)]);
   assert.equal(decideStopForOperator(stopArgs(p, { stop_hook_active: true, last_assistant_message: BRIEF_POSITIVES[0] })), null);
-  assert.equal(decideStopForOperator(stopArgs(p, { last_assistant_message: BRIEF_POSITIVES[0] }, { role: 'delivery-lead' })), null);
+  assert.equal(decideStopForOperator(stopArgs(p, { last_assistant_message: 'Merged the export change; tests pass.' }, { role: 'delivery-lead' })), null);
   // a fresh chief-of-staff session: the earlier session's input is not this session's to record
   fs.writeFileSync(path.join(p.roleDir, '.delivery-session'), 'sess-relay-2\n');
   assert.equal(decideStopForOperator(stopArgs(p, { session_id: 'sess-relay-2' })), null);
@@ -839,14 +839,15 @@ test('round 4 sets: recall, long-briefing and short false positives stay at or b
   }
 });
 
-test('I3: the Product Manager gets the unrecorded-input and relay checks for its own session; other roles get none', () => {
+test('I3: the Product Manager gets the unrecorded-input and relay checks for its own session; other roles get the relay check only', () => {
   const p = captured('product-manager', [human('drop the export feature from the beta', 1)]);
   const args = stopArgs(p, { last_assistant_message: 'Please tell the builder session to drop it.' }, { role: 'product-manager', instance: 'product-manager' });
   assert.deepEqual(operatorChecks(args).map((f) => f.kind), ['unrecorded', 'relay']);
   R.ack({ projectRoot: p.projectRoot, input: 'in-pc-000001', reason: 'conversational', by: { instance: 'product-manager', role: 'product-manager', session_id: SID, host: 'pc' } });
   assert.deepEqual(operatorChecks(args).map((f) => f.kind), ['relay']);
   for (const role of ['delivery-lead', 'staffing', 'progress-observer', 'builder', 'spike-researcher']) {
-    assert.deepEqual(operatorChecks({ ...args, role }), [], role);
+    assert.deepEqual(operatorChecks({ ...args, role }).map((f) => f.kind), ['relay'], role);
+    assert.deepEqual(operatorChecks({ ...args, role, input: { ...args.input, last_assistant_message: 'Dropped it from the beta; bead updated.' } }), [], role);
   }
 });
 
@@ -892,4 +893,26 @@ test('M5: a retired Chief of Staff or Product Manager instance gets no operator 
   assert.ok(operatorChecks(args).length >= 1);
   assert.deepEqual(operatorChecks({ ...args, retired: true }), []);
   assert.deepEqual(operatorChecks({ ...args, role: 'product-manager', instance: 'product-manager', retired: true }), []);
+});
+
+// Team rule 0: the operator is never the messenger, whichever role is talking to them.
+test('rule 0: any role that asks the operator to carry something between sessions is blocked, with the peer way out', () => {
+  const { peerRelayReason } = require('./relay-guard.js');
+  const p = captured('chief-of-staff', []);
+  const asks = [
+    'Please relay the summary above to the chief-of-staff session.',
+    "You'll need to paste this summary into the builder-2 session.",
+    'Could you forward the results to the delivery lead?',
+  ];
+  for (const message of asks) {
+    const found = operatorChecks(stopArgs(p, { last_assistant_message: message }, { role: 'builder', instance: 'builder-1' }));
+    assert.deepEqual(found.map((f) => f.kind), ['relay'], message);
+    assert.match(found[0].reason, /^The operator is never the messenger \(team rule 0\)\. You wrote: "/);
+    assert.match(found[0].reason, /send it yourself with SendMessage; if it cannot be delivered, commit it to the project repo/);
+  }
+  for (const message of ['Pushed the record as 27b7541; the cloud session reads it from the project repo.', 'Which of the two layouts do you prefer for the export page?']) {
+    assert.deepEqual(operatorChecks(stopArgs(p, { last_assistant_message: message }, { role: 'builder', instance: 'builder-1' })), [], message);
+  }
+  assert.deepEqual(operatorChecks(stopArgs(p, { last_assistant_message: asks[0] }, { role: 'builder', instance: 'builder-1', retired: true })), []);
+  assert.equal(peerRelayReason('').split('\n').length, 2);
 });

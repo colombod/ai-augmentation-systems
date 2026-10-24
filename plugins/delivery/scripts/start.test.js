@@ -34,8 +34,9 @@ function claudeConfig({ installed = true, enabled = true, version = '99.0.0' } =
   return dir;
 }
 
-function start(args, { path: binDir = bin(), config = claudeConfig(), cwd } = {}) {
+function start(args, { path: binDir = bin(), config = claudeConfig(), cwd, env: extra = {} } = {}) {
   const env = {
+    ...extra,
     PATH: `${binDir}${path.delimiter}/bin`, HOME: os.tmpdir(), CLAUDE_CONFIG_DIR: config, BD_FAKE_STORE: path.join(mk('start-bd-'), 'store.json'),
     GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0',
     GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.test', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.test',
@@ -148,7 +149,7 @@ test('a second run changes nothing; it prepares only a missing role', () => {
   const again = start(['--project', project, '--host', 'other', '--preset', 'full']);
   assert.equal(again.status, 0, again.out);
   assert.match(again.out, /keeping the existing/);
-  assert.match(again.out, /bd init skipped/);
+  assert.match(again.out, /beads: database present/);
   assert.equal((again.out.match(/already prepared/g) || []).length, 4);
   assert.equal(fs.readFileSync(path.join(project, '.delivery/team/team.json'), 'utf8'), before);
   fs.rmSync(path.join(base, 'acme-team', 'delivery-lead'), { recursive: true, force: true });
@@ -187,7 +188,7 @@ test('without bd the scaffold still prepares the roles and says how to finish', 
   const project = path.join(base, 'acme');
   const r = start(['--project', project, '--host', 'laptop'], { path: bin({ bd: false }) });
   assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /beads: skipped: bd is not on PATH\. Install it, run `bd init --prefix acme`/);
+  assert.match(r.out, /beads: skipped: bd is not on PATH\. Install it \(docs\/quickstart\.md, "Setting up beads"\), then run start\.js again/);
   assert.ok(!fs.existsSync(path.join(project, '.beads')));
   const settings = readJson(path.join(base, 'acme-team', 'builder', '.claude', 'settings.local.json'));
   assert.equal(settings.env.BEADS_DIR, undefined);
@@ -258,7 +259,7 @@ test('final I3: after bd is installed and .beads exists, a re-run re-prepares th
   const project = path.join(mk('start-i3-'), 'acme');
   const first = start(['--project', project, '--host', 'laptop'], { path: bin({ bd: false }) });
   assert.equal(first.status, 0, first.out);
-  assert.match(first.out, /then run start\.js again: it re-prepares the roles/);
+  assert.match(first.out, /then run start\.js again: it sets up beads and re-prepares the roles/);
   const teamDir = path.join(path.dirname(project), 'acme-team');
   const envOf = (i) => readJson(path.join(teamDir, i, '.claude', 'settings.local.json')).env;
   assert.equal(envOf('chief-of-staff').BEADS_DIR, undefined);
@@ -281,4 +282,216 @@ test('final M6: an unknown model name is a warning in start.js output, not a ref
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /manifest: warning: team.json: role "chief-of-staff" has model "claude-opus-9"/);
   assert.match(r.out, /manifest: committed/, 'the hand edit is committed too');
+});
+
+// ---- beads setup: Windows and sync (docs/quickstart.md, "Setting up beads") ----
+
+const { checkPrerequisites } = require('./start.js');
+
+// A PATH for checkPrerequisites run in this process: bd that works or fails, and a reg that
+// answers the Smart App Control query with a given DWORD (null: no reg at all).
+function winBin({ bd = 'blocked', sac = 1 } = {}) {
+  const dir = bin({ bd: bd === 'ok' });
+  if (bd === 'blocked') fs.writeFileSync(path.join(dir, 'bd'), '#!/bin/sh\necho "An Application Control policy has blocked this file." >&2\nexit 1\n', { mode: 0o755 });
+  if (bd === 'missing') fs.rmSync(path.join(dir, 'bd'), { force: true });
+  if (sac !== null) {
+    fs.writeFileSync(path.join(dir, 'reg'), `#!/bin/sh\nprintf '\\nHKEY_LOCAL_MACHINE\\\\SYSTEM\\\\CurrentControlSet\\\\Control\\\\CI\\\\Policy\\n    VerifiedAndReputablePolicyState    REG_DWORD    0x${sac}\\n\\n'\n`, { mode: 0o755 });
+  }
+  return dir;
+}
+const bdRow = (rows) => rows.find((r) => r.name === 'bd (beads)');
+const check = (dir, platform = 'win32') => checkPrerequisites({ env: { PATH: `${dir}${path.delimiter}/bin`, HOME: os.tmpdir(), CLAUDE_CONFIG_DIR: claudeConfig(), BD_FAKE_STORE: path.join(mk('start-bd-'), 's.json') }, platform });
+
+test('--check on Windows: Smart App Control on or in evaluation names the block and recommends WSL2', () => {
+  for (const [sac, word] of [[1, 'on'], [2, 'in evaluation mode']]) {
+    const r = bdRow(check(winBin({ sac })));
+    assert.equal(r.status, 'fail');
+    assert.equal(r.hard, true);
+    assert.match(r.detail, new RegExp(`Smart App Control is ${word}, and it blocks unsigned programs such as bd\\.exe`));
+    assert.match(r.detail, /An Application Control policy has blocked this file/);
+    assert.match(r.fix, /^run the team inside WSL2 and install the Linux bd there/);
+    assert.match(r.fix, /turn Smart App Control off \(machine-wide; it can be turned back on only on Windows 11 25H2/);
+  }
+});
+
+test('--check on Windows: Smart App Control off or unreadable offers the installer, not the Smart App Control advice', () => {
+  for (const [sac, word] of [[0, 'off'], [null, 'unknown']]) {
+    const r = bdRow(check(winBin({ bd: 'missing', sac })));
+    assert.equal(r.status, 'fail');
+    assert.match(r.detail, new RegExp(`^not found on PATH; Smart App Control is ${word}$`));
+    assert.match(r.fix, /checksum-verified PowerShell installer/);
+    assert.doesNotMatch(r.fix, /turn Smart App Control off/);
+  }
+});
+
+test('--check on Windows: a bd that runs passes and the Smart App Control state is not consulted', () => {
+  const dir = winBin({ bd: 'ok', sac: 1 });
+  const rows = check(dir);
+  assert.equal(bdRow(rows).status, 'pass');
+  assert.doesNotMatch(JSON.stringify(rows), /Smart App Control/);
+  assert.match(rows.find((r) => r.name === 'platform').fix, /run the team inside WSL2/);
+  assert.equal(check(dir, 'freebsd').find((r) => r.name === 'platform').fix, 'run the team on macOS or Linux');
+});
+
+test('--check off Windows: a failing bd keeps the plain install advice', () => {
+  const r = bdRow(check(winBin({ bd: 'missing', sac: 1 }), 'linux'));
+  assert.equal(r.detail, 'not found on PATH');
+  assert.doesNotMatch(r.fix, /Smart App Control|WSL2/);
+});
+
+function beadsProject() {
+  const root = productRepo();
+  fs.mkdirSync(path.join(root, '.beads'));
+  return root;
+}
+const syncLine = (out) => (out.split('\n').find((l) => l.includes('beads sync')) || '').trim();
+
+test('--check: a beads database with no sync remote warns that its issues live on one machine', () => {
+  const r = start(['--check', '--project', beadsProject()]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(syncLine(r.out), /^\[warn\] beads sync: no sync remote: these issues exist on this machine only.*Fix: in the project repo: `bd dolt remote add origin <its private git URL>`, then `bd dolt push`/);
+});
+
+test('--check: a beads sync remote passes; an unreadable answer is unknown; no .beads, no row', () => {
+  const remotes = JSON.stringify([{ name: 'origin', url: 'git+https://example.test/acme/planning.git', status: 'ok' }]);
+  assert.equal(syncLine(start(['--check', '--project', beadsProject()], { env: { BD_FAKE_DOLT_REMOTES: remotes } }).out),
+    '[pass] beads sync: origin git+https://example.test/acme/planning.git');
+  assert.match(syncLine(start(['--check', '--project', beadsProject()], { env: { BD_FAKE_DOLT_REMOTES: 'fail' } }).out),
+    /^\[\?\?\?\?\] beads sync: `bd dolt remote list --json` could not be read: fake-bd: dolt remote list failed/);
+  assert.equal(syncLine(start(['--check', '--project', productRepo()]).out), '');
+});
+
+// ---- beads set up by start.js for any project, on any machine ----
+
+const { doltUrlOf } = require('./start.js');
+const fakeCfg = (root) => { const f = path.join(root, '.beads', 'fake-config.json'); return fs.existsSync(f) ? readJson(f) : null; };
+function projectWithOrigin() {
+  const root = productRepo();
+  const bare = mk('start-origin-');
+  cp.execFileSync(GIT, ['init', '-q', '--bare', bare]);
+  cp.execFileSync(GIT, ['remote', 'add', 'origin', bare], { cwd: root });
+  return { root, bare };
+}
+const scaffold = (root, opts = {}) => start(['--project', root, '--host', 'laptop'], opts);
+
+test('doltUrlOf: https, scp-style ssh, ssh, absolute paths and git+ URLs; anything else is null', () => {
+  assert.equal(doltUrlOf('https://github.com/acme/plan.git'), 'git+https://github.com/acme/plan.git');
+  assert.equal(doltUrlOf('git@github.com:acme/plan.git'), 'git+ssh://git@github.com/acme/plan.git');
+  assert.equal(doltUrlOf('ssh://git@gitea.local:2222/acme/plan.git'), 'git+ssh://git@gitea.local:2222/acme/plan.git');
+  assert.equal(doltUrlOf('/srv/git/plan.git'), 'git+file:///srv/git/plan.git');
+  assert.equal(doltUrlOf('git+https://x.test/a.git'), 'git+https://x.test/a.git');
+  assert.equal(doltUrlOf('relative/dir'), null);
+});
+
+test('start: a new project with an origin gets beads, the origin as sync remote, and a publish', () => {
+  const { root, bare } = projectWithOrigin();
+  const r = scaffold(root);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: run bd init --prefix /);
+  assert.match(r.out, new RegExp(`beads: set the sync remote to the project repo \\(git\\+file://${bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`));
+  assert.match(r.out, /beads: issues published to the project repo/);
+  const cfg = fakeCfg(root);
+  assert.deepEqual(cfg.remotes.map((x) => x.url), [`git+file://${bare}`]);
+  assert.equal(cfg.pushes, 1);
+});
+
+test('start: a new project with no origin keeps beads local and says so; nothing is pushed', () => {
+  const root = productRepo();
+  const r = scaffold(root);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: no sync remote, and the project repo has no origin to sync through: its issues stay on this machine/);
+  assert.equal(fakeCfg(root).pushes, undefined);
+});
+
+test('start: a fresh clone (.beads without a database) is bootstrapped, never re-initialised', () => {
+  const root = productRepo();
+  fs.mkdirSync(path.join(root, '.beads'));
+  fs.writeFileSync(path.join(root, '.beads', 'config.yaml'), 'sync.remote: "x"\n');
+  const r = scaffold(root);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: \.beads is here but this machine has no database \(a fresh clone\); run bd bootstrap to fetch them/);
+  assert.match(r.out, /beads: database fetched from the project repo/);
+  assert.doesNotMatch(r.out, /bd init/);
+  assert.equal(fakeCfg(root).bootstrapped, true);
+  assert.equal(readJson(path.join(path.dirname(root), `${path.basename(root).toLowerCase()}-team`, 'builder', '.claude', 'settings.local.json')).env.BEADS_DIR, path.join(root, '.beads'));
+});
+
+test('start: a bootstrap that fails is reported with the fix and does not stop the scaffold', () => {
+  const root = productRepo();
+  fs.mkdirSync(path.join(root, '.beads'));
+  const r = scaffold(root, { env: { BD_FAKE_BOOTSTRAP: 'fail' } });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: bd bootstrap failed: fake-bd: nothing to bootstrap from\. Fix: docs\/quickstart\.md/);
+  assert.equal(fakeCfg(root), null);
+});
+
+test('start: an existing database with no remote is connected and published; one with a remote is left alone', () => {
+  const { root, bare } = projectWithOrigin();
+  fs.mkdirSync(path.join(root, '.beads'));
+  fs.writeFileSync(path.join(root, '.beads', 'fake-config.json'), JSON.stringify({ prefix: 'acme' }));
+  const r = scaffold(root);
+  assert.match(r.out, /beads: database present/);
+  assert.match(r.out, /beads: issues published to the project repo/);
+  assert.equal(fakeCfg(root).pushes, 1);
+  assert.equal(fakeCfg(root).remotes[0].url, `git+file://${bare}`);
+  const again = scaffold(root);
+  assert.doesNotMatch(again.out, /set the sync remote|published/);
+  assert.equal(fakeCfg(root).pushes, 1);
+});
+
+test('start: a refused publish is reported; the scaffold still completes', () => {
+  const { root } = projectWithOrigin();
+  const r = scaffold(root, { env: { BD_FAKE_PUSH: 'fail' } });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: publish failed: fake-bd: push refused\. The database works here; run `bd dolt push`/);
+});
+
+test('start: a product repo with its own beads is noted as not imported; one without is not mentioned', () => {
+  const project = productRepo();
+  const product = productRepo();
+  fs.mkdirSync(path.join(product, '.beads'));
+  const r = start(['--project', project, '--host', 'laptop', '--product-repo', product]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: the product repo has its own beads workspace .*; it is not imported and nothing waits on it/);
+  const plain = start(['--project', productRepo(), '--host', 'laptop', '--product-repo', productRepo()]);
+  assert.doesNotMatch(plain.out, /its own beads workspace/);
+});
+
+test('start: a clone without .beads whose project repo already holds issues is bootstrapped, not initialised', () => {
+  const { root, bare } = projectWithOrigin();
+  const sha = cp.execFileSync(GIT, ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  cp.execFileSync(GIT, ['push', '-q', 'origin', 'HEAD:main'], { cwd: root });
+  cp.execFileSync(GIT, ['update-ref', 'refs/dolt/data', sha], { cwd: bare });
+  const r = scaffold(root);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: the project repo already holds the team's issues; run bd bootstrap to fetch them/);
+  assert.doesNotMatch(r.out, /bd init/);
+  assert.equal(fakeCfg(root).bootstrapped, true);
+});
+
+test('start: bd init leaves the customer agent files alone and commits only the beads files', () => {
+  const { root } = projectWithOrigin();
+  fs.writeFileSync(path.join(root, 'CLAUDE.md'), '# ours\n');
+  fs.writeFileSync(path.join(root, 'notes.txt'), 'staged by the customer\n');
+  cp.execFileSync(GIT, ['add', 'notes.txt'], { cwd: root });
+  const r = scaffold(root);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(fakeCfg(root).skipAgents, true);
+  assert.match(r.out, /beads: committed \.beads/);
+  const files = cp.execFileSync(GIT, ['log', '--name-only', '--format=%s', '--grep=^beads:'], { cwd: root, encoding: 'utf8' });
+  assert.match(files, /beads: initialise issue tracking/);
+  assert.match(files, /\.beads\/fake-config\.json/);
+  assert.match(files, /beads: sync through the project repo/);
+  assert.doesNotMatch(files, /notes\.txt|CLAUDE\.md/);
+  assert.match(cp.execFileSync(GIT, ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }), /^A  notes\.txt$/m);
+});
+
+test('start: a publish refused with HTTP 403 names the network policy and where to publish from; a dry run says it would publish', () => {
+  const { root } = projectWithOrigin();
+  const dry = start(['--project', root, '--host', 'laptop', '--dry-run']);
+  assert.match(dry.out, /beads: would set the project repo's origin as the sync remote and publish the issues/);
+  const r = scaffold(root, { env: { BD_FAKE_PUSH: '403' } });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: publish refused \(HTTP 403\): this machine's network does not allow pushing beads' refs\/dolt\/data .*publish once from a machine with ordinary git access/);
+  assert.doesNotMatch(r.out, /publish failed:/);
 });

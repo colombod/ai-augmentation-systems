@@ -477,12 +477,29 @@ function relayCandidates(message, relay, judged) {
   return [];
 }
 
+// Rule 0 of the team rules holds for every role, not only the two that address the operator: any
+// session the operator happens to read (a builder they watch, a session on another host) must not
+// hand them a message, a file or a step to carry. Those roles have no operator records, so their way
+// out is SendMessage, or a commit to the project repo the other session reads.
+const PEER_RELAY_REASON = 'The operator is never the messenger (team rule 0).\nRewrite only that clause: send it yourself with SendMessage; if it cannot be delivered, commit it to the project repo, name the path in a bead note, and the other session reads it there.';
+function peerRelayReason(clause) {
+  const [head, tail] = PEER_RELAY_REASON.split('\n');
+  const said = clause ? ` You wrote: "${String(clause).replace(/\s+/g, ' ').slice(0, 160)}".` : '';
+  return `${head}${said}\n${tail}`;
+}
+
 // Every operator check that applies to this stop, ignoring stop_hook_active (claim-stop.js limits
-// repeats per turn, per session). [] for roles that do not address the operator, and on any failure.
+// repeats per turn, per session). The relay check for every role; the input checks only for the two
+// roles that address the operator. [] on any failure.
 function operatorChecks({ input, roleDir, projectRoot, role, instance, captureStatus, parties, pluginRoot, retired, judged, deps = {} } = {}) {
   try {
     // a retired instance records nothing new (operator.js refuses), so its guard stands down
-    if (!OPERATOR_FACING.has(role) || retired) return [];
+    if (retired) return [];
+    if (!OPERATOR_FACING.has(role)) {
+      const msg = input && input.last_assistant_message;
+      const relay = findRelayRequest(msg, { parties });
+      return relay ? [{ kind: 'relay', reason: peerRelayReason(relay.clause), detail: relay.phrase }] : [];
+    }
     const op = operatorCommand(pluginRoot || DEFAULT_PLUGIN_ROOT);
     if (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot)) return [];
     const inp = input && typeof input === 'object' ? input : {};
@@ -503,4 +520,4 @@ function operatorChecks({ input, roleDir, projectRoot, role, instance, captureSt
 
 // unrecordedReason and integrityReason are exported for the short-reason lint;
 // clauses, compile, addressOf and strip are shared with message-checks.js (orders to the owner)
-module.exports = { unrecordedReason, integrityReason, tornTailReason, clauses, compile, addressOf, strip, findRelayRequest, operatorChecks, judgeRelay, relayCandidates, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD, OPERATOR_FACING };
+module.exports = { peerRelayReason, PEER_RELAY_REASON, unrecordedReason, integrityReason, tornTailReason, clauses, compile, addressOf, strip, findRelayRequest, operatorChecks, judgeRelay, relayCandidates, sessionIdOf, relayReason, RELAY_REASON, RELAY_REASON_NO_RECORD, OPERATOR_FACING };
