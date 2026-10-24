@@ -1,11 +1,11 @@
 # Product brief: onboarding an existing, multi-repo product
 
 > Written by /delivery:brief. Owned by Product Owner and Business Analyst.
-> Status: draft (revision 2, after `reviews/brownfield-onboarding-brief-01.md`) · Last updated: 2026-10-24
+> Status: draft (revision 3: beads topology generalised, ADR-020; revision 2 after `reviews/brownfield-onboarding-brief-01.md`) · Last updated: 2026-10-24
 > Depends on: `initiatives/feature-map/` (the inventory, held to its freshness constraint)
 
 **Mode:** frame (a new capability; the Vault is the grounding example and future test bed) ·
-**Word count:** 1000 (cap 900; declared overrun: the owner's four statements are kept verbatim, 289 words; without them 711), tables excluded.
+**Word count:** 1090 (cap 900; declared overrun: the owner's six statements are kept verbatim, 320 words; without them 770), tables excluded.
 
 ## Owner's ask
 
@@ -18,6 +18,8 @@
 > "Check my private repo there is a private repo https://github.com/colombod-personal/the-vault-planning that might be the right umbrella ?"
 
 > "For question 1 yes I confirm the umbrella for both repos, the vault ai agents should be coming now from the delivery plush in but since there are special thing to this system ther should be the “bespoke” infra manager” for the vault, remember that to simplify and focus work the delivery plugin should have the handful of subagents definiton that live in the product repos (or the umbrella ? That is usually private and might be a better place) to handle the specific of the product requirements in infra security and scalability for example"
+
+> "for how the bd logs in the database what do you mean this sounds something not sustainable and working only on this project , the session decided to put beads on Wintermute that is something I need YOu to generalise when customer use the delivery plugin"
 
 No operator record exists; defaults are labelled **default**.
 
@@ -40,7 +42,7 @@ with history, a tracker, CI, users, plan text already public, and several compon
 
 | # | Finding | Lenses | Evidence |
 | :-- | :-- | :-- | :-- |
-| B1 | No way to point the plugin at a beads database it did not create: `start.js` checks for `.beads` and otherwise runs `bd init`; the Vault's beads are reached through a wrapper on the owner's server | 3 | `scripts/start.js:353-362`; `prepare-role.js:107-111`; the-vault `AGENTS.md:188-189` |
+| B1 | No way to point the plugin at a beads database it did not create: `start.js` checks for `.beads` and otherwise runs `bd init`; the Vault's beads are reached through a wrapper on the owner's server, and the plugin's own manifest copies that shape (`bd_host`, a shared server); on day one that server refused every command and its data exists on no other machine (revision 3: ADR-020) | 3 | `scripts/start.js:353-362`; `prepare-role.js:107-111`; the-vault `AGENTS.md:187-190`; `spikes/beads-topology-results.md` |
 | B2 | One product repo is assumed in the manifest, checkouts, merge gate, CI and reviews | 3 | `lib/manifest.js:131`, `lib/gh-pr.js:21`, `start.js:308-333`, `prepare-role.js:61-73`, `merge-gate.js:105-114` |
 | B3 | Plan text is already public: roles, delegation and host topology in the Vault's `AGENTS.md`, cited by number by its scripts and CI | 3 | the-vault `AGENTS.md:226-296`; `scripts/prepush.py`, `scripts/issue_progress.py` |
 | B4 | Delivery slowed, cause unknown: 265 commits 10-03..09, 49 commits 10-10..19 (UTC). This repo is silent on the same days (10-14..17, 10-20..23), so the owner's time is as likely a cause as the Vault's process | 2 | `git log` in both repos |
@@ -105,8 +107,10 @@ cross-component bead or PR, or a per-component setup sees a forced co-release.
 **Release 1 (answers "when an umbrella" and avoids a second tracker):**
 1. `start.js --adopt --dry-run`: inventory (components, repos, workflows, surfaces, contracts,
    tracker, in-repo process) with the umbrella verdict per criterion and its evidence. Writes nothing.
-2. Point at an existing beads endpoint: check its prefix, never `bd init` over it, no schema
-   change; list live claims and worktrees as a drain list the owner signs.
+2. Adopt the existing beads database without a shared server (ADR-020): check its prefix, never
+   `bd init` over it, no schema change; move it once to sync through the private project repo
+   (`refs/dolt/data`), every host bootstrapping its own copy; list live claims and worktrees as a
+   drain list the owner signs.
 3. Classify existing beads (adopt into a story, leave, close with a note), signed by the owner.
 4. Do-not-write list (deploy, hosting, pins, the tracker's schema, public issues) and day-one
    invariants (prepush passes, tests and deploy green, `bd ready` unchanged, site up).
