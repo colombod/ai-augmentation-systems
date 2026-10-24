@@ -1,14 +1,17 @@
 # Product brief: onboarding an existing, multi-repo product
 
 > Written by /delivery:brief. Owned by Product Owner and Business Analyst.
-> Status: draft · Last updated: 2026-10-24 · Depends on: `initiatives/feature-map/` (the inventory)
+> Status: draft (revision 2, after `reviews/brownfield-onboarding-brief-01.md`) · Last updated: 2026-10-24
+> Depends on: `initiatives/feature-map/` (the inventory, held to its freshness constraint)
 
 **Mode:** frame (a new capability; the Vault is the grounding example and future test bed) ·
-**Word count:** 644 (cap 900, tables excluded, `grep -v '^|' | wc -w`).
+**Word count:** 756 (cap 900, tables excluded, `grep -v '^|' | wc -w`).
 
 ## Owner's ask
 
 > "A feature I need you to shape is how to onboard brown field projects onto delivery plugin customer will need that to work on products and make sure the delivery plugin can handle products that spans many components and repo. How to decide when an unbrella space is needed to model the product and work progress while working on each individual parts . The example I want to use later to work on is the vault project which is not performing well as delivery and this plugin will help me manage that product"
+
+> "Check my private repo there is a private repo https://github.com/colombod-personal/the-vault-planning that might be the right umbrella ?"
 
 No operator record exists; defaults are labelled **default**.
 
@@ -16,104 +19,114 @@ No operator record exists; defaults are labelled **default**.
 
 | Lens | Ran | Found nothing others did? |
 | :-- | :-- | :-- |
-| value (product-owner) | yes, isolated | yes: the Vault's throughput collapse and tracker churn (B4, B5) |
-| precision (business-analyst) | yes, isolated | yes: "component" undefined; manifest count is not release count (B6); falsifiable umbrella rule |
-| absence (feature-critic) | yes, isolated | yes: a second empty tracker on day one (B1); deploy is several shas (B8); onboarding is irreversible (B10) |
+| value (product-owner) | yes, isolated | yes: tracker churn (B5) |
+| precision (business-analyst) | yes, isolated | yes: "component" undefined (B6); a falsifiable umbrella rule |
+| absence (feature-critic) | yes, isolated | yes: deploy is several shas (B8); onboarding is irreversible (B10) |
 
-**Findings by convergence:** 3 by all three · 3 by two · 4 by one. **Not exhausted.**
-Vault facts read from a full clone of `colombod-personal/the-vault` (315 commits, root
-2026-09-27); plugin facts from `plugins/delivery` at `main` (v0.30.0).
+**Findings by convergence:** 3 by all three · 3 by two · 4 by one. **Not exhausted.** The
+challenge panel corrected B1, B4, B5, B7 and the rule. Vault facts: full clone of
+`colombod-personal/the-vault` (315 commits, root 2026-09-27); commit days in UTC.
 
 ## Problem
 
 The plugin assumes a new product in one repo with no process of its own. Real products arrive
-with history, a tracker, CI, users, plan text already public, and several repos.
+with history, a tracker, CI, users, plan text already public, and several components or repos.
 
 | # | Finding | Lenses | Evidence |
 | :-- | :-- | :-- | :-- |
-| B1 | Onboarding starts a second, empty tracker: `start.js` runs `bd init` when `.beads` is absent; the Vault's beads live on a shared Dolt server; nothing adopts them | 3 | `scripts/start.js:353-362`; the-vault `AGENTS.md:97-117` |
-| B2 | One product repo, everywhere: `product_github` is one owner/name; one checkout; the merge gate refuses any other repo; CI and reviews read one repo | 3 | `lib/manifest.js:131`, `lib/gh-pr.js:21`, `start.js:308-333`, `prepare-role.js:61-73`, `merge-gate.js:105-114` |
-| B3 | The plan is already public: the Vault's `AGENTS.md` (319 lines) holds roles, the Chief of Staff's delegation and host topology; its CI enforces that process; the leak guard has no rule for content that predates it | 3 | the-vault `AGENTS.md:226-296`; `.github/workflows/issue-progress.yml`; `hooks/scripts/leak.js` |
-| B4 | Delivery stalled: 265 commits 10-03..09 (~38/day), 47 commits 10-10..19 (~5/day), none 10-14..16 or since 10-20 | 2 | `git log` (commit dates) |
-| B5 | Tracking redefined three times in five days (issues as board, repo as backlog, beads only); 17 of 263 merged PRs name a bead; the old issue workflow still runs | 2 | the-vault `6797eb6`, `7f5f540`, `802fe6b`; `issue-progress.yml` |
-| B6 | "Component" is undefined: the conventions count manifests (the Vault has 5) but the Vault deploys one Vercel project | 2 | `references/conventions.md:13`; the-vault `deploy.yml` |
-| B7 | A second repo is a real dependency: `mtg-toolkits` pinned in `requirements-vcs.txt`, read by three workflows; a change there is two PRs in order, which the plan cannot link | 1 | the-vault `requirements-vcs.txt`, `tests.yml`, `deploy.yml` |
-| B8 | "Deployed" is one sha per surface; the Vault ships a site, an MCP remote and assistant plugins from separate paths | 1 | `docs/reference.md:344-362` |
-| B9 | Surfaces are per initiative; the Vault's six surfaces are product-wide | 1 | `scripts/lib/surface.js:13` |
-| B10 | Onboarding cannot be undone: nothing restores an in-repo process or exports beads and decisions back | 1 | absence; `docs/quickstart.md:347` covers only the watchdog |
+| B1 | No way to point the plugin at a beads database it did not create: `start.js` checks for `.beads` and otherwise runs `bd init`; the Vault's beads are reached through a wrapper on the owner's server | 3 | `scripts/start.js:353-362`; `prepare-role.js:107-111`; the-vault `AGENTS.md:188-189` |
+| B2 | One product repo is assumed in the manifest, checkouts, merge gate, CI and reviews | 3 | `lib/manifest.js:131`, `lib/gh-pr.js:21`, `start.js:308-333`, `prepare-role.js:61-73`, `merge-gate.js:105-114` |
+| B3 | Plan text is already public: roles, delegation and host topology in the Vault's `AGENTS.md`, cited by number by its scripts and CI | 3 | the-vault `AGENTS.md:226-296`; `scripts/prepush.py`, `scripts/issue_progress.py` |
+| B4 | Delivery slowed, cause unknown: 265 commits 10-03..09, 49 commits 10-10..19 (UTC). This repo is silent on the same days (10-14..17, 10-20..23), so the owner's time is as likely a cause as the Vault's process | 2 | `git log` in both repos |
+| B5 | Tracking was redefined three times (10-07, 10-07, 10-11) and has held since: 16 of 22 PRs merged from 10-12 name a bead (`vault-[a-z0-9]{3}(\.[0-9]+)?` in the subject); an old issue workflow still runs | 2 | the-vault `6797eb6`, `7f5f540`, `802fe6b`; `issue-progress.yml` |
+| B6 | "Component" is undefined: the conventions count manifests (6 files: `pyproject.toml`, `web/package.json`, two `plugin.json` in each of two plugins; plus registry files) while releases go through Vercel and GitHub Pages | 2 | `references/conventions.md:13`; the-vault `deploy.yml`, `guide-pages.yml` |
+| B7 | A second repo is a real dependency: `mtg-toolkits`, pinned in `requirements-vcs.txt` (2 pin commits), read by 7 workflows, imported on 39 lines of `vault/`, `api/`, `jobs/` | 1 | the-vault `requirements-vcs.txt`, `.github/workflows/` |
+| B8 | "Deployed" is one sha per surface; the Vault ships a site, an MCP remote and assistant plugins by separate paths, and installed plugins depend on the MCP tool contract | 1 | `docs/reference.md:344-362`; the-vault `plugins/the-vault/.mcp.json`, `server.json` |
+| B9 | Surfaces are declared per initiative; the Vault's surfaces are product-wide | 1 | `scripts/lib/surface.js:13` |
+| B10 | Onboarding cannot be undone: nothing restores an in-repo process or exports beads and decisions back | 1 | absence |
 
-The plugin's own design was extracted from the Vault (`.superpowers/specs/2026-10-12-shipping-team-design.md:7`,
-"The Vault is not migrated as part of this work"). Onboarding is mostly recovering what was
-already built, not inventing it.
+The plugin was extracted from the Vault's own practice (`.superpowers/specs/2026-10-12-shipping-team-design.md:40`,
+"The Vault is not migrated as part of this work"). Onboarding recovers what was already built.
 
 ## Who has it
 
-An **operator** running a live product across several components and repos, with users on
-surfaces they do not control. Evidence for one: the Vault's owner. Others: unknown.
+One **operator**, the owner, running a live product across components and repos with users on
+surfaces they do not control. Reach beyond this one operator is unknown; later phases must not
+generalise from n=1.
 
 ## Cost of the status quo
 
-- Delivery near standstill (B4) while gates, daily plan and watchdog exist, unused, in the plugin.
+- The plugin's gates, daily plan and watchdog exist but do not run on the product they came from.
 - CI minutes the owner pays: 5 of 7 parallel branches failed CI on 10-07 (the-vault `AGENTS.md:77-80`).
-- Progress split across issues, beads and commit text (B5); the plan exposed in a public repo (B3).
+- The plan sits in a public repo (B3); cross-repo reach (B7, B8) is invisible to planning.
 
 ## What changes if we solve it
 
-An existing product moves onto the plugin in one guided run that takes inventory first (the
-feature map), adopts what exists (tracker, CI, surfaces, work in flight), moves plan content
-private, and decides, by a stated rule, whether the product needs an umbrella space over its
-parts, with progress visible per part and for the whole.
+One read-only run inventories an existing product (through the feature map), names whether it
+needs an umbrella space and why, and connects the plugin to what exists (tracker, CI, surfaces,
+work in flight) without writing to any of it until the owner records each step.
 
-## Umbrella rule (proposed, falsifiable)
+## Umbrella rule (revision 2)
 
-**Umbrella** (one project repo planning N components, areas mapped to components) when any holds:
-(a) one story or wave touches 2+ component repos; (b) the team changes a pinned cross-repo
-dependency; (c) 2+ deploy units share a customer surface; (d) releasing one forces releasing another.
-Otherwise one project per component. **Falsified** if, over N sprints, no bead or PR crosses components.
+**Umbrella** (one project repo planning several components, each area declared against
+components) when any criterion holds **with evidence observable before onboarding**:
 
-| Product | (a) | (b) | (c) | (d) | Result |
-| :-- | :-- | :-- | :-- | :-- | :-- |
-| the Vault | if toolkit work counts | yes (`mtg-toolkits` pin) | yes (site and MCP remote behind mtgvault.cards) | unknown | umbrella |
-| ai-augmentation-systems | no | no | no | only `marketplace.json` | one project per plugin (today's shape) |
+| Criterion | Observable before onboarding as |
+| :-- | :-- |
+| (a) work crosses components | past changes touching 2+ components in one change window (commits or PRs within a day) |
+| (b) the team changes a dependency it owns | pin-bump commits on a repo the team owns, **together with** (a); a pin alone is a dependency, not an umbrella |
+| (c) components share a customer surface or contract | two deploy paths behind one host, or a tool or API schema consumed by an installed client |
+| (d) releasing one forces releasing another | co-release history; shared registry entries (`marketplace.json`) excluded |
+
+No evidence for a criterion reads **unknown**, never "no". The dry run shows which criteria fired
+and the owner can override. **Falsified** if, over 3 sprints (**default**), an umbrella sees no
+cross-component bead or PR, or a per-component setup sees a forced co-release.
 
 ## Success signals
 
 | Signal | How measured | Current (Vault) | Target |
 | :-- | :-- | :-- | :-- |
-| One tracker | merged PRs naming a bead | 17 of 263 | all, after onboarding |
-| Plan private | team, role and host lines in the public `AGENTS.md` | ~120 of 319 | 0 |
-| No silent stalls | gaps of 3+ days with no commit while work is open | 2 | 0, or flagged by the watchdog the same day |
-| First-push CI | Actions runs passing first time | 2 of 7 on 10-07 | measured weekly, rising |
-| Cross-repo reach seen | `mtg-toolkits` changes linked to Vault stories | 0 | every pin bump |
-| Onboarding time | one guided run to a first briefing | not possible | one session |
+| Delivery | beads closed with evidence per week | to measure at onboarding | rising over 4 weeks |
+| One tracker | PRs merged after onboarding naming a bead, pattern above | 16 of 22 since 10-12 | all |
+| Cross-repo reach seen | `mtg-toolkits` pin bumps linked to the Vault work they enable | 0 of 2 | all |
+| Stalls caught | claimed beads idle 3+ days flagged by the watchdog the same day | not measured | all |
+| Nothing regressed | day-one invariants (MVP 4) hold on the first merge after onboarding | n/a | all hold |
+| Verdict holds | umbrella verdict against the falsification test after 3 sprints | n/a | not falsified |
 
 ## MVP boundary
 
-1. `start.js --adopt`: dry-run inventory (repos, components, manifests, workflows, surfaces,
-   tracker, in-repo process) with the umbrella verdict and its reasons; nothing written.
-2. Adopt an existing beads database instead of `bd init`.
-3. N component repos in `team.json`, with builders' worktrees, merge gate and CI per repo.
-4. A plan-content migration report for the public repo (what moves private, what stays), applied only on an owner record.
-5. Areas mapped to components; one umbrella briefing plus per-component progress.
+**Release 1 (answers "when an umbrella" and avoids a second tracker):**
+1. `start.js --adopt --dry-run`: inventory (components, repos, workflows, surfaces, contracts,
+   tracker, in-repo process) with the umbrella verdict per criterion and its evidence. Writes nothing.
+2. Point at an existing beads endpoint: check its prefix, never `bd init` over it, no schema
+   change; list live claims and worktrees as a drain list the owner signs.
+3. Classify existing beads (adopt into a story, leave, close with a note), signed by the owner.
+4. Do-not-write list (deploy, hosting, pins, the tracker's schema, public issues) and day-one
+   invariants (prepush passes, tests and deploy green, `bd ready` unchanged, site up).
+5. Rollback: a tagged snapshot of in-repo rules and a beads export, revert tested on a clone;
+   owner decisions already made in prose ratified once as operator records.
+
+**Release 2, gated on the verdict:** several components in one team, or several teams under one
+umbrella briefing (open question 2); per-component and whole-product progress.
 
 ## Explicitly out of scope
 
-- Migrating the Vault itself (a later initiative using this one).
-- Secrets and production data migration (named as owner-queue steps, not automated).
-- Repos the team does not own beyond read and pin bumps.
+- Moving plan text out of a public repo: its own initiative (it must list inbound references
+  first; it stops publishing, it does not erase git history).
+- Migrating the Vault itself (a later initiative using this one); secrets and production data.
 
 ## Current-state workflow
 
-The owner runs the Vault's own rules from its public `AGENTS.md`, sessions on three hosts, beads
-on a home server, issues still updated by an old workflow; the plugin sits unused beside it.
+The owner runs the Vault from its public `AGENTS.md`, sessions on three hosts, beads on a home
+server; the plugin sits unused beside it.
 
 ## Open questions
 
 | # | Question | Owner | Blocks | Default |
 | :-- | :-- | :-- | :-- | :-- |
-| 1 | Is `mtg-toolkits` part of the Vault, on the same board, or a dependency you only bump? | operator | umbrella (a) | part of it |
-| 2 | Which hurts most today: broken things reaching users, work stopping unnoticed, or your time steering sessions? | operator | signal priority | work stopping |
-| 3 | Should the team rules leave the public repo for `the-vault-planning`? It is private and has no commits yet (GitHub API: 409 "Git Repository is empty", 0 branches, checked 2026-10-24), so it can become the umbrella project repo with nothing to migrate out of it | operator | MVP 4 | `the-vault-planning` is the umbrella project repo; team rules move there |
-| 4 | Does the Vault team keep working during onboarding, or pause? | operator | adoption path | keeps working |
-| 5 | If it is not helping after a month, what must you get back? | operator | B10 | the in-repo rules and the beads |
-| 6 | Where is the R-01..R-45 list the plugin cites, as a baseline? | operator | signals | none |
+| 1 | Is `mtg-toolkits` work on the Vault's board, or a library you only bump? | operator | criterion (b) | only bumped |
+| 2 | One team across the components, or one team per component under one briefing? | operator | release 2 | decided by the release 1 verdict |
+| 3 | `the-vault-planning` is private and empty (GitHub API: "Git Repository is empty", 0 branches): use it as the umbrella project repo? | operator | release 1 setup | yes |
+| 4 | What hurts most: broken things reaching users, work stopping unnoticed, or your time steering sessions? | operator | signal priority | work stopping |
+| 5 | Does the Vault team keep working during onboarding? | operator | drain list | yes, read-only adopt |
+| 6 | If it is not helping after a month, what must you get back? | operator | rollback | in-repo rules and beads |
