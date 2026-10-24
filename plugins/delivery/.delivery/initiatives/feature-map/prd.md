@@ -9,7 +9,8 @@ Scenario and requirement tables are data.
 > Status: draft (steps 1 to 5 run; not challenged) · Last updated: 2026-10-24
 > Brief: `.delivery/initiatives/feature-map/brief.md` (revision 2 plus owner quotes 4 and 5, at `57a2788`)
 > Measured at: `57a2788b2221466ae1614a462c4684a7d0958c79` (HEAD of `delivery-feature-map`). Earlier figures keep their own SHA.
-> **Word count:** WORDCOUNT
+> HEAD then moved to `4fdfa51`, which adds only this file: re-run there, 563 files (this record), 71 entry points and 1,654 edges unchanged.
+> **Word count:** 1391 prose words (target 1000, cap 1600; tables excluded, `grep -v '^|' prd.md | wc -w`). Over target, within cap: 17 scenarios each need a main path, and the binding constraint is quoted verbatim.
 
 ## Summary
 
@@ -75,7 +76,7 @@ Every criterion below names a check, a fixture and a surface. **Surfaces are pro
 | fx-blind | a `.py` file, a malformed `hooks.json`, one `.ndjson`, one extensionless script, one basename shared by two plugins |
 | fx-anchor | a registered feature; one commit deletes an anchor, one renames it |
 | fx-waves | area A with wave 1 and 2 verified, a story of wave 1 merged `x.js`; area B with feature F |
-| fx-merge | story declares `a.js`, `c.js`; PR merges `a.js`, `dist/b.js`; a second PR at the 3,000-file cap |
+| fx-merge | story declares `a.js`, `c.js`; PR merges `a.js`, `dist/b.js`; a second PR at the 3,000-file cap; a third merges `a.js`, `dist/b.js`, `d.js` |
 | fx-retire | features with exclusive and shared files, a usage-source stub, the 2026-08-10..14 ledger gap, decision records scoped `bead:<id>` and `label:irreversible`, an unmerged branch and an open PR stub referencing a file |
 | fx-pairs | features A, B sharing non-hub `x.js`; persona files with `grounding` and `status` |
 | fx-force | a confirming SHA made unreachable by a force-push |
@@ -94,10 +95,12 @@ Every criterion below names a check, a fixture and a surface. **Surfaces are pro
 | Dangling shipped reference | 1: `claim-guard/.mcp.json` serves `dist/claim-ledger.js`, not in git | same at `7746e27` |
 | Files the spike never analyses | 24 of 562: ndjson 7, jsonl 7, dot 7, sh 1, `bd`, `gh` | same set at `7746e27` (BA) |
 | Replay `6883fee` | 2 features, both `record-invocation` hooks; 0 with runtime reach off | fixed commit, HEAD-independent |
-| Sweep, last 255 non-merge commits touching `plugins/` | SWEEPHEAD | SWEEPOLD |
+| Sweep, last 255 non-merge commits touching `plugins/` | `8f3a8d5`..`57a2788`: 159 reach none; median 0, p90 6, max 48 (nearest rank, hubs included); runtime reach fires once, `6883fee` | `0342e1e`..`7746e27`: 155 reach none; median 0, p90 7, max 48; fires once, `6883fee` (re-run at `57a2788`; `research.md` reported 153) |
 
 HEAD differs from `7746e27` only in `brief.md` (4 commits), which the spike classes as a record,
-not shipped: the graph is unchanged, as measured.
+not shipped: the graph is unchanged, as measured. The sweep p90 still moved from 7 to 6: the four brief-only
+commits (0 features each) displaced four older ones (1, 17, 1, 1). A sliding window moves with
+commits that ship nothing, so the noise baseline is pinned to a commit window (FR-45).
 
 ## Spike defects the architecture must address
 
@@ -401,7 +404,7 @@ No persona was built for this initiative; each fit is inferred.
 | ID | Check | Fixture | Surface | Passes when |
 | :-- | :-- | :-- | :-- | :-- |
 | FR-28 | test | fx-merge | S3 | warns exactly "declared not merged: c.js"; nothing on `dist/b.js`; exit 0; the capped PR reads "not reconciled, truncated" |
-| FR-29 | test | fx-merge | S3 | the row records `a.js` against the story; out-of-prediction count is 1 (`dist/b.js` excluded as `GENERATED`... count of non-generated merged files outside the prediction) |
+| FR-29 | test | fx-merge, third PR adding undeclared `d.js` | S3 | the row records `a.js` against the story; out-of-prediction count is 1 (`d.js`); `dist/b.js` is `GENERATED` and not counted |
 
 ### S-11: How features relate, declared and hidden
 
@@ -647,8 +650,8 @@ No persona was built for this initiative; each fit is inferred.
 | :-- | :-- | :-- | :-- | :-- |
 | NFR-1 | Build time at HEAD | open (OQ 8) | 2.56-2.68 s, 562 files, at `57a2788` | test, timed 3 runs · hist@HEAD · S1 |
 | NFR-2 | Data volume | this repo as measured; a product repo unknown (OQ 4) | 562 files, 1,654 edges, 71 entry points at `57a2788` | test · hist@HEAD · S1 |
-| NFR-3 | Features reached per commit | see NFR-P2 (same measure; ID kept for references) | SWEEPNFR | `sweep.js` |
-| NFR-4 | Runtime-reach firing rate | open (OQ 10) | SWEEPRUNTIME | test · FR-45 window · S1 |
+| NFR-3 | Features reached per commit | see NFR-P2 (same measure; ID kept for references) | p90 6 at `57a2788`, p90 7 for the window ending `7746e27`, hubs included | `sweep.js` |
+| NFR-4 | Runtime-reach firing rate | open (OQ 10) | 1 of 255 at `57a2788` (`6883fee`), and 1 of 255 for the window ending `7746e27` | test · FR-45 window · S1 |
 | NFR-5 | Replay recall | see NFR-P1: a count, never a rate, until incidents exist | 1 of 1 (`6883fee`) | replay rows |
 | NFR-6 | Register concurrency | 0 lost writes; a write against an older version refused | not measured | test, two processes × 100 rows = 200 rows · fx-pairs · S1 |
 | NFR-7 | Availability | 0 ready refusals caused by the map | not measured | test · FR-20 fixtures · S2 |
@@ -661,7 +664,7 @@ No persona was built for this initiative; each fit is inferred.
 | NFR-F5 | Shallow clone | history answers refused | not measured | test · shallow · S1 |
 | NFR-F6 | No model text as fact | each register field extracted (rule id) or declared (declarer, record id) | no register yet | test · FR-43 · S1 |
 | NFR-P1 | Replay recall | every known break replayed on every rule change; reported as a count | 1 of 1 | test · FR-16 · CI |
-| NFR-P2 | Sweep noise, hubs excluded | p90 3 or fewer (brief target) | with hubs: SWEEPP90; hubs-excluded not measured (threshold OQ 7) | test · FR-45 · S1 |
+| NFR-P2 | Sweep noise, hubs excluded | p90 3 or fewer (brief target) | with hubs: p90 6 (`57a2788` window), 7 (`7746e27` window); hubs-excluded not measured (threshold OQ 7) | test · FR-45 · S1 |
 | NFR-P3 | Mutation coverage of rules | 100% of rules, in CI | no rule registry yet | mutation · FR-44 · CI |
 | NFR-P4 | False-edge precision per rule | open (OQ 16); research reports Tricorder holds ~10% (reported) | D-6: ~4 of 16 runtime patterns false | hand-audited sample per rule |
 | NFR-P5 | Coverage | analysed + blind spots = all files in scope; silent: 0 | 24 of 562 silent at `57a2788` | test · fx-blind, hist@HEAD · S1 |
