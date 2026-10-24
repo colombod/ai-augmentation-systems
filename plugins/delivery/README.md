@@ -37,6 +37,7 @@ Run the pipeline skills yourself, from `/delivery:brief` on: see [Using the plan
 - **Your attention protected.** Only what only you can decide reaches you, once, in one ranked briefing, and each decision carries a **record id** any session can check against your exact words.
 - **Roles that cannot do each other's jobs.** Each role has a **lane**, enforced by hooks.
 - **The right model for each job**, set per role and raised per story.
+- **The product's own experts.** Staffing hires a handful of specialists for your product (infrastructure, security, scalability), each written from the files that need it and kept in the private project repo; every role session can call them: see [Experts](docs/reference.md#the-shipping-teams-mechanisms).
 - **Work that finishes.** The team builds in compounding waves per product area, each verified on the customer's app before the next builds on it; it picks fixes and work that builds on verified work first, and under the budget you set it never starts what it cannot finish. Large stories are costed on the large model they are built with (opus by default), so set the weekly figure with that in mind: see [Waves, budget and selection](docs/reference.md#waves-budget-and-selection).
 - **Strategy stays private.** Plans and decisions live in the project repo; the product repo gets code only.
 
