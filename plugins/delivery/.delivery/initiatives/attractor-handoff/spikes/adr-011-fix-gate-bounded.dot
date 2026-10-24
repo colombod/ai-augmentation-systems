@@ -1,0 +1,38 @@
+// adr-011-fix-gate-bounded.dot -- ADR-011 fixture: hand-built bounded two-node
+// fix -> gate retry loop, proving FR-8/FR-9's declared attempt bound and honest
+// non-convergent outcome. Extends the unbounded shape of
+// plugins/attractor/skills/attractorify/examples/00-convergence-loop.dot with
+// shell-arithmetic bound checking and 3-way gate_pass/gate_retry/gate_giveup
+// routing, per ADR-011.
+
+digraph fix_gate_bounded {
+    start [shape=Mdiamond, label="Start"]
+
+    s3_c2__fix [
+        shape=box,
+        label="Fix",
+        prompt="Fix criterion FR-9 (bounded retry produces Outcome=non-convergent, never silent, never retried past the declared bound). (Informational only -- the gate below is authoritative and does not depend on this node's output.)"
+    ]
+
+    s3_c2__gate [
+        shape=parallelogram,
+        label="Gate",
+        goal_gate=true,
+        tool_command="mkdir -p .attractor-demo; c=$(( $(cat .attractor-demo/count-s3c2 2>/dev/null || echo 0) + 1 )); echo $c > .attractor-demo/count-s3c2; if [ \"$c\" -ge \"${pass_at}\" ]; then printf gate_pass; elif [ \"$c\" -ge \"${bound}\" ]; then printf gate_giveup; else printf gate_retry; fi",
+        outputs="s3_c2.result"
+    ]
+
+    non_convergent [
+        shape=parallelogram,
+        label="Record non-convergent",
+        tool_command="mkdir -p .attractor-demo; echo 'FR-9 s3_c2 Outcome=non-convergent' >> .attractor-demo/outcomes.log; printf recorded"
+    ]
+
+    done [shape=Msquare, label="Done"]
+
+    start -> s3_c2__fix -> s3_c2__gate
+    s3_c2__gate -> done            [label="pass",   condition="context.tool.last_line=gate_pass"]
+    s3_c2__gate -> s3_c2__fix      [label="retry",  condition="context.tool.last_line=gate_retry"]
+    s3_c2__gate -> non_convergent  [label="giveup", condition="context.tool.last_line=gate_giveup"]
+    non_convergent -> done
+}
