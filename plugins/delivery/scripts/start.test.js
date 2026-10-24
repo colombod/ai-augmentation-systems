@@ -485,3 +485,13 @@ test('start: bd init leaves the customer agent files alone and commits only the 
   assert.doesNotMatch(files, /notes\.txt|CLAUDE\.md/);
   assert.match(cp.execFileSync(GIT, ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }), /^A  notes\.txt$/m);
 });
+
+test('start: a publish refused with HTTP 403 names the network policy and where to publish from; a dry run says it would publish', () => {
+  const { root } = projectWithOrigin();
+  const dry = start(['--project', root, '--host', 'laptop', '--dry-run']);
+  assert.match(dry.out, /beads: would set the project repo's origin as the sync remote and publish the issues/);
+  const r = scaffold(root, { env: { BD_FAKE_PUSH: '403' } });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: publish refused \(HTTP 403\): this machine's network does not allow pushing beads' refs\/dolt\/data .*publish once from a machine with ordinary git access/);
+  assert.doesNotMatch(r.out, /publish failed:/);
+});

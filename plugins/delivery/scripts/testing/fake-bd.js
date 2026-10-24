@@ -172,6 +172,7 @@ switch (cmd) {
       process.stdout.write(`Added remote ${pos[2]}\n`);
     } else if (sub === 'push') {
       if (process.env.BD_FAKE_PUSH === 'fail') { process.stderr.write('fake-bd: push refused\n'); process.exit(1); }
+      if (process.env.BD_FAKE_PUSH === '403') { process.stderr.write('error: RPC failed; HTTP 403 curl 22 The requested URL returned error: 403\n'); process.exit(1); }
       if (!cfg || !(cfg.remotes || []).length) { process.stderr.write('Error: no remote configured\n'); process.exit(1); }
       cfg.pushes = (cfg.pushes || 0) + 1;
       fs.writeFileSync(cfgPath, JSON.stringify(cfg));

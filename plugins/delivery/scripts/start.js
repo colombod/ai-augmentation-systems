@@ -218,7 +218,7 @@ function setUpBeads({ projectRoot, prefix, env, dryRun, w, say }) {
   const published = !hasDb && run('git', ['ls-remote', 'origin', 'refs/dolt/data'], { cwd: projectRoot, env, timeout: 30000 }).out.trim() !== '';
   if (!hasBeads && !published) {
     say(`  beads: ${w}run bd init --prefix ${prefix}`);
-    if (dryRun) return;
+    if (dryRun) { say(`  beads: ${w}set the project repo's origin as the sync remote and publish the issues (bd dolt push)`); return; }
     // --skip-agents: without it bd init also writes and commits AGENTS.md, CLAUDE.md,
     // .claude/settings.json, .codex/ and .agents/skills/ into the customer's project repo (bd 1.1.2),
     // over their own files; the plugin brings its own role instructions.
@@ -255,9 +255,15 @@ function setUpBeads({ projectRoot, prefix, env, dryRun, w, say }) {
   }
   if (dryRun) { say(`  beads: ${w}publish the issues to the project repo (bd dolt push)`); return; }
   const p = bd(['dolt', 'push']);
+  // A Claude Code cloud session's git proxy refuses pushes to refs outside refs/heads (measured:
+  // HTTP 403 for refs/dolt/data, while branch pushes pass), so the first publish must come from a
+  // machine with ordinary git access to the project repo.
+  const refused = !p.ok && /HTTP 403|returned error: 403/.test(`${p.err} ${p.out}`);
   say(p.ok
     ? '  beads: issues published to the project repo; other machines get them from a clone with `bd bootstrap` (start.js does it)'
-    : `  beads: publish failed: ${(p.err || p.out).slice(0, 300)}. The database works here; run \`bd dolt push\` in ${projectRoot} once the project repo accepts pushes`);
+    : refused
+      ? `  beads: publish refused (HTTP 403): this machine's network does not allow pushing beads' refs/dolt/data (a Claude Code cloud session's proxy refuses refs outside branches). The database works here; publish once from a machine with ordinary git access by running start.js there`
+      : `  beads: publish failed: ${(p.err || p.out).slice(0, 300)}. The database works here; run \`bd dolt push\` in ${projectRoot} once the project repo accepts pushes`);
 }
 
 // Smart App Control state from the registry value Windows keeps it in: 0 off, 1 on (enforcing),

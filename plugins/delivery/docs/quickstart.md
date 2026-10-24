@@ -59,7 +59,9 @@ A failed publish is reported with its fix and does not stop the run. `start.js -
 the same state (`beads sync`).
 
 The project repo must be **private**: syncing writes the issue history into it, under
-`refs/dolt/data` and a branch named `__dolt_remote_info__`. Once a machine is set up, sessions
+`refs/dolt/data` and a branch named `__dolt_remote_info__`. A Claude Code cloud session cannot
+make the first publish: its git proxy refuses pushes outside branches (HTTP 403 on
+`refs/dolt/data`, measured), so run `start.js` first on a machine with ordinary git access. Once a machine is set up, sessions
 run `bd dolt pull` before work and `bd dolt push` after.
 
 **By hand**, when you are not using `start.js`:
