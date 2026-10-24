@@ -1,8 +1,9 @@
 # ADR-016: Keep the feature and code map in a commit-pinned SQLite database, queried through tools
 
 **Status:** proposed
-**Date:** 2026-10-24
-**Deciders:** owner (asked for it), Solution Architect (to confirm in `/delivery:architecture`)
+**Date:** 2026-10-24 (amended the same day by `/delivery:architecture`, see "Amendment")
+**Deciders:** owner (asked for it), Solution Architect (confirmed with amendments in `initiatives/feature-map/architecture.md`)
+**Word count:** 757 prose words (cap 600; declared overrun: the owner's two statements are kept verbatim and the decision now covers six points; tables excluded, `grep -v '^|'`).
 
 ## Context
 
@@ -24,27 +25,32 @@ Measured here (`spikes/db-spike.js`, Node 22.22.0, `node:sqlite`, SQLite 3.50.4)
 | :-- | :-- |
 | FTS5 and recursive CTEs available with no install | yes |
 | Build at `528f388` (563 files, 1,654 edges, 71 features) | 4.0 s, 0.99 MB |
+| Build at `57d5eca` (565 files), three runs | 2.98, 2.58, 2.73 s; 2.55 s of it is the spike's quadratic blob reader (`map-spike.js:27-44`) |
+| Linear reader (`ls-tree -z`, one `cat-file --batch`, Buffer slices) at `57d5eca` | 87-90 ms; inserting 1,654 edges plus FTS 26 ms; cold node, open, read meta 28-31 ms |
 | `6883fee` replayed as a recursive SQL query on the map at its parent | the 2 `record-invocation` hooks, 1 hop, same as the in-memory walk |
+| Recursive reach query for `scripts/lib/gates.js` | 24 features, 20.6 ms |
 | Open the map for a different commit | refused: `stale: map 528f388..., asked 00a5cb1...` |
 | Open it for its own commit | answers |
 
 ## Decision
 
-1. **Derived map:** one SQLite file per commit, named `map-<full sha>.db`, built from git
-   objects at that commit, written to a temporary name and renamed atomically. It is a cache:
-   never committed, always rebuildable, and refused when its commit is not the asked one.
-2. **Every row carries provenance:** commit, path, line span, matched text and extraction rule
-   (PRD NFR-F1); a fact without them is not inserted. Unanalysed files are rows in a `blind`
-   table, never silent.
-3. **Declared facts** (feature names, areas, retirement states, owner records) are the only
-   hand-made data. They live in the project repo as an append-only file written by one script,
-   reviewed in pull requests, and are loaded into the database at build time with their
-   declarer and record id. They are never extracted, and extracted rows are never edited.
-4. **Agents query, they do not read:** an MCP server in the plugin (as `claim-guard` ships one)
-   exposes `shipped`, `feature`, `impact`, `search` and `verify`, each answer stating the commit
-   it describes and its blind spots. The CLI exposes the same queries for hooks and gates.
-5. Node 22.13 or later becomes the plugin's minimum for the map only; older Node gets a refusal
-   naming the version, and every other script keeps working.
+1. **Derived map:** one SQLite file per (repository, commit, rule-set hash),
+   `map-<repo>-<sha>-<rules12>.db`, built from git objects, renamed into place atomically, in
+   `<git-common-dir>/delivery-map/db/` beside full bare mirrors of the product repos. A cache:
+   never committed, rebuildable, refused for any other commit.
+2. **Provenance on every row** (path, line span, matched text, rule) through NOT NULL and CHECK
+   columns; commit, extractor and rules hash once in `meta`, stamped on every answer. Every file
+   is analysed or has a `blind` row.
+3. **Declared facts** are the only hand-made data: `.delivery/map/declared/<writer>.ndjson`, one
+   append-only chain per writing session, merged on read (the `scripts/lib/reviews.js` pattern).
+   Each row cites a verifying operator record (`source`) and the head its writer saw (`base`);
+   unseen concurrent rows on one field read `contested`. Only `map.js declare` writes them.
+4. **Agents query, they do not read:** a read-only MCP server (ADR-017) with read-verb tools, and
+   the same queries on the CLI for hooks and gates; each answer states its commit, provenance and
+   blind spots.
+5. Node 22.13 or later for the map only; older Node gets a refusal, the ready gate a warning.
+6. **Several repositories:** one map per repository commit; a pin is an extracted row, and the
+   pinned repository is mapped at the pinned commit and attached at query time.
 
 ## Alternatives considered
 
@@ -62,13 +68,38 @@ Recursive SQL answered the replay exactly.
 ### Dolt (already the beads database)
 
 **Why it was attractive:** a SQL database with git-style versions, already synced through
-`refs/dolt/data`. **Why rejected for the derived map:** the map is rebuilt from git in seconds, so
-versioning it duplicates git; Dolt is not available in every session. **Kept open** for the
-declared facts, which could sit beside the beads (architecture to decide).
+`refs/dolt/data`. **Why rejected for the derived map:** the map is rebuilt from git (its measured parts: read 87-90 ms,
+insert 26 ms), so versioning it duplicates git; Dolt is not available in every session. **Why rejected
+for the declared facts (decided in amendment):** `bd` is absent in this container and on some
+role hosts, and declared facts must be reviewed in pull requests beside the plan they serve; a
+tracked append-only file gives both.
+
+### One database per product snapshot (all repositories in one file)
+
+**Why it was attractive:** one file to open. **Why rejected:** a toolkit commit pinned by two
+product commits would be built twice.
 
 ## Consequences
 
 - An answer is either for the asked commit or refused; staleness becomes a structural property.
 - `node:sqlite` prints an ExperimentalWarning on Node 22; the Node minimum rises for this feature.
-- A second extractor version needs a schema version in `meta`; old files are rebuilt, not migrated.
+- A new extractor version changes the rules hash, so the file name: old maps are rebuilt, not migrated.
 - The MCP server is new shipped surface: it needs lanes, tests and the doctor check.
+- Every declared row waits for an operator record (PRD FR-43): batching is the owner's cost.
+
+**We will need to revisit this if:** `node:sqlite` changes its API in a later Node major; a
+product repo is too large to rebuild per asked commit within the ready gate's budget; or the owner
+relaxes FR-43.
+
+## Amendment (2026-10-24, `/delivery:architecture`)
+
+What changed from the first proposal, and why:
+
+| Point | Was | Now | Why |
+| :-- | :-- | :-- | :-- |
+| 1 | `map-<sha>.db`, location unstated (the spike used the OS temp dir) | keyed by repo, commit and rules hash; in `<git-common-dir>/delivery-map/` | a rule change must not reuse an old map; the temp dir is shared and unprotected |
+| 2 | `commit_sha` on every edge row; `blind` held dangling references only | commit once in `meta`; NOT NULL and CHECK columns; every unanalysed file a `blind` row | D-4, D-9; a constraint failure names the missing field (FR-40) |
+| 3 | "an append-only file"; Dolt kept open | per-writer chained ndjson with `source` and `base`; Dolt rejected | cross-host merges; FR-43; review in pull requests |
+| 4 | tools `shipped`, `feature`, `impact`, `search`, `verify` | read-verb names | `hooks/scripts/lane.js:1071-1075` admits only read verbs |
+| 5 | refusal on old Node | plus a ready-gate warning | PRD NFR-7 |
+| 6 | single repository | per-repository maps joined through pins | the Vault and `mtg-toolkits` (brownfield brief B7) |
