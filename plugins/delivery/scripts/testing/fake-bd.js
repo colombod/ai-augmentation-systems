@@ -167,6 +167,8 @@ switch (cmd) {
       if (!cfg) { process.stderr.write('Error: no beads database found\n'); process.exit(1); }
       cfg.remotes = [...(cfg.remotes || []), { name: pos[2], url: pos[3], status: 'ok' }];
       fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+      // real bd persists the remote as sync.remote in .beads/config.yaml
+      fs.appendFileSync(require('path').join(process.cwd(), '.beads', 'config.yaml'), `sync.remote: "${pos[3]}"\n`);
       process.stdout.write(`Added remote ${pos[2]}\n`);
     } else if (sub === 'push') {
       if (process.env.BD_FAKE_PUSH === 'fail') { process.stderr.write('fake-bd: push refused\n'); process.exit(1); }
@@ -197,7 +199,7 @@ switch (cmd) {
     // what start.js relies on: a .beads directory in the working directory
     const dir = require('path').join(process.cwd(), '.beads');
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(require('path').join(dir, 'fake-config.json'), JSON.stringify({ prefix: flags.prefix || null }));
+    fs.writeFileSync(require('path').join(dir, 'fake-config.json'), JSON.stringify({ prefix: flags.prefix || null, skipAgents: flags['skip-agents'] === true }));
     process.stdout.write(`fake-bd init ${flags.prefix || ''}\n`);
     break;
   }

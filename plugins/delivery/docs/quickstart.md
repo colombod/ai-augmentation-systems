@@ -43,8 +43,10 @@ own git remote, so there is no database server to run and no database password.
 
 **`start.js` does this on every machine; you run nothing by hand.** On each run it:
 
-- creates the database when the project has none (`bd init`), sets the project repo's `origin`
-  as the sync remote, and publishes the issues (`bd dolt push`);
+- creates the database when the project has none (`bd init --skip-agents`, so beads does not
+  write its own `AGENTS.md`, `CLAUDE.md` or `.claude/settings.json` over yours), commits only the
+  `.beads` files, sets the project repo's `origin` as the sync remote, and publishes the issues
+  (`bd dolt push`);
 - on a fresh clone, where `.beads/` came with the repo but the database did not, or where the
   project repo already holds the issues, fetches them (`bd bootstrap`) and never runs `bd init`,
   which would start a second, separate history;

@@ -468,3 +468,20 @@ test('start: a clone without .beads whose project repo already holds issues is b
   assert.doesNotMatch(r.out, /bd init/);
   assert.equal(fakeCfg(root).bootstrapped, true);
 });
+
+test('start: bd init leaves the customer agent files alone and commits only the beads files', () => {
+  const { root } = projectWithOrigin();
+  fs.writeFileSync(path.join(root, 'CLAUDE.md'), '# ours\n');
+  fs.writeFileSync(path.join(root, 'notes.txt'), 'staged by the customer\n');
+  cp.execFileSync(GIT, ['add', 'notes.txt'], { cwd: root });
+  const r = scaffold(root);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(fakeCfg(root).skipAgents, true);
+  assert.match(r.out, /beads: committed \.beads/);
+  const files = cp.execFileSync(GIT, ['log', '--name-only', '--format=%s', '--grep=^beads:'], { cwd: root, encoding: 'utf8' });
+  assert.match(files, /beads: initialise issue tracking/);
+  assert.match(files, /\.beads\/fake-config\.json/);
+  assert.match(files, /beads: sync through the project repo/);
+  assert.doesNotMatch(files, /notes\.txt|CLAUDE\.md/);
+  assert.match(cp.execFileSync(GIT, ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }), /^A  notes\.txt$/m);
+});

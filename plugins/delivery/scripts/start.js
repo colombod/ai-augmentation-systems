@@ -199,6 +199,16 @@ function doltUrlOf(url) {
 //   database and remote    -> nothing
 // A failed publish is reported with its fix and does not stop the scaffold: the database works
 // locally, and the --check "beads sync" row keeps saying what is missing.
+// Commit only the named beads paths, never anything else the customer has staged.
+function commitBeadsFiles({ projectRoot, env, say, paths, message }) {
+  const existing = paths.filter((p) => fs.existsSync(path.join(projectRoot, p)));
+  if (!existing.length) return;
+  run('git', ['add', '--', ...existing], { cwd: projectRoot, env });
+  if (run('git', ['diff', '--cached', '--quiet', '--', ...existing], { cwd: projectRoot, env }).ok) return;
+  const c = run('git', ['commit', '-q', '-m', message, '--', ...existing], { cwd: projectRoot, env });
+  say(c.ok ? `  beads: committed ${existing.join(', ')} (${run('git', ['rev-parse', '--short', 'HEAD'], { cwd: projectRoot, env }).out})` : `  beads: could not commit ${existing.join(', ')}: ${(c.err || c.out).slice(0, 200)}`);
+}
+
 function setUpBeads({ projectRoot, prefix, env, dryRun, w, say }) {
   const bd = (args, timeout = 120000) => run('bd', args, { cwd: projectRoot, env, timeout });
   const hasBeads = fs.existsSync(path.join(projectRoot, '.beads'));
@@ -209,8 +219,13 @@ function setUpBeads({ projectRoot, prefix, env, dryRun, w, say }) {
   if (!hasBeads && !published) {
     say(`  beads: ${w}run bd init --prefix ${prefix}`);
     if (dryRun) return;
-    const b = bd(['init', '--prefix', prefix, '--non-interactive', '-q']);
+    // --skip-agents: without it bd init also writes and commits AGENTS.md, CLAUDE.md,
+    // .claude/settings.json, .codex/ and .agents/skills/ into the customer's project repo (bd 1.1.2),
+    // over their own files; the plugin brings its own role instructions.
+    const gitignoreWasClean = run('git', ['status', '--porcelain', '--', '.gitignore'], { cwd: projectRoot, env }).out === '';
+    const b = bd(['init', '--prefix', prefix, '--non-interactive', '-q', '--skip-agents']);
     if (!b.ok) { say(`  beads: bd init failed: ${(b.err || b.out).slice(0, 300)}`); return; }
+    commitBeadsFiles({ projectRoot, env, say, paths: gitignoreWasClean ? ['.beads', '.gitignore'] : ['.beads'], message: 'beads: initialise issue tracking (start.js, bd init)' });
   } else if (!hasDb) {
     say(`  beads: ${hasBeads ? '.beads is here but this machine has no database (a fresh clone)' : 'the project repo already holds the team\'s issues'}; ${w}run bd bootstrap to fetch them from the project repo`);
     if (dryRun) return;
@@ -233,6 +248,8 @@ function setUpBeads({ projectRoot, prefix, env, dryRun, w, say }) {
     if (dryRun) return;
     const a = bd(['dolt', 'remote', 'add', 'origin', url], 30000);
     if (!a.ok) { say(`  beads: could not set the sync remote: ${(a.err || a.out).slice(0, 300)}. Fix: ${SETUP_DOC}`); return; }
+    // bd writes sync.remote into .beads/config.yaml; committed, a fresh clone knows where to bootstrap from
+    commitBeadsFiles({ projectRoot, env, say, paths: ['.beads/config.yaml'], message: 'beads: sync through the project repo (start.js)' });
   } else if (hasDb) {
     return;
   }
