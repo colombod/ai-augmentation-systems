@@ -14,6 +14,15 @@
 
 > "this is where we need to have the system I was asking to track feature against actual code artefacts and graphs a real view into what is shipped, what is the backing tech or artefacts and how all integrates"
 
+> "Because we are going feature / product value as main driver we need to to be able to understand how ferries relate to each other , someone is clear but sometime is because dog underlaying implementation details . Understanding and tracking such inventory is key to understand business impact of bugs and code changes, how to pick the next thing to build so we compound on the work already done and on the value we ship. When and what to consolidate and how to pick better the tech debt to handle . [...] adding feature and code is easy but leads to complexity for customers so we need to be able to run analysts of the product from the customer and Personas (including when we introduce and retire them) so they use can have clear vision on how to meet them, with new or modified or removed features"
+
+The fourth quote makes the map the **product inventory** planning runs on, not only a blast-radius
+check: feature relations (declared, and coupling through shared implementation), business impact
+of a bug or change, selection that compounds on verified work (today an advisory judge reads bead
+titles only, `scripts/plan.js:79-90`), consolidation and tech-debt candidates, and persona-to-feature
+analysis as personas are introduced and retired. These are scoped in the PRD and staged there; the
+MVP below stays the foundation they all read.
+
 No operator record exists yet (this session ran outside a team). Defaults below that stand in
 for an owner decision are labelled **default**, never presented as decided.
 
