@@ -3,7 +3,7 @@
 > Written by /delivery:brief. Owned by Product Owner and Business Analyst.
 > Status: draft (revision 2, after `reviews/feature-map-brief-01.md`) · Last updated: 2026-10-24
 
-**Mode:** frame · **Word count:** 654 (cap 900, tables excluded, measured with
+**Mode:** frame · **Word count:** 880 (cap 900, tables excluded, measured with
 `grep -v '^|' | wc -w`).
 
 ## Owner's ask
