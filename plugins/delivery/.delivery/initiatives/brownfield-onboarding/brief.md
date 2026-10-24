@@ -5,11 +5,13 @@
 > Depends on: `initiatives/feature-map/` (the inventory, held to its freshness constraint)
 
 **Mode:** frame (a new capability; the Vault is the grounding example and future test bed) ·
-**Word count:** 906 (cap 900; declared overrun: the owner's three statements are kept verbatim, 240 words; without them 666), tables excluded.
+**Word count:** 1000 (cap 900; declared overrun: the owner's four statements are kept verbatim, 289 words; without them 711), tables excluded.
 
 ## Owner's ask
 
 > "A feature I need you to shape is how to onboard brown field projects onto delivery plugin customer will need that to work on products and make sure the delivery plugin can handle products that spans many components and repo. How to decide when an unbrella space is needed to model the product and work progress while working on each individual parts . The example I want to use later to work on is the vault project which is not performing well as delivery and this plugin will help me manage that product"
+
+> "Security agent is a good thing . So I think Anne’s featur of the delivery plugin hiring manager is to analyse the project and decide what experts are needed and help “building them” experts will need to leave in the repo they are needed , would that work?"
 
 > "Check my private repo there is a private repo https://github.com/colombod-personal/the-vault-planning that might be the right umbrella ?"
 
@@ -108,10 +110,13 @@ cross-component bead or PR, or a per-component setup sees a forced co-release.
    invariants (prepush passes, tests and deploy green, `bd ready` unchanged, site up).
 5. Rollback: a tagged snapshot of in-repo rules and a beads export, revert tested on a clone;
    owner decisions already made in prose ratified once as operator records.
-6. Bespoke agents: a handful (default at most 5) of product-specific agent definitions in the
-   project repo's `.delivery/agents/`, each naming its area (infra, security, scalability) and
-   the gate or role that calls it; `prepare-role` installs them into every role session; each
-   cites the product files it was written from, so a stale one is detectable.
+6. Experts hired by Staffing: Staffing (today it already "hires on evidence", `roles/staffing.md`)
+   reads the inventory, proposes each expert with its evidence, and writes it to the project
+   repo's `.delivery/team/experts/` (its own lane): a handful (default at most 5), each naming its
+   components and the role or gate that calls it, each citing the product files it was written
+   from at a commit, so the feature map flags it stale when they change and retires it when its
+   area goes; `prepare-role` installs them into every role session. Trial in `the-vault-planning`:
+   `infra-manager.md`, `security-reviewer.md`.
 
 **Release 2, gated on the verdict:** several components in one team, or several teams under one
 umbrella briefing (open question 2); per-component and whole-product progress.
@@ -135,6 +140,7 @@ server; the plugin sits unused beside it.
 | 2 | One team across the components, or one team per component under one briefing? | operator | release 2 | decided by the release 1 verdict |
 | 3 | ~~Use `the-vault-planning` as the umbrella?~~ **Answered:** the owner allowed it for this experiment; it now holds the scaffold, inventory and the bespoke Infra Manager | operator | release 1 setup | answered |
 | 7 | Bespoke agents in the private umbrella repo or the product repo? | operator | MVP 6 | the umbrella (private; the agents encode hosts and data stores) |
+| 8 | May an expert agent's review stand in for a person's, where the product requires a named review (the Vault's `Security review before merge:`)? | operator | MVP 6 | no: the agent's review is input to a named person |
 | 4 | What hurts most: broken things reaching users, work stopping unnoticed, or your time steering sessions? | operator | signal priority | work stopping |
 | 5 | Does the Vault team keep working during onboarding? | operator | drain list | yes, read-only adopt |
 | 6 | If it is not helping after a month, what must you get back? | operator | rollback | in-repo rules and beads |
