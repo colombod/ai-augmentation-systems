@@ -34,8 +34,9 @@ function claudeConfig({ installed = true, enabled = true, version = '99.0.0' } =
   return dir;
 }
 
-function start(args, { path: binDir = bin(), config = claudeConfig(), cwd } = {}) {
+function start(args, { path: binDir = bin(), config = claudeConfig(), cwd, env: extra = {} } = {}) {
   const env = {
+    ...extra,
     PATH: `${binDir}${path.delimiter}/bin`, HOME: os.tmpdir(), CLAUDE_CONFIG_DIR: config, BD_FAKE_STORE: path.join(mk('start-bd-'), 'store.json'),
     GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0',
     GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.test', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.test',
@@ -281,4 +282,81 @@ test('final M6: an unknown model name is a warning in start.js output, not a ref
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /manifest: warning: team.json: role "chief-of-staff" has model "claude-opus-9"/);
   assert.match(r.out, /manifest: committed/, 'the hand edit is committed too');
+});
+
+// ---- beads setup: Windows and sync (docs/quickstart.md, "Setting up beads") ----
+
+const { checkPrerequisites } = require('./start.js');
+
+// A PATH for checkPrerequisites run in this process: bd that works or fails, and a reg that
+// answers the Smart App Control query with a given DWORD (null: no reg at all).
+function winBin({ bd = 'blocked', sac = 1 } = {}) {
+  const dir = bin({ bd: bd === 'ok' });
+  if (bd === 'blocked') fs.writeFileSync(path.join(dir, 'bd'), '#!/bin/sh\necho "An Application Control policy has blocked this file." >&2\nexit 1\n', { mode: 0o755 });
+  if (bd === 'missing') fs.rmSync(path.join(dir, 'bd'), { force: true });
+  if (sac !== null) {
+    fs.writeFileSync(path.join(dir, 'reg'), `#!/bin/sh\nprintf '\\nHKEY_LOCAL_MACHINE\\\\SYSTEM\\\\CurrentControlSet\\\\Control\\\\CI\\\\Policy\\n    VerifiedAndReputablePolicyState    REG_DWORD    0x${sac}\\n\\n'\n`, { mode: 0o755 });
+  }
+  return dir;
+}
+const bdRow = (rows) => rows.find((r) => r.name === 'bd (beads)');
+const check = (dir, platform = 'win32') => checkPrerequisites({ env: { PATH: `${dir}${path.delimiter}/bin`, HOME: os.tmpdir(), CLAUDE_CONFIG_DIR: claudeConfig(), BD_FAKE_STORE: path.join(mk('start-bd-'), 's.json') }, platform });
+
+test('--check on Windows: Smart App Control on or in evaluation names the block and recommends WSL2', () => {
+  for (const [sac, word] of [[1, 'on'], [2, 'in evaluation mode']]) {
+    const r = bdRow(check(winBin({ sac })));
+    assert.equal(r.status, 'fail');
+    assert.equal(r.hard, true);
+    assert.match(r.detail, new RegExp(`Smart App Control is ${word}, and it blocks unsigned programs such as bd\\.exe`));
+    assert.match(r.detail, /An Application Control policy has blocked this file/);
+    assert.match(r.fix, /^run the team inside WSL2 and install the Linux bd there/);
+    assert.match(r.fix, /turn Smart App Control off \(machine-wide; it can be turned back on only on Windows 11 25H2/);
+  }
+});
+
+test('--check on Windows: Smart App Control off or unreadable offers the installer, not the Smart App Control advice', () => {
+  for (const [sac, word] of [[0, 'off'], [null, 'unknown']]) {
+    const r = bdRow(check(winBin({ bd: 'missing', sac })));
+    assert.equal(r.status, 'fail');
+    assert.match(r.detail, new RegExp(`^not found on PATH; Smart App Control is ${word}$`));
+    assert.match(r.fix, /checksum-verified PowerShell installer/);
+    assert.doesNotMatch(r.fix, /turn Smart App Control off/);
+  }
+});
+
+test('--check on Windows: a bd that runs passes and the Smart App Control state is not consulted', () => {
+  const dir = winBin({ bd: 'ok', sac: 1 });
+  const rows = check(dir);
+  assert.equal(bdRow(rows).status, 'pass');
+  assert.doesNotMatch(JSON.stringify(rows), /Smart App Control/);
+  assert.match(rows.find((r) => r.name === 'platform').fix, /run the team inside WSL2/);
+  assert.equal(check(dir, 'freebsd').find((r) => r.name === 'platform').fix, 'run the team on macOS or Linux');
+});
+
+test('--check off Windows: a failing bd keeps the plain install advice', () => {
+  const r = bdRow(check(winBin({ bd: 'missing', sac: 1 }), 'linux'));
+  assert.equal(r.detail, 'not found on PATH');
+  assert.doesNotMatch(r.fix, /Smart App Control|WSL2/);
+});
+
+function beadsProject() {
+  const root = productRepo();
+  fs.mkdirSync(path.join(root, '.beads'));
+  return root;
+}
+const syncLine = (out) => (out.split('\n').find((l) => l.includes('beads sync')) || '').trim();
+
+test('--check: a beads database with no sync remote warns that its issues live on one machine', () => {
+  const r = start(['--check', '--project', beadsProject()]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(syncLine(r.out), /^\[warn\] beads sync: no sync remote: these issues exist on this machine only.*Fix: in the project repo: `bd dolt remote add origin <its private git URL>`, then `bd dolt push`/);
+});
+
+test('--check: a beads sync remote passes; an unreadable answer is unknown; no .beads, no row', () => {
+  const remotes = JSON.stringify([{ name: 'origin', url: 'git+https://example.test/acme/planning.git', status: 'ok' }]);
+  assert.equal(syncLine(start(['--check', '--project', beadsProject()], { env: { BD_FAKE_DOLT_REMOTES: remotes } }).out),
+    '[pass] beads sync: origin git+https://example.test/acme/planning.git');
+  assert.match(syncLine(start(['--check', '--project', beadsProject()], { env: { BD_FAKE_DOLT_REMOTES: 'fail' } }).out),
+    /^\[\?\?\?\?\] beads sync: `bd dolt remote list --json` could not be read: fake-bd: dolt remote list failed/);
+  assert.equal(syncLine(start(['--check', '--project', productRepo()]).out), '');
 });

@@ -16,9 +16,9 @@ The planning pipeline (`/delivery:brief` and the rest) works on its own without 
 
 ## Prerequisites
 
-- Claude Code v2.1.224 or later, on macOS or Linux: the role sessions message each other.
+- Claude Code v2.1.224 or later, on macOS or Linux (on Windows, inside WSL2): the role sessions message each other.
 - Node 18 or later, and git.
-- `bd` (beads) on the PATH. `bd version` should answer.
+- `bd` (beads) on the PATH. `bd version` should answer. On Windows read [Setting up beads](#setting-up-beads) first.
 - The delivery plugin installed: `/plugin install delivery@ai-augmentation-systems` (the repository README's Install section has the marketplace step). In the commands below, `<plugin-root>` is the plugin's directory: the `installPath` listed for `delivery@ai-augmentation-systems` in `~/.claude/plugins/installed_plugins.json`.
 - A **private project repo**, `<project-root>`. It holds strategy: the plan under `.delivery/`, the team manifest, and your recorded decisions. `start.js` creates it (`git init`) when it does not exist; add a private remote so plans and records are pushed.
 - For an existing product, a **product repo**: a local checkout at `<product-checkout>`, or a clone URL that `start.js` clones next to the project repo as `<project>-product`. It holds code only. Builders get their own worktree of it.
@@ -34,6 +34,57 @@ delivery prerequisites
   [warn] delivery plugin: installed 0.16.0 is older than this copy (0.20.0); the installed hooks may lack the shipping team. Fix: update it with /plugin
 All hard prerequisites are met.
 ```
+
+## Setting up beads
+
+beads keeps the team's work items in a database inside the project repo (`.beads/`). Every
+machine that runs role sessions has its own copy; machines share it through the project repo's
+own git remote, so there is no database server to run and no database password. `start.js
+--check` reports each of the cases below with its fix.
+
+**One machine.** `bd init --prefix <prefix>` in `<project-root>` (step 2 below). Then add a sync
+remote anyway: until you do, the issues exist on that disk only.
+
+**Several machines, or cloud sessions.** The project repo must be **private**: syncing writes the
+issue history into it, under `refs/dolt/data` and a branch named `__dolt_remote_info__`.
+
+1. On the machine that has the database: `bd dolt remote list`. A repo that already had an
+   `origin` when `bd init` ran is wired already. Otherwise:
+   `bd dolt remote add origin git+https://<host>/<owner>/<project>.git` (or `git+ssh://git@...`),
+   then commit `.beads/config.yaml`.
+2. `bd dolt push`. Check it landed: `git ls-remote origin refs/dolt/data` prints one line.
+3. On every other machine: clone the project repo, then `bd bootstrap` once. From then on,
+   `bd dolt pull` before work and `bd dolt push` after.
+
+Claims: two machines that claim the same item before syncing both succeed locally; the second
+push is refused, and its pull stops on a conflict that needs a person. A claim made right after
+`bd dolt pull` is refused when someone holds it. Until the plugin's own claim step pulls and
+pushes around the claim, keep the sessions that claim work on one machine, or pull first.
+
+**An existing database with no sync remote** (`[warn] beads sync: no sync remote`): run steps 1
+and 2 on the machine that holds it, after `bd export -o .beads/issues.pre-remote.jsonl` as an
+audit copy. Do not `bd init` again over it.
+
+**Windows.** The released `bd.exe` is not code-signed, and Windows 11's Smart App Control blocks
+unsigned programs, a local build included, with no per-program exception. `start.js --check`
+reads its state and says which case you are in.
+
+- **Recommended: run the team inside WSL2.** `wsl --install` in an administrator PowerShell,
+  then in the Linux shell: install Node, git and Claude Code, clone the project repo into the
+  Linux file system (`~/...`, not `/mnt/c/...`), install bd with beads' Linux install script, and
+  run `start.js --check` there. Cross-session messaging is documented for macOS and Linux only,
+  so this also fixes the `[warn] platform` row.
+- **Or turn Smart App Control off** (Windows Security, App and browser control): a machine-wide
+  change. It can be turned back on only on Windows 11 25H2 with the April 2026 update or later;
+  on older builds turning it off is one-way. Then install with beads' PowerShell installer, which
+  checks the download against the release checksums.
+- With Smart App Control already off, the installer alone is enough.
+- Do not install bd from npm on Windows for this plugin: npm installs a `bd.cmd` shim, which
+  Node starts only through a shell (beads' installation notes), and the plugin's scripts and hooks
+  start `bd` directly.
+
+Not yet run by this plugin on a Windows machine: the WSL2 path and the registry read are
+written from Microsoft's and beads' documentation and tested with stand-ins.
 
 ## What `/delivery:start` runs
 
@@ -364,9 +415,11 @@ Run the restore command it names, or fix the file from outside the session.
 
 **3. `bd` cannot find the database.** From a role directory `bd where` says `No active beads workspace found`, and `/delivery:team` warns `bd unreachable from role directories: run bd init in the project root, then rerun prepare-role so the roles get BEADS_DIR`. The role's `settings.local.json` has no `BEADS_DIR`, usually because `prepare-role` ran before `bd init`. Run `bd init` in `<project-root>` if needed, run `prepare-role` again for each instance, and restart the sessions.
 
-**4. `format_unrecognised`.** `operator.js sync` or `record` reports that the transcript format was not recognised. Capture relies on an undocumented field the harness writes on each transcript entry; when it changes, recording fails closed rather than trusting what it cannot read. Nothing is recorded until the transcript reader in `scripts/lib/transcript.js` is updated. Tell whoever maintains the plugin; `operator.js sync --format-check` shows the state.
+**4. `bd` fails on Windows, or `[FAIL] bd (beads)` names Smart App Control.** See [Setting up beads](#setting-up-beads), Windows. Blocks are also logged in Event Viewer under Microsoft-Windows-CodeIntegrity/Operational.
 
-**5. The Chief of Staff's turn is blocked by its Stop hook** (once per turn: the first stop). Two common reasons, both with the way out in the message:
+**5. `format_unrecognised`.** `operator.js sync` or `record` reports that the transcript format was not recognised. Capture relies on an undocumented field the harness writes on each transcript entry; when it changes, recording fails closed rather than trusting what it cannot read. Nothing is recorded until the transcript reader in `scripts/lib/transcript.js` is updated. Tell whoever maintains the plugin; `operator.js sync --format-check` shows the state.
+
+**6. The Chief of Staff's turn is blocked by its Stop hook** (once per turn: the first stop). Two common reasons, both with the way out in the message:
 
 - An input of yours has no record. The Chief of Staff records it or acks it, then carries on:
 

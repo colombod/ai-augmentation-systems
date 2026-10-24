@@ -151,6 +151,15 @@ switch (cmd) {
     process.stdout.write(`closed ${id}\n`);
     break;
   }
+  case 'dolt': {
+    // `dolt remote list --json` as real bd 1.1.2 prints it: [] with no remote, else [{name, url, ...}].
+    // BD_FAKE_DOLT_REMOTES is that JSON verbatim; "fail" makes the command fail.
+    if (pos[0] !== 'remote' || pos[1] !== 'list') { process.stderr.write('fake-bd: unknown dolt subcommand\n'); process.exit(2); }
+    const raw = process.env.BD_FAKE_DOLT_REMOTES;
+    if (raw === 'fail') { process.stderr.write('fake-bd: dolt remote list failed\n'); process.exit(1); }
+    process.stdout.write(`${raw || '[]'}\n`);
+    break;
+  }
   case 'prime': process.stdout.write('fake-bd prime\n'); break;
   case 'version': process.stdout.write('bd version 0.0.0-fake\n'); break;
   case 'init': {

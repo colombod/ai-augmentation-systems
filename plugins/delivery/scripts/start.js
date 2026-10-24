@@ -107,10 +107,14 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
     : { name: 'git', status: 'fail', detail: 'not found on PATH', fix: 'install git', hard: true });
 
   const bd = run('bd', ['version'], { env: runEnv });
-  rows.push(bd.ok
-    ? { name: 'bd (beads)', status: 'pass', detail: bd.out.split('\n')[0], hard: true }
-    : { name: 'bd (beads)', status: 'fail', detail: bd.missing ? 'not found on PATH' : `\`bd version\` failed: ${bd.err.slice(0, 120)}`,
-      fix: 'install beads so `bd` is on PATH (https://github.com/gastownhall/beads)', hard: true });
+  if (bd.ok) {
+    rows.push({ name: 'bd (beads)', status: 'pass', detail: bd.out.split('\n')[0], hard: true });
+  } else if (platform === 'win32') {
+    rows.push(windowsBdRow(bd, smartAppControl(runEnv)));
+  } else {
+    rows.push({ name: 'bd (beads)', status: 'fail', detail: bd.missing ? 'not found on PATH' : `\`bd version\` failed: ${bd.err.slice(0, 120)}`,
+      fix: `install beads so \`bd\` is on PATH (${SETUP_DOC})`, hard: true });
+  }
 
   const claude = run('claude', ['--version'], { env: runEnv });
   const need = MIN_CLAUDE.join('.');
@@ -129,7 +133,8 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
     }
   }
   if (platform !== 'darwin' && platform !== 'linux') {
-    rows.push({ name: 'platform', status: 'warn', detail: `${platform}: cross-session messaging is documented for macOS and Linux`, fix: 'run the team on macOS or Linux', hard: false });
+    rows.push({ name: 'platform', status: 'warn', detail: `${platform}: cross-session messaging is documented for macOS and Linux`,
+      fix: platform === 'win32' ? `run the team inside WSL2 (${SETUP_DOC}, Windows)` : 'run the team on macOS or Linux', hard: false });
   }
 
   const configDir = claudeConfigDir(env);
@@ -168,8 +173,52 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
         ? { name: 'project repo remote', status: 'pass', detail: remote.out, hard: false }
         : { name: 'project repo remote', status: 'warn', detail: 'no origin remote', fix: 'add a private remote (`git remote add origin <url>`) so plans are pushed and operator records travel on its delivery-operator branch (sessions need push access to publish them)', hard: false });
     }
+    if (bd.ok && fs.existsSync(path.join(root, '.beads'))) rows.push(beadsSyncRow(run('bd', ['dolt', 'remote', 'list', '--json'], { cwd: root, env: runEnv })));
   }
   return rows;
+}
+
+const SETUP_DOC = 'docs/quickstart.md, "Setting up beads"';
+
+// Smart App Control state from the registry value Windows keeps it in: 0 off, 1 on (enforcing),
+// 2 evaluation. Read with reg.exe so no PowerShell module is needed; anything unreadable is unknown.
+function smartAppControl(env) {
+  const r = run('reg', ['query', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy', '/v', 'VerifiedAndReputablePolicyState'], { env });
+  const m = r.ok && /VerifiedAndReputablePolicyState\s+REG_DWORD\s+0x([0-9a-f]+)/i.exec(r.out);
+  return m ? ({ 0: 'off', 1: 'on', 2: 'evaluation' })[parseInt(m[1], 16)] || 'unknown' : 'unknown';
+}
+
+// Why the Windows row is its own: the released bd.exe is not code-signed (1.1.2 has an empty
+// certificate table), and Smart App Control blocks unsigned programs, a local build included, with
+// no per-app exception. Telling a Windows user to "install beads" sends them into that wall.
+function windowsBdRow(bd, sac) {
+  const wsl = 'run the team inside WSL2 and install the Linux bd there (recommended: cross-session messaging is also documented only for macOS and Linux)';
+  const off = 'or turn Smart App Control off (machine-wide; it can be turned back on only on Windows 11 25H2 with the April 2026 update or later)';
+  const detail = bd.missing ? 'not found on PATH' : `\`bd version\` failed: ${bd.err.slice(0, 120)}`;
+  if (sac === 'on' || sac === 'evaluation') {
+    return { name: 'bd (beads)', status: 'fail', hard: true,
+      detail: `${detail}; Smart App Control is ${sac === 'on' ? 'on' : 'in evaluation mode'}, and it blocks unsigned programs such as bd.exe`,
+      fix: `${wsl}, ${off}. See ${SETUP_DOC}, Windows` };
+  }
+  return { name: 'bd (beads)', status: 'fail', hard: true,
+    detail: `${detail}; Smart App Control is ${sac}`,
+    fix: `${wsl}; or install bd.exe with beads' checksum-verified PowerShell installer. See ${SETUP_DOC}, Windows` };
+}
+
+// A beads database with no sync remote lives on one machine only: no other host or cloud session
+// sees its issues, and losing that disk loses them. beads syncs through the project repo's own git
+// remote (refs/dolt/data), so the fix needs no server.
+function beadsSyncRow(r) {
+  let remotes;
+  try { remotes = r.ok ? JSON.parse(r.out || '[]') : null; } catch (e) { remotes = null; }
+  if (!Array.isArray(remotes)) {
+    return { name: 'beads sync', status: 'unknown', detail: `\`bd dolt remote list --json\` could not be read${r.err ? `: ${r.err.slice(0, 120)}` : ''}`, fix: `check with \`bd dolt remote list\` (${SETUP_DOC})`, hard: false };
+  }
+  if (!remotes.length) {
+    return { name: 'beads sync', status: 'warn', detail: 'no sync remote: these issues exist on this machine only, and no other host or cloud session sees them',
+      fix: `in the project repo: \`bd dolt remote add origin <its private git URL>\`, then \`bd dolt push\` and commit .beads/config.yaml (${SETUP_DOC})`, hard: false };
+  }
+  return { name: 'beads sync', status: 'pass', detail: remotes.map((x) => `${x.name} ${x.url}`).join(', '), hard: false };
 }
 
 function formatCheck(rows) {
