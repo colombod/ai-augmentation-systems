@@ -8,6 +8,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { loadManifest, validateManifest, manifestWarnings, expandInstances, canonicalRoleId, reachOf } = require('./lib/manifest.js');
 const { loadRoleBrief, composeBrief } = require('./lib/compose-brief.js');
+const { installExperts } = require('./lib/experts.js');
 
 function git(cwd, ...args) {
   return execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
@@ -171,6 +172,12 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   fs.writeFileSync(briefFile, composeBrief({ team, hosts, instance, role, brief, rules, pluginRoot }));
   files.push(briefFile);
 
+  // The product's own experts (Staffing's .delivery/team/experts/), as subagents in this session.
+  const ex = installExperts({ projectRoot, roleDir });
+  files.push(...ex.installed);
+  for (const r of ex.removed) files.push(`removed (expert retired): ${r}`);
+  for (const w of ex.warnings) files.push(`warning: ${w}`);
+
   const marker = {
     instance,
     role: role.id,
@@ -210,7 +217,7 @@ if (require.main === module) {
     productRepo: args.product_repo,
     user: args.user,
   });
-  for (const f of files) if (f.startsWith('warning:')) console.error(f);
+  for (const f of files) if (f.startsWith('warning:') || f.startsWith('removed (expert retired):')) console.error(f);
   console.log(roleDir);
 }
 
