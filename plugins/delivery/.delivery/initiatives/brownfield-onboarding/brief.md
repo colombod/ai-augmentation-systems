@@ -4,7 +4,7 @@
 > Status: draft · Last updated: 2026-10-24 · Depends on: `initiatives/feature-map/` (the inventory)
 
 **Mode:** frame (a new capability; the Vault is the grounding example and future test bed) ·
-**Word count:** 645 (cap 900, tables excluded, `grep -v '^|' | wc -w`).
+**Word count:** 644 (cap 900, tables excluded, `grep -v '^|' | wc -w`).
 
 ## Owner's ask
 
@@ -113,7 +113,7 @@ on a home server, issues still updated by an old workflow; the plugin sits unuse
 | :-- | :-- | :-- | :-- | :-- |
 | 1 | Is `mtg-toolkits` part of the Vault, on the same board, or a dependency you only bump? | operator | umbrella (a) | part of it |
 | 2 | Which hurts most today: broken things reaching users, work stopping unnoticed, or your time steering sessions? | operator | signal priority | work stopping |
-| 3 | Should the team rules leave the public repo for `the-vault-planning` (empty today), or does `the-vault-project` exist? | operator | MVP 4 | move to `the-vault-planning` |
+| 3 | Should the team rules leave the public repo for `the-vault-planning`? It is private and has no commits yet (GitHub API: 409 "Git Repository is empty", 0 branches, checked 2026-10-24), so it can become the umbrella project repo with nothing to migrate out of it | operator | MVP 4 | `the-vault-planning` is the umbrella project repo; team rules move there |
 | 4 | Does the Vault team keep working during onboarding, or pause? | operator | adoption path | keeps working |
 | 5 | If it is not helping after a month, what must you get back? | operator | B10 | the in-repo rules and the beads |
 | 6 | Where is the R-01..R-45 list the plugin cites, as a baseline? | operator | signals | none |
