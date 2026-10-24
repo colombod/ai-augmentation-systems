@@ -13,6 +13,8 @@
 
 > "Security agent is a good thing . So I think Anne’s featur of the delivery plugin hiring manager is to analyse the project and decide what experts are needed and help “building them” experts will need to leave in the repo they are needed , would that work?"
 
+> "All this must be performed by the delivery plugin ! This is amazing feature work"
+
 > "Check my private repo there is a private repo https://github.com/colombod-personal/the-vault-planning that might be the right umbrella ?"
 
 > "For question 1 yes I confirm the umbrella for both repos, the vault ai agents should be coming now from the delivery plush in but since there are special thing to this system ther should be the “bespoke” infra manager” for the vault, remember that to simplify and focus work the delivery plugin should have the handful of subagents definiton that live in the product repos (or the umbrella ? That is usually private and might be a better place) to handle the specific of the product requirements in infra security and scalability for example"
