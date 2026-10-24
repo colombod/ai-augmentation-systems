@@ -75,3 +75,28 @@ stayed `2f01eab`. "Shipped" keys on `commit` only; the deployment id is not a st
 (the plugin install and its scripts were refused by that session's permission checks); every
 Wintermute and PC row. The Wintermute steps are in the-vault-planning
 `.delivery/initiatives/onboarding/day-one-wintermute-runbook.md` (`cb149fd`).
+
+## Spikes 2 and 6: wintermute host, from Vault onboarding day one
+
+**Source:** `colombod-personal/the-vault-planning` at `48d13ca`,
+`.delivery/initiatives/onboarding/day-one-wintermute.md` (a Remote Control session on Wintermute,
+2026-10-24 about 16:00 UTC; Ubuntu 26.04.1, Node v22.23.3, git 2.53.0, bd 1.1.2, gh signed in).
+`/api/health` re-checked here after the run: `commit` `2f01eab`, deployment `the-vault-532iolc5s`.
+
+| Check | Result |
+| :-- | :-- |
+| spike 6: `node:sqlite` on Node 22.23.3 | SQLite 3.51.3, FTS5 present, ExperimentalWarning |
+| spike 2: full clone | the-vault 3.05 s; mtg-toolkits 0.57 s |
+| spike 2: no-op fetch, ten samples each | the-vault p50 0.341 s, p90 0.365 s; mtg-toolkits p50 0.341 s, p90 0.369 s |
+| spike 2: credentials | none (anonymous `ls-remote` with the credential helper disabled) |
+| spike 2: `/api/health` at 16:00:43Z | `commit` `2f01eab`, equal to `origin/main` |
+| spike 2: GitHub deployments API (A-15) | answered: three records, all `2f01eab`: `Production` by `vercel[bot]` at 12:17:47Z; `vercel-production` by `colombod` at 13:59:14Z and 14:07:10Z |
+
+**A-15:** Vercel's git integration writes a GitHub deployment (`Production`, `vercel[bot]`). Two more
+records for the same commit were made by the owner's account under a different environment name,
+`vercel-production`, which matches the deployment id changing between the cloud checks at 13:56 and
+14:05. So a deployments-API reader must accept both environment names, must not count a redeploy of
+the same commit as a new release, and `/api/health` `commit` stays the primary record (ADR-019 point 7).
+
+**Not measured on wintermute:** spike 1 and every plugin step. The auto-mode check refused
+`claude plugin marketplace add` for the local clone, as on the cloud host's first pass.
