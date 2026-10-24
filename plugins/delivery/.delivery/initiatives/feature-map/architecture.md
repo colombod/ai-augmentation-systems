@@ -5,8 +5,8 @@ Interface blocks and NFR tables are data.
 
 # Architecture: feature map, from what is shipped to blast radius to retirement
 
-> Written by /delivery:architecture (step 2, Solution Architect). Owned by Solution Architect, with QA Strategist.
-> Status: draft (steps 3 to 7 not run: no test strategy review, no critic pass, no `assumptions.md`, no `surface.json`) · Last updated: 2026-10-24
+> Written by /delivery:architecture (step 2, Solution Architect; step 3, QA Strategist). Owned by Solution Architect, with QA Strategist.
+> Status: draft (steps 4 to 7 not run: no critic pass, no `assumptions.md`, no `surface.json`) · Last updated: 2026-10-24
 > PRD: `.delivery/initiatives/feature-map/prd.md` · Measured at `57d5eca0aeb5a55999caa9a372bc0a11ffe12a52` (HEAD of `delivery-feature-map`), Node 22.22.0, SQLite 3.50.4, this container
 > Decisions: ADR-016 (amended), ADR-017, ADR-018, ADR-019 · **Word count:** see the last line
 
@@ -51,6 +51,8 @@ cannot be done**; no cached answer is ever served for another commit. That turns
 | :-- | :-- | :-- |
 | CI checkout with full history, Node 22 and 24 | `hist@C` fixtures exist in CI; `node:sqlite` on both majors | every FR with an `hist@C` fixture; spike 6 |
 | `scripts/testing/map-fixture.js` | clones this repository at a pinned SHA into a temp dir, never the working tree | FR-1..FR-17, FR-40..FR-45 |
+| `scripts/testing/map-repos.js` | builds the synthetic fixture repos (fx-*, shallow, partial, dirty, local bare remotes) with fixed author and dates | every L2 map test (Test strategy) |
+| `scripts/testing/map-mutate.js` | the mutation harness over the rule registry (FR-44) | NFR-P3; the CI step |
 
 ## Component structure
 
@@ -261,8 +263,141 @@ read). Removing `.mcp.json` stops the server at the next session start.
 
 ## Test strategy
 
-Owned by the QA Strategist (step 3, not yet run). Fixed by the PRD: real child processes on S1 to S5,
-`hist@C` clones (never the working tree), mutation per rule (FR-44), and `map verify` as checker.
+Owned by the QA Strategist (step 3). Weighted by owner quote 5: freshness, provenance and blind
+spots get the deepest checks. Measured at `435defd`, Node 22.22.0, 4 cores, unless a row names
+another SHA.
+
+### Levels
+
+| Level | What it proves | Where it runs | Cost |
+| :-- | :-- | :-- | :-- |
+| L1 unit (`node --test`, in process) | rules as pure functions of `(path, text, fileIndex)`; the TOML subset reader; chain hashing; stamp comparison; path normalisation (FR-27) | CI | to measure |
+| L2 child-process CLI | a real `node map.js`, `ready.js`, `reviews.js`, `plan.js` process on a synthetic repo; stdout, stderr and exit code asserted (the CLI channel in `agents/qa-strategist.md`); through `scripts/testing/role-harness.js`, which runs the real lane and bd-guard hook processes, wherever a lane decides | CI | to measure |
+| L3 real-repo fixture | `hist@C`: a clone of this repository at a pinned commit, never the working tree | CI, full history | clone `--no-local` 383-505 ms (3 runs), checkout 32 ms, 4.0 MB `.git` |
+| L4 MCP stdio session | `map-mcp.js` spawned; JSON-RPC frames written to stdin; every stdout line read | CI, both Node majors | to measure |
+| L5 real role session | Claude Code started from a role directory; transcript recorded (`observe`) | a team host; spike 1, FR-6 | not CI |
+| Local real-repo check | the Vault at `b1ca9eb`, the `mtg-toolkits` mirror | a host holding the clones; output recorded with host and SHA | not CI: private repositories, no token in the workflow |
+
+The delivery suite today: 932 tests, 116.5 s.
+
+### Risk-based coverage
+
+| Area | Risk (likelihood × impact) | Test level | Notes |
+| :-- | :-- | :-- | :-- |
+| Freshness: an answer for one commit served for another (FR-20, FR-41, NFR-F2) | medium × high | L2, L3 | a freshness matrix: every CLI verb and each of the 7 MCP tools, map at X, asked about Y; passes only when rebuilt at Y or refused. Stamp reuse: each of the four keys changed alone recomputes, all four equal reuses |
+| Silent blind spots (FR-4, NFR-9, NFR-P5) | high × high (spike: 24 of 562 silent) | L1, L2, L3 | the analysed-plus-blind invariant asserted at every L3 commit; fx-blind names each file and reason; undetected shapes always listed |
+| Provenance and verify (FR-2, FR-40, FR-42, NFR-F1) | medium × high | L3 checker, L2 | `verify` over every edge at `hist@df0c0a5`; tamper `matched`, `line_start`, `dst`, `rule` one at a time: non-zero exit naming the edge |
+| Rule correctness: false or missing edges (FR-1 to FR-3, FR-10 to FR-15, ADR-018) | high × high | L1, L3, mutation | lexical-state cases per rule; FR-1 counts at L3; the harness below; precision by hand audit (spike 3) |
+| Runtime reach (FR-11, FR-16, FR-17, FR-45, NFR-4) | medium × high | L3 | `6883fee^` replay on every run; FR-45 window re-measured with the shipped extractor, merges included (D-8) |
+| Commit shapes (FR-15, D-1 to D-3) | medium × medium | L3, L2 | `ca0b215`: 2 parents, first-parent diff 35 files (measured); `e84618b` rename; a root commit and `""` refused with exit 1 |
+| Declared facts: one writer, append-only, contested (FR-6 to FR-9, FR-43, NFR-6, NFR-8) | medium × high (lost writes) | L2 role harness | 2 processes × 100 rows on one writer: 200 rows, prefix holds after each; two writer files on two branches merged by git: 0 conflicts, same-field rows read `contested`; `--base` mismatch and a missing or unresolving `source` refused |
+| Lane protection of `.delivery/map/**` and the map cache | low × high | L2 role harness | both directions: Edit, Write, a shell redirect and `node -e` naming the path are denied for every role in `roles/*.md`, `any` included; `map.js declare` is allowed |
+| Ready gate availability (FR-18 to FR-21, NFR-7) | medium × high (blocks delivery) | L2, fake `bd` | faults: map deleted; `node:sqlite` absent (`NODE_OPTIONS=--no-experimental-sqlite`, measured to hide the module on 22.22.0); database truncated; `git` off `PATH`; fetch failure; a rule that throws. Each: exit 0 and `reach-not-computed` |
+| `node:sqlite` across Node majors (ADR-016 point 5) | medium × high | L2, L4, CI matrix | ExperimentalWarning measured on stderr on 22.22.0; Node 24 to measure |
+| MCP protocol subset (ADR-017) | medium × medium | L4, L5 | each stdout line parses as one JSON-RPC frame on Node 22; the envelope equals `map.js --json`; unknown method, bad arguments, a malformed line, EOF; the database opens on first call. The 7 tool names pass `lane.js:44-45` (measured: all read verbs, no write verb) |
+| Mirrors, named refs, pins (ADR-019, FR-5, NFR-F3, NFR-F5) | medium × medium | L2, local bare remotes | fetch success and failure (unreachable `file://`); fx-force; shallow and partial clones refused; FR-5's three git listings unchanged. Latency is spike 2 |
+| Merge gate reconciliation (FR-28, FR-29) | medium × low (warns) | L2, fake `gh` | fx-merge, the 3,000-file cap; detectability of truncation is spike 7 |
+| Retire path (FR-22 to FR-26) | low × high (a deletion follows) | L2 | FR-26 blob hashes after each stage; record scope refused and accepted |
+| Stage 2 and 3 views (FR-30 to FR-39); experts (proposed FR-46) | low × low | L2, one fixture each | thin, below |
+| Test isolation | low × high | L2 guard | at suite end, the developer's `.git/delivery-map/` is absent or unchanged |
+
+### Fixtures
+
+| Fixture | Built how | Criteria |
+| :-- | :-- | :-- |
+| `hist@df0c0a5` (origin/main; replaces `7746e27` and `57a2788`, see below) | `scripts/testing/map-fixture.js`: `git clone --no-local`, checkout | FR-1 to FR-4, FR-8, FR-12, FR-37, FR-42, NFR-1, NFR-2, NFR-F1, NFR-P5. Spike there: 71 entry points, 1,654 edges, 556 files (562 at `7746e27`) |
+| `hist@6883fee^` | same | FR-11, FR-16, FR-17 |
+| `hist@ca0b215` (merge), `hist@e84618b` (rename `R100`) | same | FR-15 |
+| a FR-41 pair of main commits (`6cea411`, `df0c0a5`) | same | FR-20, FR-41 |
+| FR-45 window: 255 commits touching `plugins/`, merges included, ending at a main commit | same | FR-45, NFR-4, NFR-P2; baseline to measure with the shipped extractor |
+| shallow | `git clone --depth 1 file://…` (271 ms) | FR-15, NFR-F5 |
+| partial | `git -c uploadpack.allowFilter=true clone --filter=blob:none file://…` (302 ms; `remote.origin.promisor` true), promisor URL then pointed at a missing path so a lazy fetch fails loudly | NFR-F5, A-11 |
+| dirty | `hist@df0c0a5` plus one modified, one untracked, one staged file | NFR-F4 |
+| fx-force | a local bare remote: push, map, force-push, `fetch --prune` | NFR-F3 |
+| fx-wire, fx-blind, fx-anchor, fx-waves, fx-merge, fx-retire, fx-pairs | `scripts/testing/map-repos.js`: `git init`, fixed author and dates, per the PRD table | per the PRD |
+| fx-py | synthetic Python repo: hatch `packages`, pytest `pythonpath`, `src/` layout, relative imports, imports inside triple quotes, continuation, parenthesised lists, literal and computed dynamic imports, a `sys.path` edit | ADR-018, NFR-9 |
+| fx-wf | workflows with block scalars, `python -m`, `-r`, `uses: ./`, an external action, one anchor, one flow-style step, one `${{ }}` path | ADR-018, NFR-9 |
+| fx-pin | an app repo pinning a library repo by SHA in `requirements-vcs.txt` and `pyproject.toml`, plus a disagreeing second pin | ADR-016 point 6 |
+| fx-experts | expert files with and without `read_at` | proposed FR-46 |
+| fx-mcp-frames | `initialize` and `tools/call` as Claude Code sends them | ADR-017; recorded in spike 1, hand-written (assumed) until then |
+| fx-schema-forged | a map file whose `edge` table lacks the NOT NULL columns | FR-40 |
+| bd-stub | `scripts/testing/fake-bd.js` | FR-18, FR-19, FR-21, FR-34 |
+| the Vault at `b1ca9eb` (local, full, 315 commits) | local check | spike 3, A-5, A-6 |
+| `mtg-toolkits` | a full clone is needed; the local one is `blob:none` | spike 3; a real partial-clone refusal |
+
+### How each NFR is measured
+
+| NFR | Measured by | Gate | Number today |
+| :-- | :-- | :-- | :-- |
+| NFR-1 | L3: 3 cold builds at `hist@HEAD`, a new process each, empty cache; median, max and file count printed; the Vault locally | reported, not failing, until OQ 8 sets a target and runner variance is known (10 runs on `ubuntu-latest`, to measure) | spike 2.56-2.68 s at `57a2788`; parts 87-90 ms read, 26 ms insert; end to end to measure |
+| NFR-2 | counts at L3: files, entry points, edges, bytes | regression | 556 / 71 / 1,654 at `df0c0a5` (spike); 0.99 MB |
+| NFR-3, NFR-5 | as NFR-P2, NFR-P1 | — | — |
+| NFR-4 | FR-45 firing count | equals stored baseline | spike: 1 of 255 |
+| NFR-6 | the two concurrency tests above | 200 rows; 0 conflicts | not measured |
+| NFR-7 | the fault list above | 0 non-zero `ready.js` exits | not measured |
+| NFR-8 | prefix check after every write; mutation: `declare` rewrites instead of appends | red under the mutation | not measured |
+| NFR-9 | fx-blind, fx-py, fx-wf | every unanalysed file a `blind` row | spike: 24 of 562 silent |
+| NFR-F1 | `verify` over every edge, then the tamper set | 0 diffs; each tamper non-zero | spike: 0% |
+| NFR-F2 | the freshness matrix | 0 answers stamped other than asked | db-spike refused a stale open (measured) |
+| NFR-F3 | fx-force | `unverifiable` | not measured |
+| NFR-F4 | dirty: canonical dump equals the clean build's; dirty count 3 | equality | not measured |
+| NFR-F5 | shallow and partial refused before any blob read | refusal code | not measured |
+| NFR-F6 | FR-43 | write refused without rule or record | no register yet |
+| NFR-P1 | replay rows; a rules-hash change marks them out of date | a count | 1 of 1 |
+| NFR-P2 | FR-45 against its stored baseline | baseline only; the target waits for spike 5 | hubs excluded p90 5 (this document); hubs included p90 6 (PRD) |
+| NFR-P3 | the harness below | 100% of rules killed | no registry yet |
+| NFR-P4 | hand audit, 50 edges per rule (spike 3), recorded with the rules hash | 90% proposed (OQ 16) | not automatable |
+| NFR-P5 | build-end invariant plus a count test | equality | spike: 24 silent |
+
+### Mutation harness over the rule registry
+
+`scripts/testing/map-mutate.js` runs the map tests once per rule through a `--require` preload
+that filters the exported registry, so shipped code has no switch that disables a rule. Operators
+per rule: delete it (FR-44's floor); shift `line_start` by one; add a false edge. A mutant is killed
+only when a test tagged `[rule:<id>]` turns red, because the aggregate tests (71 entry points,
+1,654 edges) go red for almost any deletion and would make FR-44 vacuous. The harness fails when a
+rule has no tagged test, its control run is red, or the filtered registry is not one shorter; a
+planted untested rule must turn it red. Cost: rules × tagged-test time, to measure.
+
+Every other new test names its mutation in its story; the reviewer re-runs it.
+
+**Deliberately thin coverage:**
+
+- Stage 2 and 3 views and experts: one L2 fixture per criterion. Advisory and read-only; a defect
+  misleads one owner conversation, not a gate.
+- PRD OQ 18, answered: `bd`-dependent logic passes on the fake `bd`; one contract check on a host
+  with `bd` (absent here) records `bd show --json`'s `metadata.area` per `bd` version (A-14).
+- Windows and the team hosts: no CI runner; spike 6 observes them once.
+- Build time is reported, not gated, until OQ 8; rule precision is a sampled audit.
+
+### CI changes (`.github/workflows/delivery-tests.yml`)
+
+- `actions/checkout@v4` with `fetch-depth: 0`. A `hist@C` test on a shallow checkout fails, never
+  skips: a skipped test passes with its feature deleted.
+- `setup-node` matrix: `22.13.0` (the ADR-016 floor), `22`, `24`.
+- The harness as its own step after the suite.
+- Fixture commits set author and committer inline, never through runner git config.
+
+### Found untestable as designed
+
+1. **Pinned commits leave history.** `7746e27`, `57a2788` and `57d5eca` are not ancestors of
+   `origin/main`, which squash-merges (its last 12 first-parent commits have one parent each).
+   After this branch merges, CI cannot clone them and NFR-F3 makes the map refuse them. Pin to
+   `df0c0a5` (same 71 and 1,654) or push fixture tags; the Product Owner accepts 556 files.
+2. **Byte-identical builds** (S-17) contradict `meta.built_at`, `node` and `sqlite`. The test
+   compares a canonical dump without them; the PRD case needs rewording.
+3. **FR-40's read refusal has no input**: commit lives in `meta`, NOT NULL stops a field being
+   removed, and the design checks only at build. `query.js` must compare the stored schema with
+   the shipped one at open; fx-schema-forged tests it.
+4. **`verify` compares `matched` only**: an edited `dst`, `rel` or `rule` on an intact line passes.
+   It must re-run the rule and compare the whole row.
+5. **Stamp reuse is unobservable**: add `reach.source: stamp | computed` to the envelope.
+6. **The MCP surface has no verification channel** in the role's table, and its frames rest on
+   A-1. L4 proves the protocol; the agent-facing claim is observed only at L5. Step 7 decides S6.
+7. **Lane protection is best effort** (`lane.js`, same register pattern): a computed path escapes.
+   Tested both ways, never as a guarantee; `verify` and the chain check are the guarantee.
+8. **No pass rule yet:** NFR-1, NFR-4, NFR-P4 (OQ 8, 10, 16), NFR-P2 (spike 5); FR-45 checks
+   regression only. ADR-018's Vault figures came from a throwaway scanner; re-measure locally.
 
 ## Risks
 
@@ -291,4 +426,4 @@ Glossary terms to propose: **declared fact** (a map fact a named role wrote with
 never derived), **map cache** (the derived SQLite files), **mirror** (a private full copy of a
 product repo's history, fetched only), **pin** (a product repo naming another repo at a commit).
 
-**Word count:** 1036 prose words with tables and code blocks excluded (target 1000, cap 1600); `grep -v '^|' architecture.md | wc -w`, which also counts the five code blocks (schema, file format, CLI, envelope, diagram), gives 1643; the budget excludes code, so the document is near target and within the cap.
+**Word count:** 1578 prose words, code blocks and tables excluded (target 1000, cap 1600), measured by deleting fenced blocks with `awk`, then `grep -v '^|' | wc -w`. Over target, within the cap: step 3 added the test strategy.
