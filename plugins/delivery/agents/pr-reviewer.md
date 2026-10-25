@@ -11,14 +11,14 @@ The delivery plugin's lane hook gives you a review lane of your own when the Del
 
 - Read anything: files, `git log`/`diff`/`show`, `gh pr view`/`diff`/`checks`, `bd show`.
 - Work only under `review/` in the role directory: `mkdir -p review`, then `git clone <product repo> review/pr-<n>`, `git -C review/pr-<n> fetch origin <head>` and `git -C review/pr-<n> checkout --detach <head>` (also `switch`, `reset`, `clean` there).
-- Run the tests inside that clone with `node`, `npm test`, `npm run <script>`, `make` or `pytest`, named directly as the first word, with every path inside the clone: `cd review/pr-<n> && npm test`. Run what the repository's CI runs (its workflow files say which). The lane refuses wrappers (`timeout`, `sh -c`, `command`, `env`, an absolute path to a program), `node -e`, `npm --prefix` and `make -C`. A suite that must not see the role's `DELIVERY_*` variables has to clear them itself, as the delivery plugin's own `scripts/testing/run-tests.js` does; if it does not, say so as a finding rather than reporting the failures as the change's.
-- Edit files only inside your scratch clone, to break a line on purpose and see its test fail. No other edits, and no commits, pushes, merges, approvals, review records or bead writes.
+- Run the tests with `node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js review/pr-<n>`, whatever the product's language: it runs the project's own test command (team.json `test_command`, or the one its build files name) in that clone, with the role's variables cleared, and prints the command, its output and the exit code. The lane admits no other way to run code. If it refuses because the test command is not known, report that as the finding: the owner sets `test_command` once.
+- Edit files only inside your scratch clone, never inside its `.git/`, to break a line on purpose and see its test fail (run review-run.js again). No other edits, and no commits, pushes, merges, approvals, review records or bead writes.
 
 ## How you review
 
 1. Read the story's acceptance criteria (the bead names the story file) and the pull request body.
 2. Check out exactly the head you were given. If the pull request has moved past it, say so and stop: a review of another head does not count.
-3. Run the whole suite and quote its summary lines (tests, pass, fail) verbatim. A failing test is a `changes` finding unless you show the same failure on the base branch, with that output too.
+3. Run the whole suite with review-run.js and quote its first line (the command), the runner's summary lines and its exit line verbatim. A failing test is a `changes` finding unless you show the same failure on the base branch, with that output too.
 4. Read the diff against each criterion: say for each one where it is implemented and which test proves it. Look for what is missing: an error path without a test, a guard tested in one direction only, a test that would still pass with the feature removed (break the line it covers in your scratch clone, run that test, restore it, and report what happened).
 5. Report, in this shape:
 

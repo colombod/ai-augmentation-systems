@@ -1056,6 +1056,13 @@ function foreignTeamPush(command, instance) {
   return null;
 }
 
+// The reviewer's one runner: review-run.js, which runs the product's own test command in a clone.
+function reviewRunSegment(text, groups, ctx) {
+  const rule = ((groups && groups['review-run']) || []).find((r) => r && r.arg_prefix && /review-run\.js$/.test(r.arg_prefix));
+  if (!rule) return false;
+  try { return ruleMatches(rule, tokens(text), ctx); } catch (err) { return false; }
+}
+
 // A segment that runs one of the plugin's own scripts (they write the team's records).
 function mentionsPluginScript(text, root) {
   return /\$\{?CLAUDE_PLUGIN_ROOT\}?/.test(text) || (!!root && text.includes(root));
@@ -1086,7 +1093,11 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     // only its scratch clones, where it breaks a covered line to see the test fail (mutation check)
     const scratch = roleDir ? path.join(realish(roleDir), 'review') : null;
     const base = cwd || process.cwd();
-    const ok = !!scratch && filePathsOf(name, toolInput).every((fp) => under(realish(path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`), scratch));
+    // never inside a clone's .git: its config and hooks would turn the allowed git commands into an escape
+    const ok = !!scratch && filePathsOf(name, toolInput).every((fp) => {
+      const real = realish(path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`);
+      return under(real, scratch) && !path.relative(scratch, real).split(path.sep).includes('.git');
+    });
     return ok ? { allow: true } : { allow: false, reason: `Role ${pol.roleId} edits files only under review/: ${REVIEWER_REASON}.` };
   }
   if (FILE_TOOLS.includes(name)) {
@@ -1142,7 +1153,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       const { text, op } = segs[n];
       if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
       const names = classifySegment(text, groups, { roleDir, pluginRoot, dirs: live });
-      if (pol.review && !names.includes('read') && mentionsPluginScript(text, pluginRootOf({ pluginRoot }))) {
+      if (pol.review && !names.includes('read') && !reviewRunSegment(text, groups, { roleDir, pluginRoot, dirs: live }) && mentionsPluginScript(text, pluginRootOf({ pluginRoot }))) {
         return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`: ${REVIEWER_REASON}.\nReport pass or changes to the role that dispatched you; it records the review.` };
       }
       if (!names.some((x) => bash.includes(x))) {
@@ -1172,7 +1183,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
 // The subagent type Claude Code reports for agents/pr-reviewer.md (plugin agents are namespaced).
 // Only the plugin's own agent: a same-named agent from elsewhere does not get this lane.
 const REVIEWER_AGENT = 'delivery:pr-reviewer';
-const REVIEWER_REASON = 'a reviewer reads, clones into review/ and runs the tests there with node, npm, make or pytest named directly (no wrapper such as timeout or sh -c); it never changes anything else, commits, pushes, merges or records';
+const REVIEWER_REASON = 'a reviewer reads, clones into review/ and runs the product\'s tests there with `node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js review/<clone>` (the project\'s own test command, any language); it never changes anything else, commits, pushes, merges or records';
 // Read everything; run anything only inside review/ of the role directory; no file edits; no writes
 // through git, gh, bd or the plugin's record scripts (only their read subcommands, in the read groups).
 function reviewerPolicy(base) {

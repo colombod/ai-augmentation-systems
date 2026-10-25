@@ -129,6 +129,9 @@ function validateManifest(team, hosts) {
   }
   // the product's GitHub repository (owner/name), which start.js records and the merge gate reads
   if (team.product_github !== undefined && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(team.product_github))) problems.push(`team.json: "product_github" must be owner/name, not "${String(team.product_github).slice(0, 80)}"`);
+  // the command that runs the product's tests from its checkout root (review-run.js), any language
+  if (team.test_command !== undefined && (typeof team.test_command !== 'string' || !team.test_command.trim() || /[\r\n]/.test(team.test_command))) problems.push('team.json: "test_command" must be one line of shell, the command CI runs from the repository root');
+  if (team.test_timeout_minutes !== undefined && !(Number.isFinite(team.test_timeout_minutes) && team.test_timeout_minutes > 0)) problems.push('team.json: "test_timeout_minutes" must be a positive number');
   if (!Array.isArray(team.roles) || team.roles.length === 0) {
     problems.push('team.json: "roles" must be a non-empty array');
     return problems;
