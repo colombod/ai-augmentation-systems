@@ -103,8 +103,8 @@ test('R-04 (10-13 12:06 to 10-17 15:01): the weekly limit schedules each holder\
   assert.match(w.out, /^Woke builder-1 \(resume of sess-builder-1\)/m);
   assert.deepEqual(spawned.map((s) => s.role).sort(), ['builder-1', 'builder-2']);
   const b1 = spawned.find((s) => s.role === 'builder-1');
-  assert.deepEqual(b1.args.slice(0, 3), ['--resume', 'sess-builder-1', '-p']);
-  assert.match(b1.args[3], /The usage limit has reset\. Continue where you stopped: ex-wxy-12 \(bd show ex-wxy-12\)/);
+  assert.deepEqual(b1.args.slice(0, 5), ['--permission-mode', 'auto', '--resume', 'sess-builder-1', '-p']);
+  assert.match(b1.args[5], /The usage limit has reset\. Continue where you stopped: ex-wxy-12 \(bd show ex-wxy-12\)/);
   assert.equal(b1.cwd, h.roleDir('builder-1'), 'in its role directory, with its settings and hooks');
   // at most once an hour per stall
   assert.doesNotMatch(at(h, '2026-10-17T15:30:00Z', ['wake'], { spawn }).out, /Woke/);
@@ -158,8 +158,8 @@ test('R-04 (wxy.12 unclaimed 15.5 h overnight): a stall line within the hour and
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /^Woke delivery-lead \(fork of sess-delivery-lead\)/m);
   const [c] = calls(log);
-  assert.deepEqual(c.argv.slice(0, 4), ['--resume', `sess-${DM}`, '--fork-session', '-p']);
-  assert.match(c.argv[4], /^Watchdog \(a host job, not the owner\): Top-priority ex-wxy-12 has waited 15\.5 h unclaimed\. Assign it to a builder now/);
+  assert.deepEqual(c.argv.slice(0, 6), ['--permission-mode', 'auto', '--resume', `sess-${DM}`, '--fork-session', '-p']);
+  assert.match(c.argv[6], /^Watchdog \(a host job, not the owner\): Top-priority ex-wxy-12 has waited 15\.5 h unclaimed\. Assign it to a builder now/);
   assert.equal(fs.realpathSync(c.cwd), fs.realpathSync(h.roleDir(DM)));
   assert.equal(c.role, DM);
   // the next run within the hour wakes nobody again
@@ -176,10 +176,15 @@ test('R-43 and R-42: idle with ready work wakes the Delivery Manager; a busy ses
   // "IDLE NOW" sent by the Chief of Staff is no pause: only a verified owner pause holds
   assert.deepEqual(WD.stalls({ beads, ready: beads, now: iso(now), sessions, pause: { paused: true, by: 'dec-chief-of-staff-31' } }), { paused: 'dec-chief-of-staff-31', stalls: [] });
   assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'busy' }]), { skip: 'it is working (busy)' });
-  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', []).args, ['--resume', 's-dm', '-p', 'go']);
+  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', []).args, ['--permission-mode', 'auto', '--resume', 's-dm', '-p', 'go']);
+  // a resumed session does not keep its mode (it came back in default and stopped at approval prompts
+  // no one could answer, on a real team), so every wake names the team's
+  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [], 'acceptEdits').args, ['--permission-mode', 'acceptEdits', '--resume', 's-dm', '-p', 'go']);
+  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [], 'default').args, ['--resume', 's-dm', '-p', 'go']);
+  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'idle' }], 'auto').args, ['--permission-mode', 'auto', '--resume', 's-dm', '--fork-session', '-p', 'go']);
   assert.match(WD.wakeCommand(sessions[0], 'go', null).skip, /could not be listed.*alarm only/, 'open sessions unknown: never a fork, never a resume');
   assert.equal(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'idle' }]).mode, 'fork');
-  assert.deepEqual(WD.wakeCommand({ ...sessions[0], session: null }, 'go', []).args, ['-c', '-p', 'go']);
+  assert.deepEqual(WD.wakeCommand({ ...sessions[0], session: null }, 'go', []).args, ['--permission-mode', 'auto', '-c', '-p', 'go']);
   assert.match(WD.wakeCommand({ ...sessions[0], roleDir: '/nowhere/role' }, 'go', []).skip, /not on this host/);
 });
 
@@ -268,7 +273,7 @@ test('B2: staggered P0s wake the Delivery Manager once an hour at most, whatever
   const bd = memStore(h);
   for (const now of every15(t0, 3)) at(h, now, ['run'], { spawn, bd });
   assert.ok(spawn.list.length <= 4 && spawn.list.length >= 3, `woken ${spawn.list.length} times in 3 h`);
-  const first = spawn.list[0].args[3];
+  const first = spawn.list[0].args[5];
   assert.match(first, /ex-p0/);
 });
 
@@ -324,7 +329,7 @@ test('B2 and Copilot 416: a session on its own usage limit is woken for nothing 
   assert.match(at(h, '2026-10-13T16:00:00Z', ['wake'], { spawn }).out, /^Scheduled: delivery-lead at 2026-10-13 16:05 UTC\. Idle:/m);
   at(h, '2026-10-13T16:10:00Z', ['run'], { spawn });
   assert.equal(spawn.list.length, 1);
-  assert.match(spawn.list[0].args[3], /The usage limit has reset\..*Nothing is in progress although 1 item is ready/);
+  assert.match(spawn.list[0].args[5], /The usage limit has reset\..*Nothing is in progress although 1 item is ready/);
 });
 
 test('B2: a wake whose process still runs is not started again; concurrent host-job runs wake once', () => {
@@ -802,7 +807,7 @@ test('a waiting message wakes its target once, with the message; a new one waits
   at(h, t0, ['run'], { spawn, bd });
   assert.equal(spawn.list.length, 1);
   assert.equal(spawn.list[0].role, COS);
-  assert.match(spawn.list[0].args[3], /\[from delivery-lead: dlv-1 blocked\] merge the story branch/);
+  assert.match(spawn.list[0].args[5], /\[from delivery-lead: dlv-1 blocked\] merge the story branch/);
   at(h, iso(Date.parse(t0) + 60e3), ['run'], { spawn, bd });
   assert.equal(spawn.list.length, 1, 'a delivered message does not wake again');
   IB.queue(h.root, { to: COS, from: DM, message: 'second', at: iso(Date.parse(t0) + 2 * 60e3) });
@@ -811,6 +816,26 @@ test('a waiting message wakes its target once, with the message; a new one waits
   assert.match(held.out, /messages wait 5 min between wakes/);
   at(h, iso(Date.parse(t0) + 6 * 60e3), ['run'], { spawn, bd });
   assert.equal(spawn.list.length, 2, 'woken again after five minutes, not an hour');
-  assert.match(spawn.list[1].args[3], /second/);
-  assert.doesNotMatch(spawn.list[1].args[3], /merge the story branch/);
+  assert.match(spawn.list[1].args[5], /second/);
+  assert.doesNotMatch(spawn.list[1].args[5], /merge the story branch/);
+});
+
+// A resumed session came back in default mode on a real team and stopped at approval prompts no one
+// could answer; the watchdog wakes each session in the mode team.json records.
+test('a wake runs in the team\'s permission mode (team.json permission_mode; auto when unset)', () => {
+  const t0 = '2026-10-25T18:00:00Z';
+  for (const [mode, want] of [[undefined, ['--permission-mode', 'auto']], ['acceptEdits', ['--permission-mode', 'acceptEdits']], ['default', []]]) {
+    const h = harness({});
+    if (mode) {
+      const f = path.join(h.root, '.delivery', 'team', 'team.json');
+      fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), permission_mode: mode }, null, 2));
+    }
+    const IB = require('./lib/inbox.js');
+    session(h, COS, { seen: iso(Date.parse(t0) - 2 * H) });
+    IB.queue(h.root, { to: COS, from: DM, summary: 'x', message: 'y', at: t0 });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1, String(mode));
+    assert.deepEqual(spawn.list[0].args.slice(0, want.length + 1), [...want, '--resume'], String(mode));
+  }
 });

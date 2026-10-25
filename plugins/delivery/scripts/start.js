@@ -406,14 +406,14 @@ function startCommand(roleDir, instance, permissionMode) {
 
 function scaffold(opts) {
   const {
-    project, host: hostFlag, preset = 'minimal', models = 'balanced', productRepo, prefix: prefixFlag, runner = 'plain', permissionMode = 'auto',
+    project, host: hostFlag, preset = 'minimal', models = 'balanced', productRepo, prefix: prefixFlag, runner = 'plain', permissionMode: modeFlag,
     teamDir: teamDirFlag, user, dryRun = false, env = process.env, pluginRoot = PLUGIN_ROOT, realityChecker = false, launch = false, keepAlive = false,
   } = opts;
   if (!project) throw new UsageError('--project <root> is required');
   if (!PRESETS[preset]) throw new UsageError(`--preset must be one of ${Object.keys(PRESETS).join(', ')}`);
   if (!MODEL_PRESETS[models]) throw new UsageError(`--models must be one of ${Object.keys(MODEL_PRESETS).join(', ')}`);
   if (!RUNNERS.has(runner)) throw new UsageError(`--runner must be one of ${[...RUNNERS].join(', ')}`);
-  if (!PERMISSION_MODES.includes(permissionMode)) throw new UsageError(`--permission-mode must be one of ${PERMISSION_MODES.join(', ')}`);
+  if (modeFlag !== undefined && !PERMISSION_MODES.includes(modeFlag)) throw new UsageError(`--permission-mode must be one of ${PERMISSION_MODES.join(', ')}`);
   const w = dryRun ? 'would ' : '';
   const out = [];
   const say = (s) => out.push(s);
@@ -512,6 +512,21 @@ function scaffold(opts) {
       const raw = JSON.parse(fs.readFileSync(teamFile, 'utf8'));
       raw.product_github = github;
       team.product_github = github;
+      fs.writeFileSync(teamFile, formatManifestJson(raw));
+      wroteManifest = true;
+    }
+  }
+
+  // the team's permission mode, recorded in team.json: the watchdog resumes each session in it. A
+  // resumed session does not keep the mode it was started in (`claude --resume -p` came back in
+  // default mode and stopped at approval prompts no one could answer), so every wake passes it.
+  const permissionMode = modeFlag || (PERMISSION_MODES.includes(team.permission_mode) ? team.permission_mode : 'auto');
+  if (team.permission_mode !== permissionMode) {
+    say(`  permission mode: ${permissionMode}; ${w}record it as permission_mode in ${TEAM_REL} (the watchdog wakes each session in it)`);
+    if (!dryRun) {
+      const raw = JSON.parse(fs.readFileSync(teamFile, 'utf8'));
+      raw.permission_mode = permissionMode;
+      team.permission_mode = permissionMode;
       fs.writeFileSync(teamFile, formatManifestJson(raw));
       wroteManifest = true;
     }

@@ -106,6 +106,14 @@ function pruneWakeLogs(root) {
   } catch (err) { /* no logs yet */ }
 }
 
+// the team's permission mode (team.json permission_mode, recorded by start.js; auto, start's default)
+function teamMode(root) {
+  try {
+    const m = require('./lib/manifest.js').loadManifest(root).team.permission_mode;
+    return typeof m === 'string' && m ? m : 'auto';
+  } catch (err) { return 'auto'; }
+}
+
 function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
@@ -116,7 +124,7 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
   const rows = WD.logRows(root);
   for (const w of p.wakes) {
     const s = res.sessions.find((x) => x.instance === w.target) || null;
-    const c = WD.wakeCommand(s, w.prompt, open);
+    const c = WD.wakeCommand(s, w.prompt, open, teamMode(root));
     if (c.skip) {
       lines.push(`Not woken: ${w.target}: ${c.skip}. ${w.lines[0]}`);
       // one skip row an hour per session keeps the log short while a session is busy
