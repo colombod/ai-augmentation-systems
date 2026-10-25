@@ -6,10 +6,12 @@
 //       prerequisites as a pass/fail list with the fix for each; exit 1 when a hard one is missing.
 //   start.js --project <root> [--host <name>] [--preset minimal|full] [--product-repo <path|url>]
 //            [--prefix <bd prefix>] [--runner superpowers|attractor|plain] [--permission-mode <mode>]
-//            [--models quality|balanced|economy] [--reality-checker] [--team-dir <dir>] [--user <name>] [--launch [--keep-alive]] [--dry-run]
+//            [--models quality|balanced|economy] [--reality-checker] [--team-dir <dir>] [--user <name>] [--launch [--keep-alive]] [--import-beads <file>] [--dry-run]
 //       scaffold a shipping team: manifest from the preset (never overwriting one), bd init when
 //       .beads is absent, prepare-role for every instance not yet prepared, then the command that
-//       starts each session. --dry-run prints the plan and writes nothing.
+//       starts each session. --dry-run prints the plan and writes nothing. --import-beads loads a
+//       `bd export` file (JSONL) into the project's beads once: ids must carry the team's prefix,
+//       an id already present is skipped and never overwritten.
 //
 // Exit codes: 0 ok; 1 a hard prerequisite is missing or the scaffold was refused; 2 usage error.
 const fs = require('fs');
@@ -173,6 +175,12 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
         ? { name: 'project repo remote', status: 'pass', detail: remote.out, hard: false }
         : { name: 'project repo remote', status: 'warn', detail: 'no origin remote', fix: 'add a private remote (`git remote add origin <url>`) so plans are pushed and operator records travel on its delivery-operator branch (sessions need push access to publish them)', hard: false });
     }
+    if (bd.ok && fs.existsSync(path.join(root, '.beads'))) {
+      const ids = beadsIssueIds(root, runEnv);
+      rows.push(ids
+        ? { name: 'beads issues', status: 'pass', detail: `${issuesOf(ids.length)} in ${path.join(root, '.beads')}`, hard: false }
+        : { name: 'beads issues', status: 'unknown', detail: 'this machine has no readable database yet', fix: 'run start.js (it fetches the team\'s issues with `bd bootstrap`)', hard: false });
+    }
     if (bd.ok && fs.existsSync(path.join(root, '.beads'))) rows.push(beadsSyncRow(run('bd', ['dolt', 'remote', 'list', '--json'], { cwd: root, env: runEnv })));
   }
   return rows;
@@ -249,7 +257,7 @@ function commitBeadsFiles({ projectRoot, env, say, paths, message }) {
   say(c.ok ? `  beads: committed ${existing.join(', ')} (${run('git', ['rev-parse', '--short', 'HEAD'], { cwd: projectRoot, env }).out})` : `  beads: could not commit ${existing.join(', ')}: ${(c.err || c.out).slice(0, 200)}`);
 }
 
-function setUpBeads({ projectRoot, prefix, env, dryRun, w, say }) {
+function setUpBeads({ projectRoot, prefix, env, dryRun, w, say, skipPublish = false }) {
   const bd = (args, timeout = 120000) => run('bd', args, { cwd: projectRoot, env, timeout });
   const hasBeads = fs.existsSync(path.join(projectRoot, '.beads'));
   const hasDb = hasBeads && bd(['stats'], 30000).ok;
@@ -294,6 +302,12 @@ function setUpBeads({ projectRoot, prefix, env, dryRun, w, say }) {
     return;
   }
   if (dryRun) { say(`  beads: ${w}publish the issues to the project repo (bd dolt push)`); return; }
+  if (skipPublish) return;
+  publishBeads({ projectRoot, env, say });
+}
+
+function publishBeads({ projectRoot, env, say }) {
+  const bd = (args, timeout = 120000) => run('bd', args, { cwd: projectRoot, env, timeout });
   const p = bd(['dolt', 'push']);
   // A Claude Code cloud session's git proxy refuses pushes to refs outside refs/heads (measured:
   // HTTP 403 for refs/dolt/data, while branch pushes pass), so the first publish must come from a
@@ -304,6 +318,74 @@ function setUpBeads({ projectRoot, prefix, env, dryRun, w, say }) {
     : refused
       ? `  beads: publish refused (HTTP 403): this machine's network does not allow pushing beads' refs/dolt/data (a Claude Code cloud session's proxy refuses refs outside branches). The database works here; publish once from a machine with ordinary git access by running start.js there`
       : `  beads: publish failed: ${(p.err || p.out).slice(0, 300)}. The database works here; run \`bd dolt push\` in ${projectRoot} once the project repo accepts pushes`);
+}
+
+// ---- --import-beads: load a `bd export` file once ----
+
+// The prefix the team's issues will carry: the existing manifest's, else the one scaffold would write.
+function plannedPrefix(projectRoot, prefixFlag) {
+  const team = readJsonFile(path.join(projectRoot, TEAM_REL));
+  if (team && team.prefix) return team.prefix;
+  return slug(prefixFlag || slug(path.basename(projectRoot), 'project'), 'proj');
+}
+
+// Read and check the whole file before anything is written. Returns { ids, lines } (one entry per
+// distinct id, in file order) or { refusal }. An id is `<prefix>-<rest>`; a prefix is never rewritten.
+function readBeadsExport(file, prefix) {
+  let text;
+  try { text = fs.readFileSync(path.resolve(file), 'utf8'); } catch (err) { return { refusal: `${file} cannot be read (${err.code === 'ENOENT' ? 'no such file' : err.message})` }; }
+  const issues = new Map();
+  const wrong = [];
+  const rows = text.split(/\r?\n/);
+  for (let i = 0; i < rows.length; i++) {
+    if (!rows[i].trim()) continue;
+    let obj;
+    try { obj = JSON.parse(rows[i]); } catch (err) { return { refusal: `line ${i + 1} of ${file} is not JSON` }; }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj) || typeof obj.id !== 'string' || !obj.id) return { refusal: `line ${i + 1} of ${file} is not an issue (no "id")` };
+    if (!obj.id.startsWith(`${prefix}-`) || obj.id.length === prefix.length + 1) { wrong.push({ line: i + 1, id: obj.id }); continue; }
+    if (!issues.has(obj.id)) issues.set(obj.id, rows[i]);
+  }
+  if (wrong.length) {
+    const first = wrong[0];
+    const own = first.id.includes('-') ? first.id.slice(0, first.id.lastIndexOf('-')) : first.id;
+    return { refusal: `line ${first.line} of ${file} holds ${first.id}, whose prefix is "${own}", but this project's prefix is "${prefix}"${wrong.length > 1 ? ` (${wrong.length} lines do not match)` : ''}; ids are never rewritten` };
+  }
+  return { ids: [...issues.keys()], lines: [...issues.values()] };
+}
+
+// Every issue id in the project's database, closed ones included; null when it cannot be read.
+function beadsIssueIds(projectRoot, env) {
+  const r = run('bd', ['list', '--all', '--limit', '0', '--json'], { cwd: projectRoot, env, timeout: 60000 });
+  if (!r.ok) return null;
+  try { return JSON.parse(r.out || '[]').map((x) => x.id); } catch (err) { return null; }
+}
+
+const issuesOf = (n) => `${n} issue${n === 1 ? '' : 's'}`;
+
+function importBeads({ projectRoot, parsed, env, dryRun, say }) {
+  const have = fs.existsSync(path.join(projectRoot, '.beads')) ? beadsIssueIds(projectRoot, env) : null;
+  if (!have && !dryRun) { say(`  beads: import refused: the project has no readable beads database to load ${issuesOf(parsed.ids.length)} into`); return false; }
+  const present = new Set(have || []);
+  const lines = parsed.lines.filter((_, i) => !present.has(parsed.ids[i]));
+  const skipped = parsed.ids.length - lines.length;
+  // "imported 3 issues" on a first load; "0 new, 3 already present" when some or all were there
+  const summary = (verb) => (skipped ? `${verb === 'imported' ? '' : `${verb} `}${lines.length} new, ${skipped} already present` : `${verb} ${issuesOf(lines.length)}`);
+  if (dryRun) { say(`  beads: ${summary('would import')}`); return true; }
+  if (lines.length) {
+    const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'start-import-')), 'issues.jsonl');
+    fs.writeFileSync(tmp, `${lines.join('\n')}\n`);
+    const r = run('bd', ['import', tmp], { cwd: projectRoot, env, timeout: 300000 });
+    fs.rmSync(path.dirname(tmp), { recursive: true, force: true });
+    if (!r.ok) { say(`  beads: import failed: ${(r.err || r.out).slice(0, 300)}`); return false; }
+  }
+  say(`  beads: ${summary('imported')}`);
+  if (lines.length) {
+    const remotes = run('bd', ['dolt', 'remote', 'list', '--json'], { cwd: projectRoot, env, timeout: 30000 });
+    let list = [];
+    try { list = remotes.ok ? JSON.parse(remotes.out || '[]') : []; } catch (err) { list = []; }
+    if (list.length) publishBeads({ projectRoot, env, say });
+  }
+  return true;
 }
 
 // Smart App Control state from the registry value Windows keeps it in: 0 off, 1 on (enforcing),
@@ -407,7 +489,7 @@ function startCommand(roleDir, instance, permissionMode) {
 function scaffold(opts) {
   const {
     project, host: hostFlag, preset = 'minimal', models = 'balanced', productRepo, prefix: prefixFlag, runner = 'plain', permissionMode = 'auto',
-    teamDir: teamDirFlag, user, dryRun = false, env = process.env, pluginRoot = PLUGIN_ROOT, realityChecker = false, launch = false, keepAlive = false,
+    teamDir: teamDirFlag, user, dryRun = false, env = process.env, pluginRoot = PLUGIN_ROOT, realityChecker = false, launch = false, keepAlive = false, importBeads: importFile,
   } = opts;
   if (!project) throw new UsageError('--project <root> is required');
   if (!PRESETS[preset]) throw new UsageError(`--preset must be one of ${Object.keys(PRESETS).join(', ')}`);
@@ -420,6 +502,14 @@ function scaffold(opts) {
   const projectRoot = path.resolve(project);
   const host = slug(hostFlag || os.hostname().split('.')[0], 'host');
   const gitEnv = { ...env };
+  // --import-beads is checked whole before anything is written, so a refusal changes nothing
+  let parsedImport = null;
+  if (importFile) {
+    const expected = plannedPrefix(projectRoot, prefixFlag);
+    parsedImport = readBeadsExport(importFile, expected);
+    if (parsedImport.refusal) { say(`delivery start: import refused: ${parsedImport.refusal}; nothing was imported or written`); return { code: 1, out }; }
+    if (!run('bd', ['version'], { env }).ok) { say('delivery start: import refused: bd is not on PATH; install it, then run start.js again with --import-beads'); return { code: 1, out }; }
+  }
   say(`delivery start: ${projectRoot}${dryRun ? ' (dry run: nothing is written)' : ''}`);
 
   // 1. the private project repo
@@ -529,10 +619,11 @@ function scaffold(opts) {
   if (!run('bd', ['version'], { env }).ok) {
     say(`  beads: skipped: bd is not on PATH. Install it (${SETUP_DOC}), then run start.js again: it sets up beads and re-prepares the roles so each gets BEADS_DIR`);
   } else {
-    setUpBeads({ projectRoot, prefix: team.prefix, env, dryRun, w, say });
+    setUpBeads({ projectRoot, prefix: team.prefix, env, dryRun, w, say, skipPublish: !!parsedImport });
+    if (parsedImport && !importBeads({ projectRoot, parsed: parsedImport, env, dryRun, say })) return { code: 1, out };
   }
   if (productCheckout && fs.existsSync(path.join(productCheckout, '.beads'))) {
-    say(`  beads: the product repo has its own beads workspace (${path.join(productCheckout, '.beads')}); it is not imported and nothing waits on it. The team's work items live in ${projectRoot}`);
+    say(`  beads: the product repo has its own beads workspace (${path.join(productCheckout, '.beads')}); it is not imported and nothing waits on it. The team's work items live in ${projectRoot}. To bring that backlog in, run \`bd export -o <file>\` there and pass the file with --import-beads <file>`);
   }
 
   // 6. one prepared directory per instance; an already prepared one is left as it is
@@ -609,9 +700,9 @@ function parseArgs(argv) {
 
 const USAGE = `usage: start.js --check [--project <root>]
        start.js --project <root> [--host <name>] [--preset minimal|full] [--models quality|balanced|economy] [--reality-checker] [--product-repo <path|url>] [--prefix <bd prefix>]
-                [--runner superpowers|attractor|plain] [--permission-mode <mode>] [--team-dir <dir>] [--user <name>] [--launch [--keep-alive]] [--dry-run]`;
+                [--runner superpowers|attractor|plain] [--permission-mode <mode>] [--team-dir <dir>] [--user <name>] [--launch [--keep-alive]] [--import-beads <file>] [--dry-run]`;
 
-const KNOWN = new Set(['check', 'dry-run', 'help', 'reality-checker', 'launch', 'keep-alive', 'project', 'host', 'preset', 'models', 'product-repo', 'prefix', 'runner', 'permission-mode', 'team-dir', 'user']);
+const KNOWN = new Set(['check', 'dry-run', 'help', 'reality-checker', 'launch', 'keep-alive', 'project', 'host', 'preset', 'models', 'product-repo', 'prefix', 'runner', 'permission-mode', 'team-dir', 'user', 'import-beads']);
 
 function main(argv, { env = process.env, write = (s) => process.stdout.write(s) } = {}) {
   let flags;
@@ -631,7 +722,7 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
   try {
     const res = scaffold({
       project: flags.project, host: flags.host, preset: flags.preset, models: flags.models, productRepo: flags['product-repo'], prefix: flags.prefix,
-      runner: flags.runner, permissionMode: flags['permission-mode'], teamDir: flags['team-dir'], user: flags.user, dryRun: !!flags['dry-run'], env, realityChecker: !!flags['reality-checker'], launch: !!flags.launch, keepAlive: !!flags['keep-alive'],
+      runner: flags.runner, permissionMode: flags['permission-mode'], teamDir: flags['team-dir'], user: flags.user, dryRun: !!flags['dry-run'], env, realityChecker: !!flags['reality-checker'], launch: !!flags.launch, keepAlive: !!flags['keep-alive'], importBeads: flags['import-beads'],
     });
     write(`${res.out.join('\n')}\n`);
     return res.code;

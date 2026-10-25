@@ -41,6 +41,16 @@ beads keeps the team's work items in a database inside the project repo (`.beads
 machine that runs role sessions has its own copy; machines share it through the project repo's
 own git remote, so there is no database server to run and no database password.
 
+**Bringing an existing backlog in.** A product that already tracks its work in beads exports it
+from the old tracker (`bd export -o vault-export.jsonl`, run in the old workspace) and passes the
+file once: `start.js --project ~/vault-planning --import-beads vault-export.jsonl`. It prints
+`imported 3 issues`; the same ids, titles, statuses and dependencies are then in the project's
+database and are published with the rest. Every id must start with the team's prefix (`vault-`);
+a file with any other prefix, a missing file or a line that is not JSON is refused before
+anything is written. Running it again prints `0 new, 3 already present` and leaves edited issues
+as they are. `--dry-run` prints `would import 3 issues` and changes nothing; `start.js --check
+--project <root>` shows `beads issues: 3 issues`.
+
 **`start.js` does this on every machine; you run nothing by hand.** On each run it:
 
 - creates the database when the project has none (`bd init --skip-agents`, so beads does not

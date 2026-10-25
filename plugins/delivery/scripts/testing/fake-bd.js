@@ -44,6 +44,12 @@ function view(b) {
   return v;
 }
 
+// Where a git+file:// remote keeps the database a push publishes (inside the bare repo); null for other URLs.
+function remoteStore(url) {
+  const m = /^git\+file:\/\/(.+)$/.exec(url || '');
+  return m && fs.existsSync(m[1]) ? require('path').join(m[1], 'fake-dolt-store.json') : null;
+}
+
 function out(obj) { process.stdout.write(`${JSON.stringify(obj)}\n`); }
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -176,6 +182,9 @@ switch (cmd) {
       if (!cfg || !(cfg.remotes || []).length) { process.stderr.write('Error: no remote configured\n'); process.exit(1); }
       cfg.pushes = (cfg.pushes || 0) + 1;
       fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+      // a git+file:// remote keeps the pushed database, so a second clone's bootstrap can fetch it
+      const dest = remoteStore(cfg.remotes[0].url);
+      if (dest) fs.writeFileSync(dest, JSON.stringify(s));
       process.stdout.write('Push complete.\n');
     } else { process.stderr.write('fake-bd: unknown dolt subcommand\n'); process.exit(2); }
     break;
@@ -190,8 +199,29 @@ switch (cmd) {
     if (process.env.BD_FAKE_BOOTSTRAP === 'fail') { process.stderr.write('fake-bd: nothing to bootstrap from\n'); process.exit(1); }
     const dir = require('path').join(process.cwd(), '.beads');
     fs.mkdirSync(dir, { recursive: true });
+    const origin = require('child_process').spawnSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8' });
+    const src = origin.status === 0 ? remoteStore(`git+file://${origin.stdout.trim()}`) : null;
+    if (src && fs.existsSync(src)) save(JSON.parse(fs.readFileSync(src, 'utf8')));
     fs.writeFileSync(require('path').join(dir, 'fake-config.json'), JSON.stringify({ prefix: null, bootstrapped: true, remotes: [{ name: 'origin', url: 'git+file:///fake-origin', status: 'ok' }] }));
     process.stdout.write('Synced database\n');
+    break;
+  }
+  case 'import': {
+    // `import <file>`: one issue per JSONL line, added when its id is new; its `dependencies`
+    // ({issue_id, depends_on_id}) become blocked-by pairs. Real bd upserts; start.js never passes it an id already present.
+    const file = pos[0] || flags.input || flags.i;
+    if (!file || !fs.existsSync(file)) { process.stderr.write(`fake-bd: no such file ${file}\n`); process.exit(1); }
+    let n = 0;
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      const o = JSON.parse(line);
+      if (s.issues[o.id]) continue;
+      s.issues[o.id] = { id: o.id, title: o.title || '', status: o.status || 'open', type: o.issue_type || 'task', parent: null, labels: o.labels || [], metadata: o.metadata || {}, notes: o.notes || '', priority: o.priority === undefined ? 2 : o.priority, description: o.description || '', assignee: o.assignee || '', updated_at: new Date().toISOString() };
+      for (const d of o.dependencies || []) s.deps.push({ id: d.issue_id || o.id, blocked_by: d.depends_on_id });
+      n++;
+    }
+    save(s);
+    process.stdout.write(`Imported ${n} issues\n`);
     break;
   }
   case 'prime': process.stdout.write('fake-bd prime\n'); break;
