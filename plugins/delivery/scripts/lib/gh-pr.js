@@ -31,13 +31,73 @@ function productRepoOf(team, { roleDir } = {}) {
 const sameRepo = (a, b) => !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
 const UNKNOWN = (pr) => `the product repository is not known, so gh cannot read PR ${pr}.\nSet it: start.js --product-repo <checkout or URL> records product_github in team.json`;
 
+const firstLine = (r) => String(r.stderr || r.stdout || `gh exited ${r.status}`).trim().split('\n')[0].slice(0, 160);
+
 function viewPr(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
   if (!repo) return { unavailable: 'the product repository is not known' };
   let r;
   try { r = spawnSync('gh', ['pr', 'view', String(pr), '--json', FIELDS, '-R', repo], { cwd, encoding: 'utf8', timeout: timeoutMs }); } catch (err) { return { unavailable: err.message }; }
   if (r.error) return { unavailable: r.error.code === 'ENOENT' ? 'gh is not installed' : r.error.message };
-  if (r.status !== 0) return { unavailable: String(r.stderr || r.stdout || `gh exited ${r.status}`).trim().split('\n')[0].slice(0, 160) };
-  try { return JSON.parse(r.stdout); } catch (err) { return { unavailable: 'gh pr view returned no JSON' }; }
+  if (r.status === 0) {
+    try { return JSON.parse(r.stdout); } catch (err) { return { unavailable: 'gh pr view returned no JSON' }; }
+  }
+  // `gh pr view` is GraphQL. Some hosts reach GitHub only through REST (Claude Code's cloud sessions
+  // get "HTTP 403: GitHub GraphQL is not available"), so the same facts are read through `gh api`.
+  const why = firstLine(r);
+  const rest = viewPrRest(pr, { repo, cwd, timeoutMs });
+  return rest.unavailable ? { unavailable: `${why}; through REST: ${rest.unavailable}` } : rest;
 }
 
-module.exports = { viewPr, repoOf, productRepoOf, sameRepo, UNKNOWN, REPO };
+function ghApi(endpoint, { cwd, timeoutMs }) {
+  let r;
+  try { r = spawnSync('gh', ['api', '-H', 'Accept: application/vnd.github+json', endpoint], { cwd, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 }); } catch (err) { return { unavailable: err.message }; }
+  if (r.error) return { unavailable: r.error.message };
+  if (r.status !== 0) return { unavailable: firstLine(r) };
+  try { return { json: JSON.parse(r.stdout) }; } catch (err) { return { unavailable: `gh api ${endpoint} returned no JSON` }; }
+}
+
+const MERGEABLE = (m) => (m === true ? 'MERGEABLE' : m === false ? 'CONFLICTING' : 'UNKNOWN');
+const UP = (x) => String(x || '').toUpperCase();
+
+// The fields viewPr's callers read, in `gh pr view --json` shape, from the REST endpoints.
+function viewPrRest(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
+  const o = { cwd, timeoutMs };
+  const base = `repos/${repo}`;
+  const p = ghApi(`${base}/pulls/${pr}`, o);
+  if (p.unavailable) return p;
+  const pull = p.json || {};
+  const sha = pull.head && pull.head.sha;
+  const files = [];
+  for (let page = 1; page <= 30; page++) {
+    const f = ghApi(`${base}/pulls/${pr}/files?per_page=100&page=${page}`, o);
+    if (f.unavailable) return f;
+    const list = Array.isArray(f.json) ? f.json : [];
+    for (const x of list) files.push({ path: x.filename, additions: x.additions, deletions: x.deletions });
+    if (list.length < 100) break;
+  }
+  const rollup = [];
+  if (sha) {
+    const runs = ghApi(`${base}/commits/${sha}/check-runs?per_page=100`, o);
+    if (runs.unavailable) return runs;
+    for (const c of (runs.json && runs.json.check_runs) || []) rollup.push({ __typename: 'CheckRun', name: c.name, status: UP(c.status), conclusion: UP(c.conclusion) });
+    const st = ghApi(`${base}/commits/${sha}/status`, o);
+    if (st.unavailable) return st;
+    for (const c of (st.json && st.json.statuses) || []) rollup.push({ __typename: 'StatusContext', context: c.context, state: UP(c.state) });
+  }
+  return {
+    number: pull.number,
+    state: pull.merged || pull.merged_at ? 'MERGED' : UP(pull.state),
+    headRefOid: sha || null,
+    headRefName: (pull.head && pull.head.ref) || null,
+    mergeable: MERGEABLE(pull.mergeable),
+    statusCheckRollup: rollup,
+    additions: pull.additions,
+    deletions: pull.deletions,
+    files,
+    body: pull.body || '',
+    title: pull.title || '',
+    via: 'rest',
+  };
+}
+
+module.exports = { viewPr, viewPrRest, repoOf, productRepoOf, sameRepo, UNKNOWN, REPO };

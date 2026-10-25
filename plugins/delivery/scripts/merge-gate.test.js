@@ -20,9 +20,9 @@ const GREEN = [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conc
 const pr478 = (over = {}) => ({ headRefOid: H1, headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'src/import.js', additions: 120, deletions: 30 }],
   body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, title: 'Import a dropped CSV', ...over });
 
-function setup(prs = { 478: pr478() }) {
+function setup(prs = { 478: pr478() }, { restOnly = false } = {}) {
   const bead = storyBead({ metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } });
-  const h = harness({ beads: { [BEAD]: bead }, prs });
+  const h = harness({ beads: { [BEAD]: bead }, prs, restOnly });
   h.review = (inst, args) => h.bash(inst, `${h.script('review.js')} ${args}`);
   h.gate = (inst, args) => h.bash(inst, `${h.script('merge-gate.js')} ${args}`);
   h.merge = (inst, args) => h.bash(inst, `gh pr merge ${args} -R example/example`);
@@ -154,6 +154,36 @@ test('R-32 R-12: the normal path: request, a pass on the current head, CI green,
   assert.equal(h.db().issues[BEAD].metadata.merged_pr, '478');
   assert.match(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /^The change "Import a collection" is reviewed and merged; checking it on the customer's app next$/);
   assert.doesNotMatch(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /478|ex-vault/, 'no ids in the plain words');
+});
+
+// Claude Code's cloud sessions reach GitHub through REST only: `gh pr view` and `gh pr merge` (GraphQL)
+// answer HTTP 403 there, so a Delivery Manager in the cloud could neither read nor merge (found on #71).
+test('R-32 through REST only: the gate reads the pull request with gh api and merges through the merge endpoint, gated the same', () => {
+  const h = setup({ 478: pr478() }, { restOnly: true });
+  const api = (args) => h.bash('delivery-lead', `gh api ${args}`);
+  assert.match(h.review('delivery-lead', 'request 478 --reviewer builder-2').out, /review of PR 478 at a1b2c3d4e5f6 requested from builder-2/);
+  // no review yet: the REST merge is refused exactly as gh pr merge is
+  const early = api(`-X PUT repos/example/example/pulls/478/merge -f merge_method=squash -f sha=${H1}`);
+  assert.match(early.deny || '', /merge of PR 478 refused: PR 478 has no independent review/);
+  assert.equal(h.gh()[478].state, undefined, 'nothing merged');
+  h.pass('builder-2');
+  const ok = h.gate('delivery-lead', 'check 478').out;
+  assert.match(ok, /passes at a1b2c3d4e5f6: review .* CI green\./, ok);
+  assert.ok(ok.includes(`\`gh api -X PUT repos/example/example/pulls/478/merge -f merge_method=squash -f sha=${H1}\``), ok);
+  // the head must be named in full, the repository must be the product's, and only PUT on the endpoint passes
+  assert.match(api('-X PUT repos/example/example/pulls/478/merge -f merge_method=squash').deny || '', /name the reviewed head in full/);
+  assert.match(api(`-X PUT repos/example/other/pulls/478/merge -f sha=${H1}`).deny || '', /is not the product repository/);
+  assert.match(api(`-X PUT repos/example/example/pulls/478/merge -f sha=${H2}`).deny || '', /not .*b2c3d4e5f607|new commits arrived/);
+  assert.match(api(`-X PUT repos/example/example/pulls/478/merge --input body.json`).deny || '', /fields inline|may not run/);
+  assert.notEqual(api(`repos/example/example/pulls/478/merge -f sha=${H1}`).deny, null, 'fields without -X are a POST, not the merge');
+  assert.notEqual(api('repos/example/example/pulls/478').deny, null, 'other gh api calls stay outside the Delivery Manager\'s lane');
+  const m = api(`-X PUT repos/example/example/pulls/478/merge -f merge_method=squash -f sha=${H1}`);
+  assert.equal(m.deny, null, m.deny);
+  assert.equal(h.gh()[478].state, 'MERGED');
+  assert.match(h.gate('delivery-lead', 'merged 478').out, /PR 478 merged at a1b2c3d4e5f6/);
+  // every other role is still refused the endpoint
+  const b = h.bash('builder-1', `gh api -X PUT repos/example/example/pulls/478/merge -f sha=${H1}`, { run: false });
+  assert.match(b.deny || '', /merging is the Delivery Manager's/);
 });
 
 test('R-32 without gh: the head comes from the merge command and CI from the Delivery Manager\'s recorded run', () => {

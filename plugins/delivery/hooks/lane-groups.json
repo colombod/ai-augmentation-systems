@@ -64,7 +64,8 @@
     { "first": "gh", "sub": ["pr create", "pr edit", "pr comment", "pr ready", "pr review", "issue comment", "release create", "workflow run"] }
   ],
   "gh-merge": [
-    { "first": "gh", "sub": ["pr merge"] }
+    { "first": "gh", "sub": ["pr merge"] },
+    { "first": "gh", "sub": ["api"], "merge_endpoint": true, "native_allow": false }
   ],
   "bd-read": [
     { "first": "bd", "sub": ["list", "show", "ready", "prime", "where", "dep list", "dep tree", "dep cycles", "label list", "label list-all", "stats", "help", "comments list"] }

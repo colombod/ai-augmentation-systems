@@ -393,6 +393,10 @@ function ruleMatches(rule, t, ctx) {
       if (valueFlags.includes(args[k])) k++;
     }
   }
+  if (rule.merge_endpoint) {
+    const c = ghApiCall(t);
+    if (!c || c.bad || !MERGE_ENDPOINT.test(c.endpoint || '') || c.method !== 'PUT') return false;
+  }
   if (rule.scope) {
     if (!ctx.roleDir) return false;
     const base = path.join(realish(ctx.roleDir), String(rule.scope));
@@ -968,6 +972,34 @@ function defaultBranches(dir) {
   return out;
 }
 
+// One `gh api` call's endpoint, method and fields, or null when the segment is not `gh api`. Value
+// options are consumed; --input (a body the lane cannot read) and an unknown option make it `bad`.
+const GH_API_VALUE = ['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '-R', '--repo', '--hostname', '-q', '--jq', '-t', '--template', '--cache'];
+const GH_API_FLAG = ['--silent', '-i', '--include', '--verbose', '--paginate', '--slurp'];
+function ghApiCall(t) {
+  const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+  if (path.basename(words[0] || '') !== 'gh' || words[1] !== 'api') return null;
+  const out = { endpoint: null, method: null, fields: {}, bad: null };
+  for (let i = 2; i < words.length; i++) {
+    const x = words[i];
+    const [f, inline] = x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
+    if (GH_API_VALUE.includes(f)) {
+      const val = inline !== undefined ? inline : words[++i];
+      if (val === undefined) { out.bad = `${f} has no value`; continue; }
+      if (f === '-X' || f === '--method') out.method = String(val).toUpperCase();
+      if (['-f', '--raw-field', '-F', '--field'].includes(f)) { const k = val.indexOf('='); if (k > 0) out.fields[val.slice(0, k)] = val.slice(k + 1); else out.bad = `${f} ${val}`; }
+      continue;
+    }
+    if (GH_API_FLAG.includes(f)) continue;
+    if (x.startsWith('-')) { out.bad = f; continue; }
+    if (out.endpoint === null) out.endpoint = x; else out.bad = x;
+  }
+  // gh sends a POST when fields are given without -X
+  if (!out.method) out.method = Object.keys(out.fields).length ? 'POST' : 'GET';
+  return out;
+}
+const MERGE_ENDPOINT = /^\/?repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pulls\/(\d+)\/merge$/;
+
 function mergeAttempt(command, cwd) {
   const text = String(command == null ? '' : command);
   return splitCommand(text).some((seg) => {
@@ -1162,4 +1194,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { ghApiCall, MERGE_ENDPOINT, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

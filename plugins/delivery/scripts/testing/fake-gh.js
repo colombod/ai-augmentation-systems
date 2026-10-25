@@ -3,7 +3,8 @@
 // --match-head-commit <sha>`, over the JSON file named in GH_FAKE_STORE ({ repo: "owner/name", prs:
 // { "<n>": view } }). Like gh outside a checkout of the product, it needs -R (or a URL target) naming
 // that repository and fails on any other. Without the store it fails the way a signed-out gh does.
-// Never used in production.
+// With rest_only in the store, GraphQL commands fail with the cloud's 403 and `api` serves the
+// REST endpoints from the same store. Never used in production.
 const fs = require('fs');
 
 const store = process.env.GH_FAKE_STORE;
@@ -23,6 +24,48 @@ for (let i = 0; i < argv.length; i++) {
   else args.push(argv[i]);
 }
 const [group, cmd, target] = args;
+// rest_only in the store: GraphQL is refused the way Claude Code's cloud sessions refuse it, and the
+// REST endpoints the plugin reads (and the merge endpoint) answer from the same store
+if (s.rest_only && group !== 'api' && !(group === 'run' && cmd === 'list')) fail('HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...). (https://api.github.com/graphql)');
+if (group === 'api') {
+  let method = null;
+  let endpoint = null;
+  const fields = {};
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-X' || a === '--method') method = String(args[++i]).toUpperCase();
+    else if (['-f', '-F', '--field', '--raw-field'].includes(a)) { const kv = args[++i]; const k = kv.indexOf('='); fields[kv.slice(0, k)] = kv.slice(k + 1); }
+    else if (a === '-H' || a === '--header') i++;
+    else if (!a.startsWith('-')) endpoint = a;
+  }
+  method = method || (Object.keys(fields).length ? 'POST' : 'GET');
+  const m = /^\/?repos\/([^/]+\/[^/]+)\/(pulls\/(\d+)(\/files|\/merge)?|commits\/([0-9a-f]+)\/(check-runs|status))(?:\?(.*))?$/.exec(endpoint || '');
+  if (!m) fail(`fake gh: unsupported api ${endpoint}`);
+  if (m[1].toLowerCase() !== String(s.repo).toLowerCase()) fail('gh: Not Found (HTTP 404)');
+  const out = (j) => { fs.writeSync(1, `${JSON.stringify(j)}\n`); process.exit(0); };
+  if (m[5]) {
+    const pr = Object.values(s.prs || {}).find((p) => p.headRefOid === m[5]) || { statusCheckRollup: [] };
+    const roll = pr.statusCheckRollup || [];
+    if (m[6] === 'check-runs') out({ check_runs: roll.filter((c) => c.__typename !== 'StatusContext').map((c) => ({ name: c.name, status: String(c.status || '').toLowerCase(), conclusion: c.conclusion ? String(c.conclusion).toLowerCase() : null })) });
+    out({ statuses: roll.filter((c) => c.__typename === 'StatusContext').map((c) => ({ context: c.context, state: String(c.state || '').toLowerCase() })) });
+  }
+  const pr = s.prs && s.prs[m[3]];
+  if (!pr) fail('gh: Not Found (HTTP 404)');
+  if (m[4] === '/files') {
+    const page = Number((/(?:^|&)page=(\d+)/.exec(m[7] || '') || [])[1] || 1);
+    out(page === 1 ? (pr.files || []).map((f) => ({ filename: f.path, additions: f.additions, deletions: f.deletions })) : []);
+  }
+  if (m[4] === '/merge') {
+    if (method !== 'PUT') out({ message: 'Not Found' });
+    if (fields.sha && fields.sha !== pr.headRefOid) fail('gh: Head branch was modified. Review and try the merge again. (HTTP 409)');
+    pr.state = 'MERGED';
+    fs.writeFileSync(store, JSON.stringify(s, null, 2));
+    out({ sha: 'f'.repeat(40), merged: true, message: 'Pull Request successfully merged' });
+  }
+  const conflicting = String(pr.mergeable || '').toUpperCase() === 'CONFLICTING';
+  out({ number: Number(m[3]), state: pr.state === 'MERGED' ? 'closed' : 'open', merged: pr.state === 'MERGED', head: { sha: pr.headRefOid, ref: pr.headRefName },
+    mergeable: String(pr.mergeable || '').toUpperCase() === 'MERGEABLE' ? true : conflicting ? false : null, additions: pr.additions, deletions: pr.deletions, body: pr.body, title: pr.title });
+}
 if (group === 'run' && cmd === 'list') {
   // `run list -R <repo> --branch <b> --json ...`: the store's runs on that branch, newest first
   if (!repo) fail('failed to run git: fatal: not a git repository (or any of the parent directories): .git');
