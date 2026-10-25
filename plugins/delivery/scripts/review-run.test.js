@@ -106,7 +106,7 @@ test('review-run test: runs the project command in the clone with the role varia
   const code = main(['test', '7'], { env: { ...process.env, DELIVERY_ROLE: 'delivery-lead', GIT_DIR: '/elsewhere' }, cwd: roleDir, roleDir, team, ...c });
   assert.equal(code, 0, c.lines.join('\n'));
   assert.equal(fs.readFileSync(path.join(roleDir, 'review', 'pr-7', 'result.txt'), 'utf8').trim(), 'role=unset');
-  assert.match(c.lines[0], /^review-run: make test \(detected: Makefile test target\) in review\/pr-7$/);
+  assert.match(c.lines[0], new RegExp(`^review-run: make test \\(detected: Makefile test target\\) in review/pr-7 at ${first}$`));
   assert.match(c.lines[c.lines.length - 1], /^review-run: exit 0 after \d+s$/);
   // git variables that would point a test's git at another repository are cleared too
   assert.equal(main(['test', '7'], { env: { ...process.env, GIT_DIR: '/elsewhere', GIT_WORK_TREE: '/elsewhere' }, cwd: roleDir, roleDir, team: { ...team, test_command: 'test -z "$GIT_DIR$GIT_WORK_TREE"' }, ...capture() }), 0);

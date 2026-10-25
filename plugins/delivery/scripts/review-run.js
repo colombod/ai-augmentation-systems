@@ -106,7 +106,11 @@ function test(pr, { roleDir, team, env, spawn, out, err, platform }) {
   if (c.problem) { err(`review-run: refused: ${c.problem}.`); return 2; }
   const t = testCommandOf(c.dir, team, { platform });
   if (t.problem) { err(`review-run: refused: ${t.problem}.\n${FIX}`); return 2; }
-  out(`review-run: ${t.command} (${t.source}) in review/pr-${pr}`);
+  // the commit under test, read with git pinned to the clone: a refused checkout leaves the clone where
+  // it was, and the review must quote what it actually ran
+  const at = spawn('git', ['-c', 'safe.bareRepository=explicit', `--git-dir=${path.join(c.dir, '.git')}`, 'rev-parse', 'HEAD'], { env: cleanEnv(env), encoding: 'utf8', timeout: 30e3, cwd: c.scratch });
+  const sha = at && at.status === 0 ? String(at.stdout || '').trim() : 'unknown';
+  out(`review-run: ${t.command} (${t.source}) in review/pr-${pr} at ${sha}`);
   const started = Date.now();
   const minutes = team && Number.isFinite(Number(team.test_timeout_minutes)) && Number(team.test_timeout_minutes) > 0 ? Number(team.test_timeout_minutes) : 60;
   const win = platform === 'win32';
