@@ -89,6 +89,15 @@ test('--check: plugin not installed, disabled or older is a warning; --project w
   assert.match(r.out, /\[warn\] project repo remote: no origin remote/);
 });
 
+test('start: names the product\'s test command for any language (the reviewer runs it on each pull request)', () => {
+  for (const [file, want] of [['go.mod', /product tests: `go test \.\/\.\.\.` \(detected: Go\)/], ['App.sln', /product tests: `dotnet test` \(detected: \.NET\)/]]) {
+    const repo = productRepo();
+    fs.writeFileSync(path.join(repo, file), '');
+    const r = start(['--project', path.join(mk('start-tc-'), 'acme'), '--host', 'laptop', '--product-repo', repo, '--dry-run']);
+    assert.match(r.out, want, r.out);
+  }
+});
+
 test('--dry-run prints the plan and writes nothing', () => {
   const base = mk('start-dry-');
   const project = path.join(base, 'acme');
@@ -98,6 +107,8 @@ test('--dry-run prints the plan and writes nothing', () => {
   assert.match(r.out, /would write \.delivery\/team\/team\.json and \.delivery\/team\/hosts\.json: preset minimal, models balanced, host "laptop", prefix "acme"/);
   assert.match(r.out, /would run bd init --prefix acme/);
   assert.match(r.out, /builder: would prepare \(sonnet, product worktree on team\/builder\)/);
+  // an empty product has no test setup: said at start, with the one-line fix
+  assert.match(r.out, /product tests: not known: no test setup found in the repository root\.\n {4}Set it once: "test_command" in \.delivery\/team\/team\.json/);
   assert.deepEqual(fs.readdirSync(base), []);
 });
 

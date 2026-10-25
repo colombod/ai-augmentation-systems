@@ -10,7 +10,7 @@ const G = require('./gates.js');
 // to its origin, and nothing else brings that work into the root: measured 2026-10-25, ready.js read a
 // master four commits behind origin and reported "no readable story file" for a story already pushed.
 // So before a gate reads, the root fast-forwards to origin's copy of its branch: fast-forward only, never
-// with uncommitted changes to tracked files, at most once a minute, and every refusal is left as it is.
+// over a local change to a file the update touches, at most once a minute, and every refusal is left as it is.
 // 'updated' | 'current' | 'no-remote' | 'dirty' | 'diverged' | 'recent' | 'skipped'
 function freshRoot(root, { env = process.env, everyMs = 60e3, now = Date.now() } = {}) {
   try {
@@ -22,12 +22,15 @@ function freshRoot(root, { env = process.env, everyMs = 60e3, now = Date.now() }
     try { if (now - fs.statSync(stamp).mtimeMs < everyMs) return 'recent'; } catch (err) { /* never freshened */ }
     if (git('remote', 'get-url', 'origin').status !== 0) return 'no-remote';
     try { fs.writeFileSync(stamp, `${new Date(now).toISOString()}\n`); } catch (err) { /* best effort */ }
-    if ((git('status', '--porcelain', '--untracked-files=no').stdout || '').trim()) return 'dirty';
     const branch = (git('rev-parse', '--abbrev-ref', 'HEAD').stdout || '').trim();
     if (!branch || branch === 'HEAD') return 'skipped';
     if (git('fetch', '-q', 'origin', branch).status !== 0) return 'skipped';
     const before = (git('rev-parse', 'HEAD').stdout || '').trim();
-    if (git('merge', '--ff-only', '-q', 'FETCH_HEAD').status !== 0) return 'diverged';
+    // git refuses a fast-forward that would overwrite a local change, and keeps every other one: the
+    // plugin's own scripts keep tracked records in the root (the warnings ledger, waves, bd's
+    // interactions log), so a root is rarely clean, and refusing on any change left the gates stale
+    const m = git('merge', '--ff-only', '-q', 'FETCH_HEAD');
+    if (m.status !== 0) return /overwritten|local changes/i.test(`${m.stderr}${m.stdout}`) ? 'dirty' : 'diverged';
     return (git('rev-parse', 'HEAD').stdout || '').trim() === before ? 'current' : 'updated';
   } catch (err) { return 'skipped'; }
 }

@@ -172,6 +172,8 @@ delivery start: <project-root>
     builder: already prepared
 ```
 
+With a product checkout, `start.js` also names the command that runs its tests (`product tests: ...`). Each pull request's reviewer runs that command, so it works for a product in any language: it is read from the repository's build files (`dotnet test`, `cargo test`, `go test ./...`, `./gradlew test`, `mix test`, `npm test` and others), or from `"test_command"` in `.delivery/team/team.json` when you set it. Set it when `start.js` says it is not known, or when CI runs something else (`"test_command": "make ci"`).
+
 When `bd` is missing, `start.js` still prepares the roles and says how to finish: install `bd` ([Setting up beads](#setting-up-beads)), then run `start.js` again: it sets up beads and re-prepares each role that lacks `BEADS_DIR`. The steps below are what `start.js` does, for doing them by hand.
 
 ## 1. Write the team manifest

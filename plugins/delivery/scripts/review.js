@@ -89,7 +89,7 @@ const isManager = (who, id) => R.norm(id) === DM || [who.instance, who.actor].fi
 function reviewerBrief(pr, head, req) {
   return [
     'Reviewer brief (give it to the reviewer as written):',
-    `  Review pull request ${pr} of ${req.repo} at head ${head} only (\`gh pr diff ${pr} -R ${req.repo}\`; check it out in a scratch clone), against ${req.beads.join(', ')} and its story's acceptance criteria.`,
+    `  Review pull request ${pr} of ${req.repo} at head ${head} only (\`gh pr diff ${pr} -R ${req.repo}\`; check it out and test it with \`node \${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js checkout ${pr} ${head}\` and \`... review-run.js test ${pr}\`), against ${req.beads.join(', ')} and its story's acceptance criteria.`,
     '  Run the product\'s tests on that head and quote their real output. Do not modify code, push, approve on GitHub or merge.',
     '  Report `pass` or `changes` on the first line, then each finding: file:line, what is wrong, why it matters.',
     `Record the outcome: ${R.cmd('review.js', `record ${pr} --head ${head} --result pass|changes${req.session ? '' : ` --by ${req.reviewer}`} --summary '<one line>'`)}`,
