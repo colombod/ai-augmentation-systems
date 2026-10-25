@@ -12,18 +12,21 @@ project, without the owner relaying messages, approving steps or moving files be
 ## Doctrine that is not traded away
 
 1. **Any user, any project, any topology.** The plugin is for every customer: a product in any
-   language and build system, on any forge (GitHub, a self-hosted Gitea), with its sessions on one
-   machine, several machines, or Claude Code's cloud. Nothing in the plugin may assume one
-   language, one runner, one package manager, one host or one owner's setup. Where the plugin needs a
-   fact about the product (how to run its tests, where it deploys), it reads the product's own
-   files or asks the owner once for one line in `team.json`, and says at setup which it found;
-   it never ships a short list of supported tools. A design that works only for this repository, the
-   Vault, or one machine is a defect, whatever its tests say. Check every change against this before
-   it ships: which customer, project or topology would it fail for?
+   language and build system, with its sessions on one machine, several machines, or Claude Code's
+   cloud. Nothing in the plugin may assume one language, one runner, one package manager, one host or
+   one owner's setup. Where the plugin needs a fact about the product (how to run its tests, where it
+   deploys), it reads the product's own files or asks the owner once for one line in `team.json`, and
+   says at setup which it found. A table that detects common toolchains is fine; a list that limits
+   what is supported is not: the owner's one line always overrides it. A design that works only for
+   this repository, one owner's product or one machine is a defect, whatever its tests say. Check
+   every change against this before it ships: which customer, project or topology would it fail for?
 
    It was broken once by a reviewer lane that ran only node, npm, make and pytest; a product in
    .NET, Java, Go or Rust could not be reviewed. The fix runs the project's own test command
    (`review-run.js`, `scripts/lib/test-command.js`).
+
+   Known gap against this rule: pull requests, reviews and the merge gate work through GitHub (`gh`,
+   `product_github`). A product on another forge (a self-hosted Gitea, GitLab) is not supported yet.
 
 2. **The owner is never the messenger.** Roles reach each other through the plugin (messages, the
    inbox, the watchdog); a step that needs the owner to carry a message, approve a routine action or

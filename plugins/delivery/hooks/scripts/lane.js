@@ -1093,10 +1093,13 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     // only its scratch clones, where it breaks a covered line to see the test fail (mutation check)
     const scratch = roleDir ? path.join(realish(roleDir), 'review') : null;
     const base = cwd || process.cwd();
-    // never inside a clone's .git: its config and hooks would turn the allowed git commands into an escape
+    // never a clone's .git (its config and hooks act on review-run's git) nor a role marker or team
+    // manifest (a fake one would give a call from inside review/ another lane); compared case-folded,
+    // for case-insensitive file systems (macOS, Windows), and 8.3 short names (GIT~1) refused outright
     const ok = !!scratch && filePathsOf(name, toolInput).every((fp) => {
       const real = realish(path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`);
-      return under(real, scratch) && !path.relative(scratch, real).split(path.sep).includes('.git');
+      const parts = path.relative(scratch, real).split(/[\\/]/).map((x) => x.toLowerCase());
+      return under(real, scratch) && !parts.some((x) => x === '.git' || x === '.delivery' || x === '.delivery-role.json' || /~\d/.test(x));
     });
     return ok ? { allow: true } : { allow: false, reason: `Role ${pol.roleId} edits files only under review/: ${REVIEWER_REASON}.` };
   }
@@ -1183,7 +1186,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
 // The subagent type Claude Code reports for agents/pr-reviewer.md (plugin agents are namespaced).
 // Only the plugin's own agent: a same-named agent from elsewhere does not get this lane.
 const REVIEWER_AGENT = 'delivery:pr-reviewer';
-const REVIEWER_REASON = 'a reviewer reads, clones into review/ and runs the product\'s tests there with `node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js review/<clone>` (the project\'s own test command, any language); it never changes anything else, commits, pushes, merges or records';
+const REVIEWER_REASON = 'a reviewer reads, and checks out and tests a head only through `node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js checkout <pr> <head>` and `... test <pr>` (the project\'s own test command, any language); it edits files only in its clone and never commits, pushes, merges or records';
 // Read everything; run anything only inside review/ of the role directory; no file edits; no writes
 // through git, gh, bd or the plugin's record scripts (only their read subcommands, in the read groups).
 function reviewerPolicy(base) {

@@ -22,27 +22,34 @@ test('test command: one per ecosystem, from the repository\'s own build files', 
     [{ 'go.mod': '' }, 'go test ./...'],
     [{ 'pom.xml': '' }, 'mvn test'],
     [{ 'pom.xml': '', mvnw: '' }, './mvnw test'],
+    [{ Gemfile: '' }, 'bundle install && bundle exec rake test'],
+    [{ 'package.json': '{"scripts":{"test":"jest"}}', 'package-lock.json': '{}' }, 'npm ci && npm test'],
+    [{ 'package.json': '{"scripts":{"test":"vitest"}}', 'bun.lock': '' }, 'bun install --frozen-lockfile && bun run test'],
+    [{ 'CMakeLists.txt': '' }, 'cmake -S . -B build && cmake --build build && ctest --test-dir build --no-tests=error'],
     [{ 'build.gradle.kts': '', gradlew: '' }, './gradlew test'],
     [{ 'build.sbt': '' }, 'sbt test'],
     [{ 'pyproject.toml': '' }, 'python -m pytest'],
     [{ 'pyproject.toml': '', 'uv.lock': '' }, 'uv run pytest'],
     [{ 'tox.ini': '' }, 'tox'],
-    [{ Gemfile: '', '.rspec': '' }, 'bundle exec rspec'],
-    [{ 'mix.exs': '' }, 'mix test'],
-    [{ 'composer.json': '{"scripts":{"test":"phpunit"}}' }, 'composer test'],
+    [{ Gemfile: '', '.rspec': '' }, 'bundle install && bundle exec rspec'],
+    [{ 'mix.exs': '' }, 'mix deps.get && mix test'],
+    [{ 'composer.json': '{"scripts":{"test":"phpunit"}}' }, 'composer install && composer test'],
     [{ 'Package.swift': '' }, 'swift test'],
-    [{ 'pubspec.yaml': 'dependencies:\n  flutter:\n    sdk: flutter\n' }, 'flutter test'],
+    [{ 'pubspec.yaml': 'dependencies:\n  flutter:\n    sdk: flutter\n' }, 'flutter pub get && flutter test'],
     [{ 'stack.yaml': '' }, 'stack test'],
     [{ 'build.zig': '' }, 'zig build test'],
-    [{ 'package.json': '{"scripts":{"test":"vitest"}}', 'pnpm-lock.yaml': '' }, 'pnpm test'],
+    [{ 'package.json': '{"scripts":{"test":"vitest"}}', 'pnpm-lock.yaml': '' }, 'pnpm install --frozen-lockfile && pnpm test'],
     [{ 'deno.json': '{}' }, 'deno test'],
     [{ Makefile: 'test:\n\techo ok\n' }, 'make test'],
-    // one ecosystem and a Makefile: the ecosystem's own runner, which is what CI usually calls
-    [{ 'Cargo.toml': '', Makefile: 'test:\n\tcargo test\n' }, 'cargo test'],
+    // a Makefile test target is the project's own entry point (build tags, integration setup): it wins
+    [{ 'go.mod': '', Makefile: 'test:\n\tgo test -tags integration ./...\n' }, 'make test'],
     // a polyglot repository with a make test target: the project's own entry point wins
     [{ 'go.mod': '', 'package.json': '{"scripts":{"test":"jest"}}', Makefile: 'build:\n\ttrue\ntest: build\n\tgo test ./...\n' }, 'make test'],
   ];
-  for (const [files, want] of cases) assert.equal(testCommandOf(repo(files), null).command, want, JSON.stringify(files));
+  for (const [files, want] of cases) assert.equal(testCommandOf(repo(files), null, { platform: 'linux' }).command, want, JSON.stringify(files));
+  // Windows runs the wrappers' .cmd and .bat
+  assert.equal(testCommandOf(repo({ 'pom.xml': '', mvnw: '' }), null, { platform: 'win32' }).command, 'mvnw.cmd test');
+  assert.equal(testCommandOf(repo({ 'build.gradle': '', gradlew: '' }), null, { platform: 'win32' }).command, 'gradlew.bat test');
 });
 
 test('test command: the owner\'s test_command wins; several setups without one is refused, never guessed', () => {
@@ -56,52 +63,95 @@ test('test command: the owner\'s test_command wins; several setups without one i
   assert.match(testCommandOf(repo({ 'package.json': '{"name":"x"}' }), null).problem, /no test setup/);
 });
 
-function role() {
+const G = (cwd, ...a) => require('child_process').execFileSync('git', a, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }).trim();
+
+// a product repository with two commits, and a role directory whose team names it
+function setup(makefile = 'test:\n\t@echo "role=$${DELIVERY_ROLE:-unset}" > result.txt\n') {
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'rr-src-'));
+  G(src, 'init', '-q', '-b', 'main');
+  fs.writeFileSync(path.join(src, 'Makefile'), makefile);
+  fs.writeFileSync(path.join(src, 'a.txt'), 'one\n');
+  G(src, 'add', '-A'); G(src, 'commit', '-q', '-m', 'one');
+  const first = G(src, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(src, 'a.txt'), 'two\n');
+  G(src, 'commit', '-qam', 'two');
+  const second = G(src, 'rev-parse', 'HEAD');
   const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rr-role-'));
-  const clone = path.join(roleDir, 'review', 'pr-1');
-  fs.mkdirSync(clone, { recursive: true });
-  return { roleDir, clone };
+  return { src, first, second, roleDir, team: { product_url: src } };
 }
 const capture = () => { const lines = []; return { lines, out: (l) => lines.push(String(l)), err: (l) => lines.push(String(l)) }; };
 
-test('review-run: runs the command in the clone with the role variables cleared, and returns its exit code', () => {
-  const { roleDir, clone } = role();
+test('review-run checkout: clones the product into review/pr-<n> at exactly the head, and a second checkout undoes local edits', () => {
+  const { roleDir, team, first, second } = setup();
   const c = capture();
-  let seen = null;
-  const spawn = (cmd, args, opts) => { seen = { cmd, args, opts }; return { status: 3 }; };
-  const env = { PATH: '/bin', HOME: '/h', DELIVERY_ROLE: 'delivery-lead', DELIVERY_ROLE_DIR: roleDir, BEADS_DIR: '/b', BD_ACTOR: 'a', LANG: 'C' };
-  const code = main(['review/pr-1'], { env, cwd: roleDir, roleDir, team: { test_command: 'dotnet test --no-restore' }, spawn, ...c });
-  assert.equal(code, 3);
-  assert.equal(seen.opts.cwd, fs.realpathSync(clone));
-  assert.deepEqual(seen.opts.env, { PATH: '/bin', HOME: '/h', LANG: 'C' });
-  assert.equal(seen.args[seen.args.length - 1], 'dotnet test --no-restore');
-  assert.match(c.lines[0], /^review-run: dotnet test --no-restore \(team\.json test_command\) in pr-1$/);
-  assert.match(c.lines[c.lines.length - 1], /^review-run: exit 3 after \d+s$/);
+  assert.equal(main(['checkout', '7', first], { env: process.env, cwd: roleDir, roleDir, team, ...c }), 0, c.lines.join('\n'));
+  const clone = path.join(roleDir, 'review', 'pr-7');
+  assert.equal(G(clone, 'rev-parse', 'HEAD'), first);
+  assert.equal(fs.readFileSync(path.join(clone, 'a.txt'), 'utf8'), 'one\n');
+  assert.match(c.lines.join('\n'), new RegExp(`review/pr-7 at ${first} .*clean`));
+  // a mutation and a stray file, undone by checking out again (the second head)
+  fs.writeFileSync(path.join(clone, 'a.txt'), 'mutated\n');
+  fs.writeFileSync(path.join(clone, 'stray.txt'), 'x');
+  assert.equal(main(['checkout', '7', second], { env: process.env, cwd: roleDir, roleDir, team, ...capture() }), 0);
+  assert.equal(fs.readFileSync(path.join(clone, 'a.txt'), 'utf8'), 'two\n');
+  assert.ok(!fs.existsSync(path.join(clone, 'stray.txt')));
 });
 
-test('review-run: refuses a directory outside review/ (also through a symlink), extra arguments, and an unknown setup', () => {
-  const { roleDir } = role();
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'rr-out-'));
-  fs.symlinkSync(outside, path.join(roleDir, 'review', 'link'));
-  const spawn = () => { throw new Error('must not run'); };
-  for (const target of [outside, 'review', 'review/link', 'review/../', 'review/missing']) {
-    const c = capture();
-    assert.equal(main([target], { env: {}, cwd: roleDir, roleDir, team: { test_command: 'true' }, spawn, ...c }), 2, target);
-    assert.match(c.lines.join('\n'), /refused/, target);
-  }
-  for (const argv of [['review/pr-1', '--', '--basetemp=/tmp'], ['review/pr-1', 'x'], ['--help'], []]) {
-    assert.equal(main(argv, { env: {}, cwd: roleDir, roleDir, team: { test_command: 'true' }, spawn, ...capture() }), 2, argv.join(' '));
-  }
+test('review-run test: runs the project command in the clone with the role variables cleared, and returns its exit code', () => {
+  const { roleDir, team, first } = setup();
+  main(['checkout', '7', first], { env: process.env, cwd: roleDir, roleDir, team, ...capture() });
   const c = capture();
-  assert.equal(main(['review/pr-1'], { env: {}, cwd: roleDir, roleDir, team: {}, spawn, ...c }), 2);
-  assert.match(c.lines.join('\n'), /no test setup found[\s\S]*"test_command" in \.delivery\/team\/team\.json/);
-});
-
-test('review-run: a real run, with a test setup detected from the clone', () => {
-  const { roleDir, clone } = role();
-  fs.writeFileSync(path.join(clone, 'Makefile'), 'test:\n\t@echo "role=$${DELIVERY_ROLE:-unset}" > result.txt\n');
-  const c = capture();
-  const code = main(['review/pr-1'], { env: { ...process.env, DELIVERY_ROLE: 'delivery-lead' }, cwd: roleDir, roleDir, team: {}, ...c });
+  const code = main(['test', '7'], { env: { ...process.env, DELIVERY_ROLE: 'delivery-lead', GIT_DIR: '/elsewhere' }, cwd: roleDir, roleDir, team, ...c });
   assert.equal(code, 0, c.lines.join('\n'));
-  assert.equal(fs.readFileSync(path.join(clone, 'result.txt'), 'utf8').trim(), 'role=unset');
+  assert.equal(fs.readFileSync(path.join(roleDir, 'review', 'pr-7', 'result.txt'), 'utf8').trim(), 'role=unset');
+  assert.match(c.lines[0], /^review-run: make test \(detected: Makefile test target\) in review\/pr-7$/);
+  assert.match(c.lines[c.lines.length - 1], /^review-run: exit 0 after \d+s$/);
+  // git variables that would point a test's git at another repository are cleared too
+  assert.equal(main(['test', '7'], { env: { ...process.env, GIT_DIR: '/elsewhere', GIT_WORK_TREE: '/elsewhere' }, cwd: roleDir, roleDir, team: { ...team, test_command: 'test -z "$GIT_DIR$GIT_WORK_TREE"' }, ...capture() }), 0);
+  const failing = capture();
+  assert.equal(main(['test', '7'], { env: process.env, cwd: roleDir, roleDir, team: { ...team, test_command: 'exit 3' }, ...failing }), 3);
+  assert.match(failing.lines.join('\n'), /review-run: exit 3/);
+});
+
+test('review-run: a fake bare repository planted in the clone cannot point its git outside review/', () => {
+  const { roleDir, team, first } = setup();
+  assert.equal(main(['checkout', '7', first], { env: process.env, cwd: roleDir, roleDir, team, ...capture() }), 0);
+  const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'rr-victim-'));
+  fs.writeFileSync(path.join(victim, 'important.txt'), 'keep');
+  // the reviewer may edit files in its clone: it plants a bare repository whose work tree is the victim
+  const clone = path.join(roleDir, 'review', 'pr-7');
+  fs.mkdirSync(path.join(clone, 'objects'), { recursive: true });
+  fs.mkdirSync(path.join(clone, 'refs'), { recursive: true });
+  fs.writeFileSync(path.join(clone, 'HEAD'), 'ref: refs/heads/main\n');
+  fs.writeFileSync(path.join(clone, 'config'), `[core]\n\tbare = false\n\tworktree = ${victim}\n`);
+  assert.equal(main(['checkout', '7', first], { env: process.env, cwd: roleDir, roleDir, team, ...capture() }), 0);
+  assert.equal(fs.readFileSync(path.join(victim, 'important.txt'), 'utf8'), 'keep');
+  // and a clone whose .git was replaced by a file or symlink is refused, not used
+  fs.rmSync(path.join(clone, '.git'), { recursive: true, force: true });
+  fs.symlinkSync(victim, path.join(clone, '.git'));
+  const c = capture();
+  assert.equal(main(['test', '7'], { env: process.env, cwd: roleDir, roleDir, team: { ...team, test_command: 'true' }, ...c }), 2);
+  assert.match(c.lines.join('\n'), /holds no clone/);
+});
+
+test('review-run: refuses anything but its two forms; a missing clone or product and an unknown setup say how to fix them', () => {
+  const { roleDir, team } = setup();
+  const spawn = () => { throw new Error('must not run'); };
+  for (const argv of [[], ['test'], ['test', '0'], ['test', '7', 'x'], ['test', '../7'], ['checkout', '7'], ['checkout', '7', 'HEAD'], ['checkout', '7', 'abc1234', 'x'], ['checkout', '-7', 'abc1234'], ['install', '7'], ['--help']]) {
+    assert.equal(main(argv, { env: {}, cwd: roleDir, roleDir, team, spawn, ...capture() }), 2, argv.join(' '));
+  }
+  const c = capture();
+  assert.equal(main(['test', '7'], { env: {}, cwd: roleDir, roleDir, team, spawn, ...c }), 2);
+  assert.match(c.lines.join('\n'), /no clone yet\. Run: review-run\.js checkout 7 <head sha>/);
+  const u = capture();
+  assert.equal(main(['checkout', '7', 'abc1234'], { env: {}, cwd: path.join(os.tmpdir()), roleDir: fs.mkdtempSync(path.join(os.tmpdir(), 'rr-none-')), team: {}, spawn, ...u }), 2);
+  assert.match(u.lines.join('\n'), /product repository is not known/);
+  // a repository with no test setup, after a real checkout
+  const bare = setup('');
+  fs.rmSync(path.join(bare.src, 'Makefile'));
+  G(bare.src, 'commit', '-qam', 'no makefile');
+  main(['checkout', '8', G(bare.src, 'rev-parse', 'HEAD')], { env: process.env, cwd: bare.roleDir, roleDir: bare.roleDir, team: bare.team, ...capture() });
+  const n = capture();
+  assert.equal(main(['test', '8'], { env: process.env, cwd: bare.roleDir, roleDir: bare.roleDir, team: bare.team, ...n }), 2);
+  assert.match(n.lines.join('\n'), /no test setup found[\s\S]*"test_command" in \.delivery\/team\/team\.json/);
 });
