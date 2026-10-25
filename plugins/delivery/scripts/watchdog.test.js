@@ -769,3 +769,48 @@ test('review 3 on e3a7b28: a % in the project path, PATH or CLAUDE_CONFIG_DIR is
   const asCronRuns = j.cron.line.replace(/\\%/g, '%');
   for (const want of ["'/srv/100%/proj'", "/opt/50%/bin", "'/srv/c%fg'"]) assert.ok(asCronRuns.includes(want), want);
 });
+
+// A launched team runs one turn at a time, so a message to a role between its turns fails with
+// "No agent named '<x>' is reachable" and was lost (measured 2026-10-25). The SendMessage hook keeps it;
+// the watchdog wakes the target with it.
+test('a send to a role that is not running is kept for it; a delivered send is not', () => {
+  const h = harness({});
+  const RC = require('../hooks/scripts/route-check.js');
+  const IB = require('./lib/inbox.js');
+  const failed = [{ type: 'text', text: JSON.stringify({ success: false, message: "No agent named 'chief-of-staff' is reachable.\nUse ListAgents to see everyone you can message." }) }];
+  const as = (fn) => withEnv({ DELIVERY_ROLE: 'builder-1' }, fn);
+  const r = as(() => RC.check({ tool_name: 'SendMessage', cwd: h.roleDir('builder-1'), tool_input: { to: 'chief-of-staff', summary: 'dlv-1 blocked', message: 'the story is not on master' }, tool_response: failed }));
+  assert.match(r.context, /^chief-of-staff is not running, so the message is kept for it: the watchdog wakes chief-of-staff with it/);
+  const p = IB.pending(h.root);
+  assert.equal(p.length, 1);
+  assert.equal(p[0].to, 'chief-of-staff');
+  assert.equal(p[0].entries[0].from, 'builder-1');
+  assert.equal(p[0].entries[0].message, 'the story is not on master');
+  const sent = as(() => RC.check({ tool_name: 'SendMessage', cwd: h.roleDir('builder-1'), tool_input: { to: 'delivery-lead', message: 'x' }, tool_response: [{ type: 'text', text: JSON.stringify({ success: true }) }] }));
+  assert.equal(sent, null);
+  assert.equal(IB.pending(h.root).length, 1, 'a delivered send is not kept');
+});
+
+test('a waiting message wakes its target once, with the message; a new one waits five minutes between wakes', () => {
+  const t0 = '2026-10-25T18:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, COS, { seen: iso(Date.parse(t0) - 2 * H) });
+  IB.queue(h.root, { to: COS, from: DM, summary: 'dlv-1 blocked', message: 'merge the story branch', at: t0 });
+  const spawn = spawner();
+  const bd = memStore(h);
+  at(h, t0, ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 1);
+  assert.equal(spawn.list[0].role, COS);
+  assert.match(spawn.list[0].args[3], /\[from delivery-lead: dlv-1 blocked\] merge the story branch/);
+  at(h, iso(Date.parse(t0) + 60e3), ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 1, 'a delivered message does not wake again');
+  IB.queue(h.root, { to: COS, from: DM, message: 'second', at: iso(Date.parse(t0) + 2 * 60e3) });
+  const held = at(h, iso(Date.parse(t0) + 3 * 60e3), ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 1);
+  assert.match(held.out, /messages wait 5 min between wakes/);
+  at(h, iso(Date.parse(t0) + 6 * 60e3), ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 2, 'woken again after five minutes, not an hour');
+  assert.match(spawn.list[1].args[3], /second/);
+  assert.doesNotMatch(spawn.list[1].args[3], /merge the story branch/);
+});
