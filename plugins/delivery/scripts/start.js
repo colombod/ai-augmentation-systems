@@ -6,7 +6,7 @@
 //       prerequisites as a pass/fail list with the fix for each; exit 1 when a hard one is missing.
 //   start.js --project <root> [--host <name>] [--preset minimal|full] [--product-repo <path|url>]
 //            [--prefix <bd prefix>] [--runner superpowers|attractor|plain] [--permission-mode <mode>]
-//            [--models quality|balanced|economy] [--reality-checker] [--team-dir <dir>] [--user <name>] [--dry-run]
+//            [--models quality|balanced|economy] [--reality-checker] [--team-dir <dir>] [--user <name>] [--launch [--keep-alive]] [--dry-run]
 //       scaffold a shipping team: manifest from the preset (never overwriting one), bd init when
 //       .beads is absent, prepare-role for every instance not yet prepared, then the command that
 //       starts each session. --dry-run prints the plan and writes nothing.
@@ -179,6 +179,46 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
 }
 
 const SETUP_DOC = 'docs/quickstart.md, "Setting up beads"';
+
+// The team starts itself (--launch). Each role on this machine gets its first turn headless, in its own
+// role directory, in the team's permission mode, and joins the team; the session it creates is on the
+// roster, so the watchdog (--keep-alive) can resume it whenever work is due. Before this, the operator
+// started every session by hand and, in their default mode, approved its steps: the opposite of rule 0.
+const JOIN_PROMPT = '/delivery:team join';
+function launchTeam({ projectRoot, prepared, host, permissionMode, env, dryRun, w, say }) {
+  const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
+  const here = prepared.filter((p) => p.host === host);
+  const elsewhere = prepared.filter((p) => p.host !== host).map((p) => `${p.instance} (${p.host})`);
+  say(`  launch (on host "${host}"):`);
+  if (!here.length) { say(`    nothing to start: no role of this team runs on host "${host}" (pass --host with this machine's name in hosts.json)`); return { code: 1 }; }
+  const roster = require('./lib/roster.js').readRoster(projectRoot).instances || {};
+  const at = new Date().toISOString().replace(/[:.]/g, '-');
+  for (const { instance, roleDir } of here) {
+    const known = roster[instance] && roster[instance].session_id;
+    if (known) { say(`    ${instance}: already started (session ${known}); the watchdog resumes it when work is due`); continue; }
+    const args = ['-p', JOIN_PROMPT, ...(permissionMode && permissionMode !== 'default' ? ['--permission-mode', permissionMode] : []), '--name', instance];
+    if (dryRun) { say(`    ${instance}: would start in ${roleDir}: ${bin} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`); continue; }
+    const logPath = path.join(projectRoot, '.delivery', 'watchdog', 'logs', `launch-${instance}-${at}.log`);
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    const fd = fs.openSync(logPath, 'a');
+    const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(2 * 3600e3), bin, ...args],
+      { cwd: roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: instance }), detached: true, stdio: ['ignore', fd, fd] });
+    child.unref();
+    fs.closeSync(fd);
+    say(`    ${instance}: started (pid ${child.pid}), joining the team; log ${path.relative(projectRoot, logPath)}`);
+  }
+  if (elsewhere.length) say(`    not on this machine: ${elsewhere.join(', ')}; run start.js --launch on each of those hosts`);
+  if (permissionMode === 'default') say('    warning: --permission-mode default: a headless session cannot ask you, so steps your default would ask about are refused');
+  return { code: 0 };
+}
+
+// --keep-alive installs the watchdog's host job (launchd, systemd user timer or cron), which resumes a
+// role session whose work is due; without it a session that stopped stays stopped.
+function keepTeamAlive({ projectRoot, env, dryRun, w, say }) {
+  if (dryRun) { say(`  keep-alive: ${w}install the watchdog job (watchdog.js install --apply)`); return; }
+  const r = run(process.execPath, [path.join(__dirname, 'watchdog.js'), 'install', '--apply', '--project', projectRoot], { env, timeout: 60000 });
+  say(r.ok ? `  keep-alive: watchdog job installed${r.out ? `: ${r.out.split('\n').slice(-1)[0]}` : ''}` : `  keep-alive: watchdog install failed: ${(r.err || r.out).slice(0, 300)}`);
+}
 
 // Dolt names git remotes with a git+ prefix; the project repo's origin is the sync remote (beads
 // stores issue history there under refs/dolt/data), so no server and no database password exist.
@@ -367,7 +407,7 @@ function startCommand(roleDir, instance, permissionMode) {
 function scaffold(opts) {
   const {
     project, host: hostFlag, preset = 'minimal', models = 'balanced', productRepo, prefix: prefixFlag, runner = 'plain', permissionMode = 'auto',
-    teamDir: teamDirFlag, user, dryRun = false, env = process.env, pluginRoot = PLUGIN_ROOT, realityChecker = false,
+    teamDir: teamDirFlag, user, dryRun = false, env = process.env, pluginRoot = PLUGIN_ROOT, realityChecker = false, launch = false, keepAlive = false,
   } = opts;
   if (!project) throw new UsageError('--project <root> is required');
   if (!PRESETS[preset]) throw new UsageError(`--preset must be one of ${Object.keys(PRESETS).join(', ')}`);
@@ -522,9 +562,18 @@ function scaffold(opts) {
         return { code: 1, out };
       }
     }
-    prepared.push({ instance, roleDir });
+    prepared.push({ instance, roleDir, host: role.host });
   }
 
+  if (launch) {
+    const launched = launchTeam({ projectRoot, prepared, host, permissionMode, env, dryRun, w, say });
+    if (keepAlive) keepTeamAlive({ projectRoot, env, dryRun, w, say });
+    if (launched.code) return { code: launched.code, out };
+    say('');
+    say('The team is starting: each role on this machine runs its first turn in its own role directory and joins the team (/delivery:team join); /delivery:team shows when each is live.');
+    say(`  Talk to the Chief of Staff: cd ${path.join(teamDir, 'chief-of-staff')} && claude --continue`);
+    return { code: 0, out, teamDir, prepared, projectRoot };
+  }
   say('');
   say(`${dryRun ? 'After a real run, start' : 'Start'} each session in its own terminal, the Chief of Staff first:`);
   for (const { instance, roleDir } of prepared) say(`  ${startCommand(roleDir, instance, permissionMode)}`);
@@ -544,7 +593,7 @@ function scaffold(opts) {
 
 // ---- CLI ----
 
-const BOOLEAN = new Set(['check', 'dry-run', 'help', 'reality-checker']);
+const BOOLEAN = new Set(['check', 'dry-run', 'help', 'reality-checker', 'launch', 'keep-alive']);
 function parseArgs(argv) {
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
@@ -560,9 +609,9 @@ function parseArgs(argv) {
 
 const USAGE = `usage: start.js --check [--project <root>]
        start.js --project <root> [--host <name>] [--preset minimal|full] [--models quality|balanced|economy] [--reality-checker] [--product-repo <path|url>] [--prefix <bd prefix>]
-                [--runner superpowers|attractor|plain] [--permission-mode <mode>] [--team-dir <dir>] [--user <name>] [--dry-run]`;
+                [--runner superpowers|attractor|plain] [--permission-mode <mode>] [--team-dir <dir>] [--user <name>] [--launch [--keep-alive]] [--dry-run]`;
 
-const KNOWN = new Set(['check', 'dry-run', 'help', 'reality-checker', 'project', 'host', 'preset', 'models', 'product-repo', 'prefix', 'runner', 'permission-mode', 'team-dir', 'user']);
+const KNOWN = new Set(['check', 'dry-run', 'help', 'reality-checker', 'launch', 'keep-alive', 'project', 'host', 'preset', 'models', 'product-repo', 'prefix', 'runner', 'permission-mode', 'team-dir', 'user']);
 
 function main(argv, { env = process.env, write = (s) => process.stdout.write(s) } = {}) {
   let flags;
@@ -582,7 +631,7 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
   try {
     const res = scaffold({
       project: flags.project, host: flags.host, preset: flags.preset, models: flags.models, productRepo: flags['product-repo'], prefix: flags.prefix,
-      runner: flags.runner, permissionMode: flags['permission-mode'], teamDir: flags['team-dir'], user: flags.user, dryRun: !!flags['dry-run'], env, realityChecker: !!flags['reality-checker'],
+      runner: flags.runner, permissionMode: flags['permission-mode'], teamDir: flags['team-dir'], user: flags.user, dryRun: !!flags['dry-run'], env, realityChecker: !!flags['reality-checker'], launch: !!flags.launch, keepAlive: !!flags['keep-alive'],
     });
     write(`${res.out.join('\n')}\n`);
     return res.code;

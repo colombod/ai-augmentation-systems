@@ -131,7 +131,7 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     // owner's open session, never in its place
     // each wake has its own id: a fork records its session under it (lib/roster.js sessionLocator)
     const wakeId = crypto.randomBytes(6).toString('hex');
-    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: { ...env, DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId }, logPath });
+    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId }), logPath });
     WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
     lines.push(`Woke ${w.target} (${c.mode}${s.session ? ` of ${s.session}` : ''}): ${w.lines.join(' ')}`);
   }

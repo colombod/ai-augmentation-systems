@@ -505,3 +505,54 @@ test('start: a publish refused with HTTP 403 names the network policy and where 
   assert.match(r.out, /beads: publish refused \(HTTP 403\): this machine's network does not allow pushing beads' refs\/dolt\/data .*publish once from a machine with ordinary git access/);
   assert.doesNotMatch(r.out, /publish failed:/);
 });
+
+// ---- --launch: the team starts itself ----
+
+// a stand-in claude that records each start (cwd, args, DELIVERY_ROLE) as one JSON file per call
+function recordingClaude() {
+  const dir = mk('start-launch-rec-');
+  const bin = path.join(dir, 'claude-rec');
+  fs.writeFileSync(bin, `#!/bin/sh\nf="${dir}/$DELIVERY_ROLE.json"\n"${process.execPath}" -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), role: process.env.DELIVERY_ROLE, parent: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_CODE_REMOTE_SESSION_ID || process.env.CLAUDECODE || null, args: process.argv.slice(2) }))' "$f" "$@"\n`, { mode: 0o755 });
+  return { bin, dir };
+}
+function waitFor(files, ms = 10000) {
+  const until = Date.now() + ms;
+  while (Date.now() < until && !files.every((f) => fs.existsSync(f))) cp.spawnSync('sleep', ['0.1']);
+  return files.every((f) => fs.existsSync(f));
+}
+
+test('--launch starts every role on this host in its role directory, in auto mode, with the join prompt', () => {
+  const project = path.join(mk('start-launch-'), 'acme');
+  const rec = recordingClaude();
+  // launched from inside a Claude Code session: the roles must not inherit its identity
+  const r = start(['--project', project, '--host', 'laptop', '--launch'], { env: { DELIVERY_CLAUDE_BIN: rec.bin, CLAUDE_CODE_SESSION_ID: 'parent-sess', CLAUDE_CODE_REMOTE_SESSION_ID: 'parent-remote', CLAUDECODE: '1' } });
+  assert.equal(r.status, 0, r.out);
+  const roles = ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder'];
+  assert.ok(waitFor(roles.map((i) => path.join(rec.dir, `${i}.json`))), r.out);
+  for (const i of roles) {
+    const call = readJson(path.join(rec.dir, `${i}.json`));
+    assert.equal(fs.realpathSync(call.cwd), fs.realpathSync(path.join(path.dirname(project), 'acme-team', i)), i);
+    assert.equal(call.role, i);
+    assert.equal(call.parent, null, `${i} inherited the launching session's identity`);
+    assert.deepEqual(call.args, ['-p', '/delivery:team join', '--permission-mode', 'auto', '--name', i]);
+    assert.match(r.out, new RegExp(`${i}: started \\(pid \\d+\\), joining the team`));
+  }
+  assert.match(r.out, /The team is starting: each role on this machine runs its first turn/);
+  assert.doesNotMatch(r.out, /Start each session in its own terminal/);
+});
+
+test('--launch skips a role already on the roster, starts nothing for other hosts, and a dry run starts nothing', () => {
+  const project = path.join(mk('start-launch2-'), 'acme');
+  const rec = recordingClaude();
+  const dry = start(['--project', project, '--host', 'laptop', '--launch', '--dry-run'], { env: { DELIVERY_CLAUDE_BIN: rec.bin } });
+  assert.match(dry.out, /chief-of-staff: would start in \S+: \S+ -p "\/delivery:team join" --permission-mode auto --name chief-of-staff/);
+  assert.equal(start(['--project', project, '--host', 'laptop'], { env: { DELIVERY_CLAUDE_BIN: rec.bin } }).status, 0);
+  require('./lib/roster.js').registerInstance(project, { instance: 'chief-of-staff', session_id: 'sess-cos-1', host: 'laptop', model: 'opus', role_dir: '/x', now: new Date().toISOString() });
+  const r = start(['--project', project, '--host', 'laptop', '--launch'], { env: { DELIVERY_CLAUDE_BIN: rec.bin } });
+  assert.match(r.out, /chief-of-staff: already started \(session sess-cos-1\)/);
+  assert.ok(waitFor(['product-manager', 'delivery-lead', 'builder'].map((i) => path.join(rec.dir, `${i}.json`))), r.out);
+  assert.ok(!fs.existsSync(path.join(rec.dir, 'chief-of-staff.json')), 'a started role is not started twice');
+  const other = start(['--project', project, '--host', 'elsewhere', '--launch'], { env: { DELIVERY_CLAUDE_BIN: rec.bin } });
+  assert.equal(other.status, 1, other.out);
+  assert.match(other.out, /nothing to start: no role of this team runs on host "elsewhere"/);
+});
