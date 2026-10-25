@@ -57,6 +57,9 @@ why some names appear in both lists.
 | `program-manager` | prd (staging), roadmap, realign, challenge | sequencing, dependencies, risk |
 | `delivery-lead` | stories, challenge | is each story ready to pick up |
 | `chief-of-staff` | composed into the Chief of Staff role | does a real source already settle this question |
+| `pr-reviewer` (no edits) | the Delivery Manager, for every pull request before the merge gate | does this head meet its story's criteria, with the suite's output quoted |
+
+The `pr-reviewer` is the one lens with a lane of its own: whichever role dispatches it, the lane hook lets it read everything, clone into `review/` of that role's directory and run anything there (the product's tests), and refuses every edit, commit, push, merge, bead write and record. A Delivery Manager's lane runs no product code, so a reviewer that inherited it could not run the tests it must quote; with one builder on the team, this subagent is the independent reviewer.
 
 ## The shipping team's mechanisms
 

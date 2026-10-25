@@ -1086,3 +1086,69 @@ test('1b: computer use on the owner\'s app is denied to a builder until its mani
   const c = JSON.parse(runHook('role-lane.js', { cwd: cos.roleDir, session_id: 's', tool_name: 'mcp__claude-in-chrome__navigate', tool_input: { url: 'https://chatgpt.com' } }, { DELIVERY_ROLE: 'chief-of-staff', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT }));
   assert.equal(c.hookSpecificOutput.permissionDecision, 'deny');
 });
+
+// The plugin's reviewer subagent (agents/pr-reviewer.md) gets a review lane whoever dispatches it:
+// the Delivery Manager's lane runs no product code, and a reviewer inheriting it could not run the
+// tests it must quote (found on a real pull request, the first one a single-builder team produced).
+test('pr-reviewer lane: clones into review/, runs tests and edits there; refuses every write elsewhere', () => {
+  const { roleDir } = preparedRole('delivery-lead');
+  const scratch = path.join(roleDir, 'review', 'pr-1');
+  fs.mkdirSync(scratch, { recursive: true });
+  const env = { DELIVERY_ROLE: 'delivery-lead', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  const call = (tool_input, { tool = 'Bash', agent = 'delivery:pr-reviewer', cwd = roleDir } = {}) => {
+    const input = { cwd, session_id: 's', tool_name: tool, tool_input };
+    if (agent) { input.agent_type = agent; input.agent_id = 'a1'; }
+    const out = runHook('role-lane.js', input, env);
+    return out === '' ? 'allow' : JSON.parse(out).hookSpecificOutput.permissionDecisionReason;
+  };
+  const allowed = [
+    'mkdir -p review',
+    'git clone https://github.com/o/r review/pr-1',
+    'git clone --depth 50 /srv/git/product.git review/pr-2',
+    'cd review && git clone https://github.com/o/r',
+    'git -C review/pr-1 fetch origin abc123',
+    'git -C review/pr-1 checkout --detach abc123',
+    'cd review/pr-1 && node --test',
+    'cd review/pr-1 && node scripts/testing/run-tests.js 2>&1 | tail -5',
+    'cd review/pr-1 && npm test',
+    'git log --oneline -3',
+    'gh pr diff 1',
+    'bd show dlv-1',
+    'node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js show 1',
+  ];
+  for (const c of allowed) assert.equal(call({ command: c }), 'allow', c);
+  assert.equal(call({ file_path: path.join(scratch, 'a.js'), old_string: 'a', new_string: 'b' }, { tool: 'Edit' }), 'allow');
+  const denied = [
+    'git clone https://github.com/o/r /tmp/elsewhere',
+    'git clone https://github.com/o/r',
+    'git clone https://github.com/o/r review/../product',
+    'mkdir -p project/x',
+    'node --test',
+    'npm test',
+    'cd review/pr-1 && git push origin HEAD:main',
+    'cd review/pr-1 && gh pr merge 1',
+    'cd review/pr-1 && bd update dlv-1 --claim',
+    'cd review/pr-1 && node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js record 1 --head abc --result pass',
+    `cd review/pr-1 && node ${PLUGIN_ROOT}/scripts/evidence.js add dlv-1`,
+    'bd update dlv-1 --append-notes x',
+    'cd review/pr-1 && env -u DELIVERY_ROLE node --test',
+  ];
+  for (const c of denied) assert.notEqual(call({ command: c }), 'allow', c);
+  assert.match(call({ file_path: path.join(roleDir, 'product', 'a.js'), old_string: 'a', new_string: 'b' }, { tool: 'Edit' }), /only under review\//);
+  assert.notEqual(call({ file_path: path.join(roleDir, 'review', '..', 'project', 'a.md'), content: 'x' }, { tool: 'Write' }), 'allow');
+});
+
+test('pr-reviewer lane: only the plugin\'s own reviewer gets it; the dispatching role keeps its lane', () => {
+  const { roleDir } = preparedRole('delivery-lead');
+  fs.mkdirSync(path.join(roleDir, 'review', 'pr-1'), { recursive: true });
+  const env = { DELIVERY_ROLE: 'delivery-lead', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  const run = (agent) => {
+    const input = { cwd: roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'cd review/pr-1 && node --test' } };
+    if (agent) input.agent_type = agent;
+    return runHook('role-lane.js', input, env);
+  };
+  assert.equal(run('delivery:pr-reviewer'), '');
+  for (const agent of [null, 'pr-reviewer', 'superpowers:code-reviewer', 'other:pr-reviewer']) {
+    assert.equal(JSON.parse(run(agent)).hookSpecificOutput.permissionDecision, 'deny', String(agent));
+  }
+});

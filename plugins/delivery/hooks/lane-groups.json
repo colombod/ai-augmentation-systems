@@ -122,6 +122,12 @@
   "a3-draft": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/a3.js", "sub": ["new"] }
   ],
+  "review-run": [
+    { "first": "mkdir", "dest_in_scope": "all", "scope": "review", "value_flags": ["-m", "--mode"] },
+    { "first": "git", "sub": ["clone"], "dest_in_scope": "last", "scope": "review", "value_flags": ["--depth", "-b", "--branch", "-o", "--origin", "--filter", "-j", "--jobs", "--reference", "--shallow-since", "--shallow-exclude"], "flags_none": ["--upload-pack", "-u", "--template", "--separate-git-dir", "--config", "-c", "--recurse-submodules", "--recursive"] },
+    { "first": "git", "sub": ["fetch", "checkout", "switch", "restore", "reset", "clean", "stash", "merge", "apply"], "scope": "review", "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] },
+    { "first": "*", "scope": "review", "first_none": ["git", "gh", "bd", "curl", "wget", "ssh", "scp", "rsync", "sudo", "claude"] }
+  ],
   "review-record": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/review.js", "sub": ["record"] }
   ],

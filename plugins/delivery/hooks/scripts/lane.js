@@ -357,7 +357,12 @@ function expandPluginRoot(arg, root) {
 
 function ruleMatches(rule, t, ctx) {
   if (!rule || typeof rule !== 'object' || !t.length) return false;
-  if (rule.first === '*') return true;
+  if (rule.first === '*' && !rule.scope) return true;
+  if (rule.first === '*') {
+    // anything, but only where the rule's scope is the working directory (a reviewer's scratch clone)
+    if ((rule.first_none || []).includes(t[0])) return false;
+    return scopeHolds(rule, t, ctx);
+  }
   if (t[0] !== rule.first) return false;
   const argv = splitGlobals(t).rest;
   let subLen = 0;
@@ -393,12 +398,37 @@ function ruleMatches(rule, t, ctx) {
       if (valueFlags.includes(args[k])) k++;
     }
   }
-  if (rule.scope) {
-    if (!ctx.roleDir) return false;
-    const base = path.join(realish(ctx.roleDir), String(rule.scope));
-    if (!effectiveDirs(t, ctxDirs(ctx)).every((d) => d !== null && under(realish(d), base))) return false;
-  }
+  if (rule.dest_in_scope) return destInScope(rule, argv.slice(subLen), ctx);
+  if (rule.scope && !scopeHolds(rule, t, ctx)) return false;
   return true;
+}
+
+function scopeBase(rule, ctx) { return ctx.roleDir ? path.join(realish(ctx.roleDir), String(rule.scope)) : null; }
+
+function scopeHolds(rule, t, ctx) {
+  const base = scopeBase(rule, ctx);
+  return !!base && effectiveDirs(t, ctxDirs(ctx)).every((d) => d !== null && under(realish(d), base));
+}
+
+// The paths a command creates (mkdir's operands, git clone's target) must be inside the rule's scope,
+// from every directory the segment may run in. `git clone <repo>` with no target clones into the
+// working directory, so that directory must be in scope instead.
+function destInScope(rule, args, ctx) {
+  const base = scopeBase(rule, ctx);
+  if (!base) return false;
+  const valueFlags = rule.value_flags || [];
+  const pos = [];
+  for (let k = 0; k < args.length; k++) {
+    if (args[k] === '--') { pos.push(...args.slice(k + 1)); break; }
+    if (args[k].startsWith('-')) { if (valueFlags.includes(args[k])) k++; continue; }
+    pos.push(args[k]);
+  }
+  const targets = rule.dest_in_scope === 'last' ? (pos.length >= 2 ? [pos[pos.length - 1]] : pos.length === 1 ? ['.'] : []) : pos;
+  if (!targets.length || targets.some((x) => UNSAFE_DIR.test(x))) return false;
+  return ctxDirs(ctx).every((d) => {
+    if (d === null) return false;
+    return targets.every((x) => under(realish(path.resolve(d, x)), base));
+  });
 }
 
 // ctx: { roleDir, pluginRoot, cwd } or { roleDir, pluginRoot, dirs: [dir|null, ...] }.
@@ -1024,6 +1054,11 @@ function foreignTeamPush(command, instance) {
   return null;
 }
 
+// A segment that runs one of the plugin's own scripts (they write the team's records).
+function mentionsPluginScript(text, root) {
+  return /\$\{?CLAUDE_PLUGIN_ROOT\}?/.test(text) || (!!root && text.includes(root));
+}
+
 function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, cwd, hostHeadless, hostName, desktopHosts, projectRoot }) {
   const name = String(toolName || '');
   const pol = policy || { roleId: '', writes: [], bash: [] };
@@ -1045,6 +1080,13 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     return { allow: true };
   }
   const opDirs = operatorDirs({ projectRoot, roleDir });
+  if (FILE_TOOLS.includes(name) && pol.review) {
+    // only its scratch clones, where it breaks a covered line to see the test fail (mutation check)
+    const scratch = roleDir ? path.join(realish(roleDir), 'review') : null;
+    const base = cwd || process.cwd();
+    const ok = !!scratch && filePathsOf(name, toolInput).every((fp) => under(realish(path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`), scratch));
+    return ok ? { allow: true } : { allow: false, reason: `Role ${pol.roleId} edits files only under review/: ${REVIEWER_REASON}.` };
+  }
   if (FILE_TOOLS.includes(name)) {
     const base = cwd || process.cwd();
     for (const fp of filePathsOf(name, toolInput)) {
@@ -1098,6 +1140,9 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       const { text, op } = segs[n];
       if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
       const names = classifySegment(text, groups, { roleDir, pluginRoot, dirs: live });
+      if (pol.review && !names.includes('read') && mentionsPluginScript(text, pluginRootOf({ pluginRoot }))) {
+        return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`: ${REVIEWER_REASON}.\nReport pass or changes to the role that dispatched you; it records the review.` };
+      }
       if (!names.some((x) => bash.includes(x))) {
         const construct = expansionConstruct(text);
         // a refused construct is the whole story; otherwise the allowed groups say what the lane runs
@@ -1122,6 +1167,16 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   return { allow: true };
 }
 
+// The subagent type Claude Code reports for agents/pr-reviewer.md (plugin agents are namespaced).
+// Only the plugin's own agent: a same-named agent from elsewhere does not get this lane.
+const REVIEWER_AGENT = 'delivery:pr-reviewer';
+const REVIEWER_REASON = 'a reviewer reads, clones into review/ and runs and mutation-checks tests there; it never changes anything else, commits, pushes, merges or records';
+// Read everything; run anything only inside review/ of the role directory; no file edits; no writes
+// through git, gh, bd or the plugin's record scripts (only their read subcommands, in the read groups).
+function reviewerPolicy(base) {
+  return { roleId: `${base.roleId || 'role'} reviewer`, writes: [], bash: ['read', 'git-read', 'gh-read', 'bd-read', 'review-run'], mcp: [], reach: false, review: true };
+}
+
 function laneDecisionForHook(input, pluginRoot) {
   const { findRoleMarker, validMarker } = require('./role-context.js');
   const found = findRoleMarker(input.cwd);
@@ -1129,7 +1184,10 @@ function laneDecisionForHook(input, pluginRoot) {
   const ctx = validMarker(found);
   if (!ctx) return null;
   const { marker, hosts, role, roleDir } = ctx;
-  const policy = loadPolicy({ pluginRoot, projectRoot: marker.project_root, briefRef: role.brief });
+  let policy = loadPolicy({ pluginRoot, projectRoot: marker.project_root, briefRef: role.brief });
+  // The plugin's own reviewer subagent gets the review lane whoever dispatched it: a Delivery Manager's
+  // lane runs no product code, so a reviewer inheriting it could not run the tests it must quote.
+  if (input.agent_type === REVIEWER_AGENT) policy = reviewerPolicy(policy);
   // the manifest's opt-in: local reach only, and never for a manager even when team.json was edited by hand
   const granted = require('../../scripts/lib/manifest.js').reachOf(role);
   if (granted && !policy.reach) policy.reach = granted;
@@ -1162,4 +1220,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

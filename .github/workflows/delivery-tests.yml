@@ -26,8 +26,9 @@ jobs:
           node-version: '24'
 
       # No package.json, no dependencies -- every test uses only Node
-      # builtins. The glob is quoted so node expands it (** included); the
-      # tests put the fake bd in scripts/testing/ on PATH, never the real one.
-      # hooks/scripts/*.test.js includes record-invocation.test.js.
+      # builtins. run-tests.js finds every scripts/**/*.test.js and
+      # hooks/scripts/*.test.js and clears the role variables first, so CI,
+      # builders and reviewers run the same command; the tests put the fake
+      # bd in scripts/testing/ on PATH, never the real one.
       - name: Run test suite
-        run: node --test 'plugins/delivery/scripts/**/*.test.js' plugins/delivery/hooks/scripts/*.test.js
+        run: node plugins/delivery/scripts/testing/run-tests.js
