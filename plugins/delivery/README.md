@@ -18,7 +18,7 @@ delivery gives you a team of Claude Code sessions, one per role, that plan and s
 
 1. **Install the plugin:** `/plugin install delivery@ai-augmentation-systems` (the repository README has the marketplace step).
 2. **Run `/delivery:start`** in an ordinary Claude Code session, outside any role directory. It asks for the project repo, the product repo, the host name, the preset, the model profile and the permission mode, shows a dry run, then writes the team manifest, creates the beads database, prepares one directory per role and prints the command that starts each session.
-3. **Start the printed sessions,** run `/delivery:team join` in each, then open the Chief of Staff session and talk to it.
+3. **Talk to the Chief of Staff.** `/delivery:start` starts every role session itself (`start.js --launch --keep-alive`), in auto mode, and each joins the team; it prints the one command that opens the Chief of Staff.
 
 ### Using the team
 

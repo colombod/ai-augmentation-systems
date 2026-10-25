@@ -25,11 +25,11 @@ You are helping the human (the operator) start a team of role sessions for a pro
 
    Then run `start.js --check --project <project repo>` once more if the project repo already exists, and mention a missing remote as a warning.
 
-4. **Dry run.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/start.js --project <project repo> --host <host> --preset <preset> --models <models> [--product-repo <path or url>] [--permission-mode <mode>] --dry-run` and show the plan verbatim. Ask the human to confirm it.
+4. **Dry run.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/start.js --project <project repo> --host <host> --preset <preset> --models <models> [--product-repo <path or url>] [--permission-mode <mode>] --launch --keep-alive --dry-run` and show the plan verbatim. Ask the human to confirm it.
 
 5. **Real run.** Run the same command without `--dry-run` and show the output verbatim. If it exits non-zero, show the refusal and stop; never work around it. If it says a manifest already exists, that manifest is kept as it is; say so.
 
-6. **Start the sessions.** Tell the human to run each printed `cd ... && claude ...` line in its own terminal, the Chief of Staff first, and to run `/delivery:team join` in each session once it starts.
+6. **The team starts itself.** `--launch` starts every role on this machine in its role directory, in the team's permission mode, and each joins the team in its first turn; `--keep-alive` installs the watchdog job that resumes a role when its work is due. The human starts nothing by hand. Run `/delivery:team` after a minute and show who is live. Roles on another machine start with the same command run there (`--host` that machine's name). Leave out `--launch` only if the human asks to start the sessions themselves; then give them the printed `cd ... && claude ...` lines.
 
 7. **How to use the team.** End with these five lines, in your words:
    - Talk to the Chief of Staff for decisions and logistics, and with the Product Manager about product vision; the other sessions send their questions to the Chief of Staff, not to you.
