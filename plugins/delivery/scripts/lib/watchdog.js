@@ -33,6 +33,9 @@ const REL = path.join('.delivery', 'watchdog');
 const P0_HOURS = 1;
 const WAKE_EVERY_MS = 3600e3;
 const DAILY_CAP = 6;
+// a waiting message wakes its target sooner and more often than a stall does: it is the team's handoff
+const MESSAGE_EVERY_MS = 5 * 60e3;
+const MESSAGE_DAILY_CAP = 48;
 const RESET_GRACE_MIN = 5;
 const TAIL_BYTES = 512 * 1024;
 const MIN_POLL_S = 240;
@@ -189,7 +192,7 @@ const typeOf = (b) => b.type || b.issue_type || null;
 // ---- the stalls ----
 // facts: { beads, ready, now, idleMinutes, stallHours, pause, openSteps, sessions, team, installed }
 // { paused?, stalls: [{ kind, key, bead?, target, line, plain, detail, prompt, due, scheduled?, wakeAt? }] }
-function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true } = {}) {
+function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [] } = {}) {
   const t = ms(now || new Date().toISOString());
   if (pause && pause.paused) return { paused: pause.by || true, stalls: [] };
   const out = [];
@@ -261,6 +264,15 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       detail: `P0 open and unclaimed since ${b.created_at || b.updated_at}`,
       prompt: `Top-priority ${b.id} has waited ${span(minutes)} unclaimed. Assign it to a builder now (bd show ${b.id}).` });
   }
+  // messages sent to a role while its session was not running (lib/inbox.js): its next turn starts with them
+  for (const m of messages.filter((x) => x && x.to && x.entries && x.entries.length)) {
+    const shown = m.entries.slice(-5).map((e) => `[from ${e.from || 'unknown'}${e.summary ? `: ${e.summary}` : ''}] ${String(e.message || '').replace(/\s+/g, ' ').slice(0, 600)}`);
+    out.push({ kind: 'message', key: `message:${m.to}:${m.upTo}`, target: m.to, due: true, upTo: m.upTo,
+      line: `Waiting: ${m.entries.length} message${m.entries.length > 1 ? 's' : ''} for ${m.to}, sent while its session was not running.`,
+      plain: `A message is waiting for ${m.to}; it is woken to read it.`,
+      detail: `${m.entries.length} undelivered message(s) for ${m.to}`,
+      prompt: `${m.entries.length > 5 ? `${m.entries.length} messages arrived; the last 5:` : `Message${m.entries.length > 1 ? 's' : ''} sent to you while your session was not running:`} ${shown.join(' ')} Act on them now, as your brief says.` });
+  }
   return { stalls: out };
 }
 
@@ -274,6 +286,7 @@ const KIND = { idle: 'idle', quiet: 'stall', p0: 'p0-unclaimed', limit: 'usage-l
 // no fixed instance: each host appends to its own ledger file, as team-status does (review on aaea37c)
 function recordAll(root, res, polls, { now, instance } = {}) {
   for (const s of res.stalls) {
+    if (s.kind === 'message') continue; // a handoff, not a warning
     if (s.kind === 'idle') I.recordIdle(root, s.idle, { now, instance });
     else W.record(root, { kind: KIND[s.kind], rule: 'R-04', bead: s.bead, detail: s.detail, raisedBy: instance || 'watchdog', instance, now });
   }
@@ -302,7 +315,7 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
     const beadOf = (id) => { try { return bd.show(id); } catch (err) { return null; } };
     const list = sessions(root, { team, rows });
     const res = stalls({ beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
-      pause: given || Goal.activePause(root, { beadOf, maxLookups: 4 }), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)) });
+      pause: given || Goal.activePause(root, { beadOf, maxLookups: 4 }), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root) });
     // a verified pause silences the polling warnings too
     return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list };
   } catch (err) { return { stalls: [], polls: [], sessions: [], unreadable: String(err.message).split('\n')[0] }; }
@@ -361,7 +374,17 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     const mine = rows.filter((r) => r.instance === w.target).sort((a, b) => ms(a.at) - ms(b.at));
     const last = mine[mine.length - 1];
     const lines = w.stalls.map((s) => s.line);
+    // a message is a handoff, not a stall: its target is woken within MESSAGE_EVERY_MS, not an hour
+    const onlyMessages = w.stalls.every((s) => s.kind === 'message');
     let reason = null;
+    if (onlyMessages) {
+      if (last && alive(last.pid)) reason = 'its last wake is still running; the message waits for it';
+      else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) reason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
+      else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) reason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
+      if (reason) { held.push({ target: w.target, lines, reason }); continue; }
+      wakes.push({ target: w.target, keys: w.stalls.map((s) => s.key), lines, delivers: w.stalls.map((s) => ({ to: s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${w.stalls.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
+      continue;
+    }
     if (last && t - ms(last.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(last.at))}; one wake an hour`;
     else if (last && alive(last.pid)) reason = 'its last wake is still running';
     else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
@@ -392,4 +415,4 @@ function wakeCommand(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
