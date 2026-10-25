@@ -556,3 +556,10 @@ test('--launch skips a role already on the roster, starts nothing for other host
   assert.equal(other.status, 1, other.out);
   assert.match(other.out, /nothing to start: no role of this team runs on host "elsewhere"/);
 });
+
+test('a project repo start.js creates starts on main, whatever the machine\'s git default', () => {
+  const project = path.join(mk('start-main-'), 'acme');
+  const r = start(['--project', project, '--host', 'laptop']);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(cp.execFileSync(GIT, ['symbolic-ref', '--short', 'HEAD'], { cwd: project, encoding: 'utf8' }).trim(), 'main');
+});

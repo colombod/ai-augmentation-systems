@@ -425,10 +425,10 @@ function scaffold(opts) {
   // 1. the private project repo
   if (!fs.existsSync(projectRoot)) {
     say(`  project repo: ${w}create ${projectRoot} and run git init`);
-    if (!dryRun) { fs.mkdirSync(projectRoot, { recursive: true }); if (!run('git', ['init', '-q'], { cwd: projectRoot, env: gitEnv }).ok) { say('  project repo: git init failed'); return { code: 1, out }; } }
+    if (!dryRun) { fs.mkdirSync(projectRoot, { recursive: true }); if (!run('git', ['init', '-q', '-b', 'main'], { cwd: projectRoot, env: gitEnv }).ok) { say('  project repo: git init failed'); return { code: 1, out }; } }
   } else if (!fs.existsSync(path.join(projectRoot, '.git'))) {
     say(`  project repo: ${w}run git init in ${projectRoot}`);
-    if (!dryRun && !run('git', ['init', '-q'], { cwd: projectRoot, env: gitEnv }).ok) { say('  project repo: git init failed'); return { code: 1, out }; }
+    if (!dryRun && !run('git', ['init', '-q', '-b', 'main'], { cwd: projectRoot, env: gitEnv }).ok) { say('  project repo: git init failed'); return { code: 1, out }; }
   } else {
     say('  project repo: exists');
   }
