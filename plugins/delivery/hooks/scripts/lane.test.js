@@ -1094,6 +1094,7 @@ test('pr-reviewer lane: clones into review/, runs tests and edits there; refuses
   const { roleDir } = preparedRole('delivery-lead');
   const scratch = path.join(roleDir, 'review', 'pr-1');
   fs.mkdirSync(scratch, { recursive: true });
+  fs.symlinkSync(PLUGIN_ROOT, path.join(roleDir, 'review', 'plug'));
   const env = { DELIVERY_ROLE: 'delivery-lead', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
   const call = (tool_input, { tool = 'Bash', agent = 'delivery:pr-reviewer', cwd = roleDir } = {}) => {
     const input = { cwd, session_id: 's', tool_name: tool, tool_input };
@@ -1111,6 +1112,9 @@ test('pr-reviewer lane: clones into review/, runs tests and edits there; refuses
     'cd review/pr-1 && node --test',
     'cd review/pr-1 && node scripts/testing/run-tests.js 2>&1 | tail -5',
     'cd review/pr-1 && npm test',
+    'cd review/pr-1 && npm run test:unit',
+    'cd review/pr-1 && make test',
+    'cd review/pr-1 && node --test --test-name-pattern=import',
     'git log --oneline -3',
     'gh pr diff 1',
     'bd show dlv-1',
@@ -1132,10 +1136,49 @@ test('pr-reviewer lane: clones into review/, runs tests and edits there; refuses
     `cd review/pr-1 && node ${PLUGIN_ROOT}/scripts/evidence.js add dlv-1`,
     'bd update dlv-1 --append-notes x',
     'cd review/pr-1 && env -u DELIVERY_ROLE node --test',
+    // the independent review of this lane (PR 72) got past the first version with each of these
+    'cd review/pr-1 && /usr/bin/git push origin HEAD:feature',
+    'cd review/pr-1 && command git push origin HEAD:feature',
+    'cd review/pr-1 && timeout 60 git push origin HEAD:feature',
+    'cd review/pr-1 && nice git push origin HEAD:feature',
+    'cd review/pr-1 && xargs git push < /dev/null',
+    "cd review/pr-1 && sh -c 'git push origin HEAD:feature'",
+    "cd review/pr-1 && bash -c 'gh pr merge 1 --squash'",
+    'cd review/pr-1 && command gh pr review 1 --approve',
+    'cd review/pr-1 && /usr/bin/bd update x --claim',
+    'cd review/pr-1 && exec bd update x --claim',
+    'cd review/pr-1 && npx bd update x',
+    `cd review/pr-1 && node ${path.relative(path.join(roleDir, 'review', 'pr-1'), PLUGIN_ROOT)}/scripts/review.js record 1 --head a --result pass`,
+    'cd review/pr-1 && node ../plug/scripts/review.js record 1 --head a --result pass',
+    "cd review/pr-1 && node -e 'require(process.env.CLAUDE_PLUGIN_ROOT)'",
+    'cd review && ln -s / plug',
+    'git -C /tmp clone https://github.com/o/r review/pr-9',
+    'git clone https://github.com/o/r /tmp/evil --server-option review/x',
+    'git clone https://github.com/o/r /tmp/evil --bundle-uri review/x',
+    'cd review/pr-1 && (cd / && npm test)',
+    'cd review/pr-1 && pushd / && npm test',
+    'cd review/pr-1 && npm --prefix / test',
+    'cd review/pr-1 && npm test --prefix /',
+    'cd review/pr-1 && make -C / test',
+    'cd review/pr-1 && node --test /',
+    'cd review && mkdir /tmp/evil-dir',
+    'cd review && touch /tmp/evil',
+    'cd review && tee /tmp/evil < /dev/null',
+    'cd review && dd if=/dev/null of=/tmp/evil',
+    'cd review && tar -xf a.tar -C /tmp',
+    'cd review && perl -pi -e s/a/b/ /tmp/x',
+    'git -C review/pr-1 apply --unsafe-paths p.patch',
   ];
   for (const c of denied) assert.notEqual(call({ command: c }), 'allow', c);
   assert.match(call({ file_path: path.join(roleDir, 'product', 'a.js'), old_string: 'a', new_string: 'b' }, { tool: 'Edit' }), /only under review\//);
   assert.notEqual(call({ file_path: path.join(roleDir, 'review', '..', 'project', 'a.md'), content: 'x' }, { tool: 'Write' }), 'allow');
+});
+
+test('pr-reviewer lane: only when the Delivery Manager dispatches it; a role that runs no code does not gain it', () => {
+  const { roleDir } = preparedRole('chief-of-staff');
+  fs.mkdirSync(path.join(roleDir, 'review', 'pr-1'), { recursive: true });
+  const out = runHook('role-lane.js', { cwd: roleDir, session_id: 's', tool_name: 'Bash', agent_type: 'delivery:pr-reviewer', tool_input: { command: 'cd review/pr-1 && node --test' } }, { DELIVERY_ROLE: 'chief-of-staff', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT });
+  assert.equal(JSON.parse(out).hookSpecificOutput.permissionDecision, 'deny');
 });
 
 test('pr-reviewer lane: only the plugin\'s own reviewer gets it; the dispatching role keeps its lane', () => {

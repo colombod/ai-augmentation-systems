@@ -357,12 +357,7 @@ function expandPluginRoot(arg, root) {
 
 function ruleMatches(rule, t, ctx) {
   if (!rule || typeof rule !== 'object' || !t.length) return false;
-  if (rule.first === '*' && !rule.scope) return true;
-  if (rule.first === '*') {
-    // anything, but only where the rule's scope is the working directory (a reviewer's scratch clone)
-    if ((rule.first_none || []).includes(t[0])) return false;
-    return scopeHolds(rule, t, ctx);
-  }
+  if (rule.first === '*') return true;
   if (t[0] !== rule.first) return false;
   const argv = splitGlobals(t).rest;
   let subLen = 0;
@@ -398,7 +393,12 @@ function ruleMatches(rule, t, ctx) {
       if (valueFlags.includes(args[k])) k++;
     }
   }
-  if (rule.dest_in_scope) return destInScope(rule, argv.slice(subLen), ctx);
+  if (rule.flags_only) {
+    const allowed = rule.flags_only;
+    if (argv.slice(subLen).some((x) => x.startsWith('-') && !allowed.includes(x.split('=')[0]))) return false;
+  }
+  if (rule.dest_in_scope) return destInScope(rule, argv.slice(subLen), t, ctx);
+  if (rule.paths_in_scope && !destInScope({ ...rule, dest_in_scope: 'all', allow_none: true }, argv.slice(subLen), t, ctx)) return false;
   if (rule.scope && !scopeHolds(rule, t, ctx)) return false;
   return true;
 }
@@ -413,7 +413,7 @@ function scopeHolds(rule, t, ctx) {
 // The paths a command creates (mkdir's operands, git clone's target) must be inside the rule's scope,
 // from every directory the segment may run in. `git clone <repo>` with no target clones into the
 // working directory, so that directory must be in scope instead.
-function destInScope(rule, args, ctx) {
+function destInScope(rule, args, t, ctx) {
   const base = scopeBase(rule, ctx);
   if (!base) return false;
   const valueFlags = rule.value_flags || [];
@@ -424,8 +424,10 @@ function destInScope(rule, args, ctx) {
     pos.push(args[k]);
   }
   const targets = rule.dest_in_scope === 'last' ? (pos.length >= 2 ? [pos[pos.length - 1]] : pos.length === 1 ? ['.'] : []) : pos;
-  if (!targets.length || targets.some((x) => UNSAFE_DIR.test(x))) return false;
-  return ctxDirs(ctx).every((d) => {
+  if (!targets.length) return !!rule.allow_none && scopeHolds(rule, t, ctx);
+  if (targets.some((x) => UNSAFE_DIR.test(x))) return false;
+  // every directory the segment may run in, after git's own -C
+  return effectiveDirs(t, ctxDirs(ctx)).every((d) => {
     if (d === null) return false;
     return targets.every((x) => under(realish(path.resolve(d, x)), base));
   });
@@ -1170,7 +1172,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
 // The subagent type Claude Code reports for agents/pr-reviewer.md (plugin agents are namespaced).
 // Only the plugin's own agent: a same-named agent from elsewhere does not get this lane.
 const REVIEWER_AGENT = 'delivery:pr-reviewer';
-const REVIEWER_REASON = 'a reviewer reads, clones into review/ and runs and mutation-checks tests there; it never changes anything else, commits, pushes, merges or records';
+const REVIEWER_REASON = 'a reviewer reads, clones into review/ and runs the tests there with node, npm, make or pytest named directly (no wrapper such as timeout or sh -c); it never changes anything else, commits, pushes, merges or records';
 // Read everything; run anything only inside review/ of the role directory; no file edits; no writes
 // through git, gh, bd or the plugin's record scripts (only their read subcommands, in the read groups).
 function reviewerPolicy(base) {
@@ -1185,12 +1187,13 @@ function laneDecisionForHook(input, pluginRoot) {
   if (!ctx) return null;
   const { marker, hosts, role, roleDir } = ctx;
   let policy = loadPolicy({ pluginRoot, projectRoot: marker.project_root, briefRef: role.brief });
-  // The plugin's own reviewer subagent gets the review lane whoever dispatched it: a Delivery Manager's
-  // lane runs no product code, so a reviewer inheriting it could not run the tests it must quote.
-  if (input.agent_type === REVIEWER_AGENT) policy = reviewerPolicy(policy);
   // the manifest's opt-in: local reach only, and never for a manager even when team.json was edited by hand
   const granted = require('../../scripts/lib/manifest.js').reachOf(role);
   if (granted && !policy.reach) policy.reach = granted;
+  // The plugin's reviewer subagent, dispatched by the Delivery Manager, gets the review lane: that lane
+  // runs no product code, so a reviewer inheriting it could not run the tests it must quote. Only the
+  // Delivery Manager's: any other role dispatching it keeps its own lane (a builder's already runs code).
+  if (input.agent_type === REVIEWER_AGENT && policy.roleId === MERGER) policy = reviewerPolicy(policy);
   const hostMap = (hosts && hosts.hosts) || {};
   const host = hostMap[role.host] || {};
   const desktopHosts = Object.entries(hostMap).filter(([, h]) => h && h.desktop_apps).map(([n]) => n);

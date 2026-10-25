@@ -59,7 +59,9 @@ why some names appear in both lists.
 | `chief-of-staff` | composed into the Chief of Staff role | does a real source already settle this question |
 | `pr-reviewer` (no edits) | the Delivery Manager, for every pull request before the merge gate | does this head meet its story's criteria, with the suite's output quoted |
 
-The `pr-reviewer` is the one lens with a lane of its own: whichever role dispatches it, the lane hook lets it read everything, clone into `review/` of that role's directory and run anything there (the product's tests), and refuses every edit, commit, push, merge, bead write and record. A Delivery Manager's lane runs no product code, so a reviewer that inherited it could not run the tests it must quote; with one builder on the team, this subagent is the independent reviewer.
+The `pr-reviewer` is the one lens with a lane of its own, when the Delivery Manager dispatches it (any other role's dispatch keeps that role's lane). A Delivery Manager's lane runs no product code, so a reviewer that inherited it could not run the tests it must quote; with one builder on the team, this subagent is the independent reviewer. Its lane: read everything; `mkdir` and `git clone` into `review/` of the role directory; `git fetch`, `checkout`, `switch`, `reset` and `clean` there; run the tests there with `node`, `npm test`/`npm run`, `make` or `pytest` named directly, every path they name inside `review/`; edit files only under `review/` (to break a covered line and see its test fail). Everything else is refused, wrappers included (`timeout`, `sh -c`, `command`, an absolute path to git), and so are `node -e`, `npm --prefix`, `make -C`, and the plugin's own scripts except their read subcommands.
+
+What the lane cannot stop: the tests it runs are the pull request's own code, and they run with the role's access. The lane keeps an honest reviewer from writing, pushing or recording by mistake; it is not a sandbox against a hostile pull request. Run the team where a role's credentials can do no more than its work needs.
 
 ## The shipping team's mechanisms
 
