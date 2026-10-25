@@ -137,8 +137,18 @@ test('full preset: eight instances, the Reality Checker among them, and a valid 
   assert.deepEqual(ids.slice().sort(), ['builder', 'chief-of-staff', 'delivery-lead', 'product-manager', 'progress-observer', 'reality-checker', 'spike-researcher', 'staffing']);
   for (const i of ids) assert.ok(fs.existsSync(path.join(base, 'shop-team', i, '.delivery-role.json')), i);
   assert.match(r.out, /no product worktree/);
-  assert.match(r.out, /claude --name chief-of-staff/);
+  // auto by default (team rule 0: the operator is not the team's approver)
+  assert.match(r.out, /claude --permission-mode auto --name chief-of-staff/);
+  assert.match(r.out, /--permission-mode auto: the sessions run without asking you to approve each step/);
+});
+
+test('--permission-mode default is still available and prints no flag', () => {
+  const project = path.join(mk('start-default-mode-'), 'acme');
+  const r = start(['--project', project, '--host', 'laptop', '--permission-mode', 'default']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /cd \S+ && claude --name chief-of-staff/);
   assert.doesNotMatch(r.out, /claude --permission-mode/);
+  assert.match(r.out, /--permission-mode default: each session uses your own Claude Code default and may ask you/);
 });
 
 test('a second run changes nothing; it prepares only a missing role', () => {
