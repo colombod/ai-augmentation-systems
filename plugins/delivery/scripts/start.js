@@ -366,7 +366,7 @@ function startCommand(roleDir, instance, permissionMode) {
 
 function scaffold(opts) {
   const {
-    project, host: hostFlag, preset = 'minimal', models = 'balanced', productRepo, prefix: prefixFlag, runner = 'plain', permissionMode = 'default',
+    project, host: hostFlag, preset = 'minimal', models = 'balanced', productRepo, prefix: prefixFlag, runner = 'plain', permissionMode = 'auto',
     teamDir: teamDirFlag, user, dryRun = false, env = process.env, pluginRoot = PLUGIN_ROOT, realityChecker = false,
   } = opts;
   if (!project) throw new UsageError('--project <root> is required');
@@ -528,7 +528,12 @@ function scaffold(opts) {
   say('');
   say(`${dryRun ? 'After a real run, start' : 'Start'} each session in its own terminal, the Chief of Staff first:`);
   for (const { instance, roleDir } of prepared) say(`  ${startCommand(roleDir, instance, permissionMode)}`);
-  if (permissionMode === 'default') say('  (no --permission-mode: each session uses your own Claude Code default; pass --permission-mode to choose one)');
+  // auto by default: a team whose sessions ask the operator to approve each step puts the operator
+  // to work as the team's approver, which is what the team exists to remove (team rule 0). The lane
+  // hook and the native deny rules still bound what each role can do in any mode.
+  say(permissionMode === 'default'
+    ? '  (--permission-mode default: each session uses your own Claude Code default and may ask you to approve its steps)'
+    : `  (--permission-mode ${permissionMode}: the sessions run without asking you to approve each step; the lane hook still limits what each role can do. Pass --permission-mode default to be asked instead)`);
   say('');
   say('Then:');
   say('  1. In every session, run /delivery:team join.');

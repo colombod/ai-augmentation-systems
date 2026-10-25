@@ -113,7 +113,7 @@ node <plugin-root>/scripts/start.js --project <project-root> --host laptop --mod
 node <plugin-root>/scripts/start.js --project <project-root> --host laptop --models balanced --product-repo <product-checkout>
 ```
 
-Other flags: `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Manager, one builder; `full` adds Staffing, the Progress Observer, the Spike Researcher and the Reality Checker; the Reality Checker also joins `minimal` when a declared surface is not scriptable, or with `--reality-checker`), `--models quality|balanced|economy` (default `balanced`; see the README's Models section), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default: none, so each session uses your own Claude Code default), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
+Other flags: `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Manager, one builder; `full` adds Staffing, the Progress Observer, the Spike Researcher and the Reality Checker; the Reality Checker also joins `minimal` when a declared surface is not scriptable, or with `--reality-checker`), `--models quality|balanced|economy` (default `balanced`; see the README's Models section), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default `auto`: the sessions run without asking you to approve each step, inside the lane hook's limits; `default` uses your own Claude Code default and may ask), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
 
 The real run, against a throwaway fixture (paths shortened to placeholders):
 
@@ -133,11 +133,11 @@ delivery start: <project-root>
     builder: prepared (sonnet)
 
 Start each session in its own terminal, the Chief of Staff first:
-  cd <team-dir>/chief-of-staff && claude --name chief-of-staff
-  cd <team-dir>/product-manager && claude --name product-manager
-  cd <team-dir>/delivery-lead && claude --name delivery-lead
-  cd <team-dir>/builder && claude --name builder
-  (no --permission-mode: each session uses your own Claude Code default; pass --permission-mode to choose one)
+  cd <team-dir>/chief-of-staff && claude --permission-mode auto --name chief-of-staff
+  cd <team-dir>/product-manager && claude --permission-mode auto --name product-manager
+  cd <team-dir>/delivery-lead && claude --permission-mode auto --name delivery-lead
+  cd <team-dir>/builder && claude --permission-mode auto --name builder
+  (--permission-mode auto: the sessions run without asking you to approve each step; the lane hook still limits what each role can do. Pass --permission-mode default to be asked instead)
 
 Then:
   1. In every session, run /delivery:team join.
