@@ -1098,7 +1098,10 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     // for case-insensitive file systems (macOS, Windows), and 8.3 short names (GIT~1) refused outright
     const ok = !!scratch && filePathsOf(name, toolInput).every((fp) => {
       const real = realish(path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`);
-      const parts = path.relative(scratch, real).split(/[\\/]/).map((x) => x.toLowerCase());
+      // Windows drops trailing dots and spaces and reads `name::$DATA` as name; HFS+ ignores
+      // zero-width characters (git's own is_ntfs_dotgit and is_hfs_dotgit cover the same spellings)
+      const parts = path.relative(scratch, real).split(/[\\/]/).map((x) => x.toLowerCase()
+        .replace(/[\u00ad\u034f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u206a-\u206f\ufeff]/g, '').split(':')[0].replace(/[. ]+$/, ''));
       return under(real, scratch) && !parts.some((x) => x === '.git' || x === '.delivery' || x === '.delivery-role.json' || /~\d/.test(x));
     });
     return ok ? { allow: true } : { allow: false, reason: `Role ${pol.roleId} edits files only under review/: ${REVIEWER_REASON}.` };

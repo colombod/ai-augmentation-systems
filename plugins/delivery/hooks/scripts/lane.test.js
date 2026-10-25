@@ -1103,7 +1103,7 @@ test('pr-reviewer lane: clones into review/, runs tests and edits there; refuses
     return out === '' ? 'allow' : JSON.parse(out).hookSpecificOutput.permissionDecisionReason;
   };
   const allowed = [
-    'node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js checkout 1 abc1234',
+    'node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js checkout 1 0123456789abcdef0123456789abcdef01234567',
     'node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js test 1',
     'node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js test 1 2>&1 | tail -5',
     `node ${PLUGIN_ROOT}/scripts/review-run.js test 1`,
@@ -1187,7 +1187,9 @@ test('pr-reviewer lane: clones into review/, runs tests and edits there; refuses
   assert.match(call({ file_path: path.join(roleDir, 'product', 'a.js'), old_string: 'a', new_string: 'b' }, { tool: 'Edit' }), /only under review\//);
   assert.notEqual(call({ file_path: path.join(roleDir, 'review', '..', 'project', 'a.md'), content: 'x' }, { tool: 'Write' }), 'allow');
   // a clone's .git config or hooks would make the allowed git commands act outside review/
-  for (const f of ['.git/config', '.git/hooks/post-checkout', 'sub/.git/config', '.GIT/config', '.Git/HEAD', 'GIT~1/config', '.delivery-role.json', 'fake/.delivery/team/team.json', '.DELIVERY/team/team.json']) {
+  for (const f of ['.git/config', '.git/hooks/post-checkout', 'sub/.git/config', '.GIT/config', '.Git/HEAD', 'GIT~1/config', '.delivery-role.json', 'fake/.delivery/team/team.json', '.DELIVERY/team/team.json',
+    // the fourth review: spellings Windows (trailing dot or space, NTFS streams) and HFS+ (zero-width) read as .git
+    '.git./config', '.git /config', '.git::$INDEX_ALLOCATION/config', '.g\u200cit/config', '.delivery-role.json.', '.delivery-role.json::$DATA']) {
     assert.notEqual(call({ file_path: path.join(scratch, f), content: 'x' }, { tool: 'Write' }), 'allow', f);
   }
 });

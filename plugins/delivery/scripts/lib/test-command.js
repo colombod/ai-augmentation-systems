@@ -28,7 +28,9 @@ const ECOSYSTEMS = [
   { name: 'JVM (Gradle)', marks: (d) => has(d, 'build.gradle') || has(d, 'build.gradle.kts'), command: (d, win) => (has(d, 'gradlew') ? (win ? 'gradlew.bat test' : './gradlew test') : 'gradle test') },
   { name: 'Scala (sbt)', marks: (d) => has(d, 'build.sbt'), command: () => 'sbt test' },
   { name: 'Python', marks: (d) => has(d, 'pyproject.toml') || has(d, 'setup.py') || has(d, 'setup.cfg') || has(d, 'tox.ini') || has(d, 'pytest.ini'),
-    command: (d) => (has(d, 'tox.ini') ? 'tox' : has(d, 'uv.lock') ? 'uv run pytest' : has(d, 'poetry.lock') ? 'poetry run pytest' : 'python -m pytest') },
+    // tox and uv set up their own environments; otherwise install the project before its tests
+    command: (d) => (has(d, 'tox.ini') ? 'tox' : has(d, 'uv.lock') ? 'uv run pytest' : has(d, 'poetry.lock') ? 'poetry install && poetry run pytest'
+      : has(d, 'requirements.txt') ? 'python -m pip install -r requirements.txt && python -m pytest' : 'python -m pip install -e . && python -m pytest') },
   { name: 'Ruby', marks: (d) => has(d, 'Gemfile'), command: (d) => `bundle install && ${has(d, '.rspec') || has(d, 'spec') ? 'bundle exec rspec' : 'bundle exec rake test'}` },
   { name: 'Elixir', marks: (d) => has(d, 'mix.exs'), command: () => 'mix deps.get && mix test' },
   { name: 'PHP', marks: (d) => has(d, 'composer.json'), command: (d) => `composer install && ${/"test"\s*:/.test(read(d, 'composer.json')) ? 'composer test' : 'vendor/bin/phpunit'}` },

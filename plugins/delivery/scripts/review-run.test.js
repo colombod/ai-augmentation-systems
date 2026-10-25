@@ -28,7 +28,9 @@ test('test command: one per ecosystem, from the repository\'s own build files', 
     [{ 'CMakeLists.txt': '' }, 'cmake -S . -B build && cmake --build build && ctest --test-dir build --no-tests=error'],
     [{ 'build.gradle.kts': '', gradlew: '' }, './gradlew test'],
     [{ 'build.sbt': '' }, 'sbt test'],
-    [{ 'pyproject.toml': '' }, 'python -m pytest'],
+    [{ 'pyproject.toml': '' }, 'python -m pip install -e . && python -m pytest'],
+    [{ 'pyproject.toml': '', 'poetry.lock': '' }, 'poetry install && poetry run pytest'],
+    [{ 'setup.cfg': '', 'requirements.txt': '' }, 'python -m pip install -r requirements.txt && python -m pytest'],
     [{ 'pyproject.toml': '', 'uv.lock': '' }, 'uv run pytest'],
     [{ 'tox.ini': '' }, 'tox'],
     [{ Gemfile: '', '.rspec': '' }, 'bundle install && bundle exec rspec'],
@@ -113,6 +115,22 @@ test('review-run test: runs the project command in the clone with the role varia
   assert.match(failing.lines.join('\n'), /review-run: exit 3/);
 });
 
+// the fourth review: a tag named like an abbreviated head checked out other code under that head
+test('review-run checkout: only a full head; a tag named like the head does not redirect it', () => {
+  const { roleDir, team, src, first, second } = setup();
+  G(src, 'tag', first.slice(0, 7), second);
+  G(src, 'tag', first, second);
+  const c = capture();
+  assert.equal(main(['checkout', '7', first], { env: process.env, cwd: roleDir, roleDir, team, ...c }), 0, c.lines.join('\n'));
+  assert.equal(G(path.join(roleDir, 'review', 'pr-7'), 'rev-parse', 'HEAD'), first);
+  assert.equal(main(['checkout', '7', first.slice(0, 7)], { env: process.env, cwd: roleDir, roleDir, team, ...capture() }), 2);
+  // and whatever git does, a clone that does not end at the head is refused, never reported clean
+  const lying = (cmd, args, opts) => (args.includes('rev-parse') ? { status: 0, stdout: `${second}\n` } : require('child_process').spawnSync(cmd, args, opts));
+  const l = capture();
+  assert.equal(main(['checkout', '7', first], { env: process.env, cwd: roleDir, roleDir, team, spawn: lying, ...l }), 1);
+  assert.match(l.lines.join('\n'), new RegExp(`refused: the clone is at ${second}, not ${first}`));
+});
+
 test('review-run: a fake bare repository planted in the clone cannot point its git outside review/', () => {
   const { roleDir, team, first } = setup();
   assert.equal(main(['checkout', '7', first], { env: process.env, cwd: roleDir, roleDir, team, ...capture() }), 0);
@@ -137,14 +155,14 @@ test('review-run: a fake bare repository planted in the clone cannot point its g
 test('review-run: refuses anything but its two forms; a missing clone or product and an unknown setup say how to fix them', () => {
   const { roleDir, team } = setup();
   const spawn = () => { throw new Error('must not run'); };
-  for (const argv of [[], ['test'], ['test', '0'], ['test', '7', 'x'], ['test', '../7'], ['checkout', '7'], ['checkout', '7', 'HEAD'], ['checkout', '7', 'abc1234', 'x'], ['checkout', '-7', 'abc1234'], ['install', '7'], ['--help']]) {
+  for (const argv of [[], ['test'], ['test', '0'], ['test', '7', 'x'], ['test', '../7'], ['checkout', '7'], ['checkout', '7', 'HEAD'], ['checkout', '7', 'abc1234', 'x'], ['checkout', '-7', 'abc1234'], ['checkout', '7', 'abc1234'], ['checkout', '7', 'a'.repeat(39)], ['install', '7'], ['--help']]) {
     assert.equal(main(argv, { env: {}, cwd: roleDir, roleDir, team, spawn, ...capture() }), 2, argv.join(' '));
   }
   const c = capture();
   assert.equal(main(['test', '7'], { env: {}, cwd: roleDir, roleDir, team, spawn, ...c }), 2);
   assert.match(c.lines.join('\n'), /no clone yet\. Run: review-run\.js checkout 7 <head sha>/);
   const u = capture();
-  assert.equal(main(['checkout', '7', 'abc1234'], { env: {}, cwd: path.join(os.tmpdir()), roleDir: fs.mkdtempSync(path.join(os.tmpdir(), 'rr-none-')), team: {}, spawn, ...u }), 2);
+  assert.equal(main(['checkout', '7', 'a'.repeat(40)], { env: {}, cwd: path.join(os.tmpdir()), roleDir: fs.mkdtempSync(path.join(os.tmpdir(), 'rr-none-')), team: {}, spawn, ...u }), 2);
   assert.match(u.lines.join('\n'), /product repository is not known/);
   // a repository with no test setup, after a real checkout
   const bare = setup('');

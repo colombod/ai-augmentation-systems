@@ -24,9 +24,11 @@ const { testCommandOf, FIX } = require('./lib/test-command.js');
 const ROLE_VARS = /^(DELIVERY_|BEADS_|BD_ACTOR$)/;
 // git variables that would point git at another repository or config than the clone's
 const GIT_REPO_VARS = /^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR|NAMESPACE|CONFIG|CONFIG_GLOBAL|CONFIG_SYSTEM|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+|CONFIG_PARAMETERS|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM)$/;
-const USAGE = 'usage: review-run.js checkout <pr number> <head sha> | review-run.js test <pr number>';
+const USAGE = 'usage: review-run.js checkout <pr number> <full head sha> | review-run.js test <pr number>';
 const PR = /^[1-9][0-9]{0,8}$/;
-const SHA = /^[0-9a-f]{7,64}$/;
+// the full head only: git resolves a ref name before an abbreviated object name, so a tag named
+// like a short sha would check out other code under the reviewed head
+const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 function cleanEnv(env) {
   const out = {};
@@ -91,10 +93,11 @@ function checkout(pr, head, { roleDir, team, env, spawn, out, err }) {
   let f = git([...pinned, 'fetch', '--quiet', 'origin', head]);
   if (f.status !== 0) f = git([...pinned, 'fetch', '--quiet', 'origin', `+refs/pull/${pr}/head:refs/remotes/origin/pr-${pr}`]);
   if (!step(`fetch of ${head}`, f)) return 1;
-  if (!step(`checkout of ${head}`, git([...pinned, 'checkout', '--quiet', '--force', '--detach', head]))) return 1;
+  if (!step(`checkout of ${head}`, git([...pinned, 'checkout', '--quiet', '--force', '--detach', `${head}^{commit}`]))) return 1;
   if (!step('clean', git([...pinned, 'clean', '-ffdxq']))) return 1;
-  const at = git([...pinned, 'rev-parse', 'HEAD']);
-  out(`review-run: review/pr-${pr} at ${String(at.stdout || '').trim()} (from ${url}), clean`);
+  const at = String(git([...pinned, 'rev-parse', 'HEAD']).stdout || '').trim();
+  if (at !== head) { err(`review-run: refused: the clone is at ${at || 'nothing'}, not ${head}.`); return 1; }
+  out(`review-run: review/pr-${pr} at ${at} (from ${url}), clean`);
   return 0;
 }
 
