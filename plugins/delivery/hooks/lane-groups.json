@@ -49,7 +49,7 @@
     { "first": "git", "sub": ["branch"], "flags_any": ["-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--show-current", "--contains", "--no-contains", "--merged", "--no-merged"], "no_positional": true, "value_flags": ["--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format"], "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "-D", "-d", "-m", "-M", "--delete", "--move", "-c", "-C", "--copy", "-f", "--force", "-u", "--set-upstream-to", "--unset-upstream", "--edit-description", "-t", "--track", "--no-track"] }
   ],
   "git-write-project": [
-    { "first": "git", "sub": ["add", "commit", "push", "pull", "fetch", "checkout", "switch", "restore", "stash", "merge", "cherry-pick", "reset"], "scope": "project", "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] },
+    { "first": "git", "sub": ["add", "rm", "mv", "commit", "push", "pull", "fetch", "checkout", "switch", "restore", "stash", "merge", "cherry-pick", "reset"], "scope": "project", "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] },
     { "first": "git", "sub": ["rebase"], "scope": "project", "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "-x"] }
   ],
   "git-write-product": [

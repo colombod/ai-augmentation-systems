@@ -51,6 +51,12 @@ test('classifySegment scopes git writes by directory', () => {
   assert.ok(!classifySegment('git commit -m x', GROUPS, ctx({ cwd: cwdProject })).includes('git-write-product'));
   assert.ok(classifySegment('git commit -m x', GROUPS, ctx({ cwd: cwdProduct })).includes('git-write-product'));
   assert.ok(classifySegment(`git -C ${cwdProduct} push`, GROUPS, ctx({ cwd: cwdProject })).includes('git-write-product'));
+  // a role that owns plan documents can remove and move them in git, not only add them (a moved story
+  // left a duplicate no role could remove, measured 2026-10-25)
+  for (const c of ['git rm .delivery/initiatives/x/stories/s.md', 'git mv a.md b.md']) {
+    assert.ok(classifySegment(c, GROUPS, ctx({ cwd: cwdProject })).includes('git-write-project'), c);
+    assert.ok(!classifySegment(c, GROUPS, ctx({ cwd: cwdProduct })).includes('git-write-project'), `${c} in the product repo`);
+  }
 });
 
 test('pathAllowed honours globs, exact files and tmp', () => {
