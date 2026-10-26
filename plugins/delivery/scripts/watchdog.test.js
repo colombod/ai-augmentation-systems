@@ -871,16 +871,25 @@ test('a wake never runs in a mode the team did not choose: invalid or unreadable
 // dlv-2et: a merged story waiting on evidence counted as its builder's stall and the builder was woken
 // every two hours until its daily wake budget ran out; and a wake's background reviewer was stopped
 // ten minutes after the turn ended, so no verdict was recorded
-test('a merged or deployed story is no stall of its builder; a stale unmerged one still is; a wake waits for its background tasks', () => {
+test('a merged or deployed story wakes the Delivery Manager, not its builder; verified or cut wakes the holder to close; a wake waits for its background tasks', () => {
   const t0 = '2026-10-26T10:00:00Z';
-  for (const [labels, wakes] of [[['state-merged'], 0], [['state-deployed'], 0], [[], 1]]) {
+  for (const [labels, who, prompt] of [
+    [['state-merged'], DM, /is merged .*deploy it/],
+    [['state-merged', 'state-deployed'], DM, /is deployed .*reality check/],
+    [['state-merged', 'state-verified'], 'builder-1', /is verified .*Close it now/],
+    [['state-merged', 'state-cut'], 'builder-1', /is cut .*Close it now/],
+    [[], 'builder-1', /Continue it now/],
+  ]) {
     const h = harness({ beads: { 'ex-s': { id: 'ex-s', status: 'in_progress', assignee: 'dev@pc/builder-1', labels, updated_at: iso(Date.parse(t0) - 9 * H) } } });
     session(h, 'builder-1', { seen: iso(Date.parse(t0) - 9 * H) });
     session(h, DM, { seen: iso(Date.parse(t0) - 9 * H) });
     const spawn = spawner();
     at(h, t0, ['run'], { spawn, bd: memStore(h) });
-    const toBuilder = spawn.list.filter((x) => x.role === 'builder-1');
-    assert.equal(toBuilder.length, wakes, labels.join(',') || 'unmerged');
-    if (wakes) assert.equal(toBuilder[0].bgWait, '0');
+    const woken = spawn.list.map((x) => x.role);
+    assert.deepEqual(woken, [who], labels.join(',') || 'unmerged');
+    assert.match(spawn.list[0].args.join(' '), prompt, labels.join(','));
+    assert.equal(spawn.list[0].bgWait, '0');
+    // the same quiet spell backs off like every stall: no second wake within the hour
+    if (who === DM) { at(h, iso(Date.parse(t0) + 30 * 60e3), ['run'], { spawn, bd: memStore(h) }); assert.equal(spawn.list.length, 1, `${labels} again`); }
   }
 });

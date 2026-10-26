@@ -537,7 +537,7 @@ test('start: a publish refused with HTTP 403 names the network policy and where 
 function recordingClaude() {
   const dir = mk('start-launch-rec-');
   const bin = path.join(dir, 'claude-rec');
-  fs.writeFileSync(bin, `#!/bin/sh\nf="${dir}/$DELIVERY_ROLE.json"\n"${process.execPath}" -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), role: process.env.DELIVERY_ROLE, parent: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_CODE_REMOTE_SESSION_ID || process.env.CLAUDECODE || null, args: process.argv.slice(2) }))' "$f" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(bin, `#!/bin/sh\nf="${dir}/$DELIVERY_ROLE.json"\n"${process.execPath}" -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), role: process.env.DELIVERY_ROLE, parent: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_CODE_REMOTE_SESSION_ID || process.env.CLAUDECODE || null, bgWait: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS || null, args: process.argv.slice(2) }))' "$f" "$@"\n`, { mode: 0o755 });
   return { bin, dir };
 }
 function waitFor(files, ms = 10000) {
@@ -559,6 +559,8 @@ test('--launch starts every role on this host in its role directory, in auto mod
     assert.equal(fs.realpathSync(call.cwd), fs.realpathSync(path.join(path.dirname(project), 'acme-team', i)), i);
     assert.equal(call.role, i);
     assert.equal(call.parent, null, `${i} inherited the launching session's identity`);
+    // a headless first turn waits for the background subagents it starts (claude stops them 10 min after the turn otherwise)
+    assert.equal(call.bgWait, '0', i);
     assert.deepEqual(call.args, ['-p', '/delivery:team join', '--permission-mode', 'auto', '--name', i]);
     assert.match(r.out, new RegExp(`${i}: started \\(pid \\d+\\), joining the team`));
   }

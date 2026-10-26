@@ -983,7 +983,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   - a bead in progress with no bead update and no activity of its holder's session (roster `last_seen`,
     transcript time) for more than `stall_hours` (a goal field, 2 by default, owner-set like the others;
     `goal.js ask stall_hours <n>`), unless the holder is inside a `watch.js until` wait within the
-    `--max` it declared;
+    `--max` it declared; a verified or cut story wakes its holder to close it;
+  - a story merged or deployed, waiting on its evidence rows, with no bead update for `stall_hours`:
+    it goes to the Delivery Manager (deploy it, dispatch its reality check, record its evidence), never
+    to its builder, who has nothing to continue;
   - a top-priority (P0) bead that can be taken now (in `bd ready`: open, not blocked, not an epic) and
     unclaimed for more than an hour;
   - a session stopped on a usage limit: "The team resumes at <reset + 5 min> (restart scheduled)" once the
@@ -1003,7 +1006,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
 - **The wake.** `watchdog.js wake [--dry-run]` wakes, for each due stall, its session: the holder of a
   stalled bead or of a bead stopped by the usage limit, else the Delivery Manager. One run carries every
   line for that session in one prompt. The command, in the session's role directory with
-  `DELIVERY_ROLE` and `DELIVERY_WAKE` set, always with `--permission-mode <mode>` first (team.json
+  `DELIVERY_ROLE`, `DELIVERY_WAKE` and `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` set (a headless run
+  otherwise stops the background subagents its turn started, such as the Delivery Manager's reviewer,
+  ten minutes after the turn ends; the wake's own limit still bounds it), always with
+  `--permission-mode <mode>` first (team.json
   `permission_mode`, which start.js records; for a team recorded before it, the mode the session
   started in; auto when neither says; nothing for `default`; an unreadable team.json or an invalid mode
   is no wake, alarm only): `claude --resume <id> -p "<prompt>"` when the session is not
