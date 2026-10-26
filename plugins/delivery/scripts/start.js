@@ -497,6 +497,12 @@ function scaffold(opts) {
   } else {
     say('  product repo: none given; a builder prepared in this run gets no product worktree (pass --product-repo <path|url>)');
   }
+  // the command the reviewer runs on each pull request (review-run.js): any language, said up front so
+  // a repository the detection cannot read is fixed once here, not found at the first review
+  if (productCheckout && fs.existsSync(path.join(productCheckout, '.git'))) {
+    const t = require('./lib/test-command.js').testCommandOf(productCheckout, team);
+    say(t.problem ? `  product tests: not known: ${t.problem}.\n    ${require('./lib/test-command.js').FIX}` : `  product tests: \`${t.command}\` (${t.source}); reviewers run it on each pull request`);
+  }
   // the GitHub repository the review records and the merge gate read (R-32): from the checkout's origin
   const github = productCheckout && fs.existsSync(path.join(productCheckout, '.git')) ? githubOf(productCheckout) : (productRepo && isUrl(productRepo) ? require('./lib/gh-pr.js').repoOf(productRepo) : null);
   if (github) {
