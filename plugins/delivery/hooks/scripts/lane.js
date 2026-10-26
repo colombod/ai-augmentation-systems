@@ -393,6 +393,10 @@ function ruleMatches(rule, t, ctx) {
       if (valueFlags.includes(args[k])) k++;
     }
   }
+  if (rule.merge_endpoint) {
+    const c = ghApiCall(t);
+    if (!c || c.bad || !MERGE_ENDPOINT.test(c.endpoint || '') || c.method !== 'PUT') return false;
+  }
   if (rule.flags_only) {
     const allowed = rule.flags_only;
     if (argv.slice(subLen).some((x) => x.startsWith('-') && !allowed.includes(x.split('=')[0]))) return false;
@@ -1000,6 +1004,54 @@ function defaultBranches(dir) {
   return out;
 }
 
+// One `gh api` call's endpoint, method and fields, or null when the segment is not `gh api`. Value
+// options are consumed; --input (a body the lane cannot read) and an unknown option make it `bad`.
+const GH_API_VALUE = ['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '-R', '--repo', '--hostname', '-q', '--jq', '-t', '--template', '--cache'];
+const GH_API_FLAG = ['--silent', '-i', '--include', '--verbose', '--paginate', '--slurp'];
+function ghApiCall(t) {
+  const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+  if (path.basename(words[0] || '') !== 'gh' || words[1] !== 'api') return null;
+  const out = { endpoint: null, method: null, fields: {}, bad: null, positionals: [] };
+  for (let i = 2; i < words.length; i++) {
+    const x = words[i];
+    const [f, inline] = x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
+    if (GH_API_VALUE.includes(f)) {
+      const val = inline !== undefined ? inline : words[++i];
+      if (val === undefined) { out.bad = `${f} has no value`; continue; }
+      if (f === '-X' || f === '--method') out.method = String(val).toUpperCase();
+      // the merge is checked against github.com's product repository; another host is not that one
+      if (f === '--hostname' && String(val).toLowerCase() !== 'github.com') out.bad = `${f} ${val}`;
+      if (['-f', '--raw-field', '-F', '--field'].includes(f)) {
+        const k = val.indexOf('=');
+        if (k <= 0) out.bad = `${f} ${val}`;
+        else if (Object.prototype.hasOwnProperty.call(out.fields, val.slice(0, k))) out.bad = `${val.slice(0, k)} given twice`;
+        else out.fields[val.slice(0, k)] = val.slice(k + 1);
+      }
+      continue;
+    }
+    if (GH_API_FLAG.includes(f)) continue;
+    if (x.startsWith('-')) { out.bad = f; continue; }
+    out.positionals.push(decodeEscapes(x));
+    if (out.endpoint === null) out.endpoint = decodeEscapes(x); else out.bad = x;
+  }
+  // gh sends a POST when fields are given without -X
+  if (!out.method) out.method = Object.keys(out.fields).length ? 'POST' : 'GET';
+  return out;
+}
+const MERGE_ENDPOINT = /^\/?repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pulls\/(\d+)\/merge$/;
+
+// percent-escapes decoded until stable (m%2565rge is m%65rge is merge), as a server may
+function decodeEscapes(x) {
+  let s = String(x);
+  for (let k = 0; k < 4; k++) {
+    let d;
+    try { d = decodeURIComponent(s); } catch (err) { d = s.replace(/%([0-9a-f]{2})/gi, (m, h) => String.fromCharCode(parseInt(h, 16))); }
+    if (d === s) break;
+    s = d;
+  }
+  return s;
+}
+
 function mergeAttempt(command, cwd) {
   const text = String(command == null ? '' : command);
   return splitCommand(text).some((seg) => {
@@ -1007,14 +1059,38 @@ function mergeAttempt(command, cwd) {
     const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
     const first = path.basename(words[0] || '');
     if (first === 'gh') {
+      // -R is gh's global option only before the subcommand; after it, a value option may take "-R"
+      // as its value (gh api -t -R <endpoint>), so it is left for the subcommand's own parsing
       const rest = [];
-      for (let i = 1; i < words.length; i++) {
-        if (words[i] === '-R' || words[i] === '--repo') { i++; continue; }
-        if (/^--repo=/.test(words[i])) continue;
-        rest.push(words[i]);
+      let i = 1;
+      for (; i < words.length && words[i].startsWith('-'); i++) {
+        if (words[i] === '-R' || words[i] === '--repo') i++;
       }
-      if (rest[0] === 'pr' && rest[1] === 'merge') return true;
-      if (rest[0] === 'api' && rest.some((a) => /\/merges?(?:$|[/?])/.test(a))) return true;
+      rest.push(...words.slice(i));
+      if (rest[0] === 'pr') {
+        // the subcommand: the first word after pr that is not -R and its value
+        let k = 1;
+        while (k < rest.length && (rest[k] === '-R' || rest[k] === '--repo' || /^--repo=/.test(rest[k]))) k += rest[k].startsWith('--repo=') ? 1 : 2;
+        if (rest[k] === 'merge') return true;
+      }
+      if (rest[0] === 'api') {
+        // judged on the endpoint only (decoded: GitHub reads pulls/478/m%65rge as the merge), so reads
+        // and the cloud's other ccr routes (review threads, ready for review) stay open. Auto-merge (the
+        // ccr route, GraphQL's mutations) merges later, outside the gate, like gh pr merge --auto.
+        const c = ghApiCall(['gh', ...rest]);
+        // every positional word: an option the parser does not know may take a value, and the endpoint
+        // is then the second word, not the first
+        // as the server reads the path: no query or fragment, repeated slashes collapsed, no trailing
+        // slash or dot segment
+        const eps = ((c && c.positionals) || []).map((x) => x.split(/[?#]/)[0].replace(/\/{2,}/g, '/').replace(/(?:\/\.)+$/, '').replace(/\/+$/, ''));
+        if (eps.some((ep) => /\/merges?(?:$|\/)/i.test(ep) || /\/pulls\/[^/]+\/(?:ccr\/)?auto[_-]?merge$/i.test(ep))) return true;
+        if (eps.some((ep) => /(?:^|\/)graphql$/i.test(ep))) {
+          const q = Object.values(c.fields).join(' ');
+          // a query from a file or stdin cannot be read, so it cannot be cleared
+          if (rest.some((a) => /^--input/.test(a)) || Object.values(c.fields).some((v) => String(v).startsWith('@'))) return true;
+          if (/mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest/i.test(q)) return true;
+        }
+      }
       return false;
     }
     if (first !== 'git') return false;
@@ -1240,4 +1316,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
