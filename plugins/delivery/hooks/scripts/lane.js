@@ -1059,13 +1059,20 @@ function mergeAttempt(command, cwd) {
     const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
     const first = path.basename(words[0] || '');
     if (first === 'gh') {
+      // -R is gh's global option only before the subcommand; after it, a value option may take "-R"
+      // as its value (gh api -t -R <endpoint>), so it is left for the subcommand's own parsing
       const rest = [];
-      for (let i = 1; i < words.length; i++) {
-        if (words[i] === '-R' || words[i] === '--repo') { i++; continue; }
-        if (/^--repo=/.test(words[i])) continue;
-        rest.push(words[i]);
+      let i = 1;
+      for (; i < words.length && words[i].startsWith('-'); i++) {
+        if (words[i] === '-R' || words[i] === '--repo') i++;
       }
-      if (rest[0] === 'pr' && rest[1] === 'merge') return true;
+      rest.push(...words.slice(i));
+      if (rest[0] === 'pr') {
+        // the subcommand: the first word after pr that is not -R and its value
+        let k = 1;
+        while (k < rest.length && (rest[k] === '-R' || rest[k] === '--repo' || /^--repo=/.test(rest[k]))) k += rest[k].startsWith('--repo=') ? 1 : 2;
+        if (rest[k] === 'merge') return true;
+      }
       if (rest[0] === 'api') {
         // judged on the endpoint only (decoded: GitHub reads pulls/478/m%65rge as the merge), so reads
         // and the cloud's other ccr routes (review threads, ready for review) stay open. Auto-merge (the
@@ -1073,9 +1080,11 @@ function mergeAttempt(command, cwd) {
         const c = ghApiCall(['gh', ...rest]);
         // every positional word: an option the parser does not know may take a value, and the endpoint
         // is then the second word, not the first
-        const eps = ((c && c.positionals) || []).map((x) => x.split('?')[0].replace(/\/+$/, ''));
-        if (eps.some((ep) => /\/merges?(?:$|\/)/i.test(ep) || /\/pulls\/[^/]+\/(?:ccr\/)?auto_?merge$/i.test(ep))) return true;
-        if (eps.some((ep) => /^\/?graphql$/i.test(ep))) {
+        // as the server reads the path: no query or fragment, repeated slashes collapsed, no trailing
+        // slash or dot segment
+        const eps = ((c && c.positionals) || []).map((x) => x.split(/[?#]/)[0].replace(/\/{2,}/g, '/').replace(/(?:\/\.)+$/, '').replace(/\/+$/, ''));
+        if (eps.some((ep) => /\/merges?(?:$|\/)/i.test(ep) || /\/pulls\/[^/]+\/(?:ccr\/)?auto[_-]?merge$/i.test(ep))) return true;
+        if (eps.some((ep) => /(?:^|\/)graphql$/i.test(ep))) {
           const q = Object.values(c.fields).join(' ');
           // a query from a file or stdin cannot be read, so it cannot be cleared
           if (rest.some((a) => /^--input/.test(a)) || Object.values(c.fields).some((v) => String(v).startsWith('@'))) return true;

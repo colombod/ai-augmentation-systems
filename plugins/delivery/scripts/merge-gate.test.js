@@ -215,6 +215,14 @@ test('R-32 through REST only: no other role reaches the merge through gh api in 
     "gh api graphql -f query='mutation{enablePullRequestAutoMerge(input:{pullRequestId:\"x\"}){clientMutationId}}'",
     "gh api graphql -F query=@mutation.graphql",
     `gh api -p corsair -X PUT repos/example/example/pulls/478/merge -f sha=${H1}`,
+    // the third review: a value option swallowing -R, a fragment, an absolute graphql URL, a double slash
+    `gh api -X PUT -t -R repos/example/example/pulls/478/merge -f sha=${H1}`,
+    `gh api -X PUT -q --repo repos/example/example/pulls/478/merge -f sha=${H1}`,
+    `gh api -X PUT repos/example/example/pulls/478/merge#x -f sha=${H1}`,
+    "gh api https://api.github.com/graphql -f query='mutation{mergePullRequest(input:{pullRequestId:\"x\"}){clientMutationId}}'",
+    'gh api -X PUT repos/example/example/pulls/478/ccr//auto_merge',
+    'gh api -X PUT repos/example/example/pulls/478/ccr/auto-merge',
+    `gh -R example/example pr merge 478 --squash`,
   ]) assert.match(h.bash('builder-1', c, { run: false }).deny || '', /merging is the Delivery Manager's/, c);
   // the second review: the auto-merge check refused a builder's reads and the cloud's other ccr routes
   for (const c of [
@@ -225,6 +233,7 @@ test('R-32 through REST only: no other role reaches the merge through gh api in 
     "gh api 'repos/example/example/issues?labels=automerge'",
     'gh api repos/example/example/contents/src/merge.js',
     "gh api graphql -f query='{ viewer { login } }'",
+    'gh pr view merge -R example/example',
   ]) assert.doesNotMatch(h.bash('builder-1', c, { run: false }).deny || '', /merging is the Delivery Manager's/, c);
   h.review('delivery-lead', 'request 478 --reviewer builder-2');
   h.pass('builder-2');
