@@ -13,9 +13,10 @@ const P = path.join(__dirname, '..', '..');
 // prs: { "<n>": gh pr view fields } for the fake gh (testing/fake-gh.js) on repo, which also becomes the
 // manifest's product_github; without prs gh is signed out
 // runs: CI runs for `gh run list` (with prs, or alone)
+// restOnly: gh refuses GraphQL (as in Claude Code's cloud sessions) and answers `gh api` from prs
 // clone: each role's project/ is its own copy of the project, as prepare-role's clone is (default: a link
 // to the shared root, which the lane refuses to write)
-function harness({ root = makeProject(), beads = {}, deps = [], prs = null, runs = null, repo = 'example/example', clone = false } = {}) {
+function harness({ root = makeProject(), beads = {}, deps = [], prs = null, runs = null, repo = 'example/example', clone = false, restOnly = false } = {}) {
   const tj = path.join(root, '.delivery', 'team', 'team.json');
   const team = JSON.parse(fs.readFileSync(tj, 'utf8'));
   if (!team.roles.some((r) => r.id === 'reality-checker')) team.roles.push({ id: 'reality-checker', brief: 'delivery/reality-checker', host: 'pc', model: 'sonnet' });
@@ -26,7 +27,7 @@ function harness({ root = makeProject(), beads = {}, deps = [], prs = null, runs
   for (const b of Object.values(beads)) issues[b.id] = { title: b.id, status: 'open', type: 'task', notes: '', priority: 1, description: '', assignee: '', updated_at: new Date().toISOString(), labels: [], metadata: {}, ...b };
   fs.writeFileSync(store, JSON.stringify({ issues, deps: deps.map((d) => ({ id: d.id, blocked_by: d.blockedBy })) }, null, 2));
   const ghStore = path.join(root, 'gh-store.json');
-  if (prs || runs) fs.writeFileSync(ghStore, JSON.stringify({ repo, prs: prs || {}, runs: runs || [] }, null, 2));
+  if (prs || runs) fs.writeFileSync(ghStore, JSON.stringify({ repo, prs: prs || {}, runs: runs || [], ...(restOnly ? { rest_only: true } : {}) }, null, 2));
   const rolesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'roles-'));
   const roleDir = (inst) => {
     const d = path.join(rolesDir, inst);

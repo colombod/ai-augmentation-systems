@@ -98,6 +98,18 @@ test('start: names the product\'s test command for any language (the reviewer ru
   }
 });
 
+test('start: the team\'s permission mode is kept across runs unless --permission-mode changes it', () => {
+  const base = mk('start-mode-');
+  const project = path.join(base, 'acme');
+  assert.equal(start(['--project', project, '--host', 'laptop']).status, 0);
+  assert.equal(manifestOf(project).team.permission_mode, 'auto');
+  assert.equal(start(['--project', project, '--host', 'laptop', '--permission-mode', 'acceptEdits']).status, 0);
+  assert.equal(manifestOf(project).team.permission_mode, 'acceptEdits');
+  const again = start(['--project', project, '--host', 'laptop']);
+  assert.equal(manifestOf(project).team.permission_mode, 'acceptEdits', 'a run without the flag keeps the recorded mode');
+  assert.ok(again.out.includes('--permission-mode acceptEdits'), again.out);
+});
+
 test('--dry-run prints the plan and writes nothing', () => {
   const base = mk('start-dry-');
   const project = path.join(base, 'acme');
@@ -121,6 +133,8 @@ test('minimal preset: a valid manifest, four prepared roles, BEADS_DIR, a builde
   assert.deepEqual(validateManifest(team, hosts), []);
   assert.deepEqual(expandInstances(team).map((i) => i.instance), ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder']);
   assert.equal(team.prefix, 'acme');
+  // the watchdog resumes each session in this mode (a resumed session does not keep its own)
+  assert.equal(team.permission_mode, 'acceptEdits');
   assert.ok(fs.existsSync(path.join(project, '.beads')));
   assert.match(r.out, /manifest: committed \([0-9a-f]+\)/);
   for (const i of ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder']) {
