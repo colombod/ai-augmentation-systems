@@ -104,6 +104,13 @@ function append(root, pr, row, writer) {
   }, { strict: true, waitMs: 2000 });
 }
 
+// Publish the writer's chain file for a pull request to the project repo's origin, so the gate on
+// another host reads the same rows. Returns the line to print when it did not publish, else ''.
+function publish(root, pr, writer, event, { env = process.env } = {}) {
+  const res = require('./publish-records.js').publish(root, [path.join(REL, String(pr), `${writerOf(writer)}.ndjson`)], `reviews: PR ${pr} ${event} (${writerOf(writer)})`, { env });
+  return res.ok ? '' : `review rows for PR ${pr} not published: ${res.reason}`;
+}
+
 function listPrs(root) {
   try { return fs.readdirSync(path.join(root, REL)).filter((f) => /^\d+$/.test(f)).sort((a, b) => a - b); } catch (err) { return []; }
 }
@@ -244,4 +251,4 @@ function stateOf(allRows, live, { botsCount = false, repo } = {}) {
   return view && ci.state === 'green' && String(view.mergeable || '').toUpperCase() === 'MERGEABLE' ? 'ready' : 'passed';
 }
 
-module.exports = { WRITER, writerOf, dirOf, norm, branchOwner, BRANCH, FULL_SHA, REL, PR, SHA, DEFAULT_SIZE, fileOf, read, append, listPrs, refsOf, storiesOf, authorsOfBeads, isAuthor, isBot, instanceOf, changedLines, scopeWarnings, ciOf, evaluate, lastRequest, stateOf, cmd, short };
+module.exports = { WRITER, writerOf, dirOf, norm, branchOwner, BRANCH, FULL_SHA, REL, PR, SHA, DEFAULT_SIZE, fileOf, read, append, publish, listPrs, refsOf, storiesOf, authorsOfBeads, isAuthor, isBot, instanceOf, changedLines, scopeWarnings, ciOf, evaluate, lastRequest, stateOf, cmd, short };
