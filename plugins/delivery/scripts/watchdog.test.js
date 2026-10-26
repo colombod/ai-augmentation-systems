@@ -1017,6 +1017,11 @@ test('plan: messages beside a held stall keep their own rules; message wakes do 
   p = plan(Array.from({ length: 48 }, (_, i) => ({ at: ago(20 * (i + 1)), keys: [`message:b1:x${i}`] })).concat(sixStalls));
   assert.equal(p.wakes.length, 0);
   assert.match(p.held.find((h) => h.lines.includes('Waiting: 1 message')).reason, /woken 48 times in a day/);
+  // the review's storm: an hour past the last stall wake, the stall still waits out its backoff (its
+  // second try is due at 2 h); a message wake a minute ago holds the next message by the message rules
+  p = plan([{ at: ago(130), keys: ['quiet:ex-s:1'] }, { at: ago(61), keys: ['quiet:ex-s:1'] }, { at: ago(1), keys: ['message:b1:0'] }]);
+  assert.equal(p.wakes.length, 0, JSON.stringify(p.wakes));
+  assert.match(p.held.find((h) => h.lines.includes('Waiting: 1 message')).reason, /messages wait 5 min/);
   // message wakes in the last hour do not hold the stall: one wake carries both, and hands the message over
   p = plan([{ at: ago(10), keys: ['message:b1:a'] }, { at: ago(40), keys: ['message:b1:b'] }]);
   assert.equal(p.wakes.length, 1);

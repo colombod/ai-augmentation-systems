@@ -431,7 +431,10 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
       const k = mine.filter((r) => (r.keys || []).includes(s.key) && t - ms(r.at) < 7 * 24 * 3600e3);
       return !k.length || t - ms(k[k.length - 1].at) >= WAKE_EVERY_MS * 2 ** (k.length - 1);
     });
-    if (!reason && !ok.length) reason = 'woken for these already; waiting longer before the next try';
+    // a wake that would carry only messages is not a stall wake: it goes by the message rules below
+    // (five minutes apart, 48 a day), or a stall still waiting out its backoff would let a message wake
+    // the role every minute through this path
+    if (!reason && !ok.some((s) => s.kind !== 'message')) reason = 'woken for these already; waiting longer before the next try';
     // A message waiting beside a held stall is still a handoff: a role that spent its stall wakes (or
     // was woken for the stall within the hour) gets its messages by the message rules, not left until
     // the stall count falls. Seen on a real team: the Delivery Manager's work waited hours behind its cap.
