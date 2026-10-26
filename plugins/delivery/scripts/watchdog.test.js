@@ -889,7 +889,14 @@ test('a merged or deployed story wakes the Delivery Manager, not its builder; ve
     assert.deepEqual(woken, [who], labels.join(',') || 'unmerged');
     assert.match(spawn.list[0].args.join(' '), prompt, labels.join(','));
     assert.equal(spawn.list[0].bgWait, '0');
-    // the same quiet spell backs off like every stall: no second wake within the hour
-    if (who === DM) { at(h, iso(Date.parse(t0) + 30 * 60e3), ['run'], { spawn, bd: memStore(h) }); assert.equal(spawn.list.length, 1, `${labels} again`); }
+    // the same quiet spell backs off like every stall (its key holds still): woken at 0 and 1 h, held at 2 h
+    if (who === DM) {
+      at(h, iso(Date.parse(t0) + 30 * 60e3), ['run'], { spawn, bd: memStore(h) });
+      assert.equal(spawn.list.length, 1, `${labels} within the hour`);
+      at(h, iso(Date.parse(t0) + H), ['run'], { spawn, bd: memStore(h) });
+      assert.equal(spawn.list.length, 2, `${labels} after an hour`);
+      at(h, iso(Date.parse(t0) + 2 * H), ['run'], { spawn, bd: memStore(h) });
+      assert.equal(spawn.list.length, 2, `${labels} backs off`);
+    }
   }
 });

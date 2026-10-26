@@ -241,8 +241,8 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   // A story merged or deployed waits on its evidence rows, which other roles record (the Delivery
   // Manager deploys, dispatches the reality check, records evidence): its builder has nothing to
   // continue, and waking it every two hours spent its whole daily wake budget (dlv-2et). Such a story
-  // goes to the Delivery Manager once per quiet spell, keyed on the bead alone so the builder's own
-  // activity cannot repeat it. Verified or cut stories stay with their holder: closing them is its job.
+  // goes to the Delivery Manager, keyed on the bead alone so the builder's own activity cannot renew
+  // it: the key holds still, so its retries back off (1 h, 2 h, 4 h) like every stall's. Verified or cut stories stay with their holder: closing them is its job.
   const waitingEvidence = (b) => ['merged', 'deployed'].includes(G.stateOf(b));
   for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && waitingEvidence(x))) {
     const last = Math.max(ms(b.updated_at), ms(b.created_at));
