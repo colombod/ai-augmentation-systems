@@ -169,3 +169,21 @@ test('Copilot: the single-host exemption counts every active host, cloud include
   const retiredBox = { project: 'x', prefix: 'x', bd_host: 'pc', roles: [role('chief-of-staff', 'pc'), role('builder', 'pc'), role('spike-researcher', 'box', { retired: true })] };
   assert.deepEqual(validateManifest(retiredBox, hosts), [], 'a retired role on another host does not make the team multi-host');
 });
+
+// the fields the watchdog and the reviewer read from team.json: a value they cannot use is refused at
+// setup, both ways (the valid forms pass)
+test('validateManifest: permission_mode, test_command and wake_fresh_above_tokens', () => {
+  const { team, hosts } = loadManifest(scratchProject());
+  const problems = (extra) => validateManifest({ ...team, ...extra }, hosts);
+  for (const ok of [{ permission_mode: 'auto' }, { permission_mode: 'default' }, { test_command: 'make ci' }, { wake_fresh_above_tokens: 0 }, { wake_fresh_above_tokens: 150000 }]) {
+    assert.deepEqual(problems(ok), [], JSON.stringify(ok));
+  }
+  for (const [bad, re] of [
+    [{ permission_mode: 'Auto' }, /"permission_mode" must be a Claude Code permission mode/],
+    [{ test_command: '' }, /"test_command" must be one line of shell/],
+    [{ test_command: 'a\nb' }, /"test_command" must be one line of shell/],
+    [{ wake_fresh_above_tokens: '0' }, /"wake_fresh_above_tokens" must be a whole number/],
+    [{ wake_fresh_above_tokens: 1.5 }, /"wake_fresh_above_tokens" must be a whole number/],
+    [{ wake_fresh_above_tokens: -1 }, /"wake_fresh_above_tokens" must be a whole number/],
+  ]) assert.ok(problems(bad).some((p) => re.test(p)), JSON.stringify(bad));
+});

@@ -1,5 +1,6 @@
 ---
 description: Renamed — confirming a role session is now /delivery:team join. This alias is kept for one version.
+disable-model-invocation: true
 argument-hint: ""
 ---
 

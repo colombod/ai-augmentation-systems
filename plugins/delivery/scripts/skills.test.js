@@ -72,7 +72,9 @@ test('aliases: each renamed or cut skill is a short pointer to where the work we
     const s = skills.find((k) => k.name === alias);
     assert.ok(s, `alias ${alias} kept for one version`);
     assert.ok(isAlias(s.text), `${alias} is marked Renamed or Removed`);
-    assert.ok(s.text.trim().split('\n').length <= 6, `${alias} is at most 6 lines`);
+    assert.ok(s.text.trim().split('\n').length <= 7, `${alias} is at most 7 lines`);
+    // an alias is for a person typing the old name: its description is kept out of every session's listing
+    assert.match(s.text, /^disable-model-invocation: true$/m, `${alias} is not listed for the model`);
     if (target) {
       assert.ok(s.text.includes(`/delivery:${target}`), `${alias} points to /delivery:${target}`);
       assert.ok(!isAlias(skills.find((k) => k.name === target).text), `${target} is a real skill`);
