@@ -238,7 +238,10 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       line: I.idleLine(idle).split('\n')[0], plain: `Nobody is working although work is ready (for ${span(idle.minutes)}); the Delivery Manager starts it first.`, detail: `ready work (${idle.ready.slice(0, 3).join(', ')}) and nothing in progress since ${idle.since || 'unknown'}`,
       prompt: `Nothing is in progress although ${idle.ready.length} item${idle.ready.length > 1 ? 's are' : ' is'} ready (${idle.ready.slice(0, 3).join(', ')}). Start the next one now: bd ready, then assign it to a builder.` });
   }
-  for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x))) {
+  // a story merged or deployed waits on its evidence rows, recorded by another role: its builder has
+  // nothing to continue, and waking it every two hours spent its whole daily wake budget (dlv-2et)
+  const shipped = (b) => (Array.isArray(b.labels) ? b.labels : []).some((l) => l === 'state-merged' || l === 'state-deployed');
+  for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && !shipped(x))) {
     const h = holderOf(b, list);
     if (h && limited.has(h.instance)) continue;
     // a holder inside a watch.js wait is waiting within the limit it declared
