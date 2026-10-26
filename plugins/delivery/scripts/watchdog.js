@@ -106,6 +106,33 @@ function pruneWakeLogs(root) {
   } catch (err) { /* no logs yet */ }
 }
 
+// The mode a wake runs in: team.json permission_mode (start.js records it); for a team recorded before
+// that field existed, the mode the session itself started in (the first permissionMode its transcript
+// records), so a wake never runs with more than the owner chose; auto, start.js's default, when neither
+// says. An unreadable team.json or a value claude would refuse is no wake at all, with the reason:
+// claude exits on an invalid mode, and the wake would be logged and its messages marked delivered.
+const MODES = ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan'];
+function teamOf(root) {
+  try { return { team: require('./lib/manifest.js').loadManifest(root).team }; } catch (err) { return { unreadable: String(err.message || err).split('\n')[0].slice(0, 120) }; }
+}
+function startedMode(file) {
+  if (!file) return null;
+  try {
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(256 * 1024);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    const m = /"permissionMode":"([A-Za-z]+)"/.exec(buf.slice(0, n).toString('utf8'));
+    return m && MODES.includes(m[1]) ? m[1] : null;
+  } catch (err) { return null; }
+}
+function wakeMode(t, s) {
+  if (t.unreadable) return { skip: `team.json cannot be read (${t.unreadable}), so the team's permission mode is not known; alarm only` };
+  const m = t.team.permission_mode;
+  if (m !== undefined) return MODES.includes(m) ? { mode: m } : { skip: `team.json permission_mode "${String(m).slice(0, 40)}" is not a Claude Code mode (${MODES.join(', ')}); alarm only` };
+  return { mode: startedMode(s && s.transcript) || 'auto' };
+}
+
 function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
@@ -114,9 +141,11 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const open = p.wakes.length ? (live !== undefined ? live : liveSessions(bin, env)) : null;
   const rows = WD.logRows(root);
+  const manifest = p.wakes.length ? teamOf(root) : null;
   for (const w of p.wakes) {
     const s = res.sessions.find((x) => x.instance === w.target) || null;
-    const c = WD.wakeCommand(s, w.prompt, open);
+    const wm = wakeMode(manifest, s);
+    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode);
     if (c.skip) {
       lines.push(`Not woken: ${w.target}: ${c.skip}. ${w.lines[0]}`);
       // one skip row an hour per session keeps the log short while a session is busy
