@@ -956,7 +956,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
 - **What can wake a stopped session (the probe, Claude Code 2.1.287).** Checked against `claude --help`
   and the Claude Code docs, with one `claude -p --model haiku` run in a scratch directory:
   - `claude --resume <session-id> -p "<prompt>"` continues that conversation non-interactively, under the
-    same id, with its model and permission mode; run in the role directory, the role's
+    same id, with its model, but not its permission mode: a session started in auto comes back in
+    default (checked on claude 2.1.310, and seen on a real team as a woken builder stopped at approval
+    prompts no one could answer), so every wake passes `--permission-mode`; run in the role directory, the role's
     `.claude/settings.local.json` (model, `DELIVERY_ROLE`, lane permissions) and the plugin's hooks load
     (the scratch run fired SessionStart; `--resume` with an unknown id exits 1, "No conversation found",
     without calling the API). The resume of a real role session was not exercised live. A `-p` prompt is
@@ -1001,7 +1003,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
 - **The wake.** `watchdog.js wake [--dry-run]` wakes, for each due stall, its session: the holder of a
   stalled bead or of a bead stopped by the usage limit, else the Delivery Manager. One run carries every
   line for that session in one prompt. The command, in the session's role directory with
-  `DELIVERY_ROLE` and `DELIVERY_WAKE` set: `claude --resume <id> -p "<prompt>"` when the session is not
+  `DELIVERY_ROLE` and `DELIVERY_WAKE` set, always with `--permission-mode <mode>` first (team.json
+  `permission_mode`, which start.js records; for a team recorded before it, the mode the session
+  started in; auto when neither says; nothing for `default`; an unreadable team.json or an invalid mode
+  is no wake, alarm only): `claude --resume <id> -p "<prompt>"` when the session is not
   open; with `--fork-session` when it is open and idle; `claude -c -p` when the roster has no session id;
   nothing when it is busy, when open sessions cannot be listed (`claude agents --json` failed: alarm
   only, never a fork), or when its role directory is not on this host.

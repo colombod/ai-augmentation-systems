@@ -520,7 +520,8 @@ function scaffold(opts) {
   // the team's permission mode, recorded in team.json: the watchdog resumes each session in it. A
   // resumed session does not keep the mode it was started in (`claude --resume -p` came back in
   // default mode and stopped at approval prompts no one could answer), so every wake passes it.
-  const permissionMode = modeFlag || (PERMISSION_MODES.includes(team.permission_mode) ? team.permission_mode : 'auto');
+  // (a recorded value is valid here: validateManifest refused the run otherwise)
+  const permissionMode = modeFlag || team.permission_mode || 'auto';
   if (team.permission_mode !== permissionMode) {
     say(`  permission mode: ${permissionMode}; ${w}record it as permission_mode in ${TEAM_REL} (the watchdog wakes each session in it)`);
     if (!dryRun) {
@@ -592,7 +593,7 @@ function scaffold(opts) {
     if (launched.code) return { code: launched.code, out };
     say('');
     say('The team is starting: each role on this machine runs its first turn in its own role directory and joins the team (/delivery:team join); /delivery:team shows when each is live.');
-    say(`  Talk to the Chief of Staff: cd ${path.join(teamDir, 'chief-of-staff')} && claude --continue`);
+    say(`  Talk to the Chief of Staff: cd ${path.join(teamDir, 'chief-of-staff')} && claude --continue${permissionMode && permissionMode !== 'default' ? ` --permission-mode ${permissionMode}` : ''}`);
     return { code: 0, out, teamDir, prepared, projectRoot };
   }
   say('');

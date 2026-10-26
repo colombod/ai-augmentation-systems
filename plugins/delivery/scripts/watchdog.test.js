@@ -839,3 +839,31 @@ test('a wake runs in the team\'s permission mode (team.json permission_mode; aut
     assert.deepEqual(spawn.list[0].args.slice(0, want.length + 1), [...want, '--resume'], String(mode));
   }
 });
+
+// the review of the fix: an invalid mode made claude exit while the wake was logged and its messages
+// marked delivered; a team recorded before the field would have been woken in auto, more than it chose
+test('a wake never runs in a mode the team did not choose: invalid or unreadable is no wake; an older team keeps its session\'s own mode', () => {
+  const t0 = '2026-10-25T18:00:00Z';
+  const IB = require('./lib/inbox.js');
+  const teamFile = (h) => path.join(h.root, '.delivery', 'team', 'team.json');
+  const prep = (edit, rows) => {
+    const h = harness({});
+    if (edit) fs.writeFileSync(teamFile(h), edit(fs.readFileSync(teamFile(h), 'utf8')));
+    session(h, COS, { seen: iso(Date.parse(t0) - 2 * H), rows });
+    IB.queue(h.root, { to: COS, from: DM, summary: 'x', message: 'y', at: t0 });
+    return h;
+  };
+  for (const [edit, why] of [[(t) => JSON.stringify({ ...JSON.parse(t), permission_mode: 'Auto' }), /permission_mode "Auto" is not a Claude Code mode/], [() => '{ not json', /team\.json cannot be read/]]) {
+    const h = prep(edit);
+    const spawn = spawner();
+    const out = at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 0, 'no wake');
+    assert.match(String(out && (out.out || out.stdout || out)), why);
+    assert.equal(IB.pending(h.root).length, 1, 'the message is kept for the next run');
+  }
+  // no permission_mode recorded: the mode the session started in, read from its transcript
+  const h = prep(null, [{ type: 'user', permissionMode: 'acceptEdits', message: { role: 'user', content: 'hi' } }]);
+  const spawn = spawner();
+  at(h, t0, ['run'], { spawn, bd: memStore(h) });
+  assert.deepEqual(spawn.list[0].args.slice(0, 3), ['--permission-mode', 'acceptEdits', '--resume']);
+});
