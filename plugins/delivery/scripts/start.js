@@ -210,7 +210,7 @@ function launchTeam({ projectRoot, prepared, host, permissionMode, env, dryRun, 
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
     const fd = fs.openSync(logPath, 'a');
     const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(2 * 3600e3), bin, ...args],
-      { cwd: roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: instance }), detached: true, stdio: ['ignore', fd, fd] });
+      { cwd: roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: instance, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' }), detached: true, stdio: ['ignore', fd, fd] });
     child.unref();
     fs.closeSync(fd);
     say(`    ${instance}: started (pid ${child.pid}), joining the team; log ${path.relative(projectRoot, logPath)}`);

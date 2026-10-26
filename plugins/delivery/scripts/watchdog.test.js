@@ -259,7 +259,7 @@ test('B1: no role, `any` lanes included, can run the wake, the job or a resume i
 // ---- the wake is bounded (B2) ----
 // the beads the harness wrote, read without a bd process per run (the long replays run every 15 min for days)
 const memStore = (h) => { const b = Object.values(h.db().issues).map((x) => ({ ...x, type: x.type })); return { list: () => b, ready: () => b.filter((x) => x.status === 'open'), show: (id) => b.find((x) => x.id === id) || null }; };
-const spawner = () => { const list = []; const fn = (bin, args, o) => { list.push({ args, role: o.env.DELIVERY_ROLE, wake: o.env.DELIVERY_WAKE }); return 999999999; }; fn.list = list; return fn; };
+const spawner = () => { const list = []; const fn = (bin, args, o) => { list.push({ args, role: o.env.DELIVERY_ROLE, wake: o.env.DELIVERY_WAKE, bgWait: o.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS }); return 999999999; }; fn.list = list; return fn; };
 const every15 = (from, hours) => Array.from({ length: hours * 4 + 1 }, (_, i) => iso(Date.parse(from) + i * 15 * 60e3));
 
 test('B2: staggered P0s wake the Delivery Manager once an hour at most, whatever the number of stalls', () => {
@@ -866,4 +866,37 @@ test('a wake never runs in a mode the team did not choose: invalid or unreadable
   const spawn = spawner();
   at(h, t0, ['run'], { spawn, bd: memStore(h) });
   assert.deepEqual(spawn.list[0].args.slice(0, 3), ['--permission-mode', 'acceptEdits', '--resume']);
+});
+
+// dlv-2et: a merged story waiting on evidence counted as its builder's stall and the builder was woken
+// every two hours until its daily wake budget ran out; and a wake's background reviewer was stopped
+// ten minutes after the turn ended, so no verdict was recorded
+test('a merged or deployed story wakes the Delivery Manager, not its builder; verified or cut wakes the holder to close; a wake waits for its background tasks', () => {
+  const t0 = '2026-10-26T10:00:00Z';
+  for (const [labels, who, prompt] of [
+    [['state-merged'], DM, /is merged .*deploy it/],
+    [['state-merged', 'state-deployed'], DM, /is deployed .*reality check/],
+    [['state-merged', 'state-verified'], 'builder-1', /is verified .*Close it now/],
+    [['state-merged', 'state-cut'], 'builder-1', /is cut .*Close it now/],
+    [[], 'builder-1', /Continue it now/],
+  ]) {
+    const h = harness({ beads: { 'ex-s': { id: 'ex-s', status: 'in_progress', assignee: 'dev@pc/builder-1', labels, updated_at: iso(Date.parse(t0) - 9 * H) } } });
+    session(h, 'builder-1', { seen: iso(Date.parse(t0) - 9 * H) });
+    session(h, DM, { seen: iso(Date.parse(t0) - 9 * H) });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    const woken = spawn.list.map((x) => x.role);
+    assert.deepEqual(woken, [who], labels.join(',') || 'unmerged');
+    assert.match(spawn.list[0].args.join(' '), prompt, labels.join(','));
+    assert.equal(spawn.list[0].bgWait, '0');
+    // the same quiet spell backs off like every stall (its key holds still): woken at 0 and 1 h, held at 2 h
+    if (who === DM) {
+      at(h, iso(Date.parse(t0) + 30 * 60e3), ['run'], { spawn, bd: memStore(h) });
+      assert.equal(spawn.list.length, 1, `${labels} within the hour`);
+      at(h, iso(Date.parse(t0) + H), ['run'], { spawn, bd: memStore(h) });
+      assert.equal(spawn.list.length, 2, `${labels} after an hour`);
+      at(h, iso(Date.parse(t0) + 2 * H), ['run'], { spawn, bd: memStore(h) });
+      assert.equal(spawn.list.length, 2, `${labels} backs off`);
+    }
+  }
 });

@@ -238,7 +238,24 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       line: I.idleLine(idle).split('\n')[0], plain: `Nobody is working although work is ready (for ${span(idle.minutes)}); the Delivery Manager starts it first.`, detail: `ready work (${idle.ready.slice(0, 3).join(', ')}) and nothing in progress since ${idle.since || 'unknown'}`,
       prompt: `Nothing is in progress although ${idle.ready.length} item${idle.ready.length > 1 ? 's are' : ' is'} ready (${idle.ready.slice(0, 3).join(', ')}). Start the next one now: bd ready, then assign it to a builder.` });
   }
-  for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x))) {
+  // A story merged or deployed waits on its evidence rows, which other roles record (the Delivery
+  // Manager deploys, dispatches the reality check, records evidence): its builder has nothing to
+  // continue, and waking it every two hours spent its whole daily wake budget (dlv-2et). Such a story
+  // goes to the Delivery Manager, keyed on the bead alone so the builder's own activity cannot renew
+  // it: the key holds still, so its retries back off (1 h, 2 h, 4 h) like every stall's. Verified or cut stories stay with their holder: closing them is its job.
+  const waitingEvidence = (b) => ['merged', 'deployed'].includes(G.stateOf(b));
+  for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && waitingEvidence(x))) {
+    const last = Math.max(ms(b.updated_at), ms(b.created_at));
+    const minutes = (t - last) / 60000;
+    if (!(minutes > stallHours * 60)) continue;
+    const st = G.stateOf(b);
+    out.push({ kind: 'quiet', key: `evidence:${b.id}:${Number.isFinite(last) ? new Date(last).toISOString() : 'never'}`, bead: b.id, target: dm, due: true,
+      line: `Waiting on evidence: ${b.id} is ${st} and nothing has moved for ${span(minutes)}.`,
+      plain: `A shipped item has waited ${span(minutes)} to be checked on the customer's app; the Delivery Manager moves it.`,
+      detail: `${st}; no bead update since ${Number.isFinite(last) ? new Date(last).toISOString() : 'unknown'}`,
+      prompt: `${b.id} is ${st} and has not moved for ${span(minutes)}. Take its next step now: ${st === 'merged' ? 'deploy it and record it (evidence.js state deployed)' : 'dispatch its reality check (reality-check.js plan) or record its evidence (evidence.js add)'}, or note on the bead what blocks it.` });
+  }
+  for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && !waitingEvidence(x))) {
     const h = holderOf(b, list);
     if (h && limited.has(h.instance)) continue;
     // a holder inside a watch.js wait is waiting within the limit it declared
@@ -251,7 +268,8 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       line: `Stalled: ${b.id} is in progress with ${who}, and nothing has moved for ${span(minutes)} (the limit is ${stallHours} h).`,
       plain: `A started item has not moved for ${span(minutes)}; its holder is asked to continue it.`,
       detail: `in progress with ${who}; no bead update or session activity since ${Number.isFinite(last) ? new Date(last).toISOString() : 'unknown'}`,
-      prompt: h ? `${b.id} has not moved for ${span(minutes)}. Continue it now (bd show ${b.id}), or note in the bead what blocks it and tell the Delivery Manager.` : `${b.id} is in progress with ${who}, whose session is not on this host's roster, and has not moved for ${span(minutes)}: release or reassign it.` });
+      prompt: h && ['verified', 'cut'].includes(G.stateOf(b)) ? `${b.id} is ${G.stateOf(b)} and has not moved for ${span(minutes)}. Close it now (bd close ${b.id}), or note in the bead what blocks the close.`
+        : h ? `${b.id} has not moved for ${span(minutes)}. Continue it now (bd show ${b.id}), or note in the bead what blocks it and tell the Delivery Manager.` : `${b.id} is in progress with ${who}, whose session is not on this host's roster, and has not moved for ${span(minutes)}: release or reassign it.` });
   }
   // a P0 counts when it can be taken now: ready (not blocked), not an epic, not in a stopped area
   const readyIds = new Set(ready.map((b) => b && b.id));

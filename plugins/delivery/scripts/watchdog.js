@@ -133,6 +133,12 @@ function wakeMode(t, s) {
   return { mode: startedMode(s && s.transcript) || 'auto' };
 }
 
+// A headless claude -p stops the background tasks its turn started 10 minutes after the turn ends
+// ("Background tasks still running 10m after the last turn ... stopping them"): the Delivery Manager's
+// reviewer subagent was killed mid-review and no verdict was recorded. A wake waits for them; the
+// wake's own limit (wake-run.js) still bounds the whole run.
+const HEADLESS_WAIT = { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
+
 function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
@@ -160,7 +166,7 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     // owner's open session, never in its place
     // each wake has its own id: a fork records its session under it (lib/roster.js sessionLocator)
     const wakeId = crypto.randomBytes(6).toString('hex');
-    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId }), logPath });
+    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, ...HEADLESS_WAIT }), logPath });
     WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
     // the messages it carries are handed over: the next run does not wake for them again
     for (const d of w.delivers || []) require('./lib/inbox.js').markDelivered(root, d.to, d.upTo);
