@@ -86,6 +86,21 @@ function resetIso(v) {
   return t < Date.parse('2020-01-01') || t > Date.parse('2100-01-01') ? null : new Date(t).toISOString();
 }
 
+// The context the session's last turn carried (input, cache read and cache written, from the usage
+// Claude Code records on each reply), or null when the tail shows none. Every resume reloads the whole
+// conversation, so this is what the next wake would carry too.
+function contextOf(rows) {
+  if (!Array.isArray(rows)) return null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const u = rows[i] && rows[i].type === 'assistant' && rows[i].message && rows[i].message.usage;
+    if (u && typeof u === 'object') {
+      const n = [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens].reduce((a, x) => a + (Number.isFinite(x) ? x : 0), 0);
+      if (n > 0) return n;
+    }
+  }
+  return null;
+}
+
 // { at, resetsAt, window, text } when the transcript's last word is a usage limit; null otherwise.
 function limitOf(rows) {
   if (!Array.isArray(rows)) return null;
@@ -162,15 +177,16 @@ function sessions(root, { team, rows = tailRows } = {}) {
       let limit = null;
       let waitUntil = -Infinity;
       const polls = [];
+      let context = null;
       for (const f of [t, ...forks].filter(Boolean)) {
         try { lastActive = Math.max(lastActive, fs.statSync(f).mtimeMs); } catch (err) { /* not on disk */ }
         const tail = rows(f);
         const l = limitOf(tail);
         if (l && (!limit || ms(l.at) > ms(limit.at))) limit = l;
         waitUntil = Math.max(waitUntil, waitingUntil(tail));
-        if (f === t) polls.push(...tightPolls(tail));
+        if (f === t) { polls.push(...tightPolls(tail)); context = contextOf(tail); }
       }
-      return { ...base, lastActive, transcript: t, forks, limit, waitUntil, polls };
+      return { ...base, lastActive, transcript: t, forks, limit, waitUntil, polls, context };
     } catch (err) { return { ...base, lastActive: ms(e && e.last_seen), transcript: null, limit: null, waitUntil: -Infinity, polls: [] }; }
   }).filter((s) => !s.retired);
 }
@@ -238,7 +254,24 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       line: I.idleLine(idle).split('\n')[0], plain: `Nobody is working although work is ready (for ${span(idle.minutes)}); the Delivery Manager starts it first.`, detail: `ready work (${idle.ready.slice(0, 3).join(', ')}) and nothing in progress since ${idle.since || 'unknown'}`,
       prompt: `Nothing is in progress although ${idle.ready.length} item${idle.ready.length > 1 ? 's are' : ' is'} ready (${idle.ready.slice(0, 3).join(', ')}). Start the next one now: bd ready, then assign it to a builder.` });
   }
-  for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x))) {
+  // A story merged or deployed waits on its evidence rows, which other roles record (the Delivery
+  // Manager deploys, dispatches the reality check, records evidence): its builder has nothing to
+  // continue, and waking it every two hours spent its whole daily wake budget (dlv-2et). Such a story
+  // goes to the Delivery Manager, keyed on the bead alone so the builder's own activity cannot renew
+  // it: the key holds still, so its retries back off (1 h, 2 h, 4 h) like every stall's. Verified or cut stories stay with their holder: closing them is its job.
+  const waitingEvidence = (b) => ['merged', 'deployed'].includes(G.stateOf(b));
+  for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && waitingEvidence(x))) {
+    const last = Math.max(ms(b.updated_at), ms(b.created_at));
+    const minutes = (t - last) / 60000;
+    if (!(minutes > stallHours * 60)) continue;
+    const st = G.stateOf(b);
+    out.push({ kind: 'quiet', key: `evidence:${b.id}:${Number.isFinite(last) ? new Date(last).toISOString() : 'never'}`, bead: b.id, target: dm, due: true,
+      line: `Waiting on evidence: ${b.id} is ${st} and nothing has moved for ${span(minutes)}.`,
+      plain: `A shipped item has waited ${span(minutes)} to be checked on the customer's app; the Delivery Manager moves it.`,
+      detail: `${st}; no bead update since ${Number.isFinite(last) ? new Date(last).toISOString() : 'unknown'}`,
+      prompt: `${b.id} is ${st} and has not moved for ${span(minutes)}. Take its next step now: ${st === 'merged' ? 'deploy it and record it (evidence.js state deployed)' : 'dispatch its reality check (reality-check.js plan) or record its evidence (evidence.js add)'}, or note on the bead what blocks it.` });
+  }
+  for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && !waitingEvidence(x))) {
     const h = holderOf(b, list);
     if (h && limited.has(h.instance)) continue;
     // a holder inside a watch.js wait is waiting within the limit it declared
@@ -251,7 +284,8 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       line: `Stalled: ${b.id} is in progress with ${who}, and nothing has moved for ${span(minutes)} (the limit is ${stallHours} h).`,
       plain: `A started item has not moved for ${span(minutes)}; its holder is asked to continue it.`,
       detail: `in progress with ${who}; no bead update or session activity since ${Number.isFinite(last) ? new Date(last).toISOString() : 'unknown'}`,
-      prompt: h ? `${b.id} has not moved for ${span(minutes)}. Continue it now (bd show ${b.id}), or note in the bead what blocks it and tell the Delivery Manager.` : `${b.id} is in progress with ${who}, whose session is not on this host's roster, and has not moved for ${span(minutes)}: release or reassign it.` });
+      prompt: h && ['verified', 'cut'].includes(G.stateOf(b)) ? `${b.id} is ${G.stateOf(b)} and has not moved for ${span(minutes)}. Close it now (bd close ${b.id}), or note in the bead what blocks the close.`
+        : h ? `${b.id} has not moved for ${span(minutes)}. Continue it now (bd show ${b.id}), or note in the bead what blocks it and tell the Delivery Manager.` : `${b.id} is in progress with ${who}, whose session is not on this host's roster, and has not moved for ${span(minutes)}: release or reassign it.` });
   }
   // a P0 counts when it can be taken now: ready (not blocked), not an epic, not in a stopped area
   const readyIds = new Set(ready.map((b) => b && b.id));
@@ -385,17 +419,46 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
       wakes.push({ target: w.target, keys: w.stalls.map((s) => s.key), lines, delivers: w.stalls.map((s) => ({ to: s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${w.stalls.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
       continue;
     }
-    if (last && t - ms(last.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(last.at))}; one wake an hour`;
-    else if (last && alive(last.pid)) reason = 'its last wake is still running';
-    else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
+    // the stall gates count stall wakes only: a role woken often for messages is still told about its
+    // stall (each message wake would otherwise push "one wake an hour" forward and fill the day's six)
+    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !String(k).startsWith('message:')));
+    const lastStall = stallRows[stallRows.length - 1];
+    if (last && alive(last.pid)) reason = 'its last wake is still running';
+    else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
+    else if (stallRows.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
     // each stall waits 1, 2, 4 ... hours after each wake that carried it
     const ok = reason ? [] : w.stalls.filter((s) => {
       const k = mine.filter((r) => (r.keys || []).includes(s.key) && t - ms(r.at) < 7 * 24 * 3600e3);
       return !k.length || t - ms(k[k.length - 1].at) >= WAKE_EVERY_MS * 2 ** (k.length - 1);
     });
-    if (!reason && !ok.length) reason = 'woken for these already; waiting longer before the next try';
+    // a wake that would carry only messages is not a stall wake: it goes by the message rules below
+    // (five minutes apart, 48 a day), or a stall still waiting out its backoff would let a message wake
+    // the role every minute through this path
+    if (!reason && !ok.some((s) => s.kind !== 'message')) reason = 'woken for these already; waiting longer before the next try';
+    // A message waiting beside a held stall is still a handoff: a role that spent its stall wakes (or
+    // was woken for the stall within the hour) gets its messages by the message rules, not left until
+    // the stall count falls. Seen on a real team: the Delivery Manager's work waited hours behind its cap.
+    const msgs = w.stalls.filter((s) => s.kind === 'message');
+    if (reason && msgs.length) {
+      let mReason = null;
+      if (last && alive(last.pid)) mReason = 'its last wake is still running; the message waits for it';
+      else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) mReason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
+      else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) mReason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
+      if (!mReason) {
+        wakes.push({ target: w.target, keys: msgs.map((s) => s.key), lines: msgs.map((s) => s.line), delivers: msgs.map((s) => ({ to: s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${msgs.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
+        const rest = w.stalls.filter((s) => s.kind !== 'message');
+        if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
+        continue;
+      }
+      // both held: each line says its own cause
+      const rest = w.stalls.filter((s) => s.kind !== 'message');
+      held.push({ target: w.target, lines: msgs.map((s) => s.line), reason: mReason });
+      if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
+      continue;
+    }
     if (reason) { held.push({ target: w.target, lines, reason }); continue; }
-    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), prompt: `Watchdog (a host job, not the owner): ${ok.map((s) => s.prompt).join(' ')} Reply in one line with what you started.` });
+    // the messages a stall wake carries are handed over too, so the next run does not send them again
+    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), delivers: ok.filter((s) => s.kind === 'message').map((s) => ({ to: s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${ok.map((s) => s.prompt).join(' ')} Reply in one line with what you started.` });
   }
   return { wakes, waiting, held };
 }
@@ -405,10 +468,27 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
 // conversation when no id is known. live: claude agents --json rows (null when unknown). { mode, args } or { skip }
 // mode: the team's permission_mode (team.json); a resumed session does not keep the mode it was
 // started in, so every wake names it (default needs no flag)
-function wakeCommand(s, prompt, live, mode = 'auto') {
+// freshAbove: a session not open whose last turn carried more context than this is woken in a fresh
+// session in its role directory instead of resumed (0: never). A resume reloads the whole
+// conversation, and on a real team each wake piled onto it until a turn carried 236k tokens; the role
+// brief and the team's records (beads, story files, review rows) are what a role works from, so a
+// fresh session loses no state, only the chat.
+const FRESH_ABOVE = 120000;
+function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE } = {}) {
   const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
   const r = wakeArgs(s, prompt, live);
+  if (r.mode === 'resume' && freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove) {
+    // named like every role session (start.js --name), so peers reach it by name (team rule 13)
+    return { mode: 'fresh', args: [...m, '--name', s.instance, '-p', `${freshPreamble(s)} ${prompt}`] };
+  }
   return r.args ? { ...r, args: [...m, ...r.args] } : r;
+}
+
+function freshPreamble(s) {
+  // the Chief of Staff's Stop guard checks unrecorded operator input per session: a fresh session
+  // would not be held for input left in the old one, so it is told to look
+  const operator = s.role === 'chief-of-staff' ? ' Check first for operator input still unrecorded (operator.js pending) and record it.' : '';
+  return `You are ${s.instance}, starting a fresh session: your earlier conversation (${Math.round(s.context / 1000)}k tokens) is not loaded, so each turn stays light. Your brief and the team's records are your memory: start with your own in-progress beads (bd list --assignee "$BEADS_ACTOR" --status in_progress) and their notes, and the files they name.${operator}`;
 }
 
 function wakeArgs(s, prompt, live) {
@@ -423,4 +503,4 @@ function wakeArgs(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

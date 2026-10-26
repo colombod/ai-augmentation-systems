@@ -17,3 +17,18 @@ test('run-tests: finds the suite CI ran (scripts/**, hooks/scripts), itself incl
   assert.ok(rel.every((f) => f.endsWith('.test.js')));
   assert.ok(rel.length > 50);
 });
+
+// A day of suite runs left 245,000 fixture directories in /tmp and filled the disk: the runner gives
+// the suite a temporary directory of its own and removes it, whatever the run's result.
+test('run-tests: the suite runs in a temporary directory of its own, removed afterwards', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { spawnSync } = require('child_process');
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-outer-'));
+  try {
+    // a pattern no test has: every file loads, no test body runs (so this test does not run itself)
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js'), '--test-name-pattern=^no test has this name$'], { env: { ...process.env, TMPDIR: outer }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr.slice(-500));
+    assert.deepEqual(fs.readdirSync(outer).filter((f) => f.startsWith('delivery-tests-')), [], 'its directory is gone');
+  } finally { fs.rmSync(outer, { recursive: true, force: true }); }
+});

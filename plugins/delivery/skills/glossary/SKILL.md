@@ -1,5 +1,6 @@
 ---
 description: Removed — the glossary is no longer a separate skill. Every pipeline skill keeps .delivery/glossary.md through the Language section of the plugin's references/conventions.md. This alias is kept for one version.
+disable-model-invocation: true
 argument-hint: "[term-optional]"
 ---
 

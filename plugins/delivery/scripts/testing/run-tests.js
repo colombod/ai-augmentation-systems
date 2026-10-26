@@ -36,6 +36,16 @@ module.exports = { cleanEnv, testFiles };
 
 if (require.main === module) {
   const root = path.join(__dirname, '..', '..');
-  const r = spawnSync(process.execPath, ['--test', ...process.argv.slice(2), ...testFiles(root)], { env: cleanEnv(process.env), stdio: 'inherit' });
-  process.exit(r.status === null ? 1 : r.status);
+  // the tests make their fixtures with mkdtemp and leave them: thousands of directories with git
+  // repositories in them each run, which filled a 39 GB disk over a day of runs. The suite gets a
+  // temporary directory of its own, removed when it ends.
+  const os = require('os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'delivery-tests-'));
+  let r;
+  try {
+    r = spawnSync(process.execPath, ['--test', ...process.argv.slice(2), ...testFiles(root)], { env: { ...cleanEnv(process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp }, stdio: 'inherit' });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  process.exit(r && r.status !== null ? r.status : 1);
 }
