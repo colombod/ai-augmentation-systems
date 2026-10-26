@@ -37,7 +37,7 @@ function claudeConfig({ installed = true, enabled = true, version = '99.0.0' } =
 function start(args, { path: binDir = bin(), config = claudeConfig(), cwd, env: extra = {} } = {}) {
   const env = {
     ...extra,
-    PATH: `${binDir}${path.delimiter}/bin`, HOME: os.tmpdir(), CLAUDE_CONFIG_DIR: config, BD_FAKE_STORE: path.join(mk('start-bd-'), 'store.json'),
+    PATH: `${binDir}${path.delimiter}/bin`, HOME: os.tmpdir(), CLAUDE_CONFIG_DIR: config, BD_FAKE_STORE: extra.BD_FAKE_STORE || path.join(mk('start-bd-'), 'store.json'),
     GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0',
     GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.test', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.test',
   };
@@ -587,4 +587,171 @@ test('a project repo start.js creates starts on main, whatever the machine\'s gi
   const r = start(['--project', project, '--host', 'laptop']);
   assert.equal(r.status, 0, r.out);
   assert.equal(cp.execFileSync(GIT, ['symbolic-ref', '--short', 'HEAD'], { cwd: project, encoding: 'utf8' }).trim(), 'main');
+});
+
+// ---- --import-beads: a product's existing backlog comes into the project once ----
+
+// The worked example: prefix vault, 3 issues (one closed, one depending on another).
+const VAULT_ISSUES = [
+  { id: 'vault-a1', title: 'Cut the first release', status: 'closed', issue_type: 'task' },
+  { id: 'vault-b2', title: 'Write the changelog', status: 'open', issue_type: 'task', dependencies: [{ issue_id: 'vault-b2', depends_on_id: 'vault-a1', type: 'blocks' }] },
+  { id: 'vault-c3', title: 'Plan the next quarter', status: 'in_progress', issue_type: 'task' },
+];
+function exportFile(rows = VAULT_ISSUES, name = 'vault-export.jsonl') {
+  const f = path.join(mk('start-export-'), name);
+  fs.writeFileSync(f, rows.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join('\n') + '\n');
+  return f;
+}
+const storeIn = () => path.join(mk('start-bd-'), 'store.json');
+const issuesIn = (store) => (fs.existsSync(store) ? Object.values(readJson(store).issues) : []);
+const importRun = (root, file, store, extra = [], opts = {}) => start(['--project', root, '--host', 'laptop', '--prefix', 'vault', '--import-beads', file, ...extra], { ...opts, env: { BD_FAKE_STORE: store, ...(opts.env || {}) } });
+
+test('import 1: a 3-issue export lands with the same ids, titles, statuses and dependencies', () => {
+  const root = productRepo();
+  const store = storeIn();
+  const r = importRun(root, exportFile(), store);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /imported 3 issues/);
+  const s = readJson(store);
+  assert.deepEqual(Object.values(s.issues).map((x) => [x.id, x.title, x.status]).sort(), VAULT_ISSUES.map((x) => [x.id, x.title, x.status]).sort());
+  assert.deepEqual(s.deps, [{ id: 'vault-b2', blocked_by: 'vault-a1' }]);
+});
+
+test('import 2: the same import again adds nothing and keeps an edit made in between', () => {
+  const root = productRepo();
+  const store = storeIn();
+  const file = exportFile();
+  assert.equal(importRun(root, file, store).status, 0);
+  const s = readJson(store);
+  s.issues['vault-b2'].title = 'Write the changelog (edited)';
+  fs.writeFileSync(store, JSON.stringify(s));
+  const r = importRun(root, file, store);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /0 new, 3 already present/);
+  assert.doesNotMatch(r.out, /imported 3 issues/);
+  assert.equal(issuesIn(store).length, 3);
+  assert.equal(readJson(store).issues['vault-b2'].title, 'Write the changelog (edited)');
+});
+
+test('import 3: a wrong prefix, a missing file and a line that is not JSON are refused; nothing changes', () => {
+  const root = productRepo();
+  const store = storeIn();
+  assert.equal(importRun(root, exportFile(), store).status, 0);
+  const before = JSON.stringify(readJson(store));
+  const bad = [
+    [exportFile([...VAULT_ISSUES, { id: 'dlv-abc', title: 'Foreign', status: 'open' }]), /dlv-abc.*"dlv".*"vault"/],
+    [path.join(os.tmpdir(), 'no-such-export.jsonl'), /no-such-export\.jsonl cannot be read \(no such file\)/],
+    [exportFile([JSON.stringify(VAULT_ISSUES[0]), 'this is not json']), /line 2 of .* is not JSON/],
+  ];
+  for (const [file, words] of bad) {
+    const r = importRun(root, file, store);
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /import refused/);
+    assert.match(r.out, words);
+    assert.equal(JSON.stringify(readJson(store)), before);
+  }
+});
+
+test('import 3: a refused import into a new project writes nothing at all, and mixed prefixes are refused', () => {
+  const root = productRepo();
+  const store = storeIn();
+  const r = importRun(root, exportFile([VAULT_ISSUES[0], { id: 'dlv-abc', title: 'x' }, { id: 'zz-1', title: 'y' }]), store);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /\(2 lines do not match\)/);
+  assert.equal(fs.existsSync(path.join(root, '.beads')), false);
+  assert.equal(fs.existsSync(path.join(root, '.delivery')), false);
+  assert.equal(fs.existsSync(store), false);
+});
+
+test('import 4: a second machine starting from a fresh clone finds the same 3 issues', () => {
+  const { root, bare } = projectWithOrigin();
+  const store = storeIn();
+  const r = importRun(root, exportFile(), store);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /beads: issues published to the project repo/);
+  cp.execFileSync(GIT, ['push', '-q', 'origin', 'HEAD:main'], { cwd: root });
+  const clone = path.join(mk('start-clone-'), 'vault-planning');
+  cp.execFileSync(GIT, ['clone', '-q', '-b', 'main', bare, clone]);
+  fs.rmSync(path.join(clone, '.beads', 'fake-config.json'), { force: true }); // the database is never in git
+  const store2 = storeIn();
+  const r2 = start(['--project', clone, '--host', 'laptop'], { env: { BD_FAKE_STORE: store2 } });
+  assert.equal(r2.status, 0, r2.out);
+  assert.match(r2.out, /database fetched from the project repo/);
+  assert.deepEqual(issuesIn(store2).map((x) => x.id).sort(), ['vault-a1', 'vault-b2', 'vault-c3']);
+  assert.match(start(['--check', '--project', clone], { env: { BD_FAKE_STORE: store2 } }).out, /\[pass\] beads issues: 3 issues in /);
+});
+
+test('import 5: --check shows the issue count; 0 on a new project; no row without .beads', () => {
+  const root = productRepo();
+  const store = storeIn();
+  assert.equal(start(['--project', root, '--host', 'laptop', '--prefix', 'vault'], { env: { BD_FAKE_STORE: store } }).status, 0);
+  assert.match(start(['--check', '--project', root], { env: { BD_FAKE_STORE: store } }).out, /\[pass\] beads issues: 0 issues in .*\.beads/);
+  assert.equal(importRun(root, exportFile(), store).status, 0);
+  assert.match(start(['--check', '--project', root], { env: { BD_FAKE_STORE: store } }).out, /\[pass\] beads issues: 3 issues in .*\.beads/);
+  assert.doesNotMatch(start(['--check', '--project', productRepo()]).out, /beads issues/);
+});
+
+test('import 6: --dry-run says what it would import and changes nothing', () => {
+  const snapshot = (root) => JSON.stringify([
+    cp.execFileSync('find', [root, '-not', '-path', '*/.git/*'], { encoding: 'utf8' }),
+    cp.execFileSync(GIT, ['log', '--oneline'], { cwd: root, encoding: 'utf8' }),
+    cp.execFileSync(GIT, ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }),
+  ]);
+  const root = productRepo();
+  const store = storeIn();
+  const before = snapshot(root);
+  const r = importRun(root, exportFile(), store, ['--dry-run']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /would import 3 issues/);
+  assert.equal(snapshot(root), before);
+  assert.equal(fs.existsSync(store), false);
+  // a refusal under --dry-run is the same refusal
+  const refused = importRun(root, exportFile([{ id: 'dlv-abc', title: 'x' }]), store, ['--dry-run']);
+  assert.equal(refused.status, 1, refused.out);
+  assert.match(refused.out, /dlv-abc.*"dlv".*"vault"/);
+  assert.equal(snapshot(root), before);
+  // on an existing database it counts what is new and what is there
+  assert.equal(importRun(root, exportFile(), store).status, 0);
+  const again = importRun(root, exportFile(), store, ['--dry-run']);
+  assert.match(again.out, /would import 0 new, 3 already present/);
+});
+
+test('import: an empty export imports 0 issues and succeeds; an issue the database already had is kept beside the new ones', () => {
+  const root = productRepo();
+  const store = storeIn();
+  const empty = importRun(root, exportFile([]), store);
+  assert.equal(empty.status, 0, empty.out);
+  assert.match(empty.out, /imported 0 issues/);
+  const s = fs.existsSync(store) ? readJson(store) : { issues: {}, deps: [] };
+  s.issues['vault-own'] = { id: 'vault-own', title: 'Already here', status: 'open', type: 'task', labels: [], metadata: {}, notes: '', priority: 2, description: '', assignee: '' };
+  fs.writeFileSync(store, JSON.stringify(s));
+  const r = importRun(root, exportFile(), store);
+  assert.match(r.out, /imported 3 issues/);
+  assert.deepEqual(issuesIn(store).map((x) => x.id).sort(), ['vault-a1', 'vault-b2', 'vault-c3', 'vault-own']);
+});
+
+test('import: a publish refused with HTTP 403 keeps the import locally and prints the existing 403 message', () => {
+  const { root } = projectWithOrigin();
+  const store = storeIn();
+  const r = importRun(root, exportFile(), store, [], { env: { BD_FAKE_PUSH: '403' } });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /imported 3 issues/);
+  assert.match(r.out, /beads: publish refused \(HTTP 403\)/);
+  assert.equal(issuesIn(store).length, 3);
+});
+
+test('import: without the beads tool on PATH the import is refused before anything is written', () => {
+  const root = productRepo();
+  const r = start(['--project', root, '--host', 'laptop', '--prefix', 'vault', '--import-beads', exportFile()], { path: bin({ bd: false }) });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /import refused: bd is not on PATH/);
+  assert.equal(fs.existsSync(path.join(root, '.delivery')), false);
+});
+
+test('import: the product repo\'s own beads message names the flag', () => {
+  const root = productRepo();
+  const product = productRepo();
+  fs.mkdirSync(path.join(product, '.beads'));
+  const r = start(['--project', root, '--host', 'laptop', '--product-repo', product]);
+  assert.match(r.out, /not imported and nothing waits on it.*--import-beads <file>/);
 });
