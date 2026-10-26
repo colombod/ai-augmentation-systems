@@ -784,6 +784,7 @@ test('a send to a role that is not running is kept for it; a delivered send is n
   const IB = require('./lib/inbox.js');
   const failed = [{ type: 'text', text: JSON.stringify({ success: false, message: "No agent named 'chief-of-staff' is reachable.\nUse ListAgents to see everyone you can message." }) }];
   const as = (fn) => withEnv({ DELIVERY_ROLE: 'builder-1' }, fn);
+  session(h, COS, { seen: new Date().toISOString() });
   const r = as(() => RC.check({ tool_name: 'SendMessage', cwd: h.roleDir('builder-1'), tool_input: { to: 'chief-of-staff', summary: 'dlv-1 blocked', message: 'the story is not on master' }, tool_response: failed }));
   assert.match(r.context, /^chief-of-staff is not running, so the message is kept for it: the watchdog wakes chief-of-staff with it/);
   const p = IB.pending(h.root);
@@ -794,6 +795,44 @@ test('a send to a role that is not running is kept for it; a delivered send is n
   const sent = as(() => RC.check({ tool_name: 'SendMessage', cwd: h.roleDir('builder-1'), tool_input: { to: 'delivery-lead', message: 'x' }, tool_response: [{ type: 'text', text: JSON.stringify({ success: true }) }] }));
   assert.equal(sent, null);
   assert.equal(IB.pending(h.root).length, 1, 'a delivered send is not kept');
+});
+
+// dlv-efp: the Delivery Manager and the builder sent "open the PR" to "steward", a duty in team.json and
+// no session's name; it was kept under that name and the watchdog reported it unwoken at every run for
+// over an hour. A name no role answers to is now refused at send, "steward" goes to the host's steward,
+// and a role never started is kept with the sender told nobody can wake it.
+test('dlv-2ex: a send to no role is refused with the roles there are; "steward" reaches the host\'s steward', () => {
+  const h = harness({});
+  const RC = require('../hooks/scripts/route-check.js');
+  const IB = require('./lib/inbox.js');
+  const failed = (to) => [{ type: 'text', text: JSON.stringify({ success: false, message: `No agent named '${to}' is reachable.` }) }];
+  const send = (to) => withEnv({ DELIVERY_ROLE: DM }, () => RC.check({ tool_name: 'SendMessage', cwd: h.roleDir(DM), tool_input: { to, message: 'open the PR' }, tool_response: failed(to) }));
+  const nobody = send('stewart');
+  assert.match(nobody.context, /^stewart is not a role on this team, so the message was not kept/);
+  assert.match(nobody.context, /Send it to one of: chief-of-staff, .*builder-1, builder-2/);
+  assert.equal(IB.pending(h.root).length, 0, 'nothing kept for a name no session has');
+  const never = send('steward');
+  assert.match(never.context, /^builder-1 \(this host's steward\) has never been started on this team/);
+  assert.deepEqual(IB.pending(h.root).map((p) => p.to), ['builder-1']);
+  session(h, 'builder-1', { seen: new Date().toISOString() });
+  assert.match(send('steward').context, /^builder-1 \(this host's steward\) is not running, so the message is kept/);
+  session(h, DM, { seen: new Date().toISOString() });
+  assert.match(send('delivery-manager').context, /^delivery-lead is not running/, 'the role alias still resolves');
+});
+
+test('dlv-2ex: the watchdog wakes the steward for a message kept under "steward", and nobody for a name no role has', () => {
+  const t0 = '2026-10-26T18:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, 'builder-1', { seen: iso(Date.parse(t0) - 2 * H) });
+  IB.queue(h.root, { to: 'steward', from: DM, message: 'open the PR', at: t0 });
+  IB.queue(h.root, { to: 'stewart', from: DM, message: 'lost', at: t0 });
+  const spawn = spawner();
+  const res = at(h, t0, ['run'], { spawn, bd: memStore(h) });
+  assert.deepEqual(spawn.list.map((x) => x.role), ['builder-1'], res.out);
+  assert.match(spawn.list[0].args.join(' '), /open the PR/);
+  assert.doesNotMatch(res.out, /stewart/, 'a name no role has is not reported at every run');
+  assert.deepEqual(IB.pending(h.root).map((p) => p.to), ['stewart'], 'the steward\'s message is marked delivered under the name it was kept by');
 });
 
 test('a waiting message wakes its target once, with the message; a new one waits five minutes between wakes', () => {

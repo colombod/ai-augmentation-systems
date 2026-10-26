@@ -55,4 +55,21 @@ function unreachableTarget(response) {
   return m ? m[1] : null;
 }
 
-module.exports = { REL, queue, pending, markDelivered, delivered, unreachableTarget };
+// Who a message sent to `name` is for. A role session once sent to "steward" (a duty some roles have,
+// team.json `steward: true`, not a session name) and to a misspelt role: the message was kept under that
+// name, the watchdog found no session for it at every run, and nobody ever read it.
+// -> { to, via } for a role instance on the team ("steward" is this host's steward role), or
+//    { unknown: true, names } when no instance on the team answers to it
+function resolveTarget(team, name, host) {
+  const M = require('./manifest.js');
+  const active = M.expandInstances(team || {}).filter((i) => !(i.role && i.role.retired));
+  const names = active.map((i) => i.instance);
+  const want = M.canonicalRoleId(String(name || '').trim());
+  if (want === 'steward') {
+    const s = active.find((i) => i.role && i.role.steward && (!host || i.role.host === host));
+    return s ? { to: s.instance, via: 'steward' } : { unknown: true, names };
+  }
+  return names.includes(want) ? { to: want, via: null } : { unknown: true, names };
+}
+
+module.exports = { REL, queue, pending, markDelivered, delivered, unreachableTarget, resolveTarget };
