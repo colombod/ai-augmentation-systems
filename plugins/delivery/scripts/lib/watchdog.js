@@ -428,8 +428,25 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
       return !k.length || t - ms(k[k.length - 1].at) >= WAKE_EVERY_MS * 2 ** (k.length - 1);
     });
     if (!reason && !ok.length) reason = 'woken for these already; waiting longer before the next try';
+    // A message waiting beside a held stall is still a handoff: a role that spent its stall wakes (or
+    // was woken for the stall within the hour) gets its messages by the message rules, not left until
+    // the stall count falls. Seen on a real team: the Delivery Manager's work waited hours behind its cap.
+    const msgs = w.stalls.filter((s) => s.kind === 'message');
+    if (reason && msgs.length) {
+      let mReason = null;
+      if (last && alive(last.pid)) mReason = 'its last wake is still running; the message waits for it';
+      else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) mReason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
+      else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) mReason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
+      if (!mReason) {
+        wakes.push({ target: w.target, keys: msgs.map((s) => s.key), lines: msgs.map((s) => s.line), delivers: msgs.map((s) => ({ to: s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${msgs.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
+        const rest = w.stalls.filter((s) => s.kind !== 'message');
+        if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
+        continue;
+      }
+    }
     if (reason) { held.push({ target: w.target, lines, reason }); continue; }
-    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), prompt: `Watchdog (a host job, not the owner): ${ok.map((s) => s.prompt).join(' ')} Reply in one line with what you started.` });
+    // the messages a stall wake carries are handed over too, so the next run does not send them again
+    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), delivers: ok.filter((s) => s.kind === 'message').map((s) => ({ to: s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${ok.map((s) => s.prompt).join(' ')} Reply in one line with what you started.` });
   }
   return { wakes, waiting, held };
 }

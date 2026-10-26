@@ -901,6 +901,41 @@ test('a merged or deployed story wakes the Delivery Manager, not its builder; ve
   }
 });
 
+// On a real team the Delivery Manager had spent its six stall wakes for the day, and a message for it
+// waited for hours behind that cap; and a wake carrying a stall and a message never marked the
+// message delivered, so the next run sent it again.
+test('a message reaches a role that spent its stall wakes, once; a wake that carries a stall and a message hands the message over', () => {
+  const t0 = '2026-10-26T15:00:00Z';
+  const IB = require('./lib/inbox.js');
+  const stale = { 'ex-s': { id: 'ex-s', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(Date.parse(t0) - 9 * H) } };
+  // at the daily cap: six wakes in the last day
+  {
+    const h = harness({ beads: stale });
+    session(h, 'builder-1', { seen: iso(Date.parse(t0) - 9 * H) });
+    for (let i = 1; i <= 6; i++) WD.log(h.root, { type: 'wake', at: iso(Date.parse(t0) - i * 2 * H), keys: [`k${i}`], instance: 'builder-1', pid: 999999998 });
+    IB.queue(h.root, { to: 'builder-1', from: DM, summary: 'PR 75', message: 'merge main into your branch', at: t0 });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1, 'the message goes through');
+    assert.match(spawn.list[0].args.join(' '), /merge main into your branch/);
+    assert.doesNotMatch(spawn.list[0].args.join(' '), /ex-s has not moved/, 'the held stall does not ride along');
+    assert.equal(IB.pending(h.root).length, 0, 'delivered');
+    at(h, iso(Date.parse(t0) + 10 * 60e3), ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1, 'not sent again; the stall stays held by the cap');
+  }
+  // no cap: one wake carries both, and the message is handed over
+  {
+    const h = harness({ beads: stale });
+    session(h, 'builder-1', { seen: iso(Date.parse(t0) - 9 * H) });
+    IB.queue(h.root, { to: 'builder-1', from: DM, summary: 'PR 75', message: 'merge main into your branch', at: t0 });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1);
+    assert.match(spawn.list[0].args.join(' '), /merge main into your branch.*|ex-s has not moved/);
+    assert.equal(IB.pending(h.root).length, 0, 'the message a stall wake carried is delivered');
+  }
+});
+
 // Every resume reloads the whole conversation: on a real team the Delivery Manager's turns carried
 // 236k tokens after a day of wakes. Above the limit a wake starts a fresh session in the role directory.
 test('a wake starts a fresh session when the last turn carried more than the limit; light, disabled or open sessions resume or fork', () => {
