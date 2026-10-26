@@ -1011,7 +1011,7 @@ const GH_API_FLAG = ['--silent', '-i', '--include', '--verbose', '--paginate', '
 function ghApiCall(t) {
   const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
   if (path.basename(words[0] || '') !== 'gh' || words[1] !== 'api') return null;
-  const out = { endpoint: null, method: null, fields: {}, bad: null };
+  const out = { endpoint: null, method: null, fields: {}, bad: null, positionals: [] };
   for (let i = 2; i < words.length; i++) {
     const x = words[i];
     const [f, inline] = x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
@@ -1031,6 +1031,7 @@ function ghApiCall(t) {
     }
     if (GH_API_FLAG.includes(f)) continue;
     if (x.startsWith('-')) { out.bad = f; continue; }
+    out.positionals.push(decodeEscapes(x));
     if (out.endpoint === null) out.endpoint = decodeEscapes(x); else out.bad = x;
   }
   // gh sends a POST when fields are given without -X
@@ -1066,11 +1067,20 @@ function mergeAttempt(command, cwd) {
       }
       if (rest[0] === 'pr' && rest[1] === 'merge') return true;
       if (rest[0] === 'api') {
-        // GitHub decodes the path (pulls/478/m%65rge is the merge); auto-merge (the cloud's ccr route,
-        // GraphQL's enablePullRequestAutoMerge) merges later, outside the gate, like gh pr merge --auto
-        const plain = rest.map(decodeEscapes);
-        if (plain.some((a) => /\/merges?(?:$|[/?])|auto_?merge|\/ccr\//i.test(a))) return true;
-        if (plain.some((a) => /mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest/i.test(a))) return true;
+        // judged on the endpoint only (decoded: GitHub reads pulls/478/m%65rge as the merge), so reads
+        // and the cloud's other ccr routes (review threads, ready for review) stay open. Auto-merge (the
+        // ccr route, GraphQL's mutations) merges later, outside the gate, like gh pr merge --auto.
+        const c = ghApiCall(['gh', ...rest]);
+        // every positional word: an option the parser does not know may take a value, and the endpoint
+        // is then the second word, not the first
+        const eps = ((c && c.positionals) || []).map((x) => x.split('?')[0].replace(/\/+$/, ''));
+        if (eps.some((ep) => /\/merges?(?:$|\/)/i.test(ep) || /\/pulls\/[^/]+\/(?:ccr\/)?auto_?merge$/i.test(ep))) return true;
+        if (eps.some((ep) => /^\/?graphql$/i.test(ep))) {
+          const q = Object.values(c.fields).join(' ');
+          // a query from a file or stdin cannot be read, so it cannot be cleared
+          if (rest.some((a) => /^--input/.test(a)) || Object.values(c.fields).some((v) => String(v).startsWith('@'))) return true;
+          if (/mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest/i.test(q)) return true;
+        }
       }
       return false;
     }
