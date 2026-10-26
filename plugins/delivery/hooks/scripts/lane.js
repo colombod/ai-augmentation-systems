@@ -397,6 +397,7 @@ function ruleMatches(rule, t, ctx) {
     const c = ghApiCall(t);
     if (!c || c.bad || !MERGE_ENDPOINT.test(c.endpoint || '') || c.method !== 'PUT') return false;
   }
+  if (rule.pr_open_endpoint && !prOpenCall(ghApiCall(t))) return false;
   if (rule.flags_only) {
     const allowed = rule.flags_only;
     if (argv.slice(subLen).some((x) => x.startsWith('-') && !allowed.includes(x.split('=')[0]))) return false;
@@ -1042,6 +1043,16 @@ function ghApiCall(t) {
   if (!out.method) out.method = Object.keys(out.fields).length ? 'POST' : 'GET';
   return out;
 }
+// Opening a pull request through REST where `gh pr create` (GraphQL) is refused: POST repos/<o>/<r>/pulls
+// with inline title, body, head, base (and draft) fields only. A field read from a file (@path) cannot be checked.
+const PR_OPEN_ENDPOINT = /^\/?repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls$/;
+const PR_OPEN_FIELDS = ['title', 'body', 'head', 'base', 'draft', 'maintainer_can_modify'];
+function prOpenCall(c) {
+  if (!c || c.bad || c.method !== 'POST' || c.positionals.length !== 1 || !PR_OPEN_ENDPOINT.test(c.endpoint || '')) return false;
+  const keys = Object.keys(c.fields);
+  return ['title', 'head', 'base'].every((k) => keys.includes(k))
+    && keys.every((k) => PR_OPEN_FIELDS.includes(k) && !String(c.fields[k]).startsWith('@'));
+}
 const MERGE_ENDPOINT = /^\/?repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pulls\/(\d+)\/merge$/;
 
 // percent-escapes decoded until stable (m%2565rge is m%65rge is merge), as a server may
@@ -1320,4 +1331,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

@@ -61,7 +61,8 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watch.js", "sub": ["gh", "until"] }
   ],
   "gh-write": [
-    { "first": "gh", "sub": ["pr create", "pr edit", "pr comment", "pr ready", "pr review", "issue comment", "release create", "workflow run"] }
+    { "first": "gh", "sub": ["pr create", "pr edit", "pr comment", "pr ready", "pr review", "issue comment", "release create", "workflow run"] },
+    { "first": "gh", "sub": ["api"], "pr_open_endpoint": true, "native_allow": false }
   ],
   "gh-merge": [
     { "first": "gh", "sub": ["pr merge"] },
