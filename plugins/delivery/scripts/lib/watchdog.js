@@ -86,6 +86,21 @@ function resetIso(v) {
   return t < Date.parse('2020-01-01') || t > Date.parse('2100-01-01') ? null : new Date(t).toISOString();
 }
 
+// The context the session's last turn carried (input, cache read and cache written, from the usage
+// Claude Code records on each reply), or null when the tail shows none. Every resume reloads the whole
+// conversation, so this is what the next wake would carry too.
+function contextOf(rows) {
+  if (!Array.isArray(rows)) return null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const u = rows[i] && rows[i].type === 'assistant' && rows[i].message && rows[i].message.usage;
+    if (u && typeof u === 'object') {
+      const n = [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens].reduce((a, x) => a + (Number.isFinite(x) ? x : 0), 0);
+      if (n > 0) return n;
+    }
+  }
+  return null;
+}
+
 // { at, resetsAt, window, text } when the transcript's last word is a usage limit; null otherwise.
 function limitOf(rows) {
   if (!Array.isArray(rows)) return null;
@@ -162,15 +177,16 @@ function sessions(root, { team, rows = tailRows } = {}) {
       let limit = null;
       let waitUntil = -Infinity;
       const polls = [];
+      let context = null;
       for (const f of [t, ...forks].filter(Boolean)) {
         try { lastActive = Math.max(lastActive, fs.statSync(f).mtimeMs); } catch (err) { /* not on disk */ }
         const tail = rows(f);
         const l = limitOf(tail);
         if (l && (!limit || ms(l.at) > ms(limit.at))) limit = l;
         waitUntil = Math.max(waitUntil, waitingUntil(tail));
-        if (f === t) polls.push(...tightPolls(tail));
+        if (f === t) { polls.push(...tightPolls(tail)); context = contextOf(tail); }
       }
-      return { ...base, lastActive, transcript: t, forks, limit, waitUntil, polls };
+      return { ...base, lastActive, transcript: t, forks, limit, waitUntil, polls, context };
     } catch (err) { return { ...base, lastActive: ms(e && e.last_seen), transcript: null, limit: null, waitUntil: -Infinity, polls: [] }; }
   }).filter((s) => !s.retired);
 }
@@ -423,10 +439,23 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
 // conversation when no id is known. live: claude agents --json rows (null when unknown). { mode, args } or { skip }
 // mode: the team's permission_mode (team.json); a resumed session does not keep the mode it was
 // started in, so every wake names it (default needs no flag)
-function wakeCommand(s, prompt, live, mode = 'auto') {
+// freshAbove: a session not open whose last turn carried more context than this is woken in a fresh
+// session in its role directory instead of resumed (0: never). A resume reloads the whole
+// conversation, and on a real team each wake piled onto it until a turn carried 236k tokens; the role
+// brief and the team's records (beads, story files, review rows) are what a role works from, so a
+// fresh session loses no state, only the chat.
+const FRESH_ABOVE = 120000;
+function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE } = {}) {
   const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
   const r = wakeArgs(s, prompt, live);
+  if (r.mode === 'resume' && freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove) {
+    return { mode: 'fresh', args: [...m, '-p', `${freshPreamble(s)} ${prompt}`] };
+  }
   return r.args ? { ...r, args: [...m, ...r.args] } : r;
+}
+
+function freshPreamble(s) {
+  return `You are ${s.instance}, starting a fresh session: your earlier conversation (${Math.round(s.context / 1000)}k tokens) is not loaded, so each turn stays light. Your brief and the team's records are your memory: start with your in-progress beads (bd list --status in_progress) and their notes, and the files they name.`;
 }
 
 function wakeArgs(s, prompt, live) {
@@ -441,4 +470,4 @@ function wakeArgs(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

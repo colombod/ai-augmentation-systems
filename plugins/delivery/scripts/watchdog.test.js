@@ -900,3 +900,35 @@ test('a merged or deployed story wakes the Delivery Manager, not its builder; ve
     }
   }
 });
+
+// Every resume reloads the whole conversation: on a real team the Delivery Manager's turns carried
+// 236k tokens after a day of wakes. Above the limit a wake starts a fresh session in the role directory.
+test('a wake starts a fresh session when the last turn carried more than the limit; light, disabled or open sessions resume or fork', () => {
+  const t0 = '2026-10-26T18:00:00Z';
+  const used = (n) => [{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 2, cache_read_input_tokens: n - 1002, cache_creation_input_tokens: 1000 } } }];
+  assert.equal(WD.contextOf(used(236000)), 236000);
+  assert.equal(WD.contextOf([{ type: 'user', message: { content: 'x' } }]), null);
+  const IB = require('./lib/inbox.js');
+  const run = ({ tokens, limit, agents = [] }) => {
+    const h = harness({});
+    if (limit !== undefined) {
+      const f = path.join(h.root, '.delivery', 'team', 'team.json');
+      fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), wake_fresh_above_tokens: limit }, null, 2));
+    }
+    session(h, COS, { seen: iso(Date.parse(t0) - 2 * H), rows: used(tokens) });
+    IB.queue(h.root, { to: COS, from: DM, summary: 'x', message: 'merge the story branch', at: t0 });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h), live: agents });
+    return spawn.list[0];
+  };
+  const heavy = run({ tokens: 236000 });
+  assert.equal(heavy.wake, 'fresh');
+  assert.deepEqual(heavy.args.slice(0, 3), ['--permission-mode', 'auto', '-p']);
+  assert.ok(!heavy.args.includes('--resume'), 'a fresh session, not a resume');
+  assert.match(heavy.args[3], /starting a fresh session: your earlier conversation \(236k tokens\) is not loaded.*bd list --status in_progress.*merge the story branch/);
+  assert.equal(run({ tokens: 50000 }).wake, 'resume');
+  assert.equal(run({ tokens: 236000, limit: 0 }).wake, 'resume', '0 turns it off');
+  assert.equal(run({ tokens: 236000, limit: 300000 }).wake, 'resume', 'the owner\'s limit');
+  // an open, idle session is forked as before: a fresh session would replace it on the roster
+  assert.equal(run({ tokens: 236000, agents: [{ sessionId: `sess-${COS}`, status: 'idle' }] }).wake, 'fork');
+});

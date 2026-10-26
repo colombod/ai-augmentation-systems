@@ -126,6 +126,12 @@ function startedMode(file) {
     return m && MODES.includes(m[1]) ? m[1] : null;
   } catch (err) { return null; }
 }
+// team.json wake_fresh_above_tokens: the context above which a wake starts a fresh session (0: never)
+function freshAboveOf(t) {
+  const v = t && t.team ? t.team.wake_fresh_above_tokens : undefined;
+  return Number.isInteger(v) && v >= 0 ? v : WD.FRESH_ABOVE;
+}
+
 function wakeMode(t, s) {
   if (t.unreadable) return { skip: `team.json cannot be read (${t.unreadable}), so the team's permission mode is not known; alarm only` };
   const m = t.team.permission_mode;
@@ -151,7 +157,7 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
   for (const w of p.wakes) {
     const s = res.sessions.find((x) => x.instance === w.target) || null;
     const wm = wakeMode(manifest, s);
-    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode);
+    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode, { freshAbove: freshAboveOf(manifest) });
     if (c.skip) {
       lines.push(`Not woken: ${w.target}: ${c.skip}. ${w.lines[0]}`);
       // one skip row an hour per session keeps the log short while a session is busy
