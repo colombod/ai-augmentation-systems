@@ -77,12 +77,28 @@ function viewPrRest(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
   }
   const rollup = [];
   if (sha) {
-    const runs = ghApi(`${base}/commits/${sha}/check-runs?per_page=100`, o);
-    if (runs.unavailable) return runs;
-    for (const c of (runs.json && runs.json.check_runs) || []) rollup.push({ __typename: 'CheckRun', name: c.name, status: UP(c.status), conclusion: UP(c.conclusion) });
-    const st = ghApi(`${base}/commits/${sha}/status`, o);
+    // every page: a failing check past the first page must not read as green (fails closed when the
+    // pages do not add up to the total GitHub reports)
+    let total = null;
+    let seen = 0;
+    for (let page = 1; page <= 30; page++) {
+      const runs = ghApi(`${base}/commits/${sha}/check-runs?per_page=100&page=${page}`, o);
+      if (runs.unavailable) return runs;
+      const list = (runs.json && runs.json.check_runs) || [];
+      total = runs.json && Number.isFinite(runs.json.total_count) ? runs.json.total_count : total;
+      for (const c of list) rollup.push({ __typename: 'CheckRun', name: c.name, status: UP(c.status), conclusion: UP(c.conclusion) });
+      seen += list.length;
+      if (list.length < 100 || (total !== null && seen >= total)) break;
+    }
+    if (total !== null && seen < total) return { unavailable: `only ${seen} of ${total} check runs could be read` };
+    const st = ghApi(`${base}/commits/${sha}/status?per_page=100`, o);
     if (st.unavailable) return st;
-    for (const c of (st.json && st.json.statuses) || []) rollup.push({ __typename: 'StatusContext', context: c.context, state: UP(c.state) });
+    const statuses = (st.json && st.json.statuses) || [];
+    for (const c of statuses) rollup.push({ __typename: 'StatusContext', context: c.context, state: UP(c.state) });
+    // the combined state covers statuses past the page read; a failure there is red whatever was listed
+    const combined = UP(st.json && st.json.state);
+    const stTotal = st.json && Number.isFinite(st.json.total_count) ? st.json.total_count : statuses.length;
+    if (stTotal > statuses.length && combined !== 'SUCCESS') rollup.push({ __typename: 'StatusContext', context: `combined status (${stTotal} statuses)`, state: combined || 'PENDING' });
   }
   return {
     number: pull.number,

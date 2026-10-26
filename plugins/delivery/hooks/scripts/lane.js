@@ -1019,18 +1019,37 @@ function ghApiCall(t) {
       const val = inline !== undefined ? inline : words[++i];
       if (val === undefined) { out.bad = `${f} has no value`; continue; }
       if (f === '-X' || f === '--method') out.method = String(val).toUpperCase();
-      if (['-f', '--raw-field', '-F', '--field'].includes(f)) { const k = val.indexOf('='); if (k > 0) out.fields[val.slice(0, k)] = val.slice(k + 1); else out.bad = `${f} ${val}`; }
+      // the merge is checked against github.com's product repository; another host is not that one
+      if (f === '--hostname' && String(val).toLowerCase() !== 'github.com') out.bad = `${f} ${val}`;
+      if (['-f', '--raw-field', '-F', '--field'].includes(f)) {
+        const k = val.indexOf('=');
+        if (k <= 0) out.bad = `${f} ${val}`;
+        else if (Object.prototype.hasOwnProperty.call(out.fields, val.slice(0, k))) out.bad = `${val.slice(0, k)} given twice`;
+        else out.fields[val.slice(0, k)] = val.slice(k + 1);
+      }
       continue;
     }
     if (GH_API_FLAG.includes(f)) continue;
     if (x.startsWith('-')) { out.bad = f; continue; }
-    if (out.endpoint === null) out.endpoint = x; else out.bad = x;
+    if (out.endpoint === null) out.endpoint = decodeEscapes(x); else out.bad = x;
   }
   // gh sends a POST when fields are given without -X
   if (!out.method) out.method = Object.keys(out.fields).length ? 'POST' : 'GET';
   return out;
 }
 const MERGE_ENDPOINT = /^\/?repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pulls\/(\d+)\/merge$/;
+
+// percent-escapes decoded until stable (m%2565rge is m%65rge is merge), as a server may
+function decodeEscapes(x) {
+  let s = String(x);
+  for (let k = 0; k < 4; k++) {
+    let d;
+    try { d = decodeURIComponent(s); } catch (err) { d = s.replace(/%([0-9a-f]{2})/gi, (m, h) => String.fromCharCode(parseInt(h, 16))); }
+    if (d === s) break;
+    s = d;
+  }
+  return s;
+}
 
 function mergeAttempt(command, cwd) {
   const text = String(command == null ? '' : command);
@@ -1046,7 +1065,13 @@ function mergeAttempt(command, cwd) {
         rest.push(words[i]);
       }
       if (rest[0] === 'pr' && rest[1] === 'merge') return true;
-      if (rest[0] === 'api' && rest.some((a) => /\/merges?(?:$|[/?])/.test(a))) return true;
+      if (rest[0] === 'api') {
+        // GitHub decodes the path (pulls/478/m%65rge is the merge); auto-merge (the cloud's ccr route,
+        // GraphQL's enablePullRequestAutoMerge) merges later, outside the gate, like gh pr merge --auto
+        const plain = rest.map(decodeEscapes);
+        if (plain.some((a) => /\/merges?(?:$|[/?])|auto_?merge|\/ccr\//i.test(a))) return true;
+        if (plain.some((a) => /mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest/i.test(a))) return true;
+      }
       return false;
     }
     if (first !== 'git') return false;

@@ -186,6 +186,42 @@ test('R-32 through REST only: the gate reads the pull request with gh api and me
   assert.match(b.deny || '', /merging is the Delivery Manager's/);
 });
 
+// the independent review of the REST path: a failing check past the first page read as green, and a
+// builder reached the merge through an encoded path, the cloud's auto-merge route or GraphQL
+test('R-32 through REST only: every page of checks and statuses counts; red past the first page is red', () => {
+  const pass = (n) => Array.from({ length: n }, (_, i) => ({ __typename: 'CheckRun', name: `t${i}`, status: 'COMPLETED', conclusion: 'SUCCESS' }));
+  const status = (n, last) => Array.from({ length: n }, (_, i) => ({ __typename: 'StatusContext', context: `s${i}`, state: i === n - 1 ? last : 'SUCCESS' }));
+  for (const [roll, want] of [
+    [[...pass(100), { __typename: 'CheckRun', name: 'late', status: 'COMPLETED', conclusion: 'FAILURE' }], /CI is red/],
+    [[...pass(2), ...status(31, 'FAILURE')], /CI is red/],
+    // past the one page of statuses read: the combined state still says red
+    [[...pass(2), ...status(101, 'FAILURE')], /CI is red/],
+    [[...pass(150)], /passes at/],
+  ]) {
+    const h = setup({ 478: pr478({ statusCheckRollup: roll }) }, { restOnly: true });
+    h.review('delivery-lead', 'request 478 --reviewer builder-2');
+    h.pass('builder-2');
+    assert.match(h.gate('delivery-lead', 'check 478').out, want, String(roll.length));
+  }
+});
+
+test('R-32 through REST only: no other role reaches the merge through gh api in any spelling; the merger only on github.com', () => {
+  const h = setup({ 478: pr478() }, { restOnly: true });
+  for (const c of [
+    `gh api -X PUT repos/example/example/pulls/478/m%65rge -f sha=${H1}`,
+    `gh api -X PUT repos/example/example/pulls/478/m%2565rge -f sha=${H1}`,
+    'gh api -X PUT repos/example/example/pulls/478/ccr/auto_merge',
+    "gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:\"x\"}){clientMutationId}}'",
+    "gh api graphql -f query='mutation{enablePullRequestAutoMerge(input:{pullRequestId:\"x\"}){clientMutationId}}'",
+  ]) assert.match(h.bash('builder-1', c, { run: false }).deny || '', /merging is the Delivery Manager's/, c);
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  const api = (args) => h.bash('delivery-lead', `gh api ${args}`, { run: false });
+  assert.notEqual(api(`-X PUT repos/example/example/pulls/478/merge -f sha=${H1} --hostname ghe.example.test`).deny, null, 'another GitHub host');
+  assert.notEqual(api(`-X PUT repos/example/example/pulls/478/merge -f sha=${H2} -f sha=${H1}`).deny, null, 'a field given twice');
+  assert.equal(api(`-X PUT repos/example/example/pulls/478/merge -f sha=${H1} --hostname github.com`).deny, null);
+});
+
 test('R-32 without gh: the head comes from the merge command and CI from the Delivery Manager\'s recorded run', () => {
   const root = makeProject();
   const bd = memBd([storyBead({ metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } })]);

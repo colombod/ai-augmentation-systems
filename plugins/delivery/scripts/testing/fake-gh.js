@@ -46,8 +46,17 @@ if (group === 'api') {
   if (m[5]) {
     const pr = Object.values(s.prs || {}).find((p) => p.headRefOid === m[5]) || { statusCheckRollup: [] };
     const roll = pr.statusCheckRollup || [];
-    if (m[6] === 'check-runs') out({ check_runs: roll.filter((c) => c.__typename !== 'StatusContext').map((c) => ({ name: c.name, status: String(c.status || '').toLowerCase(), conclusion: c.conclusion ? String(c.conclusion).toLowerCase() : null })) });
-    out({ statuses: roll.filter((c) => c.__typename === 'StatusContext').map((c) => ({ context: c.context, state: String(c.state || '').toLowerCase() })) });
+    // GitHub pages both lists (per_page, default 30) and reports the full count; the combined status
+    // state covers every status, listed or not
+    const q = new URLSearchParams(m[7] || '');
+    const per = Number(q.get('per_page') || 30);
+    const page = Number(q.get('page') || 1);
+    const slice = (list) => list.slice((page - 1) * per, page * per);
+    const runs = roll.filter((c) => c.__typename !== 'StatusContext').map((c) => ({ name: c.name, status: String(c.status || '').toLowerCase(), conclusion: c.conclusion ? String(c.conclusion).toLowerCase() : null }));
+    if (m[6] === 'check-runs') out({ total_count: runs.length, check_runs: slice(runs) });
+    const sts = roll.filter((c) => c.__typename === 'StatusContext').map((c) => ({ context: c.context, state: String(c.state || '').toLowerCase() }));
+    const combined = !sts.length ? 'pending' : sts.some((x) => ['failure', 'error'].includes(x.state)) ? 'failure' : sts.some((x) => x.state === 'pending') ? 'pending' : 'success';
+    out({ state: combined, total_count: sts.length, statuses: slice(sts) });
   }
   const pr = s.prs && s.prs[m[3]];
   if (!pr) fail('gh: Not Found (HTTP 404)');
