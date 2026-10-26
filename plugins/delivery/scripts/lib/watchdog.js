@@ -419,9 +419,13 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
       wakes.push({ target: w.target, keys: w.stalls.map((s) => s.key), lines, delivers: w.stalls.map((s) => ({ to: s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${w.stalls.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
       continue;
     }
-    if (last && t - ms(last.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(last.at))}; one wake an hour`;
-    else if (last && alive(last.pid)) reason = 'its last wake is still running';
-    else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
+    // the stall gates count stall wakes only: a role woken often for messages is still told about its
+    // stall (each message wake would otherwise push "one wake an hour" forward and fill the day's six)
+    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !String(k).startsWith('message:')));
+    const lastStall = stallRows[stallRows.length - 1];
+    if (last && alive(last.pid)) reason = 'its last wake is still running';
+    else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
+    else if (stallRows.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
     // each stall waits 1, 2, 4 ... hours after each wake that carried it
     const ok = reason ? [] : w.stalls.filter((s) => {
       const k = mine.filter((r) => (r.keys || []).includes(s.key) && t - ms(r.at) < 7 * 24 * 3600e3);
@@ -443,6 +447,11 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
         if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
         continue;
       }
+      // both held: each line says its own cause
+      const rest = w.stalls.filter((s) => s.kind !== 'message');
+      held.push({ target: w.target, lines: msgs.map((s) => s.line), reason: mReason });
+      if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
+      continue;
     }
     if (reason) { held.push({ target: w.target, lines, reason }); continue; }
     // the messages a stall wake carries are handed over too, so the next run does not send them again

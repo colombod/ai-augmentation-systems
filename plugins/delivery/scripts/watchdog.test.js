@@ -931,7 +931,7 @@ test('a message reaches a role that spent its stall wakes, once; a wake that car
     const spawn = spawner();
     at(h, t0, ['run'], { spawn, bd: memStore(h) });
     assert.equal(spawn.list.length, 1);
-    assert.match(spawn.list[0].args.join(' '), /merge main into your branch.*|ex-s has not moved/);
+    assert.match(spawn.list[0].args.join(' '), /ex-s has not moved.*merge main into your branch/, 'one wake carries both');
     assert.equal(IB.pending(h.root).length, 0, 'the message a stall wake carried is delivered');
   }
 });
@@ -981,4 +981,47 @@ test('a wake starts a fresh session when the last turn carried more than the lim
   }
   // an open, idle session is forked as before: a fresh session would replace it on the roster
   assert.equal(run({ tokens: 236000, agents: [{ sessionId: `sess-${COS}`, status: 'idle' }] }).wake, 'fork');
+});
+
+// The review of the change above: each rule on the message path under a held stall, and message wakes
+// must not starve the stall (they used to count toward its hourly gate and daily cap).
+test('plan: messages beside a held stall keep their own rules; message wakes do not starve the stall', () => {
+  const t0 = Date.parse('2026-10-26T15:00:00Z');
+  const stall = { kind: 'quiet', key: 'quiet:ex-s:1', target: 'b1', due: true, line: 'Stalled: ex-s', prompt: 'ex-s has not moved.' };
+  const msg = { kind: 'message', key: 'message:b1:1', target: 'b1', due: true, line: 'Waiting: 1 message', prompt: 'merge main into your branch.', upTo: 1 };
+  const plan = (rows, { alive = () => false } = {}) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-'));
+    for (const r of rows) WD.log(root, { type: 'wake', instance: 'b1', pid: 7, ...r });
+    return WD.plan({ stalls: [stall, msg] }, { root, now: new Date(t0).toISOString(), alive });
+  };
+  const ago = (m) => new Date(t0 - m * 60e3).toISOString();
+  const sixStalls = Array.from({ length: 6 }, (_, i) => ({ at: ago(120 * (i + 1)), keys: [`quiet:old-${i}`] }));
+  // the stall cap spent: the message alone goes, by its rules; the stall stays held, listed once
+  let p = plan(sixStalls);
+  assert.equal(p.wakes.length, 1);
+  assert.deepEqual(p.wakes[0].keys, ['message:b1:1'], 'only the message key is logged, so the stall backoff is untouched');
+  assert.deepEqual(p.wakes[0].delivers, [{ to: 'b1', upTo: 1 }]);
+  assert.doesNotMatch(p.wakes[0].prompt, /ex-s has not moved/);
+  assert.deepEqual(p.held.map((h) => h.lines.join()), ['Stalled: ex-s']);
+  assert.match(p.held[0].reason, /woken 6 times in a day/);
+  // a wake still running holds both
+  p = plan(sixStalls, { alive: () => true });
+  assert.equal(p.wakes.length, 0);
+  assert.ok(p.held.every((h) => /still running/.test(h.reason)), JSON.stringify(p.held));
+  // messages five minutes apart: the message held says so, the stall says its own cause
+  p = plan([...sixStalls, { at: ago(2), keys: ['message:b1:0'] }]);
+  assert.equal(p.wakes.length, 0);
+  assert.match(p.held.find((h) => h.lines.includes('Waiting: 1 message')).reason, /messages wait 5 min/);
+  assert.match(p.held.find((h) => h.lines.includes('Stalled: ex-s')).reason, /woken 6 times in a day/);
+  // 48 wakes in a day: the message is held too
+  p = plan(Array.from({ length: 48 }, (_, i) => ({ at: ago(20 * (i + 1)), keys: [`message:b1:x${i}`] })).concat(sixStalls));
+  assert.equal(p.wakes.length, 0);
+  assert.match(p.held.find((h) => h.lines.includes('Waiting: 1 message')).reason, /woken 48 times in a day/);
+  // message wakes in the last hour do not hold the stall: one wake carries both, and hands the message over
+  p = plan([{ at: ago(10), keys: ['message:b1:a'] }, { at: ago(40), keys: ['message:b1:b'] }]);
+  assert.equal(p.wakes.length, 1);
+  assert.match(p.wakes[0].prompt, /ex-s has not moved\..*merge main into your branch\./);
+  assert.deepEqual(p.wakes[0].keys.sort(), ['message:b1:1', 'quiet:ex-s:1']);
+  assert.deepEqual(p.wakes[0].delivers, [{ to: 'b1', upTo: 1 }]);
+  assert.equal(p.held.length, 0);
 });
