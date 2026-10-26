@@ -449,13 +449,17 @@ function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE 
   const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
   const r = wakeArgs(s, prompt, live);
   if (r.mode === 'resume' && freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove) {
-    return { mode: 'fresh', args: [...m, '-p', `${freshPreamble(s)} ${prompt}`] };
+    // named like every role session (start.js --name), so peers reach it by name (team rule 13)
+    return { mode: 'fresh', args: [...m, '--name', s.instance, '-p', `${freshPreamble(s)} ${prompt}`] };
   }
   return r.args ? { ...r, args: [...m, ...r.args] } : r;
 }
 
 function freshPreamble(s) {
-  return `You are ${s.instance}, starting a fresh session: your earlier conversation (${Math.round(s.context / 1000)}k tokens) is not loaded, so each turn stays light. Your brief and the team's records are your memory: start with your in-progress beads (bd list --status in_progress) and their notes, and the files they name.`;
+  // the Chief of Staff's Stop guard checks unrecorded operator input per session: a fresh session
+  // would not be held for input left in the old one, so it is told to look
+  const operator = s.role === 'chief-of-staff' ? ' Check first for operator input still unrecorded (operator.js pending) and record it.' : '';
+  return `You are ${s.instance}, starting a fresh session: your earlier conversation (${Math.round(s.context / 1000)}k tokens) is not loaded, so each turn stays light. Your brief and the team's records are your memory: start with your own in-progress beads (bd list --assignee "$BEADS_ACTOR" --status in_progress) and their notes, and the files they name.${operator}`;
 }
 
 function wakeArgs(s, prompt, live) {

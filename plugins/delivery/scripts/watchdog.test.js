@@ -923,12 +923,27 @@ test('a wake starts a fresh session when the last turn carried more than the lim
   };
   const heavy = run({ tokens: 236000 });
   assert.equal(heavy.wake, 'fresh');
-  assert.deepEqual(heavy.args.slice(0, 3), ['--permission-mode', 'auto', '-p']);
+  // named like every role session, so peers reach it by name; its own beads, by its actor
+  assert.deepEqual(heavy.args.slice(0, 5), ['--permission-mode', 'auto', '--name', COS, '-p']);
   assert.ok(!heavy.args.includes('--resume'), 'a fresh session, not a resume');
-  assert.match(heavy.args[3], /starting a fresh session: your earlier conversation \(236k tokens\) is not loaded.*bd list --status in_progress.*merge the story branch/);
+  assert.match(heavy.args[5], /starting a fresh session: your earlier conversation \(236k tokens\) is not loaded.*bd list --assignee "\$BEADS_ACTOR" --status in_progress.*merge the story branch/);
+  // the Chief of Staff is told to look for operator input left unrecorded in the old session
+  assert.match(heavy.args[5], /operator input still unrecorded \(operator\.js pending\)/);
   assert.equal(run({ tokens: 50000 }).wake, 'resume');
   assert.equal(run({ tokens: 236000, limit: 0 }).wake, 'resume', '0 turns it off');
   assert.equal(run({ tokens: 236000, limit: 300000 }).wake, 'resume', 'the owner\'s limit');
+  // a limit the watchdog cannot use is said, not silently replaced: "0" as text is not 0
+  {
+    const h = harness({});
+    const f = path.join(h.root, '.delivery', 'team', 'team.json');
+    fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), wake_fresh_above_tokens: '0' }, null, 2));
+    session(h, COS, { seen: iso(Date.parse(t0) - 2 * H), rows: used(236000) });
+    IB.queue(h.root, { to: COS, from: DM, summary: 'x', message: 'y', at: t0 });
+    const spawn = spawner();
+    const out = at(h, t0, ['run'], { spawn, bd: memStore(h), live: [] });
+    assert.match(String(out.out || out), /Warning: team\.json wake_fresh_above_tokens "0" is not a whole number of tokens; using 120000/);
+    assert.equal(spawn.list[0].wake, 'fresh');
+  }
   // an open, idle session is forked as before: a fresh session would replace it on the roster
   assert.equal(run({ tokens: 236000, agents: [{ sessionId: `sess-${COS}`, status: 'idle' }] }).wake, 'fork');
 });

@@ -131,6 +131,11 @@ function freshAboveOf(t) {
   const v = t && t.team ? t.team.wake_fresh_above_tokens : undefined;
   return Number.isInteger(v) && v >= 0 ? v : WD.FRESH_ABOVE;
 }
+// an owner's limit the watchdog cannot use is said, not silently replaced ("0" as text is not 0)
+function freshAboveProblem(t) {
+  const v = t && t.team ? t.team.wake_fresh_above_tokens : undefined;
+  return v === undefined || (Number.isInteger(v) && v >= 0) ? null : `team.json wake_fresh_above_tokens ${JSON.stringify(v).slice(0, 40)} is not a whole number of tokens; using ${WD.FRESH_ABOVE}`;
+}
 
 function wakeMode(t, s) {
   if (t.unreadable) return { skip: `team.json cannot be read (${t.unreadable}), so the team's permission mode is not known; alarm only` };
@@ -154,6 +159,8 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
   const open = p.wakes.length ? (live !== undefined ? live : liveSessions(bin, env)) : null;
   const rows = WD.logRows(root);
   const manifest = p.wakes.length ? teamOf(root) : null;
+  const limitProblem = freshAboveProblem(manifest);
+  if (limitProblem) lines.push(`Warning: ${limitProblem}.`);
   for (const w of p.wakes) {
     const s = res.sessions.find((x) => x.instance === w.target) || null;
     const wm = wakeMode(manifest, s);

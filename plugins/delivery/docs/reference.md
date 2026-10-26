@@ -1020,7 +1020,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   transcript records) is woken in a fresh session in its role directory instead (`claude -p`, no
   resume), told that its earlier conversation is not loaded and to start from its in-progress beads:
   a resume reloads the whole conversation, and one day of wakes took a real Delivery Manager's turns to
-  236k tokens.
+  236k tokens. The fresh session is named like the role (`--name`), and the next wake resumes it (a
+  fresh role session starts near 53k tokens). The Stop guard's check for unrecorded operator input is
+  per session, so a fresh Chief of Staff is told to run `operator.js pending` first.
 - **The wake's limits.** At most one wake per session an hour whatever the stalls; at most 6 a day per
   session; each stall waits 1, 2, 4, 8 ... hours after each wake that carried it; never while that
   session's last wake still runs, however long ago it started (each wake runs in its own process group
