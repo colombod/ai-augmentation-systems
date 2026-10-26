@@ -207,15 +207,16 @@ switch (cmd) {
     break;
   }
   case 'import': {
-    // `import <file>`: one issue per JSONL line, added when its id is new; its `dependencies`
-    // ({issue_id, depends_on_id}) become blocked-by pairs. Real bd upserts; start.js never passes it an id already present.
+    // `import <file>`: one issue per JSONL line, upserted by id, as real bd does; its `dependencies`
+    // ({issue_id, depends_on_id}) become blocked-by pairs. Keeping an existing issue's edits is start.js's job, not the tool's.
     const file = pos[0] || flags.input || flags.i;
     if (!file || !fs.existsSync(file)) { process.stderr.write(`fake-bd: no such file ${file}\n`); process.exit(1); }
     let n = 0;
     for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
       if (!line.trim()) continue;
       const o = JSON.parse(line);
-      if (s.issues[o.id]) continue;
+      // upsert, as real bd does: an id already held is overwritten with the file's fields
+      s.deps = s.deps.filter((d) => d.id !== o.id);
       s.issues[o.id] = { id: o.id, title: o.title || '', status: o.status || 'open', type: o.issue_type || 'task', parent: null, labels: o.labels || [], metadata: o.metadata || {}, notes: o.notes || '', priority: o.priority === undefined ? 2 : o.priority, description: o.description || '', assignee: o.assignee || '', updated_at: new Date().toISOString() };
       for (const d of o.dependencies || []) s.deps.push({ id: d.issue_id || o.id, blocked_by: d.depends_on_id });
       n++;
