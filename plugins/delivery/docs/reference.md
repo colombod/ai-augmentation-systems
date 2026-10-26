@@ -159,6 +159,12 @@ author) and merges only on a passing review of the pull request's current head; 
 commits send the pull request back to its owner and to review again. Its own `gh pr merge` sits in
 the `gh-merge` group and passes only through the merge gate (below).
 
+Where `gh pr create` (GraphQL) is refused, a role opens its pull request through REST:
+`gh api -X POST repos/<owner>/<repo>/pulls -f title='<the change>' -f head=team/<instance> -f base=main -f body='Refs <bead id> ...'`.
+The `gh-write` group and the leak guard accept exactly that shape (inline `title`, `head`, `base`, optionally
+`body`, `draft`), and scan the title and body like `gh pr create`; every other `gh api` write, a body read from
+a file, and any other endpoint stay refused.
+
 ### The leak guard
 
 In a product worktree, commit, PR, issue and release text (through Bash, Monitor or PowerShell)

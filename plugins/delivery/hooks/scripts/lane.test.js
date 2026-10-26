@@ -973,6 +973,22 @@ test('A1: every pipeline output path is writable by at least one role of the min
   assert.ok(!pathAllowed(path.join(rd, 'project/.delivery/sprints/1-checkout.md'), { roleDir: rd, writes: policies['product-manager'].writes }), 'the PM writes only the realign record under sprints/');
 });
 
+test('a role with gh-write opens a pull request through REST, and only that', () => {
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[DL], ...ctx(), cwd: os.tmpdir() });
+  const open = 'gh api -X POST repos/o/r/pulls -f title=\'Fix x\' -f head=team/builder -f base=main -f body=\'Refs dlv-1\'';
+  assert.equal(run(open).allow, true, open);
+  assert.equal(run('gh api repos/o/r/pulls -f title=x -f head=team/builder -f base=main').allow, true, 'POST implied by fields');
+  for (const bad of [
+    'gh api -X POST repos/o/r/pulls --input body.json',
+    'gh api -X POST repos/o/r/pulls -f title=x -f head=h -f base=main -F body=@body.md',
+    'gh api -X POST repos/o/r/pulls -f title=x -f head=h',
+    'gh api -X POST repos/o/r/pulls -f title=x -f head=h -f base=main -f state=closed',
+    'gh api -X POST repos/o/r/issues -f title=x -f head=h -f base=main',
+    'gh api -X PATCH repos/o/r/pulls/3 -f title=x -f head=h -f base=main',
+    'gh api -X POST repos/o/r/pulls/3/comments -f title=x -f head=h -f base=main',
+  ]) assert.equal(run(bad).allow, false, bad);
+});
+
 // Owner ruling 2026-10-18: builders cannot merge; the Delivery Manager merges after independent review.
 test('merging is the Delivery Manager\'s: builder and spike researcher lanes are refused every form of merge', () => {
   const SPIKE = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/spike-researcher' });
