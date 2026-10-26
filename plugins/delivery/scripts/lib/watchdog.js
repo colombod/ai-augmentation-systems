@@ -419,17 +419,46 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
       wakes.push({ target: w.target, keys: w.stalls.map((s) => s.key), lines, delivers: w.stalls.map((s) => ({ to: s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${w.stalls.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
       continue;
     }
-    if (last && t - ms(last.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(last.at))}; one wake an hour`;
-    else if (last && alive(last.pid)) reason = 'its last wake is still running';
-    else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
+    // the stall gates count stall wakes only: a role woken often for messages is still told about its
+    // stall (each message wake would otherwise push "one wake an hour" forward and fill the day's six)
+    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !String(k).startsWith('message:')));
+    const lastStall = stallRows[stallRows.length - 1];
+    if (last && alive(last.pid)) reason = 'its last wake is still running';
+    else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
+    else if (stallRows.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
     // each stall waits 1, 2, 4 ... hours after each wake that carried it
     const ok = reason ? [] : w.stalls.filter((s) => {
       const k = mine.filter((r) => (r.keys || []).includes(s.key) && t - ms(r.at) < 7 * 24 * 3600e3);
       return !k.length || t - ms(k[k.length - 1].at) >= WAKE_EVERY_MS * 2 ** (k.length - 1);
     });
-    if (!reason && !ok.length) reason = 'woken for these already; waiting longer before the next try';
+    // a wake that would carry only messages is not a stall wake: it goes by the message rules below
+    // (five minutes apart, 48 a day), or a stall still waiting out its backoff would let a message wake
+    // the role every minute through this path
+    if (!reason && !ok.some((s) => s.kind !== 'message')) reason = 'woken for these already; waiting longer before the next try';
+    // A message waiting beside a held stall is still a handoff: a role that spent its stall wakes (or
+    // was woken for the stall within the hour) gets its messages by the message rules, not left until
+    // the stall count falls. Seen on a real team: the Delivery Manager's work waited hours behind its cap.
+    const msgs = w.stalls.filter((s) => s.kind === 'message');
+    if (reason && msgs.length) {
+      let mReason = null;
+      if (last && alive(last.pid)) mReason = 'its last wake is still running; the message waits for it';
+      else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) mReason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
+      else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) mReason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
+      if (!mReason) {
+        wakes.push({ target: w.target, keys: msgs.map((s) => s.key), lines: msgs.map((s) => s.line), delivers: msgs.map((s) => ({ to: s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${msgs.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
+        const rest = w.stalls.filter((s) => s.kind !== 'message');
+        if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
+        continue;
+      }
+      // both held: each line says its own cause
+      const rest = w.stalls.filter((s) => s.kind !== 'message');
+      held.push({ target: w.target, lines: msgs.map((s) => s.line), reason: mReason });
+      if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
+      continue;
+    }
     if (reason) { held.push({ target: w.target, lines, reason }); continue; }
-    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), prompt: `Watchdog (a host job, not the owner): ${ok.map((s) => s.prompt).join(' ')} Reply in one line with what you started.` });
+    // the messages a stall wake carries are handed over too, so the next run does not send them again
+    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), delivers: ok.filter((s) => s.kind === 'message').map((s) => ({ to: s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${ok.map((s) => s.prompt).join(' ')} Reply in one line with what you started.` });
   }
   return { wakes, waiting, held };
 }
