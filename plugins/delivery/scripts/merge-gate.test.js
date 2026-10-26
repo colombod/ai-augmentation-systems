@@ -177,7 +177,10 @@ test('R-32 through REST only: the gate reads the pull request with gh api and me
   assert.match(api(`-X PUT repos/example/example/pulls/478/merge --input body.json`).deny || '', /fields inline|may not run/);
   assert.notEqual(api(`repos/example/example/pulls/478/merge -f sha=${H1}`).deny, null, 'fields without -X are a POST, not the merge');
   assert.notEqual(api('repos/example/example/pulls/478').deny, null, 'other gh api calls stay outside the Delivery Manager\'s lane');
-  const m = api(`-X PUT repos/example/example/pulls/478/merge -f merge_method=squash -f sha=${H1}`);
+  // a redirection after the call (the DM ran it as `... 2>&1 | tail -5` on PR 75) is not a second
+  // endpoint; one that names another endpoint still is
+  assert.notEqual(api(`-X PUT repos/example/example/pulls/478/merge -f sha=${H1} 2>&1 repos/example/example/pulls/1`).deny, null);
+  const m = api(`-X PUT repos/example/example/pulls/478/merge -f merge_method=squash -f sha=${H1} 2>&1 | tail -5`);
   assert.equal(m.deny, null, m.deny);
   assert.equal(h.gh()[478].state, 'MERGED');
   assert.match(h.gate('delivery-lead', 'merged 478').out, /PR 478 merged at a1b2c3d4e5f6/);
