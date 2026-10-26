@@ -115,6 +115,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   if (!sub) return { code: 2, out: USAGE };
   const who = given || whoAmI({ cwd, env, project: a.project });
   if (!who.root) return { code: 2, out: 'review.js: no project found; pass --project <root>' };
+  // a row is published to origin right after it is written; a failure is one more line, never a refusal
+  const published = (row) => { const m = R.publish(who.root, pr, who.instance, row.type, { env }); return m ? `\n${m}` : ''; };
   const at = now || new Date().toISOString();
   const store = () => bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 });
   const repo = productRepoOf(who.team, { roleDir: who.roleDir });
@@ -152,7 +154,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     const session = team.some((i) => R.norm(i.instance) === R.norm(a.reviewer));
     const row = R.append(who.root, pr, { type: 'request', head, branch: branch || null, owner: bound.owner, reviewer: a.reviewer, session, beads: ids, stories, authors, title: (story && story.title) || view.title || null, lines: Number.isFinite(lines) ? lines : null, ...base }, who.instance);
     const warned = warnings.map((w) => { const x = W.record(who.root, { ...w, bead: stories[0], raisedBy: who.instance, instance: who.instance }); return `warning ${x ? x.id : 'unrecorded'}: ${w.detail}`; });
-    return { code: 0, row, out: [`${row.id}: review of PR ${pr} at ${R.short(head)} requested from ${a.reviewer}`, ...warned, ...reviewerBrief(pr, head, row)].join('\n') };
+    return { code: 0, row, out: [`${row.id}: review of PR ${pr} at ${R.short(head)} requested from ${a.reviewer}`, ...warned, ...reviewerBrief(pr, head, row)].join('\n') + published(row) };
   }
 
   if (sub === 'record') {
@@ -177,7 +179,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     if (view && view.headRefOid && !G.shaMatch(view.headRefOid, a.head)) note = `\nnote: PR ${pr} is now at ${R.short(view.headRefOid)}, so this review of ${R.short(a.head)} will not count for the merge: review ${R.short(view.headRefOid)}`;
     const row = R.append(who.root, pr, { type: 'review', head: a.head, result: a.result, reviewer: by, kind, summary: String(a.summary).slice(0, 500), ...(a.findings ? { findings: a.findings } : {}), recorded_by: who.instance, ...base }, who.instance);
     const next = a.result === 'pass' ? `Next: ${R.cmd('merge-gate.js', `check ${pr}`)}` : `Next: ${R.cmd('review.js', `send-back ${pr} --reason changes --note '<the findings>'`)}`;
-    return { code: 0, row, out: `${row.id}: ${a.result} by ${by} on ${R.short(a.head)} (${kind}${kind === 'advisory' ? ': does not satisfy the gate alone' : ''})${note}\n${next}` };
+    return { code: 0, row, out: `${row.id}: ${a.result} by ${by} on ${R.short(a.head)} (${kind}${kind === 'advisory' ? ': does not satisfy the gate alone' : ''})${note}\n${next}${published(row)}` };
   }
 
   if (sub === 'ci') {
@@ -185,7 +187,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     if (wp) return refuse(wp.replace(/\.$/, ''));
     if (!a.head || !R.SHA.test(a.head) || !['pass', 'fail'].includes(a.result) || !a.run) return { code: 2, out: USAGE };
     const row = R.append(who.root, pr, { type: 'ci', head: a.head, result: a.result, run: a.run, ...base }, who.instance);
-    return { code: 0, row, out: `${row.id}: CI ${a.result} on ${R.short(a.head)} (${a.run})` };
+    return { code: 0, row, out: `${row.id}: CI ${a.result} on ${R.short(a.head)} (${a.run})${published(row)}` };
   }
 
   if (sub === 'send-back') {
@@ -201,7 +203,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     const row = R.append(who.root, pr, { type: 'sent-back', head, reason: a.reason, note: a.note || null, owners, ...base }, who.instance);
     const text = `${at.slice(0, 10)}: PR ${pr} sent back at ${R.short(head)}: ${what}${a.note ? ` (${a.note})` : ''}; a new review is needed after the fix (${row.id})`;
     for (const id of req.beads || []) { try { store().update(id, { appendNotes: text }); } catch (err) { /* the row and the message still stand */ } }
-    return { code: 0, row, out: `${row.id}: PR ${pr} sent back to ${owners.join(', ') || 'its owner'}; noted in ${(req.beads || []).join(', ')}\nMessage ${owners.join(', ') || 'the owner'}: "PR ${pr}: ${what}${a.note ? `: ${a.note}` : ''}. Fix it on your branch, push, and tell me; I will ask for a new review."` };
+    return { code: 0, row, out: `${row.id}: PR ${pr} sent back to ${owners.join(', ') || 'its owner'}; noted in ${(req.beads || []).join(', ')}\nMessage ${owners.join(', ') || 'the owner'}: "PR ${pr}: ${what}${a.note ? `: ${a.note}` : ''}. Fix it on your branch, push, and tell me; I will ask for a new review."${published(row)}` };
   }
   return { code: 2, out: USAGE };
 }

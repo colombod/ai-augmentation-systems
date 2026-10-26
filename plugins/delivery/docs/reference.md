@@ -613,7 +613,14 @@ owner and is reviewed again; gates block only on authority or serious divergence
   chain; a reader merges every chain of the pull request in time order (clocks are trusted to be
   roughly right). Every row names the product repository, and rows recorded for another repository
   never count, for the gate or for status. Rows: `request`, `review`, `ci`, `sent-back`, `merged`. `node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js
-  show <pr>` and `review.js list [--plain] [--json]` read them.
+  show <pr>` and `review.js list [--plain] [--json]` read them. **Review rows are published to the
+  project repository automatically**: right after a row is written, the script commits that one
+  chain file (`reviews: PR <n> <event> (<writer>)`) and pushes the root's branch to origin
+  (fast-forward only; on a rejected push it fetches, rebases the record commit and retries once),
+  so the gate on another host, or after a container restart, reads the same rows. Nothing else in
+  the root is staged. It never blocks a command: with no origin or an unreachable one the command
+  keeps its exit code and prints `review rows for PR <n> not published: <reason>`, and the next
+  command carries the earlier rows too.
 - **Who authored it.** A GitHub fact, not the body a builder wrote: the pull request's head branch,
   `team/<builder instance>` (the worktree branch prepare-role gives each builder). Every bead its
   `Refs <bead>` lines name must have that builder among its stamped authors (the claim check records

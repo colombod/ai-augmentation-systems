@@ -208,6 +208,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     const v = R.evaluate(pr, rows, { head, ci: { state: 'green', names: [] }, mergeable: null, botsCount: botsCountOf(who.team), repo });
     row = R.append(who.root, pr, { type: 'merged', repo, head, beads: req ? req.beads || [] : [], gated: v.ok, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
     out.push(`${row.id}: PR ${pr} merged at ${R.short(head)}`);
+    const unpublished = R.publish(who.root, pr, who.instance, 'merged', { env });
+    if (unpublished) out.push(unpublished);
     if (!v.ok) {
       const w = require('./lib/warnings.js').record(who.root, { kind: 'merge-ungated', rule: 'R-32', bead: (req && req.beads && req.beads[0]) || null, detail: `PR ${pr} merged at ${R.short(head)} without a passing review of that head: ${v.why}`, raisedBy: who.instance, instance: who.instance });
       out.push(`warning ${w ? w.id : 'unrecorded'}: merged without a passing review of ${R.short(head)} (${v.why})`);
