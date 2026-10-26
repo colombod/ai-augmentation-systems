@@ -1014,6 +1014,10 @@ function ghApiCall(t) {
   const out = { endpoint: null, method: null, fields: {}, bad: null, positionals: [] };
   for (let i = 2; i < words.length; i++) {
     const x = words[i];
+    // a redirection that writes nowhere (2>&1, >&2, 2>/dev/null) is the shell's, not gh's: the merge
+    // the gate prints is often run as `... 2>&1 | tail`, and reading 2>&1 as a second endpoint refused it
+    if (/^\d*>&(?:\d+|-)$/.test(x) || /^\d*>>?\/dev\/null$/.test(x)) continue;
+    if (/^\d*>>?$/.test(x) && words[i + 1] === '/dev/null') { i++; continue; }
     const [f, inline] = x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
     if (GH_API_VALUE.includes(f)) {
       const val = inline !== undefined ? inline : words[++i];
