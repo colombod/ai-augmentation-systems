@@ -127,6 +127,59 @@ test('run: the run cap of run-record still applies (a third run on the same depl
   assert.match(s.verify(1).out, /already has 2 run\(s\)/);
 });
 
+// verify-run.main with an injected spawn, as the Reality Checker
+function verifyWith(s, spawn) {
+  const who = { root: s.root, team: { ...loadManifest(s.root).team, product_url: s.prod.dir }, instance: 'reality-checker', roleId: 'reality-checker', actor: 't@pc/reality-checker', roleDir: s.roleDir };
+  return vr.main(['run', ID, '--criterion', '1'], { cwd: s.root, env: {}, bd: s.bd, now: T.run, who, spawn });
+}
+
+test('run: a timed-out command is a fail row naming the minutes', () => {
+  const s = ready();
+  s.refine(1, 'sh tool.sh');
+  const r = verifyWith(s, (cmd, args, opts) => (cmd === '/bin/sh' ? { status: null, error: { code: 'ETIMEDOUT' }, stdout: '', stderr: '' } : spawnSync(cmd, args, opts)));
+  assert.match(r.out, /: fail \(stopped after \d+ minutes\)/);
+  assert.equal(s.rows()[0].result, 'fail');
+});
+
+test('run: an over-cap run executes nothing and writes no capture', () => {
+  const s = ready();
+  s.refine(1, 'sh tool.sh');
+  assert.equal(s.verify(1).code, 0);
+  assert.equal(s.verify(1).code, 0);
+  const dir = path.join(s.roleDir, 'project', '.delivery', 'evidence', 'artifacts', ID);
+  const before = fs.readdirSync(dir).length;
+  let ran = 0;
+  const r = verifyWith(s, (...a) => { ran++; return spawnSync(...a); });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /already has 2 run\(s\)/);
+  assert.equal(ran, 0);
+  assert.equal(fs.readdirSync(dir).length, before);
+});
+
+test('run: a criterion with two command steps is refused, none silently ignored', () => {
+  const s = ready();
+  s.refine(1, 'sh tool.sh');
+  const f = path.join(s.root, rc.scriptRel(ID));
+  const script = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const g = script.criteria.find((x) => x.criterion === 1);
+  g.steps.push({ ...g.steps[0], n: 2, command: 'echo second' });
+  fs.writeFileSync(f, JSON.stringify(script));
+  const r = s.verify(1);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /2 steps with a command/);
+  assert.equal(s.rows().length, 0);
+});
+
+test('run: a capture over the size cap is truncated and says so', () => {
+  const s = ready();
+  s.refine(1, 'head -c 400000 /dev/zero | tr "\\0" x');
+  const r = s.verify(1);
+  assert.equal(r.code, 0, r.out);
+  const cap = fs.readFileSync(path.join(s.root, '.delivery', 'evidence', s.rows()[0].capture.path), 'utf8');
+  assert.match(cap, /\[truncated: \d+ more characters not kept\]/);
+  assert.ok(cap.length < 300000);
+});
+
 test('surface: command_line must be a boolean; checkerSurfaces lists command-line and unscriptable surfaces', () => {
   const bad = validateSurface({ surfaces: [{ ...CLI_SURFACES.surfaces[0], command_line: 'yes' }] });
   assert.match(bad.problems.join(), /"command_line" must be true or false/);

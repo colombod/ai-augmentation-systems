@@ -19,14 +19,15 @@ const RC = require('./reality-check.js');
 const G = require('./lib/gates.js');
 const { whoAmI, writerProblem } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: verify-run.js run <bead> --criterion <n> [--project <root>]';
+const USAGE = 'usage: verify-run.js run <bead> --criterion <n>';
+const CAPTURE_MAX = 256 * 1024;
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const refuse = (text) => ({ code: 1, out: `verify-run.js: ${text}` });
 
 function parse(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--criterion' || argv[i] === '--project') { if (argv[i + 1] === undefined) throw new Error(`${argv[i]} needs a value`); out[argv[i].slice(2)] = argv[++i]; }
+    if (argv[i] === '--criterion') { if (argv[i + 1] === undefined) throw new Error(`${argv[i]} needs a value`); out[argv[i].slice(2)] = argv[++i]; }
     else if (argv[i].startsWith('--')) throw new Error(`unknown option ${argv[i]}`);
     else out._.push(argv[i]);
   }
@@ -85,17 +86,24 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   if (!G.shaMatch(script.artifact && script.artifact.deployed_sha, sha)) return refuse(`the script is for ${(script.artifact && script.artifact.deployed_sha) || 'no deploy'}, not the deployed ${sha}: message the Delivery Manager to plan it again`);
   const group = (script.criteria || []).find((g) => g.criterion === n);
   if (!group) return refuse(`criterion ${n} is not in the script (${(script.criteria || []).map((g) => g.criterion).join(', ') || 'none'})`);
-  const step = (group.steps || []).find((s) => typeof s.command === 'string' && s.command.trim());
+  const withCommand = (group.steps || []).filter((s) => typeof s.command === 'string' && s.command.trim());
+  if (withCommand.length > 1) return refuse(`criterion ${n} has ${withCommand.length} steps with a command (steps ${withCommand.map((s) => s.n).join(', ')}): the runner runs exactly one, so none is silently ignored. The Delivery Manager keeps one command on the criterion (reality-check.js refine ${bead} --criterion ${n} --step <k> --command '<the one command>') and splits the rest into criteria`);
+  const step = withCommand[0];
   if (!step) return refuse(`criterion ${n} has no step with a command: the Delivery Manager adds it (reality-check.js refine ${bead} --criterion ${n} --step 1 --command '<the command>' [--match '<pattern stdout must show>'])`);
   if (!who.roleDir) return refuse('not in a role directory, so the scratch area (verify/) is not known.');
+  const minutes = Number(script.cap && script.cap.minutes) > 0 ? Number(script.cap.minutes) : RC.DEFAULT_CAP.minutes;
+  // the run cap is checked before any checkout or spawn: an over-cap run executes nothing and leaves no capture
+  const attempts = (script.cap && script.cap.attempts) || RC.DEFAULT_CAP.attempts;
+  const spent = G.readEvidence(who.root, bead).filter((r) => r.type === 'row' && r.via === 'reality-check' && r.arm !== 'side' && Number(r.criterion) === n && G.shaMatch(r.sha, sha));
+  if (spent.length >= attempts) return refuse(`criterion ${n} already has ${spent.length} run(s) on ${sha.slice(0, 12)}, the script's cap.\nStop and message the Delivery Manager: a new run needs a new deploy or a new script`);
   const co = checkoutDeployed({ roleDir: who.roleDir, team: who.team, sha, bead, env, spawn });
   if (co.problem) return refuse(co.problem);
-  const minutes = Number(script.cap && script.cap.minutes) > 0 ? Number(script.cap.minutes) : RC.DEFAULT_CAP.minutes;
   const started = Date.now();
   const r = spawn('/bin/sh', ['-c', step.command], { cwd: co.dir, env: RR.cleanEnv(env), encoding: 'utf8', timeout: minutes * 60e3, maxBuffer: 16 * 1024 * 1024 });
   const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
   const code = r.status === null ? null : r.status;
   const stdout = String(r.stdout || '');
+  const clip = (t) => (t.length > CAPTURE_MAX ? `${t.slice(0, CAPTURE_MAX)}\n[truncated: ${t.length - CAPTURE_MAX} more characters not kept]\n` : t);
   let matched = true;
   if (step.match) { try { matched = new RegExp(step.match).test(stdout); } catch (err) { return refuse(`step ${step.n} has a match that is not a pattern (${err.message})`); } }
   const pass = !timedOut && code === 0 && matched;
@@ -105,7 +113,7 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   const dir = path.join(base, '.delivery', 'evidence', 'artifacts', bead);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `verify-c${n}-${sha.slice(0, 7)}-${Date.parse(now) || started}.txt`);
-  fs.writeFileSync(file, [`$ ${step.command}`, `sha: ${co.sha}`, `repo: ${co.url}`, `at: ${now}`, `criterion: ${n} step ${step.n}`, step.match ? `match: /${step.match}/` : 'match: none', `result: ${pass ? 'pass' : 'fail'} (${why})`, '', '--- stdout ---', stdout, '--- stderr ---', String(r.stderr || ''), `--- exit ${code === null ? 'signal' : code} after ${Math.round((Date.now() - started) / 1000)}s ---`, ''].join('\n'));
+  fs.writeFileSync(file, [`$ ${step.command}`, `sha: ${co.sha}`, `repo: ${co.url}`, `at: ${now}`, `criterion: ${n} step ${step.n}`, step.match ? `match: /${step.match}/` : 'match: none', `result: ${pass ? 'pass' : 'fail'} (${why})`, '', '--- stdout ---', clip(stdout), '--- stderr ---', clip(String(r.stderr || '')), `--- exit ${code === null ? 'signal' : code} after ${Math.round((Date.now() - started) / 1000)}s ---`, ''].join('\n'));
   const rec = RC.main(['run-record', bead, '--criterion', String(n), '--result', pass ? 'pass' : 'fail', '--artifact', file, '--observed-version', co.sha], { cwd, env, bd: store, now, verifyRecord, who });
   return { code: rec.code, out: `verify-run.js: criterion ${n} of ${bead}: \`${step.command}\` in verify/${bead}-${sha.slice(0, 12)} at ${co.sha}: ${pass ? 'pass' : 'fail'} (${why})\n${rec.out}`, row: rec.row };
 }
@@ -115,8 +123,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: give
   try { a = parse(argv); } catch (err) { return { code: 2, out: `verify-run.js: ${err.message}\n${USAGE}` }; }
   const [cmd, id] = a._;
   if (cmd !== 'run' || !id || a._.length !== 2 || a.criterion === undefined) return { code: 2, out: USAGE };
-  const who = given || whoAmI({ cwd, env, project: a.project });
-  if (!who.root) return { code: 2, out: 'verify-run.js: no project found; pass --project <root>' };
+  const who = given || whoAmI({ cwd, env });
+  if (!who.root) return { code: 2, out: 'verify-run.js: no project found; run it from the role directory' };
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
   return run(who, store, id, a, { cwd, env, now: now || new Date().toISOString(), spawn, verifyRecord });
 }

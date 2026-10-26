@@ -426,6 +426,11 @@ runs the command there with the role's variables cleared, saves the command, sha
 exit code as the capture, decides the result itself (exit 0, and the match found in stdout when the step
 has one), and records the row through `run-record`, so the run cap, the capture rules and the andon on
 a fail all apply. The agent types no result, and the builder's lane has no way to write the row.
+The run cap is checked before the checkout, so an over-cap run executes nothing and writes no capture;
+a criterion with more than one step carrying a command is refused, never partly run. The runner runs
+the source clone at the deployed sha, not the installed artifact, so the version it observes is the
+clone's sha. The capture is cut at 256 KiB per stream (and says so) and is not redacted: a command that
+prints a secret writes it into the capture.
 `start.js` adds the Reality Checker to a new team whose surfaces include a command-line one, and
 `/delivery:team` warns when a declared surface only the Reality Checker can verify has no Reality
 Checker on the team.
