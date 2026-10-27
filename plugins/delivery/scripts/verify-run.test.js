@@ -180,6 +180,21 @@ test('run: a capture over the size cap is truncated and says so', () => {
   assert.ok(cap.length < 300000);
 });
 
+test('plan: a command-line surface covers every criterion even when the probes say by: test', () => {
+  const story = CLI_STORY.replace(/by: reality-check/g, 'by: test');
+  const root = makeProject({ story, surfaces: CLI_SURFACES });
+  const store = memBd([storyBead({ assignee: 't@pc/builder-1' })]);
+  const who = { root, team: loadManifest(root).team, instance: 'delivery-lead', roleId: 'delivery-lead', actor: 't@pc/delivery-lead' };
+  const r = rc.main(['plan', ID], { cwd: root, env: {}, bd: store, now: T.plan, who });
+  assert.equal(r.code, 0, r.out);
+  assert.ok(rc.readScript(root, ID).criteria.length >= 2);
+  // a scriptable surface that is not a command line still leaves by: test probes to the tests
+  const plain = makeProject({ story: story.replace('surface: S3', 'surface: S2').replace(/where: S3/g, 'where: S2') });
+  const r2 = rc.main(['plan', ID], { cwd: plain, env: {}, bd: store, now: T.plan, who: { ...who, root: plain, team: loadManifest(plain).team } });
+  assert.equal(r2.code, 1);
+  assert.match(r2.out, /its probes run as tests/);
+});
+
 test('surface: command_line must be a boolean; checkerSurfaces lists command-line and unscriptable surfaces', () => {
   const bad = validateSurface({ surfaces: [{ ...CLI_SURFACES.surfaces[0], command_line: 'yes' }] });
   assert.match(bad.problems.join(), /"command_line" must be true or false/);

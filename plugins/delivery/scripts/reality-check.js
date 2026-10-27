@@ -50,8 +50,8 @@ const refuse = (text) => ({ code: 1, out: `reality-check.js: ${text}` });
 function readScript(root, bead) { try { return JSON.parse(fs.readFileSync(path.join(root, scriptRel(bead)), 'utf8')); } catch (err) { return null; } }
 
 // The criteria a reality check covers: those whose probe says `by: reality-check`, and on a surface that
-// is not scriptable every criterion (no test reaches it).
-const covered = (story, surface) => story.criteria.filter((c) => (c.probe && c.probe.by === 'reality-check') || surface.scriptable === false);
+// is not scriptable, or is a command line (verify-run.js runs its commands), every criterion.
+const covered = (story, surface) => story.criteria.filter((c) => (c.probe && c.probe.by === 'reality-check') || surface.scriptable === false || surface.command_line === true);
 const expectOf = (c) => (c.probe ? c.probe.text.replace(/;\s*(?:where|by):[^;]*/gi, '').trim() : c.text);
 
 // A step group per covered criterion. A group the Delivery Manager already refined is kept as long as
