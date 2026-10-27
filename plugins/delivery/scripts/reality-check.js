@@ -6,7 +6,7 @@
 //       .delivery/reality-checks/<bead>.json (templates/reality-check.json is the format); once the story
 //       is deployed, also create its reality-check child bead for the Reality Checker
 //   reality-check.js refine <bead> [--criterion <n> (--step <k> | --add-step) | --setup <k>]
-//       [--action ..] [--expect ..] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..]
+//       [--action ..] [--expect ..] [--command ..] [--match ..] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..]
 //       [--precondition <o-id>]   Delivery Manager: edit the shared script (the only way to change it)
 //   reality-check.js show <bead>                                       the script, read only
 //   reality-check.js run-record <bead> --criterion <n> --result pass|fail --artifact <path>
@@ -23,9 +23,9 @@ const W = require('./lib/warnings.js');
 const { tupleOf, TUPLE } = require('./lib/surface.js');
 const { whoAmI, gateInputs, writerProblem, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
+const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
 const VALUE = ['--criterion', '--result', '--artifact', '--observed-version', '--attempts', '--minutes', '--project', '--host', '--app', '--mode', '--install-artifact',
-  '--step', '--setup', '--action', '--expect', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition'];
+  '--step', '--setup', '--action', '--expect', '--command', '--match', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition'];
 // a test account is named, never given: anything that looks like a password or token is refused
 const SECRETISH = /pass(?:word|wd)?|secret|token|api[_-]?key|[:=]\S|\b[A-Za-z0-9+/_-]{24,}\b/i;
 const DEFAULT_CAP = { attempts: 2, minutes: 30 };
@@ -241,6 +241,9 @@ function refine(who, id, a, at) {
   const fields = (step) => {
     if (a.action !== undefined) step.action = a.action;
     if (a.expect !== undefined) step.expect = a.expect;
+    // a command-line surface: verify-run.js runs this at the deployed sha and decides pass or fail from it
+    if (a.command !== undefined) step.command = a.command;
+    if (a.match !== undefined) step.match = a.match;
     if (a.capture !== undefined) step.capture = a.capture.split(',').map((x) => x.trim()).filter(Boolean);
   };
   const changed = [];
@@ -307,4 +310,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, buildScript, pending, scriptRel, artifactsRel, DEFAULT_CAP, LABEL };
+module.exports = { main, buildScript, readScript, pending, scriptRel, artifactsRel, DEFAULT_CAP, LABEL };

@@ -134,5 +134,5 @@ function main(argv, { env = process.env, cwd = process.cwd(), team, roleDir, spa
   return cmd === 'checkout' ? checkout(pr, head, ctx) : test(pr, ctx);
 }
 
-module.exports = { main, cleanEnv };
+module.exports = { main, cleanEnv, productUrl, GIT_PINS: ['-c', 'safe.bareRepository=explicit', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'] };
 if (require.main === module) process.exit(main(process.argv.slice(2)));

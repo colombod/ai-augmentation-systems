@@ -124,6 +124,9 @@
   "a3-draft": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/a3.js", "sub": ["new"] }
   ],
+  "verify-run": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/verify-run.js", "sub": ["run"] }
+  ],
   "review-run": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js", "sub": ["checkout", "test"] }
   ],

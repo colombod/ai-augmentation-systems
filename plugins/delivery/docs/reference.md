@@ -416,6 +416,25 @@ counting fail raises the andon (the mechanical pause below) with no owner step. 
 lists the open reality checks. The run's minutes cap is the checker's brief, not yet measured by the
 script.
 
+**Command-line surfaces.** A surface declared with `"command_line": true` (a CLI, a library, a service
+driven by commands) has no screen, so the Reality Checker checks it with
+`verify-run.js run <bead> --criterion <n>` (the `verify-run` lane group, the Reality Checker's only).
+The Delivery Manager puts the command in the script step with `reality-check.js refine <bead>
+--criterion <n> --step <k> --command '<shell command>' [--match '<pattern stdout must show>']`. The runner
+checks out the bead's deployed sha (the full sha) in `verify/<bead>-<sha12>` of the role directory,
+runs the command there with the role's variables cleared, saves the command, sha, stdout, stderr and
+exit code as the capture, decides the result itself (exit 0, and the match found in stdout when the step
+has one), and records the row through `run-record`, so the run cap, the capture rules and the andon on
+a fail all apply. The agent types no result, and the builder's lane has no way to write the row.
+The run cap is checked before the checkout, so an over-cap run executes nothing and writes no capture;
+a criterion with more than one step carrying a command is refused, never partly run. The runner runs
+the source clone at the deployed sha, not the installed artifact, so the version it observes is the
+clone's sha. The capture is cut at 256 KiB per stream (and says so) and is not redacted: a command that
+prints a secret writes it into the capture.
+`start.js` adds the Reality Checker to a new team whose surfaces include a command-line one, and
+`/delivery:team` warns when a declared surface only the Reality Checker can verify has no Reality
+Checker on the team.
+
 **Migration and cut stories.** The hard done gate applies to stories the Delivery Manager made ready.
 A story never made ready (one from before 0.22, or on the old checkbox template) closes with a
 `close-not-ready` warning, so in-flight work is never locked out; another bead closed with no

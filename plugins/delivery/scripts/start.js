@@ -54,13 +54,15 @@ const PRESETS = {
 };
 
 // R-33: a customer surface no test reaches needs the Reality Checker, so a declared surface with
-// scriptable: false puts it in the minimal preset too. The surface ids that are not scriptable:
+// scriptable: false puts it in the minimal preset too. So does a command-line surface (command_line:
+// true): its stories are verified by verify-run.js, which only the Reality Checker may run, never the
+// builder. The surface ids that need the Reality Checker:
 function unscriptableSurfaces(projectRoot) {
   const dir = path.join(projectRoot, '.delivery', 'initiatives');
   let names = [];
   try { names = fs.readdirSync(dir); } catch (err) { return []; }
   const { loadSurface } = require('./lib/surface.js');
-  return names.flatMap((n) => loadSurface(projectRoot, n).surfaces.filter((x) => x.scriptable === false).map((x) => `${n}/${x.id}`));
+  return names.flatMap((n) => loadSurface(projectRoot, n).surfaces.filter((x) => x.scriptable === false || x.command_line === true).map((x) => `${n}/${x.id}`));
 }
 function presetRoles(preset, { realityChecker = false, unscriptable = [] } = {}) {
   const ids = PRESETS[preset].slice();
@@ -544,7 +546,7 @@ function scaffold(opts) {
     if (st.ok && st.out) { if (dryRun) say('  manifest: would commit the uncommitted manifest files'); else wroteManifest = true; }
     say(`  manifest: keeping the existing ${TEAM_REL} and ${HOSTS_REL} (project "${team.project}", ${expandInstances(team).length} instance(s)); --preset, --models, --host, --prefix and --runner are not applied to it`);
     const unscriptable = unscriptableSurfaces(projectRoot);
-    if (unscriptable.length && !team.roles.some((r) => r.id === 'reality-checker' && !r.retired)) say(`  manifest: warning: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'are' : 'is'} not scriptable and the team has no Reality Checker: add {"id": "reality-checker", "brief": "delivery/reality-checker", "host": "<a host with desktop apps>"} to roles`);
+    if (unscriptable.length && !team.roles.some((r) => r.id === 'reality-checker' && !r.retired)) say(`  manifest: warning: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'need' : 'needs'} the Reality Checker (not scriptable, or a command line) and the team has none: add {"id": "reality-checker", "brief": "delivery/reality-checker", "host": "<a host with desktop apps>"} to roles`);
   } else {
     const project = slug(path.basename(projectRoot), 'project');
     const prefix = slug(prefixFlag || project, 'proj');
@@ -552,7 +554,7 @@ function scaffold(opts) {
     const roleIds = presetRoles(preset, { realityChecker, unscriptable });
     ({ team, hosts } = buildManifest({ project, prefix, host, preset, runner, models, roleIds }));
     say(`  manifest: ${w}write ${TEAM_REL} and ${HOSTS_REL}: preset ${preset}, models ${models}, host "${host}", prefix "${prefix}", roles ${roleIds.join(', ')}`);
-    if (unscriptable.length && !PRESETS[preset].includes('reality-checker')) say(`  manifest: the Reality Checker is added: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'are' : 'is'} not scriptable, so its checks run on the real surface`);
+    if (unscriptable.length && !PRESETS[preset].includes('reality-checker')) say(`  manifest: the Reality Checker is added: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'are' : 'is'} not scriptable or a command line, so its checks run on the real surface`);
     if (!dryRun) {
       fs.mkdirSync(path.dirname(teamFile), { recursive: true });
       fs.writeFileSync(teamFile, formatManifestJson(team));

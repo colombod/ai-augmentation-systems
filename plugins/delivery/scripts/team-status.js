@@ -176,11 +176,17 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
   // R-33: the Reality Checker drives a browser or desktop app, which a headless host cannot run
   const placement = team.roles.filter((r) => r.id === 'reality-checker' && !r.retired && ((hosts && hosts.hosts) || {})[r.host] && hosts.hosts[r.host].headless)
     .map((r) => `the Reality Checker is on ${r.host}, a headless host: it cannot drive a browser or desktop app there; move it to a host with desktop apps (hosts.json)`);
+  // a story on a surface only the Reality Checker can verify, with no Reality Checker on the team, can never reach verified
+  let unverifiable = [];
+  try {
+    const need = require('./lib/surface.js').checkerSurfaces(projectRoot);
+    if (need.length && !team.roles.some((r) => r.id === 'reality-checker' && !r.retired)) unverifiable = [`${need.join(', ')} can only be verified by a Reality Checker (not scriptable, or a command line) and the team has none: its stories can never be verified; add {"id": "reality-checker", "brief": "delivery/reality-checker", "host": "<a host>"} to roles in team.json`];
+  } catch (err) { unverifiable = []; }
   let reviews = null;
   try { reviews = reviewStatus(projectRoot, { team, gh }); } catch (err) { reviews = null; }
   let andon = null;
   try { andon = andonStatus(projectRoot, team, { bd, gh, ciGh, now, reachable: bd_reachable }); } catch (err) { andon = null; }
-  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, stalls, reviews, andon, warnings: [...manifestWarnings(team), ...placement] };
+  return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, stalls, reviews, andon, warnings: [...manifestWarnings(team), ...placement, ...unverifiable] };
 }
 
 function hasDrift(drift) {
