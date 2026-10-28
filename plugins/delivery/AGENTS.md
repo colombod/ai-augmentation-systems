@@ -40,6 +40,13 @@ project, without the owner relaying messages, approving steps or moving files be
 
 4. **Run the thing.** A feature is shipped when it is merged, released at an explicit version and
    shown working on a real project, not when its tests pass.
+5. **Lean on what owns the machine; no agent improvises administration.** Where Microsoft
+   Amplifier is installed, it owns that machine's own setup (amplifier-work-tracker, its Dolt
+   server and the logins they use): a session hands a host problem to one `amplifier run` call
+   first (`skills/amplifier`). Credentials and services are wired by whatever set the machine up,
+   never by an agent at run time: no agent reads a credential file, and the owner is never asked
+   for a password (owner ruling 2026-10-28, after a session on Wintermute was refused editing the
+   work-tracker's service and reading its credential file).
 
 ## Conventions
 

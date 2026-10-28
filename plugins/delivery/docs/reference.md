@@ -1301,6 +1301,7 @@ independently and `/delivery:realign` folds what it taught into the plan.
 | `/delivery:challenge` | any gate | Adversarial panel against any artifact |
 | `/delivery:status` | any time | Gates, open findings, drift, evidence grounding |
 | `/delivery:start`, `/delivery:team`, `/delivery:decision` | team | Start a team; status and join; the operator-decision loop |
+| `/delivery:amplifier` | any time | On a machine with Microsoft Amplifier: hand a host problem (work-tracker, its Dolt server, services) to one `amplifier run` call first; every session there starts with a one-line reminder, and `start.js --check` shows Amplifier and the work-tracker's doctor |
 
 Kept for one version as aliases: `/delivery:interview` (now `simulate --interview`),
 `/delivery:handoff` (now `sprint --runner`), `/delivery:prioritize` (now `prd --stage`),
