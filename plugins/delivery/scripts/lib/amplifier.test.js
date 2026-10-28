@@ -57,7 +57,7 @@ test('with Amplifier: every session starts knowing to lean on it, and names the 
 test('a failing work-tracker doctor is a warning whose fix is Amplifier, not a hand repair; a passing one is a pass', () => {
   const failing = envWith(fakeBin({
     amplifier: 'echo amplifier 2026.10.1',
-    'amplifier-work-tracker': 'echo "amplifier-work-tracker: bd init failed: Error 1045 (28000): Access denied for user \'root\'" >&2; exit 1',
+    'amplifier-work-tracker': 'echo "amplifier-work-tracker: bd init failed: Error: failed to open Dolt store: failed to check if database \\"contract1793214605304\\" exists on server 127.0.0.1:3308: Error 1045 (28000): Access denied for user \'root\'" >&2; exit 1',
   }));
   const d = A.detect({ env: failing, platform: 'darwin', run: realRun });
   assert.equal(d.version, 'amplifier 2026.10.1');
@@ -66,7 +66,7 @@ test('a failing work-tracker doctor is a warning whose fix is Amplifier, not a h
   assert.equal(rows[0].status, 'pass');
   assert.match(rows[0].detail, /host problems go to it first/);
   assert.equal(rows[1].status, 'warn');
-  assert.match(rows[1].detail, /doctor fails: .*Error 1045/);
+  assert.match(rows[1].detail, /doctor fails: .*Error 1045 \(28000\): Access denied for user 'root'$/, 'the cause, at the end of the line, is kept');
   assert.match(rows[1].fix, /ask Amplifier to fix its own setup/);
   assert.ok(rows.every((r) => r.hard === false), 'Amplifier is never a prerequisite');
 
