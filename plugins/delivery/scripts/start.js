@@ -185,6 +185,9 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
     }
     if (bd.ok && fs.existsSync(path.join(root, '.beads'))) rows.push(beadsSyncRow(run('bd', ['dolt', 'remote', 'list', '--json'], { cwd: root, env: runEnv })));
   }
+  // Amplifier is not a prerequisite; where it is installed it owns the machine's setup (skills/amplifier)
+  const A = require('./lib/amplifier.js');
+  rows.push(...A.checkRows(A.detect({ env: runEnv, platform, run: (c, a) => run(c, a, { env: runEnv, timeout: 60000 }) })));
   return rows;
 }
 
