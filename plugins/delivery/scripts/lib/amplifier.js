@@ -63,6 +63,10 @@ function detect({ env = process.env, platform = process.platform, run } = {}) {
   return out;
 }
 
+// bd puts the cause last ("... on server 127.0.0.1:3308: Error 1045 (28000): Access denied for user
+// 'root'"): a long line keeps its end, where the cause is (found running it on Wintermute)
+const tail = (s, n) => (s.length > n ? `...${s.slice(-n)}` : s);
+
 // start.js --check rows: none where Amplifier is absent (it is not a prerequisite)
 function checkRows(d) {
   if (!d.amplifier) return [];
@@ -71,7 +75,7 @@ function checkRows(d) {
     const svc = d.service ? `service ${d.service}; ` : '';
     rows.push(d.doctor && d.doctor.ok
       ? { name: 'amplifier-work-tracker', status: 'pass', detail: `${svc}doctor passes`, hard: false }
-      : { name: 'amplifier-work-tracker', status: 'warn', detail: `${svc}doctor fails: ${d.doctor ? d.doctor.line.slice(0, 160) : 'not run'}`,
+      : { name: 'amplifier-work-tracker', status: 'warn', detail: `${svc}doctor fails: ${d.doctor ? tail(d.doctor.line, 200) : 'not run'}`,
         fix: 'ask Amplifier to fix its own setup (/delivery:amplifier); do not repair the service or its login by hand', hard: false });
   }
   return rows;
