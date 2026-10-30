@@ -158,3 +158,24 @@ test('the Delivery Manager and the other restricted lanes may run map.js; nothin
   for (const sub of ['features', 'impact --story s.md', 'blind --json']) assert.equal(run(`node ${ROOT}/scripts/map.js ${sub}`).allow, true, sub);
   assert.equal(run(`node ${ROOT}/scripts/map.js rm -rf /`).allow, false, 'only its three read-only verbs');
 });
+
+// Retirement (MJ's Market Fit and Worth Using): what deleting a feature frees, never a verdict on use
+test('retire: files only the feature reaches are deletable; shared ones name the features that keep them', () => {
+  const fx = fixture(FILES);
+  const r = run(['retire', 'shop:checkout', '--repo', fx.dir, '--json']).json();
+  assert.equal(r.sha, fx.sha);
+  assert.deepEqual(r.exclusive, ['plug/scripts/pay.js', 'plug/skills/checkout/SKILL.md']);
+  assert.deepEqual(r.shared, [
+    { path: 'plug/scripts/lib/rates.json', features: ['shop:hook:SessionStart'] },
+    { path: 'plug/scripts/lib/tax.js', features: ['shop:hook:SessionStart'] },
+  ]);
+  const text = run(['retire', 'shop:checkout', '--repo', fx.dir]).out;
+  assert.match(text, /Deletable with it/);
+  assert.match(text, /plug\/scripts\/lib\/tax\.js {2}also reached by shop:hook:SessionStart/);
+  assert.match(text, /reach, not use/);
+  assert.match(text, /the owner's decision, recorded/);
+  const none = run(['retire', 'no-such', '--repo', fx.dir]);
+  assert.equal(none.code, 1);
+  assert.match(none.out, /no feature "no-such"/);
+  assert.equal(run(['retire', '--repo', fx.dir]).code, 2);
+});
