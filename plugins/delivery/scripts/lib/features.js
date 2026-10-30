@@ -18,10 +18,17 @@ function globRe(glob) {
 function featuresOf(map, texts = map.texts) {
   const out = [];
   const files = new Set(map.files);
+  const nameOf = (root) => {
+    const pre = root ? `${root}/` : '';
+    try { return JSON.parse(texts[`${pre}.claude-plugin/plugin.json`]).name || path.posix.basename(root) || 'plugin'; } catch (err) { return path.posix.basename(root) || 'plugin'; }
+  };
+  // two plugins with one name (the Vault ships plugins/the-vault and plugins/the-vault-openai, both
+  // "the-vault") would list every feature twice under one id: such names carry their folder
+  const counts = {};
+  for (const r of map.pluginRoots) counts[nameOf(r)] = (counts[nameOf(r)] || 0) + 1;
   for (const root of map.pluginRoots) {
     const pre = root ? `${root}/` : '';
-    let name = path.posix.basename(root) || 'plugin';
-    try { name = JSON.parse(texts[`${pre}.claude-plugin/plugin.json`]).name || name; } catch (err) { /* keep the folder name */ }
+    const name = counts[nameOf(root)] > 1 ? `${nameOf(root)}@${root || '.'}` : nameOf(root);
     for (const f of map.files) {
       if (!f.startsWith(pre)) continue;
       const rel = f.slice(pre.length);
@@ -50,6 +57,7 @@ function featuresOf(map, texts = map.texts) {
       } catch (err) { /* unreadable hooks.json: no hook features, said by the anchors check */ }
     }
   }
+  out.push(...entryPoints(map, texts));
   // package.json bin entries, anywhere in the tree
   for (const f of map.files.filter((x) => path.posix.basename(x) === 'package.json' && !x.includes('node_modules/'))) {
     let pkg;
@@ -79,6 +87,56 @@ function featuresOf(map, texts = map.texts) {
   return out;
 }
 
+// A product's own entry points, for any project: where its users and machines start.
+//   web routes   @app.get("/x"), @router.post(...) (FastAPI, Flask), app.get('/x', ...) (Express):
+//                one feature per file, naming its routes
+//   MCP tools    Tool("name", ...), server.tool("name", ...), registerTool("name", ...): one per file
+//   functions    vercel.json "functions", and api/ files where vercel.json exists (serverless entries)
+//   workflows    .github/workflows/*.yml: each is started by a push, a schedule or a person
+//   scripts      pyproject [project.scripts] console entry points
+// Anchored at the file that declares them: a change reaching that file reaches those entries.
+function entryPoints(map, texts) {
+  const out = [];
+  const files = new Set(map.files);
+  const stem = (f) => f.replace(/\.[^./]+$/, '');
+  for (const [f, text] of Object.entries(texts)) {
+    const lang = C.langOf(f);
+    if (lang === 'py' || lang === 'js') {
+      const routes = [];
+      for (const m of text.matchAll(/^[ \t]*@\w+(?:\.\w+)*\.(get|post|put|patch|delete|route|websocket|api_route)\(\s*(?:path\s*=\s*)?["']([^"']*)["']/gm)) routes.push(`${m[1].toUpperCase()} ${m[2] || '/'}`);
+      for (const m of text.matchAll(/\b(?:app|router|server)\.(get|post|put|patch|delete|all|use)\(\s*["'](\/[^"']*)["']/g)) routes.push(`${m[1].toUpperCase()} ${m[2]}`);
+      if (routes.length) out.push({ id: `http:${stem(f)}`, kind: 'routes', source: 'derived', anchors: [f], entries: [...new Set(routes)] });
+      const tools = [];
+      for (const m of text.matchAll(/(?:^|[^\w.])Tool\(\s*["'](\w+)["']/g)) tools.push(m[1]);
+      for (const m of text.matchAll(/\.(?:tool|registerTool|addTool)\(\s*["'](\w+)["']/g)) tools.push(m[1]);
+      if (tools.length && !/(^|\/)tests?\//.test(f) && !/(^|\/)test_[^/]*$|\.test\.[jt]s$/.test(f)) out.push({ id: `tools:${stem(f)}`, kind: 'tools', source: 'derived', anchors: [f], entries: [...new Set(tools)] });
+    }
+    if (/(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/.test(f)) {
+      const name = (/^name:\s*["']?([^"'\n]+)/m.exec(text) || [])[1];
+      out.push({ id: `ci:${path.posix.basename(f).replace(/\.ya?ml$/, '')}`, kind: 'workflow', source: 'derived', anchors: [f], entries: name ? [name.trim()] : [] });
+    }
+  }
+  for (const v of map.files.filter((x) => path.posix.basename(x) === 'vercel.json')) {
+    const dir = path.posix.dirname(v) === '.' ? '' : `${path.posix.dirname(v)}/`;
+    let conf = {};
+    try { conf = JSON.parse(texts[v]); } catch (err) { conf = {}; }
+    const fns = new Set(Object.keys(conf.functions || {}).map((k) => `${dir}${k}`).filter((k) => files.has(k)));
+    for (const f of map.files) if (f.startsWith(`${dir}api/`) && /\.(py|js|ts|mjs|go|rb)$/.test(f)) fns.add(f);
+    for (const f of fns) out.push({ id: `function:${stem(f)}`, kind: 'function', source: 'derived', anchors: [f] });
+  }
+  for (const p of map.files.filter((x) => path.posix.basename(x) === 'pyproject.toml')) {
+    const sec = /^\[project\.scripts\]\s*$([\s\S]*?)(?=^\[|(?![\s\S]))/m.exec(texts[p] || '');
+    if (!sec) continue;
+    const dir = path.posix.dirname(p) === '.' ? '' : `${path.posix.dirname(p)}/`;
+    for (const m of sec[1].matchAll(/^\s*["']?([\w.-]+)["']?\s*=\s*["']([\w.]+)(?::\w+)?["']/gm)) {
+      const rel = m[2].split('.').join('/');
+      const hit = [`${dir}${rel}.py`, `${dir}src/${rel}.py`, `${dir}${rel}/__init__.py`, `${dir}src/${rel}/__init__.py`].find((c) => files.has(c));
+      out.push({ id: `script:${m[1]}`, kind: 'script', source: 'derived', anchors: hit ? [hit] : [], dangling: hit ? [] : [m[2]] });
+    }
+  }
+  return out;
+}
+
 // A path as the user typed it -> the repository path, or null. One file, one path: `./x`, a plugin-relative
 // spelling and a unique suffix all name the same file (roadmap feature-map-03).
 function canonicalPath(map, p) {
@@ -101,20 +159,28 @@ function impact(map, feats, paths) {
     else if (c.ambiguous) ambiguous.push({ path: p, candidates: c.ambiguous });
     else changed.push(c.path);
   }
-  const want = new Set(changed);
-  const reached = [];
+  const withAnchors = feats.filter((f) => f.anchors.length);
+  const reaches = withAnchors.map((f) => ({ f, r: C.reach(map, f.anchors) }));
+  // fan-in of every file: how many features reach it. A file a fifth or more of the features reach
+  // (and at least three) is a hub, like a shared config or a core library: reach through it is real
+  // but says little, so features reached only through a hub are counted apart, not listed one by one.
   const fanIn = new Map();
-  for (const f of feats) {
-    if (!f.anchors.length) continue;
-    const r = C.reach(map, f.anchors);
+  for (const { r } of reaches) for (const file of r.keys()) fanIn.set(file, (fanIn.get(file) || 0) + 1);
+  const isHub = (file) => (fanIn.get(file) || 0) >= Math.max(3, Math.ceil(withAnchors.length * 0.2));
+  const reached = [];
+  for (const { f, r } of reaches) {
     const hits = changed.filter((p) => r.has(p));
-    for (const p of hits) fanIn.set(p, (fanIn.get(p) || 0) + 1);
     if (!hits.length) continue;
-    const via = hits.map((p) => ({ path: p, hops: r.get(p).hops, chain: C.chainTo(r, p) })).sort((a, b) => a.hops - b.hops);
-    reached.push({ id: f.id, kind: f.kind, source: f.source, hops: via[0].hops, via });
+    const via = hits.map((p) => {
+      const chain = C.chainTo(r, p);
+      // a doc is a leaf, never a hub: changing one changes no behaviour
+      const hub = [p, ...chain.map((st) => st.from)].find((x) => !f.anchors.includes(x) && C.langOf(x) !== 'doc' && isHub(x)) || null;
+      return { path: p, hops: r.get(p).hops, chain, hub };
+    }).sort((a, b) => a.hops - b.hops);
+    const direct = via.filter((v) => !v.hub);
+    reached.push({ id: f.id, kind: f.kind, source: f.source, hops: via[0].hops, via, viaHub: direct.length ? null : via[0].hub });
   }
   reached.sort((a, b) => a.hops - b.hops || a.id.localeCompare(b.id));
-  const withAnchors = feats.filter((f) => f.anchors.length).length;
   const blindSet = new Set(map.blind);
   const unreached = changed.filter((p) => !fanIn.has(p));
   return {
@@ -123,8 +189,8 @@ function impact(map, feats, paths) {
     unknown,
     ambiguous,
     reached,
-    // a file most features reach is a hub: changing it reaches nearly everything, so the list says so
-    hubs: [...fanIn].filter(([, n]) => withAnchors >= 4 && n / withAnchors >= 0.5).map(([p, n]) => ({ path: p, features: n })),
+    // changed files that are hubs: changing one reaches much of the product, so the answer says so
+    hubs: changed.filter((p) => isHub(p) && C.langOf(p) !== 'doc').map((p) => ({ path: p, features: fanIn.get(p) })),
     // changed files no feature reaches: dead code, a feature nobody declared, or a reference no rule reads
     unreached: unreached.map((p) => ({ path: p, blind: blindSet.has(p) })),
     features: feats.length,

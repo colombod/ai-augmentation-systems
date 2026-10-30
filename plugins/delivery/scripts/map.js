@@ -3,7 +3,7 @@
 //   map.js features [--repo <dir>] [--at <ref>] [--json]
 //       every feature at the commit, derived (plugin skills, agents, commands, hooks; package bins)
 //       and declared (.delivery/features.json), with its anchors
-//   map.js impact [--repo <dir>] [--at <ref>] (<path>... | --diff <base> [<head>] | --story <file>) [--json]
+//   map.js impact [--repo <dir>] [--at <ref>] (<path>... | --diff <base> [<head>] | --story <file>) [--all] [--json]
 //       the features a change reaches: each with the shortest chain from the feature to the changed
 //       file, the hop count and file:line evidence for every step; hubs, unreached files and the
 //       blind count. --diff maps at <base> (what the change lands on) the files changed in base..head;
@@ -25,6 +25,7 @@ function parse(argv) {
     if (a === '--repo') o.repo = argv[++i];
     else if (a === '--at') o.at = argv[++i];
     else if (a === '--json') o.json = true;
+    else if (a === '--all') o.all = true;
     else if (a === '--story') o.story = argv[++i];
     else if (a === '--diff') { o.diff = [argv[++i]]; if (argv[i + 1] && !argv[i + 1].startsWith('--')) o.diff.push(argv[++i]); }
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
@@ -95,17 +96,48 @@ function main(argv, { write = (s) => process.stdout.write(s) } = {}) {
     const out = require('child_process').spawnSync('git', ['diff', '--name-only', '--no-renames', map.sha, head], { cwd: repo, encoding: 'utf8' });
     if (out.status !== 0) { write(`map.js: refused: git diff failed: ${out.stderr.trim()}\n`); return 1; }
     paths = paths.concat(out.stdout.split('\n').filter(Boolean));
+    var headSha = head;
   }
   if (!paths.length) { write('map.js: impact needs paths, --diff or --story\n'); return 2; }
   const r = F.impact(map, feats, paths);
+  // Files the change adds are not at the base: map them at the head, where they exist, so a new file
+  // a feature reaches is reached, not reported "not in the commit" (found on the Vault, 92d8452).
+  if (o.diff && r.unknown.length && headSha && headSha !== map.sha) {
+    const headMap = C.buildMap(repo, headSha);
+    const added = F.impact(headMap, F.featuresOf(headMap), r.unknown);
+    const byId = new Map(r.reached.map((f) => [f.id, f]));
+    for (const f of added.reached) {
+      const have = byId.get(f.id);
+      if (!have) { byId.set(f.id, { ...f, added: true }); continue; }
+      have.via.push(...f.via);
+      have.hops = Math.min(have.hops, f.hops);
+    }
+    r.reached = [...byId.values()].sort((a, b) => a.hops - b.hops || a.id.localeCompare(b.id));
+    r.changed = r.changed.concat(added.changed);
+    r.added = added.changed;
+    r.unknown = added.unknown;
+    r.unreached = r.unreached.concat(added.unreached);
+  }
   if (o.json) { write(`${JSON.stringify(r)}\n`); return 0; }
   write(`Impact at ${r.sha} of ${r.changed.length} changed file${r.changed.length === 1 ? '' : 's'}: ${r.reached.length} of ${r.features} features reached\n`);
-  for (const f of r.reached) {
+  // nearest first; past NEAR hops a reach is real but indirect: counted, and listed with --all
+  const NEAR = 2;
+  const throughHub = o.all ? [] : r.reached.filter((f) => f.viaHub);
+  const shown = o.all ? r.reached : r.reached.filter((f) => !f.viaHub && f.hops <= NEAR);
+  for (const f of shown) {
     write(`  ${f.id} (${f.kind}, ${f.source}), ${f.hops} hop${f.hops === 1 ? '' : 's'}\n`);
     const v = f.via[0];
     if (v.chain.length) for (const s of v.chain) write(`      ${s.from}:${s.line} -> ${s.to} (${s.kind})\n`);
     else write(`      ${v.path} is the feature's own file\n`);
     if (f.via.length > 1) write(`      and ${f.via.length - 1} more changed file${f.via.length > 2 ? 's' : ''}: ${f.via.slice(1).map((x) => x.path).join(', ')}\n`);
+  }
+  if (throughHub.length) {
+    const hubs = [...new Set(throughHub.map((f) => f.viaHub))];
+    write(`  and ${throughHub.length} reached only through shared hub file${hubs.length > 1 ? 's' : ''} ${hubs.join(', ')}: ${throughHub.slice(0, 6).map((f) => f.id).join(', ')}${throughHub.length > 6 ? ', ...' : ''}\n`);
+  }
+  const far = o.all ? [] : r.reached.filter((f) => !f.viaHub && f.hops > NEAR);
+  if (far.length) {
+    write(`  and ${far.length} more, ${NEAR + 1} to ${far[far.length - 1].hops} hops away: ${far.slice(0, 8).map((f) => f.id).join(', ')}${far.length > 8 ? ', ...' : ''} (--all lists them with their chains)\n`);
   }
   for (const h of r.hubs) write(`Hub: ${h.path} is reached by ${h.features} features; a change there reaches most of the product.\n`);
   for (const u of r.unreached) write(`Unreached: ${u.path}${u.blind ? ' (blind: no rule reads its kind of file)' : ': no feature reaches it (dead code, an undeclared feature, or a reference no rule reads)'}\n`);
@@ -116,4 +148,9 @@ function main(argv, { write = (s) => process.stdout.write(s) } = {}) {
 }
 
 module.exports = { main, storyPaths };
-if (require.main === module) process.exit(main(process.argv.slice(2)));
+// exitCode, not exit(): exit() drops output still queued for a pipe (a large --json was cut at 64 KB)
+if (require.main === module) {
+  // a reader that stops early (| head) is not an error
+  process.stdout.on('error', (err) => { if (err.code === 'EPIPE') process.exit(0); throw err; });
+  process.exitCode = main(process.argv.slice(2));
+}
