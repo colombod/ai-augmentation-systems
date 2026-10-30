@@ -31,6 +31,25 @@ others missed, the space is **not exhausted** — say so rather than implying co
 Single-lens findings are the least reliable *and* the ones a single pass would have
 missed entirely. Mark them, do not drop them.
 
+## Owner lens and what must survive
+
+Elicited in at most three questions (`/delivery:brief` step 4b). Quote the owner; with no
+answer, write **assumed** and keep the questions under Open questions.
+
+**Lens:** you value <X> because <Y>, while wanting to preserve <Z> · confirmed | assumed
+**What must survive:** the few things no later cut or change may drop without the owner's record.
+
+- 
+
+**Proposition:** the one thing <named user> must believe or be able to do at the end, in one sentence.
+
+| Gate | Pass / fail / unknown / n.a. | Reason |
+| :-- | :-- | :-- |
+| correctness | | |
+| safety | | |
+| accessibility | | |
+| feasibility | | |
+
 ## Problem
 
 What happens today that shouldn't, or doesn't happen that should. Describe the

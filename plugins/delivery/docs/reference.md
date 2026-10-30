@@ -1285,14 +1285,14 @@ independently and `/delivery:realign` folds what it taught into the plan.
 
 | Skill | Stage | Purpose |
 | :-- | :-- | :-- |
-| `/delivery:brief` | DEFINE | Problem, users, cost of the status quo; frame or assess mode |
+| `/delivery:brief` | DEFINE | Problem, users, cost of the status quo; frame or assess mode; the owner's lens and what must survive (at most three questions), one proposition, gates first |
 | `/delivery:research` | DEFINE (optional) | Prior art, domain constraints, technical landscape, cited |
 | `/delivery:personas` | DEFINE (optional) | 3–5 behavioral personas, evidence-graded |
 | `/delivery:simulate` | DEFINE (optional) | `--interview`: needs and objections; `--journey`: ranked friction map |
-| `/delivery:prd` | DEFINE | Scenarios, falsifiable criteria, NFRs as numbers, then MVP staging (`--stage`) |
+| `/delivery:prd` | DEFINE | Scenarios, falsifiable criteria, NFRs as numbers, the one-breath test (cuts as proposed non-goals), then MVP staging (`--stage`) with the leftover test, and the storyboard the owner approves in quoted words |
 | `/delivery:design` | DEFINE (optional) | Seed → tokens, component states, computed contrast |
 | `/delivery:architecture` | DEFINE | Real-codebase design, alternatives, spikes, migration |
-| `/delivery:roadmap` | CONTRACT | Risk-first sequencing, critical path, cut lists, cost inversions |
+| `/delivery:roadmap` | CONTRACT | Risk-first sequencing, critical path, cut lists, cost inversions; stops until the storyboard is approved |
 | `/delivery:stories` | CONTRACT | Vertical slices carrying full context and acceptance criteria |
 | `/delivery:materialise` | NAVIGATE | Roadmap, stories and spikes → beads; denylist |
 | `/delivery:sprint` | NAVIGATE | Scope package with stop conditions; `--runner` for an external runner |

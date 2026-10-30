@@ -21,12 +21,17 @@ completely is a project milestone, not a release.
 
 ## Requirement scoring
 
-| FR | Personas served | Load-bearing? | Severity | Objection answered | Effort (est.) | Confidence |
-| :-- | :-- | :-- | :-- | :-- | :-- | :-- |
-| FR-1 | | yes / no | | | S/M/L | observed / assumed |
+| FR | Personas served | Load-bearing? | Severity | Objection answered | Effort (est.) | Confidence | In the primary picture? |
+| :-- | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
+| FR-1 | | yes / no | | | S/M/L | observed / assumed | yes / no: load-bearing for <persona> / no: leftover |
 
 Load-bearing beats enhancement. Where a delighter outranks a blocker, say why
 explicitly — that reasoning should not win quietly.
+
+**Leftover test.** A requirement outside the primary persona's before-and-after picture defaults
+to *Explicitly not doing* unless it is load-bearing for another persona the stages name. Each
+default is a proposal for the owner (Open questions below); nothing under the brief's **What must
+survive** defaults out.
 
 ## Stages
 
@@ -58,8 +63,8 @@ served, personas not yet served, what it teaches, what's excluded and why)*
 
 ### Explicitly not doing
 
-| FR | Reason | Revisit if |
-| :-- | :-- | :-- |
+| FR | Reason | Leftover default or owner's record | Revisit if |
+| :-- | :-- | :-- | :-- |
 
 ## Milestones
 

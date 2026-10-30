@@ -85,8 +85,25 @@ space is **not exhausted**, and the brief should say so rather than implying com
 gets checked against the source before it enters the brief. Specific, confident and wrong is
 the worst thing this phase can produce, because precision reads as authority.
 
+**4b. The owner's lens, what must survive, and the proposition.** Methods ported from
+michaeljabbour's Taste and Sizzle skills (MIT; see `${CLAUDE_PLUGIN_ROOT}/NOTICE`).
+
+- *Lens.* What the owner values here and why, in at most three questions, put in step 5's batch:
+  what experience taught them to value this; what they admire or dislike in a concrete example,
+  and which choice creates that reaction; what someone should feel, understand or do, and what
+  must not be lost. Skip any question the owner's own words already answer. Reflect it back in
+  one line ("you value X because Y, while wanting to preserve Z") and let them correct it. With
+  no answer, write the lens **assumed** and keep the questions open; never fill it in.
+- *What must survive.* The few things any later cut or change must keep, in the owner's words.
+  The PRD's staging cannot drop one without the owner's record.
+- *Proposition.* The one thing the named user must believe or be able to do at the end, in one
+  sentence. If it needs "and also", there are two products: say so, and propose which one this is.
+- *Gates first.* Correctness, safety, accessibility, feasibility: each pass, fail, unknown or not
+  applicable, with a reason. A critical fail blocks the idea however appealing it is; a critical
+  unknown is an open question.
+
 **5. Ask what you cannot determine.** Collect open questions, drop the ones the codebase
-answers, put the rest to the user in one batch. Record what stays unanswered. Never invent
+answers, put the rest (with step 4b's lens questions) to the user in one batch. Record what stays unanswered. Never invent
 an answer, and never quietly drop a question because it is inconvenient.
 
 **6. Write** to `.delivery/initiatives/<initiative>/brief.md` using `${CLAUDE_PLUGIN_ROOT}/templates/brief.md`.
@@ -98,6 +115,8 @@ an answer, and never quietly drop a question because it is inconvenient.
 - Coverage stated: whether the finders agreed enough to call the space explored
 - Every numeric claim verified against its source
 - A named user segment, not "users"
+- The owner's lens and what must survive, in their words or labelled **assumed**
+- One proposition in one sentence, and the four gates each marked with a reason
 - The problem stated as something happening today, with its cost
 - At least one measurable success signal
 - Explicit out-of-scope list

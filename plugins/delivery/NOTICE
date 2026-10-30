@@ -1,0 +1,39 @@
+delivery plugin: third-party methods
+
+The delivery plugin ports methods (the doctrine, not the code) from the projects below.
+Each is under the MIT License; their copyright lines are reproduced here. The places that
+use each method name it and point to this file.
+
+amplifier-skill-taste (https://github.com/michaeljabbour/amplifier-skill-taste)
+  Copyright (c) 2026 Taste × Elegance contributors. MIT License.
+  Used in: skills/brief (the owner's lens in at most three questions, what must survive,
+  gates first), templates/brief.md.
+
+amplifier-skill-sizzle (https://github.com/michaeljabbour/amplifier-skill-sizzle)
+  Copyright (c) 2026 Sizzle contributors. MIT License.
+  Used in: skills/brief (one proposition), skills/prd (the one-breath test, cuts as proposed
+  non-goals, the storyboard approved before any spend and reopened by change),
+  skills/roadmap (the storyboard gate), templates/storyboard.md.
+
+amplifier-skill-market-fit (https://github.com/michaeljabbour/amplifier-skill-market-fit)
+  Copyright (c) 2026 Market Fit contributors. MIT License.
+  Used in: skills/prd and templates/prioritization.md (the leftover test, after its
+  "leftover stone").
+
+The MIT License, as each project states it:
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this
+  software and associated documentation files (the "Software"), to deal in the Software
+  without restriction, including without limitation the rights to use, copy, modify, merge,
+  publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+  to whom the Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies or
+  substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+  INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+  PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+  FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+  DEALINGS IN THE SOFTWARE.

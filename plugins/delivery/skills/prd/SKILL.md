@@ -46,6 +46,14 @@ Read `.delivery/initiatives/<initiative>/brief.md`.
 
 **5. Write the PRD** to `.delivery/initiatives/<initiative>/prd.md` using `${CLAUDE_PLUGIN_ROOT}/templates/prd.md`. Give every requirement a stable ID (`FR-1`, `NFR-1`) — the roadmap, stories and tests will reference these, and renumbering later breaks the chain.
 
+**5b. One breath, and what to cut.** (Sizzle, michaeljabbour, MIT; `${CLAUDE_PLUGIN_ROOT}/NOTICE`.)
+Tell the primary persona's journey in one breath: "they start at X, which leads to Y, because of
+that Z, and they leave with W", each step following from the one before. Check it against the
+brief's proposition. Wherever it needs "and also", the scenario after it is a candidate cut: list
+it under the PRD's out of scope as **proposed non-goal**, with the reason. A proposed non-goal is
+the owner's to accept or refuse; narrowing scope is never the team's choice, so nothing is dropped
+until they answer.
+
 ## Step 6 — MVP staging
 
 Output: `.delivery/initiatives/<initiative>/prioritization.md`. Inputs: the PRD just written,
@@ -77,8 +85,14 @@ Take this directly from the simulation's per-persona coverage data: for each can
 | **Objection addressed** | which interview objection it answers, if any |
 | **Effort** | rough size, flagged as an estimate not yet architecture-informed |
 | **Confidence** | grounding grade of the persona evidence behind the score |
+| **In the primary picture?** | is it in the primary persona's before-and-after picture (step 5b's one breath) |
 
 Load-bearing beats enhancement. A feature that prevents abandonment for two personas outranks one that delights one persona, unless the delight is the differentiator — and if it is, say so explicitly rather than letting it win quietly.
+
+**The leftover test** (after Market Fit's leftover stone, michaeljabbour, MIT). A requirement that is
+not in the primary picture defaults to *Explicitly not doing* unless it is load-bearing for another
+persona the stages name; say which. A default is a proposal: it goes to the owner with the others
+in Open questions, and a requirement the brief lists under **What must survive** never defaults out.
 
 **6.3 Cut the stages.** Typically MVP / Stage 2 / Stage 3 / explicitly-not-doing. For each stage state:
 
@@ -87,6 +101,7 @@ Load-bearing beats enhancement. A feature that prevents abandonment for two pers
 - Personas explicitly *not* served yet, and when they will be. Naming this prevents a segment from being silently abandoned.
 - What the stage lets you learn — each stage should answer a question, since a stage that teaches nothing could have been merged into the next one
 - Why the excluded features can wait, in terms of the friction map
+- That every item under the brief's **What must survive** is in the MVP; a stage that leaves one out needs the owner's record, cited
 
 **Evidence-only marker — check this for every stage, every run, not just the first time.**
 Look at the `Confidence` column for every persona the stage names as completing a journey
@@ -110,6 +125,16 @@ on it is removed on the next run, without anyone having to remember to clear it 
 
 Write to `.delivery/initiatives/<initiative>/prioritization.md` using `${CLAUDE_PLUGIN_ROOT}/templates/prioritization.md`.
 
+**6.7 The product storyboard, approved before the roadmap.** (Sizzle's storyboard gate, michaeljabbour, MIT.)
+Write `.delivery/initiatives/<initiative>/storyboard.md` from `${CLAUDE_PLUGIN_ROOT}/templates/storyboard.md`:
+the MVP's primary journey as one card per step (what the persona sees, does, and believes after,
+with its `FR-n`), the proposition, and two or three real choices with a recommended answer each.
+Show it to the owner (in a team, through the Chief of Staff's briefing) and nothing downstream
+starts until they approve it. The approval is their message **quoted word for word** in the
+storyboard's approval block; with no message to quote, it is not approved. Approval is never
+assumed, inferred from silence, or given by a role. Any later change to the scenarios, the MVP's
+`FR-n` list or the proposition reopens it: clear the approval and say so in the hand-off.
+
 Where scores rest on `assumed`-grade personas, mark them. A prioritisation built on invented users is a plan for an invented market, and the reader is entitled to know how much of it is that.
 
 **Staging exit criteria**
@@ -120,6 +145,8 @@ Where scores rest on `assumed`-grade personas, mark them. A prioritisation built
 - Each stage states what it lets you learn
 - Milestones are demonstrable, and release milestones are distinguished from learning milestones
 - Confidence reflects the grounding of the persona evidence
+- Every `FR-n` answers *In the primary picture?*; leftover defaults are listed for the owner, and nothing under **What must survive** is staged out without their record
+- `storyboard.md` written, and its approval either quoted word for word or marked not approved
 
 **Staging budget: 700 words target, 1100 hard cap** (excludes code, YAML and data tables), in `prioritization.md`, measured separately from the PRD's.
 
@@ -133,6 +160,7 @@ Where scores rest on `assumed`-grade personas, mark them. A prioritisation built
 - Non-functional requirements are numbers, or explicitly listed as open questions
 - Requirements have stable IDs
 - Out of scope is stated explicitly
+- The primary journey passes the one-breath test, or each "and also" is a proposed non-goal for the owner
 
 ## Writing, then revising
 
@@ -142,4 +170,4 @@ Where scores rest on `assumed`-grade personas, mark them. A prioritisation built
 
 Report exit criteria status honestly, including any criterion you could not make falsifiable. Then report the stages, and lead with the MVP's persona coverage — that is the claim everything else rests on. Flag any persona served by no stage at all.
 
-Recommend `/delivery:challenge .delivery/initiatives/<initiative>/prd.md` (and `prioritization.md`) before design — the adversarial pass is cheapest here. Then `/delivery:design` if the product has a UI worth a design system, and `/delivery:architecture` to design the MVP stage.
+Say whether the storyboard is approved; if not, the roadmap waits for it. Recommend `/delivery:challenge .delivery/initiatives/<initiative>/prd.md` (and `prioritization.md`) before design — the adversarial pass is cheapest here. Then `/delivery:design` if the product has a UI worth a design system, and `/delivery:architecture` to design the MVP stage.

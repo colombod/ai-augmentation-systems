@@ -25,6 +25,11 @@ Its sections **Where `.delivery/` resolves to**, **Which initiative**, **Open bl
 Read both inputs.
 
 - **PRD missing** — stop. Sequencing unknown requirements is fiction. Run `/delivery:prd` first.
+- **Storyboard not approved** — stop. `.delivery/initiatives/<initiative>/storyboard.md` must exist
+  with status approved and the owner's approving words quoted exactly (`/delivery:prd` step 6.7;
+  Sizzle's storyboard gate, michaeljabbour, MIT). Missing, unquoted or reopened: say which, and offer
+  to draft it or put it to the owner. Only the owner may waive it, in words you quote in the
+  roadmap's header; a role never does, and silence is not approval.
 - **Architecture missing** — warn clearly. You can sequence without it, but the dependency map and effort sizing will be guesses, and the spike list — the most valuable input to sequencing — will not exist. Ask whether to proceed anyway or run `/delivery:architecture` first.
 
 If `.delivery/initiatives/<initiative>/roadmap.md` already exists, read it and ask whether
