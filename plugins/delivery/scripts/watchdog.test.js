@@ -1187,6 +1187,26 @@ test('dlv-4oj: a merged story\'s deploy and a deployed story\'s check wake the D
     assert.match(r.out, /not verified; its reality check was not handed to the watchdog \(.*\): dispatch it in this turn/);
     assert.ok(h.db().issues['ex-s'].labels.includes('state-deployed'), 'the deploy is recorded all the same');
   }
+  // a handoffs file another writer holds (its lock taken) fails open: the wake runs and says the row stays open; a pass closing a done row says so and still wakes
+  {
+    const h = fresh(['state-merged'], { merged_pr: '478' });
+    HO.queue(h.root, { bead: 'ex-s', step: 'deploy', to: DM, pr: '478', at: t0 });
+    fs.writeFileSync(path.join(h.root, HO.REL, `${HO.FILE}.lock`), '1');
+    const spawn = spawner();
+    const r = at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1, 'the wake stands');
+    assert.match(r.out, /Woke delivery-lead .*\(its handoff stays open until the next pass: handoffs\.ndjson\.lock is held by another writer; retry in a moment\)/);
+    assert.equal(HO.pending(h.root).length, 1, 'not handed over yet');
+    fs.unlinkSync(path.join(h.root, HO.REL, `${HO.FILE}.lock`));
+    h.setBead('ex-s', (b) => { b.labels = ['state-merged', 'state-deployed']; b.metadata = { deployed_sha: SHA }; });
+    HO.queue(h.root, { bead: 'ex-s', step: 'check', to: DM, sha: SHA, at: iso(Date.parse(t0) + 6 * 60e3) });
+    fs.writeFileSync(path.join(h.root, HO.REL, `${HO.FILE}.lock`), '1');
+    const r2 = at(h, iso(Date.parse(t0) + 6 * 60e3), ['run'], { spawn, bd: memStore(h) });
+    assert.match(r2.out, /Note: the handoffs the record closed stay open until the next pass \(handoffs\.ndjson\.lock is held by another writer/);
+    assert.equal(spawn.list.length, 2, 'the check wake still runs in the same pass');
+    assert.match(spawn.list[1].args.join(' '), /Dispatch its reality check now/);
+    fs.unlinkSync(path.join(h.root, HO.REL, `${HO.FILE}.lock`));
+  }
   // a handoff keeps the message rules: five minutes after a message wake it waits, then goes; the day's stall cap does not hold it
   {
     const h = fresh(['state-merged'], { merged_pr: '478' });
