@@ -494,14 +494,23 @@ test('install: dry run by default; --apply writes a job with no versioned path, 
   assert.equal(main(['uninstall'], { platform: 'linux', has: () => true }).code, 0);
   assert.deepEqual(fs.readdirSync(unit), []);
   // cron: only an interval that divides the hour keeps its cadence (Copilot 471)
-  assert.equal(main(['install', '--apply', '--every', '45m'], { platform: 'linux', has: () => false }).code, 2);
-  assert.match(main(['install', '--every', '7m'], { platform: 'linux', has: () => false }).out, /must divide the hour/);
-  assert.equal(main(['install', '--apply', '--every', '1h'], { platform: 'linux', has: () => false }).code, 0);
+  const cronOnly = (c) => c === 'crontab';
+  assert.equal(main(['install', '--apply', '--every', '45m'], { platform: 'linux', has: cronOnly }).code, 2);
+  assert.match(main(['install', '--every', '7m'], { platform: 'linux', has: cronOnly }).out, /must divide the hour/);
+  assert.equal(main(['install', '--apply', '--every', '1h'], { platform: 'linux', has: cronOnly }).code, 0);
   assert.match(tab, /^MAILTO=x\n0 \* \* \* \* cd .* '\/usr\/bin\/env' 'node' '.*job\.js' >> .* # delivery-watchdog [0-9a-f]{8}\n$/);
-  assert.equal(main(['install', '--apply', '--every', '20m'], { platform: 'linux', has: () => false }).code, 0);
+  assert.equal(main(['install', '--apply', '--every', '20m'], { platform: 'linux', has: cronOnly }).code, 0);
   assert.equal(tab.split('\n').filter((l) => l.includes('# delivery-watchdog')).length, 1, 'a second install replaces the line');
-  main(['uninstall'], { platform: 'linux', has: () => false });
+  main(['uninstall'], { platform: 'linux', has: cronOnly });
   assert.equal(tab, 'MAILTO=x\n');
+  // dlv-4oj: a host with neither systemd nor crontab (Claude Code's cloud container) is told so, with the way out, and nothing is written
+  ran.length = 0;
+  const none = main(['install', '--apply'], { platform: 'linux', has: () => false });
+  assert.equal(none.code, 1);
+  assert.match(none.out, /^watchdog\.js: this host has no scheduler \(no systemd user session, no crontab\), so the watchdog cannot run on its own here: .*Run the team on an always-on host/);
+  assert.deepEqual(ran, []);
+  assert.equal(fs.existsSync(path.join(h.root, WD.REL, 'job.js')), false);
+  assert.equal(main(['install'], { platform: 'linux', has: () => false }).code, 1, 'the dry run says so too');
   assert.equal(main(['install', '--every', '1m'], { platform: 'darwin' }).code, 2, 'under 5 minutes is refused');
 });
 
@@ -534,7 +543,7 @@ test('Copilot 984 and 169: a project path with spaces runs from every scheduler,
   assert.equal(watchdog.main(['install', '--apply', '--every', '15m'], { cwd: h.root, env, home, exec, platform: 'darwin' }).code, 0);
   const plist = fs.readFileSync(path.join(home, 'Library', 'LaunchAgents', fs.readdirSync(path.join(home, 'Library', 'LaunchAgents'))[0]), 'utf8');
   assert.match(plist, /<key>CLAUDE_CONFIG_DIR<\/key><string>[^<]*\/claude config<\/string>/);
-  assert.equal(watchdog.main(['install', '--apply'], { cwd: h.root, env, home, exec, platform: 'linux', has: () => false }).code, 0);
+  assert.equal(watchdog.main(['install', '--apply'], { cwd: h.root, env, home, exec, platform: 'linux', has: (c) => c === 'crontab' }).code, 0);
   // run the cron line as cron would, with no CLAUDE_CONFIG_DIR in its environment: the job still uses the installer's
   const log = scratchLog();
   const line = tab.trim().replace(/^\S+ \S+ \S+ \S+ \S+ /, '').replace(/ # delivery-watchdog \w+$/, '');
@@ -659,13 +668,13 @@ test('Copilot 829: a crontab that cannot be read is never replaced; only "no cro
   const writes = [];
   const fail = (stderr) => (cmd, args, input) => { if (cmd === 'crontab' && args[0] === '-l') { const e = new Error('crontab failed'); e.stderr = stderr; e.status = 1; throw e; } if (cmd === 'crontab') writes.push(input); return ''; };
   const env = { ...process.env, DELIVERY_ROLE: '' };
-  const r = watchdog.main(['install', '--apply'], { cwd: h.root, env, home, platform: 'linux', has: () => false, exec: fail('crontab: cannot open your crontab: Permission denied') });
+  const r = watchdog.main(['install', '--apply'], { cwd: h.root, env, home, platform: 'linux', has: (c) => c === 'crontab', exec: fail('crontab: cannot open your crontab: Permission denied') });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /crontab could not be read/);
   assert.deepEqual(writes, []);
-  assert.equal(watchdog.main(['uninstall'], { cwd: h.root, env, home, platform: 'linux', has: () => false, exec: fail('crontab: cannot open your crontab: Permission denied') }).code, 1);
+  assert.equal(watchdog.main(['uninstall'], { cwd: h.root, env, home, platform: 'linux', has: (c) => c === 'crontab', exec: fail('crontab: cannot open your crontab: Permission denied') }).code, 1);
   assert.deepEqual(writes, []);
-  assert.equal(watchdog.main(['install', '--apply'], { cwd: h.root, env, home, platform: 'linux', has: () => false, exec: fail('no crontab for dev') }).code, 0);
+  assert.equal(watchdog.main(['install', '--apply'], { cwd: h.root, env, home, platform: 'linux', has: (c) => c === 'crontab', exec: fail('no crontab for dev') }).code, 0);
   assert.equal(writes.length, 1);
 });
 
@@ -1068,4 +1077,98 @@ test('plan: messages beside a held stall keep their own rules; message wakes do 
   assert.deepEqual(p.wakes[0].keys.sort(), ['message:b1:1', 'quiet:ex-s:1']);
   assert.deepEqual(p.wakes[0].delivers, [{ to: 'b1', upTo: 1 }]);
   assert.equal(p.held.length, 0);
+});
+
+// dlv-4oj: on a host with no scheduler a merged story waited hours: the Delivery Manager's turn ended
+// right after the merge, and the deploy, then the reality check, waited for the two-hour evidence stall.
+// The merge gate and the deploy record hand the next step to the watchdog, which wakes the Delivery
+// Manager for it at its next pass, once, and closes it without a wake when the record shows it done.
+test('dlv-4oj: a merged story\'s deploy and a deployed story\'s check wake the Delivery Manager at the next pass, once each, and never when the record shows them done', () => {
+  const t0 = '2026-10-29T10:00:00Z';
+  const HO = require('./lib/handoff.js');
+  const SHA = 'abc1234def5678901234567890123456789abcde';
+  const fresh = (labels, metadata = {}, extra = {}) => {
+    const h = harness({ beads: { 'ex-s': { id: 'ex-s', status: 'in_progress', assignee: 'dev@pc/builder-1', labels, metadata, updated_at: iso(Date.parse(t0) - 60e3) }, ...extra } });
+    session(h, 'builder-1', { seen: iso(Date.parse(t0) - 60e3) });
+    session(h, DM, { seen: iso(Date.parse(t0) - 60e3) });
+    return h;
+  };
+  // the deploy: merged a minute ago, nothing is stalled, and the Delivery Manager is still woken for it
+  {
+    const h = fresh(['state-merged'], { merged_pr: '478' });
+    const row = HO.queue(h.root, { bead: 'ex-s', step: 'deploy', to: DM, from: DM, pr: '478', sha: SHA, at: t0 });
+    assert.ok(row && row.id.startsWith('h-ex-s-deploy-'));
+    assert.equal(HO.queue(h.root, { bead: 'ex-s', step: 'deploy', to: DM, pr: '478', at: t0 }), null, 'queued once while open');
+    const spawn = spawner();
+    const r = at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.match(r.out, /Handed over: ex-s waits for its deploy \(PR 478 merged at 2026-10-29 10:00 UTC\)/);
+    assert.equal(spawn.list.length, 1);
+    assert.equal(spawn.list[0].role, DM);
+    assert.match(spawn.list[0].args.join(' '), /PR 478 is merged \(ex-s\)\. Deploy it now and record it: evidence\.js state ex-s deployed --sha <the live sha>; then dispatch its reality check \(reality-check\.js plan ex-s/);
+    assert.equal(HO.pending(h.root).length, 0, 'handed over with the wake');
+    assert.ok(HO.rows(h.root)[0].delivered_at);
+    at(h, iso(Date.parse(t0) + 60e3), ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1, 'a handed-over step does not wake again');
+    assert.equal(Wn.list(h.root).filter((w) => w.kind === 'stall').length, 0, 'a handoff is not a warning');
+  }
+  // the step taken before the pass: the record closes the handoff, nobody is woken
+  {
+    const h = fresh(['state-merged', 'state-deployed'], { merged_pr: '478', deployed_sha: SHA });
+    HO.queue(h.root, { bead: 'ex-s', step: 'deploy', to: DM, pr: '478', at: t0 });
+    const spawn = spawner();
+    const r = at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.doesNotMatch(r.out, /Handed over/);
+    assert.equal(spawn.list.length, 0);
+    assert.ok(HO.rows(h.root)[0].done_at, 'closed from the record');
+    assert.equal(HO.pending(h.root).length, 0);
+  }
+  // the check: deployed, no reality check yet -> woken with the dispatch; the child bead for that sha -> done
+  {
+    const h = fresh(['state-merged', 'state-deployed'], { deployed_sha: SHA });
+    HO.queue(h.root, { bead: 'ex-s', step: 'check', to: DM, sha: SHA, at: t0 });
+    const spawn = spawner();
+    const r = at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.match(r.out, /Handed over: ex-s waits for its reality check \(deployed at/);
+    assert.equal(spawn.list.length, 1);
+    assert.match(spawn.list[0].args.join(' '), /ex-s is deployed at abc1234\. Dispatch its reality check now \(reality-check\.js plan ex-s/);
+  }
+  {
+    const h = fresh(['state-merged', 'state-deployed'], { deployed_sha: SHA }, { 'ex-s-rc-abc1234': { id: 'ex-s-rc-abc1234', parent: 'ex-s', status: 'open', labels: ['reality-check'] } });
+    HO.queue(h.root, { bead: 'ex-s', step: 'check', to: DM, sha: SHA, at: t0 });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 0, 'the reality check exists: nothing to hand over');
+    assert.ok(HO.rows(h.root)[0].done_at);
+  }
+  // the deploy record hands the check over itself, through the Delivery Manager's lane; a builder cannot record a deploy
+  {
+    const h = fresh(['state-merged'], { merged_pr: '478' });
+    const r = h.bash(DM, `${h.script('evidence.js')} state ex-s deployed --sha ${SHA}`);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /ex-s: deployed at abc1234def5678901234567890123456789abcde, not verified; its reality check is handed to the watchdog/);
+    const p = HO.pending(h.root);
+    assert.equal(p.length, 1);
+    assert.equal(p[0].step, 'check');
+    assert.equal(p[0].to, DM);
+    assert.equal(p[0].sha, SHA);
+    // the same sha again is no new handoff
+    assert.doesNotMatch(h.bash(DM, `${h.script('evidence.js')} state ex-s deployed --sha ${SHA}`).out, /handed/);
+    assert.equal(HO.pending(h.root).length, 1);
+  }
+  // a handoff keeps the message rules: five minutes after a message wake it waits, then goes; the day's stall cap does not hold it
+  {
+    const h = fresh(['state-merged'], { merged_pr: '478' });
+    for (let i = 0; i < WD.DAILY_CAP; i++) WD.log(h.root, { type: 'wake', at: iso(Date.parse(t0) - (i + 1) * 2 * H), keys: ['p0:ex-old'], instance: DM, pid: 1 });
+    require('./lib/inbox.js').queue(h.root, { to: DM, from: 'builder-1', message: 'first', at: iso(Date.parse(t0) - 3 * 60e3) });
+    const spawn = spawner();
+    at(h, iso(Date.parse(t0) - 2 * 60e3), ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1, 'the message wake');
+    HO.queue(h.root, { bead: 'ex-s', step: 'deploy', to: DM, pr: '478', at: t0 });
+    const held = at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1);
+    assert.match(held.out, /Alarm only: delivery-lead: woken at 2026-10-29 09:58 UTC; messages wait 5 min between wakes\. Handed over: ex-s/);
+    at(h, iso(Date.parse(t0) + 4 * 60e3), ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 2, 'woken by the message rules, past the stall cap');
+    assert.match(spawn.list[1].args.join(' '), /Deploy it now/);
+  }
 });

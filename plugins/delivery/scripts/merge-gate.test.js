@@ -149,9 +149,16 @@ test('R-32 R-12: the normal path: request, a pass on the current head, CI green,
   assert.equal(m.deny, null, m.deny);
   assert.match(m.out, /Merged pull request #478/);
   const done = h.gate('delivery-lead', 'merged 478');
-  assert.match(done.out, /rv-478-delivery-lead-2: PR 478 merged at a1b2c3d4e5f6\nex-vault-0n9-3: merged \(478\), not verified/);
+  assert.match(done.out, /rv-478-delivery-lead-2: PR 478 merged at a1b2c3d4e5f6\nex-vault-0n9-3: merged \(478\), not verified\nex-vault-0n9-3: its deploy is handed to the watchdog, which wakes delivery-lead for it if this turn ends first/);
   assert.ok(h.db().issues[BEAD].labels.includes('state-merged'));
   assert.equal(h.db().issues[BEAD].metadata.merged_pr, '478');
+  // dlv-4oj: the deploy is the next step, handed to the watchdog so it is not left to the two-hour stall
+  const HO = require('./lib/handoff.js');
+  const handed = HO.pending(h.root);
+  assert.equal(handed.length, 1);
+  assert.deepEqual([handed[0].bead, handed[0].step, handed[0].to, handed[0].pr, handed[0].sha], [BEAD, 'deploy', 'delivery-lead', '478', H1]);
+  assert.doesNotMatch(h.gate('delivery-lead', 'merged 478').out, /handed/, 'a retry hands nothing over again');
+  assert.equal(HO.pending(h.root).length, 1);
   assert.match(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /^The change "Import a collection" is reviewed and merged; checking it on the customer's app next$/);
   assert.doesNotMatch(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /478|ex-vault/, 'no ids in the plain words');
 });

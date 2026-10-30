@@ -1055,6 +1055,13 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   236k tokens. The fresh session is named like the role (`--name`), and the next wake resumes it (a
   fresh role session starts near 53k tokens). The Stop guard's check for unrecorded operator input is
   per session, so a fresh Chief of Staff is told to run `operator.js pending` first.
+- **Handoffs.** `merge-gate.js merged` hands the deploy of each story it marked merged to the watchdog,
+  and `evidence.js state <bead> deployed` hands the reality check (`.delivery/watchdog/handoffs.ndjson`,
+  `lib/handoff.js`): if the Delivery Manager's turn ends there, the next pass wakes it for that step with
+  the exact commands, under the message rules below (five minutes apart, 48 a day), not after the
+  two-hour evidence stall. Each handoff wakes once; a step the record already shows taken (the bead
+  deployed, the `<bead>-rc-<sha>` child created, the story verified, cut or closed) is closed at the
+  pass with no wake. Like a message, a handoff is a handover, not a warning in the ledger.
 - **The wake's limits.** At most one wake per session an hour whatever the stalls; at most 6 a day per
   session; each stall waits 1, 2, 4, 8 ... hours after each wake that carried it; never while that
   session's last wake still runs, however long ago it started (each wake runs in its own process group
@@ -1106,6 +1113,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
     replaces it; every `%` is escaped for cron; a crontab that cannot be read is never replaced, only "no crontab" counts as empty). Cron runs on clock minutes, so `--every` must divide the hour there (5m, 10m, 12m, 15m,
     20m, 30m, 1h).
   `--every` is 5m to 1h. The machine must be on and the owner signed in to Claude Code for a wake to run.
+  A host with neither systemd nor crontab (Claude Code's cloud container) is refused with the reason:
+  the watchdog cannot run on its own there, so a stopped role is woken only while someone keeps a loop
+  alive; run the team on an always-on host, or run `watchdog.js run` yourself when work is due.
   Each scheduler keeps the installing shell's `CLAUDE_CONFIG_DIR`, and the shim restores it before it
   looks up the plugin or wakes anyone. Paths with spaces are quoted for each scheduler.
   `.delivery/watchdog/installed.json` records the install; the plan and the brief promise a restart only

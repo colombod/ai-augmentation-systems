@@ -208,7 +208,7 @@ const typeOf = (b) => b.type || b.issue_type || null;
 // ---- the stalls ----
 // facts: { beads, ready, now, idleMinutes, stallHours, pause, openSteps, sessions, team, installed }
 // { paused?, stalls: [{ kind, key, bead?, target, line, plain, detail, prompt, due, scheduled?, wakeAt? }] }
-function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [] } = {}) {
+function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [] } = {}) {
   const t = ms(now || new Date().toISOString());
   if (pause && pause.paused) return { paused: pause.by || true, stalls: [] };
   const out = [];
@@ -313,7 +313,21 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       detail: `${m.entries.length} undelivered message(s) for ${m.to}`,
       prompt: `${m.entries.length > 5 ? `${m.entries.length} messages arrived; the last 5:` : `Message${m.entries.length > 1 ? 's' : ''} sent to you while your session was not running:`} ${shown.join(' ')} Act on them now, as your brief says.` });
   }
-  return { stalls: out };
+  // the next step a merge or a deploy handed to a role (lib/handoff.js): a handoff, woken like a message,
+  // once; a step the record already shows taken is closed instead (handoffsDone), with no wake
+  const HO = require('./handoff.js');
+  const handoffsDone = [];
+  for (const r of handoffs.filter((x) => x && x.id && x.bead)) {
+    const b = beads.find((x) => x && x.id === r.bead) || null;
+    if (HO.done(r, b, beads)) { handoffsDone.push(r.id); continue; }
+    if (inStop(b)) continue;
+    const target = list.some((s) => s.instance === r.to) ? r.to : dm;
+    out.push({ kind: 'handoff', key: `handoff:${r.id}`, bead: r.bead, target, handoff: r.id, due: true,
+      line: `Handed over: ${r.bead} waits for its ${r.step === 'deploy' ? 'deploy' : 'reality check'} (${r.step === 'deploy' ? `PR ${r.pr || '?'} merged` : 'deployed'} at ${clock(ms(r.at))}).`,
+      plain: r.step === 'deploy' ? 'A merged item is handed to the Delivery Manager to deploy.' : 'A deployed item is handed to the Delivery Manager for its check on the customer\'s app.',
+      detail: `${r.step} handed to ${target} at ${r.at}`, prompt: HO.prompt(r, b) });
+  }
+  return { stalls: out, handoffsDone };
 }
 
 // R-25: a role whose transcript shows gh polled in a loop faster than every 4 minutes
@@ -326,7 +340,7 @@ const KIND = { idle: 'idle', quiet: 'stall', p0: 'p0-unclaimed', limit: 'usage-l
 // no fixed instance: each host appends to its own ledger file, as team-status does (review on aaea37c)
 function recordAll(root, res, polls, { now, instance } = {}) {
   for (const s of res.stalls) {
-    if (s.kind === 'message') continue; // a handoff, not a warning
+    if (s.kind === 'message' || s.kind === 'handoff') continue; // a handoff, not a warning
     if (s.kind === 'idle') I.recordIdle(root, s.idle, { now, instance });
     else W.record(root, { kind: KIND[s.kind], rule: 'R-04', bead: s.bead, detail: s.detail, raisedBy: instance || 'watchdog', instance, now });
   }
@@ -355,7 +369,7 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
     const beadOf = (id) => { try { return bd.show(id); } catch (err) { return null; } };
     const list = sessions(root, { team, rows });
     const res = stalls({ beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
-      pause: given || Goal.activePause(root, { beadOf, maxLookups: 4 }), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root) });
+      pause: given || Goal.activePause(root, { beadOf, maxLookups: 4 }), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root) });
     // a verified pause silences the polling warnings too
     return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list };
   } catch (err) { return { stalls: [], polls: [], sessions: [], unreadable: String(err.message).split('\n')[0] }; }
@@ -392,6 +406,12 @@ function pidAlive(pid) {
   } catch (err) { return true; }
 }
 
+// a message and a handoff (lib/handoff.js) are the team's handovers, not stalls: woken by the message rules
+const isHandoff = (s) => s.kind === 'message' || s.kind === 'handoff';
+// what a wake hands over: the inbox messages (marked delivered by count) and the handoff rows it carries
+const deliversOf = (stalls) => stalls.filter((s) => s.kind === 'message').map((s) => ({ to: s.inbox || s.target, upTo: s.upTo }));
+const handoffsOf = (stalls) => stalls.filter((s) => s.kind === 'handoff').map((s) => s.handoff);
+
 // The wakes due now, one per target session, carrying the stall lines it may still be woken for.
 // { wakes: [{ target, keys, lines, prompt }], waiting: [stall], held: [{ target, lines, reason }] }
 function plan(res, { root, now, alive = pidAlive } = {}) {
@@ -415,19 +435,19 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     const last = mine[mine.length - 1];
     const lines = w.stalls.map((s) => s.line);
     // a message is a handoff, not a stall: its target is woken within MESSAGE_EVERY_MS, not an hour
-    const onlyMessages = w.stalls.every((s) => s.kind === 'message');
+    const onlyMessages = w.stalls.every((s) => isHandoff(s));
     let reason = null;
     if (onlyMessages) {
       if (last && alive(last.pid)) reason = 'its last wake is still running; the message waits for it';
       else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) reason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
       else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) reason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
       if (reason) { held.push({ target: w.target, lines, reason }); continue; }
-      wakes.push({ target: w.target, keys: w.stalls.map((s) => s.key), lines, delivers: w.stalls.map((s) => ({ to: s.inbox || s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${w.stalls.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
+      wakes.push({ target: w.target, keys: w.stalls.map((s) => s.key), lines, delivers: deliversOf(w.stalls), handoffs: handoffsOf(w.stalls), prompt: `Watchdog (a host job, not the owner): ${w.stalls.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
       continue;
     }
     // the stall gates count stall wakes only: a role woken often for messages is still told about its
     // stall (each message wake would otherwise push "one wake an hour" forward and fill the day's six)
-    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !String(k).startsWith('message:')));
+    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !/^(message|handoff):/.test(String(k))));
     const lastStall = stallRows[stallRows.length - 1];
     if (last && alive(last.pid)) reason = 'its last wake is still running';
     else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
@@ -440,31 +460,31 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     // a wake that would carry only messages is not a stall wake: it goes by the message rules below
     // (five minutes apart, 48 a day), or a stall still waiting out its backoff would let a message wake
     // the role every minute through this path
-    if (!reason && !ok.some((s) => s.kind !== 'message')) reason = 'woken for these already; waiting longer before the next try';
+    if (!reason && !ok.some((s) => !isHandoff(s))) reason = 'woken for these already; waiting longer before the next try';
     // A message waiting beside a held stall is still a handoff: a role that spent its stall wakes (or
     // was woken for the stall within the hour) gets its messages by the message rules, not left until
     // the stall count falls. Seen on a real team: the Delivery Manager's work waited hours behind its cap.
-    const msgs = w.stalls.filter((s) => s.kind === 'message');
+    const msgs = w.stalls.filter((s) => isHandoff(s));
     if (reason && msgs.length) {
       let mReason = null;
       if (last && alive(last.pid)) mReason = 'its last wake is still running; the message waits for it';
       else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) mReason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
       else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) mReason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
       if (!mReason) {
-        wakes.push({ target: w.target, keys: msgs.map((s) => s.key), lines: msgs.map((s) => s.line), delivers: msgs.map((s) => ({ to: s.inbox || s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${msgs.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
-        const rest = w.stalls.filter((s) => s.kind !== 'message');
+        wakes.push({ target: w.target, keys: msgs.map((s) => s.key), lines: msgs.map((s) => s.line), delivers: deliversOf(msgs), handoffs: handoffsOf(msgs), prompt: `Watchdog (a host job, not the owner): ${msgs.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
+        const rest = w.stalls.filter((s) => !isHandoff(s));
         if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
         continue;
       }
       // both held: each line says its own cause
-      const rest = w.stalls.filter((s) => s.kind !== 'message');
+      const rest = w.stalls.filter((s) => !isHandoff(s));
       held.push({ target: w.target, lines: msgs.map((s) => s.line), reason: mReason });
       if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
       continue;
     }
     if (reason) { held.push({ target: w.target, lines, reason }); continue; }
     // the messages a stall wake carries are handed over too, so the next run does not send them again
-    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), delivers: ok.filter((s) => s.kind === 'message').map((s) => ({ to: s.inbox || s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${ok.map((s) => s.prompt).join(' ')} Reply in one line with what you started.` });
+    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), delivers: deliversOf(ok), handoffs: handoffsOf(ok), prompt: `Watchdog (a host job, not the owner): ${ok.map((s) => s.prompt).join(' ')} Reply in one line with what you started.` });
   }
   return { wakes, waiting, held };
 }

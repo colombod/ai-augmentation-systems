@@ -181,6 +181,23 @@ function markMerged(pr, req, who, { cwd, env, bd, now }) {
   return { lines, failed };
 }
 
+// One handoff per story the merge carried that is marked merged and not yet deployed; a story not
+// marked (bd could not read it, another author) gets none: its line above says what to do by hand.
+function handOver(pr, req, who, { bd, now, head }) {
+  const HO = require('./lib/handoff.js');
+  const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 });
+  const lines = [];
+  for (const id of req ? (req.stories || req.beads || []) : []) {
+    let b = null;
+    try { b = store.show(id); } catch (err) { b = null; }
+    if (!b || G.stateOf(b) !== 'merged' || b.status === 'closed') continue;
+    let r = null;
+    try { r = HO.queue(who.root, { bead: id, step: 'deploy', to: who.instance, from: who.instance, pr, sha: head, at: now }); } catch (err) { lines.push(`${id}: the deploy was not handed to the watchdog (${err.message})`); continue; }
+    if (r) lines.push(`${id}: its deploy is handed to the watchdog, which wakes ${who.instance} for it if this turn ends first`);
+  }
+  return lines;
+}
+
 function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: given } = {}) {
   const a = parse(argv);
   const [sub, pr] = a._;
@@ -218,6 +235,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   if (!req) return { code: 0, out: [...out, `no bead is recorded for PR ${pr}: set its state by hand, \`evidence.js state <bead> merged --pr ${pr}\``].join('\n') };
   const m = markMerged(pr, req, who, { cwd, env, bd, now: at });
   out.push(...m.lines);
+  // the deploy is the next step, and it is this role's: handed to the watchdog (lib/handoff.js), which
+  // wakes this session at its next pass if its turn ends here, instead of after the two-hour stall limit
+  out.push(...handOver(pr, req, who, { bd, now: at, head: row.head }));
   // fix on fix (R-22): a second fix on the same symptom within 48 h opens a spike for its cause
   try { out.push(...require('./lib/andon.js').fixChain(who.root, { pr, bd: bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 }), now: at, who })); } catch (err) { out.push(`note: the fix-on-fix check did not run (${err.message})`); }
   if (m.failed) return { code: 1, out: `${out.join('\n')}.\nRetry: ${R.cmd('merge-gate.js', `merged ${pr}`)}` };

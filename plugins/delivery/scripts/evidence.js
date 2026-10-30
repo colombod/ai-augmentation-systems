@@ -109,7 +109,13 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       else if (!same) delete meta.deployed_version;
       store.update(id, { addLabels: [G.STATE.merged, G.STATE.deployed], metadata: meta });
       const d = syncVerified(store, store.show(id), inp);
-      return { code: 0, out: `${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}` };
+      // the check on the customer's app is the next step: handed to the watchdog (lib/handoff.js), which
+      // wakes the Delivery Manager for it at its next pass if this turn ends first
+      let handed = '';
+      if (!d.ok && !same) {
+        try { handed = require('./lib/handoff.js').queue(who.root, { bead: id, step: 'check', to: who.instance, from: who.instance, sha: meta.deployed_sha, at }) ? '; its reality check is handed to the watchdog' : ''; } catch (err) { handed = ''; }
+      }
+      return { code: 0, out: `${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}${handed}` };
     }
     return { code: 2, out: USAGE };
   }
