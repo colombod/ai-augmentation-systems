@@ -22,9 +22,26 @@ Its sections **Where `.delivery/` resolves to**, **Which initiative**, **Open bl
 
 ## Gate check
 
-Read both inputs.
+Read the inputs and, where they exist, `storyboard.md` and the brief.
 
 - **PRD missing** — stop. Sequencing unknown requirements is fiction. Run `/delivery:prd` first.
+- **Storyboard not approved** — stop. `.delivery/initiatives/<initiative>/storyboard.md` must exist
+  with status approved and the owner's approving words quoted exactly (`/delivery:prd` step 6.7;
+  Sizzle's storyboard gate, michaeljabbour, MIT). Missing, unquoted or reopened: say which, and offer
+  to draft it or put it to the owner. Only the owner may waive it, in words you quote in the
+  roadmap's header; a role never does, and silence is not approval. **Reopened on an initiative
+  already planned** (a `roadmap.md` exists, and `/delivery:realign` or a PRD change reopened the
+  storyboard) — not a stop: revise the roadmap, mark each phase the change affects "storyboard
+  reopened: awaiting the owner", and put the storyboard to the owner.
+  **Planned before this gate:** an initiative whose brief has no *Owner lens and what must survive*
+  section was framed before the storyboard existed (delivery 0.41.2). Do not stop it: go on, and
+  write in the roadmap's header "Planned before the storyboard gate: no approved storyboard;
+  `/delivery:prd --stage` adds one", and say so in the hand-off. Once the brief has that section,
+  the gate applies in full.
+- **Proposed for not doing, or a proposed non-goal (step 5b), unanswered** — not a stop. Sequence
+  each such `FR-n` in the stage `prioritization.md` keeps it in, marked "proposed: awaiting the
+  owner" in its phase; never leave it out of the plan on the team's word, whatever the PRD's out of
+  scope list says about it.
 - **Architecture missing** — warn clearly. You can sequence without it, but the dependency map and effort sizing will be guesses, and the spike list — the most valuable input to sequencing — will not exist. Ask whether to proceed anyway or run `/delivery:architecture` first.
 
 If `.delivery/initiatives/<initiative>/roadmap.md` already exists, read it and ask whether
@@ -54,6 +71,12 @@ Ask the user for any constraints not given in `$ARGUMENTS`: team size and compos
 Look specifically for **inversions**: a requirement sitting in the MVP whose cost turned out far higher than assumed, or a deferred requirement that turns out nearly free once the MVP work exists. Both are common and neither is visible before architecture. For each inversion, state the value, the revised cost, and a recommendation.
 
 Do not silently re-stage. Prioritisation is the Product Owner's call — present the inversions and let them decide, then record what they chose.
+
+If what they chose changes the MVP's `FR-n` list, the journey the storyboard's cards tell or the
+proposition, the storyboard is reopened: clear its approval, update its cards, and put it to the
+owner with every open proposal in the same message (`/delivery:prd` step 6.7). Then apply the
+storyboard gate above again, with its exceptions (the owner's waiver, planned before the gate,
+already planned), before writing `roadmap.md`: an approval of the old MVP never carries the new one.
 
 **3. QA Strategist places the verification.** Delegate to `delivery:qa-strategist` to map risk-based coverage onto the phases, so testing is continuous rather than a final phase.
 

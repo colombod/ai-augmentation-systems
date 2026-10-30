@@ -63,6 +63,7 @@ Read whichever exist, and note which do not (* = optional depth: a missing optio
 | DEFINE | Simulate --journey* | `.delivery/simulations/` |
 | DEFINE | PRD | `.delivery/initiatives/<initiative>/prd.md` |
 | DEFINE | PRD: MVP staging | `.delivery/initiatives/<initiative>/prioritization.md` |
+| DEFINE | PRD: storyboard approved by the owner | `.delivery/initiatives/<initiative>/storyboard.md` (approved only with the owner's words quoted; reopened says so) |
 | DEFINE | Design* | `.delivery/initiatives/<initiative>/design-system.md` |
 | DEFINE | Architecture | `.delivery/initiatives/<initiative>/architecture.md`, `decisions/` |
 | CONTRACT | Roadmap | `.delivery/initiatives/<initiative>/roadmap.md` |
