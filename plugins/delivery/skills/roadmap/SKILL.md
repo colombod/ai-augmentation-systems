@@ -30,6 +30,11 @@ Read both inputs.
   Sizzle's storyboard gate, michaeljabbour, MIT). Missing, unquoted or reopened: say which, and offer
   to draft it or put it to the owner. Only the owner may waive it, in words you quote in the
   roadmap's header; a role never does, and silence is not approval.
+  **Planned before this gate:** an initiative whose `prioritization.md` has no *In the primary
+  picture?* column was staged before the storyboard existed (delivery 0.40.3). Do not stop it:
+  go on, and write in the roadmap's header "Planned before the storyboard gate: no approved
+  storyboard; `/delivery:prd --stage` adds one", and say so in the hand-off. Once that column is
+  there, the gate applies in full.
 - **Architecture missing** — warn clearly. You can sequence without it, but the dependency map and effort sizing will be guesses, and the spike list — the most valuable input to sequencing — will not exist. Ask whether to proceed anyway or run `/delivery:architecture` first.
 
 If `.delivery/initiatives/<initiative>/roadmap.md` already exists, read it and ask whether

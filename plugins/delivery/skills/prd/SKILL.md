@@ -25,6 +25,9 @@ Its sections **Where `.delivery/` resolves to**, **Which initiative**, **Open bl
 Read `.delivery/initiatives/<initiative>/brief.md`.
 
 - **Missing** — stop. Tell the user to run `/delivery:brief` first, and offer to run it now. Do not improvise a brief.
+- **Written before the owner's lens** (no *Owner lens and what must survive* section, delivery
+  0.40.3) — not thin: proceed, take what must survive from the brief's own words where it says it,
+  and list the lens questions under Open questions for the owner's next briefing.
 - **Exists but thin** (no named user segment, no measurable success signal, or unresolved blocking questions) — say specifically what is weak, and ask whether to proceed anyway or strengthen the brief first. Proceeding on a weak brief is a legitimate choice, but it should be a choice.
 - If `.delivery/initiatives/<initiative>/prd.md` already exists, read it and ask whether to
   **revise**, **replace**, or **start new version**. See

@@ -59,3 +59,11 @@ test('NOTICE: every ported method names its source and the source is in NOTICE w
   }
   for (const f of ['skills/brief/SKILL.md', 'skills/prd/SKILL.md', 'skills/roadmap/SKILL.md', 'templates/storyboard.md']) assert.match(read(f), /michaeljabbour/, f);
 });
+
+test('planned before the methods: an older initiative is flagged, never stopped, at the PRD and the roadmap', () => {
+  const r = read('skills/roadmap/SKILL.md');
+  assert.match(r, /\*\*Planned before this gate:\*\* an initiative whose `prioritization\.md` has no \*In the primary\s+picture\?\* column[\s\S]*Do not stop it/);
+  assert.match(r, /Once that column is\s+there, the gate applies in full\./);
+  const p = read('skills/prd/SKILL.md');
+  assert.match(p, /\*\*Written before the owner's lens\*\*[\s\S]*not thin: proceed/);
+});
