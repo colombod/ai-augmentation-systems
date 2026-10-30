@@ -68,15 +68,43 @@ function waveLine(x, { checked } = {}) {
 }
 
 // ---- files touched (parallel builders take file-disjoint stories, R-23) ----
-const norm = (p) => String(p).replace(/\/\*\*.*$|\/\*$/, '/').replace(/^\.\//, '');
-function overlap(a, b) {
+// One spelling per file (FR-27): `./x`, `x/**` and `x/*` as before, and `..`, a doubled slash and case
+// folded too. With an index of the repository (fileIndex), a plugin-relative spelling (`agents/x.md`)
+// is the repo path it names (`<plugin root>/agents/x.md`); one that names a file in two plugins is
+// compared as each and reported "ambiguous", never resolved silently.
+const norm = (p) => {
+  const dir = /\/\*\*.*$|\/\*$|\/$/.test(String(p));
+  const s = path.posix.normalize(String(p).replace(/\\/g, '/').replace(/\/\*\*.*$|\/\*$/, '/')).replace(/^(\.\/)+/, '').replace(/\/+$/, '').toLowerCase();
+  return s === '.' ? '' : dir ? `${s}/` : s;
+};
+function spellings(p, index) {
+  if (!index || !index.roots.length || index.roots.some((r) => p.startsWith(r))) return { paths: [p] };
+  const found = index.roots.map((r) => r + p).filter((q) => index.has(q));
+  return found.length ? { paths: found, ambiguous: found.length > 1 } : { paths: [p] };
+}
+function overlap(a, b, { index } = {}) {
   const hit = [];
   for (const x of a || []) for (const y of b || []) {
-    const p = norm(x.path);
-    const q = norm(y.path);
-    if (p === q || (p.endsWith('/') && q.startsWith(p)) || (q.endsWith('/') && p.startsWith(q))) hit.push(p.length <= q.length ? p : q);
+    const sx = spellings(norm(x.path), index);
+    const sy = spellings(norm(y.path), index);
+    for (const p of sx.paths) for (const q of sy.paths) {
+      if (!(p === q || (p.endsWith('/') && q.startsWith(p)) || (q.endsWith('/') && p.startsWith(q)))) continue;
+      const amb = [sx, sy].find((s) => s.ambiguous);
+      hit.push(amb ? `${p.length <= q.length ? p : q} (ambiguous: ${(amb === sx ? norm(x.path) : norm(y.path))} names ${amb.paths.join(' and ')})` : (p.length <= q.length ? p : q));
+    }
   }
   return [...new Set(hit)];
+}
+// The repository's files and plugin roots (directories holding .claude-plugin/plugin.json), lower-cased
+// as norm folds them; null when the root is not a git checkout, so overlap compares spellings as given.
+function fileIndex(root) {
+  let out;
+  try { out = require('child_process').execFileSync('git', ['-C', root, 'ls-files', '-z'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024, timeout: 10000 }); } catch (err) { return null; }
+  const files = new Set(out.split('\0').filter(Boolean).map((f) => f.toLowerCase()));
+  const roots = [...files].filter((f) => f.endsWith('.claude-plugin/plugin.json')).map((f) => f.slice(0, -'.claude-plugin/plugin.json'.length)).filter(Boolean);
+  const dirs = new Set();
+  for (const f of files) for (let i = f.indexOf('/'); i > 0; i = f.indexOf('/', i + 1)) dirs.add(f.slice(0, i + 1));
+  return { roots, has: (p) => files.has(p) || dirs.has(p) };
 }
 
 // ---- fixes and security fixes (R-41 tier 1) ----
@@ -193,7 +221,7 @@ const u = B.n1;
 
 // Findings for claiming `bead`. ctx: { beads (story beads), budget (B.state), team, fix (fixLink),
 // reason (areaReason or null), filesOf(bead) -> [{ path }], builders }.
-function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = { ok: false }, reason = null, filesOf = () => [], builders = 1 } = {}) {
+function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = { ok: false }, reason = null, filesOf = () => [], builders = 1, index = null } = {}) {
   const f = [];
   const t = budget.table || B.table(null);
   const est = B.estimate(bead, { t, team });
@@ -235,7 +263,7 @@ function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = 
   // file-disjoint parallel builders and WIP (R-23, R-31)
   const mine = filesOf(bead);
   for (const o of others) {
-    const hit = overlap(mine, filesOf(o));
+    const hit = overlap(mine, filesOf(o), { index });
     if (hit.length) f.push(warn('file-overlap', 'R-23', `touches ${hit.slice(0, 3).join(', ')}, as ${o.id} in progress does: parallel builders take file-disjoint stories`));
   }
   if (budget.lean && others.length && !tier1) f.push(warn('lean-wip', 'R-31', `lean mode (${u(budget.weeklyPct)}% of the week used, lean at ${budget.leanAt}%): one story at a time team-wide; ${others.length} already in progress`));
@@ -351,6 +379,7 @@ function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now, dea
   const beadOf = (id) => known.get(id) || (bd ? (() => { try { return bd.show(id); } catch (err) { return null; } })() : null);
   let builders = 1;
   try { builders = require('./manifest.js').expandInstances(team).filter((i) => i.role.id === 'builder' && !i.role.retired).length || 1; } catch (err) { builders = 1; }
+  let idx;
   let ownerAreas = null;
   try { ownerAreas = require('./goal.js').value(root, 'areas', { warn: false, verifyRecord }); } catch (err) { ownerAreas = null; }
   return {
@@ -369,6 +398,7 @@ function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now, dea
     fixOf: (b, story) => fixLink(b, story === undefined ? storyOf(b) : story, { root, beadOf, ownerRecord: (id) => C.ownerRecord(root, id, verifyRecord), byStoryId: (sid) => beads.find((x) => G.isStoryBead(x) && String((x.metadata || {}).story || '') === sid) || null }),
     reasonOf: (area) => areaReason(root, area, { ownerRecord: (id) => C.ownerRecord(root, id, verifyRecord), ownerAreas }),
     filesOf: (b) => ((storyOf(b) || {}).files || []),
+    get index() { if (idx === undefined) idx = fileIndex(root); return idx; },
   };
 }
 
@@ -388,4 +418,4 @@ function selectRanked(bd, stories, ctx) {
   return { ranked: rank(candidates, ctx), byId: new Map(candidates.map((b) => [b.id, b])) };
 }
 
-module.exports = { currentWave, selectRanked, contextFor, waveOf, areas, waveLine, overlap, fixLink, roadmapAreas, areaReason, claimFindings, rank, candidate, FIX_LABELS, finished, built };
+module.exports = { fileIndex, norm, currentWave, selectRanked, contextFor, waveOf, areas, waveLine, overlap, fixLink, roadmapAreas, areaReason, claimFindings, rank, candidate, FIX_LABELS, finished, built };

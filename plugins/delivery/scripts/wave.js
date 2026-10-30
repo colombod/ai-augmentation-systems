@@ -64,6 +64,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: gi
     const t = st.table;
     const out = [];
     const rows = [];
+    let index;
     for (const x of A.values()) {
       // an area of unwaved stories only is listed too, with its warning (Copilot 670)
       if (!x.order.length && !x.unwaved.some((b) => !W.finished(b))) continue;
@@ -72,7 +73,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, who: given, bd: gi
         const units = s.reduce((m, b) => m + B.stillNeeds(b, B.estimate(b, { t, team: who.team }), t), 0);
         const overlaps = [];
         for (let i = 0; i < s.length; i++) for (let j = i + 1; j < s.length; j++) {
-          const hit = W.overlap(readFiles(who.root, s[i]), readFiles(who.root, s[j]));
+          if (index === undefined) index = W.fileIndex(who.root);
+          const hit = W.overlap(readFiles(who.root, s[i]), readFiles(who.root, s[j]), { index });
           if (hit.length) overlaps.push(`${s[i].id} and ${s[j].id} touch ${hit.slice(0, 3).join(', ')}`);
         }
         return { wave: k, stories: s.map((b) => b.id), needs: units, done: s.every(W.finished), closed: closed.has(`${x.area}#${k}`), overlaps };

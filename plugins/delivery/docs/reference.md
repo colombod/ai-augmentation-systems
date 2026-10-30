@@ -506,7 +506,9 @@ tight; block only on serious divergence, otherwise warn (R-34, R-36, R-41, R-23,
   allowance. Only the plugin's reader writes `.delivery/usage/`; the lanes refuse it to every role. `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan.js budget` shows remaining
   against what each current wave still needs; `usage.js show` the raw readings.
 - **The claim check.** At `bd update --claim` on a story or a fix, the bd guard warns on: a story
-  outside its area's current wave (D5), overlapping files with a story in progress, WIP above the
+  outside its area's current wave (D5), overlapping files with a story in progress (one file's spellings
+  are one path: `./`, `..`, case and a trailing slash are folded, and a plugin-relative path such as
+  `agents/x.md` is the repository file it names, or "ambiguous" when it names one in two plugins; FR-27), WIP above the
   builders or, in lean mode, any second story (R-23, R-31), a new area (nothing built there while other
   areas hold work) with no recorded reason (R-41), and a story that does not fit inside a wave under
   way. It refuses only half-built risk, and only under an owner-set budget: a story that would start

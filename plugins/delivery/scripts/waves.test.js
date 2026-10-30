@@ -469,3 +469,47 @@ test('m-b: a partial spend reading is flagged in the claim warnings and in team-
   const s = renderStatus(teamStatus(t.root, { bdCheck: () => true, storyBeads: () => beads, checkBeads: () => [], idleBd: { list: () => [], ready: () => [] }, budget: st, now: NOW }));
   assert.match(s, /spend reading is partial/);
 });
+
+// FR-27 (S-9): one file's spellings are one path at claim; a short spelling naming a file in two plugins
+// is compared as each and reported "ambiguous", never resolved silently.
+function twoPlugins(t) {
+  const files = ['kit/alpha/.claude-plugin/plugin.json', 'kit/alpha/agents/chief-of-staff.md', 'kit/alpha/agents/x.md',
+    'kit/beta/.claude-plugin/plugin.json', 'kit/beta/agents/x.md'];
+  for (const f of files) { fs.mkdirSync(path.join(t.root, path.dirname(f)), { recursive: true }); fs.writeFileSync(path.join(t.root, f), '{}\n'); }
+  require('child_process').execFileSync('git', ['init', '-q'], { cwd: t.root });
+  require('child_process').execFileSync('git', ['add', '-A'], { cwd: t.root });
+}
+test('FR-27 [rule:waves-spelling]: two stories naming one file two ways raise one file-overlap at claim; agents/x.md in two plugins reads ambiguous', async () => {
+  const t = vault();
+  twoPlugins(t);
+  t.story('a', { area: 'team', wave: 1, files: [['agents/chief-of-staff.md', 'modify']] });
+  t.story('b', { area: 'team', wave: 1, files: [['kit/alpha/agents/chief-of-staff.md', 'modify']] });
+  t.story('c', { area: 'team', wave: 1, files: [['agents/x.md', 'modify']] });
+  t.story('d', { area: 'team', wave: 1, files: [['kit/beta/agents/x.md', 'modify']] });
+  const bd = memBd([bead('a', 'team', { wave: 1, status: 'in_progress' }), bead('b', 'team', { wave: 1 }), bead('c', 'team', { wave: 1 }), bead('d', 'team', { wave: 1, status: 'in_progress' })]);
+  const g = await claim(t, bd, 'ex-b', NO_BUDGET);
+  const over = g.warnings.filter((w) => w.kind === 'file-overlap');
+  assert.equal(over.length, 1, JSON.stringify(g.warnings));
+  assert.match(over[0].detail, /^touches kit\/alpha\/agents\/chief-of-staff\.md, as ex-a in progress does/);
+  const amb = (await claim(t, bd, 'ex-c', NO_BUDGET)).warnings.filter((w) => w.kind === 'file-overlap');
+  assert.equal(amb.length, 1, JSON.stringify(amb));
+  assert.match(amb[0].detail, /touches kit\/beta\/agents\/x\.md \(ambiguous: agents\/x\.md names kit\/alpha\/agents\/x\.md and kit\/beta\/agents\/x\.md\), as ex-d/);
+});
+
+test('FR-27 [rule:waves-norm]: ./x, x, x/** match as before; case, a trailing slash and .. are folded; no files, no overlap', () => {
+  const o = (a, b, index) => W.overlap(a.map((p) => ({ path: p })), b.map((p) => ({ path: p })), { index });
+  assert.deepEqual(o(['./src/a.js'], ['src/a.js']), ['src/a.js']);
+  assert.deepEqual(o(['src/**'], ['src/a.js']), ['src/']);
+  assert.deepEqual(o(['Src/A.js'], ['src/a.js']), ['src/a.js']);
+  assert.deepEqual(o(['src/lib/../a.js'], ['src//a.js']), ['src/a.js']);
+  assert.deepEqual(o(['src/'], ['src/a.js']), ['src/']);
+  assert.deepEqual(o([], ['src/a.js']), []);
+  assert.deepEqual(o(['src/a.js'], ['src/b.js']), []);
+  // without an index (not a git checkout) a short spelling stays as written
+  assert.deepEqual(o(['agents/x.md'], ['kit/alpha/agents/x.md']), []);
+  const index = { roots: ['kit/alpha/'], has: (p) => p === 'kit/alpha/agents/x.md' };
+  assert.deepEqual(o(['agents/x.md'], ['kit/alpha/agents/x.md'], index), ['kit/alpha/agents/x.md']);
+  // a short spelling that names no file in any plugin is a repo path
+  assert.deepEqual(o(['docs/a.md'], ['kit/alpha/docs/a.md'], index), []);
+  assert.equal(W.fileIndex(fs.mkdtempSync(path.join(require('os').tmpdir(), 'nogit-'))), null);
+});
