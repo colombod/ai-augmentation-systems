@@ -78,8 +78,13 @@ function done(row, bead, beads = []) {
   if (!bead) return true;
   const G = require('./gates.js');
   const st = G.stateOf(bead);
-  if (bead.status === 'closed' || ['verified', 'cut'].includes(st)) return true;
-  if (row.step === 'deploy') return st === 'deployed';
+  if (bead.status === 'closed' || st === 'cut') return true;
+  // a follow-up PR on a story already deployed keeps its deployed (or verified) label: its deploy is
+  // done only once a deploy is recorded after this merge (Copilot, #86)
+  const m = bead.metadata || {};
+  const redeploy = Boolean(m.merged_at) && (!m.deployed_at || Date.parse(m.deployed_at) < Date.parse(m.merged_at));
+  if (row.step === 'deploy') return !redeploy && ['deployed', 'verified'].includes(st);
+  if (st === 'verified' && !redeploy) return true;
   // check: the reality check for the deployed sha exists (reality-check.js plan creates <bead>-rc-<sha7>)
   const sha = (bead.metadata && bead.metadata.deployed_sha) || row.sha;
   if (!sha) return false;

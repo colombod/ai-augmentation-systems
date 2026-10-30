@@ -98,7 +98,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
 
   if (cmd === 'state') {
     if (word === 'merged') {
-      store.update(id, { addLabels: [G.STATE.merged], metadata: { ...m, ...(a.pr ? { merged_pr: a.pr } : {}) } });
+      // merged_at: when this merge was recorded, so a deploy before it (a follow-up PR on a story already
+      // deployed) is told from the deploy of this merge (lib/handoff.js, merge-gate.js handOver)
+      const again = a.pr && String(m.merged_pr || '') === String(a.pr) && m.merged_at;
+      store.update(id, { addLabels: [G.STATE.merged], metadata: { ...m, ...(a.pr ? { merged_pr: a.pr } : {}), merged_at: again ? m.merged_at : at } });
       return { code: 0, out: `${id}: merged${a.pr ? ` (${a.pr})` : ''}, not verified` };
     }
     if (word === 'deployed' && a.sha) {

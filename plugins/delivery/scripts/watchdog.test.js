@@ -1266,9 +1266,32 @@ test('Copilot #86: in a stopped area the recovery work\'s handoff still wakes; u
   const now = Date.parse('2026-10-30T12:00:00Z');
   const sessions = [{ instance: DM, role: DM, session: 's-dm', roleDir: os.tmpdir(), lastActive: now - 10 * 60e3 }];
   const area = (id, meta = {}) => ({ id, status: 'in_progress', labels: ['story', 'state-merged'], metadata: { area: 'import', ...meta } });
-  const beads = [area('ex-fail'), area('ex-fix', { fixes: 'ex-fail' }), area('ex-a3work', { a3: 'a3-1' }), area('ex-other')];
+  const beads = [area('ex-fail'), area('ex-fix', { fixes: 'ex-fail' }), area('ex-a3work', { a3: 'a3-1' }), area('ex-other'), area('ex-other-a3', { a3: 'a3-9' })];
   const handoffs = beads.map((b, i) => ({ id: `h-${i}`, at: new Date(now - 60e3).toISOString(), bead: b.id, step: 'deploy', to: DM, pr: String(500 + i) }));
-  const pause = { paused: false, stops: [{ trigger: 'andon:ev-ex-fail-1', area: require('./lib/gates.js').areaOf(beads[0]) }] };
+  const pause = { paused: false, stops: [{ trigger: 'andon:ev-ex-fail-1', area: require('./lib/gates.js').areaOf(beads[0]), a3: 'a3-1' }] };
   const r = WD.stalls({ beads, now: iso(now), sessions, handoffs, pause });
+  // the stop's own A3 work goes on; work tagged with another A3 is held like any other (Copilot round 2)
   assert.deepEqual(r.stalls.filter((s) => s.kind === 'handoff').map((s) => s.bead).sort(), ['ex-a3work', 'ex-fail', 'ex-fix']);
+  const noA3 = WD.stalls({ beads, now: iso(now), sessions, handoffs, pause: { paused: false, stops: [{ ...pause.stops[0], a3: null }] } });
+  assert.deepEqual(noA3.stalls.filter((s) => s.kind === 'handoff').map((s) => s.bead).sort(), ['ex-fail', 'ex-fix'], 'a stop with no open A3 lets no A3 work through');
+});
+
+test('Copilot #86: the watchdog reads each stop\'s open A3 from the andon record; none open, none', () => {
+  const A = require('./lib/andon.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wd-a3-'));
+  const trigger = 'andon:ev-ex-fail-1';
+  const pause = { paused: false, stops: [{ trigger, area: 'import' }, { trigger: 'andon:ev-ex-other-2', area: 'import' }] };
+  assert.deepEqual(WD.withA3s(root, pause).stops.map((s) => s.a3), [null, null], 'no A3 opened yet');
+  A.append(root, { type: 'a3-open', trigger, area: 'import', by: 'delivery-lead', at: '2026-10-30T12:00:00Z' }, 'delivery-lead');
+  const id = A.openA3For(root, trigger, A.read(root).rows).id;
+  assert.deepEqual(WD.withA3s(root, pause).stops.map((s) => s.a3), [id, null], 'the open A3 of that trigger only');
+  // through read, the stopped area's A3 work wakes for its handoff and unrelated A3 work is held
+  const HO = require('./lib/handoff.js');
+  const bead = (bid, a3) => ({ id: bid, status: 'in_progress', labels: ['story', 'state-merged'], metadata: { area: 'import', a3 } });
+  const beads = [bead('ex-mine', id), bead('ex-theirs', 'a3-elsewhere')];
+  for (const b of beads) HO.queue(root, { bead: b.id, step: 'deploy', to: DM, pr: b.id === 'ex-mine' ? '1' : '2', at: '2026-10-30T12:00:00Z' });
+  const bd = { list: () => beads, ready: () => [], show: (x) => beads.find((b) => b.id === x) || null };
+  const res = WD.read(root, { bd, now: '2026-10-30T12:10:00Z', pause: { paused: false, stops: [{ trigger, area: 'import' }] } });
+  assert.equal(res.unreadable, undefined, res.unreadable);
+  assert.deepEqual(res.stalls.filter((s) => s.kind === 'handoff').map((s) => s.bead), ['ex-mine']);
 });

@@ -225,7 +225,7 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
     const failed = (/^ev-(.+)-\d+$/.exec(row) || [])[1];
     const m = b.metadata || {};
     const link = String(m.fixes || '').replace(/\s+#.*$/, '').trim();
-    return Boolean(failed) && (b.id === failed || b.parent === failed || [row, failed].includes(link) || Boolean(m.a3));
+    return Boolean(failed) && (b.id === failed || b.parent === failed || [row, failed].includes(link) || Boolean(s.a3 && m.a3 && String(m.a3) === s.a3));
   });
   // usage limits first: the rest of the team's quiet follows from them
   const limited = new Set();
@@ -370,6 +370,17 @@ function installedJob(root) {
   } catch (err) { return null; }
 }
 
+// each stop's open A3, by id: its work goes on in the stopped area, unrelated A3 work does not
+// (lib/andon.js claimFindings; Copilot, #86). Fails open to no A3.
+function withA3s(root, pause) {
+  if (!pause || !Array.isArray(pause.stops) || !pause.stops.length) return pause;
+  try {
+    const A = require('./andon.js');
+    const rows = A.read(root).rows;
+    return { ...pause, stops: pause.stops.map((s) => ({ ...s, a3: (A.openA3For(root, s.trigger, rows) || {}).id || null })) };
+  } catch (err) { return pause; }
+}
+
 // Read the record for a project: beads from bd (a lib/bd.js store), the goal sheet, the owner queue,
 // the roster and the transcripts. Fails open: a failed read gives no stalls and says so.
 function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
@@ -381,7 +392,7 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
     const beadOf = (id) => { try { return bd.show(id); } catch (err) { return null; } };
     const list = sessions(root, { team, rows });
     const res = stalls({ beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
-      pause: given || Goal.activePause(root, { beadOf, maxLookups: 4 }), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root) });
+      pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root) });
     // a verified pause silences the polling warnings too
     return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list };
   } catch (err) { return { stalls: [], polls: [], sessions: [], unreadable: String(err.message).split('\n')[0] }; }
@@ -541,4 +552,4 @@ function wakeArgs(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

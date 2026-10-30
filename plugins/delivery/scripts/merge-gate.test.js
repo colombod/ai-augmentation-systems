@@ -310,3 +310,20 @@ test('Copilot #86: a deploy handoff only for a story this PR merged, by this PR\
   assert.deepEqual(HO.pending(root).map((r) => r.bead), ['ex-a'], lines.join('\n'));
   assert.equal(lines.length, 1);
 });
+
+// Copilot round 2 on #86: a follow-up PR on a story already deployed (or verified) keeps that label;
+// the deploy of the new merge is still handed over, and is done only once a deploy follows the merge.
+test('Copilot #86: a follow-up merge on a deployed story hands its deploy over until a deploy follows it', () => {
+  const root = makeProject();
+  const HO = require('./lib/handoff.js');
+  const story = (id, labels, meta) => storyBead({ id, assignee: 'dev@pc/builder-1', labels: ['story', ...labels], metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }], ...meta } });
+  const followUp = story('ex-f', ['state-merged', 'state-deployed', 'state-verified'], { merged_pr: '480', merged_at: '2026-10-30T11:00:00Z', deployed_at: '2026-10-29T09:00:00Z', deployed_sha: 'aaaaaaa' });
+  const deployedSince = story('ex-d', ['state-merged', 'state-deployed'], { merged_pr: '480', merged_at: '2026-10-30T11:00:00Z', deployed_at: '2026-10-30T11:30:00Z', deployed_sha: 'bbbbbbb' });
+  const bd = memBd([followUp, deployedSince]);
+  const who = { root, instance: 'delivery-lead', roleId: 'delivery-lead', actor: 'dev@pc/delivery-lead' };
+  mergeGate.handOver('480', { owner: R.norm('dev@pc/builder-1'), stories: ['ex-f', 'ex-d'] }, who, { bd, now: '2026-10-30T11:05:00Z', head: H1 });
+  const [row] = HO.pending(root);
+  assert.deepEqual(HO.pending(root).map((r) => r.bead), ['ex-f'], 'deployed after this merge: nothing to hand over');
+  assert.equal(HO.done(row, followUp), false, 'the earlier deploy and verified labels do not close it');
+  assert.equal(HO.done(row, { ...followUp, metadata: { ...followUp.metadata, deployed_at: '2026-10-30T12:00:00Z' } }), true, 'a deploy after the merge does');
+});

@@ -190,7 +190,11 @@ function handOver(pr, req, who, { bd, now, head }) {
   for (const id of req ? (req.stories || req.beads || []) : []) {
     let b = null;
     try { b = store.show(id); } catch (err) { b = null; }
-    if (!b || G.stateOf(b) !== 'merged' || b.status === 'closed') continue;
+    if (!b || b.status === 'closed' || !G.stateOf(b) || G.stateOf(b) === 'cut') continue;
+    // the deploy of this merge is the step: not yet taken when no deploy is recorded after it (a first
+    // merge, or a follow-up PR on a story already deployed or verified; Copilot, #86)
+    const bm = b.metadata || {};
+    if (bm.deployed_at && (!bm.merged_at || Date.parse(bm.deployed_at) >= Date.parse(bm.merged_at))) continue;
     // only a story this PR marked: the same author check as markMerged, and merged by this PR, so a
     // story merged by another PR keeps its own handoff (Copilot, #86)
     if (req.owner && !G.authorsOf(b).actors.some((a) => R.norm(a) === req.owner)) continue;
