@@ -1,6 +1,8 @@
 # ADR-016: Keep the feature and code map in a commit-pinned SQLite database, queried through tools
 
-**Status:** proposed
+**Status:** proposed · **not built**: open for the owner
+
+> **Against what shipped (2026-10-30, delivery 0.39.0 to 0.41.2, #91 to #97):** `scripts/map.js` (`lib/codemap.js`, `lib/features.js`) computes every answer from git objects at the resolved commit on each call; there is no SQLite store, no `node:sqlite`, no full-text index. The owner asked for "a real db tech not markdown … a real 'rag tool'" (Context, above). The shipped design does not meet that ask, and no owner record drops it. Whether to build the store, or to accept per-call computation instead, is the owner's decision.
 **Date:** 2026-10-24 (amended twice the same day by `/delivery:architecture`, steps 2 and 4, see "Amendment")
 **Deciders:** owner (asked for it), Solution Architect (confirmed with amendments in `initiatives/feature-map/architecture.md`)
 **Word count:** 827 prose words (cap 600; declared overrun: the owner's two statements are kept verbatim, the decision covers six points, and step 4 tightened points 1 and 3 after the critic pass; tables excluded, `grep -v '^|'`).

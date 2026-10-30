@@ -1,6 +1,8 @@
 # ADR-017: Ship the map's MCP server as one dependency-free script, read-only
 
-**Status:** proposed
+**Status:** proposed · **not built**: open for the owner
+
+> **Against what shipped (2026-10-30, delivery 0.39.0 to 0.41.2, #91 to #97):** no `scripts/map-mcp.js` and no `.mcp.json`: roles reach the map through the CLI (`map.js`, lane group `map`) and `skills/map`. The owner said "Yes keep the server in this release" (Consequences, above); the release shipped without it, and no owner record changes that. Building the server, or recording that the CLI stands in for it, is the owner's decision.
 **Date:** 2026-10-24 (amended the same day at architecture step 4, see "Amendment")
 **Deciders:** Solution Architect (`initiatives/feature-map/architecture.md`); owner through spike 1
 

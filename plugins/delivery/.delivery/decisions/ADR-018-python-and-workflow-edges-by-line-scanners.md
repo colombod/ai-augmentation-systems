@@ -1,6 +1,8 @@
 # ADR-018: Extract Python and workflow edges with lexical line scanners; declare the rest blind
 
-**Status:** proposed
+**Status:** accepted in practice (built as line scanners in `lib/codemap.js`)
+
+> **Against what shipped (2026-10-30, delivery 0.39.0 to 0.41.2, #91 to #97):** Python imports, workflow `run:` lines and other references are read by lexical scanners in `lib/codemap.js` (#91, #97), and files no rule reads are listed by `map.js blind`, as this ADR proposed. Spike 3's precision audit (50 edges per rule) was not run; the Vault replay of eight merges (#97, #100) is the evidence so far.
 **Date:** 2026-10-24
 **Deciders:** Solution Architect (`initiatives/feature-map/architecture.md`); Delivery Manager through spike 3
 
