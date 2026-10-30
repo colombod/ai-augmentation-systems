@@ -340,7 +340,9 @@ const KIND = { idle: 'idle', quiet: 'stall', p0: 'p0-unclaimed', limit: 'usage-l
 // no fixed instance: each host appends to its own ledger file, as team-status does (review on aaea37c)
 function recordAll(root, res, polls, { now, instance } = {}) {
   for (const s of res.stalls) {
-    if (s.kind === 'message' || s.kind === 'handoff') continue; // a handoff, not a warning
+    // a message or a handoff is a handover, not a warning; KIND has no entry for either, and the ledger
+    // refuses a row with no kind, so this skip is the first of two guards
+    if (s.kind === 'message' || s.kind === 'handoff') continue;
     if (s.kind === 'idle') I.recordIdle(root, s.idle, { now, instance });
     else W.record(root, { kind: KIND[s.kind], rule: 'R-04', bead: s.bead, detail: s.detail, raisedBy: instance || 'watchdog', instance, now });
   }

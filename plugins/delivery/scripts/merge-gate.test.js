@@ -159,6 +159,10 @@ test('R-32 R-12: the normal path: request, a pass on the current head, CI green,
   assert.deepEqual([handed[0].bead, handed[0].step, handed[0].to, handed[0].pr, handed[0].sha], [BEAD, 'deploy', 'delivery-lead', '478', H1]);
   assert.doesNotMatch(h.gate('delivery-lead', 'merged 478').out, /handed/, 'a retry hands nothing over again');
   assert.equal(HO.pending(h.root).length, 1);
+  // a handoff that cannot be written is said, so the Delivery Manager deploys in this turn
+  fs.rmSync(path.join(h.root, HO.REL, HO.FILE));
+  fs.mkdirSync(path.join(h.root, HO.REL, HO.FILE));
+  assert.match(h.gate('delivery-lead', 'merged 478').out, /ex-vault-0n9-3: the deploy was not handed to the watchdog \(.*\)/);
   assert.match(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /^The change "Import a collection" is reviewed and merged; checking it on the customer's app next$/);
   assert.doesNotMatch(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /478|ex-vault/, 'no ids in the plain words');
 });

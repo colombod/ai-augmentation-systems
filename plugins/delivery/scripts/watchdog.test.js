@@ -507,7 +507,7 @@ test('install: dry run by default; --apply writes a job with no versioned path, 
   ran.length = 0;
   const none = main(['install', '--apply'], { platform: 'linux', has: () => false });
   assert.equal(none.code, 1);
-  assert.match(none.out, /^watchdog\.js: this host has no scheduler \(no systemd user session, no crontab\), so the watchdog cannot run on its own here: .*Run the team on an always-on host/);
+  assert.match(none.out, /^watchdog\.js: this host has no scheduler \(no systemctl, no crontab\), so the watchdog cannot run on its own here: .*Run the team on an always-on host/);
   assert.deepEqual(ran, []);
   assert.equal(fs.existsSync(path.join(h.root, WD.REL, 'job.js')), false);
   assert.equal(main(['install'], { platform: 'linux', has: () => false }).code, 1, 'the dry run says so too');
@@ -1109,7 +1109,15 @@ test('dlv-4oj: a merged story\'s deploy and a deployed story\'s check wake the D
     assert.ok(HO.rows(h.root)[0].delivered_at);
     at(h, iso(Date.parse(t0) + 60e3), ['run'], { spawn, bd: memStore(h) });
     assert.equal(spawn.list.length, 1, 'a handed-over step does not wake again');
-    assert.equal(Wn.list(h.root).filter((w) => w.kind === 'stall').length, 0, 'a handoff is not a warning');
+    assert.deepEqual(Wn.list(h.root), [], 'a handoff is not a warning: the ledger stays empty');
+    // a handoff wake leaves the stall gates alone: a stall due in the same hour still wakes, and the day's six are untouched
+    h.setBead('ex-s', (b) => { b.labels = ['state-merged', 'state-deployed']; b.metadata = { deployed_sha: SHA }; });
+    const p0 = iso(Date.parse(t0) + 10 * 60e3);
+    fs.writeFileSync(h.store, JSON.stringify({ ...h.db(), issues: { ...h.db().issues, 'ex-p0': { id: 'ex-p0', status: 'open', priority: 0, created_at: iso(Date.parse(t0) - 2 * H) } } }, null, 2));
+    at(h, p0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 2, 'the P0 stall wakes within the hour of the handoff wake');
+    assert.match(spawn.list[1].args.join(' '), /Top-priority ex-p0/);
+    assert.equal(WD.logRows(h.root).filter((r) => r.type === 'wake' && (r.keys || []).some((k) => /^handoff:/.test(k))).length, 1);
   }
   // the step taken before the pass: the record closes the handoff, nobody is woken
   {
@@ -1154,6 +1162,30 @@ test('dlv-4oj: a merged story\'s deploy and a deployed story\'s check wake the D
     // the same sha again is no new handoff
     assert.doesNotMatch(h.bash(DM, `${h.script('evidence.js')} state ex-s deployed --sha ${SHA}`).out, /handed/);
     assert.equal(HO.pending(h.root).length, 1);
+  }
+  // a stale open row (another pull request for the same story) is superseded, so the wake names the current one; the same one again is not
+  {
+    const h = fresh(['state-merged'], { merged_pr: '479' });
+    HO.queue(h.root, { bead: 'ex-s', step: 'deploy', to: DM, pr: '478', at: iso(Date.parse(t0) - H) });
+    const r = HO.queue(h.root, { bead: 'ex-s', step: 'deploy', to: DM, pr: '479', at: t0 });
+    assert.ok(r, 'a new pull request is a new handoff');
+    assert.equal(HO.queue(h.root, { bead: 'ex-s', step: 'deploy', to: DM, pr: '479', at: t0 }), null);
+    assert.deepEqual(HO.pending(h.root).map((x) => x.pr), ['479']);
+    assert.equal(HO.rows(h.root)[0].superseded_by, r.id);
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1);
+    assert.match(spawn.list[0].args.join(' '), /PR 479 is merged/);
+    assert.doesNotMatch(spawn.list[0].args.join(' '), /PR 478/);
+  }
+  // a handoff that cannot be written is said by the deploy record, so the step is taken in that turn
+  {
+    const h = fresh(['state-merged'], { merged_pr: '478' });
+    fs.mkdirSync(path.join(h.root, HO.REL, HO.FILE), { recursive: true });
+    const r = h.bash(DM, `${h.script('evidence.js')} state ex-s deployed --sha ${SHA}`);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /not verified; its reality check was not handed to the watchdog \(.*\): dispatch it in this turn/);
+    assert.ok(h.db().issues['ex-s'].labels.includes('state-deployed'), 'the deploy is recorded all the same');
   }
   // a handoff keeps the message rules: five minutes after a message wake it waits, then goes; the day's stall cap does not hold it
   {

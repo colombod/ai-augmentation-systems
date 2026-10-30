@@ -113,7 +113,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       // wakes the Delivery Manager for it at its next pass if this turn ends first
       let handed = '';
       if (!d.ok && !same) {
-        try { handed = require('./lib/handoff.js').queue(who.root, { bead: id, step: 'check', to: who.instance, from: who.instance, sha: meta.deployed_sha, at }) ? '; its reality check is handed to the watchdog' : ''; } catch (err) { handed = ''; }
+        try { handed = require('./lib/handoff.js').queue(who.root, { bead: id, step: 'check', to: who.instance, from: who.instance, sha: meta.deployed_sha, at }) ? '; its reality check is handed to the watchdog' : ''; } catch (err) { handed = `; its reality check was not handed to the watchdog (${String(err.message).split('\n')[0]}): dispatch it in this turn`; }
       }
       return { code: 0, out: `${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}${handed}` };
     }

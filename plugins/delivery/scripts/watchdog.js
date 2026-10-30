@@ -346,7 +346,7 @@ const whichOf = (has) => has || ((cmd) => { try { require('child_process').execF
 
 // a host with no scheduler at all (Claude Code's cloud container: no systemd user session, no crontab)
 // cannot run the job: said plainly, with the way out, instead of a crontab error (dlv-4oj)
-const NO_SCHEDULER = 'this host has no scheduler (no systemd user session, no crontab), so the watchdog cannot run on its own here: a stopped role is woken only while someone keeps a loop alive. Run the team on an always-on host (one with systemd, launchd or cron), or run `watchdog.js run --project <root>` yourself when work is due.';
+const NO_SCHEDULER = 'this host has no scheduler (no systemctl, no crontab), so the watchdog cannot run on its own here: a stopped role is woken only while someone keeps a loop alive. Run the team on an always-on host (one with systemd, launchd or cron), or run `watchdog.js run --project <root>` yourself when work is due.';
 
 function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has } = {}) {
   const which = whichOf(has);

@@ -9,34 +9,50 @@
 // watchdog's git-ignored directory, like the inbox: the bead stays the record (team rule 5).
 const fs = require('fs');
 const path = require('path');
+const { withLock } = require('./lock.js');
 
 const REL = path.join('.delivery', 'watchdog');
 const FILE = 'handoffs.ndjson';
 const STEPS = ['deploy', 'check'];
 const KEEP_MS = 7 * 24 * 3600e3;
 const file = (root) => path.join(root, REL, FILE);
+const lockOf = (root) => `${file(root)}.lock`;
 
 function rows(root) {
   try { return fs.readFileSync(file(root), 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (err) { return null; } }).filter((r) => r && typeof r === 'object' && r.id); } catch (err) { return []; }
 }
+// The file is rewritten whole (rows change state), so every change runs under the lock, read to write,
+// and lands by rename: the merge gate, the deploy record and a watchdog pass may write at the same
+// moment, and a lost row is a story left to the two-hour stall, a lost mark a second wake for one step.
 function write(root, list) {
   fs.mkdirSync(path.join(root, REL), { recursive: true });
   const ig = path.join(root, REL, '.gitignore');
   if (!fs.existsSync(ig)) fs.writeFileSync(ig, '*\n');
-  fs.writeFileSync(file(root), list.map((r) => JSON.stringify(r)).join('\n') + (list.length ? '\n' : ''));
+  const tmp = `${file(root)}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, list.map((r) => JSON.stringify(r)).join('\n') + (list.length ? '\n' : ''));
+  fs.renameSync(tmp, file(root));
 }
+const locked = (root, fn) => withLock(lockOf(root), fn, { strict: true });
 
-// Queue one step for a role. The same step for the same bead is queued once while it is open: a retry
-// of `merge-gate.js merged` (it is retry-safe) adds nothing. Returns the row, or null when nothing was added.
+// Queue one step for a role. The same step for the same bead and the same pull request (a deploy) or
+// sha (a check) is queued once while it is open: a retry of `merge-gate.js merged` (it is retry-safe)
+// adds nothing. An open row for another pull request or sha is stale (a new merge of the same story
+// while its area was stopped, or while nobody could be woken): it is closed and the new one takes its
+// place, so the wake names the current one. Returns the row, or null when nothing was added.
 function queue(root, { bead, step, to, from, pr, sha, at }) {
   if (!bead || !STEPS.includes(step) || !to) return null;
-  const list = rows(root);
-  if (list.some((r) => r.bead === bead && r.step === step && !r.delivered_at && !r.done_at)) return null;
   const now = at || new Date().toISOString();
   const row = { id: `h-${bead}-${step}-${now.replace(/[-:.TZ]/g, '').slice(0, 14)}`, at: now, bead, step, to, from: from || null, pr: pr ? String(pr) : null, sha: sha || null };
-  // rows settled over a week ago go; the open ones stay whatever their age
-  write(root, [...list.filter((r) => !(r.done_at || r.delivered_at) || Date.parse(now) - Date.parse(r.done_at || r.delivered_at) < KEEP_MS), row]);
-  return row;
+  const same = (r) => (step === 'deploy' ? String(r.pr || '') === String(row.pr || '') : String(r.sha || '') === String(row.sha || ''));
+  return locked(root, () => {
+    const list = rows(root);
+    const open = list.filter((r) => r.bead === bead && r.step === step && !r.delivered_at && !r.done_at);
+    if (open.some(same)) return null;
+    const kept = list.map((r) => (open.includes(r) ? { ...r, done_at: now, superseded_by: row.id } : r));
+    // rows settled over a week ago go; the open ones stay whatever their age
+    write(root, [...kept.filter((r) => !(r.done_at || r.delivered_at) || Date.parse(now) - Date.parse(r.done_at || r.delivered_at) < KEEP_MS), row]);
+    return row;
+  });
 }
 
 // the rows no wake has carried and no record has closed
@@ -46,7 +62,7 @@ function mark(root, ids, field, at) {
   const want = new Set(ids || []);
   if (!want.size) return;
   const now = at || new Date().toISOString();
-  write(root, rows(root).map((r) => (want.has(r.id) && !r[field] ? { ...r, [field]: now } : r)));
+  locked(root, () => write(root, rows(root).map((r) => (want.has(r.id) && !r[field] ? { ...r, [field]: now } : r))));
 }
 const markDelivered = (root, ids, at) => mark(root, ids, 'delivered_at', at);
 const markDone = (root, ids, at) => mark(root, ids, 'done_at', at);
