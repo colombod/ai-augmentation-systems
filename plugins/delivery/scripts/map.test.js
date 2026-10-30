@@ -209,12 +209,16 @@ test('Vault: a product\'s own entry points are features: web routes, MCP tools, 
     'tests/test_x.py': 'TOOLS = [Tool("fake_tool")]\n',
     'tests/fakes.py': 'TOOLS = [Tool("twin_tool")]\n',
     'web/app.test.js': "server.tool('spec_tool', {});\n",
+    'tests/test_twins.py': 'from app import oauth\n@app.get("/twin/token")\ndef token(): pass\n',
+    'web/consent.spec.ts': "app.get('/spec-only', (req, res) => res.send('ok'));\n",
   });
   const f = Object.fromEntries(run(['features', '--repo', fx.dir, '--json']).json().features.map((x) => [x.id, x]));
   assert.deepEqual(f['http:app/main'].entries, ['GET /health', 'POST /decks/{id}/restore']);
   assert.deepEqual(f['http:web/server'].entries, ['GET /consent']);
   assert.deepEqual(f['tools:app/mcp'].entries, ['save_deck', 'restore_deck']);
   for (const t of ['tools:tests/test_x', 'tools:tests/fakes', 'tools:web/app.test']) assert.equal(f[t], undefined, `${t}: a test file's tools are not the product's`);
+  // nor its routes (the Vault's tests/test_twins.py, reached by every sign-in change)
+  for (const t of ['http:tests/test_twins', 'http:web/consent.spec']) assert.equal(f[t], undefined, `${t}: a test file's routes are not the product's`);
   assert.deepEqual(f['function:api/index'].anchors, ['api/index.py']);
   assert.deepEqual(f['ci:tests'].entries, ['Tests']);
   assert.deepEqual(f['script:vault-sync'].anchors, ['app/main.py']);
