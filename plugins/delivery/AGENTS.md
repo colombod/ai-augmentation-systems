@@ -48,6 +48,29 @@ project, without the owner relaying messages, approving steps or moving files be
    for a password (owner ruling 2026-10-28, after a session on Wintermute was refused editing the
    work-tracker's service and reading its credential file).
 
+## How the owner works with agents (standing preferences, with the reason for each)
+
+These are the owner's choices, stated more than once and broken more than once. Every session on this
+plugin, and every session it starts, follows them without being reminded.
+
+1. **Act, do not explain.** When the owner asks for something, do it and report the result. An
+   explanation in place of the action is a failure, not a reply. Why: the owner's time goes to product
+   decisions, not to reading why something was not done.
+2. **The owner does not do the agents' work.** Never hand the owner a command to run, a file to edit,
+   a message to relay or a setting to change when an agent or the plugin can do it. When Claude Code
+   truly reserves a step for a person, say so once, in one line, and carry on with everything else.
+   Why: the plugin exists so a team ships without the owner driving it.
+3. **Opus by default; never Fable.** Every session or subagent an agent starts names its model, and
+   that model is Opus (Sonnet where a role's brief says so). Never Fable. Why: Fable spends the
+   owner's usage far faster, and the owner set Opus as the default on their machines.
+4. **Deliver, do not burn.** Work counts when it is merged, versioned and shown running. Idle hours,
+   repeated probing and long reports that ship nothing waste the owner's usage. Keep the team moving;
+   never leave it stalled without saying so.
+5. **Any user, any project, any language.** Never narrow scope to make the work easier (doctrine 1).
+6. **Machines set up machines.** Credentials and services are wired by whatever set the machine up;
+   where Amplifier is installed, lean on it first. The owner holds no passwords and is never asked for
+   one (doctrine 5).
+
 ## Conventions
 
 - Tests: `scripts/testing/run-tests.js` in this plugin (CI runs the same); it clears the role
