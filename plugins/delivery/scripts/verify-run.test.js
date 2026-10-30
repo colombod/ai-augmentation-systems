@@ -80,7 +80,9 @@ test('run: the deployed sha, not the newest commit, runs the command, and the ru
   const cap = fs.readFileSync(path.join(s.root, '.delivery', 'evidence', rows[0].capture.path), 'utf8');
   assert.match(cap, /^\$ sh tool\.sh/);
   assert.match(cap, /tool v1 imported 212 cards/);
-  assert.doesNotMatch(cap, /v2/);
+  // the newest commit's output, not any "v2": the capture also carries a random temp path, which once
+  // read delivery-tests-2zv2TU and failed the test on an unrelated pull request
+  assert.doesNotMatch(cap, /tool v2 imported/);
   assert.ok(fs.existsSync(path.join(s.roleDir, 'verify', `${ID}-${s.prod.deployed.slice(0, 12)}`, 'tool.sh')));
 });
 
