@@ -1224,3 +1224,23 @@ test('dlv-4oj: a merged story\'s deploy and a deployed story\'s check wake the D
     assert.match(spawn.list[1].args.join(' '), /Deploy it now/);
   }
 });
+
+// From the review of #86: a handoff alone keeps the message rules' daily cap (48 wakes a day), and is
+// woken again once the day's count falls under it.
+test('plan: a handoff alone is held at 48 wakes in a day and woken below it (dlv-4oj)', () => {
+  const t0 = Date.parse('2026-10-26T15:00:00Z');
+  const ho = { kind: 'handoff', key: 'handoff:ho-1', bead: 'ex-s', target: 'b1', handoff: 'ho-1', due: true, line: 'Handed over: ex-s waits for its deploy', prompt: 'deploy ex-s.' };
+  const ago = (m) => new Date(t0 - m * 60e3).toISOString();
+  const plan = (n) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-ho-'));
+    for (let i = 0; i < n; i++) WD.log(root, { type: 'wake', instance: 'b1', pid: 7, at: ago(20 * (i + 1)), keys: [`handoff:old-${i}`] });
+    return WD.plan({ stalls: [ho] }, { root, now: new Date(t0).toISOString(), alive: () => false });
+  };
+  const full = plan(48);
+  assert.equal(full.wakes.length, 0, JSON.stringify(full.wakes));
+  assert.match(full.held.find((h) => h.lines.includes(ho.line)).reason, /woken 48 times in a day/);
+  const under = plan(47);
+  assert.equal(under.wakes.length, 1);
+  assert.deepEqual(under.wakes[0].keys, ['handoff:ho-1']);
+  assert.deepEqual(under.wakes[0].handoffs, ['ho-1'], 'the wake carries its handoff, so it is marked handed over');
+});
