@@ -36,8 +36,9 @@ missed entirely. Mark them, do not drop them.
 Elicited in at most three questions (`/delivery:brief` step 4b). Quote the owner; with no
 answer, write **assumed** and keep the questions under Open questions.
 
-**Lens:** you value <X> because <Y>, while wanting to preserve <Z> · confirmed | assumed
+**Lens:** you value <X> because <Y>, while wanting to preserve <Z> · confirmed (their words) | assumed (the team's reading, not their words)
 **What must survive:** the few things no later cut or change may drop without the owner's record.
+Each item quotes the owner, or is labelled **assumed** (a proposal that does not bind yet).
 
 - 
 

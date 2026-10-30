@@ -13,7 +13,8 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 test('brief: the owner\'s lens in at most three questions, what must survive, one proposition, gates first; never filled in', () => {
   const s = read('skills/brief/SKILL.md');
   assert.match(s, /in at most three questions, put in step 5's batch/);
-  assert.match(s, /write the lens \*\*assumed\*\* and keep the questions open; never fill it in/);
+  assert.match(s, /write the lens \*\*assumed\*\*: the team's reading, never written as the owner's words/);
+  assert.match(s, /Only an item in the owner's own\s+words binds; one the team assumed is labelled \*\*assumed\*\*, is a proposal/);
   assert.match(s, /\*What must survive\.\*[\s\S]*cannot drop one without the owner's record/);
   assert.match(s, /\*Proposition\.\* The one thing[\s\S]*in one\s+sentence/);
   assert.match(s, /\*Gates first\.\* Correctness, safety, accessibility, feasibility[\s\S]*A critical fail blocks the idea/);
@@ -32,7 +33,7 @@ test('prd staging: every FR answers "In the primary picture?"; a leftover defaul
   const s = read('skills/prd/SKILL.md');
   assert.match(s, /\| \*\*In the primary picture\?\*\* \|/);
   assert.match(s, /defaults to \*Explicitly not doing\* unless it is load-bearing for another\s+persona/);
-  assert.match(s, /A default is a proposal: it goes to the owner[\s\S]*\*\*What must survive\*\* never defaults out/);
+  assert.match(s, /A default is a proposal: it goes to the owner[\s\S]*\*\*What must survive\*\* in the owner's words\s+never defaults out/);
   const t = read('templates/prioritization.md');
   assert.match(t, /^\| FR \| Personas served \|.*\| In the primary picture\? \|$/m);
   assert.match(t, /\| FR \| Reason \| Leftover default or owner's record \| Revisit if \|/);
@@ -62,8 +63,18 @@ test('NOTICE: every ported method names its source and the source is in NOTICE w
 
 test('planned before the methods: an older initiative is flagged, never stopped, at the PRD and the roadmap', () => {
   const r = read('skills/roadmap/SKILL.md');
-  assert.match(r, /\*\*Planned before this gate:\*\* an initiative whose `prioritization\.md` has no \*In the primary\s+picture\?\* column[\s\S]*Do not stop it/);
+  assert.match(r, /\*\*Planned before this gate:\*\* an initiative with no `storyboard\.md` whose `prioritization\.md` is\s+missing, or has no \*In the primary picture\?\* column[\s\S]*Do not stop it/);
   assert.match(r, /Once that column is\s+there, the gate applies in full\./);
   const p = read('skills/prd/SKILL.md');
   assert.match(p, /\*\*Written before the owner's lens\*\*[\s\S]*not thin: proceed/);
+});
+
+test('from the trial run: precondition steps, a wrong breath, one proposal per cut, the brief\'s MVP boundary stands', () => {
+  const s = read('skills/prd/SKILL.md');
+  assert.match(s, /\(an \*\*assumed\*\* item does not bind; list it for the owner\)/);
+  assert.match(s, /\(\*yes, precondition\*\)/);
+  assert.match(s, /means the breath is wrong: fix the breath, do not\s+default the requirement out/);
+  assert.match(s, /already proposed as a non-goal is not proposed\s+again here/);
+  assert.match(s, /narrow the brief's \*\*MVP boundary\*\*, the brief stands until the\s+owner answers/);
+  assert.match(read('templates/prioritization.md'), /yes, precondition .* proposed non-goal, step 5b \|/);
 });

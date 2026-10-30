@@ -93,9 +93,12 @@ michaeljabbour's Taste and Sizzle skills (MIT; see `${CLAUDE_PLUGIN_ROOT}/NOTICE
   and which choice creates that reaction; what someone should feel, understand or do, and what
   must not be lost. Skip any question the owner's own words already answer. Reflect it back in
   one line ("you value X because Y, while wanting to preserve Z") and let them correct it. With
-  no answer, write the lens **assumed** and keep the questions open; never fill it in.
+  no answer, write the lens **assumed**: the team's reading, never written as the owner's words or
+  quoted, and keep the questions open.
 - *What must survive.* The few things any later cut or change must keep, in the owner's words.
-  The PRD's staging cannot drop one without the owner's record.
+  The PRD's staging cannot drop one without the owner's record. Only an item in the owner's own
+  words binds; one the team assumed is labelled **assumed**, is a proposal like any other, and goes
+  to the owner with the lens questions.
 - *Proposition.* The one thing the named user must believe or be able to do at the end, in one
   sentence. If it needs "and also", there are two products: say so, and propose which one this is.
 - *Gates first.* Correctness, safety, accessibility, feasibility: each pass, fail, unknown or not

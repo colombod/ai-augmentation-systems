@@ -55,7 +55,8 @@ that Z, and they leave with W", each step following from the one before. Check i
 brief's proposition. Wherever it needs "and also", the scenario after it is a candidate cut: list
 it under the PRD's out of scope as **proposed non-goal**, with the reason. A proposed non-goal is
 the owner's to accept or refuse; narrowing scope is never the team's choice, so nothing is dropped
-until they answer.
+until they answer. Where a cut would narrow the brief's **MVP boundary**, the brief stands until the
+owner answers: write the scenario in, and mark it proposed for cutting.
 
 ## Step 6 — MVP staging
 
@@ -95,7 +96,12 @@ Load-bearing beats enhancement. A feature that prevents abandonment for two pers
 **The leftover test** (after Market Fit's leftover stone, michaeljabbour, MIT). A requirement that is
 not in the primary picture defaults to *Explicitly not doing* unless it is load-bearing for another
 persona the stages name; say which. A default is a proposal: it goes to the owner with the others
-in Open questions, and a requirement the brief lists under **What must survive** never defaults out.
+in Open questions, and a requirement the brief lists under **What must survive** in the owner's words
+never defaults out (an **assumed** item does not bind; list it for the owner). A step the journey
+cannot happen without is in the picture (*yes, precondition*). A requirement load-bearing for the
+primary persona but missing from the one breath means the breath is wrong: fix the breath, do not
+default the requirement out. A scenario step 5b already proposed as a non-goal is not proposed
+again here: its row cites the proposal (*proposed non-goal, step 5b*).
 
 **6.3 Cut the stages.** Typically MVP / Stage 2 / Stage 3 / explicitly-not-doing. For each stage state:
 

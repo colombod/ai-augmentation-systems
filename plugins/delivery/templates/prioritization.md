@@ -23,7 +23,7 @@ completely is a project milestone, not a release.
 
 | FR | Personas served | Load-bearing? | Severity | Objection answered | Effort (est.) | Confidence | In the primary picture? |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
-| FR-1 | | yes / no | | | S/M/L | observed / assumed | yes / no: load-bearing for <persona> / no: leftover |
+| FR-1 | | yes / no | | | S/M/L | observed / assumed | yes / yes, precondition / no: load-bearing for <persona> / no: leftover / proposed non-goal, step 5b |
 
 Load-bearing beats enhancement. Where a delighter outranks a blocker, say why
 explicitly — that reasoning should not win quietly.
