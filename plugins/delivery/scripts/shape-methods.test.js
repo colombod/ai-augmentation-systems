@@ -69,6 +69,8 @@ test('storyboard: approved only in the owner\'s quoted words; reopened by a chan
   assert.match(r, /whatever the PRD's out of\s+scope list says about it/);
   assert.match(s, /Put every open shape proposal in the same message, each with a\s+recommended answer/);
   assert.match(s, /`--stage` never edits `prd\.md`/);
+  assert.match(s, /with "the PRD needs a\s+revise" in the hand-off/);
+  assert.match(s, /\(the stage its scores give it as if it were in the picture\)/);
   const g = read('skills/realign/SKILL.md');
   assert.match(g, /If the journey the\s+storyboard's cards tell, the MVP's `FR-n` list or the proposition changes, the storyboard\s+\(`storyboard\.md`\) is reopened/);
   assert.match(g, /Re-staging keeps `\/delivery:prd`'s staging rules: what must survive in the owner's words stays in\s+the MVP unless the owner's record says otherwise[\s\S]*kept in its\s+stage until the owner's record/);

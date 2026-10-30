@@ -68,7 +68,9 @@ plus `.delivery/simulations/`, `.delivery/interviews/` and `.delivery/personas/`
 exist. With `--stage`, run only this step against an existing `prd.md`: skip the PRD's own
 revise/replace question and steps 1–5 except 5b (the one breath, which *In the primary picture?*
 is scored against: tell it if the PRD has none, and keep its proposed non-goals as proposals,
-written in `prioritization.md` only; `--stage` never edits `prd.md`), keep
+written in `prioritization.md` only; `--stage` never edits `prd.md`: a breath fixed there, or a
+requirement the staging finds missing, is written in `prioritization.md` with "the PRD needs a
+revise" in the hand-off), keep
 the blocking-findings gate, and stop if `prd.md` is missing. Value is ranked here with rough effort; the real-cost
 pass comes later, in `/delivery:roadmap`.
 
@@ -101,7 +103,7 @@ Load-bearing beats enhancement. A feature that prevents abandonment for two pers
 **The leftover test** (after Market Fit's leftover stone, michaeljabbour, MIT). A requirement that is
 not in the primary picture is proposed for *Explicitly not doing* unless it is load-bearing for
 another persona the stages name; say which. A proposal is not a cut: the requirement stays in the
-stage it would be in otherwise, marked *proposed for not doing* in its row, and the question goes to
+stage it would be in otherwise (the stage its scores give it as if it were in the picture), marked *proposed for not doing* in its row, and the question goes to
 the owner with the others in Open questions. It moves to Explicitly not doing only with the owner's
 record, cited. A requirement the brief lists under **What must survive** in the owner's words is
 never proposed out (an **assumed** item does not bind; list it for the owner). A step the journey
