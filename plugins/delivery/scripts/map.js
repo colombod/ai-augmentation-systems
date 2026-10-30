@@ -9,6 +9,9 @@
 //       blind count. --diff maps at <base> (what the change lands on) the files changed in base..head;
 //       --story reads the paths in a story's "Files and modules" table.
 //   map.js blind [--repo <dir>] [--at <ref>] [--json]   the files no rule reads, by extension
+//   map.js retire <feature-id> [--repo <dir>] [--at <ref>] [--json]
+//       what retiring a feature frees: the files only it reaches (deletable with it) and the files other
+//       features reach too (retire the surface, keep the code); never a verdict on use or a deletion
 // Every answer names the 40-hex commit it was computed at. Exit codes: 0 done; 1 refused; 2 usage.
 const fs = require('fs');
 const path = require('path');
@@ -40,8 +43,8 @@ function storyPaths(text) {
 function main(argv, { write = (s) => process.stdout.write(s) } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { write(`map.js: ${err.message}\n`); return 2; }
-  if (!['features', 'impact', 'blind'].includes(o.cmd)) {
-    write('usage: map.js features|impact|blind [--repo <dir>] [--at <ref>] [--json] ...\n');
+  if (!['features', 'impact', 'blind', 'retire'].includes(o.cmd)) {
+    write('usage: map.js features|impact|blind|retire [--repo <dir>] [--at <ref>] [--json] ...\n');
     return 2;
   }
   const repo = path.resolve(o.repo);
@@ -64,6 +67,19 @@ function main(argv, { write = (s) => process.stdout.write(s) } = {}) {
     if (o.json) { write(`${JSON.stringify({ sha: map.sha, blind: map.blind })}\n`); return 0; }
     write(`Blind at ${map.sha}: ${map.blind.length} of ${map.files.length} files (no rule reads them)\n`);
     for (const [e, fs_] of Object.entries(by).sort((a, b) => b[1].length - a[1].length)) write(`  ${e}: ${fs_.length}\n`);
+    return 0;
+  }
+  if (o.cmd === 'retire') {
+    if (o.paths.length !== 1) { write('map.js: retire needs one feature id (map.js features lists them)\n'); return 2; }
+    const r = F.retirement(map, feats, o.paths[0]);
+    if (r.error) { write(o.json ? `${JSON.stringify(r)}\n` : `map.js: refused: ${r.error}\n`); return 1; }
+    if (o.json) { write(`${JSON.stringify(r)}\n`); return 0; }
+    write(`Retiring ${r.id} (${r.kind}, ${r.source}) at ${r.sha}: ${r.exclusive.length} file${r.exclusive.length === 1 ? '' : 's'} only it reaches, ${r.shared.length} shared\n`);
+    write('  Deletable with it (no other feature reaches them):\n');
+    for (const p of r.exclusive) write(`    ${p}\n`);
+    if (r.shared.length) write('  Shared (retire the surface, keep the code):\n');
+    for (const x of r.shared) write(`    ${x.path}  also reached by ${x.features.length > 3 ? `${x.features.slice(0, 3).join(', ')} and ${x.features.length - 3} more` : x.features.join(', ')}\n`);
+    write('The map shows reach, not use. Before retiring, show from the product\'s own logs that the feature is no longer used; with no logs, instrument it first and decide later. Deleting is irreversible: it is the owner\'s decision, recorded (/delivery:decision), never inferred.\n');
     return 0;
   }
   // impact

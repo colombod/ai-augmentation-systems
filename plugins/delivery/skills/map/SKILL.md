@@ -36,6 +36,9 @@ register, because naming what the product ships is a product decision.
 - `node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js impact --diff <base> [<head>]` — a commit range, mapped at
   the base it lands on. Use it on a pull request, or to replay a past break.
 - `node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js blind` — the files no rule reads, by kind.
+- `node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js retire <feature-id>` — what retiring a feature frees: the
+  files only it reaches (deletable with it) and the files other features reach too (retire the surface,
+  keep the code), with those features named.
 - Add `--repo <dir>` for another repository and `--json` for the machine-readable answer.
 
 ## Reading the answer
@@ -53,7 +56,13 @@ register, because naming what the product ships is a product decision.
 ## Where it is used
 
 - `/delivery:stories` step 3a: every story carries its blast radius before it is ready.
-- Before a removal: a feature's exclusive files can go; files other features reach mean retire the
-  surface and keep the code.
+- Retiring a feature (from MJ's Market Fit and Worth Using):
+  1. `map.js retire <id>` for what it would free. Exclusive files go with it; shared files stay.
+  2. Evidence of non-use comes from the product's own logs, never from the map: the feature's users no
+     longer return to it over two checks. No logs means instrument the feature first and decide later.
+  3. The decision is the owner's and irreversible: put it to them once, with the retire output and
+     the evidence, and record it (`/delivery:decision`). Then a story of kind retire deletes the
+     exclusive files and the shared surface, and its blast radius (`impact --story`) is empty of
+     features it does not name.
 - After a break: `impact --diff <bad commit>^ <bad commit>` shows what the change reached, to check
   whether the map would have predicted it.
