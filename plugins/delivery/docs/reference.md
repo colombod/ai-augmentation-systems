@@ -1061,7 +1061,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   the exact commands, under the message rules below (five minutes apart, 48 a day), not after the
   two-hour evidence stall. Each handoff wakes once; a step the record already shows taken (the bead
   deployed, the `<bead>-rc-<sha>` child created, the story verified, cut or closed) is closed at the
-  pass with no wake. Like a message, a handoff is a handover, not a warning in the ledger. A handoff
+  pass with no wake (a deploy counts only when recorded after the merge: `merged_at`, a gate field only
+  the Delivery Manager's scripts write). Like a message, a handoff is a handover, not a warning in the ledger. A handoff
   in an area stopped on a failed check wakes only for that stop's recovery work (the failed story, a
   fix linked to it, its A3's work), as the claim check allows; other work there waits for the stop.
   The promise, a merged story at its reality check within one watchdog interval with no loop kept by
