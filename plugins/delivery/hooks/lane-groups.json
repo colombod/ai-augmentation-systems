@@ -49,7 +49,7 @@
     { "first": "git", "sub": ["branch"], "flags_any": ["-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--show-current", "--contains", "--no-contains", "--merged", "--no-merged"], "no_positional": true, "value_flags": ["--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format"], "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "-D", "-d", "-m", "-M", "--delete", "--move", "-c", "-C", "--copy", "-f", "--force", "-u", "--set-upstream-to", "--unset-upstream", "--edit-description", "-t", "--track", "--no-track"] }
   ],
   "git-write-project": [
-    { "first": "git", "sub": ["add", "commit", "push", "pull", "fetch", "checkout", "switch", "restore", "stash", "merge", "cherry-pick", "reset"], "scope": "project", "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] },
+    { "first": "git", "sub": ["add", "rm", "mv", "commit", "push", "pull", "fetch", "checkout", "switch", "restore", "stash", "merge", "cherry-pick", "reset"], "scope": "project", "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] },
     { "first": "git", "sub": ["rebase"], "scope": "project", "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "-x"] }
   ],
   "git-write-product": [
@@ -61,10 +61,12 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watch.js", "sub": ["gh", "until"] }
   ],
   "gh-write": [
-    { "first": "gh", "sub": ["pr create", "pr edit", "pr comment", "pr ready", "pr review", "issue comment", "release create", "workflow run"] }
+    { "first": "gh", "sub": ["pr create", "pr edit", "pr comment", "pr ready", "pr review", "issue comment", "release create", "workflow run"] },
+    { "first": "gh", "sub": ["api"], "pr_open_endpoint": true, "native_allow": false }
   ],
   "gh-merge": [
-    { "first": "gh", "sub": ["pr merge"] }
+    { "first": "gh", "sub": ["pr merge"] },
+    { "first": "gh", "sub": ["api"], "merge_endpoint": true, "native_allow": false }
   ],
   "bd-read": [
     { "first": "bd", "sub": ["list", "show", "ready", "prime", "where", "dep list", "dep tree", "dep cycles", "label list", "label list-all", "stats", "help", "comments list"] }
@@ -121,6 +123,12 @@
   ],
   "a3-draft": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/a3.js", "sub": ["new"] }
+  ],
+  "verify-run": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/verify-run.js", "sub": ["run"] }
+  ],
+  "review-run": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js", "sub": ["checkout", "test"] }
   ],
   "review-record": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/review.js", "sub": ["record"] }

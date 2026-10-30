@@ -5,7 +5,10 @@ const path = require('path');
 try {
   const { readHookInput, sessionStartText } = require('./role-context.js');
   const text = sessionStartText(readHookInput(), path.join(__dirname, '..', '..'), { warn: (m) => process.stderr.write(m) });
-  if (text) process.stdout.write(text);
+  // every session, role or not: on a machine with Amplifier, the first thing it knows is to lean on it
+  let hint = '';
+  try { hint = require('../../scripts/lib/amplifier.js').sessionHint(process.env); } catch (err) { hint = ''; }
+  if (text || hint) process.stdout.write(`${text || ''}${hint}`);
 } catch (err) {
   // swallow: observing hook
 }

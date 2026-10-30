@@ -6,6 +6,35 @@ const { findProjectRoot, loadManifest, expandInstances } = require('./manifest.j
 const { loadSurface } = require('./surface.js');
 const G = require('./gates.js');
 
+// The gates read the project repo's root checkout, but role sessions commit in their own clones and push
+// to its origin, and nothing else brings that work into the root: measured 2026-10-25, ready.js read a
+// master four commits behind origin and reported "no readable story file" for a story already pushed.
+// So before a gate reads, the root fast-forwards to origin's copy of its branch: fast-forward only, never
+// over a local change to a file the update touches, at most once a minute, and every refusal is left as it is.
+// 'updated' | 'current' | 'no-remote' | 'dirty' | 'diverged' | 'recent' | 'skipped'
+function freshRoot(root, { env = process.env, everyMs = 60e3, now = Date.now() } = {}) {
+  try {
+    if (!root || env.DELIVERY_NO_FRESH_ROOT === '1' || !fs.existsSync(path.join(root, '.git'))) return 'skipped';
+    const { spawnSync } = require('child_process');
+    const git = (...a) => spawnSync('git', ['-C', root, ...a], { encoding: 'utf8', timeout: 8000, env: { ...env, GIT_TERMINAL_PROMPT: '0' } });
+    const gitDir = (git('rev-parse', '--git-dir').stdout || '').trim();
+    const stamp = path.join(path.isAbsolute(gitDir) ? gitDir : path.join(root, gitDir || '.git'), 'delivery-fresh-root');
+    try { if (now - fs.statSync(stamp).mtimeMs < everyMs) return 'recent'; } catch (err) { /* never freshened */ }
+    if (git('remote', 'get-url', 'origin').status !== 0) return 'no-remote';
+    try { fs.writeFileSync(stamp, `${new Date(now).toISOString()}\n`); } catch (err) { /* best effort */ }
+    const branch = (git('rev-parse', '--abbrev-ref', 'HEAD').stdout || '').trim();
+    if (!branch || branch === 'HEAD') return 'skipped';
+    if (git('fetch', '-q', 'origin', branch).status !== 0) return 'skipped';
+    const before = (git('rev-parse', 'HEAD').stdout || '').trim();
+    // git refuses a fast-forward that would overwrite a local change, and keeps every other one: the
+    // plugin's own scripts keep tracked records in the root (the warnings ledger, waves, bd's
+    // interactions log), so a root is rarely clean, and refusing on any change left the gates stale
+    const m = git('merge', '--ff-only', '-q', 'FETCH_HEAD');
+    if (m.status !== 0) return /overwritten|local changes/i.test(`${m.stderr}${m.stdout}`) ? 'dirty' : 'diverged';
+    return (git('rev-parse', 'HEAD').stdout || '').trim() === before ? 'current' : 'updated';
+  } catch (err) { return 'skipped'; }
+}
+
 // { root, roleId, instance, actor, team, roleDir } for this session; role fields are null outside a role session.
 function whoAmI({ cwd = process.cwd(), env = process.env, project } = {}) {
   let valid = null;
@@ -14,6 +43,7 @@ function whoAmI({ cwd = process.cwd(), env = process.env, project } = {}) {
     valid = validMarker(findRoleMarker(cwd));
   } catch (err) { valid = null; }
   const root = valid ? valid.marker.project_root : (project ? path.resolve(project) : findProjectRoot(cwd));
+  if (root) freshRoot(root, { env });
   let team = valid ? valid.team : null;
   if (!team && root) { try { team = loadManifest(root).team; } catch (err) { team = null; } }
   return {
@@ -90,4 +120,4 @@ function recordChecker(root, verifyRecord) {
 
 const maxUnverified = (team) => { const v = team && team.budget ? team.budget.max_unverified : undefined; return Number.isInteger(v) && v >= 0 ? v : G.DEFAULT_MAX_UNVERIFIED; };
 
-module.exports = { whoAmI, readStory, gateInputs, maxUnverified, writerProblem, recordChecker, ownerRecord, EVIDENCE_WRITERS };
+module.exports = { freshRoot, whoAmI, readStory, gateInputs, maxUnverified, writerProblem, recordChecker, ownerRecord, EVIDENCE_WRITERS };

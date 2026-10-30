@@ -44,6 +44,12 @@ function view(b) {
   return v;
 }
 
+// Where a git+file:// remote keeps the database a push publishes (inside the bare repo); null for other URLs.
+function remoteStore(url) {
+  const m = /^git\+file:\/\/(.+)$/.exec(url || '');
+  return m && fs.existsSync(m[1]) ? require('path').join(m[1], 'fake-dolt-store.json') : null;
+}
+
 function out(obj) { process.stdout.write(`${JSON.stringify(obj)}\n`); }
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -151,13 +157,81 @@ switch (cmd) {
     process.stdout.write(`closed ${id}\n`);
     break;
   }
+  case 'dolt': {
+    // The database "exists" when .beads/fake-config.json does (fake init and bootstrap write it).
+    // `dolt remote list --json` prints what real bd 1.1.2 prints: [] or [{name, url, ...}].
+    // BD_FAKE_DOLT_REMOTES overrides the list verbatim ("fail" makes it fail); BD_FAKE_PUSH=fail
+    // makes `dolt push` fail; a push with no remote fails as real bd does.
+    const cfgPath = require('path').join(process.cwd(), '.beads', 'fake-config.json');
+    const cfg = fs.existsSync(cfgPath) ? JSON.parse(fs.readFileSync(cfgPath, 'utf8')) : null;
+    const sub = `${pos[0]} ${pos[1] || ''}`.trim();
+    if (sub === 'remote list') {
+      const raw = process.env.BD_FAKE_DOLT_REMOTES;
+      if (raw === 'fail') { process.stderr.write('fake-bd: dolt remote list failed\n'); process.exit(1); }
+      process.stdout.write(`${raw || JSON.stringify((cfg && cfg.remotes) || [])}\n`);
+    } else if (sub === 'remote add') {
+      if (!cfg) { process.stderr.write('Error: no beads database found\n'); process.exit(1); }
+      cfg.remotes = [...(cfg.remotes || []), { name: pos[2], url: pos[3], status: 'ok' }];
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+      // real bd persists the remote as sync.remote in .beads/config.yaml
+      fs.appendFileSync(require('path').join(process.cwd(), '.beads', 'config.yaml'), `sync.remote: "${pos[3]}"\n`);
+      process.stdout.write(`Added remote ${pos[2]}\n`);
+    } else if (sub === 'push') {
+      if (process.env.BD_FAKE_PUSH === 'fail') { process.stderr.write('fake-bd: push refused\n'); process.exit(1); }
+      if (process.env.BD_FAKE_PUSH === '403') { process.stderr.write('error: RPC failed; HTTP 403 curl 22 The requested URL returned error: 403\n'); process.exit(1); }
+      if (!cfg || !(cfg.remotes || []).length) { process.stderr.write('Error: no remote configured\n'); process.exit(1); }
+      cfg.pushes = (cfg.pushes || 0) + 1;
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+      // a git+file:// remote keeps the pushed database, so a second clone's bootstrap can fetch it
+      const dest = remoteStore(cfg.remotes[0].url);
+      if (dest) fs.writeFileSync(dest, JSON.stringify(s));
+      process.stdout.write('Push complete.\n');
+    } else { process.stderr.write('fake-bd: unknown dolt subcommand\n'); process.exit(2); }
+    break;
+  }
+  case 'stats': {
+    if (!fs.existsSync(require('path').join(process.cwd(), '.beads', 'fake-config.json'))) { process.stderr.write('Error: no beads database found\n'); process.exit(1); }
+    process.stdout.write(`Total issues: ${Object.keys(s.issues).length}\n`);
+    break;
+  }
+  case 'bootstrap': {
+    // a fresh clone fetching the team's database; BD_FAKE_BOOTSTRAP=fail when the remote has none
+    if (process.env.BD_FAKE_BOOTSTRAP === 'fail') { process.stderr.write('fake-bd: nothing to bootstrap from\n'); process.exit(1); }
+    const dir = require('path').join(process.cwd(), '.beads');
+    fs.mkdirSync(dir, { recursive: true });
+    const origin = require('child_process').spawnSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8' });
+    const src = origin.status === 0 ? remoteStore(`git+file://${origin.stdout.trim()}`) : null;
+    if (src && fs.existsSync(src)) save(JSON.parse(fs.readFileSync(src, 'utf8')));
+    fs.writeFileSync(require('path').join(dir, 'fake-config.json'), JSON.stringify({ prefix: null, bootstrapped: true, remotes: [{ name: 'origin', url: 'git+file:///fake-origin', status: 'ok' }] }));
+    process.stdout.write('Synced database\n');
+    break;
+  }
+  case 'import': {
+    // `import <file>`: one issue per JSONL line, upserted by id, as real bd does; its `dependencies`
+    // ({issue_id, depends_on_id}) become blocked-by pairs. Keeping an existing issue's edits is start.js's job, not the tool's.
+    const file = pos[0] || flags.input || flags.i;
+    if (!file || !fs.existsSync(file)) { process.stderr.write(`fake-bd: no such file ${file}\n`); process.exit(1); }
+    let n = 0;
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      const o = JSON.parse(line);
+      // upsert, as real bd does: an id already held is overwritten with the file's fields
+      s.deps = s.deps.filter((d) => d.id !== o.id);
+      s.issues[o.id] = { id: o.id, title: o.title || '', status: o.status || 'open', type: o.issue_type || 'task', parent: null, labels: o.labels || [], metadata: o.metadata || {}, notes: o.notes || '', priority: o.priority === undefined ? 2 : o.priority, description: o.description || '', assignee: o.assignee || '', updated_at: new Date().toISOString() };
+      for (const d of o.dependencies || []) s.deps.push({ id: d.issue_id || o.id, blocked_by: d.depends_on_id });
+      n++;
+    }
+    save(s);
+    process.stdout.write(`Imported ${n} issues\n`);
+    break;
+  }
   case 'prime': process.stdout.write('fake-bd prime\n'); break;
   case 'version': process.stdout.write('bd version 0.0.0-fake\n'); break;
   case 'init': {
     // what start.js relies on: a .beads directory in the working directory
     const dir = require('path').join(process.cwd(), '.beads');
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(require('path').join(dir, 'fake-config.json'), JSON.stringify({ prefix: flags.prefix || null }));
+    fs.writeFileSync(require('path').join(dir, 'fake-config.json'), JSON.stringify({ prefix: flags.prefix || null, skipAgents: flags['skip-agents'] === true }));
     process.stdout.write(`fake-bd init ${flags.prefix || ''}\n`);
     break;
   }

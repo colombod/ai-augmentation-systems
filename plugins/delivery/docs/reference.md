@@ -57,6 +57,13 @@ why some names appear in both lists.
 | `program-manager` | prd (staging), roadmap, realign, challenge | sequencing, dependencies, risk |
 | `delivery-lead` | stories, challenge | is each story ready to pick up |
 | `chief-of-staff` | composed into the Chief of Staff role | does a real source already settle this question |
+| `pr-reviewer` (no edits) | the Delivery Manager, for every pull request before the merge gate | does this head meet its story's criteria, with the suite's output quoted |
+
+The `pr-reviewer` is the one lens with a lane of its own, when the Delivery Manager dispatches it (any other role's dispatch keeps that role's lane). A Delivery Manager's lane runs no product code, so a reviewer that inherited it could not run the tests it must quote; with one builder on the team, this subagent is the independent reviewer. Its lane: read everything; check out and test a head only through `review-run.js` (`checkout <pr> <full head sha>`, `test <pr>`), which keeps the clone at `review/pr-<pr>` of the role directory; edit files only in that clone (to break a covered line and see its test fail), never in its `.git/` nor a role marker or team manifest, in any letter case. Everything else is refused, the reviewer's own git writes and `mkdir` included: git run by the reviewer was once pointed outside `review/` through a fake bare repository, so `review-run.js` runs git itself, with the repository and work tree named and discovery, hooks and fsmonitor off.
+
+`review-run.js test` runs the product's own test command, in whatever language the product is written: `test_command` in `team.json` when the owner sets it (one line of shell, the command CI runs from the repository root, for example `dotnet test`, `./gradlew check`, `cargo test`, `make ci`), otherwise the one the repository's build files name, with its install step where the toolchain needs one (`npm ci && npm test`, `bundle install && ...`): a Makefile `test` target first, else .NET, Rust, Go, Maven, Gradle, sbt, Python, Ruby, Elixir, PHP, Swift, Dart and Flutter, Haskell, Zig, CMake, Node.js and Deno, A repository with several of these and no `make test` is refused with the candidates named, never guessed; `start.js` says at setup which command it found. It runs only in `review/pr-<pr>`, with the role's `DELIVERY_*`, beads and repository-pointing git variables cleared, and takes no extra arguments (a runner's own options can point it outside the clone); `test_timeout_minutes` (default 60) bounds it. The lane never lists runners itself: a list locks languages out, and a wildcard was got past with `timeout ... git push`.
+
+What the lane cannot stop: the tests are the pull request's own code (and the reviewer may edit files in its clone), and they run with the role's access. The lane keeps an honest reviewer from writing, pushing or recording by mistake; it is not a sandbox against a hostile pull request. Run the team where a role's credentials can do no more than its work needs.
 
 ## The shipping team's mechanisms
 
@@ -65,6 +72,7 @@ coordinating through cross-session messages (`SendMessage`) and beads. These pie
 session its role and keep it:
 
 - **Role briefs**: `roles/*.md`. Project-specific briefs go in the project repo under `.delivery/team/briefs/`.
+- **Experts**: the product's own specialists (infrastructure, security, scalability) as subagent definitions in the project repo under `.delivery/team/experts/<name>.md`, written by Staffing. `prepare-role` copies each into the role session's `.claude/agents/`, keeps a list of what it installed in `.claude/.delivery-managed-agents.json`, removes an expert the project no longer defines, never overwrites an agent the user wrote, and reports a malformed expert (no `name`, a `name` that is not the file name, no `description`) or more than five.
 - **The manifest**: `.delivery/team/team.json` and `hosts.json` in the private project repo (templates in `templates/`). [team-example.md](team-example.md) explains each field.
 - **`scripts/prepare-role.js --project <root> --instance <id>`** creates one directory per role
   instance with its own settings (model, env, actor), a composed `CLAUDE.local.md`, a clone of the
@@ -150,6 +158,12 @@ Delivery Manager requests an independent review (a reviewer subagent or another 
 author) and merges only on a passing review of the pull request's current head; a conflict or new
 commits send the pull request back to its owner and to review again. Its own `gh pr merge` sits in
 the `gh-merge` group and passes only through the merge gate (below).
+
+Where `gh pr create` (GraphQL) is refused, a role opens its pull request through REST:
+`gh api -X POST repos/<owner>/<repo>/pulls -f title='<the change>' -f head=team/<instance> -f base=main -f body='Refs <bead id> ...'`.
+The `gh-write` group and the leak guard accept exactly that shape (inline `title`, `head`, `base`, optionally
+`body`, `draft`), and scan the title and body like `gh pr create`; every other `gh api` write, a body read from
+a file, and any other endpoint stay refused.
 
 ### The leak guard
 
@@ -402,6 +416,25 @@ counting fail raises the andon (the mechanical pause below) with no owner step. 
 lists the open reality checks. The run's minutes cap is the checker's brief, not yet measured by the
 script.
 
+**Command-line surfaces.** A surface declared with `"command_line": true` (a CLI, a library, a service
+driven by commands) has no screen, so the Reality Checker checks it with
+`verify-run.js run <bead> --criterion <n>` (the `verify-run` lane group, the Reality Checker's only).
+The Delivery Manager puts the command in the script step with `reality-check.js refine <bead>
+--criterion <n> --step <k> --command '<shell command>' [--match '<pattern stdout must show>']`. The runner
+checks out the bead's deployed sha (the full sha) in `verify/<bead>-<sha12>` of the role directory,
+runs the command there with the role's variables cleared, saves the command, sha, stdout, stderr and
+exit code as the capture, decides the result itself (exit 0, and the match found in stdout when the step
+has one), and records the row through `run-record`, so the run cap, the capture rules and the andon on
+a fail all apply. The agent types no result, and the builder's lane has no way to write the row.
+The run cap is checked before the checkout, so an over-cap run executes nothing and writes no capture;
+a criterion with more than one step carrying a command is refused, never partly run. The runner runs
+the source clone at the deployed sha, not the installed artifact, so the version it observes is the
+clone's sha. The capture is cut at 256 KiB per stream (and says so) and is not redacted: a command that
+prints a secret writes it into the capture.
+`start.js` adds the Reality Checker to a new team whose surfaces include a command-line one, and
+`/delivery:team` warns when a declared surface only the Reality Checker can verify has no Reality
+Checker on the team.
+
 **Migration and cut stories.** The hard done gate applies to stories the Delivery Manager made ready.
 A story never made ready (one from before 0.22, or on the old checkbox template) closes with a
 `close-not-ready` warning, so in-flight work is never locked out; another bead closed with no
@@ -605,7 +638,14 @@ owner and is reviewed again; gates block only on authority or serious divergence
   chain; a reader merges every chain of the pull request in time order (clocks are trusted to be
   roughly right). Every row names the product repository, and rows recorded for another repository
   never count, for the gate or for status. Rows: `request`, `review`, `ci`, `sent-back`, `merged`. `node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js
-  show <pr>` and `review.js list [--plain] [--json]` read them.
+  show <pr>` and `review.js list [--plain] [--json]` read them. **Review rows are published to the
+  project repository automatically**: right after a row is written, the script commits that one
+  chain file (`reviews: PR <n> <event> (<writer>)`) and pushes the root's branch to origin
+  (fast-forward only; on a rejected push it fetches, rebases the record commit and retries once),
+  so the gate on another host, or after a container restart, reads the same rows. Nothing else in
+  the root is staged. It never blocks a command: with no origin or an unreachable one the command
+  keeps its exit code and prints `review rows for PR <n> not published: <reason>`, and the next
+  command carries the earlier rows too.
 - **Who authored it.** A GitHub fact, not the body a builder wrote: the pull request's head branch,
   `team/<builder instance>` (the worktree branch prepare-role gives each builder). Every bead its
   `Refs <bead>` lines name must have that builder among its stamped authors (the claim check records
@@ -948,7 +988,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
 - **What can wake a stopped session (the probe, Claude Code 2.1.287).** Checked against `claude --help`
   and the Claude Code docs, with one `claude -p --model haiku` run in a scratch directory:
   - `claude --resume <session-id> -p "<prompt>"` continues that conversation non-interactively, under the
-    same id, with its model and permission mode; run in the role directory, the role's
+    same id, with its model, but not its permission mode: a session started in auto comes back in
+    default (checked on claude 2.1.310, and seen on a real team as a woken builder stopped at approval
+    prompts no one could answer), so every wake passes `--permission-mode`; run in the role directory, the role's
     `.claude/settings.local.json` (model, `DELIVERY_ROLE`, lane permissions) and the plugin's hooks load
     (the scratch run fired SessionStart; `--resume` with an unknown id exits 1, "No conversation found",
     without calling the API). The resume of a real role session was not exercised live. A `-p` prompt is
@@ -973,7 +1015,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   - a bead in progress with no bead update and no activity of its holder's session (roster `last_seen`,
     transcript time) for more than `stall_hours` (a goal field, 2 by default, owner-set like the others;
     `goal.js ask stall_hours <n>`), unless the holder is inside a `watch.js until` wait within the
-    `--max` it declared;
+    `--max` it declared; a verified or cut story wakes its holder to close it;
+  - a story merged or deployed, waiting on its evidence rows, with no bead update for `stall_hours`:
+    it goes to the Delivery Manager (deploy it, dispatch its reality check, record its evidence), never
+    to its builder, who has nothing to continue;
   - a top-priority (P0) bead that can be taken now (in `bd ready`: open, not blocked, not an epic) and
     unclaimed for more than an hour;
   - a session stopped on a usage limit: "The team resumes at <reset + 5 min> (restart scheduled)" once the
@@ -993,10 +1038,23 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
 - **The wake.** `watchdog.js wake [--dry-run]` wakes, for each due stall, its session: the holder of a
   stalled bead or of a bead stopped by the usage limit, else the Delivery Manager. One run carries every
   line for that session in one prompt. The command, in the session's role directory with
-  `DELIVERY_ROLE` and `DELIVERY_WAKE` set: `claude --resume <id> -p "<prompt>"` when the session is not
+  `DELIVERY_ROLE`, `DELIVERY_WAKE` and `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` set (a headless run
+  otherwise stops the background subagents its turn started, such as the Delivery Manager's reviewer,
+  ten minutes after the turn ends; the wake's own limit still bounds it), always with
+  `--permission-mode <mode>` first (team.json
+  `permission_mode`, which start.js records; for a team recorded before it, the mode the session
+  started in; auto when neither says; nothing for `default`; an unreadable team.json or an invalid mode
+  is no wake, alarm only): `claude --resume <id> -p "<prompt>"` when the session is not
   open; with `--fork-session` when it is open and idle; `claude -c -p` when the roster has no session id;
   nothing when it is busy, when open sessions cannot be listed (`claude agents --json` failed: alarm
-  only, never a fork), or when its role directory is not on this host.
+  only, never a fork), or when its role directory is not on this host. A session not open whose last turn carried more
+  than `wake_fresh_above_tokens` (team.json, 120000 by default, 0 for never; read from the usage its
+  transcript records) is woken in a fresh session in its role directory instead (`claude -p`, no
+  resume), told that its earlier conversation is not loaded and to start from its in-progress beads:
+  a resume reloads the whole conversation, and one day of wakes took a real Delivery Manager's turns to
+  236k tokens. The fresh session is named like the role (`--name`), and the next wake resumes it (a
+  fresh role session starts near 53k tokens). The Stop guard's check for unrecorded operator input is
+  per session, so a fresh Chief of Staff is told to run `operator.js pending` first.
 - **The wake's limits.** At most one wake per session an hour whatever the stalls; at most 6 a day per
   session; each stall waits 1, 2, 4, 8 ... hours after each wake that carried it; never while that
   session's last wake still runs, however long ago it started (each wake runs in its own process group
@@ -1243,6 +1301,7 @@ independently and `/delivery:realign` folds what it taught into the plan.
 | `/delivery:challenge` | any gate | Adversarial panel against any artifact |
 | `/delivery:status` | any time | Gates, open findings, drift, evidence grounding |
 | `/delivery:start`, `/delivery:team`, `/delivery:decision` | team | Start a team; status and join; the operator-decision loop |
+| `/delivery:amplifier` | any time | On a machine with Microsoft Amplifier: hand a host problem (work-tracker, its Dolt server, services) to one `amplifier run` call first; every session there starts with a one-line reminder, and `start.js --check` shows Amplifier and the work-tracker's doctor |
 
 Kept for one version as aliases: `/delivery:interview` (now `simulate --interview`),
 `/delivery:handoff` (now `sprint --runner`), `/delivery:prioritize` (now `prd --stage`),

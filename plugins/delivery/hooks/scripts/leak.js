@@ -1,7 +1,7 @@
 // hooks/scripts/leak.js — keep plans and strategy out of the public product repo.
 const fs = require('fs');
 const path = require('path');
-const { splitWithOps, realish, shellCommandOf } = require('./lane.js');
+const { splitWithOps, realish, shellCommandOf, ghApiCall, prOpenCall } = require('./lane.js');
 
 function loadDenylist(projectRoot) {
   const file = path.join(projectRoot, '.delivery', 'team', 'denylist.txt');
@@ -525,7 +525,11 @@ function parseFlags(args, spec, abbrev) {
   return out;
 }
 
+// Opening a pull request through REST (POST repos/<o>/<r>/pulls with inline fields) is checked like gh pr create.
+const prOpenOf = (item) => (item.prog === 'gh' && item.sub === 'api' ? ghApiCall(['gh', 'api', ...item.args]) : null);
 function itemMessages(item) {
+  const open = prOpenOf(item);
+  if (open && prOpenCall(open)) return ['title', 'body'].filter((k) => k in open.fields).map((k) => (/[$`]|\\[A-Za-z]/.test(open.fields[k]) ? `<subst: ${unsent(open.fields[k])}>` : unsent(open.fields[k])));
   let spec = null;
   if (item.prog === 'git') spec = GIT_SPECS[item.sub];
   else if (item.prog === 'gh' && GH_WRITES.includes(item.sub)) spec = GH_SPEC;
@@ -661,7 +665,7 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId }) {
         continue;
       }
       if (item.prog === 'gh' && item.sub === 'issue create') return { reason: ISSUE_REASON };
-      if (item.prog === 'gh' && item.sub === 'api' && ghApiWrite(item.args)) return { reason: 'Public writes through gh api cannot be checked.\nUse a checked command with inline text: `gh pr comment <n> --body \'<text>\'`.' };
+      if (item.prog === 'gh' && item.sub === 'api' && ghApiWrite(item.args) && !prOpenCall(prOpenOf(item))) return { reason: 'Public writes through gh api cannot be checked.\nUse a checked command with inline text: `gh pr comment <n> --body \'<text>\'`.' };
       const writes = (item.prog === 'git' && ['commit', 'merge', 'tag', 'notes', 'push'].includes(item.sub)) || (item.prog === 'gh' && (GH_WRITES.includes(item.sub) || item.sub === 'issue create' || item.sub === 'api'));
       const injected = !writes ? undefined : item.prog === 'git' && item.sub === 'push' ? pushOptionExpanded(item.args) : item.args.find((x) => /[$`]/.test(x));
       if (injected !== undefined) return { reason: `Write arguments inline, without $ or backticks, so they can be checked (${unsent(injected).slice(0, 60)}).${RULE}` };

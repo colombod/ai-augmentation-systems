@@ -51,6 +51,12 @@ test('classifySegment scopes git writes by directory', () => {
   assert.ok(!classifySegment('git commit -m x', GROUPS, ctx({ cwd: cwdProject })).includes('git-write-product'));
   assert.ok(classifySegment('git commit -m x', GROUPS, ctx({ cwd: cwdProduct })).includes('git-write-product'));
   assert.ok(classifySegment(`git -C ${cwdProduct} push`, GROUPS, ctx({ cwd: cwdProject })).includes('git-write-product'));
+  // a role that owns plan documents can remove and move them in git, not only add them (a moved story
+  // left a duplicate no role could remove, measured 2026-10-25)
+  for (const c of ['git rm .delivery/initiatives/x/stories/s.md', 'git mv a.md b.md']) {
+    assert.ok(classifySegment(c, GROUPS, ctx({ cwd: cwdProject })).includes('git-write-project'), c);
+    assert.ok(!classifySegment(c, GROUPS, ctx({ cwd: cwdProduct })).includes('git-write-project'), `${c} in the product repo`);
+  }
 });
 
 test('pathAllowed honours globs, exact files and tmp', () => {
@@ -967,6 +973,22 @@ test('A1: every pipeline output path is writable by at least one role of the min
   assert.ok(!pathAllowed(path.join(rd, 'project/.delivery/sprints/1-checkout.md'), { roleDir: rd, writes: policies['product-manager'].writes }), 'the PM writes only the realign record under sprints/');
 });
 
+test('a role with gh-write opens a pull request through REST, and only that', () => {
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[DL], ...ctx(), cwd: os.tmpdir() });
+  const open = 'gh api -X POST repos/o/r/pulls -f title=\'Fix x\' -f head=team/builder -f base=main -f body=\'Refs dlv-1\'';
+  assert.equal(run(open).allow, true, open);
+  assert.equal(run('gh api repos/o/r/pulls -f title=x -f head=team/builder -f base=main').allow, true, 'POST implied by fields');
+  for (const bad of [
+    'gh api -X POST repos/o/r/pulls --input body.json',
+    'gh api -X POST repos/o/r/pulls -f title=x -f head=h -f base=main -F body=@body.md',
+    'gh api -X POST repos/o/r/pulls -f title=x -f head=h',
+    'gh api -X POST repos/o/r/pulls -f title=x -f head=h -f base=main -f state=closed',
+    'gh api -X POST repos/o/r/issues -f title=x -f head=h -f base=main',
+    'gh api -X PATCH repos/o/r/pulls/3 -f title=x -f head=h -f base=main',
+    'gh api -X POST repos/o/r/pulls/3/comments -f title=x -f head=h -f base=main',
+  ]) assert.equal(run(bad).allow, false, bad);
+});
+
 // Owner ruling 2026-10-18: builders cannot merge; the Delivery Manager merges after independent review.
 test('merging is the Delivery Manager\'s: builder and spike researcher lanes are refused every form of merge', () => {
   const SPIKE = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/spike-researcher' });
@@ -1079,4 +1101,133 @@ test('1b: computer use on the owner\'s app is denied to a builder until its mani
   fs.writeFileSync(tf, JSON.stringify(t2));
   const c = JSON.parse(runHook('role-lane.js', { cwd: cos.roleDir, session_id: 's', tool_name: 'mcp__claude-in-chrome__navigate', tool_input: { url: 'https://chatgpt.com' } }, { DELIVERY_ROLE: 'chief-of-staff', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT }));
   assert.equal(c.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+// The plugin's reviewer subagent (agents/pr-reviewer.md) gets a review lane whoever dispatches it:
+// the Delivery Manager's lane runs no product code, and a reviewer inheriting it could not run the
+// tests it must quote (found on a real pull request, the first one a single-builder team produced).
+test('pr-reviewer lane: clones into review/, runs tests and edits there; refuses every write elsewhere', () => {
+  const { roleDir } = preparedRole('delivery-lead');
+  const scratch = path.join(roleDir, 'review', 'pr-1');
+  fs.mkdirSync(scratch, { recursive: true });
+  fs.symlinkSync(PLUGIN_ROOT, path.join(roleDir, 'review', 'plug'));
+  const env = { DELIVERY_ROLE: 'delivery-lead', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  const call = (tool_input, { tool = 'Bash', agent = 'delivery:pr-reviewer', cwd = roleDir } = {}) => {
+    const input = { cwd, session_id: 's', tool_name: tool, tool_input };
+    if (agent) { input.agent_type = agent; input.agent_id = 'a1'; }
+    const out = runHook('role-lane.js', input, env);
+    return out === '' ? 'allow' : JSON.parse(out).hookSpecificOutput.permissionDecisionReason;
+  };
+  const allowed = [
+    'node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js checkout 1 0123456789abcdef0123456789abcdef01234567',
+    'node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js test 1',
+    'node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js test 1 2>&1 | tail -5',
+    `node ${PLUGIN_ROOT}/scripts/review-run.js test 1`,
+    'git log --oneline -3',
+    'git -C review/pr-1 diff HEAD~1',
+    'gh pr diff 1',
+    'bd show dlv-1',
+    'node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js show 1',
+  ];
+  for (const c of allowed) assert.equal(call({ command: c }), 'allow', c);
+  assert.equal(call({ file_path: path.join(scratch, 'a.js'), old_string: 'a', new_string: 'b' }, { tool: 'Edit' }), 'allow');
+  const denied = [
+    'git clone https://github.com/o/r /tmp/elsewhere',
+    'git clone https://github.com/o/r',
+    'git clone https://github.com/o/r review/../product',
+    'mkdir -p project/x',
+    'node --test',
+    'npm test',
+    'cd review/pr-1 && git push origin HEAD:main',
+    'cd review/pr-1 && gh pr merge 1',
+    'cd review/pr-1 && bd update dlv-1 --claim',
+    'cd review/pr-1 && node ${CLAUDE_PLUGIN_ROOT}/scripts/review.js record 1 --head abc --result pass',
+    `cd review/pr-1 && node ${PLUGIN_ROOT}/scripts/evidence.js add dlv-1`,
+    'bd update dlv-1 --append-notes x',
+    'cd review/pr-1 && env -u DELIVERY_ROLE node --test',
+    // the independent review of this lane (PR 72) got past the first version with each of these
+    'cd review/pr-1 && /usr/bin/git push origin HEAD:feature',
+    'cd review/pr-1 && command git push origin HEAD:feature',
+    'cd review/pr-1 && timeout 60 git push origin HEAD:feature',
+    'cd review/pr-1 && nice git push origin HEAD:feature',
+    'cd review/pr-1 && xargs git push < /dev/null',
+    "cd review/pr-1 && sh -c 'git push origin HEAD:feature'",
+    "cd review/pr-1 && bash -c 'gh pr merge 1 --squash'",
+    'cd review/pr-1 && command gh pr review 1 --approve',
+    'cd review/pr-1 && /usr/bin/bd update x --claim',
+    'cd review/pr-1 && exec bd update x --claim',
+    'cd review/pr-1 && npx bd update x',
+    `cd review/pr-1 && node ${path.relative(path.join(roleDir, 'review', 'pr-1'), PLUGIN_ROOT)}/scripts/review.js record 1 --head a --result pass`,
+    'cd review/pr-1 && node ../plug/scripts/review.js record 1 --head a --result pass',
+    "cd review/pr-1 && node -e 'require(process.env.CLAUDE_PLUGIN_ROOT)'",
+    'cd review && ln -s / plug',
+    'git -C /tmp clone https://github.com/o/r review/pr-9',
+    'git clone https://github.com/o/r /tmp/evil --server-option review/x',
+    'git clone https://github.com/o/r /tmp/evil --bundle-uri review/x',
+    'cd review/pr-1 && (cd / && npm test)',
+    'cd review/pr-1 && pushd / && npm test',
+    'cd review/pr-1 && npm --prefix / test',
+    'cd review/pr-1 && npm test --prefix /',
+    'cd review/pr-1 && make -C / test',
+    'cd review/pr-1 && node --test /',
+    'cd review && mkdir /tmp/evil-dir',
+    'cd review && touch /tmp/evil',
+    'cd review && tee /tmp/evil < /dev/null',
+    'cd review && dd if=/dev/null of=/tmp/evil',
+    'cd review && tar -xf a.tar -C /tmp',
+    'cd review && perl -pi -e s/a/b/ /tmp/x',
+    'git -C review/pr-1 apply --unsafe-paths p.patch',
+    // the second review: runners named directly took options that point outside (attached values)
+    'cd review/pr-1 && node --test',
+    'cd review/pr-1 && npm test',
+    'cd review/pr-1 && make test',
+    'cd review/pr-1 && pytest --basetemp=/tmp/x',
+    'cd review/pr-1 && make -C/ test',
+    'cd review/pr-1 && node --test --test-reporter-destination=/tmp/out.txt',
+    "cd review/pr-1 && echo 'x' | node",
+    'cd review/pr-1 && dotnet test',
+    'cd review/pr-1 && cargo test',
+    // the third review: git run by the reviewer acted outside review/ through a fake bare repository
+    // (core.worktree), so the reviewer runs no git writes and makes no directories itself
+    'mkdir -p review',
+    'mkdir -p review/pr-1/evil/objects review/pr-1/evil/refs',
+    'git clone https://github.com/o/r review/pr-1',
+    'git -C review/pr-1 fetch origin abc123',
+    'git -C review/pr-1 checkout --detach abc123',
+    'git -C review/pr-1/evil clean -fdx',
+    'git -C review/pr-1 reset --hard',
+    'node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js',
+    'node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js install 1',
+  ];
+  for (const c of denied) assert.notEqual(call({ command: c }), 'allow', c);
+  assert.match(call({ file_path: path.join(roleDir, 'product', 'a.js'), old_string: 'a', new_string: 'b' }, { tool: 'Edit' }), /only under review\//);
+  assert.notEqual(call({ file_path: path.join(roleDir, 'review', '..', 'project', 'a.md'), content: 'x' }, { tool: 'Write' }), 'allow');
+  // a clone's .git config or hooks would make the allowed git commands act outside review/
+  for (const f of ['.git/config', '.git/hooks/post-checkout', 'sub/.git/config', '.GIT/config', '.Git/HEAD', 'GIT~1/config', '.delivery-role.json', 'fake/.delivery/team/team.json', '.DELIVERY/team/team.json',
+    // the fourth review: spellings Windows (trailing dot or space, NTFS streams) and HFS+ (zero-width) read as .git
+    '.git./config', '.git /config', '.git::$INDEX_ALLOCATION/config', '.g\u200cit/config', '.delivery-role.json.', '.delivery-role.json::$DATA']) {
+    assert.notEqual(call({ file_path: path.join(scratch, f), content: 'x' }, { tool: 'Write' }), 'allow', f);
+  }
+});
+
+test('pr-reviewer lane: only when the Delivery Manager dispatches it; a role that runs no code does not gain it', () => {
+  const { roleDir } = preparedRole('chief-of-staff');
+  fs.mkdirSync(path.join(roleDir, 'review', 'pr-1'), { recursive: true });
+  const out = runHook('role-lane.js', { cwd: roleDir, session_id: 's', tool_name: 'Bash', agent_type: 'delivery:pr-reviewer', tool_input: { command: 'node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js test 1' } }, { DELIVERY_ROLE: 'chief-of-staff', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT });
+  assert.equal(JSON.parse(out).hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('pr-reviewer lane: only the plugin\'s own reviewer gets it; the dispatching role keeps its lane', () => {
+  const { roleDir } = preparedRole('delivery-lead');
+  fs.mkdirSync(path.join(roleDir, 'review', 'pr-1'), { recursive: true });
+  const env = { DELIVERY_ROLE: 'delivery-lead', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  const run = (agent) => {
+    const input = { cwd: roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js test 1' } };
+    if (agent) input.agent_type = agent;
+    return runHook('role-lane.js', input, env);
+  };
+  assert.equal(run('delivery:pr-reviewer'), '');
+  for (const agent of [null, 'pr-reviewer', 'superpowers:code-reviewer', 'other:pr-reviewer']) {
+    assert.equal(JSON.parse(run(agent)).hookSpecificOutput.permissionDecision, 'deny', String(agent));
+  }
 });

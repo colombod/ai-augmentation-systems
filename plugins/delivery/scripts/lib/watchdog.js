@@ -16,7 +16,7 @@
 //
 // The probe (phase 7) found one documented way for a host job to wake a stopped role session:
 // `claude --resume <session-id> -p "<prompt>"` run in the role directory (its settings and hooks load;
-// the conversation, model and permission mode are restored). A session still open in another process
+// the conversation and model are restored; the permission mode is not, so the wake passes the team's). A session still open in another process
 // cannot be resumed in place; `--fork-session` continues a copy of it. Hooks, /loop and CronCreate live
 // and die with their session, and cloud routines cannot reach a local session. The usage-limit row in a
 // transcript (error "rate_limit", quotaLimits.resetsAt) is undocumented, so the reader fails open.
@@ -33,6 +33,9 @@ const REL = path.join('.delivery', 'watchdog');
 const P0_HOURS = 1;
 const WAKE_EVERY_MS = 3600e3;
 const DAILY_CAP = 6;
+// a waiting message wakes its target sooner and more often than a stall does: it is the team's handoff
+const MESSAGE_EVERY_MS = 5 * 60e3;
+const MESSAGE_DAILY_CAP = 48;
 const RESET_GRACE_MIN = 5;
 const TAIL_BYTES = 512 * 1024;
 const MIN_POLL_S = 240;
@@ -81,6 +84,21 @@ function resetIso(v) {
   if (n > 1e11) n /= 1000;
   const t = n * 1000;
   return t < Date.parse('2020-01-01') || t > Date.parse('2100-01-01') ? null : new Date(t).toISOString();
+}
+
+// The context the session's last turn carried (input, cache read and cache written, from the usage
+// Claude Code records on each reply), or null when the tail shows none. Every resume reloads the whole
+// conversation, so this is what the next wake would carry too.
+function contextOf(rows) {
+  if (!Array.isArray(rows)) return null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const u = rows[i] && rows[i].type === 'assistant' && rows[i].message && rows[i].message.usage;
+    if (u && typeof u === 'object') {
+      const n = [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens].reduce((a, x) => a + (Number.isFinite(x) ? x : 0), 0);
+      if (n > 0) return n;
+    }
+  }
+  return null;
 }
 
 // { at, resetsAt, window, text } when the transcript's last word is a usage limit; null otherwise.
@@ -159,15 +177,16 @@ function sessions(root, { team, rows = tailRows } = {}) {
       let limit = null;
       let waitUntil = -Infinity;
       const polls = [];
+      let context = null;
       for (const f of [t, ...forks].filter(Boolean)) {
         try { lastActive = Math.max(lastActive, fs.statSync(f).mtimeMs); } catch (err) { /* not on disk */ }
         const tail = rows(f);
         const l = limitOf(tail);
         if (l && (!limit || ms(l.at) > ms(limit.at))) limit = l;
         waitUntil = Math.max(waitUntil, waitingUntil(tail));
-        if (f === t) polls.push(...tightPolls(tail));
+        if (f === t) { polls.push(...tightPolls(tail)); context = contextOf(tail); }
       }
-      return { ...base, lastActive, transcript: t, forks, limit, waitUntil, polls };
+      return { ...base, lastActive, transcript: t, forks, limit, waitUntil, polls, context };
     } catch (err) { return { ...base, lastActive: ms(e && e.last_seen), transcript: null, limit: null, waitUntil: -Infinity, polls: [] }; }
   }).filter((s) => !s.retired);
 }
@@ -189,7 +208,7 @@ const typeOf = (b) => b.type || b.issue_type || null;
 // ---- the stalls ----
 // facts: { beads, ready, now, idleMinutes, stallHours, pause, openSteps, sessions, team, installed }
 // { paused?, stalls: [{ kind, key, bead?, target, line, plain, detail, prompt, due, scheduled?, wakeAt? }] }
-function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true } = {}) {
+function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [] } = {}) {
   const t = ms(now || new Date().toISOString());
   if (pause && pause.paused) return { paused: pause.by || true, stalls: [] };
   const out = [];
@@ -235,7 +254,24 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       line: I.idleLine(idle).split('\n')[0], plain: `Nobody is working although work is ready (for ${span(idle.minutes)}); the Delivery Manager starts it first.`, detail: `ready work (${idle.ready.slice(0, 3).join(', ')}) and nothing in progress since ${idle.since || 'unknown'}`,
       prompt: `Nothing is in progress although ${idle.ready.length} item${idle.ready.length > 1 ? 's are' : ' is'} ready (${idle.ready.slice(0, 3).join(', ')}). Start the next one now: bd ready, then assign it to a builder.` });
   }
-  for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x))) {
+  // A story merged or deployed waits on its evidence rows, which other roles record (the Delivery
+  // Manager deploys, dispatches the reality check, records evidence): its builder has nothing to
+  // continue, and waking it every two hours spent its whole daily wake budget (dlv-2et). Such a story
+  // goes to the Delivery Manager, keyed on the bead alone so the builder's own activity cannot renew
+  // it: the key holds still, so its retries back off (1 h, 2 h, 4 h) like every stall's. Verified or cut stories stay with their holder: closing them is its job.
+  const waitingEvidence = (b) => ['merged', 'deployed'].includes(G.stateOf(b));
+  for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && waitingEvidence(x))) {
+    const last = Math.max(ms(b.updated_at), ms(b.created_at));
+    const minutes = (t - last) / 60000;
+    if (!(minutes > stallHours * 60)) continue;
+    const st = G.stateOf(b);
+    out.push({ kind: 'quiet', key: `evidence:${b.id}:${Number.isFinite(last) ? new Date(last).toISOString() : 'never'}`, bead: b.id, target: dm, due: true,
+      line: `Waiting on evidence: ${b.id} is ${st} and nothing has moved for ${span(minutes)}.`,
+      plain: `A shipped item has waited ${span(minutes)} to be checked on the customer's app; the Delivery Manager moves it.`,
+      detail: `${st}; no bead update since ${Number.isFinite(last) ? new Date(last).toISOString() : 'unknown'}`,
+      prompt: `${b.id} is ${st} and has not moved for ${span(minutes)}. Take its next step now: ${st === 'merged' ? 'deploy it and record it (evidence.js state deployed)' : 'dispatch its reality check (reality-check.js plan) or record its evidence (evidence.js add)'}, or note on the bead what blocks it.` });
+  }
+  for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && !waitingEvidence(x))) {
     const h = holderOf(b, list);
     if (h && limited.has(h.instance)) continue;
     // a holder inside a watch.js wait is waiting within the limit it declared
@@ -248,7 +284,8 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       line: `Stalled: ${b.id} is in progress with ${who}, and nothing has moved for ${span(minutes)} (the limit is ${stallHours} h).`,
       plain: `A started item has not moved for ${span(minutes)}; its holder is asked to continue it.`,
       detail: `in progress with ${who}; no bead update or session activity since ${Number.isFinite(last) ? new Date(last).toISOString() : 'unknown'}`,
-      prompt: h ? `${b.id} has not moved for ${span(minutes)}. Continue it now (bd show ${b.id}), or note in the bead what blocks it and tell the Delivery Manager.` : `${b.id} is in progress with ${who}, whose session is not on this host's roster, and has not moved for ${span(minutes)}: release or reassign it.` });
+      prompt: h && ['verified', 'cut'].includes(G.stateOf(b)) ? `${b.id} is ${G.stateOf(b)} and has not moved for ${span(minutes)}. Close it now (bd close ${b.id}), or note in the bead what blocks the close.`
+        : h ? `${b.id} has not moved for ${span(minutes)}. Continue it now (bd show ${b.id}), or note in the bead what blocks it and tell the Delivery Manager.` : `${b.id} is in progress with ${who}, whose session is not on this host's roster, and has not moved for ${span(minutes)}: release or reassign it.` });
   }
   // a P0 counts when it can be taken now: ready (not blocked), not an epic, not in a stopped area
   const readyIds = new Set(ready.map((b) => b && b.id));
@@ -260,6 +297,21 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       plain: `A top-priority item has waited ${span(minutes)} for someone to take it; the Delivery Manager assigns it first.`,
       detail: `P0 open and unclaimed since ${b.created_at || b.updated_at}`,
       prompt: `Top-priority ${b.id} has waited ${span(minutes)} unclaimed. Assign it to a builder now (bd show ${b.id}).` });
+  }
+  // messages sent to a role while its session was not running (lib/inbox.js): its next turn starts with them
+  for (const m of messages.filter((x) => x && x.to && x.entries && x.entries.length)) {
+    // "steward" goes to the steward role; a name no role on the team answers to wakes nobody (the
+    // sender was told when it sent, route-check.js), rather than reporting it at every run
+    // the steward is the one on the sender's host, as when it was sent
+    const sender = team && require('./manifest.js').expandInstances(team).find((i) => i.instance === (m.entries[0] || {}).from);
+    const r = team ? require('./inbox.js').resolveTarget(team, m.to, sender && sender.role ? sender.role.host : null) : { to: m.to };
+    if (r.unknown) continue;
+    const shown = m.entries.slice(-5).map((e) => `[from ${e.from || 'unknown'}${e.summary ? `: ${e.summary}` : ''}] ${String(e.message || '').replace(/\s+/g, ' ').slice(0, 600)}`);
+    out.push({ kind: 'message', key: `message:${m.to}:${m.upTo}`, target: r.to, inbox: m.to, due: true, upTo: m.upTo,
+      line: `Waiting: ${m.entries.length} message${m.entries.length > 1 ? 's' : ''} for ${m.to}, sent while its session was not running.`,
+      plain: `A message is waiting for ${m.to}; it is woken to read it.`,
+      detail: `${m.entries.length} undelivered message(s) for ${m.to}`,
+      prompt: `${m.entries.length > 5 ? `${m.entries.length} messages arrived; the last 5:` : `Message${m.entries.length > 1 ? 's' : ''} sent to you while your session was not running:`} ${shown.join(' ')} Act on them now, as your brief says.` });
   }
   return { stalls: out };
 }
@@ -274,6 +326,7 @@ const KIND = { idle: 'idle', quiet: 'stall', p0: 'p0-unclaimed', limit: 'usage-l
 // no fixed instance: each host appends to its own ledger file, as team-status does (review on aaea37c)
 function recordAll(root, res, polls, { now, instance } = {}) {
   for (const s of res.stalls) {
+    if (s.kind === 'message') continue; // a handoff, not a warning
     if (s.kind === 'idle') I.recordIdle(root, s.idle, { now, instance });
     else W.record(root, { kind: KIND[s.kind], rule: 'R-04', bead: s.bead, detail: s.detail, raisedBy: instance || 'watchdog', instance, now });
   }
@@ -302,7 +355,7 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
     const beadOf = (id) => { try { return bd.show(id); } catch (err) { return null; } };
     const list = sessions(root, { team, rows });
     const res = stalls({ beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
-      pause: given || Goal.activePause(root, { beadOf, maxLookups: 4 }), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)) });
+      pause: given || Goal.activePause(root, { beadOf, maxLookups: 4 }), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root) });
     // a verified pause silences the polling warnings too
     return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list };
   } catch (err) { return { stalls: [], polls: [], sessions: [], unreadable: String(err.message).split('\n')[0] }; }
@@ -361,18 +414,57 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     const mine = rows.filter((r) => r.instance === w.target).sort((a, b) => ms(a.at) - ms(b.at));
     const last = mine[mine.length - 1];
     const lines = w.stalls.map((s) => s.line);
+    // a message is a handoff, not a stall: its target is woken within MESSAGE_EVERY_MS, not an hour
+    const onlyMessages = w.stalls.every((s) => s.kind === 'message');
     let reason = null;
-    if (last && t - ms(last.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(last.at))}; one wake an hour`;
-    else if (last && alive(last.pid)) reason = 'its last wake is still running';
-    else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
+    if (onlyMessages) {
+      if (last && alive(last.pid)) reason = 'its last wake is still running; the message waits for it';
+      else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) reason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
+      else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) reason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
+      if (reason) { held.push({ target: w.target, lines, reason }); continue; }
+      wakes.push({ target: w.target, keys: w.stalls.map((s) => s.key), lines, delivers: w.stalls.map((s) => ({ to: s.inbox || s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${w.stalls.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
+      continue;
+    }
+    // the stall gates count stall wakes only: a role woken often for messages is still told about its
+    // stall (each message wake would otherwise push "one wake an hour" forward and fill the day's six)
+    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !String(k).startsWith('message:')));
+    const lastStall = stallRows[stallRows.length - 1];
+    if (last && alive(last.pid)) reason = 'its last wake is still running';
+    else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
+    else if (stallRows.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
     // each stall waits 1, 2, 4 ... hours after each wake that carried it
     const ok = reason ? [] : w.stalls.filter((s) => {
       const k = mine.filter((r) => (r.keys || []).includes(s.key) && t - ms(r.at) < 7 * 24 * 3600e3);
       return !k.length || t - ms(k[k.length - 1].at) >= WAKE_EVERY_MS * 2 ** (k.length - 1);
     });
-    if (!reason && !ok.length) reason = 'woken for these already; waiting longer before the next try';
+    // a wake that would carry only messages is not a stall wake: it goes by the message rules below
+    // (five minutes apart, 48 a day), or a stall still waiting out its backoff would let a message wake
+    // the role every minute through this path
+    if (!reason && !ok.some((s) => s.kind !== 'message')) reason = 'woken for these already; waiting longer before the next try';
+    // A message waiting beside a held stall is still a handoff: a role that spent its stall wakes (or
+    // was woken for the stall within the hour) gets its messages by the message rules, not left until
+    // the stall count falls. Seen on a real team: the Delivery Manager's work waited hours behind its cap.
+    const msgs = w.stalls.filter((s) => s.kind === 'message');
+    if (reason && msgs.length) {
+      let mReason = null;
+      if (last && alive(last.pid)) mReason = 'its last wake is still running; the message waits for it';
+      else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) mReason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
+      else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) mReason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
+      if (!mReason) {
+        wakes.push({ target: w.target, keys: msgs.map((s) => s.key), lines: msgs.map((s) => s.line), delivers: msgs.map((s) => ({ to: s.inbox || s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${msgs.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
+        const rest = w.stalls.filter((s) => s.kind !== 'message');
+        if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
+        continue;
+      }
+      // both held: each line says its own cause
+      const rest = w.stalls.filter((s) => s.kind !== 'message');
+      held.push({ target: w.target, lines: msgs.map((s) => s.line), reason: mReason });
+      if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
+      continue;
+    }
     if (reason) { held.push({ target: w.target, lines, reason }); continue; }
-    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), prompt: `Watchdog (a host job, not the owner): ${ok.map((s) => s.prompt).join(' ')} Reply in one line with what you started.` });
+    // the messages a stall wake carries are handed over too, so the next run does not send them again
+    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), delivers: ok.filter((s) => s.kind === 'message').map((s) => ({ to: s.inbox || s.target, upTo: s.upTo })), prompt: `Watchdog (a host job, not the owner): ${ok.map((s) => s.prompt).join(' ')} Reply in one line with what you started.` });
   }
   return { wakes, waiting, held };
 }
@@ -380,7 +472,32 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
 // How to wake one session: resume it in place when it is not open, fork it when it is open and idle,
 // leave it when it is busy or when open sessions cannot be listed, continue the role directory's latest
 // conversation when no id is known. live: claude agents --json rows (null when unknown). { mode, args } or { skip }
-function wakeCommand(s, prompt, live) {
+// mode: the team's permission_mode (team.json); a resumed session does not keep the mode it was
+// started in, so every wake names it (default needs no flag)
+// freshAbove: a session not open whose last turn carried more context than this is woken in a fresh
+// session in its role directory instead of resumed (0: never). A resume reloads the whole
+// conversation, and on a real team each wake piled onto it until a turn carried 236k tokens; the role
+// brief and the team's records (beads, story files, review rows) are what a role works from, so a
+// fresh session loses no state, only the chat.
+const FRESH_ABOVE = 120000;
+function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE } = {}) {
+  const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
+  const r = wakeArgs(s, prompt, live);
+  if (r.mode === 'resume' && freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove) {
+    // named like every role session (start.js --name), so peers reach it by name (team rule 13)
+    return { mode: 'fresh', args: [...m, '--name', s.instance, '-p', `${freshPreamble(s)} ${prompt}`] };
+  }
+  return r.args ? { ...r, args: [...m, ...r.args] } : r;
+}
+
+function freshPreamble(s) {
+  // the Chief of Staff's Stop guard checks unrecorded operator input per session: a fresh session
+  // would not be held for input left in the old one, so it is told to look
+  const operator = s.role === 'chief-of-staff' ? ' Check first for operator input still unrecorded (operator.js pending) and record it.' : '';
+  return `You are ${s.instance}, starting a fresh session: your earlier conversation (${Math.round(s.context / 1000)}k tokens) is not loaded, so each turn stays light. Your brief and the team's records are your memory: start with your own in-progress beads (bd list --assignee "$BEADS_ACTOR" --status in_progress) and their notes, and the files they name.${operator}`;
+}
+
+function wakeArgs(s, prompt, live) {
   if (!s || !s.roleDir) return { skip: 'no session of this role on this host\'s roster' };
   if (!fs.existsSync(s.roleDir)) return { skip: `its role directory ${s.roleDir} is not on this host` };
   if (live === null || live === undefined) return { skip: 'open sessions could not be listed (claude agents --json), so a wake could collide with one; alarm only' };
@@ -392,4 +509,4 @@ function wakeCommand(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

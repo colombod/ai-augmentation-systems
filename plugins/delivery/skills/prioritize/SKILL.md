@@ -1,5 +1,6 @@
 ---
 description: Renamed — MVP staging is now step 6 of /delivery:prd; run /delivery:prd --stage to re-stage an existing PRD. This alias is kept for one version.
+disable-model-invocation: true
 argument-hint: "[initiative]"
 ---
 

@@ -2,13 +2,13 @@
 
 ## Start here
 
-delivery gives you a team of Claude Code sessions, one per role, that plan and ship a product while you talk mainly to one of them, the **Chief of Staff** (and to the Product Manager about product vision). You decide once: your exact words are recorded with proof that every session can check, so nobody asks you to repeat or pass anything on. Without a team, the same plugin is a planning pipeline that turns your intent into a brief, a PRD, an architecture, a roadmap and stories.
+delivery gives you a team of Claude Code sessions, one per role, that plan and ship a product while you talk mainly to one of them, the **Chief of Staff** (and to the Product Manager about product vision). You decide once: your exact words are recorded with proof that every session can check, so nobody asks you to repeat or pass anything on. **You are never the messenger.** Sessions carry every message, file and result between themselves; when one cannot reach another, it commits the result to the project repo and the other reads it there. You are asked only for what no agent can do (a sign-in, a consent, a payment, a secret, a product decision), once, through the Chief of Staff. Every role's brief carries this as team rule 0, and every role's Stop hook blocks a turn that asks you to relay something. Without a team, the same plugin is a planning pipeline that turns your intent into a brief, a PRD, an architecture, a roadmap and stories.
 
 ### Prerequisites
 
-- Claude Code v2.1.224 or later, on macOS or Linux (the sessions message each other).
+- Claude Code v2.1.224 or later, on macOS or Linux; on Windows, inside WSL2 (the sessions message each other).
 - Node 18 or later, and git.
-- beads: `bd` on the PATH. **Beads** are the team's work items.
+- beads: `bd` on the PATH. **Beads** are the team's work items; `/delivery:start` sets them up on every machine, synced through the project repo ([Setting up beads](docs/quickstart.md#setting-up-beads)).
 - A private **project repo** (the plan, the team manifest, your decisions) and, for an existing product, its **product repo** (code only).
 - This plugin installed: `/plugin install delivery@ai-augmentation-systems`.
 
@@ -18,7 +18,7 @@ delivery gives you a team of Claude Code sessions, one per role, that plan and s
 
 1. **Install the plugin:** `/plugin install delivery@ai-augmentation-systems` (the repository README has the marketplace step).
 2. **Run `/delivery:start`** in an ordinary Claude Code session, outside any role directory. It asks for the project repo, the product repo, the host name, the preset, the model profile and the permission mode, shows a dry run, then writes the team manifest, creates the beads database, prepares one directory per role and prints the command that starts each session.
-3. **Start the printed sessions,** run `/delivery:team join` in each, then open the Chief of Staff session and talk to it.
+3. **Talk to the Chief of Staff.** `/delivery:start` starts every role session itself (`start.js --launch --keep-alive`), in auto mode, and each joins the team; it prints the one command that opens the Chief of Staff.
 
 ### Using the team
 
@@ -37,6 +37,7 @@ Run the pipeline skills yourself, from `/delivery:brief` on: see [Using the plan
 - **Your attention protected.** Only what only you can decide reaches you, once, in one ranked briefing, and each decision carries a **record id** any session can check against your exact words.
 - **Roles that cannot do each other's jobs.** Each role has a **lane**, enforced by hooks.
 - **The right model for each job**, set per role and raised per story.
+- **The product's own experts.** Staffing hires a handful of specialists for your product (infrastructure, security, scalability), each written from the files that need it and kept in the private project repo; every role session can call them: see [Experts](docs/reference.md#the-shipping-teams-mechanisms).
 - **Work that finishes.** The team builds in compounding waves per product area, each verified on the customer's app before the next builds on it; it picks fixes and work that builds on verified work first, and under the budget you set it never starts what it cannot finish. Large stories are costed on the large model they are built with (opus by default), so set the weekly figure with that in mind: see [Waves, budget and selection](docs/reference.md#waves-budget-and-selection).
 - **Strategy stays private.** Plans and decisions live in the project repo; the product repo gets code only.
 

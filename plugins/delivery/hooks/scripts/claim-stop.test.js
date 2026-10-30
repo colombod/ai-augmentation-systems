@@ -218,12 +218,15 @@ test('I3: a broken own records chain blocks once per turn with the repair path, 
   assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: 'ok' }).stdout, '');
 });
 
-test('other roles are not subject to the operator stop checks', () => {
+test('other roles are not subject to the operator input check; a relay request blocks them (rule 0)', () => {
   const { roleDir } = preparedRole('builder-1');
   const tr = transcript([human('just a note', 1)]);
+  const quiet = runStop('builder-1', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'Migration branch pushed; bead updated.' });
+  assert.equal(quiet.status, 0);
+  assert.equal(quiet.stdout, '');
   const r = runStop('builder-1', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'Please tell the Delivery Lead session to proceed with the migration' });
   assert.equal(r.status, 0);
-  assert.equal(r.stdout, '');
+  assert.match(reasonOf(r).reason, /^The operator is never the messenger \(team rule 0\)/);
 });
 
 test('without a role, an unloadable manifest or garbage input, the stop hook allows and exits 0', () => {
@@ -405,4 +408,18 @@ test('R-44 through the Stop hook: judge on, orders_owner p 0.9 blocks once with 
     // the same turn's continuation does not block on it again
     assert.equal((await runStopAsync({ cwd: roleDir, stop_hook_active: true, last_assistant_message: UNLOCK }, url)).stdout, '');
   } finally { server.closeAllConnections(); server.close(); }
+});
+
+// Team rule 0, end to end through the Stop hook: a builder's turn that asks the operator to carry a
+// result to another session is blocked once with the peer way out; a turn that commits it is not.
+test('rule 0: a builder that asks the operator to relay is blocked by its Stop hook; one that commits the result is not', () => {
+  const { roleDir } = preparedRole('builder-1');
+  const tr = transcript([]);
+  const asked = runStop('builder-1', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'Done. Please relay the summary above to the chief-of-staff session.' });
+  assert.equal(asked.status, 0);
+  const out = reasonOf(asked);
+  assert.equal(out && out.decision, 'block', asked.stdout + asked.stderr);
+  assert.match(out.reason, /The operator is never the messenger \(team rule 0\)/);
+  const fine = runStop('builder-1', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'Done. Pushed the record as 27b7541; the chief-of-staff session reads it from the project repo.' });
+  assert.equal(fine.stdout, '', fine.stdout);
 });

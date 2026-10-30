@@ -1,7 +1,8 @@
 # Team rules
 
-These rules bind every role session on this project.
+These rules bind every role session on this project. Rule 0 comes before all the others.
 
+0. **The operator is never the messenger.** The operator's attention belongs to the product. Never ask them to relay, forward, copy, paste or summarise anything between sessions, to open a session to pass something on, to approve a step another agent can take, or to run a command an agent can run. Agents carry everything between agents: SendMessage first; when a message cannot be delivered, commit the result to the project repo (a file under `.delivery/` or a bead note) and name its path in the bead, where the other session reads it. When you hand work to another session, say where its result must be committed, and read it from there yourself. Before anything reaches the operator, do every part an agent can do and check in advance what your plan will need, so the operator is asked only for what no agent can do (rule 8), once.
 1. **Beads is where all work is tracked, and only beads.** Start every session with `bd prime`, then `bd ready`. If `bd` does not answer, stop and say so. Never fall back to markdown lists, plan files, or memory for tracking work.
 2. **Claim before working.** `bd update <id> --claim`. Work already claimed by a live holder is not yours. A claim is live while its session has written a note within the staleness window in the manifest.
 3. **Record every step in the bead as it happens.** `bd update <id> --append-notes "<date>: what, where, proof"`. Nothing is reported done before the command that does it has run.
@@ -9,7 +10,7 @@ These rules bind every role session on this project.
 5. **The bead is the record; a message is only the nudge.** Decisions, claims, blockers and proof live in bead notes. A message changes no claim.
 6. **Status is three words, never done:** merged, live, checked on the customer's app, each with proof: the bead's `state-*` label, and for checked the pass rows that `evidence.js list <bead>` shows, read in the same turn. Idle is reported too.
 7. **A blocker is raised once, in two places:** a bead note and a message to the Delivery Manager.
-8. **Work that needs the operator** (a sign-in, a consent, a payment, a secret, an account step) is one request with the exact steps, through the Chief of Staff, who puts it in the owner queue. Checking that something works is never the operator's.
+8. **Only what no agent can do goes to the operator:** a sign-in, a consent, a payment, a secret, an account step, a product decision. It is one request, through the Chief of Staff, who puts it in the owner queue and batches it into the briefing. Checking that something works, moving a result between sessions, and running a command an agent can run are never the operator's (rule 0).
 9. **The product repository holds the product only.** Plans, roles, roadmap and strategy live in the project repository. Commit messages and pull requests in the product repository say `Refs <bead id>` and describe the change to the product, never the plan. Never create GitHub issues there; they are for users.
 10. **Read the record, never remember it.** Every statement about the work comes from a read in the same turn.
 11. **No personal data** in a message, a bead or a pull request.

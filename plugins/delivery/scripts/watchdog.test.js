@@ -103,8 +103,8 @@ test('R-04 (10-13 12:06 to 10-17 15:01): the weekly limit schedules each holder\
   assert.match(w.out, /^Woke builder-1 \(resume of sess-builder-1\)/m);
   assert.deepEqual(spawned.map((s) => s.role).sort(), ['builder-1', 'builder-2']);
   const b1 = spawned.find((s) => s.role === 'builder-1');
-  assert.deepEqual(b1.args.slice(0, 3), ['--resume', 'sess-builder-1', '-p']);
-  assert.match(b1.args[3], /The usage limit has reset\. Continue where you stopped: ex-wxy-12 \(bd show ex-wxy-12\)/);
+  assert.deepEqual(b1.args.slice(0, 5), ['--permission-mode', 'auto', '--resume', 'sess-builder-1', '-p']);
+  assert.match(b1.args[5], /The usage limit has reset\. Continue where you stopped: ex-wxy-12 \(bd show ex-wxy-12\)/);
   assert.equal(b1.cwd, h.roleDir('builder-1'), 'in its role directory, with its settings and hooks');
   // at most once an hour per stall
   assert.doesNotMatch(at(h, '2026-10-17T15:30:00Z', ['wake'], { spawn }).out, /Woke/);
@@ -158,8 +158,8 @@ test('R-04 (wxy.12 unclaimed 15.5 h overnight): a stall line within the hour and
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /^Woke delivery-lead \(fork of sess-delivery-lead\)/m);
   const [c] = calls(log);
-  assert.deepEqual(c.argv.slice(0, 4), ['--resume', `sess-${DM}`, '--fork-session', '-p']);
-  assert.match(c.argv[4], /^Watchdog \(a host job, not the owner\): Top-priority ex-wxy-12 has waited 15\.5 h unclaimed\. Assign it to a builder now/);
+  assert.deepEqual(c.argv.slice(0, 6), ['--permission-mode', 'auto', '--resume', `sess-${DM}`, '--fork-session', '-p']);
+  assert.match(c.argv[6], /^Watchdog \(a host job, not the owner\): Top-priority ex-wxy-12 has waited 15\.5 h unclaimed\. Assign it to a builder now/);
   assert.equal(fs.realpathSync(c.cwd), fs.realpathSync(h.roleDir(DM)));
   assert.equal(c.role, DM);
   // the next run within the hour wakes nobody again
@@ -176,10 +176,15 @@ test('R-43 and R-42: idle with ready work wakes the Delivery Manager; a busy ses
   // "IDLE NOW" sent by the Chief of Staff is no pause: only a verified owner pause holds
   assert.deepEqual(WD.stalls({ beads, ready: beads, now: iso(now), sessions, pause: { paused: true, by: 'dec-chief-of-staff-31' } }), { paused: 'dec-chief-of-staff-31', stalls: [] });
   assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'busy' }]), { skip: 'it is working (busy)' });
-  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', []).args, ['--resume', 's-dm', '-p', 'go']);
+  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', []).args, ['--permission-mode', 'auto', '--resume', 's-dm', '-p', 'go']);
+  // a resumed session does not keep its mode (it came back in default and stopped at approval prompts
+  // no one could answer, on a real team), so every wake names the team's
+  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [], 'acceptEdits').args, ['--permission-mode', 'acceptEdits', '--resume', 's-dm', '-p', 'go']);
+  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [], 'default').args, ['--resume', 's-dm', '-p', 'go']);
+  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'idle' }], 'auto').args, ['--permission-mode', 'auto', '--resume', 's-dm', '--fork-session', '-p', 'go']);
   assert.match(WD.wakeCommand(sessions[0], 'go', null).skip, /could not be listed.*alarm only/, 'open sessions unknown: never a fork, never a resume');
   assert.equal(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'idle' }]).mode, 'fork');
-  assert.deepEqual(WD.wakeCommand({ ...sessions[0], session: null }, 'go', []).args, ['-c', '-p', 'go']);
+  assert.deepEqual(WD.wakeCommand({ ...sessions[0], session: null }, 'go', []).args, ['--permission-mode', 'auto', '-c', '-p', 'go']);
   assert.match(WD.wakeCommand({ ...sessions[0], roleDir: '/nowhere/role' }, 'go', []).skip, /not on this host/);
 });
 
@@ -254,7 +259,7 @@ test('B1: no role, `any` lanes included, can run the wake, the job or a resume i
 // ---- the wake is bounded (B2) ----
 // the beads the harness wrote, read without a bd process per run (the long replays run every 15 min for days)
 const memStore = (h) => { const b = Object.values(h.db().issues).map((x) => ({ ...x, type: x.type })); return { list: () => b, ready: () => b.filter((x) => x.status === 'open'), show: (id) => b.find((x) => x.id === id) || null }; };
-const spawner = () => { const list = []; const fn = (bin, args, o) => { list.push({ args, role: o.env.DELIVERY_ROLE, wake: o.env.DELIVERY_WAKE }); return 999999999; }; fn.list = list; return fn; };
+const spawner = () => { const list = []; const fn = (bin, args, o) => { list.push({ args, role: o.env.DELIVERY_ROLE, wake: o.env.DELIVERY_WAKE, bgWait: o.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS }); return 999999999; }; fn.list = list; return fn; };
 const every15 = (from, hours) => Array.from({ length: hours * 4 + 1 }, (_, i) => iso(Date.parse(from) + i * 15 * 60e3));
 
 test('B2: staggered P0s wake the Delivery Manager once an hour at most, whatever the number of stalls', () => {
@@ -268,7 +273,7 @@ test('B2: staggered P0s wake the Delivery Manager once an hour at most, whatever
   const bd = memStore(h);
   for (const now of every15(t0, 3)) at(h, now, ['run'], { spawn, bd });
   assert.ok(spawn.list.length <= 4 && spawn.list.length >= 3, `woken ${spawn.list.length} times in 3 h`);
-  const first = spawn.list[0].args[3];
+  const first = spawn.list[0].args[5];
   assert.match(first, /ex-p0/);
 });
 
@@ -324,7 +329,7 @@ test('B2 and Copilot 416: a session on its own usage limit is woken for nothing 
   assert.match(at(h, '2026-10-13T16:00:00Z', ['wake'], { spawn }).out, /^Scheduled: delivery-lead at 2026-10-13 16:05 UTC\. Idle:/m);
   at(h, '2026-10-13T16:10:00Z', ['run'], { spawn });
   assert.equal(spawn.list.length, 1);
-  assert.match(spawn.list[0].args[3], /The usage limit has reset\..*Nothing is in progress although 1 item is ready/);
+  assert.match(spawn.list[0].args[5], /The usage limit has reset\..*Nothing is in progress although 1 item is ready/);
 });
 
 test('B2: a wake whose process still runs is not started again; concurrent host-job runs wake once', () => {
@@ -768,4 +773,299 @@ test('review 3 on e3a7b28: a % in the project path, PATH or CLAUDE_CONFIG_DIR is
   assert.doesNotMatch(j.cron.line.replace(/\\%/g, ''), /%/, 'every % escaped');
   const asCronRuns = j.cron.line.replace(/\\%/g, '%');
   for (const want of ["'/srv/100%/proj'", "/opt/50%/bin", "'/srv/c%fg'"]) assert.ok(asCronRuns.includes(want), want);
+});
+
+// A launched team runs one turn at a time, so a message to a role between its turns fails with
+// "No agent named '<x>' is reachable" and was lost (measured 2026-10-25). The SendMessage hook keeps it;
+// the watchdog wakes the target with it.
+test('a send to a role that is not running is kept for it; a delivered send is not', () => {
+  const h = harness({});
+  const RC = require('../hooks/scripts/route-check.js');
+  const IB = require('./lib/inbox.js');
+  const failed = [{ type: 'text', text: JSON.stringify({ success: false, message: "No agent named 'chief-of-staff' is reachable.\nUse ListAgents to see everyone you can message." }) }];
+  const as = (fn) => withEnv({ DELIVERY_ROLE: 'builder-1' }, fn);
+  session(h, COS, { seen: new Date().toISOString() });
+  const r = as(() => RC.check({ tool_name: 'SendMessage', cwd: h.roleDir('builder-1'), tool_input: { to: 'chief-of-staff', summary: 'dlv-1 blocked', message: 'the story is not on master' }, tool_response: failed }));
+  assert.match(r.context, /^chief-of-staff is not running, so the message is kept for it: the watchdog wakes chief-of-staff with it/);
+  const p = IB.pending(h.root);
+  assert.equal(p.length, 1);
+  assert.equal(p[0].to, 'chief-of-staff');
+  assert.equal(p[0].entries[0].from, 'builder-1');
+  assert.equal(p[0].entries[0].message, 'the story is not on master');
+  const sent = as(() => RC.check({ tool_name: 'SendMessage', cwd: h.roleDir('builder-1'), tool_input: { to: 'delivery-lead', message: 'x' }, tool_response: [{ type: 'text', text: JSON.stringify({ success: true }) }] }));
+  assert.equal(sent, null);
+  assert.equal(IB.pending(h.root).length, 1, 'a delivered send is not kept');
+});
+
+// dlv-efp: the Delivery Manager and the builder sent "open the PR" to "steward", a duty in team.json and
+// no session's name; it was kept under that name and the watchdog reported it unwoken at every run for
+// over an hour. A name no role answers to is now refused at send, "steward" goes to the host's steward,
+// and a role never started is kept with the sender told nobody can wake it.
+test('dlv-2ex: a send to no role is refused with the roles there are; "steward" reaches the host\'s steward', () => {
+  const h = harness({});
+  const RC = require('../hooks/scripts/route-check.js');
+  const IB = require('./lib/inbox.js');
+  const failed = (to) => [{ type: 'text', text: JSON.stringify({ success: false, message: `No agent named '${to}' is reachable.` }) }];
+  const send = (to) => withEnv({ DELIVERY_ROLE: DM }, () => RC.check({ tool_name: 'SendMessage', cwd: h.roleDir(DM), tool_input: { to, message: 'open the PR' }, tool_response: failed(to) }));
+  const nobody = send('stewart');
+  assert.match(nobody.context, /^stewart is not a role on this team, so the message was not kept/);
+  assert.match(nobody.context, /Send it to one of: chief-of-staff, .*builder-1, builder-2/);
+  assert.equal(IB.pending(h.root).length, 0, 'nothing kept for a name no session has');
+  const never = send('steward');
+  assert.match(never.context, /^builder-1 \(this host's steward\) has never been started on this team/);
+  assert.deepEqual(IB.pending(h.root).map((p) => p.to), ['builder-1']);
+  session(h, 'builder-1', { seen: new Date().toISOString() });
+  assert.match(send('steward').context, /^builder-1 \(this host's steward\) is not running, so the message is kept/);
+  session(h, DM, { seen: new Date().toISOString() });
+  assert.match(send('delivery-manager').context, /^delivery-lead is not running/, 'the role alias still resolves');
+});
+
+test('dlv-2ex: the watchdog wakes the steward for a message kept under "steward", and nobody for a name no role has', () => {
+  const t0 = '2026-10-26T18:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, 'builder-1', { seen: iso(Date.parse(t0) - 2 * H) });
+  IB.queue(h.root, { to: 'steward', from: DM, message: 'open the PR', at: t0 });
+  IB.queue(h.root, { to: 'stewart', from: DM, message: 'lost', at: t0 });
+  const spawn = spawner();
+  const res = at(h, t0, ['run'], { spawn, bd: memStore(h) });
+  assert.deepEqual(spawn.list.map((x) => x.role), ['builder-1'], res.out);
+  assert.match(spawn.list[0].args.join(' '), /open the PR/);
+  assert.doesNotMatch(res.out, /stewart/, 'a name no role has is not reported at every run');
+  assert.deepEqual(IB.pending(h.root).map((p) => p.to), ['stewart'], 'the steward\'s message is marked delivered under the name it was kept by');
+});
+
+test('a waiting message wakes its target once, with the message; a new one waits five minutes between wakes', () => {
+  const t0 = '2026-10-25T18:00:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, COS, { seen: iso(Date.parse(t0) - 2 * H) });
+  IB.queue(h.root, { to: COS, from: DM, summary: 'dlv-1 blocked', message: 'merge the story branch', at: t0 });
+  const spawn = spawner();
+  const bd = memStore(h);
+  at(h, t0, ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 1);
+  assert.equal(spawn.list[0].role, COS);
+  assert.match(spawn.list[0].args[5], /\[from delivery-lead: dlv-1 blocked\] merge the story branch/);
+  at(h, iso(Date.parse(t0) + 60e3), ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 1, 'a delivered message does not wake again');
+  IB.queue(h.root, { to: COS, from: DM, message: 'second', at: iso(Date.parse(t0) + 2 * 60e3) });
+  const held = at(h, iso(Date.parse(t0) + 3 * 60e3), ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 1);
+  assert.match(held.out, /messages wait 5 min between wakes/);
+  at(h, iso(Date.parse(t0) + 6 * 60e3), ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 2, 'woken again after five minutes, not an hour');
+  assert.match(spawn.list[1].args[5], /second/);
+  assert.doesNotMatch(spawn.list[1].args[5], /merge the story branch/);
+});
+
+// A resumed session came back in default mode on a real team and stopped at approval prompts no one
+// could answer; the watchdog wakes each session in the mode team.json records.
+test('a wake runs in the team\'s permission mode (team.json permission_mode; auto when unset)', () => {
+  const t0 = '2026-10-25T18:00:00Z';
+  for (const [mode, want] of [[undefined, ['--permission-mode', 'auto']], ['acceptEdits', ['--permission-mode', 'acceptEdits']], ['default', []]]) {
+    const h = harness({});
+    if (mode) {
+      const f = path.join(h.root, '.delivery', 'team', 'team.json');
+      fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), permission_mode: mode }, null, 2));
+    }
+    const IB = require('./lib/inbox.js');
+    session(h, COS, { seen: iso(Date.parse(t0) - 2 * H) });
+    IB.queue(h.root, { to: COS, from: DM, summary: 'x', message: 'y', at: t0 });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1, String(mode));
+    assert.deepEqual(spawn.list[0].args.slice(0, want.length + 1), [...want, '--resume'], String(mode));
+  }
+});
+
+// the review of the fix: an invalid mode made claude exit while the wake was logged and its messages
+// marked delivered; a team recorded before the field would have been woken in auto, more than it chose
+test('a wake never runs in a mode the team did not choose: invalid or unreadable is no wake; an older team keeps its session\'s own mode', () => {
+  const t0 = '2026-10-25T18:00:00Z';
+  const IB = require('./lib/inbox.js');
+  const teamFile = (h) => path.join(h.root, '.delivery', 'team', 'team.json');
+  const prep = (edit, rows) => {
+    const h = harness({});
+    if (edit) fs.writeFileSync(teamFile(h), edit(fs.readFileSync(teamFile(h), 'utf8')));
+    session(h, COS, { seen: iso(Date.parse(t0) - 2 * H), rows });
+    IB.queue(h.root, { to: COS, from: DM, summary: 'x', message: 'y', at: t0 });
+    return h;
+  };
+  for (const [edit, why] of [[(t) => JSON.stringify({ ...JSON.parse(t), permission_mode: 'Auto' }), /permission_mode "Auto" is not a Claude Code mode/], [() => '{ not json', /team\.json cannot be read/]]) {
+    const h = prep(edit);
+    const spawn = spawner();
+    const out = at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 0, 'no wake');
+    assert.match(String(out && (out.out || out.stdout || out)), why);
+    assert.equal(IB.pending(h.root).length, 1, 'the message is kept for the next run');
+  }
+  // no permission_mode recorded: the mode the session started in, read from its transcript
+  const h = prep(null, [{ type: 'user', permissionMode: 'acceptEdits', message: { role: 'user', content: 'hi' } }]);
+  const spawn = spawner();
+  at(h, t0, ['run'], { spawn, bd: memStore(h) });
+  assert.deepEqual(spawn.list[0].args.slice(0, 3), ['--permission-mode', 'acceptEdits', '--resume']);
+});
+
+// dlv-2et: a merged story waiting on evidence counted as its builder's stall and the builder was woken
+// every two hours until its daily wake budget ran out; and a wake's background reviewer was stopped
+// ten minutes after the turn ended, so no verdict was recorded
+test('a merged or deployed story wakes the Delivery Manager, not its builder; verified or cut wakes the holder to close; a wake waits for its background tasks', () => {
+  const t0 = '2026-10-26T10:00:00Z';
+  for (const [labels, who, prompt] of [
+    [['state-merged'], DM, /is merged .*deploy it/],
+    [['state-merged', 'state-deployed'], DM, /is deployed .*reality check/],
+    [['state-merged', 'state-verified'], 'builder-1', /is verified .*Close it now/],
+    [['state-merged', 'state-cut'], 'builder-1', /is cut .*Close it now/],
+    [[], 'builder-1', /Continue it now/],
+  ]) {
+    const h = harness({ beads: { 'ex-s': { id: 'ex-s', status: 'in_progress', assignee: 'dev@pc/builder-1', labels, updated_at: iso(Date.parse(t0) - 9 * H) } } });
+    session(h, 'builder-1', { seen: iso(Date.parse(t0) - 9 * H) });
+    session(h, DM, { seen: iso(Date.parse(t0) - 9 * H) });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    const woken = spawn.list.map((x) => x.role);
+    assert.deepEqual(woken, [who], labels.join(',') || 'unmerged');
+    assert.match(spawn.list[0].args.join(' '), prompt, labels.join(','));
+    assert.equal(spawn.list[0].bgWait, '0');
+    // the same quiet spell backs off like every stall (its key holds still): woken at 0 and 1 h, held at 2 h
+    if (who === DM) {
+      at(h, iso(Date.parse(t0) + 30 * 60e3), ['run'], { spawn, bd: memStore(h) });
+      assert.equal(spawn.list.length, 1, `${labels} within the hour`);
+      at(h, iso(Date.parse(t0) + H), ['run'], { spawn, bd: memStore(h) });
+      assert.equal(spawn.list.length, 2, `${labels} after an hour`);
+      at(h, iso(Date.parse(t0) + 2 * H), ['run'], { spawn, bd: memStore(h) });
+      assert.equal(spawn.list.length, 2, `${labels} backs off`);
+    }
+  }
+});
+
+// On a real team the Delivery Manager had spent its six stall wakes for the day, and a message for it
+// waited for hours behind that cap; and a wake carrying a stall and a message never marked the
+// message delivered, so the next run sent it again.
+test('a message reaches a role that spent its stall wakes, once; a wake that carries a stall and a message hands the message over', () => {
+  const t0 = '2026-10-26T15:00:00Z';
+  const IB = require('./lib/inbox.js');
+  const stale = { 'ex-s': { id: 'ex-s', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(Date.parse(t0) - 9 * H) } };
+  // at the daily cap: six wakes in the last day
+  {
+    const h = harness({ beads: stale });
+    session(h, 'builder-1', { seen: iso(Date.parse(t0) - 9 * H) });
+    for (let i = 1; i <= 6; i++) WD.log(h.root, { type: 'wake', at: iso(Date.parse(t0) - i * 2 * H), keys: [`k${i}`], instance: 'builder-1', pid: 999999998 });
+    IB.queue(h.root, { to: 'builder-1', from: DM, summary: 'PR 75', message: 'merge main into your branch', at: t0 });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1, 'the message goes through');
+    assert.match(spawn.list[0].args.join(' '), /merge main into your branch/);
+    assert.doesNotMatch(spawn.list[0].args.join(' '), /ex-s has not moved/, 'the held stall does not ride along');
+    assert.equal(IB.pending(h.root).length, 0, 'delivered');
+    at(h, iso(Date.parse(t0) + 10 * 60e3), ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1, 'not sent again; the stall stays held by the cap');
+  }
+  // no cap: one wake carries both, and the message is handed over
+  {
+    const h = harness({ beads: stale });
+    session(h, 'builder-1', { seen: iso(Date.parse(t0) - 9 * H) });
+    IB.queue(h.root, { to: 'builder-1', from: DM, summary: 'PR 75', message: 'merge main into your branch', at: t0 });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 1);
+    assert.match(spawn.list[0].args.join(' '), /ex-s has not moved.*merge main into your branch/, 'one wake carries both');
+    assert.equal(IB.pending(h.root).length, 0, 'the message a stall wake carried is delivered');
+  }
+});
+
+// Every resume reloads the whole conversation: on a real team the Delivery Manager's turns carried
+// 236k tokens after a day of wakes. Above the limit a wake starts a fresh session in the role directory.
+test('a wake starts a fresh session when the last turn carried more than the limit; light, disabled or open sessions resume or fork', () => {
+  const t0 = '2026-10-26T18:00:00Z';
+  const used = (n) => [{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 2, cache_read_input_tokens: n - 1002, cache_creation_input_tokens: 1000 } } }];
+  assert.equal(WD.contextOf(used(236000)), 236000);
+  assert.equal(WD.contextOf([{ type: 'user', message: { content: 'x' } }]), null);
+  const IB = require('./lib/inbox.js');
+  const run = ({ tokens, limit, agents = [] }) => {
+    const h = harness({});
+    if (limit !== undefined) {
+      const f = path.join(h.root, '.delivery', 'team', 'team.json');
+      fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), wake_fresh_above_tokens: limit }, null, 2));
+    }
+    session(h, COS, { seen: iso(Date.parse(t0) - 2 * H), rows: used(tokens) });
+    IB.queue(h.root, { to: COS, from: DM, summary: 'x', message: 'merge the story branch', at: t0 });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h), live: agents });
+    return spawn.list[0];
+  };
+  const heavy = run({ tokens: 236000 });
+  assert.equal(heavy.wake, 'fresh');
+  // named like every role session, so peers reach it by name; its own beads, by its actor
+  assert.deepEqual(heavy.args.slice(0, 5), ['--permission-mode', 'auto', '--name', COS, '-p']);
+  assert.ok(!heavy.args.includes('--resume'), 'a fresh session, not a resume');
+  assert.match(heavy.args[5], /starting a fresh session: your earlier conversation \(236k tokens\) is not loaded.*bd list --assignee "\$BEADS_ACTOR" --status in_progress.*merge the story branch/);
+  // the Chief of Staff is told to look for operator input left unrecorded in the old session
+  assert.match(heavy.args[5], /operator input still unrecorded \(operator\.js pending\)/);
+  assert.equal(run({ tokens: 50000 }).wake, 'resume');
+  assert.equal(run({ tokens: 236000, limit: 0 }).wake, 'resume', '0 turns it off');
+  assert.equal(run({ tokens: 236000, limit: 300000 }).wake, 'resume', 'the owner\'s limit');
+  // a limit the watchdog cannot use is said, not silently replaced: "0" as text is not 0
+  {
+    const h = harness({});
+    const f = path.join(h.root, '.delivery', 'team', 'team.json');
+    fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), wake_fresh_above_tokens: '0' }, null, 2));
+    session(h, COS, { seen: iso(Date.parse(t0) - 2 * H), rows: used(236000) });
+    IB.queue(h.root, { to: COS, from: DM, summary: 'x', message: 'y', at: t0 });
+    const spawn = spawner();
+    const out = at(h, t0, ['run'], { spawn, bd: memStore(h), live: [] });
+    assert.match(String(out.out || out), /Warning: team\.json wake_fresh_above_tokens "0" is not a whole number of tokens; using 120000/);
+    assert.equal(spawn.list[0].wake, 'fresh');
+  }
+  // an open, idle session is forked as before: a fresh session would replace it on the roster
+  assert.equal(run({ tokens: 236000, agents: [{ sessionId: `sess-${COS}`, status: 'idle' }] }).wake, 'fork');
+});
+
+// The review of the change above: each rule on the message path under a held stall, and message wakes
+// must not starve the stall (they used to count toward its hourly gate and daily cap).
+test('plan: messages beside a held stall keep their own rules; message wakes do not starve the stall', () => {
+  const t0 = Date.parse('2026-10-26T15:00:00Z');
+  const stall = { kind: 'quiet', key: 'quiet:ex-s:1', target: 'b1', due: true, line: 'Stalled: ex-s', prompt: 'ex-s has not moved.' };
+  const msg = { kind: 'message', key: 'message:b1:1', target: 'b1', due: true, line: 'Waiting: 1 message', prompt: 'merge main into your branch.', upTo: 1 };
+  const plan = (rows, { alive = () => false } = {}) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-'));
+    for (const r of rows) WD.log(root, { type: 'wake', instance: 'b1', pid: 7, ...r });
+    return WD.plan({ stalls: [stall, msg] }, { root, now: new Date(t0).toISOString(), alive });
+  };
+  const ago = (m) => new Date(t0 - m * 60e3).toISOString();
+  const sixStalls = Array.from({ length: 6 }, (_, i) => ({ at: ago(120 * (i + 1)), keys: [`quiet:old-${i}`] }));
+  // the stall cap spent: the message alone goes, by its rules; the stall stays held, listed once
+  let p = plan(sixStalls);
+  assert.equal(p.wakes.length, 1);
+  assert.deepEqual(p.wakes[0].keys, ['message:b1:1'], 'only the message key is logged, so the stall backoff is untouched');
+  assert.deepEqual(p.wakes[0].delivers, [{ to: 'b1', upTo: 1 }]);
+  assert.doesNotMatch(p.wakes[0].prompt, /ex-s has not moved/);
+  assert.deepEqual(p.held.map((h) => h.lines.join()), ['Stalled: ex-s']);
+  assert.match(p.held[0].reason, /woken 6 times in a day/);
+  // a wake still running holds both
+  p = plan(sixStalls, { alive: () => true });
+  assert.equal(p.wakes.length, 0);
+  assert.ok(p.held.every((h) => /still running/.test(h.reason)), JSON.stringify(p.held));
+  // messages five minutes apart: the message held says so, the stall says its own cause
+  p = plan([...sixStalls, { at: ago(2), keys: ['message:b1:0'] }]);
+  assert.equal(p.wakes.length, 0);
+  assert.match(p.held.find((h) => h.lines.includes('Waiting: 1 message')).reason, /messages wait 5 min/);
+  assert.match(p.held.find((h) => h.lines.includes('Stalled: ex-s')).reason, /woken 6 times in a day/);
+  // 48 wakes in a day: the message is held too
+  p = plan(Array.from({ length: 48 }, (_, i) => ({ at: ago(20 * (i + 1)), keys: [`message:b1:x${i}`] })).concat(sixStalls));
+  assert.equal(p.wakes.length, 0);
+  assert.match(p.held.find((h) => h.lines.includes('Waiting: 1 message')).reason, /woken 48 times in a day/);
+  // the review's storm: an hour past the last stall wake, the stall still waits out its backoff (its
+  // second try is due at 2 h); a message wake a minute ago holds the next message by the message rules
+  p = plan([{ at: ago(130), keys: ['quiet:ex-s:1'] }, { at: ago(61), keys: ['quiet:ex-s:1'] }, { at: ago(1), keys: ['message:b1:0'] }]);
+  assert.equal(p.wakes.length, 0, JSON.stringify(p.wakes));
+  assert.match(p.held.find((h) => h.lines.includes('Waiting: 1 message')).reason, /messages wait 5 min/);
+  // message wakes in the last hour do not hold the stall: one wake carries both, and hands the message over
+  p = plan([{ at: ago(10), keys: ['message:b1:a'] }, { at: ago(40), keys: ['message:b1:b'] }]);
+  assert.equal(p.wakes.length, 1);
+  assert.match(p.wakes[0].prompt, /ex-s has not moved\..*merge main into your branch\./);
+  assert.deepEqual(p.wakes[0].keys.sort(), ['message:b1:1', 'quiet:ex-s:1']);
+  assert.deepEqual(p.wakes[0].delivers, [{ to: 'b1', upTo: 1 }]);
+  assert.equal(p.held.length, 0);
 });

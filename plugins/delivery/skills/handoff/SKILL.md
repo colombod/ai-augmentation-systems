@@ -1,5 +1,6 @@
 ---
 description: Renamed — handing a sprint package to a runner is now /delivery:sprint --runner superpowers|generic. This alias is kept for one version.
+disable-model-invocation: true
 argument-hint: "[runner]"
 ---
 

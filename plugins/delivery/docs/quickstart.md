@@ -16,9 +16,9 @@ The planning pipeline (`/delivery:brief` and the rest) works on its own without 
 
 ## Prerequisites
 
-- Claude Code v2.1.224 or later, on macOS or Linux: the role sessions message each other.
+- Claude Code v2.1.224 or later, on macOS or Linux (on Windows, inside WSL2): the role sessions message each other.
 - Node 18 or later, and git.
-- `bd` (beads) on the PATH. `bd version` should answer.
+- `bd` (beads) on the PATH. `bd version` should answer. On Windows read [Setting up beads](#setting-up-beads) first.
 - The delivery plugin installed: `/plugin install delivery@ai-augmentation-systems` (the repository README's Install section has the marketplace step). In the commands below, `<plugin-root>` is the plugin's directory: the `installPath` listed for `delivery@ai-augmentation-systems` in `~/.claude/plugins/installed_plugins.json`.
 - A **private project repo**, `<project-root>`. It holds strategy: the plan under `.delivery/`, the team manifest, and your recorded decisions. `start.js` creates it (`git init`) when it does not exist; add a private remote so plans and records are pushed.
 - For an existing product, a **product repo**: a local checkout at `<product-checkout>`, or a clone URL that `start.js` clones next to the project repo as `<project>-product`. It holds code only. Builders get their own worktree of it.
@@ -35,6 +35,85 @@ delivery prerequisites
 All hard prerequisites are met.
 ```
 
+## Setting up beads
+
+beads keeps the team's work items in a database inside the project repo (`.beads/`). Every
+machine that runs role sessions has its own copy; machines share it through the project repo's
+own git remote, so there is no database server to run and no database password.
+
+**Bringing an existing backlog in.** A product that already tracks its work in beads exports it
+from the old tracker (`bd export -o vault-export.jsonl`, run in the old workspace) and passes the
+file once: `start.js --project ~/vault-planning --import-beads vault-export.jsonl`. It prints
+`imported 3 issues`; the same ids, titles, statuses and dependencies are then in the project's
+database and are published with the rest. Every id must start with the team's prefix (`vault-`);
+a file with any other prefix, a missing file or a line that is not JSON is refused before
+anything is written. Running it again prints `0 new, 3 already present` and leaves edited issues
+as they are. `--dry-run` prints `would import 3 issues` and changes nothing; `start.js --check
+--project <root>` shows `beads issues: 3 issues`.
+
+**`start.js` does this on every machine; you run nothing by hand.** On each run it:
+
+- creates the database when the project has none (`bd init --skip-agents`, so beads does not
+  write its own `AGENTS.md`, `CLAUDE.md` or `.claude/settings.json` over yours), commits only the
+  `.beads` files, sets the project repo's `origin` as the sync remote, and publishes the issues
+  (`bd dolt push`);
+- on a fresh clone, where `.beads/` came with the repo but the database did not, or where the
+  project repo already holds the issues, fetches them (`bd bootstrap`) and never runs `bd init`,
+  which would start a second, separate history;
+- connects an existing database that has no sync remote to the project repo, and publishes it;
+- leaves a database that is already connected alone;
+- notes a product repo that has its own beads workspace, without importing it: the team's work
+  items live in the project repo, and nothing waits on the product's old tracker.
+
+A failed publish is reported with its fix and does not stop the run. `start.js --check` reports
+the same state (`beads sync`).
+
+The project repo must be **private**: syncing writes the issue history into it, under
+`refs/dolt/data` and a branch named `__dolt_remote_info__`. A Claude Code cloud session cannot
+make the first publish: its git proxy refuses pushes outside branches (HTTP 403 on
+`refs/dolt/data`, measured), so run `start.js` first on a machine with ordinary git access. Once a machine is set up, sessions
+run `bd dolt pull` before work and `bd dolt push` after.
+
+**By hand**, when you are not using `start.js`:
+
+1. On the machine that has the database: `bd dolt remote list`. A repo that already had an
+   `origin` when `bd init` ran is wired already. Otherwise:
+   `bd dolt remote add origin git+https://<host>/<owner>/<project>.git` (or `git+ssh://git@...`),
+   then commit `.beads/config.yaml`.
+2. `bd dolt push`. Check it landed: `git ls-remote origin refs/dolt/data` prints one line.
+3. On every other machine: clone the project repo, then `bd bootstrap` once. From then on,
+   `bd dolt pull` before work and `bd dolt push` after.
+
+Claims: two machines that claim the same item before syncing both succeed locally; the second
+push is refused, and its pull stops on a conflict that needs a person. A claim made right after
+`bd dolt pull` is refused when someone holds it. Until the plugin's own claim step pulls and
+pushes around the claim, keep the sessions that claim work on one machine, or pull first.
+
+**An existing database with no sync remote** (`[warn] beads sync: no sync remote`): `start.js`
+connects and publishes it; by hand, run steps 1 and 2 on the machine that holds it, after
+`bd export -o .beads/issues.pre-remote.jsonl` as an audit copy. Do not `bd init` again over it.
+
+**Windows.** The released `bd.exe` is not code-signed, and Windows 11's Smart App Control blocks
+unsigned programs, a local build included, with no per-program exception. `start.js --check`
+reads its state and says which case you are in.
+
+- **Recommended: run the team inside WSL2.** `wsl --install` in an administrator PowerShell,
+  then in the Linux shell: install Node, git and Claude Code, clone the project repo into the
+  Linux file system (`~/...`, not `/mnt/c/...`), install bd with beads' Linux install script, and
+  run `start.js --check` there. Cross-session messaging is documented for macOS and Linux only,
+  so this also fixes the `[warn] platform` row.
+- **Or turn Smart App Control off** (Windows Security, App and browser control): a machine-wide
+  change. It can be turned back on only on Windows 11 25H2 with the April 2026 update or later;
+  on older builds turning it off is one-way. Then install with beads' PowerShell installer, which
+  checks the download against the release checksums.
+- With Smart App Control already off, the installer alone is enough.
+- Do not install bd from npm on Windows for this plugin: npm installs a `bd.cmd` shim, which
+  Node starts only through a shell (beads' installation notes), and the plugin's scripts and hooks
+  start `bd` directly.
+
+Not yet run by this plugin on a Windows machine: the WSL2 path and the registry read are
+written from Microsoft's and beads' documentation and tested with stand-ins.
+
 ## What `/delivery:start` runs
 
 The skill asks you for the project repo, the product repo, the host name, the preset, the model profile and the permission mode, then runs `start.js` twice: a dry run to show you the plan, then the real run. All inputs are flags; the script never prompts.
@@ -44,7 +123,7 @@ node <plugin-root>/scripts/start.js --project <project-root> --host laptop --mod
 node <plugin-root>/scripts/start.js --project <project-root> --host laptop --models balanced --product-repo <product-checkout>
 ```
 
-Other flags: `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Manager, one builder; `full` adds Staffing, the Progress Observer, the Spike Researcher and the Reality Checker; the Reality Checker also joins `minimal` when a declared surface is not scriptable, or with `--reality-checker`), `--models quality|balanced|economy` (default `balanced`; see the README's Models section), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default: none, so each session uses your own Claude Code default), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
+Other flags: `--launch` (start every role on this machine yourself: each runs its first turn headless in its role directory, in the team's permission mode, and joins the team; nobody starts a session by hand), `--keep-alive` (with `--launch`: install the watchdog job that resumes a role when its work is due, and wakes a role with any message sent to it while it was not running), `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Manager, one builder; `full` adds Staffing, the Progress Observer, the Spike Researcher and the Reality Checker; the Reality Checker also joins `minimal` when a declared surface is not scriptable, or with `--reality-checker`), `--models quality|balanced|economy` (default `balanced`; see the README's Models section), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default `auto`: the sessions run without asking you to approve each step, inside the lane hook's limits; `default` uses your own Claude Code default and may ask), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
 
 The real run, against a throwaway fixture (paths shortened to placeholders):
 
@@ -56,6 +135,7 @@ delivery start: <project-root>
   product repo: using the checkout at <product-checkout>
   manifest: committed (6380dab)
   beads: run bd init --prefix acme
+  beads: no sync remote, and the project repo has no origin to sync through: its issues stay on this machine. Fix: add a private remote, then run start.js again (docs/quickstart.md, "Setting up beads")
   roles (in <team-dir>):
     chief-of-staff: prepared (opus)
     product-manager: prepared (opus)
@@ -63,11 +143,11 @@ delivery start: <project-root>
     builder: prepared (sonnet)
 
 Start each session in its own terminal, the Chief of Staff first:
-  cd <team-dir>/chief-of-staff && claude --name chief-of-staff
-  cd <team-dir>/product-manager && claude --name product-manager
-  cd <team-dir>/delivery-lead && claude --name delivery-lead
-  cd <team-dir>/builder && claude --name builder
-  (no --permission-mode: each session uses your own Claude Code default; pass --permission-mode to choose one)
+  cd <team-dir>/chief-of-staff && claude --permission-mode auto --name chief-of-staff
+  cd <team-dir>/product-manager && claude --permission-mode auto --name product-manager
+  cd <team-dir>/delivery-lead && claude --permission-mode auto --name delivery-lead
+  cd <team-dir>/builder && claude --permission-mode auto --name builder
+  (--permission-mode auto: the sessions run without asking you to approve each step; the lane hook still limits what each role can do. Pass --permission-mode default to be asked instead)
 
 Then:
   1. In every session, run /delivery:team join.
@@ -75,7 +155,7 @@ Then:
   3. /delivery:team shows who is live; ask the Chief of Staff for the question ledger to see every decision.
 ```
 
-The dry run prints the same plan with "would" in front of each write, and writes nothing. Running it again is safe: an existing manifest is kept as it is (and `--preset`, `--models`, `--host`, `--prefix` and `--runner` are not applied to it; if it is uncommitted, for example after a refused run, just those two files are committed), `bd init` runs only when `.beads` is absent, and only roles without a prepared directory are prepared (plus, once `.beads` exists, any prepared role still missing `BEADS_DIR`, which is re-prepared):
+The dry run prints the same plan with "would" in front of each write, and writes nothing. Running it again is safe: an existing manifest is kept as it is (and `--preset`, `--models`, `--host`, `--prefix` and `--runner` are not applied to it; if it is uncommitted, for example after a refused run, just those two files are committed), beads is set up as [Setting up beads](#setting-up-beads) describes (an existing database is never re-created), and only roles without a prepared directory are prepared (plus, once `.beads` exists, any prepared role still missing `BEADS_DIR`, which is re-prepared):
 
 ```
 delivery start: <project-root>
@@ -83,7 +163,8 @@ delivery start: <project-root>
   manifest: keeping the existing .delivery/team/team.json and .delivery/team/hosts.json (project "acme", 4 instance(s)); --preset, --models, --host, --prefix and --runner are not applied to it
   manifest: valid
   product repo: none given; a builder prepared in this run gets no product worktree (pass --product-repo <path|url>)
-  beads: .beads exists; bd init skipped
+  beads: database present
+  beads: no sync remote, and the project repo has no origin to sync through: its issues stay on this machine. Fix: add a private remote, then run start.js again (docs/quickstart.md, "Setting up beads")
   roles (in <team-dir>):
     chief-of-staff: already prepared
     product-manager: already prepared
@@ -91,7 +172,9 @@ delivery start: <project-root>
     builder: already prepared
 ```
 
-When `bd` is missing, `start.js` still prepares the roles and says how to finish: install `bd`, run `bd init --prefix <prefix>` in `<project-root>`, then run `start.js` again: it re-prepares each role that lacks `BEADS_DIR`. The steps below are what `start.js` does, for doing them by hand.
+With a product checkout, `start.js` also names the command that runs its tests (`product tests: ...`). Each pull request's reviewer runs that command, so it works for a product in any language: it is read from the repository's build files (`dotnet test`, `cargo test`, `go test ./...`, `./gradlew test`, `mix test`, `npm test` and others), or from `"test_command"` in `.delivery/team/team.json` when you set it. Set it when `start.js` says it is not known, or when CI runs something else (`"test_command": "make ci"`).
+
+When `bd` is missing, `start.js` still prepares the roles and says how to finish: install `bd` ([Setting up beads](#setting-up-beads)), then run `start.js` again: it sets up beads and re-prepares each role that lacks `BEADS_DIR`. The steps below are what `start.js` does, for doing them by hand.
 
 ## 1. Write the team manifest
 
@@ -137,7 +220,7 @@ Commit the manifest. The hooks read it from this checkout, so keep it pulled (`g
 
 ## 2. Create the beads database
 
-In `<project-root>`, run `bd init --prefix acme` with the same prefix as `team.json`. Do this before step 3: `prepare-role` sets `BEADS_DIR` for a role only when `<project-root>/.beads` already exists, and `bd` cannot find the database from a role directory without it.
+`start.js` does this ([Setting up beads](#setting-up-beads)). By hand: in `<project-root>`, run `bd init --prefix acme` with the same prefix as `team.json` on the first machine, and `bd bootstrap` on every other one. Do this before step 3: `prepare-role` sets `BEADS_DIR` for a role only when `<project-root>/.beads` already exists, and `bd` cannot find the database from a role directory without it.
 
 ## 3. Prepare one directory per role
 
@@ -364,9 +447,11 @@ Run the restore command it names, or fix the file from outside the session.
 
 **3. `bd` cannot find the database.** From a role directory `bd where` says `No active beads workspace found`, and `/delivery:team` warns `bd unreachable from role directories: run bd init in the project root, then rerun prepare-role so the roles get BEADS_DIR`. The role's `settings.local.json` has no `BEADS_DIR`, usually because `prepare-role` ran before `bd init`. Run `bd init` in `<project-root>` if needed, run `prepare-role` again for each instance, and restart the sessions.
 
-**4. `format_unrecognised`.** `operator.js sync` or `record` reports that the transcript format was not recognised. Capture relies on an undocumented field the harness writes on each transcript entry; when it changes, recording fails closed rather than trusting what it cannot read. Nothing is recorded until the transcript reader in `scripts/lib/transcript.js` is updated. Tell whoever maintains the plugin; `operator.js sync --format-check` shows the state.
+**4. `bd` fails on Windows, or `[FAIL] bd (beads)` names Smart App Control.** See [Setting up beads](#setting-up-beads), Windows. Blocks are also logged in Event Viewer under Microsoft-Windows-CodeIntegrity/Operational.
 
-**5. The Chief of Staff's turn is blocked by its Stop hook** (once per turn: the first stop). Two common reasons, both with the way out in the message:
+**5. `format_unrecognised`.** `operator.js sync` or `record` reports that the transcript format was not recognised. Capture relies on an undocumented field the harness writes on each transcript entry; when it changes, recording fails closed rather than trusting what it cannot read. Nothing is recorded until the transcript reader in `scripts/lib/transcript.js` is updated. Tell whoever maintains the plugin; `operator.js sync --format-check` shows the state.
+
+**6. The Chief of Staff's turn is blocked by its Stop hook** (once per turn: the first stop). Two common reasons, both with the way out in the message:
 
 - An input of yours has no record. The Chief of Staff records it or acks it, then carries on:
 

@@ -6,10 +6,12 @@
 //       prerequisites as a pass/fail list with the fix for each; exit 1 when a hard one is missing.
 //   start.js --project <root> [--host <name>] [--preset minimal|full] [--product-repo <path|url>]
 //            [--prefix <bd prefix>] [--runner superpowers|attractor|plain] [--permission-mode <mode>]
-//            [--models quality|balanced|economy] [--reality-checker] [--team-dir <dir>] [--user <name>] [--dry-run]
+//            [--models quality|balanced|economy] [--reality-checker] [--team-dir <dir>] [--user <name>] [--launch [--keep-alive]] [--import-beads <file>] [--dry-run]
 //       scaffold a shipping team: manifest from the preset (never overwriting one), bd init when
 //       .beads is absent, prepare-role for every instance not yet prepared, then the command that
-//       starts each session. --dry-run prints the plan and writes nothing.
+//       starts each session. --dry-run prints the plan and writes nothing. --import-beads loads a
+//       `bd export` file (JSONL) into the project's beads once: ids must carry the team's prefix,
+//       an id already present is skipped and never overwritten.
 //
 // Exit codes: 0 ok; 1 a hard prerequisite is missing or the scaffold was refused; 2 usage error.
 const fs = require('fs');
@@ -52,13 +54,15 @@ const PRESETS = {
 };
 
 // R-33: a customer surface no test reaches needs the Reality Checker, so a declared surface with
-// scriptable: false puts it in the minimal preset too. The surface ids that are not scriptable:
+// scriptable: false puts it in the minimal preset too. So does a command-line surface (command_line:
+// true): its stories are verified by verify-run.js, which only the Reality Checker may run, never the
+// builder. The surface ids that need the Reality Checker:
 function unscriptableSurfaces(projectRoot) {
   const dir = path.join(projectRoot, '.delivery', 'initiatives');
   let names = [];
   try { names = fs.readdirSync(dir); } catch (err) { return []; }
   const { loadSurface } = require('./lib/surface.js');
-  return names.flatMap((n) => loadSurface(projectRoot, n).surfaces.filter((x) => x.scriptable === false).map((x) => `${n}/${x.id}`));
+  return names.flatMap((n) => loadSurface(projectRoot, n).surfaces.filter((x) => x.scriptable === false || x.command_line === true).map((x) => `${n}/${x.id}`));
 }
 function presetRoles(preset, { realityChecker = false, unscriptable = [] } = {}) {
   const ids = PRESETS[preset].slice();
@@ -107,10 +111,14 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
     : { name: 'git', status: 'fail', detail: 'not found on PATH', fix: 'install git', hard: true });
 
   const bd = run('bd', ['version'], { env: runEnv });
-  rows.push(bd.ok
-    ? { name: 'bd (beads)', status: 'pass', detail: bd.out.split('\n')[0], hard: true }
-    : { name: 'bd (beads)', status: 'fail', detail: bd.missing ? 'not found on PATH' : `\`bd version\` failed: ${bd.err.slice(0, 120)}`,
-      fix: 'install beads so `bd` is on PATH (https://github.com/gastownhall/beads)', hard: true });
+  if (bd.ok) {
+    rows.push({ name: 'bd (beads)', status: 'pass', detail: bd.out.split('\n')[0], hard: true });
+  } else if (platform === 'win32') {
+    rows.push(windowsBdRow(bd, smartAppControl(runEnv)));
+  } else {
+    rows.push({ name: 'bd (beads)', status: 'fail', detail: bd.missing ? 'not found on PATH' : `\`bd version\` failed: ${bd.err.slice(0, 120)}`,
+      fix: `install beads so \`bd\` is on PATH (${SETUP_DOC})`, hard: true });
+  }
 
   const claude = run('claude', ['--version'], { env: runEnv });
   const need = MIN_CLAUDE.join('.');
@@ -129,7 +137,8 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
     }
   }
   if (platform !== 'darwin' && platform !== 'linux') {
-    rows.push({ name: 'platform', status: 'warn', detail: `${platform}: cross-session messaging is documented for macOS and Linux`, fix: 'run the team on macOS or Linux', hard: false });
+    rows.push({ name: 'platform', status: 'warn', detail: `${platform}: cross-session messaging is documented for macOS and Linux`,
+      fix: platform === 'win32' ? `run the team inside WSL2 (${SETUP_DOC}, Windows)` : 'run the team on macOS or Linux', hard: false });
   }
 
   const configDir = claudeConfigDir(env);
@@ -168,8 +177,261 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
         ? { name: 'project repo remote', status: 'pass', detail: remote.out, hard: false }
         : { name: 'project repo remote', status: 'warn', detail: 'no origin remote', fix: 'add a private remote (`git remote add origin <url>`) so plans are pushed and operator records travel on its delivery-operator branch (sessions need push access to publish them)', hard: false });
     }
+    if (bd.ok && fs.existsSync(path.join(root, '.beads'))) {
+      const ids = beadsIssueIds(root, runEnv);
+      rows.push(ids
+        ? { name: 'beads issues', status: 'pass', detail: `${issuesOf(ids.length)} in ${path.join(root, '.beads')}`, hard: false }
+        : { name: 'beads issues', status: 'unknown', detail: 'this machine has no readable database yet', fix: 'run start.js (it fetches the team\'s issues with `bd bootstrap`)', hard: false });
+    }
+    if (bd.ok && fs.existsSync(path.join(root, '.beads'))) rows.push(beadsSyncRow(run('bd', ['dolt', 'remote', 'list', '--json'], { cwd: root, env: runEnv })));
   }
+  // Amplifier is not a prerequisite; where it is installed it owns the machine's setup (skills/amplifier)
+  const A = require('./lib/amplifier.js');
+  rows.push(...A.checkRows(A.detect({ env: runEnv, platform, run: (c, a) => run(c, a, { env: runEnv, timeout: 60000 }) })));
   return rows;
+}
+
+const SETUP_DOC = 'docs/quickstart.md, "Setting up beads"';
+
+// The team starts itself (--launch). Each role on this machine gets its first turn headless, in its own
+// role directory, in the team's permission mode, and joins the team; the session it creates is on the
+// roster, so the watchdog (--keep-alive) can resume it whenever work is due. Before this, the operator
+// started every session by hand and, in their default mode, approved its steps: the opposite of rule 0.
+const JOIN_PROMPT = '/delivery:team join';
+function launchTeam({ projectRoot, prepared, host, permissionMode, env, dryRun, w, say }) {
+  const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
+  const here = prepared.filter((p) => p.host === host);
+  const elsewhere = prepared.filter((p) => p.host !== host).map((p) => `${p.instance} (${p.host})`);
+  say(`  launch (on host "${host}"):`);
+  if (!here.length) { say(`    nothing to start: no role of this team runs on host "${host}" (pass --host with this machine's name in hosts.json)`); return { code: 1 }; }
+  const roster = require('./lib/roster.js').readRoster(projectRoot).instances || {};
+  const at = new Date().toISOString().replace(/[:.]/g, '-');
+  for (const { instance, roleDir } of here) {
+    const known = roster[instance] && roster[instance].session_id;
+    if (known) { say(`    ${instance}: already started (session ${known}); the watchdog resumes it when work is due`); continue; }
+    const args = ['-p', JOIN_PROMPT, ...(permissionMode && permissionMode !== 'default' ? ['--permission-mode', permissionMode] : []), '--name', instance];
+    if (dryRun) { say(`    ${instance}: would start in ${roleDir}: ${bin} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`); continue; }
+    const logPath = path.join(projectRoot, '.delivery', 'watchdog', 'logs', `launch-${instance}-${at}.log`);
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    const fd = fs.openSync(logPath, 'a');
+    const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(2 * 3600e3), bin, ...args],
+      { cwd: roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: instance, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' }), detached: true, stdio: ['ignore', fd, fd] });
+    child.unref();
+    fs.closeSync(fd);
+    say(`    ${instance}: started (pid ${child.pid}), joining the team; log ${path.relative(projectRoot, logPath)}`);
+  }
+  if (elsewhere.length) say(`    not on this machine: ${elsewhere.join(', ')}; run start.js --launch on each of those hosts`);
+  if (permissionMode === 'default') say('    warning: --permission-mode default: a headless session cannot ask you, so steps your default would ask about are refused');
+  return { code: 0 };
+}
+
+// --keep-alive installs the watchdog's host job (launchd, systemd user timer or cron), which resumes a
+// role session whose work is due; without it a session that stopped stays stopped.
+function keepTeamAlive({ projectRoot, env, dryRun, w, say }) {
+  if (dryRun) { say(`  keep-alive: ${w}install the watchdog job (watchdog.js install --apply)`); return; }
+  const r = run(process.execPath, [path.join(__dirname, 'watchdog.js'), 'install', '--apply', '--project', projectRoot], { env, timeout: 60000 });
+  say(r.ok ? `  keep-alive: watchdog job installed${r.out ? `: ${r.out.split('\n').slice(-1)[0]}` : ''}` : `  keep-alive: watchdog install failed: ${(r.err || r.out).slice(0, 300)}`);
+}
+
+// Dolt names git remotes with a git+ prefix; the project repo's origin is the sync remote (beads
+// stores issue history there under refs/dolt/data), so no server and no database password exist.
+function doltUrlOf(url) {
+  if (/^git\+/.test(url)) return url;
+  if (/^(https?|ssh|file):\/\//.test(url)) return `git+${url}`;
+  const scp = /^([^@\s]+@)?([^:\s/]+):(.+)$/.exec(url);
+  if (scp) return `git+ssh://${scp[1] || ''}${scp[2]}/${scp[3]}`;
+  if (path.isAbsolute(url)) return `git+file://${url}`;
+  return null;
+}
+
+// Beads for any project, on any machine, with nothing for the customer to run by hand:
+//   no .beads              -> bd init (bd wires the project's origin as the sync remote), publish
+//   .beads, no database    -> bd bootstrap: a second machine's fresh clone carries .beads/config.yaml
+//                             but never the database, and bd init there would fork the history
+//   database, no remote    -> add the project's origin as the sync remote, publish
+//   database and remote    -> nothing
+// A failed publish is reported with its fix and does not stop the scaffold: the database works
+// locally, and the --check "beads sync" row keeps saying what is missing.
+// Commit only the named beads paths, never anything else the customer has staged.
+function commitBeadsFiles({ projectRoot, env, say, paths, message }) {
+  const existing = paths.filter((p) => fs.existsSync(path.join(projectRoot, p)));
+  if (!existing.length) return;
+  run('git', ['add', '--', ...existing], { cwd: projectRoot, env });
+  if (run('git', ['diff', '--cached', '--quiet', '--', ...existing], { cwd: projectRoot, env }).ok) return;
+  const c = run('git', ['commit', '-q', '-m', message, '--', ...existing], { cwd: projectRoot, env });
+  say(c.ok ? `  beads: committed ${existing.join(', ')} (${run('git', ['rev-parse', '--short', 'HEAD'], { cwd: projectRoot, env }).out})` : `  beads: could not commit ${existing.join(', ')}: ${(c.err || c.out).slice(0, 200)}`);
+}
+
+function setUpBeads({ projectRoot, prefix, env, dryRun, w, say, skipPublish = false }) {
+  const bd = (args, timeout = 120000) => run('bd', args, { cwd: projectRoot, env, timeout });
+  const hasBeads = fs.existsSync(path.join(projectRoot, '.beads'));
+  const hasDb = hasBeads && bd(['stats'], 30000).ok;
+  // the project repo already holds the team's issues even when this clone has no .beads yet
+  // (another machine published them before pushing its commit): fetch them, never init a second history
+  const published = !hasDb && run('git', ['ls-remote', 'origin', 'refs/dolt/data'], { cwd: projectRoot, env, timeout: 30000 }).out.trim() !== '';
+  if (!hasBeads && !published) {
+    say(`  beads: ${w}run bd init --prefix ${prefix}`);
+    if (dryRun) { say(`  beads: ${w}set the project repo's origin as the sync remote and publish the issues (bd dolt push)`); return; }
+    // --skip-agents: without it bd init also writes and commits AGENTS.md, CLAUDE.md,
+    // .claude/settings.json, .codex/ and .agents/skills/ into the customer's project repo (bd 1.1.2),
+    // over their own files; the plugin brings its own role instructions.
+    const gitignoreWasClean = run('git', ['status', '--porcelain', '--', '.gitignore'], { cwd: projectRoot, env }).out === '';
+    const b = bd(['init', '--prefix', prefix, '--non-interactive', '-q', '--skip-agents']);
+    if (!b.ok) { say(`  beads: bd init failed: ${(b.err || b.out).slice(0, 300)}`); return; }
+    commitBeadsFiles({ projectRoot, env, say, paths: gitignoreWasClean ? ['.beads', '.gitignore'] : ['.beads'], message: 'beads: initialise issue tracking (start.js, bd init)' });
+  } else if (!hasDb) {
+    say(`  beads: ${hasBeads ? '.beads is here but this machine has no database (a fresh clone)' : 'the project repo already holds the team\'s issues'}; ${w}run bd bootstrap to fetch them from the project repo`);
+    if (dryRun) return;
+    const b = bd(['bootstrap', '--yes']);
+    if (!b.ok) { say(`  beads: bd bootstrap failed: ${(b.err || b.out).slice(0, 300)}. Fix: ${SETUP_DOC}`); return; }
+    if (!bd(['stats'], 30000).ok) { say(`  beads: bd bootstrap ran but there is still no database. Fix: ${SETUP_DOC}`); return; }
+    say('  beads: database fetched from the project repo');
+    return;
+  } else {
+    say('  beads: database present');
+  }
+  const remotes = bd(['dolt', 'remote', 'list', '--json'], 30000);
+  let list = [];
+  try { list = remotes.ok ? JSON.parse(remotes.out || '[]') : []; } catch (e) { list = []; }
+  if (!list.length) {
+    const origin = run('git', ['remote', 'get-url', 'origin'], { cwd: projectRoot, env });
+    const url = origin.ok && doltUrlOf(origin.out);
+    if (!url) { say(`  beads: no sync remote, and the project repo has no origin to sync through: its issues stay on this machine. Fix: add a private remote, then run start.js again (${SETUP_DOC})`); return; }
+    say(`  beads: ${w}set the sync remote to the project repo (${url})`);
+    if (dryRun) return;
+    const a = bd(['dolt', 'remote', 'add', 'origin', url], 30000);
+    if (!a.ok) { say(`  beads: could not set the sync remote: ${(a.err || a.out).slice(0, 300)}. Fix: ${SETUP_DOC}`); return; }
+    // bd writes sync.remote into .beads/config.yaml; committed, a fresh clone knows where to bootstrap from
+    commitBeadsFiles({ projectRoot, env, say, paths: ['.beads/config.yaml'], message: 'beads: sync through the project repo (start.js)' });
+  } else if (hasDb) {
+    return;
+  }
+  if (dryRun) { say(`  beads: ${w}publish the issues to the project repo (bd dolt push)`); return; }
+  if (skipPublish) return;
+  publishBeads({ projectRoot, env, say });
+}
+
+function publishBeads({ projectRoot, env, say }) {
+  const bd = (args, timeout = 120000) => run('bd', args, { cwd: projectRoot, env, timeout });
+  const p = bd(['dolt', 'push']);
+  // A Claude Code cloud session's git proxy refuses pushes to refs outside refs/heads (measured:
+  // HTTP 403 for refs/dolt/data, while branch pushes pass), so the first publish must come from a
+  // machine with ordinary git access to the project repo.
+  const refused = !p.ok && /HTTP 403|returned error: 403/.test(`${p.err} ${p.out}`);
+  say(p.ok
+    ? '  beads: issues published to the project repo; other machines get them from a clone with `bd bootstrap` (start.js does it)'
+    : refused
+      ? `  beads: publish refused (HTTP 403): this machine's network does not allow pushing beads' refs/dolt/data (a Claude Code cloud session's proxy refuses refs outside branches). The database works here; publish once from a machine with ordinary git access by running start.js there`
+      : `  beads: publish failed: ${(p.err || p.out).slice(0, 300)}. The database works here; run \`bd dolt push\` in ${projectRoot} once the project repo accepts pushes`);
+}
+
+// ---- --import-beads: load a `bd export` file once ----
+
+// The prefix the team's issues will carry: the existing manifest's, else the one scaffold would write.
+function plannedPrefix(projectRoot, prefixFlag) {
+  const team = readJsonFile(path.join(projectRoot, TEAM_REL));
+  if (team && team.prefix) return team.prefix;
+  return slug(prefixFlag || slug(path.basename(projectRoot), 'project'), 'proj');
+}
+
+// Read and check the whole file before anything is written. Returns { ids, lines } (one entry per
+// distinct id, in file order) or { refusal }. An id is `<prefix>-<rest>`; a prefix is never rewritten.
+function readBeadsExport(file, prefix) {
+  let text;
+  try { text = fs.readFileSync(path.resolve(file), 'utf8'); } catch (err) { return { refusal: `${file} cannot be read (${err.code === 'ENOENT' ? 'no such file' : err.message})` }; }
+  const issues = new Map();
+  const wrong = [];
+  const rows = text.split(/\r?\n/);
+  for (let i = 0; i < rows.length; i++) {
+    if (!rows[i].trim()) continue;
+    let obj;
+    try { obj = JSON.parse(rows[i]); } catch (err) { return { refusal: `line ${i + 1} of ${file} is not JSON` }; }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj) || typeof obj.id !== 'string' || !obj.id) return { refusal: `line ${i + 1} of ${file} is not an issue (no "id")` };
+    if (!obj.id.startsWith(`${prefix}-`) || obj.id.length === prefix.length + 1) { wrong.push({ line: i + 1, id: obj.id }); continue; }
+    if (!issues.has(obj.id)) issues.set(obj.id, rows[i]);
+  }
+  if (wrong.length) {
+    const first = wrong[0];
+    const own = first.id.includes('-') ? first.id.slice(0, first.id.lastIndexOf('-')) : first.id;
+    return { refusal: `line ${first.line} of ${file} holds ${first.id}, whose prefix is "${own}", but this project's prefix is "${prefix}"${wrong.length > 1 ? ` (${wrong.length} lines do not match)` : ''}; ids are never rewritten` };
+  }
+  return { ids: [...issues.keys()], lines: [...issues.values()] };
+}
+
+// Every issue id in the project's database, closed ones included; null when it cannot be read.
+function beadsIssueIds(projectRoot, env) {
+  const r = run('bd', ['list', '--all', '--limit', '0', '--json'], { cwd: projectRoot, env, timeout: 60000 });
+  if (!r.ok) return null;
+  try { return JSON.parse(r.out || '[]').map((x) => x.id); } catch (err) { return null; }
+}
+
+const issuesOf = (n) => `${n} issue${n === 1 ? '' : 's'}`;
+
+function importBeads({ projectRoot, parsed, env, dryRun, say }) {
+  const have = fs.existsSync(path.join(projectRoot, '.beads')) ? beadsIssueIds(projectRoot, env) : null;
+  if (!have && !dryRun) { say(`  beads: import refused: the project has no readable beads database to load ${issuesOf(parsed.ids.length)} into`); return false; }
+  const present = new Set(have || []);
+  const lines = parsed.lines.filter((_, i) => !present.has(parsed.ids[i]));
+  const skipped = parsed.ids.length - lines.length;
+  // "imported 3 issues" on a first load; "0 new, 3 already present" when some or all were there
+  const summary = (verb) => (skipped ? `${verb === 'imported' ? '' : `${verb} `}${lines.length} new, ${skipped} already present` : `${verb} ${issuesOf(lines.length)}`);
+  if (dryRun) { say(`  beads: ${summary('would import')}`); return true; }
+  if (lines.length) {
+    const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'start-import-')), 'issues.jsonl');
+    fs.writeFileSync(tmp, `${lines.join('\n')}\n`);
+    const r = run('bd', ['import', tmp], { cwd: projectRoot, env, timeout: 300000 });
+    fs.rmSync(path.dirname(tmp), { recursive: true, force: true });
+    if (!r.ok) { say(`  beads: import failed: ${(r.err || r.out).slice(0, 300)}`); return false; }
+  }
+  say(`  beads: ${summary('imported')}`);
+  if (lines.length) {
+    const remotes = run('bd', ['dolt', 'remote', 'list', '--json'], { cwd: projectRoot, env, timeout: 30000 });
+    let list = [];
+    try { list = remotes.ok ? JSON.parse(remotes.out || '[]') : []; } catch (err) { list = []; }
+    if (list.length) publishBeads({ projectRoot, env, say });
+  }
+  return true;
+}
+
+// Smart App Control state from the registry value Windows keeps it in: 0 off, 1 on (enforcing),
+// 2 evaluation. Read with reg.exe so no PowerShell module is needed; anything unreadable is unknown.
+function smartAppControl(env) {
+  const r = run('reg', ['query', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy', '/v', 'VerifiedAndReputablePolicyState'], { env });
+  const m = r.ok && /VerifiedAndReputablePolicyState\s+REG_DWORD\s+0x([0-9a-f]+)/i.exec(r.out);
+  return m ? ({ 0: 'off', 1: 'on', 2: 'evaluation' })[parseInt(m[1], 16)] || 'unknown' : 'unknown';
+}
+
+// Why the Windows row is its own: the released bd.exe is not code-signed (1.1.2 has an empty
+// certificate table), and Smart App Control blocks unsigned programs, a local build included, with
+// no per-app exception. Telling a Windows user to "install beads" sends them into that wall.
+function windowsBdRow(bd, sac) {
+  const wsl = 'run the team inside WSL2 and install the Linux bd there (recommended: cross-session messaging is also documented only for macOS and Linux)';
+  const off = 'or turn Smart App Control off (machine-wide; it can be turned back on only on Windows 11 25H2 with the April 2026 update or later)';
+  const detail = bd.missing ? 'not found on PATH' : `\`bd version\` failed: ${bd.err.slice(0, 120)}`;
+  if (sac === 'on' || sac === 'evaluation') {
+    return { name: 'bd (beads)', status: 'fail', hard: true,
+      detail: `${detail}; Smart App Control is ${sac === 'on' ? 'on' : 'in evaluation mode'}, and it blocks unsigned programs such as bd.exe`,
+      fix: `${wsl}, ${off}. See ${SETUP_DOC}, Windows` };
+  }
+  return { name: 'bd (beads)', status: 'fail', hard: true,
+    detail: `${detail}; Smart App Control is ${sac}`,
+    fix: `${wsl}; or install bd.exe with beads' checksum-verified PowerShell installer. See ${SETUP_DOC}, Windows` };
+}
+
+// A beads database with no sync remote lives on one machine only: no other host or cloud session
+// sees its issues, and losing that disk loses them. beads syncs through the project repo's own git
+// remote (refs/dolt/data), so the fix needs no server.
+function beadsSyncRow(r) {
+  let remotes;
+  try { remotes = r.ok ? JSON.parse(r.out || '[]') : null; } catch (e) { remotes = null; }
+  if (!Array.isArray(remotes)) {
+    return { name: 'beads sync', status: 'unknown', detail: `\`bd dolt remote list --json\` could not be read${r.err ? `: ${r.err.slice(0, 120)}` : ''}`, fix: `check with \`bd dolt remote list\` (${SETUP_DOC})`, hard: false };
+  }
+  if (!remotes.length) {
+    return { name: 'beads sync', status: 'warn', detail: 'no sync remote: these issues exist on this machine only, and no other host or cloud session sees them',
+      fix: `in the project repo: \`bd dolt remote add origin <its private git URL>\`, then \`bd dolt push\` and commit .beads/config.yaml (${SETUP_DOC})`, hard: false };
+  }
+  return { name: 'beads sync', status: 'pass', detail: remotes.map((x) => `${x.name} ${x.url}`).join(', '), hard: false };
 }
 
 function formatCheck(rows) {
@@ -231,29 +493,37 @@ function startCommand(roleDir, instance, permissionMode) {
 
 function scaffold(opts) {
   const {
-    project, host: hostFlag, preset = 'minimal', models = 'balanced', productRepo, prefix: prefixFlag, runner = 'plain', permissionMode = 'default',
-    teamDir: teamDirFlag, user, dryRun = false, env = process.env, pluginRoot = PLUGIN_ROOT, realityChecker = false,
+    project, host: hostFlag, preset = 'minimal', models = 'balanced', productRepo, prefix: prefixFlag, runner = 'plain', permissionMode: modeFlag,
+    teamDir: teamDirFlag, user, dryRun = false, env = process.env, pluginRoot = PLUGIN_ROOT, realityChecker = false, launch = false, keepAlive = false, importBeads: importFile,
   } = opts;
   if (!project) throw new UsageError('--project <root> is required');
   if (!PRESETS[preset]) throw new UsageError(`--preset must be one of ${Object.keys(PRESETS).join(', ')}`);
   if (!MODEL_PRESETS[models]) throw new UsageError(`--models must be one of ${Object.keys(MODEL_PRESETS).join(', ')}`);
   if (!RUNNERS.has(runner)) throw new UsageError(`--runner must be one of ${[...RUNNERS].join(', ')}`);
-  if (!PERMISSION_MODES.includes(permissionMode)) throw new UsageError(`--permission-mode must be one of ${PERMISSION_MODES.join(', ')}`);
+  if (modeFlag !== undefined && !PERMISSION_MODES.includes(modeFlag)) throw new UsageError(`--permission-mode must be one of ${PERMISSION_MODES.join(', ')}`);
   const w = dryRun ? 'would ' : '';
   const out = [];
   const say = (s) => out.push(s);
   const projectRoot = path.resolve(project);
   const host = slug(hostFlag || os.hostname().split('.')[0], 'host');
   const gitEnv = { ...env };
+  // --import-beads is checked whole before anything is written, so a refusal changes nothing
+  let parsedImport = null;
+  if (importFile) {
+    const expected = plannedPrefix(projectRoot, prefixFlag);
+    parsedImport = readBeadsExport(importFile, expected);
+    if (parsedImport.refusal) { say(`delivery start: import refused: ${parsedImport.refusal}; nothing was imported or written`); return { code: 1, out }; }
+    if (!run('bd', ['version'], { env }).ok) { say('delivery start: import refused: bd is not on PATH; install it, then run start.js again with --import-beads'); return { code: 1, out }; }
+  }
   say(`delivery start: ${projectRoot}${dryRun ? ' (dry run: nothing is written)' : ''}`);
 
   // 1. the private project repo
   if (!fs.existsSync(projectRoot)) {
     say(`  project repo: ${w}create ${projectRoot} and run git init`);
-    if (!dryRun) { fs.mkdirSync(projectRoot, { recursive: true }); if (!run('git', ['init', '-q'], { cwd: projectRoot, env: gitEnv }).ok) { say('  project repo: git init failed'); return { code: 1, out }; } }
+    if (!dryRun) { fs.mkdirSync(projectRoot, { recursive: true }); if (!run('git', ['init', '-q', '-b', 'main'], { cwd: projectRoot, env: gitEnv }).ok) { say('  project repo: git init failed'); return { code: 1, out }; } }
   } else if (!fs.existsSync(path.join(projectRoot, '.git'))) {
     say(`  project repo: ${w}run git init in ${projectRoot}`);
-    if (!dryRun && !run('git', ['init', '-q'], { cwd: projectRoot, env: gitEnv }).ok) { say('  project repo: git init failed'); return { code: 1, out }; }
+    if (!dryRun && !run('git', ['init', '-q', '-b', 'main'], { cwd: projectRoot, env: gitEnv }).ok) { say('  project repo: git init failed'); return { code: 1, out }; }
   } else {
     say('  project repo: exists');
   }
@@ -279,7 +549,7 @@ function scaffold(opts) {
     if (st.ok && st.out) { if (dryRun) say('  manifest: would commit the uncommitted manifest files'); else wroteManifest = true; }
     say(`  manifest: keeping the existing ${TEAM_REL} and ${HOSTS_REL} (project "${team.project}", ${expandInstances(team).length} instance(s)); --preset, --models, --host, --prefix and --runner are not applied to it`);
     const unscriptable = unscriptableSurfaces(projectRoot);
-    if (unscriptable.length && !team.roles.some((r) => r.id === 'reality-checker' && !r.retired)) say(`  manifest: warning: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'are' : 'is'} not scriptable and the team has no Reality Checker: add {"id": "reality-checker", "brief": "delivery/reality-checker", "host": "<a host with desktop apps>"} to roles`);
+    if (unscriptable.length && !team.roles.some((r) => r.id === 'reality-checker' && !r.retired)) say(`  manifest: warning: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'need' : 'needs'} the Reality Checker (not scriptable, or a command line) and the team has none: add {"id": "reality-checker", "brief": "delivery/reality-checker", "host": "<a host with desktop apps>"} to roles`);
   } else {
     const project = slug(path.basename(projectRoot), 'project');
     const prefix = slug(prefixFlag || project, 'proj');
@@ -287,7 +557,7 @@ function scaffold(opts) {
     const roleIds = presetRoles(preset, { realityChecker, unscriptable });
     ({ team, hosts } = buildManifest({ project, prefix, host, preset, runner, models, roleIds }));
     say(`  manifest: ${w}write ${TEAM_REL} and ${HOSTS_REL}: preset ${preset}, models ${models}, host "${host}", prefix "${prefix}", roles ${roleIds.join(', ')}`);
-    if (unscriptable.length && !PRESETS[preset].includes('reality-checker')) say(`  manifest: the Reality Checker is added: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'are' : 'is'} not scriptable, so its checks run on the real surface`);
+    if (unscriptable.length && !PRESETS[preset].includes('reality-checker')) say(`  manifest: the Reality Checker is added: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'are' : 'is'} not scriptable or a command line, so its checks run on the real surface`);
     if (!dryRun) {
       fs.mkdirSync(path.dirname(teamFile), { recursive: true });
       fs.writeFileSync(teamFile, formatManifestJson(team));
@@ -322,6 +592,12 @@ function scaffold(opts) {
   } else {
     say('  product repo: none given; a builder prepared in this run gets no product worktree (pass --product-repo <path|url>)');
   }
+  // the command the reviewer runs on each pull request (review-run.js): any language, said up front so
+  // a repository the detection cannot read is fixed once here, not found at the first review
+  if (productCheckout && fs.existsSync(path.join(productCheckout, '.git'))) {
+    const t = require('./lib/test-command.js').testCommandOf(productCheckout, team);
+    say(t.problem ? `  product tests: not known: ${t.problem}.\n    ${require('./lib/test-command.js').FIX}` : `  product tests: \`${t.command}\` (${t.source}); reviewers run it on each pull request`);
+  }
   // the GitHub repository the review records and the merge gate read (R-32): from the checkout's origin
   const github = productCheckout && fs.existsSync(path.join(productCheckout, '.git')) ? githubOf(productCheckout) : (productRepo && isUrl(productRepo) ? require('./lib/gh-pr.js').repoOf(productRepo) : null);
   if (github) {
@@ -331,6 +607,22 @@ function scaffold(opts) {
       const raw = JSON.parse(fs.readFileSync(teamFile, 'utf8'));
       raw.product_github = github;
       team.product_github = github;
+      fs.writeFileSync(teamFile, formatManifestJson(raw));
+      wroteManifest = true;
+    }
+  }
+
+  // the team's permission mode, recorded in team.json: the watchdog resumes each session in it. A
+  // resumed session does not keep the mode it was started in (`claude --resume -p` came back in
+  // default mode and stopped at approval prompts no one could answer), so every wake passes it.
+  // (a recorded value is valid here: validateManifest refused the run otherwise)
+  const permissionMode = modeFlag || team.permission_mode || 'auto';
+  if (team.permission_mode !== permissionMode) {
+    say(`  permission mode: ${permissionMode}; ${w}record it as permission_mode in ${TEAM_REL} (the watchdog wakes each session in it)`);
+    if (!dryRun) {
+      const raw = JSON.parse(fs.readFileSync(teamFile, 'utf8'));
+      raw.permission_mode = permissionMode;
+      team.permission_mode = permissionMode;
       fs.writeFileSync(teamFile, formatManifestJson(raw));
       wroteManifest = true;
     }
@@ -351,16 +643,14 @@ function scaffold(opts) {
   }
 
   // 5. beads, before prepare-role so it writes BEADS_DIR into each role's settings
-  if (fs.existsSync(path.join(projectRoot, '.beads'))) {
-    say('  beads: .beads exists; bd init skipped');
-  } else if (!run('bd', ['version'], { env }).ok) {
-    say(`  beads: skipped: bd is not on PATH. Install it, run \`bd init --prefix ${team.prefix}\` in ${projectRoot}, then run start.js again: it re-prepares the roles so each gets BEADS_DIR`);
+  if (!run('bd', ['version'], { env }).ok) {
+    say(`  beads: skipped: bd is not on PATH. Install it (${SETUP_DOC}), then run start.js again: it sets up beads and re-prepares the roles so each gets BEADS_DIR`);
   } else {
-    say(`  beads: ${w}run bd init --prefix ${team.prefix}`);
-    if (!dryRun) {
-      const b = run('bd', ['init', '--prefix', team.prefix, '--non-interactive', '-q'], { cwd: projectRoot, env, timeout: 120000 });
-      if (!b.ok) say(`  beads: bd init failed: ${(b.err || b.out).slice(0, 300)}`);
-    }
+    setUpBeads({ projectRoot, prefix: team.prefix, env, dryRun, w, say, skipPublish: !!parsedImport });
+    if (parsedImport && !importBeads({ projectRoot, parsed: parsedImport, env, dryRun, say })) return { code: 1, out };
+  }
+  if (productCheckout && fs.existsSync(path.join(productCheckout, '.beads'))) {
+    say(`  beads: the product repo has its own beads workspace (${path.join(productCheckout, '.beads')}); it is not imported and nothing waits on it. The team's work items live in ${projectRoot}. To bring that backlog in, run \`bd export -o <file>\` there and pass the file with --import-beads <file>`);
   }
 
   // 6. one prepared directory per instance; an already prepared one is left as it is
@@ -390,13 +680,27 @@ function scaffold(opts) {
         return { code: 1, out };
       }
     }
-    prepared.push({ instance, roleDir });
+    prepared.push({ instance, roleDir, host: role.host });
   }
 
+  if (launch) {
+    const launched = launchTeam({ projectRoot, prepared, host, permissionMode, env, dryRun, w, say });
+    if (keepAlive) keepTeamAlive({ projectRoot, env, dryRun, w, say });
+    if (launched.code) return { code: launched.code, out };
+    say('');
+    say('The team is starting: each role on this machine runs its first turn in its own role directory and joins the team (/delivery:team join); /delivery:team shows when each is live.');
+    say(`  Talk to the Chief of Staff: cd ${path.join(teamDir, 'chief-of-staff')} && claude --continue${permissionMode && permissionMode !== 'default' ? ` --permission-mode ${permissionMode}` : ''}`);
+    return { code: 0, out, teamDir, prepared, projectRoot };
+  }
   say('');
   say(`${dryRun ? 'After a real run, start' : 'Start'} each session in its own terminal, the Chief of Staff first:`);
   for (const { instance, roleDir } of prepared) say(`  ${startCommand(roleDir, instance, permissionMode)}`);
-  if (permissionMode === 'default') say('  (no --permission-mode: each session uses your own Claude Code default; pass --permission-mode to choose one)');
+  // auto by default: a team whose sessions ask the operator to approve each step puts the operator
+  // to work as the team's approver, which is what the team exists to remove (team rule 0). The lane
+  // hook and the native deny rules still bound what each role can do in any mode.
+  say(permissionMode === 'default'
+    ? '  (--permission-mode default: each session uses your own Claude Code default and may ask you to approve its steps)'
+    : `  (--permission-mode ${permissionMode}: the sessions run without asking you to approve each step; the lane hook still limits what each role can do. Pass --permission-mode default to be asked instead)`);
   say('');
   say('Then:');
   say('  1. In every session, run /delivery:team join.');
@@ -407,7 +711,7 @@ function scaffold(opts) {
 
 // ---- CLI ----
 
-const BOOLEAN = new Set(['check', 'dry-run', 'help', 'reality-checker']);
+const BOOLEAN = new Set(['check', 'dry-run', 'help', 'reality-checker', 'launch', 'keep-alive']);
 function parseArgs(argv) {
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
@@ -423,9 +727,9 @@ function parseArgs(argv) {
 
 const USAGE = `usage: start.js --check [--project <root>]
        start.js --project <root> [--host <name>] [--preset minimal|full] [--models quality|balanced|economy] [--reality-checker] [--product-repo <path|url>] [--prefix <bd prefix>]
-                [--runner superpowers|attractor|plain] [--permission-mode <mode>] [--team-dir <dir>] [--user <name>] [--dry-run]`;
+                [--runner superpowers|attractor|plain] [--permission-mode <mode>] [--team-dir <dir>] [--user <name>] [--launch [--keep-alive]] [--import-beads <file>] [--dry-run]`;
 
-const KNOWN = new Set(['check', 'dry-run', 'help', 'reality-checker', 'project', 'host', 'preset', 'models', 'product-repo', 'prefix', 'runner', 'permission-mode', 'team-dir', 'user']);
+const KNOWN = new Set(['check', 'dry-run', 'help', 'reality-checker', 'launch', 'keep-alive', 'project', 'host', 'preset', 'models', 'product-repo', 'prefix', 'runner', 'permission-mode', 'team-dir', 'user', 'import-beads']);
 
 function main(argv, { env = process.env, write = (s) => process.stdout.write(s) } = {}) {
   let flags;
@@ -445,7 +749,7 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
   try {
     const res = scaffold({
       project: flags.project, host: flags.host, preset: flags.preset, models: flags.models, productRepo: flags['product-repo'], prefix: flags.prefix,
-      runner: flags.runner, permissionMode: flags['permission-mode'], teamDir: flags['team-dir'], user: flags.user, dryRun: !!flags['dry-run'], env, realityChecker: !!flags['reality-checker'],
+      runner: flags.runner, permissionMode: flags['permission-mode'], teamDir: flags['team-dir'], user: flags.user, dryRun: !!flags['dry-run'], env, realityChecker: !!flags['reality-checker'], launch: !!flags.launch, keepAlive: !!flags['keep-alive'], importBeads: flags['import-beads'],
     });
     write(`${res.out.join('\n')}\n`);
     return res.code;
@@ -458,4 +762,4 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };
+module.exports = { doltUrlOf, githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };

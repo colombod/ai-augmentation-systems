@@ -393,12 +393,49 @@ function ruleMatches(rule, t, ctx) {
       if (valueFlags.includes(args[k])) k++;
     }
   }
-  if (rule.scope) {
-    if (!ctx.roleDir) return false;
-    const base = path.join(realish(ctx.roleDir), String(rule.scope));
-    if (!effectiveDirs(t, ctxDirs(ctx)).every((d) => d !== null && under(realish(d), base))) return false;
+  if (rule.merge_endpoint) {
+    const c = ghApiCall(t);
+    if (!c || c.bad || !MERGE_ENDPOINT.test(c.endpoint || '') || c.method !== 'PUT') return false;
   }
+  if (rule.pr_open_endpoint && !prOpenCall(ghApiCall(t))) return false;
+  if (rule.flags_only) {
+    const allowed = rule.flags_only;
+    if (argv.slice(subLen).some((x) => x.startsWith('-') && !allowed.includes(x.split('=')[0]))) return false;
+  }
+  if (rule.dest_in_scope) return destInScope(rule, argv.slice(subLen), t, ctx);
+  if (rule.paths_in_scope && !destInScope({ ...rule, dest_in_scope: 'all', allow_none: true }, argv.slice(subLen), t, ctx)) return false;
+  if (rule.scope && !scopeHolds(rule, t, ctx)) return false;
   return true;
+}
+
+function scopeBase(rule, ctx) { return ctx.roleDir ? path.join(realish(ctx.roleDir), String(rule.scope)) : null; }
+
+function scopeHolds(rule, t, ctx) {
+  const base = scopeBase(rule, ctx);
+  return !!base && effectiveDirs(t, ctxDirs(ctx)).every((d) => d !== null && under(realish(d), base));
+}
+
+// The paths a command creates (mkdir's operands, git clone's target) must be inside the rule's scope,
+// from every directory the segment may run in. `git clone <repo>` with no target clones into the
+// working directory, so that directory must be in scope instead.
+function destInScope(rule, args, t, ctx) {
+  const base = scopeBase(rule, ctx);
+  if (!base) return false;
+  const valueFlags = rule.value_flags || [];
+  const pos = [];
+  for (let k = 0; k < args.length; k++) {
+    if (args[k] === '--') { pos.push(...args.slice(k + 1)); break; }
+    if (args[k].startsWith('-')) { if (valueFlags.includes(args[k])) k++; continue; }
+    pos.push(args[k]);
+  }
+  const targets = rule.dest_in_scope === 'last' ? (pos.length >= 2 ? [pos[pos.length - 1]] : pos.length === 1 ? ['.'] : []) : pos;
+  if (!targets.length) return !!rule.allow_none && scopeHolds(rule, t, ctx);
+  if (targets.some((x) => UNSAFE_DIR.test(x))) return false;
+  // every directory the segment may run in, after git's own -C
+  return effectiveDirs(t, ctxDirs(ctx)).every((d) => {
+    if (d === null) return false;
+    return targets.every((x) => under(realish(path.resolve(d, x)), base));
+  });
 }
 
 // ctx: { roleDir, pluginRoot, cwd } or { roleDir, pluginRoot, dirs: [dir|null, ...] }.
@@ -968,6 +1005,68 @@ function defaultBranches(dir) {
   return out;
 }
 
+// One `gh api` call's endpoint, method and fields, or null when the segment is not `gh api`. Value
+// options are consumed; --input (a body the lane cannot read) and an unknown option make it `bad`.
+const GH_API_VALUE = ['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '-R', '--repo', '--hostname', '-q', '--jq', '-t', '--template', '--cache'];
+const GH_API_FLAG = ['--silent', '-i', '--include', '--verbose', '--paginate', '--slurp'];
+function ghApiCall(t) {
+  const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+  if (path.basename(words[0] || '') !== 'gh' || words[1] !== 'api') return null;
+  const out = { endpoint: null, method: null, fields: {}, bad: null, positionals: [] };
+  for (let i = 2; i < words.length; i++) {
+    const x = words[i];
+    // a redirection that writes nowhere (2>&1, >&2, 2>/dev/null) is the shell's, not gh's: the merge
+    // the gate prints is often run as `... 2>&1 | tail`, and reading 2>&1 as a second endpoint refused it
+    if (/^\d*>&(?:\d+|-)$/.test(x) || /^\d*>>?\/dev\/null$/.test(x)) continue;
+    if (/^\d*>>?$/.test(x) && words[i + 1] === '/dev/null') { i++; continue; }
+    const [f, inline] = x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
+    if (GH_API_VALUE.includes(f)) {
+      const val = inline !== undefined ? inline : words[++i];
+      if (val === undefined) { out.bad = `${f} has no value`; continue; }
+      if (f === '-X' || f === '--method') out.method = String(val).toUpperCase();
+      // the merge is checked against github.com's product repository; another host is not that one
+      if (f === '--hostname' && String(val).toLowerCase() !== 'github.com') out.bad = `${f} ${val}`;
+      if (['-f', '--raw-field', '-F', '--field'].includes(f)) {
+        const k = val.indexOf('=');
+        if (k <= 0) out.bad = `${f} ${val}`;
+        else if (Object.prototype.hasOwnProperty.call(out.fields, val.slice(0, k))) out.bad = `${val.slice(0, k)} given twice`;
+        else out.fields[val.slice(0, k)] = val.slice(k + 1);
+      }
+      continue;
+    }
+    if (GH_API_FLAG.includes(f)) continue;
+    if (x.startsWith('-')) { out.bad = f; continue; }
+    out.positionals.push(decodeEscapes(x));
+    if (out.endpoint === null) out.endpoint = decodeEscapes(x); else out.bad = x;
+  }
+  // gh sends a POST when fields are given without -X
+  if (!out.method) out.method = Object.keys(out.fields).length ? 'POST' : 'GET';
+  return out;
+}
+// Opening a pull request through REST where `gh pr create` (GraphQL) is refused: POST repos/<o>/<r>/pulls
+// with inline title, body, head, base (and draft) fields only. A field read from a file (@path) cannot be checked.
+const PR_OPEN_ENDPOINT = /^\/?repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls$/;
+const PR_OPEN_FIELDS = ['title', 'body', 'head', 'base', 'draft', 'maintainer_can_modify'];
+function prOpenCall(c) {
+  if (!c || c.bad || c.method !== 'POST' || c.positionals.length !== 1 || !PR_OPEN_ENDPOINT.test(c.endpoint || '')) return false;
+  const keys = Object.keys(c.fields);
+  return ['title', 'head', 'base'].every((k) => keys.includes(k))
+    && keys.every((k) => PR_OPEN_FIELDS.includes(k) && !String(c.fields[k]).startsWith('@'));
+}
+const MERGE_ENDPOINT = /^\/?repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pulls\/(\d+)\/merge$/;
+
+// percent-escapes decoded until stable (m%2565rge is m%65rge is merge), as a server may
+function decodeEscapes(x) {
+  let s = String(x);
+  for (let k = 0; k < 4; k++) {
+    let d;
+    try { d = decodeURIComponent(s); } catch (err) { d = s.replace(/%([0-9a-f]{2})/gi, (m, h) => String.fromCharCode(parseInt(h, 16))); }
+    if (d === s) break;
+    s = d;
+  }
+  return s;
+}
+
 function mergeAttempt(command, cwd) {
   const text = String(command == null ? '' : command);
   return splitCommand(text).some((seg) => {
@@ -975,14 +1074,38 @@ function mergeAttempt(command, cwd) {
     const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
     const first = path.basename(words[0] || '');
     if (first === 'gh') {
+      // -R is gh's global option only before the subcommand; after it, a value option may take "-R"
+      // as its value (gh api -t -R <endpoint>), so it is left for the subcommand's own parsing
       const rest = [];
-      for (let i = 1; i < words.length; i++) {
-        if (words[i] === '-R' || words[i] === '--repo') { i++; continue; }
-        if (/^--repo=/.test(words[i])) continue;
-        rest.push(words[i]);
+      let i = 1;
+      for (; i < words.length && words[i].startsWith('-'); i++) {
+        if (words[i] === '-R' || words[i] === '--repo') i++;
       }
-      if (rest[0] === 'pr' && rest[1] === 'merge') return true;
-      if (rest[0] === 'api' && rest.some((a) => /\/merges?(?:$|[/?])/.test(a))) return true;
+      rest.push(...words.slice(i));
+      if (rest[0] === 'pr') {
+        // the subcommand: the first word after pr that is not -R and its value
+        let k = 1;
+        while (k < rest.length && (rest[k] === '-R' || rest[k] === '--repo' || /^--repo=/.test(rest[k]))) k += rest[k].startsWith('--repo=') ? 1 : 2;
+        if (rest[k] === 'merge') return true;
+      }
+      if (rest[0] === 'api') {
+        // judged on the endpoint only (decoded: GitHub reads pulls/478/m%65rge as the merge), so reads
+        // and the cloud's other ccr routes (review threads, ready for review) stay open. Auto-merge (the
+        // ccr route, GraphQL's mutations) merges later, outside the gate, like gh pr merge --auto.
+        const c = ghApiCall(['gh', ...rest]);
+        // every positional word: an option the parser does not know may take a value, and the endpoint
+        // is then the second word, not the first
+        // as the server reads the path: no query or fragment, repeated slashes collapsed, no trailing
+        // slash or dot segment
+        const eps = ((c && c.positionals) || []).map((x) => x.split(/[?#]/)[0].replace(/\/{2,}/g, '/').replace(/(?:\/\.)+$/, '').replace(/\/+$/, ''));
+        if (eps.some((ep) => /\/merges?(?:$|\/)/i.test(ep) || /\/pulls\/[^/]+\/(?:ccr\/)?auto[_-]?merge$/i.test(ep))) return true;
+        if (eps.some((ep) => /(?:^|\/)graphql$/i.test(ep))) {
+          const q = Object.values(c.fields).join(' ');
+          // a query from a file or stdin cannot be read, so it cannot be cleared
+          if (rest.some((a) => /^--input/.test(a)) || Object.values(c.fields).some((v) => String(v).startsWith('@'))) return true;
+          if (/mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest/i.test(q)) return true;
+        }
+      }
       return false;
     }
     if (first !== 'git') return false;
@@ -1024,6 +1147,18 @@ function foreignTeamPush(command, instance) {
   return null;
 }
 
+// The reviewer's one runner: review-run.js, which runs the product's own test command in a clone.
+function reviewRunSegment(text, groups, ctx) {
+  const rule = ((groups && groups['review-run']) || []).find((r) => r && r.arg_prefix && /review-run\.js$/.test(r.arg_prefix));
+  if (!rule) return false;
+  try { return ruleMatches(rule, tokens(text), ctx); } catch (err) { return false; }
+}
+
+// A segment that runs one of the plugin's own scripts (they write the team's records).
+function mentionsPluginScript(text, root) {
+  return /\$\{?CLAUDE_PLUGIN_ROOT\}?/.test(text) || (!!root && text.includes(root));
+}
+
 function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, cwd, hostHeadless, hostName, desktopHosts, projectRoot }) {
   const name = String(toolName || '');
   const pol = policy || { roleId: '', writes: [], bash: [] };
@@ -1045,6 +1180,23 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     return { allow: true };
   }
   const opDirs = operatorDirs({ projectRoot, roleDir });
+  if (FILE_TOOLS.includes(name) && pol.review) {
+    // only its scratch clones, where it breaks a covered line to see the test fail (mutation check)
+    const scratch = roleDir ? path.join(realish(roleDir), 'review') : null;
+    const base = cwd || process.cwd();
+    // never a clone's .git (its config and hooks act on review-run's git) nor a role marker or team
+    // manifest (a fake one would give a call from inside review/ another lane); compared case-folded,
+    // for case-insensitive file systems (macOS, Windows), and 8.3 short names (GIT~1) refused outright
+    const ok = !!scratch && filePathsOf(name, toolInput).every((fp) => {
+      const real = realish(path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`);
+      // Windows drops trailing dots and spaces and reads `name::$DATA` as name; HFS+ ignores
+      // zero-width characters (git's own is_ntfs_dotgit and is_hfs_dotgit cover the same spellings)
+      const parts = path.relative(scratch, real).split(/[\\/]/).map((x) => x.toLowerCase()
+        .replace(/[\u00ad\u034f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u206a-\u206f\ufeff]/g, '').split(':')[0].replace(/[. ]+$/, ''));
+      return under(real, scratch) && !parts.some((x) => x === '.git' || x === '.delivery' || x === '.delivery-role.json' || /~\d/.test(x));
+    });
+    return ok ? { allow: true } : { allow: false, reason: `Role ${pol.roleId} edits files only under review/: ${REVIEWER_REASON}.` };
+  }
   if (FILE_TOOLS.includes(name)) {
     const base = cwd || process.cwd();
     for (const fp of filePathsOf(name, toolInput)) {
@@ -1098,6 +1250,9 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       const { text, op } = segs[n];
       if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
       const names = classifySegment(text, groups, { roleDir, pluginRoot, dirs: live });
+      if (pol.review && !names.includes('read') && !reviewRunSegment(text, groups, { roleDir, pluginRoot, dirs: live }) && mentionsPluginScript(text, pluginRootOf({ pluginRoot }))) {
+        return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`: ${REVIEWER_REASON}.\nReport pass or changes to the role that dispatched you; it records the review.` };
+      }
       if (!names.some((x) => bash.includes(x))) {
         const construct = expansionConstruct(text);
         // a refused construct is the whole story; otherwise the allowed groups say what the lane runs
@@ -1122,6 +1277,16 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   return { allow: true };
 }
 
+// The subagent type Claude Code reports for agents/pr-reviewer.md (plugin agents are namespaced).
+// Only the plugin's own agent: a same-named agent from elsewhere does not get this lane.
+const REVIEWER_AGENT = 'delivery:pr-reviewer';
+const REVIEWER_REASON = 'a reviewer reads, and checks out and tests a head only through `node ${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js checkout <pr> <head>` and `... test <pr>` (the project\'s own test command, any language); it edits files only in its clone and never commits, pushes, merges or records';
+// Read everything; run anything only inside review/ of the role directory; no file edits; no writes
+// through git, gh, bd or the plugin's record scripts (only their read subcommands, in the read groups).
+function reviewerPolicy(base) {
+  return { roleId: `${base.roleId || 'role'} reviewer`, writes: [], bash: ['read', 'git-read', 'gh-read', 'bd-read', 'review-run'], mcp: [], reach: false, review: true };
+}
+
 function laneDecisionForHook(input, pluginRoot) {
   const { findRoleMarker, validMarker } = require('./role-context.js');
   const found = findRoleMarker(input.cwd);
@@ -1129,10 +1294,14 @@ function laneDecisionForHook(input, pluginRoot) {
   const ctx = validMarker(found);
   if (!ctx) return null;
   const { marker, hosts, role, roleDir } = ctx;
-  const policy = loadPolicy({ pluginRoot, projectRoot: marker.project_root, briefRef: role.brief });
+  let policy = loadPolicy({ pluginRoot, projectRoot: marker.project_root, briefRef: role.brief });
   // the manifest's opt-in: local reach only, and never for a manager even when team.json was edited by hand
   const granted = require('../../scripts/lib/manifest.js').reachOf(role);
   if (granted && !policy.reach) policy.reach = granted;
+  // The plugin's reviewer subagent, dispatched by the Delivery Manager, gets the review lane: that lane
+  // runs no product code, so a reviewer inheriting it could not run the tests it must quote. Only the
+  // Delivery Manager's: any other role dispatching it keeps its own lane (a builder's already runs code).
+  if (input.agent_type === REVIEWER_AGENT && policy.roleId === MERGER) policy = reviewerPolicy(policy);
   const hostMap = (hosts && hosts.hosts) || {};
   const host = hostMap[role.host] || {};
   const desktopHosts = Object.entries(hostMap).filter(([, h]) => h && h.desktop_apps).map(([n]) => n);
@@ -1162,4 +1331,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

@@ -106,6 +106,50 @@ function pruneWakeLogs(root) {
   } catch (err) { /* no logs yet */ }
 }
 
+// The mode a wake runs in: team.json permission_mode (start.js records it); for a team recorded before
+// that field existed, the mode the session itself started in (the first permissionMode its transcript
+// records), so a wake never runs with more than the owner chose; auto, start.js's default, when neither
+// says. An unreadable team.json or a value claude would refuse is no wake at all, with the reason:
+// claude exits on an invalid mode, and the wake would be logged and its messages marked delivered.
+const MODES = ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan'];
+function teamOf(root) {
+  try { return { team: require('./lib/manifest.js').loadManifest(root).team }; } catch (err) { return { unreadable: String(err.message || err).split('\n')[0].slice(0, 120) }; }
+}
+function startedMode(file) {
+  if (!file) return null;
+  try {
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(256 * 1024);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    const m = /"permissionMode":"([A-Za-z]+)"/.exec(buf.slice(0, n).toString('utf8'));
+    return m && MODES.includes(m[1]) ? m[1] : null;
+  } catch (err) { return null; }
+}
+// team.json wake_fresh_above_tokens: the context above which a wake starts a fresh session (0: never)
+function freshAboveOf(t) {
+  const v = t && t.team ? t.team.wake_fresh_above_tokens : undefined;
+  return Number.isInteger(v) && v >= 0 ? v : WD.FRESH_ABOVE;
+}
+// an owner's limit the watchdog cannot use is said, not silently replaced ("0" as text is not 0)
+function freshAboveProblem(t) {
+  const v = t && t.team ? t.team.wake_fresh_above_tokens : undefined;
+  return v === undefined || (Number.isInteger(v) && v >= 0) ? null : `team.json wake_fresh_above_tokens ${JSON.stringify(v).slice(0, 40)} is not a whole number of tokens; using ${WD.FRESH_ABOVE}`;
+}
+
+function wakeMode(t, s) {
+  if (t.unreadable) return { skip: `team.json cannot be read (${t.unreadable}), so the team's permission mode is not known; alarm only` };
+  const m = t.team.permission_mode;
+  if (m !== undefined) return MODES.includes(m) ? { mode: m } : { skip: `team.json permission_mode "${String(m).slice(0, 40)}" is not a Claude Code mode (${MODES.join(', ')}); alarm only` };
+  return { mode: startedMode(s && s.transcript) || 'auto' };
+}
+
+// A headless claude -p stops the background tasks its turn started 10 minutes after the turn ends
+// ("Background tasks still running 10m after the last turn ... stopping them"): the Delivery Manager's
+// reviewer subagent was killed mid-review and no verdict was recorded. A wake waits for them; the
+// wake's own limit (wake-run.js) still bounds the whole run.
+const HEADLESS_WAIT = { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
+
 function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
@@ -114,9 +158,13 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const open = p.wakes.length ? (live !== undefined ? live : liveSessions(bin, env)) : null;
   const rows = WD.logRows(root);
+  const manifest = p.wakes.length ? teamOf(root) : null;
+  const limitProblem = freshAboveProblem(manifest);
+  if (limitProblem) lines.push(`Warning: ${limitProblem}.`);
   for (const w of p.wakes) {
     const s = res.sessions.find((x) => x.instance === w.target) || null;
-    const c = WD.wakeCommand(s, w.prompt, open);
+    const wm = wakeMode(manifest, s);
+    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode, { freshAbove: freshAboveOf(manifest) });
     if (c.skip) {
       lines.push(`Not woken: ${w.target}: ${c.skip}. ${w.lines[0]}`);
       // one skip row an hour per session keeps the log short while a session is busy
@@ -131,8 +179,10 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     // owner's open session, never in its place
     // each wake has its own id: a fork records its session under it (lib/roster.js sessionLocator)
     const wakeId = crypto.randomBytes(6).toString('hex');
-    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: { ...env, DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId }, logPath });
+    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, ...HEADLESS_WAIT }), logPath });
     WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
+    // the messages it carries are handed over: the next run does not wake for them again
+    for (const d of w.delivers || []) require('./lib/inbox.js').markDelivered(root, d.to, d.upTo);
     lines.push(`Woke ${w.target} (${c.mode}${s.session ? ` of ${s.session}` : ''}): ${w.lines.join(' ')}`);
   }
   for (const h of p.held) lines.push(`Alarm only: ${h.target}: ${h.reason}. ${h.lines[0]}`);

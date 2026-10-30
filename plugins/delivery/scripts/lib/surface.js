@@ -2,7 +2,8 @@
 // uses the product, as a tuple a check can compare. .delivery/initiatives/<slug>/surface.json:
 //   { "owner_record": "dec-...", "surfaces": [ { "id": "S1", "host": "...", "app": "...", "mode": "...",
 //     "install_artifact": "...", "scriptable": false, "size_budgets": { "tool_list_max": 20 },
-//     "test_account": "<name, never a password>", "version_on_screen": "<where the version shows>" } ] }
+//     "test_account": "<name, never a password>", "version_on_screen": "<where the version shows>",
+//     "command_line": true } ] }
 // Evidence from another surface, or from the same id with a different tuple, never counts.
 const fs = require('fs');
 const path = require('path');
@@ -31,6 +32,9 @@ function validateSurface(doc) {
     // optional, for the reality-check script (R-33): the test account's name (never a password) and
     // where the surface shows the installed version
     for (const k of ['test_account', 'version_on_screen']) if (s[k] !== undefined && (typeof s[k] !== 'string' || !s[k].trim())) problems.push(`${at}: "${k}" must be a non-empty string when given`);
+    // optional: a command-line product (CLI, library, service driven by commands); its criteria are
+    // verified by the Reality Checker running the script's command at the deployed sha (verify-run.js)
+    if (s.command_line !== undefined && typeof s.command_line !== 'boolean') problems.push(`${at}: "command_line" must be true or false when given`);
     const b = s.size_budgets;
     if (b === undefined || (b && typeof b === 'object' && !Array.isArray(b) && !Object.keys(b).length)) warnings.push(`${at}: no size_budgets; state the host's limits as numbers (tool_list_max, answer_max_chars, page weight)`);
     else if (!b || typeof b !== 'object' || Array.isArray(b) || Object.values(b).some((v) => typeof v !== 'number' || !Number.isFinite(v) || v < 0)) problems.push(`${at}: "size_budgets" must map names to non-negative numbers`);
@@ -53,4 +57,12 @@ const tupleOf = (s) => Object.fromEntries(TUPLE.map((k) => [k, s ? s[k] : undefi
 const sameTuple = (a, b) => TUPLE.every((k) => String((a || {})[k] || '') === String((b || {})[k] || ''));
 const describe = (s) => (s ? `${s.id} (${s.app}, ${s.mode}, on ${s.host})` : 'none');
 
-module.exports = { surfaceFile, validateSurface, loadSurface, tupleOf, sameTuple, describe, TUPLE };
+// The declared surfaces whose stories only the Reality Checker can verify: ones no test reaches
+// (scriptable: false) and command-line ones (command_line: true). ["<initiative>/<id>", ...]
+function checkerSurfaces(root) {
+  let names = [];
+  try { names = fs.readdirSync(path.join(root, '.delivery', 'initiatives')); } catch (err) { return []; }
+  return names.flatMap((n) => loadSurface(root, n).surfaces.filter((x) => x.scriptable === false || x.command_line === true).map((x) => `${n}/${x.id}`));
+}
+
+module.exports = { checkerSurfaces, surfaceFile, validateSurface, loadSurface, tupleOf, sameTuple, describe, TUPLE };

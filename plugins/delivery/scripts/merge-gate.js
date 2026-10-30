@@ -29,6 +29,10 @@ function sizeThreshold(root) {
 }
 const botsCountOf = (team) => Boolean(team && team.review && team.review.bots_count === true);
 const mergeCmd = (pr, repo, head) => `\`gh pr merge ${pr} -R ${repo} --match-head-commit ${head || '<full head sha>'} --squash\``;
+// The same merge through the REST endpoint, for hosts where gh reaches GitHub only through REST
+// (gh pr merge is GraphQL); GitHub refuses it when `sha` is not the pull request's head.
+const restMergeCmd = (pr, repo, head) => `\`gh api -X PUT repos/${repo}/pulls/${pr}/merge -f merge_method=squash -f sha=${head || '<full head sha>'}\``;
+const mergeCmdFor = (view) => (view && view.via === 'rest' ? restMergeCmd : mergeCmd);
 
 // { ok, why, fix, head, review, warnings, view }
 function gate(root, pr, { head: named, gh, team, repo } = {}) {
@@ -53,7 +57,7 @@ function check(root, pr, opts) {
   if (!g.ok) return { code: 1, out: [`merge-gate: refused: ${g.why}.`, g.fix, ...warn].join('\n'), gate: g };
   const via = g.view.unavailable ? ` (gh: ${g.view.unavailable}; head and CI from the record)` : '';
   return { code: 0, out: [`merge-gate: PR ${pr} passes at ${R.short(g.head)}: review ${g.review.id} by ${g.review.reviewer}, CI green${via}.`,
-    `Merge: ${mergeCmd(pr, opts.repo, R.FULL_SHA.test(g.head) ? g.head : null)}, then ${R.cmd('merge-gate.js', `merged ${pr}`)}`, ...warn].join('\n'), gate: g };
+    `Merge: ${mergeCmdFor(g.view)(pr, opts.repo, R.FULL_SHA.test(g.head) ? g.head : null)}, then ${R.cmd('merge-gate.js', `merged ${pr}`)}`, ...warn].join('\n'), gate: g };
 }
 
 // gh's options that take a value; anything else starting with - is a flag
@@ -103,6 +107,8 @@ const hasFlag = (flags, long, letter) => flags.some((f) => f === long || (letter
 // The lane's check for the Delivery Manager's gh: null to allow, or the two-line reason
 function mergeCommandProblem(command, { root, team, gh, roleDir } = {}) {
   const product = productRepoOf(team, { roleDir });
+  const rest = restMergeProblem(command, { root, team, gh, product });
+  if (rest) return rest;
   for (const c of ghPrCalls(command)) {
     if (c.sub === 'review' && hasFlag(c.flags, '--approve', 'a')) return `approvals are review rows, not GitHub approvals: the gate reads the review record.\nRecord the reviewer's outcome: ${R.cmd('review.js', `record ${c.pr || '<pr>'} --head <sha> --result pass --by <subagent id> --summary '<one line>'`)}`;
     if (c.sub !== 'merge') continue;
@@ -119,6 +125,27 @@ function mergeCommandProblem(command, { root, team, gh, roleDir } = {}) {
     const full = R.FULL_SHA.test(g.head || '') ? g.head : null;
     if (!c.head) return `merge of PR ${c.pr} refused: name the reviewed head, so GitHub merges exactly that commit.\nRun: ${mergeCmd(c.pr, product, full)}`;
     if (!R.FULL_SHA.test(c.head)) return `merge of PR ${c.pr} refused: name the full head sha (40 characters), so GitHub merges exactly that commit.\nRun: ${mergeCmd(c.pr, product, full)}`;
+  }
+  return null;
+}
+
+// `gh api` calls on a pull request's merge endpoint get the same gate as `gh pr merge`.
+function restMergeProblem(command, { root, team, gh, product }) {
+  const L = require('../hooks/scripts/lane.js');
+  for (const seg of L.splitCommand(command)) {
+    const c = L.ghApiCall(L.tokens(seg));
+    if (!c || !/\/merges?(?:$|[/?])/.test(c.endpoint || '')) continue;
+    const m = L.MERGE_ENDPOINT.exec(c.endpoint || '');
+    const sha = c.fields.sha || null;
+    const pr = m ? m[2] : '<pr>';
+    if (!m || c.method !== 'PUT' || c.bad) return `only a pull request's merge endpoint, as PUT with its fields inline, can be checked (got \`${seg.trim().slice(0, 80)}\`).\nRun: ${R.cmd('merge-gate.js', `check ${pr}`)} and the merge it prints`;
+    if (!product) return `merge of PR ${pr} refused: ${UNKNOWN(pr).replace('\n', '.\n')}`;
+    if (!sameRepo(m[1], product)) return `merge of PR ${pr} refused: ${m[1]} is not the product repository (${product}), and its reviews are recorded only for that one.\nRun: ${restMergeCmd(pr, product)}`;
+    let g;
+    try { g = gate(root, pr, { head: sha, gh, team, repo: product }); } catch (err) { return `the merge gate could not run (${String(err.message).split('\n')[0]}), so the merge is refused.\nRun: ${R.cmd('merge-gate.js', `check ${pr}`)}`; }
+    if (!g.ok) return `merge of PR ${pr} refused: ${g.why}.\n${g.fix}`;
+    const full = R.FULL_SHA.test(g.head || '') ? g.head : null;
+    if (!sha || !R.FULL_SHA.test(sha)) return `merge of PR ${pr} refused: name the reviewed head in full (\`-f sha=<40 characters>\`), so GitHub merges exactly that commit.\nRun: ${restMergeCmd(pr, product, full)}`;
   }
   return null;
 }
@@ -181,6 +208,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     const v = R.evaluate(pr, rows, { head, ci: { state: 'green', names: [] }, mergeable: null, botsCount: botsCountOf(who.team), repo });
     row = R.append(who.root, pr, { type: 'merged', repo, head, beads: req ? req.beads || [] : [], gated: v.ok, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
     out.push(`${row.id}: PR ${pr} merged at ${R.short(head)}`);
+    const unpublished = R.publish(who.root, pr, who.instance, 'merged', { env });
+    if (unpublished) out.push(unpublished);
     if (!v.ok) {
       const w = require('./lib/warnings.js').record(who.root, { kind: 'merge-ungated', rule: 'R-32', bead: (req && req.beads && req.beads[0]) || null, detail: `PR ${pr} merged at ${R.short(head)} without a passing review of that head: ${v.why}`, raisedBy: who.instance, instance: who.instance });
       out.push(`warning ${w ? w.id : 'unrecorded'}: merged without a passing review of ${R.short(head)} (${v.why})`);
