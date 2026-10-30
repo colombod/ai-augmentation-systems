@@ -103,9 +103,11 @@ michaeljabbour's Taste and Sizzle skills (MIT; see `${CLAUDE_PLUGIN_ROOT}/NOTICE
   sentence. If it needs "and also", there are two products: say so, and propose which one this is.
 - *Gates first.* Correctness, safety, accessibility, feasibility: each pass, fail, unknown or not
   applicable, with a reason. A fail is critical when it would make the product wrong, unsafe,
-  unusable by its named users, or unbuildable. A critical fail is not the team's veto: it goes to
-  the owner as a decision, with its evidence and a recommendation; a critical
-  unknown is an open question.
+  unusable by its named users, or unbuildable. A critical fail is not the team's veto, and not
+  something to build past: write it under Open questions as **blocking** the PRD, with its evidence
+  and a recommendation, and put it to the owner. The PRD does not start on it until the fail is
+  resolved or the owner's decision to proceed is recorded and cited. A critical unknown is an open
+  question.
 
 **5. Ask what you cannot determine.** Collect open questions, drop the ones the codebase
 answers, put the rest (with step 4b's lens questions) to the user in one batch. Record what stays unanswered. Never invent

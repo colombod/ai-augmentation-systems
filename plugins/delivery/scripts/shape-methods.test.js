@@ -19,7 +19,7 @@ test('brief: the lens in at most three questions; only the owner\'s words bind; 
   assert.match(s, /Only an item in the owner's own\s+words binds; one the team assumed is labelled \*\*assumed\*\*, is a proposal/);
   assert.match(s, /\*Proposition\.\* The one thing[\s\S]*in one\s+sentence/);
   assert.match(s, /\*Gates first\.\* Correctness, safety, accessibility, feasibility/);
-  assert.match(s, /A critical fail is not the team's veto: it goes to\s+the owner as a decision/);
+  assert.match(s, /A critical fail is not the team's veto, and not\s+something to build past/);
   const t = read('templates/brief.md');
   assert.match(t, /## Owner lens and what must survive/);
   assert.match(t, /An item quoted from elsewhere binds only once the owner\s+confirms it applies here/);
@@ -102,4 +102,24 @@ test('NOTICE: every ported method names its source; the source and its copyright
   }
   assert.match(n, /its "cut" adapted\s+here into proposed non-goals the owner decides/);
   for (const f of ['skills/brief/SKILL.md', 'skills/prd/SKILL.md', 'skills/roadmap/SKILL.md', 'templates/storyboard.md']) assert.match(read(f), /michaeljabbour/, f);
+});
+
+// From GitHub Copilot's review of #92 (e28b758): three holes in the gates.
+test('Copilot #92: a re-stage at the roadmap reopens the storyboard and re-applies the gate before roadmap.md', () => {
+  const r = read('skills/roadmap/SKILL.md');
+  assert.match(r, /If what they chose changes the MVP's `FR-n` list, the journey the storyboard's cards tell or the\s+proposition, the storyboard is reopened/);
+  assert.match(r, /Then apply the\s+storyboard gate above again, with its exceptions[\s\S]*before writing `roadmap\.md`: an approval of the old MVP never carries the new one\./);
+});
+
+test('Copilot #92: a critical gate fail is a blocking question the PRD holds on until resolved or the owner decides', () => {
+  const b = read('skills/brief/SKILL.md');
+  assert.match(b, /write it under Open questions as \*\*blocking\*\* the PRD/);
+  assert.match(b, /The PRD does not start on it until the fail is\s+resolved or the owner's decision to proceed is recorded and cited\./);
+});
+
+test('Copilot #92: the storyboard holds the roadmap and what follows it only, under the roadmap gate\'s exceptions', () => {
+  const p = read('skills/prd/SKILL.md');
+  assert.doesNotMatch(p, /nothing downstream\s+starts/);
+  assert.match(p, /Until they approve it, the\s+roadmap and the work that follows it \(stories, sprints\) wait, as `\/delivery:roadmap`'s storyboard\s+gate and its exceptions say[\s\S]*design\s+and architecture do not wait for it\./);
+  assert.match(p, /the roadmap waits for it unless one of `\/delivery:roadmap`'s exceptions applies/);
 });

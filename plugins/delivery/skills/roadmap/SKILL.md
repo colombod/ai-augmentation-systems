@@ -72,6 +72,12 @@ Look specifically for **inversions**: a requirement sitting in the MVP whose cos
 
 Do not silently re-stage. Prioritisation is the Product Owner's call — present the inversions and let them decide, then record what they chose.
 
+If what they chose changes the MVP's `FR-n` list, the journey the storyboard's cards tell or the
+proposition, the storyboard is reopened: clear its approval, update its cards, and put it to the
+owner with every open proposal in the same message (`/delivery:prd` step 6.7). Then apply the
+storyboard gate above again, with its exceptions (the owner's waiver, planned before the gate,
+already planned), before writing `roadmap.md`: an approval of the old MVP never carries the new one.
+
 **3. QA Strategist places the verification.** Delegate to `delivery:qa-strategist` to map risk-based coverage onto the phases, so testing is continuous rather than a final phase.
 
 **4. Critic checks the plan holds.** Delegate to `delivery:feature-critic` (read-only) specifically to check: do parallel tracks secretly share a person or an unbuilt component? Does the sequence match the architecture's dependencies? Is integration deferred to the end? Fold blocking findings in.

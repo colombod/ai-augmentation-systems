@@ -147,8 +147,10 @@ Write to `.delivery/initiatives/<initiative>/prioritization.md` using `${CLAUDE_
 Write `.delivery/initiatives/<initiative>/storyboard.md` from `${CLAUDE_PLUGIN_ROOT}/templates/storyboard.md`:
 the MVP's primary journey as one card per step (what the persona sees, does, and believes after,
 with its `FR-n`), the proposition, and two or three real choices with a recommended answer each.
-Show it to the owner (in a team, through the Chief of Staff's briefing) and nothing downstream
-starts until they approve it. Put every open shape proposal in the same message, each with a
+Show it to the owner (in a team, through the Chief of Staff's briefing). Until they approve it, the
+roadmap and the work that follows it (stories, sprints) wait, as `/delivery:roadmap`'s storyboard
+gate and its exceptions say (the owner's waiver, planned before the gate, already planned); design
+and architecture do not wait for it. Put every open shape proposal in the same message, each with a
 recommended answer, so one reply can settle them all: the lens questions still open, the assumed
 what-must-survive items, the step 5b non-goals and the requirements proposed for not doing. The approval is their message **quoted word for word** in the
 storyboard's approval block; with no message to quote, it is not approved. Approval is never
@@ -191,4 +193,4 @@ Where scores rest on `assumed`-grade personas, mark them. A prioritisation built
 
 Report exit criteria status honestly, including any criterion you could not make falsifiable. Then report the stages, and lead with the MVP's persona coverage — that is the claim everything else rests on. Flag any persona served by no stage at all.
 
-Say whether the storyboard is approved; if not, the roadmap waits for it. Recommend `/delivery:challenge .delivery/initiatives/<initiative>/prd.md` (and `prioritization.md`) before design — the adversarial pass is cheapest here. Then `/delivery:design` if the product has a UI worth a design system, and `/delivery:architecture` to design the MVP stage.
+Say whether the storyboard is approved; if not, the roadmap waits for it unless one of `/delivery:roadmap`'s exceptions applies (the owner's waiver, planned before the gate, already planned), and design and architecture can go ahead. Recommend `/delivery:challenge .delivery/initiatives/<initiative>/prd.md` (and `prioritization.md`) before design — the adversarial pass is cheapest here. Then `/delivery:design` if the product has a UI worth a design system, and `/delivery:architecture` to design the MVP stage.
