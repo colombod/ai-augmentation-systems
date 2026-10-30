@@ -179,3 +179,93 @@ test('retire: files only the feature reaches are deletable; shared ones name the
   assert.match(none.out, /no feature "no-such"/);
   assert.equal(run(['retire', '--repo', fx.dir]).code, 2);
 });
+
+// Found running the map on the Vault (2026-10-30): each case below is one of its wrong answers
+test('Vault: a doc reached from elsewhere ends its chain; a feature\'s own doc still counts', () => {
+  const fx = fixture({
+    'p/.claude-plugin/plugin.json': '{"name":"p"}',
+    'p/skills/a/SKILL.md': 'See [the notes](../../docs/notes.md).\n',
+    'p/skills/b/SKILL.md': 'Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/b.js`.\n',
+    'p/docs/notes.md': 'The build uses `p/scripts/b.js`.\n',
+    'p/scripts/b.js': '',
+  });
+  const r = run(['impact', '--repo', fx.dir, '--json', 'p/scripts/b.js']).json();
+  assert.deepEqual(r.reached.map((f) => f.id), ['p:b'], 'a: SKILL.md -> notes.md -> b.js is not a dependency');
+  assert.deepEqual(run(['impact', '--repo', fx.dir, '--json', 'p/docs/notes.md']).json().reached.map((f) => f.id), ['p:a']);
+});
+
+test('Vault: a product\'s own entry points are features: web routes, MCP tools, functions, workflows, console scripts', () => {
+  const fx = fixture({
+    'vercel.json': '{"functions": {"api/index.py": {"maxDuration": 60}}}',
+    'api/index.py': 'from app.main import app\n',
+    'app/__init__.py': '',
+    'app/main.py': 'from app import oauth\n@app.get("/health")\ndef health(): pass\n@router.post("/decks/{id}/restore")\ndef restore(): pass\n',
+    'app/oauth.py': 'def refresh(): pass\n',
+    'app/mcp.py': 'TOOLS = [\n    Tool("save_deck", "Saves a deck"),\n    Tool("restore_deck", "Restores a deck"),\n]\n',
+    'web/server.js': "app.get('/consent', (req, res) => res.send('ok'));\n",
+    '.github/workflows/tests.yml': 'name: Tests\non: push\njobs:\n  t:\n    steps:\n      - run: python scripts/check.py\n',
+    'scripts/check.py': '',
+    'pyproject.toml': '[project]\nname = "app"\n\n[project.scripts]\nvault-sync = "app.main:sync"\n',
+    'tests/test_x.py': 'TOOLS = [Tool("fake_tool")]\n',
+    'tests/fakes.py': 'TOOLS = [Tool("twin_tool")]\n',
+    'web/app.test.js': "server.tool('spec_tool', {});\n",
+  });
+  const f = Object.fromEntries(run(['features', '--repo', fx.dir, '--json']).json().features.map((x) => [x.id, x]));
+  assert.deepEqual(f['http:app/main'].entries, ['GET /health', 'POST /decks/{id}/restore']);
+  assert.deepEqual(f['http:web/server'].entries, ['GET /consent']);
+  assert.deepEqual(f['tools:app/mcp'].entries, ['save_deck', 'restore_deck']);
+  for (const t of ['tools:tests/test_x', 'tools:tests/fakes', 'tools:web/app.test']) assert.equal(f[t], undefined, `${t}: a test file's tools are not the product's`);
+  assert.deepEqual(f['function:api/index'].anchors, ['api/index.py']);
+  assert.deepEqual(f['ci:tests'].entries, ['Tests']);
+  assert.deepEqual(f['script:vault-sync'].anchors, ['app/main.py']);
+  // the sign-in change reaches the function and the routes that serve it
+  const r = run(['impact', '--repo', fx.dir, '--json', 'app/oauth.py']).json();
+  assert.deepEqual(r.reached.map((x) => x.id).sort(), ['function:api/index', 'http:app/main', 'script:vault-sync']);
+  assert.deepEqual(run(['impact', '--repo', fx.dir, '--json', 'scripts/check.py']).json().reached.map((x) => x.id), ['ci:tests'], 'a workflow runs its script');
+});
+
+test('Vault: two plugins with one name keep their features apart', () => {
+  const fx = fixture({
+    'plugins/v/.claude-plugin/plugin.json': '{"name":"the-vault"}',
+    'plugins/v/skills/s/SKILL.md': 'x\n',
+    'plugins/v-openai/.claude-plugin/plugin.json': '{"name":"the-vault"}',
+    'plugins/v-openai/skills/s/SKILL.md': 'x\n',
+  });
+  const ids = run(['features', '--repo', fx.dir, '--json']).json().features.map((x) => x.id).sort();
+  assert.deepEqual(ids, ['the-vault@plugins/v-openai:s', 'the-vault@plugins/v:s']);
+});
+
+test('Vault: a file the change adds is mapped at the head, not reported as missing', () => {
+  const fx = fixture(FILES);
+  fs.writeFileSync(path.join(fx.dir, 'plug/scripts/receipt.js'), '');
+  fs.writeFileSync(path.join(fx.dir, 'plug/scripts/pay.js'), `const t = ${REQ}('./lib/tax');\n${REQ}('./receipt');\nmodule.exports = t;\n`);
+  fx.g('add', '-A'); fx.g('commit', '-qm', 'receipts');
+  const r = run(['impact', '--repo', fx.dir, '--json', '--diff', fx.sha, 'HEAD']).json();
+  assert.deepEqual(r.added, ['plug/scripts/receipt.js']);
+  assert.deepEqual(r.unknown, []);
+  assert.ok(r.reached.find((f) => f.id === 'shop:checkout').via.some((v) => v.path === 'plug/scripts/receipt.js'));
+});
+
+test('Vault: a source file named in another file\'s comment is not a dependency; a script it runs is', () => {
+  const fx = fixture({
+    'pkg/package.json': '{"name":"t","bin":{"t":"bin/t.js"}}',
+    'pkg/bin/t.js': "// see pkg/tests/t.test.js for the cases\nspawn('node pkg/lib/worker.js')\n",
+    'pkg/tests/t.test.js': '',
+    'pkg/lib/worker.js': '',
+  });
+  assert.deepEqual(run(['impact', '--repo', fx.dir, '--json', 'pkg/tests/t.test.js']).json().reached, []);
+  assert.deepEqual(run(['impact', '--repo', fx.dir, '--json', 'pkg/lib/worker.js']).json().reached.map((f) => f.id), ['t:bin:t']);
+});
+
+test('a large answer reaches a pipe whole, and a reader that stops early is not an error', () => {
+  const many = { features: Array.from({ length: 1500 }, (_, i) => ({ id: `feature-${i}`, name: `A feature with a long name ${i}`, anchors: ['a.js'] })) };
+  const fx = fixture({ 'a.js': '', '.delivery/features.json': JSON.stringify(many) });
+  const MAP = path.join(__dirname, 'map.js');
+  const { spawnSync } = require('child_process');
+  // a reader slower than the writer fills the pipe (64 KB), as jq did: what is still queued must not be lost
+  const out = spawnSync('sh', ['-c', `node '${MAP}' features --repo '${fx.dir}' --json | (sleep 1; cat)`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  assert.ok(out.stdout.length > 65536);
+  assert.equal(JSON.parse(out.stdout).features.length, 1500);
+  const early = spawnSync('sh', ['-c', `node '${MAP}' features --repo '${fx.dir}' | head -1`], { encoding: 'utf8' });
+  assert.doesNotMatch(early.stderr, /EPIPE/);
+});

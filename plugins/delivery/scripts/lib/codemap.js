@@ -59,7 +59,7 @@ const LANG = {
   php: ['.php'],
   sh: ['.sh', '.bash', '.zsh'],
   jvm: ['.java', '.kt', '.kts', '.scala'],
-  doc: ['.md', '.mdx', '.markdown', '.txt', '.rst'],
+  doc: ['.md', '.mdx', '.markdown', '.txt', '.rst', '.html', '.htm'],
   conf: ['.json', '.yaml', '.yml', '.toml', '.ini', '.cfg'],
 };
 const langOf = (p) => {
@@ -70,6 +70,7 @@ const langOf = (p) => {
   return null;
 };
 
+const CODE_EXT = /\.(?:js|mjs|cjs|jsx|ts|tsx|py|go|rs|rb|php|java|kt|scala|c|cc|cpp|h|hpp|sh|bash)$/i;
 const lineOf = (text, index) => text.slice(0, index).split('\n').length;
 
 // raw references in a file: [{ spec, line, kind }]
@@ -121,7 +122,17 @@ function references(p, text, lang) {
   if (lang === 'doc' || lang === 'conf' || lang === 'sh' || lang === 'js' || lang === 'py') {
     const re = /(?:\$\{CLAUDE_PLUGIN_ROOT\}\/)?(?:\.{1,2}\/)?[A-Za-z0-9_@-][A-Za-z0-9_.@/-]*\/[A-Za-z0-9_.@-]+\.[A-Za-z0-9]+|\]\(([^)\s#]+)/g;
     let m;
-    while ((m = re.exec(text))) refs.push({ spec: m[1] || m[0], line: lineOf(text, m.index), kind: 'mention' });
+    const code = lang === 'js' || lang === 'py';
+    while ((m = re.exec(text))) {
+      const spec = m[1] || m[0];
+      // In code, a path in a string or comment is a dependency only when it runs a script (`node x.js`,
+      // `python x.py`), uses the plugin root, or names a non-code file the code serves or reads (a
+      // template, a page, a config). Naming another source file in a comment is not a dependency: on the
+      // Vault it made every route reach tests/test_workflows.py.
+      if (code && !spec.includes('${CLAUDE_PLUGIN_ROOT}') && CODE_EXT.test(spec)
+        && !/\b(?:node|python3?|bash|sh|deno|bun|ruby|php)\s+["']?$/.test(text.slice(Math.max(0, m.index - 12), m.index))) continue;
+      refs.push({ spec, line: lineOf(text, m.index), kind: 'mention' });
+    }
   }
   return refs;
 }
@@ -237,6 +248,10 @@ function reach(map, starts) {
   while (queue.length) {
     const f = queue.shift();
     const h = seen.get(f).hops;
+    // A document reached from somewhere else is the end of its chain: docs name files to explain them,
+    // so walking on from a doc reached through another made everything reach everything (the Vault:
+    // SKILL.md -> docs -> a build script -> docs -> tests). A feature's own doc (a start) still counts.
+    if (h > 0 && langOf(f) === 'doc') continue;
     for (const e of map.edges.get(f) || []) {
       if (seen.has(e.to)) continue;
       seen.set(e.to, { hops: h + 1, via: f, line: e.line, kind: e.kind });
