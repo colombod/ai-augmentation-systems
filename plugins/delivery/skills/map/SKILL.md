@@ -18,7 +18,11 @@ view before hitting the code". Every answer comes from `scripts/map.js`, read fr
 ## What a feature is
 
 - **Derived**: a Claude Code plugin's skills, agents, commands, role briefs and each hook event (anchored
-  at the scripts it runs); a package's command-line entry points (`package.json` `bin`).
+  at the scripts it runs); a package's command-line entry points (`package.json` `bin`, pyproject
+  `[project.scripts]`); and a product's own entry points: web routes (`@app.get(...)`, `@router.post(...)`,
+  `app.get('/x', ...)`, one feature per file), MCP tools (`Tool("name", ...)`, `server.tool("name", ...)`),
+  serverless functions (`vercel.json` and its `api/` files) and CI workflows (`.github/workflows/*.yml`).
+  Test files never count as the product's entry points.
 - **Declared**: what the team names in `.delivery/features.json`, for any project in any language:
   `{"features": [{"id": "checkout", "name": "Checkout", "anchors": ["src/checkout/**", "api/pay.py"]}]}`.
   An anchor is the file a user's path starts from. One that matches nothing is listed as dangling.
@@ -45,7 +49,10 @@ register, because naming what the product ships is a product decision.
 
 - Each reached feature has its shortest chain, from the feature's file to the changed file, one
   `file:line -> file (rule)` step per hop. Fewer hops is closer to what the user touches.
-- **Hub**: a file most features reach. A change there reaches most of the product: say so to the
+- **Reached only through a hub**: features that reach the change only through a shared file a fifth or
+  more of the features reach (a config, a core library) are counted apart, with the hub named; `--all`
+  lists them. Past two hops, features are counted, not listed, unless `--all`.
+- **Hub**: a changed file many features reach. A change there reaches most of the product: say so to the
   Delivery Manager, and size and test it as a change to all of them.
 - **Unreached**: a changed file no feature reaches. It is dead code, a feature nobody declared, or a
   reference no rule reads. Find out which before calling the change safe.
