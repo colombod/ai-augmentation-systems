@@ -70,6 +70,9 @@ plugin, and every session it starts, follows them without being reminded.
 6. **Machines set up machines.** Credentials and services are wired by whatever set the machine up;
    where Amplifier is installed, lean on it first. The owner holds no passwords and is never asked for
    one (doctrine 5).
+7. **Pull requests open ready, never as drafts.** A pull request is opened for review and merged
+   once CI is green and its review is done. Why: drafts only add a step and leave work looking
+   unfinished on the owner's list.
 
 ## Conventions
 
