@@ -97,7 +97,7 @@ function readJsonFile(file) {
 // ---- prerequisites ----
 
 // Each row: { name, status: 'pass' | 'fail' | 'warn' | 'unknown', detail, fix, hard }.
-function checkPrerequisites({ env = process.env, project, platform = process.platform, nodeVersion = process.versions.node } = {}) {
+function checkPrerequisites({ env = process.env, project, platform = process.platform, nodeVersion = process.versions.node, has } = {}) {
   const rows = [];
   const runEnv = { ...env };
   const nodeMajor = Number(String(nodeVersion).split('.')[0]);
@@ -185,6 +185,7 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
     }
     if (bd.ok && fs.existsSync(path.join(root, '.beads'))) rows.push(beadsSyncRow(run('bd', ['dolt', 'remote', 'list', '--json'], { cwd: root, env: runEnv })));
   }
+  rows.push(keepAliveRow({ project, platform, has: has || ((cmd) => run('sh', ['-c', `command -v ${cmd}`], { env: runEnv }).ok) }));
   // Amplifier is not a prerequisite; where it is installed it owns the machine's setup (skills/amplifier)
   const A = require('./lib/amplifier.js');
   rows.push(...A.checkRows(A.detect({ env: runEnv, platform, run: (c, a) => run(c, a, { env: runEnv, timeout: 60000 }) })));
@@ -192,6 +193,20 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
 }
 
 const SETUP_DOC = 'docs/quickstart.md, "Setting up beads"';
+
+// Whether a stopped role can be woken with nobody keeping a loop alive (dlv-4oj): the scheduler the
+// watchdog's host job would use, and with --project whether that job is installed. A host with none
+// (Claude Code's cloud container) is said plainly, with the way out; not a hard prerequisite.
+function keepAliveRow({ project, platform, has }) {
+  const W = require('./watchdog.js');
+  const kind = W.schedulerOf({ platform, has });
+  if (!kind) return { name: 'keep-alive', status: 'warn', detail: W.NO_SCHEDULER.replace(/ Run the team on .*$/, ''), fix: 'run the team on an always-on host (one with systemd, launchd or cron), or run `watchdog.js run --project <root>` yourself when work is due', hard: false };
+  if (!project) return { name: 'keep-alive', status: 'pass', detail: `${kind} can run the watchdog's host job on this host`, hard: false };
+  const job = require('./lib/watchdog.js').installedJob(path.resolve(project));
+  return job
+    ? { name: 'keep-alive', status: 'pass', detail: `the watchdog's ${job.kind} job is installed${job.every_s ? ` (every ${job.every_s / 60} min)` : ''}; the team resumes after a restart`, hard: false }
+    : { name: 'keep-alive', status: 'warn', detail: `${kind} is here, but no watchdog job is installed for this project: after a restart, or a turn that ends with work handed on, nobody wakes the team`, fix: 'start.js --launch --keep-alive, or `watchdog.js install --apply --project <root>`', hard: false };
+}
 
 // The team starts itself (--launch). Each role on this machine gets its first turn headless, in its own
 // role directory, in the team's permission mode, and joins the team; the session it creates is on the

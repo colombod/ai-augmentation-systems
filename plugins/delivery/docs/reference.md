@@ -1116,6 +1116,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   A host with neither systemd nor crontab (Claude Code's cloud container) is refused with the reason:
   the watchdog cannot run on its own there, so a stopped role is woken only while someone keeps a loop
   alive; run the team on an always-on host, or run `watchdog.js run` yourself when work is due.
+  `start.js --check` says the same before anything is set up: its `keep-alive` row names the scheduler
+  the job would use or that there is none, and with `--project` whether the job is installed for it.
   Each scheduler keeps the installing shell's `CLAUDE_CONFIG_DIR`, and the shim restores it before it
   looks up the plugin or wakes anyone. Paths with spaces are quoted for each scheduler.
   `.delivery/watchdog/installed.json` records the install; the plan and the brief promise a restart only

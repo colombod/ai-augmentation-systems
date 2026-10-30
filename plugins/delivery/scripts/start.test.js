@@ -757,3 +757,33 @@ test('import: the product repo\'s own beads message names the flag', () => {
   const r = start(['--project', root, '--host', 'laptop', '--product-repo', product]);
   assert.match(r.out, /not imported and nothing waits on it.*--import-beads <file>/);
 });
+
+// dlv-4oj: --check says whether a stopped role can be woken with nobody keeping a loop alive
+const keepAlive = (o) => checkPrerequisites({ env: { PATH: `${bin()}${path.delimiter}/bin`, HOME: os.tmpdir(), CLAUDE_CONFIG_DIR: claudeConfig(), BD_FAKE_STORE: path.join(mk('start-bd-'), 's.json') }, platform: 'linux', ...o })
+  .find((r) => r.name === 'keep-alive');
+
+test('--check keep-alive: a host with no scheduler is said plainly with the way out, and is not a hard failure', () => {
+  const r = keepAlive({ has: () => false });
+  assert.equal(r.status, 'warn');
+  assert.equal(r.hard, false);
+  assert.match(r.detail, /^this host has no scheduler \(no systemctl, no crontab\), so the watchdog cannot run on its own here/);
+  assert.match(r.fix, /always-on host/);
+  assert.match(keepAlive({ has: (c) => c === 'crontab' }).detail, /^cron can run/);
+  assert.match(keepAlive({ has: () => false, platform: 'darwin' }).detail, /^launchd can run/);
+});
+
+test('--check keep-alive: with --project, the installed watchdog job passes and a missing one warns with the fix', () => {
+  const root = productRepo();
+  const sys = (c) => c === 'systemctl';
+  const missing = keepAlive({ has: sys, project: root });
+  assert.equal(missing.status, 'warn');
+  assert.match(missing.detail, /^systemd is here, but no watchdog job is installed for this project/);
+  assert.match(missing.fix, /--keep-alive/);
+  const timer = path.join(mk('start-timer-'), 'delivery-watchdog.timer');
+  fs.writeFileSync(timer, '');
+  fs.mkdirSync(path.join(root, '.delivery', 'watchdog'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.delivery', 'watchdog', 'installed.json'), JSON.stringify({ kind: 'systemd', file: timer, every_s: 900 }));
+  const installed = keepAlive({ has: sys, project: root });
+  assert.equal(installed.status, 'pass');
+  assert.match(installed.detail, /the watchdog's systemd job is installed \(every 15 min\); the team resumes after a restart/);
+});

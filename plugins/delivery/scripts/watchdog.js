@@ -355,10 +355,20 @@ const whichOf = (has) => has || ((cmd) => { try { require('child_process').execF
 // cannot run the job: said plainly, with the way out, instead of a crontab error (dlv-4oj)
 const NO_SCHEDULER = 'this host has no scheduler (no systemctl, no crontab), so the watchdog cannot run on its own here: a stopped role is woken only while someone keeps a loop alive. Run the team on an always-on host (one with systemd, launchd or cron), or run `watchdog.js run --project <root>` yourself when work is due.';
 
+// the scheduler the host job would use here: launchd, systemd or cron, or null when there is none;
+// start.js --check reports the same answer the install acts on
+function schedulerOf({ platform = process.platform, has } = {}) {
+  const which = whichOf(has);
+  if (platform === 'darwin') return 'launchd';
+  if (which('systemctl')) return 'systemd';
+  return which('crontab') ? 'cron' : null;
+}
+
 function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has } = {}) {
   const which = whichOf(has);
-  const cron = platform !== 'darwin' && !which('systemctl');
-  if (cron && !which('crontab')) return { code: 1, out: `watchdog.js: ${NO_SCHEDULER}` };
+  const kind = schedulerOf({ platform, has: which });
+  if (!kind) return { code: 1, out: `watchdog.js: ${NO_SCHEDULER}` };
+  const cron = kind === 'cron';
   const e = everySeconds(o.every, { cron });
   if (e.error) return { code: 2, out: `watchdog.js: ${e.error}\n${USAGE}` };
   const run = runner(exec);
@@ -461,4 +471,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, checkLines, jobFiles, everySeconds, roleContext };
+module.exports = { main, checkLines, jobFiles, everySeconds, roleContext, schedulerOf, NO_SCHEDULER };
