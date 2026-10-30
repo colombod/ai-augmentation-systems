@@ -133,4 +133,24 @@ function impact(map, feats, paths) {
   };
 }
 
-module.exports = { featuresOf, impact, canonicalPath, REGISTER, globRe };
+// What retiring a feature would free, from the map: the files only it reaches (deletable with it) and
+// the files other features also reach (retire the surface, keep the code), each with those features.
+// From MJ's Market Fit: exclusive anchors are deletable, shared ones mean keep the code. The map shows
+// reach, never use: whether anyone still uses the feature needs evidence from the product's own logs
+// (Worth Using: no logs means instrument first, never retire), and deleting is the owner's decision.
+function retirement(map, feats, id) {
+  const f = feats.find((x) => x.id === id);
+  if (!f) return { error: `no feature "${id}" at ${map.sha}`, known: feats.map((x) => x.id) };
+  const mine = C.reach(map, f.anchors);
+  const others = feats.filter((x) => x !== f && x.anchors.length).map((x) => ({ id: x.id, reached: C.reach(map, x.anchors) }));
+  const exclusive = [];
+  const shared = [];
+  for (const file of [...mine.keys()].sort()) {
+    const by = others.filter((o) => o.reached.has(file)).map((o) => o.id);
+    if (by.length) shared.push({ path: file, features: by });
+    else exclusive.push(file);
+  }
+  return { sha: map.sha, id: f.id, kind: f.kind, source: f.source, anchors: f.anchors, exclusive, shared };
+}
+
+module.exports = { featuresOf, impact, retirement, canonicalPath, REGISTER, globRe };

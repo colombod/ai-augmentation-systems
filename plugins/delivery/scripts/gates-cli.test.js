@@ -57,6 +57,29 @@ test('ready.js --story checks a story file before it has a bead; an undeclared s
   assert.match(r.out, /block D2 surface-unknown/);
 });
 
+// the feature map at the ready gate: what the story's files reach, as information only
+test('ready.js --story prints the story\'s reach from the feature map; where it cannot, it says so and the verdict is unchanged', async () => {
+  const story = `${STORY}\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n| \`p/scripts/run.js\` | modify |\n`;
+  const root = makeProject({ story });
+  const file = path.join(root, '.delivery', 'stories', 'vault-0n9-3.md');
+  const before = await ready.main(['--story', file, '--initiative', 'vault', '--project', root], { cwd: root, env });
+  assert.match(before.out, /\nReach: reach-not-computed \(/, 'not a git repository: said, not hidden');
+  const { execFileSync } = require('child_process');
+  fs.mkdirSync(path.join(root, 'p', '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'p', 'skills', 'go'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'p', 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'p', '.claude-plugin', 'plugin.json'), '{"name":"p"}');
+  fs.writeFileSync(path.join(root, 'p', 'skills', 'go', 'SKILL.md'), 'Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/run.js`.\n');
+  fs.writeFileSync(path.join(root, 'p', 'scripts', 'run.js'), '');
+  const g = (...x) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...x], { cwd: root, stdio: 'ignore' });
+  g('init', '-q'); g('add', '-A'); g('commit', '-qm', 'x');
+  const after = await ready.main(['--story', file, '--initiative', 'vault', '--project', root], { cwd: root, env });
+  assert.equal(after.code, before.code, 'reach never changes the verdict');
+  assert.match(after.out, /\nReach at [0-9a-f]{12}: p:go \(1 hop\)/);
+  const json = JSON.parse((await ready.main(['--story', file, '--initiative', 'vault', '--project', root, '--json'], { cwd: root, env })).out);
+  assert.deepEqual(json.reach.features, [{ id: 'p:go', hops: 1 }]);
+});
+
 test('evidence.js, 10-11 05:40: the author, a builder, a spike researcher and a session with no role cannot write a row', () => {
   const { root, run, add } = setup();
   const argv = ['add', ID, '--criterion', '1', '--result', 'pass', '--surface', 'S1', '--sha', 'd478aa11'];

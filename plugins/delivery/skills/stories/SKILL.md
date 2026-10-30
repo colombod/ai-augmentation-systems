@@ -91,7 +91,7 @@ Each story carries: the owner's ask (quoted, with its `dec-` record id when ther
 
 **3. Verify the file paths exist.** The Delivery Manager cites paths; you check them against the repo. A story pointing at a file that does not exist sends the implementer looking for something imaginary.
 
-**3a. Blast radius, from the feature's side.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js impact --story <file>` on each story and put what it prints under a `## Blast radius` heading in the story: the features the change reaches, the chain and file:line for each, any hub it touches, and its blind spots. A story whose reach crosses features it does not name is split, or names them in its acceptance criteria; one that touches a hub says so to the Delivery Manager before it is ready. The owner asked for exactly this: what a change reaches, from the feature's point of view, before code.
+**3a. Blast radius, from the feature's side.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js impact --story <file>` on each story and put what it prints under a `## Blast radius` heading in the story: the features the change reaches, the chain and file:line for each, any hub it touches, and its blind spots. `ready.js --story` prints the same reach in one line, as information that never blocks. A story whose reach crosses features it does not name is split, or names them in its acceptance criteria; one that touches a hub says so to the Delivery Manager before it is ready. The owner asked for exactly this: what a change reaches, from the feature's point of view, before code.
 
 **4. QA Strategist sets the test approach** per story — the level, the negative and boundary cases, and how it is verified.
 

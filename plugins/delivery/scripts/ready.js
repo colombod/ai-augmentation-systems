@@ -50,6 +50,30 @@ function render(id, findings, extra, json) {
   return [head, ...findings.map((f) => `  ${f.level} ${f.rule} ${f.code}: ${f.detail}${f.warning ? ` [${f.warning}]` : ''}`), ...(extra.recorded ? [`  recorded criteria hash ${extra.recorded}`] : [])].join('\n');
 }
 
+// What the story's "Files and modules" reach, at the project's HEAD: { sha, features: [{ id, hops }],
+// hubs, unreached, unknown } or { error }
+function storyReach(root, text) {
+  try {
+    const paths = require('./map.js').storyPaths(text);
+    if (!paths.length) return { error: 'the story names no files (its Files and modules table is empty)' };
+    const C = require('./lib/codemap.js');
+    const F = require('./lib/features.js');
+    const map = C.buildMap(root, 'HEAD');
+    const r = F.impact(map, F.featuresOf(map), paths);
+    return { sha: r.sha, features: r.reached.map((f) => ({ id: f.id, hops: f.hops })), hubs: r.hubs.map((h) => h.path), unreached: r.unreached.map((u) => u.path), unknown: r.unknown };
+  } catch (err) {
+    return { error: String(err.message).split('\n')[0] };
+  }
+}
+
+function reachLines(r) {
+  if (r.error) return `Reach: reach-not-computed (${r.error})`;
+  const lines = [`Reach at ${r.sha.slice(0, 12)}: ${r.features.length ? r.features.map((f) => `${f.id} (${f.hops} hop${f.hops === 1 ? '' : 's'})`).join(', ') : 'no feature'} (map.js impact --story for the chains)`];
+  if (r.hubs.length) lines.push(`Reach: touches a hub (${r.hubs.join(', ')}): a change there reaches most of the product`);
+  if (r.unreached.length) lines.push(`Reach: no feature reaches ${r.unreached.join(', ')}`);
+  return lines.join('\n');
+}
+
 async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRecord, ask, who: given } = {}) {
   const a = parse(argv);
   const who = given || whoAmI({ cwd, env, project: a.project });
@@ -67,7 +91,11 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
       const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
       findings.push(...A.forStory(who.root, { id: sid, metadata: { story: sid } }, { bd: store, team: who.team, verifyRecord, initiative: a.initiative }).findings);
     }
-    return { code: findings.some((f) => f.level === 'block') ? 1 : 0, out: render(path.basename(a.story), findings, { hash: G.storyHash(story) }, a.flags.has('json')) };
+    // the feature map (owner's ask: blast radius from the feature's side before code): information,
+    // never a block; a fault reads reach-not-computed and the gate's verdict is unchanged
+    const reach = storyReach(who.root, fs.readFileSync(path.resolve(cwd, a.story), 'utf8'));
+    const out = render(path.basename(a.story), findings, { hash: G.storyHash(story) }, a.flags.has('json'));
+    return { code: findings.some((f) => f.level === 'block') ? 1 : 0, out: a.flags.has('json') ? JSON.stringify({ ...JSON.parse(out), reach }) : `${out}\n${reachLines(reach)}` };
   }
   const id = a._[0];
   if (!id) return { code: 2, out: USAGE };

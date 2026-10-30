@@ -72,6 +72,8 @@ criteria, not the builder's report" rule this whole review runs under:
 
 A sprint where every story passed but no persona can complete a journey has delivered nothing usable, and only this check will tell you.
 
+**5a. Is it worth using?** For each area this sprint changed, fill a usefulness card (`${CLAUDE_PLUGIN_ROOT}/references/usefulness.md`): one named user and job, the six criteria each with its evidence grade, never summed. The team's own checks, the Reality Checker's included, are Claimed; Seen needs someone outside the team. Write the return check for any area short of Worth using, and compare with the area's previous card: a feature whose Return is still not Solid and Repeated after two return checks backed by logs is a retirement candidate, put to the owner with `node ${CLAUDE_PLUGIN_ROOT}/scripts/map.js retire <feature>` (see the reference; no logs means instrument first). Cards go in the review record beside the verdict.
+
 **6. Reconcile against the stage promise.** `prioritization.md` said what this stage would deliver and which personas it would serve. Compare what was promised to what is now true. Name any silent scope drop.
 
 **7. Challenge the result.** Delegate to `delivery:feature-critic` (read-only) with the question: *what would make this acceptance verdict wrong?* Missing evidence, criteria passing on a technicality, tests asserting implementation rather than behavior.
