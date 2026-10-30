@@ -191,6 +191,10 @@ function handOver(pr, req, who, { bd, now, head }) {
     let b = null;
     try { b = store.show(id); } catch (err) { b = null; }
     if (!b || G.stateOf(b) !== 'merged' || b.status === 'closed') continue;
+    // only a story this PR marked: the same author check as markMerged, and merged by this PR, so a
+    // story merged by another PR keeps its own handoff (Copilot, #86)
+    if (req.owner && !G.authorsOf(b).actors.some((a) => R.norm(a) === req.owner)) continue;
+    if (String((b.metadata || {}).merged_pr || '') !== String(pr)) continue;
     let r = null;
     try { r = HO.queue(who.root, { bead: id, step: 'deploy', to: who.instance, from: who.instance, pr, sha: head, at: now }); } catch (err) { lines.push(`${id}: the deploy was not handed to the watchdog (${err.message})`); continue; }
     if (r) lines.push(`${id}: its deploy is handed to the watchdog, which wakes ${who.instance} for it if this turn ends first`);
@@ -251,4 +255,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, gate, check, ghPrCalls, mergeCommandProblem };
+module.exports = { main, gate, check, ghPrCalls, mergeCommandProblem, handOver };

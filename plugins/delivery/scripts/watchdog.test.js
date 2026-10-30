@@ -1244,3 +1244,31 @@ test('plan: a handoff alone is held at 48 wakes in a day and woken below it (dlv
   assert.deepEqual(under.wakes[0].keys, ['handoff:ho-1']);
   assert.deepEqual(under.wakes[0].handoffs, ['ho-1'], 'the wake carries its handoff, so it is marked handed over');
 });
+
+// GitHub Copilot's review of #86: handoff ids, retries after a wake, and recovery in a stopped area.
+test('Copilot #86: two handoffs in one second have their own ids; a retry after the wake adds nothing', () => {
+  const HO = require('./lib/handoff.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ho-id-'));
+  const at = '2026-10-30T12:00:00.000Z';
+  const a = HO.queue(root, { bead: 'ex-s', step: 'deploy', to: DM, pr: '478', at });
+  const b = HO.queue(root, { bead: 'ex-s', step: 'deploy', to: DM, pr: '479', at });
+  assert.notEqual(a.id, b.id, 'same bead, step and second, another PR');
+  // an acknowledgement of the superseded row never consumes its replacement
+  HO.markDone(root, [a.id], at);
+  assert.deepEqual(HO.pending(root).map((r) => r.id), [b.id]);
+  // the wake starts (delivered); a retry of merge-gate.js merged for the same PR adds nothing
+  HO.markDelivered(root, [b.id], at);
+  assert.equal(HO.queue(root, { bead: 'ex-s', step: 'deploy', to: DM, pr: '479', at }), null);
+  assert.equal(HO.pending(root).length, 0);
+});
+
+test('Copilot #86: in a stopped area the recovery work\'s handoff still wakes; unrelated work is held', () => {
+  const now = Date.parse('2026-10-30T12:00:00Z');
+  const sessions = [{ instance: DM, role: DM, session: 's-dm', roleDir: os.tmpdir(), lastActive: now - 10 * 60e3 }];
+  const area = (id, meta = {}) => ({ id, status: 'in_progress', labels: ['story', 'state-merged'], metadata: { area: 'import', ...meta } });
+  const beads = [area('ex-fail'), area('ex-fix', { fixes: 'ex-fail' }), area('ex-a3work', { a3: 'a3-1' }), area('ex-other')];
+  const handoffs = beads.map((b, i) => ({ id: `h-${i}`, at: new Date(now - 60e3).toISOString(), bead: b.id, step: 'deploy', to: DM, pr: String(500 + i) }));
+  const pause = { paused: false, stops: [{ trigger: 'andon:ev-ex-fail-1', area: require('./lib/gates.js').areaOf(beads[0]) }] };
+  const r = WD.stalls({ beads, now: iso(now), sessions, handoffs, pause });
+  assert.deepEqual(r.stalls.filter((s) => s.kind === 'handoff').map((s) => s.bead).sort(), ['ex-a3work', 'ex-fail', 'ex-fix']);
+});

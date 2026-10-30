@@ -217,6 +217,16 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   const G = require('./gates.js');
   const stopped = new Set(((pause && pause.stops) || []).map((s) => s.area).filter(Boolean));
   const inStop = (b) => stopped.size > 0 && stopped.has(G.areaOf(b));
+  // the recovery work of a stop goes on in its area (lib/andon.js claimFindings, D3c): the failed bead
+  // or its story, a fix linked to the failed row or bead, its A3's work. Read from the trigger
+  // (andon:ev-<bead>-<n>), since a stop carries only its trigger and area here.
+  const recovering = (b) => ((pause && pause.stops) || []).filter((s) => s.area === G.areaOf(b)).some((s) => {
+    const row = String(s.trigger || '').replace(/^andon:/, '');
+    const failed = (/^ev-(.+)-\d+$/.exec(row) || [])[1];
+    const m = b.metadata || {};
+    const link = String(m.fixes || '').replace(/\s+#.*$/, '').trim();
+    return Boolean(failed) && (b.id === failed || b.parent === failed || [row, failed].includes(link) || Boolean(m.a3));
+  });
   // usage limits first: the rest of the team's quiet follows from them
   const limited = new Set();
   for (const s of list.filter((x) => x.limit && x.lastActive <= ms(x.limit.at) + 60e3)) {
@@ -320,7 +330,7 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   for (const r of handoffs.filter((x) => x && x.id && x.bead)) {
     const b = beads.find((x) => x && x.id === r.bead) || null;
     if (HO.done(r, b, beads)) { handoffsDone.push(r.id); continue; }
-    if (inStop(b)) continue;
+    if (inStop(b) && !recovering(b)) continue;
     const target = list.some((s) => s.instance === r.to) ? r.to : dm;
     out.push({ kind: 'handoff', key: `handoff:${r.id}`, bead: r.bead, target, handoff: r.id, due: true,
       line: `Handed over: ${r.bead} waits for its ${r.step === 'deploy' ? 'deploy' : 'reality check'} (${r.step === 'deploy' ? `PR ${r.pr || '?'} merged` : 'deployed'} at ${clock(ms(r.at))}).`,

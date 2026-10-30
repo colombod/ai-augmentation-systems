@@ -42,12 +42,17 @@ const locked = (root, fn) => withLock(lockOf(root), fn, { strict: true });
 function queue(root, { bead, step, to, from, pr, sha, at }) {
   if (!bead || !STEPS.includes(step) || !to) return null;
   const now = at || new Date().toISOString();
-  const row = { id: `h-${bead}-${step}-${now.replace(/[-:.TZ]/g, '').slice(0, 14)}`, at: now, bead, step, to, from: from || null, pr: pr ? String(pr) : null, sha: sha || null };
+  // a random suffix: two rows for one bead and step in the same second (another PR or sha) never share
+  // an id, so marking one done or delivered cannot consume the other (Copilot, #86)
+  const row = { id: `h-${bead}-${step}-${now.replace(/[-:.TZ]/g, '').slice(0, 14)}-${require('crypto').randomBytes(3).toString('hex')}`, at: now, bead, step, to, from: from || null, pr: pr ? String(pr) : null, sha: sha || null };
   const same = (r) => (step === 'deploy' ? String(r.pr || '') === String(row.pr || '') : String(r.sha || '') === String(row.sha || ''));
   return locked(root, () => {
     const list = rows(root);
     const open = list.filter((r) => r.bead === bead && r.step === step && !r.delivered_at && !r.done_at);
-    if (open.some(same)) return null;
+    // a row already handed over (its wake started) and not yet closed counts too: a retry of
+    // `merge-gate.js merged` after the wake started adds nothing (Copilot, #86)
+    const live = list.filter((r) => r.bead === bead && r.step === step && !r.done_at);
+    if (live.some(same)) return null;
     const kept = list.map((r) => (open.includes(r) ? { ...r, done_at: now, superseded_by: row.id } : r));
     // rows settled over a week ago go; the open ones stay whatever their age
     write(root, [...kept.filter((r) => !(r.done_at || r.delivered_at) || Date.parse(now) - Date.parse(r.done_at || r.delivered_at) < KEEP_MS), row]);

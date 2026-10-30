@@ -297,3 +297,16 @@ test('briefs: the Delivery Manager\'s loop with exact commands; builders never m
   }
   assert.equal(review.main(['bogus', '1'], { who: { root: makeProject() } }).code, 2);
 });
+
+// GitHub Copilot's review of #86: the deploy is handed over only for a story this PR marked merged:
+// the author check markMerged applies, and merged_pr names this PR.
+test('Copilot #86: a deploy handoff only for a story this PR merged, by this PR\'s author', () => {
+  const root = makeProject();
+  const HO = require('./lib/handoff.js');
+  const merged = (id, actor, pr) => storyBead({ id, assignee: actor, labels: ['story', 'state-merged'], metadata: { authors: [{ actor, role: 'builder' }], merged_pr: pr } });
+  const bd = memBd([merged('ex-a', 'dev@pc/builder-1', '478'), merged('ex-b', 'dev@pc/builder-1', '477'), merged('ex-c', 'dev@pc/builder-2', '478')]);
+  const who = { root, instance: 'delivery-lead', roleId: 'delivery-lead', actor: 'dev@pc/delivery-lead' };
+  const lines = mergeGate.handOver('478', { owner: R.norm('dev@pc/builder-1'), stories: ['ex-a', 'ex-b', 'ex-c'] }, who, { bd, now: '2026-10-30T12:00:00Z', head: H1 });
+  assert.deepEqual(HO.pending(root).map((r) => r.bead), ['ex-a'], lines.join('\n'));
+  assert.equal(lines.length, 1);
+});
