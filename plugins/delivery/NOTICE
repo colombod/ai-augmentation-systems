@@ -11,8 +11,8 @@ amplifier-skill-taste (https://github.com/michaeljabbour/amplifier-skill-taste)
 
 amplifier-skill-sizzle (https://github.com/michaeljabbour/amplifier-skill-sizzle)
   Copyright (c) 2026 Sizzle contributors. MIT License.
-  Used in: skills/brief (one proposition), skills/prd (the one-breath test, cuts as proposed
-  non-goals, the storyboard approved before any spend and reopened by change),
+  Used in: skills/brief (one proposition), skills/prd (the one-breath test; its "cut" adapted
+  here into proposed non-goals the owner decides, the storyboard approved before any spend and reopened by change),
   skills/roadmap (the storyboard gate), templates/storyboard.md.
 
 amplifier-skill-market-fit (https://github.com/michaeljabbour/amplifier-skill-market-fit)

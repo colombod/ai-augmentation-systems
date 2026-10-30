@@ -8,7 +8,7 @@ Obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md.
 # Product storyboard: <initiative>
 
 > Written by /delivery:prd (step 6.7). Owned by Product Owner. The roadmap does not start until
-> the approval below quotes the owner. Last updated: <date> · Version: <n>
+> the approval below quotes the owner, or the owner waives it in words the roadmap quotes. Last updated: <date> · Version: <n>
 
 ## Overview
 
@@ -43,5 +43,6 @@ Two or three real choices, each with the option recommended and why.
 
 **Changes they asked for:** 
 
-A later change to the scenarios, the MVP's `FR-n` list or the proposition reopens this: set the
-status to reopened, name the change, and ask again.
+A later change to the journey these cards tell, the MVP's `FR-n` list or the proposition reopens
+this: set the status to reopened, name the change, and ask again. A fix that changes none of them
+does not.

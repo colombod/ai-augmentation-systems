@@ -102,7 +102,9 @@ michaeljabbour's Taste and Sizzle skills (MIT; see `${CLAUDE_PLUGIN_ROOT}/NOTICE
 - *Proposition.* The one thing the named user must believe or be able to do at the end, in one
   sentence. If it needs "and also", there are two products: say so, and propose which one this is.
 - *Gates first.* Correctness, safety, accessibility, feasibility: each pass, fail, unknown or not
-  applicable, with a reason. A critical fail blocks the idea however appealing it is; a critical
+  applicable, with a reason. A fail is critical when it would make the product wrong, unsafe,
+  unusable by its named users, or unbuildable. A critical fail is not the team's veto: it goes to
+  the owner as a decision, with its evidence and a recommendation; a critical
   unknown is an open question.
 
 **5. Ask what you cannot determine.** Collect open questions, drop the ones the codebase

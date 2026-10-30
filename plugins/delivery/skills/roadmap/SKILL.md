@@ -22,7 +22,7 @@ Its sections **Where `.delivery/` resolves to**, **Which initiative**, **Open bl
 
 ## Gate check
 
-Read the inputs.
+Read the inputs and, where they exist, `storyboard.md` and the brief.
 
 - **PRD missing** — stop. Sequencing unknown requirements is fiction. Run `/delivery:prd` first.
 - **Storyboard not approved** — stop. `.delivery/initiatives/<initiative>/storyboard.md` must exist
@@ -30,12 +30,14 @@ Read the inputs.
   Sizzle's storyboard gate, michaeljabbour, MIT). Missing, unquoted or reopened: say which, and offer
   to draft it or put it to the owner. Only the owner may waive it, in words you quote in the
   roadmap's header; a role never does, and silence is not approval.
-  **Planned before this gate:** an initiative with no `storyboard.md` whose `prioritization.md` is
-  missing, or has no *In the primary picture?* column, was staged before the storyboard existed
-  (delivery 0.40.3). Do not stop it:
-  go on, and write in the roadmap's header "Planned before the storyboard gate: no approved
-  storyboard; `/delivery:prd --stage` adds one", and say so in the hand-off. Once that column is
-  there, the gate applies in full.
+  **Planned before this gate:** an initiative whose brief has no *Owner lens and what must survive*
+  section was framed before the storyboard existed (delivery 0.40.3). Do not stop it: go on, and
+  write in the roadmap's header "Planned before the storyboard gate: no approved storyboard;
+  `/delivery:prd --stage` adds one", and say so in the hand-off. Once the brief has that section,
+  the gate applies in full.
+- **Proposed for not doing, unanswered** — not a stop. Sequence each such `FR-n` in the stage
+  `prioritization.md` keeps it in, marked "proposed for not doing: awaiting the owner" in its
+  phase; never leave it out of the plan on the team's word.
 - **Architecture missing** — warn clearly. You can sequence without it, but the dependency map and effort sizing will be guesses, and the spike list — the most valuable input to sequencing — will not exist. Ask whether to proceed anyway or run `/delivery:architecture` first.
 
 If `.delivery/initiatives/<initiative>/roadmap.md` already exists, read it and ask whether

@@ -64,6 +64,12 @@ finish a journey end to end.**
 If the review found that personas could not complete their journey, that outcome dominates
 this step: the next stage's job is to close that gap, not to add scope.
 
+Re-staging keeps `/delivery:prd`'s staging rules: what must survive in the owner's words stays in
+the MVP, and a requirement newly outside the primary picture is *proposed for not doing*, kept in its
+stage until the owner's record. If the MVP's `FR-n` list or the proposition changes, the storyboard
+(`storyboard.md`) is reopened: clear its approval, say so, and put it to the owner; the roadmap
+update in step 4 marks the phases it affects "storyboard reopened".
+
 **4. Re-sequence.** Delegate to `delivery:program-manager` to update the roadmap: revised
 sizes, new dependencies the sprint exposed, and the critical path recomputed. Carried debt
 from the review is work — it goes in a phase with an owner, or it is explicitly accepted

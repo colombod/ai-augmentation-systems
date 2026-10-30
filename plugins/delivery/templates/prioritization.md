@@ -23,15 +23,15 @@ completely is a project milestone, not a release.
 
 | FR | Personas served | Load-bearing? | Severity | Objection answered | Effort (est.) | Confidence | In the primary picture? |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
-| FR-1 | | yes / no | | | S/M/L | observed / assumed | yes / yes, precondition / no: load-bearing for <persona> / no: leftover / proposed non-goal, step 5b |
+| FR-1 | | yes / no | | | S/M/L | observed / assumed | yes / yes, precondition / no: load-bearing for <persona> / no: proposed for not doing / proposed non-goal, step 5b |
 
 Load-bearing beats enhancement. Where a delighter outranks a blocker, say why
 explicitly — that reasoning should not win quietly.
 
-**Leftover test.** A requirement outside the primary persona's before-and-after picture defaults
-to *Explicitly not doing* unless it is load-bearing for another persona the stages name. Each
-default is a proposal for the owner (Open questions below); nothing under the brief's **What must
-survive** defaults out.
+**Leftover test.** A requirement outside the primary persona's before-and-after picture is proposed
+for *Explicitly not doing* unless it is load-bearing for another persona the stages name. It stays
+in its stage, marked *proposed for not doing*, until the owner's record moves it (Open questions
+below); nothing under the brief's **What must survive** in the owner's words is proposed out.
 
 ## Stages
 
@@ -63,7 +63,7 @@ served, personas not yet served, what it teaches, what's excluded and why)*
 
 ### Explicitly not doing
 
-| FR | Reason | Leftover default or owner's record | Revisit if |
+| FR | Reason | Owner's record (required) | Revisit if |
 | :-- | :-- | :-- | :-- |
 
 ## Milestones

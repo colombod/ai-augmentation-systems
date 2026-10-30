@@ -38,7 +38,9 @@ answer, write **assumed** and keep the questions under Open questions.
 
 **Lens:** you value <X> because <Y>, while wanting to preserve <Z> · confirmed (their words) | assumed (the team's reading, not their words)
 **What must survive:** the few things no later cut or change may drop without the owner's record.
-Each item quotes the owner, or is labelled **assumed** (a proposal that does not bind yet).
+Each item quotes the owner (from this initiative or an earlier one, cited), or is labelled **assumed**
+(a proposal that does not bind yet). An item quoted from elsewhere binds only once the owner
+confirms it applies here; until then it is assumed.
 
 - 
 

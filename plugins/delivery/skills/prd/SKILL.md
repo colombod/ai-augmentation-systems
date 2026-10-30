@@ -26,8 +26,9 @@ Read `.delivery/initiatives/<initiative>/brief.md`.
 
 - **Missing** — stop. Tell the user to run `/delivery:brief` first, and offer to run it now. Do not improvise a brief.
 - **Written before the owner's lens** (no *Owner lens and what must survive* section, delivery
-  0.40.3) — not thin: proceed, take what must survive from the brief's own words where it says it,
-  and list the lens questions under Open questions for the owner's next briefing.
+  0.40.3) — not thin: proceed. What must survive is taken only from the owner's words the brief
+  quotes; anything else the brief says is **assumed** and does not bind. List the lens questions
+  under Open questions for the owner's next briefing.
 - **Exists but thin** (no named user segment, no measurable success signal, or unresolved blocking questions) — say specifically what is weak, and ask whether to proceed anyway or strengthen the brief first. Proceeding on a weak brief is a legitimate choice, but it should be a choice.
 - If `.delivery/initiatives/<initiative>/prd.md` already exists, read it and ask whether to
   **revise**, **replace**, or **start new version**. See
@@ -52,19 +53,22 @@ Read `.delivery/initiatives/<initiative>/brief.md`.
 **5b. One breath, and what to cut.** (Sizzle, michaeljabbour, MIT; `${CLAUDE_PLUGIN_ROOT}/NOTICE`.)
 Tell the primary persona's journey in one breath: "they start at X, which leads to Y, because of
 that Z, and they leave with W", each step following from the one before. Check it against the
-brief's proposition. Wherever it needs "and also", the scenario after it is a candidate cut: list
-it under the PRD's out of scope as **proposed non-goal**, with the reason. A proposed non-goal is
-the owner's to accept or refuse; narrowing scope is never the team's choice, so nothing is dropped
-until they answer. Where a cut would narrow the brief's **MVP boundary**, the brief stands until the
-owner answers: write the scenario in, and mark it proposed for cutting.
+brief's proposition. Wherever it needs "and also", the scenario after it is a candidate cut (an
+adaptation of Sizzle's "if it needs 'and also', cut"): the scenario stays written in the PRD, marked
+**proposed non-goal** with the reason, and is listed under out of scope as proposed. A proposed
+non-goal is the owner's to accept or refuse; narrowing scope is never the team's choice, so nothing
+is dropped until they answer. Where a cut would narrow the brief's **MVP boundary**, the brief stands
+until the owner answers. In staging, the scenario's `FR-n` rows read *proposed non-goal, step 5b*
+and stay in the stage they would be in otherwise.
 
 ## Step 6 — MVP staging
 
 Output: `.delivery/initiatives/<initiative>/prioritization.md`. Inputs: the PRD just written,
 plus `.delivery/simulations/`, `.delivery/interviews/` and `.delivery/personas/` where they
 exist. With `--stage`, run only this step against an existing `prd.md`: skip the PRD's own
-revise/replace question and steps 1–5, keep the blocking-findings gate, and stop if `prd.md`
-is missing. Value is ranked here with rough effort; the real-cost
+revise/replace question and steps 1–5 except 5b (the one breath, which *In the primary picture?*
+is scored against: tell it if the PRD has none, and keep its proposed non-goals as proposals), keep
+the blocking-findings gate, and stop if `prd.md` is missing. Value is ranked here with rough effort; the real-cost
 pass comes later, in `/delivery:roadmap`.
 
 Read the simulation and interview outputs if they exist. If they do not, warn clearly: **prioritisation without persona data is prioritisation by opinion.** It is a legitimate choice, but the resulting stages rest on the team's beliefs about value rather than on any model of user behavior, and the document must say so. Offer to run `/delivery:simulate` first.
@@ -94,10 +98,12 @@ Take this directly from the simulation's per-persona coverage data: for each can
 Load-bearing beats enhancement. A feature that prevents abandonment for two personas outranks one that delights one persona, unless the delight is the differentiator — and if it is, say so explicitly rather than letting it win quietly.
 
 **The leftover test** (after Market Fit's leftover stone, michaeljabbour, MIT). A requirement that is
-not in the primary picture defaults to *Explicitly not doing* unless it is load-bearing for another
-persona the stages name; say which. A default is a proposal: it goes to the owner with the others
-in Open questions, and a requirement the brief lists under **What must survive** in the owner's words
-never defaults out (an **assumed** item does not bind; list it for the owner). A step the journey
+not in the primary picture is proposed for *Explicitly not doing* unless it is load-bearing for
+another persona the stages name; say which. A proposal is not a cut: the requirement stays in the
+stage it would be in otherwise, marked *proposed for not doing* in its row, and the question goes to
+the owner with the others in Open questions. It moves to Explicitly not doing only with the owner's
+record, cited. A requirement the brief lists under **What must survive** in the owner's words is
+never proposed out (an **assumed** item does not bind; list it for the owner). A step the journey
 cannot happen without is in the picture (*yes, precondition*). A requirement load-bearing for the
 primary persona but missing from the one breath means the breath is wrong: fix the breath, do not
 default the requirement out. A scenario step 5b already proposed as a non-goal is not proposed
@@ -110,7 +116,7 @@ again here: its row cites the proposal (*proposed non-goal, step 5b*).
 - Personas explicitly *not* served yet, and when they will be. Naming this prevents a segment from being silently abandoned.
 - What the stage lets you learn — each stage should answer a question, since a stage that teaches nothing could have been merged into the next one
 - Why the excluded features can wait, in terms of the friction map
-- That every item under the brief's **What must survive** is in the MVP; a stage that leaves one out needs the owner's record, cited
+- That every item under the brief's **What must survive** in the owner's words is in the MVP (an **assumed** item is listed for the owner, not enforced); a stage that leaves one out needs the owner's record, cited
 
 **Evidence-only marker — check this for every stage, every run, not just the first time.**
 Look at the `Confidence` column for every persona the stage names as completing a journey
@@ -141,8 +147,9 @@ with its `FR-n`), the proposition, and two or three real choices with a recommen
 Show it to the owner (in a team, through the Chief of Staff's briefing) and nothing downstream
 starts until they approve it. The approval is their message **quoted word for word** in the
 storyboard's approval block; with no message to quote, it is not approved. Approval is never
-assumed, inferred from silence, or given by a role. Any later change to the scenarios, the MVP's
-`FR-n` list or the proposition reopens it: clear the approval and say so in the hand-off.
+assumed, inferred from silence, or given by a role. A later change to the journey the cards tell,
+the MVP's `FR-n` list or the proposition reopens it: clear the approval and say so in the hand-off.
+A fix that changes none of these (an edge path, a criterion's wording, a number) does not.
 
 Where scores rest on `assumed`-grade personas, mark them. A prioritisation built on invented users is a plan for an invented market, and the reader is entitled to know how much of it is that.
 
@@ -154,7 +161,7 @@ Where scores rest on `assumed`-grade personas, mark them. A prioritisation built
 - Each stage states what it lets you learn
 - Milestones are demonstrable, and release milestones are distinguished from learning milestones
 - Confidence reflects the grounding of the persona evidence
-- Every `FR-n` answers *In the primary picture?*; leftover defaults are listed for the owner, and nothing under **What must survive** is staged out without their record
+- Every `FR-n` answers *In the primary picture?*; each proposed for not doing stays in its stage until the owner's record, and nothing under **What must survive** in the owner's words is staged out without their record
 - `storyboard.md` written, and its approval either quoted word for word or marked not approved
 
 **Staging budget: 700 words target, 1100 hard cap** (excludes code, YAML and data tables), in `prioritization.md`, measured separately from the PRD's.
