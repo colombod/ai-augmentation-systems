@@ -1266,14 +1266,14 @@ test('Copilot #86: in a stopped area the recovery work\'s handoff still wakes; u
   const now = Date.parse('2026-10-30T12:00:00Z');
   const sessions = [{ instance: DM, role: DM, session: 's-dm', roleDir: os.tmpdir(), lastActive: now - 10 * 60e3 }];
   const area = (id, meta = {}) => ({ id, status: 'in_progress', labels: ['story', 'state-merged'], metadata: { area: 'import', ...meta } });
-  const beads = [area('ex-fail'), area('ex-fix', { fixes: 'ex-fail' }), area('ex-a3work', { a3: 'a3-1' }), area('ex-other'), area('ex-other-a3', { a3: 'a3-9' })];
+  const beads = [area('ex-fail', { story: 'vault-0n9-3' }), area('ex-fix', { fixes: 'ex-fail' }), area('ex-a3work', { a3: 'a3-1' }), area('ex-other'), area('ex-other-a3', { a3: 'a3-9' }), area('ex-fix-by-story', { fixes: 'vault-0n9-3 # the import story' })];
   const handoffs = beads.map((b, i) => ({ id: `h-${i}`, at: new Date(now - 60e3).toISOString(), bead: b.id, step: 'deploy', to: DM, pr: String(500 + i) }));
   const pause = { paused: false, stops: [{ trigger: 'andon:ev-ex-fail-1', area: require('./lib/gates.js').areaOf(beads[0]), a3: 'a3-1' }] };
   const r = WD.stalls({ beads, now: iso(now), sessions, handoffs, pause });
   // the stop's own A3 work goes on; work tagged with another A3 is held like any other (Copilot round 2)
-  assert.deepEqual(r.stalls.filter((s) => s.kind === 'handoff').map((s) => s.bead).sort(), ['ex-a3work', 'ex-fail', 'ex-fix']);
+  assert.deepEqual(r.stalls.filter((s) => s.kind === 'handoff').map((s) => s.bead).sort(), ['ex-a3work', 'ex-fail', 'ex-fix', 'ex-fix-by-story'], 'a fix naming the failed story by its story id is recovery too');
   const noA3 = WD.stalls({ beads, now: iso(now), sessions, handoffs, pause: { paused: false, stops: [{ ...pause.stops[0], a3: null }] } });
-  assert.deepEqual(noA3.stalls.filter((s) => s.kind === 'handoff').map((s) => s.bead).sort(), ['ex-fail', 'ex-fix'], 'a stop with no open A3 lets no A3 work through');
+  assert.deepEqual(noA3.stalls.filter((s) => s.kind === 'handoff').map((s) => s.bead).sort(), ['ex-fail', 'ex-fix', 'ex-fix-by-story'], 'a stop with no open A3 lets no A3 work through');
 });
 
 test('Copilot #86: the watchdog reads each stop\'s open A3 from the andon record; none open, none', () => {

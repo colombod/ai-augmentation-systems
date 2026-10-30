@@ -225,7 +225,10 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
     const failed = (/^ev-(.+)-\d+$/.exec(row) || [])[1];
     const m = b.metadata || {};
     const link = String(m.fixes || '').replace(/\s+#.*$/, '').trim();
-    return Boolean(failed) && (b.id === failed || b.parent === failed || [row, failed].includes(link) || Boolean(s.a3 && m.a3 && String(m.a3) === s.a3));
+    // a fix may name the failed story by its story id, as the claim check accepts (lib/andon.js s.story)
+    const failedBead = beads.find((x) => x && x.id === failed);
+    const story = String(((failedBead || {}).metadata || {}).story || '');
+    return Boolean(failed) && (b.id === failed || b.parent === failed || [row, failed].includes(link) || (Boolean(story) && link === story) || Boolean(s.a3 && m.a3 && String(m.a3) === s.a3));
   });
   // usage limits first: the rest of the team's quiet follows from them
   const limited = new Set();
