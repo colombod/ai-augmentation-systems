@@ -211,6 +211,14 @@ test('Vault: a product\'s own entry points are features: web routes, MCP tools, 
     'web/app.test.js': "server.tool('spec_tool', {});\n",
     'tests/test_twins.py': 'from app import oauth\n@app.get("/twin/token")\ndef token(): pass\n',
     'web/consent.spec.ts': "app.get('/spec-only', (req, res) => res.send('ok'));\n",
+    'web/__tests__/routes.js': "app.get('/jest-only', (req, res) => res.send('ok'));\n",
+    'app/oauth_test.py': '@app.get("/go-style")\ndef t(): pass\n',
+    'conftest.py': '@app.get("/fixture")\ndef f(): pass\n',
+    'web/server.test.mjs': "app.get('/mjs-only', (req, res) => res.send('ok'));\n",
+    // near misses: product files whose names contain "test" stay features
+    'app/contest.py': '@app.get("/contest")\ndef c(): pass\n',
+    'latest/feed.py': '@app.get("/latest")\ndef l(): pass\n',
+    'web/attestation.ts': "app.post('/attest', (req, res) => res.send('ok'));\n",
   });
   const f = Object.fromEntries(run(['features', '--repo', fx.dir, '--json']).json().features.map((x) => [x.id, x]));
   assert.deepEqual(f['http:app/main'].entries, ['GET /health', 'POST /decks/{id}/restore']);
@@ -218,7 +226,8 @@ test('Vault: a product\'s own entry points are features: web routes, MCP tools, 
   assert.deepEqual(f['tools:app/mcp'].entries, ['save_deck', 'restore_deck']);
   for (const t of ['tools:tests/test_x', 'tools:tests/fakes', 'tools:web/app.test']) assert.equal(f[t], undefined, `${t}: a test file's tools are not the product's`);
   // nor its routes (the Vault's tests/test_twins.py, reached by every sign-in change)
-  for (const t of ['http:tests/test_twins', 'http:web/consent.spec']) assert.equal(f[t], undefined, `${t}: a test file's routes are not the product's`);
+  for (const t of ['http:tests/test_twins', 'http:web/consent.spec', 'http:web/__tests__/routes', 'http:app/oauth_test', 'http:conftest', 'http:web/server.test']) assert.equal(f[t], undefined, `${t}: a test file's routes are not the product's`);
+  for (const t of ['http:app/contest', 'http:latest/feed', 'http:web/attestation']) assert.ok(f[t], `${t}: a product file with "test" in its name is still a feature`);
   assert.deepEqual(f['function:api/index'].anchors, ['api/index.py']);
   assert.deepEqual(f['ci:tests'].entries, ['Tests']);
   assert.deepEqual(f['script:vault-sync'].anchors, ['app/main.py']);

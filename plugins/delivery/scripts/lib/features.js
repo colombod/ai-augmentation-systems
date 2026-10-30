@@ -101,7 +101,7 @@ function entryPoints(map, texts) {
   const stem = (f) => f.replace(/\.[^./]+$/, '');
   // a test file is never the product's entry point, for its routes as for its tools: the Vault's
   // tests/test_twins.py starts an app with routes, and became a feature every sign-in change reached
-  const isTest = (f) => /(^|\/)tests?\//.test(f) || /(^|\/)test_[^/]*$|\.(test|spec)\.[jt]sx?$/.test(f);
+  const isTest = (f) => /(^|\/)(tests?|__tests__)\//.test(f) || /(^|\/)(test_[^/]*|[^/]*_test\.py|conftest\.py)$|\.(test|spec)\.[cm]?[jt]sx?$/.test(f);
   for (const [f, text] of Object.entries(texts)) {
     const lang = C.langOf(f);
     if ((lang === 'py' || lang === 'js') && !isTest(f)) {
