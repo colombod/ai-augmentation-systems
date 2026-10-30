@@ -452,6 +452,12 @@ function validateCore(st, rec, view, mode) {
 
   switch (rec.kind) {
     case 'decision': {
+      // the options turned down (Decisioncraft's option status, Market Fit's choice log; NOTICE):
+      // optional, one to five short options, none the decision itself
+      if (rec.over !== undefined) {
+        if (!Array.isArray(rec.over) || !rec.over.length || rec.over.length > 5 || rec.over.some((x) => typeof x !== 'string' || !x.trim() || x.length > 200)) return bad('invalid_over', `${rec.id}: over must list one to five options turned down, each a short non-empty text (--over '<option>' --over '<option>')`);
+        if (rec.over.some((x) => x.trim().toLowerCase() === String(rec.statement || '').trim().toLowerCase())) return bad('invalid_over', `${rec.id}: an option turned down cannot be the decision itself`);
+      }
       if (rec.under) {
         if (!citesAre([rec.under])) return bad('bad_cites', `${rec.id} decides under ${rec.under} and must cite exactly it`);
         const e0 = text(rec.statement, 'statement'); if (e0) return e0;
@@ -634,7 +640,7 @@ function validateCore(st, rec, view, mode) {
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 const COMMON_FIELDS = ['id', 'kind', 'by', 'ts', 'prev', 'hash', 'scope', 'cites', 'cites_head', 'supersedes'];
 const KIND_FIELDS = {
-  decision: ['statement', 'quote', 'under', 'answers'],
+  decision: ['statement', 'quote', 'under', 'answers', 'over'],
   delegation: ['statement', 'grant', 'quote', 'limits', 'answers'],
   answer: ['question', 'answer', 'confidence', 'rationale', 'ratified', 'answers'],
   revocation: ['target', 'quote'],
@@ -1144,6 +1150,8 @@ function recordDecision(o) {
   const fields = { kind: 'decision', statement: o.statement.trim(), quote: o.quote, cites: [o.cite], cites_head: input ? [inputHead(input)] : [], scope, supersedes: o.supersedes || null };
   const answers = Array.isArray(o.answers) ? o.answers : [];
   if (answers.length) fields.answers = answers;
+  const over = (Array.isArray(o.over) ? o.over : []).map((x) => String(x).trim()).filter(Boolean);
+  if (over.length) fields.over = over;
   const rec = commit(st, by, fields, [...answers, o.supersedes]);
   afterWrite(o);
   return rec;
@@ -1525,7 +1533,7 @@ function getRecord(projectRoot, id) { return makeStore(projectRoot).findRecord(i
 function viewProblems(projectRoot) { return makeStore(projectRoot).problems().slice(); }
 
 function haystack(r) {
-  return normalizeWs([r.statement, r.grant, r.answer, r.question, r.quote, r.text].filter((x) => typeof x === 'string').join(' '));
+  return normalizeWs([r.statement, r.grant, r.answer, r.question, r.quote, r.text, ...(Array.isArray(r.over) ? r.over : [])].filter((x) => typeof x === 'string').join(' '));
 }
 function wordsOf(text) { return normalizeWs(text).split(' ').filter(Boolean); }
 
@@ -1555,7 +1563,7 @@ function find(projectRoot, o = {}) {
     const exactBead = scoped && (r.scope.beads || []).some((b) => (want.beads || []).includes(b));
     out.push({
       id: r.id, kind: r.kind, statement: r.kind === 'answer' ? r.answer : r.statement, question: r.question, quote: r.quote || null,
-      grant: r.grant || undefined, scope: r.scope, confidence: r.kind === 'answer' ? r.confidence : undefined,
+      grant: r.grant || undefined, over: r.over || undefined, scope: r.scope, confidence: r.kind === 'answer' ? r.confidence : undefined,
       ratified: (r.kind === 'answer' && r.confidence === 'inferred') || r.kind === 'delegation' ? isRatified(view, r) : undefined,
       by: r.by, ts: r.ts, superseded_by: superseded ? superseded.id : undefined, match: exactBead ? 'bead' : 'scope', _bead: exactBead, _rec: r,
     });

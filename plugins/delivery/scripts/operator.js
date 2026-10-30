@@ -22,7 +22,7 @@ const COMMANDS = ['publish', 'refresh', 'sync', 'record', 'delegate', 'decide', 
 
 const USAGE = `usage: operator.js <command> [options]   (all commands: --project <root> --json)
   sync [--all] [--format-check]   (--transcript <path> and --session <id> are refused in role lanes: capture reads the session's own transcript)
-  record --cite in-N --quote "<exact words>" --statement "<what was decided>" [--scope bead:ID,label:L,initiative:I] [--answers q-N] [--supersedes ID] [--goal <field>=<value>]
+  record --cite in-N --quote "<exact words>" --statement "<what was decided>" [--scope bead:ID,label:L,initiative:I] [--answers q-N] [--supersedes ID] [--goal <field>=<value>] [--over "<option turned down>|<another>"]
   delegate --cite in-N --quote "<...>" --statement "<...>" --grant "<one sentence: what is delegated>" --scope ... [--until DATE] [--max-uses N] [--answers q-N]
   decide --under del-N --statement "<...>" --scope ... [--answers q-N]
   revoke --cite in-N --quote "<...>" --target ID
@@ -470,8 +470,8 @@ const handlers = {
     refuseIfFormatUnrecognised(ctx, s, flags.cite);
     if (flags.supersedes) needFresh(ctx);
     const rec = R.recordDecision({ projectRoot: ctx.projectRoot, cite: flags.cite, quote: flags.quote, statement: flags.statement, scope,
-      by: ctx.by, answers: csv(flags.answers), supersedes: flags.supersedes || null, refresh: ctx.refreshOnce, noLedger: true, onWarning: ctx.onWarning });
-    const warnings = bdNotes(ctx, rec.scope.beads, `DECISION ${rec.id} (operator ${flags.cite}): ${rec.statement}`);
+      by: ctx.by, answers: csv(flags.answers), supersedes: flags.supersedes || null, over: flags.over ? flags.over.split('|') : [], refresh: ctx.refreshOnce, noLedger: true, onWarning: ctx.onWarning });
+    const warnings = bdNotes(ctx, rec.scope.beads, `DECISION ${rec.id} (operator ${flags.cite}): ${rec.statement}${rec.over ? ` (over: ${rec.over.join('; ')})` : ''}`);
     return afterWrite(ctx, rec, { warnings });
   },
 
@@ -586,7 +586,7 @@ const handlers = {
     const lines = res.length ? res.map((r) => {
       const sc = Object.entries(r.scope || {}).flatMap(([k, v]) => v.map((x) => `${k.slice(0, -1)}:${x}`)).join(',');
       const extra = [r.confidence ? `[${r.confidence}${r.ratified === true ? ', ratified' : ''}]` : '', sc ? `scope ${sc}` : '', r.superseded_by ? `superseded by ${r.superseded_by}` : ''].filter(Boolean).join(' ');
-      return `${r.id} ${r.kind}${extra ? ' ' + extra : ''}: ${r.statement}${r.quote ? ` (operator: ${quoted(r.quote)})` : ''}${r.grant ? ` GRANT: ${r.grant}` : ''}`;
+      return `${r.id} ${r.kind}${extra ? ' ' + extra : ''}: ${r.statement}${r.over ? ` (over: ${r.over.join('; ')})` : ''}${r.quote ? ` (operator: ${quoted(r.quote)})` : ''}${r.grant ? ` GRANT: ${r.grant}` : ''}`;
     }) : ['nothing found'];
     out(ctx, { results: [...res], problems: res.problems, warnings }, [...lines, ...warnings.map((w) => `warning: ${w}`)]);
     return manifestUnavailable(res.problems) ? 1 : 0;
@@ -768,6 +768,7 @@ const handlers = {
       lines.push(`operator quote: ${quoted((inp && R.excerptFor(inp.text, obj.quote)) || obj.quote)}`);
     }
     if (obj.grant) lines.push(`GRANT: ${obj.grant}`);
+    if (Array.isArray(obj.over) && obj.over.length) lines.push(`turned down: ${obj.over.join('; ')}`);
     if (obj.cites && obj.cites.length) lines.push(`cites: ${obj.cites.join(', ')}`);
     if (obj.under) lines.push(`under: ${obj.under}`);
     if (obj.target) lines.push(`target: ${obj.target}`);

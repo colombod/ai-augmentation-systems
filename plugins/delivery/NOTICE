@@ -20,6 +20,14 @@ amplifier-skill-market-fit (https://github.com/michaeljabbour/amplifier-skill-ma
   Used in: skills/prd and templates/prioritization.md (the leftover test, after its
   "leftover stone").
 
+amplifier-smart-tool-decisioncraft (https://github.com/michaeljabbour/amplifier-smart-tool-decisioncraft)
+  Copyright (c) 2026 Decisioncraft contributors. MIT License.
+  Used in: scripts/operator.js record --over and lib/operator-records.js (a decision keeps
+  the options turned down, after its options' status and status_reason), skills/decision.
+
+Market Fit (above) also: its choice log ("the choice, the option they turned down, and their
+  reason"), in record --over.
+
 The MIT License, as each project states it:
 
   Permission is hereby granted, free of charge, to any person obtaining a copy of this

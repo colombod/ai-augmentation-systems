@@ -28,6 +28,7 @@ List the decisions taken under a delegation in the next briefing, one line each.
 - The operator confirms an inferred answer (or a delegation):
   `operator.js ratify --cite in-<host>-N --quote '<their words>' --target ans-<instance>-N|del-<instance>-N`
 - The operator overrides an answer or a decision: record their new decision with `record ... --supersedes <id>`.
+- The operator chose between options: `record ... --over '<option>|<option>'` keeps the ones turned down (one to five, none the decision itself), signed with the decision; `show` prints them as "turned down", `find --text` searches them, and the bead note carries them.
 - The operator withdraws a delegation or a decision:
   `operator.js revoke --cite in-<host>-N --quote '<their words>' --target del-<instance>-N|dec-<instance>-N`
 

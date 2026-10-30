@@ -826,3 +826,39 @@ test('ruling 4: operator.js ask --asker delivery-manager records the delivery-le
   assert.strictEqual(r.status, 0, r.out + r.err);
   assert.deepStrictEqual(json(r).record.asker, { instance: 'delivery-lead', role: 'delivery-lead', bead: null });
 });
+
+// Decisioncraft's option status and Market Fit's choice log (NOTICE): a decision keeps the options the
+// operator turned down, signed with it, shown and searchable; a malformed or self-contradicting list is refused.
+test('record --over: the options turned down are signed into the decision, shown, found and noted on the bead; bad lists refused', () => {
+  const { cos } = cosFixture();
+  const bd = bdStore(['ex-1']);
+  const r = run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres for the orders', '--statement', 'Orders use Postgres',
+    '--scope', 'bead:ex-1', '--over', 'MySQL | Redis as the store'], { bd });
+  assert.strictEqual(r.status, 0, r.err + r.out);
+  const rec = JSON.parse(fs.readFileSync(path.join(cos.root, '.delivery/operator/records/chief-of-staff.ndjson'), 'utf8').split('\n')[0]);
+  assert.deepStrictEqual(rec.over, ['MySQL', 'Redis as the store']);
+  assert.match(JSON.parse(fs.readFileSync(bd, 'utf8')).issues['ex-1'].notes, /Orders use Postgres \(over: MySQL; Redis as the store\)/);
+  const show = run(cos, ['show', ID1]);
+  assert.match(show.out, /validity: valid/);
+  assert.match(show.out, /^turned down: MySQL; Redis as the store$/m);
+  const found = json(run(cos, ['find', '--text', 'mysql', '--json']));
+  assert.deepStrictEqual(found.results.map((x) => [x.id, x.over]), [[ID1, ['MySQL', 'Redis as the store']]]);
+  assert.match(run(cos, ['find', '--text', 'mysql']).out, /Orders use Postgres \(over: MySQL; Redis as the store\)/);
+  assert.deepStrictEqual(json(run(cos, ['find', '--text', 'cassandra', '--json'])).results, []);
+  // tampering with the list breaks the record's hash
+  const f = path.join(cos.root, '.delivery/operator/records/chief-of-staff.ndjson');
+  const lines = fs.readFileSync(f, 'utf8').split('\n');
+  const t = JSON.parse(lines[0]); t.over = ['Postgres'];
+  fs.writeFileSync(f, [JSON.stringify(t), ...lines.slice(1)].join('\n'));
+  assert.match(run(cos, ['show', ID1]).out, /validity: invalid/);
+  const { cos: c2 } = cosFixture();
+  const self = run(c2, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'Postgres', '--over', 'postgres']);
+  assert.strictEqual(self.status, 1);
+  assert.match(self.out + self.err, /invalid_over|cannot be the decision itself/);
+  const many = run(c2, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'Postgres', '--over', 'a|b|c|d|e|f']);
+  assert.strictEqual(many.status, 1);
+  assert.match(many.out + many.err, /one to five options/);
+  const none = run(c2, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'Postgres']);
+  assert.strictEqual(none.status, 0, none.err);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(c2.root, '.delivery/operator/records/chief-of-staff.ndjson'), 'utf8').split('\n')[0]).over, undefined);
+});
