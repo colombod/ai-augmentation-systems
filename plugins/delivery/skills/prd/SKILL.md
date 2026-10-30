@@ -68,7 +68,7 @@ plus `.delivery/simulations/`, `.delivery/interviews/` and `.delivery/personas/`
 exist. With `--stage`, run only this step against an existing `prd.md`: skip the PRD's own
 revise/replace question and steps 1–5 except 5b (the one breath, which *In the primary picture?*
 is scored against: tell it if the PRD has none, and keep its proposed non-goals as proposals,
-written in `prioritization.md` only; `--stage` never edits `prd.md`: a breath fixed there, or a
+written in `prioritization.md` only; `--stage` never edits `prd.md`: a breath fixed under `--stage`, or a
 requirement the staging finds missing, is written in `prioritization.md` with "the PRD needs a
 revise" in the hand-off), keep
 the blocking-findings gate, and stop if `prd.md` is missing. Value is ranked here with rough effort; the real-cost

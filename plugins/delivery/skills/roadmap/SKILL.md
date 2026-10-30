@@ -30,7 +30,7 @@ Read the inputs and, where they exist, `storyboard.md` and the brief.
   Sizzle's storyboard gate, michaeljabbour, MIT). Missing, unquoted or reopened: say which, and offer
   to draft it or put it to the owner. Only the owner may waive it, in words you quote in the
   roadmap's header; a role never does, and silence is not approval. **Reopened on an initiative
-  already being built** (a `roadmap.md` exists, and `/delivery:realign` or a PRD change reopened the
+  already planned** (a `roadmap.md` exists, and `/delivery:realign` or a PRD change reopened the
   storyboard) — not a stop: revise the roadmap, mark each phase the change affects "storyboard
   reopened: awaiting the owner", and put the storyboard to the owner.
   **Planned before this gate:** an initiative whose brief has no *Owner lens and what must survive*
