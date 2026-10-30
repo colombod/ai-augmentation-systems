@@ -63,9 +63,16 @@ test('storyboard: approved only in the owner\'s quoted words; reopened by a chan
   const r = read('skills/roadmap/SKILL.md');
   assert.match(r, /- \*\*Storyboard not approved\*\* — stop\./);
   assert.match(r, /Only the owner may waive it, in words you quote[\s\S]*a role never does, and silence is not approval/);
-  assert.match(r, /- \*\*Proposed for not doing, unanswered\*\* — not a stop\.[\s\S]*never leave it out of the plan on the team's word/);
+  assert.match(r, /never leave it out of the plan on the team's word/);
+  assert.match(r, /\*\*Reopened on an initiative\s+already being built\*\*[\s\S]*— not a stop: revise the roadmap, mark each phase/);
+  assert.match(r, /- \*\*Proposed for not doing, or a proposed non-goal \(step 5b\), unanswered\*\* — not a stop\./);
+  assert.match(r, /whatever the PRD's out of\s+scope list says about it/);
+  assert.match(s, /Put every open shape proposal in the same message, each with a\s+recommended answer/);
+  assert.match(s, /`--stage` never edits `prd\.md`/);
   const g = read('skills/realign/SKILL.md');
-  assert.match(g, /If the MVP's `FR-n` list or the proposition changes, the storyboard\s+\(`storyboard\.md`\) is reopened/);
+  assert.match(g, /If the journey the\s+storyboard's cards tell, the MVP's `FR-n` list or the proposition changes, the storyboard\s+\(`storyboard\.md`\) is reopened/);
+  assert.match(g, /Re-staging keeps `\/delivery:prd`'s staging rules: what must survive in the owner's words stays in\s+the MVP unless the owner's record says otherwise[\s\S]*kept in its\s+stage until the owner's record/);
+  assert.match(g, /marks the phases it affects "storyboard reopened: awaiting the owner" and does\s+not stop/);
   assert.match(read('skills/status/SKILL.md'), /\| PRD: storyboard approved by the owner \|/);
 });
 

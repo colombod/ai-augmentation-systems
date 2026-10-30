@@ -26,7 +26,7 @@ Read `.delivery/initiatives/<initiative>/brief.md`.
 
 - **Missing** — stop. Tell the user to run `/delivery:brief` first, and offer to run it now. Do not improvise a brief.
 - **Written before the owner's lens** (no *Owner lens and what must survive* section, delivery
-  0.40.3) — not thin: proceed. What must survive is taken only from the owner's words the brief
+  0.41.2) — not thin: proceed. What must survive is taken only from the owner's words the brief
   quotes; anything else the brief says is **assumed** and does not bind. List the lens questions
   under Open questions for the owner's next briefing.
 - **Exists but thin** (no named user segment, no measurable success signal, or unresolved blocking questions) — say specifically what is weak, and ask whether to proceed anyway or strengthen the brief first. Proceeding on a weak brief is a legitimate choice, but it should be a choice.
@@ -67,7 +67,8 @@ Output: `.delivery/initiatives/<initiative>/prioritization.md`. Inputs: the PRD 
 plus `.delivery/simulations/`, `.delivery/interviews/` and `.delivery/personas/` where they
 exist. With `--stage`, run only this step against an existing `prd.md`: skip the PRD's own
 revise/replace question and steps 1–5 except 5b (the one breath, which *In the primary picture?*
-is scored against: tell it if the PRD has none, and keep its proposed non-goals as proposals), keep
+is scored against: tell it if the PRD has none, and keep its proposed non-goals as proposals,
+written in `prioritization.md` only; `--stage` never edits `prd.md`), keep
 the blocking-findings gate, and stop if `prd.md` is missing. Value is ranked here with rough effort; the real-cost
 pass comes later, in `/delivery:roadmap`.
 
@@ -145,7 +146,9 @@ Write `.delivery/initiatives/<initiative>/storyboard.md` from `${CLAUDE_PLUGIN_R
 the MVP's primary journey as one card per step (what the persona sees, does, and believes after,
 with its `FR-n`), the proposition, and two or three real choices with a recommended answer each.
 Show it to the owner (in a team, through the Chief of Staff's briefing) and nothing downstream
-starts until they approve it. The approval is their message **quoted word for word** in the
+starts until they approve it. Put every open shape proposal in the same message, each with a
+recommended answer, so one reply can settle them all: the lens questions still open, the assumed
+what-must-survive items, the step 5b non-goals and the requirements proposed for not doing. The approval is their message **quoted word for word** in the
 storyboard's approval block; with no message to quote, it is not approved. Approval is never
 assumed, inferred from silence, or given by a role. A later change to the journey the cards tell,
 the MVP's `FR-n` list or the proposition reopens it: clear the approval and say so in the hand-off.

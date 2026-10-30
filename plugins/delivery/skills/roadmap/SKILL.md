@@ -29,15 +29,19 @@ Read the inputs and, where they exist, `storyboard.md` and the brief.
   with status approved and the owner's approving words quoted exactly (`/delivery:prd` step 6.7;
   Sizzle's storyboard gate, michaeljabbour, MIT). Missing, unquoted or reopened: say which, and offer
   to draft it or put it to the owner. Only the owner may waive it, in words you quote in the
-  roadmap's header; a role never does, and silence is not approval.
+  roadmap's header; a role never does, and silence is not approval. **Reopened on an initiative
+  already being built** (a `roadmap.md` exists, and `/delivery:realign` or a PRD change reopened the
+  storyboard) — not a stop: revise the roadmap, mark each phase the change affects "storyboard
+  reopened: awaiting the owner", and put the storyboard to the owner.
   **Planned before this gate:** an initiative whose brief has no *Owner lens and what must survive*
-  section was framed before the storyboard existed (delivery 0.40.3). Do not stop it: go on, and
+  section was framed before the storyboard existed (delivery 0.41.2). Do not stop it: go on, and
   write in the roadmap's header "Planned before the storyboard gate: no approved storyboard;
   `/delivery:prd --stage` adds one", and say so in the hand-off. Once the brief has that section,
   the gate applies in full.
-- **Proposed for not doing, unanswered** — not a stop. Sequence each such `FR-n` in the stage
-  `prioritization.md` keeps it in, marked "proposed for not doing: awaiting the owner" in its
-  phase; never leave it out of the plan on the team's word.
+- **Proposed for not doing, or a proposed non-goal (step 5b), unanswered** — not a stop. Sequence
+  each such `FR-n` in the stage `prioritization.md` keeps it in, marked "proposed: awaiting the
+  owner" in its phase; never leave it out of the plan on the team's word, whatever the PRD's out of
+  scope list says about it.
 - **Architecture missing** — warn clearly. You can sequence without it, but the dependency map and effort sizing will be guesses, and the spike list — the most valuable input to sequencing — will not exist. Ask whether to proceed anyway or run `/delivery:architecture` first.
 
 If `.delivery/initiatives/<initiative>/roadmap.md` already exists, read it and ask whether
