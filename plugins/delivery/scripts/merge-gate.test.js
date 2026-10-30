@@ -327,3 +327,20 @@ test('Copilot #86: a follow-up merge on a deployed story hands its deploy over u
   assert.equal(HO.done(row, followUp), false, 'the earlier deploy and verified labels do not close it');
   assert.equal(HO.done(row, { ...followUp, metadata: { ...followUp.metadata, deployed_at: '2026-10-30T12:00:00Z' } }), true, 'a deploy after the merge does');
 });
+
+// Copilot's fifth pass on #86: a deploy recorded between GitHub's merge and `merge-gate.js merged` is
+// this merge's deploy. The story's merge time is GitHub's mergedAt, so no needless deploy wake follows.
+test('Copilot #86: the merge time is GitHub\'s, so a deploy before the merge was recorded is not asked for again', () => {
+  const MERGED_AT = '2000-01-01T00:00:00Z';
+  const h = setup({ 478: pr478({ mergedAt: MERGED_AT }) });
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  assert.equal(h.merge('delivery-lead', `478 --match-head-commit ${H1} --squash`).deny, null);
+  // the Delivery Manager deploys first, then records the merge
+  const dep = h.bash('delivery-lead', `${h.script('evidence.js')} state ${BEAD} deployed --sha d478aa11`);
+  assert.equal(dep.code, 0, dep.out + (dep.deny || ''));
+  const done = h.gate('delivery-lead', 'merged 478');
+  assert.doesNotMatch(done.out, /handed to the watchdog/, done.out);
+  assert.equal(h.db().issues[BEAD].metadata.merged_at, MERGED_AT);
+  assert.deepEqual(require('./lib/handoff.js').pending(h.root).map((r) => r.step), ['check'], 'only the reality check the deploy handed over; no deploy wake');
+});
