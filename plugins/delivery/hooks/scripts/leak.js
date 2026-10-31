@@ -678,6 +678,18 @@ function stagedAdds(dir, all) {
   const run = (range) => execFileSync('git', ['-C', dir, 'diff', ...range, '-U0', '--no-color', '--no-ext-diff', '--no-textconv'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] });
   let out;
   try { out = run(all ? ['HEAD'] : ['--cached']); } catch (err) { if (!all) throw err; out = run(['--cached']); }
+  const mine = addsOf(out);
+  // Concluding a merge (a conflicted `git merge`, resolved and committed): the staged change against
+  // HEAD holds everything the other side brings in, such as the default branch's own files. Only the
+  // lines new against both parents are this commit's own text (delivery-plugin-planning-a1v).
+  let other = null;
+  try { other = execFileSync('git', ['-C', dir, 'rev-parse', '-q', '--verify', 'MERGE_HEAD'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (err) { other = null; }
+  if (!other) return mine;
+  const theirs = new Map(addsOf(run([all ? other : '--cached', ...(all ? [] : [other])])).map((f) => [f.file, new Set(f.text.split('\n'))]));
+  return mine.map((f) => ({ file: f.file, text: theirs.has(f.file) ? f.text.split('\n').filter((l) => theirs.get(f.file).has(l)).join('\n') : '' })).filter((f) => f.text);
+}
+// Added lines per file from a `git diff -U0` output.
+function addsOf(out) {
   const files = [];
   const removed = new Set();
   let cur = null;

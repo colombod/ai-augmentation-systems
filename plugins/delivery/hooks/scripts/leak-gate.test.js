@@ -250,3 +250,34 @@ test('the leak-guard hook refuses a commit whose staged change copies the plan, 
   assert.equal(runHook(comment(OWN_WORDS), env), '');
   assert.ok(!git(projectRoot, 'status', '--porcelain').includes('cache'), 'the fingerprint cache never shows up as a change in the plan repo');
 });
+
+// delivery-plugin-planning-a1v: concluding a conflicted merge of the default branch, the staged change
+// against HEAD holds the default branch's own files; only lines new against both parents are the
+// builder's text, so main's .delivery files no longer read as plan text the builder wrote.
+test('stagedAdds while concluding a merge counts only lines new against both parents', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-merge-'));
+  const git = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
+  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  fs.writeFileSync(path.join(repo, 'c.txt'), 'base\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'init');
+  git('checkout', '-q', '-b', 'team/builder');
+  fs.writeFileSync(path.join(repo, 'c.txt'), 'builder side\n');
+  git('commit', '-q', '-am', 'builder');
+  git('checkout', '-q', 'main');
+  fs.mkdirSync(path.join(repo, 'plugins', 'p', '.delivery', 'x'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'plugins', 'p', '.delivery', 'x', 'brief.md'), `${COPIED}\n`);
+  fs.writeFileSync(path.join(repo, 'c.txt'), 'main side\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'main moves on');
+  git('checkout', '-q', 'team/builder');
+  assert.throws(() => git('merge', '-q', 'main'), 'the merge conflicts on c.txt');
+  fs.writeFileSync(path.join(repo, 'c.txt'), 'builder side\nmain side\nresolved by the builder\n');
+  git('add', '-A');
+  const adds = stagedAdds(repo, false);
+  assert.deepEqual(adds.map((f) => f.file), ['c.txt'], 'main\'s own .delivery file is not this commit\'s text');
+  assert.equal(adds[0].text, 'resolved by the builder', 'only the builder\'s own resolution line is new against both parents');
+  // without a merge in progress, the same staged file reads whole, as before
+  git('commit', '-q', '-m', 'merge main');
+  fs.writeFileSync(path.join(repo, 'd.txt'), `${COPIED}\n`);
+  git('add', 'd.txt');
+  assert.deepEqual(stagedAdds(repo, false), [{ file: 'd.txt', text: COPIED }]);
+});
