@@ -99,9 +99,12 @@ function entryPoints(map, texts) {
   const out = [];
   const files = new Set(map.files);
   const stem = (f) => f.replace(/\.[^./]+$/, '');
+  // a test file is never the product's entry point, for its routes as for its tools: the Vault's
+  // tests/test_twins.py starts an app with routes, and became a feature every sign-in change reached
+  const isTest = (f) => /(^|\/)(tests?|__tests__)\//.test(f) || /(^|\/)(test_[^/]*|[^/]*_test\.py|conftest\.py)$|\.(test|spec)\.[cm]?[jt]sx?$/.test(f);
   for (const [f, text] of Object.entries(texts)) {
     const lang = C.langOf(f);
-    if (lang === 'py' || lang === 'js') {
+    if ((lang === 'py' || lang === 'js') && !isTest(f)) {
       const routes = [];
       for (const m of text.matchAll(/^[ \t]*@\w+(?:\.\w+)*\.(get|post|put|patch|delete|route|websocket|api_route)\(\s*(?:path\s*=\s*)?["']([^"']*)["']/gm)) routes.push(`${m[1].toUpperCase()} ${m[2] || '/'}`);
       for (const m of text.matchAll(/\b(?:app|router|server)\.(get|post|put|patch|delete|all|use)\(\s*["'](\/[^"']*)["']/g)) routes.push(`${m[1].toUpperCase()} ${m[2]}`);
@@ -109,7 +112,7 @@ function entryPoints(map, texts) {
       const tools = [];
       for (const m of text.matchAll(/(?:^|[^\w.])Tool\(\s*["'](\w+)["']/g)) tools.push(m[1]);
       for (const m of text.matchAll(/\.(?:tool|registerTool|addTool)\(\s*["'](\w+)["']/g)) tools.push(m[1]);
-      if (tools.length && !/(^|\/)tests?\//.test(f) && !/(^|\/)test_[^/]*$|\.test\.[jt]s$/.test(f)) out.push({ id: `tools:${stem(f)}`, kind: 'tools', source: 'derived', anchors: [f], entries: [...new Set(tools)] });
+      if (tools.length) out.push({ id: `tools:${stem(f)}`, kind: 'tools', source: 'derived', anchors: [f], entries: [...new Set(tools)] });
     }
     if (/(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/.test(f)) {
       const name = (/^name:\s*["']?([^"'\n]+)/m.exec(text) || [])[1];
