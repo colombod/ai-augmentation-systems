@@ -352,6 +352,9 @@ test('role-session peer message, isMeta text blocks and launcher record are neve
   assert.strictEqual(t.classifyRecord(RS.launcher()).source, 'system');
   const meta = RS.typed('injected', 5); meta.isMeta = true;
   assert.notStrictEqual(t.classifyRecord(meta).source, 'human');
+  // the role-session shape requires isMeta absent: a record that carries the flag at all is not it
+  const metaFalse = RS.typed('flagged', 11); metaFalse.isMeta = false;
+  assert.notStrictEqual(t.classifyRecord(metaFalse).source, 'human');
   const blocks = RS.typed('x', 6); blocks.message.content = [{ type: 'text', text: 'array content' }];
   assert.notStrictEqual(t.classifyRecord(blocks).source, 'human');
   const other = RS.typed('x', 7); other.promptSource = 'system';
