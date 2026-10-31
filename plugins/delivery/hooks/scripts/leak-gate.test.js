@@ -253,11 +253,15 @@ test('the leak-guard hook refuses a commit whose staged change copies the plan, 
 
 
 // a merge only takes text as inherited from a side some remote branch already holds: publish main
-function publish(repo) {
+// (origin is a network URL, served here from a local bare repository through url.<path>.insteadOf)
+function publish(repo, { local = false } = {}) {
   const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-remote-'));
+  const g = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
   execFileSync('git', ['init', '-q', '--bare', bare], { stdio: 'pipe' });
-  execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', bare], { stdio: 'pipe' });
-  execFileSync('git', ['-C', repo, 'push', '-q', 'origin', 'main'], { stdio: 'pipe' });
+  if (local) g('remote', 'add', 'origin', bare);
+  else { g('config', `url.${bare}.insteadOf`, 'https://example.test/product.git'); g('remote', 'add', 'origin', 'https://example.test/product.git'); }
+  g('push', '-q', 'origin', 'main');
+  g('fetch', '-q', 'origin');
 }
 
 // delivery-plugin-planning-a1v: concluding a conflicted merge of the default branch, the staged change
@@ -444,4 +448,24 @@ test('stagedAdds in a merge: text from an unpublished branch is not taken as inh
   fs.writeFileSync(path.join(repo, 'a.txt'), `top\nbuilder\n${COPIED}\n`);
   git('add', '-A');
   assert.ok(stagedAdds(repo, false).some((f) => f.text.includes(COPIED)), 'the plan text is read: its source was never published');
+});
+
+test('stagedAdds in a merge: a remote on a local folder publishes nothing', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-merge7-'));
+  const git = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
+  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'top\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'init');
+  git('checkout', '-q', '-b', 'team/builder');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'top\nbuilder\n');
+  git('commit', '-q', '-am', 'builder');
+  git('checkout', '-q', 'main');
+  fs.writeFileSync(path.join(repo, 'a.txt'), `top\n${COPIED}\n`);
+  git('commit', '-q', '-am', 'plan text on a branch pushed to a folder');
+  publish(repo, { local: true });
+  git('checkout', '-q', 'team/builder');
+  try { git('merge', '-q', '--no-commit', '--no-ff', 'main'); } catch (err) { /* staged below */ }
+  fs.writeFileSync(path.join(repo, 'a.txt'), `top\nbuilder\n${COPIED}\n`);
+  git('add', '-A');
+  assert.ok(stagedAdds(repo, false).some((f) => f.text.includes(COPIED)), 'a folder is not a published remote');
 });

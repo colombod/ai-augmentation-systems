@@ -690,8 +690,17 @@ function stagedAdds(dir, all, max = DIFF_MAX) {
   if (!other) return mine.files.map(textOf);
   // only a published side can lend its text: a commit some remote branch already holds. A local branch
   // merged with --no-commit (plan text committed there first) would otherwise launder it as "inherited".
+  // Published means on origin's default branch, where origin is a network remote: a remote added on a
+  // local folder, or any other branch, could hold text nobody has seen.
+  const g = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8', timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   let published = false;
-  try { published = execFileSync('git', ['-C', dir, 'branch', '-r', '--contains', other], { encoding: 'utf8', timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== ''; } catch (err) { published = false; }
+  try {
+    const url = g('config', '--get', 'remote.origin.url');
+    if (/^(https?:\/\/|ssh:\/\/|git@[^:]+:)/.test(url)) {
+      const base = ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/remotes/origin/master'].find((r) => { try { g('rev-parse', '-q', '--verify', r); return true; } catch (err) { return false; } });
+      if (base) { g('merge-base', '--is-ancestor', other, base); published = true; }
+    }
+  } catch (err) { published = false; }
   if (!published) return mine.files.map(textOf);
   // --text: a parent's copy with a NUL byte would otherwise give 'Binary files differ' and no lines
   const theirs = addsOf(run(all ? ['--text', other] : ['--text', '--cached', other]), max);
