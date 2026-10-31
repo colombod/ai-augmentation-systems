@@ -9,7 +9,7 @@ const WAY_OUT = [
   /`[^`]+`/,
   /\bnode \S+\.js\b/,
   /\b(?:bd|git|gh) [a-z-]+/,
-  /\bmessage the (?:Delivery Manager|Chief of Staff|holder|Delivery Manager or Progress Observer)\b/i,
+  /\bmessage the (?:Delivery Manager|Chief of Staff|Product Manager|holder|Delivery Manager or Progress Observer)\b/i,
   /\bSendMessage\b/,
 ];
 

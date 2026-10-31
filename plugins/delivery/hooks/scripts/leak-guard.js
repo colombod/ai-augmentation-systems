@@ -15,8 +15,15 @@ try {
     const toolInput = input.tool_input || {};
     const shell = shellCommandOf(input.tool_name, toolInput);
     const scansText = shell !== null || String(input.tool_name).startsWith('mcp__');
-    const denylist = scansText ? loadDenylist(ctx.marker.project_root) : [];
-    const d = decideLeak({ toolName: input.tool_name, toolInput, cwd: input.cwd, roleDir: ctx.roleDir, denylist, roleId: ctx.role.id });
+    const writesFile = ['Write', 'Edit', 'NotebookEdit', 'MultiEdit'].includes(input.tool_name);
+    const root = ctx.marker.project_root;
+    const denylist = scansText || writesFile ? loadDenylist(root) : [];
+    // The plan's fingerprint (rebuilt only when a plan file changed) and the product repository's slug,
+    // so the Delivery Manager's gh writes to it are checked from the project directory too.
+    const print = scansText || writesFile ? require('../../scripts/lib/plan-print.js').load(root) : null;
+    let productRepo = null;
+    try { productRepo = JSON.parse(require('fs').readFileSync(require('path').join(root, '.delivery', 'team', 'team.json'), 'utf8')).product_github || null; } catch (e) { productRepo = null; }
+    const d = decideLeak({ toolName: input.tool_name, toolInput, cwd: input.cwd, roleDir: ctx.roleDir, denylist, roleId: ctx.role.id, print, productRepo });
     if (d) deny(d.reason);
   }
 } catch (err) {

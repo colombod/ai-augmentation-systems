@@ -444,9 +444,11 @@ test('E: MCP GitHub-style tool inputs are scanned for plan phrases; issue creati
   // Whole tool names only: a name that merely contains the words is not an issue creator.
   assert.equal(run('mcp__github__list_issue_types', { title: 'clean' }), null);
   assert.equal(run('mcp__x__addIssue', { title: 'clean' }), null);
-  // Depth and size are bounded: a phrase deeper than four levels or past 20 KB is not reached.
+  // Depth and size are bounded: a phrase deeper than four levels or past 256 KB is not reached.
   assert.equal(run('mcp__github__create_pull_request', { a: { b: { c: { d: { e: { f: 'Sell duplicates faster' } } } } } }), null);
-  assert.equal(run('mcp__github__create_pull_request', { pad: 'x'.repeat(21000), body: 'Sell duplicates faster' }), null);
+  assert.equal(run('mcp__github__create_pull_request', { pad: 'x'.repeat(257 * 1024), body: 'Sell duplicates faster' }), null);
+  // a whole file pushed through MCP is in reach (the old 20 KB budget let it past)
+  assert.match(run('mcp__github__create_pull_request', { pad: 'x'.repeat(21000), body: 'Sell duplicates faster' }).reason, /Sell duplicates faster/);
   // Not a public-text tool, or a role that does not touch product: nothing to check.
   assert.equal(run('mcp__files__read_file', { body: 'Sell duplicates faster' }), null);
   const thinker = fs.mkdtempSync(path.join(os.tmpdir(), 'leak-thinker-'));

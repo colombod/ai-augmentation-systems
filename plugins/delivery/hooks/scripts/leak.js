@@ -1,6 +1,7 @@
 // hooks/scripts/leak.js — keep plans and strategy out of the public product repo.
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { splitWithOps, realish, shellCommandOf, ghApiCall, prOpenCall } = require('./lane.js');
 
 function loadDenylist(projectRoot) {
@@ -395,10 +396,13 @@ function describe(t, live) {
   }
   if (t[0] === 'gh') {
     let k = 1;
-    while (k < t.length && t[k].startsWith('-')) { if (t[k] === '-R' || t[k] === '--repo') k += 2; else k++; }
+    let repo = null;
+    while (k < t.length && t[k].startsWith('-')) {
+      if (t[k] === '-R' || t[k] === '--repo') { repo = t[k + 1] || null; k += 2; } else { if (t[k].startsWith('--repo=')) repo = t[k].slice(7); k++; }
+    }
     if (/[$`]/.test(`${t[k] || ''}${t[k + 1] || ''}`)) return { prog: 'subst', dirs: live };
-    if (t[k] === 'api') return { prog: 'gh', sub: 'api', args: t.slice(k + 1), dirs: live };
-    return { prog: 'gh', sub: `${t[k] || ''} ${t[k + 1] || ''}`.trim(), args: t.slice(k + 2), dirs: live };
+    if (t[k] === 'api') return { prog: 'gh', sub: 'api', args: t.slice(k + 1), dirs: live, repo };
+    return { prog: 'gh', sub: `${t[k] || ''} ${t[k + 1] || ''}`.trim(), args: t.slice(k + 2), dirs: live, repo };
   }
   if (SHELLS.includes(t[0])) {
     const i = t.findIndex((x, n) => n > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(x));
@@ -598,9 +602,160 @@ function scanText(text, denylist) {
   return null;
 }
 
+// ---------- the strategy leak gate ----------
+// The owner's ask (2026-10-31): nothing of the private plan reaches the public product repository, with
+// no promise the gate cannot keep. It catches exact terms (denylist, leak-extras.txt) and 8-word passages
+// copied from the plan (scripts/lib/plan-print.js); it does not catch paraphrase, and the docs say so.
+let PP = null;
+const planPrint = () => PP || (PP = require('../../scripts/lib/plan-print.js'));
+
+// The review binding requires a `Refs <bead id>` line, and a spike's id contains the initiative slug, which
+// the denylist holds: the guard refused its own required line. A Refs line of bead ids is not scanned. An id
+// has a prefix, a hyphen and a digit somewhere (dlv-4oj, <prefix>-<slug>-spike-s1, <prefix>-<slug>-01), so
+// a bare slug or phrase after Refs is still scanned.
+const BEAD_ID = '[A-Za-z0-9]+-[\\w.-]*\\d[\\w.-]*';
+const REFS_LINE = new RegExp(`^[ \\t]*Refs:?[ \\t]+${BEAD_ID}(?:[ \\t]*,[ \\t]*${BEAD_ID})*[ \\t]*$`, 'gim');
+const withoutRefs = (t) => String(t).replace(REFS_LINE, '');
+
+// The denylist and the owner's extras, less what the allowlist says is public by design.
+function termsOf(denylist, print) {
+  const allow = new Set(((print && print.allow) || []).map((a) => String(a).toLowerCase()));
+  return [...(denylist || []), ...((print && print.terms) || [])].filter((t) => !allow.has(String(t).toLowerCase()));
+}
+
+// The first plan material in text: { what } naming it for the refusal, or null.
+function planHit(text, terms, print) {
+  const t = withoutRefs(text);
+  const hit = scanText(t, terms);
+  if (hit) return { what: `a plan phrase: "${hit.phrase}"` };
+  const p = print && print.shingles ? planPrint().passage(t, print) : null;
+  if (p) return { what: `words copied from the private plan: "${p.words}" (from ${p.source})` };
+  return null;
+}
+// Two lines at most (R-46): what matched and where it came from, then the way out. The Product Manager
+// keeps .delivery/team/leak-allow.txt for what is public by design.
+const PUBLIC_OK = 'if the words are public by design, message the Product Manager';
+const TEXT_FIX = `\nDescribe the change, never the plan: \`git commit -m '<the change>' -m 'Refs <bead id>'\`; ${PUBLIC_OK}.`;
+const CODE_FIX = `\nRewrite it in your own words (the product's code and docs describe the product, never the plan); ${PUBLIC_OK}.`;
+
+// Branch and tag names: words split on - _ / . and matched whole against the terms.
+const nameWords = (s) => ` ${String(s).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()} `;
+function nameHit(name, terms) {
+  const n = nameWords(name);
+  for (const t of terms) { const w = nameWords(t); if (w.trim() && n.includes(w)) return t; }
+  return null;
+}
+// flags whose next word is a value, not a name, per subcommand (git push -u takes none; git tag -u a key)
+const VALUE_FLAGS = {
+  push: ['-o', '--push-option', '--repo', '--receive-pack', '--exec'],
+  branch: ['-u', '--set-upstream-to', '--contains', '--no-contains', '--merged', '--no-merged', '--points-at', '--sort', '--format'],
+  tag: ['-m', '-F', '-u', '--message', '--file', '--local-user', '--contains', '--no-contains', '--merged', '--no-merged', '--points-at', '--sort', '--format', '--cleanup'],
+};
+function refNames(item) {
+  const a = item.args || [];
+  const out = [];
+  if (item.sub === 'checkout' || item.sub === 'switch') {
+    for (let i = 0; i < a.length; i++) if (['-b', '-B', '-c', '-C', '--orphan'].includes(a[i]) && a[i + 1]) out.push(a[i + 1]);
+    return out;
+  }
+  if (!['push', 'branch', 'tag'].includes(item.sub)) return out;
+  // removing a name is how a plan-named branch is cleaned up: never refused
+  if (a.some((x) => ['-d', '-D', '--delete'].includes(x) || (item.sub === 'push' && /^:/.test(x)))) return out;
+  const pos = [];
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === '--') { pos.push(...a.slice(i + 1)); break; }
+    if (a[i].startsWith('-')) { if (VALUE_FLAGS[item.sub].includes(a[i])) i++; continue; }
+    pos.push(a[i]);
+  }
+  // push: the first word is the remote; the rest are refspecs, either side of a colon
+  for (const w of item.sub === 'push' ? pos.slice(1) : pos) for (const side of w.replace(/^\+/, '').split(':')) if (side) out.push(side.replace(/^refs\/(heads|tags)\//, ''));
+  return out;
+}
+
+// Added lines of the change a commit records, per file. -a commits the working tree, so it reads HEAD.
+const DIFF_MAX = 4 * 1024 * 1024;
+function stagedAdds(dir, all) {
+  const run = (range) => execFileSync('git', ['-C', dir, 'diff', ...range, '-U0', '--no-color', '--no-ext-diff', '--no-textconv'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] });
+  let out;
+  try { out = run(all ? ['HEAD'] : ['--cached']); } catch (err) { if (!all) throw err; out = run(['--cached']); }
+  const files = [];
+  const removed = new Set();
+  let cur = null;
+  let size = 0;
+  for (const line of out.split('\n')) {
+    if (line.startsWith('+++ ')) { cur = { file: line.slice(4).replace(/^b\//, ''), text: [] }; files.push(cur); continue; }
+    if (line.startsWith('--- ')) continue;
+    if (line.startsWith('-')) { removed.add(line.slice(1).trim()); continue; }
+    if (cur && line.startsWith('+') && size < DIFF_MAX) { cur.text.push(line.slice(1)); size += line.length; }
+  }
+  // A line moved or re-indented was already in the product: not new text.
+  return files.map((f) => ({ file: f.file, text: f.text.filter((l) => !removed.has(l.trim())).join('\n') }));
+}
+// Outside a git work tree the commit fails on its own; there is no change to read.
+function inGitTree(dir) {
+  for (let d = path.resolve(dir); ; d = path.dirname(d)) {
+    if (fs.existsSync(path.join(d, '.git'))) return true;
+    if (path.dirname(d) === d) return false;
+  }
+}
+const commitsAll = (args) => args.some((x) => x === '--all' || /^-[A-Za-z]*a[A-Za-z]*$/.test(x) && !/^-[A-Za-z]*[mFtcC][A-Za-z]*a/.test(x));
+
+// The product repository a gh command writes to: -R/--repo, or the repos/<owner>/<repo> of a gh api path.
+const slugOf = (s) => String(s || '').toLowerCase().replace(/^https?:\/\//, '').replace(/^(www\.)?github\.com\//, '').replace(/\.git$/, '').replace(/\/+$/, '');
+function ghTarget(item) {
+  if (item.repo) return slugOf(item.repo);
+  const a = item.args || [];
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === '-R' || a[i] === '--repo') return slugOf(a[i + 1]);
+    if (a[i].startsWith('--repo=')) return slugOf(a[i].slice(7));
+  }
+  if (item.sub === 'api') { const m = a.map((x) => /^\/?repos\/([^/\s]+\/[^/\s?]+)/.exec(x)).find(Boolean); if (m) return slugOf(m[1]); }
+  return null;
+}
+const targetsProduct = (item, productRepo) => !!productRepo && item.prog === 'gh' && ghTarget(item) === slugOf(productRepo);
+
+const readSmall = (f, base) => { try { const p = path.isAbsolute(f) ? f : path.join(base, f); return fs.readFileSync(p, 'utf8').slice(0, DIFF_MAX); } catch (e) { return null; } };
+// Text a gh command sends to the product from outside the product worktree (the Delivery Manager's
+// comments, merge subjects, REST calls). Files are read rather than refused here: outside the product
+// worktree the guard checks what it can and does not fail closed.
+function ghOutsideTexts(item, base) {
+  if (item.sub === 'api') {
+    const out = [];
+    const a = item.args;
+    for (let i = 0; i < a.length; i++) {
+      const w = a[i];
+      let v = null;
+      if (['-f', '-F', '--field', '--raw-field'].includes(w)) v = a[++i];
+      else if (/^--(raw-)?field=/.test(w)) v = w.slice(w.indexOf('=') + 1);
+      else if (/^-[fF]./.test(w)) v = w.slice(2);
+      else if (w === '--input') { const t = readSmall(a[++i] || '', base); if (t !== null) out.push(t); continue; }
+      if (v == null) continue;
+      const val = v.includes('=') ? v.slice(v.indexOf('=') + 1) : v;
+      if (val.startsWith('@')) { const t = readSmall(val.slice(1), base); if (t !== null) out.push(t); } else out.push(unsent(val));
+    }
+    return out;
+  }
+  if (!GH_WRITES.includes(item.sub) && item.sub !== 'issue create') return [];
+  return parseFlags(item.args, GH_SPEC, false).map((f) => (f.kind === 'file' ? readSmall(f.value, base) || '' : unsent(f.value)));
+}
+
 const UNANALYSABLE = 'leak guard could not analyse this command.\nRun git and gh as plain commands with inline text: `git commit -m \'<the change>\'`';
 const ISSUE_REASON = 'GitHub issues in the product repo are for users.\nRecord internal work in a bead: `bd create --parent <your bead> --title "<the work>"`.';
 const RULE = '\nDescribe the change to the product, never the plan: `git commit -m \'<the change>\' -m \'Refs <bead id>\'`.';
+
+// The lines of a product file as it is now (trimmed), and the lines of new text that are not among them.
+function existingLines(abs) {
+  try { return new Set(fs.readFileSync(abs, 'utf8').slice(0, DIFF_MAX).split(/\r?\n/).map((l) => l.trim()).filter(Boolean)); } catch (e) { return new Set(); }
+}
+const newLines = (text, before) => (before.size ? String(text).split(/\r?\n/).filter((l) => !before.has(l.trim())).join('\n') : String(text));
+
+// The text a Write, Edit, MultiEdit or NotebookEdit puts into a file.
+function contentOf(input) {
+  const i = input || {};
+  const out = [i.content, i.new_string, i.new_source].filter((x) => typeof x === 'string');
+  if (Array.isArray(i.edits)) for (const e of i.edits) if (e && typeof e.new_string === 'string') out.push(e.new_string);
+  return out;
+}
 
 function filePathsOf(input) {
   const i = input || {};
@@ -619,9 +774,9 @@ const MCP_ISSUE_CREATE = /(^|__)(create_issue|add_issue|issue_write)$/i;
 const mcpCreatesIssue = (name, input) => MCP_ISSUE_CREATE.test(name)
   && (!/(^|__)issue_write$/i.test(name) || String(input && input.method).toLowerCase() === 'create');
 const MCP_DEPTH = 4;
-const MCP_BUDGET = 20 * 1024;
+const MCP_BUDGET = 256 * 1024;
 
-// Every string value in a tool input, to depth 4, within the first 20 KB in total.
+// Every string value in a tool input, to depth 4, within the first 256 KB in total.
 function mcpStrings(input) {
   const out = [];
   let left = MCP_BUDGET;
@@ -641,15 +796,18 @@ function touchesProduct(roleDir, roleId) {
   try { return fs.existsSync(productDir(roleDir)); } catch (e) { return false; }
 }
 
-function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId }) {
+// print: the plan's fingerprint (plan-print.load); productRepo: team.json's product_github; diffOf: the
+// added lines of a commit, injectable for tests. Without print the guard checks terms only, as before.
+function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId, print = null, productRepo = null, diffOf = stagedAdds }) {
   const base = path.resolve(cwd || process.cwd());
   const name = String(toolName || '');
+  const terms = termsOf(denylist, print);
   if (name.startsWith('mcp__') && MCP_PUBLIC.test(name) && touchesProduct(roleDir, roleId)) {
     if (mcpCreatesIssue(name, toolInput)) return { reason: ISSUE_REASON };
     for (const m of mcpStrings(toolInput)) {
       if (BIDI.test(m)) return { reason: `Public text must not contain bidirectional control characters (${name}).${RULE}` };
-      const hit = scanText(m, denylist || []);
-      if (hit) return { reason: `Text sent through ${name} contains a plan phrase: "${hit.phrase}".${RULE}` };
+      const hit = planHit(m, terms, print);
+      if (hit) return { reason: `Text sent through ${name} contains ${hit.what}.${TEXT_FIX}` };
     }
     return null;
   }
@@ -657,7 +815,15 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId }) {
   if (shell !== null) {
     const cmd = shell;
     for (const item of walk(cmd, base)) {
-      if (!item.maybeProduct && !anyInProduct(item.dirs, roleDir, base)) continue;
+      if (!item.maybeProduct && !anyInProduct(item.dirs, roleDir, base)) {
+        if (!targetsProduct(item, productRepo)) continue;
+        for (const m of ghOutsideTexts(item, base)) {
+          if (BIDI.test(m)) return { reason: `Text for the product repository must not contain bidirectional control characters.${RULE}` };
+          const hit = planHit(m, terms, print);
+          if (hit) return { reason: `Text for the product repository (${productRepo}) contains ${hit.what}.${TEXT_FIX}` };
+        }
+        continue;
+      }
       if (item.prog === 'unparsed') return { reason: `${UNANALYSABLE.replace('command.\n', `command (${item.why}).\n`)}.` };
       if (item.prog === 'subst') return { reason: 'Command substitution hides the text from the leak check.\nRun git and gh as plain commands: `git commit -m \'<the change>\'`.' };
       if (item.prog === 'shell') {
@@ -673,8 +839,23 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId }) {
         if (BIDI.test(m)) return { reason: `Commit and PR text must not contain bidirectional control characters.${RULE}` };
         if (m.startsWith('<subst:')) return { reason: `Write the text inline, without substitutions or escapes, so it can be checked (${m.slice(0, 60)}).${RULE}` };
         if (m.startsWith('<file:')) return { reason: `Commit and PR text must be inline so it can be checked (${m}).${RULE}` };
-        const hit = scanText(m, denylist);
-        if (hit) return { reason: `Commit or PR text contains a plan phrase: "${hit.phrase}".${RULE}` };
+        const hit = planHit(m, terms, print);
+        if (hit) return { reason: `Commit or PR text contains ${hit.what}.${TEXT_FIX}` };
+      }
+      if (item.prog === 'git') {
+        for (const ref of refNames(item)) {
+          const t = nameHit(ref, terms);
+          if (t) return { reason: `The branch or tag name "${ref}" carries a plan phrase: "${t}".\nName it after the change to the product, never the plan; ${PUBLIC_OK}.` };
+        }
+      }
+      if (item.prog === 'git' && item.sub === 'commit') {
+        const dir = item.dirs.find((d) => d !== null && dirUnderProduct(d, roleDir)) || base;
+        let files;
+        try { files = diffOf(dir, commitsAll(item.args)); } catch (err) { if (!inGitTree(dir)) continue; return { reason: `leak guard could not read the change this commit records (${String(err.message || err).split('\n')[0].slice(0, 80)}).\nStage the change with git add, then commit again.` }; }
+        for (const f of files) {
+          const hit = planHit(f.text, terms, print);
+          if (hit) return { reason: `The change to ${f.file} contains ${hit.what}.${CODE_FIX}` };
+        }
       }
     }
     return null;
@@ -688,9 +869,16 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId }) {
       if (parts.includes(fold('.delivery')) || parts.includes(fold('.beads')) || parts[parts.length - 1] === 'team.json') {
         return { reason: `Plan files (${fp}) never live in the product repo (.delivery, .beads, team.json).\nWrite it in the project repo, or message the Delivery Manager.` };
       }
+      // Only lines the file does not already have: text that was public before the gate existed is the
+      // owner's call (2026-10-31: "not a risk"), and must not lock out whoever edits that file next.
+      const before = existingLines(path.isAbsolute(fp) ? fp : path.join(base, fp));
+      for (const text of contentOf(toolInput)) {
+        const hit = planHit(newLines(text.slice(0, DIFF_MAX), before), terms, print);
+        if (hit) return { reason: `Writing ${fp}: the text contains ${hit.what}.${CODE_FIX}` };
+      }
     }
   }
   return null;
 }
 
-module.exports = { UNANALYSABLE, failClosed, loadDenylist, inProductWorktree, extractMessages, scanText, decideLeak };
+module.exports = { UNANALYSABLE, failClosed, loadDenylist, inProductWorktree, extractMessages, scanText, decideLeak, stagedAdds, refNames, nameHit, withoutRefs };
