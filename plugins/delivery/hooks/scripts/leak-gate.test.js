@@ -355,3 +355,46 @@ test('stagedAdds in a merge: context lines between hunks keep the positions of t
   git('add', '-A');
   assert.deepEqual(stagedAdds(repo, false), [{ file: 'a.md', text: COPIED }], 'the copied line, new against both parents, is read');
 });
+
+// Copilot on #107, round 3: a binary-looking parent, an added line that looks like a header, and a
+// sentence from main the resolution only re-indents.
+function mergeRepo(baseText, builderText, mainText) {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-merge5-'));
+  const git = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
+  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  fs.writeFileSync(path.join(repo, 'a.txt'), baseText);
+  git('add', '-A'); git('commit', '-q', '-m', 'init');
+  git('checkout', '-q', '-b', 'team/builder');
+  fs.writeFileSync(path.join(repo, 'a.txt'), builderText);
+  git('commit', '-q', '-am', 'builder');
+  git('checkout', '-q', 'main');
+  fs.writeFileSync(path.join(repo, 'a.txt'), mainText);
+  git('commit', '-q', '-am', 'main');
+  git('checkout', '-q', 'team/builder');
+  try { git('merge', '-q', '--no-commit', '--no-ff', 'main'); } catch (err) { /* staged below */ }
+  return { repo, stage: (text) => { fs.writeFileSync(path.join(repo, 'a.txt'), text); git('add', '-A'); } };
+}
+
+test('stagedAdds in a merge: a parent copy with a NUL byte still yields the resolution\'s new lines', () => {
+  const m = mergeRepo('a\nb\n', 'a\nbuilder\nb\n', 'a\0main\nb\n');
+  m.stage(`a\nbuilder\nb\n${COPIED}\n`);
+  assert.ok(stagedAdds(m.repo, false).some((f) => f.text.includes(COPIED)), 'the new line is read, not lost to a binary comparison');
+});
+
+test('stagedAdds in a merge: an added line starting with "++" is content, not a file header, from either parent', () => {
+  for (const [builder, main] of [['x\n++ counter;\ny\n', 'x\ny\nmain\n'], ['x\ny\nbuilder\n', 'x\n++ counter;\ny\n']]) {
+    const m = mergeRepo('x\ny\n', builder, main);
+    const kept = builder.includes('++') ? `x\n++ counter;\ny\nmain\n${COPIED}\n` : `x\n++ counter;\ny\nbuilder\n${COPIED}\n`;
+    m.stage(kept);
+    const adds = stagedAdds(m.repo, false);
+    assert.deepEqual(adds.map((f) => f.file), ['a.txt'], JSON.stringify(adds));
+    assert.ok(adds[0].text.includes(COPIED), `the copied line is read: ${JSON.stringify(adds)}`);
+    assert.ok(!adds[0].text.includes('++ counter;'), 'the inherited "++" line is not the merge\'s own');
+  }
+});
+
+test('stagedAdds in a merge: a sentence from main that the resolution only re-indents is not new text', () => {
+  const m = mergeRepo('top\n', 'top\nbuilder\n', `top\n${COPIED}\n`);
+  m.stage(`top\nbuilder\n    ${COPIED}\n`);
+  assert.deepEqual(stagedAdds(m.repo, false).map((f) => f.text).filter(Boolean), [], 'a re-indent of main\'s line is exempt, as a moved line is');
+});

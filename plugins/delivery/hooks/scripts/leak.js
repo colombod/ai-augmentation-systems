@@ -687,10 +687,12 @@ function stagedAdds(dir, all, max = DIFF_MAX) {
   let other = null;
   try { other = execFileSync('git', ['-C', dir, 'rev-parse', '-q', '--verify', 'MERGE_HEAD'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (err) { other = null; }
   if (!other) return mine.files.map(textOf);
-  const theirs = addsOf(run(all ? [other] : ['--cached', other]), max);
+  // --text: a parent's copy with a NUL byte would otherwise give 'Binary files differ' and no lines
+  const theirs = addsOf(run(all ? ['--text', other] : ['--text', '--cached', other]), max);
   // a comparison cut short proves nothing about what is inherited: read the whole change instead
   if (theirs.truncated || mine.truncated) return mine.files.map(textOf);
-  const at = new Map(theirs.files.map((f) => [f.file, new Set(f.lines.map((l) => l.n))]));
+  // a line the other side only moved or re-indented is that side's text, as in the first comparison
+  const at = new Map(theirs.files.map((f) => [f.file, new Set(f.lines.filter((l) => !f.removed.has(l.text.trim())).map((l) => l.n))]));
   return mine.files.map((f) => ({ file: f.file, lines: f.lines.filter((l) => at.has(f.file) && at.get(f.file).has(l.n)), removed: f.removed }))
     .map(textOf).filter((f) => f.text);
 }
@@ -705,12 +707,16 @@ function addsOf(out, max = DIFF_MAX) {
   let n = 0;
   let size = 0;
   let truncated = false;
+  // a file's header lines (---, +++) come only between its `diff --git` line and its first hunk; inside
+  // a hunk, an added line that starts with "++" is content, never a header
+  let inHunk = false;
   for (const line of out.split('\n')) {
-    if (line.startsWith('+++ ')) { cur = { file: line.slice(4).replace(/^b\//, ''), lines: [], removed }; files.push(cur); continue; }
-    if (line.startsWith('--- ')) continue;
+    if (line.startsWith('diff --git ')) { inHunk = false; cur = null; continue; }
+    if (!inHunk && line.startsWith('+++ ')) { cur = { file: line.slice(4).replace(/^b\//, ''), lines: [], removed }; files.push(cur); continue; }
+    if (!inHunk && line.startsWith('--- ')) continue;
     const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
-    if (h) { n = Number(h[1]); continue; }
-    if (!cur) continue;
+    if (h) { n = Number(h[1]); inHunk = true; continue; }
+    if (!cur || !inHunk) continue;
     // A line moved or re-indented was already in the product: not new text.
     if (line.startsWith('-')) { removed.add(line.slice(1).trim()); continue; }
     if (line.startsWith('+')) {
