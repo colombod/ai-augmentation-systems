@@ -688,6 +688,11 @@ function stagedAdds(dir, all, max = DIFF_MAX) {
   let other = null;
   try { other = execFileSync('git', ['-C', dir, 'rev-parse', '-q', '--verify', 'MERGE_HEAD'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (err) { other = null; }
   if (!other) return mine.files.map(textOf);
+  // only a published side can lend its text: a commit some remote branch already holds. A local branch
+  // merged with --no-commit (plan text committed there first) would otherwise launder it as "inherited".
+  let published = false;
+  try { published = execFileSync('git', ['-C', dir, 'branch', '-r', '--contains', other], { encoding: 'utf8', timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== ''; } catch (err) { published = false; }
+  if (!published) return mine.files.map(textOf);
   // --text: a parent's copy with a NUL byte would otherwise give 'Binary files differ' and no lines
   const theirs = addsOf(run(all ? ['--text', other] : ['--text', '--cached', other]), max);
   // a comparison cut short proves nothing about what is inherited: read the whole change instead

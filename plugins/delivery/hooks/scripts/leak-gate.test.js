@@ -251,6 +251,15 @@ test('the leak-guard hook refuses a commit whose staged change copies the plan, 
   assert.ok(!git(projectRoot, 'status', '--porcelain').includes('cache'), 'the fingerprint cache never shows up as a change in the plan repo');
 });
 
+
+// a merge only takes text as inherited from a side some remote branch already holds: publish main
+function publish(repo) {
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-remote-'));
+  execFileSync('git', ['init', '-q', '--bare', bare], { stdio: 'pipe' });
+  execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', bare], { stdio: 'pipe' });
+  execFileSync('git', ['-C', repo, 'push', '-q', 'origin', 'main'], { stdio: 'pipe' });
+}
+
 // delivery-plugin-planning-a1v: concluding a conflicted merge of the default branch, the staged change
 // against HEAD holds the default branch's own files; only lines new against both parents are the
 // builder's text, so main's .delivery files no longer read as plan text the builder wrote.
@@ -269,6 +278,7 @@ test('stagedAdds while concluding a merge counts only lines new against both par
   fs.writeFileSync(path.join(repo, 'c.txt'), 'main side\n');
   git('add', '-A'); git('commit', '-q', '-m', 'main moves on');
   git('checkout', '-q', 'team/builder');
+  publish(repo);
   assert.throws(() => git('merge', '-q', 'main'), 'the merge conflicts on c.txt');
   fs.writeFileSync(path.join(repo, 'c.txt'), 'builder side\nmain side\nresolved by the builder\n');
   git('add', '-A');
@@ -298,6 +308,7 @@ test('stagedAdds in a merge: the same sentence at two places is matched by posit
   git('commit', '-q', '-am', 'main: before the anchor');
   git('checkout', '-q', 'team/builder');
   // keep the merge open whether or not git resolves it alone, as a conflicted merge would be
+  publish(repo);
   try { git('merge', '-q', '--no-commit', '--no-ff', 'main'); } catch (err) { /* conflicted: the result is staged below */ }
   // keep both copies: each is inherited from one parent, neither is new against both
   fs.writeFileSync(path.join(repo, 'a.md'), `${COPIED}\nanchor\n${COPIED}\n`);
@@ -324,6 +335,7 @@ test('stagedAdds in a merge: when the second comparison is cut short by earlier 
   fs.writeFileSync(path.join(repo, 'c.txt'), 'main side\n');
   git('commit', '-q', '-am', 'main');
   git('checkout', '-q', 'team/builder');
+  publish(repo);
   assert.throws(() => git('merge', '-q', 'main'));
   fs.writeFileSync(path.join(repo, 'c.txt'), `builder side\nmain side\n${COPIED}\n`);
   git('add', '-A');
@@ -350,6 +362,7 @@ test('stagedAdds in a merge: context lines between hunks keep the positions of t
   fs.writeFileSync(path.join(repo, 'a.md'), lines(['l1', 'l2', 'l3', 'l4', 'l5', 'main bottom', 'l6']));
   git('commit', '-q', '-am', 'main');
   git('checkout', '-q', 'team/builder');
+  publish(repo);
   try { git('merge', '-q', '--no-commit', '--no-ff', 'main'); } catch (err) { /* staged below */ }
   fs.writeFileSync(path.join(repo, 'a.md'), lines(['l1', 'builder top', 'l2', 'l3', COPIED, 'l4', 'l5', 'main bottom', 'l6']));
   git('add', '-A');
@@ -371,6 +384,7 @@ function mergeRepo(baseText, builderText, mainText) {
   fs.writeFileSync(path.join(repo, 'a.txt'), mainText);
   git('commit', '-q', '-am', 'main');
   git('checkout', '-q', 'team/builder');
+  publish(repo);
   try { git('merge', '-q', '--no-commit', '--no-ff', 'main'); } catch (err) { /* staged below */ }
   return { repo, stage: (text) => { fs.writeFileSync(path.join(repo, 'a.txt'), text); git('add', '-A'); } };
 }
@@ -408,4 +422,26 @@ test('stagedAdds in a merge: blank context lines keep positions with diff.suppre
   execFileSync('git', ['-C', m.repo, 'config', 'diff.suppressBlankEmpty', 'true'], { stdio: 'pipe' });
   m.stage(lines(['l1', 'builder', '', COPIED, 'l2', '', 'main', 'l3']));
   assert.deepEqual(stagedAdds(m.repo, false), [{ file: 'a.txt', text: COPIED }]);
+});
+
+// Copilot on #107, round 5: a merge of a local, unpublished branch lends nothing: plan text committed
+// there first and merged in with --no-commit is read as the commit's own text.
+test('stagedAdds in a merge: text from an unpublished branch is not taken as inherited', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-merge6-'));
+  const git = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
+  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'top\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'init');
+  publish(repo);
+  git('checkout', '-q', '-b', 'team/builder');
+  git('checkout', '-q', '-b', 'stash-of-plan-text');
+  fs.writeFileSync(path.join(repo, 'a.txt'), `top\n${COPIED}\n`);
+  git('commit', '-q', '-am', 'local only');
+  git('checkout', '-q', 'team/builder');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'top\nbuilder\n');
+  git('commit', '-q', '-am', 'builder');
+  try { git('merge', '-q', '--no-commit', '--no-ff', 'stash-of-plan-text'); } catch (err) { /* staged below */ }
+  fs.writeFileSync(path.join(repo, 'a.txt'), `top\nbuilder\n${COPIED}\n`);
+  git('add', '-A');
+  assert.ok(stagedAdds(repo, false).some((f) => f.text.includes(COPIED)), 'the plan text is read: its source was never published');
 });
