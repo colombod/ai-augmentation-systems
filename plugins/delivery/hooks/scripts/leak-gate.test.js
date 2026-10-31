@@ -332,3 +332,26 @@ test('stagedAdds in a merge: when the second comparison is cut short by earlier 
   const cut = stagedAdds(repo, false, 400);
   assert.ok(cut.some((f) => f.file === 'c.txt' && f.text.includes(COPIED)), `a cut-short comparison never hides the resolution: ${JSON.stringify(cut)}`);
 });
+
+// Copilot on #107, round 2: with diff.interHunkContext set, git puts unchanged lines between nearby
+// hunks even at -U0; they are lines of the result, so they move the destination line count too.
+test('stagedAdds in a merge: context lines between hunks keep the positions of the merge\'s own lines', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-merge4-'));
+  const git = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
+  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  git('config', 'diff.interHunkContext', '10');
+  const lines = (xs) => `${xs.join('\n')}\n`;
+  fs.writeFileSync(path.join(repo, 'a.md'), lines(['l1', 'l2', 'l3', 'l4', 'l5', 'l6']));
+  git('add', '-A'); git('commit', '-q', '-m', 'init');
+  git('checkout', '-q', '-b', 'team/builder');
+  fs.writeFileSync(path.join(repo, 'a.md'), lines(['l1', 'builder top', 'l2', 'l3', 'l4', 'l5', 'l6']));
+  git('commit', '-q', '-am', 'builder');
+  git('checkout', '-q', 'main');
+  fs.writeFileSync(path.join(repo, 'a.md'), lines(['l1', 'l2', 'l3', 'l4', 'l5', 'main bottom', 'l6']));
+  git('commit', '-q', '-am', 'main');
+  git('checkout', '-q', 'team/builder');
+  try { git('merge', '-q', '--no-commit', '--no-ff', 'main'); } catch (err) { /* staged below */ }
+  fs.writeFileSync(path.join(repo, 'a.md'), lines(['l1', 'builder top', 'l2', 'l3', COPIED, 'l4', 'l5', 'main bottom', 'l6']));
+  git('add', '-A');
+  assert.deepEqual(stagedAdds(repo, false), [{ file: 'a.md', text: COPIED }], 'the copied line, new against both parents, is read');
+});

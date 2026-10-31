@@ -716,7 +716,8 @@ function addsOf(out, max = DIFF_MAX) {
     if (line.startsWith('+')) {
       if (size < max) { cur.lines.push({ n, text: line.slice(1) }); size += line.length; } else truncated = true;
       n += 1;
-    }
+    } else if (line.startsWith(' ')) n += 1; // a context line (diff.interHunkContext) is in the result too
+
   }
   return { files, truncated };
 }
