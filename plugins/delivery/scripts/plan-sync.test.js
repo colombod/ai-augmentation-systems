@@ -26,6 +26,8 @@ function world() {
   execFileSync('git', ['init', '-q', '--bare', origin]);
   const root = tmp('ps-proj-');
   git(root, 'init', '-q', '-b', 'main');
+  // the plan's own commits (publish-records) need an identity; a CI runner has none of its own
+  git(root, 'config', 'user.email', 't@t'); git(root, 'config', 'user.name', 't');
   fs.mkdirSync(path.join(root, '.delivery', 'stories'), { recursive: true });
   fs.writeFileSync(path.join(root, '.delivery', 'stories', 'a-01.md'), story('a-01', 'ready', '| `skills/search/SKILL.md` | modify |'));
   fs.writeFileSync(path.join(root, '.delivery', 'stories', 'a-02.md'), story('a-02', 'ready', '| `skills/export/SKILL.md` | create |'));
