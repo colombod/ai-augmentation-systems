@@ -5,7 +5,7 @@ runs on, the operator-decision machinery, the artifacts, and why the pipeline is
 it is. The README is enough to start; read this when you need to know exactly what happens.
 
 - [Sessions you run vs reviewers they call](#sessions-you-run-vs-reviewers-they-call)
-- [The shipping team's mechanisms](#the-shipping-teams-mechanisms): roles, hooks, lanes, the leak guard, bead discipline
+- [The shipping team's mechanisms](#the-shipping-teams-mechanisms): roles, hooks, lanes, the leak guard, bead discipline, plan sync
 - [Operator decisions in detail](#operator-decisions-in-detail)
 - [Using it with superpowers](#using-it-with-superpowers)
 - [The five ideas doing the real work](#the-five-ideas-doing-the-real-work)
@@ -650,6 +650,33 @@ divergence, otherwise warn (R-14, R-15, R-16, R-18; D4).
   (it needs labelled cases first), and the R-01 goal sheet's blocking unknowns. A program that writes
   the register or the evidence files outside a tool call is not seen by the lanes (cooperative trust,
   as for the bd guard); the gates' re-verification is what still holds then.
+
+### The plan stays true to what shipped
+
+Owner ruling (2026-10-31): a planning repository and feature map that drift from the product defeat the
+product, so keeping them current is enforced, not remembered.
+
+- **What "up to date" means** (`node scripts/plan-sync.js check`, read only):
+  - every story file's `status` matches its bead: a closed bead means `done`; a claimed, merged or deployed
+    one means `in-progress`;
+  - the feature map (`.delivery/feature-map.json`, and `.delivery/feature-map.md` to read) is newer than
+    the last merge in the review records;
+  - no plan document in the project root (`.delivery/initiatives`, `stories`, `sprints`, `decisions`,
+    `personas`, `reviews` and the map) is uncommitted or unpushed.
+- **Who keeps it so.** `merge-gate.js merged <pr>` runs `plan-sync.js apply` itself after recording the
+  merge: it advances story statuses, rebuilds the feature map from the product's default branch, and
+  commits and pushes the plan. `merge-gate.js check`, and the lane before the Delivery Manager's
+  `gh pr merge`, refuse while `check` reports anything, naming `plan-sync.js apply` as the way out. The
+  Delivery Manager and the Product Manager are told at session start when the plan is behind.
+- **The feature map** lists what ships (the derived and declared features of `lib/features.js`), what each
+  open story reaches through its Files and modules table, and a log of what each merge added and removed.
+  It is generated: edit the plan, never the map.
+- **The product copy.** The map reads the role's product worktree, else `product_url` when it is a local
+  path, else a bare copy in `.delivery/cache/product.git` (git-ignored) cloned from `product_url` or
+  `https://github.com/<product_github>.git`. The sync that runs after a merge never makes that first
+  clone, so a merge never waits on a download; the explicit `plan-sync.js apply` does.
+- **Only forward.** Statuses only advance. A story marked done whose bead was reopened is reported, never
+  rewritten: reopening is a decision someone looks at.
 
 ### Review records and the merge gate
 

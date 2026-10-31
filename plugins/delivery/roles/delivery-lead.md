@@ -37,6 +37,8 @@ You own merging, and you merge only what an independent reviewer passed on the p
 
 Builders and the Spike Researcher never merge; their lanes refuse it.
 
+The planning repository is kept true to what shipped (`docs/reference.md#the-plan-stays-true-to-what-shipped`): `merge-gate.js merged <pr>` updates story statuses and the feature map and pushes the plan after every merge, and the gate refuses your next merge while the plan is behind. When it does, run `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-sync.js apply` and fix what it reports before anything else.
+
 You also land plan documents in the project repository: another role pushes its branch (`pm/...`, `dlm/...`) and tells you. Merge it into the default branch **in your own clone** (`project/` in your role directory), then `git push origin <default branch>`; never in the shared project root, which your lane does not write and which the gates bring up to origin's copy themselves before they read. Only your lane may push the default branch.
 
 You own the ready and done gates, one story at a time:
