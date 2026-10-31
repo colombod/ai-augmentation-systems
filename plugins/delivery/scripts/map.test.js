@@ -282,3 +282,25 @@ test('a large answer reaches a pipe whole, and a reader that stops early is not 
   const early = spawnSync('sh', ['-c', `node '${MAP}' features --repo '${fx.dir}' | head -1`], { encoding: 'utf8' });
   assert.doesNotMatch(early.stderr, /EPIPE/);
 });
+
+// Found putting a real story (team-runtime-01) through the map with the team on Wintermute, 2026-10-31
+test('real story: a route or tool written in a comment is not an entry point; real ones still are', () => {
+  const fx = fixture({
+    'lib/scan.js': '// detects web routes like @app.get("/x") and MCP tools like Tool("name", ...)\n/* router.post("/y") */\nconst re = 1;\n',
+    'py/notes.py': '# @app.get("/x") is how a FastAPI route looks\nx = 1\n',
+    'srv/app.py': '@app.get("/health")\ndef health(): pass\nTOOLS = [Tool("save_deck")]  # Tool("not_this")\n',
+    'web/s.js': "const url = 'http://example.com'; app.get('/consent', h); // app.get('/fake', h)\n",
+  });
+  const f = Object.fromEntries(run(['features', '--repo', fx.dir, '--json']).json().features.map((x) => [x.id, x]));
+  assert.equal(f['http:lib/scan'], undefined);
+  assert.equal(f['tools:lib/scan'], undefined);
+  assert.equal(f['http:py/notes'], undefined);
+  assert.deepEqual(f['http:srv/app'].entries, ['GET /health']);
+  assert.deepEqual(f['tools:srv/app'].entries, ['save_deck']);
+  assert.deepEqual(f['http:web/s'].entries, ['GET /consent'], 'a URL\'s // inside quotes does not cut the line');
+});
+
+test('real story: impact --story leaves out the files a story only reads', () => {
+  const s = M.storyPaths('# S\n\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n| `a.js` | modify: add the check |\n| `b.js` | read only, for the format |\n| `c.md` | reference |\n| `d.js` | create |\n| `e.js` | read the shape, then update its caller |\n| `f.js` | |\n');
+  assert.deepEqual(s, ['a.js', 'd.js', 'e.js', 'f.js']);
+});

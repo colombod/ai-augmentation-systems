@@ -95,6 +95,33 @@ function featuresOf(map, texts = map.texts) {
 //   workflows    .github/workflows/*.yml: each is started by a push, a schedule or a person
 //   scripts      pyproject [project.scripts] console entry points
 // Anchored at the file that declares them: a change reaching that file reaches those entries.
+// the text with line comments blanked (`//` and block comments in JS, `#` in Python), keeping line
+// numbers; strings are left as they are, so a URL's `//` inside quotes is not cut
+function withoutComments(text, lang) {
+  let out = '';
+  let q = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      out += c;
+      if (c === '\\') { out += text[i + 1] || ''; i++; } else if (c === q || (c === '\n' && q !== '`')) q = null;
+      continue;
+    }
+    const line = (lang === 'py' && c === '#') || (lang === 'js' && c === '/' && text[i + 1] === '/');
+    if (line) { while (i < text.length && text[i] !== '\n') { out += ' '; i++; } out += text[i] || ''; continue; }
+    if (lang === 'js' && c === '/' && text[i + 1] === '*') {
+      const e = text.indexOf('*/', i + 2);
+      const stop = e < 0 ? text.length : e + 2;
+      out += text.slice(i, stop).replace(/[^\n]/g, ' ');
+      i = stop - 1;
+      continue;
+    }
+    if (c === '"' || c === "'" || (lang === 'js' && c === '`')) q = c;
+    out += c;
+  }
+  return out;
+}
+
 function entryPoints(map, texts) {
   const out = [];
   const files = new Set(map.files);
@@ -102,8 +129,11 @@ function entryPoints(map, texts) {
   // a test file is never the product's entry point, for its routes as for its tools: the Vault's
   // tests/test_twins.py starts an app with routes, and became a feature every sign-in change reached
   const isTest = (f) => /(^|\/)(tests?|__tests__)\//.test(f) || /(^|\/)(test_[^/]*|[^/]*_test\.py|conftest\.py)$|\.(test|spec)\.[cm]?[jt]sx?$/.test(f);
-  for (const [f, text] of Object.entries(texts)) {
+  for (const [f, raw] of Object.entries(texts)) {
     const lang = C.langOf(f);
+    // a route or tool written in a comment is an example, not an entry point (the map's own source
+    // describes its patterns in comments and read as a route and a tool: found on a real story)
+    const text = lang === 'py' || lang === 'js' ? withoutComments(raw, lang) : raw;
     if ((lang === 'py' || lang === 'js') && !isTest(f)) {
       const routes = [];
       for (const m of text.matchAll(/^[ \t]*@\w+(?:\.\w+)*\.(get|post|put|patch|delete|route|websocket|api_route)\(\s*(?:path\s*=\s*)?["']([^"']*)["']/gm)) routes.push(`${m[1].toUpperCase()} ${m[2] || '/'}`);
