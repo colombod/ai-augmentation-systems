@@ -281,3 +281,54 @@ test('stagedAdds while concluding a merge counts only lines new against both par
   git('add', 'd.txt');
   assert.deepEqual(stagedAdds(repo, false), [{ file: 'd.txt', text: COPIED }]);
 });
+
+// Copilot on #107: lines are matched by their place in the result, not their text, and a comparison
+// cut short at the size limit never counts as proof that a line is inherited.
+test('stagedAdds in a merge: the same sentence at two places is matched by position; a cut-short diff reads the whole change', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-merge2-'));
+  const git = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
+  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  fs.writeFileSync(path.join(repo, 'a.md'), 'anchor\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'init');
+  git('checkout', '-q', '-b', 'team/builder');
+  fs.writeFileSync(path.join(repo, 'a.md'), `anchor\n${COPIED}\n`);
+  git('commit', '-q', '-am', 'builder: after the anchor');
+  git('checkout', '-q', 'main');
+  fs.writeFileSync(path.join(repo, 'a.md'), `${COPIED}\nanchor\n`);
+  git('commit', '-q', '-am', 'main: before the anchor');
+  git('checkout', '-q', 'team/builder');
+  // keep the merge open whether or not git resolves it alone, as a conflicted merge would be
+  try { git('merge', '-q', '--no-commit', '--no-ff', 'main'); } catch (err) { /* conflicted: the result is staged below */ }
+  // keep both copies: each is inherited from one parent, neither is new against both
+  fs.writeFileSync(path.join(repo, 'a.md'), `${COPIED}\nanchor\n${COPIED}\n`);
+  git('add', '-A');
+  assert.deepEqual(stagedAdds(repo, false).map((f) => f.file), [], 'no line is new against both parents');
+  // a line truly new against both parents is still read
+  fs.writeFileSync(path.join(repo, 'a.md'), `${COPIED}\nanchor\n${COPIED}\nnew in the resolution\n`);
+  git('add', '-A');
+  assert.deepEqual(stagedAdds(repo, false), [{ file: 'a.md', text: 'new in the resolution' }]);
+});
+
+test('stagedAdds in a merge: when the second comparison is cut short by earlier builder work, the resolution is still read', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-merge3-'));
+  const git = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
+  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  fs.writeFileSync(path.join(repo, 'c.txt'), 'base\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'init');
+  git('checkout', '-q', '-b', 'team/builder');
+  // earlier builder work, sorted before c.txt: it fills the comparison against MERGE_HEAD first
+  fs.writeFileSync(path.join(repo, 'aaa.txt'), Array.from({ length: 60 }, (_, i) => `builder line ${i} of earlier work`).join('\n') + '\n');
+  fs.writeFileSync(path.join(repo, 'c.txt'), 'builder side\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'builder');
+  git('checkout', '-q', 'main');
+  fs.writeFileSync(path.join(repo, 'c.txt'), 'main side\n');
+  git('commit', '-q', '-am', 'main');
+  git('checkout', '-q', 'team/builder');
+  assert.throws(() => git('merge', '-q', 'main'));
+  fs.writeFileSync(path.join(repo, 'c.txt'), `builder side\nmain side\n${COPIED}\n`);
+  git('add', '-A');
+  assert.deepEqual(stagedAdds(repo, false).map((f) => f.text), [COPIED], 'the full read: only the resolution is new');
+  // a limit the change against HEAD fits in, but the comparison against MERGE_HEAD (with aaa.txt) does not
+  const cut = stagedAdds(repo, false, 400);
+  assert.ok(cut.some((f) => f.file === 'c.txt' && f.text.includes(COPIED)), `a cut-short comparison never hides the resolution: ${JSON.stringify(cut)}`);
+});

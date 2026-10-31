@@ -674,34 +674,51 @@ function refNames(item) {
 
 // Added lines of the change a commit records, per file. -a commits the working tree, so it reads HEAD.
 const DIFF_MAX = 4 * 1024 * 1024;
-function stagedAdds(dir, all) {
+function stagedAdds(dir, all, max = DIFF_MAX) {
   const run = (range) => execFileSync('git', ['-C', dir, 'diff', ...range, '-U0', '--no-color', '--no-ext-diff', '--no-textconv'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] });
   let out;
   try { out = run(all ? ['HEAD'] : ['--cached']); } catch (err) { if (!all) throw err; out = run(['--cached']); }
-  const mine = addsOf(out);
+  const mine = addsOf(out, max);
   // Concluding a merge (a conflicted `git merge`, resolved and committed): the staged change against
   // HEAD holds everything the other side brings in, such as the default branch's own files. Only the
-  // lines new against both parents are this commit's own text (delivery-plugin-planning-a1v).
+  // lines new against both parents are this commit's own text (delivery-plugin-planning-a1v): a line
+  // added at the same place in the result against HEAD and against MERGE_HEAD. Both diffs end at the
+  // same tree, so a destination line number names one line of the result.
   let other = null;
   try { other = execFileSync('git', ['-C', dir, 'rev-parse', '-q', '--verify', 'MERGE_HEAD'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (err) { other = null; }
-  if (!other) return mine;
-  const theirs = new Map(addsOf(run([all ? other : '--cached', ...(all ? [] : [other])])).map((f) => [f.file, new Set(f.text.split('\n'))]));
-  return mine.map((f) => ({ file: f.file, text: theirs.has(f.file) ? f.text.split('\n').filter((l) => theirs.get(f.file).has(l)).join('\n') : '' })).filter((f) => f.text);
+  if (!other) return mine.files.map(textOf);
+  const theirs = addsOf(run(all ? [other] : ['--cached', other]), max);
+  // a comparison cut short proves nothing about what is inherited: read the whole change instead
+  if (theirs.truncated || mine.truncated) return mine.files.map(textOf);
+  const at = new Map(theirs.files.map((f) => [f.file, new Set(f.lines.map((l) => l.n))]));
+  return mine.files.map((f) => ({ file: f.file, lines: f.lines.filter((l) => at.has(f.file) && at.get(f.file).has(l.n)), removed: f.removed }))
+    .map(textOf).filter((f) => f.text);
 }
-// Added lines per file from a `git diff -U0` output.
-function addsOf(out) {
+const textOf = (f) => ({ file: f.file, text: f.lines.map((l) => l.text).filter((t) => !f.removed.has(t.trim())).join('\n') });
+// Added lines per file from a `git diff -U0` output, each with its line number in the destination
+// (from the hunk header); truncated when the output passed DIFF_MAX.
+function addsOf(out, max = DIFF_MAX) {
   const files = [];
+  // one set for the whole diff, as before: a line moved between files is not new text either
   const removed = new Set();
   let cur = null;
+  let n = 0;
   let size = 0;
+  let truncated = false;
   for (const line of out.split('\n')) {
-    if (line.startsWith('+++ ')) { cur = { file: line.slice(4).replace(/^b\//, ''), text: [] }; files.push(cur); continue; }
+    if (line.startsWith('+++ ')) { cur = { file: line.slice(4).replace(/^b\//, ''), lines: [], removed }; files.push(cur); continue; }
     if (line.startsWith('--- ')) continue;
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (h) { n = Number(h[1]); continue; }
+    if (!cur) continue;
+    // A line moved or re-indented was already in the product: not new text.
     if (line.startsWith('-')) { removed.add(line.slice(1).trim()); continue; }
-    if (cur && line.startsWith('+') && size < DIFF_MAX) { cur.text.push(line.slice(1)); size += line.length; }
+    if (line.startsWith('+')) {
+      if (size < max) { cur.lines.push({ n, text: line.slice(1) }); size += line.length; } else truncated = true;
+      n += 1;
+    }
   }
-  // A line moved or re-indented was already in the product: not new text.
-  return files.map((f) => ({ file: f.file, text: f.text.filter((l) => !removed.has(l.trim())).join('\n') }));
+  return { files, truncated };
 }
 // Outside a git work tree the commit fails on its own; there is no change to read.
 function inGitTree(dir) {
