@@ -1,7 +1,7 @@
 # PRD: strategy leak gate
 
 > Written by /delivery:prd. Owned by Product Owner, with Business Analyst and QA Strategist.
-> Status: draft · Last updated: 2026-10-31 · Brief: `brief.md` · Spike: `spikes/shingle-calibration.md`
+> Status: MVP shipped in 0.42.0 (story strategy-leak-gate-01); release 2 is story -02 · Last updated: 2026-10-31 · Brief: `brief.md` · Spike: `spikes/shingle-calibration.md`
 
 ## The promise, in one breath
 

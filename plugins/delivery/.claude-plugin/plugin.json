@@ -1,7 +1,7 @@
 {
   "name": "delivery",
   "description": "Define the product, contract it, then navigate it to shipped. DEFINE: brief, PRD with MVP staging, architecture, with research, evidence-graded personas, simulated interviews and journeys, and a design system as optional depth. CONTRACT: a risk-first roadmap and self-contained stories with acceptance criteria and derisking spikes. NAVIGATE: the plan becomes beads, sprints are built by dedicated builders (or handed to your own runner, such as superpowers), reviewed independently and re-aligned. An adversarial challenge panel at every gate; a shipping team of role sessions (Chief of Staff, Product Manager, Delivery Manager, builders), each on the model its work needs.",
-  "version": "0.41.5",
+  "version": "0.42.0",
   "author": {
     "name": "Diego Colombo",
     "url": "https://github.com/colombod"
