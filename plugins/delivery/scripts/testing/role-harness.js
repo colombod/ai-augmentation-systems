@@ -33,6 +33,9 @@ function harness({ root = makeProject(), beads = {}, deps = [], prs = null, runs
     const d = path.join(rolesDir, inst);
     if (!fs.existsSync(d)) {
       fs.mkdirSync(path.join(d, 'product'), { recursive: true });
+      // a real product checkout, so the plan sync after a merge can map what shipped (lib/plan-sync.js)
+      const g = (...a) => spawnSync('git', ['-C', path.join(d, 'product'), ...a], { encoding: 'utf8' });
+      g('init', '-q'); g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'product');
       if (clone) fs.cpSync(root, path.join(d, 'project'), { recursive: true }); else fs.symlinkSync(root, path.join(d, 'project'));
       fs.writeFileSync(path.join(d, '.delivery-role.json'), JSON.stringify({ instance: inst, project_root: root, actor: `dev@pc/${inst}` }));
     }
