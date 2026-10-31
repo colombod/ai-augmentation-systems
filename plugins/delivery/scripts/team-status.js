@@ -152,7 +152,12 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
     const age = nowMs - Date.parse(entry.last_seen);
     const state = age <= staleMs ? 'live' : 'stale';
     if (state === 'stale') drift.stale.push(instance);
-    if (entry.model !== role.model) drift.wrong_model.push({ instance, expected: role.model, actual: entry.model });
+    if (entry.model !== role.model) {
+      // the roster keeps the model the session started with, which stays true until it restarts;
+      // the marker says whether prepare-role has already fixed it, so the step left is a restart
+      const marker = markerModel(entry.role_dir);
+      drift.wrong_model.push(marker === undefined ? { instance, expected: role.model, actual: entry.model } : { instance, expected: role.model, actual: entry.model, marker });
+    }
     rows.push({ instance, role: role.id, host: entry.host, model: entry.model, session_id: entry.session_id, last_seen: entry.last_seen, state });
   }
   for (const instance of Object.keys(roster.instances)) {
@@ -187,6 +192,18 @@ function teamStatus(projectRoot, { now, staleHours, bdCheck, host, operatorDeps,
   let andon = null;
   try { andon = andonStatus(projectRoot, team, { bd, gh, ciGh, now, reachable: bd_reachable }); } catch (err) { andon = null; }
   return { rows, drift, recovered_from: roster.recovered_from, bd_reachable, operator, gates, idle, stalls, reviews, andon, warnings: [...manifestWarnings(team), ...placement, ...unverifiable] };
+}
+
+// The model a role directory's marker names now, or undefined when there is none to read. Every hook
+// loads this file (route-check -> daily-plan), so a missing or malformed marker must never throw.
+function markerModel(roleDir) {
+  try {
+    if (typeof roleDir !== 'string' || !roleDir) return undefined;
+    const m = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8'));
+    return m && typeof m.model === 'string' && m.model ? m.model : undefined;
+  } catch (err) {
+    return undefined;
+  }
 }
 
 function hasDrift(drift) {
@@ -278,7 +295,11 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gat
   if (drift.missing.length) lines.push(`Missing: ${drift.missing.join(', ')}`);
   if (drift.stale.length) lines.push(`Stale: ${drift.stale.join(', ')}`);
   if (drift.extra.length) lines.push(`Extra (not in team.json): ${drift.extra.join(', ')}`);
-  for (const w of drift.wrong_model) lines.push(`Wrong model: ${w.instance} expected ${w.expected}, running ${w.actual}`);
+  for (const w of drift.wrong_model) {
+    lines.push(w.marker === w.expected
+      ? `Restart pending: ${w.instance} runs ${w.actual}; its marker already says ${w.expected}, restart its session`
+      : `Wrong model: ${w.instance} expected ${w.expected}, running ${w.actual}`);
+  }
   return lines.join('\n');
 }
 

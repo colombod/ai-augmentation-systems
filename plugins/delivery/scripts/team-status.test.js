@@ -47,6 +47,48 @@ test('live, stale, extra and wrong_model are reported', () => {
   assert.ok(text.includes('Wrong model: builder-1 expected sonnet, running haiku'));
 });
 
+// a role directory whose marker says <model>, or holds <raw> as the marker's text; null writes no marker
+function roleDir(model, raw) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'role-'));
+  if (raw !== undefined) fs.writeFileSync(path.join(dir, '.delivery-role.json'), raw);
+  else if (model !== null) fs.writeFileSync(path.join(dir, '.delivery-role.json'), JSON.stringify({ instance: 'builder-1', model }));
+  return dir;
+}
+
+test('a wrong-model instance whose marker already has the manifest model is restart pending', () => {
+  const root = scratchProject();
+  registerInstance(root, { instance: 'builder-1', session_id: 'c', host: 'pc', model: 'haiku', role_dir: roleDir('sonnet'), now: NOW });
+  const s = teamStatus(root, { now: NOW, staleHours: 2 });
+  // the session still runs the old model, so it is still drift
+  assert.deepEqual(s.drift.wrong_model, [{ instance: 'builder-1', expected: 'sonnet', actual: 'haiku', marker: 'sonnet' }]);
+  const text = renderStatus(s);
+  assert.ok(text.includes('Restart pending: builder-1 runs haiku; its marker already says sonnet, restart its session'));
+  assert.ok(!text.includes('Wrong model: builder-1'));
+  assert.ok(text.includes('## Roster drift'));
+});
+
+test('a wrong-model instance whose marker is still wrong reads Wrong model as before', () => {
+  const root = scratchProject();
+  registerInstance(root, { instance: 'builder-1', session_id: 'c', host: 'pc', model: 'haiku', role_dir: roleDir('haiku'), now: NOW });
+  const s = teamStatus(root, { now: NOW, staleHours: 2 });
+  assert.deepEqual(s.drift.wrong_model, [{ instance: 'builder-1', expected: 'sonnet', actual: 'haiku', marker: 'haiku' }]);
+  const text = renderStatus(s);
+  assert.ok(text.includes('Wrong model: builder-1 expected sonnet, running haiku'));
+  assert.ok(!text.includes('Restart pending'));
+});
+
+test('a missing, unreadable or invalid marker is not a fix and never throws', () => {
+  for (const dir of [roleDir(null), roleDir(undefined, '{not json'), roleDir(undefined, '"sonnet"'), roleDir(undefined, 'null'), path.join(os.tmpdir(), 'no-such-role-dir-x9'), undefined, 42]) {
+    const root = scratchProject();
+    registerInstance(root, { instance: 'builder-1', session_id: 'c', host: 'pc', model: 'haiku', role_dir: dir, now: NOW });
+    const s = teamStatus(root, { now: NOW, staleHours: 2 });
+    assert.deepEqual(s.drift.wrong_model, [{ instance: 'builder-1', expected: 'sonnet', actual: 'haiku' }]);
+    const text = renderStatus(s);
+    assert.ok(text.includes('Wrong model: builder-1 expected sonnet, running haiku'));
+    assert.ok(!text.includes('Restart pending'));
+  }
+});
+
 test('renderStatus says No drift when the roster matches', () => {
   const root = scratchProject();
   for (const [inst, model] of [['chief-of-staff', 'opus'], ['staffing', 'sonnet'], ['product-manager', 'opus'], ['delivery-lead', 'sonnet'], ['progress-observer', 'haiku'], ['spike-researcher', 'sonnet'], ['builder-1', 'sonnet'], ['builder-2', 'sonnet']]) {
