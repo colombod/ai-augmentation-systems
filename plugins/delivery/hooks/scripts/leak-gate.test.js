@@ -398,3 +398,14 @@ test('stagedAdds in a merge: a sentence from main that the resolution only re-in
   m.stage(`top\nbuilder\n    ${COPIED}\n`);
   assert.deepEqual(stagedAdds(m.repo, false).map((f) => f.text).filter(Boolean), [], 'a re-indent of main\'s line is exempt, as a moved line is');
 });
+
+// Copilot on #107, round 4: blank context lines between hunks keep counting, whatever diff settings
+// the builder's repository has (diff.suppressBlankEmpty prints them with no leading space).
+test('stagedAdds in a merge: blank context lines keep positions with diff.suppressBlankEmpty set', () => {
+  const lines = (xs) => `${xs.join('\n')}\n`;
+  const m = mergeRepo(lines(['l1', '', 'l2', '', 'l3']), lines(['l1', 'builder', '', 'l2', '', 'l3']), lines(['l1', '', 'l2', '', 'main', 'l3']));
+  execFileSync('git', ['-C', m.repo, 'config', 'diff.interHunkContext', '10'], { stdio: 'pipe' });
+  execFileSync('git', ['-C', m.repo, 'config', 'diff.suppressBlankEmpty', 'true'], { stdio: 'pipe' });
+  m.stage(lines(['l1', 'builder', '', COPIED, 'l2', '', 'main', 'l3']));
+  assert.deepEqual(stagedAdds(m.repo, false), [{ file: 'a.txt', text: COPIED }]);
+});

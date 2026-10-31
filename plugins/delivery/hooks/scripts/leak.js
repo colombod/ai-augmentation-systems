@@ -675,7 +675,8 @@ function refNames(item) {
 // Added lines of the change a commit records, per file. -a commits the working tree, so it reads HEAD.
 const DIFF_MAX = 4 * 1024 * 1024;
 function stagedAdds(dir, all, max = DIFF_MAX) {
-  const run = (range) => execFileSync('git', ['-C', dir, 'diff', ...range, '-U0', '--no-color', '--no-ext-diff', '--no-textconv'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] });
+  // suppressBlankEmpty would print a blank context line with no leading space: keep git's default
+  const run = (range) => execFileSync('git', ['-C', dir, '-c', 'diff.suppressBlankEmpty=false', 'diff', ...range, '-U0', '--no-color', '--no-ext-diff', '--no-textconv'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] });
   let out;
   try { out = run(all ? ['HEAD'] : ['--cached']); } catch (err) { if (!all) throw err; out = run(['--cached']); }
   const mine = addsOf(out, max);
@@ -722,7 +723,7 @@ function addsOf(out, max = DIFF_MAX) {
     if (line.startsWith('+')) {
       if (size < max) { cur.lines.push({ n, text: line.slice(1) }); size += line.length; } else truncated = true;
       n += 1;
-    } else if (line.startsWith(' ')) n += 1; // a context line (diff.interHunkContext) is in the result too
+    } else if (line.startsWith(' ') || line === '') n += 1; // a context line (diff.interHunkContext) is in the result too
 
   }
   return { files, truncated };
