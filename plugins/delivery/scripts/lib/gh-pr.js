@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const FIELDS = 'number,state,headRefOid,headRefName,mergeable,statusCheckRollup,additions,deletions,files,body,title';
+const FIELDS = 'number,state,mergedAt,headRefOid,headRefName,mergeable,statusCheckRollup,additions,deletions,files,body,title';
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 // owner/name from a GitHub remote URL (git@github.com:o/r.git, https://github.com/o/r, a PR URL)
@@ -103,6 +103,7 @@ function viewPrRest(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
   return {
     number: pull.number,
     state: pull.merged || pull.merged_at ? 'MERGED' : UP(pull.state),
+    mergedAt: pull.merged_at || null,
     headRefOid: sha || null,
     headRefName: (pull.head && pull.head.ref) || null,
     mergeable: MERGEABLE(pull.mergeable),

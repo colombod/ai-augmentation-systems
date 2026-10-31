@@ -181,6 +181,31 @@ function markMerged(pr, req, who, { cwd, env, bd, now }) {
   return { lines, failed };
 }
 
+// One handoff per story the merge carried that is marked merged and not yet deployed; a story not
+// marked (bd could not read it, another author) gets none: its line above says what to do by hand.
+function handOver(pr, req, who, { bd, now, head }) {
+  const HO = require('./lib/handoff.js');
+  const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 });
+  const lines = [];
+  for (const id of req ? (req.stories || req.beads || []) : []) {
+    let b = null;
+    try { b = store.show(id); } catch (err) { b = null; }
+    if (!b || b.status === 'closed' || !G.stateOf(b) || G.stateOf(b) === 'cut') continue;
+    // the deploy of this merge is the step: not yet taken when no deploy is recorded after it (a first
+    // merge, or a follow-up PR on a story already deployed or verified; Copilot, #86)
+    const bm = b.metadata || {};
+    if (bm.deployed_at && (!bm.merged_at || Date.parse(bm.deployed_at) >= Date.parse(bm.merged_at))) continue;
+    // only a story this PR marked: the same author check as markMerged, and merged by this PR, so a
+    // story merged by another PR keeps its own handoff (Copilot, #86)
+    if (req.owner && !G.authorsOf(b).actors.some((a) => R.norm(a) === req.owner)) continue;
+    if (String((b.metadata || {}).merged_pr || '') !== String(pr)) continue;
+    let r = null;
+    try { r = HO.queue(who.root, { bead: id, step: 'deploy', to: who.instance, from: who.instance, pr, sha: head, at: now }); } catch (err) { lines.push(`${id}: the deploy was not handed to the watchdog (${err.message})`); continue; }
+    if (r) lines.push(`${id}: its deploy is handed to the watchdog, which wakes ${who.instance} for it if this turn ends first`);
+  }
+  return lines;
+}
+
 function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: given } = {}) {
   const a = parse(argv);
   const [sub, pr] = a._;
@@ -206,7 +231,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     if (!head) return { code: 2, out: `merge-gate.js: gh cannot read PR ${pr} (${view.unavailable}); name the merged head: merge-gate.js merged ${pr} --head <sha>` };
     // a merge without a passing review on its head (outside the gate) is recorded, and is a warning
     const v = R.evaluate(pr, rows, { head, ci: { state: 'green', names: [] }, mergeable: null, botsCount: botsCountOf(who.team), repo });
-    row = R.append(who.root, pr, { type: 'merged', repo, head, beads: req ? req.beads || [] : [], gated: v.ok, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
+    row = R.append(who.root, pr, { type: 'merged', repo, head, merged_at: view.mergedAt || null, beads: req ? req.beads || [] : [], gated: v.ok, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
     out.push(`${row.id}: PR ${pr} merged at ${R.short(head)}`);
     const unpublished = R.publish(who.root, pr, who.instance, 'merged', { env });
     if (unpublished) out.push(unpublished);
@@ -216,8 +241,13 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     }
   } else out.push(`${row.id}: PR ${pr} is recorded as merged at ${R.short(row.head)}`);
   if (!req) return { code: 0, out: [...out, `no bead is recorded for PR ${pr}: set its state by hand, \`evidence.js state <bead> merged --pr ${pr}\``].join('\n') };
-  const m = markMerged(pr, req, who, { cwd, env, bd, now: at });
+  // the story's merge time is GitHub's, when it has one, not when this was recorded: a deploy made
+  // between the two is this merge's deploy, not an earlier one (lib/handoff.js; Copilot, #86)
+  const m = markMerged(pr, req, who, { cwd, env, bd, now: row.merged_at || at });
   out.push(...m.lines);
+  // the deploy is the next step, and it is this role's: handed to the watchdog (lib/handoff.js), which
+  // wakes this session at its next pass if its turn ends here, instead of after the two-hour stall limit
+  out.push(...handOver(pr, req, who, { bd, now: at, head: row.head }));
   // fix on fix (R-22): a second fix on the same symptom within 48 h opens a spike for its cause
   try { out.push(...require('./lib/andon.js').fixChain(who.root, { pr, bd: bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 }), now: at, who })); } catch (err) { out.push(`note: the fix-on-fix check did not run (${err.message})`); }
   if (m.failed) return { code: 1, out: `${out.join('\n')}.\nRetry: ${R.cmd('merge-gate.js', `merged ${pr}`)}` };
@@ -231,4 +261,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, gate, check, ghPrCalls, mergeCommandProblem };
+module.exports = { main, gate, check, ghPrCalls, mergeCommandProblem, handOver };

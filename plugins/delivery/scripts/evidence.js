@@ -98,7 +98,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
 
   if (cmd === 'state') {
     if (word === 'merged') {
-      store.update(id, { addLabels: [G.STATE.merged], metadata: { ...m, ...(a.pr ? { merged_pr: a.pr } : {}) } });
+      // merged_at: when this merge was recorded, so a deploy before it (a follow-up PR on a story already
+      // deployed) is told from the deploy of this merge (lib/handoff.js, merge-gate.js handOver)
+      const again = a.pr && String(m.merged_pr || '') === String(a.pr) && m.merged_at;
+      store.update(id, { addLabels: [G.STATE.merged], metadata: { ...m, ...(a.pr ? { merged_pr: a.pr } : {}), merged_at: again ? m.merged_at : at } });
       return { code: 0, out: `${id}: merged${a.pr ? ` (${a.pr})` : ''}, not verified` };
     }
     if (word === 'deployed' && a.sha) {
@@ -109,7 +112,13 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       else if (!same) delete meta.deployed_version;
       store.update(id, { addLabels: [G.STATE.merged, G.STATE.deployed], metadata: meta });
       const d = syncVerified(store, store.show(id), inp);
-      return { code: 0, out: `${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}` };
+      // the check on the customer's app is the next step: handed to the watchdog (lib/handoff.js), which
+      // wakes the Delivery Manager for it at its next pass if this turn ends first
+      let handed = '';
+      if (!d.ok && !same) {
+        try { handed = require('./lib/handoff.js').queue(who.root, { bead: id, step: 'check', to: who.instance, from: who.instance, sha: meta.deployed_sha, at }) ? '; its reality check is handed to the watchdog' : ''; } catch (err) { handed = `; its reality check was not handed to the watchdog (${String(err.message).split('\n')[0]}): dispatch it in this turn`; }
+      }
+      return { code: 0, out: `${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}${handed}` };
     }
     return { code: 2, out: USAGE };
   }

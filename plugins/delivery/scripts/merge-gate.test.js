@@ -149,9 +149,20 @@ test('R-32 R-12: the normal path: request, a pass on the current head, CI green,
   assert.equal(m.deny, null, m.deny);
   assert.match(m.out, /Merged pull request #478/);
   const done = h.gate('delivery-lead', 'merged 478');
-  assert.match(done.out, /rv-478-delivery-lead-2: PR 478 merged at a1b2c3d4e5f6\nex-vault-0n9-3: merged \(478\), not verified/);
+  assert.match(done.out, /rv-478-delivery-lead-2: PR 478 merged at a1b2c3d4e5f6\nex-vault-0n9-3: merged \(478\), not verified\nex-vault-0n9-3: its deploy is handed to the watchdog, which wakes delivery-lead for it if this turn ends first/);
   assert.ok(h.db().issues[BEAD].labels.includes('state-merged'));
   assert.equal(h.db().issues[BEAD].metadata.merged_pr, '478');
+  // dlv-4oj: the deploy is the next step, handed to the watchdog so it is not left to the two-hour stall
+  const HO = require('./lib/handoff.js');
+  const handed = HO.pending(h.root);
+  assert.equal(handed.length, 1);
+  assert.deepEqual([handed[0].bead, handed[0].step, handed[0].to, handed[0].pr, handed[0].sha], [BEAD, 'deploy', 'delivery-lead', '478', H1]);
+  assert.doesNotMatch(h.gate('delivery-lead', 'merged 478').out, /handed/, 'a retry hands nothing over again');
+  assert.equal(HO.pending(h.root).length, 1);
+  // a handoff that cannot be written is said, so the Delivery Manager deploys in this turn
+  fs.rmSync(path.join(h.root, HO.REL, HO.FILE));
+  fs.mkdirSync(path.join(h.root, HO.REL, HO.FILE));
+  assert.match(h.gate('delivery-lead', 'merged 478').out, /ex-vault-0n9-3: the deploy was not handed to the watchdog \(.*\)/);
   assert.match(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /^The change "Import a collection" is reviewed and merged; checking it on the customer's app next$/);
   assert.doesNotMatch(h.bash('chief-of-staff', `${h.script('review.js')} list --plain`).out, /478|ex-vault/, 'no ids in the plain words');
 });
@@ -285,4 +296,51 @@ test('briefs: the Delivery Manager\'s loop with exact commands; builders never m
     for (const m of read(r).matchAll(/(review\.js|merge-gate\.js) ([a-z-]+)/g)) assert.ok(subs[m[1]].includes(m[2]), `${r}: ${m[0]}`);
   }
   assert.equal(review.main(['bogus', '1'], { who: { root: makeProject() } }).code, 2);
+});
+
+// GitHub Copilot's review of #86: the deploy is handed over only for a story this PR marked merged:
+// the author check markMerged applies, and merged_pr names this PR.
+test('Copilot #86: a deploy handoff only for a story this PR merged, by this PR\'s author', () => {
+  const root = makeProject();
+  const HO = require('./lib/handoff.js');
+  const merged = (id, actor, pr) => storyBead({ id, assignee: actor, labels: ['story', 'state-merged'], metadata: { authors: [{ actor, role: 'builder' }], merged_pr: pr } });
+  const bd = memBd([merged('ex-a', 'dev@pc/builder-1', '478'), merged('ex-b', 'dev@pc/builder-1', '477'), merged('ex-c', 'dev@pc/builder-2', '478')]);
+  const who = { root, instance: 'delivery-lead', roleId: 'delivery-lead', actor: 'dev@pc/delivery-lead' };
+  const lines = mergeGate.handOver('478', { owner: R.norm('dev@pc/builder-1'), stories: ['ex-a', 'ex-b', 'ex-c'] }, who, { bd, now: '2026-10-30T12:00:00Z', head: H1 });
+  assert.deepEqual(HO.pending(root).map((r) => r.bead), ['ex-a'], lines.join('\n'));
+  assert.equal(lines.length, 1);
+});
+
+// Copilot round 2 on #86: a follow-up PR on a story already deployed (or verified) keeps that label;
+// the deploy of the new merge is still handed over, and is done only once a deploy follows the merge.
+test('Copilot #86: a follow-up merge on a deployed story hands its deploy over until a deploy follows it', () => {
+  const root = makeProject();
+  const HO = require('./lib/handoff.js');
+  const story = (id, labels, meta) => storyBead({ id, assignee: 'dev@pc/builder-1', labels: ['story', ...labels], metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }], ...meta } });
+  const followUp = story('ex-f', ['state-merged', 'state-deployed', 'state-verified'], { merged_pr: '480', merged_at: '2026-10-30T11:00:00Z', deployed_at: '2026-10-29T09:00:00Z', deployed_sha: 'aaaaaaa' });
+  const deployedSince = story('ex-d', ['state-merged', 'state-deployed'], { merged_pr: '480', merged_at: '2026-10-30T11:00:00Z', deployed_at: '2026-10-30T11:30:00Z', deployed_sha: 'bbbbbbb' });
+  const bd = memBd([followUp, deployedSince]);
+  const who = { root, instance: 'delivery-lead', roleId: 'delivery-lead', actor: 'dev@pc/delivery-lead' };
+  mergeGate.handOver('480', { owner: R.norm('dev@pc/builder-1'), stories: ['ex-f', 'ex-d'] }, who, { bd, now: '2026-10-30T11:05:00Z', head: H1 });
+  const [row] = HO.pending(root);
+  assert.deepEqual(HO.pending(root).map((r) => r.bead), ['ex-f'], 'deployed after this merge: nothing to hand over');
+  assert.equal(HO.done(row, followUp), false, 'the earlier deploy and verified labels do not close it');
+  assert.equal(HO.done(row, { ...followUp, metadata: { ...followUp.metadata, deployed_at: '2026-10-30T12:00:00Z' } }), true, 'a deploy after the merge does');
+});
+
+// Copilot's fifth pass on #86: a deploy recorded between GitHub's merge and `merge-gate.js merged` is
+// this merge's deploy. The story's merge time is GitHub's mergedAt, so no needless deploy wake follows.
+test('Copilot #86: the merge time is GitHub\'s, so a deploy before the merge was recorded is not asked for again', () => {
+  const MERGED_AT = '2000-01-01T00:00:00Z';
+  const h = setup({ 478: pr478({ mergedAt: MERGED_AT }) });
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  assert.equal(h.merge('delivery-lead', `478 --match-head-commit ${H1} --squash`).deny, null);
+  // the Delivery Manager deploys first, then records the merge
+  const dep = h.bash('delivery-lead', `${h.script('evidence.js')} state ${BEAD} deployed --sha d478aa11`);
+  assert.equal(dep.code, 0, dep.out + (dep.deny || ''));
+  const done = h.gate('delivery-lead', 'merged 478');
+  assert.doesNotMatch(done.out, /handed to the watchdog/, done.out);
+  assert.equal(h.db().issues[BEAD].metadata.merged_at, MERGED_AT);
+  assert.deepEqual(require('./lib/handoff.js').pending(h.root).map((r) => r.step), ['check'], 'only the reality check the deploy handed over; no deploy wake');
 });

@@ -72,7 +72,7 @@ if (group === 'api') {
     out({ sha: 'f'.repeat(40), merged: true, message: 'Pull Request successfully merged' });
   }
   const conflicting = String(pr.mergeable || '').toUpperCase() === 'CONFLICTING';
-  out({ number: Number(m[3]), state: pr.state === 'MERGED' ? 'closed' : 'open', merged: pr.state === 'MERGED', head: { sha: pr.headRefOid, ref: pr.headRefName },
+  out({ number: Number(m[3]), state: pr.state === 'MERGED' ? 'closed' : 'open', merged: pr.state === 'MERGED', merged_at: pr.mergedAt || null, head: { sha: pr.headRefOid, ref: pr.headRefName },
     mergeable: String(pr.mergeable || '').toUpperCase() === 'MERGEABLE' ? true : conflicting ? false : null, additions: pr.additions, deletions: pr.deletions, body: pr.body, title: pr.title });
 }
 if (group === 'run' && cmd === 'list') {
