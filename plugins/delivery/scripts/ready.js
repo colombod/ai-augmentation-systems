@@ -52,6 +52,18 @@ function render(id, findings, extra, json) {
 
 // What the story's "Files and modules" reach, at the project's HEAD: { sha, features: [{ id, hops }],
 // hubs, unreached, unknown } or { error }
+// The product's code, where the story's files are: the role's product checkout, else a local
+// product_url, else the project root. The project root alone is the planning repository on a team
+// whose code lives elsewhere, and mapped there a story reached "no feature" (found on a real story).
+function productRepo(who) {
+  const isRepo = (d) => { try { return require('child_process').spawnSync('git', ['-C', d, 'rev-parse', '--git-dir'], { encoding: 'utf8', timeout: 5000 }).status === 0; } catch (err) { return false; } };
+  const url = who.team && who.team.product_url;
+  for (const d of [who.roleDir && path.join(who.roleDir, 'product'), typeof url === 'string' && path.isAbsolute(url) ? url : null, who.root]) {
+    if (d && fs.existsSync(d) && isRepo(d)) return d;
+  }
+  return who.root;
+}
+
 function storyReach(root, text) {
   try {
     const paths = require('./map.js').storyPaths(text);
@@ -93,7 +105,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
     }
     // the feature map (owner's ask: blast radius from the feature's side before code): information,
     // never a block; a fault reads reach-not-computed and the gate's verdict is unchanged
-    const reach = storyReach(who.root, fs.readFileSync(path.resolve(cwd, a.story), 'utf8'));
+    const reach = storyReach(productRepo(who), fs.readFileSync(path.resolve(cwd, a.story), 'utf8'));
     const out = render(path.basename(a.story), findings, { hash: G.storyHash(story) }, a.flags.has('json'));
     return { code: findings.some((f) => f.level === 'block') ? 1 : 0, out: a.flags.has('json') ? JSON.stringify({ ...JSON.parse(out), reach }) : `${out}\n${reachLines(reach)}` };
   }
