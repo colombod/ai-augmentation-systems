@@ -38,7 +38,13 @@ function parse(argv) {
 function storyPaths(text) {
   const sec = /^##\s+Files and modules\s*$([\s\S]*?)(?=^##\s|(?![\s\S]))/m.exec(text);
   if (!sec) return [];
-  return [...sec[1].matchAll(/^\|\s*`([^`]+)`/gm)].map((m) => m[1]).filter((p) => !p.includes('...'));
+  // a row the story only reads (its action says read, reference, see or unchanged and names no change)
+  // is context, not a change: counting it made a story reach 28 features instead of 17
+  const READ = /\b(read|reads|reference|references|refer|see|context|unchanged|consult)\b/i;
+  const CHANGE = /\b(modify|change|edit|create|add|delete|remove|rename|move|update|fix|replace|write|extend)\b/i;
+  return [...sec[1].matchAll(/^\|\s*`([^`]+)`\s*\|([^|\n]*)/gm)]
+    .filter((m) => !(READ.test(m[2]) && !CHANGE.test(m[2])))
+    .map((m) => m[1]).filter((p) => !p.includes('...'));
 }
 
 function main(argv, { write = (s) => process.stdout.write(s) } = {}) {
