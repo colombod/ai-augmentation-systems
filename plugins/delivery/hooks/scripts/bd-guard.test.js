@@ -470,6 +470,9 @@ test('1a authority: state and story labels, gate fields in any shape, set-labels
     'bd update mine --metadata not-json',
     'bd update mine --unset-metadata ready_hash',
     'bd update mine --set-metadata surface=S2',
+    // merged_at decides whether a follow-up merge's deploy is done (lib/handoff.js): a builder setting it
+    // back would close the pending handoff without a wake (Copilot, #86)
+    'bd update mine --set-metadata merged_at=2000-01-01T00:00:00Z',
     'bd update mine --assignee ""',
     'bd assign mine someone',
   ];
@@ -477,7 +480,7 @@ test('1a authority: state and story labels, gate fields in any shape, set-labels
     const r = run(command);
     assert.ok(r && lines(r.reason) <= 2 && /message the Delivery Manager/i.test(r.reason), command);
   }
-  for (const command of refused.slice(0, 11)) assert.equal(run(command, 'delivery-lead'), null, command);
+  for (const command of refused.slice(0, 12)) assert.equal(run(command, 'delivery-lead'), null, command);
   assert.equal(run('bd update mine --add-label blocked'), null);
   assert.equal(run(`bd create --parent mine --title t --metadata '{"criterion":2}'`), null);
 });

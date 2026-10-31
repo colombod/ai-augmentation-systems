@@ -180,7 +180,7 @@ function structural(p, actor, bd) {
 
 // A write of a state label, the story label or a gate field, which only the gate scripts and
 // materialise set. Metadata is judged on its parsed keys, and only literal values are accepted.
-const GATE_FIELDS = new Set(['ready_hash', 'ready_at', 'ready_record', 'deployed_sha', 'deployed_at', 'deployed_version', 'evidence_head', 'merged_pr', 'authors', 'story', 'story_file', 'surface', 'area', 'roadmap_ref', 'materialised_by', 'doc_id', 'wave', 'selection', 'assumption', 'decision_owner', 'ready_assumptions']);
+const GATE_FIELDS = new Set(['ready_hash', 'ready_at', 'ready_record', 'deployed_sha', 'deployed_at', 'deployed_version', 'evidence_head', 'merged_pr', 'merged_at', 'authors', 'story', 'story_file', 'surface', 'area', 'roadmap_ref', 'materialised_by', 'doc_id', 'wave', 'selection', 'assumption', 'decision_owner', 'ready_assumptions']);
 // wave labels come from the story file through materialise: a relabel would move a story out of its wave
 const PROTECTED_LABEL = /^(state-.*|story|wave-\d+)$/;
 const EXPANSION = /\$\(|\$\{|\$[A-Za-z_]|`/;

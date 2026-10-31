@@ -4,7 +4,9 @@
 //                                                   progress with nothing moving, a ready P0 unclaimed over
 //                                                   an hour, a session stopped on a usage limit and when it
 //                                                   resumes) and tight gh polling; each is a warning in
-//                                                   the ledger. Never pauses or blocks anything.
+//                                                   the ledger. Never pauses or blocks anything. A message
+//                                                   or a step handed to a role (lib/inbox.js, lib/handoff.js)
+//                                                   is listed too: a handover, not a warning.
 //   watchdog.js wake [--dry-run] [--project <root>] wakes the session each due stall names, within the
 //                                                   caps (one wake per session an hour, six a day, a doubling
 //                                                   wait per stall); a usage-limit wake waits for the reset.
@@ -61,6 +63,11 @@ function check(root, { bd, now, team, rows, record = true }) {
   const store = bd || require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 });
   const res = WD.read(root, { bd: store, now, team, rows });
   if (record && !res.unreadable) WD.recordAll(root, res, res.polls, { now });
+  // a handed-over step the record shows taken is closed here, with no wake (lib/handoff.js); a file
+  // another writer holds is left for the next pass, which closes it then: the pass itself goes on
+  if (record && !res.unreadable && res.handoffsDone && res.handoffsDone.length) {
+    try { require('./lib/handoff.js').markDone(root, res.handoffsDone, now); } catch (err) { res.note = `the handoffs the record closed stay open until the next pass (${String(err.message).split('\n')[0]})`; }
+  }
   return res;
 }
 
@@ -69,6 +76,7 @@ function checkLines(res) {
   if (res.paused) return [`Paused by the owner (${res.paused === true ? 'a verified pause' : res.paused}): no stall is raised and nobody is woken.`];
   const lines = res.stalls.map((s) => s.line);
   lines.push(...res.polls.map((p) => p.line));
+  if (res.note) lines.push(`Note: ${res.note}.`);
   return lines.length ? lines : ['No stall: work is moving.'];
 }
 
@@ -181,9 +189,13 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     const wakeId = crypto.randomBytes(6).toString('hex');
     const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, ...HEADLESS_WAIT }), logPath });
     WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
-    // the messages it carries are handed over: the next run does not wake for them again
+    // the messages and handoffs it carries are handed over: the next run does not wake for them again
     for (const d of w.delivers || []) require('./lib/inbox.js').markDelivered(root, d.to, d.upTo);
-    lines.push(`Woke ${w.target} (${c.mode}${s.session ? ` of ${s.session}` : ''}): ${w.lines.join(' ')}`);
+    // a handoffs file another writer holds: the wake stands, the row is handed over at the next pass
+    // (its wake then waits the message gap), and the other wakes of this pass still run
+    let kept = '';
+    if (w.handoffs && w.handoffs.length) { try { require('./lib/handoff.js').markDelivered(root, w.handoffs, at); } catch (err) { kept = ` (its handoff stays open until the next pass: ${String(err.message).split('\n')[0]})`; } }
+    lines.push(`Woke ${w.target} (${c.mode}${s.session ? ` of ${s.session}` : ''}): ${w.lines.join(' ')}${kept}`);
   }
   for (const h of p.held) lines.push(`Alarm only: ${h.target}: ${h.reason}. ${h.lines[0]}`);
   const logged = new Set(rows.filter((r) => r.type === 'scheduled').map((r) => r.key));
@@ -339,9 +351,14 @@ function readCrontab(run) {
 const runner = (exec) => exec || ((cmd, args, input) => require('child_process').execFileSync(cmd, args, { encoding: 'utf8', input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] }));
 const whichOf = (has) => has || ((cmd) => { try { require('child_process').execFileSync('which', [cmd], { stdio: 'ignore' }); return true; } catch (err) { return false; } });
 
+// a host with no scheduler at all (Claude Code's cloud container: no systemd user session, no crontab)
+// cannot run the job: said plainly, with the way out, instead of a crontab error (dlv-4oj)
+const NO_SCHEDULER = 'this host has no scheduler (no systemctl, no crontab), so the watchdog cannot run on its own here: a stopped role is woken only while someone keeps a loop alive. Run the team on an always-on host (one with systemd, launchd or cron), or run `watchdog.js run --project <root>` yourself when work is due.';
+
 function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has } = {}) {
   const which = whichOf(has);
   const cron = platform !== 'darwin' && !which('systemctl');
+  if (cron && !which('crontab')) return { code: 1, out: `watchdog.js: ${NO_SCHEDULER}` };
   const e = everySeconds(o.every, { cron });
   if (e.error) return { code: 2, out: `watchdog.js: ${e.error}\n${USAGE}` };
   const run = runner(exec);

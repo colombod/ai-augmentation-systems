@@ -172,3 +172,21 @@ test('evidence.js: a story naming a surface not in surface.json is refused clear
   fs.appendFileSync(file, `${JSON.stringify(forged)}\n`);
   assert.match(ok.ev('check', ID).out, /not the recorded row 1/);
 });
+
+// Copilot round 2 on #86: the merge records when it was recorded, so a deploy before it (a follow-up
+// PR on a story already deployed) is told from the deploy of this merge; a retry keeps the first time.
+test('evidence.js: state merged records merged_at; a retry of the same PR keeps it; a new PR moves it', () => {
+  const { ev, bead, bd, run } = setup();
+  assert.equal(ev('state', ID, 'merged', '--pr', '478').code, 0);
+  const first = bead().metadata.merged_at;
+  assert.ok(first && !Number.isNaN(Date.parse(first)), 'merged_at is a time');
+  ev('state', ID, 'deployed', '--sha', 'd478aa11');
+  const later = new Date(Date.parse(first) + 3600e3).toISOString();
+  assert.equal(run('delivery-lead', ['state', ID, 'merged', '--pr', '478'], later).code, 0);
+  assert.equal(bead().metadata.merged_at, first, 'a retry of the same PR, an hour later, keeps the first time');
+  bd.update(ID, { metadata: { ...bead().metadata, merged_at: '2000-01-01T00:00:00.000Z' } });
+  assert.equal(bead().metadata.merged_at, '2000-01-01T00:00:00.000Z');
+  assert.equal(ev('state', ID, 'merged', '--pr', '479').code, 0);
+  assert.notEqual(bead().metadata.merged_at, '2000-01-01T00:00:00.000Z', 'a follow-up PR records its own time');
+  assert.equal(bead().metadata.merged_pr, '479');
+});
