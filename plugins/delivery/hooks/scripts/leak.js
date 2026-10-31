@@ -695,7 +695,8 @@ function stagedAdds(dir, all, max = DIFF_MAX) {
   const g = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8', timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   let published = false;
   try {
-    const url = g('config', '--get', 'remote.origin.url');
+    // the effective fetch URL, after any url.*.insteadOf rewrite: where the text would really come from
+    const url = g('remote', 'get-url', 'origin');
     if (/^(https?:\/\/|ssh:\/\/|git@[^:]+:)/.test(url)) {
       const base = ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/remotes/origin/master'].find((r) => { try { g('rev-parse', '-q', '--verify', r); return true; } catch (err) { return false; } });
       if (base) { g('merge-base', '--is-ancestor', other, base); published = true; }

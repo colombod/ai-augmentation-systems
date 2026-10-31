@@ -253,15 +253,15 @@ test('the leak-guard hook refuses a commit whose staged change copies the plan, 
 
 
 // a merge only takes text as inherited from a side some remote branch already holds: publish main
-// (origin is a network URL, served here from a local bare repository through url.<path>.insteadOf)
-function publish(repo, { local = false } = {}) {
-  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-remote-'));
+// origin is a network URL; the remote-tracking ref is set as a fetch would set it, so no network is
+// needed. With local: true, origin's effective URL is a local folder (configured as https, rewritten by
+// url.<folder>.insteadOf), which publishes nothing.
+function publish(repo, { local = false, shorthand = false } = {}) {
   const g = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
-  execFileSync('git', ['init', '-q', '--bare', bare], { stdio: 'pipe' });
-  if (local) g('remote', 'add', 'origin', bare);
-  else { g('config', `url.${bare}.insteadOf`, 'https://example.test/product.git'); g('remote', 'add', 'origin', 'https://example.test/product.git'); }
-  g('push', '-q', 'origin', 'main');
-  g('fetch', '-q', 'origin');
+  if (local) g('config', `url.${fs.mkdtempSync(path.join(os.tmpdir(), 'gate-folder-'))}.insteadOf`, 'https://example.test/');
+  if (shorthand) g('config', 'url.https://example.test/.insteadOf', 'gh:');
+  g('remote', 'add', 'origin', shorthand ? 'gh:product.git' : 'https://example.test/product.git');
+  g('update-ref', 'refs/remotes/origin/main', 'main');
 }
 
 // delivery-plugin-planning-a1v: concluding a conflicted merge of the default branch, the staged change
@@ -468,4 +468,27 @@ test('stagedAdds in a merge: a remote on a local folder publishes nothing', () =
   fs.writeFileSync(path.join(repo, 'a.txt'), `top\nbuilder\n${COPIED}\n`);
   git('add', '-A');
   assert.ok(stagedAdds(repo, false).some((f) => f.text.includes(COPIED)), 'a folder is not a published remote');
+});
+
+test('stagedAdds in a merge: a shorthand origin rewritten to https still counts as published', () => {
+  const m = (() => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-merge8-'));
+    const git = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
+    git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'top\n');
+    git('add', '-A'); git('commit', '-q', '-m', 'init');
+    git('checkout', '-q', '-b', 'team/builder');
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'top\nbuilder\n');
+    git('commit', '-q', '-am', 'builder');
+    git('checkout', '-q', 'main');
+    fs.writeFileSync(path.join(repo, 'a.txt'), `top\n${COPIED}\n`);
+    git('commit', '-q', '-am', 'main');
+    publish(repo, { shorthand: true });
+    git('checkout', '-q', 'team/builder');
+    try { git('merge', '-q', '--no-commit', '--no-ff', 'main'); } catch (err) { /* staged below */ }
+    fs.writeFileSync(path.join(repo, 'a.txt'), `top\nbuilder\n${COPIED}\n`);
+    git('add', '-A');
+    return repo;
+  })();
+  assert.deepEqual(stagedAdds(m, false).map((f) => f.text).filter(Boolean), [], 'main\'s line, published through gh: -> https, is inherited');
 });
