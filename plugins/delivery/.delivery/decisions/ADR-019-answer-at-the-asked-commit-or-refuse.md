@@ -1,6 +1,8 @@
 # ADR-019: Answer at the asked commit, building the map there, or refuse
 
-**Status:** proposed
+**Status:** partly built
+
+> **Against what shipped (2026-10-30, delivery 0.39.0 to 0.41.2: #91, #93, #94, #96, #97):** every `map.js` answer is read from git at one resolved 40-hex commit and names it, and a ref that does not resolve is refused. Not built: the host cache and mirrors, fetching before a named ref, refusing shallow and partial clones, and the deployment record for "shipped" (points 2 to 7). A named ref such as `main` is answered at whatever it names in the local clone, without a fetch. One exception to "one commit per answer": `impact --diff <base> <head>` maps files the change adds at the head (`scripts/map.js`), so their chains come from the head while the answer names the base; those chains cannot be checked at the commit the answer names.
 **Date:** 2026-10-24 (amended the same day at architecture step 4, see "Amendment")
 **Deciders:** Solution Architect (`initiatives/feature-map/architecture.md`, answering PRD OQ 11 and 19); owner through spike 2
 

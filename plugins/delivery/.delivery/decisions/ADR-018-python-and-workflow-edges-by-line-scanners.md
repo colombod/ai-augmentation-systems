@@ -1,8 +1,15 @@
 # ADR-018: Extract Python and workflow edges with lexical line scanners; declare the rest blind
 
-**Status:** proposed
-**Date:** 2026-10-24
-**Deciders:** Solution Architect (`initiatives/feature-map/architecture.md`); Delivery Manager through spike 3
+**Status:** proposed · **partly built**: the approach shipped, its safeguards did not
+
+> **Against what shipped (2026-10-30, delivery 0.39.0 to 0.41.2: #91, #93, #94, #96, #97):** lexical
+> scanners in `lib/codemap.js` read Python imports (resolved to repository files) and path mentions in
+> other files, as this ADR proposed. Not built: lexical state for Python strings, so an import-shaped
+> line inside a triple-quoted string can make a false edge; the indentation-aware workflow scanner
+> (`on:` triggers, `run:` lines, block scalars), since `.yml` is read only by the generic path-mention
+> rule and each workflow file is derived as a feature; line-level blind rows for constructs the scanners
+> do not understand, since `map.js blind` lists unread files only; and spike 3's precision audit. The
+> status stays proposed until a decider accepts or changes it.
 
 ## Context
 

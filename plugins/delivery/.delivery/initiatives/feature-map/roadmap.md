@@ -5,6 +5,8 @@ Phase, dependency and coverage tables are data.
 
 # Delivery roadmap: feature map, from what is shipped to blast radius to retirement
 
+> **Against what shipped (2026-10-30):** the map shipped as `scripts/map.js` (features, impact, blind, retire; #91, #93, #96, #97), computed from git at a resolved commit on each call (files an `impact --diff` adds are mapped at the head). Not built from this plan: the SQLite store (ADR-016) and the MCP server (ADR-017), both of which the owner asked for; the host cache, mirrors and deployment record (ADR-019 points 2 to 7); the line scanners' safeguards (ADR-018). Each ADR's status line says where it stands. Read this document as the plan, not as a description of the code.
+
 > Written by /delivery:roadmap. Owned by Program Manager, with QA Strategist.
 > Status: draft · Last updated: 2026-10-24 · Planned at `195071b`; revised at `e67a1b0` (HEAD of `delivery-feature-map`)
 > PRD: `.delivery/initiatives/feature-map/prd.md` · Architecture: `.delivery/initiatives/feature-map/architecture.md` · ADR-016 to ADR-019
