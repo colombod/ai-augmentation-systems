@@ -679,13 +679,17 @@ function stagedAdds(dir, all) {
   let out;
   try { out = run(all ? ['HEAD'] : ['--cached']); } catch (err) { if (!all) throw err; out = run(['--cached']); }
   const files = [];
+  const removed = new Set();
   let cur = null;
   let size = 0;
   for (const line of out.split('\n')) {
     if (line.startsWith('+++ ')) { cur = { file: line.slice(4).replace(/^b\//, ''), text: [] }; files.push(cur); continue; }
+    if (line.startsWith('--- ')) continue;
+    if (line.startsWith('-')) { removed.add(line.slice(1).trim()); continue; }
     if (cur && line.startsWith('+') && size < DIFF_MAX) { cur.text.push(line.slice(1)); size += line.length; }
   }
-  return files.map((f) => ({ file: f.file, text: f.text.join('\n') }));
+  // A line moved or re-indented was already in the product: not new text.
+  return files.map((f) => ({ file: f.file, text: f.text.filter((l) => !removed.has(l.trim())).join('\n') }));
 }
 // Outside a git work tree the commit fails on its own; there is no change to read.
 function inGitTree(dir) {
@@ -738,6 +742,12 @@ function ghOutsideTexts(item, base) {
 const UNANALYSABLE = 'leak guard could not analyse this command.\nRun git and gh as plain commands with inline text: `git commit -m \'<the change>\'`';
 const ISSUE_REASON = 'GitHub issues in the product repo are for users.\nRecord internal work in a bead: `bd create --parent <your bead> --title "<the work>"`.';
 const RULE = '\nDescribe the change to the product, never the plan: `git commit -m \'<the change>\' -m \'Refs <bead id>\'`.';
+
+// The lines of a product file as it is now (trimmed), and the lines of new text that are not among them.
+function existingLines(abs) {
+  try { return new Set(fs.readFileSync(abs, 'utf8').slice(0, DIFF_MAX).split(/\r?\n/).map((l) => l.trim()).filter(Boolean)); } catch (e) { return new Set(); }
+}
+const newLines = (text, before) => (before.size ? String(text).split(/\r?\n/).filter((l) => !before.has(l.trim())).join('\n') : String(text));
 
 // The text a Write, Edit, MultiEdit or NotebookEdit puts into a file.
 function contentOf(input) {
@@ -859,8 +869,11 @@ function decideLeak({ toolName, toolInput, cwd, roleDir, denylist, roleId, print
       if (parts.includes(fold('.delivery')) || parts.includes(fold('.beads')) || parts[parts.length - 1] === 'team.json') {
         return { reason: `Plan files (${fp}) never live in the product repo (.delivery, .beads, team.json).\nWrite it in the project repo, or message the Delivery Manager.` };
       }
+      // Only lines the file does not already have: text that was public before the gate existed is the
+      // owner's call (2026-10-31: "not a risk"), and must not lock out whoever edits that file next.
+      const before = existingLines(path.isAbsolute(fp) ? fp : path.join(base, fp));
       for (const text of contentOf(toolInput)) {
-        const hit = planHit(text.slice(0, DIFF_MAX), terms, print);
+        const hit = planHit(newLines(text.slice(0, DIFF_MAX), before), terms, print);
         if (hit) return { reason: `Writing ${fp}: the text contains ${hit.what}.${CODE_FIX}` };
       }
     }

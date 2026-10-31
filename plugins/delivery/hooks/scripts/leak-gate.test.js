@@ -121,6 +121,13 @@ test('canary: MCP text and a Write or Edit into the product', () => {
   assert.match(ask({ toolName: 'Edit', toolInput: { file_path: path.join(product, 'README.md'), old_string: 'a', new_string: 'Built for Project Falcon' } }).reason, /Project Falcon/);
   assert.match(ask({ toolName: 'MultiEdit', toolInput: { file_path: path.join(product, 'b.md'), edits: [{ old_string: 'a', new_string: COPIED }] } }).reason, /undercut/);
   assert.equal(ask({ toolName: 'Write', toolInput: { file_path: path.join(product, 'src', 'a.js'), content: `// ${OWN_WORDS}\n` } }), null);
+  // a file that already carried the sentence before the gate existed can still be edited; new copies cannot
+  const old = path.join(product, 'tests', 'old.py');
+  fs.mkdirSync(path.dirname(old), { recursive: true });
+  fs.writeFileSync(old, `# ${COPIED}\nx = 1\n`);
+  assert.equal(ask({ toolName: 'Write', toolInput: { file_path: old, content: `# ${COPIED}\nx = 2\n` } }), null);
+  assert.equal(ask({ toolName: 'Edit', toolInput: { file_path: old, old_string: 'x = 1', new_string: `# ${COPIED}\nx = 2` } }), null);
+  assert.match(ask({ toolName: 'Write', toolInput: { file_path: old, content: `# ${COPIED}\n# also: before the spring launch to win their largest accounts\n` } }).reason, /spring launch/);
   // the same text written outside the product (a plan note in the project) is the plan's own business
   assert.equal(ask({ toolName: 'Write', toolInput: { file_path: path.join(project, 'notes.md'), content: COPIED } }), null);
 });
@@ -157,6 +164,11 @@ test('stagedAdds reads the added lines of a real staged change, per file', () =>
   assert.deepEqual(stagedAdds(repo, false), [{ file: 'a.txt', text: COPIED }]);
   fs.writeFileSync(path.join(repo, 'a.txt'), `old line\n${COPIED}\nworking tree only\n`);
   assert.deepEqual(stagedAdds(repo, true), [{ file: 'a.txt', text: `${COPIED}\nworking tree only` }]);
+  // a line that was already there, moved or re-indented, is not new text
+  git('add', '-A'); git('commit', '-q', '-m', 'old leak');
+  fs.writeFileSync(path.join(repo, 'a.txt'), `  ${COPIED}\nold line\nworking tree only\n`);
+  git('add', 'a.txt');
+  assert.deepEqual(stagedAdds(repo, false), [{ file: 'a.txt', text: '' }]);
 });
 
 test('canary: branch and tag names carrying a plan term are refused; ordinary names pass', () => {

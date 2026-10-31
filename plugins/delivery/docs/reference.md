@@ -191,6 +191,8 @@ or push-option arguments are refused so the text can be checked.
   (the product's name, a public customer, a sentence written for the README). An allowed term leaves the term
   list; an allowed sentence's passages leave the fingerprint. A refusal names the matched words and the private
   file they came from, and says to rewrite in your own words or message the Product Manager.
+- **Only new text.** A line the product file already has, or one a commit moves or re-indents, is not checked:
+  what was public before the gate existed never locks out the next person to edit that file.
 - **The `Refs` line.** A `Refs <bead id>` line (ids with a hyphen and a digit, comma-separated) is not scanned:
   story and spike ids contain the initiative's slug, which the denylist holds.
 - **Kept fresh without anyone running it.** The fingerprint (salted hashes, no plan text) lives in
