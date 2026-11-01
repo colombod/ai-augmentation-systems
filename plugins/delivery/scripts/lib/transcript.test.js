@@ -377,6 +377,30 @@ test('a watchdog wake built by the watchdog is never human; the prefix mid-text 
   assert.strictEqual(t.WAKE_OPENING, WAKE_OPENING);
 });
 
+test('every wake the watchdog sends is never human, in each mode it wakes a session', () => {
+  const { wakeCommand, FRESH_ABOVE } = require('./watchdog.js');
+  const s = { instance: 'chief-of-staff', role: 'chief-of-staff', roleDir: os.tmpdir(), session: 'sess-w', context: 1000 };
+  const prompt = wakePrompt(['[from delivery-lead: merge it] please merge the branch.'], 'did');
+  const cases = {
+    resume: wakeCommand(s, prompt, []),
+    fork: wakeCommand(s, prompt, [{ sessionId: 'sess-w', status: 'idle' }]),
+    continue: wakeCommand({ ...s, session: null }, prompt, []),
+    fresh: wakeCommand({ ...s, context: FRESH_ABOVE + 1 }, prompt, []),
+  };
+  for (const [mode, c] of Object.entries(cases)) {
+    assert.strictEqual(c.mode, mode);
+    const text = c.args[c.args.indexOf('-p') + 1];
+    assert.strictEqual(t.classifyRecord(RS.typed(text, 12)).source, 'system', mode);
+  }
+  // the fresh session's preamble follows the opening, and the carried message is still there
+  const fresh = cases.fresh.args[cases.fresh.args.indexOf('-p') + 1];
+  assert.match(fresh, /^Watchdog \(a host job, not the owner\): You are chief-of-staff, starting a fresh session.*please merge the branch/);
+});
+
+test('a wake with leading whitespace is still a wake', () => {
+  assert.strictEqual(t.classifyRecord(RS.typed(`\n  ${wakePrompt(['Continue bead x.'], 'did')}`, 13)).source, 'system');
+});
+
 test('formatStatus is ok for 3+ role-session prompts with no peer message', () => {
   const f = writeJsonl([RS.launcher(), RS.typed('a', 1), RS.typed('b', 2), RS.typed('c', 3)]);
   const r = t.readHumanInputs(f);

@@ -537,9 +537,17 @@ function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE 
   const r = wakeArgs(s, prompt, live);
   if (r.mode === 'resume' && freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove) {
     // named like every role session (start.js --name), so peers reach it by name (team rule 13)
-    return { mode: 'fresh', args: [...m, '--name', s.instance, '-p', `${freshPreamble(s)} ${prompt}`] };
+    return { mode: 'fresh', args: [...m, '--name', s.instance, '-p', freshPrompt(s, prompt)] };
   }
   return r.args ? { ...r, args: [...m, ...r.args] } : r;
+}
+
+// the capture hook tells a wake from a typed prompt only by its opening words, so the fresh
+// session's preamble goes after them, never before
+function freshPrompt(s, prompt) {
+  const lead = `${WAKE_OPENING}: `;
+  const rest = String(prompt).startsWith(lead) ? String(prompt).slice(lead.length) : String(prompt);
+  return `${lead}${freshPreamble(s)} ${rest}`;
 }
 
 function freshPreamble(s) {

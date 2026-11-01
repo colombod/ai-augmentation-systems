@@ -69,7 +69,7 @@ function classifyRecord(record) {
     // a role session's typed prompt; a watchdog wake is stamped identically and differs only in its
     // opening words, and the harness's own injected tags are never the operator's
     const head = text.trim();
-    source = text.startsWith(WAKE_OPENING) || SYSTEM_PREFIXES.some((p) => head.startsWith(p)) ? 'system' : 'human';
+    source = head.startsWith(WAKE_OPENING) || SYSTEM_PREFIXES.some((p) => head.startsWith(p)) ? 'system' : 'human';
   } else {
     const head = text.trim();
     // harness-injected UI notes that carry no origin at all are not operator input either

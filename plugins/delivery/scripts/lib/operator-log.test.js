@@ -567,7 +567,7 @@ test('a cursor written before the recognised count is read without a false forma
   fs.appendFileSync(tr, JSON.stringify(roleTyped('go ahead', 4)) + '\n');
   assert.strictEqual(sync(root, tr).status, 'ok');
   assert.strictEqual(typeof JSON.parse(fs.readFileSync(f, 'utf8')).recognised, 'number');
-  // and records of no known format still raise it after the fresh start
+  // records of no known format after it do not raise it again: the typed prompt since the fresh start is recognised
   for (const n of [5, 6, 7]) fs.appendFileSync(tr, JSON.stringify(noOrigin(n)) + '\n');
-  assert.strictEqual(sync(root, tr).status, 'ok'); // one recognised record since the fresh start
+  assert.strictEqual(sync(root, tr).status, 'ok');
 });
