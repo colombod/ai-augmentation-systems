@@ -310,11 +310,19 @@ test('prepareRole writes a PATH that finds bd for a session started with a bare 
     const { roleDir } = prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
     const file = path.join(roleDir, '.claude', 'settings.local.json');
     const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const bare = '/usr/bin:/bin';
+    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-empty-'));
     // with the service manager's bare PATH bd is not found; with the role's PATH it runs
     assert.throws(() => execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: bare }, stdio: 'pipe' }));
     assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: settings.env.PATH }, stdio: 'pipe' }).toString().trim(), 'fake-bd');
     assert.ok(settings.env.PATH.split(path.delimiter).includes(path.dirname(process.execPath)));
+    // the preparing shell's order is kept: a bd earlier on its PATH is the one the role runs
+    const first = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-bin-'));
+    fs.writeFileSync(path.join(first, 'bd'), '#!/bin/sh\necho first-bd\n', { mode: 0o755 });
+    const { rolePath } = require('./prepare-role.js');
+    const ordered = rolePath({ PATH: `${first}${path.delimiter}${bin}` });
+    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: ordered }, stdio: 'pipe' }).toString().trim(), 'first-bd');
+    // a relative entry is made absolute against the preparing directory
+    assert.ok(rolePath({ PATH: 'rel/bin' }, '/h', '/work').split(path.delimiter).includes('/work/rel/bin'));
     // a re-prepare refreshes the PATH it wrote: bd moved, the new place is found
     const bin2 = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-bin-'));
     fs.renameSync(path.join(bin, 'bd'), path.join(bin2, 'bd'));

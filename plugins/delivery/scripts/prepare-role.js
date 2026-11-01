@@ -33,19 +33,13 @@ const REACH_DENY = REACH_PREFIXES.map((p) => p.replace(/__$/, ''));
 const REACH_TOOL_DENY = ['mcp__claude-in-chrome__request_credentials', 'mcp__computer-use__read_clipboard', 'mcp__computer-use__write_clipboard', 'mcp__computer-use__request_full_control', 'mcp__computer-use__request_teach_access'];
 const reachDeny = (reach) => (!reach ? REACH_DENY : reach === 'local' ? OWNER_SERVERS.map((s) => `mcp__${s}`) : REACH_TOOL_DENY);
 
-// The directories of the node, bd and claude this preparation resolves, then the preparing shell's
-// PATH, then the usual install places: nothing versioned is pinned (as the watchdog's jobPath).
-function whichDir(name, envPath) {
-  for (const d of String(envPath || '').split(path.delimiter).filter(Boolean)) {
-    try { fs.accessSync(path.join(d, name), fs.constants.X_OK); return d; } catch (err) { /* next */ }
-  }
-  return null;
-}
-function rolePath(env, home = os.homedir()) {
+// The preparing shell's PATH in its own order (so the bd and claude it selects stay the ones selected),
+// each entry made absolute (the session starts in another directory), then the usual install places
+// where a service manager's bare PATH would miss bd and claude, then node's own directory: nothing
+// versioned is pinned (as the watchdog's jobPath). (Copilot on #115: no reordering, no relative entry.)
+function rolePath(env, home = os.homedir(), cwd = process.cwd()) {
   const usual = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', path.join(home, '.local', 'bin')];
-  const search = [String(env.PATH || ''), ...usual].join(path.delimiter);
-  const tools = [path.dirname(process.execPath), whichDir('bd', search), whichDir('claude', search)];
-  const parts = [...tools, ...String(env.PATH || '').split(path.delimiter), ...usual].filter(Boolean);
+  const parts = [...String(env.PATH || '').split(path.delimiter).filter(Boolean).map((d) => path.resolve(cwd, d)), ...usual, path.dirname(process.execPath)];
   return [...new Set(parts)].join(path.delimiter);
 }
 

@@ -78,8 +78,8 @@ session its role and keep it:
   instance with its own settings (model, env, actor), a composed `CLAUDE.local.md`, a clone of the
   project repo and, for builders, a worktree of the product repo. The env includes
   `DELIVERY_ROLE_DIR` (so the hooks still find the role after a `cd`) and, when the project has
-  `.beads`, `BEADS_DIR`. It also sets `PATH`: the directories of the node, bd and claude found at
-  preparation, then the preparing shell's PATH and the usual install places. A session started by a
+  `.beads`, `BEADS_DIR`. It also sets `PATH`: the preparing shell's PATH in its own order (entries
+  made absolute), then the usual install places and node's directory. A session started by a
   service manager (systemd, launchd, Remote Control) then still finds bd. A re-prepare refreshes a
   PATH it wrote earlier and never replaces one the user set.
 - **Hooks** (all in `hooks/hooks.json`; each is inert outside a role session unless noted):
