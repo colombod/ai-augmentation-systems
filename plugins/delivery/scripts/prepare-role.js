@@ -33,6 +33,19 @@ const REACH_DENY = REACH_PREFIXES.map((p) => p.replace(/__$/, ''));
 const REACH_TOOL_DENY = ['mcp__claude-in-chrome__request_credentials', 'mcp__computer-use__read_clipboard', 'mcp__computer-use__write_clipboard', 'mcp__computer-use__request_full_control', 'mcp__computer-use__request_teach_access'];
 const reachDeny = (reach) => (!reach ? REACH_DENY : reach === 'local' ? OWNER_SERVERS.map((s) => `mcp__${s}`) : REACH_TOOL_DENY);
 
+// The preparing shell's PATH in its own order (so the bd and claude it selects stay the ones selected),
+// each entry made absolute (the session starts in another directory), then the usual install places
+// where a service manager's bare PATH would miss bd and claude, then node's own directory: nothing
+// versioned is pinned (as the watchdog's jobPath). (Copilot on #115: no reordering, no relative entry.)
+function rolePath(env, home = os.homedir(), cwd = process.cwd()) {
+  const usual = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', path.join(home, '.local', 'bin')];
+  // an empty component (a leading, trailing or doubled delimiter) searches the current directory; an
+  // entry is never normalised (a `..` after a symlink is resolved by the kernel, not lexically)
+  const own = env.PATH === undefined ? [] : String(env.PATH).split(path.delimiter).map((d) => (!d ? cwd : path.isAbsolute(d) ? d : `${cwd}${path.sep}${d}`));
+  const parts = [...own, ...usual, path.dirname(process.execPath)];
+  return [...new Set(parts)].join(path.delimiter);
+}
+
 function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, user, now }) {
   instance = canonicalRoleId(instance); // --instance delivery-manager means delivery-lead
   projectRoot = path.resolve(projectRoot);
@@ -73,7 +86,14 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
 
   if (brief.meta.touches_code && !productRepo) files.push('warning: no product worktree (pass --product-repo)');
 
-  const actor = `${user || os.userInfo().username}@${role.host}/${instance}`;
+  // a re-preparation without --user keeps the role's saved actor: whoever re-runs start.js (say, to
+  // change the permission mode) is not the role's identity, and a new actor loses the role's claims
+  let savedUser;
+  try {
+    const saved = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')).actor;
+    if (typeof saved === 'string' && saved.lastIndexOf('@') > 0) savedUser = saved.slice(0, saved.lastIndexOf('@'));
+  } catch (err) { savedUser = undefined; }
+  const actor = `${user || savedUser || os.userInfo().username}@${role.host}/${instance}`;
   fs.mkdirSync(path.join(roleDir, '.claude'), { recursive: true });
   const settingsFile = path.join(roleDir, '.claude', 'settings.local.json');
   let settings = {};
@@ -113,6 +133,19 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     beadsDirWritten = beadsDir;
   } else if (previouslyWritten && currentBeadsDir === previouslyWritten) {
     beadsDirWritten = previouslyWritten;
+  }
+  // A role session started by a service manager (systemd, launchd, the Remote Control service) gets
+  // the manager's bare PATH, without ~/.local/bin where bd and claude usually live, and every bd call
+  // failed with ENOENT (07t). The session's PATH is written from the tools resolved here, so it no
+  // longer depends on how the session was started. Same rule as BEADS_DIR: a value this script wrote
+  // earlier is refreshed; one the user set is never touched.
+  let previousPath;
+  try { previousPath = JSON.parse(fs.readFileSync(markerFile, 'utf8')).path_written; } catch (err) { previousPath = undefined; }
+  let pathWritten;
+  // only an unset PATH is ours to fill: an empty one is a user's valid choice (Copilot on #115)
+  if (settings.env.PATH === undefined || (previousPath && settings.env.PATH === previousPath)) {
+    settings.env.PATH = rolePath(process.env);
+    pathWritten = settings.env.PATH;
   }
   settings.enabledPlugins = Object.assign({}, settings.enabledPlugins, { 'delivery@ai-augmentation-systems': true });
   // Pre-allow the lane's own commands (spec 8.6, permission prompts): a manager session should not
@@ -154,10 +187,17 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   } catch (err) {
     files.push(`warning: lane permission rules not written (${err.message})`);
   }
-  if (settings.permissions && typeof settings.permissions === 'object') {
-    delete settings.permissions.defaultMode;
-    if (Object.keys(settings.permissions).length === 0) delete settings.permissions;
-  }
+  // The team's permission mode is the role's default too, not only the flag a launch passes: a session
+  // started any other way (the owner's Claude app through Remote Control, a start command typed by
+  // hand, a fresh-start wake) otherwise came up in manual-approve mode and turned every bead note,
+  // record and ack into an approval prompt for the owner (kk5, dec-chief-of-staff-000076: no session
+  // the plugin spawns may run in manual-approve mode). team.json permission_mode, auto when unset;
+  // 'default' or 'manual' written by an owner is respected as asked.
+  const mode = team.permission_mode || 'auto';
+  if (!settings.permissions || typeof settings.permissions !== 'object') settings.permissions = {};
+  if (mode === 'default' || mode === 'manual') delete settings.permissions.defaultMode;
+  else settings.permissions.defaultMode = mode;
+  if (Object.keys(settings.permissions).length === 0) delete settings.permissions;
   fs.writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
   files.push(settingsFile);
 
@@ -188,6 +228,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     prepared_at: now || new Date().toISOString(),
   };
   if (beadsDirWritten) marker.beads_dir_written = beadsDirWritten;
+  if (pathWritten) marker.path_written = pathWritten;
   fs.writeFileSync(markerFile, `${JSON.stringify(marker, null, 2)}\n`);
   files.push(markerFile);
 
@@ -221,4 +262,4 @@ if (require.main === module) {
   console.log(roleDir);
 }
 
-module.exports = { reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole };
+module.exports = { rolePath, reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole };

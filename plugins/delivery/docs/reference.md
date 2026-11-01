@@ -78,7 +78,11 @@ session its role and keep it:
   instance with its own settings (model, env, actor), a composed `CLAUDE.local.md`, a clone of the
   project repo and, for builders, a worktree of the product repo. The env includes
   `DELIVERY_ROLE_DIR` (so the hooks still find the role after a `cd`) and, when the project has
-  `.beads`, `BEADS_DIR`.
+  `.beads`, `BEADS_DIR`. It also sets `PATH`: the preparing shell's PATH in its own order (entries
+  made absolute), then the usual install places and node's directory. A session started by a
+  service manager (systemd, launchd, Remote Control) then still finds bd. A re-prepare refreshes a
+  PATH it wrote earlier and never replaces one the user set (an empty one included); `start` re-prepares
+  a role prepared before PATH was written.
 - **Hooks** (all in `hooks/hooks.json`; each is inert outside a role session unless noted):
   - SessionStart rewrites `CLAUDE.local.md` from the manifest, registers the session in the
     roster and captures operator input. On clear and compact it restates the role; on startup
@@ -1121,6 +1125,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   236k tokens. The fresh session is named like the role (`--name`), and the next wake resumes it (a
   fresh role session starts near 53k tokens). The Stop guard's check for unrecorded operator input is
   per session, so a fresh Chief of Staff is told to run `operator.js pending` first.
+- **Assigned work runs.** A role holding assigned or claimed work it can start (in progress, or open and ready) whose session has been quiet more than 10 minutes is woken to work it, message or not, under the message rules (five minutes apart, 48 a day), never a busy, usage-limited or epic case. Work an open owner-queue step names waits for the owner and is not woken. While main is red, open work is woken only when the claim check would let it start (a valid fix, or work of the open `ci:main` A3); work already in progress is still woken. In an area stopped on a failed check only the stop's recovery work is woken (the failed bead or its children, a fix linked through `metadata.fixes`, the stop's A3 work). Past `stall_hours` the in-progress stall wakes it instead, except recovery work in a stopped area, which the stall skips and so keeps its assigned wake. Assigned wakes do not count toward the stall wakes' hourly gate, daily cap or per-stall backoff, and a stall wake that goes out carries the holder's assigned work with it (hjx.1).
 - **Handoffs.** `merge-gate.js merged` hands the deploy of each story it marked merged to the watchdog,
   and `evidence.js state <bead> deployed` hands the reality check (`.delivery/watchdog/handoffs.ndjson`,
   `lib/handoff.js`): if the Delivery Manager's turn ends there, the next pass wakes it for that step with
@@ -1257,7 +1262,7 @@ scope always go to the operator, once, in the briefing, logged with `operator.js
 - Only the Chief of Staff and the Product Manager may use `AskUserQuestion`, `PushNotification` and `SendUserFile`.
 - Their Stop hook reminds once per turn, blocking the first stop, when a turn leaves an operator input unrecorded or asks the operator to relay (including "approve the permission prompt in X"); the relay check is a heuristic, and both checks fail open if the transcript format is unrecognised.
 - Lanes deny writes to the operator store (`.git/delivery-operator/`, in the project and in a role's clone, case-folded and through symlinks), to the legacy `.delivery/operator/`, and git commands that would write the store or push its branch; only the manager lanes include the writer commands. Workers with unrestricted Bash can record or acknowledge only inputs their own session captured; the check is cooperative (it compares a session id the session's own Bash can rewrite).
-- `prepare-role` pre-allows each manager lane's own commands in `settings.local.json`, so a session does not stop on a prompt only the operator can clear. When a role session's lane cannot be checked (manifest unreadable, internal error) it fails closed and allows only restoring the manifest; a session whose role marker is missing gets no lane check at all.
+- `prepare-role` pre-allows each manager lane's own commands in `settings.local.json`, so a session does not stop on a prompt only the operator can clear. It also writes the team's permission mode (`team.json` `permission_mode`, auto when unset) as the role's `permissions.defaultMode`, so a session started any way (the owner's Claude app through Remote Control, a typed start command, a fresh wake) never comes up in manual-approve mode; an owner who sets `default` gets it. The allow rules name the plugin's path on the day the role was prepared, so after a plugin update they stop matching; the lane hook therefore approves the same commands itself, judged against the plugin root it runs from: a Bash command every segment of which a pre-allowable rule of the role's own groups matches, once every guard has let it through (never an unrestricted `any` lane, the reviewer lane, or a rule marked `native_allow: false`). When a role session's lane cannot be checked (manifest unreadable, internal error) it fails closed and allows only restoring the manifest; a session whose role marker is missing gets no lane check at all.
 
 **Artifacts**, in the `operator/` directory of the private operator store:
 `inputs/<host>/<YYYY-MM>.ndjson` (one hash-chained entry per operator prompt, from the session

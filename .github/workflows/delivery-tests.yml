@@ -25,6 +25,15 @@ jobs:
         with:
           node-version: '24'
 
+      # Test runs are sealed (hjx): bubblewrap gives each run a private, capped /tmp that the kernel
+      # removes when the run ends, so no run leaves anything in the host's /tmp.
+      - name: Install bubblewrap
+        run: sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
+
+      # The proof, from outside any sealed run: a run killed while writing into /tmp leaves nothing.
+      - name: Seal check
+        run: node plugins/delivery/scripts/testing/seal-check.js
+
       # No package.json, no dependencies -- every test uses only Node
       # builtins. run-tests.js finds every scripts/**/*.test.js and
       # hooks/scripts/*.test.js and clears the role variables first, so CI,

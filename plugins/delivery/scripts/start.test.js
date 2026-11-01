@@ -757,3 +757,60 @@ test('import: the product repo\'s own beads message names the flag', () => {
   const r = start(['--project', root, '--host', 'laptop', '--product-repo', product]);
   assert.match(r.out, /not imported and nothing waits on it.*--import-beads <file>/);
 });
+
+// Copilot on #112: an owner who changes the team's permission mode changes it for every existing role,
+// not only new ones; the role's saved default follows team.json (kk5).
+test('start: changing --permission-mode re-prepares existing roles so their saved default follows', () => {
+  const project = productRepo();
+  const modeOf = () => {
+    const dir = path.join(path.dirname(project), `${path.basename(project)}-team`, 'chief-of-staff', '.claude', 'settings.local.json');
+    const team = path.join(path.resolve(project, '..'), `${JSON.parse(fs.readFileSync(path.join(project, '.delivery', 'team', 'team.json'), 'utf8')).project}-team`, 'chief-of-staff', '.claude', 'settings.local.json');
+    const f = fs.existsSync(team) ? team : dir;
+    return (JSON.parse(fs.readFileSync(f, 'utf8')).permissions || {}).defaultMode;
+  };
+  assert.equal(start(['--project', project, '--host', 'laptop']).status, 0);
+  assert.equal(modeOf(), 'auto', 'a new team: auto');
+  const toDefault = start(['--project', project, '--host', 'laptop', '--permission-mode', 'default']);
+  assert.equal(toDefault.status, 0, toDefault.out);
+  assert.match(toDefault.out, /chief-of-staff: re-prepared for the permission mode/);
+  assert.equal(modeOf(), undefined, 'the owner chose default: no saved default left');
+  const toEdits = start(['--project', project, '--host', 'laptop', '--permission-mode', 'acceptEdits']);
+  assert.match(toEdits.out, /chief-of-staff: re-prepared for the permission mode/);
+  assert.equal(modeOf(), 'acceptEdits');
+  assert.match(start(['--project', project, '--host', 'laptop']).out, /chief-of-staff: already prepared/, 'unchanged: left as it is');
+});
+
+// Copilot on #112: a dry run previews the mode the real run would apply, not the one team.json still
+// holds; and a re-preparation for the mode without --user keeps the role's saved actor
+test('start: a mode change previews correctly in a dry run and keeps the role\'s actor', () => {
+  const project = productRepo();
+  const roleFile = (f) => path.join(path.resolve(project, '..'), `${JSON.parse(fs.readFileSync(path.join(project, '.delivery', 'team', 'team.json'), 'utf8')).project}-team`, 'chief-of-staff', f);
+  assert.equal(start(['--project', project, '--host', 'laptop', '--user', 'alice']).status, 0);
+  const preview = start(['--project', project, '--host', 'laptop', '--permission-mode', 'default', '--dry-run']);
+  assert.equal(preview.status, 0, preview.out);
+  assert.match(preview.out, /chief-of-staff: would re-prepare for the permission mode/);
+  const real = start(['--project', project, '--host', 'laptop', '--permission-mode', 'default']);
+  assert.match(real.out, /chief-of-staff: re-prepared for the permission mode/);
+  assert.equal(JSON.parse(fs.readFileSync(roleFile('.delivery-role.json'), 'utf8')).actor, 'alice@laptop/chief-of-staff');
+  assert.equal(JSON.parse(fs.readFileSync(roleFile(path.join('.claude', 'settings.local.json')), 'utf8')).env.BEADS_ACTOR, 'alice@laptop/chief-of-staff');
+});
+
+// Copilot on #115 (07t): a role prepared before the plugin wrote PATH gets it when start runs again;
+// a PATH the user set, even an empty one, is left alone
+test('start: an already prepared role without PATH is re-prepared for PATH; a user PATH is kept', () => {
+  const project = productRepo();
+  const settingsFile = () => path.join(path.resolve(project, '..'), `${JSON.parse(fs.readFileSync(path.join(project, '.delivery', 'team', 'team.json'), 'utf8')).project}-team`, 'chief-of-staff', '.claude', 'settings.local.json');
+  assert.equal(start(['--project', project, '--host', 'laptop']).status, 0);
+  const s = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
+  assert.ok(s.env.PATH, 'a new role gets a PATH');
+  delete s.env.PATH; // as prepared by an older plugin
+  fs.writeFileSync(settingsFile(), JSON.stringify(s));
+  const again = start(['--project', project, '--host', 'laptop']);
+  assert.match(again.out, /chief-of-staff: re-prepared for PATH/);
+  assert.ok(JSON.parse(fs.readFileSync(settingsFile(), 'utf8')).env.PATH);
+  const u = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
+  u.env.PATH = '';
+  fs.writeFileSync(settingsFile(), JSON.stringify(u));
+  assert.match(start(['--project', project, '--host', 'laptop']).out, /chief-of-staff: already prepared/);
+  assert.equal(JSON.parse(fs.readFileSync(settingsFile(), 'utf8')).env.PATH, '');
+});
