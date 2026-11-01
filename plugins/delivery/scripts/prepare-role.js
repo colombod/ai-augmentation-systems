@@ -73,7 +73,14 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
 
   if (brief.meta.touches_code && !productRepo) files.push('warning: no product worktree (pass --product-repo)');
 
-  const actor = `${user || os.userInfo().username}@${role.host}/${instance}`;
+  // a re-preparation without --user keeps the role's saved actor: whoever re-runs start.js (say, to
+  // change the permission mode) is not the role's identity, and a new actor loses the role's claims
+  let savedUser;
+  try {
+    const saved = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')).actor;
+    if (typeof saved === 'string' && saved.lastIndexOf('@') > 0) savedUser = saved.slice(0, saved.lastIndexOf('@'));
+  } catch (err) { savedUser = undefined; }
+  const actor = `${user || savedUser || os.userInfo().username}@${role.host}/${instance}`;
   fs.mkdirSync(path.join(roleDir, '.claude'), { recursive: true });
   const settingsFile = path.join(roleDir, '.claude', 'settings.local.json');
   let settings = {};
@@ -154,10 +161,17 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   } catch (err) {
     files.push(`warning: lane permission rules not written (${err.message})`);
   }
-  if (settings.permissions && typeof settings.permissions === 'object') {
-    delete settings.permissions.defaultMode;
-    if (Object.keys(settings.permissions).length === 0) delete settings.permissions;
-  }
+  // The team's permission mode is the role's default too, not only the flag a launch passes: a session
+  // started any other way (the owner's Claude app through Remote Control, a start command typed by
+  // hand, a fresh-start wake) otherwise came up in manual-approve mode and turned every bead note,
+  // record and ack into an approval prompt for the owner (kk5, dec-chief-of-staff-000076: no session
+  // the plugin spawns may run in manual-approve mode). team.json permission_mode, auto when unset;
+  // 'default' or 'manual' written by an owner is respected as asked.
+  const mode = team.permission_mode || 'auto';
+  if (!settings.permissions || typeof settings.permissions !== 'object') settings.permissions = {};
+  if (mode === 'default' || mode === 'manual') delete settings.permissions.defaultMode;
+  else settings.permissions.defaultMode = mode;
+  if (Object.keys(settings.permissions).length === 0) delete settings.permissions;
   fs.writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
   files.push(settingsFile);
 
