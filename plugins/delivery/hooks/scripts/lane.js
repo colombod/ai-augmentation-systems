@@ -770,6 +770,13 @@ function registerHit({ projectRoot, roleDir }) {
 // and so is resuming or continuing another Claude session by hand. Only `node .../watchdog.js check`
 // runs in a role session; the script refuses the rest inside a role directory as well.
 const WATCHDOG_REASON = 'the watchdog\'s wake, run, install and uninstall are the host job\'s, which the owner installs from a shell outside any role directory; read the stalls with `watchdog.js check`';
+// A suite run straight with `node --test` (or `node x.test.js`) writes its fixtures into the host's
+// shared /tmp and leaves them there: one such run left 6,156 fixture folders (456 MB, 192,000 inodes)
+// in a host's memory-backed /tmp, after the same pattern had once filled it. Every role, any-lane
+// builders included, runs tests through the sealed runner, whose run lives in a capped private /tmp
+// the OS destroys.
+const TEST_FILE = /\.test\.[cm]?[jt]s$/;
+const TESTS_REASON = 'tests run only through the sealed runner, which gives the run a capped private /tmp the OS destroys: `node <plugin>/scripts/testing/run-tests.js` (the team\'s test_command; pick files with DELIVERY_TEST_FILES), never `node --test` or a test file directly';
 const RESUME_REASON = 'resuming or continuing a Claude session is the watchdog host job\'s; message the session instead';
 // Only what runs is judged: the command word of each segment (after VAR=x assignments and wrappers such
 // as env, nohup, timeout), the script an interpreter runs or the code it evaluates, the command a shell
@@ -920,6 +927,8 @@ function refusedRun(text, depth = 0) {
         break;
       }
       if (script !== null && namesWatchdog(args[script]) && !(isCli(args[script]) && checkOnly(args.slice(script + 1)))) return 'watchdog';
+      // node's test runner, or a test file run directly: only through the sealed runner (dec-000014)
+      if ((name === 'node' || name === 'nodejs') && (args.some((a) => a === '--test' || a.startsWith('--test=')) || (script !== null && TEST_FILE.test(args[script])))) return 'tests';
       continue;
     }
     if (namesWatchdog(w) && !(isCli(w) && checkOnly(args))) return 'watchdog';
@@ -1238,7 +1247,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     const run = refusedRun(command);
-    if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : RESUME_REASON}.` };
+    if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? TESTS_REASON : RESUME_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
       return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };

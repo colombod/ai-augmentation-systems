@@ -1300,3 +1300,18 @@ test('nativeApproval approves nothing for a non-Bash tool, an any lane or the re
   assert.ok(nativeApproval(cmd("ls *"), reads, groups, ctx) === null);
   assert.ok(nativeApproval(cmd(`node ${path.join(PLUGIN_ROOT, 'scripts', 'team-status.js')}`), reads, groups, ctx).allow);
 });
+
+// hjx item 2: a suite run straight with node's test runner leaves its fixtures in the host's /tmp;
+// every role, the any-lane builder included, runs tests only through the sealed runner
+test('lane: node --test and a test file run directly are refused for every role; the sealed runner is not', () => {
+  const run = (command, role = BUILDER) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], ...ctx() });
+  for (const command of ['node --test', 'node --test hooks/scripts/lane.test.js', 'cd .. && node --test hooks/scripts/*.test.js',
+    'node --test-name-pattern=x --test a.test.js', 'node scripts/watch.test.js', 'FOO=1 node --test', "bash -c 'node --test'", 'nodejs --test=a']) {
+    const d = run(command);
+    assert.equal(d.allow, false, command);
+    assert.match(d.reason, /sealed runner/, command);
+  }
+  assert.match(run('node --test', COS).reason, /sealed runner/);
+  for (const command of ['node scripts/testing/run-tests.js', 'DELIVERY_TEST_FILES=a.test.js node scripts/testing/run-tests.js',
+    'node scripts/test-helper.js', 'npm test', 'grep -- --test lane.js']) assert.equal(run(command).allow, true, command);
+});
