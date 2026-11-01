@@ -674,22 +674,74 @@ function refNames(item) {
 
 // Added lines of the change a commit records, per file. -a commits the working tree, so it reads HEAD.
 const DIFF_MAX = 4 * 1024 * 1024;
-function stagedAdds(dir, all) {
-  const run = (range) => execFileSync('git', ['-C', dir, 'diff', ...range, '-U0', '--no-color', '--no-ext-diff', '--no-textconv'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] });
+function stagedAdds(dir, all, max = DIFF_MAX) {
+  // suppressBlankEmpty would print a blank context line with no leading space: keep git's default
+  const run = (range) => execFileSync('git', ['-C', dir, '-c', 'diff.suppressBlankEmpty=false', 'diff', ...range, '-U0', '--no-color', '--no-ext-diff', '--no-textconv'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] });
   let out;
   try { out = run(all ? ['HEAD'] : ['--cached']); } catch (err) { if (!all) throw err; out = run(['--cached']); }
+  const mine = addsOf(out, max);
+  // Concluding a merge (a conflicted `git merge`, resolved and committed): the staged change against
+  // HEAD holds everything the other side brings in, such as the default branch's own files. Only the
+  // lines new against both parents are this commit's own text (delivery-plugin-planning-a1v): a line
+  // added at the same place in the result against HEAD and against MERGE_HEAD. Both diffs end at the
+  // same tree, so a destination line number names one line of the result.
+  let other = null;
+  try { other = execFileSync('git', ['-C', dir, 'rev-parse', '-q', '--verify', 'MERGE_HEAD'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (err) { other = null; }
+  if (!other) return mine.files.map(textOf);
+  // only a published side can lend its text: a commit some remote branch already holds. A local branch
+  // merged with --no-commit (plan text committed there first) would otherwise launder it as "inherited".
+  // Published means on origin's default branch, where origin is a network remote: a remote added on a
+  // local folder, or any other branch, could hold text nobody has seen.
+  const g = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8', timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  let published = false;
+  try {
+    // the effective fetch URL, after any url.*.insteadOf rewrite: where the text would really come from
+    const url = g('remote', 'get-url', 'origin');
+    if (/^(https?:\/\/|ssh:\/\/|git@[^:]+:)/.test(url)) {
+      const base = ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/remotes/origin/master'].find((r) => { try { g('rev-parse', '-q', '--verify', r); return true; } catch (err) { return false; } });
+      if (base) { g('merge-base', '--is-ancestor', other, base); published = true; }
+    }
+  } catch (err) { published = false; }
+  if (!published) return mine.files.map(textOf);
+  // --text: a parent's copy with a NUL byte would otherwise give 'Binary files differ' and no lines
+  const theirs = addsOf(run(all ? ['--text', other] : ['--text', '--cached', other]), max);
+  // a comparison cut short proves nothing about what is inherited: read the whole change instead
+  if (theirs.truncated || mine.truncated) return mine.files.map(textOf);
+  // a line the other side only moved or re-indented is that side's text, as in the first comparison
+  const at = new Map(theirs.files.map((f) => [f.file, new Set(f.lines.filter((l) => !f.removed.has(l.text.trim())).map((l) => l.n))]));
+  return mine.files.map((f) => ({ file: f.file, lines: f.lines.filter((l) => at.has(f.file) && at.get(f.file).has(l.n)), removed: f.removed }))
+    .map(textOf).filter((f) => f.text);
+}
+const textOf = (f) => ({ file: f.file, text: f.lines.map((l) => l.text).filter((t) => !f.removed.has(t.trim())).join('\n') });
+// Added lines per file from a `git diff -U0` output, each with its line number in the destination
+// (from the hunk header); truncated when the output passed DIFF_MAX.
+function addsOf(out, max = DIFF_MAX) {
   const files = [];
+  // one set for the whole diff, as before: a line moved between files is not new text either
   const removed = new Set();
   let cur = null;
+  let n = 0;
   let size = 0;
+  let truncated = false;
+  // a file's header lines (---, +++) come only between its `diff --git` line and its first hunk; inside
+  // a hunk, an added line that starts with "++" is content, never a header
+  let inHunk = false;
   for (const line of out.split('\n')) {
-    if (line.startsWith('+++ ')) { cur = { file: line.slice(4).replace(/^b\//, ''), text: [] }; files.push(cur); continue; }
-    if (line.startsWith('--- ')) continue;
+    if (line.startsWith('diff --git ')) { inHunk = false; cur = null; continue; }
+    if (!inHunk && line.startsWith('+++ ')) { cur = { file: line.slice(4).replace(/^b\//, ''), lines: [], removed }; files.push(cur); continue; }
+    if (!inHunk && line.startsWith('--- ')) continue;
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (h) { n = Number(h[1]); inHunk = true; continue; }
+    if (!cur || !inHunk) continue;
+    // A line moved or re-indented was already in the product: not new text.
     if (line.startsWith('-')) { removed.add(line.slice(1).trim()); continue; }
-    if (cur && line.startsWith('+') && size < DIFF_MAX) { cur.text.push(line.slice(1)); size += line.length; }
+    if (line.startsWith('+')) {
+      if (size < max) { cur.lines.push({ n, text: line.slice(1) }); size += line.length; } else truncated = true;
+      n += 1;
+    } else if (line.startsWith(' ') || line === '') n += 1; // a context line (diff.interHunkContext) is in the result too
+
   }
-  // A line moved or re-indented was already in the product: not new text.
-  return files.map((f) => ({ file: f.file, text: f.text.filter((l) => !removed.has(l.trim())).join('\n') }));
+  return { files, truncated };
 }
 // Outside a git work tree the commit fails on its own; there is no change to read.
 function inGitTree(dir) {
