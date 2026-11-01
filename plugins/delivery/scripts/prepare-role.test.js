@@ -341,22 +341,25 @@ test('prepareRole writes a PATH that finds bd for a session started with a bare 
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-bin-'));
   fs.writeFileSync(path.join(bin, 'bd'), '#!/bin/sh\necho fake-bd\n', { mode: 0o755 });
   const saved = process.env.PATH;
+  // a private home for the spawned shells, removed whatever happens (Copilot on #116)
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-home-'));
   process.env.PATH = `${bin}${path.delimiter}${saved}`;
   try {
     const { roleDir } = prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
     const file = path.join(roleDir, '.claude', 'settings.local.json');
     const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-empty-'));
-    // with the service manager's bare PATH bd is not found; with the role's PATH it runs
-    assert.throws(() => execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: bare }, stdio: 'pipe' }));
-    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: settings.env.PATH }, stdio: 'pipe' }).toString().trim(), 'fake-bd');
+    // with the service manager's bare PATH bd is not found; with the role's PATH it runs. HOME is
+    // set: a real bd that wins the lookup writes ~/.config/bd, which without HOME landed in the cwd
+    assert.throws(() => execFileSync('/bin/sh', ['-c', 'bd'], { env: { HOME: home, PATH: bare }, stdio: 'pipe' }));
+    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { HOME: home, PATH: settings.env.PATH }, stdio: 'pipe' }).toString().trim(), 'fake-bd');
     assert.ok(settings.env.PATH.split(path.delimiter).includes(path.dirname(process.execPath)));
     // the preparing shell's order is kept: a bd earlier on its PATH is the one the role runs
     const first = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-bin-'));
     fs.writeFileSync(path.join(first, 'bd'), '#!/bin/sh\necho first-bd\n', { mode: 0o755 });
     const { rolePath } = require('./prepare-role.js');
     const ordered = rolePath({ PATH: `${first}${path.delimiter}${bin}` });
-    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: ordered }, stdio: 'pipe' }).toString().trim(), 'first-bd');
+    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { HOME: home, PATH: ordered }, stdio: 'pipe' }).toString().trim(), 'first-bd');
     // a relative entry is made absolute against the preparing directory
     assert.ok(rolePath({ PATH: 'rel/bin' }, '/h', '/work').split(path.delimiter).includes('/work/rel/bin'));
     // traversal is kept as written: through a symlink, link/.. is not the directory holding link (Copilot on #115)
@@ -370,7 +373,7 @@ test('prepareRole writes a PATH that finds bd for a session started with a bare 
     process.env.PATH = `${bin2}${path.delimiter}${saved}`;
     prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
     const again = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: again.env.PATH }, stdio: 'pipe' }).toString().trim(), 'fake-bd');
+    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { HOME: home, PATH: again.env.PATH }, stdio: 'pipe' }).toString().trim(), 'fake-bd');
     // a PATH the user set is never touched
     again.env.PATH = '/my/own/bin:/usr/bin';
     fs.writeFileSync(file, JSON.stringify(again));
@@ -382,5 +385,5 @@ test('prepareRole writes a PATH that finds bd for a session started with a bare 
     fs.writeFileSync(file, JSON.stringify(empty));
     prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).env.PATH, '');
-  } finally { process.env.PATH = saved; }
+  } finally { process.env.PATH = saved; fs.rmSync(home, { recursive: true, force: true }); }
 });
