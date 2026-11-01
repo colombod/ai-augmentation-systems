@@ -757,3 +757,25 @@ test('import: the product repo\'s own beads message names the flag', () => {
   const r = start(['--project', root, '--host', 'laptop', '--product-repo', product]);
   assert.match(r.out, /not imported and nothing waits on it.*--import-beads <file>/);
 });
+
+// Copilot on #112: an owner who changes the team's permission mode changes it for every existing role,
+// not only new ones; the role's saved default follows team.json (kk5).
+test('start: changing --permission-mode re-prepares existing roles so their saved default follows', () => {
+  const project = productRepo();
+  const modeOf = () => {
+    const dir = path.join(path.dirname(project), `${path.basename(project)}-team`, 'chief-of-staff', '.claude', 'settings.local.json');
+    const team = path.join(path.resolve(project, '..'), `${JSON.parse(fs.readFileSync(path.join(project, '.delivery', 'team', 'team.json'), 'utf8')).project}-team`, 'chief-of-staff', '.claude', 'settings.local.json');
+    const f = fs.existsSync(team) ? team : dir;
+    return (JSON.parse(fs.readFileSync(f, 'utf8')).permissions || {}).defaultMode;
+  };
+  assert.equal(start(['--project', project, '--host', 'laptop']).status, 0);
+  assert.equal(modeOf(), 'auto', 'a new team: auto');
+  const toDefault = start(['--project', project, '--host', 'laptop', '--permission-mode', 'default']);
+  assert.equal(toDefault.status, 0, toDefault.out);
+  assert.match(toDefault.out, /chief-of-staff: re-prepared for the permission mode/);
+  assert.equal(modeOf(), undefined, 'the owner chose default: no saved default left');
+  const toEdits = start(['--project', project, '--host', 'laptop', '--permission-mode', 'acceptEdits']);
+  assert.match(toEdits.out, /chief-of-staff: re-prepared for the permission mode/);
+  assert.equal(modeOf(), 'acceptEdits');
+  assert.match(start(['--project', project, '--host', 'laptop']).out, /chief-of-staff: already prepared/, 'unchanged: left as it is');
+});
