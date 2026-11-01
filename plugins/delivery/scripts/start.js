@@ -666,14 +666,22 @@ function scaffold(opts) {
     const needsBeadsDir = beadsNow && fs.existsSync(path.join(roleDir, '.delivery-role.json')) && (() => {
       try { return !(JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).env || {}).BEADS_DIR; } catch (e) { return true; }
     })();
-    if (fs.existsSync(path.join(roleDir, '.delivery-role.json')) && !needsBeadsDir) {
+    // a role whose saved permission mode is not the team's (the owner changed permission_mode) is
+    // re-prepared, so the change reaches every role, not only new ones (Copilot on #112)
+    // (permissionMode, not team.permission_mode: a dry run leaves team.json as it was)
+    const wantMode = ['default', 'manual'].includes(permissionMode) ? undefined : permissionMode;
+    const needsMode = fs.existsSync(path.join(roleDir, '.delivery-role.json')) && (() => {
+      try { return ((JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).permissions || {}).defaultMode) !== wantMode; } catch (e) { return true; }
+    })();
+    const why = needsBeadsDir ? 'BEADS_DIR' : 'the permission mode';
+    if (fs.existsSync(path.join(roleDir, '.delivery-role.json')) && !needsBeadsDir && !needsMode) {
       say(`    ${instance}: already prepared`);
     } else if (dryRun) {
-      say(`    ${instance}: would ${needsBeadsDir ? 're-prepare for BEADS_DIR' : 'prepare'} (${role.model}${role.id === 'builder' && productCheckout ? ', product worktree on team/' + instance : ''})`);
+      say(`    ${instance}: would ${needsBeadsDir || needsMode ? `re-prepare for ${why}` : 'prepare'} (${role.model}${role.id === 'builder' && productCheckout ? ', product worktree on team/' + instance : ''})`);
     } else {
       try {
         const { files } = prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo: productCheckout || undefined, user });
-        say(`    ${instance}: ${needsBeadsDir ? 're-prepared for BEADS_DIR' : 'prepared'} (${role.model})`);
+        say(`    ${instance}: ${needsBeadsDir || needsMode ? `re-prepared for ${why}` : 'prepared'} (${role.model})`);
         for (const f of files) if (f.startsWith('warning:')) say(`      ${f}`);
       } catch (err) {
         say(`    ${instance}: prepare failed: ${err.message}`);
