@@ -103,6 +103,15 @@ test('run-tests: a run that passes its inode cap is stopped and says why', () =>
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// a pid that still runs code. Signal 0 answers for a zombie too, which an unsealed container whose PID 1
+// does not reap keeps for ever (Copilot on #111), so where /proc exists its state is read; elsewhere
+// (macOS) signal 0 alone.
+function running(pid) {
+  const fs = require('fs');
+  try { process.kill(pid, 0); } catch (e) { if (e.code !== 'EPERM') return false; }
+  try { return fs.readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^[^]*\) /, '')[0] !== 'Z'; } catch (e) { return !fs.existsSync('/proc/self/stat'); }
+}
+
 // Ctrl+C or a kill of the runner stops the whole suite and cleans up (Copilot on #111): the suite runs
 // detached, so it would not get the terminal's signal on its own.
 test('run-tests: SIGINT to the runner stops the suite\'s processes and removes the run\'s directory', async () => {
@@ -119,9 +128,9 @@ test('run-tests: SIGINT to the runner stops the suite\'s processes and removes t
     const runner = spawn(process.execPath, [path.join(__dirname, 'run-tests.js')], { env, stdio: 'ignore' });
     for (let i = 0; i < 100 && !fs.existsSync(path.join(dir, 'ready')); i++) await new Promise((r) => setTimeout(r, 100));
     assert.ok(fs.existsSync(path.join(dir, 'ready')), 'the fixture started');
-    // the fixture's own pid, checked with signal 0: no /proc, so it holds on macOS's unsealed run too
+    // the fixture's own pid, checked with running(): it needs no /proc, so it holds on macOS's unsealed run too
     const pid = Number(fs.readFileSync(path.join(dir, 'ready'), 'utf8'));
-    const alive = () => { try { process.kill(pid, 0); return [pid]; } catch (e) { return e.code === 'EPERM' ? [pid] : []; } };
+    const alive = () => (running(pid) ? [pid] : []);
     assert.ok(pid > 0 && alive().length > 0);
     const exited = new Promise((r) => runner.on('exit', r));
     runner.kill('SIGINT');
@@ -142,7 +151,7 @@ test('run-tests: a suite process that ignores SIGTERM is killed before the runne
   const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-term-'));
   const pidFile = path.join(dir, 'stubborn');
   let pid = 0;
-  const alive = () => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+  const alive = () => running(pid);
   try {
     const fixture = path.join(dir, 'stubborn.test.js');
     // the child writes its pid only after its SIGTERM handler is in place
@@ -189,8 +198,14 @@ test('run-tests: a zombie left in the suite\'s group does not keep the runner wa
     delete env.NODE_TEST_CONTEXT;
     runner = spawn(process.execPath, [path.join(__dirname, 'run-tests.js')], { env, stdio: 'ignore' });
     for (let i = 0; i < 100 && !fs.existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 100));
-    parent = Number(fs.readFileSync(pidFile, 'utf8').split(' ')[0]);
-    assert.ok(parent > 0, 'the zombie\'s parent started');
+    const [p, zombie] = fs.readFileSync(pidFile, 'utf8').split(' ').map(Number);
+    parent = p;
+    assert.ok(parent > 0 && zombie > 0, 'the zombie\'s parent started');
+    // the liveness check the other tests use: signal 0 answers for the zombie, running() does not
+    for (let i = 0; i < 20 && running(zombie); i++) await new Promise((r) => setTimeout(r, 50)); // it has exited
+    assert.doesNotThrow(() => process.kill(zombie, 0));
+    if (fs.existsSync('/proc/self/stat')) assert.equal(running(zombie), false, 'a zombie does not count as running');
+    assert.equal(running(parent), true);
     const exited = new Promise((r) => runner.on('exit', () => r(true)));
     runner.kill('SIGTERM');
     const done = await Promise.race([exited, new Promise((r) => setTimeout(() => r(false), 15000))]);
