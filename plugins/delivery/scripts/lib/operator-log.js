@@ -223,11 +223,14 @@ function syncTranscript(opts) {
   }
   let read = transcript.readHumanInputs(transcriptPath, rewritten
     ? { fromLine: 0 } : { fromLine: cursor.line, fromOffset: cursor.offset || 0, lastAssistant: cursor.last_assistant || null, pendingAsks: cursor.pending_asks || {} });
-  let base = rewritten ? { total_user_records: 0, with_origin: 0 }
-    : { total_user_records: cursor.total_user_records || 0, with_origin: cursor.with_origin || 0 };
+  // a cursor from before the recognised count starts its format counts afresh from here: its old
+  // records were counted when role-session prompts were not recognised, and would read as unrecognised
+  const fresh = rewritten || typeof cursor.recognised !== 'number';
+  let base = fresh ? { total_user_records: 0, with_origin: 0, recognised: 0 }
+    : { total_user_records: cursor.total_user_records || 0, with_origin: cursor.with_origin || 0, recognised: cursor.recognised };
   if (read.rescanned || read.lastLine < cursor.line) { // rewritten: rescan (dedupe protects)
     if (!read.rescanned) read = transcript.readHumanInputs(transcriptPath, { fromLine: 0 });
-    base = { total_user_records: 0, with_origin: 0 };
+    base = { total_user_records: 0, with_origin: 0, recognised: 0 };
   }
 
   const monthName = `${now.toISOString().slice(0, 7)}.ndjson`;
@@ -296,6 +299,7 @@ function syncTranscript(opts) {
       transcript: transcriptPath,
       total_user_records: base.total_user_records + read.total_user_records,
       with_origin: base.with_origin + read.with_origin,
+      recognised: base.recognised + read.recognised,
       last_assistant: read.lastAssistant || null,
       pending_asks: read.pendingAsks || {},
     };

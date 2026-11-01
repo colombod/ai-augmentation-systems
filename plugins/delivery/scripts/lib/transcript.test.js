@@ -317,3 +317,76 @@ test('Copilot round 5: an answer needs its AskUserQuestion tool_use (kept across
   const ins = r2.inputs.filter((i) => i.source === 'human');
   assert.deepEqual(ins.map((i) => [i.text, !!i.asked, !!i.after_assistant]), [['Yes', true, false], ['yes', false, false]]);
 });
+
+// Role sessions (Claude Code 2.1.312, sdk-cli) write a typed prompt with no origin: promptSource and
+// turnOrigin 'sdk'. A watchdog wake writes the very same shape; only its leading WAKE_OPENING differs.
+const { WAKE_OPENING, wakePrompt } = require('./watchdog.js');
+const RS = {
+  typed: (text = 'ship it', n = 1) => ({
+    type: 'user', promptId: 'p' + n, uuid: 'u' + n, timestamp: ts(n), sessionId: 'S', version: '2.1.312', entrypoint: 'sdk-cli',
+    userType: 'external', promptSource: 'sdk', turnOrigin: 'sdk', turnPosition: { promptIndex: 0, turnIndex: 1 },
+    message: { role: 'user', content: text },
+  }),
+  peer: (n = 2) => ({
+    type: 'user', isMeta: true, promptSource: 'system', turnOrigin: 'peer', origin: { kind: 'peer', name: 'product-manager', msg_id: 'm1' },
+    uuid: 'u' + n, timestamp: ts(n), sessionId: 'S', message: { role: 'user', content: 'merge request' },
+  }),
+  metaBlocks: (n = 3) => ({
+    type: 'user', isMeta: true, uuid: 'u' + n, timestamp: ts(n), sessionId: 'S', message: { role: 'user', content: [{ type: 'text', text: 'skill body' }] },
+  }),
+  launcher: (n = 4) => ({
+    type: 'user', turnOrigin: 'sdk', uuid: 'u' + n, timestamp: ts(n), sessionId: 'S', message: { role: 'user', content: '<command-name>/start</command-name>' },
+  }),
+};
+
+test('role-session typed prompt (no origin, promptSource sdk) is human, ext_id promptId', () => {
+  const c = t.classifyRecord(RS.typed());
+  assert.strictEqual(c.source, 'human');
+  assert.strictEqual(c.ext_id, 'p1');
+  assert.strictEqual(c.text, 'ship it');
+});
+
+test('role-session peer message, isMeta text blocks and launcher record are never human', () => {
+  assert.strictEqual(t.classifyRecord(RS.peer()).source, 'peer');
+  assert.strictEqual(t.classifyRecord(RS.metaBlocks()).source, 'system');
+  assert.strictEqual(t.classifyRecord(RS.launcher()).source, 'system');
+  const meta = RS.typed('injected', 5); meta.isMeta = true;
+  assert.notStrictEqual(t.classifyRecord(meta).source, 'human');
+  // the role-session shape requires isMeta absent: a record that carries the flag at all is not it
+  const metaFalse = RS.typed('flagged', 11); metaFalse.isMeta = false;
+  assert.notStrictEqual(t.classifyRecord(metaFalse).source, 'human');
+  const blocks = RS.typed('x', 6); blocks.message.content = [{ type: 'text', text: 'array content' }];
+  assert.notStrictEqual(t.classifyRecord(blocks).source, 'human');
+  const other = RS.typed('x', 7); other.promptSource = 'system';
+  assert.notStrictEqual(t.classifyRecord(other).source, 'human');
+});
+
+test('role-session format with a SYSTEM_PREFIXES tag is not human', () => {
+  for (const text of ['<system-reminder>note</system-reminder>', '<task-notification>done</task-notification>', '<local-command-stdout>ok</local-command-stdout>']) {
+    assert.notStrictEqual(t.classifyRecord(RS.typed(text, 8)).source, 'human', text);
+  }
+});
+
+test('a watchdog wake built by the watchdog is never human; the prefix mid-text is', () => {
+  const wake = RS.typed(wakePrompt(['Continue bead x.'], 'did'), 9);
+  assert.ok(wake.message.content.startsWith(WAKE_OPENING));
+  assert.strictEqual(t.classifyRecord(wake).source, 'system');
+  const mention = RS.typed(`why did the ${WAKE_OPENING} wake me?`, 10);
+  assert.strictEqual(t.classifyRecord(mention).source, 'human');
+  // the classifier takes the prefix from the watchdog's export, not a copy
+  assert.strictEqual(t.WAKE_OPENING, WAKE_OPENING);
+});
+
+test('formatStatus is ok for 3+ role-session prompts with no peer message', () => {
+  const f = writeJsonl([RS.launcher(), RS.typed('a', 1), RS.typed('b', 2), RS.typed('c', 3)]);
+  const r = t.readHumanInputs(f);
+  assert.strictEqual(r.total_user_records, 4);
+  assert.strictEqual(r.recognised, 3);
+  assert.strictEqual(t.formatStatus(r), 'ok');
+  assert.deepStrictEqual(r.inputs.filter((i) => i.source === 'human').map((i) => i.ext_id), ['p1', 'p2', 'p3']);
+});
+
+test('formatStatus without a recognised count (an old cursor) falls back to with_origin', () => {
+  assert.strictEqual(t.formatStatus({ total_user_records: 5, with_origin: 0 }), 'format_unrecognised');
+  assert.strictEqual(t.formatStatus({ total_user_records: 5, with_origin: 0, recognised: 2 }), 'ok');
+});

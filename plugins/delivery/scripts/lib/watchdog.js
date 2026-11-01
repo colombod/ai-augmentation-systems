@@ -29,6 +29,12 @@ const path = require('path');
 const W = require('./warnings.js');
 const I = require('./idle.js');
 
+// How every wake prompt opens. In a role session's transcript a wake and a prompt the operator typed are
+// the same record shape, and these words are the one difference, so lib/transcript.js requires this
+// copy instead of keeping its own: rewording the wake can never let one pass as the operator's.
+const WAKE_OPENING = 'Watchdog (a host job, not the owner)';
+const wakePrompt = (prompts, verb) => `${WAKE_OPENING}: ${prompts.join(' ')} Reply in one line with what you ${verb}.`;
+
 const REL = path.join('.delivery', 'watchdog');
 const P0_HOURS = 1;
 const WAKE_EVERY_MS = 3600e3;
@@ -468,7 +474,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
       else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) reason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
       else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) reason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
       if (reason) { held.push({ target: w.target, lines, reason }); continue; }
-      wakes.push({ target: w.target, keys: w.stalls.map((s) => s.key), lines, delivers: deliversOf(w.stalls), handoffs: handoffsOf(w.stalls), prompt: `Watchdog (a host job, not the owner): ${w.stalls.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
+      wakes.push({ target: w.target, keys: w.stalls.map((s) => s.key), lines, delivers: deliversOf(w.stalls), handoffs: handoffsOf(w.stalls), prompt: wakePrompt(w.stalls.map((s) => s.prompt), 'did') });
       continue;
     }
     // the stall gates count stall wakes only: a role woken often for messages is still told about its
@@ -497,7 +503,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
       else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) mReason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
       else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) mReason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
       if (!mReason) {
-        wakes.push({ target: w.target, keys: msgs.map((s) => s.key), lines: msgs.map((s) => s.line), delivers: deliversOf(msgs), handoffs: handoffsOf(msgs), prompt: `Watchdog (a host job, not the owner): ${msgs.map((s) => s.prompt).join(' ')} Reply in one line with what you did.` });
+        wakes.push({ target: w.target, keys: msgs.map((s) => s.key), lines: msgs.map((s) => s.line), delivers: deliversOf(msgs), handoffs: handoffsOf(msgs), prompt: wakePrompt(msgs.map((s) => s.prompt), 'did') });
         const rest = w.stalls.filter((s) => !isHandoff(s));
         if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
         continue;
@@ -510,7 +516,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     }
     if (reason) { held.push({ target: w.target, lines, reason }); continue; }
     // the messages a stall wake carries are handed over too, so the next run does not send them again
-    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), delivers: deliversOf(ok), handoffs: handoffsOf(ok), prompt: `Watchdog (a host job, not the owner): ${ok.map((s) => s.prompt).join(' ')} Reply in one line with what you started.` });
+    wakes.push({ target: w.target, keys: ok.map((s) => s.key), lines: ok.map((s) => s.line), delivers: deliversOf(ok), handoffs: handoffsOf(ok), prompt: wakePrompt(ok.map((s) => s.prompt), 'started') });
   }
   return { wakes, waiting, held };
 }
@@ -555,4 +561,4 @@ function wakeArgs(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

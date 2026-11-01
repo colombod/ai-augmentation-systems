@@ -2,7 +2,18 @@
 // by the harness's own `origin` stamp, never by message wording. All format knowledge lives here.
 const fs = require('fs');
 
+const { WAKE_OPENING } = require('./watchdog.js');
+
 const SYSTEM_PREFIXES = ['<system-reminder>', '<command-name>', '<local-command', '<task-notification'];
+
+// Role sessions (Claude Code 2.1.312, entrypoint sdk-cli) stamp a typed prompt with no origin at all:
+// promptSource 'sdk', no isMeta, plain string content. Harness injections there carry isMeta or no
+// promptSource, and peer messages and task notifications keep their origin, so only this shape is a
+// candidate for the operator's words. Anything else without an origin stays unknown (fail closed).
+function isRoleSessionPrompt(record) {
+  return record.type === 'user' && !record.origin && record.isMeta === undefined && record.promptSource === 'sdk'
+    && record.message && typeof record.message.content === 'string';
+}
 
 function textOf(content) {
   if (typeof content === 'string') return content;
@@ -54,6 +65,11 @@ function classifyRecord(record) {
   else if (kind === 'human') {
     const head = text.trim();
     source = SYSTEM_PREFIXES.some((p) => head.startsWith(p)) ? 'system' : 'human';
+  } else if (isRoleSessionPrompt(record)) {
+    // a role session's typed prompt; a watchdog wake is stamped identically and differs only in its
+    // opening words, and the harness's own injected tags are never the operator's
+    const head = text.trim();
+    source = text.startsWith(WAKE_OPENING) || SYSTEM_PREFIXES.some((p) => head.startsWith(p)) ? 'system' : 'human';
   } else {
     const head = text.trim();
     // harness-injected UI notes that carry no origin at all are not operator input either
@@ -76,7 +92,7 @@ function readHumanInputs(file, opts = {}) {
   let fromOffset = opts.fromOffset || 0;
   // lastAssistant: the session's last assistant text before the next owner input ({ line, sha256, tail });
   // carried across reads by the caller's cursor, so a typed yes can be checked against what it answered
-  const out = { inputs: [], lastLine: fromLine, lastOffset: fromOffset, total_user_records: 0, with_origin: 0, rescanned: false, lastAssistant: opts.lastAssistant || null };
+  const out = { inputs: [], lastLine: fromLine, lastOffset: fromOffset, total_user_records: 0, with_origin: 0, recognised: 0, rescanned: false, lastAssistant: opts.lastAssistant || null };
   // pending AskUserQuestion invocations by tool_use id ({ uuid, questions }), carried across reads
   const asks = new Map(Object.entries(opts.pendingAsks || {}));
   let buf;
@@ -135,6 +151,7 @@ function readHumanInputs(file, opts = {}) {
     if (rec.type === 'user' && c) {
       out.total_user_records++;
       if (c.origin && c.origin.kind) out.with_origin++;
+      if ((c.origin && c.origin.kind) || isRoleSessionPrompt(rec)) out.recognised++;
     }
     if (!c) continue;
     const att = rec.attachment;
@@ -157,8 +174,11 @@ function readHumanInputs(file, opts = {}) {
   return out;
 }
 
+// recognised: user records in either known format (an origin stamp, or a role session's typed prompt).
+// A cursor written before that count existed has only with_origin, and is judged by it.
 function formatStatus(read) {
-  return read.total_user_records >= 3 && read.with_origin === 0 ? 'format_unrecognised' : 'ok';
+  const known = typeof read.recognised === 'number' ? read.recognised : read.with_origin;
+  return read.total_user_records >= 3 && known === 0 ? 'format_unrecognised' : 'ok';
 }
 
 // The current turn, for the Stop checks: the last human input's text and the shell commands the
@@ -209,4 +229,4 @@ function turnIn(file, size, maxBytes) {
   return out;
 }
 
-module.exports = { classifyRecord, readHumanInputs, formatStatus, currentTurn };
+module.exports = { classifyRecord, readHumanInputs, formatStatus, currentTurn, WAKE_OPENING };

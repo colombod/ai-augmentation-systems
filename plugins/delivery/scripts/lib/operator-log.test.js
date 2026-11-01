@@ -543,3 +543,31 @@ test('Copilot 2: a head never moves back inside the lock (a stale reader cannot 
 
 // ---- final review B1: after a recovered push the checkout stays pullable ----
 
+
+// a role session's typed prompt (Claude Code 2.1.312): no origin, promptSource 'sdk'
+const roleTyped = (text, n) => ({ type: 'user', promptId: 'rp' + n, uuid: 'ru' + n, timestamp: '2026-10-13T10:03:00.000Z', sessionId: SID,
+  promptSource: 'sdk', turnOrigin: 'sdk', message: { role: 'user', content: text } });
+
+test('a role-session transcript syncs ok and adds the typed prompts as human inputs', () => {
+  const root = project();
+  const tr = transcript([roleTyped('ship it', 1), roleTyped('and the docs', 2), roleTyped('yes', 3)]);
+  const r = sync(root, tr);
+  assert.strictEqual(r.status, 'ok');
+  const ins = log.listInputs(root, { source: 'human' });
+  assert.deepStrictEqual(ins.map((e) => e.ext_id), ['rp1', 'rp2', 'rp3']);
+});
+
+test('a cursor written before the recognised count is read without a false format_unrecognised', () => {
+  const root = project();
+  const tr = transcript([noOrigin(1), noOrigin(2), noOrigin(3)]);
+  assert.strictEqual(sync(root, tr).status, 'format_unrecognised');
+  // make the cursor look like one written before the fix
+  const f = path.join(require('./operator-store.js').operatorDir(root), 'cursors', `${SID}.json`);
+  const c = JSON.parse(fs.readFileSync(f, 'utf8')); delete c.recognised; fs.writeFileSync(f, JSON.stringify(c));
+  fs.appendFileSync(tr, JSON.stringify(roleTyped('go ahead', 4)) + '\n');
+  assert.strictEqual(sync(root, tr).status, 'ok');
+  assert.strictEqual(typeof JSON.parse(fs.readFileSync(f, 'utf8')).recognised, 'number');
+  // and records of no known format still raise it after the fresh start
+  for (const n of [5, 6, 7]) fs.appendFileSync(tr, JSON.stringify(noOrigin(n)) + '\n');
+  assert.strictEqual(sync(root, tr).status, 'ok'); // one recognised record since the fresh start
+});
