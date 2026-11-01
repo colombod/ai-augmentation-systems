@@ -1419,3 +1419,34 @@ test('hjx.1 (Copilot 4436815462): assigned work woken 7 min ago rides the newly 
     assert.match(p.wakes[0].prompt, /ex-a is assigned to you/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// Copilot on PR 113 (df6b5c9): bd ready knows nothing of a red main; the claim check does (andon.js ciRedBlock)
+test('hjx.1 (Copilot 4437000590): on a red main only claimable open work wakes its holder: a fix, the ci:main A3 work, or work already started', () => {
+  const A = require('./lib/andon.js');
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-ci-'));
+  try {
+    const beads = [
+      { id: 'ex-story', status: 'open', assignee: 'builder-1', labels: ['story'], updated_at: iso(now - H) },
+      { id: 'ex-fix', status: 'open', assignee: 'builder-2', labels: ['bug'], metadata: { fixes: 'ex-shipped' }, updated_at: iso(now - H) },
+      { id: 'ex-a3w', status: 'open', assignee: 'builder-3', labels: ['story'], metadata: {}, updated_at: iso(now - H) },
+      { id: 'ex-ip', status: 'in_progress', assignee: 'builder-4', labels: ['story'], updated_at: iso(now - H) },
+      { id: 'ex-shipped', status: 'closed', labels: ['story', 'state-merged'], updated_at: iso(now - 9 * H) },
+    ];
+    for (const i of [1, 2, 3, 4]) registerInstance(root, { instance: `builder-${i}`, session_id: `s-${i}`, host: 'pc', model: 'opus', role_dir: root, now: iso(now - 30 * 60e3) });
+    const bd = { list: () => beads, ready: () => beads.filter((b) => b.status === 'open'), show: (x) => beads.find((b) => b.id === x) || null };
+    const woken = () => {
+      const res = WD.read(root, { bd, now: iso(now), installed: true, pause: { paused: false } });
+      assert.equal(res.unreadable, undefined, res.unreadable);
+      return res.stalls.filter((s) => s.kind === 'assigned').map((s) => s.bead).sort();
+    };
+    assert.deepEqual(woken(), ['ex-a3w', 'ex-fix', 'ex-ip', 'ex-story'], 'main not known red: all woken');
+    A.append(root, { type: 'ci', result: 'red', sha: 'c195aa00', run: '195', at: iso(now - 2 * H) }, 'delivery-lead');
+    assert.deepEqual(woken(), ['ex-fix', 'ex-ip'], 'red main: the fix and started work only');
+    A.append(root, { type: 'a3-open', trigger: 'ci:main', by: 'delivery-lead', at: iso(now - H) }, 'delivery-lead');
+    beads[2].metadata.a3 = A.openA3For(root, 'ci:main', A.read(root).rows).id;
+    assert.deepEqual(woken(), ['ex-a3w', 'ex-fix', 'ex-ip'], 'the ci:main A3 work starts too');
+    A.append(root, { type: 'ci', result: 'green', sha: 'c196bb00', run: '196', at: iso(now - 10 * 60e3) }, 'delivery-lead');
+    assert.deepEqual(woken(), ['ex-a3w', 'ex-fix', 'ex-ip', 'ex-story'], 'green again: all woken');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

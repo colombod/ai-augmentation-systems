@@ -216,7 +216,7 @@ const typeOf = (b) => b.type || b.issue_type || null;
 // ---- the stalls ----
 // facts: { beads, ready, now, idleMinutes, stallHours, pause, openSteps, sessions, team, installed }
 // { paused?, stalls: [{ kind, key, bead?, target, line, plain, detail, prompt, due, scheduled?, wakeAt? }] }
-function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [] } = {}) {
+function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [], claimable = () => true } = {}) {
   const t = ms(now || new Date().toISOString());
   if (pause && pause.paused) return { paused: pause.by || true, stalls: [] };
   const out = [];
@@ -295,6 +295,9 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
     if (!h || limited.has(h.instance) || (h.waitUntil && h.waitUntil > t)) continue;
     const quiet = (t - (Number.isFinite(h.lastActive) ? h.lastActive : -Infinity)) / 60000;
     if (!(quiet > ASSIGNED_IDLE_MIN)) continue;
+    // an open bead must still be one its holder may claim: bd ready knows nothing of a red main, which
+    // the claim check refuses (lib/andon.js ciRedBlock). Asked last, so CI is read only for a real wake.
+    if (b.status === 'open' && !claimable(b)) continue;
     // past stall_hours the in-progress stall below wakes the holder already: one wake, not two. That
     // stall skips a stopped area, so recovery work there keeps its assigned wake.
     const lastMove = Math.max(ms(b.updated_at), ms(b.created_at), Number.isFinite(h.lastActive) ? h.lastActive : -Infinity);
@@ -426,7 +429,21 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
     const ready = bd.ready() || [];
     const beadOf = (id) => { try { return bd.show(id); } catch (err) { return null; } };
     const list = sessions(root, { team, rows });
-    const res = stalls({ beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
+    // the claim check's red-main rule for open assigned work, CI read once per pass and only when asked;
+    // a fix (as the claim check links it) or the ci:main A3's work is still claimable. Fails open.
+    let ciNow;
+    const claimable = (b) => {
+      try {
+        const AN = require('./andon.js');
+        if (ciNow === undefined) ciNow = AN.ciState(root, { team });
+        if (!ciNow || !ciNow.red) return true;
+        const G = require('./gates.js');
+        const fix = require('./waves.js').fixLink(b, null, { root, beadOf, ownerRecord: (r) => require('./gate-context.js').ownerRecord(root, r),
+          byStoryId: (sid) => beads.find((x) => G.isStoryBead(x) && String((x.metadata || {}).story || '') === sid) || null });
+        return !AN.ciRedBlock(b, ciNow, fix);
+      } catch (err) { return true; }
+    };
+    const res = stalls({ claimable, beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
       pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root) });
     // a verified pause silences the polling warnings too
     return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list };
