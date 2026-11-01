@@ -32,3 +32,41 @@ test('run-tests: the suite runs in a temporary directory of its own, removed aft
     assert.deepEqual(fs.readdirSync(outer).filter((f) => f.startsWith('delivery-tests-')), [], 'its directory is gone');
   } finally { fs.rmSync(outer, { recursive: true, force: true }); }
 });
+
+// A test that named the current month in a path passed all month and failed everywhere on the 1st.
+// --clock runs the suite in another month so that class fails the day it is written.
+test('run-tests: --clock is the runner\'s own argument; a bad date is refused', () => {
+  const { splitArgs } = require('./run-tests.js');
+  assert.deepStrictEqual(splitArgs(['--clock', '2027-03-15T12:00:00Z', '--test-name-pattern=x']), { clock: '2027-03-15T12:00:00Z', rest: ['--test-name-pattern=x'] });
+  assert.deepStrictEqual(splitArgs(['--clock=2027-03-15']), { clock: '2027-03-15', rest: [] });
+  assert.deepStrictEqual(splitArgs(['--test-name-pattern=x']), { clock: null, rest: ['--test-name-pattern=x'] });
+  assert.throws(() => splitArgs(['--clock', 'soon']), /--clock needs a date/);
+});
+
+test('run-tests: under --clock, node children share one moved clock that runs on, and file times move with it', () => {
+  const { spawnSync } = require('child_process');
+  const { clockEnv } = require('./run-tests.js');
+  const fs = require('fs');
+  const os = require('os');
+  const env = { ...process.env, ...clockEnv('2027-03-15T12:00:00Z', process.env) };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-clock-'));
+  try {
+    // a child prints its clock, a file's age as it sees it, and the clock of a node process it spawns
+    const f = path.join(dir, 'f');
+    // (it waits 1.5 s first: a child whose clock restarted at the moved instant would read earlier)
+    const script = `const fs=require('fs');fs.writeFileSync(${JSON.stringify(f)},'x');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1500);const t=Date.now();
+      const kid=Number(require('child_process').execFileSync(process.execPath,['-e','process.stdout.write(String(Date.now()))'],{encoding:'utf8'}));
+      fs.utimesSync(${JSON.stringify(f)},new Date(t-60000),new Date(t-60000));
+      console.log(JSON.stringify({iso:new Date(t).toISOString(),call:Date(),kid:kid-t,age:t-fs.statSync(${JSON.stringify(f)}).mtimeMs}));`;
+    const r = spawnSync(process.execPath, ['-e', script], { env, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    const o = JSON.parse(r.stdout);
+    assert.match(o.iso, /^2027-03-15T12:0/);
+    assert.match(o.call, /Mar 15 2027/);
+    assert.ok(o.kid >= 0 && o.kid < 10000, `the spawned process's clock runs on from its parent's: ${o.kid} ms`);
+    assert.ok(Math.abs(o.age - 60000) < 2000, `a time set on the moved clock reads back on it: ${o.age} ms`);
+    // without --clock nothing is preloaded
+    assert.deepStrictEqual(clockEnv(null, {}), {});
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

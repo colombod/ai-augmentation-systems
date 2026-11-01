@@ -239,7 +239,11 @@ test('verify prints the path and ends with the operator words in quotes; exit 0'
 test('verify exits 1 when an input was tampered and says where', () => {
   const { root, cos } = cosFixture();
   run(cos, ['record', '--cite', 'in-pc-000001', '--quote', 'use postgres', '--statement', 'Orders use Postgres']);
-  const f = path.join(root, '.delivery/operator/inputs/pc/2026-10.ndjson');
+  // the shard is named after the month the input was stored in: read the one there, never name a month
+  const dir = path.join(root, '.delivery', 'operator', 'inputs', 'pc');
+  const shards = fs.readdirSync(dir).filter((n) => /^\d{4}-\d{2}\.ndjson$/.test(n));
+  assert.strictEqual(shards.length, 1, shards.join(', '));
+  const f = path.join(dir, shards[0]);
   fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('Postgres', 'MySQL'));
   const v = run(cos, ['verify', ID1]);
   assert.strictEqual(v.status, 1);
