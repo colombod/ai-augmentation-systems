@@ -825,10 +825,16 @@ const TEST_FILE = /\.test\.[cm]?[jt]s$/;
 // The reason names the sealed form of the very command refused: `run-tests.js -- <command>` runs any
 // product's test command (through the shell, in this directory) in the same seal, so a product whose
 // test_command is `node --test` still runs its own suite (Copilot on #117).
-const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`);
+// The suggested form is exactly the one SEALED_FORM admits: the command in single quotes, inside which
+// the outer shell expands nothing. A command holding a single quote cannot go there as it is, so it goes
+// in a script file.
 function testsReason(command, pluginRoot) {
   const runner = `${pluginRoot ? path.join(pluginRoot, 'scripts', 'testing', 'run-tests.js') : '<plugin>/scripts/testing/run-tests.js'}`;
-  return `tests run only through the sealed runner, which gives the run a capped private /tmp the OS destroys: \`node ${shellQuote(runner)} -- ${shellQuote(String(command || '').trim())}\` runs that command sealed, here (delivery's own suite: \`node ${shellQuote(runner)}\`, files picked with DELIVERY_TEST_FILES); never \`node --test\` or a test file directly`;
+  const c = String(command || '').trim();
+  const form = c.includes("'")
+    ? `the command holds a single quote, so put it in a script file and run \`node ${runner} -- 'sh <file>'\`, which runs it sealed, here`
+    : `\`node ${runner} -- '${c}'\` runs that command sealed, here`;
+  return `tests run only through the sealed runner, which gives the run a capped private /tmp the OS destroys: ${form} (delivery's own suite: \`node ${runner}\`, files picked with DELIVERY_TEST_FILES); never \`node --test\` or a test file directly`;
 }
 // node's options that take their value as the next word (`--conditions development`), so that word
 // is not mistaken for the script; options after the script are the script's own (Copilot on #117)
@@ -1017,9 +1023,7 @@ const watchdogAction = (command) => refusedRun(command) === 'watchdog';
 // backslash dropped, is refused when node or nodejs appears as a word followed anywhere by --test or a
 // test file. It over-refuses on purpose (`node helper.js --test` is refused too): a false refusal costs
 // one retry, because the reason gives the sealed form, which runs any command; a false allow fills the
-// host's /tmp. The one exemption is the sealed runner itself as a single simple command: one segment,
-// no substitution, whose command words are node and <...>/scripts/testing/run-tests.js (whatever follows,
-// a -- command included, runs inside the seal).
+// host's /tmp. The one exemption is the sealed runner in its exact form (SEALED_FORM below).
 const NODE_WORD = /(?:^|[\s;&|(`/$=])node(?:js)?(?=\s|$)/g;
 function unsealedTestText(text) {
   const flat = String(text || '').replace(/\\\r?\n/g, '').replace(/["'\\]/g, '');
@@ -1028,16 +1032,16 @@ function unsealedTestText(text) {
   NODE_WORD.lastIndex = 0;
   while ((m = NODE_WORD.exec(flat))) {
     const after = flat.slice(m.index + m[0].length);
-    if (/(?:^|\s)--test(?:[=\s]|$)/.test(after) || /\.test\.[cm]?[jt]s(?![\w])/.test(after)) { tests = true; break; }
+    if (/(?:^|[\s(`=;&|])--test(?![\w-])/.test(after) || /\.test\.[cm]?[jt]s(?![\w])/.test(after)) { tests = true; break; }
   }
-  if (!tests) return false;
-  const segs = splitWithOps(text);
-  if (segs.length === 1 && !substitutions(text).length && !/[`]|\$\(/.test(String(text))) {
-    const t = commandWords(stripGrammar(argWords(segs[0].text)));
-    if (['node', 'nodejs'].includes(baseOf(t[0])) && /(?:^|\/)scripts\/testing\/run-tests\.js$/.test(t[1] || '')) return false;
-  }
-  return true;
+  return tests && !SEALED_FORM.test(String(text || '').trim());
 }
+// The exemption is an exact form, not a parse (Copilot on #117: a parse let `run-tests.js > >(node
+// --test)` through): optionally DELIVERY_TEST_FILES=<plain chars>, node, the runner by a plain path,
+// optionally --clock <iso>, and optionally -- '<command>' in single quotes, inside which the outer shell
+// expands nothing, so the command, substitutions included, runs inside the seal. Anything else that the
+// fail-safe matches is refused.
+const SEALED_FORM = /^(?:DELIVERY_TEST_FILES=[A-Za-z0-9_./:@+,=-]* )?(?:node|[A-Za-z0-9_./@+,=-]*\/node) (?:[A-Za-z0-9_./@+,=-]*\/)?scripts\/testing\/run-tests\.js(?: --clock [A-Za-z0-9:.+-]+)?(?: -- '[^']*')?$/;
 
 // deep: a deletion or move of a protected folder's parent (rm -rf .delivery), or a glob that reaches the
 // folder or names files in it (rm -rf .delivery/an*, rm .delivery/andon/*.ndjson), counts as a write too

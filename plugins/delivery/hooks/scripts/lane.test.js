@@ -1329,8 +1329,7 @@ test('lane: a value-taking node option does not hide a test file; --test after t
     'node -i hooks/scripts/lane.test.js']) {
     assert.equal(run(command).allow, false, command);
   }
-  for (const command of ['node --conditions development scripts/build.js',
-    'node scripts/testing/run-tests.js -- node --test', "node scripts/testing/run-tests.js -- 'node --test a.test.js'"]) {
+  for (const command of ['node --conditions development scripts/build.js', "node scripts/testing/run-tests.js -- 'node --test a.test.js'"]) {
     assert.equal(run(command).allow, true, command);
   }
 });
@@ -1348,15 +1347,21 @@ test('lane: the fail-safe refuses every spelling of node with --test or a test f
     'n\\ode --test', '"node" --test', "'node' x.test.js", 'nodejs --test', '/usr/bin/node a.test.mjs',
     // over-refused on purpose: --test or a test file after node, wherever it sits
     'node scripts/test-helper.js --test', 'node tool.js --test=x', "node '2>tool.js' --test", 'node tool.js > a.test.js', 'node tool.js 2>&1 --test',
-    // the runner, but not alone: what follows the operator runs outside the seal
-    'node scripts/testing/run-tests.js -- npm test && node --test', 'node scripts/testing/run-tests.js $(node --test)']) {
+    // the runner, but not in its exact form (Copilot on #117): an operator, a substitution or a process
+    // substitution outside the quotes runs outside the seal; an unquoted -- command is the outer shell's
+    'node scripts/testing/run-tests.js -- npm test && node --test', 'node scripts/testing/run-tests.js $(node --test)',
+    'node scripts/testing/run-tests.js > >(node --test)', 'node scripts/testing/run-tests.js -- node --test',
+    "node scripts/testing/run-tests.js -- 'node --test a.test.js'; x", "node scripts/testing/run-tests.js -- 'node --test' 'x.test.js'"]) {
     const d = run(command);
     assert.equal(d.allow, false, command);
-    assert.match(d.reason, /run-tests\.js -- /, command);
+    assert.match(d.reason, /run-tests\.js -- '/, command);
   }
+  // the exact form: whatever is inside the single quotes, substitutions and newlines included, runs sealed
   for (const command of ['node scripts/testing/run-tests.js', 'DELIVERY_TEST_FILES=a.test.js node scripts/testing/run-tests.js', 'npm test',
     'grep -- --test lane.js', 'git diff -- x.test.js', 'node-gyp --test', 'node scripts/build.js',
-    "node scripts/testing/run-tests.js -- 'node \\\n--test'"]) {
+    "node scripts/testing/run-tests.js -- 'node \\\n--test'", 'node scripts/testing/run-tests.js -- \'node --test $(find . -name "*.test.js")\'',
+    "node scripts/testing/run-tests.js -- 'cd x\nnode --test'", "/usr/local/bin/node /opt/delivery/scripts/testing/run-tests.js --clock 2027-03-15T12:00:00Z -- 'node --test'",
+    'DELIVERY_TEST_FILES=a.test.js:b.test.js node scripts/testing/run-tests.js']) {
     assert.equal(run(command).allow, true, command);
   }
 });
@@ -1364,9 +1369,17 @@ test('lane: the fail-safe refuses every spelling of node with --test or a test f
 // Copilot on #117: any product's test command still runs, sealed; the reason names the command refused
 // in the runner's -- form, with this plugin's runner path
 test('lane: the tests reason names the refused command in the sealed runner\'s -- form', () => {
-  const d = decideLane({ toolName: 'Bash', toolInput: { command: "node --test it\\'s.test.js" }, policy: POLICIES[BUILDER], ...ctx() });
-  assert.equal(d.allow, false);
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[BUILDER], ...ctx() });
   const runner = path.join(PLUGIN_ROOT, 'scripts', 'testing', 'run-tests.js');
-  // single-quoted for the shell, its own quote escaped, so it can be run as given
-  assert.ok(d.reason.includes(`\`node ${runner} -- 'node --test it\\'\\''s.test.js'\``), d.reason);
+  // exactly the single-quoted form the lane admits, so it runs as given
+  const d = run('node --test $(ls *.test.js)');
+  assert.equal(d.allow, false);
+  const form = `node ${runner} -- 'node --test $(ls *.test.js)'`;
+  assert.ok(d.reason.includes(`\`${form}\``), d.reason);
+  assert.equal(run(form).allow, true, form);
+  // a command with a single quote cannot go in those quotes: a script file, run with sh
+  const q = run("node --test it\\'s.test.js");
+  assert.equal(q.allow, false);
+  assert.ok(q.reason.includes(`put it in a script file and run \`node ${runner} -- 'sh <file>'\``), q.reason);
+  assert.equal(run(`node ${runner} -- 'sh tests.sh'`).allow, true);
 });
