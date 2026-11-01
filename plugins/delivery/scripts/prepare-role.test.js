@@ -108,7 +108,7 @@ test('prepareRole rewrites origin to the project remote, or keeps the local path
   assert.equal(git(path.join(b.roleDir, 'project'), 'remote', 'get-url', 'origin').trim(), noRemote);
 });
 
-test('prepareRole merges settings, keeps foreign keys, sets DELIVERY_MODE and enabledPlugins, no defaultMode', () => {
+test('prepareRole merges settings, keeps foreign keys, sets DELIVERY_MODE and enabledPlugins, the team\'s permission mode as default', () => {
   const projectRoot = scratchProjectRepo();
   const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
   const { roleDir } = prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
@@ -128,7 +128,7 @@ test('prepareRole merges settings, keeps foreign keys, sets DELIVERY_MODE and en
   const second = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.equal(second.permissions.allow[0], 'Bash(ls)', 'a user rule is kept');
   assert.deepEqual(second.permissions.allow.slice(1).sort(), generated.sort());
-  assert.equal(second.permissions.defaultMode, undefined);
+  assert.equal(second.permissions.defaultMode, 'auto', 'the team\'s mode (auto when team.json names none), never a leftover');
   assert.equal(second.model, 'opus');
   assert.equal(second.enabledPlugins['delivery@ai-augmentation-systems'], true);
 });
@@ -146,6 +146,19 @@ test('prepareRole tolerates invalid settings JSON, writes actor into the marker 
   fs.writeFileSync(ignore, 'custom\n');
   prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
   assert.equal(fs.readFileSync(ignore, 'utf8'), 'custom\n');
+});
+
+// Copilot on #112: re-preparing without --user keeps the saved actor; an explicit --user changes it
+test('prepareRole keeps the role\'s saved actor when no user is given', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT, user: 'alice' });
+  const actor = () => JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')).actor;
+  prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT });
+  assert.equal(actor(), 'alice@pc/staffing');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).env.BEADS_ACTOR, 'alice@pc/staffing');
+  prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT, user: 'bob' });
+  assert.equal(actor(), 'bob@pc/staffing');
 });
 
 test('prepareRole warns when a code-touching role has no product repo', () => {
@@ -295,6 +308,29 @@ test('Copilot: a deny rule the user had is never removed, even one the plugin al
   prep();
   const deny = JSON.parse(fs.readFileSync(file(dir), 'utf8')).permissions.deny;
   assert.ok(deny.includes('Bash(sudo:*)') && deny.includes('Bash(rm:*)'), JSON.stringify(deny));
+});
+
+// kk5 (dec-chief-of-staff-000076): no session the plugin spawns may come up in manual-approve mode,
+// however it is started (the owner's Claude app via Remote Control, a typed start command, a fresh
+// wake), so the team's permission mode is each role's default, not only a launch flag.
+test('kk5: every role defaults to the team\'s permission mode; auto when unset; an owner\'s default is respected', () => {
+  const settingsOf = (mode) => {
+    const projectRoot = scratchProjectRepo();
+    const file = path.join(projectRoot, '.delivery', 'team', 'team.json');
+    const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (mode === undefined) delete team.permission_mode; else team.permission_mode = mode;
+    fs.writeFileSync(file, JSON.stringify(team, null, 2));
+    const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+    const out = {};
+    for (const instance of ['chief-of-staff', 'product-manager']) {
+      const { roleDir } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+      out[instance] = (JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).permissions || {}).defaultMode;
+    }
+    return out;
+  };
+  assert.deepEqual(settingsOf(undefined), { 'chief-of-staff': 'auto', 'product-manager': 'auto' });
+  assert.deepEqual(settingsOf('acceptEdits'), { 'chief-of-staff': 'acceptEdits', 'product-manager': 'acceptEdits' });
+  assert.deepEqual(settingsOf('default'), { 'chief-of-staff': undefined, 'product-manager': undefined }, 'an owner who chose default gets it');
 });
 
 // 07t: a session started by a service manager gets its bare PATH; bd lives in ~/.local/bin, so every
