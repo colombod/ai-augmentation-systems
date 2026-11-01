@@ -105,8 +105,10 @@ const SUBJECT_NEXT = /^\s+(?:is|are|was|were|has|have|had|will|would|can|could|s
 // words of four or more letters ending in -s are nouns or third-person verbs, except these verbs
 const S_VERBS = new Set('pass press discuss access dismiss address process bless focus toss cross guess express assess bypass'.split(' '));
 const SOFT = String.raw`(?:(?:just|then|now|also|quickly|simply|first|kindly|please|okay|ok|alright|right|so|btw|oh|and|ps),?\s+)*`;
-// a lead-in before the verb: "once you have decided,", "before lunch,", "tomorrow morning,"
-const LEAD = String.raw`^(?:[-*+]\s+|\d+[.)]\s+)?(?:(?:once|when|if|after|as soon as|before) you[^,]{0,60},\s*|(?:before|after|by|during|tomorrow|today|tonight|this|first thing|whenever)\b[^,]{0,30},\s*)?${SOFT}`;
+// a lead-in before the verb: "once you have decided,", "before lunch,", "tomorrow morning,", and a place
+// ("in the Staffing session,", "over in the builder tab,"): a place first once hid "tell it ..." there
+const PLACE_LEAD = String.raw`(?:over |back )?(?:in|inside|within|on|at|over in) (?:the |that |its |their )?[^,]{0,40}?\b${PLACE}\b[^,]{0,10},\s*`;
+const LEAD = String.raw`^(?:[-*+]\s+|\d+[.)]\s+)?(?:(?:once|when|if|after|as soon as|before) you[^,]{0,60},\s*|(?:before|after|by|during|tomorrow|today|tonight|this|first thing|whenever)\b[^,]{0,30},\s*|${PLACE_LEAD})?${SOFT}`;
 const FIRST_WORD = new RegExp(String.raw`${LEAD}([a-z][a-z0-9'’-]*)(:?)`);
 const MARK_START = new RegExp(String.raw`^${SOFT}(?:${MARKS})\b`);
 // a dash, an arrow or a colon after a short lead opens a new clause ("One ask — go to ...")

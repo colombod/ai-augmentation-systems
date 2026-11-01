@@ -87,7 +87,7 @@ test('ask: a noul answer is typed, the key goes only in the header, and the log 
     assert.equal(r.answer, 'yes');
     assert.equal(r.p, 0.91);
     assert.equal(r.model, 'jev-1.13.0');
-    assert.equal(r.version, '1.1');
+    assert.equal(r.version, '1.2');
     assert.equal(r.inputTokens, 581);
     assert.ok(r.latencyMs >= 0);
     assert.deepEqual([r.dropped, r.dropped_count], [['extra'], 2], 'a token-like dropped name is counted, not named');
@@ -159,7 +159,7 @@ test('ask refuses locally: off, unknown question, sensitive or missing fields; n
   const f = await fakeServer(noul(0.9));
   const logDir = tmp();
   try {
-    assert.deepEqual(await J.ask('relay_request', RELAY, { config: J.judgeConfig({ judge: { provider: 'typesafe' } }, {}), logDir }), { question: 'relay_request', version: '1.1', skipped: true, reason: 'no_key' });
+    assert.deepEqual(await J.ask('relay_request', RELAY, { config: J.judgeConfig({ judge: { provider: 'typesafe' } }, {}), logDir }), { question: 'relay_request', version: '1.2', skipped: true, reason: 'no_key' });
     assert.equal((await J.ask('nope', RELAY, { config: cfgFor(f.url) })).reason, 'unknown_question');
     const cases = {
       token: 'use ghp_abcdefghijklmnopqrstuvwxyz0123 now', email: 'mail someone@example.com', url: 'see https://example.com/a',

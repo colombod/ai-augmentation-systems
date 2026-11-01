@@ -916,3 +916,29 @@ test('rule 0: any role that asks the operator to carry something between session
   assert.deepEqual(operatorChecks(stopArgs(p, { last_assistant_message: asks[0] }, { role: 'builder', instance: 'builder-1', retired: true })), []);
   assert.equal(peerRelayReason('').split('\n').length, 2);
 });
+
+// The Chief of Staff once ended a briefing with "in the Staffing session, tell it ...": a place named
+// before the imperative hid the request from the detector. Sending the operator into another session
+// to grant, tell or approve something is a relay request, whatever comes first in the sentence.
+const INTO_ANOTHER_SESSION = '**The one thing needed from you:** in the Staffing session, tell it "you may edit team.json to add the plugin builder". After that it\'s the team\'s job again: register, review, merge, ship.';
+test('sending the operator into another session to grant or tell something is a relay request; naming a session as information is not', () => {
+  const parties = ['staffing', 'delivery-lead', 'builder'];
+  for (const m of [
+    INTO_ANOTHER_SESSION,
+    'In the Staffing session, tell it you approve the edit.',
+    'Over in the Staffing session, approve the permission prompt.',
+    'Inside the builder tab, grant the write to team.json.',
+    'In the delivery lead window, type yes.',
+    'Go to the Staffing session and grant the team.json edit.',
+    'Open the builder session and approve the prompt there.',
+    'Switch to the delivery lead tab and say yes.',
+    'Grant it in the Staffing session.',
+  ]) assert.ok(findRelayRequest(m, { parties }), m);
+  for (const m of [
+    'In the Staffing session, the builder was registered at 10:40; nothing is needed from you.',
+    'In this session, approve the plan if it reads right to you.',
+    'The Staffing session registered the builder; nothing is needed from you.',
+    'Staffing is working on the roster edit in its own session.',
+    'In the builder session, tests pass at the new head.',
+  ]) assert.equal(findRelayRequest(m, { parties }), null, m);
+});

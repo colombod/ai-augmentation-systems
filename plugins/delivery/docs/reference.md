@@ -259,7 +259,7 @@ The catalogue is `judge/questions.json`, versioned per question:
 
 | Question | Type | Used by | Mode |
 |---|---|---|---|
-| `relay_request` v1.1 | probability | the Chief of Staff's and Product Manager's Stop hook | confirms or overrules the regex (below) |
+| `relay_request` v1.2 | probability | the Chief of Staff's and Product Manager's Stop hook | confirms or overrules the regex (below) |
 | `divergence` v2 | none, minor, serious | the done gate (bd guard on close) | warn-only until re-measured on real gate summaries |
 | `shippable_unit` v2 | yes, partial, no | the ready gate (`ready.js`, bd guard on claim) | advisory: a warning at most |
 | `builds_on_verified` v2 | strongly, partly, new area | library and CLI only for now | advisory |
@@ -300,7 +300,8 @@ The catalogue is `judge/questions.json`, versioned per question:
 - **What the numbers are worth:** the J1 probe had 10 relay cases and 5 for each other question, all
   written by someone who knew the labels; 10 of 10 has a 95% lower bound of about 72%. The
   role-neutral v1.1 wording was re-checked live on the same 10 relay cases; Product Manager messages
-  are not measured. `divergence` is re-measured on real gate summaries (about 10, at least 3 minor)
+  are not measured. v1.2 names telling and granting in another session among the acts asked about, and
+  is not yet re-measured live. `divergence` is re-measured on real gate summaries (about 10, at least 3 minor)
   before it may ever block.
 - **Live check:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge-smoke.js` (opt-in, not in the test suite)
   sends the 10 labelled relay cases in `judge/smoke-relay-cases.json` and fails below 9 of 10;
