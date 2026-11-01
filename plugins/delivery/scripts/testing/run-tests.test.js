@@ -261,6 +261,22 @@ test('run-tests: entriesUnder counts nested entries without Dirent.parentPath', 
   } finally { fs.readdirSync = real; fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Copilot on #111: without fs.statfsSync (Node 18 before 18.15), or when it fails, a sealed run's guard
+// counts its directory's entries instead, so the inode cap is still enforced
+test('run-tests: guardCount falls back to walking the directory when statfs is unavailable', () => {
+  const fs = require('fs');
+  const R = require('./run-tests.js');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.guard-'));
+  const real = fs.statfsSync;
+  try {
+    for (let i = 0; i < 5; i += 1) fs.writeFileSync(path.join(dir, `f${i}`), '');
+    fs.statfsSync = undefined;
+    assert.equal(R.guardCount(dir, true, 100), 5);
+    fs.statfsSync = () => { throw new Error('statfs failed'); };
+    assert.equal(R.guardCount(dir, true, 100), 5);
+  } finally { fs.statfsSync = real; fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 // Copilot on #111: a spawn that fails emits 'error', not 'exit'. A preload makes every spawn in the
 // process fail (a command that does not exist), so the runner and seal-check meet a real spawn error.
 function failingSpawnEnv(dir) {

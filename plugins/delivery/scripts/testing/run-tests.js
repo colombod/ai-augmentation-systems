@@ -85,7 +85,7 @@ function sealArgs(bwrap, cap, argv) {
 // inodes in use on a mount, or null when it cannot be read: the sealed run's /tmp is its own tmpfs,
 // so the mount's count is the run's count
 function inodesUsed(dir) {
-  try { const s = fs.statfsSync(dir); return s.files - s.ffree; } catch (e) { return null; }
+  try { const s = fs.statfsSync(dir); return s.files - s.ffree; } catch (e) { return null; } // statfsSync missing throws too
 }
 // entries under one directory, stopping once past `limit`: an unsealed run's private directory sits on
 // a shared filesystem, whose mount-wide count says nothing about this run
@@ -102,6 +102,14 @@ function entriesUnder(dir, limit) {
   return n;
 }
 
+// what the guard compares with the cap: a sealed run reads its tmpfs's own counters; where statfs is
+// missing (Node 18 before 18.15) or fails, it walks the directory instead, so the cap still holds
+// (Copilot on #111)
+function guardCount(dir, sealed, limit) {
+  const used = sealed ? inodesUsed(dir) : null;
+  return used !== null ? used : entriesUnder(dir, limit);
+}
+module.exports.guardCount = guardCount;
 module.exports.sealArgs = sealArgs;
 module.exports.caps = caps;
 module.exports.bwrapPath = bwrapPath;
@@ -140,7 +148,7 @@ if (require.main === module) {
   const child = spawn(process.execPath, ['--test', ...rest, ...files], { env, stdio: 'inherit', detached: true });
   let over = null;
   const guard = setInterval(() => {
-    const used = sealed ? inodesUsed(tmp) : entriesUnder(tmp, cap.inodes);
+    const used = guardCount(tmp, sealed, cap.inodes);
     if (used !== null && used > cap.inodes) {
       over = `run-tests: the run's /tmp passed its inode cap (${used} > ${cap.inodes}); stopping the suite`;
       try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { /* gone */ }
