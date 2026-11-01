@@ -89,6 +89,16 @@ test('run-tests: the seal is a private /tmp tmpfs, capped, gone with its parent,
   for (const f of ['--die-with-parent', '--unshare-pid']) assert.ok(args.includes(f), f);
   assert.equal(args[args.indexOf('--proc') + 1], '/proc', 'its own /proc, so process lookups see the run\'s own pid namespace');
   assert.deepEqual(args.slice(-3), ['--', 'node', 'x.js']);
+  // a checkout under /tmp is bound back after the tmpfs, so it shows through (Copilot on #117); a fresh
+  // seal cannot start inside this one, so seal-check.js (CI step) proves it end to end
+  const kept = R.sealArgs('/usr/bin/bwrap', { bytes: 1024, inodes: 10 }, ['node', 'x.js'], ['/tmp/co'])[1];
+  assert.deepEqual(kept.slice(5, 10), ['--tmpfs', '/tmp', '--bind', '/tmp/co', '/tmp/co']);
+  const fs = require('fs');
+  const co = fs.realpathSync(fs.mkdtempSync(path.join('/tmp', 'rt-keep-')));
+  try {
+    fs.mkdirSync(path.join(co, 'sub'));
+    assert.deepEqual(R.keepPaths([co, path.join(co, 'sub'), __dirname, '/tmp', '/nonexistent']), /^\/tmp\//.test(__dirname) ? [co, fs.realpathSync(__dirname)] : [co]);
+  } finally { fs.rmSync(co, { recursive: true, force: true }); }
   assert.deepEqual(R.caps({}), { bytes: 2048 * 1024 * 1024, inodes: 200000 });
   assert.deepEqual(R.caps({ DELIVERY_TEST_TMP_MB: '64', DELIVERY_TEST_TMP_INODES: '500' }), { bytes: 64 * 1024 * 1024, inodes: 500 });
 });

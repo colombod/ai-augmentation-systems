@@ -90,9 +90,20 @@ function bwrapPath(env) {
   }
   return null;
 }
-// the bwrap argv that seals a run: the host as it is, a private capped /tmp, gone with the parent
-function sealArgs(bwrap, cap, argv) {
-  return [bwrap, ['--dev-bind', '/', '/', '--size', String(cap.bytes), '--tmpfs', '/tmp', '--proc', '/proc', '--die-with-parent', '--unshare-pid', '--', ...argv]];
+// the bwrap argv that seals a run: the host as it is, a private capped /tmp, gone with the parent.
+// `keep` are host directories under /tmp bound back over the fresh tmpfs (after it, so they show
+// through): the run's own checkout and this runner, when they live there (Copilot on #117).
+function sealArgs(bwrap, cap, argv, keep = []) {
+  const binds = keep.flatMap((p) => ['--bind', p, p]);
+  return [bwrap, ['--dev-bind', '/', '/', '--size', String(cap.bytes), '--tmpfs', '/tmp', ...binds, '--proc', '/proc', '--die-with-parent', '--unshare-pid', '--', ...argv]];
+}
+// the directories a sealed run needs that the private /tmp would hide: the directory it runs in and
+// the plugin it runs from, each when it lies under /tmp (never /tmp itself, which is the seal)
+function keepPaths(dirs) {
+  const real = (d) => { try { return fs.realpathSync(d); } catch (e) { return null; } };
+  const out = [];
+  for (const d of dirs.map(real)) if (d && /^\/tmp\/./.test(d) && !out.some((k) => d === k || d.startsWith(`${k}/`))) out.push(d);
+  return out;
 }
 // inodes in use on a mount, or null when it cannot be read: the sealed run's /tmp is its own tmpfs,
 // so the mount's count is the run's count
@@ -123,6 +134,7 @@ function guardCount(dir, sealed, limit) {
 }
 module.exports.guardCount = guardCount;
 module.exports.sealArgs = sealArgs;
+module.exports.keepPaths = keepPaths;
 module.exports.caps = caps;
 module.exports.bwrapPath = bwrapPath;
 module.exports.inodesUsed = inodesUsed;
@@ -144,7 +156,7 @@ if (require.main === module) {
     const bwrap = process.env.DELIVERY_TEST_UNSEALED === '1' ? null : bwrapPath(process.env);
     if (bwrap) {
       // re-run this runner inside the seal; the sealed child does the rest
-      const [cmd, args] = sealArgs(bwrap, cap, [process.execPath, __filename, ...process.argv.slice(2)]);
+      const [cmd, args] = sealArgs(bwrap, cap, [process.execPath, __filename, ...process.argv.slice(2)], keepPaths([process.cwd(), root]));
       const r = spawnSync(cmd, args, { env: { ...process.env, DELIVERY_SEALED_RUN: '1', DELIVERY_SEAL_ACTIVE: '1' }, stdio: 'inherit' });
       if (r.error) { process.stderr.write(`run-tests: could not start the sealed run (${r.error.message})\n`); process.exit(1); }
       process.exit(r.status !== null ? r.status : 1);

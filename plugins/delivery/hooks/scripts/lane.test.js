@@ -1321,10 +1321,17 @@ test('lane: node --test and a test file run directly are refused for every role;
 test('lane: a value-taking node option does not hide a test file; --test after the script is not node\'s', () => {
   const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[BUILDER], ...ctx() });
   for (const command of ['node --conditions development hooks/scripts/lane.test.js', 'node -C development x.test.js',
-    'node --test-reporter spec --test', 'node --env-file .env --test-name-pattern x a.test.js', 'node -- x.test.js', 'node --input-type module --test']) {
+    'node --test-reporter spec --test', 'node --env-file .env --test-name-pattern x a.test.js', 'node -- x.test.js', 'node --input-type module --test',
+    // redirections are the shell's, apart or attached, never node's script (Copilot on #117)
+    'node 2>/dev/null --test', 'node 2>/dev/null x.test.js', 'node x.test.js>/dev/null', 'node > out x.test.js', 'node &>/dev/null --test',
+    'node x.test.js 2>&1', 'node 2>&1 x.test.js',
+    // -i is node's interactive switch and takes no value (Copilot on #117)
+    'node -i hooks/scripts/lane.test.js']) {
     assert.equal(run(command).allow, false, command);
   }
   for (const command of ['node scripts/test-helper.js --test', 'node tool.js --test=x', 'node --conditions development scripts/build.js',
+    // a quoted > is part of the word; a redirection's target is not the script
+    "node '2>tool.js' --test", 'node tool.js > a.test.js', 'node tool.js 2>&1 --test',
     'node scripts/testing/run-tests.js -- node --test', "node scripts/testing/run-tests.js -- 'node --test a.test.js'"]) {
     assert.equal(run(command).allow, true, command);
   }

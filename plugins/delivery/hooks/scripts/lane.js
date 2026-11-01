@@ -178,6 +178,52 @@ function tokens(seg) {
   return out;
 }
 
+// The words the shell passes to the command: tokens() with every redirection and its target removed,
+// apart (`2> /dev/null`) or attached (`x.test.js>/dev/null`, `2>&1`); a quoted < or > is literal
+// (Copilot on #117: `node 2>/dev/null --test` read the redirection as the script).
+function argWords(seg) {
+  const s = String(seg == null ? '' : seg);
+  const out = [];
+  let cur = null;
+  let q = null;
+  let quoted = false;
+  let skip = false; // the next word is a redirection's target
+  const end = () => { if (cur !== null) { if (skip) skip = false; else out.push(cur); } cur = null; quoted = false; };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q === "'") { if (c === "'") q = null; else cur += c; continue; }
+    if (q === '"') {
+      if (c === '"') q = null;
+      else if (c === '\\' && i + 1 < s.length && '"\\$`'.includes(s[i + 1])) cur += s[++i];
+      else cur += c;
+      continue;
+    }
+    if (/\s/.test(c)) { end(); continue; }
+    if ((c === '>' || c === '<') && s[i + 1] !== '(') {
+      // a bare fd number or & just before the operator is part of it (2>, &>)
+      if (cur !== null && !quoted && /^(?:\d+|&)$/.test(cur)) cur = null;
+      else end();
+      let j = i + 1;
+      while (j < s.length && /[<>|&]/.test(s[j])) j++;
+      i = j - 1;
+      // >&2, <&-: a stream merged or closed, no target word
+      if (s[j - 1] === '&') {
+        let k = j;
+        while (k < s.length && /[\d-]/.test(s[k])) k++;
+        if (k > j && (k === s.length || /[\s;&|)]/.test(s[k]))) { i = k - 1; continue; }
+      }
+      skip = true;
+      continue;
+    }
+    if (cur === null) cur = '';
+    if (c === '\\') { if (i + 1 < s.length) cur += s[++i]; quoted = true; continue; }
+    if (c === '"' || c === "'") { q = c; quoted = true; continue; }
+    cur += c;
+  }
+  end();
+  return out;
+}
+
 // Merging, closing or discarding a stream writes no file: >&N, >&-, >/dev/null, >>/dev/null.
 const STREAM_ONLY = /^(?:>&(?:\d+|-)|>>?[ \t]*\/dev\/null)(?=[\s;&|)]|$)/;
 
@@ -807,7 +853,8 @@ const WRAPPERS = new Set(['env', 'nohup', 'exec', 'command', 'builtin', 'time', 
 const WRAPPER_VALUE_FLAGS = new Set(['-u', '-g', '-C', '-n', '-k', '-s', '-S', '--signal', '--kill-after', '--unset', '--chdir', '-P', '-I', '-L']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 const INTERPRETERS = new Set(['node', 'nodejs', 'bun', 'deno', 'tsx', 'ts-node']);
-const CODE_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-r', '--require', '--import', '--loader', '-i']);
+// -i (interactive) takes no value: `node -i x.test.js` runs the file (Copilot on #117)
+const CODE_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-r', '--require', '--import', '--loader']);
 const WATCHDOG_VERBS = new Set(['wake', 'run', 'install', 'uninstall']);
 const CHECK_FLAGS = new Set(['--json']);
 const RESUME_FLAGS = new Set(['-r', '--resume', '-c', '--continue', '--fork-session', '--teleport', '--from-pr']);
@@ -917,7 +964,7 @@ function refusedRun(text, depth = 0) {
   if (depth > 4) return null;
   for (const sub of substitutions(text)) { const r = refusedRun(sub, depth + 1); if (r) return r; }
   for (const seg of splitWithOps(text)) {
-    const t = commandWords(stripGrammar(tokens(seg.text)));
+    const t = commandWords(stripGrammar(argWords(seg.text)));
     if (!t.length) continue;
     const w = t[0];
     const args = t.slice(1);
