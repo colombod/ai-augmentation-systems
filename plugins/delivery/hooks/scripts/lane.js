@@ -1299,6 +1299,12 @@ function nativeApproval(input, policy, groups, ctx) {
   if (input.tool_name !== 'Bash' || !policy || policy.review || policy.bash.includes('any')) return null;
   const cmd = shellCommandOf(input.tool_name, input.tool_input || {});
   if (!cmd || !cmd.trim()) return null;
+  // Where the lane's shell reading and bash's can differ, approval is the harness's call, not ours:
+  // a word-start `#` (bash drops a commented quote that the lane would pair with a later one, hiding
+  // a second command after a newline) and any `$` or backquote (the lane expands a single-quoted
+  // ${CLAUDE_PLUGIN_ROOT} that bash leaves literal). Rendered briefs give the plugin's absolute
+  // path, so the decision loop's commands carry neither. (Copilot 4436789914, 4436789928)
+  if (/(?:^|\s)#/.test(cmd) || /[$`]/.test(cmd)) return null;
   const native = {};
   for (const g of policy.bash) {
     const rules = ((groups && groups[g]) || []).filter((r) => r && r.first && r.first !== '*' && r.native_allow !== false);

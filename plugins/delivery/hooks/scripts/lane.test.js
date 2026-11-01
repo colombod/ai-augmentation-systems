@@ -1277,4 +1277,16 @@ test('nativeApproval approves nothing for a non-Bash tool, an any lane or the re
   assert.ok(nativeApproval(ls, { ...pol, bash: ['read'] }, groups, ctx).allow);
   assert.equal(nativeApproval(ls, reviewerPolicy(pol), groups, ctx), null);
   assert.equal(nativeApproval({ tool_name: 'Bash', tool_input: { command: '' } }, pol, groups, ctx), null);
+  // a quote inside a comment hides a second command from the lane's split; a symbolic plugin root
+  // the lane expands is literal to bash: neither is approved (Copilot 4436789914, 4436789928)
+  const cmd = (command) => ({ tool_name: 'Bash', tool_input: { command } });
+  const reads = { ...pol, bash: ['read', 'operator-read', 'bd-notes'] };
+  assert.ok(nativeApproval(cmd("ls # x"), reads, groups, ctx) === null);
+  assert.ok(nativeApproval(cmd("ls # '\nrm -- product/a.js # '"), reads, groups, ctx) === null);
+  // conservative: a quoted `#` is left to the harness as well; without it the same note is approved
+  assert.ok(nativeApproval(cmd("bd comments add x-1 'see #12'"), reads, groups, ctx) === null);
+  assert.ok(nativeApproval(cmd("bd comments add x-1 'see 12'"), reads, groups, ctx).allow);
+  assert.ok(nativeApproval(cmd("node '${CLAUDE_PLUGIN_ROOT}/scripts/team-status.js'"), reads, groups, ctx) === null);
+  assert.ok(nativeApproval(cmd('node $CLAUDE_PLUGIN_ROOT/scripts/team-status.js'), reads, groups, ctx) === null);
+  assert.ok(nativeApproval(cmd(`node ${path.join(PLUGIN_ROOT, 'scripts', 'team-status.js')}`), reads, groups, ctx).allow);
 });
