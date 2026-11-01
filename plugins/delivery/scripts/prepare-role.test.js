@@ -359,6 +359,8 @@ test('prepareRole writes a PATH that finds bd for a session started with a bare 
     assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: ordered }, stdio: 'pipe' }).toString().trim(), 'first-bd');
     // a relative entry is made absolute against the preparing directory
     assert.ok(rolePath({ PATH: 'rel/bin' }, '/h', '/work').split(path.delimiter).includes('/work/rel/bin'));
+    // traversal is kept as written: through a symlink, link/.. is not the directory holding link (Copilot on #115)
+    assert.deepEqual(rolePath({ PATH: '/a/link/../bin:x/../y' }, '/h', '/work').split(path.delimiter).slice(0, 2), ['/a/link/../bin', '/work/x/../y']);
     // an empty component searches the preparing directory, and stays first (Copilot on #115)
     assert.equal(rolePath({ PATH: ':/other/bin' }, '/h', '/work').split(path.delimiter)[0], '/work');
     assert.ok(!rolePath({}, '/h', '/work').split(path.delimiter).includes('/work'));

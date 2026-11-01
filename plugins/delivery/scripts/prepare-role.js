@@ -39,8 +39,9 @@ const reachDeny = (reach) => (!reach ? REACH_DENY : reach === 'local' ? OWNER_SE
 // versioned is pinned (as the watchdog's jobPath). (Copilot on #115: no reordering, no relative entry.)
 function rolePath(env, home = os.homedir(), cwd = process.cwd()) {
   const usual = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', path.join(home, '.local', 'bin')];
-  // an empty component (a leading, trailing or doubled delimiter) searches the current directory
-  const own = env.PATH === undefined ? [] : String(env.PATH).split(path.delimiter).map((d) => path.resolve(cwd, d || '.'));
+  // an empty component (a leading, trailing or doubled delimiter) searches the current directory; an
+  // entry is never normalised (a `..` after a symlink is resolved by the kernel, not lexically)
+  const own = env.PATH === undefined ? [] : String(env.PATH).split(path.delimiter).map((d) => (!d ? cwd : path.isAbsolute(d) ? d : `${cwd}${path.sep}${d}`));
   const parts = [...own, ...usual, path.dirname(process.execPath)];
   return [...new Set(parts)].join(path.delimiter);
 }
