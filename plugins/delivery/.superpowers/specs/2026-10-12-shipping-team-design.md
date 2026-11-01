@@ -195,7 +195,7 @@ stewards put it in a new session's first prompt. Idempotent.
    whose brief says they touch code, a worktree of the product repo. One directory per instance gives
    each session its own auto-memory, actor, and settings.
 2. Writes `.claude/settings.local.json` there: `model` from the manifest, `DELIVERY_MODE`, `enabledPlugins` for delivery,
-   (the permission mode is passed by the steward at launch, never written to local settings), and an env block exporting `DELIVERY_ROLE=<id>`, `DELIVERY_HOST=<host>`,
+   (the permission mode is passed at launch and, since kk5 (2026-11-01, dec-chief-of-staff-000076), also written as the role's default, so a session started without the flag never runs in manual-approve mode), and an env block exporting `DELIVERY_ROLE=<id>`, `DELIVERY_HOST=<host>`,
    `BEADS_ACTOR=<user>@<host>/<role-id>`, `DELIVERY_ROLE_DIR=<role instance directory>` (the hooks find
    the role marker through it after the session leaves its directory) and, when `<project>/.beads`
    exists, `BEADS_DIR=<project>/.beads` (bd cannot find the database from a role directory on its own;
