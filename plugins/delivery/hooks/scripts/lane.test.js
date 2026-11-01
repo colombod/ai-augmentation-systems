@@ -1231,3 +1231,50 @@ test('pr-reviewer lane: only the plugin\'s own reviewer gets it; the dispatching
     assert.equal(JSON.parse(run(agent)).hookSpecificOutput.permissionDecision, 'deny', String(agent));
   }
 });
+
+// fwa: the allow rules prepare-role writes pin the plugin's path of that day; after an update they no
+// longer match and the decision loop stopped on a permission prompt. The hook approves the lane's own
+// pre-allowable commands against the plugin root it runs from, and nothing else.
+test('role-lane hook approves the lane\'s own commands at the running plugin root, and only those', () => {
+  const { roleDir } = preparedRole('chief-of-staff');
+  const env = { DELIVERY_ROLE: 'chief-of-staff', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+  const decide = (command, cwd = roleDir) => {
+    const out = runHook('role-lane.js', { cwd, session_id: 's', tool_name: 'Bash', tool_input: { command } }, env);
+    return out ? JSON.parse(out).hookSpecificOutput.permissionDecision : '';
+  };
+  const op = path.join(PLUGIN_ROOT, 'scripts', 'operator.js');
+  assert.equal(decide(`node ${op} record --kind decision --text 'ship it'`), 'allow');
+  assert.equal(decide(`node ${op} ack in-cos-000001`), 'allow');
+  assert.equal(decide("bd comments add x-1 'seen'"), 'allow');
+  assert.equal(decide("bd update x-1 --append-notes 'n'"), 'allow');
+  assert.equal(decide(`cd ${roleDir} && node ${op} record --kind decision --text 'a'`), 'allow');
+  // the rule's own flag limits still hold: the lane refuses, and nothing is approved
+  assert.equal(decide(`node ${op} record --transcript x`), 'deny');
+  assert.equal(decide("bd update x-1 --notes 'n' --status closed"), 'deny');
+  // a stale plugin path is not this plugin: out of lane
+  assert.equal(decide("node /old/delivery/0.41.2/scripts/operator.js record --kind decision --text 'a'"), 'deny');
+  // in the lane but not pre-allowable (its rule says native_allow: false): left to the harness
+  assert.equal(decide(`node ${path.join(PLUGIN_ROOT, 'scripts', 'ready.js')} x-1`), '');
+  // a redirect makes it no lane command at all
+  assert.equal(decide(`node ${op} record --kind decision --text 'a' > out.txt`), 'deny');
+  // one out-of-lane segment denies the whole command
+  assert.equal(decide(`node ${op} ack in-cos-000001 && rm -rf product`), 'deny');
+  // an unrestricted lane is never approved by the hook: the harness decides
+  const b = preparedRole('builder-1');
+  assert.equal(runHook('role-lane.js', { cwd: b.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'bd comments add x-1 hi' } }, { DELIVERY_ROLE: 'builder-1', CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT }), '');
+});
+
+test('nativeApproval approves nothing for a non-Bash tool, an any lane or the reviewer lane', () => {
+  const { nativeApproval, reviewerPolicy } = require('./lane.js');
+  const groups = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'lane-groups.json'), 'utf8'));
+  const pol = { roleId: 'chief-of-staff', bash: ['bd-notes'], writes: [], mcp: [] };
+  const ctx = { roleDir: os.tmpdir(), pluginRoot: PLUGIN_ROOT, cwd: os.tmpdir() };
+  const input = (tool_name) => ({ tool_name, tool_input: { command: 'bd comments add x-1 hi' } });
+  assert.ok(nativeApproval(input('Bash'), pol, groups, ctx).allow);
+  assert.equal(nativeApproval(input('PowerShell'), pol, groups, ctx), null);
+  assert.equal(nativeApproval(input('Bash'), { ...pol, bash: ['bd-notes', 'any'] }, groups, ctx), null);
+  const ls = { tool_name: 'Bash', tool_input: { command: 'ls' } };
+  assert.ok(nativeApproval(ls, { ...pol, bash: ['read'] }, groups, ctx).allow);
+  assert.equal(nativeApproval(ls, reviewerPolicy(pol), groups, ctx), null);
+  assert.equal(nativeApproval({ tool_name: 'Bash', tool_input: { command: '' } }, pol, groups, ctx), null);
+});

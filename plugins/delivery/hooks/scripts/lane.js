@@ -1287,6 +1287,40 @@ function reviewerPolicy(base) {
   return { roleId: `${base.roleId || 'role'} reviewer`, writes: [], bash: ['read', 'git-read', 'gh-read', 'bd-read', 'review-run'], mcp: [], reach: false, review: true };
 }
 
+// The allow rules prepare-role writes pin the plugin's absolute path of the day it ran
+// (Bash(node <cache>/delivery/<version>/scripts/operator.js record:*)), so after every plugin update
+// they stop matching and the role stops on a permission prompt only the operator can clear: the
+// decision loop (operator.js record, ack, verify) and bd notes included. The hook approves those
+// same commands itself, judged against the plugin root it runs from: a Bash command every segment
+// of which a native-allowable rule of the role's own groups matches (the rules laneAllowRules turns
+// into allow rules), after every guard above let it through. Nothing broader: never an `any` lane,
+// never the reviewer lane, never a rule whose flags matter (native_allow: false), never a `*` rule.
+function nativeApproval(input, policy, groups, ctx) {
+  if (input.tool_name !== 'Bash' || !policy || policy.review || policy.bash.includes('any')) return null;
+  const cmd = shellCommandOf(input.tool_name, input.tool_input || {});
+  if (!cmd || !cmd.trim()) return null;
+  const native = {};
+  for (const g of policy.bash) {
+    const rules = ((groups && groups[g]) || []).filter((r) => r && r.first && r.first !== '*' && r.native_allow !== false);
+    if (rules.length) native[g] = rules;
+  }
+  let live = [ctx.cwd ? path.resolve(ctx.cwd) : path.resolve(process.cwd())];
+  let deferred = [];
+  const segs = splitWithOps(cmd);
+  for (let n = 0; n < segs.length; n++) {
+    const { text, op } = segs[n];
+    if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
+    if (!classifySegment(text, native, { roleDir: ctx.roleDir, pluginRoot: ctx.pluginRoot, dirs: live }).length) return null;
+    const t = tokens(text);
+    if (t[0] !== 'cd') continue;
+    const target = cdTarget(t);
+    const moved = live.map((d) => (target.unknown ? null : path.isAbsolute(target.dir) ? path.resolve(target.dir) : d === null ? null : path.resolve(d, target.dir)));
+    const nextOp = segs[n + 1] ? segs[n + 1].op : '';
+    if (nextOp === '&&' && !['||', '|'].includes(op)) { deferred = union(deferred, live); live = union([], moved); } else live = union(live, moved);
+  }
+  return { allow: true, reason: `Role ${policy.roleId}: in its lane (pre-allowed for the plugin version running now).` };
+}
+
 function laneDecisionForHook(input, pluginRoot) {
   const { findRoleMarker, validMarker } = require('./role-context.js');
   const found = findRoleMarker(input.cwd);
@@ -1320,7 +1354,7 @@ function laneDecisionForHook(input, pluginRoot) {
   const pushCmd = d.allow ? shellCommandOf(input.tool_name, input.tool_input || {}) : null;
   const foreign = pushCmd !== null ? foreignTeamPush(pushCmd, marker.instance) : null;
   if (foreign) d = { allow: false, reason: `Role ${policy.roleId}: ${foreign.branch} is ${foreign.owner}'s branch: the merge gate knows a pull request's author by it, so only ${foreign.owner} pushes there.\nPush your own: \`git push origin HEAD:team/${marker.instance}\`` };
-  if (d.allow) return null;
+  if (d.allow) return nativeApproval(input, policy, groups, { roleDir, pluginRoot, cwd: input.cwd });
   try {
     const ti = input.tool_input || {};
     const cmd = shellCommandOf(input.tool_name, ti);
@@ -1331,4 +1365,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
