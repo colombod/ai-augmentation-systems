@@ -185,6 +185,7 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
     }
     if (bd.ok && fs.existsSync(path.join(root, '.beads'))) rows.push(beadsSyncRow(run('bd', ['dolt', 'remote', 'list', '--json'], { cwd: root, env: runEnv })));
   }
+  rows.push(sealRow({ env: runEnv }));
   // Amplifier is not a prerequisite; where it is installed it owns the machine's setup (skills/amplifier)
   const A = require('./lib/amplifier.js');
   rows.push(...A.checkRows(A.detect({ env: runEnv, platform, run: (c, a) => run(c, a, { env: runEnv, timeout: 60000 }) })));
@@ -192,6 +193,24 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
 }
 
 const SETUP_DOC = 'docs/quickstart.md, "Setting up beads"';
+
+// Test runs are sealed (run-tests.js): without bubblewrap they are refused, and each one may fill a
+// RAM-backed tmpfs up to its cap (DELIVERY_TEST_TMP_MB, 2048 by default). The per-host limit is how many
+// capped runs fit in the memory available now: builders and reviewers running the suite at once must
+// stay under it, or the host swaps or kills them. Fewer than two warns.
+function sealRow({ env = process.env, bwrap, freeBytes } = {}) {
+  const T = require('./testing/run-tests.js');
+  const where = bwrap !== undefined ? bwrap : T.bwrapPath(env);
+  const cap = T.caps(env).bytes;
+  const free = freeBytes !== undefined ? freeBytes : require('os').freemem();
+  const fit = Math.floor(free / cap);
+  const mb = (b) => `${Math.round(b / (1024 * 1024))} MB`;
+  if (!where) return { name: 'sealed test runs', status: 'fail', detail: 'bubblewrap (bwrap) not found: run-tests.js refuses every run here', fix: 'install bubblewrap (apt install bubblewrap); test runs are sealed and never run unsealed without an owner record', hard: false };
+  const detail = `bwrap at ${where}; each run may take ${mb(cap)} of memory, ${mb(free)} available: at most ${fit} at once on this host`;
+  return fit >= 2
+    ? { name: 'sealed test runs', status: 'pass', detail, hard: false }
+    : { name: 'sealed test runs', status: 'warn', detail, fix: 'run fewer suites at once, free memory, or lower DELIVERY_TEST_TMP_MB', hard: false };
+}
 
 // The team starts itself (--launch). Each role on this machine gets its first turn headless, in its own
 // role directory, in the team's permission mode, and joins the team; the session it creates is on the
@@ -774,4 +793,4 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { doltUrlOf, githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };
+module.exports = { sealRow, doltUrlOf, githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };
