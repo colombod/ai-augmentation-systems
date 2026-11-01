@@ -5,6 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execFileSync } = require('child_process');
 const G = require('./lib/gates.js');
 const W = require('./lib/warnings.js');
@@ -78,6 +79,28 @@ test('ready.js --story prints the story\'s reach from the feature map; where it 
   assert.match(after.out, /\nReach at [0-9a-f]{12}: p:go \(1 hop\)/);
   const json = JSON.parse((await ready.main(['--story', file, '--initiative', 'vault', '--project', root, '--json'], { cwd: root, env })).out);
   assert.deepEqual(json.reach.features, [{ id: 'p:go', hops: 1 }]);
+});
+
+// a team whose code lives apart from the planning repository: the role's product checkout is mapped
+test('ready.js --story maps the role\'s product checkout, not the planning repository', async () => {
+  const story = `${STORY}\n## Files and modules\n\n| Path | What to do |\n| :-- | :-- |\n| \`p/scripts/run.js\` | modify |\n`;
+  const root = makeProject({ story });
+  const { execFileSync } = require('child_process');
+  const g = (cwd, ...x) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...x], { cwd, stdio: 'ignore' });
+  g(root, 'init', '-q'); g(root, 'add', '-A'); g(root, 'commit', '-qm', 'plans only');
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ready-role-'));
+  const product = path.join(roleDir, 'product');
+  fs.mkdirSync(path.join(product, 'p', '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(product, 'p', 'skills', 'go'), { recursive: true });
+  fs.mkdirSync(path.join(product, 'p', 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(product, 'p', '.claude-plugin', 'plugin.json'), '{"name":"p"}');
+  fs.writeFileSync(path.join(product, 'p', 'skills', 'go', 'SKILL.md'), 'Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/run.js`.\n');
+  fs.writeFileSync(path.join(product, 'p', 'scripts', 'run.js'), '');
+  g(product, 'init', '-q'); g(product, 'add', '-A'); g(product, 'commit', '-qm', 'code');
+  const file = path.join(root, '.delivery', 'stories', 'vault-0n9-3.md');
+  const who = { root, team: null, roleId: 'delivery-lead', instance: 'delivery-lead', actor: 'x', roleDir };
+  const r = await ready.main(['--story', file, '--initiative', 'vault', '--project', root], { cwd: root, env, who });
+  assert.match(r.out, /\nReach at [0-9a-f]{12}: p:go \(1 hop\)/, 'mapped in the product checkout');
 });
 
 test('evidence.js, 10-11 05:40: the author, a builder, a spike researcher and a session with no role cannot write a row', () => {

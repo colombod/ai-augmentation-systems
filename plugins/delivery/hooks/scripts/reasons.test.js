@@ -57,6 +57,12 @@ function leakReasons() {
     d('Bash', { command: 'gh api -X POST repos/o/r/issues' }),
     d('Bash', { command: 'git commit -m "unbalanced' }),
     d('Write', { file_path: '.delivery/team/team.json' }),
+    // the strategy leak gate's refusals
+    d('Bash', { command: 'git push origin sell-duplicates-faster' }),
+    d('Write', { file_path: 'src/a.js', content: '// Sell duplicates faster' }),
+    decideLeak({ toolName: 'Bash', toolInput: { command: 'git commit -m x' }, cwd: product, roleDir, denylist, diffOf: () => [{ file: 'src/a.js', text: 'Sell duplicates faster' }] }),
+    decideLeak({ toolName: 'Bash', toolInput: { command: 'gh pr comment 1 -R o/r --body "Sell duplicates faster"' }, cwd: roleDir, roleDir, denylist, productRepo: 'o/r' }),
+    decideLeak({ toolName: 'mcp__github__add_issue_comment', toolInput: { body: 'Sell duplicates faster' }, cwd: product, roleDir, denylist }),
   ].filter(Boolean).map((r) => ['leak', r.reason]).concat([['leak fail-closed', UNANALYSABLE]]);
 }
 

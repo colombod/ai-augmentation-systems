@@ -127,7 +127,10 @@
   "verify-run": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/verify-run.js", "sub": ["run"] }
   ],
-  "map": [{ "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/map.js", "sub": ["features", "impact", "blind"] }],
+  "map": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/map.js", "sub": ["features", "impact", "blind"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/plan-sync.js", "sub": ["check", "apply"] }
+  ],
   "review-run": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/review-run.js", "sub": ["checkout", "test"] }
   ],

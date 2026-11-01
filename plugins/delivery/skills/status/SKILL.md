@@ -151,6 +151,12 @@ here — it changes how every downstream decision should be read.
 acceptance verdict. Name any story stuck `in-progress` or any sprint left `running` —
 that usually means an interrupted session.
 
+**The plan against what shipped.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-sync.js check` and report
+its result first: a story status behind its bead, a feature map older than the last merge, or plan
+files not on origin means the plan no longer describes the product, and every other line of this
+report is read against a stale plan. Name the fix, `plan-sync.js apply`. Read `.delivery/feature-map.md`
+for what ships and what each open story reaches.
+
 **Consistency.** Documents drift apart between sessions, and the drift is where work
 falls through. Check specifically:
 

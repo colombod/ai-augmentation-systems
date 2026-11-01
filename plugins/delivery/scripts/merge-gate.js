@@ -35,7 +35,7 @@ const restMergeCmd = (pr, repo, head) => `\`gh api -X PUT repos/${repo}/pulls/${
 const mergeCmdFor = (view) => (view && view.via === 'rest' ? restMergeCmd : mergeCmd);
 
 // { ok, why, fix, head, review, warnings, view }
-function gate(root, pr, { head: named, gh, team, repo } = {}) {
+function gate(root, pr, { head: named, gh, team, repo, planDrift } = {}) {
   const view = ghFor(root, gh, repo)(pr) || { unavailable: 'no answer' };
   const { rows, problem } = R.read(root, pr);
   const seen = view.headRefOid || null;
@@ -48,7 +48,19 @@ function gate(root, pr, { head: named, gh, team, repo } = {}) {
   const req = R.lastRequest(rows);
   const lines = view.unavailable ? (req ? req.lines : null) : R.changedLines(view);
   const warnings = R.scopeWarnings({ pr, lines: lines == null ? NaN : lines, stories: req ? req.stories || [] : [], threshold: sizeThreshold(root) });
+  // The plan must be true to what already shipped before anything more ships (the owner, 2026-10-31:
+  // a planning repo and feature map that diverge from the product defeat the product).
+  if (v.ok) {
+    const d = (planDrift || defaultPlanDrift)(root);
+    if (d.length) return { ...v, ok: false, why: `the plan is behind what shipped: ${d[0].detail}${d.length > 1 ? ` (and ${d.length - 1} more)` : ''}`, fix: `Bring it up to date: ${R.cmd('plan-sync.js', 'apply')}, then check again`, head, warnings, view, rows };
+  }
   return { ...v, head, warnings, view, rows };
+}
+
+function defaultPlanDrift(root) {
+  let beads = null;
+  try { beads = require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 }).list({ all: true }); } catch (err) { beads = null; }
+  return require('./lib/plan-sync.js').drift(root, { beads });
 }
 
 function check(root, pr, opts) {
@@ -206,7 +218,13 @@ function handOver(pr, req, who, { bd, now, head }) {
   return lines;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: given } = {}) {
+function defaultPlanSync(who, { bd, env, now, pr }) {
+  let beads = null;
+  try { beads = (bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 })).list({ all: true }); } catch (err) { beads = null; }
+  try { return require('./lib/plan-sync.js').apply(who.root, { beads, team: who.team, roleDir: who.roleDir, env, now, pr, clone: false }); } catch (err) { return { ok: false, lines: [], problems: [String(err.message).split('\n')[0]] }; }
+}
+
+function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: given, planSync, planDrift } = {}) {
   const a = parse(argv);
   const [sub, pr] = a._;
   if (!sub || !pr || !R.PR.test(pr)) return { code: 2, out: USAGE };
@@ -214,7 +232,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   if (!who.root) return { code: 2, out: 'merge-gate.js: no project found; pass --project <root>' };
   const repo = productRepoOf(who.team, { roleDir: who.roleDir });
   if (!repo && (sub === 'check' || sub === 'merged')) return { code: 1, out: `merge-gate.js: ${UNKNOWN(pr)}` };
-  if (sub === 'check') return check(who.root, pr, { head: a.head, gh, team: who.team, repo });
+  if (sub === 'check') return check(who.root, pr, { head: a.head, gh, team: who.team, repo, planDrift });
   if (sub !== 'merged') return { code: 2, out: USAGE };
   const wp = writerProblem(who, ['delivery-lead']);
   if (wp) return { code: 1, out: `merge-gate.js: ${wp}` };
@@ -250,8 +268,12 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   out.push(...handOver(pr, req, who, { bd, now: at, head: row.head }));
   // fix on fix (R-22): a second fix on the same symptom within 48 h opens a spike for its cause
   try { out.push(...require('./lib/andon.js').fixChain(who.root, { pr, bd: bd || require('./lib/bd.js').makeBd({ cwd: who.root, timeoutMs: 10000 }), now: at, who })); } catch (err) { out.push(`note: the fix-on-fix check did not run (${err.message})`); }
-  if (m.failed) return { code: 1, out: `${out.join('\n')}.\nRetry: ${R.cmd('merge-gate.js', `merged ${pr}`)}` };
-  return { code: 0, out: out.join('\n') };
+  // what shipped goes into the plan now: story statuses, the feature map at the merged head, pushed
+  const ps = (planSync || defaultPlanSync)(who, { bd, env, now: at, pr });
+  const plan = [...ps.lines.map((l) => `plan: ${l}`), ...ps.problems.map((p) => `plan: not done: ${p}`)];
+  if (!ps.ok) plan.push(`The next merge is refused until the plan is up to date: ${R.cmd('plan-sync.js', 'apply')}`);
+  if (m.failed) return { code: 1, out: [`${out.join('\n')}.\nRetry: ${R.cmd('merge-gate.js', `merged ${pr}`)}`, ...plan].join('\n') };
+  return { code: 0, out: [...out, ...plan].join('\n') };
 }
 
 if (require.main === module) {

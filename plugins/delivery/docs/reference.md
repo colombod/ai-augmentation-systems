@@ -5,7 +5,7 @@ runs on, the operator-decision machinery, the artifacts, and why the pipeline is
 it is. The README is enough to start; read this when you need to know exactly what happens.
 
 - [Sessions you run vs reviewers they call](#sessions-you-run-vs-reviewers-they-call)
-- [The shipping team's mechanisms](#the-shipping-teams-mechanisms): roles, hooks, lanes, the leak guard, bead discipline
+- [The shipping team's mechanisms](#the-shipping-teams-mechanisms): roles, hooks, lanes, the leak guard, bead discipline, plan sync
 - [Operator decisions in detail](#operator-decisions-in-detail)
 - [Using it with superpowers](#using-it-with-superpowers)
 - [The five ideas doing the real work](#the-five-ideas-doing-the-real-work)
@@ -173,6 +173,38 @@ is checked against `.delivery/team/denylist.txt`, plan files cannot be written, 
 inputs pass the same scan and MCP issue creation is refused. Builders use plain
 `git commit -m "text"`: command substitution, heredoc messages, `-F` files and `$VAR` in message
 or push-option arguments are refused so the text can be checked.
+
+**The strategy leak gate** extends the guard from headings to the whole private plan:
+
+- **What it catches.** Exact terms: the denylist, plus `.delivery/team/leak-extras.txt` (one per line: customer
+  names, codenames, prices; the Product Manager keeps it). Copied passages: any 8 consecutive words from a text
+  file under the project's `.delivery/`, whatever the case, punctuation or line breaks. Runs of fewer than five
+  real words (numbers, ids, paths) and fenced code in Markdown plans are not counted, so quoting the product's
+  own code back in a plan does not refuse the builder who changes it.
+- **Where.** Every channel above, plus: the added lines of the change a `git commit` records in the product
+  (`git diff --cached`, or against HEAD with `-a`); the text a Write, Edit or MultiEdit puts into a product file;
+  branch and tag names in `git push`, `checkout -b`, `switch -c`, `branch` and `tag` (deleting a name always
+  passes); and `gh` writes that name the product repository (`-R`, or `repos/<owner>/<repo>` in `gh api`) from
+  any directory, so the Delivery Manager's comments, merge subjects and REST merges are checked too. That last
+  one needs `product_github` in `team.json`, which `start.js` writes.
+- **Public by design.** `.delivery/team/leak-allow.txt` lists terms and sentences that are meant to be public
+  (the product's name, a public customer, a sentence written for the README). An allowed term leaves the term
+  list; an allowed sentence's passages leave the fingerprint. A refusal names the matched words and the private
+  file they came from, and says to rewrite in your own words or message the Product Manager.
+- **Only new text.** A line the product file already has, or one a commit moves or re-indents, is not checked:
+  what was public before the gate existed never locks out the next person to edit that file.
+- **The `Refs` line.** A `Refs <bead id>` line (ids with a hyphen and a digit, comma-separated) is not scanned:
+  story and spike ids contain the initiative's slug, which the denylist holds.
+- **Kept fresh without anyone running it.** The fingerprint (salted hashes, no plan text) lives in
+  `.delivery/cache/leak/`, git-ignored, and is rebuilt on the next check after any plan file changes
+  (about 75 ms for a 12,000-passage plan; a commit's check stays under 300 ms).
+- **What it does not promise.** Paraphrase, a summary in other words, and meaning are not caught. Seven
+  copied words are not caught. Text already public cannot be recalled: a leak in history stays in forks and
+  caches, so the gate's job is to stop it before it is written.
+
+Measured on a real private plan and its public product repository: the gate found a sentence of the private
+plan already copied into a public test file, and hit 3 of 595 public files in all, each a sentence the plan and
+the product share verbatim (the allowlist's job).
 
 The guard is the first line, not the last. It fails closed inside the product worktree, but it
 is not a boundary against a determined session with unrestricted Bash (file contents, git
@@ -618,6 +650,33 @@ divergence, otherwise warn (R-14, R-15, R-16, R-18; D4).
   (it needs labelled cases first), and the R-01 goal sheet's blocking unknowns. A program that writes
   the register or the evidence files outside a tool call is not seen by the lanes (cooperative trust,
   as for the bd guard); the gates' re-verification is what still holds then.
+
+### The plan stays true to what shipped
+
+Owner ruling (2026-10-31): a planning repository and feature map that drift from the product defeat the
+product, so keeping them current is enforced, not remembered.
+
+- **What "up to date" means** (`node scripts/plan-sync.js check`, read only):
+  - every story file's `status` matches its bead: a closed bead means `done`; a claimed, merged or deployed
+    one means `in-progress`;
+  - the feature map (`.delivery/feature-map.json`, and `.delivery/feature-map.md` to read) is newer than
+    the last merge in the review records;
+  - no plan document in the project root (`.delivery/initiatives`, `stories`, `sprints`, `decisions`,
+    `personas`, `reviews` and the map) is uncommitted or unpushed.
+- **Who keeps it so.** `merge-gate.js merged <pr>` runs `plan-sync.js apply` itself after recording the
+  merge: it advances story statuses, rebuilds the feature map from the product's default branch, and
+  commits and pushes the plan. `merge-gate.js check`, and the lane before the Delivery Manager's
+  `gh pr merge`, refuse while `check` reports anything, naming `plan-sync.js apply` as the way out. The
+  Delivery Manager and the Product Manager are told at session start when the plan is behind.
+- **The feature map** lists what ships (the derived and declared features of `lib/features.js`), what each
+  open story reaches through its Files and modules table, and a log of what each merge added and removed.
+  It is generated: edit the plan, never the map.
+- **The product copy.** The map reads the role's product worktree, else `product_url` when it is a local
+  path, else a bare copy in `.delivery/cache/product.git` (git-ignored) cloned from `product_url` or
+  `https://github.com/<product_github>.git`. The sync that runs after a merge never makes that first
+  clone, so a merge never waits on a download; the explicit `plan-sync.js apply` does.
+- **Only forward.** Statuses only advance. A story marked done whose bead was reopened is reported, never
+  rewritten: reopening is a decision someone looks at.
 
 ### Review records and the merge gate
 
