@@ -1295,18 +1295,19 @@ function reviewerPolicy(base) {
 // of which a native-allowable rule of the role's own groups matches (the rules laneAllowRules turns
 // into allow rules), after every guard above let it through. Nothing broader: never an `any` lane,
 // never the reviewer lane, never a rule whose flags matter (native_allow: false), never a `*` rule.
+const SAFE_FOR_APPROVAL = /^[A-Za-z0-9 _./@%+,=:!'"-]+$/;
 function nativeApproval(input, policy, groups, ctx) {
   if (input.tool_name !== 'Bash' || !policy || policy.review || policy.bash.includes('any')) return null;
   const cmd = shellCommandOf(input.tool_name, input.tool_input || {});
   if (!cmd || !cmd.trim()) return null;
-  // Where the lane's shell reading and bash's can differ, approval is the harness's call, not ours:
-  // a word-start `#` (bash drops a commented quote that the lane would pair with a later one, hiding
-  // a second command after a newline) and any `$` or backquote (the lane expands a single-quoted
-  // ${CLAUDE_PLUGIN_ROOT} that bash leaves literal). Rendered briefs give the plugin's absolute
-  // path, so the decision loop's commands carry neither. (Copilot 4436789914, 4436789928)
-  // A redirect is also declined: the lane's tokens keep one glued to a word (--status</dev/null), so a
-  // refused flag can hide behind it while bash strips the redirect (Copilot 4436827075).
-  if (/(?:^|\s)#/.test(cmd) || /[$`<>]/.test(cmd)) return null;
+  // Approval makes the lane's shell reading the last check, so it is given only where that reading
+  // and bash's cannot differ: plain words, spaces and quotes, segments joined by `&&`. No backslash
+  // (a continuation inside quotes hides a flag), newline, comment, `$` or backquote (the lane expands
+  // a quoted ${CLAUDE_PLUGIN_ROOT} that bash leaves literal), redirect (one glued to a refused flag
+  // hides it), glob or other operator. Rendered briefs give the plugin's absolute path, so the
+  // decision loop's commands pass; anything else falls back to the permission check. (Copilot on #114:
+  // 4436789914, 4436789928, 4436827075, 4436886860.)
+  if (!SAFE_FOR_APPROVAL.test(cmd.split(' && ').join(' '))) return null;
   const native = {};
   for (const g of policy.bash) {
     const rules = ((groups && groups[g]) || []).filter((r) => r && r.first && r.first !== '*' && r.native_allow !== false);

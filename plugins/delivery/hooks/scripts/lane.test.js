@@ -1292,5 +1292,11 @@ test('nativeApproval approves nothing for a non-Bash tool, an any lane or the re
   assert.ok(nativeApproval(cmd("bd update x-1 --append-notes n --status</dev/null closed"), reads, groups, ctx) === null);
   assert.ok(nativeApproval(cmd("bd update x-1 --append-notes n --status>/dev/null closed"), reads, groups, ctx) === null);
   assert.ok(nativeApproval(cmd("bd update x-1 --append-notes n"), reads, groups, ctx).allow);
+  // a backslash-newline inside quotes is removed by bash and kept by the lane (Copilot 4436886860)
+  assert.ok(nativeApproval(cmd('bd update x-1 --append-notes n "--sta\\\ntus" closed'), reads, groups, ctx) === null);
+  assert.ok(nativeApproval(cmd("bd update x-1 --append-notes 'a\\b'"), reads, groups, ctx) === null);
+  assert.ok(nativeApproval(cmd("ls; ls"), reads, groups, ctx) === null);
+  assert.ok(nativeApproval(cmd("ls && ls"), reads, groups, ctx).allow);
+  assert.ok(nativeApproval(cmd("ls *"), reads, groups, ctx) === null);
   assert.ok(nativeApproval(cmd(`node ${path.join(PLUGIN_ROOT, 'scripts', 'team-status.js')}`), reads, groups, ctx).allow);
 });
