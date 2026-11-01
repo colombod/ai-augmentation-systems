@@ -1352,3 +1352,52 @@ test('hjx.1: assigned work wakes its holder after 10 quiet minutes, under the me
   WD.log(root2, { type: 'wake', at: iso(now - 2 * 60e3), keys: ['assigned:ex-p'], instance: 'builder-2', pid: 7 });
   assert.match(WD.plan(st, { root: root2, now: iso(now), alive: () => false }).held[0].reason, /wait 5 min/);
 });
+
+// Copilot on PR 113: bd ready does not know owner-queue steps; work waiting for the owner is not woken
+test('hjx.1 (Copilot 4436744668): assigned work an open owner-queue step names waits for the owner, no wake', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const sess = (inst) => ({ instance: inst, role: 'builder', session: `s-${inst}`, roleDir: os.tmpdir(), lastActive: now - 30 * 60e3 });
+  const open = { id: 'ex-o', status: 'open', assignee: 'builder-1', updated_at: iso(now - 30 * 60e3) };
+  const prog = { id: 'ex-p', status: 'in_progress', assignee: 'builder-2', updated_at: iso(now - 30 * 60e3) };
+  const assigned = (openSteps) => WD.stalls({ now: iso(now), beads: [open, prog], ready: [open], sessions: [sess('builder-1'), sess('builder-2')], openSteps })
+    .stalls.filter((x) => x.kind === 'assigned').map((x) => x.bead);
+  assert.deepEqual(assigned([]), ['ex-o', 'ex-p'], 'no owner step: both woken');
+  assert.deepEqual(assigned([{ id: 'oq-1', bead: 'ex-o' }, { id: 'oq-2', bead: 'ex-p' }]), [], 'each waits for its owner step');
+  assert.deepEqual(assigned([{ id: 'oq-3', bead: 'ex-other' }]), ['ex-o', 'ex-p'], 'a step naming other work holds nothing');
+});
+
+// Copilot on PR 113: in a stopped area the stop's recovery work still runs, even past stall_hours
+test('hjx.1 (Copilot 4436744684): in a stopped area recovery work is woken, past stall_hours too; unrelated work is held', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const sess = (inst, quietMin) => ({ instance: inst, role: 'builder', session: `s-${inst}`, roleDir: os.tmpdir(), lastActive: now - quietMin * 60e3 });
+  const area = (id, assignee, status, meta = {}, upd = 30) => ({ id, status, assignee, labels: ['story'], updated_at: iso(now - upd * 60e3), metadata: { area: 'import', ...meta } });
+  const fail = area('ex-fail', 'builder-1', 'in_progress');
+  const fix = area('ex-fix', 'builder-2', 'open', { fixes: 'ex-fail' });
+  const a3 = area('ex-a3', 'builder-3', 'in_progress', { a3: 'a3-1' }, 180);
+  const other = area('ex-other', 'builder-4', 'in_progress');
+  const pause = { paused: false, stops: [{ trigger: 'andon:ev-ex-fail-1', area: 'import', a3: 'a3-1' }] };
+  const sessions = [sess('builder-1', 30), sess('builder-2', 30), sess('builder-3', 180), sess('builder-4', 30)];
+  const r = WD.stalls({ now: iso(now), beads: [fail, fix, a3, other], ready: [fix], sessions, pause, stallHours: 2 });
+  assert.deepEqual(r.stalls.filter((x) => x.kind === 'assigned').map((x) => x.bead).sort(), ['ex-a3', 'ex-fail', 'ex-fix'], 'the failed bead, its fix and the A3 work run; ex-other waits');
+  // ex-a3 is past stall_hours, and the quiet stall skips a stopped area: the assigned wake is its only one
+  assert.deepEqual(r.stalls.filter((x) => x.bead === 'ex-a3').map((x) => x.kind), ['assigned']);
+  // outside a stop the in-progress stall takes over past stall_hours: one wake, not two
+  const free = WD.stalls({ now: iso(now), beads: [a3], sessions, stallHours: 2 });
+  assert.deepEqual(free.stalls.map((x) => x.kind), ['quiet']);
+});
+
+// Copilot on PR 113: assigned wakes are handovers; they never spend the stall wakes' hourly gate or daily cap
+test('hjx.1 (Copilot 4436744698): logged assigned wakes do not hold a due stall wake', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const b = { id: 'ex-p', status: 'in_progress', assignee: 'builder-2', updated_at: iso(now - 3 * H) };
+  const st = WD.stalls({ now: iso(now), beads: [b], sessions: [{ instance: 'builder-2', role: 'builder', session: 's-b2', roleDir: os.tmpdir(), lastActive: now - 3 * H }], stallHours: 2 });
+  assert.deepEqual(st.stalls.map((x) => x.kind), ['quiet'], 'past stall_hours the stall is due');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-cap-'));
+  try {
+    // six assigned wakes today, the last six minutes ago
+    for (let i = 0; i < 6; i++) WD.log(root, { type: 'wake', at: iso(now - (6 + i * 20) * 60e3), keys: ['assigned:ex-p'], instance: 'builder-2', pid: 7 });
+    const p = WD.plan(st, { root, now: iso(now), alive: () => false });
+    assert.equal(p.held.length, 0, JSON.stringify(p.held));
+    assert.deepEqual(p.wakes.map((w) => w.keys).flat(), [st.stalls[0].key]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

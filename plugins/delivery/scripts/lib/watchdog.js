@@ -285,17 +285,20 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   // open and ready) and quiet for ASSIGNED_IDLE_MIN is woken to work it, whether or not a message
   // waits. Before, a role was woken only for a message or a two-hour stall, so a builder handed a story
   // with no message sat idle for hours. It is a handover like a message (five minutes apart, the
-  // message caps), not a warning, and it never targets a session that is running a turn.
+  // message caps), not a warning, and it never targets a session that is running a turn. Work an open
+  // owner-queue step names waits for the owner, as the idle and P0 rules read it (bd ready does not
+  // know those steps). In a stopped area only the stop's recovery work runs (recovering, as for handoffs).
   const readySet = new Set((ready || []).map((b) => b && b.id));
-  for (const b of beads.filter((x) => x && x.assignee && !inStop(x) && !waitingEvidence(x) && typeOf(x) !== 'epic'
+  for (const b of beads.filter((x) => x && x.assignee && !(inStop(x) && !recovering(x)) && !waiting.has(x.id) && !waitingEvidence(x) && typeOf(x) !== 'epic'
     && (x.status === 'in_progress' || (x.status === 'open' && readySet.has(x.id))))) {
     const h = holderOf(b, list);
     if (!h || limited.has(h.instance) || (h.waitUntil && h.waitUntil > t)) continue;
     const quiet = (t - (Number.isFinite(h.lastActive) ? h.lastActive : -Infinity)) / 60000;
     if (!(quiet > ASSIGNED_IDLE_MIN)) continue;
-    // past stall_hours the in-progress stall below wakes the holder already: one wake, not two
+    // past stall_hours the in-progress stall below wakes the holder already: one wake, not two. That
+    // stall skips a stopped area, so recovery work there keeps its assigned wake.
     const lastMove = Math.max(ms(b.updated_at), ms(b.created_at), Number.isFinite(h.lastActive) ? h.lastActive : -Infinity);
-    if (b.status === 'in_progress' && (t - lastMove) / 60000 > stallHours * 60) continue;
+    if (b.status === 'in_progress' && !inStop(b) && (t - lastMove) / 60000 > stallHours * 60) continue;
     out.push({ kind: 'assigned', key: `assigned:${b.id}`, bead: b.id, target: h.instance, due: true,
       line: `Assigned and waiting: ${b.id} is with ${h.instance}, whose session has been quiet for ${span(quiet)}.`,
       plain: 'Work handed to a team member is waiting for them; they are started on it.',
@@ -502,7 +505,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     }
     // the stall gates count stall wakes only: a role woken often for messages is still told about its
     // stall (each message wake would otherwise push "one wake an hour" forward and fill the day's six)
-    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !/^(message|handoff):/.test(String(k))));
+    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !/^(message|handoff|assigned):/.test(String(k))));
     const lastStall = stallRows[stallRows.length - 1];
     if (last && alive(last.pid)) reason = 'its last wake is still running';
     else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
