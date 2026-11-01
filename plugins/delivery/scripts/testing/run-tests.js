@@ -5,7 +5,8 @@
 // DELIVERY_* (and beads) variables that the hooks and scripts under test read. Inherited, they make
 // about 70 tests fail that pass in CI. A reviewer's lane cannot prefix a command with `env -u`, so
 // the clearing lives here, and this one command is what CI, builders and reviewers all run.
-// Extra arguments go to `node --test` (for example --test-name-pattern).
+// Extra arguments go to `node --test` (for example --test-name-pattern), except --clock <iso>, which
+// runs the suite with every node process's clock moved to that instant (fake-clock.js).
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -32,7 +33,30 @@ function testFiles(root) {
   return files.sort();
 }
 
-module.exports = { cleanEnv, testFiles };
+// --clock <iso> is the runner's own; the rest pass through to `node --test`
+function splitArgs(argv) {
+  const rest = [];
+  let clock = null;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--clock') clock = argv[++i];
+    else if (argv[i].startsWith('--clock=')) clock = argv[i].slice('--clock='.length);
+    else rest.push(argv[i]);
+  }
+  if (clock !== null && !Number.isFinite(Date.parse(clock))) throw new Error(`--clock needs a date, got ${JSON.stringify(clock)}`);
+  return { clock, rest };
+}
+
+// The offset is from the real clock: a runner already under a moved one (the suite's own test of
+// --clock, run with --clock) takes the inherited offset off first, and does not preload twice.
+function clockEnv(clock, env) {
+  if (!clock) return {};
+  const realNow = Date.now() - (Number(env.TEST_CLOCK_OFFSET_MS) || 0);
+  const preload = `--require ${JSON.stringify(path.join(__dirname, 'fake-clock.js'))}`;
+  const opts = env.NODE_OPTIONS || '';
+  return { TEST_CLOCK_OFFSET_MS: String(Date.parse(clock) - realNow), NODE_OPTIONS: opts.includes(preload) ? opts : `${opts} ${preload}`.trim() };
+}
+
+module.exports = { cleanEnv, testFiles, splitArgs, clockEnv };
 
 if (require.main === module) {
   const root = path.join(__dirname, '..', '..');
@@ -40,10 +64,11 @@ if (require.main === module) {
   // repositories in them each run, which filled a 39 GB disk over a day of runs. The suite gets a
   // temporary directory of its own, removed when it ends.
   const os = require('os');
+  const { clock, rest } = splitArgs(process.argv.slice(2));
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'delivery-tests-'));
   let r;
   try {
-    r = spawnSync(process.execPath, ['--test', ...process.argv.slice(2), ...testFiles(root)], { env: { ...cleanEnv(process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp }, stdio: 'inherit' });
+    r = spawnSync(process.execPath, ['--test', ...rest, ...testFiles(root)], { env: { ...cleanEnv(process.env), ...clockEnv(clock, process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp }, stdio: 'inherit' });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

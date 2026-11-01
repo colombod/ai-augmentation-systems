@@ -32,3 +32,9 @@ jobs:
       # bd in scripts/testing/ on PATH, never the real one.
       - name: Run test suite
         run: node plugins/delivery/scripts/testing/run-tests.js
+
+      # The same suite with the clock 45 days ahead, so always in another month: a test that writes
+      # the current month into a path or a fixture fails here the day it is written, not on the 1st
+      # of the next month on every branch at once.
+      - name: Run test suite in another month
+        run: node plugins/delivery/scripts/testing/run-tests.js --clock "$(date -u -d '+45 days' +%Y-%m-%dT12:00:00Z)"
