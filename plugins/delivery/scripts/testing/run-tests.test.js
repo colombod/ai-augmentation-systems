@@ -230,8 +230,9 @@ test('run-tests: an unsealed run on a filesystem already past the cap is not sto
   try {
     // others' files on the same filesystem, more than the cap below
     for (let i = 0; i < 400; i++) fs.writeFileSync(path.join(outer, `other-${i}`), '');
-    const used = R.inodesUsed(outer);
-    assert.ok(used > 300, `the filesystem already holds more than the cap (${used})`);
+    // counted by walking, not by the mount's inode counters, which some filesystems (APFS) do not keep
+    const used = R.entriesUnder(outer, 300);
+    assert.ok(used > 300, `the run's temp dir already holds more than the cap (${used})`);
     const fixture = path.join(dir, 'small.test.js');
     fs.writeFileSync(fixture, "const test = require('node:test'); const fs = require('fs'); const path = require('path'); const os = require('os');\n" +
       "test('a few files', async () => { for (let i = 0; i < 10; i++) fs.writeFileSync(path.join(os.tmpdir(), 'f' + i), ''); await new Promise((r) => setTimeout(r, 2500)); });\n");
@@ -241,4 +242,64 @@ test('run-tests: an unsealed run on a filesystem already past the cap is not sto
     assert.equal(r.status, 0, r.stderr.slice(-400));
     assert.doesNotMatch(r.stderr, /inode cap/);
   } finally { fs.rmSync(outer, { recursive: true, force: true }); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Copilot on #111: early Node 18 has neither Dirent.parentPath nor Dirent.path; the walk joins each
+// name against the directory it read, so nested directories are counted without them.
+test('run-tests: entriesUnder counts nested entries without Dirent.parentPath', () => {
+  const fs = require('fs');
+  const R = require('./run-tests.js');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.walk-'));
+  const real = fs.readdirSync;
+  try {
+    fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a', 'b', 'f'), '');
+    fs.writeFileSync(path.join(dir, 'g'), '');
+    // what early Node 18 hands back: a name and a type, nothing about the parent
+    fs.readdirSync = (d, o) => real(d, o).map((e) => ({ name: e.name, isDirectory: () => e.isDirectory() }));
+    assert.equal(R.entriesUnder(dir, 100), 4);
+  } finally { fs.readdirSync = real; fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Copilot on #111: a spawn that fails emits 'error', not 'exit'. A preload makes every spawn in the
+// process fail (a command that does not exist), so the runner and seal-check meet a real spawn error.
+function failingSpawnEnv(dir) {
+  const fs = require('fs');
+  const stub = path.join(dir, 'failing-spawn.js');
+  fs.writeFileSync(stub, "const cp = require('child_process'); const real = cp.spawn; cp.spawn = (cmd, args, opts) => real('/nonexistent/delivery-spawn-fails', args, opts);\n");
+  const env = { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require ${JSON.stringify(stub)}`.trim() };
+  delete env.NODE_TEST_CONTEXT;
+  return env;
+}
+
+test('run-tests: a suite that cannot be started fails the run and removes its directory', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { spawnSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.nospawn-'));
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-nospawn-'));
+  try {
+    const env = { ...failingSpawnEnv(dir), TMPDIR: outer, DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_FILES: path.join(dir, 'none.test.js') };
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js')], { env, encoding: 'utf8', timeout: 30000 });
+    assert.equal(r.status, 1, r.stderr.slice(-400));
+    assert.match(r.stderr, /run-tests: could not start the suite \(spawn \/nonexistent\/delivery-spawn-fails ENOENT\)/);
+    assert.deepEqual(fs.readdirSync(outer), [], 'the run\'s directory is removed');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(outer, { recursive: true, force: true }); }
+});
+
+test('seal-check: a runner that cannot be started fails with the reason and removes its fixture', { skip: !require('./run-tests.js').bwrapPath(process.env) && 'seal-check needs bwrap on this host' }, () => {
+  const fs = require('fs');
+  const { spawnSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.nospawn-'));
+  const fixtures = () => fs.readdirSync(__dirname).filter((f) => f.startsWith('.seal-check-')).sort();
+  const before = fixtures();
+  try {
+    // seal-check refuses to run inside a seal; here it gets no further than starting its runner
+    const env = failingSpawnEnv(dir);
+    delete env.DELIVERY_SEAL_ACTIVE;
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'seal-check.js')], { env, encoding: 'utf8', timeout: 30000 });
+    assert.equal(r.status, 1, r.stderr.slice(-400));
+    assert.match(r.stderr, /seal-check: could not start run-tests\.js \(spawn \/nonexistent\/delivery-spawn-fails ENOENT\); nothing proven/);
+    assert.deepEqual(fixtures(), before, 'its .seal-check- directory is removed');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

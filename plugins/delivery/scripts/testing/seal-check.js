@@ -42,6 +42,14 @@ test('writes into /tmp and waits', async () => {
   const runner = spawn(process.execPath, [path.join(__dirname, 'run-tests.js')], { env: { ...process.env, DELIVERY_TEST_FILES: fixture }, stdio: 'ignore' });
   return new Promise((resolve) => {
     const started = Date.now();
+    // a runner that cannot start (EAGAIN under process pressure) emits 'error', not 'exit': stop
+    // polling, remove the fixture directory and fail with the reason (Copilot on #111)
+    runner.on('error', (err) => {
+      clearInterval(poll);
+      fs.rmSync(signal, { recursive: true, force: true });
+      console.error(`seal-check: could not start run-tests.js (${err.message}); nothing proven`);
+      resolve(1);
+    });
     const poll = setInterval(() => {
       if (fs.existsSync(path.join(signal, 'ready')) || Date.now() - started > 30000) {
         clearInterval(poll);

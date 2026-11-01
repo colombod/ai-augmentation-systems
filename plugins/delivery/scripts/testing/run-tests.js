@@ -93,9 +93,11 @@ function entriesUnder(dir, limit) {
   let n = 0;
   const stack = [dir];
   while (stack.length && n <= limit) {
+    // joined against the directory read, not Dirent.parentPath, which early Node 18 lacks (Copilot on #111)
+    const d = stack.pop();
     let list;
-    try { list = fs.readdirSync(stack.pop(), { withFileTypes: true }); } catch (e) { continue; }
-    for (const e of list) { n += 1; if (e.isDirectory()) stack.push(path.join(e.parentPath || e.path, e.name)); }
+    try { list = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { continue; }
+    for (const e of list) { n += 1; if (e.isDirectory()) stack.push(path.join(d, e.name)); }
   }
   return n;
 }
@@ -163,6 +165,14 @@ if (require.main === module) {
   };
   process.on('SIGINT', () => stop('SIGINT'));
   process.on('SIGTERM', () => stop('SIGTERM'));
+  // a suite that cannot start (EAGAIN under process pressure) emits 'error' and no 'exit': clean up
+  // and fail here rather than crash and leave the run's directory (Copilot on #111)
+  child.on('error', (err) => {
+    clearInterval(guard);
+    if (!sealed) fs.rmSync(tmp, { recursive: true, force: true });
+    process.stderr.write(`run-tests: could not start the suite (${err.message})\n`);
+    process.exit(1);
+  });
   child.on('exit', (code, signal) => {
     clearInterval(guard);
     const finish = () => {
