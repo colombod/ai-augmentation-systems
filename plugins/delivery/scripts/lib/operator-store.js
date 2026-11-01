@@ -762,7 +762,8 @@ function humanReason(op, err, timedOut) {
   return `git ${op} in the private operator store failed: ${firstLine(e) || 'unknown error'}`;
 }
 
-const retryable = (err) => /\[rejected\]|non-fast-forward|fetch first|cannot lock ref|incorrect old value|failed to update ref|stale info|but expected/i.test(String(err || ''))
+// git 2.53 reports two hosts creating the branch at once as "reference already exists"
+const retryable = (err) => /\[rejected\]|non-fast-forward|fetch first|cannot lock ref|incorrect old value|failed to update ref|stale info|but expected|reference already exists/i.test(String(err || ''))
   && !/protected branch|declined|pre-receive hook/i.test(String(err || ''));
 
 // "Remote down" is remembered for DOWN_MS across processes (a stamp in the store's local state), so
