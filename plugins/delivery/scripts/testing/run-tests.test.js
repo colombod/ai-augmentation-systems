@@ -70,3 +70,38 @@ test('run-tests: under --clock, node children share one moved clock that runs on
     assert.deepStrictEqual(clockEnv(null, {}), {});
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// hjx (dec-chief-of-staff-000014): a run seals itself in a private, capped /tmp the kernel removes
+// when the run ends, even killed; seal-check.js proves the killed case from outside the suite (CI step).
+test('run-tests: the seal is a private /tmp tmpfs, capped, gone with its parent, nothing relocated', () => {
+  const R = require('./run-tests.js');
+  const [cmd, args] = R.sealArgs('/usr/bin/bwrap', { bytes: 1024, inodes: 10 }, ['node', 'x.js']);
+  assert.equal(cmd, '/usr/bin/bwrap');
+  assert.deepEqual(args.slice(0, 5), ['--dev-bind', '/', '/', '--size', '1024']);
+  assert.deepEqual(args.slice(5, 7), ['--tmpfs', '/tmp']);
+  for (const f of ['--die-with-parent', '--unshare-pid']) assert.ok(args.includes(f), f);
+  assert.equal(args[args.indexOf('--proc') + 1], '/proc', 'its own /proc, so process lookups see the run\'s own pid namespace');
+  assert.deepEqual(args.slice(-3), ['--', 'node', 'x.js']);
+  assert.deepEqual(R.caps({}), { bytes: 2048 * 1024 * 1024, inodes: 200000 });
+  assert.deepEqual(R.caps({ DELIVERY_TEST_TMP_MB: '64', DELIVERY_TEST_TMP_INODES: '500' }), { bytes: 64 * 1024 * 1024, inodes: 500 });
+});
+
+test('run-tests: a run that passes its inode cap is stopped and says why', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { spawnSync } = require('child_process');
+  const R = require('./run-tests.js');
+  const base = R.inodesUsed(os.tmpdir());
+  assert.ok(base !== null, 'the temp dir mount can be read');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.inode-cap-'));
+  try {
+    const fixture = path.join(dir, 'many-files.test.js');
+    fs.writeFileSync(fixture, "const test = require('node:test'); const fs = require('fs'); const path = require('path'); const os = require('os');\n" +
+      "test('makes files', async () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'many-')); for (let i = 0; i < 6000; i++) fs.writeFileSync(path.join(d, String(i)), ''); await new Promise((r) => setTimeout(r, 8000)); });\n");
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT; // a node:test child of a test would otherwise skip its files
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js')], { env: { ...env, DELIVERY_SEAL_ACTIVE: process.env.DELIVERY_SEAL_ACTIVE || '0', DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_FILES: fixture, DELIVERY_TEST_TMP_INODES: String(base + 2000) }, encoding: 'utf8', timeout: 60000 });
+    assert.equal(r.status, 1, r.stdout.slice(-300) + r.stderr.slice(-300));
+    assert.match(r.stderr, /passed its inode cap \(\d+ > \d+\); stopping the suite/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

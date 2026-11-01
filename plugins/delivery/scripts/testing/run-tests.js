@@ -58,6 +58,40 @@ function clockEnv(clock, env) {
 
 module.exports = { cleanEnv, testFiles, splitArgs, clockEnv };
 
+// ---- the sealed run (hjx, dec-chief-of-staff-000014) ----
+// A run leaves nothing in the host's /tmp, whatever happens to it. The suite runs inside bubblewrap
+// with a private /tmp (a fresh tmpfs capped in size) that the kernel destroys when the run ends, also
+// when it is killed or crashes (--die-with-parent): leftover fixtures filled wintermute's /tmp on
+// 2026-11-01 when runs were killed before their cleanup ran. Temp files are not relocated anywhere.
+// tmpfs inodes cannot be capped from an unprivileged sandbox, so the sealed run polls its own /tmp and
+// stops the suite past the inode cap. Without bubblewrap (macOS, a host without it) the run falls back
+// to a private directory under the system temp dir, removed at the end, and says it is not sealed.
+const MB = 1024 * 1024;
+const caps = (env) => ({
+  bytes: (Number(env.DELIVERY_TEST_TMP_MB) || 2048) * MB,
+  inodes: Number(env.DELIVERY_TEST_TMP_INODES) || 200000,
+});
+function bwrapPath(env) {
+  for (const d of String(env.PATH || '').split(path.delimiter).concat(['/usr/bin', '/bin'])) {
+    const p = path.join(d, 'bwrap');
+    try { fs.accessSync(p, fs.constants.X_OK); return p; } catch (e) { /* next */ }
+  }
+  return null;
+}
+// the bwrap argv that seals a run: the host as it is, a private capped /tmp, gone with the parent
+function sealArgs(bwrap, cap, argv) {
+  return [bwrap, ['--dev-bind', '/', '/', '--size', String(cap.bytes), '--tmpfs', '/tmp', '--proc', '/proc', '--die-with-parent', '--unshare-pid', '--', ...argv]];
+}
+// inodes in use on a mount, or null when it cannot be read
+function inodesUsed(dir) {
+  try { const s = fs.statfsSync(dir); return s.files - s.ffree; } catch (e) { return null; }
+}
+
+module.exports.sealArgs = sealArgs;
+module.exports.caps = caps;
+module.exports.bwrapPath = bwrapPath;
+module.exports.inodesUsed = inodesUsed;
+
 if (require.main === module) {
   const root = path.join(__dirname, '..', '..');
   // the tests make their fixtures with mkdtemp and leave them: thousands of directories with git
@@ -65,12 +99,41 @@ if (require.main === module) {
   // temporary directory of its own, removed when it ends.
   const os = require('os');
   const { clock, rest } = splitArgs(process.argv.slice(2));
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'delivery-tests-'));
-  let r;
-  try {
-    r = spawnSync(process.execPath, ['--test', ...rest, ...testFiles(root)], { env: { ...cleanEnv(process.env), ...clockEnv(clock, process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp }, stdio: 'inherit' });
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+  const cap = caps(process.env);
+  const files = process.env.DELIVERY_TEST_FILES ? process.env.DELIVERY_TEST_FILES.split(path.delimiter) : testFiles(root);
+  // already inside a seal (the suite's own tests run this runner): no nested sandbox, which the host
+  // refuses; a private directory inside the sealed /tmp instead
+  const inSeal = process.env.DELIVERY_SEAL_ACTIVE === '1' && process.env.DELIVERY_SEALED_RUN !== '1';
+  if (process.env.DELIVERY_SEALED_RUN !== '1' && !inSeal) {
+    const bwrap = process.env.DELIVERY_TEST_UNSEALED === '1' ? null : bwrapPath(process.env);
+    if (bwrap) {
+      // re-run this runner inside the seal; the sealed child does the rest
+      const [cmd, args] = sealArgs(bwrap, cap, [process.execPath, __filename, ...process.argv.slice(2)]);
+      const r = spawnSync(cmd, args, { env: { ...process.env, DELIVERY_SEALED_RUN: '1', DELIVERY_SEAL_ACTIVE: '1' }, stdio: 'inherit' });
+      if (r.error) { process.stderr.write(`run-tests: could not start the sealed run (${r.error.message})\n`); process.exit(1); }
+      process.exit(r.status !== null ? r.status : 1);
+    }
+    process.stderr.write(`run-tests: ${process.env.DELIVERY_TEST_UNSEALED === '1' ? 'DELIVERY_TEST_UNSEALED is set' : 'bubblewrap (bwrap) not found'}: this run is NOT sealed; it uses a private directory under the system temp dir, removed at the end\n`);
   }
-  process.exit(r && r.status !== null ? r.status : 1);
+  // sealed: /tmp is the run's own capped tmpfs; unsealed: a private directory, removed at the end
+  const sealed = process.env.DELIVERY_SEALED_RUN === '1';
+  const tmp = sealed ? '/tmp' : fs.mkdtempSync(path.join(os.tmpdir(), 'delivery-tests-'));
+  const { spawn } = require('child_process');
+  const env = { ...cleanEnv(process.env), ...clockEnv(clock, process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp, ...(sealed || inSeal ? { DELIVERY_SEAL_ACTIVE: '1' } : {}) };
+  delete env.DELIVERY_SEALED_RUN;
+  const child = spawn(process.execPath, ['--test', ...rest, ...files], { env, stdio: 'inherit', detached: true });
+  let over = null;
+  const guard = setInterval(() => {
+    const used = inodesUsed(tmp);
+    if (used !== null && used > cap.inodes) {
+      over = `run-tests: the run's /tmp passed its inode cap (${used} > ${cap.inodes}); stopping the suite`;
+      try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { /* gone */ }
+    }
+  }, 1000);
+  child.on('exit', (code, signal) => {
+    clearInterval(guard);
+    if (!sealed) fs.rmSync(tmp, { recursive: true, force: true });
+    if (over) process.stderr.write(`${over}\n`);
+    process.exit(over ? 1 : code !== null ? code : 1);
+  });
 }
