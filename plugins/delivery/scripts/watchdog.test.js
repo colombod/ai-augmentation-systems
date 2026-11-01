@@ -196,7 +196,8 @@ test('R-04: a bead in progress is stalled only when neither the bead nor its hol
   assert.equal(quiet[0].line, 'Stalled: ex-1 is in progress with builder-1, and nothing has moved for 2.5 h (the limit is 2 h).');
   assert.equal(quiet[0].target, 'builder-1');
   assert.deepEqual(WD.stalls({ beads, now: iso(now), sessions: s(now - 10 * 60e3) }).stalls, [], 'its session is working');
-  assert.deepEqual(WD.stalls({ beads, now: iso(now), sessions: s(now - 2.5 * H), stallHours: 4 }).stalls, [], 'the owner-set limit applies');
+  // the owner-set limit governs the stall alarm; continuing assigned work is a handover, not an alarm (hjx.1)
+  assert.deepEqual(WD.stalls({ beads, now: iso(now), sessions: s(now - 2.5 * H), stallHours: 4 }).stalls.map((x) => x.kind), ['assigned'], 'the owner-set limit applies to the alarm');
   // a holder not on this host's roster: the Delivery Manager releases or reassigns it
   assert.equal(WD.stalls({ beads, now: iso(now), sessions: [] }).stalls[0].target, DM);
 });
@@ -1324,4 +1325,30 @@ test('Copilot #86: the watchdog reads each stop\'s open A3 from the andon record
   const res = WD.read(root, { bd, now: '2026-10-30T12:10:00Z', pause: { paused: false, stops: [{ trigger, area: 'import' }] } });
   assert.equal(res.unreadable, undefined, res.unreadable);
   assert.deepEqual(res.stalls.filter((s) => s.kind === 'handoff').map((s) => s.bead), ['ex-mine']);
+});
+
+// hjx.1: a role holding assigned or claimed work it can start is woken for it, without a message
+test('hjx.1: assigned work wakes its holder after 10 quiet minutes, under the message rules; never a busy, limited or epic case', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const sess = (inst, quietMin, extra = {}) => ({ instance: inst, role: inst.replace(/-\d+$/, ''), session: `s-${inst}`, roleDir: os.tmpdir(), lastActive: now - quietMin * 60e3, ...extra });
+  const open = { id: 'ex-o', status: 'open', assignee: 'dev@pc/builder-1', updated_at: iso(now - 30 * 60e3) };
+  const prog = { id: 'ex-p', status: 'in_progress', assignee: 'dev@pc/builder-2', updated_at: iso(now - 20 * 60e3) };
+  const kinds = (o) => WD.stalls({ now: iso(now), ...o }).stalls.filter((x) => x.kind === 'assigned').map((x) => [x.bead, x.target]);
+  // an open bead assigned and ready, its holder quiet 30 min: woken; in progress, quiet 20 min: woken
+  assert.deepEqual(kinds({ beads: [open, prog], ready: [open], sessions: [sess('builder-1', 30), sess('builder-2', 20)] }), [['ex-o', 'builder-1'], ['ex-p', 'builder-2']]);
+  // not ready (blocked), not woken; holder active 5 min ago, not woken; exactly 10 min, not woken
+  assert.deepEqual(kinds({ beads: [open], ready: [], sessions: [sess('builder-1', 30)] }), []);
+  assert.deepEqual(kinds({ beads: [prog], sessions: [sess('builder-2', 5)] }), []);
+  assert.deepEqual(kinds({ beads: [prog], sessions: [sess('builder-2', WD.ASSIGNED_IDLE_MIN)] }), []);
+  // an epic, an unassigned bead, a holder not on the roster: none
+  assert.deepEqual(kinds({ beads: [{ ...prog, issue_type: 'epic' }, { ...prog, id: 'ex-u', assignee: '' }], sessions: [sess('builder-2', 30)] }), []);
+  assert.deepEqual(kinds({ beads: [prog], sessions: [] }), []);
+  // it plans like a message: five minutes after the holder's last wake, not one an hour
+  const st = WD.stalls({ now: iso(now), beads: [prog], sessions: [sess('builder-2', 20)] });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-'));
+  WD.log(root, { type: 'wake', at: iso(now - 7 * 60e3), keys: ['assigned:ex-p'], instance: 'builder-2', pid: 7 });
+  assert.equal(WD.plan(st, { root, now: iso(now), alive: () => false }).wakes.length, 1, 'seven minutes after the last wake: woken again');
+  const root2 = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-'));
+  WD.log(root2, { type: 'wake', at: iso(now - 2 * 60e3), keys: ['assigned:ex-p'], instance: 'builder-2', pid: 7 });
+  assert.match(WD.plan(st, { root: root2, now: iso(now), alive: () => false }).held[0].reason, /wait 5 min/);
 });
