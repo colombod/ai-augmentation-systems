@@ -794,3 +794,23 @@ test('start: a mode change previews correctly in a dry run and keeps the role\'s
   assert.equal(JSON.parse(fs.readFileSync(roleFile('.delivery-role.json'), 'utf8')).actor, 'alice@laptop/chief-of-staff');
   assert.equal(JSON.parse(fs.readFileSync(roleFile(path.join('.claude', 'settings.local.json')), 'utf8')).env.BEADS_ACTOR, 'alice@laptop/chief-of-staff');
 });
+
+// Copilot on #115 (07t): a role prepared before the plugin wrote PATH gets it when start runs again;
+// a PATH the user set, even an empty one, is left alone
+test('start: an already prepared role without PATH is re-prepared for PATH; a user PATH is kept', () => {
+  const project = productRepo();
+  const settingsFile = () => path.join(path.resolve(project, '..'), `${JSON.parse(fs.readFileSync(path.join(project, '.delivery', 'team', 'team.json'), 'utf8')).project}-team`, 'chief-of-staff', '.claude', 'settings.local.json');
+  assert.equal(start(['--project', project, '--host', 'laptop']).status, 0);
+  const s = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
+  assert.ok(s.env.PATH, 'a new role gets a PATH');
+  delete s.env.PATH; // as prepared by an older plugin
+  fs.writeFileSync(settingsFile(), JSON.stringify(s));
+  const again = start(['--project', project, '--host', 'laptop']);
+  assert.match(again.out, /chief-of-staff: re-prepared for PATH/);
+  assert.ok(JSON.parse(fs.readFileSync(settingsFile(), 'utf8')).env.PATH);
+  const u = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
+  u.env.PATH = '';
+  fs.writeFileSync(settingsFile(), JSON.stringify(u));
+  assert.match(start(['--project', project, '--host', 'laptop']).out, /chief-of-staff: already prepared/);
+  assert.equal(JSON.parse(fs.readFileSync(settingsFile(), 'utf8')).env.PATH, '');
+});

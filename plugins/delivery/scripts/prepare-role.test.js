@@ -332,3 +332,55 @@ test('kk5: every role defaults to the team\'s permission mode; auto when unset; 
   assert.deepEqual(settingsOf('acceptEdits'), { 'chief-of-staff': 'acceptEdits', 'product-manager': 'acceptEdits' });
   assert.deepEqual(settingsOf('default'), { 'chief-of-staff': undefined, 'product-manager': undefined }, 'an owner who chose default gets it');
 });
+
+// 07t: a session started by a service manager gets its bare PATH; bd lives in ~/.local/bin, so every
+// bd call failed with ENOENT. The role's PATH is written from the tools resolved at preparation.
+test('prepareRole writes a PATH that finds bd for a session started with a bare PATH, and keeps a user PATH', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-bin-'));
+  fs.writeFileSync(path.join(bin, 'bd'), '#!/bin/sh\necho fake-bd\n', { mode: 0o755 });
+  const saved = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${saved}`;
+  try {
+    const { roleDir } = prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+    const file = path.join(roleDir, '.claude', 'settings.local.json');
+    const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-empty-'));
+    // with the service manager's bare PATH bd is not found; with the role's PATH it runs
+    assert.throws(() => execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: bare }, stdio: 'pipe' }));
+    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: settings.env.PATH }, stdio: 'pipe' }).toString().trim(), 'fake-bd');
+    assert.ok(settings.env.PATH.split(path.delimiter).includes(path.dirname(process.execPath)));
+    // the preparing shell's order is kept: a bd earlier on its PATH is the one the role runs
+    const first = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-bin-'));
+    fs.writeFileSync(path.join(first, 'bd'), '#!/bin/sh\necho first-bd\n', { mode: 0o755 });
+    const { rolePath } = require('./prepare-role.js');
+    const ordered = rolePath({ PATH: `${first}${path.delimiter}${bin}` });
+    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: ordered }, stdio: 'pipe' }).toString().trim(), 'first-bd');
+    // a relative entry is made absolute against the preparing directory
+    assert.ok(rolePath({ PATH: 'rel/bin' }, '/h', '/work').split(path.delimiter).includes('/work/rel/bin'));
+    // traversal is kept as written: through a symlink, link/.. is not the directory holding link (Copilot on #115)
+    assert.deepEqual(rolePath({ PATH: '/a/link/../bin:x/../y' }, '/h', '/work').split(path.delimiter).slice(0, 2), ['/a/link/../bin', '/work/x/../y']);
+    // an empty component searches the preparing directory, and stays first (Copilot on #115)
+    assert.equal(rolePath({ PATH: ':/other/bin' }, '/h', '/work').split(path.delimiter)[0], '/work');
+    assert.ok(!rolePath({}, '/h', '/work').split(path.delimiter).includes('/work'));
+    // a re-prepare refreshes the PATH it wrote: bd moved, the new place is found
+    const bin2 = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-bin-'));
+    fs.renameSync(path.join(bin, 'bd'), path.join(bin2, 'bd'));
+    process.env.PATH = `${bin2}${path.delimiter}${saved}`;
+    prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+    const again = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: again.env.PATH }, stdio: 'pipe' }).toString().trim(), 'fake-bd');
+    // a PATH the user set is never touched
+    again.env.PATH = '/my/own/bin:/usr/bin';
+    fs.writeFileSync(file, JSON.stringify(again));
+    prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).env.PATH, '/my/own/bin:/usr/bin');
+    // an empty PATH is a valid user choice too (Copilot on #115)
+    const empty = JSON.parse(fs.readFileSync(file, 'utf8'));
+    empty.env.PATH = '';
+    fs.writeFileSync(file, JSON.stringify(empty));
+    prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).env.PATH, '');
+  } finally { process.env.PATH = saved; }
+});
