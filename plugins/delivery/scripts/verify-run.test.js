@@ -260,7 +260,7 @@ test('run: operator.js sync in the role directory is refused not_allowed without
   delete env.DELIVERY_PROJECT_ROOT;
   const who = { root: s.root, team: { ...loadManifest(s.root).team, product_url: s.prod.dir }, instance: 'reality-checker', roleId: 'reality-checker', actor: 't@pc/reality-checker', roleDir: s.roleDir };
   const verify = () => vr.main(['run', ID, '--criterion', '1'], { cwd: s.root, env, bd: s.bd, now: T.run, who });
-  const command = `cd '${s.roleDir}' && '${process.execPath}' '${path.join(__dirname, 'operator.js')}' sync --format-check`;
+  const command = `cd '${s.roleDir}' && node '${path.join(__dirname, 'operator.js')}' sync --format-check`;
   assert.equal(s.refine(1, command).code, 0);
   const without = verify();
   assert.equal(without.code, 0, without.out);
@@ -276,7 +276,52 @@ test('run: operator.js sync in the role directory is refused not_allowed without
   const cap = fs.readFileSync(path.join(s.root, '.delivery', 'evidence', rows[1].capture.path), 'utf8');
   assert.match(cap, /as role: reality-checker/);
   assert.match(cap, /added 1 \(ok\)/);
+  // a re-plan keeps the refined step, its mark included
+  assert.equal(s.dm('plan', ID).code, 0);
+  assert.equal(rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0].as_role, true);
   // --no-as-role takes it back
   assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--no-as-role').code, 0);
   assert.equal(rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0].as_role, undefined);
+});
+
+// The checker's identity in a step is outside its lane hook, so only operator.js sync may run with it:
+// a writer of rows, reviews or beads there would write the done gate in the checker's name.
+test('refine: --as-role is refused for any command but operator.js sync, and the runner refuses a hand-edited one', () => {
+  const s = ready();
+  const step = () => rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0];
+  const op = "'/opt/delivery/scripts/operator.js'";
+  for (const ok of [`node ${op} sync`, `cd '/r d/rc' && node ${op} sync --format-check`, `/usr/bin/node ${op} sync --all --json`]) {
+    assert.equal(rc.asRoleProblem(ok), null, ok);
+  }
+  for (const bad of [
+    `node /p/reality-check.js run-record ${ID} --criterion 1 --result pass`,
+    `node /p/evidence.js add ${ID} --criterion 1 --result pass`,
+    'bd update x --append-notes y', 'node /p/review.js record 1 --result pass',
+    `node ${op} record --cite x --quote y --statement z`,
+    `node ${op} sync; node /p/evidence.js add x`, `node ${op} sync && bd close x`, `node ${op} sync | sh`,
+    `node ${op} sync $(bd close x)`, `node ${op} sync \`bd close x\``, `FOO=1 node ${op} sync`, `node -r /x.js ${op} sync`,
+    `node ${op} sync > /p/rows.ndjson`, `node "${op}$X" sync`, `node ${op}'' sync`, 'sh tool.sh', '',
+  ]) {
+    assert.ok(rc.asRoleProblem(bad), `not refused: ${bad}`);
+    assert.equal(s.refine(1, bad).code, 0);
+    const r = s.dm('refine', ID, '--criterion', '1', '--step', '1', '--as-role');
+    assert.equal(r.code, 1, bad);
+    assert.match(r.out, /--as-role is only for the form/);
+    assert.equal(step().as_role, undefined, bad);
+  }
+  // a command changed under an existing mark is refused too
+  assert.equal(s.refine(1, `node ${op} sync`).code, 0);
+  assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--as-role').code, 0);
+  assert.equal(s.refine(1, 'node /p/evidence.js add x').code, 1);
+  assert.equal(step().command, `node ${op} sync`);
+  // a script edited by hand: the runner refuses before any checkout or spawn, and writes no row
+  const file = path.join(s.root, rc.scriptRel(ID));
+  const script = JSON.parse(fs.readFileSync(file, 'utf8'));
+  Object.assign(script.criteria.find((g) => g.criterion === 1).steps[0], { command: 'node /p/evidence.js add x', as_role: true });
+  fs.writeFileSync(file, JSON.stringify(script));
+  const r = s.verify(1);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /--as-role is only for the form/);
+  assert.equal(s.rows().length, 0);
+  assert.ok(!fs.existsSync(path.join(s.roleDir, 'verify')));
 });

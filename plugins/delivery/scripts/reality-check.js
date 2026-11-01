@@ -46,7 +46,46 @@ function parse(argv) {
   return out;
 }
 
-const scriptRel = (bead) => `.delivery/reality-checks/${bead}.json`;
+// The one command a step may run as the Reality Checker (refine --as-role): operator.js sync, after an
+// optional cd, with flags only. A step that keeps the checker's identity runs outside its lane hook, so
+// any other writer there (run-record, evidence.js add, review.js, a bd write) would write the done gate in
+// the checker's name. An allowlist, not a denylist: a shell can spell a refused command too many ways.
+const AS_ROLE_FORM = "[cd <role directory> &&] node <path>/operator.js sync [--format-check] [--all] [--json]";
+const SYNC_FLAGS = new Set(['--format-check', '--all', '--json']);
+const AND = Symbol('&&');
+// words of a plain command: single-quoted, double-quoted without expansion, bare, and `&&`; null for
+// anything else (a pipe, `;`, a redirect, a substitution, a variable, words run together)
+function shellWords(text) {
+  const out = [];
+  const re = /\s*(?:(&&)|'([^']*)'|"([^"$`\\!]*)"|([A-Za-z0-9_@%+=:,./~-]+))(?=\s|&&|$)/y;
+  let i = 0;
+  while (i < text.length) {
+    if (!text.slice(i).trim()) break;
+    re.lastIndex = i;
+    const m = re.exec(text);
+    if (!m) return null;
+    out.push(m[1] ? AND : (m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4]));
+    i = re.lastIndex;
+  }
+  return out;
+}
+function asRoleProblem(command) {
+  const no = `--as-role is only for the form ${AS_ROLE_FORM}: any other command run as the Reality Checker could write rows, reviews or beads in its name. Make the step a plain command (--no-as-role)`;
+  const w = shellWords(String(command || ''));
+  if (!w || !w.length) return no;
+  let i = 0;
+  if (w[0] === 'cd') {
+    if (typeof w[1] !== 'string' || w[2] !== AND) return no;
+    i = 3;
+  }
+  const [bin, script, sub, ...flags] = w.slice(i);
+  if (typeof bin !== 'string' || path.basename(bin) !== 'node') return no;
+  if (typeof script !== 'string' || path.basename(script) !== 'operator.js') return no;
+  if (sub !== 'sync' || !flags.every((f) => typeof f === 'string' && SYNC_FLAGS.has(f))) return no;
+  return null;
+}
+
+const scriptRel = (bead) =>`.delivery/reality-checks/${bead}.json`;
 const artifactsRel = (bead) => `.delivery/evidence/artifacts/${bead}/`;
 const refuse = (text) => ({ code: 1, out: `reality-check.js: ${text}` });
 function readScript(root, bead) { try { return JSON.parse(fs.readFileSync(path.join(root, scriptRel(bead)), 'utf8')); } catch (err) { return null; } }
@@ -246,11 +285,12 @@ function refine(who, id, a, at) {
     // a command-line surface: verify-run.js runs this at the deployed sha and decides pass or fail from it
     if (a.command !== undefined) step.command = a.command;
     if (a.match !== undefined) step.match = a.match;
-    // a command that writes as a role (operator.js sync, record) needs the checker's identity, which the
-    // runner otherwise clears; --as-role keeps it for this step only
+    // operator.js sync writes as a role, so it needs the checker's identity, which the runner otherwise
+    // clears; --as-role keeps it for this step only, and only for the one form asRoleProblem allows
     if (a.as_role === true) step.as_role = true;
     if (a.as_role === false) delete step.as_role;
     if (a.capture !== undefined) step.capture = a.capture.split(',').map((x) => x.trim()).filter(Boolean);
+    return step.as_role ? asRoleProblem(step.command) : null;
   };
   const changed = [];
   if (a.criterion !== undefined) {
@@ -259,20 +299,23 @@ function refine(who, id, a, at) {
     if (a.add_step) {
       if (!a.action || !a.expect) return { code: 2, out: 'reality-check.js: --add-step needs --action and --expect' };
       const step = { n: g.steps.length + 1, capture: ['screenshot', 'page-text'] };
-      fields(step);
+      const p = fields(step);
+      if (p) return refuse(p);
       g.steps.push(step);
       changed.push(`criterion ${g.criterion} step ${step.n} added`);
     } else if (a.step !== undefined) {
       const step = g.steps.find((x) => x.n === Number(a.step));
       if (!step) return refuse(`criterion ${g.criterion} has no step ${a.step} (1..${g.steps.length})`);
-      fields(step);
+      const p = fields(step);
+      if (p) return refuse(p);
       changed.push(`criterion ${g.criterion} step ${step.n}`);
     }
     if (a.pass_rule !== undefined) { g.pass_rule = a.pass_rule; changed.push(`criterion ${g.criterion} pass rule`); }
   } else if (a.setup !== undefined) {
     const step = (s.setup || [])[Number(a.setup) - 1];
     if (!step) return refuse(`no setup step ${a.setup} (1..${(s.setup || []).length})`);
-    fields(step);
+    const p = fields(step);
+    if (p) return refuse(p);
     changed.push(`setup step ${a.setup}`);
   }
   if (a.account !== undefined) {
@@ -316,4 +359,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, buildScript, readScript, pending, scriptRel, artifactsRel, DEFAULT_CAP, LABEL };
+module.exports = { main, buildScript, readScript, pending, scriptRel, artifactsRel, asRoleProblem, DEFAULT_CAP, LABEL };
