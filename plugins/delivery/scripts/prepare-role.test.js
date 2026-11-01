@@ -296,3 +296,36 @@ test('Copilot: a deny rule the user had is never removed, even one the plugin al
   const deny = JSON.parse(fs.readFileSync(file(dir), 'utf8')).permissions.deny;
   assert.ok(deny.includes('Bash(sudo:*)') && deny.includes('Bash(rm:*)'), JSON.stringify(deny));
 });
+
+// 07t: a session started by a service manager gets its bare PATH; bd lives in ~/.local/bin, so every
+// bd call failed with ENOENT. The role's PATH is written from the tools resolved at preparation.
+test('prepareRole writes a PATH that finds bd for a session started with a bare PATH, and keeps a user PATH', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-bin-'));
+  fs.writeFileSync(path.join(bin, 'bd'), '#!/bin/sh\necho fake-bd\n', { mode: 0o755 });
+  const saved = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${saved}`;
+  try {
+    const { roleDir } = prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+    const file = path.join(roleDir, '.claude', 'settings.local.json');
+    const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const bare = '/usr/bin:/bin';
+    // with the service manager's bare PATH bd is not found; with the role's PATH it runs
+    assert.throws(() => execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: bare }, stdio: 'pipe' }));
+    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: settings.env.PATH }, stdio: 'pipe' }).toString().trim(), 'fake-bd');
+    assert.ok(settings.env.PATH.split(path.delimiter).includes(path.dirname(process.execPath)));
+    // a re-prepare refreshes the PATH it wrote: bd moved, the new place is found
+    const bin2 = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-bin-'));
+    fs.renameSync(path.join(bin, 'bd'), path.join(bin2, 'bd'));
+    process.env.PATH = `${bin2}${path.delimiter}${saved}`;
+    prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+    const again = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: again.env.PATH }, stdio: 'pipe' }).toString().trim(), 'fake-bd');
+    // a PATH the user set is never touched
+    again.env.PATH = '/my/own/bin:/usr/bin';
+    fs.writeFileSync(file, JSON.stringify(again));
+    prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).env.PATH, '/my/own/bin:/usr/bin');
+  } finally { process.env.PATH = saved; }
+});

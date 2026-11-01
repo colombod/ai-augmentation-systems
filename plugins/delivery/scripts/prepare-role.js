@@ -33,6 +33,22 @@ const REACH_DENY = REACH_PREFIXES.map((p) => p.replace(/__$/, ''));
 const REACH_TOOL_DENY = ['mcp__claude-in-chrome__request_credentials', 'mcp__computer-use__read_clipboard', 'mcp__computer-use__write_clipboard', 'mcp__computer-use__request_full_control', 'mcp__computer-use__request_teach_access'];
 const reachDeny = (reach) => (!reach ? REACH_DENY : reach === 'local' ? OWNER_SERVERS.map((s) => `mcp__${s}`) : REACH_TOOL_DENY);
 
+// The directories of the node, bd and claude this preparation resolves, then the preparing shell's
+// PATH, then the usual install places: nothing versioned is pinned (as the watchdog's jobPath).
+function whichDir(name, envPath) {
+  for (const d of String(envPath || '').split(path.delimiter).filter(Boolean)) {
+    try { fs.accessSync(path.join(d, name), fs.constants.X_OK); return d; } catch (err) { /* next */ }
+  }
+  return null;
+}
+function rolePath(env, home = os.homedir()) {
+  const usual = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', path.join(home, '.local', 'bin')];
+  const search = [String(env.PATH || ''), ...usual].join(path.delimiter);
+  const tools = [path.dirname(process.execPath), whichDir('bd', search), whichDir('claude', search)];
+  const parts = [...tools, ...String(env.PATH || '').split(path.delimiter), ...usual].filter(Boolean);
+  return [...new Set(parts)].join(path.delimiter);
+}
+
 function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, user, now }) {
   instance = canonicalRoleId(instance); // --instance delivery-manager means delivery-lead
   projectRoot = path.resolve(projectRoot);
@@ -114,6 +130,18 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   } else if (previouslyWritten && currentBeadsDir === previouslyWritten) {
     beadsDirWritten = previouslyWritten;
   }
+  // A role session started by a service manager (systemd, launchd, the Remote Control service) gets
+  // the manager's bare PATH, without ~/.local/bin where bd and claude usually live, and every bd call
+  // failed with ENOENT (07t). The session's PATH is written from the tools resolved here, so it no
+  // longer depends on how the session was started. Same rule as BEADS_DIR: a value this script wrote
+  // earlier is refreshed; one the user set is never touched.
+  let previousPath;
+  try { previousPath = JSON.parse(fs.readFileSync(markerFile, 'utf8')).path_written; } catch (err) { previousPath = undefined; }
+  let pathWritten;
+  if (!settings.env.PATH || (previousPath && settings.env.PATH === previousPath)) {
+    settings.env.PATH = rolePath(process.env);
+    pathWritten = settings.env.PATH;
+  }
   settings.enabledPlugins = Object.assign({}, settings.enabledPlugins, { 'delivery@ai-augmentation-systems': true });
   // Pre-allow the lane's own commands (spec 8.6, permission prompts): a manager session should not
   // stop on a prompt only the operator can clear for a command its lane already permits.
@@ -188,6 +216,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     prepared_at: now || new Date().toISOString(),
   };
   if (beadsDirWritten) marker.beads_dir_written = beadsDirWritten;
+  if (pathWritten) marker.path_written = pathWritten;
   fs.writeFileSync(markerFile, `${JSON.stringify(marker, null, 2)}\n`);
   files.push(markerFile);
 
@@ -221,4 +250,4 @@ if (require.main === module) {
   console.log(roleDir);
 }
 
-module.exports = { reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole };
+module.exports = { rolePath, reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole };
