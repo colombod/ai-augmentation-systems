@@ -33,7 +33,11 @@ function checkoutVisible() {
     const r = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', 'cat marker && ls -A /tmp'], { cwd: dir, env, encoding: 'utf8', timeout: 60000 });
     const lines = String(r.stdout || '').trim().split('\n');
     if (r.status !== 0 || lines[0] !== 'checkout') { console.error(`seal-check: FAILED, a checkout under /tmp is not visible in a fresh seal (exit ${r.status}): ${String(r.stderr || '').slice(-300)}`); return 1; }
-    if (lines.slice(1).join(' ') !== path.basename(dir)) { console.error(`seal-check: FAILED, the seal shows more of the host's /tmp than the checkout: ${lines.slice(1).join(' ')}`); return 1; }
+    // what the seal may show of /tmp: the top-level entries of the paths the runner keeps, this
+    // checkout and the plugin itself when it lives under /tmp too (Copilot on #117); nothing else
+    const expected = [...new Set(R.keepPaths([dir, path.join(__dirname, '..', '..')]).map((p) => p.split('/')[2]))].sort();
+    const seen = lines.slice(1).filter(Boolean).sort();
+    if (seen.join(' ') !== expected.join(' ')) { console.error(`seal-check: FAILED, the seal shows ${seen.join(' ') || 'nothing'} of the host's /tmp, not just ${expected.join(' ')}`); return 1; }
     console.log('seal-check: a checkout under /tmp is visible in a fresh seal, and nothing else of the host\'s /tmp is');
     return 0;
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }

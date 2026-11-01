@@ -1007,9 +1007,37 @@ function refusedRun(text, depth = 0) {
     if (namesClaude(w) && claudeResumes(args)) return 'resume';
     if (nonLiteral(w) && (claudeResumes(args) || WATCHDOG_VERBS.has(args[0]))) return 'resume';
   }
+  if (depth === 0 && unsealedTestText(text)) return 'tests';
   return null;
 }
 const watchdogAction = (command) => refusedRun(command) === 'watchdog';
+
+// The fail-safe behind the parse above (Copilot on #117, after each round found another spelling:
+// redirections, -i, backslash-newline). The whole command, continuations joined and every quote and
+// backslash dropped, is refused when node or nodejs appears as a word followed anywhere by --test or a
+// test file. It over-refuses on purpose (`node helper.js --test` is refused too): a false refusal costs
+// one retry, because the reason gives the sealed form, which runs any command; a false allow fills the
+// host's /tmp. The one exemption is the sealed runner itself as a single simple command: one segment,
+// no substitution, whose command words are node and <...>/scripts/testing/run-tests.js (whatever follows,
+// a -- command included, runs inside the seal).
+const NODE_WORD = /(?:^|[\s;&|(`/$=])node(?:js)?(?=\s|$)/g;
+function unsealedTestText(text) {
+  const flat = String(text || '').replace(/\\\r?\n/g, '').replace(/["'\\]/g, '');
+  let m;
+  let tests = false;
+  NODE_WORD.lastIndex = 0;
+  while ((m = NODE_WORD.exec(flat))) {
+    const after = flat.slice(m.index + m[0].length);
+    if (/(?:^|\s)--test(?:[=\s]|$)/.test(after) || /\.test\.[cm]?[jt]s(?![\w])/.test(after)) { tests = true; break; }
+  }
+  if (!tests) return false;
+  const segs = splitWithOps(text);
+  if (segs.length === 1 && !substitutions(text).length && !/[`]|\$\(/.test(String(text))) {
+    const t = commandWords(stripGrammar(argWords(segs[0].text)));
+    if (['node', 'nodejs'].includes(baseOf(t[0])) && /(?:^|\/)scripts\/testing\/run-tests\.js$/.test(t[1] || '')) return false;
+  }
+  return true;
+}
 
 // deep: a deletion or move of a protected folder's parent (rm -rf .delivery), or a glob that reaches the
 // folder or names files in it (rm -rf .delivery/an*, rm .delivery/andon/*.ndjson), counts as a write too

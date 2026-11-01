@@ -1329,10 +1329,34 @@ test('lane: a value-taking node option does not hide a test file; --test after t
     'node -i hooks/scripts/lane.test.js']) {
     assert.equal(run(command).allow, false, command);
   }
-  for (const command of ['node scripts/test-helper.js --test', 'node tool.js --test=x', 'node --conditions development scripts/build.js',
-    // a quoted > is part of the word; a redirection's target is not the script
-    "node '2>tool.js' --test", 'node tool.js > a.test.js', 'node tool.js 2>&1 --test',
+  for (const command of ['node --conditions development scripts/build.js',
     'node scripts/testing/run-tests.js -- node --test', "node scripts/testing/run-tests.js -- 'node --test a.test.js'"]) {
+    assert.equal(run(command).allow, true, command);
+  }
+});
+
+// Copilot on #117, after each round found another spelling (redirections, -i, backslash-newline): a
+// fail-safe reads the whole command with continuations joined and quotes and backslashes dropped, and
+// refuses node or nodejs followed anywhere by --test or a test file, unless the command is the sealed
+// runner alone. It over-refuses on purpose: the reason's sealed form runs any command.
+test('lane: the fail-safe refuses every spelling of node with --test or a test file, the sealed runner alone excepted', () => {
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[BUILDER], ...ctx() });
+  for (const command of [
+    // backslash-newline continuations, unquoted and double-quoted
+    'node \\\n--test', 'node \\\n  hooks/scripts/lane.test.js', 'node hooks/scripts/lane.te\\\nst.js', 'bash -c "node \\\n--test"', 'sh -c "node --te\\\nst"',
+    // other spellings of the command word
+    'n\\ode --test', '"node" --test', "'node' x.test.js", 'nodejs --test', '/usr/bin/node a.test.mjs',
+    // over-refused on purpose: --test or a test file after node, wherever it sits
+    'node scripts/test-helper.js --test', 'node tool.js --test=x', "node '2>tool.js' --test", 'node tool.js > a.test.js', 'node tool.js 2>&1 --test',
+    // the runner, but not alone: what follows the operator runs outside the seal
+    'node scripts/testing/run-tests.js -- npm test && node --test', 'node scripts/testing/run-tests.js $(node --test)']) {
+    const d = run(command);
+    assert.equal(d.allow, false, command);
+    assert.match(d.reason, /run-tests\.js -- /, command);
+  }
+  for (const command of ['node scripts/testing/run-tests.js', 'DELIVERY_TEST_FILES=a.test.js node scripts/testing/run-tests.js', 'npm test',
+    'grep -- --test lane.js', 'git diff -- x.test.js', 'node-gyp --test', 'node scripts/build.js',
+    "node scripts/testing/run-tests.js -- 'node \\\n--test'"]) {
     assert.equal(run(command).allow, true, command);
   }
 });
