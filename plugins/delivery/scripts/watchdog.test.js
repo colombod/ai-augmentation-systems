@@ -196,7 +196,8 @@ test('R-04: a bead in progress is stalled only when neither the bead nor its hol
   assert.equal(quiet[0].line, 'Stalled: ex-1 is in progress with builder-1, and nothing has moved for 2.5 h (the limit is 2 h).');
   assert.equal(quiet[0].target, 'builder-1');
   assert.deepEqual(WD.stalls({ beads, now: iso(now), sessions: s(now - 10 * 60e3) }).stalls, [], 'its session is working');
-  assert.deepEqual(WD.stalls({ beads, now: iso(now), sessions: s(now - 2.5 * H), stallHours: 4 }).stalls, [], 'the owner-set limit applies');
+  // the owner-set limit governs the stall alarm; continuing assigned work is a handover, not an alarm (hjx.1)
+  assert.deepEqual(WD.stalls({ beads, now: iso(now), sessions: s(now - 2.5 * H), stallHours: 4 }).stalls.map((x) => x.kind), ['assigned'], 'the owner-set limit applies to the alarm');
   // a holder not on this host's roster: the Delivery Manager releases or reassigns it
   assert.equal(WD.stalls({ beads, now: iso(now), sessions: [] }).stalls[0].target, DM);
 });
@@ -1324,4 +1325,128 @@ test('Copilot #86: the watchdog reads each stop\'s open A3 from the andon record
   const res = WD.read(root, { bd, now: '2026-10-30T12:10:00Z', pause: { paused: false, stops: [{ trigger, area: 'import' }] } });
   assert.equal(res.unreadable, undefined, res.unreadable);
   assert.deepEqual(res.stalls.filter((s) => s.kind === 'handoff').map((s) => s.bead), ['ex-mine']);
+});
+
+// hjx.1: a role holding assigned or claimed work it can start is woken for it, without a message
+test('hjx.1: assigned work wakes its holder after 10 quiet minutes, under the message rules; never a busy, limited or epic case', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const sess = (inst, quietMin, extra = {}) => ({ instance: inst, role: inst.replace(/-\d+$/, ''), session: `s-${inst}`, roleDir: os.tmpdir(), lastActive: now - quietMin * 60e3, ...extra });
+  const open = { id: 'ex-o', status: 'open', assignee: 'dev@pc/builder-1', updated_at: iso(now - 30 * 60e3) };
+  const prog = { id: 'ex-p', status: 'in_progress', assignee: 'dev@pc/builder-2', updated_at: iso(now - 20 * 60e3) };
+  const kinds = (o) => WD.stalls({ now: iso(now), ...o }).stalls.filter((x) => x.kind === 'assigned').map((x) => [x.bead, x.target]);
+  // an open bead assigned and ready, its holder quiet 30 min: woken; in progress, quiet 20 min: woken
+  assert.deepEqual(kinds({ beads: [open, prog], ready: [open], sessions: [sess('builder-1', 30), sess('builder-2', 20)] }), [['ex-o', 'builder-1'], ['ex-p', 'builder-2']]);
+  // not ready (blocked), not woken; holder active 5 min ago, not woken; exactly 10 min, not woken
+  assert.deepEqual(kinds({ beads: [open], ready: [], sessions: [sess('builder-1', 30)] }), []);
+  assert.deepEqual(kinds({ beads: [prog], sessions: [sess('builder-2', 5)] }), []);
+  assert.deepEqual(kinds({ beads: [prog], sessions: [sess('builder-2', WD.ASSIGNED_IDLE_MIN)] }), []);
+  // an epic, an unassigned bead, a holder not on the roster: none
+  assert.deepEqual(kinds({ beads: [{ ...prog, issue_type: 'epic' }, { ...prog, id: 'ex-u', assignee: '' }], sessions: [sess('builder-2', 30)] }), []);
+  assert.deepEqual(kinds({ beads: [prog], sessions: [] }), []);
+  // it plans like a message: five minutes after the holder's last wake, not one an hour
+  const st = WD.stalls({ now: iso(now), beads: [prog], sessions: [sess('builder-2', 20)] });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-'));
+  WD.log(root, { type: 'wake', at: iso(now - 7 * 60e3), keys: ['assigned:ex-p'], instance: 'builder-2', pid: 7 });
+  assert.equal(WD.plan(st, { root, now: iso(now), alive: () => false }).wakes.length, 1, 'seven minutes after the last wake: woken again');
+  const root2 = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-'));
+  WD.log(root2, { type: 'wake', at: iso(now - 2 * 60e3), keys: ['assigned:ex-p'], instance: 'builder-2', pid: 7 });
+  assert.match(WD.plan(st, { root: root2, now: iso(now), alive: () => false }).held[0].reason, /wait 5 min/);
+});
+
+// Copilot on PR 113: bd ready does not know owner-queue steps; work waiting for the owner is not woken
+test('hjx.1 (Copilot 4436744668): assigned work an open owner-queue step names waits for the owner, no wake', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const sess = (inst) => ({ instance: inst, role: 'builder', session: `s-${inst}`, roleDir: os.tmpdir(), lastActive: now - 30 * 60e3 });
+  const open = { id: 'ex-o', status: 'open', assignee: 'builder-1', updated_at: iso(now - 30 * 60e3) };
+  const prog = { id: 'ex-p', status: 'in_progress', assignee: 'builder-2', updated_at: iso(now - 30 * 60e3) };
+  const assigned = (openSteps) => WD.stalls({ now: iso(now), beads: [open, prog], ready: [open], sessions: [sess('builder-1'), sess('builder-2')], openSteps })
+    .stalls.filter((x) => x.kind === 'assigned').map((x) => x.bead);
+  assert.deepEqual(assigned([]), ['ex-o', 'ex-p'], 'no owner step: both woken');
+  assert.deepEqual(assigned([{ id: 'oq-1', bead: 'ex-o' }, { id: 'oq-2', bead: 'ex-p' }]), [], 'each waits for its owner step');
+  assert.deepEqual(assigned([{ id: 'oq-3', bead: 'ex-other' }]), ['ex-o', 'ex-p'], 'a step naming other work holds nothing');
+});
+
+// Copilot on PR 113: in a stopped area the stop's recovery work still runs, even past stall_hours
+test('hjx.1 (Copilot 4436744684): in a stopped area recovery work is woken, past stall_hours too; unrelated work is held', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const sess = (inst, quietMin) => ({ instance: inst, role: 'builder', session: `s-${inst}`, roleDir: os.tmpdir(), lastActive: now - quietMin * 60e3 });
+  const area = (id, assignee, status, meta = {}, upd = 30) => ({ id, status, assignee, labels: ['story'], updated_at: iso(now - upd * 60e3), metadata: { area: 'import', ...meta } });
+  const fail = area('ex-fail', 'builder-1', 'in_progress');
+  const fix = area('ex-fix', 'builder-2', 'open', { fixes: 'ex-fail' });
+  const a3 = area('ex-a3', 'builder-3', 'in_progress', { a3: 'a3-1' }, 180);
+  const other = area('ex-other', 'builder-4', 'in_progress');
+  const pause = { paused: false, stops: [{ trigger: 'andon:ev-ex-fail-1', area: 'import', a3: 'a3-1' }] };
+  const sessions = [sess('builder-1', 30), sess('builder-2', 30), sess('builder-3', 180), sess('builder-4', 30)];
+  const r = WD.stalls({ now: iso(now), beads: [fail, fix, a3, other], ready: [fix], sessions, pause, stallHours: 2 });
+  assert.deepEqual(r.stalls.filter((x) => x.kind === 'assigned').map((x) => x.bead).sort(), ['ex-a3', 'ex-fail', 'ex-fix'], 'the failed bead, its fix and the A3 work run; ex-other waits');
+  // ex-a3 is past stall_hours, and the quiet stall skips a stopped area: the assigned wake is its only one
+  assert.deepEqual(r.stalls.filter((x) => x.bead === 'ex-a3').map((x) => x.kind), ['assigned']);
+  // outside a stop the in-progress stall takes over past stall_hours: one wake, not two
+  const free = WD.stalls({ now: iso(now), beads: [a3], sessions, stallHours: 2 });
+  assert.deepEqual(free.stalls.map((x) => x.kind), ['quiet']);
+});
+
+// Copilot on PR 113: assigned wakes are handovers; they never spend the stall wakes' hourly gate or daily cap
+test('hjx.1 (Copilot 4436744698): logged assigned wakes do not hold a due stall wake', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const b = { id: 'ex-p', status: 'in_progress', assignee: 'builder-2', updated_at: iso(now - 3 * H) };
+  const st = WD.stalls({ now: iso(now), beads: [b], sessions: [{ instance: 'builder-2', role: 'builder', session: 's-b2', roleDir: os.tmpdir(), lastActive: now - 3 * H }], stallHours: 2 });
+  assert.deepEqual(st.stalls.map((x) => x.kind), ['quiet'], 'past stall_hours the stall is due');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-cap-'));
+  try {
+    // six assigned wakes today, the last six minutes ago
+    for (let i = 0; i < 6; i++) WD.log(root, { type: 'wake', at: iso(now - (6 + i * 20) * 60e3), keys: ['assigned:ex-p'], instance: 'builder-2', pid: 7 });
+    const p = WD.plan(st, { root, now: iso(now), alive: () => false });
+    assert.equal(p.held.length, 0, JSON.stringify(p.held));
+    assert.deepEqual(p.wakes.map((w) => w.keys).flat(), [st.stalls[0].key]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// Copilot on PR 113 (023505b): a stall wake carries the holder's assigned work, not drops it on the stall backoff
+test('hjx.1 (Copilot 4436815462): assigned work woken 7 min ago rides the newly due stall wake', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const stuck = { id: 'ex-q', status: 'in_progress', assignee: 'builder-2', updated_at: iso(now - 3 * H) };
+  const next = { id: 'ex-a', status: 'open', assignee: 'builder-2', updated_at: iso(now - 30 * 60e3) };
+  const st = WD.stalls({ now: iso(now), beads: [stuck, next], ready: [next], sessions: [{ instance: 'builder-2', role: 'builder', session: 's-b2', roleDir: os.tmpdir(), lastActive: now - 3 * H }], stallHours: 2 });
+  assert.deepEqual(st.stalls.map((x) => x.key).sort(), ['assigned:ex-a', `quiet:ex-q:${iso(now - 3 * H)}`]);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-mix-'));
+  try {
+    WD.log(root, { type: 'wake', at: iso(now - 7 * 60e3), keys: ['assigned:ex-a'], instance: 'builder-2', pid: 7 });
+    const p = WD.plan(st, { root, now: iso(now), alive: () => false });
+    assert.equal(p.held.length, 0, JSON.stringify(p.held));
+    assert.equal(p.wakes.length, 1);
+    assert.deepEqual(p.wakes[0].keys.slice().sort(), ['assigned:ex-a', `quiet:ex-q:${iso(now - 3 * H)}`], 'one wake carries both');
+    assert.match(p.wakes[0].prompt, /ex-a is assigned to you/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// Copilot on PR 113 (df6b5c9): bd ready knows nothing of a red main; the claim check does (andon.js ciRedBlock)
+test('hjx.1 (Copilot 4437000590): on a red main only claimable open work wakes its holder: a fix, the ci:main A3 work, or work already started', () => {
+  const A = require('./lib/andon.js');
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-ci-'));
+  try {
+    const beads = [
+      { id: 'ex-story', status: 'open', assignee: 'builder-1', labels: ['story'], updated_at: iso(now - H) },
+      { id: 'ex-fix', status: 'open', assignee: 'builder-2', labels: ['bug'], metadata: { fixes: 'ex-shipped' }, updated_at: iso(now - H) },
+      { id: 'ex-a3w', status: 'open', assignee: 'builder-3', labels: ['story'], metadata: {}, updated_at: iso(now - H) },
+      { id: 'ex-ip', status: 'in_progress', assignee: 'builder-4', labels: ['story'], updated_at: iso(now - H) },
+      { id: 'ex-shipped', status: 'closed', labels: ['story', 'state-merged'], updated_at: iso(now - 9 * H) },
+    ];
+    for (const i of [1, 2, 3, 4]) registerInstance(root, { instance: `builder-${i}`, session_id: `s-${i}`, host: 'pc', model: 'opus', role_dir: root, now: iso(now - 30 * 60e3) });
+    const bd = { list: () => beads, ready: () => beads.filter((b) => b.status === 'open'), show: (x) => beads.find((b) => b.id === x) || null };
+    const woken = () => {
+      const res = WD.read(root, { bd, now: iso(now), installed: true, pause: { paused: false } });
+      assert.equal(res.unreadable, undefined, res.unreadable);
+      return res.stalls.filter((s) => s.kind === 'assigned').map((s) => s.bead).sort();
+    };
+    assert.deepEqual(woken(), ['ex-a3w', 'ex-fix', 'ex-ip', 'ex-story'], 'main not known red: all woken');
+    A.append(root, { type: 'ci', result: 'red', sha: 'c195aa00', run: '195', at: iso(now - 2 * H) }, 'delivery-lead');
+    assert.deepEqual(woken(), ['ex-fix', 'ex-ip'], 'red main: the fix and started work only');
+    A.append(root, { type: 'a3-open', trigger: 'ci:main', by: 'delivery-lead', at: iso(now - H) }, 'delivery-lead');
+    beads[2].metadata.a3 = A.openA3For(root, 'ci:main', A.read(root).rows).id;
+    assert.deepEqual(woken(), ['ex-a3w', 'ex-fix', 'ex-ip'], 'the ci:main A3 work starts too');
+    A.append(root, { type: 'ci', result: 'green', sha: 'c196bb00', run: '196', at: iso(now - 10 * 60e3) }, 'delivery-lead');
+    assert.deepEqual(woken(), ['ex-a3w', 'ex-fix', 'ex-ip', 'ex-story'], 'green again: all woken');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
