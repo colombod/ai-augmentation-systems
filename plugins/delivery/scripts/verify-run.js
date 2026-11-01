@@ -71,6 +71,21 @@ function checkoutDeployed({ roleDir, team, sha, bead, env, spawn }) {
   return { dir: c.dir, sha: at, url };
 }
 
+// The step's environment. By default the role's DELIVERY_* and beads variables are cleared, so a command
+// cannot write as the checker by accident. A step marked as_role (reality-check.js refine --as-role) runs
+// as the Reality Checker itself: a writer such as operator.js sync finds its role only through
+// DELIVERY_ROLE (role-context.js validMarker), and the code it runs is the deployed sha, not a pull
+// request. Git's repository variables are cleared either way.
+function stepEnv(env, who, step) {
+  const clean = RR.cleanEnv(env);
+  if (!step.as_role) return clean;
+  const role = Object.fromEntries(Object.entries(env).filter(([k]) => RR.ROLE_VARS.test(k)));
+  return { ...clean, ...role, DELIVERY_ROLE: who.instance, DELIVERY_ROLE_DIR: who.roleDir, BEADS_ACTOR: who.actor };
+}
+
+// operator.js's refusal without a role (its code, and the message's words); either names the fix
+const NO_ROLE = /not_allowed|no valid role marker/;
+
 function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   const wp = writerProblem(who, ['reality-checker']);
   if (wp) return refuse(wp.replace("the Delivery Manager's", "the Reality Checker's"));
@@ -91,6 +106,10 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   const step = withCommand[0];
   if (!step) return refuse(`criterion ${n} has no step with a command: the Delivery Manager adds it (reality-check.js refine ${bead} --criterion ${n} --step 1 --command '<the command>' [--match '<pattern stdout must show>'])`);
   if (!who.roleDir) return refuse('not in a role directory, so the scratch area (verify/) is not known.');
+  // refine refuses --as-role on any other command; checked again here for a script edited by hand, and
+  // here alone with the checker's role directory, the only directory a cd in such a step may enter
+  const roleProblem = step.as_role ? RC.asRoleProblem(step.command, { roleDir: who.roleDir }) : null;
+  if (roleProblem) return refuse(`criterion ${n} step ${step.n}: ${roleProblem}. Message the Delivery Manager`);
   const minutes = Number(script.cap && script.cap.minutes) > 0 ? Number(script.cap.minutes) : RC.DEFAULT_CAP.minutes;
   // the run cap is checked before any checkout or spawn: an over-cap run executes nothing and leaves no capture
   const attempts = (script.cap && script.cap.attempts) || RC.DEFAULT_CAP.attempts;
@@ -99,7 +118,7 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   const co = checkoutDeployed({ roleDir: who.roleDir, team: who.team, sha, bead, env, spawn });
   if (co.problem) return refuse(co.problem);
   const started = Date.now();
-  const r = spawn('/bin/sh', ['-c', step.command], { cwd: co.dir, env: RR.cleanEnv(env), encoding: 'utf8', timeout: minutes * 60e3, maxBuffer: 16 * 1024 * 1024 });
+  const r = spawn('/bin/sh', ['-c', step.command], { cwd: co.dir, env: stepEnv(env, who, step), encoding: 'utf8', timeout: minutes * 60e3, maxBuffer: 16 * 1024 * 1024 });
   const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
   const code = r.status === null ? null : r.status;
   const stdout = String(r.stdout || '');
@@ -108,14 +127,17 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   if (step.match) { try { matched = new RegExp(step.match).test(stdout); } catch (err) { return refuse(`step ${step.n} has a match that is not a pattern (${err.message})`); } }
   const pass = !timedOut && code === 0 && matched;
   const why = timedOut ? `stopped after ${minutes} minutes` : code !== 0 ? `exit ${code === null ? 'by signal' : code}` : matched ? 'exit 0' : `exit 0 but stdout does not match /${step.match}/`;
+  // the refusal of a role-scoped writer run without the role: name the fix, so the fail is not read as the product's
+  const hint = !pass && !step.as_role && NO_ROLE.test(`${stdout}${r.stderr || ''}`) && !RC.asRoleProblem(step.command, { roleDir: who.roleDir })
+    ? `\nthe command needs a role identity, which this step does not keep: the Delivery Manager marks it (reality-check.js refine ${bead} --criterion ${n} --step ${step.n} --as-role) and plans a new run` : '';
   // the capture sits in the checker's own project clone, where its lane writes; run-record publishes it
   const base = path.join(who.roleDir, 'project');
   const dir = path.join(base, '.delivery', 'evidence', 'artifacts', bead);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `verify-c${n}-${sha.slice(0, 7)}-${Date.parse(now) || started}.txt`);
-  fs.writeFileSync(file, [`$ ${step.command}`, `sha: ${co.sha}`, `repo: ${co.url}`, `at: ${now}`, `criterion: ${n} step ${step.n}`, step.match ? `match: /${step.match}/` : 'match: none', `result: ${pass ? 'pass' : 'fail'} (${why})`, '', '--- stdout ---', clip(stdout), '--- stderr ---', clip(String(r.stderr || '')), `--- exit ${code === null ? 'signal' : code} after ${Math.round((Date.now() - started) / 1000)}s ---`, ''].join('\n'));
+  fs.writeFileSync(file, [`$ ${step.command}`, `sha: ${co.sha}`, `repo: ${co.url}`, `at: ${now}`, `criterion: ${n} step ${step.n}`, step.match ? `match: /${step.match}/` : 'match: none', `as role: ${step.as_role ? who.instance : 'no'}`, `result: ${pass ? 'pass' : 'fail'} (${why})`, '', '--- stdout ---', clip(stdout), '--- stderr ---', clip(String(r.stderr || '')), `--- exit ${code === null ? 'signal' : code} after ${Math.round((Date.now() - started) / 1000)}s ---`, ''].join('\n'));
   const rec = RC.main(['run-record', bead, '--criterion', String(n), '--result', pass ? 'pass' : 'fail', '--artifact', file, '--observed-version', co.sha], { cwd, env, bd: store, now, verifyRecord, who });
-  return { code: rec.code, out: `verify-run.js: criterion ${n} of ${bead}: \`${step.command}\` in verify/${bead}-${sha.slice(0, 12)} at ${co.sha}: ${pass ? 'pass' : 'fail'} (${why})\n${rec.out}`, row: rec.row };
+  return { code: rec.code, out: `verify-run.js: criterion ${n} of ${bead}: \`${step.command}\` in verify/${bead}-${sha.slice(0, 12)} at ${co.sha}: ${pass ? 'pass' : 'fail'} (${why})${hint}\n${rec.out}`, row: rec.row };
 }
 
 function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: given, spawn = spawnSync, verifyRecord } = {}) {
