@@ -76,9 +76,60 @@ module.exports = { cleanEnv, testFiles, splitArgs, clockEnv, shellLine };
 // when it is killed or crashes (--die-with-parent): leftover fixtures filled wintermute's /tmp on
 // 2026-11-01 when runs were killed before their cleanup ran. Temp files are not relocated anywhere.
 // tmpfs inodes cannot be capped from an unprivileged sandbox, so the sealed run polls its own /tmp and
-// stops the suite past the inode cap. Without bubblewrap (macOS, a host without it) the run falls back
-// to a private directory under the system temp dir, removed at the end, and says it is not sealed.
+// stops the suite past the inode cap. Without bubblewrap (macOS, a host without it), or with
+// DELIVERY_TEST_UNSEALED=1, the run is refused: an unsealed run killed before its cleanup leaves its
+// directory in the host's /tmp, which the owner ruled out. Two cases still run unsealed, in a private
+// directory removed at the end: inside a proven seal (the suite's own tests of this runner, whose /tmp
+// is the outer run's tmpfs), and an opt-out the owner recorded (DELIVERY_TEST_UNSEALED_RECORD=<id>,
+// checked with operator.js verify).
+//
+// A seal is proven, never taken from a flag: a stray DELIVERY_SEAL_ACTIVE=1 or DELIVERY_SEALED_RUN=1
+// once turned sealing off silently. The sealed child checks that /tmp is a tmpfs mounted apart from the
+// host's /tmp (the parent passes its /tmp mount id), then writes a random token to /tmp/.delivery-seal
+// and gives the suite DELIVERY_SEAL_ACTIVE=<token>; a nested run trusts its flag only when that file in
+// a tmpfs /tmp holds the same token. Anything else that claims a seal is refused with the reason.
 const MB = 1024 * 1024;
+const SEAL_FILE = '.delivery-seal';
+// the mount over a path in /proc/self/mountinfo, { id, fstype }, or null (no /proc: macOS); the last
+// line for that mount point wins, as a later mount covers an earlier one
+function mountAt(dir, mountinfo) {
+  let text = mountinfo;
+  if (text === undefined) { try { text = fs.readFileSync('/proc/self/mountinfo', 'utf8'); } catch (e) { return null; } }
+  let found = null;
+  for (const line of String(text).split('\n')) {
+    const [pre, post] = line.split(' - ');
+    if (!post) continue;
+    const f = pre.split(' ');
+    if (f[4] === dir) found = { id: f[0], fstype: post.split(' ')[0] };
+  }
+  return found;
+}
+// null when this process runs in a proven seal, else why not. claim is DELIVERY_SEALED_RUN (the sealed
+// child: host-tmp:<the host /tmp mount id, or none>) or DELIVERY_SEAL_ACTIVE (a nested run: the token)
+function sealProblem({ sealedRun, sealActive, tmpDir = '/tmp', mountinfo } = {}) {
+  const m = mountAt(tmpDir, mountinfo);
+  if (!m || m.fstype !== 'tmpfs') return `${tmpDir} is not a tmpfs mount`;
+  if (sealedRun !== undefined) {
+    const host = /^host-tmp:(\S+)$/.exec(String(sealedRun));
+    if (!host) return `DELIVERY_SEALED_RUN=${sealedRun} is not one the runner set`;
+    if (host[1] === m.id) return `${tmpDir} is the host's own mount`;
+    return null;
+  }
+  let token = null;
+  try { token = fs.readFileSync(path.join(tmpDir, SEAL_FILE), 'utf8').trim(); } catch (e) { /* none */ }
+  if (!token || token !== String(sealActive)) return `no seal token in ${tmpDir} matches DELIVERY_SEAL_ACTIVE`;
+  return null;
+}
+// a seal flag counts as set unless it is empty or 0
+const claimed = (v) => v !== undefined && v !== '' && v !== '0';
+// null when the owner's record id verifies (operator.js verify, run from here), else why not
+function ownerOptOut(id, { operatorJs = path.join(__dirname, '..', 'operator.js'), cwd = process.cwd(), env = process.env } = {}) {
+  if (!id) return 'no owner record allows an unsealed run (DELIVERY_TEST_UNSEALED_RECORD=<record id>)';
+  const r = spawnSync(process.execPath, [operatorJs, 'verify', String(id), '--json'], { cwd, env, encoding: 'utf8', timeout: 30000 });
+  let v = null;
+  try { v = JSON.parse(r.stdout); } catch (e) { /* not json */ }
+  return v && v.ok === true ? null : `the owner record ${id} does not verify (${(v && v.code) || (r.stderr || '').trim().split('\n')[0] || 'no answer'})`;
+}
 const caps = (env) => ({
   bytes: (Number(env.DELIVERY_TEST_TMP_MB) || 2048) * MB,
   inodes: Number(env.DELIVERY_TEST_TMP_INODES) || 200000,
@@ -139,6 +190,10 @@ module.exports.caps = caps;
 module.exports.bwrapPath = bwrapPath;
 module.exports.inodesUsed = inodesUsed;
 module.exports.entriesUnder = entriesUnder;
+module.exports.mountAt = mountAt;
+module.exports.sealProblem = sealProblem;
+module.exports.ownerOptOut = ownerOptOut;
+module.exports.SEAL_FILE = SEAL_FILE;
 
 if (require.main === module) {
   const root = path.join(__dirname, '..', '..');
@@ -151,24 +206,49 @@ if (require.main === module) {
   const files = command ? [] : process.env.DELIVERY_TEST_FILES ? process.env.DELIVERY_TEST_FILES.split(path.delimiter) : testFiles(root);
   // already inside a seal (the suite's own tests run this runner): no nested sandbox, which the host
   // refuses; a private directory inside the sealed /tmp instead
-  const inSeal = process.env.DELIVERY_SEAL_ACTIVE === '1' && process.env.DELIVERY_SEALED_RUN !== '1';
-  if (process.env.DELIVERY_SEALED_RUN !== '1' && !inSeal) {
-    const bwrap = process.env.DELIVERY_TEST_UNSEALED === '1' ? null : bwrapPath(process.env);
+  const refuse = (why) => { process.stderr.write(`run-tests: refused: ${why}. Nothing was run.\n`); process.exit(2); };
+  const sealedRun = process.env.DELIVERY_SEALED_RUN;
+  const sealActive = process.env.DELIVERY_SEAL_ACTIVE;
+  // the sealed child proves its own seal; a nested run proves the one it is in
+  let sealed = false;
+  let inSeal = false;
+  if (sealedRun !== undefined) {
+    const p = sealProblem({ sealedRun });
+    if (p) refuse(`this run claims a seal it is not in (${p})`);
+    sealed = true;
+  } else if (claimed(sealActive)) {
+    const p = sealProblem({ sealActive });
+    if (p) refuse(`DELIVERY_SEAL_ACTIVE is set, but this run is not in a seal (${p}); unset it, or run inside a sealed run`);
+    inSeal = true;
+  }
+  if (!sealed && !inSeal) {
+    const optedOut = process.env.DELIVERY_TEST_UNSEALED === '1';
+    const bwrap = optedOut ? null : bwrapPath(process.env);
     if (bwrap) {
       // re-run this runner inside the seal; the sealed child does the rest
+      const host = mountAt('/tmp');
       const [cmd, args] = sealArgs(bwrap, cap, [process.execPath, __filename, ...process.argv.slice(2)], keepPaths([process.cwd(), root]));
-      const r = spawnSync(cmd, args, { env: { ...process.env, DELIVERY_SEALED_RUN: '1', DELIVERY_SEAL_ACTIVE: '1' }, stdio: 'inherit' });
+      const childEnv = { ...process.env, DELIVERY_SEALED_RUN: `host-tmp:${host ? host.id : 'none'}` };
+      delete childEnv.DELIVERY_SEAL_ACTIVE;
+      const r = spawnSync(cmd, args, { env: childEnv, stdio: 'inherit' });
       if (r.error) { process.stderr.write(`run-tests: could not start the sealed run (${r.error.message})\n`); process.exit(1); }
       process.exit(r.status !== null ? r.status : 1);
     }
-    process.stderr.write(`run-tests: ${process.env.DELIVERY_TEST_UNSEALED === '1' ? 'DELIVERY_TEST_UNSEALED is set' : 'bubblewrap (bwrap) not found'}: this run is NOT sealed; it uses a private directory under the system temp dir, removed at the end\n`);
+    const why = optedOut ? 'DELIVERY_TEST_UNSEALED is set' : 'bubblewrap (bwrap) is not installed';
+    const p = ownerOptOut(process.env.DELIVERY_TEST_UNSEALED_RECORD);
+    if (p) refuse(`${why}, so this run would not be sealed, and a run that is not sealed can leave files in the host's /tmp; ${p}. ${optedOut ? 'Unset DELIVERY_TEST_UNSEALED' : 'Install bubblewrap'}`);
+    process.stderr.write(`run-tests: ${why}: this run is NOT sealed (owner record ${process.env.DELIVERY_TEST_UNSEALED_RECORD}); it uses a private directory under the system temp dir, removed at the end\n`);
   }
-  // sealed: /tmp is the run's own capped tmpfs; unsealed: a private directory, removed at the end
-  const sealed = process.env.DELIVERY_SEALED_RUN === '1';
+  // sealed: /tmp is the run's own capped tmpfs, and the token in it proves the seal to nested runs;
+  // otherwise a private directory, removed at the end
+  let token = inSeal ? sealActive : null;
+  if (sealed) {
+    token = require('crypto').randomBytes(16).toString('hex');
+    fs.writeFileSync(path.join('/tmp', SEAL_FILE), token);
+  }
   const tmp = sealed ? '/tmp' : fs.mkdtempSync(path.join(os.tmpdir(), 'delivery-tests-'));
   const { spawn } = require('child_process');
-  const env = { ...cleanEnv(process.env), ...clockEnv(clock, process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp, ...(sealed || inSeal ? { DELIVERY_SEAL_ACTIVE: '1' } : {}) };
-  delete env.DELIVERY_SEALED_RUN;
+  const env = { ...cleanEnv(process.env), ...clockEnv(clock, process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp, ...(token ? { DELIVERY_SEAL_ACTIVE: token } : {}) };
   const child = command
     ? spawn(shellLine(command), { env, stdio: 'inherit', detached: true, shell: true })
     : spawn(process.execPath, ['--test', ...rest, ...files], { env, stdio: 'inherit', detached: true });

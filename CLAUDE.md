@@ -63,8 +63,11 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 ## Build & Test
 
 ```bash
-node --test plugins/delivery/hooks/scripts/*.test.js
+node plugins/delivery/scripts/testing/run-tests.js
 ```
+
+The one test command: it runs the whole delivery suite sealed in a private, capped /tmp
+(bubblewrap) and refuses to run unsealed. Never run `node --test` on the suite directly.
 
 ## Architecture & Conventions
 

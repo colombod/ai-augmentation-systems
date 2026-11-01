@@ -44,7 +44,7 @@ function checkoutVisible() {
 }
 
 function main() {
-  if (process.env.DELIVERY_SEAL_ACTIVE === '1') { console.error('seal-check: run it outside a sealed run'); return Promise.resolve(2); }
+  if (process.env.DELIVERY_SEAL_ACTIVE && process.env.DELIVERY_SEAL_ACTIVE !== '0') { console.error('seal-check: run it outside a sealed run'); return Promise.resolve(2); }
   if (!R.bwrapPath(process.env)) { console.error('seal-check: bubblewrap (bwrap) not found: a run cannot be sealed on this host'); return Promise.resolve(2); }
   // the host's /tmp itself, whatever TMPDIR says: it is the mount the seal hides
   const host = '/tmp';
