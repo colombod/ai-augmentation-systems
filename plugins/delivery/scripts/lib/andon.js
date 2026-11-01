@@ -308,6 +308,14 @@ const warn = (code, rule, detail, extra = {}) => ({ level: 'warn', code, rule, d
 const block = (code, rule, detail, extra = {}) => ({ level: 'block', code, rule, detail, ...extra });
 const norm = (id) => String(id || '').trim().toLowerCase().split('/').pop().replace(/@.*$/, '');
 
+// The claim block a red main puts on `bead` (ciState's c), or null: a valid fix (fixLink) and the work of
+// the open ci:main A3 still start. One rule for the claim check and the watchdog's assigned-work wake.
+function ciRedBlock(bead, c, fix = { ok: false }) {
+  const m = (bead && bead.metadata) || {};
+  if (!c || !c.red || fix.ok || (c.a3 && m.a3 && String(m.a3) === c.a3.id)) return null;
+  return block('ci-red', 'D3', `CI on ${c.repo ? `${c.repo} ` : ''}${c.branch} is red since ${String(c.since).slice(0, 16)}${c.workflows && c.workflows.length ? ` (${c.workflows.join(', ')})` : ''}: fixes only until every required workflow is green (${c.a3 ? `A3 ${c.a3.id} is open` : 'a3.js new --trigger ci:main'})`);
+}
+
 // Findings for claiming `bead`. ctx: { root, parent, fix (fixLink), stories, beadOf, team, now, ci, builder, starts, wipPerSession }
 function claimFindings(bead, { root, parent = null, fix = { ok: false }, stories = [], beadOf = () => null, team, now, ci, builder, starts = true, wipPerSession } = {}) {
   const f = [];
@@ -328,8 +336,8 @@ function claimFindings(bead, { root, parent = null, fix = { ok: false }, stories
     f.push(block('area-stopped', 'D3', `area ${area} is stopped: ${s.row} failed criterion ${s.criterion} of ${s.bead} on the customer's app; fixes only until its A3 closes on a passing check of the fix (${next})`, { stop: s }));
   }
   // a red main stops new claims across the product, until green or an A3 closed after it went red
-  const c = ci || ciState(root, { team, rows });
-  if (c.red && !fix.ok && !tagged(c.a3)) f.push(block('ci-red', 'D3', `CI on ${c.repo ? `${c.repo} ` : ''}${c.branch} is red since ${String(c.since).slice(0, 16)}${c.workflows && c.workflows.length ? ` (${c.workflows.join(', ')})` : ''}: fixes only until every required workflow is green (${c.a3 ? `A3 ${c.a3.id} is open` : 'a3.js new --trigger ci:main'})`));
+  const red = ciRedBlock(bead, ci || ciState(root, { team, rows }), fix);
+  if (red) f.push(red);
   // a flaky test wants an A3 within 24 h: a warning; a stop (D3) only on a named area, once the Delivery
   // Manager confirmed the record and no A3 was opened within 24 h; never the whole product
   for (const r of flakyOpen(root, { now, rows })) {
@@ -400,4 +408,4 @@ function plainLines(s) {
   return out;
 }
 
-module.exports = { MIN_WORDS, weakSections, mergedBead, REL, SECTIONS, read, append, a3File, a3s, openA3For, closedA3For, sectionsOf, missingSections, classOf, areaStops, ciState, redFromRuns, ghRuns, flakyOpen, symptomsOf, chains, fixChain, claimFindings, summary, plainLines, FLAKY_HOURS, CHAIN_HOURS, FAILED };
+module.exports = { MIN_WORDS, weakSections, mergedBead, REL, SECTIONS, read, append, a3File, a3s, openA3For, closedA3For, sectionsOf, missingSections, classOf, areaStops, ciState, redFromRuns, ghRuns, flakyOpen, symptomsOf, chains, fixChain, ciRedBlock, claimFindings, summary, plainLines, FLAKY_HOURS, CHAIN_HOURS, FAILED };
