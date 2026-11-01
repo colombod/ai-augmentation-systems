@@ -273,3 +273,21 @@ test('a boundary an earlier version kept in the role directory is still read for
   assert.equal(log.roleSince(dir, 'new', o), '2026-10-17T00:00:00.000Z');
   assert.ok(fs.existsSync(path.join(log.opDir(projectRoot), 'cursors', 'role-since', 'pm.json')));
 });
+
+test('a role session in the 2.1.312 format: no format problem, the typed prompt pending, the peer message and the wake not', () => {
+  const { projectRoot, roleDir } = preparedRole('chief-of-staff');
+  const { wakePrompt } = require('../../scripts/lib/watchdog.js');
+  // typed prompts and host wakes are stamped alike: no origin, promptSource and turnOrigin 'sdk'
+  const typed = (text, n) => ({ type: 'user', promptId: 'p' + n, uuid: 'u' + n, timestamp: `2099-10-13T10:00:${String(n).padStart(2, '0')}.000Z`,
+    sessionId: SID, version: '2.1.312', entrypoint: 'sdk-cli', userType: 'external', promptSource: 'sdk', turnOrigin: 'sdk',
+    message: { role: 'user', content: text } });
+  const launcher = { type: 'user', turnOrigin: 'sdk', uuid: 'u0', timestamp: '2099-10-13T10:00:00.000Z', sessionId: SID, message: { role: 'user', content: '<command-name>/start</command-name>' } };
+  const tr = transcript([launcher, typed(wakePrompt(['Continue bead x.'], 'did'), 1), peer(2), typed('record the store choice', 3)]);
+  registerInstance(projectRoot, { instance: 'chief-of-staff', session_id: SID, host: 'pc', model: 'opus', role_dir: roleDir, now: '2026-10-13T09:59:00Z' });
+  const res = withEnv({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: undefined }, () =>
+    captureFromHookInput({ cwd: roleDir, session_id: SID, transcript_path: tr, hook_event_name: 'UserPromptSubmit' }, PLUGIN_ROOT));
+  assert.equal(res.status, 'ok');
+  assert.equal(res.problem, undefined);
+  assert.deepEqual(res.pending.map((p) => p.text), ['record the store choice']);
+  assert.doesNotMatch(captureNote(res, PLUGIN_ROOT), /format was not recognised/);
+});
