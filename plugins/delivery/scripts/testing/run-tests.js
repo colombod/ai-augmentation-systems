@@ -7,6 +7,10 @@
 // the clearing lives here, and this one command is what CI, builders and reviewers all run.
 // Extra arguments go to `node --test` (for example --test-name-pattern), except --clock <iso>, which
 // runs the suite with every node process's clock moved to that instant (fake-clock.js).
+// `run-tests.js [--clock <iso>] -- <command...>` runs any other command instead of delivery's suite,
+// through the shell in the current directory, in the same seal with the same caps, guard, signal
+// handling and cleanup: a product's own test_command, whatever its language (Copilot on #117). One
+// word after -- is a shell line as written (`-- 'npm ci && npm test'`); several are quoted one by one.
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -33,18 +37,26 @@ function testFiles(root) {
   return files.sort();
 }
 
-// --clock <iso> is the runner's own; the rest pass through to `node --test`
+// --clock <iso> is the runner's own; the rest pass through to `node --test`, or after -- are a command
 function splitArgs(argv) {
   const rest = [];
   let clock = null;
+  let command = null;
   for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--') { command = argv.slice(i + 1); break; }
     if (argv[i] === '--clock') clock = argv[++i];
     else if (argv[i].startsWith('--clock=')) clock = argv[i].slice('--clock='.length);
     else rest.push(argv[i]);
   }
   if (clock !== null && !Number.isFinite(Date.parse(clock))) throw new Error(`--clock needs a date, got ${JSON.stringify(clock)}`);
-  return { clock, rest };
+  if (command !== null && !command.length) throw new Error('-- needs the command to run after it');
+  if (command !== null && rest.length) throw new Error(`only --clock goes before -- <command>; ${rest.join(' ')} is for node --test`);
+  return command === null ? { clock, rest } : { clock, rest, command };
 }
+
+// the shell line a command runs as: one word as written, several quoted one by one
+const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`);
+const shellLine = (command) => (command.length === 1 ? command[0] : command.map(shellQuote).join(' '));
 
 // The offset is from the real clock: a runner already under a moved one (the suite's own test of
 // --clock, run with --clock) takes the inherited offset off first, and does not preload twice.
@@ -56,7 +68,7 @@ function clockEnv(clock, env) {
   return { TEST_CLOCK_OFFSET_MS: String(Date.parse(clock) - realNow), NODE_OPTIONS: opts.includes(preload) ? opts : `${opts} ${preload}`.trim() };
 }
 
-module.exports = { cleanEnv, testFiles, splitArgs, clockEnv };
+module.exports = { cleanEnv, testFiles, splitArgs, clockEnv, shellLine };
 
 // ---- the sealed run (hjx, dec-chief-of-staff-000014) ----
 // A run leaves nothing in the host's /tmp, whatever happens to it. The suite runs inside bubblewrap
@@ -122,9 +134,9 @@ if (require.main === module) {
   // repositories in them each run, which filled a 39 GB disk over a day of runs. The suite gets a
   // temporary directory of its own, removed when it ends.
   const os = require('os');
-  const { clock, rest } = splitArgs(process.argv.slice(2));
+  const { clock, rest, command } = splitArgs(process.argv.slice(2));
   const cap = caps(process.env);
-  const files = process.env.DELIVERY_TEST_FILES ? process.env.DELIVERY_TEST_FILES.split(path.delimiter) : testFiles(root);
+  const files = command ? [] : process.env.DELIVERY_TEST_FILES ? process.env.DELIVERY_TEST_FILES.split(path.delimiter) : testFiles(root);
   // already inside a seal (the suite's own tests run this runner): no nested sandbox, which the host
   // refuses; a private directory inside the sealed /tmp instead
   const inSeal = process.env.DELIVERY_SEAL_ACTIVE === '1' && process.env.DELIVERY_SEALED_RUN !== '1';
@@ -145,7 +157,9 @@ if (require.main === module) {
   const { spawn } = require('child_process');
   const env = { ...cleanEnv(process.env), ...clockEnv(clock, process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp, ...(sealed || inSeal ? { DELIVERY_SEAL_ACTIVE: '1' } : {}) };
   delete env.DELIVERY_SEALED_RUN;
-  const child = spawn(process.execPath, ['--test', ...rest, ...files], { env, stdio: 'inherit', detached: true });
+  const child = command
+    ? spawn(shellLine(command), { env, stdio: 'inherit', detached: true, shell: true })
+    : spawn(process.execPath, ['--test', ...rest, ...files], { env, stdio: 'inherit', detached: true });
   let over = null;
   const guard = setInterval(() => {
     const used = guardCount(tmp, sealed, cap.inodes);

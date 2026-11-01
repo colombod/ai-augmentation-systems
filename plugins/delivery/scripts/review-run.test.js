@@ -113,6 +113,14 @@ test('review-run test: runs the project command in the clone with the role varia
   const failing = capture();
   assert.equal(main(['test', '7'], { env: process.env, cwd: roleDir, roleDir, team: { ...team, test_command: 'exit 3' }, ...failing }), 3);
   assert.match(failing.lines.join('\n'), /review-run: exit 3/);
+  // the product's suite runs through the sealed runner (Copilot on #117): a temp dir of its own,
+  // gone when the run ends
+  if (process.platform !== 'win32') {
+    assert.equal(main(['test', '7'], { env: process.env, cwd: roleDir, roleDir, team: { ...team, test_command: 'echo "$TMPDIR" > tmpdir.txt' }, ...capture() }), 0);
+    const tmp = fs.readFileSync(path.join(roleDir, 'review', 'pr-7', 'tmpdir.txt'), 'utf8').trim();
+    assert.match(tmp, /delivery-tests-/, 'the run\'s own temp dir');
+    assert.ok(!fs.existsSync(tmp), 'removed at the end');
+  }
 });
 
 // the fourth review: a tag named like an abbreviated head checked out other code under that head

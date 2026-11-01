@@ -776,7 +776,26 @@ const WATCHDOG_REASON = 'the watchdog\'s wake, run, install and uninstall are th
 // builders included, runs tests through the sealed runner, whose run lives in a capped private /tmp
 // the OS destroys.
 const TEST_FILE = /\.test\.[cm]?[jt]s$/;
-const TESTS_REASON = 'tests run only through the sealed runner, which gives the run a capped private /tmp the OS destroys: `node <plugin>/scripts/testing/run-tests.js` (the team\'s test_command; pick files with DELIVERY_TEST_FILES), never `node --test` or a test file directly';
+// The reason names the sealed form of the very command refused: `run-tests.js -- <command>` runs any
+// product's test command (through the shell, in this directory) in the same seal, so a product whose
+// test_command is `node --test` still runs its own suite (Copilot on #117).
+const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`);
+function testsReason(command, pluginRoot) {
+  const runner = `${pluginRoot ? path.join(pluginRoot, 'scripts', 'testing', 'run-tests.js') : '<plugin>/scripts/testing/run-tests.js'}`;
+  return `tests run only through the sealed runner, which gives the run a capped private /tmp the OS destroys: \`node ${shellQuote(runner)} -- ${shellQuote(String(command || '').trim())}\` runs that command sealed, here (delivery's own suite: \`node ${shellQuote(runner)}\`, files picked with DELIVERY_TEST_FILES); never \`node --test\` or a test file directly`;
+}
+// node's options that take their value as the next word (`--conditions development`), so that word
+// is not mistaken for the script; options after the script are the script's own (Copilot on #117)
+const NODE_VALUE_FLAGS = new Set(['-C', '--conditions', '--input-type', '--loader', '--experimental-loader', '--env-file', '--env-file-if-exists',
+  '--test-name-pattern', '--test-skip-pattern', '--test-reporter', '--test-reporter-destination', '--test-concurrency', '--test-shard', '--test-timeout',
+  '--test-isolation', '--test-global-setup', '--test-coverage-include', '--test-coverage-exclude', '--test-coverage-branches', '--test-coverage-functions',
+  '--test-coverage-lines', '--watch-path', '--watch-kill-signal', '--title', '--inspect-port', '--debug-port', '--redirect-warnings', '--diagnostic-dir',
+  '--report-dir', '--report-directory', '--report-filename', '--report-signal', '--heapsnapshot-signal', '--heapsnapshot-near-heap-limit', '--secure-heap',
+  '--secure-heap-min', '--openssl-config', '--icu-data-dir', '--tls-cipher-list', '--tls-keylog', '--dns-result-order', '--unhandled-rejections',
+  '--disable-warning', '--localstorage-file', '--cpu-prof-dir', '--cpu-prof-name', '--cpu-prof-interval', '--heap-prof-dir', '--heap-prof-name',
+  '--heap-prof-interval', '--experimental-policy', '--policy-integrity', '--experimental-config-file', '--max-http-header-size', '--run',
+  '--experimental-default-type', '--trace-event-categories', '--trace-event-file-pattern', '--use-largepages', '--snapshot-blob',
+  '--experimental-sea-config', '--allow-fs-read', '--allow-fs-write', '--max-old-space-size', '--max-semi-space-size', '--stack-size']);
 const RESUME_REASON = 'resuming or continuing a Claude session is the watchdog host job\'s; message the session instead';
 // Only what runs is judged: the command word of each segment (after VAR=x assignments and wrappers such
 // as env, nohup, timeout), the script an interpreter runs or the code it evaluates, the command a shell
@@ -914,7 +933,9 @@ function refusedRun(text, depth = 0) {
     }
     if ((name === 'source' || name === '.') && namesWatchdog(firstOperand(args))) return 'watchdog';
     if (INTERPRETERS.has(name)) {
+      const isNode = name === 'node' || name === 'nodejs';
       let script = null;
+      let testFlag = false;
       for (let i = 0; i < args.length; i++) {
         if (CODE_FLAGS.has(args[i]) || /^--(?:eval|print|require|import)=/.test(args[i])) {
           const code = args[i].includes('=') ? args[i].slice(args[i].indexOf('=') + 1) : args[++i] || '';
@@ -922,13 +943,17 @@ function refusedRun(text, depth = 0) {
           if (CLAUDE_RESUME.test(code)) return 'resume';
           continue;
         }
+        if (args[i] === '--') { script = i + 1 < args.length ? i + 1 : null; break; }
+        if (args[i] === '--test' || args[i].startsWith('--test=')) testFlag = true;
+        if (isNode && NODE_VALUE_FLAGS.has(args[i])) { i++; continue; }
         if (args[i].startsWith('-')) continue;
         script = i;
         break;
       }
       if (script !== null && namesWatchdog(args[script]) && !(isCli(args[script]) && checkOnly(args.slice(script + 1)))) return 'watchdog';
-      // node's test runner, or a test file run directly: only through the sealed runner (dec-000014)
-      if ((name === 'node' || name === 'nodejs') && (args.some((a) => a === '--test' || a.startsWith('--test=')) || (script !== null && TEST_FILE.test(args[script])))) return 'tests';
+      // node's test runner, or a test file run directly: only through the sealed runner (dec-000014).
+      // Only node's own options count: a --test after the script is the script's argument.
+      if (isNode && (testFlag || (script !== null && TEST_FILE.test(args[script])))) return 'tests';
       continue;
     }
     if (namesWatchdog(w) && !(isCli(w) && checkOnly(args))) return 'watchdog';
@@ -1247,7 +1272,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     const run = refusedRun(command);
-    if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? TESTS_REASON : RESUME_REASON}.` };
+    if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? testsReason(command, pluginRootOf({ pluginRoot })) : RESUME_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
       return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };

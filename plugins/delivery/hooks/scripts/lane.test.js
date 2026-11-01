@@ -1315,3 +1315,27 @@ test('lane: node --test and a test file run directly are refused for every role;
   for (const command of ['node scripts/testing/run-tests.js', 'DELIVERY_TEST_FILES=a.test.js node scripts/testing/run-tests.js',
     'node scripts/test-helper.js', 'npm test', 'grep -- --test lane.js']) assert.equal(run(command).allow, true, command);
 });
+
+// Copilot on #117: node's options that take a value are skipped with it, and only node's own options
+// count: a --test after the script is the script's argument
+test('lane: a value-taking node option does not hide a test file; --test after the script is not node\'s', () => {
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[BUILDER], ...ctx() });
+  for (const command of ['node --conditions development hooks/scripts/lane.test.js', 'node -C development x.test.js',
+    'node --test-reporter spec --test', 'node --env-file .env --test-name-pattern x a.test.js', 'node -- x.test.js', 'node --input-type module --test']) {
+    assert.equal(run(command).allow, false, command);
+  }
+  for (const command of ['node scripts/test-helper.js --test', 'node tool.js --test=x', 'node --conditions development scripts/build.js',
+    'node scripts/testing/run-tests.js -- node --test', "node scripts/testing/run-tests.js -- 'node --test a.test.js'"]) {
+    assert.equal(run(command).allow, true, command);
+  }
+});
+
+// Copilot on #117: any product's test command still runs, sealed; the reason names the command refused
+// in the runner's -- form, with this plugin's runner path
+test('lane: the tests reason names the refused command in the sealed runner\'s -- form', () => {
+  const d = decideLane({ toolName: 'Bash', toolInput: { command: "node --test it\\'s.test.js" }, policy: POLICIES[BUILDER], ...ctx() });
+  assert.equal(d.allow, false);
+  const runner = path.join(PLUGIN_ROOT, 'scripts', 'testing', 'run-tests.js');
+  // single-quoted for the shell, its own quote escaped, so it can be run as given
+  assert.ok(d.reason.includes(`\`node ${runner} -- 'node --test it\\'\\''s.test.js'\``), d.reason);
+});
