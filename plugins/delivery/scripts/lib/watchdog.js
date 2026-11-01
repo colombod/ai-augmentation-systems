@@ -510,8 +510,11 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     if (last && alive(last.pid)) reason = 'its last wake is still running';
     else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
     else if (stallRows.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
-    // each stall waits 1, 2, 4 ... hours after each wake that carried it
+    // each stall waits 1, 2, 4 ... hours after each wake that carried it. A handover (message, handoff,
+    // assigned work) is not a stall and goes by the message rules: a stall wake that goes out carries it,
+    // or it would be dropped from the wake with no held line (Copilot 4436815462)
     const ok = reason ? [] : w.stalls.filter((s) => {
+      if (isHandoff(s)) return true;
       const k = mine.filter((r) => (r.keys || []).includes(s.key) && t - ms(r.at) < 7 * 24 * 3600e3);
       return !k.length || t - ms(k[k.length - 1].at) >= WAKE_EVERY_MS * 2 ** (k.length - 1);
     });

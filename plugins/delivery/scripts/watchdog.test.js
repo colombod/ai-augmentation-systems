@@ -1401,3 +1401,21 @@ test('hjx.1 (Copilot 4436744698): logged assigned wakes do not hold a due stall 
     assert.deepEqual(p.wakes.map((w) => w.keys).flat(), [st.stalls[0].key]);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// Copilot on PR 113 (023505b): a stall wake carries the holder's assigned work, not drops it on the stall backoff
+test('hjx.1 (Copilot 4436815462): assigned work woken 7 min ago rides the newly due stall wake', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const stuck = { id: 'ex-q', status: 'in_progress', assignee: 'builder-2', updated_at: iso(now - 3 * H) };
+  const next = { id: 'ex-a', status: 'open', assignee: 'builder-2', updated_at: iso(now - 30 * 60e3) };
+  const st = WD.stalls({ now: iso(now), beads: [stuck, next], ready: [next], sessions: [{ instance: 'builder-2', role: 'builder', session: 's-b2', roleDir: os.tmpdir(), lastActive: now - 3 * H }], stallHours: 2 });
+  assert.deepEqual(st.stalls.map((x) => x.key).sort(), ['assigned:ex-a', `quiet:ex-q:${iso(now - 3 * H)}`]);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-mix-'));
+  try {
+    WD.log(root, { type: 'wake', at: iso(now - 7 * 60e3), keys: ['assigned:ex-a'], instance: 'builder-2', pid: 7 });
+    const p = WD.plan(st, { root, now: iso(now), alive: () => false });
+    assert.equal(p.held.length, 0, JSON.stringify(p.held));
+    assert.equal(p.wakes.length, 1);
+    assert.deepEqual(p.wakes[0].keys.slice().sort(), ['assigned:ex-a', `quiet:ex-q:${iso(now - 3 * H)}`], 'one wake carries both');
+    assert.match(p.wakes[0].prompt, /ex-a is assigned to you/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
