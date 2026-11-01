@@ -673,15 +673,19 @@ function scaffold(opts) {
     const needsMode = fs.existsSync(path.join(roleDir, '.delivery-role.json')) && (() => {
       try { return ((JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).permissions || {}).defaultMode) !== wantMode; } catch (e) { return true; }
     })();
-    const why = needsBeadsDir ? 'BEADS_DIR' : 'the permission mode';
-    if (fs.existsSync(path.join(roleDir, '.delivery-role.json')) && !needsBeadsDir && !needsMode) {
+    // a role prepared before the plugin wrote PATH still lacks it: re-prepared, unless the user set one (07t)
+    const needsPath = fs.existsSync(path.join(roleDir, '.delivery-role.json')) && (() => {
+      try { return (JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).env || {}).PATH === undefined; } catch (e) { return true; }
+    })();
+    const why = needsBeadsDir ? 'BEADS_DIR' : needsMode ? 'the permission mode' : 'PATH';
+    if (fs.existsSync(path.join(roleDir, '.delivery-role.json')) && !needsBeadsDir && !needsMode && !needsPath) {
       say(`    ${instance}: already prepared`);
     } else if (dryRun) {
-      say(`    ${instance}: would ${needsBeadsDir || needsMode ? `re-prepare for ${why}` : 'prepare'} (${role.model}${role.id === 'builder' && productCheckout ? ', product worktree on team/' + instance : ''})`);
+      say(`    ${instance}: would ${needsBeadsDir || needsMode || needsPath ? `re-prepare for ${why}` : 'prepare'} (${role.model}${role.id === 'builder' && productCheckout ? ', product worktree on team/' + instance : ''})`);
     } else {
       try {
         const { files } = prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo: productCheckout || undefined, user });
-        say(`    ${instance}: ${needsBeadsDir || needsMode ? `re-prepared for ${why}` : 'prepared'} (${role.model})`);
+        say(`    ${instance}: ${needsBeadsDir || needsMode || needsPath ? `re-prepared for ${why}` : 'prepared'} (${role.model})`);
         for (const f of files) if (f.startsWith('warning:')) say(`      ${f}`);
       } catch (err) {
         say(`    ${instance}: prepare failed: ${err.message}`);

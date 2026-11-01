@@ -39,7 +39,9 @@ const reachDeny = (reach) => (!reach ? REACH_DENY : reach === 'local' ? OWNER_SE
 // versioned is pinned (as the watchdog's jobPath). (Copilot on #115: no reordering, no relative entry.)
 function rolePath(env, home = os.homedir(), cwd = process.cwd()) {
   const usual = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', path.join(home, '.local', 'bin')];
-  const parts = [...String(env.PATH || '').split(path.delimiter).filter(Boolean).map((d) => path.resolve(cwd, d)), ...usual, path.dirname(process.execPath)];
+  // an empty component (a leading, trailing or doubled delimiter) searches the current directory
+  const own = env.PATH === undefined ? [] : String(env.PATH).split(path.delimiter).map((d) => path.resolve(cwd, d || '.'));
+  const parts = [...own, ...usual, path.dirname(process.execPath)];
   return [...new Set(parts)].join(path.delimiter);
 }
 
@@ -139,7 +141,8 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   let previousPath;
   try { previousPath = JSON.parse(fs.readFileSync(markerFile, 'utf8')).path_written; } catch (err) { previousPath = undefined; }
   let pathWritten;
-  if (!settings.env.PATH || (previousPath && settings.env.PATH === previousPath)) {
+  // only an unset PATH is ours to fill: an empty one is a user's valid choice (Copilot on #115)
+  if (settings.env.PATH === undefined || (previousPath && settings.env.PATH === previousPath)) {
     settings.env.PATH = rolePath(process.env);
     pathWritten = settings.env.PATH;
   }

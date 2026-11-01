@@ -81,7 +81,8 @@ session its role and keep it:
   `.beads`, `BEADS_DIR`. It also sets `PATH`: the preparing shell's PATH in its own order (entries
   made absolute), then the usual install places and node's directory. A session started by a
   service manager (systemd, launchd, Remote Control) then still finds bd. A re-prepare refreshes a
-  PATH it wrote earlier and never replaces one the user set.
+  PATH it wrote earlier and never replaces one the user set (an empty one included); `start` re-prepares
+  a role prepared before PATH was written.
 - **Hooks** (all in `hooks/hooks.json`; each is inert outside a role session unless noted):
   - SessionStart rewrites `CLAUDE.local.md` from the manifest, registers the session in the
     roster and captures operator input. On clear and compact it restates the role; on startup

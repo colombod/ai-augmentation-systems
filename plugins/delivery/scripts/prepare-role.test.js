@@ -359,6 +359,9 @@ test('prepareRole writes a PATH that finds bd for a session started with a bare 
     assert.equal(execFileSync('/bin/sh', ['-c', 'bd'], { env: { PATH: ordered }, stdio: 'pipe' }).toString().trim(), 'first-bd');
     // a relative entry is made absolute against the preparing directory
     assert.ok(rolePath({ PATH: 'rel/bin' }, '/h', '/work').split(path.delimiter).includes('/work/rel/bin'));
+    // an empty component searches the preparing directory, and stays first (Copilot on #115)
+    assert.equal(rolePath({ PATH: ':/other/bin' }, '/h', '/work').split(path.delimiter)[0], '/work');
+    assert.ok(!rolePath({}, '/h', '/work').split(path.delimiter).includes('/work'));
     // a re-prepare refreshes the PATH it wrote: bd moved, the new place is found
     const bin2 = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-bin-'));
     fs.renameSync(path.join(bin, 'bd'), path.join(bin2, 'bd'));
@@ -371,5 +374,11 @@ test('prepareRole writes a PATH that finds bd for a session started with a bare 
     fs.writeFileSync(file, JSON.stringify(again));
     prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).env.PATH, '/my/own/bin:/usr/bin');
+    // an empty PATH is a valid user choice too (Copilot on #115)
+    const empty = JSON.parse(fs.readFileSync(file, 'utf8'));
+    empty.env.PATH = '';
+    fs.writeFileSync(file, JSON.stringify(empty));
+    prepareRole({ projectRoot, instance: 'chief-of-staff', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).env.PATH, '');
   } finally { process.env.PATH = saved; }
 });
