@@ -21,8 +21,8 @@ const SHA = 'd478aa11';
 const T = { plan: '2026-10-13T08:00:00Z', deploy: '2026-10-13T09:00:00Z', run: '2026-10-13T10:00:00Z' };
 const whoFor = (root, instance) => ({ root, team: loadManifest(root).team, instance, roleId: instance.replace(/-\d+$/, ''), actor: `t@pc/${instance}` });
 
-function setup() {
-  const root = makeProject();
+function setup(project = {}) {
+  const root = makeProject(project);
   const bd = memBd([storyBead({ assignee: 't@pc/builder-1' })]);
   const call = (mod, instance, argv, now) => mod.main(argv, { cwd: root, env: {}, bd, now, who: whoFor(root, instance) });
   const dm = (...argv) => call(rc, 'delivery-lead', argv, T.plan);
@@ -51,13 +51,16 @@ test('plan: the Delivery Manager writes the script from the story; after the dep
   assert.match(s.criteria[0].steps[0].expect, /^the chat shows the summary and the server log shows the file argument$/);
   assert.match(s.account.signin, /owner queue \(kind signin, consent or payment\)/);
   assert.ok(!JSON.stringify(s).match(/password"\s*:/i), 'no secret field');
-  // the Delivery Manager refines a step; a re-plan after the deploy keeps it and stamps the sha
+  // the Delivery Manager refines a step; the deploy dispatches the check and stamps the sha, keeping it
   s.criteria[0].steps[0].action = 'Drop collection.csv into a new plain chat';
   fs.writeFileSync(path.join(root, rc.scriptRel(ID)), JSON.stringify(s));
-  deploy('v1.4.2');
+  const deployed = deploy('v1.4.2');
+  assert.equal(deployed.code, 0, deployed.out);
+  assert.match(deployed.out, /ex-vault-0n9-3-rc-d478aa1: created for the Reality Checker/);
+  assert.match(deployed.out, /warning: the team has no Reality Checker/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, rc.scriptRel(ID)), 'utf8')).artifact.deployed_sha, SHA);
   const after = dm('plan', ID, '--attempts', '3');
-  assert.match(after.out, /ex-vault-0n9-3-rc-d478aa1: created for the Reality Checker/);
-  assert.match(after.out, /warning: the team has no Reality Checker/);
+  assert.match(after.out, /ex-vault-0n9-3-rc-d478aa1: already dispatched/);
   const again = JSON.parse(fs.readFileSync(path.join(root, rc.scriptRel(ID)), 'utf8'));
   assert.equal(again.criteria[0].steps[0].action, 'Drop collection.csv into a new plain chat');
   assert.deepEqual([again.artifact.deployed_sha, again.artifact.version, again.cap.attempts], [SHA, 'v1.4.2', 3]);
@@ -69,10 +72,81 @@ test('plan: the Delivery Manager writes the script from the story; after the dep
   assert.match(dm('plan', ID).out, /already dispatched/);
 });
 
+test('7k3.1.1: a story the Reality Checker verifies is neither ready nor deployed without its script; once planned, the deploy dispatches the check', async () => {
+  const { root, bd, call, dm, deploy, bead } = setup({ checkScript: false });
+  const readyNow = () => require('./ready.js').main([ID], { cwd: root, env: {}, bd, now: T.plan, who: whoFor(root, 'delivery-lead') });
+  const pre = await readyNow();
+  assert.equal(pre.code, 1, pre.out);
+  assert.match(pre.out, /block R-33 reality-check-script: criteria 1, 2 are checked on S1 by the Reality Checker, and no reality-check script is planned/);
+  const refused = deploy('v1.4.2');
+  assert.equal(refused.code, 1);
+  assert.match(refused.out, /ex-vault-0n9-3 is not marked deployed: criteria 1, 2 are checked on S1 by the Reality Checker and no reality-check script is planned/);
+  assert.equal(G.stateOf(bead()), null, 'nothing recorded');
+  assert.equal(bead().metadata.deployed_sha, undefined);
+  assert.equal(bd.show(`${ID}-rc-d478aa1`), null, 'no check bead');
+  // planned: ready, and the deploy creates the check bead with the script stamped with its sha
+  assert.equal(dm('plan', ID).code, 0);
+  const post = await readyNow();
+  assert.equal(post.code, 0, post.out);
+  assert.doesNotMatch(post.out, /reality-check-script/);
+  const ok = deploy('v1.4.2');
+  assert.equal(ok.code, 0, ok.out);
+  assert.match(ok.out, /ex-vault-0n9-3-rc-d478aa1: created for the Reality Checker/);
+  assert.equal(bd.show(`${ID}-rc-d478aa1`).metadata.deployed_sha, SHA);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, rc.scriptRel(ID)), 'utf8')).artifact.deployed_sha, SHA);
+  // a reworded criterion is a step group the script lacks: a new deploy is refused until it is planned again
+  const story = path.join(root, '.delivery', 'stories', 'vault-0n9-3.md');
+  fs.writeFileSync(story, fs.readFileSync(story, 'utf8').replace('with the card count', 'with the card count and the deck name'));
+  const stale = call(evidence, 'delivery-lead', ['state', ID, 'deployed', '--sha', 'e5f6a7b8'], T.run);
+  assert.match(stale.out, /criteria 1 are checked on S1 by the Reality Checker and its script has no step group for their current wording/);
+  assert.equal(bead().metadata.deployed_sha, SHA, 'the earlier deploy stands');
+});
+
+// 7k3.1.1 review: a bug checked on a surface has no story to plan a script from; its deploy says so
+test('7k3.1.1: a deploy of a bead that names a surface but has no story file warns that its check cannot run', () => {
+  const root = makeProject();
+  const fix = storyBead({ id: 'ex-fix-1', labels: ['bug'], metadata: { story_file: undefined } });
+  const bd = memBd([fix, storyBead({ assignee: 't@pc/builder-1' })]);
+  const deploy = (id) => evidence.main(['state', id, 'deployed', '--sha', SHA], { cwd: root, env: {}, bd, now: T.deploy, who: whoFor(root, 'delivery-lead') });
+  const r = deploy('ex-fix-1');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^warning: ex-fix-1 names surface S1 but has no readable story file, so no reality-check script can be planned for it and its check on the customer's app cannot run/m);
+  // a story with its script planned gets its check bead, and no such warning
+  const ok = deploy(ID);
+  assert.equal(ok.code, 0, ok.out);
+  assert.doesNotMatch(ok.out, /no readable story file/);
+});
+
+test('7k3.1.1: materialise plans the script of every open story that needs one, keeps refined steps, and skips a closed or test-checked story', () => {
+  const { planChecks } = require('./materialise.js');
+  const root = makeProject({ checkScript: false });
+  const S2 = 'ex-vault-0n9-5';
+  fs.writeFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-5.md'), require('./testing/gate-fixture.js').STORY.replace('surface: S1', 'surface: S2').replace(/by: reality-check/g, 'by: test'));
+  const shut = 'ex-vault-0n9-6';
+  fs.writeFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-6.md'), require('./testing/gate-fixture.js').STORY);
+  const bd = memBd([storyBead({ status: 'open' }), storyBead({ id: S2, status: 'open', metadata: { story_file: 'vault-0n9-5.md', surface: 'S2' } }), storyBead({ id: shut, status: 'closed', metadata: { story_file: 'vault-0n9-6.md' } })]);
+  const plan = { beads: [ID, S2, shut].map((id) => ({ id, labels: ['roadmap', 'phase-1', 'story'] })).concat([{ id: 'ex-vault-ph1', labels: ['roadmap', 'phase-1'] }]) };
+  assert.deepEqual(planChecks({ projectRoot: root, plan, bd, by: 'materialise', at: T.plan }), [ID]);
+  const file = path.join(root, rc.scriptRel(ID));
+  const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual([s.planned_by, s.criteria.map((g) => g.criterion)], ['materialise', [1, 2]]);
+  assert.ok(!fs.existsSync(path.join(root, rc.scriptRel(S2))), 'a scriptable surface checked by tests needs no script');
+  assert.ok(!fs.existsSync(path.join(root, rc.scriptRel(shut))), 'a closed story is left alone');
+  s.criteria[0].steps[0].action = 'Drop collection.csv into a new plain chat';
+  fs.writeFileSync(file, JSON.stringify(s));
+  assert.deepEqual(planChecks({ projectRoot: root, plan, bd, by: 'materialise', at: T.plan }), [], 'a covering script is left as it is');
+  const story = path.join(root, '.delivery', 'stories', 'vault-0n9-3.md');
+  fs.writeFileSync(story, fs.readFileSync(story, 'utf8').replace('sees which column was skipped', 'sees which column was skipped and why'));
+  assert.deepEqual(planChecks({ projectRoot: root, plan, bd, by: 'materialise', at: T.plan }), [ID], 'a reworded criterion is planned again');
+  const again = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(again.criteria[0].steps[0].action, 'Drop collection.csv into a new plain chat', 'the unchanged criterion keeps its refined step');
+  assert.match(again.criteria[1].text, /and why\.$/);
+});
+
 test('10-17: a Reality Checker row on the wrong tuple (Codex mode for ChatGPT plain chat) does not count; the right one does', () => {
   const { root, dm, deploy, record, bead, call } = setup();
-  deploy('v1.4.2');
   dm('plan', ID);
+  deploy('v1.4.2');
   const wrong = record(1, 'pass', ['--mode', 'codex']);
   assert.equal(wrong.code, 1);
   assert.match(wrong.out, /not verification of ex-vault-0n9-3 \(D2\): observed on ChatGPT web, codex/);
@@ -92,8 +166,8 @@ test('10-17: a Reality Checker row on the wrong tuple (Codex mode for ChatGPT pl
 
 test('a pass whose observed version differs from the deployed sha is refused, and nothing is recorded', () => {
   const { root, dm, deploy, call, capture } = setup();
-  deploy('v1.4.2');
   dm('plan', ID);
+  deploy('v1.4.2');
   const run = (version) => call(rc, 'reality-checker', ['run-record', ID, '--criterion', '1', '--result', 'pass', '--artifact', capture(), '--observed-version', version], T.run);
   const r = run('v1.4.1');
   assert.equal(r.code, 1);
@@ -105,8 +179,8 @@ test('a pass whose observed version differs from the deployed sha is refused, an
 
 test('run-record refuses a capture outside the artifacts directory, a missing one, a criterion not in the script, and a stale script', () => {
   const { root, dm, deploy, call, capture, bd } = setup();
-  deploy();
   dm('plan', ID);
+  deploy();
   const run = (artifact, n = '1') => call(rc, 'reality-checker', ['run-record', ID, '--criterion', n, '--result', 'pass', '--artifact', artifact, '--observed-version', SHA], T.run).out;
   const stray = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rc-')), 'shot.png');
   fs.writeFileSync(stray, 'x');
@@ -120,8 +194,8 @@ test('run-record refuses a capture outside the artifacts directory, a missing on
 
 test('#478 on 10-13: a fail row raises the andon with no owner involvement; a blind retry is a warning; the cap stops a third run', () => {
   const { root, dm, deploy, record, bead } = setup();
-  deploy('v1.4.2');
   dm('plan', ID);
+  deploy('v1.4.2');
   const fail = record(1, 'fail');
   assert.equal(fail.code, 0, fail.out);
   assert.match(fail.out, /andon:ev-ex-vault-0n9-3-1 raised: area collection stops \(fixes only\) until its A3 closes on a proved fix; draft its problem: a3\.js new --trigger andon:ev-ex-vault-0n9-3-1/);
@@ -136,8 +210,8 @@ test('#478 on 10-13: a fail row raises the andon with no owner involvement; a bl
 
 test('a Reality Checker cannot write a row around the script, and a builder cannot record a run at all', () => {
   const { dm, deploy, call, capture } = setup();
-  deploy();
   dm('plan', ID);
+  deploy();
   assert.match(call(evidence, 'reality-checker', ['add', ID, '--criterion', '1', '--result', 'pass', '--surface', 'S1', '--sha', SHA], T.run).out, /records through the script/);
   assert.match(call(rc, 'builder-1', ['run-record', ID, '--criterion', '1', '--result', 'pass', '--artifact', capture(), '--observed-version', SHA], T.run).out, /the Delivery Manager's to do/);
 });
@@ -213,7 +287,8 @@ test('the Reality Checker brief renders with the plugin path and tells it to sto
 // ---- fix round (PR 53 review) ----
 
 test('R-11: a Delivery Manager pass on a reality-check criterion is a side arm unless it cites a verified owner record', () => {
-  const { root, bd, deploy, call } = setup();
+  const { root, bd, dm, deploy, call } = setup();
+  dm('plan', ID);
   deploy('v1.4.2');
   const add = (n, extra = []) => evidence.main(['add', ID, '--criterion', String(n), '--result', 'pass', '--surface', 'S1', '--sha', SHA, ...extra], { cwd: root, env: {}, bd, now: T.run, who: whoFor(root, 'delivery-lead'), verifyRecord: require('./testing/gate-fixture.js').ownerVerify('dec-chief-of-staff-41') });
   const r = add(1);
@@ -233,8 +308,8 @@ test('R-11: a Delivery Manager pass on a reality-check criterion is a side arm u
 
 test('the done gate counts the latest main-arm row per criterion on the deployed sha: a fail after a pass un-verifies', () => {
   const { dm, deploy, record, bead, call } = setup();
-  deploy('v1.4.2');
   dm('plan', ID, '--attempts', '3');
+  deploy('v1.4.2');
   record(1, 'pass');
   record(2, 'pass');
   assert.equal(G.stateOf(bead()), 'verified');
@@ -245,8 +320,8 @@ test('the done gate counts the latest main-arm row per criterion on the deployed
 
 test('capture: real-path containment in the shared checkout or the checker\'s own project clone; no symlink escape; published into the shared store', () => {
   const { root, bd, dm, deploy, capture } = setup();
-  deploy('v1.4.2');
   dm('plan', ID);
+  deploy('v1.4.2');
   const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-role-'));
   const who = { ...whoFor(root, 'reality-checker'), roleDir };
   const out = (artifact) => rc.main(['run-record', ID, '--criterion', '1', '--result', 'pass', '--artifact', artifact, '--observed-version', 'v1.4.2'], { cwd: roleDir, env: {}, now: T.run, who, bd }).out;
@@ -267,8 +342,8 @@ test('capture: real-path containment in the shared checkout or the checker\'s ow
 
 test('capture reuse: a capture already cited for another bead, criterion or sha is refused', () => {
   const { root, dm, deploy, call, capture } = setup();
-  deploy('v1.4.2');
   dm('plan', ID);
+  deploy('v1.4.2');
   const file = capture('one.txt');
   const run = (n, artifact) => call(rc, 'reality-checker', ['run-record', ID, '--criterion', String(n), '--result', 'pass', '--artifact', artifact, '--observed-version', 'v1.4.2'], T.run);
   assert.equal(run(1, file).code, 0);
@@ -279,8 +354,8 @@ test('capture reuse: a capture already cited for another bead, criterion or sha 
 
 test('Copilot: the script\'s criterion hash and tuple are what count; deployed_version and evidence_head are protected bead fields', () => {
   const { root, bd, dm, deploy, record } = setup();
-  deploy('v1.4.2');
   dm('plan', ID);
+  deploy('v1.4.2');
   // the surface declaration changes after planning: a run that followed the old script is a side arm
   const file = path.join(root, '.delivery', 'initiatives', 'vault', 'surface.json');
   const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -320,8 +395,8 @@ test('Copilot 470: the Delivery Manager refines the shared script through realit
 
 test('a side-arm run does not use up the cap', () => {
   const { dm, deploy, record } = setup();
-  deploy('v1.4.2');
   dm('plan', ID);
+  deploy('v1.4.2');
   record(1, 'pass', ['--mode', 'codex']);
   record(1, 'pass', ['--mode', 'codex']);
   assert.equal(record(1, 'fail').code, 0);

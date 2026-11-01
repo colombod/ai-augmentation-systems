@@ -429,7 +429,7 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
         const findings = [];
         if (story && inp.story) {
           const judged = await judge('shippable_unit', G.shippableState(inp.story, inp.surface));
-          findings.push(...G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead, judged }));
+          findings.push(...G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead, judged, checkScript: inp.checkScript }));
         }
         let overCap = null;
         let stories = null;

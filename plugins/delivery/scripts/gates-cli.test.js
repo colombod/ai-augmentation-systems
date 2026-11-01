@@ -10,7 +10,7 @@ const { execFileSync } = require('child_process');
 const G = require('./lib/gates.js');
 const W = require('./lib/warnings.js');
 const { loadManifest } = require('./lib/manifest.js');
-const { STORY, makeProject, storyBead, memBd } = require('./testing/gate-fixture.js');
+const { STORY, makeProject, planCheck, storyBead, memBd } = require('./testing/gate-fixture.js');
 const ready = require('./ready.js');
 const evidence = require('./evidence.js');
 const warnings = require('./warnings.js');
@@ -45,6 +45,9 @@ test('ready.js, vault-0n9.3 without a measurement plan: the pre-check only repor
   // fixed and re-recorded with an owner record: the warning resolves itself
   fs.writeFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-3.md'), STORY.replace('with the card count', 'with the card count and the deck name'));
   const again = (extra) => ready.main([ID, '--record', ...extra], { cwd: root, env, bd, who: dm, verifyRecord: require('./testing/gate-fixture.js').ownerVerify('dec-chief-of-staff-50') });
+  // the reworded criterion has no checked steps until its script is planned again
+  assert.match((await again([])).out, /block R-33 reality-check-script: criteria 1 are checked on S1 by the Reality Checker, and the script has no step group for their current wording/);
+  planCheck(root, bead());
   assert.match((await again([])).out, /changed since they were made ready \(D1\)\.\nRe-record with an owner record/);
   assert.match((await again(['--owner-record', 'dec-x-1'])).out, /dec-x-1 does not verify \(not found\)/);
   assert.equal((await again(['--owner-record', 'dec-chief-of-staff-50'])).code, 0);

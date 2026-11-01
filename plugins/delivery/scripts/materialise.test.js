@@ -175,6 +175,29 @@ test('CLI materialises then reports no drift, and exits 1 on drift', () => {
   assert.throws(() => execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo', '--check'], { env, stdio: 'pipe' }), (err) => err.status === 1 && String(err.stdout).includes('ex-demo-03'));
 });
 
+// 7k3.1.1.1: the CLI plans the reality-check script of a story the Reality Checker verifies; a dry run
+// writes none
+test('CLI plans the reality-check script of a story checked on the customer\'s app; --dry-run writes none', () => {
+  const { SURFACES, STORY } = require('./testing/gate-fixture.js');
+  const root = scratchProject();
+  fs.writeFileSync(path.join(root, '.delivery', 'initiatives', 'demo', 'surface.json'), JSON.stringify(SURFACES));
+  const body = STORY.replace(/^---[\s\S]*?---\n/, '');
+  fs.writeFileSync(path.join(root, '.delivery', 'stories', 'demo-01-first.md'), `---\nid: demo-01\ntitle: First story\nstatus: ready\nepic: demo\nphase: Phase 1\nsurface: S1\ndepends_on: []\nsize: S\n---\n${body}`);
+  execFileSync('git', ['add', '-A'], { cwd: root });
+  execFileSync('git', ['commit', '-q', '-m', 'surface'], { cwd: root });
+  const env = fakeEnv();
+  const script = path.join(PLUGIN, 'scripts', 'materialise.js');
+  const file = path.join(root, '.delivery', 'reality-checks', 'ex-demo-01.json');
+  const out = execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo'], { env }).toString();
+  assert.match(out, /^reality-check scripts planned: \.delivery\/reality-checks\/ex-demo-01\.json$/m);
+  const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual([s.story, s.planned_by, s.criteria.map((g) => g.criterion)], ['ex-demo-01', 'materialise', [1, 2]]);
+  // the beads now exist, so a dry run reaches the story and would plan its missing script; it writes none
+  fs.rmSync(file);
+  const dry = execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo', '--dry-run'], { env }).toString();
+  assert.doesNotMatch(dry, /reality-check scripts planned/);
+  assert.equal(fs.existsSync(file), false, 'a dry run plans no script');
+});
 
 test('applyPlan never adds deps to a closed bead and reports them as skippedDeps', () => {
   const bd = makeBd({ env: fakeEnv() });
