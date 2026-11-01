@@ -242,3 +242,41 @@ test('lane: the Reality Checker may run verify-run.js run; the builder and the D
   assert.equal(typed.code, 2);
   assert.match(typed.out, /unknown option --result/);
 });
+
+// A writer such as operator.js sync finds its role only through DELIVERY_ROLE and the role marker. The
+// runner clears the role's variables by default; a step marked --as-role runs as the Reality Checker.
+test('run: operator.js sync in the role directory is refused not_allowed without --as-role, and passes with it', () => {
+  const s = ready();
+  const tj = path.join(s.root, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(tj, 'utf8'));
+  if (!team.roles.some((r) => r.id === 'reality-checker')) team.roles.push({ id: 'reality-checker', brief: 'delivery/reality-checker', host: 'pc', model: 'sonnet' });
+  fs.writeFileSync(tj, JSON.stringify(team, null, 2));
+  fs.writeFileSync(path.join(s.roleDir, '.delivery-role.json'), JSON.stringify({ instance: 'reality-checker', role: 'reality-checker', host: 'pc', project_root: s.root, actor: 't@pc/reality-checker' }));
+  fs.writeFileSync(path.join(s.roleDir, '.delivery-session'), 'sess-rc');
+  const tr = path.join(s.roleDir, 't.jsonl');
+  fs.writeFileSync(tr, `${JSON.stringify({ type: 'user', origin: { kind: 'human' }, promptId: 'p1', uuid: 'u1', timestamp: '2099-10-13T10:00:01.000Z', sessionId: 'sess-rc', message: { role: 'user', content: 'ship it' } })}\n`);
+  fs.writeFileSync(path.join(s.roleDir, '.delivery-transcript'), tr);
+  const env = { ...process.env, DELIVERY_ROLE: 'reality-checker', DELIVERY_ROLE_DIR: s.roleDir, BEADS_ACTOR: 't@pc/reality-checker' };
+  delete env.DELIVERY_PROJECT_ROOT;
+  const who = { root: s.root, team: { ...loadManifest(s.root).team, product_url: s.prod.dir }, instance: 'reality-checker', roleId: 'reality-checker', actor: 't@pc/reality-checker', roleDir: s.roleDir };
+  const verify = () => vr.main(['run', ID, '--criterion', '1'], { cwd: s.root, env, bd: s.bd, now: T.run, who });
+  const command = `cd '${s.roleDir}' && '${process.execPath}' '${path.join(__dirname, 'operator.js')}' sync --format-check`;
+  assert.equal(s.refine(1, command).code, 0);
+  const without = verify();
+  assert.equal(without.code, 0, without.out);
+  assert.match(without.out, /: fail \(exit 1\)/);
+  assert.match(without.out, /--step 1 --as-role/);
+  assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--as-role').code, 0);
+  assert.equal(rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0].as_role, true);
+  const withRole = verify();
+  assert.equal(withRole.code, 0, withRole.out);
+  assert.match(withRole.out, /: pass \(exit 0\)/);
+  const rows = s.rows();
+  assert.deepEqual(rows.map((r) => r.result), ['fail', 'pass']);
+  const cap = fs.readFileSync(path.join(s.root, '.delivery', 'evidence', rows[1].capture.path), 'utf8');
+  assert.match(cap, /as role: reality-checker/);
+  assert.match(cap, /added 1 \(ok\)/);
+  // --no-as-role takes it back
+  assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--no-as-role').code, 0);
+  assert.equal(rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0].as_role, undefined);
+});

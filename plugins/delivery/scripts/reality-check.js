@@ -6,7 +6,7 @@
 //       .delivery/reality-checks/<bead>.json (templates/reality-check.json is the format); once the story
 //       is deployed, also create its reality-check child bead for the Reality Checker
 //   reality-check.js refine <bead> [--criterion <n> (--step <k> | --add-step) | --setup <k>]
-//       [--action ..] [--expect ..] [--command ..] [--match ..] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..]
+//       [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..]
 //       [--precondition <o-id>]   Delivery Manager: edit the shared script (the only way to change it)
 //   reality-check.js show <bead>                                       the script, read only
 //   reality-check.js run-record <bead> --criterion <n> --result pass|fail --artifact <path>
@@ -23,7 +23,7 @@ const W = require('./lib/warnings.js');
 const { tupleOf, TUPLE } = require('./lib/surface.js');
 const { whoAmI, gateInputs, writerProblem, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
+const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
 const VALUE = ['--criterion', '--result', '--artifact', '--observed-version', '--attempts', '--minutes', '--project', '--host', '--app', '--mode', '--install-artifact',
   '--step', '--setup', '--action', '--expect', '--command', '--match', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition'];
 // a test account is named, never given: anything that looks like a password or token is refused
@@ -37,6 +37,8 @@ function parse(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--add-step') out.add_step = true;
+    else if (a === '--as-role') out.as_role = true;
+    else if (a === '--no-as-role') out.as_role = false;
     else if (VALUE.includes(a)) { if (argv[i + 1] === undefined) throw new Error(`${a} needs a value`); out[a.slice(2).replace(/-/g, '_')] = argv[++i]; }
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
     else out._.push(a);
@@ -244,6 +246,10 @@ function refine(who, id, a, at) {
     // a command-line surface: verify-run.js runs this at the deployed sha and decides pass or fail from it
     if (a.command !== undefined) step.command = a.command;
     if (a.match !== undefined) step.match = a.match;
+    // a command that writes as a role (operator.js sync, record) needs the checker's identity, which the
+    // runner otherwise clears; --as-role keeps it for this step only
+    if (a.as_role === true) step.as_role = true;
+    if (a.as_role === false) delete step.as_role;
     if (a.capture !== undefined) step.capture = a.capture.split(',').map((x) => x.trim()).filter(Boolean);
   };
   const changed = [];

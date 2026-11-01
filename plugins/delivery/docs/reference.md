@@ -454,7 +454,9 @@ driven by commands) has no screen, so the Reality Checker checks it with
 The Delivery Manager puts the command in the script step with `reality-check.js refine <bead>
 --criterion <n> --step <k> --command '<shell command>' [--match '<pattern stdout must show>']`. The runner
 checks out the bead's deployed sha (the full sha) in `verify/<bead>-<sha12>` of the role directory,
-runs the command there with the role's variables cleared, saves the command, sha, stdout, stderr and
+runs the command there with the role's variables cleared (a step refined with `--as-role` keeps the
+Reality Checker's own role variables instead, for a command that writes as a role, such as
+`cd <role directory> && operator.js sync`; `--no-as-role` takes it back), saves the command, sha, stdout, stderr and
 exit code as the capture, decides the result itself (exit 0, and the match found in stdout when the step
 has one), and records the row through `run-record`, so the run cap, the capture rules and the andon on
 a fail all apply. The agent types no result, and the builder's lane has no way to write the row.
