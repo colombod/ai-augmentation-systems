@@ -242,3 +242,156 @@ test('lane: the Reality Checker may run verify-run.js run; the builder and the D
   assert.equal(typed.code, 2);
   assert.match(typed.out, /unknown option --result/);
 });
+
+// A writer such as operator.js sync finds its role only through DELIVERY_ROLE and the role marker. The
+// runner clears the role's variables by default; a step marked --as-role runs as the Reality Checker.
+test('run: operator.js sync in the role directory is refused not_allowed without --as-role, and passes with it', () => {
+  const s = ready();
+  const tj = path.join(s.root, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(tj, 'utf8'));
+  if (!team.roles.some((r) => r.id === 'reality-checker')) team.roles.push({ id: 'reality-checker', brief: 'delivery/reality-checker', host: 'pc', model: 'sonnet' });
+  fs.writeFileSync(tj, JSON.stringify(team, null, 2));
+  fs.writeFileSync(path.join(s.roleDir, '.delivery-role.json'), JSON.stringify({ instance: 'reality-checker', role: 'reality-checker', host: 'pc', project_root: s.root, actor: 't@pc/reality-checker' }));
+  fs.writeFileSync(path.join(s.roleDir, '.delivery-session'), 'sess-rc');
+  const tr = path.join(s.roleDir, 't.jsonl');
+  fs.writeFileSync(tr, `${JSON.stringify({ type: 'user', origin: { kind: 'human' }, promptId: 'p1', uuid: 'u1', timestamp: '2099-10-13T10:00:01.000Z', sessionId: 'sess-rc', message: { role: 'user', content: 'ship it' } })}\n`);
+  fs.writeFileSync(path.join(s.roleDir, '.delivery-transcript'), tr);
+  const env = { ...process.env, DELIVERY_ROLE: 'reality-checker', DELIVERY_ROLE_DIR: s.roleDir, BEADS_ACTOR: 't@pc/reality-checker' };
+  delete env.DELIVERY_PROJECT_ROOT;
+  const who = { root: s.root, team: { ...loadManifest(s.root).team, product_url: s.prod.dir }, instance: 'reality-checker', roleId: 'reality-checker', actor: 't@pc/reality-checker', roleDir: s.roleDir };
+  const verify = () => vr.main(['run', ID, '--criterion', '1'], { cwd: s.root, env, bd: s.bd, now: T.run, who });
+  const command = `cd '${s.roleDir}' && node '${path.join(__dirname, 'operator.js')}' sync --format-check`;
+  assert.equal(s.refine(1, command).code, 0);
+  const without = verify();
+  assert.equal(without.code, 0, without.out);
+  assert.match(without.out, /: fail \(exit 1\)/);
+  assert.match(without.out, /--step 1 --as-role/);
+  assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--as-role').code, 0);
+  assert.equal(rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0].as_role, true);
+  const withRole = verify();
+  assert.equal(withRole.code, 0, withRole.out);
+  assert.match(withRole.out, /: pass \(exit 0\)/);
+  const rows = s.rows();
+  assert.deepEqual(rows.map((r) => r.result), ['fail', 'pass']);
+  const cap = fs.readFileSync(path.join(s.root, '.delivery', 'evidence', rows[1].capture.path), 'utf8');
+  assert.match(cap, /as role: reality-checker/);
+  assert.match(cap, /added 1 \(ok\)/);
+  // a re-plan keeps the refined step, its mark included
+  assert.equal(s.dm('plan', ID).code, 0);
+  assert.equal(rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0].as_role, true);
+  // --no-as-role takes it back
+  assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--no-as-role').code, 0);
+  assert.equal(rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0].as_role, undefined);
+});
+
+// The checker's identity in a step is outside its lane hook, so only operator.js sync may run with it:
+// a writer of rows, reviews or beads there would write the done gate in the checker's name.
+test('refine: --as-role is refused for any command but operator.js sync, and the runner refuses a hand-edited one', () => {
+  const s = ready();
+  const step = () => rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0];
+  const op = `'${path.join(__dirname, 'operator.js')}'`;
+  for (const ok of [`node ${op} sync`, `cd '/r d/rc' && node ${op} sync --format-check`, `'${process.execPath}' ${op} sync --all --json`]) {
+    assert.equal(rc.asRoleProblem(ok), null, ok);
+  }
+  for (const bad of [
+    `node /p/reality-check.js run-record ${ID} --criterion 1 --result pass`,
+    `node /p/evidence.js add ${ID} --criterion 1 --result pass`,
+    'bd update x --append-notes y', 'node /p/review.js record 1 --result pass',
+    `node ${op} record --cite x --quote y --statement z`,
+    `node ${op} sync; node /p/evidence.js add x`, `node ${op} sync && bd close x`, `node ${op} sync | sh`,
+    `node ${op} sync $(bd close x)`, `node ${op} sync \`bd close x\``, `FOO=1 node ${op} sync`, `node -r /x.js ${op} sync`,
+    `node ${op} sync > /p/rows.ndjson`, `node "${op}$X" sync`, `node ${op}'' sync`, 'sh tool.sh', '',
+  ]) {
+    assert.ok(rc.asRoleProblem(bad), `not refused: ${bad}`);
+    assert.equal(s.refine(1, bad).code, 0);
+    const r = s.dm('refine', ID, '--criterion', '1', '--step', '1', '--as-role');
+    assert.equal(r.code, 1, bad);
+    assert.match(r.out, /--as-role is only for the form/);
+    assert.equal(step().as_role, undefined, bad);
+  }
+  // a command changed under an existing mark is refused too
+  assert.equal(s.refine(1, `node ${op} sync`).code, 0);
+  assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--as-role').code, 0);
+  assert.equal(s.refine(1, 'node /p/evidence.js add x').code, 1);
+  assert.equal(step().command, `node ${op} sync`);
+  // a script edited by hand: the runner refuses before any checkout or spawn, and writes no row
+  const file = path.join(s.root, rc.scriptRel(ID));
+  const script = JSON.parse(fs.readFileSync(file, 'utf8'));
+  Object.assign(script.criteria.find((g) => g.criterion === 1).steps[0], { command: 'node /p/evidence.js add x', as_role: true });
+  fs.writeFileSync(file, JSON.stringify(script));
+  const r = s.verify(1);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /--as-role is only for the form/);
+  assert.equal(s.rows().length, 0);
+  assert.ok(!fs.existsSync(path.join(s.roleDir, 'verify')));
+});
+
+// The allowlist compares real paths, the exact program and the checker's own role directory, never a
+// basename: each refused form below once passed a basename check, and two of them ran as the checker.
+test('as-role: only the real operator.js, run by node, from the checker\'s role directory; each bypass is refused', () => {
+  const OP = path.join(__dirname, 'operator.js');
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vr-asrole-'));
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'vr-asrole-other-'));
+  // a file named operator.js that is not this plugin's, and a link that resolves to the real one
+  const evil = path.join(elsewhere, 'operator.js');
+  fs.writeFileSync(evil, 'process.exit(0)\n');
+  const link = path.join(elsewhere, 'linked.js');
+  fs.symlinkSync(OP, link);
+  const ctx = { roleDir };
+  for (const ok of [
+    `node '${OP}' sync`, `node '${link}' sync --json`, `'${process.execPath}' '${OP}' sync --format-check`,
+    `cd '${roleDir}' && node '${OP}' sync --all`,
+  ]) assert.equal(rc.asRoleProblem(ok, ctx), null, ok);
+  for (const [bad, why] of [
+    [`node '${evil}' sync`, /is not this plugin's operator\.js/],
+    [`node ../../../evil/operator.js sync`, /absolute path/],
+    [`cd '${elsewhere}' && node ./operator.js sync`, /role directory|absolute path/],
+    [`cd '${elsewhere}' && node '${OP}' sync`, /not the Reality Checker's role directory/],
+    [`cd /nonexistent-dir && node '${OP}' sync`, /not the Reality Checker's role directory/],
+    [`cd rel && node '${OP}' sync`, /cd target must be an absolute path/],
+    [`cd '${roleDir}' && ./node '${OP}' sync`, /program must be node/],
+    [`/usr/local/bin/not-node '${OP}' sync`, /program must be node/],
+    [`node ~/operator.js sync`, /absolute path/],
+    [`cd\n/evil/payload.sh && node '${OP}' sync`, /control character/],
+    [`node '${OP}' sync\nbd close x`, /control character/],
+    [`node '${OP}' sync\rbd close x`, /control character/],
+    [`node\t'${OP}' sync`, /control character/],
+    [`node '${OP}' sync`, /plain command/],
+    [`node '${OP}' record --cite x`, /only subcommand allowed is sync/],
+    [`node '${OP}' sync --project /x`, /sync takes only/],
+  ]) {
+    const p = rc.asRoleProblem(bad, ctx);
+    assert.ok(p, `not refused: ${JSON.stringify(bad)}`);
+    assert.match(p, why, JSON.stringify(bad));
+  }
+  // refine does not know the checker's directory: an absolute cd target passes there, and the runner refuses it
+  assert.equal(rc.asRoleProblem(`cd '${elsewhere}' && node '${OP}' sync`), null);
+  assert.ok(rc.asRoleProblem(`cd '${elsewhere}' && node '${OP}' sync`, { roleDir: null }));
+  const s = ready();
+  assert.equal(s.refine(1, `cd '${elsewhere}' && node '${OP}' sync`).code, 0);
+  assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--as-role').code, 0);
+  const r = s.verify(1);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /not the Reality Checker's role directory/);
+  assert.equal(s.rows().length, 0);
+  assert.ok(!fs.existsSync(path.join(s.roleDir, 'verify')));
+  // and the same step with a cd into the checker's own role directory gets past the check to the run
+  assert.equal(s.refine(1, `cd '${s.roleDir}' && node '${OP}' sync --format-check`).code, 0);
+  assert.doesNotMatch(s.verify(1).out, /--as-role is only for the form/);
+});
+
+// operator.js names its refusal two ways (the code not_allowed, and the words "no valid role marker");
+// either one, alone, makes the runner name the --as-role fix, and other failures do not.
+test('run: the hint names --as-role on either wording of the role refusal, and not on another failure', () => {
+  const OP = path.join(__dirname, 'operator.js');
+  const hinted = (stderr) => {
+    const s = ready();
+    assert.equal(s.refine(1, `node '${OP}' sync`).code, 0);
+    const r = verifyWith(s, (cmd, args, opts) => (cmd === '/bin/sh' ? { status: 1, stdout: '', stderr } : spawnSync(cmd, args, opts)));
+    assert.match(r.out, /: fail \(exit 1\)/);
+    return /--step 1 --as-role/.test(r.out);
+  };
+  assert.equal(hinted('operator.js: no valid role marker for this session\n'), true);
+  assert.equal(hinted('operator.js: not_allowed\n'), true);
+  assert.equal(hinted('operator.js: disk full\n'), false);
+});

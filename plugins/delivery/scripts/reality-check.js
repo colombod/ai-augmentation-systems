@@ -6,7 +6,7 @@
 //       .delivery/reality-checks/<bead>.json (templates/reality-check.json is the format); once the story
 //       is deployed, also create its reality-check child bead for the Reality Checker
 //   reality-check.js refine <bead> [--criterion <n> (--step <k> | --add-step) | --setup <k>]
-//       [--action ..] [--expect ..] [--command ..] [--match ..] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..]
+//       [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..]
 //       [--precondition <o-id>]   Delivery Manager: edit the shared script (the only way to change it)
 //   reality-check.js show <bead>                                       the script, read only
 //   reality-check.js run-record <bead> --criterion <n> --result pass|fail --artifact <path>
@@ -23,7 +23,7 @@ const W = require('./lib/warnings.js');
 const { tupleOf, TUPLE } = require('./lib/surface.js');
 const { whoAmI, gateInputs, writerProblem, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
+const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
 const VALUE = ['--criterion', '--result', '--artifact', '--observed-version', '--attempts', '--minutes', '--project', '--host', '--app', '--mode', '--install-artifact',
   '--step', '--setup', '--action', '--expect', '--command', '--match', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition'];
 // a test account is named, never given: anything that looks like a password or token is refused
@@ -37,6 +37,8 @@ function parse(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--add-step') out.add_step = true;
+    else if (a === '--as-role') out.as_role = true;
+    else if (a === '--no-as-role') out.as_role = false;
     else if (VALUE.includes(a)) { if (argv[i + 1] === undefined) throw new Error(`${a} needs a value`); out[a.slice(2).replace(/-/g, '_')] = argv[++i]; }
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
     else out._.push(a);
@@ -44,7 +46,62 @@ function parse(argv) {
   return out;
 }
 
-const scriptRel = (bead) => `.delivery/reality-checks/${bead}.json`;
+// The one command a step may run as the Reality Checker (refine --as-role): this plugin's own operator.js
+// sync, after an optional cd into the checker's role directory, with flags only. A step that keeps the
+// checker's identity runs outside its lane hook, so any other writer there (run-record, evidence.js add,
+// review.js, a bd write, or any file merely named operator.js) would write the done gate in the checker's
+// name. An allowlist, not a denylist: a shell can spell a refused command too many ways. Paths are compared
+// after resolving links, never by basename: a basename check let `node /any/dir/operator.js sync` and
+// `cd /anywhere && node ./operator.js sync` through.
+const AS_ROLE_FORM = "[cd <the Reality Checker's role directory> &&] node <absolute path of this plugin's scripts>/operator.js sync [--format-check] [--all] [--json]";
+const SYNC_FLAGS = new Set(['--format-check', '--all', '--json']);
+const OPERATOR_JS = path.join(__dirname, 'operator.js');
+const AND = Symbol('&&');
+// words of a plain command: single-quoted, double-quoted without expansion, bare, and `&&`, separated by
+// spaces only; null for anything else (a pipe, `;`, a redirect, a substitution, a variable, words run
+// together). To sh a newline separates commands, not words, so asRoleProblem refuses every control
+// character first, and only the space separates words here.
+function shellWords(text) {
+  const out = [];
+  const re = / *(?:(&&)|'([^']*)'|"([^"$`\\!]*)"|([A-Za-z0-9_@%+=:,./~-]+))(?= |&&|$)/y;
+  let i = 0;
+  while (i < text.length) {
+    if (!text.slice(i).trim()) break;
+    re.lastIndex = i;
+    const m = re.exec(text);
+    if (!m) return null;
+    out.push(m[1] ? AND : (m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4]));
+    i = re.lastIndex;
+  }
+  return out;
+}
+const real = (p) => { try { return fs.realpathSync(p); } catch (err) { return null; } };
+// roleDir is the Reality Checker's role directory. verify-run, the one place the command executes, passes
+// it, and a cd anywhere else is refused there. refine runs as the Delivery Manager, who does not know that
+// directory, so it passes none and only an absolute cd target is required at that point.
+function asRoleProblem(command, { roleDir } = {}) {
+  const no = (why) => `--as-role is only for the form ${AS_ROLE_FORM}: any other command run as the Reality Checker could write rows, reviews or beads in its name (${why}). Make the step a plain command (--no-as-role)`;
+  const text = String(command || '');
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(text)) return no('it holds a newline or another control character');
+  const w = shellWords(text);
+  if (!w || !w.length) return no('it is not one plain command');
+  let i = 0;
+  if (w[0] === 'cd') {
+    if (typeof w[1] !== 'string' || w[2] !== AND) return no('a cd must be followed by &&');
+    if (!path.isAbsolute(w[1])) return no('the cd target must be an absolute path');
+    if (roleDir !== undefined && (!roleDir || !real(w[1]) || real(w[1]) !== real(roleDir))) return no(`the cd target ${w[1]} is not the Reality Checker's role directory`);
+    i = 3;
+  }
+  const [bin, script, sub, ...flags] = w.slice(i);
+  if (bin !== 'node' && bin !== process.execPath) return no('the program must be node');
+  if (typeof script !== 'string' || !path.isAbsolute(script)) return no('operator.js must be named by its absolute path');
+  if (!real(script) || real(script) !== real(OPERATOR_JS)) return no(`${script} is not this plugin's operator.js, ${OPERATOR_JS}`);
+  if (sub !== 'sync') return no('the only subcommand allowed is sync');
+  if (!flags.every((f) => typeof f === 'string' && SYNC_FLAGS.has(f))) return no(`sync takes only ${[...SYNC_FLAGS].join(', ')}`);
+  return null;
+}
+
+const scriptRel = (bead) =>`.delivery/reality-checks/${bead}.json`;
 const artifactsRel = (bead) => `.delivery/evidence/artifacts/${bead}/`;
 const refuse = (text) => ({ code: 1, out: `reality-check.js: ${text}` });
 function readScript(root, bead) { try { return JSON.parse(fs.readFileSync(path.join(root, scriptRel(bead)), 'utf8')); } catch (err) { return null; } }
@@ -244,7 +301,12 @@ function refine(who, id, a, at) {
     // a command-line surface: verify-run.js runs this at the deployed sha and decides pass or fail from it
     if (a.command !== undefined) step.command = a.command;
     if (a.match !== undefined) step.match = a.match;
+    // operator.js sync writes as a role, so it needs the checker's identity, which the runner otherwise
+    // clears; --as-role keeps it for this step only, and only for the one form asRoleProblem allows
+    if (a.as_role === true) step.as_role = true;
+    if (a.as_role === false) delete step.as_role;
     if (a.capture !== undefined) step.capture = a.capture.split(',').map((x) => x.trim()).filter(Boolean);
+    return step.as_role ? asRoleProblem(step.command) : null;
   };
   const changed = [];
   if (a.criterion !== undefined) {
@@ -253,20 +315,23 @@ function refine(who, id, a, at) {
     if (a.add_step) {
       if (!a.action || !a.expect) return { code: 2, out: 'reality-check.js: --add-step needs --action and --expect' };
       const step = { n: g.steps.length + 1, capture: ['screenshot', 'page-text'] };
-      fields(step);
+      const p = fields(step);
+      if (p) return refuse(p);
       g.steps.push(step);
       changed.push(`criterion ${g.criterion} step ${step.n} added`);
     } else if (a.step !== undefined) {
       const step = g.steps.find((x) => x.n === Number(a.step));
       if (!step) return refuse(`criterion ${g.criterion} has no step ${a.step} (1..${g.steps.length})`);
-      fields(step);
+      const p = fields(step);
+      if (p) return refuse(p);
       changed.push(`criterion ${g.criterion} step ${step.n}`);
     }
     if (a.pass_rule !== undefined) { g.pass_rule = a.pass_rule; changed.push(`criterion ${g.criterion} pass rule`); }
   } else if (a.setup !== undefined) {
     const step = (s.setup || [])[Number(a.setup) - 1];
     if (!step) return refuse(`no setup step ${a.setup} (1..${(s.setup || []).length})`);
-    fields(step);
+    const p = fields(step);
+    if (p) return refuse(p);
     changed.push(`setup step ${a.setup}`);
   }
   if (a.account !== undefined) {
@@ -310,4 +375,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, buildScript, readScript, pending, scriptRel, artifactsRel, DEFAULT_CAP, LABEL };
+module.exports = { main, buildScript, readScript, pending, scriptRel, artifactsRel, asRoleProblem, DEFAULT_CAP, LABEL };
