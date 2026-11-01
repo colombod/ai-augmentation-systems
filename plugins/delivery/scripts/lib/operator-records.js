@@ -384,7 +384,11 @@ function validateCore(st, rec, view, mode) {
     if (!ownsInput(by, input)) return { err: bad('not_allowed', `only the chief of staff or the instance and session that captured ${cid} may record it; send the input id ${cid} to the chief of staff`) };
     if (delegation && !DELEGATORS.has(by.role)) return { err: bad('not_allowed', `only the chief of staff or the product manager records a delegation; send the operator's input id to the chief of staff`) };
     if (W && qc.attributed) st.warn(`quote_may_be_attributed: the quoted words sit inside quotation marks in ${cid}; check the operator is not quoting someone else (operator.js show ${cid})`);
-    if (qc.question) return { err: bad('quote_is_question', `the sentence containing the quote is a question, not an instruction; cite the operator's answer to it (operator.js pending lists inputs)`) };
+    // A reply to an open question may itself end in "?" ("I said already builders can be dynamic numbers
+    // and you asking me that again?"): linked to the question it answers (--answers, checked below for
+    // order and one-answer-per-input), the sentence is an answer, not a question (fwa.1)
+    const answering = Array.isArray(rec.answers) && rec.answers.length > 0;
+    if (qc.question && !answering) return { err: bad('quote_is_question', `the sentence containing the quote is a question, not an instruction; cite the operator's answer to it (operator.js pending lists inputs), or, when this sentence answers an open question, pass --answers q-...`) };
     return { input, qc };
   };
 

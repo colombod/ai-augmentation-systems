@@ -1611,3 +1611,20 @@ test('B1: one operator input answers one question; a second --answers from the s
   assert.strictEqual(R.verifyRecord(root, d2.id).ok, true);
   assert.strictEqual(R.verifyRecord(root, d1.id).ok, true, 'the superseded pairing stays valid history');
 });
+
+// fwa.1: the operator's answer to an open question can end in "?"; linked to the question with
+// --answers it is recorded, while the same sentence on its own still reads as a question
+test('fwa.1: a reply ending in "?" is recorded when it answers an open question, refused otherwise', () => {
+  const root = mk('oprec-proj-');
+  writeManifest(root);
+  const q = ask(root, { text: 'May the team run more than one builder?' });
+  sync(root, writeTranscript([human('I said already builders can be dynamic numbers and you asking me that again?', 1)]));
+  const rec = (over = {}) => R.recordDecision({ projectRoot: root, cite: 'in-pc-000001', quote: 'builders can be dynamic numbers',
+    statement: 'The builder count is dynamic', scope: scope({ beads: ['ex-1'] }), by: COS, ...over });
+  assert.strictEqual(codeOf(() => rec()), 'quote_is_question');
+  assert.strictEqual(codeOf(() => rec({ answers: ['q-chief-of-staff-000099'] })), 'not_found', 'the answered question must exist');
+  const d = rec({ answers: [q.id] });
+  assert.deepStrictEqual(d.answers, [q.id]);
+  assert.strictEqual(R.ledger(root, {})[0].status, 'answered');
+  assert.strictEqual(R.verifyRecord(root, d.id).ok, true);
+});
