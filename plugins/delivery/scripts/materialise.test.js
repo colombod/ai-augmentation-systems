@@ -188,13 +188,15 @@ test('CLI plans the reality-check script of a story checked on the customer\'s a
   const env = fakeEnv();
   const script = path.join(PLUGIN, 'scripts', 'materialise.js');
   const file = path.join(root, '.delivery', 'reality-checks', 'ex-demo-01.json');
-  const dry = execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo', '--dry-run'], { env }).toString();
-  assert.doesNotMatch(dry, /reality-check scripts planned/);
-  assert.equal(fs.existsSync(file), false, 'a dry run plans no script');
   const out = execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo'], { env }).toString();
   assert.match(out, /^reality-check scripts planned: \.delivery\/reality-checks\/ex-demo-01\.json$/m);
   const s = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.deepEqual([s.story, s.planned_by, s.criteria.map((g) => g.criterion)], ['ex-demo-01', 'materialise', [1, 2]]);
+  // the beads now exist, so a dry run reaches the story and would plan its missing script; it writes none
+  fs.rmSync(file);
+  const dry = execFileSync(process.execPath, [script, '--project', root, '--initiative', 'demo', '--dry-run'], { env }).toString();
+  assert.doesNotMatch(dry, /reality-check scripts planned/);
+  assert.equal(fs.existsSync(file), false, 'a dry run plans no script');
 });
 
 test('applyPlan never adds deps to a closed bead and reports them as skippedDeps', () => {
