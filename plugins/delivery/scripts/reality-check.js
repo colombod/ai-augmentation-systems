@@ -106,9 +106,7 @@ const artifactsRel = (bead) => `.delivery/evidence/artifacts/${bead}/`;
 const refuse = (text) => ({ code: 1, out: `reality-check.js: ${text}` });
 function readScript(root, bead) { try { return JSON.parse(fs.readFileSync(path.join(root, scriptRel(bead)), 'utf8')); } catch (err) { return null; } }
 
-// The criteria a reality check covers: those whose probe says `by: reality-check`, and on a surface that
-// is not scriptable, or is a command line (verify-run.js runs its commands), every criterion.
-const covered = (story, surface) => story.criteria.filter((c) => (c.probe && c.probe.by === 'reality-check') || surface.scriptable === false || surface.command_line === true);
+const covered = G.checkCovered;
 const expectOf = (c) => (c.probe ? c.probe.text.replace(/;\s*(?:where|by):[^;]*/gi, '').trim() : c.text);
 
 // A step group per covered criterion. A group the Delivery Manager already refined is kept as long as
@@ -167,16 +165,31 @@ function plan(who, store, id, a, at) {
     if (!Number.isInteger(n) || n < 1) return { code: 2, out: `reality-check.js: --${k} must be a whole number of at least 1` };
     cap[k] = n;
   }
-  const script = buildScript({ bead, story: inp.story, surface: inp.surface, old: readScript(who.root, id), cap, at, by: who.instance });
-  fs.mkdirSync(path.join(who.root, '.delivery', 'reality-checks'), { recursive: true });
-  fs.writeFileSync(path.join(who.root, scriptRel(id)), `${JSON.stringify(script, null, 2)}\n`);
+  const script = writeScript(who.root, bead, inp, { cap, at, by: who.instance });
   const lines = [`${scriptRel(id)}: ${groups.length} criterion group(s) on ${inp.surface.id}, cap ${script.cap.attempts} attempts and ${script.cap.minutes} minutes`];
   const sha = (bead.metadata || {}).deployed_sha;
   if (!sha) {
     lines.push(`not deployed yet: after \`evidence.js state ${id} deployed --sha <sha>\`, run plan again to dispatch the check`);
     return { code: 0, out: lines.join('\n') };
   }
-  // one check bead per deployed sha: a new deploy is a new check, the old one stays as it was
+  lines.push(...dispatch(who, store, bead, inp, sha));
+  return { code: 0, out: lines.join('\n') };
+}
+
+// Writes the bead's script (scriptRel) from the story, keeping every step group already refined
+// for an unchanged criterion. Shared by plan, materialise (a planned story gets its script) and the deploy.
+function writeScript(root, bead, inp, { cap = {}, at, by }) {
+  const script = buildScript({ bead, story: inp.story, surface: inp.surface, old: readScript(root, bead.id), cap, at, by });
+  fs.mkdirSync(path.join(root, '.delivery', 'reality-checks'), { recursive: true });
+  fs.writeFileSync(path.join(root, scriptRel(bead.id)), `${JSON.stringify(script, null, 2)}\n`);
+  return script;
+}
+
+// The check bead for one deployed sha, created once: a new deploy is a new check, the old one stays as
+// it was. Returns the lines to report.
+function dispatch(who, store, bead, inp, sha) {
+  const id = bead.id;
+  const lines = [];
   const child = `${id}-rc-${String(sha).slice(0, 7)}`;
   if (!store.show(child)) {
     store.create({ id: child, parent: id, type: 'task', labels: [LABEL], title: `Reality check: ${inp.story.meta.title || id} on ${inp.surface.id} at ${String(sha).slice(0, 7)}`,
@@ -186,7 +199,7 @@ function plan(who, store, id, a, at) {
   let hasChecker = false;
   try { hasChecker = (who.team.roles || []).some((r) => r.id === 'reality-checker' && !r.retired); } catch (err) { hasChecker = false; }
   lines.push(hasChecker ? 'message the Reality Checker with the bead id' : 'warning: the team has no Reality Checker: add it to team.json and prepare it; the check is never the owner\'s');
-  return { code: 0, out: lines.join('\n') };
+  return lines;
 }
 
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, 16);
@@ -375,4 +388,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, buildScript, readScript, pending, scriptRel, artifactsRel, asRoleProblem, DEFAULT_CAP, LABEL };
+module.exports = { main, buildScript, readScript, writeScript, dispatch, pending, scriptRel, artifactsRel, asRoleProblem, DEFAULT_CAP, LABEL };

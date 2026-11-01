@@ -105,6 +105,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       return { code: 0, out: `${id}: merged${a.pr ? ` (${a.pr})` : ''}, not verified` };
     }
     if (word === 'deployed' && a.sha) {
+      // a story the Reality Checker verifies is deployed only with its check planned: otherwise the deploy
+      // leaves a check nobody can run (R-33)
+      const gap = G.checkScriptGap(inp.story, inp.surface, inp.checkScript);
+      if (gap.length) return refuse(`${id} is not marked deployed: criteria ${gap.map((c) => c.n).join(', ')} are checked on ${inp.surface.id} by the Reality Checker and ${inp.checkScript ? 'its script has no step group for their current wording' : 'no reality-check script is planned'}. Plan it (reality-check.js plan ${id}), then record the deploy again.`);
       // the same sha again keeps its deploy time, so its rows still count
       const same = G.shaMatch(m.deployed_sha, a.sha);
       const meta = { ...m, deployed_sha: same ? m.deployed_sha : a.sha, deployed_at: same && m.deployed_at ? m.deployed_at : at };
@@ -118,7 +122,15 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       if (!d.ok && !same) {
         try { handed = require('./lib/handoff.js').queue(who.root, { bead: id, step: 'check', to: who.instance, from: who.instance, sha: meta.deployed_sha, at }) ? '; its reality check is handed to the watchdog' : ''; } catch (err) { handed = `; its reality check was not handed to the watchdog (${String(err.message).split('\n')[0]}): dispatch it in this turn`; }
       }
-      return { code: 0, out: `${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}${handed}` };
+      // the check bead for this sha, with the script stamped with it, so the Reality Checker has both
+      const checks = [];
+      if (!d.ok && G.checkCovered(inp.story, inp.surface).length) {
+        const rc = require('./reality-check.js');
+        const fresh = store.show(id);
+        rc.writeScript(who.root, fresh, inp, { at, by: who.instance });
+        checks.push(...rc.dispatch(who, store, fresh, inp, meta.deployed_sha));
+      }
+      return { code: 0, out: [`${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}${handed}`, ...checks].join('\n') };
     }
     return { code: 2, out: USAGE };
   }
