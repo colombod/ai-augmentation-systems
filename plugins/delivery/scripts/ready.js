@@ -119,7 +119,7 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
   const judged = await judgeShippable(inp.story, inp.surface, who, deps).catch(() => null);
   const record = a.flags.has('record');
   // the pre-check reports only; nothing was claimed, so not-ready and scope drift are not findings here
-  const findings = [...G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead, judged }),
+  const findings = [...G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead, judged, checkScript: inp.checkScript }),
     ...G.claimDivergence({ story: inp.story, bead, parent: inp.parent, parentStory: inp.parentStory }).filter((f) => f.code !== 'not-ready' && f.code !== 'criteria-changed')];
   const asm = A.forStory(who.root, bead, { bd: store, team: who.team, verifyRecord, storyId: (bead.metadata || {}).story || String(inp.story.meta.id || '') });
   findings.push(...asm.findings);

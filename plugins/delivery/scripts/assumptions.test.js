@@ -16,7 +16,7 @@ const { reasonProblems } = require('./lib/short-reason.js');
 const { main: assumptions } = require('./assumptions.js');
 const { main: ready } = require('./ready.js');
 const { gateChecks, decideBd } = require('../hooks/scripts/bd-guard.js');
-const { STORY, makeProject, storyBead, memBd } = require('./testing/gate-fixture.js');
+const { STORY, makeProject, planCheck, storyBead, memBd } = require('./testing/gate-fixture.js');
 
 const FILE_HANDOFF = 'The ChatGPT app passes an attached file to the tool as an https download link';
 const PASTE = 'A player can paste 5,000 lines of CSV in one message';
@@ -34,6 +34,7 @@ const VERIFY = (root, id) => (id === 'dec-chief-of-staff-30' ? scoped(['ex-vault
 function setup(rows, { arch = ARCH } = {}) {
   const root = makeProject();
   fs.writeFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-4.md'), OTHER);
+  planCheck(root, storyBead({ id: 'ex-vault-0n9-4', metadata: { story_file: 'vault-0n9-4.md' } }));
   fs.writeFileSync(A.fileOf(root, 'vault'), register(...rows));
   const team = loadManifest(root).team;
   const plan = planGraph({ prefix: 'ex', initiative: 'vault', sha: 'abc1234', roadmap: { phases: [{ number: '1', name: 'Collections', items: [] }] },

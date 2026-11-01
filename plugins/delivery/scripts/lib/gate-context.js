@@ -76,7 +76,10 @@ function gateInputs(root, bead, { bd, team } = {}) {
   // no surface declared for this story (no surface.json, no initiative, several and none named):
   // evidence counts without the surface check, with a warning (R-09 is warn-level)
   const noSurface = !s.surfaces.length || !surfaceId;
-  return { story, initiative, surfaces: s.surfaces, surfaceMissing: s.missing || s.problems.length > 0, surfaceId, surface, noSurface,
+  // the planned reality-check script (reality-check.js scriptRel), null when there is none
+  let checkScript = null;
+  try { checkScript = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'reality-checks', `${bead.id}.json`), 'utf8')); } catch (err) { checkScript = null; }
+  return { checkScript, story, initiative, surfaces: s.surfaces, surfaceMissing: s.missing || s.problems.length > 0, surfaceId, surface, noSurface,
     rows: ev.rows, evidenceProblem: G.headProblem(ev, bead), instances, parent, parentStory: parent ? readStory(root, parent) : null };
 }
 

@@ -362,7 +362,7 @@ function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now, dea
       try {
         const inp = C.gateInputs(root, b, { bd, team });
         const isStory = G.isStoryBead(b);
-        return [...(isStory && inp.story ? G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead: b }) : []),
+        return [...(isStory && inp.story ? G.readyFindings({ story: inp.story, surfaces: inp.surfaces, surfaceMissing: inp.surfaceMissing, bead: b, checkScript: inp.checkScript }) : []),
           ...G.claimDivergence({ story: isStory ? inp.story : null, isStory, bead: b, parent: inp.parent, parentStory: inp.parentStory })].filter((x) => x.level === 'block');
       } catch (err) { return []; }
     },

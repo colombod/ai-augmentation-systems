@@ -11,7 +11,7 @@ const A = require('./lib/assumptions.js');
 const { planGraph } = require('./lib/plan-graph.js');
 const { parseSpikes } = require('./lib/plan-docs.js');
 const { reasonProblems } = require('./lib/short-reason.js');
-const { STORY, makeProject } = require('./testing/gate-fixture.js');
+const { STORY, makeProject, planCheck, storyBead } = require('./testing/gate-fixture.js');
 const { harness, evIdOf } = require('./testing/role-harness.js');
 
 const FILE_HANDOFF = 'The ChatGPT app passes an attached file to the tool as an https download link';
@@ -22,6 +22,7 @@ const ARCH = '## Spikes\n\n| # | Question to answer | Decision it informs | Deci
 function setup() {
   const root = makeProject();
   fs.writeFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-4.md'), STORY.replace('id: vault-0n9-3', 'id: vault-0n9-4').replace('Import a collection by dropping a CSV in the chat', 'Show the collection summary'));
+  planCheck(root, storyBead({ id: 'ex-vault-0n9-4', metadata: { story_file: 'vault-0n9-4.md' } }));
   fs.writeFileSync(A.fileOf(root, 'vault'), register(row('A-8', FILE_HANDOFF, 'external-host', 'vault-0n9-3#1 vault-0n9-3#2')));
   const plan = planGraph({ prefix: 'ex', initiative: 'vault', sha: 'abc1234', roadmap: { phases: [{ number: '1', name: 'Collections', items: [] }] },
     stories: [], spikes: parseSpikes(ARCH), assumptions: A.loadRegister(root, 'vault').rows });

@@ -225,6 +225,26 @@ function reconcile({ plan, bd, roadmap, initiative }) {
   return out;
 }
 
+// Every planned story the Reality Checker verifies gets its reality-check script here, so no story reaches
+// ready or deployed with a check nobody can run (R-33). A script already planned keeps its refined step
+// groups; one already covering every such criterion is left as it is. Returns the beads written.
+function planChecks({ projectRoot, plan, bd, by, at }) {
+  const G = require('./lib/gates.js');
+  const { gateInputs } = require('./lib/gate-context.js');
+  const rc = require('./reality-check.js');
+  const written = [];
+  for (const b of plan.beads) {
+    if (!b.labels.includes('story')) continue;
+    const bead = bd.show(b.id);
+    if (!bead || bead.status === 'closed') continue;
+    const inp = gateInputs(projectRoot, bead, { bd });
+    if (!G.checkScriptGap(inp.story, inp.surface, inp.checkScript).length) continue;
+    rc.writeScript(projectRoot, bead, inp, { at, by });
+    written.push(b.id);
+  }
+  return written;
+}
+
 function writeDenylist(projectRoot, entries) {
   const file = path.join(projectRoot, '.delivery', 'team', 'denylist.txt');
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -287,8 +307,10 @@ if (require.main === module) {
     const entries = denylistFrom({ initiative: args.initiative, roadmap: inputs.roadmap, stories: inputs.stories, spikes: inputs.spikes, briefText: inputs.briefText, prdText: inputs.prdText, personaNames: inputs.personaNames });
     const denylistPath = path.join(root, '.delivery', 'team', 'denylist.txt');
     if (!dryRun) writeDenylist(root, entries);
+    const checks = dryRun ? [] : planChecks({ projectRoot: root, plan, bd, by: 'materialise', at: new Date().toISOString() });
     const denyText = dryRun ? `denylist would have ${entries.length} entries at ${denylistPath}` : `denylist ${denylistPath} (${entries.length} entries)`;
     console.log(`${dryRun ? 'dry run: ' : ''}created ${r.created.length}, updated ${r.updated.length}, deps ${r.depsAdded.length}, deps removed ${r.depsRemoved.length}, skipped closed ${r.skippedClosed.length}, skipped deps ${r.skippedDeps.length}; roadmap ${args.initiative}/roadmap.md@${inputs.sha}; ${denyText}`);
+    if (checks.length) console.log(`reality-check scripts planned: ${checks.map((id) => require('./reality-check.js').scriptRel(id)).join(' ')}`);
     if (args.flags.has('dry-run')) for (const c of r.commands) console.log(`  ${c}`);
     const warnings = [...inputs.warnings, ...plan.warnings];
     if (warnings.length) { console.log('warnings:'); for (const w of warnings) console.log(`  ${w}`); }
@@ -303,4 +325,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { loadInputs, applyPlan, reconcile, writeDenylist, renderDrift, hasDrift };
+module.exports = { loadInputs, applyPlan, planChecks, reconcile, writeDenylist, renderDrift, hasDrift };
