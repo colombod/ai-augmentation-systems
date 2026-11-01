@@ -73,7 +73,14 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
 
   if (brief.meta.touches_code && !productRepo) files.push('warning: no product worktree (pass --product-repo)');
 
-  const actor = `${user || os.userInfo().username}@${role.host}/${instance}`;
+  // a re-preparation without --user keeps the role's saved actor: whoever re-runs start.js (say, to
+  // change the permission mode) is not the role's identity, and a new actor loses the role's claims
+  let savedUser;
+  try {
+    const saved = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')).actor;
+    if (typeof saved === 'string' && saved.lastIndexOf('@') > 0) savedUser = saved.slice(0, saved.lastIndexOf('@'));
+  } catch (err) { savedUser = undefined; }
+  const actor = `${user || savedUser || os.userInfo().username}@${role.host}/${instance}`;
   fs.mkdirSync(path.join(roleDir, '.claude'), { recursive: true });
   const settingsFile = path.join(roleDir, '.claude', 'settings.local.json');
   let settings = {};

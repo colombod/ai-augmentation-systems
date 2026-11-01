@@ -148,6 +148,19 @@ test('prepareRole tolerates invalid settings JSON, writes actor into the marker 
   assert.equal(fs.readFileSync(ignore, 'utf8'), 'custom\n');
 });
 
+// Copilot on #112: re-preparing without --user keeps the saved actor; an explicit --user changes it
+test('prepareRole keeps the role\'s saved actor when no user is given', () => {
+  const projectRoot = scratchProjectRepo();
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT, user: 'alice' });
+  const actor = () => JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')).actor;
+  prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT });
+  assert.equal(actor(), 'alice@pc/staffing');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).env.BEADS_ACTOR, 'alice@pc/staffing');
+  prepareRole({ projectRoot, instance: 'staffing', teamDir, pluginRoot: PLUGIN_ROOT, user: 'bob' });
+  assert.equal(actor(), 'bob@pc/staffing');
+});
+
 test('prepareRole warns when a code-touching role has no product repo', () => {
   const projectRoot = scratchProjectRepo();
   const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));

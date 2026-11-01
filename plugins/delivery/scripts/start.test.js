@@ -779,3 +779,18 @@ test('start: changing --permission-mode re-prepares existing roles so their save
   assert.equal(modeOf(), 'acceptEdits');
   assert.match(start(['--project', project, '--host', 'laptop']).out, /chief-of-staff: already prepared/, 'unchanged: left as it is');
 });
+
+// Copilot on #112: a dry run previews the mode the real run would apply, not the one team.json still
+// holds; and a re-preparation for the mode without --user keeps the role's saved actor
+test('start: a mode change previews correctly in a dry run and keeps the role\'s actor', () => {
+  const project = productRepo();
+  const roleFile = (f) => path.join(path.resolve(project, '..'), `${JSON.parse(fs.readFileSync(path.join(project, '.delivery', 'team', 'team.json'), 'utf8')).project}-team`, 'chief-of-staff', f);
+  assert.equal(start(['--project', project, '--host', 'laptop', '--user', 'alice']).status, 0);
+  const preview = start(['--project', project, '--host', 'laptop', '--permission-mode', 'default', '--dry-run']);
+  assert.equal(preview.status, 0, preview.out);
+  assert.match(preview.out, /chief-of-staff: would re-prepare for the permission mode/);
+  const real = start(['--project', project, '--host', 'laptop', '--permission-mode', 'default']);
+  assert.match(real.out, /chief-of-staff: re-prepared for the permission mode/);
+  assert.equal(JSON.parse(fs.readFileSync(roleFile('.delivery-role.json'), 'utf8')).actor, 'alice@laptop/chief-of-staff');
+  assert.equal(JSON.parse(fs.readFileSync(roleFile(path.join('.claude', 'settings.local.json')), 'utf8')).env.BEADS_ACTOR, 'alice@laptop/chief-of-staff');
+});

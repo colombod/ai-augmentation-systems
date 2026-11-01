@@ -668,7 +668,8 @@ function scaffold(opts) {
     })();
     // a role whose saved permission mode is not the team's (the owner changed permission_mode) is
     // re-prepared, so the change reaches every role, not only new ones (Copilot on #112)
-    const wantMode = ['default', 'manual'].includes(team.permission_mode) ? undefined : (team.permission_mode || 'auto');
+    // (permissionMode, not team.permission_mode: a dry run leaves team.json as it was)
+    const wantMode = ['default', 'manual'].includes(permissionMode) ? undefined : permissionMode;
     const needsMode = fs.existsSync(path.join(roleDir, '.delivery-role.json')) && (() => {
       try { return ((JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8')).permissions || {}).defaultMode) !== wantMode; } catch (e) { return true; }
     })();
