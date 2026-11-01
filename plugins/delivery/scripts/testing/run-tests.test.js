@@ -90,9 +90,6 @@ test('run-tests: a run that passes its inode cap is stopped and says why', () =>
   const fs = require('fs');
   const os = require('os');
   const { spawnSync } = require('child_process');
-  const R = require('./run-tests.js');
-  const base = R.inodesUsed(os.tmpdir());
-  assert.ok(base !== null, 'the temp dir mount can be read');
   const dir = fs.mkdtempSync(path.join(__dirname, '.inode-cap-'));
   try {
     const fixture = path.join(dir, 'many-files.test.js');
@@ -100,8 +97,60 @@ test('run-tests: a run that passes its inode cap is stopped and says why', () =>
       "test('makes files', async () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'many-')); for (let i = 0; i < 6000; i++) fs.writeFileSync(path.join(d, String(i)), ''); await new Promise((r) => setTimeout(r, 8000)); });\n");
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT; // a node:test child of a test would otherwise skip its files
-    const r = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js')], { env: { ...env, DELIVERY_SEAL_ACTIVE: process.env.DELIVERY_SEAL_ACTIVE || '0', DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_FILES: fixture, DELIVERY_TEST_TMP_INODES: String(base + 2000) }, encoding: 'utf8', timeout: 60000 });
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js')], { env: { ...env, DELIVERY_SEAL_ACTIVE: process.env.DELIVERY_SEAL_ACTIVE || '0', DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_FILES: fixture, DELIVERY_TEST_TMP_INODES: '2000' }, encoding: 'utf8', timeout: 60000 });
     assert.equal(r.status, 1, r.stdout.slice(-300) + r.stderr.slice(-300));
     assert.match(r.stderr, /passed its inode cap \(\d+ > \d+\); stopping the suite/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Ctrl+C or a kill of the runner stops the whole suite and cleans up (Copilot on #111): the suite runs
+// detached, so it would not get the terminal's signal on its own.
+test('run-tests: SIGINT to the runner stops the suite\'s processes and removes the run\'s directory', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { spawn } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.sigint-'));
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-sig-'));
+  try {
+    const fixture = path.join(dir, 'waits.test.js');
+    fs.writeFileSync(fixture, "const test = require('node:test'); test('waits', async () => { require('fs').writeFileSync(" + JSON.stringify(path.join(dir, 'ready')) + ", 'r'); await new Promise((r) => setTimeout(r, 60000)); });\n");
+    const env = { ...process.env, TMPDIR: outer, DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_FILES: fixture };
+    delete env.NODE_TEST_CONTEXT;
+    const runner = spawn(process.execPath, [path.join(__dirname, 'run-tests.js')], { env, stdio: 'ignore' });
+    for (let i = 0; i < 100 && !fs.existsSync(path.join(dir, 'ready')); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(fs.existsSync(path.join(dir, 'ready')), 'the fixture started');
+    const alive = () => fs.readdirSync('/proc').filter((p) => /^\d+$/.test(p)).filter((p) => { try { return fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').includes(fixture); } catch (e) { return false; } });
+    assert.ok(alive().length > 0);
+    const exited = new Promise((r) => runner.on('exit', r));
+    runner.kill('SIGINT');
+    await exited;
+    for (let i = 0; i < 60 && alive().length; i++) await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(alive(), [], 'no process still runs the suite');
+    assert.deepEqual(fs.readdirSync(outer).filter((f) => f.startsWith('delivery-tests-')), [], 'the run\'s directory is removed');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(outer, { recursive: true, force: true }); }
+});
+
+// Copilot on #111: an unsealed run counts its own directory, not the shared filesystem's inodes, so a
+// small run on a busy filesystem is not stopped.
+test('run-tests: an unsealed run on a filesystem already past the cap is not stopped for others\' files', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { spawnSync } = require('child_process');
+  const R = require('./run-tests.js');
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-busy-'));
+  const dir = fs.mkdtempSync(path.join(__dirname, '.busy-'));
+  try {
+    // others' files on the same filesystem, more than the cap below
+    for (let i = 0; i < 400; i++) fs.writeFileSync(path.join(outer, `other-${i}`), '');
+    const used = R.inodesUsed(outer);
+    assert.ok(used > 300, `the filesystem already holds more than the cap (${used})`);
+    const fixture = path.join(dir, 'small.test.js');
+    fs.writeFileSync(fixture, "const test = require('node:test'); const fs = require('fs'); const path = require('path'); const os = require('os');\n" +
+      "test('a few files', async () => { for (let i = 0; i < 10; i++) fs.writeFileSync(path.join(os.tmpdir(), 'f' + i), ''); await new Promise((r) => setTimeout(r, 2500)); });\n");
+    const env = { ...process.env, TMPDIR: outer, DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_FILES: fixture, DELIVERY_TEST_TMP_INODES: '300' };
+    delete env.NODE_TEST_CONTEXT;
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js')], { env, encoding: 'utf8', timeout: 60000 });
+    assert.equal(r.status, 0, r.stderr.slice(-400));
+    assert.doesNotMatch(r.stderr, /inode cap/);
+  } finally { fs.rmSync(outer, { recursive: true, force: true }); fs.rmSync(dir, { recursive: true, force: true }); }
 });

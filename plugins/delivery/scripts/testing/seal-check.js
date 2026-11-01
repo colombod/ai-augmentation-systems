@@ -11,11 +11,20 @@ const path = require('path');
 const { spawn } = require('child_process');
 const R = require('./run-tests.js');
 
+// pids whose command line names this file (host-visible, whatever pid namespace they run in)
+function running(file) {
+  const out = [];
+  for (const p of fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
+    try { if (fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').includes(file)) out.push(p); } catch (e) { /* gone */ }
+  }
+  return out;
+}
+
 function main() {
   if (process.env.DELIVERY_SEAL_ACTIVE === '1') { console.error('seal-check: run it outside a sealed run'); return Promise.resolve(2); }
   if (!R.bwrapPath(process.env)) { console.error('seal-check: bubblewrap (bwrap) not found: a run cannot be sealed on this host'); return Promise.resolve(2); }
-  const host = os.tmpdir();
-  const before = new Set(fs.readdirSync(host));
+  // the host's /tmp itself, whatever TMPDIR says: it is the mount the seal hides
+  const host = '/tmp';
   // the fixture and its ready signal live outside /tmp, which the sealed run cannot see: a directory
   // beside this check, created here and removed at the end
   const signal = fs.mkdtempSync(path.join(__dirname, '.seal-check-'));
@@ -37,16 +46,21 @@ test('writes into /tmp and waits', async () => {
       if (fs.existsSync(path.join(signal, 'ready')) || Date.now() - started > 30000) {
         clearInterval(poll);
         const wasReady = fs.existsSync(path.join(signal, 'ready'));
+        const aliveBefore = running(fixture);
         runner.kill('SIGKILL');
         setTimeout(() => {
+          // the sandbox died with its parent: no process still runs the fixture (an unchanged /tmp alone
+          // would not prove it; a live sandbox hides its files too)
+          const aliveAfter = running(fixture);
           fs.rmSync(signal, { recursive: true, force: true });
-          const left = fs.readdirSync(host).filter((f) => !before.has(f));
-          const markers = fs.readdirSync(host).filter((f) => f.startsWith('sealed-marker-'));
-          if (!wasReady) { console.error('seal-check: the fixture never started writing; nothing proven'); return resolve(1); }
-          if (left.length || markers.length) { console.error(`seal-check: FAILED, left in ${host}: ${[...new Set([...left, ...markers])].join(', ')}`); return resolve(1); }
-          console.log(`seal-check: a run killed while writing 50 directories into /tmp left nothing in ${host}`);
+          // this invocation's own markers only: other processes may use /tmp meanwhile
+          const markers = fs.readdirSync(host).filter((f) => f.startsWith(marker));
+          if (!wasReady || !aliveBefore.length) { console.error('seal-check: the fixture never started writing; nothing proven'); return resolve(1); }
+          if (aliveAfter.length) { console.error(`seal-check: FAILED, the sandboxed run outlived its killed parent (pids ${aliveAfter.join(', ')})`); for (const p of aliveAfter) { try { process.kill(Number(p), 'SIGKILL'); } catch (e) { /* gone */ } } return resolve(1); }
+          if (markers.length) { console.error(`seal-check: FAILED, ${markers.length} of this run's markers left in ${host}`); return resolve(1); }
+          console.log(`seal-check: a run killed while writing 50 directories into /tmp died with its parent and left nothing in ${host}`);
           return resolve(0);
-        }, 1500);
+        }, 2500);
       }
     }, 200);
   });

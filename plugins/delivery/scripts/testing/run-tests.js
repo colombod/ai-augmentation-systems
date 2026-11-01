@@ -82,15 +82,29 @@ function bwrapPath(env) {
 function sealArgs(bwrap, cap, argv) {
   return [bwrap, ['--dev-bind', '/', '/', '--size', String(cap.bytes), '--tmpfs', '/tmp', '--proc', '/proc', '--die-with-parent', '--unshare-pid', '--', ...argv]];
 }
-// inodes in use on a mount, or null when it cannot be read
+// inodes in use on a mount, or null when it cannot be read: the sealed run's /tmp is its own tmpfs,
+// so the mount's count is the run's count
 function inodesUsed(dir) {
   try { const s = fs.statfsSync(dir); return s.files - s.ffree; } catch (e) { return null; }
+}
+// entries under one directory, stopping once past `limit`: an unsealed run's private directory sits on
+// a shared filesystem, whose mount-wide count says nothing about this run
+function entriesUnder(dir, limit) {
+  let n = 0;
+  const stack = [dir];
+  while (stack.length && n <= limit) {
+    let list;
+    try { list = fs.readdirSync(stack.pop(), { withFileTypes: true }); } catch (e) { continue; }
+    for (const e of list) { n += 1; if (e.isDirectory()) stack.push(path.join(e.parentPath || e.path, e.name)); }
+  }
+  return n;
 }
 
 module.exports.sealArgs = sealArgs;
 module.exports.caps = caps;
 module.exports.bwrapPath = bwrapPath;
 module.exports.inodesUsed = inodesUsed;
+module.exports.entriesUnder = entriesUnder;
 
 if (require.main === module) {
   const root = path.join(__dirname, '..', '..');
@@ -124,12 +138,24 @@ if (require.main === module) {
   const child = spawn(process.execPath, ['--test', ...rest, ...files], { env, stdio: 'inherit', detached: true });
   let over = null;
   const guard = setInterval(() => {
-    const used = inodesUsed(tmp);
+    const used = sealed ? inodesUsed(tmp) : entriesUnder(tmp, cap.inodes);
     if (used !== null && used > cap.inodes) {
       over = `run-tests: the run's /tmp passed its inode cap (${used} > ${cap.inodes}); stopping the suite`;
       try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { /* gone */ }
     }
   }, 1000);
+  // Ctrl+C or a kill of the runner stops the suite's whole process group too, then cleans up: the
+  // suite runs detached so the inode guard can stop it as a group, which also keeps it from getting
+  // the terminal's signal on its own
+  let stopping = false;
+  const stop = (sig) => {
+    if (stopping) return;
+    stopping = true;
+    try { process.kill(-child.pid, sig); } catch (e) { /* gone */ }
+    setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { /* gone */ } }, 5000).unref();
+  };
+  process.on('SIGINT', () => stop('SIGINT'));
+  process.on('SIGTERM', () => stop('SIGTERM'));
   child.on('exit', (code, signal) => {
     clearInterval(guard);
     if (!sealed) fs.rmSync(tmp, { recursive: true, force: true });
