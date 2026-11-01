@@ -557,6 +557,22 @@ test('a role-session transcript syncs ok and adds the typed prompts as human inp
   assert.deepStrictEqual(ins.map((e) => e.ext_id), ['rp1', 'rp2', 'rp3']);
 });
 
+test('an old cursor resumed with nothing new, or only records of no known format, reads ok', () => {
+  const root = project();
+  const tr = transcript([noOrigin(1), noOrigin(2), noOrigin(3)]);
+  assert.strictEqual(sync(root, tr).status, 'format_unrecognised');
+  // a cursor written before the recognised count: 3 records, none with an origin, no recognised field
+  const f = path.join(require('./operator-store.js').operatorDir(root), 'cursors', `${SID}.json`);
+  const c = JSON.parse(fs.readFileSync(f, 'utf8')); delete c.recognised; fs.writeFileSync(f, JSON.stringify(c));
+  assert.strictEqual(c.total_user_records, 3);
+  assert.strictEqual(c.with_origin, 0);
+  assert.strictEqual(sync(root, tr).status, 'ok');
+  // aged again, then resumed over two records of no known format: the counts start afresh, under three
+  const c2 = JSON.parse(fs.readFileSync(f, 'utf8')); delete c2.recognised; fs.writeFileSync(f, JSON.stringify(c2));
+  for (const n of [4, 5]) fs.appendFileSync(tr, JSON.stringify(noOrigin(n)) + '\n');
+  assert.strictEqual(sync(root, tr).status, 'ok');
+});
+
 test('a cursor written before the recognised count is read without a false format_unrecognised', () => {
   const root = project();
   const tr = transcript([noOrigin(1), noOrigin(2), noOrigin(3)]);
