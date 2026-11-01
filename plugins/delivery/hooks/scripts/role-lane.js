@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// PreToolUse: keep the role in its lane. Prints a deny decision or nothing. Never exits non-zero.
+// PreToolUse: keep the role in its lane. Prints a deny decision, an allow for a command the role's
+// lane pre-allows (see nativeApproval in lane.js), or nothing. Never exits non-zero.
 //
 // Fail closed only for a role session: when this session's own role marker is present but the lane
 // cannot be decided (the manifest does not load, or an internal error), the call is denied with the
@@ -52,7 +53,7 @@ const MESSAGE_TOOLS = ['SendMessage', 'mcp__ccd_session_mgmt__send_message'];
 try {
   const { laneDecisionForHook } = require('./lane.js');
   const d = input && input.tool_name ? laneDecisionForHook(input, path.join(__dirname, '..', '..')) : null;
-  if (d) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.reason } }));
+  if (d) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: d.allow ? 'allow' : 'deny', permissionDecisionReason: d.reason } }));
 } catch (err) {
   const marker = input && input.tool_name ? ownMarker(input) : null;
   const cmd = input && input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : '';
