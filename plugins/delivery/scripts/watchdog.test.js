@@ -514,6 +514,33 @@ test('install: dry run by default; --apply writes a job with no versioned path, 
   assert.equal(main(['install', '--every', '1m'], { platform: 'darwin' }).code, 2, 'under 5 minutes is refused');
 });
 
+test('the job runs the install local to its project, else the user\'s, else the newest; never an older one local to a role directory', () => {
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-'));
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'proj-'));
+  const cache = path.join(cfg, 'plugins', 'cache', 'm', 'delivery');
+  const plugin = (v) => {
+    const d = path.join(cache, v);
+    fs.mkdirSync(path.join(d, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'scripts', 'watchdog.js'), `console.log('ran ${v}');`);
+    return d;
+  };
+  const entry = (v, more) => ({ installPath: plugin(v), version: v, ...more });
+  const list = (entries) => fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'delivery@m': entries } }));
+  const shim = path.join(project, 'job.js');
+  fs.writeFileSync(shim, watchdog.shimBody(project, path.join(cache, '0.40.0'), cfg));
+  plugin('0.40.0');
+  const ran = () => spawnSync('node', [shim], { encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: cfg } }).stdout.trim();
+  // the host's real case: the user's 0.43.3 listed first, role directories' older local installs after it
+  list([entry('0.43.3', { scope: 'user' }), entry('0.41.2', { scope: 'local', projectPath: '/team/delivery-lead' }), entry('0.43.0', { scope: 'local', projectPath: '/team/spike-researcher' })]);
+  assert.equal(ran(), 'ran 0.43.3');
+  // an install local to the job's own project comes first, whatever its version
+  list([entry('0.43.3', { scope: 'user' }), entry('0.42.0', { scope: 'local', projectPath: project })]);
+  assert.equal(ran(), 'ran 0.42.0');
+  // no user install: the newest of the rest, by version, not by order
+  list([entry('0.43.10', { scope: 'local', projectPath: '/a' }), entry('0.43.9', { scope: 'local', projectPath: '/b' })]);
+  assert.equal(ran(), 'ran 0.43.10');
+});
+
 test('the wake log, the job log and the wake logs stay bounded', () => {
   const h = harness({});
   WD.ensureDir(h.root);
@@ -1010,6 +1037,9 @@ test('a wake starts a fresh session when the last turn carried more than the lim
   assert.deepEqual(heavy.args.slice(0, 5), ['--permission-mode', 'auto', '--name', COS, '-p']);
   assert.ok(!heavy.args.includes('--resume'), 'a fresh session, not a resume');
   assert.match(heavy.args[5], /starting a fresh session: your earlier conversation \(236k tokens\) is not loaded.*bd list --assignee "\$BEADS_ACTOR" --status in_progress.*merge the story branch/);
+  // the run's fresh wake opens with the watchdog's words, so the capture hook never takes it for the operator
+  assert.ok(heavy.args[5].startsWith(`${WD.WAKE_OPENING}: You are ${COS}, starting a fresh session`), heavy.args[5].slice(0, 80));
+  assert.equal(require('./lib/transcript.js').classifyRecord({ type: 'user', promptSource: 'sdk', message: { role: 'user', content: heavy.args[5] } }).source, 'system');
   // the Chief of Staff is told to look for operator input left unrecorded in the old session
   assert.match(heavy.args[5], /operator input still unrecorded \(operator\.js pending\)/);
   assert.equal(run({ tokens: 50000 }).wake, 'resume');

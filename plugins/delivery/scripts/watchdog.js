@@ -246,7 +246,9 @@ function jobPath(env, home) {
 }
 
 // The job runs this shim, which finds the plugin at run time: a checkout stays where it is; a plugin
-// installed by Claude Code is looked up in installed_plugins.json, so an update is picked up.
+// installed by Claude Code is looked up in installed_plugins.json, so an update is picked up. Of the
+// installs listed there, one local to the job's project wins, then the user's own, then the newest:
+// an older install local to one role directory is never the job's (it ran 0.43.0 after 0.43.3 shipped).
 function shimBody(root, pluginRoot, configDir) {
   return `#!/usr/bin/env node
 // written by watchdog.js install for ${root}; finds the delivery plugin each run, then runs watchdog.js run
@@ -266,8 +268,11 @@ function pluginRoot() {
     const j = JSON.parse(fs.readFileSync(path.join(cache, 'installed_plugins.json'), 'utf8'));
     for (const [k, v] of Object.entries(j.plugins || j)) {
       if (!/^delivery@/.test(k)) continue;
-      const found = (Array.isArray(v) ? v : [v]).map((e) => e && e.installPath).filter(ok);
-      if (found.length) return found[found.length - 1];
+      const rank = (e) => (e.projectPath && path.resolve(e.projectPath) === path.resolve(PROJECT) ? 0 : e.scope === 'user' ? 1 : 2);
+      const ver = (e) => String(e.version || '').split('.').map((n) => parseInt(n, 10) || 0);
+      const newer = (a, b) => { const x = ver(a), y = ver(b); for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0); return 0; };
+      const found = (Array.isArray(v) ? v : [v]).filter((e) => e && ok(e.installPath)).sort((a, b) => rank(a) - rank(b) || newer(a, b));
+      if (found.length) return found[0].installPath;
     }
   } catch (err) { /* fall back below */ }
   return ok(AT_INSTALL) ? AT_INSTALL : null;
@@ -461,4 +466,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, checkLines, jobFiles, everySeconds, roleContext };
+module.exports = { main, checkLines, jobFiles, shimBody, everySeconds, roleContext };
