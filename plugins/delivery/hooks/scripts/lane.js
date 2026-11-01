@@ -829,7 +829,8 @@ const TEST_FILE = /\.test\.[cm]?[jt]s$/;
 // the outer shell expands nothing. A command holding a single quote cannot go there as it is, so it goes
 // in a script file.
 function testsReason(command, pluginRoot) {
-  const runner = `${pluginRoot ? path.join(pluginRoot, 'scripts', 'testing', 'run-tests.js') : '<plugin>/scripts/testing/run-tests.js'}`;
+  // shell-quoted when the plugin's path holds anything outside the plain characters (spaces)
+  const runner = pluginRoot ? shellPath(path.join(pluginRoot, 'scripts', 'testing', 'run-tests.js')) : '<plugin>/scripts/testing/run-tests.js';
   const c = String(command || '').trim();
   const form = c.includes("'")
     ? `the command holds a single quote, so put it in a script file and run \`node ${runner} -- 'sh <file>'\`, which runs it sealed, here`
@@ -1041,7 +1042,11 @@ function unsealedTestText(text) {
 // optionally --clock <iso>, and optionally -- '<command>' in single quotes, inside which the outer shell
 // expands nothing, so the command, substitutions included, runs inside the seal. Anything else that the
 // fail-safe matches is refused.
-const SEALED_FORM = /^(?:DELIVERY_TEST_FILES=[A-Za-z0-9_./:@+,=-]* )?(?:node|[A-Za-z0-9_./@+,=-]*\/node) (?:[A-Za-z0-9_./@+,=-]*\/)?scripts\/testing\/run-tests\.js(?: --clock [A-Za-z0-9:.+-]+)?(?: -- '[^']*')?$/;
+// The node and runner paths are each plain characters or one single-quoted literal (a plugin under a
+// path with spaces, Copilot on #117); a quoted literal expands nothing either.
+const SEALED_FORM = /^(?:DELIVERY_TEST_FILES=[A-Za-z0-9_./:@+,=-]* )?(?:node|[A-Za-z0-9_./@+,=-]*\/node|'[^']*\/node') (?:(?:[A-Za-z0-9_./@+,=-]*\/)?scripts\/testing\/run-tests\.js|'(?:[^']*\/)?scripts\/testing\/run-tests\.js')(?: --clock [A-Za-z0-9:.+-]+)?(?: -- '[^']*')?$/;
+// a path as the shell must be given it: as is when plain, else single-quoted (none of ours holds a quote)
+const shellPath = (p) => (/^[A-Za-z0-9_./@+,=-]+$/.test(p) ? p : `'${p}'`);
 
 // deep: a deletion or move of a protected folder's parent (rm -rf .delivery), or a glob that reaches the
 // folder or names files in it (rm -rf .delivery/an*, rm .delivery/andon/*.ndjson), counts as a write too

@@ -1383,3 +1383,21 @@ test('lane: the tests reason names the refused command in the sealed runner\'s -
   assert.ok(q.reason.includes(`put it in a script file and run \`node ${runner} -- 'sh <file>'\``), q.reason);
   assert.equal(run(`node ${runner} -- 'sh tests.sh'`).allow, true);
 });
+
+// Copilot on #117: a plugin under a path with spaces: the reason single-quotes the runner path, and the
+// exemption admits a node or runner path given as one single-quoted literal, nothing outside it
+test('lane: a runner path with spaces is suggested quoted and admitted quoted, and nothing may follow it', () => {
+  const root = '/opt/Claude Plugins/delivery';
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[BUILDER], ...ctx({ pluginRoot: root }) });
+  const quoted = `'${root}/scripts/testing/run-tests.js'`;
+  const d = run('node --test');
+  assert.equal(d.allow, false);
+  const form = `node ${quoted} -- 'node --test'`;
+  assert.ok(d.reason.includes(`\`${form}\``), d.reason);
+  assert.equal(run(form).allow, true, form);
+  assert.equal(run(`'/opt/Node Runtime/bin/node' ${quoted} -- 'node --test a.test.js'`).allow, true);
+  for (const command of [`${form}; x`, `node ${quoted} $(node --test)`, `node ${quoted} -- 'node --test' $(x)`, `node '${root}/scripts/testing/run-tests.js'x -- 'node --test'`,
+    `node ${root}/scripts/testing/run-tests.js -- 'node --test'`]) {
+    assert.equal(run(command).allow, false, command);
+  }
+});
