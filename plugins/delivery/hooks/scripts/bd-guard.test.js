@@ -541,6 +541,8 @@ test('1a hook: a close without rows is denied; a claim with a gap is allowed wit
   const fixture = makeProject({ story: STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, '') });
   fs.cpSync(path.join(fixture, '.delivery', 'initiatives'), path.join(projectRoot, '.delivery', 'initiatives'), { recursive: true });
   fs.cpSync(path.join(fixture, '.delivery', 'stories'), path.join(projectRoot, '.delivery', 'stories'), { recursive: true });
+  // its reality-check script too, as materialise plans it: without one the claim is refused (R-33)
+  fs.cpSync(path.join(fixture, '.delivery', 'reality-checks'), path.join(projectRoot, '.delivery', 'reality-checks'), { recursive: true });
   // the probe bd answers every show with this bead, so it has no parent here
   const bead = storyBead({ assignee: 'tester@pc/builder-1', parent: null, updated_at: NOW, metadata: { ready_hash: G.storyHash(G.parseStory(STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, ''))), deployed_sha: 'd478aa11' } });
   const { bin } = probeBd(JSON.stringify([bead]).replace(/'/g, ''), '[]');
