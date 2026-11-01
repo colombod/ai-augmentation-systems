@@ -113,14 +113,16 @@ test('run-tests: SIGINT to the runner stops the suite\'s processes and removes t
   const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-sig-'));
   try {
     const fixture = path.join(dir, 'waits.test.js');
-    fs.writeFileSync(fixture, "const test = require('node:test'); test('waits', async () => { require('fs').writeFileSync(" + JSON.stringify(path.join(dir, 'ready')) + ", 'r'); await new Promise((r) => setTimeout(r, 60000)); });\n");
+    fs.writeFileSync(fixture, "const test = require('node:test'); test('waits', async () => { require('fs').writeFileSync(" + JSON.stringify(path.join(dir, 'ready')) + ", String(process.pid)); await new Promise((r) => setTimeout(r, 60000)); });\n");
     const env = { ...process.env, TMPDIR: outer, DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_FILES: fixture };
     delete env.NODE_TEST_CONTEXT;
     const runner = spawn(process.execPath, [path.join(__dirname, 'run-tests.js')], { env, stdio: 'ignore' });
     for (let i = 0; i < 100 && !fs.existsSync(path.join(dir, 'ready')); i++) await new Promise((r) => setTimeout(r, 100));
     assert.ok(fs.existsSync(path.join(dir, 'ready')), 'the fixture started');
-    const alive = () => fs.readdirSync('/proc').filter((p) => /^\d+$/.test(p)).filter((p) => { try { return fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').includes(fixture); } catch (e) { return false; } });
-    assert.ok(alive().length > 0);
+    // the fixture's own pid, checked with signal 0: no /proc, so it holds on macOS's unsealed run too
+    const pid = Number(fs.readFileSync(path.join(dir, 'ready'), 'utf8'));
+    const alive = () => { try { process.kill(pid, 0); return [pid]; } catch (e) { return e.code === 'EPERM' ? [pid] : []; } };
+    assert.ok(pid > 0 && alive().length > 0);
     const exited = new Promise((r) => runner.on('exit', r));
     runner.kill('SIGINT');
     await exited;
@@ -128,6 +130,41 @@ test('run-tests: SIGINT to the runner stops the suite\'s processes and removes t
     assert.deepEqual(alive(), [], 'no process still runs the suite');
     assert.deepEqual(fs.readdirSync(outer).filter((f) => f.startsWith('delivery-tests-')), [], 'the run\'s directory is removed');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(outer, { recursive: true, force: true }); }
+});
+
+// Copilot on #111: the runner outlives the suite's leader until its whole group is gone, so a
+// descendant that ignores SIGTERM still gets the SIGKILL, before the run's directory is removed.
+test('run-tests: a suite process that ignores SIGTERM is killed before the runner exits', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { spawn } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.sigterm-'));
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-term-'));
+  const pidFile = path.join(dir, 'stubborn');
+  let pid = 0;
+  const alive = () => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+  try {
+    const fixture = path.join(dir, 'stubborn.test.js');
+    // the child writes its pid only after its SIGTERM handler is in place
+    const stubborn = `process.on('SIGTERM', () => {}); require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`;
+    fs.writeFileSync(fixture, "const test = require('node:test'); test('leaves a stubborn child', async () => { require('child_process').spawn(process.execPath, ['-e', " + JSON.stringify(stubborn) + "], { stdio: 'ignore' }); await new Promise((r) => setTimeout(r, 60000)); });\n");
+    const env = { ...process.env, TMPDIR: outer, DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_FILES: fixture };
+    delete env.NODE_TEST_CONTEXT;
+    const runner = spawn(process.execPath, [path.join(__dirname, 'run-tests.js')], { env, stdio: 'ignore' });
+    for (let i = 0; i < 100 && !fs.existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100)); // the pid is fully written
+    pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    assert.ok(pid > 0 && alive(), 'the stubborn child started');
+    const exited = new Promise((r) => runner.on('exit', r));
+    runner.kill('SIGTERM');
+    await exited;
+    for (let i = 0; i < 10 && alive(); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.equal(alive(), false, 'the child that ignored SIGTERM is gone when the runner exits');
+    assert.deepEqual(fs.readdirSync(outer).filter((f) => f.startsWith('delivery-tests-')), [], 'the run\'s directory is removed');
+  } finally {
+    if (pid && alive()) try { process.kill(pid, 'SIGKILL'); } catch (e) { /* gone */ }
+    fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(outer, { recursive: true, force: true });
+  }
 });
 
 // Copilot on #111: an unsealed run counts its own directory, not the shared filesystem's inodes, so a

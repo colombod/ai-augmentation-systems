@@ -146,7 +146,10 @@ if (require.main === module) {
   }, 1000);
   // Ctrl+C or a kill of the runner stops the suite's whole process group too, then cleans up: the
   // suite runs detached so the inode guard can stop it as a group, which also keeps it from getting
-  // the terminal's signal on its own
+  // the terminal's signal on its own. The runner lives until the group is gone, not only its leader
+  // (Copilot on #111): a descendant that ignores SIGTERM still gets the SIGKILL five seconds on, and
+  // the unsealed run's directory is removed only once nothing in the group can write to it.
+  const groupAlive = () => { try { process.kill(-child.pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
   let stopping = false;
   const stop = (sig) => {
     if (stopping) return;
@@ -158,8 +161,13 @@ if (require.main === module) {
   process.on('SIGTERM', () => stop('SIGTERM'));
   child.on('exit', (code, signal) => {
     clearInterval(guard);
-    if (!sealed) fs.rmSync(tmp, { recursive: true, force: true });
-    if (over) process.stderr.write(`${over}\n`);
-    process.exit(over ? 1 : code !== null ? code : 1);
+    const finish = () => {
+      if (!sealed) fs.rmSync(tmp, { recursive: true, force: true });
+      if (over) process.stderr.write(`${over}\n`);
+      process.exit(over ? 1 : code !== null ? code : 1);
+    };
+    if (!groupAlive()) return finish();
+    stop('SIGTERM');
+    const wait = setInterval(() => { if (!groupAlive()) { clearInterval(wait); finish(); } }, 100);
   });
 }
