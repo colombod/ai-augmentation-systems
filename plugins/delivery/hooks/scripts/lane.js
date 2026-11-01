@@ -1304,7 +1304,9 @@ function nativeApproval(input, policy, groups, ctx) {
   // a second command after a newline) and any `$` or backquote (the lane expands a single-quoted
   // ${CLAUDE_PLUGIN_ROOT} that bash leaves literal). Rendered briefs give the plugin's absolute
   // path, so the decision loop's commands carry neither. (Copilot 4436789914, 4436789928)
-  if (/(?:^|\s)#/.test(cmd) || /[$`]/.test(cmd)) return null;
+  // A redirect is also declined: the lane's tokens keep one glued to a word (--status</dev/null), so a
+  // refused flag can hide behind it while bash strips the redirect (Copilot 4436827075).
+  if (/(?:^|\s)#/.test(cmd) || /[$`<>]/.test(cmd)) return null;
   const native = {};
   for (const g of policy.bash) {
     const rules = ((groups && groups[g]) || []).filter((r) => r && r.first && r.first !== '*' && r.native_allow !== false);

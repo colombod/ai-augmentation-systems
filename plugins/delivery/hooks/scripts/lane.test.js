@@ -1288,5 +1288,9 @@ test('nativeApproval approves nothing for a non-Bash tool, an any lane or the re
   assert.ok(nativeApproval(cmd("bd comments add x-1 'see 12'"), reads, groups, ctx).allow);
   assert.ok(nativeApproval(cmd("node '${CLAUDE_PLUGIN_ROOT}/scripts/team-status.js'"), reads, groups, ctx) === null);
   assert.ok(nativeApproval(cmd('node $CLAUDE_PLUGIN_ROOT/scripts/team-status.js'), reads, groups, ctx) === null);
+  // a redirect glued to a refused flag hides it from flags_none; bash strips it (Copilot 4436827075)
+  assert.ok(nativeApproval(cmd("bd update x-1 --append-notes n --status</dev/null closed"), reads, groups, ctx) === null);
+  assert.ok(nativeApproval(cmd("bd update x-1 --append-notes n --status>/dev/null closed"), reads, groups, ctx) === null);
+  assert.ok(nativeApproval(cmd("bd update x-1 --append-notes n"), reads, groups, ctx).allow);
   assert.ok(nativeApproval(cmd(`node ${path.join(PLUGIN_ROOT, 'scripts', 'team-status.js')}`), reads, groups, ctx).allow);
 });
