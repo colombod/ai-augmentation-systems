@@ -1300,3 +1300,20 @@ test('nativeApproval approves nothing for a non-Bash tool, an any lane or the re
   assert.ok(nativeApproval(cmd("ls *"), reads, groups, ctx) === null);
   assert.ok(nativeApproval(cmd(`node ${path.join(PLUGIN_ROOT, 'scripts', 'team-status.js')}`), reads, groups, ctx).allow);
 });
+
+// the Technical Writer edits documentation in its product worktree, never product code; Staffing adds a
+// shipped role through team-role.js, never by a free-form edit of team.json
+test('lane: the Technical Writer edits product docs only; Staffing runs team-role.js add', () => {
+  const tw = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/tech-writer' });
+  const edit = (rel) => decideLane({ toolName: 'Edit', toolInput: { file_path: path.join(roleDir, rel) }, policy: tw, ...ctx() }).allow;
+  assert.equal(edit('product/README.md'), true);
+  assert.equal(edit('product/plugins/x/docs/quickstart.md'), true);
+  assert.equal(edit('product/src/app.js'), false);
+  assert.equal(edit('project/.delivery/team/team.json'), false);
+  const bash = (policy, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx() }).allow;
+  assert.equal(bash(tw, 'gh pr create --title docs --body x'), true);
+  assert.equal(bash(tw, 'gh pr merge 1 --squash'), false);
+  const staffing = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/staffing' });
+  assert.equal(bash(staffing, `node ${path.join(PLUGIN_ROOT, 'scripts', 'team-role.js')} add tech-writer`), true);
+  assert.equal(bash(POLICIES[COS], `node ${path.join(PLUGIN_ROOT, 'scripts', 'team-role.js')} add tech-writer`), false);
+});

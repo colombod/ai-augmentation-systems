@@ -21,7 +21,7 @@ const REL = path.join('.delivery', 'plans');
 const SECTIONS = ['Owner steps due', 'Stops', 'Blocking unknowns', 'Next stories of the current wave', 'Pull requests waiting for review or merge', 'Reality checks pending'];
 const COS = 'chief-of-staff';
 const DM = 'delivery-lead';
-const ROLE_WORD = { 'chief-of-staff': 'Chief of Staff', 'delivery-lead': 'Delivery Manager', 'product-manager': 'Product Manager', 'reality-checker': 'Reality Checker', 'spike-researcher': 'Spike Researcher', builder: 'builder', staffing: 'Staffing', 'progress-observer': 'Progress Observer' };
+const ROLE_WORD = { 'chief-of-staff': 'Chief of Staff', 'delivery-lead': 'Delivery Manager', 'product-manager': 'Product Manager', 'reality-checker': 'Reality Checker', 'spike-researcher': 'Spike Researcher', builder: 'builder', staffing: 'Staffing', 'progress-observer': 'Progress Observer', 'tech-writer': 'Technical Writer' };
 
 // ---- the routing table (R-06): one owning role per function ----
 // fallback: the role that takes the function when the first is not on the team

@@ -127,6 +127,9 @@
   "verify-run": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/verify-run.js", "sub": ["run"] }
   ],
+  "team-write": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js", "sub": ["add"] }
+  ],
   "map": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/map.js", "sub": ["features", "impact", "blind"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/plan-sync.js", "sub": ["check", "apply"] }

@@ -38,19 +38,20 @@ const ROLE_ENTRIES = {
   'spike-researcher': { id: 'spike-researcher', brief: 'delivery/spike-researcher', model: 'sonnet' },
   builder: { id: 'builder', brief: 'delivery/builder', model: 'sonnet', steward: true },
   'reality-checker': { id: 'reality-checker', brief: 'delivery/reality-checker', model: 'sonnet' },
+  'tech-writer': { id: 'tech-writer', brief: 'delivery/tech-writer', model: 'sonnet' },
 };
 // --models: one model per role for the whole team. balanced is the role defaults (opus for the Chief
 // of Staff and the Product Manager); quality also puts the Delivery Manager on opus; economy moves
 // all three to sonnet and Staffing to haiku. Builders stay on sonnet in every preset.
 // large_model is the model a builder gives its subagents for a size-L bead (env DELIVERY_LARGE_MODEL).
 const MODEL_PRESETS = {
-  quality: { 'chief-of-staff': 'opus', 'product-manager': 'opus', 'delivery-lead': 'opus', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'sonnet', 'progress-observer': 'haiku', 'reality-checker': 'sonnet', large_model: 'opus' },
-  balanced: { 'chief-of-staff': 'opus', 'product-manager': 'opus', 'delivery-lead': 'sonnet', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'sonnet', 'progress-observer': 'haiku', 'reality-checker': 'sonnet', large_model: 'opus' },
-  economy: { 'chief-of-staff': 'sonnet', 'product-manager': 'sonnet', 'delivery-lead': 'sonnet', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'haiku', 'progress-observer': 'haiku', 'reality-checker': 'sonnet', large_model: 'sonnet' },
+  quality: { 'chief-of-staff': 'opus', 'product-manager': 'opus', 'delivery-lead': 'opus', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'sonnet', 'progress-observer': 'haiku', 'reality-checker': 'sonnet', 'tech-writer': 'sonnet', large_model: 'opus' },
+  balanced: { 'chief-of-staff': 'opus', 'product-manager': 'opus', 'delivery-lead': 'sonnet', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'sonnet', 'progress-observer': 'haiku', 'reality-checker': 'sonnet', 'tech-writer': 'sonnet', large_model: 'opus' },
+  economy: { 'chief-of-staff': 'sonnet', 'product-manager': 'sonnet', 'delivery-lead': 'sonnet', builder: 'sonnet', 'spike-researcher': 'sonnet', staffing: 'haiku', 'progress-observer': 'haiku', 'reality-checker': 'sonnet', 'tech-writer': 'sonnet', large_model: 'sonnet' },
 };
 const PRESETS = {
   minimal: ['chief-of-staff', 'product-manager', 'delivery-lead', 'builder'],
-  full: ['chief-of-staff', 'staffing', 'product-manager', 'delivery-lead', 'progress-observer', 'spike-researcher', 'reality-checker', 'builder'],
+  full: ['chief-of-staff', 'staffing', 'product-manager', 'delivery-lead', 'progress-observer', 'spike-researcher', 'reality-checker', 'tech-writer', 'builder'],
 };
 
 // R-33: a customer surface no test reaches needs the Reality Checker, so a declared surface with

@@ -28,10 +28,11 @@ the commands) and they stay up.
 | Product Manager | `product-manager` | opus | DEFINE and CONTRACT documents (brief to roadmap), realign and pivots |
 | Delivery Manager | `delivery-lead` | sonnet | NAVIGATE: stories, materialise, sprints, phase reviews, bead structure; independent review requests, acceptance and merging pull requests |
 | Builder | `builder` (`builder-2`, ... when counted) | sonnet | product code, in its own worktree of the product repo; opens the pull request, never merges |
-| Staffing (optional, `full`) | `staffing` | sonnet | the roster: `team.json` and project briefs |
+| Staffing (optional, `full`) | `staffing` | sonnet | the roster: `team.json` and project briefs; adds a role the plugin ships with `scripts/team-role.js add <role-id>`, which validates the manifest and commits it |
 | Progress Observer (optional, `full`) | `progress-observer` | haiku | the record stays true: re-checks merged/deployed/verified claims, liveness, stale claims |
 | Spike Researcher (optional, `full`) | `spike-researcher` | sonnet | answers `spike` beads from the architecture |
 | Reality Checker (optional, `full`) | `reality-checker` | sonnet | runs reality-check scripts on the real customer surface with browser control or computer use; writes evidence rows and captures only. On by default when a declared surface is not scriptable |
+| Technical Writer (optional, `full`) | `tech-writer` | sonnet | the product's documentation: README, quick start and reference kept true to the shipped version, with quick-start examples for a person and for an agent that the Reality Checker can run; documentation only, in its own worktree, and opens the pull request |
 
 The role id `delivery-lead` is kept for compatibility (manifests, lanes, record ids); the role
 is shown everywhere as the Delivery Manager.

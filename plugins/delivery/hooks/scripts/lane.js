@@ -15,6 +15,7 @@ const SANCTIONED = {
   'progress-observer': 'Record what you found in the bead (`bd update <id> --append-notes "<finding>"`); fixes go to a builder bead.',
   builder: 'Product code in your worktree is yours; for plans, message the Delivery Manager.',
   'spike-researcher': 'Answers go in the bead: `bd update <id> --append-notes "<answer>"`; product code is never yours.',
+  'tech-writer': 'Documentation in your worktree is yours; a product change goes to a builder bead through the Delivery Manager.',
   'reality-checker': 'Captures go under `.delivery/evidence/artifacts/<bead>/` and rows through `reality-check.js run-record`; anything else, message the Delivery Manager.',
 };
 // Browser, desktop and computer-use tools reach the owner's apps and the customer surface (R-05, R-33):
