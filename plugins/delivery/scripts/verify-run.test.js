@@ -289,8 +289,8 @@ test('run: operator.js sync in the role directory is refused not_allowed without
 test('refine: --as-role is refused for any command but operator.js sync, and the runner refuses a hand-edited one', () => {
   const s = ready();
   const step = () => rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0];
-  const op = "'/opt/delivery/scripts/operator.js'";
-  for (const ok of [`node ${op} sync`, `cd '/r d/rc' && node ${op} sync --format-check`, `/usr/bin/node ${op} sync --all --json`]) {
+  const op = `'${path.join(__dirname, 'operator.js')}'`;
+  for (const ok of [`node ${op} sync`, `cd '/r d/rc' && node ${op} sync --format-check`, `'${process.execPath}' ${op} sync --all --json`]) {
     assert.equal(rc.asRoleProblem(ok), null, ok);
   }
   for (const bad of [
@@ -324,4 +324,74 @@ test('refine: --as-role is refused for any command but operator.js sync, and the
   assert.match(r.out, /--as-role is only for the form/);
   assert.equal(s.rows().length, 0);
   assert.ok(!fs.existsSync(path.join(s.roleDir, 'verify')));
+});
+
+// The allowlist compares real paths, the exact program and the checker's own role directory, never a
+// basename: each refused form below once passed a basename check, and two of them ran as the checker.
+test('as-role: only the real operator.js, run by node, from the checker\'s role directory; each bypass is refused', () => {
+  const OP = path.join(__dirname, 'operator.js');
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vr-asrole-'));
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'vr-asrole-other-'));
+  // a file named operator.js that is not this plugin's, and a link that resolves to the real one
+  const evil = path.join(elsewhere, 'operator.js');
+  fs.writeFileSync(evil, 'process.exit(0)\n');
+  const link = path.join(elsewhere, 'linked.js');
+  fs.symlinkSync(OP, link);
+  const ctx = { roleDir };
+  for (const ok of [
+    `node '${OP}' sync`, `node '${link}' sync --json`, `'${process.execPath}' '${OP}' sync --format-check`,
+    `cd '${roleDir}' && node '${OP}' sync --all`,
+  ]) assert.equal(rc.asRoleProblem(ok, ctx), null, ok);
+  for (const [bad, why] of [
+    [`node '${evil}' sync`, /is not this plugin's operator\.js/],
+    [`node ../../../evil/operator.js sync`, /absolute path/],
+    [`cd '${elsewhere}' && node ./operator.js sync`, /role directory|absolute path/],
+    [`cd '${elsewhere}' && node '${OP}' sync`, /not the Reality Checker's role directory/],
+    [`cd /nonexistent-dir && node '${OP}' sync`, /not the Reality Checker's role directory/],
+    [`cd rel && node '${OP}' sync`, /cd target must be an absolute path/],
+    [`cd '${roleDir}' && ./node '${OP}' sync`, /program must be node/],
+    [`/usr/local/bin/not-node '${OP}' sync`, /program must be node/],
+    [`node ~/operator.js sync`, /absolute path/],
+    [`cd\n/evil/payload.sh && node '${OP}' sync`, /control character/],
+    [`node '${OP}' sync\nbd close x`, /control character/],
+    [`node '${OP}' sync\rbd close x`, /control character/],
+    [`node\t'${OP}' sync`, /control character/],
+    [`node '${OP}' sync`, /plain command/],
+    [`node '${OP}' record --cite x`, /only subcommand allowed is sync/],
+    [`node '${OP}' sync --project /x`, /sync takes only/],
+  ]) {
+    const p = rc.asRoleProblem(bad, ctx);
+    assert.ok(p, `not refused: ${JSON.stringify(bad)}`);
+    assert.match(p, why, JSON.stringify(bad));
+  }
+  // refine does not know the checker's directory: an absolute cd target passes there, and the runner refuses it
+  assert.equal(rc.asRoleProblem(`cd '${elsewhere}' && node '${OP}' sync`), null);
+  assert.ok(rc.asRoleProblem(`cd '${elsewhere}' && node '${OP}' sync`, { roleDir: null }));
+  const s = ready();
+  assert.equal(s.refine(1, `cd '${elsewhere}' && node '${OP}' sync`).code, 0);
+  assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--as-role').code, 0);
+  const r = s.verify(1);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /not the Reality Checker's role directory/);
+  assert.equal(s.rows().length, 0);
+  assert.ok(!fs.existsSync(path.join(s.roleDir, 'verify')));
+  // and the same step with a cd into the checker's own role directory gets past the check to the run
+  assert.equal(s.refine(1, `cd '${s.roleDir}' && node '${OP}' sync --format-check`).code, 0);
+  assert.doesNotMatch(s.verify(1).out, /--as-role is only for the form/);
+});
+
+// operator.js names its refusal two ways (the code not_allowed, and the words "no valid role marker");
+// either one, alone, makes the runner name the --as-role fix, and other failures do not.
+test('run: the hint names --as-role on either wording of the role refusal, and not on another failure', () => {
+  const OP = path.join(__dirname, 'operator.js');
+  const hinted = (stderr) => {
+    const s = ready();
+    assert.equal(s.refine(1, `node '${OP}' sync`).code, 0);
+    const r = verifyWith(s, (cmd, args, opts) => (cmd === '/bin/sh' ? { status: 1, stdout: '', stderr } : spawnSync(cmd, args, opts)));
+    assert.match(r.out, /: fail \(exit 1\)/);
+    return /--step 1 --as-role/.test(r.out);
+  };
+  assert.equal(hinted('operator.js: no valid role marker for this session\n'), true);
+  assert.equal(hinted('operator.js: not_allowed\n'), true);
+  assert.equal(hinted('operator.js: disk full\n'), false);
 });

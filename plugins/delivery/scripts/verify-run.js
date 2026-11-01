@@ -105,10 +105,11 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   if (withCommand.length > 1) return refuse(`criterion ${n} has ${withCommand.length} steps with a command (steps ${withCommand.map((s) => s.n).join(', ')}): the runner runs exactly one, so none is silently ignored. The Delivery Manager keeps one command on the criterion (reality-check.js refine ${bead} --criterion ${n} --step <k> --command '<the one command>') and splits the rest into criteria`);
   const step = withCommand[0];
   if (!step) return refuse(`criterion ${n} has no step with a command: the Delivery Manager adds it (reality-check.js refine ${bead} --criterion ${n} --step 1 --command '<the command>' [--match '<pattern stdout must show>'])`);
-  // refine refuses --as-role on any other command; checked again here for a script edited by hand
-  const roleProblem = step.as_role ? RC.asRoleProblem(step.command) : null;
-  if (roleProblem) return refuse(`criterion ${n} step ${step.n}: ${roleProblem}. Message the Delivery Manager`);
   if (!who.roleDir) return refuse('not in a role directory, so the scratch area (verify/) is not known.');
+  // refine refuses --as-role on any other command; checked again here for a script edited by hand, and
+  // here alone with the checker's role directory, the only directory a cd in such a step may enter
+  const roleProblem = step.as_role ? RC.asRoleProblem(step.command, { roleDir: who.roleDir }) : null;
+  if (roleProblem) return refuse(`criterion ${n} step ${step.n}: ${roleProblem}. Message the Delivery Manager`);
   const minutes = Number(script.cap && script.cap.minutes) > 0 ? Number(script.cap.minutes) : RC.DEFAULT_CAP.minutes;
   // the run cap is checked before any checkout or spawn: an over-cap run executes nothing and leaves no capture
   const attempts = (script.cap && script.cap.attempts) || RC.DEFAULT_CAP.attempts;
@@ -127,7 +128,7 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   const pass = !timedOut && code === 0 && matched;
   const why = timedOut ? `stopped after ${minutes} minutes` : code !== 0 ? `exit ${code === null ? 'by signal' : code}` : matched ? 'exit 0' : `exit 0 but stdout does not match /${step.match}/`;
   // the refusal of a role-scoped writer run without the role: name the fix, so the fail is not read as the product's
-  const hint = !pass && !step.as_role && NO_ROLE.test(`${stdout}${r.stderr || ''}`) && !RC.asRoleProblem(step.command)
+  const hint = !pass && !step.as_role && NO_ROLE.test(`${stdout}${r.stderr || ''}`) && !RC.asRoleProblem(step.command, { roleDir: who.roleDir })
     ? `\nthe command needs a role identity, which this step does not keep: the Delivery Manager marks it (reality-check.js refine ${bead} --criterion ${n} --step ${step.n} --as-role) and plans a new run` : '';
   // the capture sits in the checker's own project clone, where its lane writes; run-record publishes it
   const base = path.join(who.roleDir, 'project');

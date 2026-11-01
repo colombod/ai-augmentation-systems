@@ -46,18 +46,24 @@ function parse(argv) {
   return out;
 }
 
-// The one command a step may run as the Reality Checker (refine --as-role): operator.js sync, after an
-// optional cd, with flags only. A step that keeps the checker's identity runs outside its lane hook, so
-// any other writer there (run-record, evidence.js add, review.js, a bd write) would write the done gate in
-// the checker's name. An allowlist, not a denylist: a shell can spell a refused command too many ways.
-const AS_ROLE_FORM = "[cd <role directory> &&] node <path>/operator.js sync [--format-check] [--all] [--json]";
+// The one command a step may run as the Reality Checker (refine --as-role): this plugin's own operator.js
+// sync, after an optional cd into the checker's role directory, with flags only. A step that keeps the
+// checker's identity runs outside its lane hook, so any other writer there (run-record, evidence.js add,
+// review.js, a bd write, or any file merely named operator.js) would write the done gate in the checker's
+// name. An allowlist, not a denylist: a shell can spell a refused command too many ways. Paths are compared
+// after resolving links, never by basename: a basename check let `node /any/dir/operator.js sync` and
+// `cd /anywhere && node ./operator.js sync` through.
+const AS_ROLE_FORM = "[cd <the Reality Checker's role directory> &&] node <absolute path of this plugin's scripts>/operator.js sync [--format-check] [--all] [--json]";
 const SYNC_FLAGS = new Set(['--format-check', '--all', '--json']);
+const OPERATOR_JS = path.join(__dirname, 'operator.js');
 const AND = Symbol('&&');
-// words of a plain command: single-quoted, double-quoted without expansion, bare, and `&&`; null for
-// anything else (a pipe, `;`, a redirect, a substitution, a variable, words run together)
+// words of a plain command: single-quoted, double-quoted without expansion, bare, and `&&`, separated by
+// spaces only; null for anything else (a pipe, `;`, a redirect, a substitution, a variable, words run
+// together). To sh a newline separates commands, not words, so asRoleProblem refuses every control
+// character first, and only the space separates words here.
 function shellWords(text) {
   const out = [];
-  const re = /\s*(?:(&&)|'([^']*)'|"([^"$`\\!]*)"|([A-Za-z0-9_@%+=:,./~-]+))(?=\s|&&|$)/y;
+  const re = / *(?:(&&)|'([^']*)'|"([^"$`\\!]*)"|([A-Za-z0-9_@%+=:,./~-]+))(?= |&&|$)/y;
   let i = 0;
   while (i < text.length) {
     if (!text.slice(i).trim()) break;
@@ -69,19 +75,29 @@ function shellWords(text) {
   }
   return out;
 }
-function asRoleProblem(command) {
-  const no = `--as-role is only for the form ${AS_ROLE_FORM}: any other command run as the Reality Checker could write rows, reviews or beads in its name. Make the step a plain command (--no-as-role)`;
-  const w = shellWords(String(command || ''));
-  if (!w || !w.length) return no;
+const real = (p) => { try { return fs.realpathSync(p); } catch (err) { return null; } };
+// roleDir is the Reality Checker's role directory. verify-run, the one place the command executes, passes
+// it, and a cd anywhere else is refused there. refine runs as the Delivery Manager, who does not know that
+// directory, so it passes none and only an absolute cd target is required at that point.
+function asRoleProblem(command, { roleDir } = {}) {
+  const no = (why) => `--as-role is only for the form ${AS_ROLE_FORM}: any other command run as the Reality Checker could write rows, reviews or beads in its name (${why}). Make the step a plain command (--no-as-role)`;
+  const text = String(command || '');
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(text)) return no('it holds a newline or another control character');
+  const w = shellWords(text);
+  if (!w || !w.length) return no('it is not one plain command');
   let i = 0;
   if (w[0] === 'cd') {
-    if (typeof w[1] !== 'string' || w[2] !== AND) return no;
+    if (typeof w[1] !== 'string' || w[2] !== AND) return no('a cd must be followed by &&');
+    if (!path.isAbsolute(w[1])) return no('the cd target must be an absolute path');
+    if (roleDir !== undefined && (!roleDir || !real(w[1]) || real(w[1]) !== real(roleDir))) return no(`the cd target ${w[1]} is not the Reality Checker's role directory`);
     i = 3;
   }
   const [bin, script, sub, ...flags] = w.slice(i);
-  if (typeof bin !== 'string' || path.basename(bin) !== 'node') return no;
-  if (typeof script !== 'string' || path.basename(script) !== 'operator.js') return no;
-  if (sub !== 'sync' || !flags.every((f) => typeof f === 'string' && SYNC_FLAGS.has(f))) return no;
+  if (bin !== 'node' && bin !== process.execPath) return no('the program must be node');
+  if (typeof script !== 'string' || !path.isAbsolute(script)) return no('operator.js must be named by its absolute path');
+  if (!real(script) || real(script) !== real(OPERATOR_JS)) return no(`${script} is not this plugin's operator.js, ${OPERATOR_JS}`);
+  if (sub !== 'sync') return no('the only subcommand allowed is sync');
+  if (!flags.every((f) => typeof f === 'string' && SYNC_FLAGS.has(f))) return no(`sync takes only ${[...SYNC_FLAGS].join(', ')}`);
   return null;
 }
 
