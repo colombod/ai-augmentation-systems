@@ -148,14 +148,18 @@ if (require.main === module) {
   // suite runs detached so the inode guard can stop it as a group, which also keeps it from getting
   // the terminal's signal on its own. The runner lives until the group is gone, not only its leader
   // (Copilot on #111): a descendant that ignores SIGTERM still gets the SIGKILL five seconds on, and
-  // the unsealed run's directory is removed only once nothing in the group can write to it.
+  // the unsealed run's directory is removed only once nothing in the group can write to it. The wait
+  // ends two seconds after the SIGKILL whatever signal 0 says (Copilot on #111): a killed process runs
+  // no more code, but in a container whose PID 1 does not reap, it stays a zombie that keeps its group
+  // answering signal 0 for ever.
   const groupAlive = () => { try { process.kill(-child.pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
   let stopping = false;
+  let killedAt = 0;
   const stop = (sig) => {
     if (stopping) return;
     stopping = true;
     try { process.kill(-child.pid, sig); } catch (e) { /* gone */ }
-    setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { /* gone */ } }, 5000).unref();
+    setTimeout(() => { killedAt = Date.now(); try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { /* gone */ } }, 5000).unref();
   };
   process.on('SIGINT', () => stop('SIGINT'));
   process.on('SIGTERM', () => stop('SIGTERM'));
@@ -168,6 +172,6 @@ if (require.main === module) {
     };
     if (!groupAlive()) return finish();
     stop('SIGTERM');
-    const wait = setInterval(() => { if (!groupAlive()) { clearInterval(wait); finish(); } }, 100);
+    const wait = setInterval(() => { if (!groupAlive() || (killedAt && Date.now() - killedAt > 2000)) { clearInterval(wait); finish(); } }, 100);
   });
 }

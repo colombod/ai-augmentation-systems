@@ -167,6 +167,42 @@ test('run-tests: a suite process that ignores SIGTERM is killed before the runne
   }
 });
 
+// Copilot on #111: a zombie left in the suite's group (its parent outside the group never reaps it, as
+// under a container PID 1 that does not reap) answers signal 0 for ever; the runner still exits.
+const perl = ['/usr/bin/perl', '/bin/perl'].find((p) => require('fs').existsSync(p));
+test('run-tests: a zombie left in the suite\'s group does not keep the runner waiting', { skip: !perl && 'no perl to make a zombie' }, async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { spawn } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.zombie-'));
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-zombie-'));
+  const pidFile = path.join(dir, 'pids');
+  let parent = 0;
+  let runner;
+  try {
+    const fixture = path.join(dir, 'zombie.test.js');
+    // the forked child exits at once and stays a zombie in the suite's group; its parent moves to a
+    // group of its own, out of the runner's reach, and never waits for it
+    const script = `my $z = fork(); exit 0 unless $z; setpgrp(0, 0); open(my $f, '>', '${pidFile}.part') or die; print $f "$$ $z"; close $f; rename('${pidFile}.part', '${pidFile}'); sleep 60;`;
+    fs.writeFileSync(fixture, "const test = require('node:test'); test('leaves a zombie', async () => { require('child_process').spawn(" + JSON.stringify(perl) + ", ['-e', " + JSON.stringify(script) + "], { stdio: 'ignore' }); await new Promise((r) => setTimeout(r, 60000)); });\n");
+    const env = { ...process.env, TMPDIR: outer, DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_FILES: fixture };
+    delete env.NODE_TEST_CONTEXT;
+    runner = spawn(process.execPath, [path.join(__dirname, 'run-tests.js')], { env, stdio: 'ignore' });
+    for (let i = 0; i < 100 && !fs.existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 100));
+    parent = Number(fs.readFileSync(pidFile, 'utf8').split(' ')[0]);
+    assert.ok(parent > 0, 'the zombie\'s parent started');
+    const exited = new Promise((r) => runner.on('exit', () => r(true)));
+    runner.kill('SIGTERM');
+    const done = await Promise.race([exited, new Promise((r) => setTimeout(() => r(false), 15000))]);
+    assert.equal(done, true, 'the runner exits with a zombie still in its group');
+    assert.deepEqual(fs.readdirSync(outer).filter((f) => f.startsWith('delivery-tests-')), [], 'the run\'s directory is removed');
+  } finally {
+    if (runner && runner.exitCode === null && runner.signalCode === null) runner.kill('SIGKILL');
+    if (parent) try { process.kill(parent, 'SIGKILL'); } catch (e) { /* gone */ }
+    fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(outer, { recursive: true, force: true });
+  }
+});
+
 // Copilot on #111: an unsealed run counts its own directory, not the shared filesystem's inodes, so a
 // small run on a busy filesystem is not stopped.
 test('run-tests: an unsealed run on a filesystem already past the cap is not stopped for others\' files', () => {
