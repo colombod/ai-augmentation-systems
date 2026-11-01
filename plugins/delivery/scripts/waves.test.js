@@ -469,3 +469,17 @@ test('m-b: a partial spend reading is flagged in the claim warnings and in team-
   const s = renderStatus(teamStatus(t.root, { bdCheck: () => true, storyBeads: () => beads, checkBeads: () => [], idleBd: { list: () => [], ready: () => [] }, budget: st, now: NOW }));
   assert.match(s, /spend reading is partial/);
 });
+
+// R-33 in selection: a story the Reality Checker verifies is listed refused until its check is planned
+test('7k3.1.1.1: select lists a story with no planned reality-check script as refused (R-33), and ranks it once planned', async () => {
+  const F = require('./testing/gate-fixture.js');
+  const Gt = require('./lib/gates.js');
+  for (const planned of [false, true]) {
+    const root = F.makeProject({ checkScript: planned });
+    const b = F.storyBead({ status: 'open', assignee: '', metadata: { ready_hash: Gt.storyHash(Gt.parseStory(F.STORY)) } });
+    const sel = JSON.parse((await plan.main(['select', '--json'], { who: { root, roleId: 'delivery-lead', team: TEAM }, bd: F.memBd([b]), budget: NO_BUDGET })).out);
+    assert.equal(sel.ranked.length, 1);
+    if (planned) assert.equal(sel.ranked[0].refused, null);
+    else assert.match(sel.ranked[0].refused, /criteria 1, 2 are checked on S1 by the Reality Checker, and no reality-check script is planned.*\(R-33\)/);
+  }
+});

@@ -102,6 +102,21 @@ test('7k3.1.1: a story the Reality Checker verifies is neither ready nor deploye
   assert.equal(bead().metadata.deployed_sha, SHA, 'the earlier deploy stands');
 });
 
+// 7k3.1.1 review: a bug checked on a surface has no story to plan a script from; its deploy says so
+test('7k3.1.1: a deploy of a bead that names a surface but has no story file warns that its check cannot run', () => {
+  const root = makeProject();
+  const fix = storyBead({ id: 'ex-fix-1', labels: ['bug'], metadata: { story_file: undefined } });
+  const bd = memBd([fix, storyBead({ assignee: 't@pc/builder-1' })]);
+  const deploy = (id) => evidence.main(['state', id, 'deployed', '--sha', SHA], { cwd: root, env: {}, bd, now: T.deploy, who: whoFor(root, 'delivery-lead') });
+  const r = deploy('ex-fix-1');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^warning: ex-fix-1 names surface S1 but has no readable story file, so no reality-check script can be planned for it and its check on the customer's app cannot run/m);
+  // a story with its script planned gets its check bead, and no such warning
+  const ok = deploy(ID);
+  assert.equal(ok.code, 0, ok.out);
+  assert.doesNotMatch(ok.out, /no readable story file/);
+});
+
 test('7k3.1.1: materialise plans the script of every open story that needs one, keeps refined steps, and skips a closed or test-checked story', () => {
   const { planChecks } = require('./materialise.js');
   const root = makeProject({ checkScript: false });

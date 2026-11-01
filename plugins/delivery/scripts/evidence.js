@@ -130,6 +130,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
         rc.writeScript(who.root, fresh, inp, { at, by: who.instance });
         checks.push(...rc.dispatch(who, store, fresh, inp, meta.deployed_sha));
       }
+      // a bead checked on a surface with no story to plan from (a bug or a fix): no script can be planned
+      // for it, so nothing would ever run its check; say so rather than pass in silence (7k3.1.1)
+      if (!d.ok && !inp.story && inp.surface) checks.push(`warning: ${id} names surface ${inp.surface.id} but has no readable story file, so no reality-check script can be planned for it and its check on the customer's app cannot run. Give it a story file (story_file), or check it by hand with evidence.js add`);
       return { code: 0, out: [`${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}${handed}`, ...checks].join('\n') };
     }
     return { code: 2, out: USAGE };
