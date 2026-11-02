@@ -10,8 +10,10 @@
 // takes the host most roles run on and the role's default model unless told otherwise, and the change is
 // committed alone. Then `start.js` prepares the new role's directory.
 //
-// The builders are one entry with a count (lib/manifest.js expands it to builder-1..n). `add builder
-// --count <n>` sets that count, and refuses one above budget.builders_cap, naming the cap. The cap is the
+// The builders are one entry with a count and the list of its instance names (lib/manifest.js
+// instanceNames). `add builder --count <n>` sets that count without renaming a live instance: the
+// existing names stay and new ones take builder-2, builder-3, ... It refuses a count above
+// budget.builders_cap, naming the cap. The cap is the
 // owner's to raise: `set-cap builders <n>` takes a decision record and writes the cap only when that
 // record verifies as the owner's own decision (lib/gate-context.js ownerRecord), not revoked or superseded.
 //
@@ -25,7 +27,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { findProjectRoot, validateManifest, canonicalRoleId, TEAM_REL, HOSTS_REL, MODELS } = require('./lib/manifest.js');
+const { findProjectRoot, validateManifest, canonicalRoleId, instanceNames, TEAM_REL, HOSTS_REL, MODELS } = require('./lib/manifest.js');
 
 const PLUGIN_ROOT = path.join(__dirname, '..');
 const USAGE = 'usage: team-role.js add <role-id> [--host <name>] [--model opus|sonnet|haiku] [--count <n>] [--project <root>] [--dry-run]\n'
@@ -123,9 +125,18 @@ function setBuilderCount(projectRoot, id, rawCount, { team, hosts, roles, host, 
   if (model && !MODELS.has(model)) return { code: 1, out: `team-role: --model must be one of ${[...MODELS].join(', ')}` };
   const at = roles.findIndex((r) => r && r.id === id && !r.retired);
   let next;
+  let dropped = null;
   if (at >= 0) {
-    if ((roles[at].count || 1) === n) return { code: 1, out: `team-role: the team already has ${n} builder${n === 1 ? '' : 's'}` };
-    const entry = { ...roles[at], count: n };
+    // grow or shrink without renaming: every instance that exists keeps its name (its claims, pull
+    // requests, team/<instance> branch and role directory are keyed by it); new ones take the next free
+    // <id>-<k> from 2; a shrink drops the newest names and says which (8l1.2.2)
+    const current = instanceNames(roles[at]);
+    if (current.length === n) return { code: 1, out: `team-role: the team already has ${n} builder${n === 1 ? '' : 's'} (${current.join(', ')})` };
+    let names = current.slice(0, n);
+    for (let k = 2; names.length < n; k++) if (!names.includes(`${id}-${k}`) && !current.includes(`${id}-${k}`)) names.push(`${id}-${k}`);
+    dropped = current.filter((x) => !names.includes(x));
+    const entry = { ...roles[at], count: n, instances: names };
+    if (n === 1 && names[0] === id) { delete entry.count; delete entry.instances; }
     if (host) entry.host = host;
     if (model) entry.model = model;
     next = { ...team, roles: roles.map((r, i) => (i === at ? entry : r)) };
@@ -136,7 +147,8 @@ function setBuilderCount(projectRoot, id, rawCount, { team, hosts, roles, host, 
     if (!chosenHost) return { code: 1, out: 'team-role: no host to place the role on; pass --host <name>' };
     next = { ...team, roles: [...roles, { id, brief: `delivery/${id}`, host: chosenHost, model: model || role.model, count: n }] };
   }
-  return writeTeam(projectRoot, next, hosts, { line: `set builder count to ${n}`, subject: `team: ${n} builders`, branch: `builders-${n}`, dryRun, clone });
+  const kept = at >= 0 ? ` (instances: ${(next.roles[at].instances || [id]).join(', ')}${dropped && dropped.length ? `; removed ${dropped.join(', ')}: reassign its claims` : ''})` : '';
+  return writeTeam(projectRoot, next, hosts, { line: `set builder count to ${n}${kept}`, subject: `team: ${n} builders`, branch: `builders-${n}`, dryRun, clone });
 }
 
 // Why `record` cannot raise the cap, or null: it must verify, stand, and be the owner's own decision.

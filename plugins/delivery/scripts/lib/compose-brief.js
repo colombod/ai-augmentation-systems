@@ -50,7 +50,8 @@ function describeHost(name, host) {
 function routingTable(team) {
   const lines = ['| Role | Host | Model | Brief |', '|---|---|---|---|'];
   for (const r of team.roles) {
-    const id = r.count && r.count > 1 ? `${r.id} (x${r.count})` : r.id;
+    const names = require('./manifest.js').instanceNames(r);
+    const id = names.length > 1 ? `${r.id} (${names.join(', ')})` : r.id;
     lines.push(`| ${id} | ${r.host} | ${r.model} | ${r.brief} |`);
   }
   return lines.join('\n');
