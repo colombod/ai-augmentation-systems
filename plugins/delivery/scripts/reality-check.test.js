@@ -455,6 +455,15 @@ test('refine --from sets and clears as_role, and refuses it on any command but o
   let r = dm('refine', ID, '--from', write({ 1: { command: sync, match: 'ok', as_role: true } }));
   assert.equal(r.code, 0, r.out);
   assert.deepEqual([step().command, step().as_role], [sync, true]);
+  // a later file that changes only the command of a marked step is checked against the mark it keeps
+  const marked = script();
+  r = dm('refine', ID, '--from', write({ 1: { command: 'node /p/evidence.js add x --result pass', match: 'x' } }));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /criterion 1: --as-role is only for the form/);
+  assert.equal(script(), marked, 'a refused command under a kept mark writes nothing');
+  r = dm('refine', ID, '--from', write({ 1: { command: `${sync} --json`, match: 'ok' } }));
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual([step().command, step().as_role], [`${sync} --json`, true]);
   r = dm('refine', ID, '--from', write({ 1: { command: 'echo plain', match: 'plain', as_role: false } }));
   assert.equal(r.code, 0, r.out);
   assert.equal(step().command, 'echo plain');

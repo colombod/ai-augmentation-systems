@@ -391,7 +391,9 @@ function refineFrom(who, id, s, a, at, cwd = process.cwd()) {
     const k = e.step === undefined ? 1 : e.step;
     const step = Number.isInteger(k) ? g.steps.find((x) => x.n === k) : null;
     if (!step) return refuse(`${a.from}: criterion ${n} has no step ${k} (1..${g.steps.length})`);
-    if (e.as_role === true) { const p = asRoleProblem(e.command); if (p) return refuse(`${a.from}: criterion ${n}: ${p}`); }
+    // a step already marked keeps its mark when only the command changes, so check the mark it ends with
+    const marked = e.as_role === undefined ? step.as_role === true : e.as_role;
+    if (marked) { const p = asRoleProblem(e.command); if (p) return refuse(`${a.from}: criterion ${n}: ${p}`); }
     plan.push({ n, step, e });
   }
   if (!plan.length) return refuse(`${a.from} names no criterion`);
