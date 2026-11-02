@@ -8,6 +8,13 @@ function phaseNumber(text) {
   return m ? m[1].toLowerCase() : null;
 }
 
+// A story's own phase field may be the bare number ("phase: 1"), which story files written by hand
+// use as often as "Phase 1"; without this the story is dropped as "phase null not in roadmap".
+function storyPhase(raw) {
+  const bare = /^\s*(\d+[a-z]?)\s*$/i.exec(raw == null ? '' : String(raw));
+  return bare ? bare[1].toLowerCase() : phaseNumber(raw);
+}
+
 function splitCells(line) {
   let body = line.trim();
   if (body.startsWith('|')) body = body.slice(1);
@@ -103,7 +110,7 @@ function parseStories(dir) {
     if (!meta.id) continue;
     out.push({
       id: String(meta.id), title: String(meta.title || meta.id), status: String(meta.status || ''), epic: String(meta.epic || ''),
-      phase: phaseNumber(meta.phase), dependsOn: listValue(meta.depends_on), size: String(meta.size || ''), model: String(meta.model || '').trim(), file,
+      phase: storyPhase(meta.phase), dependsOn: listValue(meta.depends_on), size: String(meta.size || ''), model: String(meta.model || '').trim(), file,
       surface: plain(meta.surface), area: plain(meta.area), wave: plain(meta.wave),
     });
   }
