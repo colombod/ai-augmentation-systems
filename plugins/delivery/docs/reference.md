@@ -479,6 +479,14 @@ a criterion with more than one step carrying a command is refused, never partly 
 the source clone at the deployed sha, not the installed artifact, so the version it observes is the
 clone's sha. The capture is cut at 256 KiB per stream (and says so) and is not redacted: a command that
 prints a secret writes it into the capture.
+A spike about an external host has no story, script or deploy, so the Reality Checker runs its probe with
+`verify-run.js probe <spike> --step <file> [--minutes <n>]` (default 15): the step file must be committed
+in the project repository and unchanged, its text at HEAD runs with `/bin/sh` on the host in a fresh
+temporary directory (nothing is checked out), and the capture keeps the project commit, the step's blob
+sha, stdout, stderr, the exit code and the time. Any exit is a saved capture; when the step's comments
+say what a code means (`2 = not signed in (owner step)`) the output repeats it. It prints the
+`assumptions.js probe ... --artifact <capture>` command that records the row. Only the Reality Checker
+runs it, and only on a spike whose assumption is `external-host`.
 `start.js` adds the Reality Checker to a new team whose surfaces include a command-line one, and
 `/delivery:team` warns when a declared surface only the Reality Checker can verify has no Reality
 Checker on the team.
