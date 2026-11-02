@@ -1301,6 +1301,82 @@ test('nativeApproval approves nothing for a non-Bash tool, an any lane or the re
   assert.ok(nativeApproval(cmd(`node ${path.join(PLUGIN_ROOT, 'scripts', 'team-status.js')}`), reads, groups, ctx).allow);
 });
 
+// the Technical Writer edits documentation in its product worktree, never product code; Staffing adds a
+// shipped role through team-role.js, never by a free-form edit of team.json
+test('lane: the Technical Writer edits product docs only; Staffing runs team-role.js add', () => {
+  const tw = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/tech-writer' });
+  const edit = (rel) => decideLane({ toolName: 'Edit', toolInput: { file_path: path.join(roleDir, rel) }, policy: tw, ...ctx() }).allow;
+  assert.equal(edit('product/README.md'), true);
+  assert.equal(edit('product/plugins/x/docs/quickstart.md'), true);
+  assert.equal(edit('product/src/app.js'), false);
+  assert.equal(edit(path.join('project', '.delivery', 'team', 'team.json')), false);
+  const bash = (policy, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx() }).allow;
+  assert.equal(bash(tw, 'gh pr create --title docs --body x'), true);
+  assert.equal(bash(tw, 'gh pr merge 1 --squash'), false);
+  const staffing = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/staffing' });
+  assert.equal(bash(staffing, `node ${path.join(PLUGIN_ROOT, 'scripts', 'team-role.js')} add tech-writer`), true);
+  assert.equal(bash(POLICIES[COS], `node ${path.join(PLUGIN_ROOT, 'scripts', 'team-role.js')} add tech-writer`), false);
+});
+
+// Copilot on #118 (4437630044): the writer's git writes only what its lane writes; a form whose writes
+// cannot be confined to documentation (another source, the whole tree, a glob) is refused
+test('lane: the Technical Writer\'s git (git-write-docs) takes only documentation path operands', () => {
+  const tw = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/tech-writer' });
+  const sh = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: tw, ...ctx({ cwd: roleDir }) }).allow;
+  const base = path.join(roleDir, 'product', 'tw-pkg');
+  fs.mkdirSync(path.join(base, 'docs'), { recursive: true });
+  fs.mkdirSync(path.join(base, 'notes.md'), { recursive: true });
+  try {
+    // documentation, named: staged, restored from the index, removed, committed
+    assert.equal(sh('git -C product add README.md docs/guide.md tw-pkg/docs'), true);
+    assert.equal(sh('git -C product restore README.md'), true);
+    assert.equal(sh('git -C product restore --staged -- docs/guide.md'), true);
+    assert.equal(sh('git -C product rm docs/old.md'), true);
+    assert.equal(sh('git -C product commit -m "Refs ex-1 document the import"'), true);
+    assert.equal(sh('git -C product commit -am "Refs ex-1 document the import"'), true);
+    assert.equal(sh('git -C product commit -m "Refs ex-1" -- README.md'), true);
+    assert.equal(sh('git -C product push origin HEAD:team/tech-writer'), true);
+    assert.equal(sh('git -C product fetch origin'), true);
+    assert.equal(sh('git -C product switch -C team/tech-writer origin/main'), true);
+    // Copilot's own case, and every other way to put source into the worktree
+    assert.equal(sh('git -C product restore --source=HEAD~1 -- src/app.js'), false);
+    assert.equal(sh('git -C product restore --source=HEAD~1 -- README.md'), false, 'another source is refused outright');
+    assert.equal(sh('git -C product restore -s HEAD~1 README.md'), false);
+    assert.equal(sh('git -C product restore -- src/app.js'), false);
+    assert.equal(sh('git -C product checkout HEAD~1 -- src/app.js'), false);
+    assert.equal(sh('git -C product reset --hard HEAD~1'), false);
+    assert.equal(sh('git -C product merge origin/feature'), false);
+    assert.equal(sh('git -C product pull'), false);
+    assert.equal(sh('git -C product cherry-pick abc123'), false);
+    assert.equal(sh('git -C product stash pop'), false);
+    assert.equal(sh('git -C product add src/app.js'), false);
+    assert.equal(sh('git -C product add README.md src/app.js'), false, 'one path outside the lane refuses the command');
+    assert.equal(sh('git -C product add .'), false);
+    assert.equal(sh('git -C product add -A'), false);
+    assert.equal(sh('git -C product add *.md'), false);
+    assert.equal(sh("git -C product add ':(glob)**'"), false);
+    // a pathspec that reads as a Markdown path but that git expands to the whole tree
+    assert.equal(sh("git -C product add ':(exclude)notes.md'"), false);
+    assert.equal(sh("git -C product restore ':!README.md'"), false);
+    assert.equal(sh('git -C product add --pathspec-from-file=list.txt'), false);
+    assert.equal(sh('git -C product add tw-pkg/notes.md'), false, 'a directory named like a Markdown file holds more than Markdown');
+    assert.equal(sh('git -C product mv README.md src/app.js'), false);
+    assert.equal(sh('git -C product mv src/app.js docs/app.md'), false, 'moving source into the docs writes the source path too');
+    assert.equal(sh('git -C product commit -m x -- src/app.js'), false);
+    assert.equal(sh('git -C product commit -am x src/app.js'), false, 'the message is the value of -m; the path after it is a path');
+    assert.equal(sh('git add product/README.md'), false, 'outside the product worktree the scope refuses');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+// Copilot on #118 (4437630078): the writer files a docs bead under the story it documents
+test('lane: the Technical Writer runs its documented bd create --parent, and only that create', () => {
+  const tw = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/tech-writer' });
+  const sh = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: tw, ...ctx({ cwd: roleDir }) }).allow;
+  assert.equal(sh('bd create --parent ex-12 --type task --labels docs --title "Document the import command"'), true);
+  assert.equal(sh('bd create --type task --labels docs --title "Document the import command"'), false);
+  assert.equal(sh('bd dep add ex-1 ex-2'), false);
+});
+
 // hjx item 2: a suite run straight with node's test runner leaves its fixtures in the host's /tmp;
 // every role, the any-lane builder included, runs tests only through the sealed runner
 test('lane: node --test and a test file run directly are refused for every role; the sealed runner is not', () => {

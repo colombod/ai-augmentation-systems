@@ -28,10 +28,11 @@ the commands) and they stay up.
 | Product Manager | `product-manager` | opus | DEFINE and CONTRACT documents (brief to roadmap), realign and pivots |
 | Delivery Manager | `delivery-lead` | sonnet | NAVIGATE: stories, materialise, sprints, phase reviews, bead structure; independent review requests, acceptance and merging pull requests |
 | Builder | `builder` (`builder-2`, ... when counted) | sonnet | product code, in its own worktree of the product repo; opens the pull request, never merges |
-| Staffing (optional, `full`) | `staffing` | sonnet | the roster: `team.json` and project briefs |
+| Staffing (optional, `full`) | `staffing` | sonnet | the roster: `team.json` and project briefs; adds a role the plugin ships with `scripts/team-role.js add <role-id>` (`delivery-manager` is read as `delivery-lead`), which validates the manifest, places the role on the host most active roles run on, and commits it in Staffing's own clone; Staffing pushes it to a `staffing/` branch and the Delivery Manager merges it |
 | Progress Observer (optional, `full`) | `progress-observer` | haiku | the record stays true: re-checks merged/deployed/verified claims, liveness, stale claims |
 | Spike Researcher (optional, `full`) | `spike-researcher` | sonnet | answers `spike` beads from the architecture |
 | Reality Checker (optional, `full`) | `reality-checker` | sonnet | runs reality-check scripts on the real customer surface with browser control or computer use; writes evidence rows and captures only. On by default when a declared surface is not scriptable |
+| Technical Writer (optional, `full`) | `tech-writer` | sonnet | the product's documentation: README, quick start and reference kept true to the shipped version, and runnable quick-start steps, both for someone typing commands and for an agent following a brief, which the Reality Checker can execute; documentation only, in its own worktree (its git group, `git-write-docs`, takes path operands its lane writes and refuses checkout, reset, merge, pull, rebase, cherry-pick, stash and `restore --source`), and opens the pull request |
 
 The role id `delivery-lead` is kept for compatibility (manifests, lanes, record ids); the role
 is shown everywhere as the Delivery Manager.
