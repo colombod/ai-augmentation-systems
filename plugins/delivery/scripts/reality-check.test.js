@@ -426,7 +426,49 @@ test('refine --from applies a file of criterion -> command and match, all or not
     assert.equal(script(), before, `nothing written: ${why}`);
   }
   assert.match(dm('refine', ID, '--from', 'missing.json').out, /cannot read missing\.json/);
-  assert.match(dm('refine', ID, '--from', 'commands.json', '--criterion', '1').out, /--from takes no other step option/);
+  assert.match(dm('refine', ID, '--from', 'commands.json', '--criterion', '1').out, /--from takes no other option/);
+  for (const flag of [['--account', 'vault-test-1'], ['--read-on-screen', 'the about line'], ['--precondition', 'signed in']]) {
+    const out = dm('refine', ID, '--from', 'commands.json', ...flag);
+    assert.equal(out.code, 2, flag[0]);
+    assert.ok(out.out.includes(`--from takes no other option (got ${flag[0]})`), out.out);
+  }
+  assert.equal(script(), before, 'a refused option writes nothing');
+  for (const [body, why] of [
+    [{ 1: { command: 'echo a', match: '   ' } }, /criterion 1: command and match must both be non-empty strings/],
+    [{}, /names no criterion/],
+  ]) {
+    const out = dm('refine', ID, '--from', write('bad.json', body));
+    assert.equal(out.code, 1, out.out);
+    assert.match(out.out, why);
+    assert.equal(script(), before, `nothing written: ${why}`);
+  }
+});
+
+// --from carries as_role like --as-role: only the operator.js sync form may be marked, and false clears it
+test('refine --from sets and clears as_role, and refuses it on any command but operator.js sync', () => {
+  const { root, dm } = setup();
+  dm('plan', ID);
+  const script = () => fs.readFileSync(path.join(root, rc.scriptRel(ID)), 'utf8');
+  const step = () => JSON.parse(script()).criteria.find((g) => g.criterion === 1).steps[0];
+  const write = (body) => { const f = path.join(root, 'as-role.json'); fs.writeFileSync(f, JSON.stringify(body)); return f; };
+  const sync = `node '${path.join(__dirname, 'operator.js')}' sync --format-check`;
+  let r = dm('refine', ID, '--from', write({ 1: { command: sync, match: 'ok', as_role: true } }));
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual([step().command, step().as_role], [sync, true]);
+  r = dm('refine', ID, '--from', write({ 1: { command: 'echo plain', match: 'plain', as_role: false } }));
+  assert.equal(r.code, 0, r.out);
+  assert.equal(step().command, 'echo plain');
+  assert.equal(step().as_role, undefined);
+  const before = script();
+  for (const [body, why] of [
+    [{ 1: { command: 'node /p/evidence.js add x --result pass', match: 'x', as_role: true } }, /criterion 1: --as-role is only for the form/],
+    [{ 1: { command: sync, match: 'ok', as_role: 'yes' } }, /criterion 1: as_role must be true or false/],
+  ]) {
+    const out = dm('refine', ID, '--from', write(body));
+    assert.equal(out.code, 1, out.out);
+    assert.match(out.out, why);
+    assert.equal(script(), before, `nothing written: ${why}`);
+  }
 });
 
 test('a side-arm run does not use up the cap', () => {

@@ -369,8 +369,8 @@ function refine(who, id, a, at, cwd) {
 // as data. The whole file is checked before anything is written, so a bad entry changes nothing.
 const FROM_KEYS = new Set(['command', 'match', 'step', 'as_role']);
 function refineFrom(who, id, s, a, at, cwd = process.cwd()) {
-  const other = ['criterion', 'step', 'setup', 'add_step', 'command', 'match', 'action', 'expect', 'as_role', 'capture', 'pass_rule'].find((k) => a[k] !== undefined);
-  if (other) return { code: 2, out: `reality-check.js: --from takes no other step option (got --${other.replace(/_/g, '-')})` };
+  const other = ['criterion', 'step', 'setup', 'add_step', 'command', 'match', 'action', 'expect', 'as_role', 'capture', 'pass_rule', 'account', 'read_on_screen', 'precondition'].find((k) => a[k] !== undefined);
+  if (other) return { code: 2, out: `reality-check.js: --from takes no other option (got --${other.replace(/_/g, '-')}); run that refine on its own` };
   let text;
   try { text = fs.readFileSync(path.resolve(cwd, a.from), 'utf8'); } catch (e) { return refuse(`cannot read ${a.from} (${e.code || e.message})`); }
   let entries;
@@ -385,7 +385,7 @@ function refineFrom(who, id, s, a, at, cwd = process.cwd()) {
     if (!e || typeof e !== 'object' || Array.isArray(e)) return refuse(`${a.from}: criterion ${n} must be {command, match}`);
     const extra = Object.keys(e).find((k) => !FROM_KEYS.has(k));
     if (extra) return refuse(`${a.from}: criterion ${n}: unknown key ${extra} (allowed: ${[...FROM_KEYS].join(', ')})`);
-    if (typeof e.command !== 'string' || !e.command.trim() || typeof e.match !== 'string' || !e.match) return refuse(`${a.from}: criterion ${n}: command and match must both be non-empty strings`);
+    if (typeof e.command !== 'string' || !e.command.trim() || typeof e.match !== 'string' || !e.match.trim()) return refuse(`${a.from}: criterion ${n}: command and match must both be non-empty strings`);
     try { new RegExp(e.match); } catch (err) { return refuse(`${a.from}: criterion ${n}: match is not a valid regular expression (${err.message})`); }
     if (e.as_role !== undefined && typeof e.as_role !== 'boolean') return refuse(`${a.from}: criterion ${n}: as_role must be true or false`);
     const k = e.step === undefined ? 1 : e.step;
