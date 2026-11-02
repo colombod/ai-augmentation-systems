@@ -51,6 +51,14 @@ function registerRows(projectRoot, initiative, warnings) {
   return reg.rows;
 }
 
+// Every initiative's stories share .delivery/stories/, and phases are numbered per roadmap, so a story
+// belongs to this roadmap only when its epic or area names the initiative. A story naming neither
+// predates the field and stays in, as it always did.
+function ofInitiative(story, initiative) {
+  if (!story.epic && !story.area) return true;
+  return story.epic === initiative || story.area === initiative;
+}
+
 function loadInputs({ projectRoot, initiative }) {
   const { team } = loadManifest(projectRoot);
   const init = path.join(projectRoot, '.delivery', 'initiatives', initiative);
@@ -63,7 +71,7 @@ function loadInputs({ projectRoot, initiative }) {
     if (SLUG.test(st.id)) return true;
     warnings.push(`story "${st.id}" (${path.basename(st.file)}): id must match ${SLUG}, skipped`);
     return false;
-  });
+  }).filter((st) => ofInitiative(st, initiative));
   return {
     warnings,
     team,
