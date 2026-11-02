@@ -393,6 +393,93 @@ test('Copilot 470: the Delivery Manager refines the shared script through realit
   assert.match(dm('refine', ID, '--account', 'hunter2-password').out, /a name, never a secret/);
 });
 
+// 7k3.1.1.1.4: drafted step commands hold single quotes, which a lane that refuses quote-escaping
+// cannot pass as --command; --from reads them from a file, checked whole before anything is written
+test('refine --from applies a file of criterion -> command and match, all or nothing', () => {
+  const { root, dm } = setup();
+  dm('plan', ID);
+  const script = () => fs.readFileSync(path.join(root, rc.scriptRel(ID)), 'utf8');
+  const write = (name, body) => { const f = path.join(root, name); fs.writeFileSync(f, typeof body === 'string' ? body : JSON.stringify(body)); return f; };
+  const quoted = "node -e 'console.log(\"ok\")'";
+  const good = write('commands.json', { 1: { command: quoted, match: 'ok\\n' }, 2: { command: 'echo two', match: '^two', step: 1 } });
+  const r = dm('refine', ID, '--from', 'commands.json');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /criterion 1 step 1, criterion 2 step 1/);
+  const s = JSON.parse(script());
+  assert.deepEqual([s.criteria[0].steps[0].command, s.criteria[0].steps[0].match], [quoted, 'ok\\n']);
+  assert.deepEqual([s.criteria[1].steps[0].command, s.criteria[1].steps[0].match], ['echo two', '^two']);
+  assert.ok(good);
+  const before = script();
+  for (const [body, why] of [
+    [{ 1: { command: 'echo a', match: 'a' }, 9: { command: 'echo b', match: 'b' } }, /criterion 9 is not in the script/],
+    [{ 1: { command: 'echo a', match: '(' } }, /criterion 1: match is not a valid regular expression/],
+    [{ 1: { command: 'echo a' } }, /criterion 1: command and match must both be non-empty strings/],
+    [{ 1: { command: 'echo a', match: 'a', shell: 'x' } }, /criterion 1: unknown key shell/],
+    [{ 1: { command: 'echo a', match: 'a', step: 5 } }, /criterion 1 has no step 5/],
+    [{ x: { command: 'echo a', match: 'a' } }, /"x" is not a criterion number/],
+    [[], /an object of criterion number -> \{command, match\}/],
+    ['{not json', /is not JSON/],
+  ]) {
+    const out = dm('refine', ID, '--from', write('bad.json', body));
+    assert.equal(out.code, 1, out.out);
+    assert.match(out.out, why);
+    assert.equal(script(), before, `nothing written: ${why}`);
+  }
+  assert.match(dm('refine', ID, '--from', 'missing.json').out, /cannot read missing\.json/);
+  assert.match(dm('refine', ID, '--from', 'commands.json', '--criterion', '1').out, /--from takes no other option/);
+  for (const flag of [['--account', 'vault-test-1'], ['--read-on-screen', 'the about line'], ['--precondition', 'signed in']]) {
+    const out = dm('refine', ID, '--from', 'commands.json', ...flag);
+    assert.equal(out.code, 2, flag[0]);
+    assert.ok(out.out.includes(`--from takes no other option (got ${flag[0]})`), out.out);
+  }
+  assert.equal(script(), before, 'a refused option writes nothing');
+  for (const [body, why] of [
+    [{ 1: { command: 'echo a', match: '   ' } }, /criterion 1: command and match must both be non-empty strings/],
+    [{}, /names no criterion/],
+  ]) {
+    const out = dm('refine', ID, '--from', write('bad.json', body));
+    assert.equal(out.code, 1, out.out);
+    assert.match(out.out, why);
+    assert.equal(script(), before, `nothing written: ${why}`);
+  }
+});
+
+// --from carries as_role like --as-role: only the operator.js sync form may be marked, and false clears it
+test('refine --from sets and clears as_role, and refuses it on any command but operator.js sync', () => {
+  const { root, dm } = setup();
+  dm('plan', ID);
+  const script = () => fs.readFileSync(path.join(root, rc.scriptRel(ID)), 'utf8');
+  const step = () => JSON.parse(script()).criteria.find((g) => g.criterion === 1).steps[0];
+  const write = (body) => { const f = path.join(root, 'as-role.json'); fs.writeFileSync(f, JSON.stringify(body)); return f; };
+  const sync = `node '${path.join(__dirname, 'operator.js')}' sync --format-check`;
+  let r = dm('refine', ID, '--from', write({ 1: { command: sync, match: 'ok', as_role: true } }));
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual([step().command, step().as_role], [sync, true]);
+  // a later file that changes only the command of a marked step is checked against the mark it keeps
+  const marked = script();
+  r = dm('refine', ID, '--from', write({ 1: { command: 'node /p/evidence.js add x --result pass', match: 'x' } }));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /criterion 1: --as-role is only for the form/);
+  assert.equal(script(), marked, 'a refused command under a kept mark writes nothing');
+  r = dm('refine', ID, '--from', write({ 1: { command: `${sync} --json`, match: 'ok' } }));
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual([step().command, step().as_role], [`${sync} --json`, true]);
+  r = dm('refine', ID, '--from', write({ 1: { command: 'echo plain', match: 'plain', as_role: false } }));
+  assert.equal(r.code, 0, r.out);
+  assert.equal(step().command, 'echo plain');
+  assert.equal(step().as_role, undefined);
+  const before = script();
+  for (const [body, why] of [
+    [{ 1: { command: 'node /p/evidence.js add x --result pass', match: 'x', as_role: true } }, /criterion 1: --as-role is only for the form/],
+    [{ 1: { command: sync, match: 'ok', as_role: 'yes' } }, /criterion 1: as_role must be true or false/],
+  ]) {
+    const out = dm('refine', ID, '--from', write(body));
+    assert.equal(out.code, 1, out.out);
+    assert.match(out.out, why);
+    assert.equal(script(), before, `nothing written: ${why}`);
+  }
+});
+
 test('a side-arm run does not use up the cap', () => {
   const { dm, deploy, record } = setup();
   dm('plan', ID);

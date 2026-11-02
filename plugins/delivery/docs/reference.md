@@ -456,7 +456,11 @@ script.
 driven by commands) has no screen, so the Reality Checker checks it with
 `verify-run.js run <bead> --criterion <n>` (the `verify-run` lane group, the Reality Checker's only).
 The Delivery Manager puts the command in the script step with `reality-check.js refine <bead>
---criterion <n> --step <k> --command '<shell command>' [--match '<pattern stdout must show>']`. The runner
+--criterion <n> --step <k> --command '<shell command>' [--match '<pattern stdout must show>']`, or, for
+commands that hold quotes, from a JSON file with `reality-check.js refine <bead> --from <file>`, where the
+file is `{"<criterion>": {"command": ..., "match": ..., "step": <k, default 1>, "as_role": <bool>}}`;
+the whole file is checked (known criteria and steps, known keys, a valid `match`) before anything is
+written. The runner
 checks out the bead's deployed sha (the full sha) in `verify/<bead>-<sha12>` of the role directory,
 runs the command there with the role's variables cleared (a step refined with `--as-role` keeps the
 Reality Checker's own role variables instead, and only for the one command that needs them,
