@@ -269,8 +269,26 @@ if (require.main === module) {
     fs.writeFileSync(path.join('/tmp', SEAL_FILE), token);
   }
   const tmp = sealed ? '/tmp' : fs.mkdtempSync(path.join(os.tmpdir(), 'delivery-tests-'));
+  // a run that is not sealed makes its directory on the host: it is recorded, so the watchdog's sweep can
+  // remove it if this run is killed before its cleanup, and forgotten once removed (sweep.js). A registry
+  // that cannot be written never stops the run. A run nested in a seal records too, into the seal's own
+  // registry (below), which is how the suite tests this.
+  // only a directory directly in /tmp is recorded: the sweep reads nowhere else (TMPDIR elsewhere, as on
+  // macOS, would only grow the registry)
+  const hostDir = !sealed && path.dirname(tmp) === '/tmp';
+  const S = require('./sweep.js');
+  // in a seal, its own registry: the sealed child's, or the one a nested run was given; elsewhere the user's
+  const SEAL_REGISTRY = path.join('/tmp', '.delivery-tmp-registry');
+  const registry = sealed ? SEAL_REGISTRY : inSeal ? (process.env.DELIVERY_TMP_REGISTRY || SEAL_REGISTRY) : S.registryPath();
+  if (hostDir) { try { S.record(tmp, { registry }); } catch (e) { process.stderr.write(`run-tests: could not record ${tmp} for the sweep (${e.message})\n`); } }
+  const removeTmp = () => {
+    if (sealed) return;
+    fs.rmSync(tmp, { recursive: true, force: true });
+    if (hostDir) { try { S.forget([tmp], { registry }); } catch (e) { /* the sweep drops a path that is gone */ } }
+  };
   const { spawn } = require('child_process');
-  const env = { ...cleanEnv(process.env), ...clockEnv(clock, process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp, ...(token ? { DELIVERY_SEAL_ACTIVE: token } : {}) };
+  // the runs nested in a seal record into a registry inside it, gone with it, never the user's own
+  const env = { ...cleanEnv(process.env), ...clockEnv(clock, process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp, ...(sealed || inSeal ? { DELIVERY_TMP_REGISTRY: registry } : {}), ...(token ? { DELIVERY_SEAL_ACTIVE: token } : {}) };
   const child = command
     ? spawn(shellLine(command), { env, stdio: 'inherit', detached: true, shell: true })
     : spawn(process.execPath, ['--test', ...rest, ...files], { env, stdio: 'inherit', detached: true });
@@ -305,14 +323,14 @@ if (require.main === module) {
   // and fail here rather than crash and leave the run's directory (Copilot on #111)
   child.on('error', (err) => {
     clearInterval(guard);
-    if (!sealed) fs.rmSync(tmp, { recursive: true, force: true });
+    removeTmp();
     process.stderr.write(`run-tests: could not start the suite (${err.message})\n`);
     process.exit(1);
   });
   child.on('exit', (code, signal) => {
     clearInterval(guard);
     const finish = () => {
-      if (!sealed) fs.rmSync(tmp, { recursive: true, force: true });
+      removeTmp();
       if (over) process.stderr.write(`${over}\n`);
       process.exit(over ? 1 : code !== null ? code : 1);
     };
