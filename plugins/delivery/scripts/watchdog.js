@@ -163,10 +163,15 @@ function wakeMode(t, s) {
 // wake's own limit (wake-run.js) still bounds the whole run.
 const HEADLESS_WAIT = { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
 
-function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake }) {
+// The supervisors whose own end kicked this run (lib/wake-run.js): each drops its kick from its exit
+// handler, while its pid still answers, so a run started at once would read the wake as running and
+// hold what it was kicked to hand over until the timer pass. A pid named in a kick has ended.
+const endedPids = (kicks) => new Set(kicks.map((k) => Number((/a wake ended \(pid (\d+)\)/.exec(k) || [])[1])).filter((n) => n > 0));
+
+function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set() }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
-  const p = WD.plan(res, { root, now: at });
+  const p = WD.plan(res, { root, now: at, alive: (pid) => !ended.has(pid) && WD.pidAlive(pid) });
   const lines = [];
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const open = p.wakes.length ? (live !== undefined ? live : liveSessions(bin, env)) : null;
@@ -492,10 +497,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       if (o.json) return { code: 0, out: JSON.stringify({ paused: res.paused || null, stalls: res.stalls, polls: res.polls, unreadable: res.unreadable || null }, null, 2) };
       return { code: 0, out: checkLines(res).join('\n') };
     }
-    const woke = wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn });
+    const woke = wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked) });
     // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
-    let swept = kicked.length ? [`Kicked: ${kicked.length} (${[...new Set(kicked.map((k) => k.replace(/^\S+\s*/, '') || 'a kick'))].join('; ').slice(0, 300)})`] : [];
+    let swept = kicked.length ? [`Kicked: ${kicked.length} (${[...new Set(kicked.map((k) => k.replace(/^\S+\s*/, '').replace(/ \(pid \d+\)$/, '') || 'a kick'))].join('; ').slice(0, 300)})`] : [];
     if (cmd === 'run' && first) {
       // a job installed before the kick watch existed gets it here, so an update needs no reinstall
       const kw = o.dryRun ? null : ensureKickWatch(who.root, { home, exec });

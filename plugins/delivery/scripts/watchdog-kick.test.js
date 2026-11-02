@@ -110,6 +110,46 @@ test('a wake that ends kicks the next run; the session it starts does not carry 
   assert.deepEqual(spawn.list.map((x) => x.kick), [KICK.dirOf(h.root)]);
 });
 
+test('a wake that ends names its own pid in its kick', () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kick-')), 'kicks');
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), '60000', process.execPath, '-e', '0'], { encoding: 'utf8', env: { ...process.env, DELIVERY_WAKE_KICK: dir } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(fs.readFileSync(path.join(dir, fs.readdirSync(dir)[0]), 'utf8'), new RegExp(`a wake ended \\(pid ${r.pid}\\)`));
+});
+
+test('a run kicked by a wake that ended reads that wake as gone, though its supervisor still answers; another running wake still holds', async () => {
+  // the supervisor drops its kick from its exit handler, so its pid still answers when the kicked run
+  // reads it (review of 73307bf): a process named wake-run.js stands in for it
+  const fake = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kick-')), 'wake-run.js');
+  fs.writeFileSync(fake, 'setTimeout(() => {}, 60000);\n');
+  const sup = require('child_process').spawn(process.execPath, [fake], { stdio: 'ignore' });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  try {
+    assert.equal(WD.pidAlive(sup.pid), true, 'the stand-in reads as a live wake');
+    const t0 = '2026-11-02T08:00:00Z';
+    const h = harness({});
+    session(h, DM, iso(Date.parse(t0) - H));
+    WD.log(h.root, { type: 'wake', at: iso(Date.parse(t0) - 20 * 60e3), keys: ['message:x'], instance: DM, pid: sup.pid });
+    IB.queue(h.root, { to: DM, from: 'builder-1', message: 'PR ready', at: t0 });
+    KICK.take(h.root);
+    const spawn = spawner();
+    // no kick names it: the wake is running, the message is held
+    let r = at(h, iso(Date.parse(t0) + 1e3), ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 0, r.out);
+    assert.match(r.out, /Alarm only: delivery-lead: its last wake is still running/);
+    // another wake's end names another pid: still held
+    KICK.kick(h.root, 'a wake ended (pid 1)');
+    r = at(h, iso(Date.parse(t0) + 2e3), ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 0, r.out);
+    // its own end kicks the run: the message goes at once
+    KICK.kick(h.root, `a wake ended (pid ${sup.pid})`);
+    r = at(h, iso(Date.parse(t0) + 3e3), ['run'], { spawn, bd: memStore(h) });
+    assert.match(r.out, /^Kicked: 1 \(a wake ended\)$/m, r.out);
+    assert.equal(spawn.list.length, 1, r.out);
+    assert.equal(spawn.list[0].role, DM);
+  } finally { sup.kill(); }
+});
+
 test('the host job watches the kick directory: a systemd path unit, launchd QueueDirectories; cron says it waits for the pass', () => {
   const h = harness({});
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'home-'));

@@ -14,7 +14,9 @@ const grace = Number(process.env.DELIVERY_WAKE_KILL_GRACE_MS) || 30e3;
 // Taken out of the environment, so the session it starts does not carry it.
 const kickDir = process.env.DELIVERY_WAKE_KICK || '';
 delete process.env.DELIVERY_WAKE_KICK;
-if (kickDir) process.on('exit', () => require('./kick.js').kickIn(kickDir, 'a wake ended'));
+// The kick names this pid: it is dropped while this process still lives, so the run it starts reads
+// the pid as gone rather than hold the handover for a wake that has ended (watchdog.js endedPids)
+if (kickDir) process.on('exit', () => require('./kick.js').kickIn(kickDir, `a wake ended (pid ${process.pid})`));
 const child = spawn(bin, args, { stdio: 'inherit', detached: true });
 const groupAlive = () => { try { process.kill(-child.pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } };
 let stopping = false;
