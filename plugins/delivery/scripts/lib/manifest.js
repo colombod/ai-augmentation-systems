@@ -155,6 +155,13 @@ function validateManifest(team, hosts) {
     if (role.runner !== undefined && !RUNNERS.has(role.runner)) problems.push(`team.json: role "${role.id}" has runner "${role.runner}", expected one of ${[...RUNNERS].join(', ')}`);
     if (role.mode && !MODES.has(role.mode)) problems.push(`team.json: role "${role.id}" has mode "${role.mode}"`);
     if (role.count !== undefined && (!Number.isInteger(role.count) || role.count < 1)) problems.push(`team.json: role "${role.id}" has invalid count`);
+    if (role.instances !== undefined) {
+      const names = role.instances;
+      const shape = new RegExp(`^${role.id}(?:-[1-9][0-9]*)?$`);
+      if (!Array.isArray(names) || !names.length || names.some((x) => typeof x !== 'string' || !shape.test(x))) problems.push(`team.json: role "${role.id}" has invalid "instances": a list of names, each "${role.id}" or "${role.id}-<n>"`);
+      else if (new Set(names).size !== names.length) problems.push(`team.json: role "${role.id}" lists an instance twice`);
+      else if (role.count !== undefined && role.count !== names.length) problems.push(`team.json: role "${role.id}" has count ${role.count} but ${names.length} instances`);
+    }
     if (role.retired !== undefined && typeof role.retired !== 'boolean') problems.push(`team.json: role "${role.id}" has non-boolean "retired"`);
     // reach: browser, desktop and computer-use tools for a role whose brief does not have them (R-05).
     // Managers never drive the owner's apps; real-surface runs are the Reality Checker's.
@@ -164,7 +171,7 @@ function validateManifest(team, hosts) {
   }
   problems.push(...require('./judge.js').configProblems(team.judge).problems);
   if (team.budget && team.budget.builders_cap !== undefined) {
-    const builders = team.roles.filter((r) => r.id === 'builder').reduce((n, r) => n + (r.count || 1), 0);
+    const builders = team.roles.filter((r) => r.id === 'builder' && !r.retired).reduce((n, r) => n + instanceNames(r).length, 0);
     if (builders > team.budget.builders_cap) problems.push(`team.json: ${builders} builders exceed builders_cap ${team.budget.builders_cap}`);
   }
   // a steward converges a host's sessions; a team whose active roles are on one host needs none. The
@@ -180,10 +187,22 @@ function validateManifest(team, hosts) {
   return problems;
 }
 
+// Instance names: a role's `instances` list when it has one, else <id>-1..<id>-n for a count above one,
+// else the bare id. The list exists so a role can grow without renaming a live instance: claims, pull
+// requests, branches (team/<instance>) and role directories are all keyed by the instance name, so the
+// builder that was "builder" stays "builder" when builder-2 joins (team-role.js writes the list).
+function instanceNames(role) {
+  if (Array.isArray(role.instances) && role.instances.length) return role.instances.slice();
+  if (role.count && role.count > 1) return Array.from({ length: role.count }, (_, i) => `${role.id}-${i + 1}`);
+  return [role.id];
+}
+
 function expandInstances(team) {
   const out = [];
   for (const role of team.roles) {
-    if (role.count && role.count > 1) {
+    if (Array.isArray(role.instances) && role.instances.length) {
+      for (const instance of role.instances) out.push({ instance, role });
+    } else if (role.count && role.count > 1) {
       for (let i = 1; i <= role.count; i++) out.push({ instance: `${role.id}-${i}`, role });
     } else {
       out.push({ instance: role.id, role });
@@ -192,4 +211,4 @@ function expandInstances(team) {
   return out;
 }
 
-module.exports = { reachOf, isManager, canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, expandInstances, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };
+module.exports = { reachOf, isManager, canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, expandInstances, instanceNames, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };

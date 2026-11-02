@@ -137,10 +137,11 @@ test('team-role add builder --count: sets the builders\' count within the cap an
   assert.equal(p.team().roles.find((r) => r.id === 'builder').count, 1, 'a dry run writes nothing');
   const r = cli(p.root, 'add', 'builder', '--count', '3');
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /set builder count to 3; committed/);
+  assert.match(r.stdout, /set builder count to 3 \(instances: builder, builder-2, builder-3\); committed/);
   const b = p.team().roles.filter((x) => x.id === 'builder');
   assert.equal(b.length, 1, 'still one builder entry');
   assert.equal(b[0].count, 3);
+  assert.deepEqual(b[0].instances, ['builder', 'builder-2', 'builder-3'], 'the live builder keeps its name');
   assert.equal(b[0].host, 'pc', 'the entry keeps its host');
   assert.deepEqual(lastCommit(p), ['team: 3 builders (team-role.js)', TEAM_GIT]);
   assert.equal(p.git('status', '--porcelain').trim(), '');
@@ -289,4 +290,37 @@ test('team-role set-cap builders: in a role session, verifies the record in the 
   assert.match(cgit('log', '-1', '--format=%s'), new RegExp(`builders_cap 5 under ${dec}`));
   assert.equal(p.git('rev-parse', 'HEAD'), sharedHead, 'the shared checkout is not written');
   assert.equal(p.team().budget.builders_cap, 3);
+});
+
+// 8l1.2.2: growing or shrinking the builders never renames a live instance: claims, pull requests,
+// team/<instance> branches and role directories are keyed by the name
+test('team-role add builder --count: keeps every live instance name, old count-only teams included', () => {
+  const { expandInstances, validateManifest } = require('./lib/manifest.js');
+  const names = (p) => expandInstances(p.team()).filter((i) => i.role.id === 'builder').map((i) => i.instance);
+  const p = project();
+  rewrite(p, (t) => ({ ...t, budget: { ...(t.budget || {}), builders_cap: 4 }, roles: t.roles.map((r) => (r.id === 'builder' ? (({ count, instances, ...rest }) => rest)(r) : r)) }));
+  assert.deepEqual(names(p), ['builder']);
+  assert.equal(cli(p.root, 'add', 'builder', '--count', '2').status, 0);
+  assert.deepEqual(names(p), ['builder', 'builder-2'], 'builder is not renamed builder-1');
+  assert.equal(cli(p.root, 'add', 'builder', '--count', '3').status, 0);
+  assert.deepEqual(names(p), ['builder', 'builder-2', 'builder-3']);
+  const down = cli(p.root, 'add', 'builder', '--count', '2');
+  assert.equal(down.status, 0, down.stderr);
+  assert.match(down.stdout, /removed builder-3: reassign its claims/);
+  assert.deepEqual(names(p), ['builder', 'builder-2']);
+  assert.equal(cli(p.root, 'add', 'builder', '--count', '1').status, 0);
+  assert.deepEqual(names(p), ['builder']);
+  assert.equal(p.team().roles.find((r) => r.id === 'builder').instances, undefined, 'one builder is the plain entry again');
+  // a team that already runs builder-1..n keeps those names and grows past them
+  const q = project();
+  rewrite(q, (t) => ({ ...t, budget: { ...(t.budget || {}), builders_cap: 4 }, roles: t.roles.map((r) => (r.id === 'builder' ? (({ instances, ...rest }) => ({ ...rest, count: 2 }))(r) : r)) }));
+  assert.deepEqual(names(q), ['builder-1', 'builder-2']);
+  assert.equal(cli(q.root, 'add', 'builder', '--count', '3').status, 0);
+  assert.deepEqual(names(q), ['builder-1', 'builder-2', 'builder-3']);
+  // the manifest refuses a malformed list
+  const bad = (instances, count) => validateManifest({ ...q.team(), roles: q.team().roles.map((r) => (r.id === 'builder' ? { ...r, instances, count } : r)) }, JSON.parse(fs.readFileSync(path.join(q.root, '.delivery', 'team', 'hosts.json'), 'utf8')));
+  assert.ok(bad(['builder', 'builder'], 2).some((x) => /twice/.test(x)));
+  assert.ok(bad(['builder', 'helper-2'], 2).some((x) => /invalid "instances"/.test(x)));
+  assert.ok(bad(['builder', 'builder-2'], 3).some((x) => /count 3 but 2 instances/.test(x)));
+  assert.deepEqual(bad(['builder', 'builder-2'], 2), []);
 });
