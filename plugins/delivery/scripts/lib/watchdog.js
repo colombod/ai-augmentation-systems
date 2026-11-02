@@ -39,7 +39,8 @@ const REL = path.join('.delivery', 'watchdog');
 const P0_HOURS = 1;
 const WAKE_EVERY_MS = 3600e3;
 const DAILY_CAP = 6;
-// a waiting message wakes its target sooner and more often than a stall does: it is the team's handoff
+// a waiting message wakes its target sooner and more often than a stall does: it is the team's handoff.
+// The gap between wakes now holds assigned work alone; a new message or handoff goes at once (hjx.1.3)
 const MESSAGE_EVERY_MS = 5 * 60e3;
 // a role quiet this long while holding assigned or claimed work it can start is woken for it (hjx.1)
 const ASSIGNED_IDLE_MIN = 10;
@@ -373,7 +374,9 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   const handoffsDone = [];
   for (const r of handoffs.filter((x) => x && x.id && x.bead)) {
     const b = beads.find((x) => x && x.id === r.bead) || null;
-    if (HO.done(r, b, beads)) { handoffsDone.push(r.id); continue; }
+    // closed with what in the record shows the step taken, never silently (hjx.1.3)
+    const why = HO.doneWhy(r, b, beads);
+    if (why) { handoffsDone.push({ id: r.id, why }); continue; }
     if (inStop(b) && !recovering(b)) continue;
     const target = list.some((s) => s.instance === r.to) ? r.to : dm;
     out.push({ kind: 'handoff', key: `handoff:${r.id}`, bead: r.bead, target, handoff: r.id, due: true,
@@ -515,15 +518,25 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     const mine = rows.filter((r) => r.instance === w.target).sort((a, b) => ms(a.at) - ms(b.at));
     const last = mine[mine.length - 1];
     const lines = w.stalls.map((s) => s.line);
-    // a message is a handoff, not a stall: its target is woken within MESSAGE_EVERY_MS, not an hour
+    // a message is a handoff, not a stall: its target is woken at once, not at the stall's hour
     const onlyMessages = w.stalls.every((s) => isHandoff(s));
     let reason = null;
+    // hjx.1.3: the handovers that go now, and those held with their cause. A message or a handoff row is
+    // new (each is handed over once, when its wake starts), so it waits only for a wake still running
+    // (whose end kicks the next run, lib/kick.js); the five-minute gap holds a wake that would carry
+    // assigned work alone, a standing condition that would otherwise re-wake a role every pass. A handoff
+    // row (a merge's deploy, a deploy's check) is never held by a daily cap: merges and deploys bound it.
+    const handover = (items) => {
+      if (last && alive(last.pid)) return { go: [], hold: items, why: 'its last wake is still running; it is woken again when that wake ends' };
+      if (items.every((s) => s.kind === 'assigned') && last && t - ms(last.at) < MESSAGE_EVERY_MS) return { go: [], hold: items, why: `woken at ${clock(ms(last.at))}; assigned work waits ${MESSAGE_EVERY_MS / 60000} min between wakes` };
+      if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) return { go: items.filter((s) => s.kind === 'handoff'), hold: items.filter((s) => s.kind !== 'handoff'), why: `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls` };
+      return { go: items, hold: [] };
+    };
+    const handoverWake = (go) => ({ target: w.target, keys: go.map((s) => s.key), lines: go.map((s) => s.line), delivers: deliversOf(go), handoffs: handoffsOf(go), prompt: wakePrompt(go.map((s) => s.prompt), 'did') });
     if (onlyMessages) {
-      if (last && alive(last.pid)) reason = 'its last wake is still running; the message waits for it';
-      else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) reason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
-      else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) reason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
-      if (reason) { held.push({ target: w.target, lines, reason }); continue; }
-      wakes.push({ target: w.target, keys: w.stalls.map((s) => s.key), lines, delivers: deliversOf(w.stalls), handoffs: handoffsOf(w.stalls), prompt: wakePrompt(w.stalls.map((s) => s.prompt), 'did') });
+      const g = handover(w.stalls);
+      if (g.go.length) wakes.push(handoverWake(g.go));
+      if (g.hold.length) held.push({ target: w.target, lines: g.hold.map((s) => s.line), reason: g.why });
       continue;
     }
     // the stall gates count stall wakes only: a role woken often for messages is still told about its
@@ -542,27 +555,19 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
       return !k.length || t - ms(k[k.length - 1].at) >= WAKE_EVERY_MS * 2 ** (k.length - 1);
     });
     // a wake that would carry only messages is not a stall wake: it goes by the message rules below
-    // (five minutes apart, 48 a day), or a stall still waiting out its backoff would let a message wake
-    // the role every minute through this path
+    // (handover(): new handovers now, assigned work five minutes apart, 48 a day), or a stall still
+    // waiting out its backoff would let assigned work wake the role every minute through this path
     if (!reason && !ok.some((s) => !isHandoff(s))) reason = 'woken for these already; waiting longer before the next try';
     // A message waiting beside a held stall is still a handoff: a role that spent its stall wakes (or
     // was woken for the stall within the hour) gets its messages by the message rules, not left until
     // the stall count falls. Seen on a real team: the Delivery Manager's work waited hours behind its cap.
     const msgs = w.stalls.filter((s) => isHandoff(s));
     if (reason && msgs.length) {
-      let mReason = null;
-      if (last && alive(last.pid)) mReason = 'its last wake is still running; the message waits for it';
-      else if (last && t - ms(last.at) < MESSAGE_EVERY_MS) mReason = `woken at ${clock(ms(last.at))}; messages wait ${MESSAGE_EVERY_MS / 60000} min between wakes`;
-      else if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) mReason = `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls`;
-      if (!mReason) {
-        wakes.push({ target: w.target, keys: msgs.map((s) => s.key), lines: msgs.map((s) => s.line), delivers: deliversOf(msgs), handoffs: handoffsOf(msgs), prompt: wakePrompt(msgs.map((s) => s.prompt), 'did') });
-        const rest = w.stalls.filter((s) => !isHandoff(s));
-        if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
-        continue;
-      }
-      // both held: each line says its own cause
+      // the stall's own cap or hour never holds a handover back (hjx.1.3): each line says its own cause
+      const g = handover(msgs);
+      if (g.go.length) wakes.push(handoverWake(g.go));
+      if (g.hold.length) held.push({ target: w.target, lines: g.hold.map((s) => s.line), reason: g.why });
       const rest = w.stalls.filter((s) => !isHandoff(s));
-      held.push({ target: w.target, lines: msgs.map((s) => s.line), reason: mReason });
       if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
       continue;
     }
