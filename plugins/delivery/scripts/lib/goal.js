@@ -473,7 +473,7 @@ function showLines(root, opts = {}) {
     const e = field === 'scope' || field === 'areas' ? null : g.fields[field];
     let s;
     if (r.held) s = `held: ${shown(r.value)} (confirmation ${r.unresolved} unresolved: ${r.ignored})`;
-    else if (r.ignored) s =`${r.value === null ? 'not set' : `${shown(r.value)}${field === 'scope' || field === 'areas' ? '' : ' (default)'}`}; the written value is ignored: ${r.ignored}`;
+    else if (r.ignored) s = `${r.value === null ? 'not set' : `${shown(r.value)}${field === 'scope' || field === 'areas' ? '' : ' (default)'}`}; the written value is ignored: ${r.ignored}`;
     else if (e) s = `${shown(r.value)} (${r.from}, ${e.at})`;
     else if (r.value === null) s = field.startsWith('budget.') ? 'not set by the owner (budget checks only warn)' : 'not set';
     else s = `${shown(r.value)} (${r.from === 'default' ? 'default' : r.from})`;
