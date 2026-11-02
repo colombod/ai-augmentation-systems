@@ -24,17 +24,20 @@ The planning pipeline (`/delivery:brief` and the rest) works on its own without 
 - A **private project repo**, `<project-root>`. It holds strategy: the plan under `.delivery/`, the team manifest, and your recorded decisions. `start.js` creates it (`git init`) when it does not exist; add a private remote so plans and records are pushed.
 - For an existing product, a **product repo**: a local checkout at `<product-checkout>`, or a clone URL that `start.js` clones next to the project repo as `<project>-product`. It holds code only. Builders get their own worktree of it.
 
-`node <plugin-root>/scripts/start.js --check` checks these and prints the fix for each one missing. It exits 1 when a hard prerequisite (node, git, bd, claude and its version) is missing; the plugin's install state and the project remote are warnings. On this machine:
+`node <plugin-root>/scripts/start.js --check` checks these and prints the fix for each one missing. It exits 1 when a hard prerequisite (node, git, bd, claude and its version) is missing; the plugin's install state, the project remote, the sealed test runs and Amplifier are rows that warn or inform without failing the run. With `--project <project-root>` it also reports the project repo's remote and the beads database. The rows look like this (versions, paths and memory figures are placeholders; the row text is what `start.js` prints):
 
 ```
 delivery prerequisites
-  [pass] node: 26.5.0 (need 18 or later)
-  [pass] git: git version 2.54.0 (Apple Git-157)
-  [pass] bd (beads): bd version 1.2.2 (Homebrew)
-  [pass] claude (Claude Code): 2.1.287 (cross-session messaging needs 2.1.224 or later)
-  [warn] delivery plugin: installed 0.16.0 is older than this copy (0.20.0); the installed hooks may lack the shipping team. Fix: update it with /plugin
+  [pass] node: <version> (need 18 or later)
+  [pass] git: git version <version>
+  [pass] bd (beads): bd version <version>
+  [pass] claude (Claude Code): <version> (cross-session messaging needs 2.1.224 or later)
+  [pass] delivery plugin: installed (<version>, enabled)
+  [pass] sealed test runs: bwrap at <path>; each run may take 2048 MB of memory, <n> MB available: at most <k> at once on this host
 All hard prerequisites are met.
 ```
+
+A plugin older than the copy you are running prints `[warn] delivery plugin: installed <old> is older than this copy (<new>); the installed hooks may lack the shipping team. Fix: update it with /plugin`. Where Amplifier is installed, an `amplifier` row follows: host problems go to it first (`/delivery:amplifier`).
 
 ## Setting up beads
 
@@ -124,7 +127,7 @@ node <plugin-root>/scripts/start.js --project <project-root> --host laptop --mod
 node <plugin-root>/scripts/start.js --project <project-root> --host laptop --models balanced --product-repo <product-checkout>
 ```
 
-Other flags: `--launch` (start every role on this machine yourself: each runs its first turn headless in its role directory, in the team's permission mode, and joins the team; nobody starts a session by hand), `--keep-alive` (with `--launch`: install the watchdog job that resumes a role when its work is due, and wakes a role with any message sent to it while it was not running), `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Manager, one builder; `full` adds Staffing, the Progress Observer, the Spike Researcher and the Reality Checker; the Reality Checker also joins `minimal` when a declared surface is not scriptable, or with `--reality-checker`), `--models quality|balanced|economy` (default `balanced`; see the README's Models section), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default `auto`: the sessions run without asking you to approve each step, inside the lane hook's limits; `default` uses your own Claude Code default and may ask), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
+Other flags: `--launch` (start every role on this machine for you: each runs its first turn headless in its role directory, in the team's permission mode, and joins the team; nobody starts a session by hand), `--keep-alive` (with `--launch`: install the watchdog job that resumes a role when its work is due, and wakes a role with any message sent to it while it was not running), `--preset minimal|full` (default `minimal`: Chief of Staff, Product Manager, Delivery Manager, one builder; `full` adds Staffing, the Progress Observer, the Spike Researcher, the Reality Checker and the Technical Writer; the Reality Checker also joins `minimal` when a declared surface is not scriptable, or with `--reality-checker`), `--models quality|balanced|economy` (default `balanced`; see the README's Models section), `--prefix <bd prefix>` (default: the project directory name), `--runner superpowers|attractor|plain` for the builder (default `plain`), `--permission-mode <mode>` (default `auto`: the sessions run without asking you to approve each step, inside the lane hook's limits; `default` uses your own Claude Code default and may ask), `--team-dir <dir>` and `--user <name>` (passed to `prepare-role`).
 
 The real run, against a throwaway fixture (paths shortened to placeholders):
 
@@ -426,9 +429,26 @@ What `verify` proves and what it does not is listed under **Limits** in the READ
 
 ## What is not automated yet
 
-- **Provisioning and deploy are manual.** `/delivery:start` writes the manifest and prepares the roles on this host, but you still start each session yourself, and adding a host or a role later means editing `team.json` and running `start.js` (or `prepare-role`) again.
+- **Other hosts are started on those hosts.** `start.js --launch` starts the roles whose host is this machine and names the ones that are elsewhere: run it on each of those hosts. Adding a role later means `scripts/team-role.js add <role-id>` (Staffing runs it) or editing `team.json`, then `start.js` (or `prepare-role`) again.
 - **The roster is per host.** `/delivery:team` reports only the roles on the host it runs on.
-- **The watchdog is yours to install.** A session that stopped (a usage limit, a closed terminal) is woken by a host job only if you install it once per host: `node <plugin-root>/scripts/watchdog.js install` shows what it writes, `--apply` writes it, `watchdog.js uninstall` removes it ([details](reference.md#the-watchdog-stalls-and-the-wake)). Run it from a terminal outside any role directory: role sessions cannot. Without it, start a stopped session again in its role directory; the SessionStart hook restores the role.
+- **The watchdog is installed once per host.** A session that stopped (a usage limit, a closed terminal) is woken by a host job. `start.js --launch --keep-alive` installs it; by hand, `node <plugin-root>/scripts/watchdog.js install` shows what it writes, `--apply` writes it, `watchdog.js uninstall` removes it ([details](reference.md#the-watchdog-stalls-and-the-wake)). Run it from a terminal outside any role directory: role sessions cannot. Without it, start a stopped session again in its role directory; the SessionStart hook restores the role.
+
+## Quick start for an agent
+
+For an agent that has been asked to set up a delivery team for a person. Follow it without asking; stop at the first step whose check fails and report that step and its output. Each step marks the check it proves, so the Reality Checker can run it on a real install.
+
+1. **Read:** `README.md` ("Start here" and "Prerequisites") in the plugin, and the `team.json` template at `<plugin-root>/templates/team.json`. You need three values from the person, or from the project's record: the project repo path, the product repo (a checkout or a clone URL, or none) and the host name of this machine.
+2. **Check the machine.** Run `node <plugin-root>/scripts/start.js --check --project <project-root>`.
+   - Check `quickstart-prereqs`: the last line is `All hard prerequisites are met.` and the exit code is 0. If it names a missing prerequisite, the row's `Fix:` is the next step; do not go on.
+3. **Dry run.** Run `node <plugin-root>/scripts/start.js --project <project-root> --host <host> --product-repo <product-checkout> --dry-run`.
+   - Check `quickstart-dry-run`: the output has a `manifest:` line naming the preset and the roles, and every write line says `would`. Nothing was written: the team manifest named on the `manifest:` line does not exist afterwards.
+4. **Run it and start the team.** Run the same command without `--dry-run`, adding `--launch --keep-alive`.
+   - Check `quickstart-launch`: each role on this host prints `started (pid ...), joining the team`, then `keep-alive: watchdog job installed`. Run it again: each role now prints `already started`, and nothing is created twice.
+5. **Confirm the team is live.** Run `node <plugin-root>/scripts/team-status.js --project <project-root>`.
+   - Check `quickstart-live`: every instance row ends in `live`. A role still starting shows another state; wait and run it again rather than starting it a second time.
+6. **Hand over to the person.** Tell them the one command the run printed: `cd <team-dir>/chief-of-staff && claude --continue --permission-mode auto`. From then on they talk to the Chief of Staff; you carry nothing between sessions and ask them nothing a session can do.
+
+The Reality Checker runs the four checks above on the real install after each release; a step whose output no longer matches fails its check and this page is fixed, not the check.
 
 ## Troubleshooting
 
