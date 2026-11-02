@@ -18,6 +18,12 @@ const {
   recordInvocation,
 } = require('./record-invocation.js');
 
+// Run from a role session, DELIVERY_ROLE and DELIVERY_PROJECT_ROOT send every record whose cwd finds
+// no project into that role's real project (findDeliveryRoot's fallback): the no-op tests below
+// appended their fixture sessions' ledgers there. The tests that need a role set it themselves.
+const ROLE_ENV = ['DELIVERY_ROLE', 'DELIVERY_ROLE_ID', 'DELIVERY_ROLE_DIR', 'DELIVERY_PROJECT_ROOT'];
+for (const k of ROLE_ENV) delete process.env[k];
+
 // the ledger is opt-in (A3); these tests exercise it switched on unless they say otherwise
 process.env.DELIVERY_LEDGER = '1';
 
@@ -442,4 +448,22 @@ test('A3: the ledger is opt-in: without DELIVERY_LEDGER=1 nothing is recorded, e
   } finally {
     for (const [k, v] of [['DELIVERY_LEDGER', prev.l], ['DELIVERY_ROLE', prev.r]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
+});
+
+// Run under a role session's variables, the cases whose cwd finds no project must still return null
+// and leave that role's project untouched. Guarded in a child run, which inherits what a role sets.
+test('recordInvocation: under a role session, the unreachable-project cases leave its project untouched', () => {
+  if (process.env.RECORD_INVOCATION_CHILD) return;
+  const { spawnSync } = require('child_process');
+  const real = makeScratchProject();
+  fs.mkdirSync(path.join(real, '.delivery'));
+  const env = { ...process.env, RECORD_INVOCATION_CHILD: '1', DELIVERY_LEDGER: '1' };
+  for (const k of ROLE_ENV) env[k] = k === 'DELIVERY_ROLE' ? 'builder' : real;
+  delete env.NODE_TEST_CONTEXT;
+  const r = spawnSync(process.execPath, ['--test',
+    '--test-name-pattern=no-ops \\(returns null\\) when no|zero candidates anywhere is still a no-op', __filename],
+  { env, cwd: makeScratchProject(), encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /# pass 2\b/);
+  assert.deepEqual(fs.readdirSync(path.join(real, '.delivery')), []);
 });
