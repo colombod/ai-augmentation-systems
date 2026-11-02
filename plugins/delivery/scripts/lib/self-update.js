@@ -3,9 +3,13 @@
 // and `claude plugin update` on the host and restart the roles: the owner was the installer. Each `run`
 // pass now reads the product's main from the marketplace's own clone and installs it when:
 //   - main's plugin version is newer than the job's own install (same or older: nothing);
-//   - every commit that changed the plugin since the installed one names its pull request "(#N)" and
-//     that pull request has a merged row with gated true in the project's review record (an ungated
-//     commit in the range would ride into the install under the gated version: refused);
+//   - every commit that changed the plugin since the installed one is the merge commit of a pull
+//     request the Delivery Manager recorded as merged through the gate, for the marketplace's repository
+//     (an ungated commit in the range would ride into the install under the gated version: refused).
+//     The "(#N)" in the subject only says which record to read; anyone can type it, so the commit must
+//     equal that record's merge_commit (or, for a row written before merge_commit was recorded,
+//     GitHub's merge commit for the pull request). The installed sha must be known to the clone, or
+//     the range cannot be read: refused, never guessed;
 //   - no wake is running (its session loaded the old plugin; installing under it is the run in
 //     progress the bead forbids): held, tried again next cycle.
 // Main is read with `git fetch` only: `claude plugin marketplace update` runs after the gate passed,
@@ -20,9 +24,11 @@ const WD = require('./watchdog.js');
 const R = require('./reviews.js');
 const { compare } = require('./plugin-version.js');
 const { resolveInstalledRoot } = require('./launcher.js');
+const { sameRepo, repoOf } = require('./gh-pr.js');
 
 const RETRY_MS = 3600e3;
 const EXEC_TIMEOUT_MS = 5 * 60e3;
+const GH_TIMEOUT_MS = 30e3;
 const PR_OF = /\(#(\d+)\)\s*$/;
 
 const pluginsDir = (configDir) => path.join(configDir || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'plugins');
@@ -42,15 +48,16 @@ function findInstall(pluginRoot, project, configDir) {
   if (!hit) return null;
   const [name, marketplace] = hit.key.split('@');
   const m = (readJson(path.join(dir, 'known_marketplaces.json')) || {})[marketplace] || {};
-  return { ...hit, name, marketplace, clone: m.installLocation || null, repo: (m.source && m.source.repo) || null };
+  const src = m.source || {};
+  return { ...hit, name, marketplace, clone: m.installLocation || null, repo: src.repo || repoOf(src.url) || null };
 }
 
 const git = (clone, args) => execFileSync('git', ['-C', clone, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60e3 }).trim();
 const commitsOf = (out) => out.split('\n').filter(Boolean).map((l) => { const [sha, subject] = l.split('\0'); const m = PR_OF.exec(subject || ''); return { sha, pr: m ? Number(m[1]) : null }; });
 
 // Main as the remote has it, without touching the clone's checkout: its sha, the plugin's version there
-// and the commits that changed the plugin since `base` (the installed sha; when the clone does not know
-// it, the last commit to the plugin and the one that set the version).
+// and the commits that changed the plugin since `base` (the installed sha). `known` is false when the
+// clone does not know `base`: the commits since it cannot be listed, and decide refuses.
 function readMain(clone, name, base) {
   git(clone, ['fetch', '--quiet', 'origin']);
   let ref = 'origin/HEAD';
@@ -62,30 +69,42 @@ function readMain(clone, name, base) {
   const version = JSON.parse(git(clone, ['show', `${sha}:${manifest}`])).version;
   let known = false;
   try { git(clone, ['cat-file', '-e', `${base}^{commit}`]); known = /^[0-9a-f]{7,40}$/.test(String(base)); } catch (err) { known = false; }
-  const commits = known
-    ? commitsOf(git(clone, ['log', '--format=%H%x00%s', `${base}..${sha}`, '--', src]))
-    : [...commitsOf(git(clone, ['log', '-1', '--format=%H%x00%s', sha, '--', src])), ...commitsOf(git(clone, ['log', '-1', '--format=%H%x00%s', sha, '--', manifest]))];
-  return { sha, version, commits: commits.filter((c, i) => commits.findIndex((x) => x.sha === c.sha) === i) };
+  const commits = known ? commitsOf(git(clone, ['log', '--format=%H%x00%s', `${base}..${sha}`, '--', src])) : [];
+  return { sha, version, known, commits };
 }
 
-// Is pull request `pr` merged through the gate: a merged row with gated true (for the same repository
-// when both name one).
-function gatedMerge(root, pr, repo) {
+// Is commit `sha` the gated merge of pull request `pr`: a merged row the Delivery Manager wrote (only it
+// runs merge-gate.js merged) for the marketplace's repository, gated true, whose merge commit is `sha`.
+// A row from before merge_commit was recorded asks GitHub (`mergeCommitOf`); with no answer, refused.
+function gatedMerge(root, pr, repo, sha, mergeCommitOf = () => null) {
+  if (!repo) return { ok: false, why: 'the marketplace names no GitHub repository, so its merges cannot be matched to the gate' };
   const r = R.read(root, pr);
   if (r.problem) return { ok: false, why: r.problem };
-  const m = r.rows.filter((x) => x.type === 'merged' && (!repo || !x.repo || String(x.repo).toLowerCase() === String(repo).toLowerCase())).pop();
-  if (!m) return { ok: false, why: `PR ${pr} has no merged row in the team's review record` };
-  return m.gated === true ? { ok: true } : { ok: false, why: `PR ${pr} was merged without passing the team's gate` };
+  const m = r.rows.filter((x) => x.type === 'merged' && x.by === 'delivery-lead' && sameRepo(x.repo, repo)).pop();
+  if (!m) return { ok: false, why: `PR ${pr} has no merged row by the Delivery Manager for ${repo} in the team's review record` };
+  if (m.gated !== true) return { ok: false, why: `PR ${pr} was merged without passing the team's gate` };
+  const mc = m.merge_commit || mergeCommitOf(pr);
+  if (!mc) return { ok: false, why: `PR ${pr}'s merge commit is not recorded and GitHub did not say it, so commit ${sha.slice(0, 12)} cannot be matched to it` };
+  return mc === sha ? { ok: true } : { ok: false, why: `commit ${sha.slice(0, 12)} names PR ${pr} but is not its merge (${String(mc).slice(0, 12)})` };
 }
+
+// GitHub's merge commit for a pull request, or null: bounded, and never throws
+const ghMergeCommit = (exec, repo, cwd) => (pr) => {
+  try {
+    const out = String(exec('gh', ['api', `repos/${repo}/pulls/${pr}`, '--jq', '.merge_commit_sha'], { cwd, timeout: GH_TIMEOUT_MS }) || '').trim();
+    return /^[0-9a-f]{40}$/.test(out) ? out : null;
+  } catch (err) { return null; }
+};
 
 // The decision, pure: { action: 'none' | 'install' | 'held' | 'refuse', why, pr }.
 function decide({ installed, main, gatedOf, running }) {
   const c = compare(main.version, installed);
   if (c !== 1) return { action: 'none', why: c === null ? `unreadable version (${main.version} vs ${installed})` : `main carries ${main.version}, installed ${installed}` };
+  if (!main.known) return { action: 'refuse', why: 'the installed sha is not known, so the commits since it cannot be checked', pr: null };
   if (!main.commits.length) return { action: 'refuse', why: 'no commit on main changed the plugin since the installed one', pr: null };
   for (const k of main.commits) {
     if (!k.pr) return { action: 'refuse', why: `commit ${k.sha.slice(0, 12)} names no pull request`, pr: null };
-    const g = gatedOf(k.pr);
+    const g = gatedOf(k.pr, k.sha);
     if (!g.ok) return { action: 'refuse', why: g.why, pr: k.pr };
   }
   const pr = main.commits[0].pr;
@@ -93,7 +112,7 @@ function decide({ installed, main, gatedOf, running }) {
   return { action: 'install', why: `gated through PR ${main.commits.map((k) => k.pr).filter((x, i, a) => a.indexOf(x) === i).join(', PR ')}`, pr };
 }
 
-const defaultExec = (bin, args, { cwd }) => execFileSync(bin, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: EXEC_TIMEOUT_MS });
+const defaultExec = (bin, args, { cwd, timeout = EXEC_TIMEOUT_MS }) => execFileSync(bin, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
 const brief = (err) => String((err && (err.stderr || err.message)) || err).trim().split('\n').pop().slice(0, 200);
 
 // One pass: returns { lines, installed } and never throws. `roleDirs` are the team's role directories:
@@ -106,8 +125,10 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     if (!own || !own.clone) return { lines: [], installed: false };
     const main = readMain(own.clone, own.name, own.entry.gitCommitSha);
     const rows = WD.logRows(root).filter((r) => r.type === 'self-update' && r.version === main.version);
+    // logRows reads the current log and the one rotation kept; a wake older than both (over 2 MB of
+    // rows ago) is not seen, which the wake timeout makes moot: such a wake has long been stopped
     const running = [...new Set(WD.logRows(root).filter((r) => r.type === 'wake').map((r) => r.pid))].filter((pid) => alive(pid));
-    const d = decide({ installed: own.entry.version, main, gatedOf: (pr) => gatedMerge(root, pr, own.repo), running });
+    const d = decide({ installed: own.entry.version, main, gatedOf: (pr, sha) => gatedMerge(root, pr, own.repo, sha, ghMergeCommit(exec, own.repo, root)), running });
     const label = `plugin ${own.name} ${main.version} (main ${main.sha.slice(0, 12)})`;
     if (d.action === 'none') return { lines: [], installed: false };
     if (d.action === 'held') return { lines: [`self-update: ${label} held: ${d.why}; tried again next cycle.`], installed: false };
@@ -133,6 +154,17 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     // the update's word is not the proof: the installed record must carry main's version afterwards
     const after = entriesOf(readJson(path.join(pluginsDir(configDir || env.CLAUDE_CONFIG_DIR), 'installed_plugins.json')), own.key);
     const now0 = after.find((e) => e.scope === own.entry.scope && (e.projectPath || null) === (own.entry.projectPath || null));
+    // main may have moved between the fetch and the update: the install then changed to a commit nobody
+    // checked against the gate. Recorded and warned about, never reported installed or kicked; this is
+    // looked at first, since a newer version than the checked one is that case too, not a failure
+    const got = (now0 && now0.gitCommitSha) || null;
+    const untouched = now0 && now0.version === own.entry.version && got === (own.entry.gitCommitSha || null);
+    if (now0 && !untouched && got !== main.sha) {
+      const why = `installed ${got ? got.slice(0, 12) : 'an unrecorded sha'}, not the checked ${main.sha.slice(0, 12)}: main moved during the update`;
+      WD.log(root, { ...row, result: 'ungated-install', version: now0.version, sha: got, checked: main.sha, detail: why });
+      const w = require('./warnings.js').record(root, { kind: 'install-ungated', rule: 'R-32', bead: null, detail: `plugin ${own.name} ${now0.version}: ${why}`, raisedBy: 'watchdog', instance: 'watchdog', now: at });
+      return { lines: [`self-update: warning ${w ? w.id : 'unrecorded'}: ${label} ${why}; what it carries was not checked against the gate.`], installed: false };
+    }
     if (!detail && (!now0 || now0.version !== main.version)) detail = `the install still records ${now0 ? now0.version : 'nothing'} after the update`;
     const behind = others.filter((o) => !after.some((e) => same(e.projectPath, o.projectPath) && e.scope === o.scope && e.version === main.version)).map((o) => o.projectPath);
     if (!detail && behind.length) detail = `still on the old version: ${behind.join(', ')}`;
@@ -140,7 +172,7 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
       WD.log(root, { ...row, result: 'failed', detail });
       return { lines: [`self-update: ${label} failed: ${detail}.`], installed: false };
     }
-    WD.log(root, { ...row, result: 'installed', sha: (now0 && now0.gitCommitSha) || main.sha, detail: `${d.why}; ${targets.length} install(s)` });
+    WD.log(root, { ...row, result: 'installed', sha: got, detail: `${d.why}; ${targets.length} install(s)` });
     return { lines: [`self-update: installed ${label}, ${d.why}.`], installed: true, version: main.version };
   } catch (err) {
     return { lines: [`self-update: not checked (${brief(err)}); the wakes go on.`], installed: false };
