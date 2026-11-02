@@ -15,6 +15,7 @@ const SANCTIONED = {
   'progress-observer': 'Record what you found in the bead (`bd update <id> --append-notes "<finding>"`); fixes go to a builder bead.',
   builder: 'Product code in your worktree is yours; for plans, message the Delivery Manager.',
   'spike-researcher': 'Answers go in the bead: `bd update <id> --append-notes "<answer>"`; product code is never yours.',
+  'tech-writer': 'Documentation in your worktree is yours; a product change goes to a builder bead through the Delivery Manager.',
   'reality-checker': 'Captures go under `.delivery/evidence/artifacts/<bead>/` and rows through `reality-check.js run-record`; anything else, message the Delivery Manager.',
 };
 // Browser, desktop and computer-use tools reach the owner's apps and the customer surface (R-05, R-33):
@@ -450,6 +451,7 @@ function ruleMatches(rule, t, ctx) {
   }
   if (rule.dest_in_scope) return destInScope(rule, argv.slice(subLen), t, ctx);
   if (rule.paths_in_scope && !destInScope({ ...rule, dest_in_scope: 'all', allow_none: true }, argv.slice(subLen), t, ctx)) return false;
+  if (rule.paths_in_lane && !pathsInLane(rule, argv.slice(subLen), t, ctx)) return false;
   if (rule.scope && !scopeHolds(rule, t, ctx)) return false;
   return true;
 }
@@ -467,6 +469,47 @@ function staleVersionCommand(text, root) {
   const resolved = path.resolve(root);
   const command = String(text).replace(sibling, (m, v) => (v === path.basename(resolved) ? m : `${resolved}/`));
   return { version: hit.version, running: path.basename(resolved), command };
+}
+
+// The path operands of a git command that writes or stages files (add, rm, mv, restore, commit's
+// pathspec) must each be a path the role's lane_writes allow, from every directory the segment may run
+// in, so git cannot write what the Edit tool would refuse (Copilot on #118, 4437630044). A pathspec git
+// would expand (a glob, :(magic)) and a directory the lane does not cover wholly cannot be confined, so
+// they are refused; so is a command with no path operand (it acts on the whole tree), except a commit,
+// which then records the index that only these confined commands could fill. That holds only because the
+// group refuses commit -a/--all (flags_none in git-write-docs): -a stages every tracked change first.
+const PATHSPEC_MAGIC = /^:|[*?[\]\\]/;
+function pathsInLane(rule, args, t, ctx) {
+  if (!ctx.roleDir || !Array.isArray(ctx.writes)) return false;
+  const valueFlags = rule.value_flags || [];
+  const letters = rule.value_letters || '';
+  const pos = [];
+  for (let k = 0; k < args.length; k++) {
+    if (args[k] === '--') { pos.push(...args.slice(k + 1)); break; }
+    if (args[k].startsWith('--')) { if (valueFlags.includes(args[k])) k++; continue; }
+    if (args[k].startsWith('-') && args[k].length > 1) {
+      if (valueFlags.includes(args[k])) { k++; continue; }
+      // a short cluster: the first value letter takes the rest of the word, or the next word when last
+      const at = [...args[k].slice(1)].findIndex((ch) => letters.includes(ch));
+      if (at >= 0 && at === args[k].length - 2) k++;
+      continue;
+    }
+    pos.push(args[k]);
+  }
+  // commit with no pathspec records the index, which only confined commands filled (commit -a is refused)
+  if (!pos.length) return !!rule.paths_allow_none;
+  if (pos.some((x) => UNSAFE_DIR.test(x) || PATHSPEC_MAGIC.test(x))) return false;
+  const rd = realish(ctx.roleDir);
+  const allowed = (rel) => ctx.writes.some((w) => globToRegExp(String(w)).test(rel));
+  return effectiveDirs(t, ctxDirs(ctx)).every((d) => d !== null && pos.every((x) => {
+    const abs = realish(path.resolve(d, x));
+    if (!under(abs, rd) || abs === rd) return false;
+    const rel = path.relative(rd, abs).split(path.sep).join('/');
+    let dir = false;
+    try { dir = fs.statSync(abs).isDirectory(); } catch (e) { dir = false; }
+    // a directory names everything under it: the lane must cover any file there, not only its name
+    return dir ? allowed(`${rel}/x`) : allowed(rel);
+  }));
 }
 
 function scopeBase(rule, ctx) { return ctx.roleDir ? path.join(realish(ctx.roleDir), String(rule.scope)) : null; }
@@ -1382,7 +1425,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     for (let n = 0; n < segs.length; n++) {
       const { text, op } = segs[n];
       if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
-      const names = classifySegment(text, groups, { roleDir, pluginRoot, dirs: live });
+      const names = classifySegment(text, groups, { roleDir, pluginRoot, dirs: live, writes: pol.writes });
       if (pol.review && !names.includes('read') && !reviewRunSegment(text, groups, { roleDir, pluginRoot, dirs: live }) && mentionsPluginScript(text, pluginRootOf({ pluginRoot }))) {
         return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`: ${REVIEWER_REASON}.\nReport pass or changes to the role that dispatched you; it records the review.` };
       }
@@ -1459,7 +1502,7 @@ function nativeApproval(input, policy, groups, ctx) {
   for (let n = 0; n < segs.length; n++) {
     const { text, op } = segs[n];
     if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
-    if (!classifySegment(text, native, { roleDir: ctx.roleDir, pluginRoot: ctx.pluginRoot, dirs: live }).length) return null;
+    if (!classifySegment(text, native, { roleDir: ctx.roleDir, pluginRoot: ctx.pluginRoot, dirs: live, writes: policy.writes }).length) return null;
     const t = tokens(text);
     if (t[0] !== 'cd') continue;
     const target = cdTarget(t);
