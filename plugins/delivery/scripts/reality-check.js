@@ -8,6 +8,8 @@
 //   reality-check.js refine <bead> [--criterion <n> (--step <k> | --add-step) | --setup <k>]
 //       [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..]
 //       [--precondition <o-id>]   Delivery Manager: edit the shared script (the only way to change it)
+//   reality-check.js refine <bead> --from <file>   the same, step commands from a JSON file of
+//       {"<criterion>": {command, match, [step], [as_role]}}, checked whole before anything is written
 //   reality-check.js show <bead>                                       the script, read only
 //   reality-check.js run-record <bead> --criterion <n> --result pass|fail --artifact <path>
 //       --observed-version <what the surface showed> [--host h] [--app a] [--mode m] [--install-artifact x]
@@ -23,9 +25,9 @@ const W = require('./lib/warnings.js');
 const { tupleOf, TUPLE } = require('./lib/surface.js');
 const { whoAmI, gateInputs, writerProblem, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
+const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] | refine <bead> --from <file> | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
 const VALUE = ['--criterion', '--result', '--artifact', '--observed-version', '--attempts', '--minutes', '--project', '--host', '--app', '--mode', '--install-artifact',
-  '--step', '--setup', '--action', '--expect', '--command', '--match', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition'];
+  '--step', '--setup', '--action', '--expect', '--command', '--match', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition', '--from'];
 // a test account is named, never given: anything that looks like a password or token is refused
 const SECRETISH = /pass(?:word|wd)?|secret|token|api[_-]?key|[:=]\S|\b[A-Za-z0-9+/_-]{24,}\b/i;
 const DEFAULT_CAP = { attempts: 2, minutes: 30 };
@@ -303,11 +305,12 @@ function runRecord(who, store, id, a, { cwd, env, now, verifyRecord }) {
 
 // The Delivery Manager's edits go through here: the script lives in the shared project checkout, which
 // run-record reads, and no lane writes it directly.
-function refine(who, id, a, at) {
+function refine(who, id, a, at, cwd) {
   const wp = writerProblem(who);
   if (wp) return refuse(wp);
   const s = readScript(who.root, id);
   if (!s) return refuse(`no reality-check script for ${id}: plan it first (reality-check.js plan ${id})`);
+  if (a.from !== undefined) return refineFrom(who, id, s, a, at, cwd);
   const fields = (step) => {
     if (a.action !== undefined) step.action = a.action;
     if (a.expect !== undefined) step.expect = a.expect;
@@ -361,6 +364,49 @@ function refine(who, id, a, at) {
   return { code: 0, out: `${scriptRel(id)}: ${changed.join(', ')}` };
 }
 
+// refine --from <file>: { "<criterion>": { command, match, [step], [as_role] } }. Drafted commands hold
+// single quotes, which a lane that refuses quote-escaping cannot pass as --command; a file carries them
+// as data. The whole file is checked before anything is written, so a bad entry changes nothing.
+const FROM_KEYS = new Set(['command', 'match', 'step', 'as_role']);
+function refineFrom(who, id, s, a, at, cwd = process.cwd()) {
+  const other = ['criterion', 'step', 'setup', 'add_step', 'command', 'match', 'action', 'expect', 'as_role', 'capture', 'pass_rule'].find((k) => a[k] !== undefined);
+  if (other) return { code: 2, out: `reality-check.js: --from takes no other step option (got --${other.replace(/_/g, '-')})` };
+  let text;
+  try { text = fs.readFileSync(path.resolve(cwd, a.from), 'utf8'); } catch (e) { return refuse(`cannot read ${a.from} (${e.code || e.message})`); }
+  let entries;
+  try { entries = JSON.parse(text); } catch (e) { return refuse(`${a.from} is not JSON (${e.message})`); }
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) return refuse(`${a.from} must be an object of criterion number -> {command, match}`);
+  const plan = [];
+  for (const [key, e] of Object.entries(entries)) {
+    if (!/^\d+$/.test(key)) return refuse(`${a.from}: "${key}" is not a criterion number`);
+    const n = Number(key);
+    const g = (s.criteria || []).find((x) => x.criterion === n);
+    if (!g) return refuse(`${a.from}: criterion ${n} is not in the script`);
+    if (!e || typeof e !== 'object' || Array.isArray(e)) return refuse(`${a.from}: criterion ${n} must be {command, match}`);
+    const extra = Object.keys(e).find((k) => !FROM_KEYS.has(k));
+    if (extra) return refuse(`${a.from}: criterion ${n}: unknown key ${extra} (allowed: ${[...FROM_KEYS].join(', ')})`);
+    if (typeof e.command !== 'string' || !e.command.trim() || typeof e.match !== 'string' || !e.match) return refuse(`${a.from}: criterion ${n}: command and match must both be non-empty strings`);
+    try { new RegExp(e.match); } catch (err) { return refuse(`${a.from}: criterion ${n}: match is not a valid regular expression (${err.message})`); }
+    if (e.as_role !== undefined && typeof e.as_role !== 'boolean') return refuse(`${a.from}: criterion ${n}: as_role must be true or false`);
+    const k = e.step === undefined ? 1 : e.step;
+    const step = Number.isInteger(k) ? g.steps.find((x) => x.n === k) : null;
+    if (!step) return refuse(`${a.from}: criterion ${n} has no step ${k} (1..${g.steps.length})`);
+    if (e.as_role === true) { const p = asRoleProblem(e.command); if (p) return refuse(`${a.from}: criterion ${n}: ${p}`); }
+    plan.push({ n, step, e });
+  }
+  if (!plan.length) return refuse(`${a.from} names no criterion`);
+  for (const { step, e } of plan) {
+    step.command = e.command;
+    step.match = e.match;
+    if (e.as_role === true) step.as_role = true;
+    if (e.as_role === false) delete step.as_role;
+  }
+  s.refined_by = who.instance;
+  s.refined_at = at;
+  fs.writeFileSync(path.join(who.root, scriptRel(id)), `${JSON.stringify(s, null, 2)}\n`);
+  return { code: 0, out: `${scriptRel(id)}: ${plan.map(({ n, step }) => `criterion ${n} step ${step.n}`).join(', ')}` };
+}
+
 // open reality-check beads, for /delivery:team
 const pending = (beads) => (beads || []).filter((b) => (b.labels || []).includes(LABEL) && b.status !== 'closed');
 
@@ -377,7 +423,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
   const at = now || new Date().toISOString();
   if (cmd === 'plan') return plan(who, store, id, a, at);
-  if (cmd === 'refine') return refine(who, id, a, at);
+  if (cmd === 'refine') return refine(who, id, a, at, cwd);
   return runRecord(who, store, id, a, { cwd, env, now: at, verifyRecord });
 }
 
