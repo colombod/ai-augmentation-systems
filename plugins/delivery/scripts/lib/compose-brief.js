@@ -2,6 +2,18 @@
 const fs = require('fs');
 const { resolvePluginRoot, operatorCommand } = require('./plugin-root.js');
 const path = require('path');
+const { launcherCommand } = require('./launcher.js');
+
+// `node ${CLAUDE_PLUGIN_ROOT}/scripts/<x>.js` as the project's launcher runs it (lib/launcher.js): a
+// brief that names the version directory breaks at the next plugin install. Other uses of the root
+// (templates, references, scripts/testing/run-tests.js, whose sealed form the lane matches by path)
+// keep the absolute root.
+const SCRIPT_CALL = /node \$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/([a-z0-9][a-z0-9-]*\.js)(?=[\s`'"]|$)/g;
+function renderRoot(text, pluginRoot, projectRoot) {
+  const viaLauncher = projectRoot ? String(text).replace(SCRIPT_CALL, (m, x) => launcherCommand(projectRoot, x)) : String(text);
+  return pluginRoot ? resolvePluginRoot(viaLauncher, pluginRoot) : viaLauncher;
+}
+const operatorLine = (pluginRoot, projectRoot) => (projectRoot ? launcherCommand(projectRoot, 'operator.js') : operatorCommand(pluginRoot));
 
 function parseFrontmatter(text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
@@ -68,7 +80,7 @@ function headerLines(team, instance, role) {
 }
 
 // Short role block for hook injection (Claude Code caps injected hook output at 10,000 characters).
-function shortBrief({ team, hosts, instance, role, roleDir, pluginRoot }) {
+function shortBrief({ team, hosts, instance, role, roleDir, pluginRoot, projectRoot }) {
   return [
     ...headerLines(team, instance, role),
     routingTable(team),
@@ -76,7 +88,7 @@ function shortBrief({ team, hosts, instance, role, roleDir, pluginRoot }) {
     describeHost(role.host, hosts.hosts[role.host]),
     '',
     `Your full brief and the team rules are in ${roleDir}/CLAUDE.local.md; it is binding. Re-read it if you are unsure of your role.`,
-    ...(pluginRoot ? [`Operator commands: \`${operatorCommand(pluginRoot)} <command>\` (verify, pending, record, ack, ...).`] : []),
+    ...(pluginRoot ? [`Operator commands: \`${operatorLine(pluginRoot, projectRoot)} <command>\` (verify, pending, record, ack, ...).`] : []),
     '',
   ].join('\n');
 }
@@ -93,7 +105,7 @@ function applyRoleConditions(body, team) {
     .replace(/^<!-- unless-role: ([a-z0-9-]+) -->\n([\s\S]*?)^<!-- end-unless -->\n?/gm, (m, id, inner) => (has.has(id) ? '' : inner));
 }
 
-function composeBrief({ team, hosts, instance, role, brief, rules, pluginRoot }) {
+function composeBrief({ team, hosts, instance, role, brief, rules, pluginRoot, projectRoot }) {
   const host = hosts.hosts[role.host];
   const actor = `<user>@${role.host}/${instance}`;
   const mode = role.mode || brief.meta.mode || 'default';
@@ -118,8 +130,9 @@ function composeBrief({ team, hosts, instance, role, brief, rules, pluginRoot })
     '',
     ...(mode === 'delegate' ? [DELEGATE_SECTION, ''] : []),
   ].join('\n');
-  // the session's Bash has no CLAUDE_PLUGIN_ROOT: print the absolute path (re-rendered every SessionStart)
-  return pluginRoot ? resolvePluginRoot(text, pluginRoot) : text;
+  // the session's Bash has no CLAUDE_PLUGIN_ROOT: scripts through the project's launcher when the caller
+  // wrote it (projectRoot given), else the absolute path (re-rendered every SessionStart)
+  return renderRoot(text, pluginRoot, projectRoot);
 }
 
-module.exports = { applyRoleConditions, parseFrontmatter, loadRoleBrief, composeBrief, shortBrief, describeHost, routingTable };
+module.exports = { renderRoot, applyRoleConditions, parseFrontmatter, loadRoleBrief, composeBrief, shortBrief, describeHost, routingTable };

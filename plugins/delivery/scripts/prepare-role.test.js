@@ -58,9 +58,13 @@ test('prepareRole creates a thinking role directory without a product worktree',
   assert.ok(brief.startsWith('# Role: chief-of-staff (chief-of-staff) on example'));
   // the rendered rules carry the record rule (12), never the old relay-refusing sentence
   assert.ok(brief.includes('12. **Operator decisions are records, never relays.**'));
-  // C2: the role session's Bash has no CLAUDE_PLUGIN_ROOT, so the brief carries the absolute path
+  // C2: the role session's Bash has no CLAUDE_PLUGIN_ROOT, so the brief names the project's launcher
+  // (8wz.1: a versioned plugin path breaks at the next install), written beside it and never committed
+  const L = require('./lib/launcher.js');
   assert.ok(!brief.includes('${CLAUDE_PLUGIN_ROOT}'));
-  assert.ok(brief.includes(`node ${path.join(PLUGIN_ROOT, 'scripts', 'operator.js')} verify <id>`));
+  assert.ok(brief.includes(`${L.launcherCommand(projectRoot, 'operator.js')} verify <id>`));
+  assert.equal(L.resolveLauncher(projectRoot, PLUGIN_ROOT), path.resolve(PLUGIN_ROOT));
+  assert.equal(fs.readFileSync(path.join(projectRoot, '.delivery', 'bin', '.gitignore'), 'utf8'), '*\n');
   assert.ok(!brief.includes("passes as the operator's word"));
   assert.ok(brief.includes("### The operator's time is yours to protect"));
   const marker = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8'));

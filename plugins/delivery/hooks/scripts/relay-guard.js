@@ -500,8 +500,10 @@ function operatorChecks({ input, roleDir, projectRoot, role, instance, captureSt
       const relay = findRelayRequest(msg, { parties });
       return relay ? [{ kind: 'relay', reason: peerRelayReason(relay.clause), detail: relay.phrase }] : [];
     }
-    const op = operatorCommand(pluginRoot || DEFAULT_PLUGIN_ROOT);
     if (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot)) return [];
+    // the project's launcher when it is in place (it survives plugin installs), else the absolute root
+    const L = require('../../scripts/lib/launcher.js');
+    const op = L.resolveLauncher(projectRoot, pluginRoot || DEFAULT_PLUGIN_ROOT) ? L.launcherCommand(projectRoot, 'operator.js') : operatorCommand(pluginRoot || DEFAULT_PLUGIN_ROOT);
     const inp = input && typeof input === 'object' ? input : {};
     const warn = deps.warn || (() => {});
     const sessionId = sessionIdOf(roleDir, inp);
