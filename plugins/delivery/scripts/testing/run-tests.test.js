@@ -89,6 +89,10 @@ test('run-tests: the seal is a private /tmp tmpfs, capped, gone with its parent,
   for (const f of ['--die-with-parent', '--unshare-pid']) assert.ok(args.includes(f), f);
   assert.equal(args[args.indexOf('--proc') + 1], '/proc', 'its own /proc, so process lookups see the run\'s own pid namespace');
   assert.deepEqual(args.slice(-3), ['--', 'node', 'x.js']);
+  // the token comes in on stdin and lands in the fresh tmpfs, so it follows --tmpfs /tmp
+  const withToken = R.sealArgs('/usr/bin/bwrap', { bytes: 1024, inodes: 10 }, ['node', 'x.js'], [], true)[1];
+  assert.deepEqual(withToken.slice(5, 10), ['--tmpfs', '/tmp', '--file', '0', `/tmp/${R.SEAL_FILE}`]);
+  assert.equal(args.includes('--file'), false);
   // a checkout under /tmp is bound back after the tmpfs, so it shows through (Copilot on #117); a fresh
   // seal cannot start inside this one, so seal-check.js (CI step) proves it end to end
   const kept = R.sealArgs('/usr/bin/bwrap', { bytes: 1024, inodes: 10 }, ['node', 'x.js'], ['/tmp/co'])[1];
@@ -361,5 +365,102 @@ test('run-tests: -- <command> runs that command in the current directory with a 
     const q = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', 'sh', '-c', 'printf "%s|" "$@" > words', 'x', 'a b', "c'd"], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
     assert.equal(q.status, 0, q.stderr.slice(-400));
     assert.equal(fs.readFileSync(path.join(dir, 'words'), 'utf8'), "a b|c'd|");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(outer, { recursive: true, force: true }); }
+});
+
+// hjx.2 (dec-chief-of-staff-000014): a run that cannot be sealed is refused, never run in the host's
+// /tmp; a seal is proven by the mount and its token, never taken from a flag.
+const MOUNTINFO = (dir, fstype, id = '77') => [
+  '22 1 8:1 / / rw - ext4 /dev/sda1 rw',
+  `${id} 22 0:50 / ${dir} rw,nosuid - ${fstype} ${fstype} rw,size=2097152k`,
+].join('\n');
+test('run-tests: sealProblem accepts only a tmpfs /tmp apart from the host\'s, and a nested run only with its token', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const R = require('./run-tests.js');
+  assert.deepEqual(R.mountAt('/tmp', MOUNTINFO('/tmp', 'tmpfs')), { id: '77', fstype: 'tmpfs' });
+  assert.equal(R.mountAt('/tmp', MOUNTINFO('/var', 'tmpfs')), null);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seal-token-'));
+  try {
+    const info = MOUNTINFO(dir, 'tmpfs');
+    const bwrap = () => 'bwrap';
+    const host = () => 'systemd';
+    // the sealed child: the runner's own claim, on a tmpfs that is not the host's mount, holding the
+    // token bwrap wrote there; a claim with no matching token is refused even on a tmpfs /tmp, which is
+    // what a host whose own /tmp is a tmpfs looks like (review of #125)
+    const N = 'f'.repeat(32);
+    assert.match(R.sealProblem({ sealedRun: `host-tmp:22:${N}`, tmpDir: dir, mountinfo: info }), /no seal token in .* matches DELIVERY_SEALED_RUN/);
+    fs.writeFileSync(path.join(dir, R.SEAL_FILE), N);
+    assert.equal(R.sealProblem({ sealedRun: `host-tmp:22:${N}`, tmpDir: dir, mountinfo: info }), null);
+    assert.equal(R.sealProblem({ sealedRun: `host-tmp:none:${N}`, tmpDir: dir, mountinfo: info }), null);
+    assert.match(R.sealProblem({ sealedRun: `host-tmp:22:${'e'.repeat(32)}`, tmpDir: dir, mountinfo: info }), /no seal token/);
+    assert.match(R.sealProblem({ sealedRun: 'host-tmp:22', tmpDir: dir, mountinfo: info }), /DELIVERY_SEALED_RUN=host-tmp:22 is not one the runner set/);
+    assert.match(R.sealProblem({ sealedRun: '1', tmpDir: dir, mountinfo: info }), /DELIVERY_SEALED_RUN=1 is not one the runner set/);
+    assert.match(R.sealProblem({ sealedRun: `host-tmp:77:${N}`, tmpDir: dir, mountinfo: info }), /is the host's own mount/);
+    assert.match(R.sealProblem({ sealedRun: `host-tmp:22:${N}`, tmpDir: dir, mountinfo: MOUNTINFO(dir, 'ext4') }), /is not a tmpfs mount/);
+    assert.match(R.sealProblem({ sealedRun: `host-tmp:22:${N}`, tmpDir: dir, mountinfo: '' }), /is not a tmpfs mount/);
+    fs.rmSync(path.join(dir, R.SEAL_FILE));
+    // a nested run: the token file in a tmpfs /tmp must match the flag; 1 with no token file only in a
+    // bubblewrap pid namespace, a seal of 0.43.18 or earlier (review of #125)
+    assert.match(R.sealProblem({ sealActive: '1', tmpDir: dir, mountinfo: info, init: host }), /no seal token .* not a bubblewrap seal/);
+    assert.equal(R.sealProblem({ sealActive: '1', tmpDir: dir, mountinfo: info, init: bwrap }), null);
+    assert.match(R.sealProblem({ sealActive: '1', tmpDir: dir, mountinfo: MOUNTINFO(dir, 'ext4'), init: bwrap }), /is not a tmpfs mount/);
+    fs.writeFileSync(path.join(dir, R.SEAL_FILE), 'abc123');
+    assert.match(R.sealProblem({ sealActive: '1', tmpDir: dir, mountinfo: info, init: bwrap }), /no seal token/);
+    assert.equal(R.sealProblem({ sealActive: 'abc123', tmpDir: dir, mountinfo: info }), null);
+    assert.match(R.sealProblem({ sealActive: 'abc123', tmpDir: dir, mountinfo: MOUNTINFO(dir, 'ext4') }), /is not a tmpfs mount/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('run-tests: ownerOptOut passes only a record operator.js verifies', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const R = require('./run-tests.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'optout-'));
+  try {
+    const fake = (out) => { const f = path.join(dir, `op-${Math.random().toString(36).slice(2)}.js`); fs.writeFileSync(f, `process.stdout.write(${JSON.stringify(out)})`); return f; };
+    assert.match(R.ownerOptOut(undefined), /no owner record allows an unsealed run/);
+    assert.equal(R.ownerOptOut('dec-x-1', { operatorJs: fake('{"ok":true}') }), null);
+    assert.match(R.ownerOptOut('dec-x-1', { operatorJs: fake('{"ok":false,"code":"not_found"}') }), /dec-x-1 does not verify \(not_found\)/);
+    assert.match(R.ownerOptOut('dec-x-1', { operatorJs: fake('garbage') }), /does not verify/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('run-tests: an unsealed run, a stray seal flag, or an unverified opt-out is refused, and nothing runs', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { spawnSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.refuse-'));
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-refuse-'));
+  try {
+    const ran = path.join(dir, 'ran');
+    const fixture = path.join(dir, 'marks.test.js');
+    fs.writeFileSync(fixture, `require('node:test')('marks', () => require('fs').writeFileSync(${JSON.stringify(ran)}, 'x'));\n`);
+    const base = { ...process.env, TMPDIR: outer, DELIVERY_TEST_FILES: fixture };
+    delete base.NODE_TEST_CONTEXT;
+    delete base.DELIVERY_SEAL_ACTIVE;
+    delete base.DELIVERY_SEALED_RUN;
+    delete base.DELIVERY_TEST_UNSEALED_RECORD;
+    const run = (extra) => spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js')], { env: { ...base, ...extra }, encoding: 'utf8', timeout: 60000 });
+    for (const [extra, why] of [
+      [{ DELIVERY_TEST_UNSEALED: '1' }, /refused: DELIVERY_TEST_UNSEALED is set, so this run would not be sealed.*no owner record allows an unsealed run/],
+      [{ DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_UNSEALED_RECORD: 'dec-nobody-1' }, /refused: DELIVERY_TEST_UNSEALED is set.*the owner record dec-nobody-1 does not verify/],
+      [{ DELIVERY_SEAL_ACTIVE: '1' }, /refused: DELIVERY_SEAL_ACTIVE is set, but this run is not in a seal \(no seal token/],
+      [{ DELIVERY_SEALED_RUN: '1' }, /refused: this run claims a seal it is not in \(DELIVERY_SEALED_RUN=1 is not one the runner set\)/],
+      // a well-formed claim from the environment alone: no token of its own in /tmp (review of #125)
+      [{ DELIVERY_SEALED_RUN: `host-tmp:bogus:${'a'.repeat(32)}` }, /refused: this run claims a seal it is not in \((no seal token in \/tmp matches DELIVERY_SEALED_RUN|\/tmp is not a tmpfs mount)\)/],
+    ]) {
+      const r = run(extra);
+      assert.equal(r.status, 2, JSON.stringify(extra) + r.stderr);
+      assert.match(r.stderr, why);
+      assert.equal(fs.existsSync(ran), false, `nothing ran: ${JSON.stringify(extra)}`);
+    }
+    assert.deepEqual(fs.readdirSync(outer), [], 'no run directory was made');
+    // inside this suite's own seal the same opt-out runs, in a private directory under the sealed /tmp
+    if (process.env.DELIVERY_SEAL_ACTIVE) {
+      const r = run({ DELIVERY_TEST_UNSEALED: '1', DELIVERY_SEAL_ACTIVE: process.env.DELIVERY_SEAL_ACTIVE });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(ran), true);
+    }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(outer, { recursive: true, force: true }); }
 });

@@ -814,3 +814,22 @@ test('start: an already prepared role without PATH is re-prepared for PATH; a us
   assert.match(start(['--project', project, '--host', 'laptop']).out, /chief-of-staff: already prepared/);
   assert.equal(JSON.parse(fs.readFileSync(settingsFile(), 'utf8')).env.PATH, '');
 });
+
+// hjx.2: the per-host limit on sealed test runs, and a host that cannot seal one
+test('check: sealed test runs fail without bwrap, and say how many capped runs fit in memory', () => {
+  const { sealRow } = require('./start.js');
+  const GB = 1024 * 1024 * 1024;
+  const none = sealRow({ env: {}, bwrap: null, freeBytes: 16 * GB });
+  assert.equal(none.status, 'fail');
+  assert.match(none.detail, /run-tests\.js refuses every run here/);
+  const roomy = sealRow({ env: {}, bwrap: '/usr/bin/bwrap', freeBytes: 9 * GB });
+  assert.equal(roomy.status, 'pass');
+  assert.match(roomy.detail, /each run may take 2048 MB of memory, 9216 MB available: at most 4 at once on this host/);
+  const tight = sealRow({ env: {}, bwrap: '/usr/bin/bwrap', freeBytes: 3 * GB });
+  assert.equal(tight.status, 'warn');
+  assert.match(tight.detail, /at most 1 at once/);
+  // a lower cap fits more runs
+  assert.equal(sealRow({ env: { DELIVERY_TEST_TMP_MB: '512' }, bwrap: '/usr/bin/bwrap', freeBytes: 3 * GB }).status, 'pass');
+  // checkPrerequisites carries the row
+  assert.ok(checkPrerequisites({ env: { PATH: '/bin' } }).some((r) => r.name === 'sealed test runs'));
+});
