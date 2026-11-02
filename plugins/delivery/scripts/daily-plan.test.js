@@ -13,7 +13,7 @@ const Wn = require('./lib/warnings.js');
 const MC = require('../hooks/scripts/message-checks.js');
 const { planGraph } = require('./lib/plan-graph.js');
 const { parseSpikes } = require('./lib/plan-docs.js');
-const { STORY, SURFACES, makeProject, storyBead, memBd } = require('./testing/gate-fixture.js');
+const { STORY, SURFACES, makeProject, planCheck, storyBead, memBd } = require('./testing/gate-fixture.js');
 const { harness, evIdOf } = require('./testing/role-harness.js');
 const plan = require('./plan.js');
 
@@ -28,6 +28,7 @@ const COS = 'chief-of-staff';
 function vault() {
   const root = makeProject();
   fs.writeFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-4.md'), STORY.replace('id: vault-0n9-3', 'id: vault-0n9-4').replace('Import a collection by dropping a CSV in the chat', 'Show the collection summary'));
+  planCheck(root, storyBead({ id: 'ex-vault-0n9-4', metadata: { story_file: 'vault-0n9-4.md' } }));
   fs.writeFileSync(path.join(root, '.delivery', 'initiatives', 'vault', 'brief.md'), '# Product brief: Vault\n\n## What changes if we solve it\n\nA player brings their whole collection into the chat and asks about it. More text.\n');
   fs.writeFileSync(A.fileOf(root, 'vault'), REGISTER);
   const g = planGraph({ prefix: 'ex', initiative: 'vault', sha: 'abc1234', roadmap: { phases: [{ number: '1', name: 'Collections', items: [] }] }, stories: [], spikes: parseSpikes(ARCH), assumptions: A.loadRegister(root, 'vault').rows });

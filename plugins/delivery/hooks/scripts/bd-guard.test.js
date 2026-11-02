@@ -383,6 +383,18 @@ test('1a close, #478 merged 10-13 07:56 with no pass row on S1: every closing fo
   assert.deepEqual(await gate('bd close ex-vault-0n9-3 --reason "verified ev-3, ev-2"', bd, root), { deny: null, warnings: [] });
 });
 
+// R-33 at claim time: a story the Reality Checker verifies is not claimed until its check is planned
+test('1a claim: a story whose checked criteria have no planned script is refused R-33, and claimable once planned', async () => {
+  const { planCheck } = require('../../scripts/testing/gate-fixture.js');
+  const root = makeProject({ checkScript: false });
+  const bead = storyBead({ metadata: { ready_hash: HASH } });
+  const g = await gate('bd update ex-vault-0n9-3 --claim', [bead], root);
+  assert.match(g.deny, /^Claim of ex-vault-0n9-3 refused \(R-33: criteria 1, 2 are checked on S1 by the Reality Checker, and no reality-check script is planned/);
+  assert.match(g.deny, /Message the Delivery Manager: ex-vault-0n9-3 reality-check-script\.$/);
+  planCheck(root, bead);
+  assert.equal((await gate('bd update ex-vault-0n9-3 --claim', [bead], root)).deny, null);
+});
+
 test('1a close: a story known only by its story_file (no story label) is gated; a missing story file with a ready hash is D1', async () => {
   const root = makeProject();
   const unlabelled = storyBead({ labels: ['roadmap', 'phase-1'], metadata: deployed });
@@ -541,6 +553,8 @@ test('1a hook: a close without rows is denied; a claim with a gap is allowed wit
   const fixture = makeProject({ story: STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, '') });
   fs.cpSync(path.join(fixture, '.delivery', 'initiatives'), path.join(projectRoot, '.delivery', 'initiatives'), { recursive: true });
   fs.cpSync(path.join(fixture, '.delivery', 'stories'), path.join(projectRoot, '.delivery', 'stories'), { recursive: true });
+  // its reality-check script too, as materialise plans it: without one the claim is refused (R-33)
+  fs.cpSync(path.join(fixture, '.delivery', 'reality-checks'), path.join(projectRoot, '.delivery', 'reality-checks'), { recursive: true });
   // the probe bd answers every show with this bead, so it has no parent here
   const bead = storyBead({ assignee: 'tester@pc/builder-1', parent: null, updated_at: NOW, metadata: { ready_hash: G.storyHash(G.parseStory(STORY.replace(/## Measurement plan[\s\S]*?(?=## Shippable)/, ''))), deployed_sha: 'd478aa11' } });
   const { bin } = probeBd(JSON.stringify([bead]).replace(/'/g, ''), '[]');

@@ -179,6 +179,52 @@ function tokens(seg) {
   return out;
 }
 
+// The words the shell passes to the command: tokens() with every redirection and its target removed,
+// apart (`2> /dev/null`) or attached (`x.test.js>/dev/null`, `2>&1`); a quoted < or > is literal
+// (Copilot on #117: `node 2>/dev/null --test` read the redirection as the script).
+function argWords(seg) {
+  const s = String(seg == null ? '' : seg);
+  const out = [];
+  let cur = null;
+  let q = null;
+  let quoted = false;
+  let skip = false; // the next word is a redirection's target
+  const end = () => { if (cur !== null) { if (skip) skip = false; else out.push(cur); } cur = null; quoted = false; };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q === "'") { if (c === "'") q = null; else cur += c; continue; }
+    if (q === '"') {
+      if (c === '"') q = null;
+      else if (c === '\\' && i + 1 < s.length && '"\\$`'.includes(s[i + 1])) cur += s[++i];
+      else cur += c;
+      continue;
+    }
+    if (/\s/.test(c)) { end(); continue; }
+    if ((c === '>' || c === '<') && s[i + 1] !== '(') {
+      // a bare fd number or & just before the operator is part of it (2>, &>)
+      if (cur !== null && !quoted && /^(?:\d+|&)$/.test(cur)) cur = null;
+      else end();
+      let j = i + 1;
+      while (j < s.length && /[<>|&]/.test(s[j])) j++;
+      i = j - 1;
+      // >&2, <&-: a stream merged or closed, no target word
+      if (s[j - 1] === '&') {
+        let k = j;
+        while (k < s.length && /[\d-]/.test(s[k])) k++;
+        if (k > j && (k === s.length || /[\s;&|)]/.test(s[k]))) { i = k - 1; continue; }
+      }
+      skip = true;
+      continue;
+    }
+    if (cur === null) cur = '';
+    if (c === '\\') { if (i + 1 < s.length) cur += s[++i]; quoted = true; continue; }
+    if (c === '"' || c === "'") { q = c; quoted = true; continue; }
+    cur += c;
+  }
+  end();
+  return out;
+}
+
 // Merging, closing or discarding a stream writes no file: >&N, >&-, >/dev/null, >>/dev/null.
 const STREAM_ONLY = /^(?:>&(?:\d+|-)|>>?[ \t]*\/dev\/null)(?=[\s;&|)]|$)/;
 
@@ -812,6 +858,39 @@ function registerHit({ projectRoot, roleDir }) {
 // and so is resuming or continuing another Claude session by hand. Only `node .../watchdog.js check`
 // runs in a role session; the script refuses the rest inside a role directory as well.
 const WATCHDOG_REASON = 'the watchdog\'s wake, run, install and uninstall are the host job\'s, which the owner installs from a shell outside any role directory; read the stalls with `watchdog.js check`';
+// A suite run straight with `node --test` (or `node x.test.js`) writes its fixtures into the host's
+// shared /tmp and leaves them there: one such run left 6,156 fixture folders (456 MB, 192,000 inodes)
+// in a host's memory-backed /tmp, after the same pattern had once filled it. Every role, any-lane
+// builders included, runs tests through the sealed runner, whose run lives in a capped private /tmp
+// the OS destroys.
+const TEST_FILE = /\.test\.[cm]?[jt]s$/;
+// The reason names the sealed form of the very command refused: `run-tests.js -- <command>` runs any
+// product's test command (through the shell, in this directory) in the same seal, so a product whose
+// test_command is `node --test` still runs its own suite (Copilot on #117).
+// The suggested form is exactly the one SEALED_FORM admits: the command in single quotes, inside which
+// the outer shell expands nothing. A command holding a single quote cannot go there as it is, so it goes
+// in a script file.
+function testsReason(command, pluginRoot) {
+  // shell-quoted when the plugin's path holds anything outside the plain characters (spaces)
+  const runner = pluginRoot ? shellPath(path.join(pluginRoot, 'scripts', 'testing', 'run-tests.js')) : '<plugin>/scripts/testing/run-tests.js';
+  const c = String(command || '').trim();
+  const form = c.includes("'")
+    ? `the command holds a single quote, so put it in a script file and run \`node ${runner} -- 'sh <file>'\`, which runs it sealed, here`
+    : `\`node ${runner} -- '${c}'\` runs that command sealed, here`;
+  return `tests run only through the sealed runner, which gives the run a capped private /tmp the OS destroys: ${form} (delivery's own suite: \`node ${runner}\`, files picked with DELIVERY_TEST_FILES); never \`node --test\` or a test file directly`;
+}
+// node's options that take their value as the next word (`--conditions development`), so that word
+// is not mistaken for the script; options after the script are the script's own (Copilot on #117)
+const NODE_VALUE_FLAGS = new Set(['-C', '--conditions', '--input-type', '--loader', '--experimental-loader', '--env-file', '--env-file-if-exists',
+  '--test-name-pattern', '--test-skip-pattern', '--test-reporter', '--test-reporter-destination', '--test-concurrency', '--test-shard', '--test-timeout',
+  '--test-isolation', '--test-global-setup', '--test-coverage-include', '--test-coverage-exclude', '--test-coverage-branches', '--test-coverage-functions',
+  '--test-coverage-lines', '--watch-path', '--watch-kill-signal', '--title', '--inspect-port', '--debug-port', '--redirect-warnings', '--diagnostic-dir',
+  '--report-dir', '--report-directory', '--report-filename', '--report-signal', '--heapsnapshot-signal', '--heapsnapshot-near-heap-limit', '--secure-heap',
+  '--secure-heap-min', '--openssl-config', '--icu-data-dir', '--tls-cipher-list', '--tls-keylog', '--dns-result-order', '--unhandled-rejections',
+  '--disable-warning', '--localstorage-file', '--cpu-prof-dir', '--cpu-prof-name', '--cpu-prof-interval', '--heap-prof-dir', '--heap-prof-name',
+  '--heap-prof-interval', '--experimental-policy', '--policy-integrity', '--experimental-config-file', '--max-http-header-size', '--run',
+  '--experimental-default-type', '--trace-event-categories', '--trace-event-file-pattern', '--use-largepages', '--snapshot-blob',
+  '--experimental-sea-config', '--allow-fs-read', '--allow-fs-write', '--max-old-space-size', '--max-semi-space-size', '--stack-size']);
 const RESUME_REASON = 'resuming or continuing a Claude session is the watchdog host job\'s; message the session instead';
 // Only what runs is judged: the command word of each segment (after VAR=x assignments and wrappers such
 // as env, nohup, timeout), the script an interpreter runs or the code it evaluates, the command a shell
@@ -823,7 +902,8 @@ const WRAPPERS = new Set(['env', 'nohup', 'exec', 'command', 'builtin', 'time', 
 const WRAPPER_VALUE_FLAGS = new Set(['-u', '-g', '-C', '-n', '-k', '-s', '-S', '--signal', '--kill-after', '--unset', '--chdir', '-P', '-I', '-L']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 const INTERPRETERS = new Set(['node', 'nodejs', 'bun', 'deno', 'tsx', 'ts-node']);
-const CODE_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-r', '--require', '--import', '--loader', '-i']);
+// -i (interactive) takes no value: `node -i x.test.js` runs the file (Copilot on #117)
+const CODE_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-r', '--require', '--import', '--loader']);
 const WATCHDOG_VERBS = new Set(['wake', 'run', 'install', 'uninstall']);
 const CHECK_FLAGS = new Set(['--json']);
 const RESUME_FLAGS = new Set(['-r', '--resume', '-c', '--continue', '--fork-session', '--teleport', '--from-pr']);
@@ -933,7 +1013,7 @@ function refusedRun(text, depth = 0) {
   if (depth > 4) return null;
   for (const sub of substitutions(text)) { const r = refusedRun(sub, depth + 1); if (r) return r; }
   for (const seg of splitWithOps(text)) {
-    const t = commandWords(stripGrammar(tokens(seg.text)));
+    const t = commandWords(stripGrammar(argWords(seg.text)));
     if (!t.length) continue;
     const w = t[0];
     const args = t.slice(1);
@@ -949,7 +1029,9 @@ function refusedRun(text, depth = 0) {
     }
     if ((name === 'source' || name === '.') && namesWatchdog(firstOperand(args))) return 'watchdog';
     if (INTERPRETERS.has(name)) {
+      const isNode = name === 'node' || name === 'nodejs';
       let script = null;
+      let testFlag = false;
       for (let i = 0; i < args.length; i++) {
         if (CODE_FLAGS.has(args[i]) || /^--(?:eval|print|require|import)=/.test(args[i])) {
           const code = args[i].includes('=') ? args[i].slice(args[i].indexOf('=') + 1) : args[++i] || '';
@@ -957,20 +1039,56 @@ function refusedRun(text, depth = 0) {
           if (CLAUDE_RESUME.test(code)) return 'resume';
           continue;
         }
+        if (args[i] === '--') { script = i + 1 < args.length ? i + 1 : null; break; }
+        if (args[i] === '--test' || args[i].startsWith('--test=')) testFlag = true;
+        if (isNode && NODE_VALUE_FLAGS.has(args[i])) { i++; continue; }
         if (args[i].startsWith('-')) continue;
         script = i;
         break;
       }
       if (script !== null && namesWatchdog(args[script]) && !(isCli(args[script]) && checkOnly(args.slice(script + 1)))) return 'watchdog';
+      // node's test runner, or a test file run directly: only through the sealed runner (dec-000014).
+      // Only node's own options count: a --test after the script is the script's argument.
+      if (isNode && (testFlag || (script !== null && TEST_FILE.test(args[script])))) return 'tests';
       continue;
     }
     if (namesWatchdog(w) && !(isCli(w) && checkOnly(args))) return 'watchdog';
     if (namesClaude(w) && claudeResumes(args)) return 'resume';
     if (nonLiteral(w) && (claudeResumes(args) || WATCHDOG_VERBS.has(args[0]))) return 'resume';
   }
+  if (depth === 0 && unsealedTestText(text)) return 'tests';
   return null;
 }
 const watchdogAction = (command) => refusedRun(command) === 'watchdog';
+
+// The fail-safe behind the parse above (Copilot on #117, after each round found another spelling:
+// redirections, -i, backslash-newline). The whole command, continuations joined and every quote and
+// backslash dropped, is refused when node or nodejs appears as a word followed anywhere by --test or a
+// test file. It over-refuses on purpose (`node helper.js --test` is refused too): a false refusal costs
+// one retry, because the reason gives the sealed form, which runs any command; a false allow fills the
+// host's /tmp. The one exemption is the sealed runner in its exact form (SEALED_FORM below).
+const NODE_WORD = /(?:^|[\s;&|(`/$=])node(?:js)?(?=\s|$)/g;
+function unsealedTestText(text) {
+  const flat = String(text || '').replace(/\\\r?\n/g, '').replace(/["'\\]/g, '');
+  let m;
+  let tests = false;
+  NODE_WORD.lastIndex = 0;
+  while ((m = NODE_WORD.exec(flat))) {
+    const after = flat.slice(m.index + m[0].length);
+    if (/(?:^|[\s(`=;&|])--test(?![\w-])/.test(after) || /\.test\.[cm]?[jt]s(?![\w])/.test(after)) { tests = true; break; }
+  }
+  return tests && !SEALED_FORM.test(String(text || '').trim());
+}
+// The exemption is an exact form, not a parse (Copilot on #117: a parse let `run-tests.js > >(node
+// --test)` through): optionally DELIVERY_TEST_FILES=<plain chars>, node, the runner by a plain path,
+// optionally --clock <iso>, and optionally -- '<command>' in single quotes, inside which the outer shell
+// expands nothing, so the command, substitutions included, runs inside the seal. Anything else that the
+// fail-safe matches is refused.
+// The node and runner paths are each plain characters or one single-quoted literal (a plugin under a
+// path with spaces, Copilot on #117); a quoted literal expands nothing either.
+const SEALED_FORM = /^(?:DELIVERY_TEST_FILES=[A-Za-z0-9_./:@+,=-]* )?(?:node|[A-Za-z0-9_./@+,=-]*\/node|'[^']*\/node') (?:(?:[A-Za-z0-9_./@+,=-]*\/)?scripts\/testing\/run-tests\.js|'(?:[^']*\/)?scripts\/testing\/run-tests\.js')(?: --clock [A-Za-z0-9:.+-]+)?(?: -- '[^']*')?$/;
+// a path as the shell must be given it: as is when plain, else single-quoted (none of ours holds a quote)
+const shellPath = (p) => (/^[A-Za-z0-9_./@+,=-]+$/.test(p) ? p : `'${p}'`);
 
 // deep: a deletion or move of a protected folder's parent (rm -rf .delivery), or a glob that reaches the
 // folder or names files in it (rm -rf .delivery/an*, rm .delivery/andon/*.ndjson), counts as a write too
@@ -1280,7 +1398,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     const run = refusedRun(command);
-    if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : RESUME_REASON}.` };
+    if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? testsReason(command, pluginRootOf({ pluginRoot })) : RESUME_REASON}.` };
     if (bash.includes('any')) return { allow: true };
     if (name === 'PowerShell') {
       return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };

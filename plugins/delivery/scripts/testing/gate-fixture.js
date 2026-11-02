@@ -48,7 +48,9 @@ A player imports their collection without leaving the chat.
 After this story a player can bring their whole collection into the chat and ask about it.
 `;
 
-function makeProject({ story = STORY, surfaces = SURFACES, file = 'vault-0n9-3.md' } = {}) {
+// checkScript: the story bead's reality-check script is planned, as materialise plans it; false leaves
+// it unplanned, so the ready and deploy gates refuse
+function makeProject({ story = STORY, surfaces = SURFACES, file = 'vault-0n9-3.md', checkScript = true } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gates-'));
   fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
   for (const f of ['team.json', 'hosts.json']) fs.copyFileSync(path.join(__dirname, 'manifest', f), path.join(root, '.delivery', 'team', f));
@@ -56,7 +58,16 @@ function makeProject({ story = STORY, surfaces = SURFACES, file = 'vault-0n9-3.m
   if (surfaces) fs.writeFileSync(path.join(root, '.delivery', 'initiatives', 'vault', 'surface.json'), JSON.stringify(surfaces));
   fs.mkdirSync(path.join(root, '.delivery', 'stories'), { recursive: true });
   fs.writeFileSync(path.join(root, '.delivery', 'stories', file), story);
+  if (checkScript) planCheck(root, storyBead({ metadata: { story_file: file } }));
   return root;
+}
+
+// the bead's reality-check script, written as materialise writes it; nothing when no criterion needs one
+function planCheck(root, bead) {
+  const G = require('../lib/gates.js');
+  const { gateInputs } = require('../lib/gate-context.js');
+  const inp = gateInputs(root, bead, {});
+  if (G.checkScriptGap(inp.story, inp.surface, inp.checkScript).length) require('../reality-check.js').writeScript(root, bead, inp, { at: '2026-10-13T08:00:00Z', by: 'delivery-lead' });
 }
 
 function storyBead(over = {}) {
@@ -94,4 +105,4 @@ const ownerVerify = (...ids) => (root, id) => (ids.includes(id)
   ? { ok: true, chain: [{ kind: 'decision', scope: { beads: [], labels: [] } }, { kind: 'input', source: 'human', text: '' }], notes: [] }
   : { ok: false, error: 'not found' });
 
-module.exports = { SURFACES, STORY, makeProject, storyBead, memBd, addRow, ownerVerify };
+module.exports = { SURFACES, STORY, makeProject, planCheck, storyBead, memBd, addRow, ownerVerify };

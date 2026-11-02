@@ -12,7 +12,7 @@ const Wn = require('./lib/warnings.js');
 const MC = require('../hooks/scripts/message-checks.js');
 const T = require('./lib/transcript.js');
 const { tupleOf } = require('./lib/surface.js');
-const { STORY, SURFACES, makeProject, storyBead, memBd } = require('./testing/gate-fixture.js');
+const { STORY, SURFACES, makeProject, planCheck, storyBead, memBd } = require('./testing/gate-fixture.js');
 const { harness } = require('./testing/role-harness.js');
 const plan = require('./plan.js');
 const goal = require('./goal.js');
@@ -29,6 +29,7 @@ const deps = (root, beads, extra = {}) => ({ who: who(root), bd: memBd(beads), b
 // written the way reality-check.js run-record writes them; returns the bead (its recorded head included)
 function verified(root, results = ['pass', 'pass']) {
   fs.writeFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-4.md'), STORY.replace('id: vault-0n9-3', 'id: vault-0n9-4').replace('Import a collection by dropping a CSV in the chat', 'Show the collection summary'));
+  planCheck(root, storyBead({ id: 'ex-vault-0n9-4', metadata: { story_file: 'vault-0n9-4.md' } }));
   const bead = storyOf('vault-0n9-4', 'Show the collection summary', 'collection', { status: 'closed', metadata: { deployed_sha: SHA } });
   bead.labels.push(G.STATE.merged, G.STATE.deployed, G.STATE.verified);
   const story = G.parseStory(fs.readFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-4.md'), 'utf8'));
@@ -93,6 +94,7 @@ test('M1: the brief says since <date> when the last plan is older than a day', a
 function team() {
   const root = makeProject();
   fs.writeFileSync(path.join(root, '.delivery', 'stories', 'vault-0n9-4.md'), STORY.replace('id: vault-0n9-3', 'id: vault-0n9-4'));
+  planCheck(root, storyBead({ id: 'ex-vault-0n9-4', metadata: { story_file: 'vault-0n9-4.md' } }));
   const h = harness({ root, beads: { 'ex-vault-0n9-4': storyOf('vault-0n9-4', 'Show the collection summary') } });
   assert.equal(h.bash(COS, `${h.script('plan.js')} today`).code, 0);
   return h;

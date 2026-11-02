@@ -14,7 +14,8 @@
 //   detached with every local change and untracked file removed (also how a mutation is undone).
 // test: run the project's test command there (team.json test_command, or detected from the clone's
 //   build files; any language), with the role's DELIVERY_* and beads variables cleared, bounded by
-//   test_timeout_minutes (default 60). No extra arguments: a runner's own options can point it
+//   test_timeout_minutes (default 60), sealed by scripts/testing/run-tests.js -- <command> (a private,
+//   capped /tmp the OS destroys) everywhere but Windows. No extra arguments: a runner's own options can point it
 //   outside the clone, and the whole suite is what a review quotes.
 const fs = require('fs');
 const path = require('path');
@@ -32,7 +33,9 @@ const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 function cleanEnv(env) {
   const out = {};
-  for (const [k, v] of Object.entries(env)) if (!ROLE_VARS.test(k) && !GIT_REPO_VARS.test(k)) out[k] = v;
+  // DELIVERY_SEAL_ACTIVE is the sealed runner's, not a role's: kept, a run already inside a seal is not
+  // sealed again (the host refuses a nested sandbox)
+  for (const [k, v] of Object.entries(env)) if ((k === 'DELIVERY_SEAL_ACTIVE' || !ROLE_VARS.test(k)) && !GIT_REPO_VARS.test(k)) out[k] = v;
   return out;
 }
 
@@ -114,7 +117,10 @@ function test(pr, { roleDir, team, env, spawn, out, err, platform }) {
   const started = Date.now();
   const minutes = team && Number.isFinite(Number(team.test_timeout_minutes)) && Number(team.test_timeout_minutes) > 0 ? Number(team.test_timeout_minutes) : 60;
   const win = platform === 'win32';
-  const shell = win ? { cmd: env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${t.command}"`] } : { cmd: '/bin/sh', args: ['-c', t.command] };
+  // elsewhere through the sealed runner: the product's suite gets a capped private /tmp the OS destroys,
+  // as every test run does (Copilot on #117); the runner keeps this directory and runs the line in sh
+  const shell = win ? { cmd: env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${t.command}"`] }
+    : { cmd: process.execPath, args: [path.join(__dirname, 'testing', 'run-tests.js'), '--', t.command] };
   // windowsVerbatimArguments: cmd.exe does not read Node's \" escaping (node's own shell: true sets it)
   const r = spawn(shell.cmd, shell.args, { cwd: c.dir, env: cleanEnv(env), stdio: 'inherit', timeout: minutes * 60e3, windowsVerbatimArguments: win });
   const secs = Math.round((Date.now() - started) / 1000);

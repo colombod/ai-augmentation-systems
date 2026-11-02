@@ -144,7 +144,7 @@ const warn = (code, rule, detail) => ({ level: 'warn', code, rule, detail });
 const block = (code, rule, detail) => ({ level: 'block', code, rule, detail });
 
 // Findings for a story at ready or claim time. judged: the judge's shippable_unit answer, or null.
-function readyFindings({ story, surfaces = [], surfaceMissing = false, bead = null, judged = null }) {
+function readyFindings({ story, surfaces = [], surfaceMissing = false, bead = null, judged = null, checkScript }) {
   const f = [];
   const ask = story.ownersAsk === undefined ? null : placeholderFree(story.ownersAsk);
   if (!ask || !/(^|\n)\s*>|["“]/.test(story.ownersAsk)) f.push(warn('owners-ask', 'R-10', "no Owner's ask: quote the owner's words, with the dec- record id when there is one"));
@@ -165,6 +165,11 @@ function readyFindings({ story, surfaces = [], surfaceMissing = false, bead = nu
   if (story.measurement === null) f.push(warn('measurement-plan', 'R-19', 'no Measurement plan: per criterion a signal, a numeric threshold and where'));
   else if (!story.measurement.length) f.push(warn('measurement-plan', 'R-19', 'the Measurement plan has no row with a signal, a numeric threshold and where'));
   if (!placeholderFree(story.shippable)) f.push(warn('shippable-unit', 'R-35', 'no Shippable unit: what a person on the surface can do after this story alone ships'));
+  // checkScript: the planned script, null when none; undefined when the caller has no bead to look it up for
+  if (checkScript !== undefined && surface) {
+    const gap = checkScriptGap(story, surface, checkScript);
+    if (gap.length) f.push(block('reality-check-script', 'R-33', `criteria ${gap.map((c) => c.n).join(', ')} are checked on ${surface.id} by the Reality Checker, and ${checkScript ? 'the script has no step group for their current wording' : 'no reality-check script is planned'}: materialise the initiative again, or reality-check.js plan <bead>`));
+  }
   if (judged && !judged.skipped && !judged.error && (judged.answer === 'no' || judged.answer === 'partial')) {
     f.push(warn('shippable-judge', 'R-35', `the typed judge rates this story "${judged.answer}" as a shippable unit (confidence ${Number(judged.confidence).toFixed(2)}, advisory)`));
   }
@@ -321,6 +326,18 @@ function shaMatch(a, b) {
 // A criterion a reality check verifies (R-33): its probe says so, or no test reaches its surface.
 const byRealityCheck = (c, surface) => Boolean((c.probe && c.probe.by === 'reality-check') || (surface && surface.scriptable === false));
 
+// The criteria a reality-check script covers: those whose probe says `by: reality-check`, and on a
+// surface that is not scriptable, or is a command line (verify-run.js runs its commands), every one.
+const checkCovered = (story, surface) => (story && surface ? story.criteria.filter((c) => (c.probe && c.probe.by === 'reality-check') || surface.scriptable === false || surface.command_line === true) : []);
+
+// The covered criteria that the planned script (reality-check.js scriptRel) has no step group
+// for at their current wording. A story with any of them cannot be checked, so it is neither ready nor
+// deployed (R-33): the Reality Checker would have nothing to run.
+const checkScriptGap = (story, surface, script) => {
+  const planned = new Set(((script && script.criteria) || []).map((g) => g.criterion_hash));
+  return checkCovered(story, surface).filter((c) => !planned.has(criterionHash(c)));
+};
+
 // Why a row does not count for criterion c, or null when it does (D2, D3, R-33).
 function rowProblem(row, { c, surface, noSurface, sha, deployedAt, authors, recordOk = () => false }) {
   if (row.type !== 'row' || Number(row.criterion) !== c.n) return 'not this criterion';
@@ -363,5 +380,5 @@ function doneCheck({ story, bead, rows = [], surface, noSurface = false, instanc
 
 const initiativeOf = (bead) => { const m = /^([a-z0-9][a-z0-9-]*)\//.exec(String((bead && bead.metadata && bead.metadata.roadmap_ref) || '')); return m ? m[1] : null; };
 
-module.exports = { byRealityCheck, parseStory, storyHash, criterionHash, storySurface, isStoryBead, readyFindings, shippableState, scopeDrift, claimDivergence, stateOf, stateCounts, unverifiedOver, areaOf,
+module.exports = { byRealityCheck, checkCovered, checkScriptGap, parseStory, storyHash, criterionHash, storySurface, isStoryBead, readyFindings, shippableState, scopeDrift, claimDivergence, stateOf, stateCounts, unverifiedOver, areaOf,
   readEvidence, readEvidenceChecked, headProblem, appendEvidence, evidenceFile, roleOfActor, authorsOf, shaMatch, rowProblem, doneCheck, initiativeOf, STATE, DEFAULT_MAX_UNVERIFIED };
