@@ -454,6 +454,21 @@ function ruleMatches(rule, t, ctx) {
   return true;
 }
 
+// A segment naming a script of another installed version of this plugin (a sibling of the running root,
+// <cache>/delivery/<other>/...): { version, running, command } with the command at the running root, or
+// null. A session resumed after an install remembers the old version's paths (delivery-plugin-planning-8wz).
+function staleVersionCommand(text, root) {
+  if (!root) return null;
+  const PV = require('../../scripts/lib/plugin-version.js');
+  const hit = tokens(String(text)).map((x) => PV.otherVersionPath(x, root)).find(Boolean);
+  if (!hit) return null;
+  const parent = path.dirname(path.resolve(root));
+  const sibling = new RegExp(`${parent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/(\\d+\\.\\d+\\.\\d+)/`, 'g');
+  const resolved = path.resolve(root);
+  const command = String(text).replace(sibling, (m, v) => (v === path.basename(resolved) ? m : `${resolved}/`));
+  return { version: hit.version, running: path.basename(resolved), command };
+}
+
 function scopeBase(rule, ctx) { return ctx.roleDir ? path.join(realish(ctx.roleDir), String(rule.scope)) : null; }
 
 function scopeHolds(rule, t, ctx) {
@@ -1372,6 +1387,13 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
         return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`: ${REVIEWER_REASON}.\nReport pass or changes to the role that dispatched you; it records the review.` };
       }
       if (!names.some((x) => bash.includes(x))) {
+        // a script path of another installed version of this plugin, remembered from before an install:
+        // say so and give the same command at the running root, so the session corrects itself (8wz)
+        const stale = staleVersionCommand(text, pluginRootOf({ pluginRoot }));
+        if (stale) {
+          const fixed = classifySegment(stale.command, groups, { roleDir, pluginRoot, dirs: live, writes: pol.writes }).some((x) => bash.includes(x));
+          return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`: it names the delivery plugin ${stale.version}, and ${stale.running} is the version running now, so paths remembered from ${stale.version} are stale. ${fixed ? `Run the same command at the current plugin root: \`${stale.command}\`` : `At the current plugin root it is \`${stale.command.slice(0, 200)}\`, which your lane does not run either (allowed groups: ${bash.join(', ') || 'none'}).`}${tail}` };
+        }
         const construct = expansionConstruct(text);
         // a refused construct is the whole story; otherwise the allowed groups say what the lane runs
         const why = construct ? `. Refused construct: ${construct}; put literal text in single quotes.` : ` (allowed groups: ${bash.join(', ') || 'none'}).`;

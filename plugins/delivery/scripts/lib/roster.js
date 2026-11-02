@@ -64,7 +64,7 @@ function withRosterLock(projectRoot, fn) {
   }
 }
 
-function registerInstance(projectRoot, { instance, session_id, host, model, role_dir, now, transcript_path }) {
+function registerInstance(projectRoot, { instance, session_id, host, model, role_dir, now, transcript_path, plugin_version }) {
   return withRosterLock(projectRoot, () => {
     const roster = readRoster(projectRoot);
     const existing = roster.instances[instance] || {};
@@ -76,6 +76,9 @@ function registerInstance(projectRoot, { instance, session_id, host, model, role
       joined_at: existing.joined_at || now,
       last_seen: now,
     };
+    // the plugin version this session started or resumed under: the watchdog wakes it fresh rather than
+    // resume a conversation that remembers an older version's script paths (lib/plugin-version.js)
+    if (typeof plugin_version === 'string' && plugin_version) roster.instances[instance].plugin_version = plugin_version;
     // the capture hook may have recorded this session's transcript first: keep it for the same session
     if (typeof transcript_path === 'string' && transcript_path) roster.instances[instance].transcript_path = transcript_path;
     else if (existing.transcript_path && existing.session_id === session_id) roster.instances[instance].transcript_path = existing.transcript_path;
