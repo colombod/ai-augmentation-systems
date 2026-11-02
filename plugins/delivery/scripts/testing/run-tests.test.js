@@ -41,6 +41,13 @@ test('run-tests: --clock is the runner\'s own argument; a bad date is refused', 
   assert.deepStrictEqual(splitArgs(['--clock=2027-03-15']), { clock: '2027-03-15', rest: [] });
   assert.deepStrictEqual(splitArgs(['--test-name-pattern=x']), { clock: null, rest: ['--test-name-pattern=x'] });
   assert.throws(() => splitArgs(['--clock', 'soon']), /--clock needs a date/);
+  // -- <command>: a product's test command, run sealed instead of delivery's suite (Copilot on #117)
+  assert.deepStrictEqual(splitArgs(['--clock', '2027-03-15', '--', 'node', '--test', '--clock']), { clock: '2027-03-15', rest: [], command: ['node', '--test', '--clock'] });
+  assert.throws(() => splitArgs(['--']), /-- needs the command/);
+  assert.throws(() => splitArgs(['--test-name-pattern=x', '--', 'make', 'test']), /only --clock goes before --/);
+  const { shellLine } = require('./run-tests.js');
+  assert.equal(shellLine(['npm ci && npm test']), 'npm ci && npm test');
+  assert.equal(shellLine(['sh', '-c', 'echo "$1"', 'x', "it's"]), "sh -c 'echo \"$1\"' x 'it'\\''s'");
 });
 
 test('run-tests: under --clock, node children share one moved clock that runs on, and file times move with it', () => {
@@ -82,6 +89,16 @@ test('run-tests: the seal is a private /tmp tmpfs, capped, gone with its parent,
   for (const f of ['--die-with-parent', '--unshare-pid']) assert.ok(args.includes(f), f);
   assert.equal(args[args.indexOf('--proc') + 1], '/proc', 'its own /proc, so process lookups see the run\'s own pid namespace');
   assert.deepEqual(args.slice(-3), ['--', 'node', 'x.js']);
+  // a checkout under /tmp is bound back after the tmpfs, so it shows through (Copilot on #117); a fresh
+  // seal cannot start inside this one, so seal-check.js (CI step) proves it end to end
+  const kept = R.sealArgs('/usr/bin/bwrap', { bytes: 1024, inodes: 10 }, ['node', 'x.js'], ['/tmp/co'])[1];
+  assert.deepEqual(kept.slice(5, 10), ['--tmpfs', '/tmp', '--bind', '/tmp/co', '/tmp/co']);
+  const fs = require('fs');
+  const co = fs.realpathSync(fs.mkdtempSync(path.join('/tmp', 'rt-keep-')));
+  try {
+    fs.mkdirSync(path.join(co, 'sub'));
+    assert.deepEqual(R.keepPaths([co, path.join(co, 'sub'), __dirname, '/tmp', '/nonexistent']), /^\/tmp\//.test(__dirname) ? [co, fs.realpathSync(__dirname)] : [co]);
+  } finally { fs.rmSync(co, { recursive: true, force: true }); }
   assert.deepEqual(R.caps({}), { bytes: 2048 * 1024 * 1024, inodes: 200000 });
   assert.deepEqual(R.caps({ DELIVERY_TEST_TMP_MB: '64', DELIVERY_TEST_TMP_INODES: '500' }), { bytes: 64 * 1024 * 1024, inodes: 500 });
 });
@@ -318,4 +335,31 @@ test('seal-check: a runner that cannot be started fails with the reason and remo
     assert.match(r.stderr, /seal-check: could not start run-tests\.js \(spawn \/nonexistent\/delivery-spawn-fails ENOENT\); nothing proven/);
     assert.deepEqual(fixtures(), before, 'its .seal-check- directory is removed');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Copilot on #117: `run-tests.js -- <command>` runs a product's own test command, not delivery's
+// suite: through the shell, in the caller's directory, with the run's private temp dir, removed at
+// the end, and the command's exit code
+test('run-tests: -- <command> runs that command in the current directory with a private temp dir', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { spawnSync } = require('child_process');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(__dirname, '.cmd-')));
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-cmd-'));
+  try {
+    const env = { ...process.env, TMPDIR: outer, DELIVERY_TEST_UNSEALED: '1', DELIVERY_ROLE: 'builder' };
+    delete env.NODE_TEST_CONTEXT;
+    const line = 'pwd > seen; echo "$TMPDIR" >> seen; echo "role=${DELIVERY_ROLE:-unset}" >> seen; touch "$TMPDIR/left"; exit 4';
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', line], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
+    assert.equal(r.status, 4, r.stderr.slice(-400));
+    const [cwd, tmp, role] = fs.readFileSync(path.join(dir, 'seen'), 'utf8').trim().split('\n');
+    assert.equal(cwd, dir, 'the command runs where the runner was started');
+    assert.match(tmp, /delivery-tests-/, 'the run\'s own temp dir');
+    assert.equal(role, 'role=unset', 'role variables are cleared as for the suite');
+    assert.deepEqual(fs.readdirSync(outer), [], 'the run\'s temp dir is removed at the end');
+    // several words are quoted one by one, not re-split by the shell
+    const q = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js'), '--', 'sh', '-c', 'printf "%s|" "$@" > words', 'x', 'a b', "c'd"], { cwd: dir, env, encoding: 'utf8', timeout: 30000 });
+    assert.equal(q.status, 0, q.stderr.slice(-400));
+    assert.equal(fs.readFileSync(path.join(dir, 'words'), 'utf8'), "a b|c'd|");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(outer, { recursive: true, force: true }); }
 });

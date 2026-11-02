@@ -1300,3 +1300,104 @@ test('nativeApproval approves nothing for a non-Bash tool, an any lane or the re
   assert.ok(nativeApproval(cmd("ls *"), reads, groups, ctx) === null);
   assert.ok(nativeApproval(cmd(`node ${path.join(PLUGIN_ROOT, 'scripts', 'team-status.js')}`), reads, groups, ctx).allow);
 });
+
+// hjx item 2: a suite run straight with node's test runner leaves its fixtures in the host's /tmp;
+// every role, the any-lane builder included, runs tests only through the sealed runner
+test('lane: node --test and a test file run directly are refused for every role; the sealed runner is not', () => {
+  const run = (command, role = BUILDER) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], ...ctx() });
+  for (const command of ['node --test', 'node --test hooks/scripts/lane.test.js', 'cd .. && node --test hooks/scripts/*.test.js',
+    'node --test-name-pattern=x --test a.test.js', 'node scripts/watch.test.js', 'FOO=1 node --test', "bash -c 'node --test'", 'nodejs --test=a']) {
+    const d = run(command);
+    assert.equal(d.allow, false, command);
+    assert.match(d.reason, /sealed runner/, command);
+  }
+  assert.match(run('node --test', COS).reason, /sealed runner/);
+  for (const command of ['node scripts/testing/run-tests.js', 'DELIVERY_TEST_FILES=a.test.js node scripts/testing/run-tests.js',
+    'node scripts/test-helper.js', 'npm test', 'grep -- --test lane.js']) assert.equal(run(command).allow, true, command);
+});
+
+// Copilot on #117: node's options that take a value are skipped with it, and only node's own options
+// count: a --test after the script is the script's argument
+test('lane: a value-taking node option does not hide a test file; --test after the script is not node\'s', () => {
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[BUILDER], ...ctx() });
+  for (const command of ['node --conditions development hooks/scripts/lane.test.js', 'node -C development x.test.js',
+    'node --test-reporter spec --test', 'node --env-file .env --test-name-pattern x a.test.js', 'node -- x.test.js', 'node --input-type module --test',
+    // redirections are the shell's, apart or attached, never node's script (Copilot on #117)
+    'node 2>/dev/null --test', 'node 2>/dev/null x.test.js', 'node x.test.js>/dev/null', 'node > out x.test.js', 'node &>/dev/null --test',
+    'node x.test.js 2>&1', 'node 2>&1 x.test.js',
+    // -i is node's interactive switch and takes no value (Copilot on #117)
+    'node -i hooks/scripts/lane.test.js']) {
+    assert.equal(run(command).allow, false, command);
+  }
+  for (const command of ['node --conditions development scripts/build.js', "node scripts/testing/run-tests.js -- 'node --test a.test.js'"]) {
+    assert.equal(run(command).allow, true, command);
+  }
+});
+
+// Copilot on #117, after each round found another spelling (redirections, -i, backslash-newline): a
+// fail-safe reads the whole command with continuations joined and quotes and backslashes dropped, and
+// refuses node or nodejs followed anywhere by --test or a test file, unless the command is the sealed
+// runner alone. It over-refuses on purpose: the reason's sealed form runs any command.
+test('lane: the fail-safe refuses every spelling of node with --test or a test file, the sealed runner alone excepted', () => {
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[BUILDER], ...ctx() });
+  for (const command of [
+    // backslash-newline continuations, unquoted and double-quoted
+    'node \\\n--test', 'node \\\n  hooks/scripts/lane.test.js', 'node hooks/scripts/lane.te\\\nst.js', 'bash -c "node \\\n--test"', 'sh -c "node --te\\\nst"',
+    // other spellings of the command word
+    'n\\ode --test', '"node" --test', "'node' x.test.js", 'nodejs --test', '/usr/bin/node a.test.mjs',
+    // over-refused on purpose: --test or a test file after node, wherever it sits
+    'node scripts/test-helper.js --test', 'node tool.js --test=x', "node '2>tool.js' --test", 'node tool.js > a.test.js', 'node tool.js 2>&1 --test',
+    // the runner, but not in its exact form (Copilot on #117): an operator, a substitution or a process
+    // substitution outside the quotes runs outside the seal; an unquoted -- command is the outer shell's
+    'node scripts/testing/run-tests.js -- npm test && node --test', 'node scripts/testing/run-tests.js $(node --test)',
+    'node scripts/testing/run-tests.js > >(node --test)', 'node scripts/testing/run-tests.js -- node --test',
+    "node scripts/testing/run-tests.js -- 'node --test a.test.js'; x", "node scripts/testing/run-tests.js -- 'node --test' 'x.test.js'"]) {
+    const d = run(command);
+    assert.equal(d.allow, false, command);
+    assert.match(d.reason, /run-tests\.js -- '/, command);
+  }
+  // the exact form: whatever is inside the single quotes, substitutions and newlines included, runs sealed
+  for (const command of ['node scripts/testing/run-tests.js', 'DELIVERY_TEST_FILES=a.test.js node scripts/testing/run-tests.js', 'npm test',
+    'grep -- --test lane.js', 'git diff -- x.test.js', 'node-gyp --test', 'node scripts/build.js',
+    "node scripts/testing/run-tests.js -- 'node \\\n--test'", 'node scripts/testing/run-tests.js -- \'node --test $(find . -name "*.test.js")\'',
+    "node scripts/testing/run-tests.js -- 'cd x\nnode --test'", "/usr/local/bin/node /opt/delivery/scripts/testing/run-tests.js --clock 2027-03-15T12:00:00Z -- 'node --test'",
+    'DELIVERY_TEST_FILES=a.test.js:b.test.js node scripts/testing/run-tests.js']) {
+    assert.equal(run(command).allow, true, command);
+  }
+});
+
+// Copilot on #117: any product's test command still runs, sealed; the reason names the command refused
+// in the runner's -- form, with this plugin's runner path
+test('lane: the tests reason names the refused command in the sealed runner\'s -- form', () => {
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[BUILDER], ...ctx() });
+  const runner = path.join(PLUGIN_ROOT, 'scripts', 'testing', 'run-tests.js');
+  // exactly the single-quoted form the lane admits, so it runs as given
+  const d = run('node --test $(ls *.test.js)');
+  assert.equal(d.allow, false);
+  const form = `node ${runner} -- 'node --test $(ls *.test.js)'`;
+  assert.ok(d.reason.includes(`\`${form}\``), d.reason);
+  assert.equal(run(form).allow, true, form);
+  // a command with a single quote cannot go in those quotes: a script file, run with sh
+  const q = run("node --test it\\'s.test.js");
+  assert.equal(q.allow, false);
+  assert.ok(q.reason.includes(`put it in a script file and run \`node ${runner} -- 'sh <file>'\``), q.reason);
+  assert.equal(run(`node ${runner} -- 'sh tests.sh'`).allow, true);
+});
+
+// Copilot on #117: a plugin under a path with spaces: the reason single-quotes the runner path, and the
+// exemption admits a node or runner path given as one single-quoted literal, nothing outside it
+test('lane: a runner path with spaces is suggested quoted and admitted quoted, and nothing may follow it', () => {
+  const root = '/opt/Claude Plugins/delivery';
+  const run = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[BUILDER], ...ctx({ pluginRoot: root }) });
+  const quoted = `'${root}/scripts/testing/run-tests.js'`;
+  const d = run('node --test');
+  assert.equal(d.allow, false);
+  const form = `node ${quoted} -- 'node --test'`;
+  assert.ok(d.reason.includes(`\`${form}\``), d.reason);
+  assert.equal(run(form).allow, true, form);
+  assert.equal(run(`'/opt/Node Runtime/bin/node' ${quoted} -- 'node --test a.test.js'`).allow, true);
+  for (const command of [`${form}; x`, `node ${quoted} $(node --test)`, `node ${quoted} -- 'node --test' $(x)`, `node '${root}/scripts/testing/run-tests.js'x -- 'node --test'`,
+    `node ${root}/scripts/testing/run-tests.js -- 'node --test'`]) {
+    assert.equal(run(command).allow, false, command);
+  }
+});
