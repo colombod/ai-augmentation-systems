@@ -147,6 +147,17 @@ function sessionStartText(input, pluginRoot, deps = {}) {
     }
   }
   const freshStart = input.source === 'startup' || input.source === 'resume';
+  // a resumed conversation that ran an older version of this plugin remembers that version's script
+  // paths, which the lane now refuses: say so once, with the current root (delivery-plugin-planning-8wz)
+  const PV = require('../../scripts/lib/plugin-version.js');
+  const version = PV.runningVersion(pluginRoot || PLUGIN_ROOT);
+  let moved = '';
+  try {
+    const was = (readRoster(marker.project_root).instances[marker.instance] || {}).plugin_version;
+    if (input.source === 'resume' && was && version && PV.compare(was, version) === -1) {
+      moved = `The delivery plugin is now ${version} (this conversation ran ${was}): script paths remembered from ${was} are refused. Name every plugin script at ${pluginRoot || PLUGIN_ROOT}/scripts/ from now on.\n\n`;
+    }
+  } catch (err) { moved = ''; }
   try {
     // a watchdog fork of an open session is recorded beside it; the open session stays on the roster
     if (process.env.DELIVERY_WAKE === 'fork') require('../../scripts/lib/roster.js').recordFork(marker.project_root, { instance: marker.instance, session_id: input.session_id || 'unknown', now, transcript_path: typeof input.transcript_path === 'string' && path.isAbsolute(input.transcript_path) ? input.transcript_path : undefined });
@@ -158,16 +169,17 @@ function sessionStartText(input, pluginRoot, deps = {}) {
       role_dir: valid.roleDir,
       now,
       transcript_path: typeof input.transcript_path === 'string' && path.isAbsolute(input.transcript_path) ? input.transcript_path : undefined,
+      plugin_version: version || undefined,
     });
   } catch (err) {
     // roster write failure must not stop the session; the status check will show the gap
   }
   const claim = (deps.claim || currentClaim)(actorOf(marker), bdOptionsFor(marker, input.cwd));
-  if (freshStart && unchanged) return `${claimTail(claim).trimStart()}${note ? `\n${note}\n` : ''}`;
+  if (freshStart && unchanged) return `${moved}${claimTail(claim).trimStart()}${note ? `\n${note}\n` : ''}`;
   const short = shortBrief({ team: valid.team, hosts: valid.hosts, instance: marker.instance, role: valid.role, roleDir: valid.roleDir, pluginRoot: pluginRoot || PLUGIN_ROOT });
   const prefix = input.source === 'compact' ? 'Context was compacted. Your role is restated below; it has not changed.\n\n'
     : (freshStart ? `Your ${valid.roleDir}/CLAUDE.local.md was rewritten at this start (the manifest or the plugin changed), so the copy loaded with this session is stale: re-read it now; it is binding.\n\n` : '');
-  return `${prefix}${short}${claimTail(claim)}${note ? `\n${note}\n` : ''}`;
+  return `${moved}${prefix}${short}${claimTail(claim)}${note ? `\n${note}\n` : ''}`;
 }
 
 function promptSubmitText(input, deps = {}) {

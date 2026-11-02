@@ -274,3 +274,30 @@ test('hardening e: startup and resume inject no role block when CLAUDE.local.md 
     assert.ok(text.includes('# Role: delivery-lead'), source);
   }
 });
+
+// delivery-plugin-planning-8wz: the roster keeps the plugin version each session ran, and a conversation
+// resumed after an install is told its remembered script paths are stale
+test('sessionStartText records the plugin version and tells a resumed older conversation its paths moved', () => {
+  const { projectRoot, roleDir } = preparedRole('delivery-lead');
+  const now = require('../../scripts/lib/plugin-version.js').runningVersion(PLUGIN_ROOT);
+  const rosterFile = path.join(projectRoot, '.delivery', 'team', 'roster.json');
+  const start = (source) => withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source }, PLUGIN_ROOT, { claim: () => null }));
+  const setVersion = (v) => { const r = JSON.parse(fs.readFileSync(rosterFile, 'utf8')); r.instances['delivery-lead'].plugin_version = v; fs.writeFileSync(rosterFile, JSON.stringify(r)); };
+  start('startup');
+  assert.equal(JSON.parse(fs.readFileSync(rosterFile, 'utf8')).instances['delivery-lead'].plugin_version, now);
+  assert.ok(!/The delivery plugin is now/.test(start('resume')), 'the same version: nothing to say');
+  setVersion('0.1.0');
+  const resumed = start('resume');
+  assert.ok(resumed.startsWith(`The delivery plugin is now ${now} (this conversation ran 0.1.0)`), resumed.slice(0, 120));
+  assert.ok(resumed.includes(`${PLUGIN_ROOT}/scripts/`));
+  assert.equal(JSON.parse(fs.readFileSync(rosterFile, 'utf8')).instances['delivery-lead'].plugin_version, now, 'recorded at the resume');
+  // an install usually rewrites the brief too: the line leads the restated role
+  setVersion('0.1.0');
+  const brief = path.join(roleDir, 'CLAUDE.local.md');
+  fs.writeFileSync(brief, `${fs.readFileSync(brief, 'utf8')}\nolder brief\n`);
+  const restated = start('resume');
+  assert.ok(restated.startsWith(`The delivery plugin is now ${now} (this conversation ran 0.1.0)`), restated.slice(0, 120));
+  assert.ok(restated.includes('# Role: delivery-lead'));
+  setVersion('0.1.0');
+  assert.ok(!/The delivery plugin is now/.test(start('startup')), 'a new conversation remembers no old path');
+});
