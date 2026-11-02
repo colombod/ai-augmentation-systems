@@ -1,6 +1,6 @@
 # Start a shipping team: the manual way
 
-> **The quick way is `/delivery:start`.** Run it in an ordinary Claude Code session, outside any role directory. It checks the prerequisites, asks a few questions and runs `scripts/start.js`, which does steps 1 to 3 below for you and prints the commands for step 4. This page shows what it runs, with real output, and how to do each step by hand.
+> **The quick way is `/delivery:start`.** Run it in an ordinary Claude Code session, outside any role directory. It checks the prerequisites, asks a few questions and runs `scripts/start.js`, which does steps 1 to 3 below for you. With `--launch` it also starts each role on this machine (step 4), and with `--keep-alive` it installs the watchdog that wakes a stopped session. This page shows what it runs, with real output, and how to do each step by hand.
 
 This guide starts a small shipping team on one machine: a Chief of Staff, a Product Manager, a Delivery Manager and one builder. Each runs as its own Claude Code session in its own directory. You talk to the Chief of Staff for decisions and logistics, and with the Product Manager about product vision; the other sessions send their questions to the Chief of Staff.
 
@@ -10,7 +10,7 @@ Words used below:
 - **Beads:** work items in the `bd` issue tracker. The team plans, claims and closes work as beads.
 - **Lane:** the files a role may edit and the commands it may run. A hook refuses anything outside it.
 - **Record id:** the id of one recorded operator decision or answer, such as `dec-chief-of-staff-000004`. Any session can check it with `operator.js verify`.
-- **Steward:** the role on a host that keeps the project checkout pulled and (re)starts role sessions there. Today that is you, by hand.
+- **Steward:** the role on a host that keeps the project checkout pulled and (re)starts role sessions there. On the host where you run `start.js --launch`, the launch starts the roles; on other hosts, run it there.
 
 The planning pipeline (`/delivery:brief` and the rest) works on its own without any of this. See [Which skill do I run when?](../README.md#which-skill-do-i-run-when) in the README.
 
@@ -431,7 +431,7 @@ What `verify` proves and what it does not is listed under **Limits** in the READ
 
 - **Other hosts are started on those hosts.** `start.js --launch` starts the roles whose host is this machine and names the ones that are elsewhere: run it on each of those hosts. Adding a role later means `scripts/team-role.js add <role-id>` (Staffing runs it) or editing `team.json`, then `start.js` (or `prepare-role`) again.
 - **The roster is per host.** `/delivery:team` reports only the roles on the host it runs on.
-- **The watchdog is installed once per host.** A session that stopped (a usage limit, a closed terminal) is woken by a host job. `start.js --launch --keep-alive` installs it; by hand, `node <plugin-root>/scripts/watchdog.js install` shows what it writes, `--apply` writes it, `watchdog.js uninstall` removes it ([details](reference.md#the-watchdog-stalls-and-the-wake)). Run it from a terminal outside any role directory: role sessions cannot. Without it, start a stopped session again in its role directory; the SessionStart hook restores the role.
+- **The watchdog is installed once per host.** A session that stopped (a usage limit, a closed terminal) is woken by a host job. Starting the team with the keep-alive option installs it. By hand, `watchdog.js install` shows what it writes, `watchdog.js install --apply` writes it, and `watchdog.js uninstall` removes it ([details](reference.md#the-watchdog-stalls-and-the-wake)). Run it from a terminal outside any role directory: role sessions cannot. Without it, start a stopped session again in its role directory; the SessionStart hook restores the role.
 
 ## Quick start for an agent
 
@@ -443,9 +443,10 @@ For an agent that has been asked to set up a delivery team for a person. Follow 
 3. **Dry run.** Run `node <plugin-root>/scripts/start.js --project <project-root> --host <host> --product-repo <product-checkout> --dry-run`.
    - Check `quickstart-dry-run`: the output has a `manifest:` line naming the preset and the roles, and every write line says `would`. Nothing was written: the team manifest named on the `manifest:` line does not exist afterwards.
 4. **Run it and start the team.** Run the same command without `--dry-run`, adding `--launch --keep-alive`.
-   - Check `quickstart-launch`: each role on this host prints `started (pid ...), joining the team`, then `keep-alive: watchdog job installed`. Run it again: each role now prints `already started`, and nothing is created twice.
+   - Check `quickstart-launch`: each role on this host prints `started (pid ...), joining the team`, then `keep-alive: watchdog job installed`.
 5. **Confirm the team is live.** Run `node <plugin-root>/scripts/team-status.js --project <project-root>`.
    - Check `quickstart-live`: every instance row ends in `live`. A role still starting shows another state; wait and run it again rather than starting it a second time.
+   - Only after a role shows live, rerun the step 4 command as a check: that role now prints `already started`, and nothing is created twice. Rerunning it earlier would start the role a second time, because a role is skipped only once it has written its session id.
 6. **Hand over to the person.** Tell them the one command the run printed: `cd <team-dir>/chief-of-staff && claude --continue --permission-mode auto`. From then on they talk to the Chief of Staff; you carry nothing between sessions and ask them nothing a session can do.
 
 The Reality Checker runs the four checks above on the real install after each release; a step whose output no longer matches fails its check and this page is fixed, not the check.
