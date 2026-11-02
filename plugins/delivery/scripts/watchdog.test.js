@@ -1450,3 +1450,24 @@ test('hjx.1 (Copilot 4437000590): on a red main only claimable open work wakes i
     assert.deepEqual(woken(), ['ex-a3w', 'ex-fix', 'ex-ip', 'ex-story'], 'green again: all woken');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// dec-chief-of-staff-000211: every host-job run sweeps the test runs' leftovers from the temp directory
+// and says what it removed in the job log; a failing sweep never stops the run
+test('run sweeps test leftovers every cycle and logs them; check and a dry run do not sweep', () => {
+  const h = harness({ beads: {} });
+  let calls = 0;
+  const sweep = () => { calls += 1; return { removed: ['/tmp/stop-nobd-AbC123', '/tmp/gates-6O4vP0'], failed: [] }; };
+  const r = at(h, '2026-10-13T12:00:00Z', ['run'], { sweep });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /sweep: removed 2 test leftover\(s\) from the temp directory: stop-nobd-AbC123 gates-6O4vP0/);
+  assert.equal(calls, 1);
+  at(h, '2026-10-13T12:15:00Z', ['check'], { sweep });
+  at(h, '2026-10-13T12:15:00Z', ['wake', '--dry-run'], { sweep });
+  assert.equal(calls, 1, 'only run sweeps');
+  const quiet = at(h, '2026-10-13T12:30:00Z', ['run'], { sweep: () => ({ removed: [], failed: [] }) });
+  assert.doesNotMatch(quiet.out, /sweep:/, 'nothing to say when nothing was left');
+  const broken = at(h, '2026-10-13T12:45:00Z', ['run'], { sweep: () => { throw new Error('EACCES'); } });
+  assert.equal(broken.code, 0);
+  assert.match(broken.out, /sweep: failed \(EACCES\)/);
+  assert.match(broken.out, /watchdog/);
+});
