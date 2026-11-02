@@ -179,12 +179,15 @@ function capProject() {
   const g = goalProject();
   const git = (...a) => execFileSync('git', a, { cwd: g.root, stdio: 'pipe' }).toString();
   const dec = g.decide(g.say('Yes, run two builders.'), 'Yes, run two builders.');
+  // decisions the owner made: about something else, and about the cap in words that do not name it
+  const unrelated = g.decide(g.say('Yes, only through a validated command.'), 'Yes, only through a validated command.');
+  const labelled = g.decide(g.say('Yes, raise it.'), 'Yes, raise it.', 'budget:builders_cap');
   git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
   fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), path.join(g.root, '.delivery', 'team', 'team.json'));
   fs.copyFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), path.join(g.root, '.delivery', 'team', 'hosts.json'));
   git('add', '--', path.join('.delivery', 'team')); git('commit', '-q', '-m', 'init');
   const p = { root: g.root, git, team: () => JSON.parse(fs.readFileSync(path.join(g.root, '.delivery', 'team', 'team.json'), 'utf8')) };
-  return { p, dec };
+  return { p, dec, unrelated, labelled };
 }
 
 test('team-role set-cap builders: raises builders_cap on a verifying owner decision, committing team.json alone', () => {
@@ -207,7 +210,7 @@ test('team-role set-cap builders: raises builders_cap on a verifying owner decis
 });
 
 test('team-role set-cap builders: refuses without a verifying owner decision, and any cap the team would break', () => {
-  const { p, dec } = capProject();
+  const { p, dec, unrelated } = capProject();
   const text = () => fs.readFileSync(path.join(p.root, '.delivery', 'team', 'team.json'), 'utf8');
   const before = text();
   const head = p.git('rev-parse', 'HEAD');
@@ -220,6 +223,7 @@ test('team-role set-cap builders: refuses without a verifying owner decision, an
   refused(['builders', '5'], /builders_cap stays as it is: the cap changes only on an owner decision record/);
   refused(['builders', '5', '--record', 'in-pc-000001'], /only on an owner decision record/);
   refused(['builders', '5', '--record', 'dec-chief-of-staff-999999'], /builders_cap stays as it is: dec-chief-of-staff-999999 does not verify/);
+  refused(['builders', '5', '--record', unrelated], new RegExp(`builders_cap stays as it is: ${unrelated} is not about the builders`));
   refused(['builders', 'two', '--record', dec], /the cap must be a whole number from 1/);
   refused(['builders', '0', '--record', dec], /the cap must be a whole number from 1/);
   refused(['roles', '5', '--record', dec], /set-cap takes builders, not roles/);
@@ -258,4 +262,31 @@ test('team-role set-cap builders: a revoked record, an agent\'s words and a bare
     assert.match(r.out, re);
   }
   assert.equal(fs.readFileSync(path.join(p.root, '.delivery', 'team', 'team.json'), 'utf8'), before);
+});
+
+test('team-role set-cap builders: a decision scoped budget:builders_cap counts though its words do not name builders', () => {
+  const { p, labelled } = capProject();
+  const r = cli(p.root, 'set-cap', 'builders', '4', '--record', labelled);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(p.team().budget.builders_cap, 4);
+});
+
+// a role session writes team.json in its own clone, which has no operator store: the record is verified in
+// the shared project its role marker names (PR 129 re-review: dec-chief-of-staff-000215 came back not_found)
+test('team-role set-cap builders: in a role session, verifies the record in the marker project and commits in the clone', () => {
+  const { p, dec } = capProject();
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'role-staffing-'));
+  const clone = path.join(roleDir, 'project');
+  execFileSync('git', ['clone', '-q', p.root, clone], { stdio: 'pipe' });
+  const cgit = (...a) => execFileSync('git', a, { cwd: clone, stdio: 'pipe' }).toString();
+  cgit('config', 'user.email', 't@t'); cgit('config', 'user.name', 't');
+  assert.equal(fs.existsSync(path.join(clone, '.delivery', 'operator')), false, 'the clone holds no operator store');
+  fs.writeFileSync(path.join(roleDir, '.delivery-role.json'), JSON.stringify({ instance: 'staffing', role: 'staffing', project_root: p.root }));
+  const sharedHead = p.git('rev-parse', 'HEAD');
+  const r = spawnSync(process.execPath, [CLI, 'set-cap', 'builders', '5', '--record', dec], { cwd: roleDir, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(clone, '.delivery', 'team', 'team.json'), 'utf8')).budget.builders_cap, 5);
+  assert.match(cgit('log', '-1', '--format=%s'), new RegExp(`builders_cap 5 under ${dec}`));
+  assert.equal(p.git('rev-parse', 'HEAD'), sharedHead, 'the shared checkout is not written');
+  assert.equal(p.team().budget.builders_cap, 3);
 });

@@ -54,6 +54,13 @@ function writeRoot(cwd, { project } = {}) {
   return { root: findProjectRoot(cwd), clone: false };
 }
 
+// The shared project a role session belongs to, from its marker; null outside one.
+function markerProject(cwd) {
+  const rd = roleDirOf(cwd);
+  if (!rd) return null;
+  try { return JSON.parse(fs.readFileSync(path.join(rd, '.delivery-role.json'), 'utf8')).project_root || null; } catch (e) { return null; }
+}
+
 function readTeam(projectRoot) {
   const team = JSON.parse(fs.readFileSync(path.join(projectRoot, TEAM_REL), 'utf8'));
   let hosts = null;
@@ -142,14 +149,22 @@ function capRecordProblem(root, record, verifyRecord) {
   const owner = require('./lib/gate-context.js').ownerRecord(root, record, () => v);
   if (!owner.ok) return owner.why;
   if (owner.head.kind !== 'decision') return `${record} is not an owner decision`;
+  // The authority is the owner's input (ownerRecord); this only checks the decision is about the builders,
+  // so an unrelated decision (say, on how team.json is edited) cannot raise the cap. The scope label is the
+  // precise form; a decision whose words name the builders also counts, as dec-chief-of-staff-000215 does.
+  const labels = (owner.head.scope && owner.head.scope.labels) || [];
+  const words = [owner.head.statement, owner.text].filter(Boolean).join(' ');
+  if (!labels.includes('budget:builders_cap') && !/\bbuilders?\b/i.test(words)) return `${record} is not about the builders (no budget:builders_cap scope, and its words do not name builders)`;
   return null;
 }
 
-function setCap(projectRoot, what, rawN, { record, verifyRecord, dryRun, clone = false } = {}) {
+// recordRoot: where the operator records live. In a role session that is the shared project the role
+// marker names, not the role's clone: the clone holds team.json but not the operator store.
+function setCap(projectRoot, what, rawN, { record, verifyRecord, recordRoot, dryRun, clone = false } = {}) {
   if (what !== 'builders') return { code: 1, out: `team-role: set-cap takes builders, not ${what}` };
   const n = countArg(rawN);
   if (n === null) return { code: 1, out: `team-role: the cap must be a whole number from 1, not ${rawN}` };
-  const why = capRecordProblem(projectRoot, record, verifyRecord);
+  const why = capRecordProblem(recordRoot || projectRoot, record, verifyRecord);
   if (why) return { code: 1, out: `team-role: builders_cap stays as it is: ${why}` };
   const { team, hosts } = readTeam(projectRoot);
   if (capOf(team) === n) return { code: 1, out: `team-role: builders_cap is already ${n}` };
@@ -170,7 +185,7 @@ if (require.main === module) {
   const dryRun = argv.includes('--dry-run');
   const r = verb === 'add'
     ? addRole(root, a1, { host: opt('host'), model: opt('model'), count: argv.includes('--count') ? (opt('count') ?? '') : undefined, dryRun, clone })
-    : setCap(root, a1, a2, { record: opt('record'), dryRun, clone });
+    : setCap(root, a1, a2, { record: opt('record'), recordRoot: clone ? markerProject(process.cwd()) : root, dryRun, clone });
   (r.code ? process.stderr : process.stdout).write(`${r.out}\n`);
   process.exit(r.code);
 }
