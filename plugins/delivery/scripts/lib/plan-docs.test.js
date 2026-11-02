@@ -74,6 +74,14 @@ test('parseStories reads frontmatter and resolves the phase number', () => {
   assert.equal(stories[1].file, path.join(dir, 'ex-02-second.md'));
 });
 
+test('parseStories reads a bare phase number the same as "Phase N"', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stories-'));
+  fs.writeFileSync(path.join(dir, 'ex-01.md'), '---\nid: ex-01\ntitle: Bare\nphase: 1\n---\n');
+  fs.writeFileSync(path.join(dir, 'ex-02.md'), '---\nid: ex-02\ntitle: Bare letter\nphase: 7B\n---\n');
+  fs.writeFileSync(path.join(dir, 'ex-03.md'), '---\nid: ex-03\ntitle: Not a phase\nphase: release 1\n---\n');
+  assert.deepEqual(parseStories(dir).map((s) => s.phase), ['1', '7b', null]);
+});
+
 test('parseSpikes reads the spikes table and derives keys', () => {
   const spikes = parseSpikes(ARCH);
   assert.deepEqual(spikes.map((s) => s.key), ['cos-1', '2']);

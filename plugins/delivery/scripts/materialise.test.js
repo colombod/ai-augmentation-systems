@@ -54,6 +54,26 @@ test('loadInputs reads everything and the git sha', () => {
   assert.deepEqual(inputs.personaNames, ['Casual Carl']);
 });
 
+test('loadInputs takes only the initiative\'s own stories, each read by its epic or area', () => {
+  const root = scratchProject();
+  const other = path.join(root, '.delivery', 'initiatives', 'other');
+  fs.mkdirSync(other);
+  fs.writeFileSync(path.join(other, 'roadmap.md'), '# Roadmap\n\n## Phases\n\n### Phase 1: Other start\n\n| Work item | Size | Confidence | Depends on |\n| :-- | :-- | :-- | :-- |\n| O | S | high | |\n');
+  const dir = path.join(root, '.delivery', 'stories');
+  fs.writeFileSync(path.join(dir, 'other-01.md'), '---\nid: other-01\ntitle: Other first\nstatus: ready\nepic: other\nphase: Phase 1\ndepends_on: []\n---\n');
+  fs.writeFileSync(path.join(dir, 'other-02.md'), '---\nid: other-02\ntitle: Other by area\nstatus: ready\nepic: misc\narea: other\nphase: 1\ndepends_on: []\n---\n');
+  fs.writeFileSync(path.join(dir, 'legacy-01.md'), '---\nid: legacy-01\ntitle: No initiative named\nstatus: ready\nphase: Phase 1\ndepends_on: []\n---\n');
+  const demo = loadInputs({ projectRoot: root, initiative: 'demo' });
+  assert.deepEqual(demo.stories.map((s) => s.id).sort(), ['demo-01', 'demo-02', 'legacy-01']);
+  const plan = planOf(demo);
+  assert.ok(!plan.beads.some((b) => /other/.test(b.id)), 'another initiative\'s Phase 1 stories stay out of this roadmap\'s Phase 1');
+  const oth = loadInputs({ projectRoot: root, initiative: 'other' });
+  assert.deepEqual(oth.stories.map((s) => s.id).sort(), ['legacy-01', 'other-01', 'other-02']);
+  const op = planGraph({ prefix: 'ex', initiative: 'other', sha: oth.sha, roadmap: oth.roadmap, stories: oth.stories, spikes: [] });
+  assert.equal(op.beads.find((b) => b.id === 'ex-other-02').parent, 'ex-other-ph1', 'a bare "phase: 1" story is planned under Phase 1');
+  assert.ok(!op.beads.some((b) => /demo-0/.test(b.id)));
+});
+
 test('applyPlan creates the graph, is idempotent, and never touches closed beads', () => {
   const root = scratchProject();
   const env = fakeEnv();
