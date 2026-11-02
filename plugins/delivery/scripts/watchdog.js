@@ -12,7 +12,7 @@
 //                                                   wait per stall); a usage-limit wake waits for the reset.
 //                                                   `claude --resume <id> -p` in the role directory, or a fork
 //                                                   when the session is open; logged in .delivery/watchdog/
-//   watchdog.js run [--project <root>]              check, then wake, under one lock: what the host job runs
+//   watchdog.js run [--project <root>]              sweep test leftovers, check, then wake, under one lock: what the host job runs
 //   watchdog.js install [--every 15m] [--apply] [--project <root>]
 //                                                   the host job (launchd on macOS, a systemd user timer
 //                                                   or cron on Linux) that runs `run`; prints what it would
@@ -431,7 +431,7 @@ function uninstall(root, { platform = process.platform, home = os.homedir(), env
   return { code: 0, out: lines.length ? `${lines.join('\n')}\nThe watchdog job for ${root} is removed from this host.` : `Nothing to remove: no watchdog job for ${root} on this host.` };
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform, home, exec, has } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform, home, exec, has, sweep } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -451,7 +451,17 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       return { code: 0, out: checkLines(res).join('\n') };
     }
     const woke = wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn });
-    const out = cmd === 'run' ? [`${now || new Date().toISOString()} watchdog`, ...checkLines(res), ...woke] : (woke.length ? woke : checkLines(res));
+    // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
+    // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
+    let swept = [];
+    if (cmd === 'run') {
+      try {
+        const S = require('./testing/sweep.js');
+        const r = (sweep || S.sweep)();
+        if (r.removed.length || r.failed.length) swept = S.summary(r, false).split('\n');
+      } catch (err) { swept = [`sweep: failed (${String(err && err.message || err).slice(0, 200)})`]; }
+    }
+    const out = cmd === 'run' ? [`${now || new Date().toISOString()} watchdog`, ...swept, ...checkLines(res), ...woke] : (woke.length ? woke : checkLines(res));
     return { code: 0, out: out.join('\n') };
   };
   if (cmd === 'check' || o.dryRun) return go();
