@@ -40,7 +40,8 @@ function checkoutVisible() {
     // what the seal may show of /tmp: the top-level entries of the paths the runner keeps, this
     // checkout and the plugin itself when it lives under /tmp too (Copilot on #117); nothing else
     const expected = [...new Set(R.keepPaths([dir, path.join(__dirname, '..', '..')]).map((p) => p.split('/')[2]))].sort();
-    const seen = lines.slice(1).filter(Boolean).sort();
+    // the runner's own seal token lives on the private tmpfs, not the host's /tmp
+    const seen = lines.slice(1).filter((f) => f && f !== R.SEAL_FILE).sort();
     if (seen.join(' ') !== expected.join(' ')) { console.error(`seal-check: FAILED, the seal shows ${seen.join(' ') || 'nothing'} of the host's /tmp, not just ${expected.join(' ')}`); return 1; }
     console.log('seal-check: a checkout under /tmp is visible in a fresh seal, and nothing else of the host\'s /tmp is');
     return 0;
