@@ -1,58 +1,73 @@
 #!/usr/bin/env node
-// sweep.js — remove what the plugin's own test runs left in the host's temp directory.
+// sweep.js — remove what the plugin's own test runs left in the host's /tmp.
 //   node sweep.js [--dry-run] [--min-age <minutes>] [--json]
 //
-// A suite run through the sealed runner leaves nothing on the host; a run made around it (node --test
-// straight, before the lane refused that) leaves its fixtures in the shared /tmp, and on a server whose
-// /tmp is memory-backed they pile up until the disk is full. The owner's rule (dec-chief-of-staff-000014,
+// A suite run through the sealed runner leaves nothing on the host. A run that is not sealed (the owner's
+// recorded opt-out, a host without bubblewrap) puts everything it makes in one private directory under the
+// system temp dir, and removes it at the end; a run killed before then leaves it, and on a server whose
+// /tmp is memory-backed those pile up until the disk is full. The owner's rule (dec-chief-of-staff-000014,
 // dec-chief-of-staff-000211): the host is never left to a restart or a person to clean, so the watchdog
 // runs this every cycle and logs what it removed.
 //
-// It removes an entry only when every one of these holds, and nothing else, ever:
-//   - it sits directly in the temp directory (os.tmpdir() and /tmp), never deeper;
-//   - its name is one of the plugin's fixture prefixes followed by mkdtemp's six random characters, the
-//     prefixes read at run time from the plugin's own test sources (every hyphen-ended string literal in
-//     a *.test.js or scripts/testing/*.js file), so a new test's fixtures are covered without a list to keep;
+// What may go is never guessed from a name (review of #126: a name match over /tmp would delete another
+// tool's /tmp/home-XXXXXX). A run records each directory it makes there, when it makes it, in a registry
+// outside /tmp (record()), and forgets it once it has removed it (forget()). The sweep removes a recorded
+// path only when every one of these holds, and nothing else, ever:
+//   - it sits directly in /tmp, whatever TMPDIR says, never deeper and never anywhere else;
 //   - it is a real directory, not a symlink and not a file;
 //   - it belongs to the user running the sweep;
-//   - nothing in it has changed for --min-age minutes (60 by default), so a run still in progress is never
-//     touched.
+//   - the process that recorded it is gone, so a run in progress is never touched;
+//   - nothing in it has changed for --min-age minutes (60 by default).
+// A recorded path that no longer exists is dropped from the registry; one that fails a check stays.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const PLUGIN_ROOT = path.join(__dirname, '..', '..');
 const MIN_AGE_MIN = 60;
+// the host's /tmp itself: the one place the sweep reads, whatever TMPDIR points at
+const TMP = '/tmp';
 
-function sourceFiles(root) {
+// one JSON line per directory a run made: { path, pid, at }. In the user's state directory, so it
+// outlives /tmp being cleared and is never itself a candidate.
+function registryPath(env = process.env) {
+  if (env.DELIVERY_TMP_REGISTRY) return env.DELIVERY_TMP_REGISTRY;
+  const state = env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+  return path.join(state, 'delivery', 'tmp-created.ndjson');
+}
+
+// appended in one write, so runs recording at once do not interleave lines
+function record(p, { registry = registryPath(), pid = process.pid, now = Date.now() } = {}) {
+  fs.mkdirSync(path.dirname(registry), { recursive: true });
+  fs.appendFileSync(registry, `${JSON.stringify({ path: p, pid, at: new Date(now).toISOString() })}\n`);
+}
+
+function entries(registry) {
+  let text = '';
+  try { text = fs.readFileSync(registry, 'utf8'); } catch (e) { return []; }
   const out = [];
-  const walk = (d, depth) => {
-    let list;
-    try { list = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
-    for (const e of list) {
-      if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
-      const p = path.join(d, e.name);
-      if (e.isDirectory() && depth < 6) walk(p, depth + 1);
-      else if (e.isFile() && (/\.test\.js$/.test(e.name) || (path.basename(d) === 'testing' && /\.js$/.test(e.name)))) out.push(p);
-    }
-  };
-  walk(root, 0);
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try { const e = JSON.parse(line); if (e && typeof e.path === 'string') out.push(e); } catch (err) { /* a torn line: skip */ }
+  }
   return out;
 }
 
-// one RegExp per fixture prefix; `${...}` inside a template literal stands for any name-safe text
-function fixturePatterns(root = PLUGIN_ROOT) {
-  const seen = new Set();
-  for (const f of sourceFiles(root)) {
-    let text;
-    try { text = fs.readFileSync(f, 'utf8'); } catch (e) { continue; }
-    for (const m of text.matchAll(/(['"`])([A-Za-z][A-Za-z0-9._]*(?:-[A-Za-z0-9._]*|\$\{[^}`'"]{1,40}\})*-)\1/g)) seen.add(m[2]);
-  }
-  return [...seen].map((p) => {
-    const parts = p.split(/\$\{[^}]*\}/).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    return new RegExp(`^${parts.join('[A-Za-z0-9._-]+')}[A-Za-z0-9]{6}$`);
-  });
+// rewrite the registry without the given paths. A line another run appends between the read and the
+// rename is lost, which only means that path is never swept: the safe way to be wrong.
+function forget(paths, { registry = registryPath() } = {}) {
+  const drop = new Set(paths);
+  const keep = entries(registry).filter((e) => !drop.has(e.path));
+  const tmp = `${registry}.${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, keep.map((e) => `${JSON.stringify(e)}\n`).join(''));
+    fs.renameSync(tmp, registry);
+  } catch (e) { try { fs.rmSync(tmp, { force: true }); } catch (err) { /* none */ } }
 }
+
+const alive = (pid) => {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+};
 
 // the newest modification anywhere under dir, bounded: a run still writing keeps it young
 function newestChange(dir, limit = 5000) {
@@ -73,37 +88,40 @@ function newestChange(dir, limit = 5000) {
   return n >= limit ? Infinity : newest; // too large to read cheaply: treat as busy, never guess
 }
 
-function sweep({ dirs = [...new Set([os.tmpdir(), '/tmp'])], minAgeMin = MIN_AGE_MIN, now = Date.now(), uid = process.getuid ? process.getuid() : null, dryRun = false, patterns = fixturePatterns() } = {}) {
+function sweep({ registry = registryPath(), minAgeMin = MIN_AGE_MIN, now = Date.now(), uid = process.getuid ? process.getuid() : null, dryRun = false, isAlive = alive } = {}) {
   const removed = [];
   const failed = [];
-  for (const dir of dirs) {
-    let names;
-    try { names = fs.readdirSync(dir); } catch (e) { continue; }
-    for (const name of names) {
-      if (!patterns.some((re) => re.test(name))) continue;
-      const p = path.join(dir, name);
-      let st;
-      try { st = fs.lstatSync(p); } catch (e) { continue; }
-      if (!st.isDirectory() || st.isSymbolicLink()) continue;
-      if (uid !== null && st.uid !== uid) continue;
-      if (now - newestChange(p) < minAgeMin * 60000) continue;
-      if (!dryRun) {
-        try { fs.rmSync(p, { recursive: true, force: true }); } catch (e) { failed.push({ path: p, error: e.code || e.message }); continue; }
-      }
-      removed.push(p);
+  const gone = [];
+  const seen = new Set();
+  for (const e of entries(registry)) {
+    const p = e.path;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    if (path.dirname(p) !== TMP || path.basename(p).startsWith('.')) continue;
+    let st;
+    try { st = fs.lstatSync(p); } catch (err) { if (err.code === 'ENOENT') gone.push(p); continue; }
+    // lstat: a symlink is not a directory here, so it is never followed
+    if (!st.isDirectory()) continue;
+    if (uid !== null && st.uid !== uid) continue;
+    if (isAlive(e.pid)) continue;
+    if (now - newestChange(p) < minAgeMin * 60000) continue;
+    if (!dryRun) {
+      try { fs.rmSync(p, { recursive: true, force: true }); } catch (err) { failed.push({ path: p, error: err.code || err.message }); continue; }
     }
+    removed.push(p);
   }
+  if (!dryRun && (removed.length || gone.length)) forget([...removed, ...gone], { registry });
   return { removed, failed };
 }
 
 function summary(r, dryRun) {
-  if (!r.removed.length && !r.failed.length) return 'sweep: no test leftovers in the temp directory';
-  const lines = [`sweep: ${dryRun ? 'would remove' : 'removed'} ${r.removed.length} test leftover(s) from the temp directory${r.removed.length ? `: ${r.removed.map((p) => path.basename(p)).join(' ')}` : ''}`];
+  if (!r.removed.length && !r.failed.length) return 'sweep: no test leftovers in /tmp';
+  const lines = [`sweep: ${dryRun ? 'would remove' : 'removed'} ${r.removed.length} test leftover(s) from /tmp${r.removed.length ? `: ${r.removed.map((p) => path.basename(p)).join(' ')}` : ''}`];
   for (const f of r.failed) lines.push(`sweep: could not remove ${f.path} (${f.error})`);
   return lines.join('\n');
 }
 
-module.exports = { sweep, fixturePatterns, summary, MIN_AGE_MIN };
+module.exports = { sweep, record, forget, entries, registryPath, summary, MIN_AGE_MIN, TMP };
 
 if (require.main === module) {
   const argv = process.argv.slice(2);

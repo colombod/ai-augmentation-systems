@@ -1459,7 +1459,7 @@ test('run sweeps test leftovers every cycle and logs them; check and a dry run d
   const sweep = () => { calls += 1; return { removed: ['/tmp/stop-nobd-AbC123', '/tmp/gates-6O4vP0'], failed: [] }; };
   const r = at(h, '2026-10-13T12:00:00Z', ['run'], { sweep });
   assert.equal(r.code, 0);
-  assert.match(r.out, /sweep: removed 2 test leftover\(s\) from the temp directory: stop-nobd-AbC123 gates-6O4vP0/);
+  assert.match(r.out, /sweep: removed 2 test leftover\(s\) from \/tmp: stop-nobd-AbC123 gates-6O4vP0/);
   assert.equal(calls, 1);
   at(h, '2026-10-13T12:15:00Z', ['check'], { sweep });
   at(h, '2026-10-13T12:15:00Z', ['wake', '--dry-run'], { sweep });
