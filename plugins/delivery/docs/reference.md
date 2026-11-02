@@ -1125,6 +1125,17 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   236k tokens. The fresh session is named like the role (`--name`), and the next wake resumes it (a
   fresh role session starts near 53k tokens). The Stop guard's check for unrecorded operator input is
   per session, so a fresh Chief of Staff is told to run `operator.js pending` first.
+- **After a plugin install.** Each installed version lives in its own directory, and the lane judges a
+  script path against the plugin root it runs from, so a conversation that ran an older version
+  remembers paths the new lane refuses. The roster keeps the plugin version each session started or
+  resumed under (`plugin_version`, written by the SessionStart hook; for a session started before
+  that, the last plugin path its own commands named). A session not open whose last version is older
+  than the one the watchdog runs (the installed one) is woken fresh instead of resumed, told which
+  version it ran and which is installed. A running wake is never stopped, and an open session is
+  forked as before. A conversation resumed any other way is told at its start that the plugin moved
+  and where its scripts are now; and when the lane refuses a path to another installed version of
+  this plugin, its reason says so and gives the same command at the current plugin root (or says
+  that the lane would refuse it there too) (delivery-plugin-planning-8wz).
 - **Assigned work runs.** A role holding assigned or claimed work it can start (in progress, or open and ready) whose session has been quiet more than 10 minutes is woken to work it, message or not, under the message rules (five minutes apart, 48 a day), never a busy, usage-limited or epic case. Work an open owner-queue step names waits for the owner and is not woken. While main is red, open work is woken only when the claim check would let it start (a valid fix, or work of the open `ci:main` A3); work already in progress is still woken. In an area stopped on a failed check only the stop's recovery work is woken (the failed bead or its children, a fix linked through `metadata.fixes`, the stop's A3 work). Past `stall_hours` the in-progress stall wakes it instead, except recovery work in a stopped area, which the stall skips and so keeps its assigned wake. Assigned wakes do not count toward the stall wakes' hourly gate, daily cap or per-stall backoff, and a stall wake that goes out carries the holder's assigned work with it (hjx.1).
 - **Handoffs.** `merge-gate.js merged` hands the deploy of each story it marked merged to the watchdog,
   and `evidence.js state <bead> deployed` hands the reality check (`.delivery/watchdog/handoffs.ndjson`,

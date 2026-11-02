@@ -186,16 +186,22 @@ function sessions(root, { team, rows = tailRows } = {}) {
       let waitUntil = -Infinity;
       const polls = [];
       let context = null;
+      // the plugin version it last ran: what its start recorded, else the last plugin path its own
+      // commands named (a session started before the roster kept the version)
+      let pluginVersion = (e && typeof e.plugin_version === 'string' && e.plugin_version) || null;
       for (const f of [t, ...forks].filter(Boolean)) {
         try { lastActive = Math.max(lastActive, fs.statSync(f).mtimeMs); } catch (err) { /* not on disk */ }
         const tail = rows(f);
         const l = limitOf(tail);
         if (l && (!limit || ms(l.at) > ms(limit.at))) limit = l;
         waitUntil = Math.max(waitUntil, waitingUntil(tail));
-        if (f === t) { polls.push(...tightPolls(tail)); context = contextOf(tail); }
+        if (f === t) {
+          polls.push(...tightPolls(tail)); context = contextOf(tail);
+          if (!pluginVersion) pluginVersion = require('./plugin-version.js').versionInText(toolUses(tail).map((u) => u.command).join('\n'));
+        }
       }
-      return { ...base, lastActive, transcript: t, forks, limit, waitUntil, polls, context };
-    } catch (err) { return { ...base, lastActive: ms(e && e.last_seen), transcript: null, limit: null, waitUntil: -Infinity, polls: [] }; }
+      return { ...base, lastActive, transcript: t, forks, limit, waitUntil, polls, context, pluginVersion };
+    } catch (err) { return { ...base, lastActive: ms(e && e.last_seen), transcript: null, limit: null, waitUntil: -Infinity, polls: [], pluginVersion: (e && e.plugin_version) || null }; }
   }).filter((s) => !s.retired);
 }
 
@@ -577,30 +583,36 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
 // conversation, and on a real team each wake piled onto it until a turn carried 236k tokens; the role
 // brief and the team's records (beads, story files, review rows) are what a role works from, so a
 // fresh session loses no state, only the chat.
+// installed: the plugin version running now. A session that last ran an older one is woken fresh too:
+// its conversation names that version's script paths, which the lane refuses after the install
+// (delivery-plugin-planning-8wz). A wake still running is never stopped; the next one starts fresh.
 const FRESH_ABOVE = 120000;
-function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE } = {}) {
+function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null } = {}) {
   const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
   const r = wakeArgs(s, prompt, live);
-  if (r.mode === 'resume' && freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove) {
+  const older = Boolean(installed) && require('./plugin-version.js').compare(s && s.pluginVersion, installed) === -1;
+  if (r.mode === 'resume' && (older || (freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove))) {
     // named like every role session (start.js --name), so peers reach it by name (team rule 13)
-    return { mode: 'fresh', args: [...m, '--name', s.instance, '-p', freshPrompt(s, prompt)] };
+    return { mode: 'fresh', why: older ? 'plugin' : 'context', args: [...m, '--name', s.instance, '-p', freshPrompt(s, prompt, older ? installed : null)] };
   }
   return r.args ? { ...r, args: [...m, ...r.args] } : r;
 }
 
 // the capture hook tells a wake from a typed prompt only by its opening words, so the fresh
 // session's preamble goes after them, never before
-function freshPrompt(s, prompt) {
+function freshPrompt(s, prompt, installed = null) {
   const lead = `${WAKE_OPENING}: `;
   const rest = String(prompt).startsWith(lead) ? String(prompt).slice(lead.length) : String(prompt);
-  return `${lead}${freshPreamble(s)} ${rest}`;
+  return `${lead}${freshPreamble(s, installed)} ${rest}`;
 }
 
-function freshPreamble(s) {
+function freshPreamble(s, installed = null) {
   // the Chief of Staff's Stop guard checks unrecorded operator input per session: a fresh session
   // would not be held for input left in the old one, so it is told to look
   const operator = s.role === 'chief-of-staff' ? ' Check first for operator input still unrecorded (operator.js pending) and record it.' : '';
-  return `You are ${s.instance}, starting a fresh session: your earlier conversation (${Math.round(s.context / 1000)}k tokens) is not loaded, so each turn stays light. Your brief and the team's records are your memory: start with your own in-progress beads (bd list --assignee "$BEADS_ACTOR" --status in_progress) and their notes, and the files they name.${operator}`;
+  const why = installed ? `ran the delivery plugin ${s.pluginVersion}, and ${installed} is installed now, so its script paths are stale` : `(${Math.round(s.context / 1000)}k tokens) is not loaded, so each turn stays light`;
+  return `You are ${s.instance}, starting a fresh session: your earlier conversation ${installed ? `is not loaded: it ${why}` : why}.`
+    + ` Your brief and the team's records are your memory: start with your own in-progress beads (bd list --assignee "$BEADS_ACTOR" --status in_progress) and their notes, and the files they name.${operator}`;
 }
 
 function wakeArgs(s, prompt, live) {

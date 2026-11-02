@@ -1062,6 +1062,27 @@ test('a wake starts a fresh session when the last turn carried more than the lim
   assert.equal(run({ tokens: 236000, agents: [{ sessionId: `sess-${COS}`, status: 'idle' }] }).wake, 'fork');
 });
 
+// delivery-plugin-planning-8wz: after an install, the run wakes a session that last ran an older plugin
+// fresh, since its conversation names the old version's script paths; one on the running version resumes
+test('8wz: a watchdog run wakes a session that ran an older plugin fresh, and one on the running plugin by resume', () => {
+  const t0 = '2026-11-02T18:00:00Z';
+  const IB = require('./lib/inbox.js');
+  const now = require('./lib/plugin-version.js').runningVersion();
+  const ran = (v) => [{ type: 'assistant', timestamp: t0, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'u1', input: { command: `node /h/cache/m/delivery/${v}/scripts/team-status.js` } }], usage: { input_tokens: 2, cache_read_input_tokens: 40000, cache_creation_input_tokens: 0 } } }];
+  const run = (v) => {
+    const h = harness({});
+    session(h, COS, { seen: iso(Date.parse(t0) - 2 * H), rows: ran(v) });
+    IB.queue(h.root, { to: COS, from: DM, summary: 'x', message: 'merge the story branch', at: t0 });
+    const spawn = spawner();
+    at(h, t0, ['run'], { spawn, bd: memStore(h), live: [] });
+    return spawn.list[0];
+  };
+  const old = run('0.1.0');
+  assert.equal(old.wake, 'fresh');
+  assert.match(old.args[5], new RegExp(`ran the delivery plugin 0\\.1\\.0, and ${now.replace(/\./g, '\\.')} is installed now`));
+  assert.equal(run(now).wake, 'resume');
+});
+
 // The review of the change above: each rule on the message path under a held stall, and message wakes
 // must not starve the stall (they used to count toward its hourly gate and daily cap).
 test('plan: messages beside a held stall keep their own rules; message wakes do not starve the stall', () => {
