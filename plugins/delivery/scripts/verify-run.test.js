@@ -474,7 +474,7 @@ test('run: a step naming operator.js sync through the project launcher is refine
 // 8wz.4: a check written at one plugin version runs unchanged after the next install. A command that names
 // .../plugins/cache/<m>/delivery/<version>/ is made version-free when it is stored, or refused; the runner
 // names the plugin it runs from in DELIVERY_PLUGIN_ROOT, and refuses a stored versioned path with the fix.
-const VCACHE = (v) => `/home/u/.claude/plugins/cache/m/delivery/${v}`;
+const VCACHE = (v) => `/srv/u/.claude/plugins/cache/m/delivery/${v}`;
 
 test('8wz.4 refine: a versioned plugin path is stored version-free: the launcher for a script, DELIVERY_PLUGIN_ROOT for any other path', () => {
   const L = require('./lib/launcher.js');
