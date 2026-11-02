@@ -420,3 +420,100 @@ test('Copilot round 5: a yes is consumed under the goal lock; a later window cha
   fs.writeFileSync(path.join(t3.root, '.delivery', 'goal.json'), JSON.stringify(g));
   assert.deepEqual(Goal.value(t3.root, 'scope'), []);
 });
+
+// portable-confirmations-01: a change whose confirmation cannot be accepted (a typed yes: an input with no
+// AskUserQuestion box, as another provider's answer reads today) is stored the way a port's writer would
+// store it, through the store's commitOnce, since Goal.set refuses it
+const unresolved = (t, field, value) => {
+  const dec = t.confirmTyped(field, value);
+  const r = Goal.commitOnce(t.root, field, { value, record: dec, ...Goal.bindingOf(t.root, dec), window_hours: 24, by: 'chief-of-staff', at: new Date().toISOString() });
+  assert.equal(r.ok, true, r.error);
+  return r.entry;
+};
+const ownerSet = (t, field, value) => {
+  const dec = t.confirmAsk(field, value);
+  assert.equal(set(t.root, field, value, dec).ok, true);
+  return dec;
+};
+const goalFile = (t) => path.join(t.root, '.delivery', 'goal.json');
+const showOut = (t) => goal.main(['show'], { who: who(t.root, null), bd: { show: () => null } }).out;
+
+test('portable-confirmations-01: a pause holds when the change lifting it cannot be checked, and goal.js show says held', () => {
+  const t = project();
+  const pauseRec = ownerSet(t, 'pause', 'paused');
+  const off = unresolved(t, 'pause', 'off');
+  assert.match(off.input, /^in-/);
+  const r = Goal.resolve(t.root, 'pause', { warn: false });
+  assert.equal(r.value, 'paused');
+  assert.equal(r.from, pauseRec);
+  assert.equal(r.held, true);
+  assert.match(r.ignored, /Yes\/No question box/);
+  const p = Goal.activePause(t.root, { warn: false });
+  assert.equal(p.paused, true);
+  assert.equal(p.by, pauseRec);
+  const out = showOut(t);
+  assert.equal(out.split('\n').find((l) => l.startsWith('pause:')), `pause: held: paused (confirmation ${off.input} unresolved: ${r.ignored})`);
+  assert.match(out, new RegExp(`work: paused \\(${pauseRec}\\)`));
+  // the unresolved change is still warned about
+  Goal.resolve(t.root, 'pause');
+  assert.ok(W.list(t.root).some((w) => w.kind === 'goal-unverified'), 'goal-unverified warning');
+});
+
+test('portable-confirmations-01: revoking a verified pause steps back to the verified value before it, or the default', () => {
+  // one change, revoked: the default, not paused, as before
+  const a = project();
+  const recA = ownerSet(a, 'pause', 'paused');
+  R.revoke({ projectRoot: a.root, target: recA, cite: a.say('resume work'), quote: 'resume work', statement: 'revoked', by: COS });
+  const ra = Goal.resolve(a.root, 'pause', { warn: false });
+  assert.deepEqual([ra.value, ra.from, ra.held], ['off', 'default', undefined]);
+  assert.match(ra.ignored, /revoked/);
+  assert.equal(Goal.activePause(a.root, { warn: false }).paused, false);
+  // off, then paused, the pause revoked: back to the verified off
+  const b = project();
+  const offRec = ownerSet(b, 'pause', 'off');
+  const recB = ownerSet(b, 'pause', 'paused');
+  R.revoke({ projectRoot: b.root, target: recB, cite: b.say('resume work'), quote: 'resume work', statement: 'revoked', by: COS });
+  const rb = Goal.resolve(b.root, 'pause', { warn: false });
+  assert.deepEqual([rb.value, rb.from], ['off', offRec]);
+  assert.equal(Goal.activePause(b.root, { warn: false }).paused, false);
+  // a revoked pause is never the held value behind a later unresolved change: the verified off before it is
+  const c = project();
+  const offC = ownerSet(c, 'pause', 'off');
+  const recC = ownerSet(c, 'pause', 'paused');
+  R.revoke({ projectRoot: c.root, target: recC, cite: c.say('resume work'), quote: 'resume work', statement: 'revoked', by: COS });
+  unresolved(c, 'pause', 'paused');
+  const rc = Goal.resolve(c.root, 'pause', { warn: false });
+  assert.deepEqual([rc.value, rc.from, rc.held], ['off', offC, true]);
+  assert.equal(Goal.activePause(c.root, { warn: false }).paused, false);
+});
+
+test('portable-confirmations-01: a field whose only change cannot be checked stays at the default, with no held', () => {
+  const t = project();
+  unresolved(t, 'pause', 'paused');
+  const r = Goal.resolve(t.root, 'pause', { warn: false });
+  assert.deepEqual([r.value, r.from, r.held], ['off', 'default', undefined]);
+  assert.match(r.ignored, /question box/);
+  assert.equal(Goal.activePause(t.root, { warn: false }).paused, false);
+  assert.match(showOut(t), /pause: off \(default\); the written value is ignored: /);
+});
+
+test('portable-confirmations-01: the held value is never a copy of an earlier yes, nor an entry put back by hand', () => {
+  const t = project();
+  ownerSet(t, 'pause', 'paused');
+  const offRec = ownerSet(t, 'pause', 'off');
+  // a copy of the first pause appended to the history by hand: a yes applies once
+  const g = Goal.read(t.root);
+  g.history.push({ ...g.history.find((h) => h.field === 'pause' && h.value === 'paused') });
+  fs.writeFileSync(goalFile(t), JSON.stringify(g));
+  unresolved(t, 'pause', 'paused');
+  const r = Goal.resolve(t.root, 'pause', { warn: false });
+  assert.deepEqual([r.value, r.from, r.held], ['off', offRec, true]);
+  assert.equal(Goal.activePause(t.root, { warn: false }).paused, false);
+  // the old pause entry put back into fields by hand: not the latest change, so the default, not held
+  const h = Goal.read(t.root);
+  h.fields.pause = h.history.find((x) => x.field === 'pause' && x.value === 'paused');
+  fs.writeFileSync(goalFile(t), JSON.stringify(h));
+  const r2 = Goal.resolve(t.root, 'pause', { warn: false });
+  assert.deepEqual([r2.value, r2.from, r2.held], ['off', 'default', undefined]);
+  assert.match(r2.ignored, /is not the latest change to pause/);
+});
