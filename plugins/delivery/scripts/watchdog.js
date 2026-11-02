@@ -26,6 +26,7 @@ const path = require('path');
 const crypto = require('crypto');
 const WD = require('./lib/watchdog.js');
 const { whoAmI } = require('./lib/gate-context.js');
+const LAUNCHER = require('./lib/launcher.js');
 
 const USAGE = 'usage: watchdog.js check [--json] | watchdog.js wake [--dry-run] | watchdog.js run | watchdog.js install [--every 15m] [--apply] | watchdog.js uninstall   (each takes --project <root>)';
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
@@ -262,23 +263,9 @@ const AT_INSTALL = ${JSON.stringify(pluginRoot)};
 // the Claude configuration the installing shell used: the plugin lookup and every wake use it too
 const AT_CONFIG = ${JSON.stringify(configDir || null)};
 if (AT_CONFIG && !process.env.CLAUDE_CONFIG_DIR) process.env.CLAUDE_CONFIG_DIR = AT_CONFIG;
-const ok = (p) => p && fs.existsSync(path.join(p, 'scripts', 'watchdog.js'));
-function pluginRoot() {
-  const cache = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'plugins');
-  if (ok(AT_INSTALL) && !AT_INSTALL.startsWith(cache + path.sep)) return AT_INSTALL;
-  try {
-    const j = JSON.parse(fs.readFileSync(path.join(cache, 'installed_plugins.json'), 'utf8'));
-    for (const [k, v] of Object.entries(j.plugins || j)) {
-      if (!/^delivery@/.test(k)) continue;
-      const rank = (e) => (e.projectPath && path.resolve(e.projectPath) === path.resolve(PROJECT) ? 0 : e.scope === 'user' ? 1 : 2);
-      const ver = (e) => String(e.version || '').split('.').map((n) => parseInt(n, 10) || 0);
-      const newer = (a, b) => { const x = ver(a), y = ver(b); for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0); return 0; };
-      const found = (Array.isArray(v) ? v : [v]).filter((e) => e && ok(e.installPath)).sort((a, b) => rank(a) - rank(b) || newer(a, b));
-      if (found.length) return found[0].installPath;
-    }
-  } catch (err) { /* fall back below */ }
-  return ok(AT_INSTALL) ? AT_INSTALL : null;
-}
+// the ranking the script launcher uses too, copied from lib/launcher.js's source so the two cannot drift
+${LAUNCHER.resolveInstalledRoot.toString()}
+const pluginRoot = () => resolveInstalledRoot({ project: PROJECT, atInstall: AT_INSTALL, configDir: process.env.CLAUDE_CONFIG_DIR });
 const root = pluginRoot();
 if (!root) { console.error(new Date().toISOString() + ' watchdog job: the delivery plugin was not found; install it, then run watchdog.js install --apply again'); process.exit(1); }
 const log = path.join(PROJECT, '.delivery', 'watchdog', 'job.log');
@@ -457,6 +444,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
     let swept = [];
     if (cmd === 'run') {
+      // the project's script launcher (lib/launcher.js) is kept present and current every cycle, so
+      // briefs and reality-check steps that name it work even when no role session has started since a
+      // clone or a cleanup; a failure is reported and never stops the wakes
+      const lp = o.dryRun ? null : LAUNCHER.ensureLauncher(who.root, PLUGIN_ROOT, env.CLAUDE_CONFIG_DIR);
+      if (lp) swept.push(`launcher: ${lp}`);
       try {
         const S = require('./testing/sweep.js');
         // a dry run says what the sweep would remove and removes nothing

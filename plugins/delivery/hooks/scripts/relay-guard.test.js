@@ -19,6 +19,8 @@ process.env.GIT_TERMINAL_PROMPT = '0';
 const PLUGIN_ROOT = path.join(__dirname, '..', '..');
 const SID = 'sess-relay-1';
 const OP = operatorCommand(PLUGIN_ROOT);
+// a prepared role's project has the script launcher (lib/launcher.js), so reasons name operator.js through it
+const opOf = (p) => require('../../scripts/lib/launcher.js').launcherCommand(p.projectRoot, 'operator.js');
 // stateless view of the operator checks: null on a continuation, else every reason joined
 function decideStopForOperator(args = {}) {
   const inp = args && args.input && typeof args.input === 'object' ? args.input : {};
@@ -134,7 +136,10 @@ test('blocks the chief of staff with an unrecorded input of its own session, and
   const p = captured('chief-of-staff', [human('use postgres for the store, it is what ops already runs', 1)]);
   assert.equal(p.cap.status, 'ok');
   const d = decideStopForOperator(stopArgs(p));
-  assert.equal(d.reason, `You have an operator input with no record: in-pc-000001 ("use postgres for the store, it is what ops already runs"). Record it, or ack it (operator.js ack --input in-pc-000001 --reason '<why>'; chat: ack --pending --reason 'conversational'); SendMessage the id.\n\`${OP} record --cite in-pc-000001 --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\``);
+  assert.equal(d.reason, `You have an operator input with no record: in-pc-000001 ("use postgres for the store, it is what ops already runs"). Record it, or ack it (operator.js ack --input in-pc-000001 --reason '<why>'; chat: ack --pending --reason 'conversational'); SendMessage the id.\n\`${opOf(p)} record --cite in-pc-000001 --quote '<exact words>' --statement '<what was decided>' --scope bead:<id>\``);
+  // 8wz.1: without a launcher in place the reason names the absolute plugin root
+  fs.rmSync(path.join(p.projectRoot, '.delivery', 'bin'), { recursive: true });
+  assert.ok(decideStopForOperator(stopArgs(p)).reason.includes(`\`${OP} record --cite in-pc-000001`));
   R.ack({ projectRoot: p.projectRoot, input: 'in-pc-000001', reason: 'a preference, recorded elsewhere', by: COS_BY });
   assert.equal(decideStopForOperator(stopArgs(p)), null);
 });
@@ -343,7 +348,7 @@ test("I3: a chain problem on the chief of staff's own records file replaces the 
   const torn = () => ({ inputs, problems: [{ file: 'records/chief-of-staff', code: 'truncated', error: 'records/chief-of-staff: truncated 4 entries but 5 recorded' }] });
   const found = operatorChecks(stopArgs(p, {}, { deps: { pending: torn } }));
   assert.deepEqual(found.map((f) => f.kind), ['integrity']);
-  assert.equal(found[0].reason, `Your own operator records chain (records/chief-of-staff.ndjson) fails verification (truncated: records/chief-of-staff: truncated 4 entries but 5 recorded); nothing can be recorded on it (\`${OP} problems\` shows it).\nSet it aside (kept as evidence) and keep recording: \`${OP} quarantine --file records/chief-of-staff.ndjson --reason '<what failed>'\`.`);
+  assert.equal(found[0].reason, `Your own operator records chain (records/chief-of-staff.ndjson) fails verification (truncated: records/chief-of-staff: truncated 4 entries but 5 recorded); nothing can be recorded on it (\`${opOf(p)} problems\` shows it).\nSet it aside (kept as evidence) and keep recording: \`${opOf(p)} quarantine --file records/chief-of-staff.ndjson --reason '<what failed>'\`.`);
   // the Product Manager cannot quarantine: it is told to ask the Chief of Staff
   const pm = operatorChecks(stopArgs(p, {}, { role: 'product-manager', instance: 'chief-of-staff', deps: { pending: torn } }));
   assert.match(pm[0].reason, /SendMessage the Chief of Staff with the problem/);
@@ -866,9 +871,9 @@ test('I2: every command named in a Stop block reason passes the Chief of Staff\'
   for (const role of ['chief-of-staff', 'product-manager']) {
     const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/' + role });
     for (const c of commands) {
-      assert.ok(c.startsWith(`${OP} `), c);
+      assert.ok(c.startsWith(`${opOf(p)} `), c);
       const command = c.replace(/'<[^>]*>'/g, "'the operator said: don'\\''t, ok?'").replace(/<[^>]*>/g, 'x1');
-      const d = decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: p.roleDir, groups, pluginRoot: PLUGIN_ROOT, hostHeadless: false });
+      const d = decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: p.roleDir, groups, pluginRoot: PLUGIN_ROOT, hostHeadless: false, projectRoot: p.projectRoot });
       assert.equal(d.allow, true, `${role}: ${command}\n${d.reason || ''}`);
     }
   }

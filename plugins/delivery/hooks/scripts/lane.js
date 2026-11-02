@@ -542,12 +542,28 @@ function destInScope(rule, args, t, ctx) {
   });
 }
 
-// ctx: { roleDir, pluginRoot, cwd } or { roleDir, pluginRoot, dirs: [dir|null, ...] }.
+// `node <this project's launcher> <x>.js args...` is judged exactly as `node <plugin root>/scripts/<x>.js
+// args...` (lib/launcher.js: briefs and reality-check steps name scripts that way so an install does not
+// break them). Only the launcher of the project the role belongs to, by its absolute path, only when it
+// is byte-identical to the one the plugin writes (an edited one could run anything) and the plugin it
+// resolves to has that script; anything else keeps its own words and is judged, and refused, as today.
+function viaLauncher(t, ctx) {
+  if (t[0] !== 'node' || t.length < 3 || !ctx.projectRoot || !path.isAbsolute(String(ctx.projectRoot)) || !path.isAbsolute(t[1])) return t;
+  const root = pluginRootOf(ctx);
+  const L = require('../../scripts/lib/launcher.js');
+  if (!root || path.resolve(t[1]) !== L.launcherPath(ctx.projectRoot) || !L.SCRIPT_NAME.test(t[2])) return t;
+  const ran = L.resolveLauncher(ctx.projectRoot, root);
+  if (!ran || !fs.existsSync(path.join(ran, 'scripts', t[2]))) return t;
+  return ['node', path.join(path.resolve(root), 'scripts', t[2]), ...t.slice(3)];
+}
+
+// ctx: { roleDir, pluginRoot, cwd } or { roleDir, pluginRoot, dirs: [dir|null, ...] }, and projectRoot
+// when the role's project is known (its launcher, above).
 function classifySegment(seg, groups, ctx) {
   try {
     const c = ctx || {};
     const text = String(seg == null ? '' : seg);
-    const t = tokens(text);
+    const t = viaLauncher(tokens(text), c);
     if (!t.length) return [];
     const g = groups && typeof groups === 'object' ? groups : {};
     const guarded = hasRedirect(text) || hasSubstitution(text) || writesFiles(t);
@@ -940,6 +956,8 @@ function isShim(word) {
   if (/\.delivery\/+(?:\.\/+)*watchdog\/+job\.js$/i.test(w)) return true;
   return GLOB.test(w) && segRe(baseOf(w)).test('job.js') && /delivery|watch|[*?[]/i.test(w.slice(0, -baseOf(w).length));
 }
+// the project's script launcher, or a glob the shell may expand to it
+const isLauncher = (w) => /(?:^|\/)\.delivery\/+(?:\.\/+)*bin\/+delivery\.js$/i.test(String(w || '')) || (GLOB.test(String(w || '')) && segRe(baseOf(w)).test('delivery.js'));
 // the CLI, whose `check` alone a role may run
 const isCli = (w) => namesWatchdog(w) && !isShim(w) && !/\.delivery\/+(?:\.\/+)*watchdog\//i.test(String(w || ''));
 // shell grammar words before a command: if/then/do/!, a brace or subshell, a function header, a case pattern
@@ -1063,6 +1081,8 @@ function refusedRun(text, depth = 0) {
         break;
       }
       if (script !== null && namesWatchdog(args[script]) && !(isCli(args[script]) && checkOnly(args.slice(script + 1)))) return 'watchdog';
+      // the project's script launcher runs its first argument as the plugin script (lib/launcher.js)
+      if (script !== null && isLauncher(args[script]) && namesWatchdog(args[script + 1]) && !checkOnly(args.slice(script + 2))) return 'watchdog';
       // node's test runner, or a test file run directly: only through the sealed runner (dec-000014).
       // Only node's own options count: a --test after the script is the script's argument.
       if (isNode && (testFlag || (script !== null && TEST_FILE.test(args[script])))) return 'tests';
@@ -1331,8 +1351,9 @@ function reviewRunSegment(text, groups, ctx) {
 }
 
 // A segment that runs one of the plugin's own scripts (they write the team's records).
+// The project's script launcher runs them too, so naming it counts (lib/launcher.js).
 function mentionsPluginScript(text, root) {
-  return /\$\{?CLAUDE_PLUGIN_ROOT\}?/.test(text) || (!!root && text.includes(root));
+  return /\$\{?CLAUDE_PLUGIN_ROOT\}?/.test(text) || (!!root && text.includes(root)) || /\.delivery\/+bin\/+delivery\.js/.test(text);
 }
 
 function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, cwd, hostHeadless, hostName, desktopHosts, projectRoot }) {
@@ -1425,8 +1446,8 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     for (let n = 0; n < segs.length; n++) {
       const { text, op } = segs[n];
       if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
-      const names = classifySegment(text, groups, { roleDir, pluginRoot, dirs: live, writes: pol.writes });
-      if (pol.review && !names.includes('read') && !reviewRunSegment(text, groups, { roleDir, pluginRoot, dirs: live }) && mentionsPluginScript(text, pluginRootOf({ pluginRoot }))) {
+      const names = classifySegment(text, groups, { roleDir, pluginRoot, dirs: live, writes: pol.writes, projectRoot });
+      if (pol.review && !names.includes('read') && !reviewRunSegment(text, groups, { roleDir, pluginRoot, dirs: live, projectRoot }) && mentionsPluginScript(text, pluginRootOf({ pluginRoot }))) {
         return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`: ${REVIEWER_REASON}.\nReport pass or changes to the role that dispatched you; it records the review.` };
       }
       if (!names.some((x) => bash.includes(x))) {
@@ -1434,7 +1455,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
         // say so and give the same command at the running root, so the session corrects itself (8wz)
         const stale = staleVersionCommand(text, pluginRootOf({ pluginRoot }));
         if (stale) {
-          const fixed = classifySegment(stale.command, groups, { roleDir, pluginRoot, dirs: live, writes: pol.writes }).some((x) => bash.includes(x));
+          const fixed = classifySegment(stale.command, groups, { roleDir, pluginRoot, dirs: live, writes: pol.writes, projectRoot }).some((x) => bash.includes(x));
           return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`: it names the delivery plugin ${stale.version}, and ${stale.running} is the version running now, so paths remembered from ${stale.version} are stale. ${fixed ? `Run the same command at the current plugin root: \`${stale.command}\`` : `At the current plugin root it is \`${stale.command.slice(0, 200)}\`, which your lane does not run either (allowed groups: ${bash.join(', ') || 'none'}).`}${tail}` };
         }
         const construct = expansionConstruct(text);
@@ -1502,7 +1523,7 @@ function nativeApproval(input, policy, groups, ctx) {
   for (let n = 0; n < segs.length; n++) {
     const { text, op } = segs[n];
     if (RESUME_OPS.includes(op)) { live = union(live, deferred); deferred = []; }
-    if (!classifySegment(text, native, { roleDir: ctx.roleDir, pluginRoot: ctx.pluginRoot, dirs: live, writes: policy.writes }).length) return null;
+    if (!classifySegment(text, native, { roleDir: ctx.roleDir, pluginRoot: ctx.pluginRoot, dirs: live, writes: policy.writes, projectRoot: ctx.projectRoot }).length) return null;
     const t = tokens(text);
     if (t[0] !== 'cd') continue;
     const target = cdTarget(t);
@@ -1546,7 +1567,7 @@ function laneDecisionForHook(input, pluginRoot) {
   const pushCmd = d.allow ? shellCommandOf(input.tool_name, input.tool_input || {}) : null;
   const foreign = pushCmd !== null ? foreignTeamPush(pushCmd, marker.instance) : null;
   if (foreign) d = { allow: false, reason: `Role ${policy.roleId}: ${foreign.branch} is ${foreign.owner}'s branch: the merge gate knows a pull request's author by it, so only ${foreign.owner} pushes there.\nPush your own: \`git push origin HEAD:team/${marker.instance}\`` };
-  if (d.allow) return nativeApproval(input, policy, groups, { roleDir, pluginRoot, cwd: input.cwd });
+  if (d.allow) return nativeApproval(input, policy, groups, { roleDir, pluginRoot, cwd: input.cwd, projectRoot: marker.project_root });
   try {
     const ti = input.tool_input || {};
     const cmd = shellCommandOf(input.tool_name, ti);

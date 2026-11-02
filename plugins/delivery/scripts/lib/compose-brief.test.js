@@ -103,6 +103,30 @@ test('shortBrief is header, routing table, host and pointer, with no rules or ro
   assert.ok(!out.includes('You build.'));
 });
 
+// 8wz.1: with the project known, scripts are named through its launcher, which survives plugin installs;
+// any other use of the root (templates, the sealed runner under scripts/testing/) stays absolute
+test('a brief names plugin scripts through the project launcher only when the project is given', () => {
+  const { renderRoot } = require('./compose-brief.js');
+  const root = '/plug/delivery/1.2.3';
+  const proj = '/w/my proj';
+  const text = 'run `node ${CLAUDE_PLUGIN_ROOT}/scripts/operator.js verify <id>` or node ${CLAUDE_PLUGIN_ROOT}/scripts/evidence.js add x\n'
+    + 'obey ${CLAUDE_PLUGIN_ROOT}/templates/writing-standard.md, test with `node ${CLAUDE_PLUGIN_ROOT}/scripts/testing/run-tests.js`';
+  assert.equal(renderRoot(text, root, proj), "run `node '/w/my proj/.delivery/bin/delivery.js' operator.js verify <id>` or node '/w/my proj/.delivery/bin/delivery.js' evidence.js add x\n"
+    + 'obey /plug/delivery/1.2.3/templates/writing-standard.md, test with `node /plug/delivery/1.2.3/scripts/testing/run-tests.js`');
+  assert.equal(renderRoot(text, root), 'run `node /plug/delivery/1.2.3/scripts/operator.js verify <id>` or node /plug/delivery/1.2.3/scripts/evidence.js add x\n'
+    + 'obey /plug/delivery/1.2.3/templates/writing-standard.md, test with `node /plug/delivery/1.2.3/scripts/testing/run-tests.js`');
+  const { team, hosts } = templateManifest();
+  const inst = expandInstances(team).find((i) => i.instance === 'builder-1');
+  const rules = fs.readFileSync(path.join(TEMPLATES, 'team-rules.md'), 'utf8');
+  const brief = loadRoleBrief(PLUGIN_ROOT, '/nonexistent', inst.role.brief);
+  const full = composeBrief({ team, hosts, instance: inst.instance, role: inst.role, brief, rules, pluginRoot: root, projectRoot: '/w/p' });
+  assert.ok(full.includes('`node /w/p/.delivery/bin/delivery.js operator.js verify <id>`'));
+  assert.doesNotMatch(full, /\/plug\/delivery\/1\.2\.3\/scripts\/[a-z0-9-]+\.js/);
+  const short = (projectRoot) => shortBrief({ team, hosts, instance: 'builder-1', role: inst.role, roleDir: '/r', pluginRoot: root, projectRoot });
+  assert.ok(short('/w/p').includes('Operator commands: `node /w/p/.delivery/bin/delivery.js operator.js <command>`'));
+  assert.ok(short().includes('Operator commands: `node /plug/delivery/1.2.3/scripts/operator.js <command>`'));
+});
+
 test('the chief of staff\'s routing table renders its optional rows only for roles the team has', () => {
   const { applyRoleConditions } = require('./compose-brief.js');
   const brief = loadRoleBrief(PLUGIN_ROOT, '/nonexistent', 'delivery/chief-of-staff');
