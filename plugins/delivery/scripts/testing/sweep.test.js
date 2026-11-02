@@ -177,13 +177,86 @@ test('a lock left by a run that died is taken over; a live holder is waited for,
     assert.deepEqual(S.entries(registry).map((e) => e.path), ['/tmp/a-AAAAAA']);
     assert.ok(!fs.existsSync(lock));
 
-    fs.writeFileSync(lock, String(process.pid)); // a live holder
+    const live = `${process.ppid} t0ken`; // a live holder that is not this process
+    fs.writeFileSync(lock, live);
     const t0 = Date.now();
     assert.throws(() => S.record('/tmp/b-BBBBBB', { registry, waitMs: 300 }), /locked by process/);
     assert.ok(Date.now() - t0 >= 300, 'it waited for the holder');
     assert.throws(() => S.forget(['/tmp/a-AAAAAA'], { registry, waitMs: 100 }), /locked by process/);
-    assert.equal(fs.readFileSync(lock, 'utf8'), String(process.pid), 'a live holder\'s lock is never taken');
+    assert.equal(fs.readFileSync(lock, 'utf8'), live, 'a live holder\'s lock is never taken');
     assert.deepEqual(S.entries(registry).map((e) => e.path), ['/tmp/a-AAAAAA'], 'nothing written without the lock');
+  } finally { fs.rmSync(work, { recursive: true, force: true }); }
+});
+
+// tqv.1: a lock whose pid is alive but not its holder (a reused pid, another user's included) is taken
+// over once older than any hold; one carrying this process's pid but a token it does not hold is taken
+// over at once, so a run never waits on itself; a nested hold in one process is refused, not waited on
+test('a lock under a reused pid is taken over by age, one under our own pid at once; a nested hold is refused', () => {
+  const work = fs.mkdtempSync(path.join(__dirname, '.sweep-reuse-'));
+  const registry = path.join(work, 'reg.ndjson');
+  const lock = `${registry}.lock`;
+  const old = (Date.now() - 60000) / 1000; // a minute: older than any hold
+  try {
+    fs.writeFileSync(lock, String(process.ppid)); // alive, but not the holder: its pid was reused
+    fs.utimesSync(lock, old, old);
+    S.record('/tmp/r-RRRRRR', { registry, waitMs: 300 });
+    assert.ok(!fs.existsSync(lock), 'an old lock under a live pid is taken over');
+
+    fs.writeFileSync(lock, `${process.pid} not-mine`);
+    const t0 = Date.now();
+    S.forget(['/tmp/r-RRRRRR'], { registry, waitMs: 300 });
+    assert.ok(Date.now() - t0 < 300, 'our own pid with a token we do not hold is not waited on');
+    assert.deepEqual(S.entries(registry), []);
+
+    fs.writeFileSync(lock, String(process.pid)); // the format before tokens, under our pid
+    S.record('/tmp/s-SSSSSS', { registry, waitMs: 300 });
+    assert.deepEqual(S.entries(registry).map((e) => e.path), ['/tmp/s-SSSSSS']);
+
+    assert.throws(() => S.withLock(registry, () => S.record('/tmp/n-NNNNNN', { registry, waitMs: 300 })), /already locked by this process/);
+    assert.ok(!fs.existsSync(lock), 'the outer hold is released after the refusal');
+  } finally { fs.rmSync(work, { recursive: true, force: true }); }
+});
+
+// tqv.1: a run that saw a dead holder, while another run took the lock over and holds it before this one
+// acts, must leave the new holder's lock in place and wait for it
+test('a lock that changes holder during a takeover is left to its new holder', () => {
+  const work = fs.mkdtempSync(path.join(__dirname, '.sweep-swap-'));
+  const registry = path.join(work, 'reg.ndjson');
+  const lock = `${registry}.lock`;
+  const theirs = `${process.ppid} their-token`;
+  try {
+    fs.writeFileSync(lock, String(DEAD));
+    // between reading the dead holder and taking over, another run takes the lock and holds it
+    const isAlive = (pid) => { if (pid === DEAD) { fs.rmSync(lock); fs.writeFileSync(lock, theirs); return false; } return true; };
+    assert.throws(() => S.withLock(registry, () => assert.fail('held without the lock'), { waitMs: 200, isAlive }), /locked by process/);
+    assert.equal(fs.readFileSync(lock, 'utf8'), theirs, 'the new holder keeps its lock');
+    assert.ok(!fs.existsSync(`${lock}.takeover`), 'the takeover gate is released');
+  } finally { fs.rmSync(work, { recursive: true, force: true }); }
+});
+
+// tqv.1: three runs that each leave a dead holder's lock and then record race their takeovers; no run
+// may remove another's fresh lock, so every line survives and no lock or gate is left behind
+test('three runs taking over dead locks at once lose no line', async () => {
+  const work = fs.mkdtempSync(path.join(__dirname, '.sweep-takeover-'));
+  const registry = path.join(work, 'reg.ndjson');
+  const lock = `${registry}.lock`;
+  const N = 3;
+  const EACH = 150;
+  try {
+    const kids = [];
+    for (let k = 0; k < N; k += 1) {
+      const code = `const fs = require('fs'); const S = require(${JSON.stringify(path.join(__dirname, 'sweep.js'))});
+        for (let i = 0; i < ${EACH}; i += 1) {
+          try { const fd = fs.openSync(${JSON.stringify(lock)}, 'wx'); fs.writeSync(fd, '${DEAD}'); fs.closeSync(fd); } catch (e) { /* held */ }
+          S.record('/tmp/take-${k}-' + i, { registry: ${JSON.stringify(registry)} });
+        }`;
+      kids.push(spawn(process.execPath, ['-e', code], { stdio: 'inherit' }));
+    }
+    assert.deepEqual(await Promise.all(kids.map((c) => new Promise((r) => c.on('exit', r)))), new Array(N).fill(0));
+    assert.equal(new Set(S.entries(registry).map((e) => e.path)).size, N * EACH, 'every recorded line survives');
+    // the last run may leave its planted dead lock only if no record followed it; none does
+    assert.ok(!fs.existsSync(lock), 'no lock is left');
+    assert.ok(!fs.existsSync(`${lock}.takeover`), 'no takeover gate is left');
   } finally { fs.rmSync(work, { recursive: true, force: true }); }
 });
 

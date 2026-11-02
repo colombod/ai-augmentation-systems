@@ -20,6 +20,7 @@
 //   - nothing in it has changed for --min-age minutes (60 by default).
 // A recorded path that no longer exists, or that the sweep could never remove (not directly in /tmp, not a
 // real directory), is dropped from the registry; one that may yet pass (owner, live run, age) stays.
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -40,8 +41,54 @@ function registryPath(env = process.env) {
 // recording while a sweep or another run forgets cannot lose its line (review of #126: a rewrite that
 // raced an append dropped the path, and that directory then leaked forever). A lock whose holder is gone
 // is taken over; a live holder is waited for, never for long, since it only reads and writes one file.
+//
+// The lock holds "<pid> <token>", the token new on every hold, so a lock is told from the next one even
+// when the pid is the same (review of #126, tqv.1). Taking over a stale lock is done holding a second,
+// short gate (lock.takeover, created exclusively), and removes the lock only if it still holds the very
+// token seen stale: two runs that both saw a dead holder cannot both remove a lock, so a third run's
+// fresh lock is never removed and a stale one is never put back. A lock is stale when its holder is
+// gone, when it carries this process's pid but not a token this process holds (left by an earlier
+// process with our pid, or put back by the old takeover), or when it is older than LOCK_STALE_MS, since
+// a hold lasts milliseconds and a pid that is reused by a live process (another user's included: EPERM
+// reads as alive) would otherwise refuse every record until that process exits.
 const LOCK_WAIT_MS = 10000;
+const LOCK_STALE_MS = 5000; // below LOCK_WAIT_MS, so a waiter takes a reused-pid lock over before it gives up
+const GATE_STALE_MS = 2000; // the gate is held for one read and one unlink
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const held = new Set(); // tokens of the locks this process holds now
+
+function readLock(lock) {
+  let text;
+  let st;
+  try { text = fs.readFileSync(lock, 'utf8'); st = fs.statSync(lock); } catch (e) { return null; } // released meanwhile
+  const [pid, token = ''] = text.trim().split(/\s+/);
+  return { text, pid: Number(pid) || 0, token, ageMs: Date.now() - st.mtimeMs };
+}
+
+function isStale(h, isAlive) {
+  if (h.ageMs > LOCK_STALE_MS) return true;
+  if (!h.pid) return false; // being written by a run that has just created it: young, so wait
+  if (h.pid === process.pid) return !held.has(h.token);
+  return !isAlive(h.pid);
+}
+
+// remove the lock only if it still holds the text seen stale, holding the gate so no other takeover runs
+function takeOver(lock, seen) {
+  const gate = `${lock}.takeover`;
+  let fd;
+  try { fd = fs.openSync(gate, 'wx'); } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+    // a gate left by a run that died mid-takeover: old, since a takeover lasts microseconds
+    try { if (Date.now() - fs.statSync(gate).mtimeMs > GATE_STALE_MS) fs.rmSync(gate, { force: true }); } catch (err) { /* gone */ }
+    return;
+  }
+  try {
+    fs.closeSync(fd);
+    let now = null;
+    try { now = fs.readFileSync(lock, 'utf8'); } catch (e) { /* released meanwhile */ }
+    if (now === seen.text) fs.rmSync(lock, { force: true });
+  } finally { fs.rmSync(gate, { force: true }); }
+}
 
 function withLock(registry, fn, { waitMs = LOCK_WAIT_MS, isAlive = alive } = {}) {
   fs.mkdirSync(path.dirname(registry), { recursive: true });
@@ -51,22 +98,20 @@ function withLock(registry, fn, { waitMs = LOCK_WAIT_MS, isAlive = alive } = {})
     let fd = null;
     try { fd = fs.openSync(lock, 'wx'); } catch (e) { if (e.code !== 'EEXIST') throw e; }
     if (fd !== null) {
-      try { fs.writeSync(fd, String(process.pid)); fs.closeSync(fd); return fn(); } finally { fs.rmSync(lock, { force: true }); }
+      const token = crypto.randomBytes(8).toString('hex');
+      const mine = `${process.pid} ${token}`;
+      held.add(token);
+      try { fs.writeSync(fd, mine); fs.closeSync(fd); return fn(); } finally {
+        held.delete(token);
+        // release only our own lock: one taken over after LOCK_STALE_MS is the new holder's now
+        try { if (fs.readFileSync(lock, 'utf8') === mine) fs.rmSync(lock, { force: true }); } catch (e) { /* gone */ }
+      }
     }
-    let holder = NaN;
-    try { holder = Number(fs.readFileSync(lock, 'utf8')); } catch (e) { continue; } // released meanwhile
-    // a holder that died leaves its lock: moved aside under a name of our own, and dropped only if it is
-    // still the dead holder's, so a lock another run took meanwhile is put back, never removed
-    if (holder && !isAlive(holder)) {
-      const aside = `${lock}.${process.pid}`;
-      try {
-        fs.renameSync(lock, aside);
-        if (Number(fs.readFileSync(aside, 'utf8')) === holder) fs.rmSync(aside, { force: true });
-        else { try { fs.linkSync(aside, lock); } catch (e) { /* a new holder already */ } fs.rmSync(aside, { force: true }); }
-      } catch (e) { /* another run moved it first */ }
-      continue;
-    }
-    if (Date.now() >= until) throw new Error(`the sweep registry ${registry} is locked by process ${holder || 'unknown'}`);
+    const h = readLock(lock);
+    if (!h) continue;
+    if (h.pid === process.pid && held.has(h.token)) throw new Error(`the sweep registry ${registry} is already locked by this process`);
+    if (isStale(h, isAlive)) { takeOver(lock, h); continue; }
+    if (Date.now() >= until) throw new Error(`the sweep registry ${registry} is locked by process ${h.pid || 'unknown'}`);
     pause(20);
   }
 }
@@ -159,7 +204,7 @@ function summary(r, dryRun) {
   return lines.join('\n');
 }
 
-module.exports = { sweep, record, forget, withLock, entries, registryPath, summary, MIN_AGE_MIN, TMP };
+module.exports = { sweep, record, forget, withLock, entries, registryPath, summary, MIN_AGE_MIN, TMP, LOCK_STALE_MS };
 
 if (require.main === module) {
   const argv = process.argv.slice(2);
