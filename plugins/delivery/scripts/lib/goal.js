@@ -413,10 +413,33 @@ function resolve(root, field, { g = read(root), verifyRecord, warn = true } = {}
   const latest = [...g.history].reverse().find((h) => h.field === field);
   let why = e.record ? null : 'no owner record';
   if (!why && (!latest || latest.record !== e.record || latest.at !== e.at)) why = `${e.record} is not the latest change to ${field}`;
+  const genuine = !why;
   if (!why) why = recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null, e.window_hours);
   if (!why) return { value: e.value, from: e.record };
   if (warn) warnUnverified(root, field, why);
+  // A latest change whose confirmation this session cannot accept leaves the field where the newest
+  // verified change put it, never at the default: a pause the owner set is not lifted by an unresolved
+  // change. The value comes from the history, the record of changes, never from g.fields, so a hand-put
+  // entry (not genuine above) still falls to the default. A revoked record fails recordProblem like any
+  // other, so revocation steps back to the verified value before it, or to the default.
+  const held = genuine ? heldEntry(root, g, field, latest, verifyRecord) : null;
+  if (held) return { value: held.value, from: held.record, held: true, ignored: why, unresolved: e.input || e.record };
   return { value: fallback, from: 'default', ignored: why };
+}
+
+// The newest history entry for `field` older than `latest` that still verifies, or null. A yes applies
+// once: an entry sharing its record, question or input with an earlier history entry is skipped.
+function heldEntry(root, g, field, latest, verifyRecord) {
+  const at = g.history.lastIndexOf(latest);
+  const keysOf = (h) => [h.record, h.question, h.input].filter(Boolean);
+  for (let i = at - 1; i >= 0; i--) {
+    const h = g.history[i];
+    if (h.field !== field || !h.record || h.value === undefined) continue;
+    const keys = keysOf(h);
+    if (g.history.slice(0, i).some((o) => keysOf(o).some((k) => keys.includes(k)))) continue;
+    if (!recordProblem(root, field, h.value, h.record, verifyRecord, h.judge || null, h.window_hours)) return h;
+  }
+  return null;
 }
 const value = (root, field, opts = {}) => resolve(root, field, opts).value;
 
@@ -425,7 +448,7 @@ const value = (root, field, opts = {}) => resolve(root, field, opts).value;
 // beadOf(id) gives the bead (from bd) so the andon is read against its recorded evidence head.
 function activePause(root, { verifyRecord, g = read(root), warn = true, beadOf, maxLookups = Infinity } = {}) {
   const owner = resolve(root, 'pause', { g, verifyRecord, warn });
-  if (['paused', 'stopped'].includes(owner.value)) return { paused: true, by: owner.from };
+  if (['paused', 'stopped'].includes(owner.value)) return { paused: true, by: owner.from, ...(owner.held ? { held: owner.ignored } : {}) };
   const triggers = [...(Array.isArray(g.fields.pause_triggers) ? g.fields.pause_triggers : []), ...(g.fields.pause_trigger ? [g.fields.pause_trigger] : [])].filter((t) => t && t.trigger);
   // each distinct trigger once, each bead looked up once, and at most maxLookups bd calls, so the Stop
   // hook's time budget holds (Copilot round 3); past the cap the chain alone is read
@@ -449,7 +472,8 @@ function showLines(root, opts = {}) {
     const r = resolve(root, field, { ...opts, g });
     const e = field === 'scope' || field === 'areas' ? null : g.fields[field];
     let s;
-    if (r.ignored) s = `${r.value === null ? 'not set' : `${shown(r.value)}${field === 'scope' || field === 'areas' ? '' : ' (default)'}`}; the written value is ignored: ${r.ignored}`;
+    if (r.held) s = `held: ${shown(r.value)} (confirmation ${r.unresolved} unresolved: ${r.ignored})`;
+    else if (r.ignored) s =`${r.value === null ? 'not set' : `${shown(r.value)}${field === 'scope' || field === 'areas' ? '' : ' (default)'}`}; the written value is ignored: ${r.ignored}`;
     else if (e) s = `${shown(r.value)} (${r.from}, ${e.at})`;
     else if (r.value === null) s = field.startsWith('budget.') ? 'not set by the owner (budget checks only warn)' : 'not set';
     else s = `${shown(r.value)} (${r.from === 'default' ? 'default' : r.from})`;
