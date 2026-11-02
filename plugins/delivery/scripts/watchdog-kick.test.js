@@ -45,13 +45,15 @@ test('a queued message or handoff drops a kick; the run takes it before reading 
   assert.equal(KICK.waiting(h.root), 2, 'a check (a role session may run it) takes no kick');
   const r = at(h, iso(Date.parse(t0) + 2e3), ['run'], { spawn, bd: memStore(h) });
   assert.equal(KICK.waiting(h.root), 0, 'taken, so the watched directory empties');
-  assert.match(r.out, /^Kicked: 2 \(a check handoff; a message\)$/m);
+  assert.match(r.out, /^Kicked: 2 \((a check handoff; a message|a message; a check handoff)\)$/m);
   assert.equal(spawn.list.length, 1, r.out);
   assert.equal(spawn.list[0].role, DM);
   assert.match(spawn.list[0].args.join(' '), /PR ready.*Dispatch its reality check now/);
   assert.equal(HO.pending(h.root).length, 0, 'handed over with its wake');
   // a kick that cannot be written never throws into the writer; the timer pass still finds the handover
-  assert.equal(KICK.kickIn('/proc/no-such-dir/kicks', 'x'), false);
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kick-')), 'a-file');
+  fs.writeFileSync(file, '');
+  assert.equal(KICK.kickIn(path.join(file, 'kicks'), 'x'), false);
 });
 
 test('a kick that lands while a run goes is taken by another pass of the same run', () => {
