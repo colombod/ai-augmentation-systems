@@ -1141,20 +1141,32 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   and where its scripts are now; and when the lane refuses a path to another installed version of
   this plugin, its reason says so and gives the same command at the current plugin root (or says
   that the lane would refuse it there too) (delivery-plugin-planning-8wz).
-- **Assigned work runs.** A role holding assigned or claimed work it can start (in progress, or open and ready) whose session has been quiet more than 10 minutes is woken to work it, message or not, under the message rules (five minutes apart, 48 a day), never a busy, usage-limited or epic case. Work an open owner-queue step names waits for the owner and is not woken. While main is red, open work is woken only when the claim check would let it start (a valid fix, or work of the open `ci:main` A3); work already in progress is still woken. In an area stopped on a failed check only the stop's recovery work is woken (the failed bead or its children, a fix linked through `metadata.fixes`, the stop's A3 work). Past `stall_hours` the in-progress stall wakes it instead, except recovery work in a stopped area, which the stall skips and so keeps its assigned wake. Assigned wakes do not count toward the stall wakes' hourly gate, daily cap or per-stall backoff, and a stall wake that goes out carries the holder's assigned work with it (hjx.1).
+- **Assigned work runs.** A role holding assigned or claimed work it can start (in progress, or open and ready) whose session has been quiet more than 10 minutes is woken to work it, message or not, at most every five minutes and 48 times a day, never a busy, usage-limited or epic case. Work an open owner-queue step names waits for the owner and is not woken. While main is red, open work is woken only when the claim check would let it start (a valid fix, or work of the open `ci:main` A3); work already in progress is still woken. In an area stopped on a failed check only the stop's recovery work is woken (the failed bead or its children, a fix linked through `metadata.fixes`, the stop's A3 work). Past `stall_hours` the in-progress stall wakes it instead, except recovery work in a stopped area, which the stall skips and so keeps its assigned wake. Assigned wakes do not count toward the stall wakes' hourly gate, daily cap or per-stall backoff, and a stall wake that goes out carries the holder's assigned work with it (hjx.1).
 - **Handoffs.** `merge-gate.js merged` hands the deploy of each story it marked merged to the watchdog,
   and `evidence.js state <bead> deployed` hands the reality check (`.delivery/watchdog/handoffs.ndjson`,
-  `lib/handoff.js`): if the Delivery Manager's turn ends there, the next pass wakes it for that step with
-  the exact commands, under the message rules below (five minutes apart, 48 a day), not after the
-  two-hour evidence stall. Each handoff wakes once; a step the record already shows taken (the bead
-  deployed, the `<bead>-rc-<sha>` child created, the story verified, cut or closed) is closed at the
-  pass with no wake (a deploy counts only when recorded after the merge: `merged_at`, a gate field only
+  `lib/handoff.js`): if the Delivery Manager's turn ends there, the watchdog wakes it for that step with
+  the exact commands at once (below), not after the two-hour evidence stall. Each handoff wakes once; a
+  step the record already shows taken (the bead deployed, the `<bead>-rc-<sha>` child created, the story
+  verified, cut or closed) is closed at the pass with no wake, and the row keeps what showed it
+  (`done_why`); a deploy counts only when recorded after the merge (`merged_at`, a gate field only
   the Delivery Manager's scripts write). Like a message, a handoff is a handover, not a warning in the ledger. A handoff
   in an area stopped on a failed check wakes only for that stop's recovery work (the failed story, a
   fix linked to it, its A3's work), as the claim check allows; other work there waits for the stop.
   The promise, a merged story at its reality check within one watchdog interval with no loop kept by
   hand, holds where the watchdog's host job runs (launchd, systemd or cron). A host with none cannot
   keep it, and `watchdog.js install` refuses there with the way out.
+- **Wake at once.** A message kept for a role that is not running, a handoff, and a wake that ends each
+  drop a kick in the watchdog's `kicks` directory (`lib/kick.js`). The systemd job watches it with a
+  path unit (`DirectoryNotEmpty`), the launchd job with `QueueDirectories`, so a run starts as soon as a
+  kick waits: a handoff or a message to an idle role starts its turn within a minute, not at the next
+  timer pass. The run takes the kicks before it reads the record (its log says `Kicked: <n>`), takes
+  another pass under its lock for kicks that land meanwhile, and a kicked run waits up to a minute for
+  another run's lock. A new message or handoff waits only for a wake of its role that is still running
+  (whose end kicks the next run); the five-minute gap holds assigned work alone, and no daily cap holds
+  a handoff (a message stops at 48 wakes a day). A session open and busy in a terminal is not woken;
+  its handover waits for the next pass. A systemd job installed earlier gets its path unit from its own
+  next run; a launchd job gets `QueueDirectories` when reinstalled. cron cannot watch a directory, so
+  there a kick waits for the next pass, as `install` says.
 - **The wake's limits.** At most one wake per session an hour whatever the stalls; at most 6 a day per
   session; each stall waits 1, 2, 4, 8 ... hours after each wake that carried it; never while that
   session's last wake still runs, however long ago it started (each wake runs in its own process group

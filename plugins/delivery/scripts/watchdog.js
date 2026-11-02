@@ -27,10 +27,14 @@ const crypto = require('crypto');
 const WD = require('./lib/watchdog.js');
 const { whoAmI } = require('./lib/gate-context.js');
 const LAUNCHER = require('./lib/launcher.js');
+const KICK = require('./lib/kick.js');
 
 const USAGE = 'usage: watchdog.js check [--json] | watchdog.js wake [--dry-run] | watchdog.js run | watchdog.js install [--every 15m] [--apply] | watchdog.js uninstall   (each takes --project <root>)';
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
 const RUN_LOCK_STALE_MS = 20 * 60e3;
+// a kicked run waits this long for another run's lock; passes one run takes for kicks that came meanwhile
+const KICK_LOCK_WAIT_MS = 60e3;
+const KICK_PASSES = 3;
 const KEEP_WAKE_LOGS = 50;
 
 function parse(argv) {
@@ -159,10 +163,15 @@ function wakeMode(t, s) {
 // wake's own limit (wake-run.js) still bounds the whole run.
 const HEADLESS_WAIT = { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
 
-function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake }) {
+// The supervisors whose own end kicked this run (lib/wake-run.js): each drops its kick from its exit
+// handler, while its pid still answers, so a run started at once would read the wake as running and
+// hold what it was kicked to hand over until the timer pass. A pid named in a kick has ended.
+const endedPids = (kicks) => new Set(kicks.map((k) => Number((/a wake ended \(pid (\d+)\)/.exec(k) || [])[1])).filter((n) => n > 0));
+
+function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set() }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
-  const p = WD.plan(res, { root, now: at });
+  const p = WD.plan(res, { root, now: at, alive: (pid) => !ended.has(pid) && WD.pidAlive(pid) });
   const lines = [];
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const open = p.wakes.length ? (live !== undefined ? live : liveSessions(bin, env)) : null;
@@ -190,7 +199,8 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     // owner's open session, never in its place
     // each wake has its own id: a fork records its session under it (lib/roster.js sessionLocator)
     const wakeId = crypto.randomBytes(6).toString('hex');
-    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, ...HEADLESS_WAIT }), logPath });
+    // DELIVERY_WAKE_KICK: the supervisor kicks the next run when this wake ends (lib/kick.js)
+    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, DELIVERY_WAKE_KICK: KICK.dirOf(root), ...HEADLESS_WAIT }), logPath });
     WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
     // the messages and handoffs it carries are handed over: the next run does not wake for them again
     for (const d of w.delivers || []) require('./lib/inbox.js').markDelivered(root, d.to, d.upTo);
@@ -211,15 +221,21 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
 }
 
 // One run at a time: a second run while one holds the lock does nothing (a lock older than 20 min is stale).
-function withRunLock(root, fn) {
+// A run started by a kick (lib/kick.js) waits up to waitMs for the lock instead: it leaves its kicks
+// when it gives up, and the scheduler, which starts a run while kicks wait, would start it again at once.
+function withRunLock(root, fn, { waitMs = 0 } = {}) {
   WD.ensureDir(root);
   const lock = path.join(root, WD.REL, 'run.lock');
+  const until = Date.now() + waitMs;
   let fd = null;
-  try { fd = fs.openSync(lock, 'wx'); } catch (err) {
-    let age = 0;
-    try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch (e) { age = Infinity; }
-    if (age < RUN_LOCK_STALE_MS) return null;
-    try { fs.unlinkSync(lock); fd = fs.openSync(lock, 'wx'); } catch (e) { return null; }
+  while (fd === null) {
+    try { fd = fs.openSync(lock, 'wx'); } catch (err) {
+      let age = 0;
+      try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch (e) { age = Infinity; }
+      if (age >= RUN_LOCK_STALE_MS) { try { fs.unlinkSync(lock); } catch (e) { if (e.code !== 'ENOENT') return null; } continue; }
+      if (Date.now() >= until) return null;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
   }
   try { fs.writeSync(fd, String(process.pid)); return fn(); } finally { try { fs.closeSync(fd); fs.unlinkSync(lock); } catch (e) { /* gone */ } }
 }
@@ -275,6 +291,37 @@ process.exit(r.status === null ? 1 : r.status);
 `;
 }
 
+// systemd: the path unit that starts the job's service as soon as a kick waits (lib/kick.js), so a
+// handoff or a message wakes its role within the minute, not at the next timer pass (hjx.1.3).
+// DirectoryNotEmpty is level-triggered: a kick dropped during a run starts the service again after it.
+function kickWatchUnit(root, home) {
+  const name = `delivery-watchdog-${tagOf(root)}`;
+  return {
+    file: path.join(home, '.config', 'systemd', 'user', `${name}.path`),
+    body: `[Unit]\nDescription=delivery watchdog: a run at once on a handoff or a message for ${sdPct(root)}\n\n[Path]\nDirectoryNotEmpty=${sdPct(KICK.dirOf(root))}\nMakeDirectory=yes\nUnit=${name}.service\n\n[Install]\nWantedBy=paths.target\n`,
+    commands: [['systemctl', ['--user', 'enable', '--now', `${name}.path`]]],
+  };
+}
+
+// A systemd job installed before the kick watch existed gets its path unit from the job's own run, so
+// the update reaches a running team with no reinstall (a role session may not install: R-42). Only the
+// job this project recorded at this home; null when there is nothing to do.
+function ensureKickWatch(root, { home, exec } = {}) {
+  const j = WD.installedJob(root);
+  if (!j || j.kind !== 'systemd') return null;
+  const w = kickWatchUnit(root, home);
+  if (j.file !== w.file.replace(/\.path$/, '.timer')) return null;
+  try { if (fs.readFileSync(w.file, 'utf8') === w.body) return null; } catch (err) { /* not written yet */ }
+  try {
+    fs.mkdirSync(path.dirname(w.file), { recursive: true });
+    fs.writeFileSync(w.file, w.body);
+    const run = runner(exec);
+    run('systemctl', ['--user', 'daemon-reload']);
+    for (const [cmd, args] of w.commands) run(cmd, args);
+    return `kick watch: installed ${w.file}; a handoff or a message now starts a run at once`;
+  } catch (err) { return `kick watch: not installed (${String(err.message).split('\n')[0]}); handoffs wait for the next pass`; }
+}
+
 function jobFiles(root, { platform, home, sec, env, has }) {
   const tag = tagOf(root);
   const logPath = path.join(root, WD.REL, 'job.log');
@@ -282,7 +329,9 @@ function jobFiles(root, { platform, home, sec, env, has }) {
   const argv = ['/usr/bin/env', 'node', shim];
   const PATH = jobPath(env, home);
   const config = env.CLAUDE_CONFIG_DIR || null;
-  const base = { shim, shimBody: shimBody(root, PLUGIN_ROOT, config) };
+  // a handoff or a message drops a kick here (lib/kick.js); the job runs as soon as one waits
+  const kicks = KICK.dirOf(root);
+  const base = { shim, shimBody: shimBody(root, PLUGIN_ROOT, config), kicks };
   if (platform === 'darwin') {
     const label = `com.delivery-plugin.watchdog.${tag}`;
     const file = path.join(home, 'Library', 'LaunchAgents', `${label}.plist`);
@@ -297,6 +346,8 @@ function jobFiles(root, { platform, home, sec, env, has }) {
   <key>WorkingDirectory</key><string>${xml(root)}</string>
   <key>StartInterval</key><integer>${sec}</integer>
   <key>RunAtLoad</key><true/>
+  <key>QueueDirectories</key>
+  <array><string>${xml(kicks)}</string></array>
   <key>EnvironmentVariables</key>
   <dict>${Object.entries(vars).map(([k, v]) => `<key>${k}</key><string>${xml(v)}</string>`).join('')}</dict>
   <key>StandardOutPath</key><string>${xml(logPath)}</string>
@@ -313,6 +364,7 @@ function jobFiles(root, { platform, home, sec, env, has }) {
     const dir = path.join(home, '.config', 'systemd', 'user');
     const service = path.join(dir, `${name}.service`);
     const timer = path.join(dir, `${name}.timer`);
+    const watch = kickWatchUnit(root, home);
     // KillMode=process: the wake started by the run outlives the oneshot service (Copilot 440)
     return {
       ...base,
@@ -321,9 +373,10 @@ function jobFiles(root, { platform, home, sec, env, has }) {
       files: [
         { file: service, body: `[Unit]\nDescription=delivery watchdog for ${sdPct(root)}\n\n[Service]\nType=oneshot\nKillMode=process\nWorkingDirectory=${sdPct(root)}\nEnvironment=${sdq(`PATH=${PATH}`)}\n${config ? `Environment=${sdq(`CLAUDE_CONFIG_DIR=${config}`)}\n` : ''}ExecStart=${argv[0]} ${argv.slice(1).map(sdq).join(' ')}\nStandardOutput=append:${sdPct(logPath)}\nStandardError=append:${sdPct(logPath)}\n` },
         { file: timer, body: `[Unit]\nDescription=delivery watchdog every ${sec / 60} min for ${root}\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=${sec}s\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n` },
+        { file: watch.file, body: watch.body },
       ],
-      commands: [['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', '--now', `${name}.timer`]]],
-      removeCommands: [['systemctl', ['--user', 'disable', '--now', `${name}.timer`], true], ['systemctl', ['--user', 'daemon-reload'], true]],
+      commands: [['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', '--now', `${name}.timer`]], ...watch.commands],
+      removeCommands: [['systemctl', ['--user', 'disable', '--now', `${name}.timer`], true], ['systemctl', ['--user', 'disable', '--now', `${name}.path`], true], ['systemctl', ['--user', 'daemon-reload'], true]],
     };
   }
   const marker = `# delivery-watchdog ${tag}`;
@@ -358,7 +411,7 @@ function install(root, o, { platform = process.platform, home = os.homedir(), en
   const run = runner(exec);
   const j = jobFiles(root, { platform, home, sec: e.sec, env, has: which });
   const lines = [];
-  const head = `The ${j.kind} job runs \`watchdog.js run --project ${root}\` every ${e.sec / 60} min on this host, through ${j.shim}, which finds the plugin each run: it checks for stalls and wakes the role session each one names. Its log: ${path.join(root, WD.REL, 'job.log')}.`;
+  const head = `The ${j.kind} job runs \`watchdog.js run --project ${root}\` every ${e.sec / 60} min on this host, through ${j.shim}, which finds the plugin each run: it checks for stalls and wakes the role session each one names. ${j.kind === 'cron' ? 'cron cannot watch a directory, so a handoff or a message waits for the next pass' : `It also runs at once when a handoff or a message drops a kick in ${j.kicks}`}. Its log: ${path.join(root, WD.REL, 'job.log')}.`;
   const removal = `To remove it: node ${path.join(PLUGIN_ROOT, 'scripts', 'watchdog.js')} uninstall --project ${root}`;
   if (!o.apply) {
     lines.push(`Dry run. ${head}`, `Would write ${j.shim} (the shim).`);
@@ -371,6 +424,8 @@ function install(root, o, { platform = process.platform, home = os.homedir(), en
   }
   try {
     WD.ensureDir(root);
+    // launchd watches only a directory that exists
+    fs.mkdirSync(j.kicks, { recursive: true });
     fs.writeFileSync(j.shim, j.shimBody, { mode: 0o755 });
     for (const f of j.files) { fs.mkdirSync(path.dirname(f.file), { recursive: true }); fs.writeFileSync(f.file, f.body); lines.push(`Wrote ${f.file}`); }
     if (j.cron) {
@@ -420,7 +475,7 @@ function uninstall(root, { platform = process.platform, home = os.homedir(), env
   return { code: 0, out: lines.length ? `${lines.join('\n')}\nThe watchdog job for ${root} is removed from this host.` : `Nothing to remove: no watchdog job for ${root} on this host.` };
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform, home, exec, has, sweep } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -433,17 +488,23 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   if (!who.root) return { code: 2, out: 'watchdog.js: no project found; pass --project <root>' };
   if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has });
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
-  const go = () => {
+  const go = ({ first = true } = {}) => {
+    // the kicks that started this run (lib/kick.js) are taken before the record is read: one dropped
+    // after this point starts the next pass, so nothing it announces is missed
+    const kicked = cmd !== 'check' && !o.dryRun ? KICK.take(who.root) : [];
     const res = check(who.root, { bd, now, team: who.team, rows, record: !(cmd === 'wake' && o.dryRun) });
     if (cmd === 'check') {
       if (o.json) return { code: 0, out: JSON.stringify({ paused: res.paused || null, stalls: res.stalls, polls: res.polls, unreadable: res.unreadable || null }, null, 2) };
       return { code: 0, out: checkLines(res).join('\n') };
     }
-    const woke = wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn });
+    const woke = wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked) });
     // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
-    let swept = [];
-    if (cmd === 'run') {
+    let swept = kicked.length ? [`Kicked: ${kicked.length} (${[...new Set(kicked.map((k) => k.replace(/^\S+\s*/, '').replace(/ \(pid \d+\)$/, '') || 'a kick'))].join('; ').slice(0, 300)})`] : [];
+    if (cmd === 'run' && first) {
+      // a job installed before the kick watch existed gets it here, so an update needs no reinstall
+      const kw = o.dryRun ? null : ensureKickWatch(who.root, { home, exec });
+      if (kw) swept.push(kw);
       // the project's script launcher (lib/launcher.js) is kept present and current every cycle, so
       // briefs and reality-check steps that name it work even when no role session has started since a
       // clone or a cleanup; a failure is reported and never stops the wakes
@@ -453,14 +514,21 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
         const S = require('./testing/sweep.js');
         // a dry run says what the sweep would remove and removes nothing
         const r = (sweep || S.sweep)({ dryRun: !!o.dryRun });
-        if (r.removed.length || r.failed.length) swept = S.summary(r, !!o.dryRun).split('\n');
-      } catch (err) { swept = [`sweep: failed (${String(err && err.message || err).slice(0, 200)})`]; }
+        if (r.removed.length || r.failed.length) swept.push(...S.summary(r, !!o.dryRun).split('\n'));
+      } catch (err) { swept.push(`sweep: failed (${String(err && err.message || err).slice(0, 200)})`); }
     }
     const out = cmd === 'run' ? [`${now || new Date().toISOString()} watchdog`, ...swept, ...checkLines(res), ...woke] : (woke.length ? woke : checkLines(res));
     return { code: 0, out: out.join('\n') };
   };
   if (cmd === 'check' || o.dryRun) return go();
-  const r = withRunLock(who.root, go);
+  // kicks dropped while this run went (a message sent, a wake that ended) are taken by another pass
+  // under the same lock, a few at most: the scheduler starts a new run for any left after that
+  const drain = () => {
+    const outs = [go()];
+    for (let i = 0; i < KICK_PASSES - 1 && KICK.waiting(who.root); i++) outs.push(go({ first: false }));
+    return { code: 0, out: outs.map((x) => x.out).join('\n') };
+  };
+  const r = withRunLock(who.root, drain, { waitMs: KICK.waiting(who.root) ? (lockWaitMs !== undefined ? lockWaitMs : KICK_LOCK_WAIT_MS) : 0 });
   return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
@@ -471,4 +539,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, checkLines, jobFiles, shimBody, everySeconds, roleContext };
+module.exports = { main, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit };

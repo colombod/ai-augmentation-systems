@@ -21,6 +21,8 @@ function queue(root, { to, from, summary, message, at }) {
   const ig = path.join(root, '.delivery', 'watchdog', '.gitignore');
   if (!fs.existsSync(ig)) fs.writeFileSync(ig, '*\n');
   fs.appendFileSync(file(root, to), `${JSON.stringify({ at: at || new Date().toISOString(), from: from || null, summary: summary ? String(summary).slice(0, 200) : null, message: String(message || '').slice(0, MAX_TEXT) })}\n`);
+  // the host job starts a run now, not at its next pass (lib/kick.js)
+  require('./kick.js').kick(root, 'a message');
   return true;
 }
 
