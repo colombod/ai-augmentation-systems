@@ -168,11 +168,13 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
   const rows = WD.logRows(root);
   const manifest = p.wakes.length ? teamOf(root) : null;
   const limitProblem = freshAboveProblem(manifest);
+  // the version this job runs is the installed one (the job runs the user's current plugin, 0.43.4)
+  const installed = require('./lib/plugin-version.js').runningVersion();
   if (limitProblem) lines.push(`Warning: ${limitProblem}.`);
   for (const w of p.wakes) {
     const s = res.sessions.find((x) => x.instance === w.target) || null;
     const wm = wakeMode(manifest, s);
-    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode, { freshAbove: freshAboveOf(manifest) });
+    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode, { freshAbove: freshAboveOf(manifest), installed });
     if (c.skip) {
       lines.push(`Not woken: ${w.target}: ${c.skip}. ${w.lines[0]}`);
       // one skip row an hour per session keeps the log short while a session is busy
@@ -188,7 +190,7 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     // each wake has its own id: a fork records its session under it (lib/roster.js sessionLocator)
     const wakeId = crypto.randomBytes(6).toString('hex');
     const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, ...HEADLESS_WAIT }), logPath });
-    WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
+    WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
     // the messages and handoffs it carries are handed over: the next run does not wake for them again
     for (const d of w.delivers || []) require('./lib/inbox.js').markDelivered(root, d.to, d.upTo);
     // a handoffs file another writer holds: the wake stands, the row is handed over at the next pass
