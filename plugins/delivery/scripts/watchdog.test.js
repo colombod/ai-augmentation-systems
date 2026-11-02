@@ -876,7 +876,7 @@ test('dlv-2ex: the watchdog wakes the steward for a message kept under "steward"
   assert.deepEqual(IB.pending(h.root).map((p) => p.to), ['stewart'], 'the steward\'s message is marked delivered under the name it was kept by');
 });
 
-test('a waiting message wakes its target once, with the message; a new one waits five minutes between wakes', () => {
+test('a waiting message wakes its target once, with the message; a new one goes at once once that wake has ended (hjx.1.3)', () => {
   const t0 = '2026-10-25T18:00:00Z';
   const h = harness({});
   const IB = require('./lib/inbox.js');
@@ -891,11 +891,9 @@ test('a waiting message wakes its target once, with the message; a new one waits
   at(h, iso(Date.parse(t0) + 60e3), ['run'], { spawn, bd });
   assert.equal(spawn.list.length, 1, 'a delivered message does not wake again');
   IB.queue(h.root, { to: COS, from: DM, message: 'second', at: iso(Date.parse(t0) + 2 * 60e3) });
-  const held = at(h, iso(Date.parse(t0) + 3 * 60e3), ['run'], { spawn, bd });
-  assert.equal(spawn.list.length, 1);
-  assert.match(held.out, /messages wait 5 min between wakes/);
-  at(h, iso(Date.parse(t0) + 6 * 60e3), ['run'], { spawn, bd });
-  assert.equal(spawn.list.length, 2, 'woken again after five minutes, not an hour');
+  const r = at(h, iso(Date.parse(t0) + 2 * 60e3 + 5e3), ['run'], { spawn, bd });
+  assert.equal(spawn.list.length, 2, `woken at once, not five minutes after the last wake: ${r.out}`);
+  assert.match(r.out, /^Kicked: 1 \(a message\)$/m, 'the run says the kick started it');
   assert.match(spawn.list[1].args[5], /second/);
   assert.doesNotMatch(spawn.list[1].args[5], /merge the story branch/);
 });
@@ -1112,20 +1110,27 @@ test('plan: messages beside a held stall keep their own rules; message wakes do 
   p = plan(sixStalls, { alive: () => true });
   assert.equal(p.wakes.length, 0);
   assert.ok(p.held.every((h) => /still running/.test(h.reason)), JSON.stringify(p.held));
-  // messages five minutes apart: the message held says so, the stall says its own cause
+  // hjx.1.3: a new message two minutes after a wake that has ended goes at once; the stall says its own cause
   p = plan([...sixStalls, { at: ago(2), keys: ['message:b1:0'] }]);
-  assert.equal(p.wakes.length, 0);
-  assert.match(p.held.find((h) => h.lines.includes('Waiting: 1 message')).reason, /messages wait 5 min/);
-  assert.match(p.held.find((h) => h.lines.includes('Stalled: ex-s')).reason, /woken 6 times in a day/);
+  assert.deepEqual(p.wakes.map((w) => w.keys), [['message:b1:1']]);
+  assert.deepEqual(p.held.map((h) => h.lines.join()), ['Stalled: ex-s']);
+  assert.match(p.held[0].reason, /woken 6 times in a day/);
   // 48 wakes in a day: the message is held too
   p = plan(Array.from({ length: 48 }, (_, i) => ({ at: ago(20 * (i + 1)), keys: [`message:b1:x${i}`] })).concat(sixStalls));
   assert.equal(p.wakes.length, 0);
   assert.match(p.held.find((h) => h.lines.includes('Waiting: 1 message')).reason, /woken 48 times in a day/);
   // the review's storm: an hour past the last stall wake, the stall still waits out its backoff (its
-  // second try is due at 2 h); a message wake a minute ago holds the next message by the message rules
+  // second try is due at 2 h); the new message goes alone, and never carries the stall with it
   p = plan([{ at: ago(130), keys: ['quiet:ex-s:1'] }, { at: ago(61), keys: ['quiet:ex-s:1'] }, { at: ago(1), keys: ['message:b1:0'] }]);
-  assert.equal(p.wakes.length, 0, JSON.stringify(p.wakes));
-  assert.match(p.held.find((h) => h.lines.includes('Waiting: 1 message')).reason, /messages wait 5 min/);
+  assert.deepEqual(p.wakes.map((w) => w.keys), [['message:b1:1']], JSON.stringify(p.wakes));
+  assert.doesNotMatch(p.wakes[0].prompt, /ex-s has not moved/);
+  // assigned work alone keeps the five-minute gap after a wake, even beside a held stall
+  const assigned = { kind: 'assigned', key: 'assigned:ex-a', target: 'b1', due: true, line: 'Assigned and waiting: ex-a', prompt: 'work ex-a.' };
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-'));
+  for (const r of [...sixStalls, { at: ago(2), keys: ['message:b1:0'] }]) WD.log(root, { type: 'wake', instance: 'b1', pid: 7, ...r });
+  p = WD.plan({ stalls: [stall, assigned] }, { root, now: new Date(t0).toISOString(), alive: () => false });
+  assert.equal(p.wakes.length, 0);
+  assert.match(p.held.find((h) => h.lines.includes(assigned.line)).reason, /assigned work waits 5 min/);
   // message wakes in the last hour do not hold the stall: one wake carries both, and hands the message over
   p = plan([{ at: ago(10), keys: ['message:b1:a'] }, { at: ago(40), keys: ['message:b1:b'] }]);
   assert.equal(p.wakes.length, 1);
@@ -1263,7 +1268,8 @@ test('dlv-4oj: a merged story\'s deploy and a deployed story\'s check wake the D
     assert.match(spawn.list[1].args.join(' '), /Dispatch its reality check now/);
     fs.unlinkSync(path.join(h.root, HO.REL, `${HO.FILE}.lock`));
   }
-  // a handoff keeps the message rules: five minutes after a message wake it waits, then goes; the day's stall cap does not hold it
+  // hjx.1.3: a handoff two minutes after a message wake that has ended goes at once, past the day's
+  // stall cap (the check at a65637c saw "woken 6 times in a day" beside the Delivery Manager's handoffs)
   {
     const h = fresh(['state-merged'], { merged_pr: '478' });
     for (let i = 0; i < WD.DAILY_CAP; i++) WD.log(h.root, { type: 'wake', at: iso(Date.parse(t0) - (i + 1) * 2 * H), keys: ['p0:ex-old'], instance: DM, pid: 1 });
@@ -1272,33 +1278,42 @@ test('dlv-4oj: a merged story\'s deploy and a deployed story\'s check wake the D
     at(h, iso(Date.parse(t0) - 2 * 60e3), ['run'], { spawn, bd: memStore(h) });
     assert.equal(spawn.list.length, 1, 'the message wake');
     HO.queue(h.root, { bead: 'ex-s', step: 'deploy', to: DM, pr: '478', at: t0 });
-    const held = at(h, t0, ['run'], { spawn, bd: memStore(h) });
-    assert.equal(spawn.list.length, 1);
-    assert.match(held.out, /Alarm only: delivery-lead: woken at 2026-10-29 09:58 UTC; messages wait 5 min between wakes\. Handed over: ex-s/);
-    at(h, iso(Date.parse(t0) + 4 * 60e3), ['run'], { spawn, bd: memStore(h) });
-    assert.equal(spawn.list.length, 2, 'woken by the message rules, past the stall cap');
+    const r = at(h, t0, ['run'], { spawn, bd: memStore(h) });
+    assert.equal(spawn.list.length, 2, r.out);
     assert.match(spawn.list[1].args.join(' '), /Deploy it now/);
+    assert.match(r.out, /Alarm only: delivery-lead: woken 6 times in a day; alarm only until the count falls\. Unclaimed|^Woke delivery-lead/m);
+    assert.doesNotMatch(r.out, /Alarm only: delivery-lead: [^\n]*Handed over: ex-s/, 'the handoff is not held');
   }
 });
 
-// From the review of #86: a handoff alone keeps the message rules' daily cap (48 wakes a day), and is
-// woken again once the day's count falls under it.
-test('plan: a handoff alone is held at 48 wakes in a day and woken below it (dlv-4oj)', () => {
+// hjx.1.3: no daily cap holds a handoff (a merge's deploy, a deploy's check): merges and deploys bound
+// it. At 48 wakes in a day the handoff still goes and the message beside it is held, with its cause.
+test('plan: a handoff is never held by a daily cap; a message beside it at 48 a day is (hjx.1.3)', () => {
   const t0 = Date.parse('2026-10-26T15:00:00Z');
   const ho = { kind: 'handoff', key: 'handoff:ho-1', bead: 'ex-s', target: 'b1', handoff: 'ho-1', due: true, line: 'Handed over: ex-s waits for its deploy', prompt: 'deploy ex-s.' };
+  const msg = { kind: 'message', key: 'message:b1:1', target: 'b1', due: true, line: 'Waiting: 1 message', prompt: 'read it.', upTo: 1 };
   const ago = (m) => new Date(t0 - m * 60e3).toISOString();
-  const plan = (n) => {
+  const plan = (n, stalls = [ho]) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-ho-'));
     for (let i = 0; i < n; i++) WD.log(root, { type: 'wake', instance: 'b1', pid: 7, at: ago(20 * (i + 1)), keys: [`handoff:old-${i}`] });
-    return WD.plan({ stalls: [ho] }, { root, now: new Date(t0).toISOString(), alive: () => false });
+    return WD.plan({ stalls }, { root, now: new Date(t0).toISOString(), alive: () => false });
   };
-  const full = plan(48);
-  assert.equal(full.wakes.length, 0, JSON.stringify(full.wakes));
-  assert.match(full.held.find((h) => h.lines.includes(ho.line)).reason, /woken 48 times in a day/);
-  const under = plan(47);
-  assert.equal(under.wakes.length, 1);
-  assert.deepEqual(under.wakes[0].keys, ['handoff:ho-1']);
-  assert.deepEqual(under.wakes[0].handoffs, ['ho-1'], 'the wake carries its handoff, so it is marked handed over');
+  for (const n of [47, 48, 60]) {
+    const p = plan(n);
+    assert.equal(p.wakes.length, 1, `${n} wakes in a day`);
+    assert.deepEqual(p.wakes[0].keys, ['handoff:ho-1']);
+    assert.deepEqual(p.wakes[0].handoffs, ['ho-1'], 'the wake carries its handoff, so it is marked handed over');
+  }
+  const both = plan(48, [ho, msg]);
+  assert.deepEqual(both.wakes.map((w) => w.keys), [['handoff:ho-1']]);
+  assert.deepEqual(both.wakes[0].delivers, [], 'the held message is not marked delivered');
+  assert.deepEqual(both.held.map((h) => [h.lines.join(), /woken 48 times in a day/.test(h.reason)]), [['Waiting: 1 message', true]]);
+  // a wake still running holds it, until that wake ends (whose end kicks the next run)
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-ho-'));
+  WD.log(root, { type: 'wake', instance: 'b1', pid: 7, at: ago(1), keys: ['message:b1:0'] });
+  const running = WD.plan({ stalls: [ho] }, { root, now: new Date(t0).toISOString(), alive: () => true });
+  assert.equal(running.wakes.length, 0);
+  assert.match(running.held[0].reason, /still running; it is woken again when that wake ends/);
 });
 
 // GitHub Copilot's review of #86: handoff ids, retries after a wake, and recovery in a stopped area.
@@ -1375,7 +1390,7 @@ test('hjx.1: assigned work wakes its holder after 10 quiet minutes, under the me
   assert.equal(WD.plan(st, { root, now: iso(now), alive: () => false }).wakes.length, 1, 'seven minutes after the last wake: woken again');
   const root2 = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-'));
   WD.log(root2, { type: 'wake', at: iso(now - 2 * 60e3), keys: ['assigned:ex-p'], instance: 'builder-2', pid: 7 });
-  assert.match(WD.plan(st, { root: root2, now: iso(now), alive: () => false }).held[0].reason, /wait 5 min/);
+  assert.match(WD.plan(st, { root: root2, now: iso(now), alive: () => false }).held[0].reason, /assigned work waits 5 min/);
 });
 
 // Copilot on PR 113: bd ready does not know owner-queue steps; work waiting for the owner is not woken

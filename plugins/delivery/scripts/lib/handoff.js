@@ -56,6 +56,8 @@ function queue(root, { bead, step, to, from, pr, sha, at }) {
     const kept = list.map((r) => (open.includes(r) ? { ...r, done_at: now, superseded_by: row.id } : r));
     // rows settled over a week ago go; the open ones stay whatever their age
     write(root, [...kept.filter((r) => !(r.done_at || r.delivered_at) || Date.parse(now) - Date.parse(r.done_at || r.delivered_at) < KEEP_MS), row]);
+    // the host job starts a run now, not at its next pass (lib/kick.js)
+    require('./kick.js').kick(root, `a ${step} handoff`);
     return row;
   });
 }
@@ -63,34 +65,43 @@ function queue(root, { bead, step, to, from, pr, sha, at }) {
 // the rows no wake has carried and no record has closed
 const pending = (root) => rows(root).filter((r) => !r.delivered_at && !r.done_at);
 
+// ids: row ids, or { id, why } for a row the record closed: the why stays on the row (done_why), so a
+// handoff marked done with no wake always says what in the record showed its step taken (hjx.1.3)
 function mark(root, ids, field, at) {
-  const want = new Set(ids || []);
+  const want = new Map((ids || []).map((x) => (x && typeof x === 'object' ? [x.id, x.why || null] : [x, null])));
   if (!want.size) return;
   const now = at || new Date().toISOString();
-  locked(root, () => write(root, rows(root).map((r) => (want.has(r.id) && !r[field] ? { ...r, [field]: now } : r))));
+  locked(root, () => write(root, rows(root).map((r) => {
+    if (!want.has(r.id) || r[field]) return r;
+    const why = want.get(r.id);
+    return { ...r, [field]: now, ...(field === 'done_at' && why ? { done_why: why } : {}) };
+  })));
 }
 const markDelivered = (root, ids, at) => mark(root, ids, 'delivered_at', at);
 const markDone = (root, ids, at) => mark(root, ids, 'done_at', at);
 
-// Whether the record shows the step taken, from the bead as bd lists it and the beads list (for the
-// reality-check child). A bead that cannot be found counts as done: there is nothing to wake for.
-function done(row, bead, beads = []) {
-  if (!bead) return true;
+// What the record shows of the step taken, from the bead as bd lists it and the beads list (for the
+// reality-check child), or null while the step is still to do. A bead that cannot be found counts as
+// done: there is nothing to wake for.
+function doneWhy(row, bead, beads = []) {
+  if (!bead) return `${row.bead} is not in the record`;
   const G = require('./gates.js');
   const st = G.stateOf(bead);
-  if (bead.status === 'closed' || st === 'cut') return true;
+  if (bead.status === 'closed') return `${bead.id} is closed`;
+  if (st === 'cut') return `${bead.id} is cut`;
   // a follow-up PR on a story already deployed keeps its deployed (or verified) label: its deploy is
   // done only once a deploy is recorded after this merge (Copilot, #86)
   const m = bead.metadata || {};
   const redeploy = Boolean(m.merged_at) && (!m.deployed_at || Date.parse(m.deployed_at) < Date.parse(m.merged_at));
-  if (row.step === 'deploy') return !redeploy && ['deployed', 'verified'].includes(st);
-  if (st === 'verified' && !redeploy) return true;
+  if (row.step === 'deploy') return !redeploy && ['deployed', 'verified'].includes(st) ? `${bead.id} is ${st}${m.deployed_sha ? ` at ${String(m.deployed_sha).slice(0, 7)}` : ''}` : null;
+  if (st === 'verified' && !redeploy) return `${bead.id} is verified`;
   // check: the reality check for the deployed sha exists (reality-check.js plan creates <bead>-rc-<sha7>)
   const sha = (bead.metadata && bead.metadata.deployed_sha) || row.sha;
-  if (!sha) return false;
+  if (!sha) return null;
   const child = `${bead.id}-rc-${String(sha).slice(0, 7)}`;
-  return beads.some((b) => b && b.id === child);
+  return beads.some((b) => b && b.id === child) ? `its reality check ${child} exists` : null;
 }
+const done = (row, bead, beads = []) => Boolean(doneWhy(row, bead, beads));
 
 // what the woken role is told, with the exact commands of the step
 function prompt(row, bead) {
@@ -100,4 +111,4 @@ function prompt(row, bead) {
   return `${b} is deployed${sha ? ` at ${String(sha).slice(0, 7)}` : ''}. Dispatch its reality check now (reality-check.js plan ${b}, then message the Reality Checker with the child's id), or record its evidence (evidence.js add ${b} --criterion <n> --result pass --surface <id> --sha ${sha || '<sha>'} --run <ref>).`;
 }
 
-module.exports = { REL, FILE, STEPS, queue, pending, rows, markDelivered, markDone, done, prompt };
+module.exports = { REL, FILE, STEPS, queue, pending, rows, markDelivered, markDone, done, doneWhy, prompt };
