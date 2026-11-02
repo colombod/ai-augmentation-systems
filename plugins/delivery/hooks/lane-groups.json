@@ -58,7 +58,7 @@
   ],
   "git-write-docs": [
     { "first": "git", "sub": ["add", "rm", "mv"], "scope": "product", "paths_in_lane": true, "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "--pathspec-from-file"], "value_flags": ["--chmod"] },
-    { "first": "git", "sub": ["commit"], "scope": "product", "paths_in_lane": true, "paths_allow_none": true, "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "--pathspec-from-file"], "value_flags": ["-m", "--message", "-F", "--file", "-C", "--reuse-message", "-c", "--reedit-message", "--author", "--date", "--fixup", "--squash", "-t", "--template", "--trailer", "--cleanup"], "value_letters": "mFCct" },
+    { "first": "git", "sub": ["commit"], "scope": "product", "paths_in_lane": true, "paths_allow_none": true, "flags_none": ["-a", "--all", "--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "--pathspec-from-file"], "value_flags": ["-m", "--message", "-F", "--file", "-C", "--reuse-message", "-c", "--reedit-message", "--author", "--date", "--fixup", "--squash", "-t", "--template", "--trailer", "--cleanup"], "value_letters": "mFCct" },
     { "first": "git", "sub": ["restore"], "scope": "product", "paths_in_lane": true, "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack", "--pathspec-from-file", "--source", "-s"] },
     { "first": "git", "sub": ["push", "fetch", "switch"], "scope": "product", "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] }
   ],
@@ -134,7 +134,7 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/verify-run.js", "sub": ["run"] }
   ],
   "team-write": [
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js", "sub": ["add"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js", "sub": ["add", "set-cap"] }
   ],
   "map": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/map.js", "sub": ["features", "impact", "blind"] },

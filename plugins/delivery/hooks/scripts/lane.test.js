@@ -1316,6 +1316,9 @@ test('lane: the Technical Writer edits product docs only; Staffing runs team-rol
   const staffing = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/staffing' });
   assert.equal(bash(staffing, `node ${path.join(PLUGIN_ROOT, 'scripts', 'team-role.js')} add tech-writer`), true);
   assert.equal(bash(POLICIES[COS], `node ${path.join(PLUGIN_ROOT, 'scripts', 'team-role.js')} add tech-writer`), false);
+  assert.equal(bash(staffing, `node ${path.join(PLUGIN_ROOT, 'scripts', 'team-role.js')} add builder --count 2`), true);
+  assert.equal(bash(staffing, `node ${path.join(PLUGIN_ROOT, 'scripts', 'team-role.js')} set-cap builders 2 --record dec-x-1`), true);
+  assert.equal(bash(POLICIES[COS], `node ${path.join(PLUGIN_ROOT, 'scripts', 'team-role.js')} set-cap builders 2 --record dec-x-1`), false);
 });
 
 // Copilot on #118 (4437630044): the writer's git writes only what its lane writes; a form whose writes
@@ -1333,7 +1336,6 @@ test('lane: the Technical Writer\'s git (git-write-docs) takes only documentatio
     assert.equal(sh('git -C product restore --staged -- docs/guide.md'), true);
     assert.equal(sh('git -C product rm docs/old.md'), true);
     assert.equal(sh('git -C product commit -m "Refs ex-1 document the import"'), true);
-    assert.equal(sh('git -C product commit -am "Refs ex-1 document the import"'), true);
     assert.equal(sh('git -C product commit -m "Refs ex-1" -- README.md'), true);
     assert.equal(sh('git -C product push origin HEAD:team/tech-writer'), true);
     assert.equal(sh('git -C product fetch origin'), true);
@@ -1364,6 +1366,11 @@ test('lane: the Technical Writer\'s git (git-write-docs) takes only documentatio
     assert.equal(sh('git -C product mv src/app.js docs/app.md'), false, 'moving source into the docs writes the source path too');
     assert.equal(sh('git -C product commit -m x -- src/app.js'), false);
     assert.equal(sh('git -C product commit -am x src/app.js'), false, 'the message is the value of -m; the path after it is a path');
+    // -a stages every tracked change, source included, before the commit records the index
+    assert.equal(sh('git -C product commit -am "Refs ex-1 document the import"'), false);
+    assert.equal(sh('git -C product commit -a -m "Refs ex-1"'), false);
+    assert.equal(sh('git -C product commit --all -m "Refs ex-1"'), false);
+    assert.equal(sh('git -C product commit -a -m "Refs ex-1" -- README.md'), false);
     assert.equal(sh('git add product/README.md'), false, 'outside the product worktree the scope refuses');
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });

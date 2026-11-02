@@ -476,7 +476,8 @@ function staleVersionCommand(text, root) {
 // in, so git cannot write what the Edit tool would refuse (Copilot on #118, 4437630044). A pathspec git
 // would expand (a glob, :(magic)) and a directory the lane does not cover wholly cannot be confined, so
 // they are refused; so is a command with no path operand (it acts on the whole tree), except a commit,
-// which then records the index that only these confined commands could fill.
+// which then records the index that only these confined commands could fill. That holds only because the
+// group refuses commit -a/--all (flags_none in git-write-docs): -a stages every tracked change first.
 const PATHSPEC_MAGIC = /^:|[*?[\]\\]/;
 function pathsInLane(rule, args, t, ctx) {
   if (!ctx.roleDir || !Array.isArray(ctx.writes)) return false;
@@ -495,7 +496,7 @@ function pathsInLane(rule, args, t, ctx) {
     }
     pos.push(args[k]);
   }
-  // commit with no pathspec records the index, which only confined commands filled
+  // commit with no pathspec records the index, which only confined commands filled (commit -a is refused)
   if (!pos.length) return !!rule.paths_allow_none;
   if (pos.some((x) => UNSAFE_DIR.test(x) || PATHSPEC_MAGIC.test(x))) return false;
   const rd = realish(ctx.roleDir);
