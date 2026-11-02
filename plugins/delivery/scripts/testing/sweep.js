@@ -18,7 +18,8 @@
 //   - it belongs to the user running the sweep;
 //   - the process that recorded it is gone, so a run in progress is never touched;
 //   - nothing in it has changed for --min-age minutes (60 by default).
-// A recorded path that no longer exists is dropped from the registry; one that fails a check stays.
+// A recorded path that no longer exists, or that the sweep could never remove (not directly in /tmp, not a
+// real directory), is dropped from the registry; one that may yet pass (owner, live run, age) stays.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -35,10 +36,44 @@ function registryPath(env = process.env) {
   return path.join(state, 'delivery', 'tmp-created.ndjson');
 }
 
-// appended in one write, so runs recording at once do not interleave lines
-function record(p, { registry = registryPath(), pid = process.pid, now = Date.now() } = {}) {
+// Every change to the registry is made holding its lock, a file beside it created exclusively, so a run
+// recording while a sweep or another run forgets cannot lose its line (review of #126: a rewrite that
+// raced an append dropped the path, and that directory then leaked forever). A lock whose holder is gone
+// is taken over; a live holder is waited for, never for long, since it only reads and writes one file.
+const LOCK_WAIT_MS = 10000;
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function withLock(registry, fn, { waitMs = LOCK_WAIT_MS, isAlive = alive } = {}) {
   fs.mkdirSync(path.dirname(registry), { recursive: true });
-  fs.appendFileSync(registry, `${JSON.stringify({ path: p, pid, at: new Date(now).toISOString() })}\n`);
+  const lock = `${registry}.lock`;
+  const until = Date.now() + waitMs;
+  for (;;) {
+    let fd = null;
+    try { fd = fs.openSync(lock, 'wx'); } catch (e) { if (e.code !== 'EEXIST') throw e; }
+    if (fd !== null) {
+      try { fs.writeSync(fd, String(process.pid)); fs.closeSync(fd); return fn(); } finally { fs.rmSync(lock, { force: true }); }
+    }
+    let holder = NaN;
+    try { holder = Number(fs.readFileSync(lock, 'utf8')); } catch (e) { continue; } // released meanwhile
+    // a holder that died leaves its lock: moved aside under a name of our own, and dropped only if it is
+    // still the dead holder's, so a lock another run took meanwhile is put back, never removed
+    if (holder && !isAlive(holder)) {
+      const aside = `${lock}.${process.pid}`;
+      try {
+        fs.renameSync(lock, aside);
+        if (Number(fs.readFileSync(aside, 'utf8')) === holder) fs.rmSync(aside, { force: true });
+        else { try { fs.linkSync(aside, lock); } catch (e) { /* a new holder already */ } fs.rmSync(aside, { force: true }); }
+      } catch (e) { /* another run moved it first */ }
+      continue;
+    }
+    if (Date.now() >= until) throw new Error(`the sweep registry ${registry} is locked by process ${holder || 'unknown'}`);
+    pause(20);
+  }
+}
+
+// one line per directory, appended under the lock
+function record(p, { registry = registryPath(), pid = process.pid, now = Date.now(), waitMs } = {}) {
+  withLock(registry, () => fs.appendFileSync(registry, `${JSON.stringify({ path: p, pid, at: new Date(now).toISOString() })}\n`), { waitMs });
 }
 
 function entries(registry) {
@@ -52,16 +87,17 @@ function entries(registry) {
   return out;
 }
 
-// rewrite the registry without the given paths. A line another run appends between the read and the
-// rename is lost, which only means that path is never swept: the safe way to be wrong.
-function forget(paths, { registry = registryPath() } = {}) {
+// rewrite the registry without the given paths, under the lock, so no line appended meanwhile is lost
+function forget(paths, { registry = registryPath(), waitMs } = {}) {
   const drop = new Set(paths);
-  const keep = entries(registry).filter((e) => !drop.has(e.path));
-  const tmp = `${registry}.${process.pid}`;
-  try {
-    fs.writeFileSync(tmp, keep.map((e) => `${JSON.stringify(e)}\n`).join(''));
-    fs.renameSync(tmp, registry);
-  } catch (e) { try { fs.rmSync(tmp, { force: true }); } catch (err) { /* none */ } }
+  withLock(registry, () => {
+    const keep = entries(registry).filter((e) => !drop.has(e.path));
+    const tmp = `${registry}.${process.pid}`;
+    try {
+      fs.writeFileSync(tmp, keep.map((e) => `${JSON.stringify(e)}\n`).join(''));
+      fs.renameSync(tmp, registry);
+    } catch (e) { try { fs.rmSync(tmp, { force: true }); } catch (err) { /* none */ } }
+  }, { waitMs });
 }
 
 const alive = (pid) => {
@@ -97,11 +133,13 @@ function sweep({ registry = registryPath(), minAgeMin = MIN_AGE_MIN, now = Date.
     const p = e.path;
     if (seen.has(p)) continue;
     seen.add(p);
-    if (path.dirname(p) !== TMP || path.basename(p).startsWith('.')) continue;
+    // what the sweep can never act on is dropped too, so the registry stays bounded (review of #126)
+    if (path.dirname(p) !== TMP || path.basename(p).startsWith('.')) { gone.push(p); continue; }
     let st;
     try { st = fs.lstatSync(p); } catch (err) { if (err.code === 'ENOENT') gone.push(p); continue; }
-    // lstat: a symlink is not a directory here, so it is never followed
-    if (!st.isDirectory()) continue;
+    // lstat: a symlink is not a directory here, so it is never followed; what is not the directory the
+    // run made is never removed, and forgotten
+    if (!st.isDirectory()) { gone.push(p); continue; }
     if (uid !== null && st.uid !== uid) continue;
     if (isAlive(e.pid)) continue;
     if (now - newestChange(p) < minAgeMin * 60000) continue;
@@ -121,7 +159,7 @@ function summary(r, dryRun) {
   return lines.join('\n');
 }
 
-module.exports = { sweep, record, forget, entries, registryPath, summary, MIN_AGE_MIN, TMP };
+module.exports = { sweep, record, forget, withLock, entries, registryPath, summary, MIN_AGE_MIN, TMP };
 
 if (require.main === module) {
   const argv = process.argv.slice(2);

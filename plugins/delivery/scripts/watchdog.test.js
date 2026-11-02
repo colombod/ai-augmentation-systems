@@ -1471,3 +1471,35 @@ test('run sweeps test leftovers every cycle and logs them; check and a dry run d
   assert.match(broken.out, /sweep: failed \(EACCES\)/);
   assert.match(broken.out, /watchdog/);
 });
+
+// review of #126: `run --dry-run` removes nothing; it says what the sweep would remove
+test('run --dry-run sweeps as a dry run: it names the leftovers and removes none', () => {
+  const h = harness({ beads: {} });
+  const asked = [];
+  const sweep = (opts) => { asked.push(opts); return { removed: ['/tmp/delivery-tests-AbC123'], failed: [] }; };
+  const dry = at(h, '2026-10-13T12:00:00Z', ['run', '--dry-run'], { sweep });
+  assert.deepEqual(asked, [{ dryRun: true }]);
+  assert.match(dry.out, /sweep: would remove 1 test leftover\(s\) from \/tmp: delivery-tests-AbC123/);
+  at(h, '2026-10-13T12:15:00Z', ['run'], { sweep });
+  assert.deepEqual(asked[1], { dryRun: false });
+
+  // the real sweep, through the real registry: the directory is still there after the dry run
+  const S = require('./testing/sweep.js');
+  const work = fs.mkdtempSync(path.join(__dirname, '.wd-sweep-'));
+  const saved = process.env.DELIVERY_TMP_REGISTRY;
+  const dir = fs.mkdtempSync(path.join(S.TMP, 'delivery-tests-'));
+  try {
+    process.env.DELIVERY_TMP_REGISTRY = path.join(work, 'reg.ndjson');
+    const old = (Date.now() - 2 * 3600e3) / 1000;
+    fs.utimesSync(dir, old, old);
+    S.record(dir, { pid: 2147483646 });
+    const r = at(h, '2026-10-13T12:30:00Z', ['run', '--dry-run']);
+    assert.match(r.out, new RegExp(`sweep: would remove 1 test leftover\\(s\\) from /tmp: ${path.basename(dir)}`));
+    assert.ok(fs.existsSync(dir), 'a dry run removes nothing');
+    assert.equal(S.entries(process.env.DELIVERY_TMP_REGISTRY).length, 1, 'a dry run forgets nothing');
+  } finally {
+    if (saved === undefined) delete process.env.DELIVERY_TMP_REGISTRY; else process.env.DELIVERY_TMP_REGISTRY = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+});

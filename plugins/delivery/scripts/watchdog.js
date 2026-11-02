@@ -457,8 +457,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     if (cmd === 'run') {
       try {
         const S = require('./testing/sweep.js');
-        const r = (sweep || S.sweep)();
-        if (r.removed.length || r.failed.length) swept = S.summary(r, false).split('\n');
+        // a dry run says what the sweep would remove and removes nothing
+        const r = (sweep || S.sweep)({ dryRun: !!o.dryRun });
+        if (r.removed.length || r.failed.length) swept = S.summary(r, !!o.dryRun).split('\n');
       } catch (err) { swept = [`sweep: failed (${String(err && err.message || err).slice(0, 200)})`]; }
     }
     const out = cmd === 'run' ? [`${now || new Date().toISOString()} watchdog`, ...swept, ...checkLines(res), ...woke] : (woke.length ? woke : checkLines(res));

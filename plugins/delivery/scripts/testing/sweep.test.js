@@ -75,7 +75,9 @@ test('sweep removes only old directories in /tmp that a finished run recorded, a
     assert.ok(fs.existsSync(path.join(target, 'keep')), 'a symlink is not followed');
     const left = S.entries(registry).map((e) => e.path);
     for (const p of [...gone, vanished]) assert.ok(!left.includes(p), `forgotten: ${p}`);
-    assert.equal(left.length, 6, 'what failed a check is still recorded');
+    // what can never be removed is forgotten, so the registry stays bounded; what may yet pass stays
+    for (const p of [notDir, nested, elsewhere, link]) assert.ok(!left.includes(p), `never removable, forgotten: ${p}`);
+    assert.deepEqual(left.sort(), [kept[1], kept[2]].sort(), 'a young directory and a live run\'s stay recorded');
     assert.match(S.summary(r, false), /^sweep: removed 2 test leftover\(s\) from \/tmp: /);
     assert.equal(S.summary({ removed: [], failed: [] }, false), 'sweep: no test leftovers in /tmp');
   } finally {
@@ -136,4 +138,80 @@ test('a run records its directory, forgets it at the end, and a killed run\'s di
     assert.ok(!fs.existsSync(dir));
     assert.deepEqual(S.entries(registry), []);
   } finally { fs.rmSync(work, { recursive: true, force: true }); }
+});
+
+// review of #126: a forget that rewrites the registry while runs record must lose none of their lines,
+// or those directories are never swept
+test('runs recording while the registry is rewritten lose no line', async () => {
+  const work = fs.mkdtempSync(path.join(__dirname, '.sweep-race-'));
+  const registry = path.join(work, 'reg.ndjson');
+  const N = 4;
+  const EACH = 60;
+  const kids = [];
+  try {
+    for (let k = 0; k < N; k += 1) {
+      const code = `const S = require(${JSON.stringify(path.join(__dirname, 'sweep.js'))}); for (let i = 0; i < ${EACH}; i += 1) S.record('/tmp/race-${k}-' + i, { registry: ${JSON.stringify(registry)} }); require('fs').writeFileSync(${JSON.stringify(path.join(work, `done-${k}`))}, '');`;
+      kids.push(spawn(process.execPath, ['-e', code], { stdio: 'inherit' }));
+    }
+    const exits = kids.map((c) => new Promise((r) => c.on('exit', r)));
+    const started = Date.now();
+    let rewrites = 0;
+    while (fs.readdirSync(work).filter((f) => f.startsWith('done-')).length < N && Date.now() - started < 60000) {
+      S.forget(['/tmp/not-recorded'], { registry });
+      rewrites += 1;
+    }
+    assert.deepEqual(await Promise.all(exits), new Array(N).fill(0));
+    assert.ok(rewrites > 1, 'the registry was rewritten while the runs recorded');
+    assert.equal(new Set(S.entries(registry).map((e) => e.path)).size, N * EACH, 'every recorded line survives');
+    assert.ok(!fs.existsSync(`${registry}.lock`), 'the lock is released');
+  } finally { fs.rmSync(work, { recursive: true, force: true }); }
+});
+
+test('a lock left by a run that died is taken over; a live holder is waited for, then refused', () => {
+  const work = fs.mkdtempSync(path.join(__dirname, '.sweep-lock-'));
+  const registry = path.join(work, 'reg.ndjson');
+  const lock = `${registry}.lock`;
+  try {
+    fs.writeFileSync(lock, String(DEAD));
+    S.record('/tmp/a-AAAAAA', { registry });
+    assert.deepEqual(S.entries(registry).map((e) => e.path), ['/tmp/a-AAAAAA']);
+    assert.ok(!fs.existsSync(lock));
+
+    fs.writeFileSync(lock, String(process.pid)); // a live holder
+    const t0 = Date.now();
+    assert.throws(() => S.record('/tmp/b-BBBBBB', { registry, waitMs: 300 }), /locked by process/);
+    assert.ok(Date.now() - t0 >= 300, 'it waited for the holder');
+    assert.throws(() => S.forget(['/tmp/a-AAAAAA'], { registry, waitMs: 100 }), /locked by process/);
+    assert.equal(fs.readFileSync(lock, 'utf8'), String(process.pid), 'a live holder\'s lock is never taken');
+    assert.deepEqual(S.entries(registry).map((e) => e.path), ['/tmp/a-AAAAAA'], 'nothing written without the lock');
+  } finally { fs.rmSync(work, { recursive: true, force: true }); }
+});
+
+// review of #126: the sweep reads /tmp only, so a run whose temp dir is elsewhere (TMPDIR on macOS) records
+// nothing, and the registry does not grow with paths it can never act on
+test('a run whose temp directory is not directly in /tmp records nothing', { skip: !process.env.DELIVERY_SEAL_ACTIVE && 'needs the suite\'s own seal' }, async () => {
+  const work = fs.mkdtempSync(path.join(__dirname, '.sweep-else-'));
+  const registry = path.join(work, 'reg.ndjson');
+  const ready = path.join(work, 'ready');
+  const fixture = path.join(work, 'waits.test.js');
+  const elsewhere = fs.mkdtempSync(path.join(S.TMP, 'macos-like-'));
+  fs.writeFileSync(fixture, `require('node:test')('waits', async () => { require('fs').writeFileSync(${JSON.stringify(ready)}, require('os').tmpdir() + '\\n' + process.pid); await new Promise((r) => setTimeout(r, 60000)); });\n`);
+  const env = { ...process.env, TMPDIR: elsewhere, DELIVERY_TMP_REGISTRY: registry, DELIVERY_TEST_FILES: fixture };
+  delete env.NODE_TEST_CONTEXT;
+  const runner = path.join(__dirname, 'run-tests.js');
+  let fixturePid = null;
+  const run = spawn(process.execPath, [runner], { env, stdio: 'ignore' });
+  try {
+    const started = Date.now();
+    while (!fs.existsSync(ready) && Date.now() - started < 30000) await new Promise((r) => setTimeout(r, 100));
+    const [dir, pid] = fs.readFileSync(ready, 'utf8').split('\n');
+    fixturePid = Number(pid);
+    assert.equal(path.dirname(dir), elsewhere, 'the run made its directory where TMPDIR says');
+    assert.deepEqual(S.entries(registry), [], 'and did not record it');
+  } finally {
+    run.kill('SIGKILL');
+    if (fixturePid) { try { process.kill(fixturePid, 'SIGKILL'); } catch (e) { /* gone */ } }
+    fs.rmSync(elsewhere, { recursive: true, force: true });
+    fs.rmSync(work, { recursive: true, force: true });
+  }
 });

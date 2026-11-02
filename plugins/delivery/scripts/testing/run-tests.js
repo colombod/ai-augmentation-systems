@@ -273,7 +273,9 @@ if (require.main === module) {
   // remove it if this run is killed before its cleanup, and forgotten once removed (sweep.js). A registry
   // that cannot be written never stops the run. A run nested in a seal records too, into the seal's own
   // registry (below), which is how the suite tests this.
-  const hostDir = !sealed;
+  // only a directory directly in /tmp is recorded: the sweep reads nowhere else (TMPDIR elsewhere, as on
+  // macOS, would only grow the registry)
+  const hostDir = !sealed && path.dirname(tmp) === '/tmp';
   const S = require('./sweep.js');
   // in a seal, its own registry: the sealed child's, or the one a nested run was given; elsewhere the user's
   const SEAL_REGISTRY = path.join('/tmp', '.delivery-tmp-registry');
