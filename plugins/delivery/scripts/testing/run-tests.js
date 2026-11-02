@@ -85,9 +85,18 @@ module.exports = { cleanEnv, testFiles, splitArgs, clockEnv, shellLine };
 //
 // A seal is proven, never taken from a flag: a stray DELIVERY_SEAL_ACTIVE=1 or DELIVERY_SEALED_RUN=1
 // once turned sealing off silently. The sealed child checks that /tmp is a tmpfs mounted apart from the
-// host's /tmp (the parent passes its /tmp mount id), then writes a random token to /tmp/.delivery-seal
-// and gives the suite DELIVERY_SEAL_ACTIVE=<token>; a nested run trusts its flag only when that file in
-// a tmpfs /tmp holds the same token. Anything else that claims a seal is refused with the reason.
+// host's /tmp (the parent passes its /tmp mount id), and that /tmp/.delivery-seal holds the random token
+// the parent named in DELIVERY_SEALED_RUN: bubblewrap writes that file into the fresh tmpfs from the
+// parent's stdin, so an environment variable alone cannot claim a seal, even on a host whose own /tmp
+// is a tmpfs (review of #125). The suite gets DELIVERY_SEAL_ACTIVE=<token>; a nested run trusts its
+// flag only when that file in a tmpfs /tmp holds the same token. Anything else that claims a seal is
+// refused with the reason.
+//
+// A seal made by delivery 0.43.18 or earlier (review-run.js of an installed plugin wraps a pull
+// request's own run-tests.js in it) sets DELIVERY_SEAL_ACTIVE=1 and writes no token. It is accepted
+// only when it is proven the other way: /tmp is a tmpfs holding no token file, and process 1 of this
+// pid namespace is bubblewrap, which on a host is never the case. The run then writes its own token
+// there, so runs nested in it are held to the token as usual (review of #125).
 const MB = 1024 * 1024;
 const SEAL_FILE = '.delivery-seal';
 // the mount over a path in /proc/self/mountinfo, { id, fstype }, or null (no /proc: macOS); the last
@@ -104,19 +113,26 @@ function mountAt(dir, mountinfo) {
   }
   return found;
 }
+const readToken = (dir) => { try { return fs.readFileSync(path.join(dir, SEAL_FILE), 'utf8').trim(); } catch (e) { return null; } };
+// the name of process 1 in this pid namespace: bwrap inside a seal made with --unshare-pid
+function initName() {
+  try { return fs.readFileSync('/proc/1/comm', 'utf8').trim(); } catch (e) { return null; }
+}
 // null when this process runs in a proven seal, else why not. claim is DELIVERY_SEALED_RUN (the sealed
-// child: host-tmp:<the host /tmp mount id, or none>) or DELIVERY_SEAL_ACTIVE (a nested run: the token)
-function sealProblem({ sealedRun, sealActive, tmpDir = '/tmp', mountinfo } = {}) {
+// child: host-tmp:<the host /tmp mount id, or none>:<token>) or DELIVERY_SEAL_ACTIVE (a nested run: the
+// token, or 1 from a seal of 0.43.18 or earlier)
+function sealProblem({ sealedRun, sealActive, tmpDir = '/tmp', mountinfo, init = initName } = {}) {
   const m = mountAt(tmpDir, mountinfo);
   if (!m || m.fstype !== 'tmpfs') return `${tmpDir} is not a tmpfs mount`;
+  const token = readToken(tmpDir);
   if (sealedRun !== undefined) {
-    const host = /^host-tmp:(\S+)$/.exec(String(sealedRun));
+    const host = /^host-tmp:(\S+):([0-9a-f]{32})$/.exec(String(sealedRun));
     if (!host) return `DELIVERY_SEALED_RUN=${sealedRun} is not one the runner set`;
     if (host[1] === m.id) return `${tmpDir} is the host's own mount`;
+    if (token !== host[2]) return `no seal token in ${tmpDir} matches DELIVERY_SEALED_RUN`;
     return null;
   }
-  let token = null;
-  try { token = fs.readFileSync(path.join(tmpDir, SEAL_FILE), 'utf8').trim(); } catch (e) { /* none */ }
+  if (String(sealActive) === '1' && token === null) return init() === 'bwrap' ? null : `no seal token in ${tmpDir} matches DELIVERY_SEAL_ACTIVE, and this is not a bubblewrap seal`;
   if (!token || token !== String(sealActive)) return `no seal token in ${tmpDir} matches DELIVERY_SEAL_ACTIVE`;
   return null;
 }
@@ -143,10 +159,12 @@ function bwrapPath(env) {
 }
 // the bwrap argv that seals a run: the host as it is, a private capped /tmp, gone with the parent.
 // `keep` are host directories under /tmp bound back over the fresh tmpfs (after it, so they show
-// through): the run's own checkout and this runner, when they live there (Copilot on #117).
-function sealArgs(bwrap, cap, argv, keep = []) {
+// through): the run's own checkout and this runner, when they live there (Copilot on #117). With
+// `tokenFromStdin`, bubblewrap writes what it reads on stdin to /tmp/.delivery-seal in the fresh tmpfs.
+function sealArgs(bwrap, cap, argv, keep = [], tokenFromStdin = false) {
   const binds = keep.flatMap((p) => ['--bind', p, p]);
-  return [bwrap, ['--dev-bind', '/', '/', '--size', String(cap.bytes), '--tmpfs', '/tmp', ...binds, '--proc', '/proc', '--die-with-parent', '--unshare-pid', '--', ...argv]];
+  const token = tokenFromStdin ? ['--file', '0', `/tmp/${SEAL_FILE}`] : [];
+  return [bwrap, ['--dev-bind', '/', '/', '--size', String(cap.bytes), '--tmpfs', '/tmp', ...binds, ...token, '--proc', '/proc', '--die-with-parent', '--unshare-pid', '--', ...argv]];
 }
 // the directories a sealed run needs that the private /tmp would hide: the directory it runs in and
 // the plugin it runs from, each when it lies under /tmp (never /tmp itself, which is the seal)
@@ -226,11 +244,14 @@ if (require.main === module) {
     const bwrap = optedOut ? null : bwrapPath(process.env);
     if (bwrap) {
       // re-run this runner inside the seal; the sealed child does the rest
+      // the token goes in the seal through bwrap's stdin, which the run then has at its end: a test
+      // run reads no terminal
       const host = mountAt('/tmp');
-      const [cmd, args] = sealArgs(bwrap, cap, [process.execPath, __filename, ...process.argv.slice(2)], keepPaths([process.cwd(), root]));
-      const childEnv = { ...process.env, DELIVERY_SEALED_RUN: `host-tmp:${host ? host.id : 'none'}` };
+      const nonce = require('crypto').randomBytes(16).toString('hex');
+      const [cmd, args] = sealArgs(bwrap, cap, [process.execPath, __filename, ...process.argv.slice(2)], keepPaths([process.cwd(), root]), true);
+      const childEnv = { ...process.env, DELIVERY_SEALED_RUN: `host-tmp:${host ? host.id : 'none'}:${nonce}` };
       delete childEnv.DELIVERY_SEAL_ACTIVE;
-      const r = spawnSync(cmd, args, { env: childEnv, stdio: 'inherit' });
+      const r = spawnSync(cmd, args, { env: childEnv, input: nonce, stdio: ['pipe', 'inherit', 'inherit'] });
       if (r.error) { process.stderr.write(`run-tests: could not start the sealed run (${r.error.message})\n`); process.exit(1); }
       process.exit(r.status !== null ? r.status : 1);
     }
@@ -241,8 +262,9 @@ if (require.main === module) {
   }
   // sealed: /tmp is the run's own capped tmpfs, and the token in it proves the seal to nested runs;
   // otherwise a private directory, removed at the end
-  let token = inSeal ? sealActive : null;
-  if (sealed) {
+  // the sealed child's token is already in /tmp; a seal of 0.43.18 or earlier gets one here
+  let token = sealed ? /:([0-9a-f]{32})$/.exec(sealedRun)[1] : inSeal ? sealActive : null;
+  if (inSeal && sealActive === '1') {
     token = require('crypto').randomBytes(16).toString('hex');
     fs.writeFileSync(path.join('/tmp', SEAL_FILE), token);
   }

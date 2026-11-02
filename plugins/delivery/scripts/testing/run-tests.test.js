@@ -89,6 +89,10 @@ test('run-tests: the seal is a private /tmp tmpfs, capped, gone with its parent,
   for (const f of ['--die-with-parent', '--unshare-pid']) assert.ok(args.includes(f), f);
   assert.equal(args[args.indexOf('--proc') + 1], '/proc', 'its own /proc, so process lookups see the run\'s own pid namespace');
   assert.deepEqual(args.slice(-3), ['--', 'node', 'x.js']);
+  // the token comes in on stdin and lands in the fresh tmpfs, so it follows --tmpfs /tmp
+  const withToken = R.sealArgs('/usr/bin/bwrap', { bytes: 1024, inodes: 10 }, ['node', 'x.js'], [], true)[1];
+  assert.deepEqual(withToken.slice(5, 10), ['--tmpfs', '/tmp', '--file', '0', `/tmp/${R.SEAL_FILE}`]);
+  assert.equal(args.includes('--file'), false);
   // a checkout under /tmp is bound back after the tmpfs, so it shows through (Copilot on #117); a fresh
   // seal cannot start inside this one, so seal-check.js (CI step) proves it end to end
   const kept = R.sealArgs('/usr/bin/bwrap', { bytes: 1024, inodes: 10 }, ['node', 'x.js'], ['/tmp/co'])[1];
@@ -376,20 +380,33 @@ test('run-tests: sealProblem accepts only a tmpfs /tmp apart from the host\'s, a
   const R = require('./run-tests.js');
   assert.deepEqual(R.mountAt('/tmp', MOUNTINFO('/tmp', 'tmpfs')), { id: '77', fstype: 'tmpfs' });
   assert.equal(R.mountAt('/tmp', MOUNTINFO('/var', 'tmpfs')), null);
-  // the sealed child: the runner's own claim, on a tmpfs that is not the host's mount
-  assert.equal(R.sealProblem({ sealedRun: 'host-tmp:22', mountinfo: MOUNTINFO('/tmp', 'tmpfs') }), null);
-  assert.equal(R.sealProblem({ sealedRun: 'host-tmp:none', mountinfo: MOUNTINFO('/tmp', 'tmpfs') }), null);
-  assert.match(R.sealProblem({ sealedRun: '1', mountinfo: MOUNTINFO('/tmp', 'tmpfs') }), /DELIVERY_SEALED_RUN=1 is not one the runner set/);
-  assert.match(R.sealProblem({ sealedRun: 'host-tmp:77', mountinfo: MOUNTINFO('/tmp', 'tmpfs') }), /is the host's own mount/);
-  assert.match(R.sealProblem({ sealedRun: 'host-tmp:22', mountinfo: MOUNTINFO('/tmp', 'ext4') }), /\/tmp is not a tmpfs mount/);
-  assert.match(R.sealProblem({ sealedRun: 'host-tmp:22', mountinfo: '' }), /\/tmp is not a tmpfs mount/);
-  // a nested run: the token file in a tmpfs /tmp must match the flag
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seal-token-'));
   try {
     const info = MOUNTINFO(dir, 'tmpfs');
-    assert.match(R.sealProblem({ sealActive: '1', tmpDir: dir, mountinfo: info }), /no seal token/);
+    const bwrap = () => 'bwrap';
+    const host = () => 'systemd';
+    // the sealed child: the runner's own claim, on a tmpfs that is not the host's mount, holding the
+    // token bwrap wrote there; a claim with no matching token is refused even on a tmpfs /tmp, which is
+    // what a host whose own /tmp is a tmpfs looks like (review of #125)
+    const N = 'f'.repeat(32);
+    assert.match(R.sealProblem({ sealedRun: `host-tmp:22:${N}`, tmpDir: dir, mountinfo: info }), /no seal token in .* matches DELIVERY_SEALED_RUN/);
+    fs.writeFileSync(path.join(dir, R.SEAL_FILE), N);
+    assert.equal(R.sealProblem({ sealedRun: `host-tmp:22:${N}`, tmpDir: dir, mountinfo: info }), null);
+    assert.equal(R.sealProblem({ sealedRun: `host-tmp:none:${N}`, tmpDir: dir, mountinfo: info }), null);
+    assert.match(R.sealProblem({ sealedRun: `host-tmp:22:${'e'.repeat(32)}`, tmpDir: dir, mountinfo: info }), /no seal token/);
+    assert.match(R.sealProblem({ sealedRun: 'host-tmp:22', tmpDir: dir, mountinfo: info }), /DELIVERY_SEALED_RUN=host-tmp:22 is not one the runner set/);
+    assert.match(R.sealProblem({ sealedRun: '1', tmpDir: dir, mountinfo: info }), /DELIVERY_SEALED_RUN=1 is not one the runner set/);
+    assert.match(R.sealProblem({ sealedRun: `host-tmp:77:${N}`, tmpDir: dir, mountinfo: info }), /is the host's own mount/);
+    assert.match(R.sealProblem({ sealedRun: `host-tmp:22:${N}`, tmpDir: dir, mountinfo: MOUNTINFO(dir, 'ext4') }), /is not a tmpfs mount/);
+    assert.match(R.sealProblem({ sealedRun: `host-tmp:22:${N}`, tmpDir: dir, mountinfo: '' }), /is not a tmpfs mount/);
+    fs.rmSync(path.join(dir, R.SEAL_FILE));
+    // a nested run: the token file in a tmpfs /tmp must match the flag; 1 with no token file only in a
+    // bubblewrap pid namespace, a seal of 0.43.18 or earlier (review of #125)
+    assert.match(R.sealProblem({ sealActive: '1', tmpDir: dir, mountinfo: info, init: host }), /no seal token .* not a bubblewrap seal/);
+    assert.equal(R.sealProblem({ sealActive: '1', tmpDir: dir, mountinfo: info, init: bwrap }), null);
+    assert.match(R.sealProblem({ sealActive: '1', tmpDir: dir, mountinfo: MOUNTINFO(dir, 'ext4'), init: bwrap }), /is not a tmpfs mount/);
     fs.writeFileSync(path.join(dir, R.SEAL_FILE), 'abc123');
-    assert.match(R.sealProblem({ sealActive: '1', tmpDir: dir, mountinfo: info }), /no seal token/);
+    assert.match(R.sealProblem({ sealActive: '1', tmpDir: dir, mountinfo: info, init: bwrap }), /no seal token/);
     assert.equal(R.sealProblem({ sealActive: 'abc123', tmpDir: dir, mountinfo: info }), null);
     assert.match(R.sealProblem({ sealActive: 'abc123', tmpDir: dir, mountinfo: MOUNTINFO(dir, 'ext4') }), /is not a tmpfs mount/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -430,6 +447,8 @@ test('run-tests: an unsealed run, a stray seal flag, or an unverified opt-out is
       [{ DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_UNSEALED_RECORD: 'dec-nobody-1' }, /refused: DELIVERY_TEST_UNSEALED is set.*the owner record dec-nobody-1 does not verify/],
       [{ DELIVERY_SEAL_ACTIVE: '1' }, /refused: DELIVERY_SEAL_ACTIVE is set, but this run is not in a seal \(no seal token/],
       [{ DELIVERY_SEALED_RUN: '1' }, /refused: this run claims a seal it is not in \(DELIVERY_SEALED_RUN=1 is not one the runner set\)/],
+      // a well-formed claim from the environment alone: no token of its own in /tmp (review of #125)
+      [{ DELIVERY_SEALED_RUN: `host-tmp:bogus:${'a'.repeat(32)}` }, /refused: this run claims a seal it is not in \((no seal token in \/tmp matches DELIVERY_SEALED_RUN|\/tmp is not a tmpfs mount)\)/],
     ]) {
       const r = run(extra);
       assert.equal(r.status, 2, JSON.stringify(extra) + r.stderr);

@@ -8,7 +8,9 @@
 // outside a seal can reach (the suite runs sealed, and a seal cannot be nested): a run capped at 8 MB
 // whose fixture writes 16 MB into /tmp must get ENOSPC there with the host's /tmp unchanged, and a run
 // capped at 500 inodes whose fixture makes 3000 files must be stopped by the inode guard reading the
-// sealed tmpfs's own counters (statfs). Exit 0 when all hold; 1 with what failed; 2 when it cannot run
+// sealed tmpfs's own counters (statfs). Last, a run started inside a seal made the way delivery 0.43.18
+// and earlier make it (DELIVERY_SEAL_ACTIVE=1, no token), as an installed plugin's review-run.js does with
+// a pull request's own runner, must run, and a run nested in it must still be held to a token. Exit 0 when all hold; 1 with what failed; 2 when it cannot run
 // here (no bwrap, or already inside a seal).
 const fs = require('fs');
 const os = require('os');
@@ -108,6 +110,23 @@ async function inodeCapCheck() {
   return null;
 }
 
+// a seal of 0.43.18 or earlier: bwrap with the old argv and DELIVERY_SEAL_ACTIVE=1, no token file. This
+// runner inside it runs its command, and its nested run with a stray DELIVERY_SEAL_ACTIVE=1 is refused
+// (review of #125)
+async function olderSealCheck() {
+  const env = { ...process.env, DELIVERY_SEAL_ACTIVE: '1' };
+  delete env.DELIVERY_SEALED_RUN;
+  const runner = path.join(__dirname, 'run-tests.js');
+  const nested = `DELIVERY_SEAL_ACTIVE=1 ${JSON.stringify(process.execPath)} ${JSON.stringify(runner)} -- true; echo "nested:$?"`;
+  const [cmd, args] = R.sealArgs(R.bwrapPath(process.env), R.caps({}), [process.execPath, runner, '--', `echo ran; ${nested}`], R.keepPaths([process.cwd(), path.join(__dirname, '..', '..')]));
+  const r = spawnSync(cmd, args, { env, encoding: 'utf8', timeout: 60000 });
+  const out = String(r.stdout || '');
+  if (r.status !== 0 || !/^ran$/m.test(out)) return `a run inside a 0.43.18 seal did not run its command (exit ${r.status}: ${String(r.stderr || '').trim().slice(-300)})`;
+  if (!/^nested:2$/m.test(out) || !/DELIVERY_SEAL_ACTIVE is set, but this run is not in a seal/.test(r.stderr)) return `a nested run with a stray DELIVERY_SEAL_ACTIVE=1 inside a 0.43.18 seal was not refused (${out.trim()})`;
+  console.log('seal-check: a run inside a 0.43.18 seal ran its command, and a stray DELIVERY_SEAL_ACTIVE=1 nested in it was refused');
+  return null;
+}
+
 async function main() {
   if (process.env.DELIVERY_SEAL_ACTIVE && process.env.DELIVERY_SEAL_ACTIVE !== '0') { console.error('seal-check: run it outside a sealed run'); return 2; }
   if (!R.bwrapPath(process.env)) { console.error('seal-check: bubblewrap (bwrap) not found: a run cannot be sealed on this host'); return 2; }
@@ -115,7 +134,7 @@ async function main() {
   if (killed !== 0) return killed;
   const visible = checkoutVisible();
   if (visible !== 0) return visible;
-  for (const check of [sizeCapCheck, inodeCapCheck]) {
+  for (const check of [sizeCapCheck, inodeCapCheck, olderSealCheck]) {
     const problem = await check();
     if (problem) { console.error(`seal-check: FAILED, ${problem}`); return 1; }
   }
