@@ -41,13 +41,14 @@ function findRoleMarker(cwd) {
   }
 }
 
-function composeForMarker(marker, pluginRoot) {
+// launcherProject: the project whose script launcher was just written; the brief names scripts through it
+function composeForMarker(marker, pluginRoot, launcherProject) {
   const { team, hosts } = loadManifest(marker.project_root);
   const found = expandInstances(team).find((i) => i.instance === marker.instance);
   if (!found) return `# Role: ${marker.instance}\n\nThis instance is no longer in team.json. Stop and tell the Chief of Staff.\n`;
   const brief = loadRoleBrief(pluginRoot, marker.project_root, found.role.brief);
   const rules = fs.readFileSync(path.join(pluginRoot, 'templates', 'team-rules.md'), 'utf8');
-  return composeBrief({ team, hosts, instance: marker.instance, role: found.role, brief, rules, pluginRoot });
+  return composeBrief({ team, hosts, instance: marker.instance, role: found.role, brief, rules, pluginRoot, projectRoot: launcherProject || undefined });
 }
 
 // Where and with what environment a hook runs bd: at the project root (bd cannot find the
@@ -125,10 +126,15 @@ function sessionStartText(input, pluginRoot, deps = {}) {
   const now = deps.now || new Date().toISOString();
   let valid;
   let full;
+  let launcherProject = null;
   try {
     valid = validMarker(found);
     if (!valid) return '';
-    full = composeForMarker(marker, pluginRoot);
+    // the project's script launcher first: the brief and the resume note below name scripts through it,
+    // so they survive the next plugin install; if it cannot be written they name the absolute root
+    const L = require('../../scripts/lib/launcher.js');
+    if (!L.ensureLauncher(marker.project_root, pluginRoot || PLUGIN_ROOT)) launcherProject = marker.project_root;
+    full = composeForMarker(marker, pluginRoot, launcherProject);
   } catch (err) {
     return `Role ${marker.instance}: cannot load the team manifest at ${marker.project_root} (${err.message}). Tell the Chief of Staff.\n`;
   }
@@ -155,7 +161,9 @@ function sessionStartText(input, pluginRoot, deps = {}) {
   try {
     const was = (readRoster(marker.project_root).instances[marker.instance] || {}).plugin_version;
     if (input.source === 'resume' && was && version && PV.compare(was, version) === -1) {
-      moved = `The delivery plugin is now ${version} (this conversation ran ${was}): script paths remembered from ${was} are refused. Name every plugin script at ${pluginRoot || PLUGIN_ROOT}/scripts/ from now on.\n\n`;
+      // the launcher, not the version directory: naming the new version's directory breaks at the next install
+      const how = launcherProject ? `as \`${require('../../scripts/lib/launcher.js').launcherCommand(launcherProject, '<script>.js')} ...\`, which runs the installed version` : `at ${pluginRoot || PLUGIN_ROOT}/scripts/`;
+      moved = `The delivery plugin is now ${version} (this conversation ran ${was}): script paths remembered from ${was} are refused. Name every plugin script ${how} from now on.\n\n`;
     }
   } catch (err) { moved = ''; }
   try {
@@ -176,7 +184,7 @@ function sessionStartText(input, pluginRoot, deps = {}) {
   }
   const claim = (deps.claim || currentClaim)(actorOf(marker), bdOptionsFor(marker, input.cwd));
   if (freshStart && unchanged) return `${moved}${claimTail(claim).trimStart()}${note ? `\n${note}\n` : ''}`;
-  const short = shortBrief({ team: valid.team, hosts: valid.hosts, instance: marker.instance, role: valid.role, roleDir: valid.roleDir, pluginRoot: pluginRoot || PLUGIN_ROOT });
+  const short = shortBrief({ team: valid.team, hosts: valid.hosts, instance: marker.instance, role: valid.role, roleDir: valid.roleDir, pluginRoot: pluginRoot || PLUGIN_ROOT, projectRoot: launcherProject || undefined });
   const prefix = input.source === 'compact' ? 'Context was compacted. Your role is restated below; it has not changed.\n\n'
     : (freshStart ? `Your ${valid.roleDir}/CLAUDE.local.md was rewritten at this start (the manifest or the plugin changed), so the copy loaded with this session is stale: re-read it now; it is binding.\n\n` : '');
   return `${moved}${prefix}${short}${claimTail(claim)}${note ? `\n${note}\n` : ''}`;

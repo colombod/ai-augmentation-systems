@@ -289,7 +289,13 @@ test('sessionStartText records the plugin version and tells a resumed older conv
   setVersion('0.1.0');
   const resumed = start('resume');
   assert.ok(resumed.startsWith(`The delivery plugin is now ${now} (this conversation ran 0.1.0)`), resumed.slice(0, 120));
-  assert.ok(resumed.includes(`${PLUGIN_ROOT}/scripts/`));
+  // 8wz.1: the note names the project's launcher, never the new version's directory, which the next
+  // install moves again; the launcher is in place when the note is printed
+  const L = require('../../scripts/lib/launcher.js');
+  const moved = resumed.split('\n')[0];
+  assert.ok(moved.includes(`Name every plugin script as \`${L.launcherCommand(projectRoot, '<script>.js')} ...\``), moved);
+  assert.ok(!moved.includes(`${PLUGIN_ROOT}/scripts/`), moved);
+  assert.equal(L.resolveLauncher(projectRoot, PLUGIN_ROOT), path.resolve(PLUGIN_ROOT));
   assert.equal(JSON.parse(fs.readFileSync(rosterFile, 'utf8')).instances['delivery-lead'].plugin_version, now, 'recorded at the resume');
   // an install usually rewrites the brief too: the line leads the restated role
   setVersion('0.1.0');
@@ -300,4 +306,31 @@ test('sessionStartText records the plugin version and tells a resumed older conv
   assert.ok(restated.includes('# Role: delivery-lead'));
   setVersion('0.1.0');
   assert.ok(!/The delivery plugin is now/.test(start('startup')), 'a new conversation remembers no old path');
+});
+
+// 8wz.1: the brief names plugin scripts through the project's launcher, written at prepare and at every
+// start; when it cannot be written, the brief and the resume note fall back to the absolute root
+test('sessionStartText writes the launcher and the brief names scripts through it, else the absolute root', () => {
+  const L = require('../../scripts/lib/launcher.js');
+  const { projectRoot, roleDir } = preparedRole('delivery-lead');
+  const brief = path.join(roleDir, 'CLAUDE.local.md');
+  const launcher = L.launcherCommand(projectRoot, 'operator.js');
+  assert.ok(fs.readFileSync(brief, 'utf8').includes(launcher), 'prepare-role wrote the launcher form');
+  fs.rmSync(path.join(projectRoot, '.delivery', 'bin'), { recursive: true });
+  const start = (source) => withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source }, PLUGIN_ROOT, { claim: () => null }));
+  start('startup');
+  assert.equal(L.resolveLauncher(projectRoot, PLUGIN_ROOT), path.resolve(PLUGIN_ROOT), 'the start put it back');
+  const text = fs.readFileSync(brief, 'utf8');
+  assert.ok(text.includes(launcher));
+  assert.ok(!text.includes(`node ${path.resolve(PLUGIN_ROOT)}/scripts/operator.js`), 'no versioned script path');
+  // a launcher that cannot be written: the absolute root, in the brief and in the resume note
+  fs.rmSync(path.join(projectRoot, '.delivery', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, '.delivery', 'bin'), 'not a directory');
+  const rosterFile = path.join(projectRoot, '.delivery', 'team', 'roster.json');
+  const r = JSON.parse(fs.readFileSync(rosterFile, 'utf8'));
+  r.instances['delivery-lead'].plugin_version = '0.1.0';
+  fs.writeFileSync(rosterFile, JSON.stringify(r));
+  const resumed = start('resume');
+  assert.ok(resumed.split('\n')[0].includes(`Name every plugin script at ${PLUGIN_ROOT}/scripts/ from now on`), resumed.slice(0, 300));
+  assert.ok(fs.readFileSync(brief, 'utf8').includes(`node ${path.resolve(PLUGIN_ROOT)}/scripts/operator.js`));
 });
