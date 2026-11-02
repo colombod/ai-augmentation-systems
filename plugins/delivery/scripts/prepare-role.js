@@ -207,9 +207,12 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     fs.writeFileSync(ignoreFile, 'roster.json\nroster.json.*\n');
   }
 
+  // the brief names plugin scripts through the project's launcher, which survives plugin installs; when
+  // it cannot be written the brief falls back to the absolute plugin root (lib/launcher.js)
+  const launcherProblem = require('./lib/launcher.js').ensureLauncher(projectRoot, pluginRoot);
   const rules = fs.readFileSync(path.join(pluginRoot, 'templates', 'team-rules.md'), 'utf8');
   const briefFile = path.join(roleDir, 'CLAUDE.local.md');
-  fs.writeFileSync(briefFile, composeBrief({ team, hosts, instance, role, brief, rules, pluginRoot }));
+  fs.writeFileSync(briefFile, composeBrief({ team, hosts, instance, role, brief, rules, pluginRoot, projectRoot: launcherProblem ? null : projectRoot }));
   files.push(briefFile);
 
   // The product's own experts (Staffing's .delivery/team/experts/), as subagents in this session.

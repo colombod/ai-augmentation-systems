@@ -395,3 +395,78 @@ test('run: the hint names --as-role on either wording of the role refusal, and n
   assert.equal(hinted('operator.js: not_allowed\n'), true);
   assert.equal(hinted('operator.js: disk full\n'), false);
 });
+
+// delivery-plugin-planning-8wz.1: a step names operator.js through the project's launcher, so it survives
+// plugin installs; only this project's unedited launcher, running this very plugin's operator.js sync.
+test('as-role: the project launcher form is accepted only when it runs this plugin\'s operator.js sync', () => {
+  const L = require('./lib/launcher.js');
+  const PLUGIN = path.join(__dirname, '..');
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'vr-launch-cfg-'));
+  const cache = path.join(cfg, 'plugins', 'cache', 'm', 'delivery');
+  fs.mkdirSync(cache, { recursive: true });
+  const list = (installPath) => fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'delivery@m': [{ installPath, version: '9.9.9', scope: 'user' }] } }));
+  // a cache install that is this plugin (a link to it), and one that is another plugin with its own operator.js
+  const same = path.join(cache, '9.9.9');
+  fs.symlinkSync(PLUGIN, same);
+  const other = path.join(cache, '9.9.8');
+  fs.mkdirSync(path.join(other, 'scripts'), { recursive: true });
+  for (const f of ['watchdog.js', 'operator.js']) fs.writeFileSync(path.join(other, 'scripts', f), '');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'vr-launch-proj-'));
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vr-launch-role-'));
+  const lp = L.launcherPath(proj);
+  const opts = { roleDir, projectRoot: proj, pluginRoot: same, configDir: cfg };
+  list(same);
+  assert.equal(L.ensureLauncher(proj, same, cfg), null);
+  for (const ok of [`node '${lp}' operator.js sync`, `cd '${roleDir}' && node '${lp}' operator.js sync --format-check --json`, `'${process.execPath}' ${lp} operator.js sync --all`]) {
+    assert.equal(rc.asRoleProblem(ok, opts), null, ok);
+  }
+  for (const [bad, why, o] of [
+    [`node '${lp}' evidence.js add x --criterion 1 --result pass`, /may run only operator\.js/],
+    [`node '${lp}' operator.js record --cite x`, /only subcommand allowed is sync/],
+    [`node '${lp}' operator.js sync --project /x`, /sync takes only/],
+    [`node '${lp}' operator.js`, /only subcommand allowed is sync/],
+    [`node '${lp}' operator.js sync`, /is not this plugin's operator\.js/, { ...opts, projectRoot: undefined }],
+    [`node '${L.launcherPath(roleDir)}' operator.js sync`, /is not this plugin's operator\.js/],
+  ]) {
+    const p = rc.asRoleProblem(bad, o || opts);
+    assert.ok(p, `not refused: ${bad}`);
+    assert.match(p, why, bad);
+  }
+  // the launcher resolves to another plugin: refused, and accepted again once it resolves to this one
+  list(other);
+  assert.match(rc.asRoleProblem(`node '${lp}' operator.js sync`, opts) || '', /runs the plugin at .*9\.9\.8, not this plugin's operator\.js/);
+  list(same);
+  assert.equal(rc.asRoleProblem(`node '${lp}' operator.js sync`, opts), null);
+  // an edited launcher is never trusted
+  fs.appendFileSync(lp, '// edited\n');
+  assert.match(rc.asRoleProblem(`node '${lp}' operator.js sync`, opts) || '', /not the launcher the plugin writes/);
+});
+
+test('run: a step naming operator.js sync through the project launcher is refined --as-role and runs as the checker', () => {
+  const L = require('./lib/launcher.js');
+  const s = ready();
+  const tj = path.join(s.root, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(tj, 'utf8'));
+  if (!team.roles.some((r) => r.id === 'reality-checker')) team.roles.push({ id: 'reality-checker', brief: 'delivery/reality-checker', host: 'pc', model: 'sonnet' });
+  fs.writeFileSync(tj, JSON.stringify(team, null, 2));
+  fs.writeFileSync(path.join(s.roleDir, '.delivery-role.json'), JSON.stringify({ instance: 'reality-checker', role: 'reality-checker', host: 'pc', project_root: s.root, actor: 't@pc/reality-checker' }));
+  fs.writeFileSync(path.join(s.roleDir, '.delivery-session'), 'sess-rc');
+  const tr = path.join(s.roleDir, 't.jsonl');
+  fs.writeFileSync(tr, `${JSON.stringify({ type: 'user', origin: { kind: 'human' }, promptId: 'p1', uuid: 'u1', timestamp: '2099-10-13T10:00:01.000Z', sessionId: 'sess-rc', message: { role: 'user', content: 'ship it' } })}\n`);
+  fs.writeFileSync(path.join(s.roleDir, '.delivery-transcript'), tr);
+  assert.equal(L.ensureLauncher(s.root, path.join(__dirname, '..')), null);
+  const command = `cd '${s.roleDir}' && ${L.launcherCommand(s.root, 'operator.js')} sync --format-check`;
+  assert.equal(s.refine(1, command).code, 0);
+  assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--as-role').code, 0);
+  const env = { ...process.env, DELIVERY_ROLE: 'reality-checker', DELIVERY_ROLE_DIR: s.roleDir, BEADS_ACTOR: 't@pc/reality-checker' };
+  delete env.DELIVERY_PROJECT_ROOT;
+  const who = { root: s.root, team: { ...loadManifest(s.root).team, product_url: s.prod.dir }, instance: 'reality-checker', roleId: 'reality-checker', actor: 't@pc/reality-checker', roleDir: s.roleDir };
+  const r = vr.main(['run', ID, '--criterion', '1'], { cwd: s.root, env, bd: s.bd, now: T.run, who });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /: pass \(exit 0\)/);
+  // the same step through a launcher edited after the refine: the runner refuses it before running anything
+  fs.appendFileSync(L.launcherPath(s.root), '// edited\n');
+  const edited = vr.main(['run', ID, '--criterion', '1'], { cwd: s.root, env, bd: s.bd, now: T.run, who });
+  assert.equal(edited.code, 1, edited.out);
+  assert.match(edited.out, /not the launcher the plugin writes/);
+});

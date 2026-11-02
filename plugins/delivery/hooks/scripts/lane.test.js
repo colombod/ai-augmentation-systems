@@ -1401,3 +1401,84 @@ test('lane: a runner path with spaces is suggested quoted and admitted quoted, a
     assert.equal(run(command).allow, false, command);
   }
 });
+
+// delivery-plugin-planning-8wz.1: `node <project>/.delivery/bin/delivery.js <x>.js ...` (the launcher,
+// which survives plugin installs) is judged exactly as `node <plugin root>/scripts/<x>.js ...`, and only
+// for this project's unedited launcher.
+test('the project launcher is judged as the script it runs, only when it is this project\'s and unedited', () => {
+  const L = require('../../scripts/lib/launcher.js');
+  const { nativeApproval, reviewerPolicy } = require('./lane.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-launch-'));
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-launch-other-'));
+  assert.equal(L.ensureLauncher(proj, PLUGIN_ROOT), null);
+  assert.equal(L.ensureLauncher(other, PLUGIN_ROOT), null);
+  const lp = L.launcherPath(proj);
+  const cos = { roleId: 'chief-of-staff', writes: [], bash: ['operator-read', 'operator-write'] };
+  const run = (command, over = {}) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: over.policy || cos, ...ctx({ projectRoot: proj, cwd: os.tmpdir(), ...over }) });
+  // accepted: the same verdict as the absolute form
+  for (const sub of ['verify dec-1', 'record --cite in-1 --quote x --statement y']) {
+    assert.equal(run(`node ${PLUGIN_ROOT}/scripts/operator.js ${sub}`).allow, true, `absolute: ${sub}`);
+    assert.equal(run(`node ${lp} operator.js ${sub}`).allow, true, `launcher: ${sub}`);
+    assert.equal(run(`node '${lp}' operator.js ${sub}`).allow, true, `quoted launcher: ${sub}`);
+  }
+  // refused: what the absolute form refuses, a bad script name, another directory's launcher, no project
+  for (const [command, over] of [
+    [`node ${lp} operator.js verify dec-1 --transcript /x`],
+    [`node ${lp} evidence.js add x --criterion 1 --result pass`],
+    [`node ${lp} ../scripts/operator.js verify dec-1`],
+    [`node ${lp} testing/run-tests.js`],
+    [`node ${lp} missing-script.js verify dec-1`],
+    [`node ${L.launcherPath(other)} operator.js verify dec-1`],
+    [`node ${lp} operator.js verify dec-1`, { projectRoot: undefined }],
+    [`node ${lp} operator.js verify dec-1`, { projectRoot: other }],
+  ]) assert.equal(run(command, over || {}).allow, false, command);
+  // an edited launcher is never trusted
+  fs.appendFileSync(lp, '// edited\n');
+  assert.equal(run(`node ${lp} operator.js verify dec-1`).allow, false, 'edited');
+  assert.equal(L.ensureLauncher(proj, PLUGIN_ROOT), null);
+  assert.equal(run(`node ${lp} operator.js verify dec-1`).allow, true, 'restored');
+  // the watchdog refusal holds through the launcher, even in an any lane; its read-only check does not
+  const any = { roleId: 'builder', writes: [], bash: ['any'] };
+  const wd = run(`node ${lp} watchdog.js run`, { policy: any });
+  assert.equal(wd.allow, false);
+  assert.match(wd.reason, /watchdog/);
+  assert.equal(run(`node ${lp} watchdog.js check --json`, { policy: any }).allow, true);
+  // a reviewer is told the reviewer's rule, not just the groups
+  const rv = run(`node ${lp} review.js record 1 --head abc --result pass --summary x`, { policy: reviewerPolicy(cos) });
+  assert.equal(rv.allow, false);
+  assert.match(rv.reason, /a reviewer reads/);
+  // the hook's own approval (no permission prompt) covers the launcher form too, only with the project known
+  const bash = (command) => ({ tool_name: 'Bash', tool_input: { command } });
+  const nctx = { roleDir, pluginRoot: PLUGIN_ROOT, cwd: os.tmpdir(), projectRoot: proj };
+  assert.ok(nativeApproval(bash(`node ${lp} operator.js verify dec-1`), cos, GROUPS, nctx));
+  assert.equal(nativeApproval(bash(`node ${lp} operator.js verify dec-1`), cos, GROUPS, { ...nctx, projectRoot: undefined }), null);
+});
+
+// After an install the hook can still run from the old root while the launcher resolves the new one: the
+// command is judged by the script's name, and only when the plugin the launcher runs has that script.
+test('the project launcher is judged only when the plugin it resolves to has the script', () => {
+  const L = require('../../scripts/lib/launcher.js');
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-launch-cfg-'));
+  const cache = path.join(cfg, 'plugins', 'cache', 'm', 'delivery');
+  fs.mkdirSync(cache, { recursive: true });
+  // the hook runs this plugin as a cache install (a link to it); the launcher resolves to the newer one listed
+  const running = path.join(cache, '1.0.0');
+  fs.symlinkSync(PLUGIN_ROOT, running);
+  const newer = path.join(cache, '1.0.1');
+  fs.mkdirSync(path.join(newer, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(newer, 'scripts', 'watchdog.js'), '');
+  fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'delivery@m': [{ installPath: newer, version: '1.0.1', scope: 'user' }] } }));
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-launch-new-'));
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    assert.equal(L.ensureLauncher(proj, running), null);
+    const cos = { roleId: 'chief-of-staff', writes: [], bash: ['operator-read'] };
+    const run = () => decideLane({ toolName: 'Bash', toolInput: { command: `node ${L.launcherPath(proj)} operator.js verify dec-1` }, policy: cos, ...ctx({ pluginRoot: running, projectRoot: proj, cwd: os.tmpdir() }) });
+    assert.equal(run().allow, false, 'the newer plugin has no operator.js: the launcher would fail, nothing is judged');
+    fs.writeFileSync(path.join(newer, 'scripts', 'operator.js'), '');
+    assert.equal(run().allow, true, 'it has one now');
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+  }
+});

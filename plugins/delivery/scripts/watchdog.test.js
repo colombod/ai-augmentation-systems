@@ -154,8 +154,12 @@ test('R-04 (wxy.12 unclaimed 15.5 h overnight): a stall line within the hour and
   assert.match(h.bash(COS, `${h.script('plan.js')} brief`).out.split('\n')[0], /^A top-priority item has waited 15\.5 h for someone to take it; the Delivery Manager assigns it first\.$/);
   // the host job: the Delivery Manager's session is open and idle, so it is forked, never resumed in place
   const log = scratchLog();
+  // 8wz.1: each run puts the project's script launcher back (briefs and reality-check steps name it)
+  const launcher = require('./lib/launcher.js').launcherPath(h.root);
+  fs.rmSync(path.dirname(launcher), { recursive: true, force: true });
   const run = hostJob(h, ['run'], claudeEnv(log, JSON.stringify([{ sessionId: `sess-${DM}`, kind: 'interactive', status: 'idle' }])));
   assert.equal(run.status, 0, run.stderr);
+  assert.ok(fs.existsSync(launcher));
   assert.match(run.stdout, /^Woke delivery-lead \(fork of sess-delivery-lead\)/m);
   const [c] = calls(log);
   assert.deepEqual(c.argv.slice(0, 6), ['--permission-mode', 'auto', '--resume', `sess-${DM}`, '--fork-session', '-p']);

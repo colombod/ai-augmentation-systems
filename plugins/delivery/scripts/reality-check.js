@@ -55,7 +55,10 @@ function parse(argv) {
 // name. An allowlist, not a denylist: a shell can spell a refused command too many ways. Paths are compared
 // after resolving links, never by basename: a basename check let `node /any/dir/operator.js sync` and
 // `cd /anywhere && node ./operator.js sync` through.
-const AS_ROLE_FORM = "[cd <the Reality Checker's role directory> &&] node <absolute path of this plugin's scripts>/operator.js sync [--format-check] [--all] [--json]";
+// The project's launcher form (lib/launcher.js) is accepted too, so a step survives plugin installs: only
+// this project's launcher, only when it is byte-identical to the one the plugin writes (an edited one
+// could run anything), and only when it runs this very plugin's operator.js.
+const AS_ROLE_FORM = "[cd <the Reality Checker's role directory> &&] node <project>/.delivery/bin/delivery.js operator.js sync [--format-check] [--all] [--json] (or node <absolute path of this plugin's scripts>/operator.js sync ...)";
 const SYNC_FLAGS = new Set(['--format-check', '--all', '--json']);
 const OPERATOR_JS = path.join(__dirname, 'operator.js');
 const AND = Symbol('&&');
@@ -81,7 +84,9 @@ const real = (p) => { try { return fs.realpathSync(p); } catch (err) { return nu
 // roleDir is the Reality Checker's role directory. verify-run, the one place the command executes, passes
 // it, and a cd anywhere else is refused there. refine runs as the Delivery Manager, who does not know that
 // directory, so it passes none and only an absolute cd target is required at that point.
-function asRoleProblem(command, { roleDir } = {}) {
+// projectRoot names the project whose launcher may be used; pluginRoot and configDir default to this
+// plugin and the environment's Claude configuration (tests pass others).
+function asRoleProblem(command, { roleDir, projectRoot, pluginRoot = path.join(__dirname, '..'), configDir } = {}) {
   const no = (why) => `--as-role is only for the form ${AS_ROLE_FORM}: any other command run as the Reality Checker could write rows, reviews or beads in its name (${why}). Make the step a plain command (--no-as-role)`;
   const text = String(command || '');
   if (/[\u0000-\u001f\u007f-\u009f]/.test(text)) return no('it holds a newline or another control character');
@@ -94,10 +99,17 @@ function asRoleProblem(command, { roleDir } = {}) {
     if (roleDir !== undefined && (!roleDir || !real(w[1]) || real(w[1]) !== real(roleDir))) return no(`the cd target ${w[1]} is not the Reality Checker's role directory`);
     i = 3;
   }
-  const [bin, script, sub, ...flags] = w.slice(i);
+  let [bin, script, sub, ...flags] = w.slice(i);
   if (bin !== 'node' && bin !== process.execPath) return no('the program must be node');
   if (typeof script !== 'string' || !path.isAbsolute(script)) return no('operator.js must be named by its absolute path');
-  if (!real(script) || real(script) !== real(OPERATOR_JS)) return no(`${script} is not this plugin's operator.js, ${OPERATOR_JS}`);
+  const L = require('./lib/launcher.js');
+  if (projectRoot && real(script) && real(script) === real(L.launcherPath(projectRoot))) {
+    if (sub !== 'operator.js') return no('the launcher may run only operator.js');
+    const root = L.resolveLauncher(projectRoot, pluginRoot, configDir);
+    if (!root) return no(`${script} is not the launcher the plugin writes (edited, or written for another configuration)`);
+    if (real(path.join(root, 'scripts', 'operator.js')) !== real(OPERATOR_JS)) return no(`${script} runs the plugin at ${root}, not this plugin's operator.js, ${OPERATOR_JS}`);
+    [sub, ...flags] = flags;
+  } else if (!real(script) || real(script) !== real(OPERATOR_JS)) return no(`${script} is not this plugin's operator.js, ${OPERATOR_JS}`);
   if (sub !== 'sync') return no('the only subcommand allowed is sync');
   if (!flags.every((f) => typeof f === 'string' && SYNC_FLAGS.has(f))) return no(`sync takes only ${[...SYNC_FLAGS].join(', ')}`);
   return null;
@@ -322,7 +334,7 @@ function refine(who, id, a, at, cwd) {
     if (a.as_role === true) step.as_role = true;
     if (a.as_role === false) delete step.as_role;
     if (a.capture !== undefined) step.capture = a.capture.split(',').map((x) => x.trim()).filter(Boolean);
-    return step.as_role ? asRoleProblem(step.command) : null;
+    return step.as_role ? asRoleProblem(step.command, { projectRoot: who.root }) : null;
   };
   const changed = [];
   if (a.criterion !== undefined) {
@@ -393,7 +405,7 @@ function refineFrom(who, id, s, a, at, cwd = process.cwd()) {
     if (!step) return refuse(`${a.from}: criterion ${n} has no step ${k} (1..${g.steps.length})`);
     // a step already marked keeps its mark when only the command changes, so check the mark it ends with
     const marked = e.as_role === undefined ? step.as_role === true : e.as_role;
-    if (marked) { const p = asRoleProblem(e.command); if (p) return refuse(`${a.from}: criterion ${n}: ${p}`); }
+    if (marked) { const p = asRoleProblem(e.command, { projectRoot: who.root }); if (p) return refuse(`${a.from}: criterion ${n}: ${p}`); }
     plan.push({ n, step, e });
   }
   if (!plan.length) return refuse(`${a.from} names no criterion`);
