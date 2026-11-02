@@ -20,6 +20,8 @@ delivery gives you a team of Claude Code sessions, one per role, that plan and s
 2. **Run `/delivery:start`** in an ordinary Claude Code session, outside any role directory. It asks for the project repo, the product repo, the host name, the preset, the model profile and the permission mode, shows a dry run, then writes the team manifest, creates the beads database, prepares one directory per role and prints the command that starts each session.
 3. **Talk to the Chief of Staff.** `/delivery:start` starts every role session itself (`start.js --launch --keep-alive`), in auto mode, and each joins the team; it prints the one command that opens the Chief of Staff.
 
+**If you are an agent** setting this up for a person, follow [the agent brief](docs/quickstart.md#quick-start-for-an-agent): it names the files to read, the commands to run and how to tell that each step worked.
+
 ### Using the team
 
 - **Talk to the Chief of Staff** for decisions and logistics; talk with the Product Manager about product vision. Both record what you decide. Other sessions send their questions to the Chief of Staff; it answers from what you already decided and asks you the rest once, in one ranked briefing.
@@ -104,14 +106,15 @@ The default team (`minimal` preset) has four roles:
 - **Delivery Manager** — owns stage 3: stories, materialise, sprints, phase reviews and the bead graph; assigns work to builders; has each pull request reviewed independently and merges it on a passing review.
 - **Builder** — builds one story at a time in its own worktree of the product repo, with a runner (`plain`, `superpowers` or `attractor`); opens the pull request and hands it to the Delivery Manager, resolves conflicts when asked, and never merges.
 
-The `full` preset adds four optional roles:
+The `full` preset adds five optional roles:
 
 - **Staffing** — owns the roster (`team.json`, project briefs).
 - **Progress Observer** — keeps the record true: re-checks what is claimed merged, deployed or verified, watches liveness and releases stale claims.
 - **Spike Researcher** — answers spike beads from the architecture.
 - **Reality Checker** — runs the reality-check script for a deployed story on the real customer surface, with browser control or computer use, and records a row per criterion; the only role with those tools. It is on by default, in either preset, when a declared surface is not scriptable; opt in otherwise with `start.js --reality-checker`. The owner is never asked to run a check: see [Reality checks](docs/reference.md#ready-and-done-gates).
+- **Technical Writer** — owns the product's documentation: the README, the quick start and the reference, kept true to the version that ships. It writes from the product as it runs, for two readers (a person typing commands and an agent following a brief), marks each example with the check it proves so the Reality Checker can run it, changes only Markdown and the product's `docs/` tree in its own worktree, and opens the pull request; it never merges.
 
-**Ready and done gates.** A story names its customer surface (`surface.json`) and states its criteria as what the customer sees there, each with a probe; a story closes only when every criterion has a pass row on that surface, on the deployed sha, recorded by someone other than its builder. Gates block only on a divergence from what was agreed; everything else is a counted warning the Delivery Manager acknowledges. Status is merged, deployed, verified, from the record: see [Ready and done gates](docs/reference.md#ready-and-done-gates).
+**Ready and done gates.** A story names its customer surface (`surface.json`) and states its criteria as what the customer sees there, each with a probe; a story closes only when every criterion has a pass row on that surface, on the deployed sha, recorded by someone other than its builder. Gates block only on a divergence from what was agreed; everything else is a counted warning the Delivery Manager acknowledges. Status is merged, deployed (live), verified (checked on the customer's app), from the record: see [Ready and done gates](docs/reference.md#ready-and-done-gates).
 
 Who talks to whom: you talk to the Chief of Staff (and to the Product Manager about vision); every session messages the Chief of Staff with questions for you; work moves between roles as beads, and the Delivery Manager alone changes their structure. The agents in `agents/` are reviewer lenses that skills call, not sessions: see [Sessions you run vs reviewers they call](docs/reference.md#sessions-you-run-vs-reviewers-they-call).
 
@@ -123,7 +126,7 @@ Who talks to whom: you talk to the Chief of Staff (and to the Product Manager ab
 | Product Manager | opus | keep it high: DEFINE and CONTRACT are judgement work |
 | Delivery Manager | sonnet | stories keep coming back not ready, or the plan is large |
 | Builder | sonnet | per story, through its size label (below) |
-| Staffing, Spike Researcher, Reality Checker | sonnet | spikes are deep research |
+| Staffing, Spike Researcher, Reality Checker, Technical Writer | sonnet | spikes are deep research |
 | Progress Observer | haiku | its sweeps miss drift |
 
 **Pick a whole-team profile** when you start: `start.js --models quality|balanced|economy` (`balanced`, the default, is this table; `quality` also puts the Delivery Manager on opus; `economy` moves the senior roles to sonnet and Staffing to haiku).
@@ -196,7 +199,7 @@ New terms go in `.delivery/glossary.md`; every skill keeps it. Renamed skills ke
 The shipping team runs on hooks and per-role settings. These are the places where they meet the rest of a Claude Code setup.
 
 - **Permission modes.** With a user-level `defaultMode` of `auto`, or a role started with `--permission-mode`, nothing prompts: the lane hook is then the only allowlist, and a hook that fails to spawn (no `node`, a moved plugin path) fails open. `prepare-role` also writes native `permissions.deny` rules that hold even then: `AskUserQuestion`, `PushNotification` and `SendUserFile` for every role except the Chief of Staff and the Product Manager, and `Bash(git push:*)`, `Bash(sudo:*)`, `Bash(curl:*)`, `Bash(wget:*)` and `Bash(rm:*)` for manager lanes that do not allow them. A role session whose lane cannot be checked fails closed.
-- **Plugin updates.** Hook paths are fixed when a session starts, and the allow rules name the operator.js path of the plugin version that wrote them. After updating, rerun `prepare-role` for each role and restart its session.
+- **Plugin updates.** Each installed version lives in its own directory, and the lane hook matches a script path against the plugin root it runs from, so a role's own commands (`operator.js record`, `bd` notes and the rest of its lane) are approved at the version that is running, with no `prepare-role` rerun. A session that last ran an older version remembers that version's paths. With the watchdog job installed ([the watchdog](docs/reference.md#the-watchdog-stalls-and-the-wake)), a stopped role is woken fresh after an install and told the current scripts directory; a conversation resumed any other way is told at its start that the plugin moved; and a refusal of an older version's path names the same command at the current root. You rerun `prepare-role` and restart a session only to change what it was prepared with, such as its model (`/delivery:team` says `Restart pending` while the marker is fixed and the session still runs the old model).
 - **superpowers.** Its "you must invoke skills" instruction competes with the manager lanes. Consider disabling it in manager role directories through `enabledPlugins` in the role's `settings.local.json`.
 - **ralph-loop and the Stop cap.** Claude Code allows at most 8 consecutive Stop blocks; the delivery Stop hook blocks at most twice per turn, but a loop plugin that also blocks Stop shares the budget.
 - **Role directories make roles.** An ordinary session started inside a role directory becomes that role, with its lane, deny rules and Stop guard.
