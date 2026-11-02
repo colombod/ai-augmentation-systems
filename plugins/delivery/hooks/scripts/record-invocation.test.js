@@ -460,7 +460,8 @@ test('recordInvocation: under a role session, the unreachable-project cases leav
   const env = { ...process.env, RECORD_INVOCATION_CHILD: '1', DELIVERY_LEDGER: '1' };
   for (const k of ROLE_ENV) env[k] = k === 'DELIVERY_ROLE' ? 'builder' : real;
   delete env.NODE_TEST_CONTEXT;
-  const r = spawnSync(process.execPath, ['--test',
+  // tap pinned: the default reporter differs by runner (spec on CI), and the count is read from it
+  const r = spawnSync(process.execPath, ['--test', '--test-reporter=tap',
     '--test-name-pattern=no-ops \\(returns null\\) when no|zero candidates anywhere is still a no-op', __filename],
   { env, cwd: makeScratchProject(), encoding: 'utf8' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
