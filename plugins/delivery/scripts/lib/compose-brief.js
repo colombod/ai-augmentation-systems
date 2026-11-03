@@ -59,14 +59,23 @@ function describeHost(name, host) {
   return text;
 }
 
+// The Session column is the name to message (lib/session-name.js): <instance>@<team>. Session names
+// are machine-wide, so a bare role name can reach another team's session on the same host.
 function routingTable(team) {
-  const lines = ['| Role | Host | Model | Brief |', '|---|---|---|---|'];
+  const { sessionName } = require('./session-name.js');
+  const lines = ['| Role | Host | Model | Brief | Session |', '|---|---|---|---|---|'];
   for (const r of team.roles) {
     const names = require('./manifest.js').instanceNames(r);
     const id = names.length > 1 ? `${r.id} (${names.join(', ')})` : r.id;
-    lines.push(`| ${id} | ${r.host} | ${r.model} | ${r.brief} |`);
+    lines.push(`| ${id} | ${r.host} | ${r.model} | ${r.brief} | ${names.map((n) => `\`${sessionName(n, team.prefix)}\``).join(', ')} |`);
   }
   return lines.join('\n');
+}
+
+// who this session is, and how it addresses the others
+function sessionLine(team, instance, actor) {
+  const { sessionName } = require('./session-name.js');
+  return `You are the session "${sessionName(instance, team.prefix)}" (instance ${instance}). Your beads actor is \`${actor}\` (the real user name is set in your environment as BEADS_ACTOR). Bead prefix: \`${team.prefix}-\`. The bd host is \`${team.bd_host}\`. Message another role by its name in the Session column below, never by a bare role name: session names are shared by every team on this machine.`;
 }
 
 function headerLines(team, instance, role) {
@@ -74,7 +83,7 @@ function headerLines(team, instance, role) {
   return [
     `# Role: ${instance} (${role.id}) on ${team.project}`,
     '',
-    `You are the session "${instance}". Your beads actor is \`${actor}\` (the real user name is set in your environment as BEADS_ACTOR). Bead prefix: \`${team.prefix}-\`. The bd host is \`${team.bd_host}\`.`,
+    sessionLine(team, instance, actor),
     '',
   ];
 }
@@ -112,7 +121,7 @@ function composeBrief({ team, hosts, instance, role, brief, rules, pluginRoot, p
   const text = [
     `# Role: ${instance} (${role.id}) on ${team.project}`,
     '',
-    `You are the session "${instance}". Your beads actor is \`${actor}\` (the real user name is set in your environment as BEADS_ACTOR). Bead prefix: \`${team.prefix}-\`. The bd host is \`${team.bd_host}\`.`,
+    sessionLine(team, instance, actor),
     '',
     rules.trim(),
     '',

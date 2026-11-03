@@ -147,10 +147,10 @@ delivery start: <project-root>
     builder: prepared (sonnet)
 
 Start each session in its own terminal, the Chief of Staff first:
-  cd <team-dir>/chief-of-staff && claude --permission-mode auto --name chief-of-staff
-  cd <team-dir>/product-manager && claude --permission-mode auto --name product-manager
-  cd <team-dir>/delivery-lead && claude --permission-mode auto --name delivery-lead
-  cd <team-dir>/builder && claude --permission-mode auto --name builder
+  cd <team-dir>/chief-of-staff && claude --permission-mode auto --name chief-of-staff@acme
+  cd <team-dir>/product-manager && claude --permission-mode auto --name product-manager@acme
+  cd <team-dir>/delivery-lead && claude --permission-mode auto --name delivery-lead@acme
+  cd <team-dir>/builder && claude --permission-mode auto --name builder@acme
   (--permission-mode auto: the sessions run without asking you to approve each step; the lane hook still limits what each role can do. Pass --permission-mode default to be asked instead)
 
 Then:
@@ -258,10 +258,10 @@ Start the Chief of Staff first, so the others can report to it. In a separate te
 
 ```
 cd <team-dir>/chief-of-staff
-claude --permission-mode <mode> --name chief-of-staff
+claude --permission-mode <mode> --name chief-of-staff@<team>
 ```
 
-`<mode>` is your choice for that role (`claude --help` lists the modes). The lane hook runs before every file write, shell command and MCP call. The model comes from the role's `settings.local.json`. Name each session after its instance: `/delivery:team join` reports to the session named `chief-of-staff`. On start, the SessionStart hook makes sure the role is loaded, registers the session in the roster, and starts capturing what you type in that session.
+`<mode>` is your choice for that role (`claude --help` lists the modes). The lane hook runs before every file write, shell command and MCP call. The model comes from the role's `settings.local.json`. Name each session `<instance>@<team>`, where `<team>` is the bead prefix in `team.json` without a trailing `-` (start.js prints the exact command): session names are shared by every Claude Code session on the machine, so two teams on one host that both named a session `chief-of-staff` would reach each other's. `/delivery:team join` reports to `chief-of-staff@<team>`, and a role session's message to a bare role name, or to another team's session, is refused with the name to use. On start, the SessionStart hook makes sure the role is loaded, registers the session in the roster, and starts capturing what you type in that session.
 
 ## 5. Join, then check the team
 

@@ -75,6 +75,7 @@ session its role and keep it:
 - **Role briefs**: `roles/*.md`. Project-specific briefs go in the project repo under `.delivery/team/briefs/`.
 - **Experts**: the product's own specialists (infrastructure, security, scalability) as subagent definitions in the project repo under `.delivery/team/experts/<name>.md`, written by Staffing. `prepare-role` copies each into the role session's `.claude/agents/`, keeps a list of what it installed in `.claude/.delivery-managed-agents.json`, removes an expert the project no longer defines, never overwrites an agent the user wrote, and reports a malformed expert (no `name`, a `name` that is not the file name, no `description`) or more than five.
 - **The manifest**: `.delivery/team/team.json` and `hosts.json` in the private project repo (templates in `templates/`). [team-example.md](team-example.md) explains each field.
+- **Session names**: every role session is named `<instance>@<team>`, `<team>` being the manifest's `prefix` without a trailing `-` (`builder@acme`); `start.js` prints and launches with that name, the watchdog's fresh wakes use it, and each role brief lists every peer's under Session. Claude Code session names are shared by every session on the machine, so two teams on one host that both name a session `chief-of-staff` reach each other's: it happened, when a scratch team's join reports reached another team's Chief of Staff. The message routing (`lib/inbox.js`, the Chief of Staff's routing record) reads `<instance>@<team>` back to the instance and treats another team's prefix as no role here.
 - **`scripts/prepare-role.js --project <root> --instance <id>`** creates one directory per role
   instance with its own settings (model, env, actor), a composed `CLAUDE.local.md`, a clone of the
   project repo and, for builders, a worktree of the product repo. The env includes
@@ -1141,7 +1142,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   transcript records) is woken in a fresh session in its role directory instead (`claude -p`, no
   resume), told that its earlier conversation is not loaded and to start from its in-progress beads:
   a resume reloads the whole conversation, and one day of wakes took a real Delivery Manager's turns to
-  236k tokens. The fresh session is named like the role (`--name`), and the next wake resumes it (a
+  236k tokens. The fresh session is named like every role session, `<instance>@<team>` (`--name`), and the next wake resumes it (a
   fresh role session starts near 53k tokens). The Stop guard's check for unrecorded operator input is
   per session, so a fresh Chief of Staff is told to run `operator.js pending` first.
 - **After a plugin install.** Each installed version lives in its own directory, and the lane judges a
