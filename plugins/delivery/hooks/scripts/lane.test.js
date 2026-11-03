@@ -1603,6 +1603,14 @@ test('an any-lane shell write into the host temporary directory is refused; scra
         `touch ${tmp}/x`,
         `mktemp -p ${tmp}`,
         `cd ${tmp} && echo x > out.log`,
+        // a variable or substitution is judged by the literal directory before it (rv-152)
+        `npm test > ${tmp}/suite-$ID.log`,
+        `npm test > ${tmp}/suite-$(date +%s).log`,
+        `for f in a b; do echo x > ${tmp}/$f.log; done`,
+        `cp --target-directory ${tmp} lane.js`,
+        `install -d ${tmp}/x`,
+        `(cd ${tmp} && echo x > out.log)`,
+        `(cd ${tmp}; npm test > out.log); ls`,
       ]) {
         const d = run(command);
         assert.equal(d.allow, false, command);
@@ -1632,6 +1640,12 @@ test('an any-lane shell write into the host temporary directory is refused; scra
       'npm test 2>&1 | head',
       'cat /tmp/x',
       `cat ${envTmp}/x | grep y`,
+      // the cd ends with its subshell; a heredoc body is input, not commands; an unseen directory is not judged
+      '(cd /tmp && ls); echo x > out.log',
+      `cat > ${scratch}/notes.sh <<'EOF'\necho hi > /tmp/x.log\nEOF`,
+      `cat > ${scratch}/notes.sh <<-EOF\n\tnpm test > /tmp/x.log\n\tEOF\nls`,
+      'echo x > out-$ID.log',
+      'echo x > $D/a.log',
       'cp /tmp/x lane.js',
       'rm -rf /tmp/old-run',
       'git commit -m "logs no longer go to /tmp > anywhere"',

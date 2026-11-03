@@ -1138,13 +1138,20 @@ const shellPath = (p) => (/^[A-Za-z0-9_./@+,=-]+$/.test(p) ? p : `'${p}'`);
 // rm, rmdir and a mv out of tmp only clean up, and reads (`cat /tmp/x`, `cp /tmp/x .`) write nothing there.
 const TMP_ALL_WORDS = new Set(['tee', 'truncate', 'mkdir', 'touch']); // every path argument is written
 const TMP_DEST_WORDS = new Set(['cp', 'mv', 'ln', 'install', 'rsync']); // the destination is written
-// $TMPDIR, ${TMPDIR}, ${TMPDIR:-x}, $HOME and ~ as the shell would expand them; any other variable is not judged
+// $TMPDIR, ${TMPDIR}, ${TMPDIR:-x}, $HOME and ~ as the shell would expand them. Any other variable or
+// substitution is judged by the literal directory before it (rv-152: `> /tmp/suite-$ID.log` and
+// `> /tmp/$f.log` in a loop had gone through): /tmp/suite-$ID.log is judged as /tmp/, out-$ID.log as the
+// current directory. A word that starts with one ($D/a.log) names no directory we can see: not judged.
 function tmpExpand(w) {
   const tmp = process.env.TMPDIR || os.tmpdir();
   const home = os.homedir();
   const x = String(w).replace(/\$\{TMPDIR(?::?[-=][^}]*)?\}|\$TMPDIR(?![A-Za-z0-9_])/g, tmp)
     .replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, home).replace(/^~(?=\/|$)/, home);
-  return /[$`]/.test(x) ? null : x;
+  const i = x.search(/[$`]/);
+  if (i < 0) return x;
+  if (i === 0) return null;
+  const dir = x.slice(0, x.lastIndexOf('/', i - 1) + 1);
+  return dir || '.';
 }
 function mktempTarget(args, base) {
   let dir = null;
@@ -1169,8 +1176,10 @@ function shellWriteWords(w, base) {
   const args = w.slice(1);
   const paths = args.filter((x) => !x.startsWith('-'));
   if (TMP_ALL_WORDS.has(first)) return paths;
+  // install -d creates every path it names, like mkdir (rv-152)
+  if (first === 'install' && args.some((x) => x === '--directory' || /^-[A-Za-z]*d/.test(x))) return paths;
   if (TMP_DEST_WORDS.has(first)) {
-    const t = args.find((x, i) => args[i - 1] === '-t' || x.startsWith('--target-directory=') || /^-t./.test(x));
+    const t = args.find((x, i) => args[i - 1] === '-t' || args[i - 1] === '--target-directory' || x.startsWith('--target-directory=') || /^-t./.test(x));
     if (t) return [t.startsWith('--target-directory=') ? t.slice(19) : t.startsWith('-t') ? t.slice(2) : t];
     return paths.length >= 2 ? [paths[paths.length - 1]].filter((x) => !/^[^/]*:/.test(x)) : []; // host:path is remote
   }
@@ -1187,21 +1196,47 @@ function tmpShellWrite(command, { cwd, roleDir } = {}, depth = 0) {
   const tmp = [os.tmpdir(), process.env.TMPDIR, process.platform === 'win32' ? null : '/tmp'].filter(Boolean).map(realish);
   const rd = roleDir ? realish(roleDir) : null;
   let base = cwd || process.cwd();
-  for (const seg of splitCommand(command)) {
+  // a cd inside ( ... ) ends with the subshell (rv-152: `(cd /tmp && ls); echo x > out.log` was refused)
+  const saved = [];
+  for (const seg of splitCommand(withoutHeredocBodies(command))) {
+    for (let k = (seg.match(/^\s*(\(+)/) || ['', ''])[1].length; k > 0; k--) saved.push(base);
+    const closes = (seg.match(/(\)+)\s*$/) || ['', ''])[1].length;
     const targets = [];
     const w = commandWords(stripGrammar(argWords(seg, targets)));
     if (['cd', 'pushd'].includes(w[0])) {
       const d = w.length === 2 && !w[1].startsWith('-') ? tmpExpand(w[1]) : null;
       if (d) base = path.isAbsolute(d) ? d : `${base}${path.sep}${d}`;
-      continue;
+    } else {
+      const hit = tmpSegmentWrite(w, targets, base, rd, tmp);
+      if (hit) return hit;
     }
-    for (const raw of [...targets, ...(w.length ? shellWriteWords(w, base) : [])]) {
-      const x = tmpExpand(raw);
-      if (!x) continue;
-      const abs = realish(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`);
-      if (rd && under(abs, rd)) continue;
-      if (tmp.some((t) => under(abs, t))) return abs;
-    }
+    for (let k = closes; k > 0 && saved.length; k--) base = saved.pop();
+  }
+  return null;
+}
+// A heredoc's body is the input of its command, not commands (rv-152: a script written into scratch/
+// that mentions /tmp was refused): drop the lines between <<WORD and WORD before the split.
+function withoutHeredocBodies(command) {
+  const lines = String(command).split('\n');
+  const out = [];
+  let end = null;
+  let tabs = false;
+  for (const line of lines) {
+    if (end !== null) { if ((tabs ? line.replace(/^\t+/, '') : line) === end) { end = null; out.push(''); } continue; }
+    out.push(line);
+    const m = line.match(/<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
+    if (m && !/<<</.test(line)) { end = m[3]; tabs = m[1] === '-'; }
+  }
+  return out.join('\n');
+}
+// one segment's redirect targets and written paths, judged from base
+function tmpSegmentWrite(w, targets, base, rd, tmp) {
+  for (const raw of [...targets, ...(w.length ? shellWriteWords(w, base) : [])]) {
+    const x = tmpExpand(raw);
+    if (!x) continue;
+    const abs = realish(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`);
+    if (rd && under(abs, rd)) continue;
+    if (tmp.some((t) => under(abs, t))) return abs;
   }
   return null;
 }
