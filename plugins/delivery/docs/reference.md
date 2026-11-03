@@ -380,7 +380,7 @@ named) is not locked out: its evidence counts without the surface check and the 
 one), `Customer surface`, `Acceptance criteria` as outcomes the customer sees on the surface, each
 with one `Probe:` line (`what is observed; where: <surface>; by: test | reality-check`), a
 `Measurement plan` table (signal, a numeric threshold, where) and `Shippable unit`. A criterion line
-that still holds a template `<placeholder>` does not count. `node ${CLAUDE_PLUGIN_ROOT}/scripts/ready.js <bead>`
+that still holds a template `<placeholder>` does not count; angle brackets inside a code span (`bd update <a bead>`) are part of a command and do not make it a placeholder. `node ${CLAUDE_PLUGIN_ROOT}/scripts/ready.js <bead>`
 (or `--story <file> --initiative <slug>` before materialise) reports each missing piece, a criterion
 with no outcome verb (sees, shows, reads, finds, completes: a word rule), and a `test` probe for a
 surface that is not scriptable (it needs a reality check, below); it
