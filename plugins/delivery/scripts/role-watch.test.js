@@ -113,9 +113,11 @@ test('TR-3: the manager\'s own waiting merge, deploy or review comes before the 
   assert.ok(first > 0 && second > first, 'step 1 is printed before step 2');
   assert.ok(text.slice(first + 1, second).some((l) => /PR 152 \(ex-8-2\) is passed: run the merge check and merge it/.test(l)));
   assert.ok(text.slice(first + 1, second).some((l) => /ex-shipped: PR 149 is merged; deploy it and record it/.test(l)));
-  // a holder whose work waits only on the manager is not failed for not moving it
+  // a holder whose work waits only on the manager is not failed for not moving it: the one line names
+  // the manager's wait, and the action is a note, never a restart or a reassignment
   const only = RW.pass(facts({ now, beads: nightBeads().filter((b) => ['ex-4-4', 'ex-2ys'].includes(b.id)) }));
-  assert.deepEqual(of(only, 'builder-2').fails, []);
+  assert.deepEqual(of(only, 'builder-2').fails, ['ex-4-4, ex-2ys wait on delivery-lead past 2 h']);
+  assert.equal(of(only, 'builder-2').action.kind, 'note-block');
 });
 
 test('TR-4: every failing instance gets a note on its bead, once per change of action', () => {
@@ -142,6 +144,71 @@ test('TR-4: every failing instance gets a note on its bead, once per change of a
   const third = RW.record(h.root, RW.pass(facts({ now: '2026-11-02T23:55:00Z', prs, wakes: nightWakes('2026-11-02T23:55:00Z') })), { bd });
   assert.deepEqual(third.noted, ['ex-4-4', 'ex-2ys', 'ex-8-2'], 'builder-2\'s action changed; builder-1\'s did not');
   assert.match(notes('ex-4-4'), /action unblock: PR 151 was sent back/);
+});
+
+// the reviewer's probe on PR 158: a holder whose only beads wait on the manager, quiet past stall_hours,
+// with no wasted wake. The watchdog raises each as a quiet stall; the pass names it and notes it.
+test('TR-4: held work waiting only on the manager, quiet past stall_hours with no wasted wake, gets a note too', () => {
+  const beads = nightBeads().filter((b) => ['ex-4-4', 'ex-2ys'].includes(b.id));
+  const h = harness({ beads: Object.fromEntries(beads.map((b) => [b.id, b])) });
+  const bd = require('./lib/bd.js').makeBd({ cwd: h.root, env: { ...process.env, BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, 'testing')}${path.delimiter}${process.env.PATH}` } });
+  const now = '2026-11-02T23:30:00Z';
+  const res = RW.pass(facts({ now, beads, wakes: [] }));
+  const b2 = of(res, 'builder-2');
+  assert.equal(b2.wasted, 0);
+  assert.deepEqual(b2.fails, ['ex-4-4, ex-2ys wait on delivery-lead past 2 h']);
+  assert.deepEqual([b2.action.kind, b2.action.beads], ['note-block', ['ex-4-4', 'ex-2ys']]);
+  assert.match(b2.action.why, /wait on delivery-lead, not on builder-2/);
+  const rec = RW.record(h.root, res, { bd });
+  assert.deepEqual(rec.noted.sort(), ['ex-2ys', 'ex-4-4']);
+  const st = W.stalls({ beads, ready: [], now, sessions: sessionsAt(EVENING), team: null }).stalls.filter((x) => x.kind === 'quiet');
+  assert.deepEqual(st.map((x) => x.bead).sort(), ['ex-2ys', 'ex-4-4']);
+  for (const x of st) assert.match(String(bd.show(x.bead).notes || ''), /delivery-lead pass: builder-2 fails \(ex-4-4, ex-2ys wait on delivery-lead past 2 h\); action note-block/);
+  // within stall_hours it is not a failure
+  assert.deepEqual(of(RW.pass(facts({ now: '2026-11-02T21:00:00Z', beads, wakes: [] })), 'builder-2').fails, []);
+});
+
+test('the pass names the manager by its instance, never a fixed delivery-lead', () => {
+  const h = harness({ beads: Object.fromEntries(nightBeads().map((b) => [b.id, b])) });
+  const bd = require('./lib/bd.js').makeBd({ cwd: h.root, env: { ...process.env, BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, 'testing')}${path.delimiter}${process.env.PATH}` } });
+  const now = '2026-11-02T23:30:00Z';
+  const messages = [{ to: 'delivery-lead', entries: [{ at: now }] }, { to: 'dm-2', entries: [{ at: now }, { at: now }] }];
+  const res = RW.pass(facts({ now, dm: 'dm-2', messages, wakes: nightWakes(now) }));
+  assert.deepEqual(res.own.filter((o) => o.kind === 'message').map((o) => o.ref), ['dm-2'], 'a message for another instance is not this manager\'s');
+  assert.match(of(res, 'builder-2').action.why, /waits on dm-2/);
+  RW.record(h.root, res, { bd });
+  assert.match(String(bd.show('ex-4-4').notes), /dm-2 pass: builder-2 fails/);
+  assert.doesNotMatch(String(bd.show('ex-4-4').notes), /delivery-lead/);
+});
+
+// TR-6 end to end: the pass with every builder stuck sends Staffing its roster command; once the new
+// builder is on the team, the next pass assigns it the top-priority bead and tells it
+test('TR-6: --record asks Staffing for the builder, then assigns the bead to it once it is on the team', () => {
+  const ready = [{ id: 'ex-p0', status: 'open', priority: 0, created_at: '2026-11-02T22:00:00Z' }];
+  const h = harness({ beads: Object.fromEntries([...nightBeads(), ...ready].map((b) => [b.id, b])) });
+  const bd = require('./lib/bd.js').makeBd({ cwd: h.root, env: { ...process.env, BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, 'testing')}${path.delimiter}${process.env.PATH}` } });
+  const inbox = (to) => { try { return fs.readFileSync(path.join(h.root, '.delivery', 'watchdog', 'inbox', `${to}.ndjson`), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch (err) { return []; } };
+  const now = '2026-11-03T02:00:00Z';
+  const first = RW.record(h.root, RW.pass(facts({ now, ready, staffing: 'staffing', wakes: nightWakes(now) })), { bd, actor: 'dev@pc/delivery-lead' });
+  assert.equal(first.team, 'add-builder');
+  const asked = inbox('staffing');
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].from, 'delivery-lead');
+  assert.match(asked[0].message, /team-role\.js add builder --count 3\. My next pass assigns ex-p0 to it/);
+  assert.match(String(bd.show('ex-p0').notes), /asked staffing to add builder 3 through its roster command/);
+  // the next pass, still waiting on Staffing: no second message
+  const later = '2026-11-03T02:16:00Z';
+  assert.equal(RW.record(h.root, RW.pass(facts({ now: later, ready, wakes: nightWakes(later) })), { bd, actor: 'dev@pc/delivery-lead' }).team, null);
+  assert.equal(inbox('staffing').length, 1);
+  // Staffing added builder-3: the pass after it assigns the bead and tells the new builder
+  const after = '2026-11-03T02:30:00Z';
+  const third = RW.record(h.root, RW.pass(facts({ now: after, ready, builders: ['builder-1', 'builder-2', 'builder-3'], wakes: nightWakes(after) })), { bd, actor: 'dev@pc/delivery-lead' });
+  assert.equal(third.team, 'assign');
+  assert.equal(bd.show('ex-p0').assignee, 'dev@pc/builder-3');
+  assert.match(String(bd.show('ex-p0').notes), /delivery-lead pass: assigned to builder-3/);
+  const told = inbox('builder-3');
+  assert.equal(told.length, 1);
+  assert.match(told[0].message, /top-priority ex-p0 is assigned to you/);
 });
 
 test('TR-6: every builder stuck and a top-priority bead ready: the pass adds a builder through the roster command; a free builder is assigned instead', () => {

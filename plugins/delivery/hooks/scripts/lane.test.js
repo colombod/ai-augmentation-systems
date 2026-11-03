@@ -1302,9 +1302,9 @@ test('nativeApproval approves nothing for a non-Bash tool, an any lane or the re
   assert.ok(nativeApproval(cmd(`node ${path.join(PLUGIN_ROOT, 'scripts', 'team-status.js')}`), reads, groups, ctx).allow);
 });
 
-// the Delivery Manager's pass reads the team and, with --record, writes only bead notes and its own row:
-// it runs in a role session like `check`, and its record needs the notes group; the wake verbs stay refused
-test('lane: the Delivery Manager runs watchdog.js pass and pass --record; a role without bead notes only reads it', () => {
+// the Delivery Manager's pass reads the team and, with --record, writes bead notes, an assignment and its
+// own row: it runs in a role session like `check`, its record needs bd-structure; the wake verbs stay refused
+test('lane: the Delivery Manager runs watchdog.js pass and pass --record; a role that cannot assign beads only reads it', () => {
   const bash = (policy, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx() });
   const wd = path.join(PLUGIN_ROOT, 'scripts', 'watchdog.js');
   const dm = POLICIES['delivery-lead'];
@@ -1321,6 +1321,10 @@ test('lane: the Delivery Manager runs watchdog.js pass and pass --record; a role
   const reader = { roleId: 'observer', writes: [], bash: ['read'] };
   assert.equal(bash(reader, `node ${wd} pass`).allow, true);
   assert.equal(bash(reader, `node ${wd} pass --record`).allow, false, 'the record writes bead notes');
+  // the record also assigns a bead to a free builder: a lane that may only append notes cannot run it
+  const notesOnly = { roleId: 'staffing', writes: [], bash: ['read', 'bd-notes'] };
+  assert.equal(bash(notesOnly, `node ${wd} pass`).allow, true);
+  assert.equal(bash(notesOnly, `node ${wd} pass --record`).allow, false, 'the record assigns beads');
 });
 
 // the Technical Writer edits documentation in its product worktree, never product code; Staffing adds a

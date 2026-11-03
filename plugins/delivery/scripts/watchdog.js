@@ -96,15 +96,16 @@ function checkLines(res) {
 
 // The Delivery Manager's pass: read-only unless --record, which keeps the pass row and notes each
 // action on the bead it names. Unreadable data is a line that says so, never a healthy team.
-function rolePass(root, o, { bd, now, team, rows }) {
+function rolePass(root, o, { bd, now, team, rows, env = {} }) {
   const RW = require('./lib/role-watch.js');
   const store = bd || require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 });
   const facts = RW.read(root, { bd: store, now, team, rows });
   const res = facts.unreadable ? facts : RW.pass(facts);
-  const rec = o.record ? RW.record(root, res, { bd: store }) : null;
+  const rec = o.record ? RW.record(root, res, { bd: store, actor: env.BEADS_ACTOR }) : null;
   if (o.json) return { code: 0, out: JSON.stringify({ ...res, noted: rec ? rec.noted : null }, null, 2) };
   const out = RW.lines(res);
   if (rec && rec.noted.length) out.push(`Noted on ${rec.noted.join(', ')}.`);
+  if (rec && rec.team) out.push(res.team.kind === 'assign' ? `Assigned ${res.team.bead} to ${res.team.to} and messaged it.` : `Asked ${res.team.to} to add builder ${res.team.count}; the next pass assigns ${res.team.bead} to it.`);
   return { code: 0, out: out.join('\n') };
 }
 
@@ -509,7 +510,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   }
   const who = whoAmI({ cwd, env, project: o.project });
   if (!who.root) return { code: 2, out: 'watchdog.js: no project found; pass --project <root>' };
-  if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows });
+  if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows, env });
   if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has });
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
   const state = { installed: false };

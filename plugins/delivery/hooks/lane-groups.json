@@ -80,8 +80,7 @@
   ],
   "bd-notes": [
     { "first": "bd", "sub": ["update"], "flags_any": ["--append-notes", "--notes"], "flags_none": ["--parent", "--claim", "--status", "--assignee", "--title", "--type", "--priority", "--add-label", "--remove-label", "--metadata", "--description", "--design", "--acceptance", "-s", "-a", "-p", "-t", "-d", "-l"] },
-    { "first": "bd", "sub": ["comments add", "comment add"] },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watchdog.js", "sub": ["pass"], "flags_any": ["--record"] }
+    { "first": "bd", "sub": ["comments add", "comment add"] }
   ],
   "bd-claim": [
     { "first": "bd", "sub": ["update"], "flags_any": ["--claim"], "flags_none": ["--parent", "--title", "--type", "--priority", "--add-label", "--remove-label", "--metadata", "--description", "--design", "--acceptance", "-p", "-t", "-d", "-l"] },
@@ -93,7 +92,8 @@
   ],
   "bd-structure": [
     { "first": "bd", "sub": ["create", "dep add", "dep remove", "dep relate", "dep unrelate", "label add", "label remove", "label propagate", "delete", "update", "assign", "tag", "todo", "import", "reopen", "duplicates", "link", "duplicate", "supersede", "rename", "rename-prefix", "set-state", "mol", "epic", "swarm"] },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/materialise.js" }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/materialise.js" },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watchdog.js", "sub": ["pass"], "flags_any": ["--record"] }
   ],
   "operator-read": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/operator.js", "sub": ["verify", "show", "pending", "sync", "ledger", "find", "problems", "refresh"], "flags_none": ["--transcript", "--session"] }

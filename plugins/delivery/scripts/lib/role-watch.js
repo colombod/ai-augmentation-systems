@@ -34,9 +34,9 @@ const instanceOf = (assignee) => { const a = String(assignee || ''); return a.in
 // the bead a wake key names: assigned:<bead>, quiet:<bead>:<at>, evidence:<bead>:<at>
 const beadOfKey = (k) => { const m = /^(assigned|quiet|evidence):([^:]+)/.exec(String(k || '')); return m ? m[2] : null; };
 
-// facts: { now, dm, builders, beads, ready, sessions (lib/watchdog sessions()), wakes (wake rows),
+// facts: { now, dm, staffing, builders, beads, ready, sessions (lib/watchdog sessions()), wakes (wake rows),
 // prs: [{ pr, state, beads, sentBackAt, note }], handoffs, messages, stallHours, alive }
-function pass({ now, dm = 'delivery-lead', builders = [], beads = [], ready = [], sessions = [], wakes = [], prs = [], handoffs = [], messages = [], stallHours = 2, alive = () => false, caps = W.capsOf } = {}) {
+function pass({ now, dm = 'delivery-lead', staffing = 'staffing', builders = [], beads = [], ready = [], sessions = [], wakes = [], prs = [], handoffs = [], messages = [], stallHours = 2, alive = () => false, caps = W.capsOf } = {}) {
   const t = ms(now || new Date().toISOString());
   const byId = new Map(beads.filter(Boolean).map((b) => [b.id, b]));
   const G = require('./gates.js');
@@ -47,7 +47,7 @@ function pass({ now, dm = 'delivery-lead', builders = [], beads = [], ready = []
   const own = [];
   const known = new Set(sessions.map((s) => s.instance));
   for (const h of handoffs.filter((r) => r && (r.to === dm || !known.has(r.to)))) own.push({ kind: 'handoff', ref: h.bead, line: `${h.bead}: ${h.step === 'deploy' ? `PR ${h.pr || '?'} is merged; deploy it and record it` : 'deployed; dispatch its reality check'}` });
-  for (const m of messages.filter((x) => x && (x.to === dm || x.to === 'delivery-lead') && x.entries && x.entries.length)) own.push({ kind: 'message', ref: m.to, line: `${m.entries.length} message${m.entries.length > 1 ? 's' : ''} waiting for you; read and act on them` });
+  for (const m of messages.filter((x) => x && x.to === dm && x.entries && x.entries.length)) own.push({ kind: 'message', ref: m.to, line: `${m.entries.length} message${m.entries.length > 1 ? 's' : ''} waiting for you; read and act on them` });
   for (const p of prs.filter((x) => PR_DM[x.state])) own.push({ kind: 'pr', ref: `PR ${p.pr}`, line: `PR ${p.pr} (${(p.beads || []).join(', ') || 'no bead'}) is ${p.state}: ${PR_DM[p.state]}` });
   for (const b of beads.filter((x) => x && x.status === 'in_progress' && shipped(x)).filter((x) => !own.some((o) => o.ref === x.id))) own.push({ kind: 'evidence', ref: b.id, line: `${b.id} is ${G.stateOf(b)}: ${G.stateOf(b) === 'merged' ? 'deploy it and record it' : 'dispatch its reality check or record its evidence'}` });
 
@@ -81,13 +81,19 @@ function pass({ now, dm = 'delivery-lead', builders = [], beads = [], ready = []
     }).length;
     // a send-back the holder has not acted on since: a review result waiting for it
     const sentBack = prs.filter((p) => p.state === 'sent-back' && (p.beads || []).some((id) => held.some((b) => b.id === id)) && ms(p.sentBackAt) > Math.max(lastMove, lastActive));
+    // held work quiet past stall_hours that only the manager can move: the watchdog raises it as a quiet
+    // stall, so the pass names it too, and the note beside it says the wait is the manager's
+    const quietOnDm = onDm.filter((b) => t - Math.max(ms(b.updated_at), ms(b.created_at)) > stallHours * 3600e3);
     const fails = [];
     if (!s) fails.push('not on this host\'s roster');
     if (limit) fails.push(`stopped on the usage limit${limit.resetsAt ? `, resumes ${W.clock(ms(limit.resetsAt))}` : ', reset time unknown'}`);
     if (sentBack.length) fails.push(`a review result waits for it (PR ${sentBack.map((p) => p.pr).join(', ')} sent back)`);
     if (wasted >= WASTED_MAX) fails.push(`${wasted} wakes today found nothing to do (cap ${caps(instance).messages})`);
     if (movable.length && !moving && !limit) fails.push(`nothing moved for ${W.span((t - lastMove) / 60000)} (limit ${stallHours} h)`);
-    instances.push({ instance, beads: held.map((b) => b.id), onDm: onDm.map((b) => b.id), movable: movable.map((b) => b.id), running, moving, wasted, wakesToday: today.length, limit, sentBack, fails });
+    // only when nothing else fails: any other failure already notes every held bead
+    const quietOnly = !fails.length && quietOnDm.length > 0;
+    if (quietOnly) fails.push(`${quietOnDm.map((b) => b.id).join(', ')} wait on ${dm} past ${stallHours} h`);
+    instances.push({ instance, beads: held.map((b) => b.id), onDm: onDm.map((b) => b.id), quietOnDm: quietOnDm.map((b) => b.id), quietOnly, movable: movable.map((b) => b.id), running, moving, wasted, wakesToday: today.length, limit, sentBack, fails });
   }
 
   // ---- 3. one action for each failing instance, and the team's ----
@@ -98,12 +104,12 @@ function pass({ now, dm = 'delivery-lead', builders = [], beads = [], ready = []
   const p0 = ready.filter((b) => b && Number(b.priority) === 0 && !b.assignee && typeOf(b) !== 'epic' && !shipped(b));
   const holdingBuilders = instances.filter((x) => builders.includes(x.instance));
   let team = null;
-  if (p0.length && free.length) team = { kind: 'assign', bead: p0[0].id, to: free[0], why: `top-priority ${p0[0].id} is ready and ${free[0]} holds no work`, command: `bd update ${p0[0].id} --assignee <actor>/${free[0]}, then message ${free[0]}` };
+  if (p0.length && free.length) team = { kind: 'assign', bead: p0[0].id, to: free[0], why: `top-priority ${p0[0].id} is ready and ${free[0]} holds no work`, command: `bd update ${p0[0].id} --assignee <actor>/${free[0]}, then message ${free[0]} (--record does both)` };
   else if (p0.length && builders.length && holdingBuilders.length === builders.length && holdingBuilders.every((x) => x.fails.length)) {
-    team = { kind: 'add-builder', bead: p0[0].id, count: builders.length + 1, why: `every builder (${builders.join(', ')}) holds stuck work and top-priority ${p0[0].id} is ready`,
-      command: `Message Staffing to add one with its roster command (approved, dec-chief-of-staff-000265; the owner is not asked): node \${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js add builder --count ${builders.length + 1}; then assign ${p0[0].id} to the new builder` };
+    team = { kind: 'add-builder', bead: p0[0].id, count: builders.length + 1, to: staffing, why: `every builder (${builders.join(', ')}) holds stuck work and top-priority ${p0[0].id} is ready`,
+      command: `Message ${staffing} to add one with its roster command (approved, dec-chief-of-staff-000265; the owner is not asked): node \${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js add builder --count ${builders.length + 1}; then assign ${p0[0].id} to the new builder (--record queues the message; the pass after the builder registers assigns it)` };
   }
-  return { at: new Date(t).toISOString(), own, instances, team };
+  return { at: new Date(t).toISOString(), dm, own, instances, team };
 }
 
 // the one action for an instance that fails a check, most specific first
@@ -119,6 +125,7 @@ function actionOf(x, { free, top, dm }) {
       message: `PR ${p.pr} was sent back to you${p.note ? `: ${p.note}` : ''}. Fix it on your branch, push, and tell ${dm}; a new review follows.` };
   }
   if (x.wasted >= WASTED_MAX && x.onDm.length) return { kind: 'note-block', beads: x.onDm, why: `${x.instance} is woken for work that waits on ${dm} (${x.onDm.join(', ')}); ${dm} moves it, so the wakes stop` };
+  if (x.quietOnly) return { kind: 'note-block', beads: x.quietOnDm, why: `${x.quietOnDm.join(', ')} wait${x.quietOnDm.length > 1 ? '' : 's'} on ${dm}, not on ${x.instance}; ${dm} takes it from its own list first` };
   if (!x.running && !x.moving) return { kind: 'restart', beads: x.movable.length ? x.movable : x.beads, why: `${x.instance} is not running and its work has not moved; start it on ${x.movable[0] || x.beads[0]}` };
   const moveTo = free[0] || null;
   if (moveTo && x.movable.length) return { kind: 'reassign', beads: x.movable, to: moveTo, why: `${x.instance} is not moving its work; ${moveTo} is free` };
@@ -143,10 +150,11 @@ function read(root, { bd, now, team, rows } = {}) {
     const t = team || M.loadManifest(root).team;
     const expanded = M.expandInstances(t);
     const dm = (expanded.find((i) => i.role.id === 'delivery-lead') || {}).instance || 'delivery-lead';
+    const staffing = (expanded.find((i) => i.role.id === 'staffing' && !i.role.retired) || {}).instance || 'staffing';
     const builders = expanded.filter((i) => i.role.id === 'builder' && !i.role.retired).map((i) => i.instance);
     const beads = bd.list({ all: true }) || [];
     const ready = bd.ready() || [];
-    return { now, dm, builders, beads, ready, sessions: W.sessions(root, { team: t, rows }), wakes: W.logRows(root).filter((r) => r.type === 'wake'), prs: prsOf(root),
+    return { now, dm, staffing, builders, beads, ready, sessions: W.sessions(root, { team: t, rows }), wakes: W.logRows(root).filter((r) => r.type === 'wake'), prs: prsOf(root),
       handoffs: require('./handoff.js').pending(root), messages: require('./inbox.js').pending(root), stallHours: require('./goal.js').value(root, 'stall_hours'), alive: W.pidAlive };
   } catch (err) { return { unreadable: String(err.message).split('\n')[0] }; }
 }
@@ -178,26 +186,51 @@ function previous(root) {
 }
 // the same action on the same beads for the same reasons is noted once; a count in a reason may grow
 const actionKey = (x) => (x.action ? `${x.action.kind}:${x.action.to || ''}:${(x.action.beads || []).join(',')}:${x.fails.map((f) => f.replace(/\d+(\.\d+)?/g, 'n')).join('|')}` : null);
-function record(root, res, { bd } = {}) {
+// the team's action, once per change: the same kind on the same bead to the same instance
+const teamKey = (t) => (t ? `${t.kind}:${t.bead}:${t.to || ''}:${t.count || ''}` : null);
+// the bead's assignee for an instance, in the recording actor's form (<user>@<host>/<instance>)
+const assigneeFor = (actor, to) => (actor ? `${String(actor).replace(/\/[^/]*$/, '')}/${to}` : to);
+function record(root, res, { bd, actor } = {}) {
   if (res.unreadable) return { noted: [] };
+  const dm = res.dm || 'delivery-lead';
   const before = previous(root);
   const lastFor = (i) => { for (let k = before.length - 1; k >= 0; k--) { const r = (before[k].instances || []).find((x) => x.instance === i); if (r) return r; } return null; };
   const noted = [];
   for (const x of res.instances.filter((y) => y.action)) {
     const prev = lastFor(x.instance);
     if (prev && prev.key === actionKey(x)) continue;
-    const text = `${res.at.slice(0, 10)} delivery-lead pass: ${x.instance} fails (${x.fails.join('; ')}); action ${x.action.kind}${x.action.to ? ` to ${x.action.to}` : ''}: ${x.action.why}`;
+    const text = `${res.at.slice(0, 10)} ${dm} pass: ${x.instance} fails (${x.fails.join('; ')}); action ${x.action.kind}${x.action.to ? ` to ${x.action.to}` : ''}: ${x.action.why}`;
     // on every bead it holds: whichever of them a stall line names, the note is beside it
     for (const id of x.beads) {
       try { bd.update(id, { appendNotes: text }); noted.push(id); } catch (err) { /* the pass row still records the action */ }
     }
   }
+  // the team's action is carried out, not only printed: a free builder is assigned the top-priority bead
+  // and told; with every builder stuck, Staffing (the one lane that runs the roster command) is sent the
+  // command to add one, and the pass after the new builder registers assigns the bead to it (TR-6)
+  let teamDone = null;
+  const lastTeam = before.length ? before[before.length - 1].teamKey || null : null;
+  if (res.team && teamKey(res.team) !== lastTeam) {
+    const T = res.team;
+    const I = require('./inbox.js');
+    try {
+      if (T.kind === 'assign') {
+        bd.update(T.bead, { assignee: assigneeFor(actor, T.to), appendNotes: `${res.at.slice(0, 10)} ${dm} pass: assigned to ${T.to}: ${T.why}` });
+        I.queue(root, { to: T.to, from: dm, summary: `${T.bead} assigned to you`, message: `${dm} here: top-priority ${T.bead} is assigned to you (${T.why}). Claim it and build it.`, at: res.at });
+      } else if (T.kind === 'add-builder') {
+        bd.update(T.bead, { appendNotes: `${res.at.slice(0, 10)} ${dm} pass: ${T.why}; asked ${T.to} to add builder ${T.count} through its roster command; the pass after it registers assigns this bead` });
+        I.queue(root, { to: T.to, from: dm, summary: `add a builder for ${T.bead}`, message: `${dm} here: ${T.why}. Add one builder with your roster command (approved, dec-chief-of-staff-000265): node \${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js add builder --count ${T.count}. My next pass assigns ${T.bead} to it.`, at: res.at });
+      }
+      teamDone = T.kind;
+      noted.push(T.bead);
+    } catch (err) { /* the pass row keeps the action; the next pass tries again */ }
+  }
   W.ensureDir(root);
-  const row = { type: 'pass', at: res.at, own: res.own.map((o) => `${o.kind}:${o.ref}`), team: res.team,
+  const row = { type: 'pass', at: res.at, own: res.own.map((o) => `${o.kind}:${o.ref}`), team: res.team, teamKey: !res.team ? null : teamDone ? teamKey(res.team) : lastTeam,
     instances: res.instances.map((x) => ({ instance: x.instance, beads: x.beads, running: x.running, moving: x.moving, wasted: x.wasted, fails: x.fails, action: x.action || null, key: actionKey(x) })) };
   W.rotate(file(root));
   fs.appendFileSync(file(root), `${JSON.stringify(row)}\n`);
-  return { noted, row };
+  return { noted, row, team: teamDone };
 }
 
 module.exports = { FILE, RUNNING_MIN, WASTED_MAX, pass, actionOf, read, lines, record, previous, prsOf, file };

@@ -1151,17 +1151,23 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
      whose pull request waits on the manager, or that is merged or deployed, is not the holder's to move;
   3. what fails: not on the roster, a usage limit (with its resume time), a send-back newer than the
      holder's last move or activity, 3 or more wasted wakes, or work the holder can move unmoved for
-     `stall_hours`. Each failing instance gets one action, the first that applies: `report` a usage
+     `stall_hours`; when nothing else fails, held work that waits on the manager quiet past `stall_hours`
+     (the watchdog raises it as a quiet stall, so the pass names it as the manager's wait). Each failing instance gets one action, the first that applies: `report` a usage
      limit (or `reassign` its top-priority work when a builder holds nothing), `unblock` (the message
-     that hands it the sent-back review), `note-block` (wasted wakes on work that waits on the manager),
+     that hands it the sent-back review), `note-block` (wasted wakes on, or quiet work in, what waits on
+     the manager),
      `restart` (not running and not moving), `reassign` to a builder holding nothing, else `raise`.
      For the team: a ready, unassigned top-priority bead goes to a builder holding nothing (`assign`);
      with none free and every builder failing, `add-builder` names `team-role.js add builder --count
-     <n+1>` for Staffing to run.
+     <n+1>` for Staffing to run. The manager and Staffing are named by their instances in team.json.
   `--record` appends the pass to `passes.ndjson` in the watchdog's directory and writes the action and
   its reason as a note on every bead the failing instance holds, once per change of action (a count in
-  a reason may grow without a new note). Data that cannot be read is one line saying so: no pass row,
-  no note, never a healthy team. The lane lets any role run `pass`; `pass --record` needs `bd-notes`.
+  a reason may grow without a new note). It also carries out the team's action, once per change:
+  `assign` sets the bead's assignee to the free builder (in the recording `BEADS_ACTOR`'s form) and
+  queues it a message; `add-builder` queues Staffing the roster command (only Staffing's lane runs
+  `team-role.js`) and notes the bead, and the pass after the new builder is on the team assigns it.
+  Data that cannot be read is one line saying so: no pass row, no note, never a healthy team. The lane
+  lets any role run `pass`; `pass --record` assigns beads, so it needs `bd-structure`.
 - **The wake.** `watchdog.js wake [--dry-run]` wakes, for each due stall, its session: the holder of a
   stalled bead or of a bead stopped by the usage limit, else the Delivery Manager. One run carries every
   line for that session in one prompt. The command, in the session's role directory with
