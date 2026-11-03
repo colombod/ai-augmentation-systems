@@ -144,8 +144,18 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord, 
   const watch = safe(() => require('./watchdog.js').read(root, { bd, now, team }), { stalls: [], unreadable: 'the watchdog could not run' });
   // what the watchdog recovered by itself, for the briefing to report (bqj): its restarts this week
   const restarts = safe(() => require('./watchdog.js').logRows(root).filter((r) => r && r.type === 'wake' && Array.isArray(r.keys) && r.keys.some(isRecovery)), []);
+  // a merged plugin version held past its bound (lib/self-update.js HOLD_BOUND_MS) and still not
+  // installed: the install the team runs on is stuck, which the owner hears (0ba.5)
+  const installHold = safe(() => installHoldOf(root), null);
   const unreadableStalls = watch && (watch.unreadable || (watch.unreadableParts || []).join('; '));
-  return { root, now, team, stalls: (watch && watch.stalls) || [], stalls_paused: (watch && watch.paused) || null, stalls_unreadable: unreadableStalls || null, restarts, stories, fixes: fixBeads.filter((b) => !known.has(b.id)), titles, spikes: openSpikes, checks, andon, unknowns, queue, questions, budget: ctx.budget, areas: W.areas(stories), next, known, prs, storyOf: ctx.storyOf, checked };
+  return { root, now, team, stalls: (watch && watch.stalls) || [], stalls_paused: (watch && watch.paused) || null, stalls_unreadable: unreadableStalls || null, restarts, installHold, stories, fixes: fixBeads.filter((b) => !known.has(b.id)), titles, spikes: openSpikes, checks, andon, unknowns, queue, questions, budget: ctx.budget, areas: W.areas(stories), next, known, prs, storyOf: ctx.storyOf, checked };
+}
+
+// the last self-update hold past its bound whose version has not installed since
+function installHoldOf(root) {
+  const su = require('./watchdog.js').logRows(root).filter((r) => r && r.type === 'self-update');
+  const over = su.filter((r) => r.result === 'held-overdue').pop();
+  return over && !su.some((r) => r.result === 'installed' && r.version === over.version && Date.parse(r.at) >= Date.parse(over.at)) ? over : null;
 }
 
 // ---- the plan for the day ----
@@ -383,6 +393,7 @@ function brief(f, { prev, limit = 12 } = {}) {
   // a stall the plugin recovered by itself is still reported; a record it could not read is never healthy
   const restarted = restartLine(f, prev);
   if (restarted) problems.push(restarted);
+  if (f.installHold) problems.push(`Version ${f.installHold.version} of the plugin was merged but has waited since ${require('./watchdog.js').clock(Date.parse(f.installHold.since))} to install, because a run has not stopped.`);
   if (f.stalls_unreadable) problems.push('The plugin could not read part of the team\'s record, so a stall there is not known yet.');
   problems.push(...AN.plainLines(f.andon).slice(0, 2));
   // the plan's blocking unknowns in the owner's words: assumptions and open technical spikes (Copilot 509)
@@ -466,4 +477,4 @@ function sheet(f, { verifyRecord } = {}) {
   return out;
 }
 
-module.exports = { restartLine, isRecovery, resumesAt, stallItems, ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };
+module.exports = { installHoldOf, restartLine, isRecovery, resumesAt, stallItems, ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };
