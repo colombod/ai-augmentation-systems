@@ -112,7 +112,7 @@ test('R-04 (10-13 12:06 to 10-17 15:01): the weekly limit schedules each holder\
   assert.deepEqual(WD.logRows(h.root).filter((r) => r.type === 'wake').map((r) => r.mode), ['resume', 'resume']);
 });
 
-test('R-04 through the lane: the Chief of Staff\'s plan and the owner\'s brief lead with the resume time; a role cannot wake anyone', () => {
+test('R-04 through the lane: the Chief of Staff\'s plan and the owner\'s brief lead their open problems with the resume time; a role cannot wake anyone', () => {
   const now = Date.now();
   const h = harness({ beads: { 'ex-wxy-12': { id: 'ex-wxy-12', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(now - 2 * H) } } });
   session(h, 'builder-1', { seen: iso(now - H), rows: [limitRow(iso(now - H), iso(now + 3 * H))] });
@@ -122,7 +122,8 @@ test('R-04 through the lane: the Chief of Staff\'s plan and the owner\'s brief l
   const resumes = WD.clock(now + 3 * H + WD.RESET_GRACE_MIN * 60e3);
   assert.equal(today.out.split('\n')[1], `The team resumes at ${resumes}, when the usage limit resets (restart scheduled: the watchdog wakes each stopped session then).`);
   const brief = h.bash(COS, `${h.script('plan.js')} brief`);
-  assert.equal(brief.out.split('\n')[0], `The team resumes at ${resumes}, when the usage limit resets (restart scheduled).`);
+  // what shipped leads the brief (dec-chief-of-staff-000221); the resume time is the first open problem
+  assert.deepEqual(brief.out.split('\n').slice(0, 2), ["So far: nothing new merged, live or checked on the customer's app.", `The team resumes at ${resumes}, when the usage limit resets (restart scheduled).`]);
   assert.deepEqual(MC.idTokens(brief.out, { prefix: 'ex' }), []);
   const check = h.bash(DM, `${h.script('watchdog.js')} check`);
   assert.equal(check.code, 0, check.deny || check.out);
@@ -151,7 +152,7 @@ test('R-04 (wxy.12 unclaimed 15.5 h overnight): a stall line within the hour and
   const first = today.findIndex((l) => l === '0. Stalls first:');
   assert.ok(first > 0 && first < today.findIndex((l) => /^1\. Owner steps due/.test(l)), today.join('\n'));
   assert.match(today[first + 1], /^ {3}- Delivery Manager \(delivery-lead\): Unclaimed: top-priority ex-wxy-12 .*\[ex-wxy-12\]$/);
-  assert.match(h.bash(COS, `${h.script('plan.js')} brief`).out.split('\n')[0], /^A top-priority item has waited 15\.5 h for someone to take it; the Delivery Manager assigns it first\.$/);
+  assert.match(h.bash(COS, `${h.script('plan.js')} brief`).out.split('\n')[1], /^A top-priority item has waited 15\.5 h for someone to take it; the Delivery Manager assigns it first\.$/);
   // the host job: the Delivery Manager's session is open and idle, so it is forked, never resumed in place
   const log = scratchLog();
   // 8wz.1: each run puts the project's script launcher back (briefs and reality-check steps name it)
@@ -408,7 +409,7 @@ test('the brief promises a restart only when the job is installed', () => {
   const now = Date.now();
   const h = harness({ beads: { 'ex-w': { id: 'ex-w', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(now - 2 * H) } } });
   session(h, 'builder-1', { seen: iso(now - H), rows: [limitRow(iso(now - H), iso(now + 3 * H))] });
-  const brief = h.bash(COS, `${h.script('plan.js')} brief`).out.split('\n')[0];
+  const brief = h.bash(COS, `${h.script('plan.js')} brief`).out.split('\n')[1];
   assert.equal(brief, `The team is stalled; the watchdog is not installed: the usage limit resets at ${WD.clock(now + 3 * H)}.`);
   assert.doesNotMatch(h.bash(COS, `${h.script('plan.js')} today`).out, /resumes at/);
   assert.match(h.bash(DM, `${h.script('watchdog.js')} check`).out, /^Stalled: builder-1 stopped on the seven-day usage limit .*; the watchdog is not installed, so nothing restarts it \(watchdog\.js install\)\.$/m);
