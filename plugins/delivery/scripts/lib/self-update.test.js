@@ -52,6 +52,7 @@ function fixture({ installed = '0.43.30', commits = [{ version: '0.43.31', subje
     git(work, 'add', '-A'); git(work, 'commit', '-q', '--allow-empty', '-m', c.subject);
     const pr = (/\(#(\d+)\)$/.exec(c.subject) || [])[1];
     if (pr && !shaOf[pr]) shaOf[pr] = git(work, 'rev-parse', 'HEAD');
+    if (c.key) shaOf[c.key] = git(work, 'rev-parse', 'HEAD');
   }
   git(work, 'push', '-q', 'origin', 'main');
   const pluginRoot = path.join(config, 'plugins', 'cache', 'm', 'delivery', installed);
@@ -68,11 +69,14 @@ const merged = (f, pr, gated, over = {}) => R.append(f.project, pr, { type: 'mer
 
 // the fake `claude`: records each call; a plugin update moves the matching install to `to` (at `sha`,
 // main by default) unless told to fail (throws) or to leave the version as it was. `gh` answers
-// `gh api .../pulls/N` with gh[N] (a missing entry: gh fails)
-function claude(f, { to = '0.43.31', fail = false, noop = false, sha, gh = {} } = {}) {
+// `gh api .../pulls/N` with gh[N] and `gh api .../commits/SHA/pulls` with ghc[SHA] as JSON (a missing
+// entry: gh fails)
+function claude(f, { to = '0.43.31', fail = false, noop = false, sha, gh = {}, ghc = {} } = {}) {
   const calls = [];
   const fn = (bin, args, o) => {
     calls.push({ args: args.join(' '), cwd: o.cwd });
+    const byCommit = bin === 'gh' && /commits\/([0-9a-f]+)\/pulls$/.exec(args[1]);
+    if (byCommit) { assert.ok(o.timeout > 0, 'gh is bounded'); if (!ghc[byCommit[1]]) throw new Error('gh: not logged in'); return JSON.stringify(ghc[byCommit[1]]); }
     if (bin === 'gh') { const n = /pulls\/(\d+)$/.exec(args[1])[1]; if (!gh[n]) throw new Error('gh: not logged in'); assert.ok(o.timeout > 0, 'gh is bounded'); return `${gh[n]}\n`; }
     if (fail && args[1] === 'update') throw Object.assign(new Error('update failed'), { stderr: 'network down' });
     if (args[0] === 'plugin' && args[1] === 'update' && !noop) {
@@ -122,8 +126,8 @@ test('no merged row, or a commit that names no pull request, is refused', () => 
   const exec = claude(f);
   assert.match(run(f, exec).lines[0], /refused: PR 140 has no merged row by the Delivery Manager/);
   const g = fixture({ commits: [{ version: '0.43.31', subject: 'delivery 0.43.31 pushed by hand' }] });
-  assert.match(run(g, exec).lines[0], /refused: commit [0-9a-f]{12} names no pull request/);
-  assert.equal(exec.calls.length, 0);
+  assert.match(run(g, exec).lines[0], /refused: commit [0-9a-f]{12} names no pull request and GitHub names none/);
+  assert.deepEqual(exec.calls.map((c) => c.args), [`api repos/example/product/commits/${g.mainSha}/pulls`], 'only GitHub was asked; nothing installed');
 });
 
 test('an ungated change after the gated version bump is refused: it would ride into the install', () => {
@@ -379,4 +383,87 @@ test('a shallow clone deepened to the installed sha still refuses an ungated mer
   const g = fixture({ shallow: true });
   merged(g, 140, false);
   assert.match(run(g, claude(g)).lines[0], /refused: PR 140 was merged without passing the team's gate/);
+});
+
+
+// 07407bd on wintermute: a squash merge whose subject ends "(Refs <bead>)", not "(#141)", was refused
+// as naming no pull request though the gate merged it; GitHub names the pull request it merged
+const NO_PR = [{ version: '0.43.31', subject: 'delivery 0.43.31: x (Refs delivery-plugin-planning-0ba)', key: 'm' }];
+const pullsOf = (sha, over = {}) => [{ number: 141, merged_at: T0, merge_commit_sha: sha, ...over }];
+
+test('a commit whose subject names no pull request is resolved through GitHub and installs when that merge was gated', () => {
+  for (const mc of [undefined, 'recorded']) {
+    const f = fixture({ commits: NO_PR });
+    merged(f, 141, true, { merge_commit: mc && f.shaOf.m });
+    const exec = claude(f, { ghc: { [f.shaOf.m]: pullsOf(f.shaOf.m) } });
+    const r = run(f, exec);
+    assert.equal(r.installed, true, r.lines.join('\n'));
+    assert.match(r.lines[0], /gated through PR 141/);
+    assert.ok(exec.calls.some((c) => c.args === `api repos/example/product/commits/${f.shaOf.m}/pulls`), 'asked GitHub by commit');
+  }
+});
+
+test('a commit resolved through GitHub to an ungated or unrecorded merge, or with no answer, is refused', () => {
+  const f = fixture({ commits: NO_PR });
+  merged(f, 141, false);
+  assert.match(run(f, claude(f, { ghc: { [f.shaOf.m]: pullsOf(f.shaOf.m) } })).lines[0], /refused: PR 141 was merged without passing the team's gate/);
+  const g = fixture({ commits: NO_PR });
+  assert.match(run(g, claude(g, { ghc: { [g.shaOf.m]: pullsOf(g.shaOf.m) } })).lines[0], /refused: PR 141 has no merged row by the Delivery Manager/);
+  const h = fixture({ commits: NO_PR });
+  merged(h, 141, true);
+  const off = claude(h);
+  assert.match(run(h, off).lines[0], /refused: commit [0-9a-f]{12} names no pull request and GitHub names none/);
+  assert.equal(off.calls.filter((c) => /^plugin/.test(c.args)).length, 0);
+  // an open (unmerged) pull request that carries the commit is not its merge
+  assert.match(run(h, claude(h, { ghc: { [h.shaOf.m]: pullsOf(h.shaOf.m, { merged_at: null }) } }), { now: later(60e3) }).lines[0], /names no pull request and GitHub names none/);
+});
+
+test('a pull request GitHub returns for a commit it did not merge as is refused', () => {
+  const f = fixture({ commits: NO_PR });
+  merged(f, 141, true);
+  const exec = claude(f, { ghc: { [f.shaOf.m]: pullsOf('d'.repeat(40)) } });
+  assert.match(run(f, exec).lines[0], /refused: commit [0-9a-f]{12} names no pull request and GitHub names none/);
+  // and a recorded merge commit that is not this commit wins over GitHub's word
+  const g = fixture({ commits: NO_PR });
+  merged(g, 141, true, { merge_commit: 'e'.repeat(40) });
+  assert.match(run(g, claude(g, { ghc: { [g.shaOf.m]: pullsOf(g.shaOf.m) } })).lines[0], /refused: commit [0-9a-f]{12} names PR 141 but is not its merge \(eeeeeeeeeeee\)/);
+  assert.equal(exec.calls.filter((c) => /^plugin/.test(c.args)).length, 0);
+});
+
+// own install at the hand-pushed commit `h`, main one gated version on: [hand push, gated #142]
+const LAYERED = [{ version: '0.43.31', subject: 'delivery 0.43.31 pushed by hand', key: 'h' }, { version: '0.43.32', subject: 'delivery 0.43.32 (#142)' }];
+function layered(roleSha) {
+  const role = fs.mkdtempSync(path.join(os.tmpdir(), 'role-'));
+  const f = fixture({ commits: LAYERED, extra: [{ scope: 'local', projectPath: role }] });
+  const j = JSON.parse(fs.readFileSync(f.ipFile, 'utf8'));
+  Object.assign(j.plugins['delivery@m'][0], { version: '0.43.31', gitCommitSha: f.shaOf.h });
+  if (roleSha) j.plugins['delivery@m'][1].gitCommitSha = roleSha;
+  fs.writeFileSync(f.ipFile, JSON.stringify(j));
+  merged(f, 142, true);
+  return { f, role };
+}
+
+test('a role install refused over its own range does not stop the job installing its own', () => {
+  const { f, role } = layered('b'.repeat(40));
+  const exec = claude(f, { to: '0.43.32' });
+  const r = run(f, exec, { roleDirs: [role] });
+  assert.equal(r.installed, true, r.lines.join('\n'));
+  assert.deepEqual(exec.calls.filter((c) => /^plugin/.test(c.args)).map((c) => c.args), ['plugin marketplace update m', 'plugin update delivery@m --scope user']);
+  assert.ok(r.lines.some((l) => /installed plugin delivery 0\.43\.32 .*gated through PR 142/.test(l)), r.lines.join('\n'));
+  assert.ok(r.lines.some((l) => new RegExp(`refused: the installed sha is not known.*for local ${role.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(l)), r.lines.join('\n'));
+  assert.deepEqual(rows(f).map((x) => [x.result, x.scope]), [['refused', 'local'], ['installed', 'user']]);
+  // the role refusal is logged once per version, not every pass
+  run(f, claude(f, { to: '0.43.32' }), { roleDirs: [role], now: later(60e3) });
+  assert.equal(rows(f).filter((x) => x.result === 'refused').length, 1);
+});
+
+test('a role install behind the job own install is checked over its own range: a hand push in it is refused', () => {
+  // the role sits at the original install, an ancestor of the job's; the hand push between them is in the
+  // role's range and was never gated, so the role is refused while the job's own still installs
+  const { f, role } = layered();
+  const exec = claude(f, { to: '0.43.32' });
+  const r = run(f, exec, { roleDirs: [role] });
+  assert.equal(r.installed, true, r.lines.join('\n'));
+  assert.deepEqual(exec.calls.filter((c) => /^plugin update/.test(c.args)).map((c) => c.args), ['plugin update delivery@m --scope user']);
+  assert.ok(r.lines.some((l) => new RegExp(`refused: commit ${f.shaOf.h.slice(0, 12)} names no pull request.*for local`).test(l)), r.lines.join('\n'));
 });
