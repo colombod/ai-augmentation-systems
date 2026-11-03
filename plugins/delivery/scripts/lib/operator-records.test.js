@@ -1628,3 +1628,63 @@ test('fwa.1: a reply ending in "?" is recorded when it answers an open question,
   assert.strictEqual(R.ledger(root, {})[0].status, 'answered');
   assert.strictEqual(R.verifyRecord(root, d.id).ok, true);
 });
+
+// ---- the input hop shows the stored input whole (portable-confirmations-02) ----
+
+function askedFixture() {
+  const root = mk('oprec-ask-');
+  writeManifest(root);
+  const questions = [{ question: 'Use Postgres for the orders service?', header: 'Storage', multiSelect: false, options: [{ label: 'Yes use postgres', description: 'x' }, { label: 'No', description: 'y' }] }];
+  sync(root, writeTranscript([
+    { type: 'assistant', uuid: 'a1', timestamp: '2099-10-13T10:00:01.000Z', sessionId: SID, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions } }] } },
+    { type: 'user', uuid: 'u2', timestamp: '2099-10-13T10:00:02.000Z', sessionId: SID, sourceToolAssistantUUID: 'a1', toolUseResult: { questions, answers: { [questions[0].question]: 'Yes use postgres' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'answered' }] } },
+  ]));
+  return root;
+}
+const storedLines = (root) => fs.readFileSync(inputFile(root), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+const hopOf = (v, id) => v.chain.find((h) => h.kind === 'input' && h.id === id);
+
+test('verify shows every stored field of an AskUserQuestion input but the chain links, with equal values', () => {
+  const root = askedFixture();
+  const [stored] = storedLines(root);
+  assert.ok(stored.asked, 'the real writer stored the question');
+  const d = decide(root, { quote: 'yes use postgres' });
+  const v = R.verifyRecord(root, d.id);
+  assert.strictEqual(v.ok, true, v.error);
+  const hop = hopOf(v, stored.id);
+  for (const k of ['captured_at', 'instance', 'role', 'text_sha256', 'ext_id', 'uuid']) assert.ok(k in stored, `writer stores ${k}`);
+  const dropped = Object.keys(stored).filter((k) => k !== 'prev' && k !== 'hash' && !(k in hop));
+  assert.deepStrictEqual(dropped, []);
+  for (const k of Object.keys(stored)) if (k !== 'prev' && k !== 'hash') assert.deepStrictEqual(hop[k], stored[k], k);
+  assert.ok(!('prev' in hop) && !('hash' in hop));
+  assert.strictEqual(hop.cited_by, d.id);
+  // operator.js verify --json prints the same hop
+  const out = cp.spawnSync(process.execPath, [path.join(__dirname, '..', 'operator.js'), 'verify', d.id, '--json'], { cwd: root, encoding: 'utf8', env: { ...process.env, DELIVERY_PROJECT_ROOT: root } });
+  const cli = hopOf(JSON.parse(out.stdout), stored.id);
+  for (const k of ['captured_at', 'instance', 'role', 'text_sha256', 'ext_id', 'uuid', 'asked']) assert.deepStrictEqual(cli[k], stored[k], k);
+});
+
+test('verify shows asked keys this version does not know unchanged, on an input appended with its chain intact', () => {
+  const root = askedFixture();
+  const [first] = storedLines(root);
+  const asked = { ...first.asked, contract: 'delivery.confirmation/1', provenance: { native_ref: { provider: 'codex', call_id: 'call_7', item: { id: 'q1' } } } };
+  const e = chain.appendEntry(inputFile(root), () => ({ ...first, id: 'in-pc-000002', ext_id: `${SID}:9`, uuid: 'u9', asked }));
+  const h = log.verifyInputs(root, { host: 'pc' });
+  assert.strictEqual(h.ok, true, h.error);
+  log.setHead(root, 'pc', { count: h.count, last_hash: h.last_hash });
+  const d = decide(root, { cite: e.id, quote: 'yes use postgres' });
+  const v = R.verifyRecord(root, d.id);
+  assert.strictEqual(v.ok, true, v.error);
+  assert.deepStrictEqual(hopOf(v, e.id).asked, asked);
+});
+
+test('a record citing an input with no asked and fewer stored fields keeps its verdict; the hop adds no key the input lacks', () => {
+  const root = fixture();
+  const d = decide(root);
+  const v = R.verifyRecord(root, d.id);
+  assert.strictEqual(v.ok, true, v.error);
+  assert.strictEqual(v.code, undefined);
+  const hop = hopOf(v, 'in-pc-000001');
+  assert.ok(!('asked' in hop) && !('after_assistant' in hop));
+  assert.strictEqual(hop.text, storedLines(root)[0].text);
+});
