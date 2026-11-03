@@ -293,11 +293,12 @@ test('B2: an idle stall nobody resolves is retried with a doubling wait and a da
   const times = WD.logRows(h.root).filter((r) => r.type === 'wake').map((r) => (Date.parse(r.at) - Date.parse(t0)) / H);
   assert.deepEqual(times, [0, 1, 3, 7, 15, 31], 'waits of 1, 2, 4, 8, 16 h');
   assert.match(held, /^Alarm only: delivery-lead: (?:woken at .*; one wake an hour|woken for these already; waiting longer before the next try)\./m);
-  // the daily cap: six wakes in a day, whatever the keys
+  // the daily cap: six wakes in a day for a worker, whatever the keys; the Delivery Manager's day holds
+  // 24 (7ax), still one an hour
   const many = harness({});
   session(many, DM, { seen: t0 });
-  for (let i = 0; i < WD.DAILY_CAP; i++) WD.log(many.root, { type: 'wake', at: iso(Date.parse(t0) - (23 - i * 3) * H), keys: [`k${i}`], instance: DM, pid: null });
-  const res = { stalls: [{ kind: 'p0', key: 'p0:new', target: DM, due: true, line: 'Unclaimed: new', prompt: 'go' }], sessions: [] };
+  for (let i = 0; i < WD.DAILY_CAP; i++) WD.log(many.root, { type: 'wake', at: iso(Date.parse(t0) - (23 - i * 3) * H), keys: [`k${i}`], instance: 'builder-1', pid: null });
+  const res = { stalls: [{ kind: 'p0', key: 'p0:new', target: 'builder-1', due: true, line: 'Unclaimed: new', prompt: 'go' }], sessions: [] };
   assert.match(WD.plan(res, { root: many.root, now: t0 }).held[0].reason, /woken 6 times in a day; alarm only/);
 });
 
@@ -1542,4 +1543,33 @@ test('run --dry-run sweeps as a dry run: it names the leftovers and removes none
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(work, { recursive: true, force: true });
   }
+});
+
+
+// 7ax: the Delivery Manager unblocks every other role, so six stall wakes a day left ready top-priority
+// work waiting hours behind "alarm only"; its day holds 24 stall wakes (one an hour still) and 96 handovers
+test('7ax: the Delivery Manager is woken past a worker\'s daily caps, still one stall wake an hour', () => {
+  const t0 = Date.parse('2026-11-03T12:00:00Z');
+  const ago = (m) => new Date(t0 - m * 60e3).toISOString();
+  const stall = (target) => ({ kind: 'p0', key: 'p0:new', target, due: true, line: 'Unclaimed: new', prompt: 'go' });
+  const msg = (target) => ({ kind: 'message', key: `message:${target}:1`, target, due: true, line: 'Waiting: 1 message', prompt: 'read it', upTo: 1 });
+  const plan = (instance, rows, stalls) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-7ax-'));
+    for (const r of rows) WD.log(root, { type: 'wake', instance, pid: 7, ...r });
+    return WD.plan({ stalls }, { root, now: new Date(t0).toISOString(), alive: () => false });
+  };
+  // seven stall wakes needed in a day: the seventh goes for the Delivery Manager, not for a builder
+  const six = Array.from({ length: 6 }, (_, i) => ({ at: ago(70 * (i + 1)), keys: [`p0:old-${i}`] }));
+  assert.equal(plan(DM, six, [stall(DM)]).wakes.length, 1, 'the Delivery Manager\'s seventh stall wake goes');
+  assert.match(plan('builder-1', six, [stall('builder-1')]).held[0].reason, /woken 6 times in a day/);
+  assert.equal(plan('delivery-lead-2', six, [stall('delivery-lead-2')]).wakes.length, 1, 'a counted Delivery Manager too');
+  // the hour still holds, and the Delivery Manager's own cap is 24
+  assert.match(plan(DM, [{ at: ago(20), keys: ['p0:old'] }], [stall(DM)]).held[0].reason, /one wake an hour/);
+  const day = Array.from({ length: 24 }, (_, i) => ({ at: ago(62 + 55 * i), keys: [`p0:old-${i}`] }));
+  assert.match(plan(DM, day, [stall(DM)]).held[0].reason, /woken 24 times in a day/);
+  // handovers: 48 a day for a worker, 96 for the Delivery Manager
+  const msgs = (n) => Array.from({ length: n }, (_, i) => ({ at: ago(14 * (i + 1)), keys: [`message:x:${i}`] }));
+  assert.equal(plan(DM, msgs(48), [msg(DM)]).wakes.length, 1, 'the 49th handover wake goes for the Delivery Manager');
+  assert.match(plan('builder-1', msgs(48), [msg('builder-1')]).held[0].reason, /woken 48 times in a day/);
+  assert.match(plan(DM, msgs(96), [msg(DM)]).held[0].reason, /woken 96 times in a day/);
 });

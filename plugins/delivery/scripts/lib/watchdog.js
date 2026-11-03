@@ -45,6 +45,14 @@ const MESSAGE_EVERY_MS = 5 * 60e3;
 // a role quiet this long while holding assigned or claimed work it can start is woken for it (hjx.1)
 const ASSIGNED_IDLE_MIN = 10;
 const MESSAGE_DAILY_CAP = 48;
+// The Delivery Manager assigns, reviews and merges for every other role, so its wakes are the team's
+// flow: on a real team it spent its six stall wakes by mid-day and ready top-priority work then waited
+// hours unassigned behind "alarm only" (7ax). Its day holds more: still at most one stall wake an hour
+// (the hourly gate and each stall's doubling backoff are unchanged), and twice the handover wakes.
+const MANAGER_DAILY_CAP = 24;
+const MANAGER_MESSAGE_DAILY_CAP = 96;
+const isManagerInstance = (instance) => /^delivery-lead(?:-\d+)?$/.test(String(instance || ''));
+const capsOf = (instance) => (isManagerInstance(instance) ? { daily: MANAGER_DAILY_CAP, messages: MANAGER_MESSAGE_DAILY_CAP } : { daily: DAILY_CAP, messages: MESSAGE_DAILY_CAP });
 const RESET_GRACE_MIN = 5;
 const TAIL_BYTES = 512 * 1024;
 const MIN_POLL_S = 240;
@@ -516,6 +524,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
   const held = [];
   for (const w of by.values()) {
     const mine = rows.filter((r) => r.instance === w.target).sort((a, b) => ms(a.at) - ms(b.at));
+    const cap = capsOf(w.target);
     const last = mine[mine.length - 1];
     const lines = w.stalls.map((s) => s.line);
     // a message is a handoff, not a stall: its target is woken at once, not at the stall's hour
@@ -529,7 +538,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     const handover = (items) => {
       if (last && alive(last.pid)) return { go: [], hold: items, why: 'its last wake is still running; it is woken again when that wake ends' };
       if (items.every((s) => s.kind === 'assigned') && last && t - ms(last.at) < MESSAGE_EVERY_MS) return { go: [], hold: items, why: `woken at ${clock(ms(last.at))}; assigned work waits ${MESSAGE_EVERY_MS / 60000} min between wakes` };
-      if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= MESSAGE_DAILY_CAP) return { go: items.filter((s) => s.kind === 'handoff'), hold: items.filter((s) => s.kind !== 'handoff'), why: `woken ${MESSAGE_DAILY_CAP} times in a day; alarm only until the count falls` };
+      if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= cap.messages) return { go: items.filter((s) => s.kind === 'handoff'), hold: items.filter((s) => s.kind !== 'handoff'), why: `woken ${cap.messages} times in a day; alarm only until the count falls` };
       return { go: items, hold: [] };
     };
     const handoverWake = (go) => ({ target: w.target, keys: go.map((s) => s.key), lines: go.map((s) => s.line), delivers: deliversOf(go), handoffs: handoffsOf(go), prompt: wakePrompt(go.map((s) => s.prompt), 'did') });
@@ -545,7 +554,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     const lastStall = stallRows[stallRows.length - 1];
     if (last && alive(last.pid)) reason = 'its last wake is still running';
     else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
-    else if (stallRows.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= DAILY_CAP) reason = `woken ${DAILY_CAP} times in a day; alarm only until the count falls`;
+    else if (stallRows.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= cap.daily) reason = `woken ${cap.daily} times in a day; alarm only until the count falls`;
     // each stall waits 1, 2, 4 ... hours after each wake that carried it. A handover (message, handoff,
     // assigned work) is not a stall and goes by the message rules: a stall wake that goes out carries it,
     // or it would be dropped from the wake with no held line (Copilot 4436815462)
@@ -632,4 +641,4 @@ function wakeArgs(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

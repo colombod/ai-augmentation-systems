@@ -1176,8 +1176,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   next run; a launchd job gets `QueueDirectories` when reinstalled. cron cannot watch a directory, so
   there a kick waits for the next pass, as `install` says.
 - **The wake's limits.** At most one wake per session an hour whatever the stalls; at most 6 a day per
-  session; each stall waits 1, 2, 4, 8 ... hours after each wake that carried it; never while that
-  session's last wake still runs, however long ago it started (each wake runs in its own process group
+  session, 24 for the Delivery Manager (`delivery-lead`), which assigns, reviews and merges for every
+  other role (its handovers likewise go up to 96 a day, against 48 for other roles); each stall waits
+  1, 2, 4, 8 ... hours after each wake that carried it; never while that session's last wake still runs, however long ago it started (each wake runs in its own process group
   under `lib/wake-run.js`, which stops the whole group after 2 hours, SIGTERM then SIGKILL, and lives
   until the group is gone; the guard checks that the logged pid is alive and is still that supervisor); never before the session's own usage limit resets (then once,
   for everything due). Past a limit the stall stays an alarm: "Alarm only: <session>: <reason>". A usage
