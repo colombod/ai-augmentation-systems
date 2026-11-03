@@ -1636,7 +1636,7 @@ test('an any-lane shell write into the host temporary directory is refused; scra
       'rm -rf /tmp/old-run',
       'git commit -m "logs no longer go to /tmp > anywhere"',
       `node ${PLUGIN_ROOT}/scripts/testing/run-tests.js`,
-      `DELIVERY_TEST_FILES=plugins/delivery/hooks/scripts/lane.test.js node ${PLUGIN_ROOT}/scripts/testing/run-tests.js`,
+      `DELIVERY_TEST_FILES=hooks/scripts/lane.test.js node ${PLUGIN_ROOT}/scripts/testing/run-tests.js`,
       `node ${PLUGIN_ROOT}/scripts/testing/run-tests.js -- 'sh x.sh > /tmp/in-seal.log'`,
     ]) assert.equal(run(command).allow, true, command);
   } finally {
