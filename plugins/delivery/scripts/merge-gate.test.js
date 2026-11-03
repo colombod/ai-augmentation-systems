@@ -152,6 +152,8 @@ test('R-32 R-12: the normal path: request, a pass on the current head, CI green,
   assert.match(done.out, /rv-478-delivery-lead-2: PR 478 merged at a1b2c3d4e5f6\nex-vault-0n9-3: merged \(478\), not verified\nex-vault-0n9-3: its deploy is handed to the watchdog, which wakes delivery-lead for it if this turn ends first/);
   assert.ok(h.db().issues[BEAD].labels.includes('state-merged'));
   assert.equal(h.db().issues[BEAD].metadata.merged_pr, '478');
+  // the merge commit GitHub put on main is recorded, so the self-update can bind a commit to its merge
+  assert.equal(require('./lib/reviews.js').read(h.root, 478).rows.find((r) => r.type === 'merged').merge_commit, 'e'.repeat(40));
   // dlv-4oj: the deploy is the next step, handed to the watchdog so it is not left to the two-hour stall
   const HO = require('./lib/handoff.js');
   const handed = HO.pending(h.root);
@@ -195,6 +197,7 @@ test('R-32 through REST only: the gate reads the pull request with gh api and me
   assert.equal(m.deny, null, m.deny);
   assert.equal(h.gh()[478].state, 'MERGED');
   assert.match(h.gate('delivery-lead', 'merged 478').out, /PR 478 merged at a1b2c3d4e5f6/);
+  assert.equal(require('./lib/reviews.js').read(h.root, 478).rows.find((r) => r.type === 'merged').merge_commit, 'f'.repeat(40), 'read through REST too');
   // every other role is still refused the endpoint
   const b = h.bash('builder-1', `gh api -X PUT repos/example/example/pulls/478/merge -f sha=${H1}`, { run: false });
   assert.match(b.deny || '', /merging is the Delivery Manager's/);

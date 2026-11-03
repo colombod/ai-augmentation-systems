@@ -1190,6 +1190,21 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `.delivery/watchdog/logs/` (the newest 50 kept); the job's own output to `job.log` (rotated past 1 MB).
   All of `.delivery/watchdog/` is gitignored: it is this host's. Each wake is one turn of that session;
   the next run checks again. `DELIVERY_CLAUDE_BIN` names another `claude`.
+- **The plugin installs itself after a gated merge.** Each `run` reads the product's main in the
+  marketplace's clone (a fetch, nothing installable changes) and, when it carries a newer plugin version
+  and every commit to the plugin since the installed one is the merge commit of a pull request the
+  Delivery Manager recorded as merged with `gated: true` for the marketplace's repository (the row's
+  `merge_commit`; for an older row without one, GitHub's merge commit for that pull request), runs
+  `claude plugin marketplace update` and `claude plugin update` for the job's scope (and for a role
+  directory's own older install), then checks the installed record. A role directory still on an older
+  version once the job's own install is current (a failed or partial pass, or one installed later) is
+  updated on a later pass, after the same check over the commits since its own installed sha. A commit that only names a pull
+  request in its subject, or an installed sha the clone does not know, is refused. It never installs
+  while a wake is running (held to the next cycle), refuses an ungated or older version, retries a failed
+  update once an hour, and logs each outcome as a `self-update` row. If main moved during the update, so
+  the installed sha is not the one checked, the row says `ungated-install` and an `install-ungated`
+  warning is recorded. After an install the pass wakes no one and kicks the next run, which runs the new
+  plugin and wakes an old-version session fresh.
 - **The host job: installed by the owner, once per host.** `watchdog.js install [--every 15m]` prints
   what it would write and how to remove it; `--apply` writes it; `watchdog.js uninstall` removes it in
   every form (running it again says "Nothing to remove"). Nothing installs it for you. `wake`, `run`,
