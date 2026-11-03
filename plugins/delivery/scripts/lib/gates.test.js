@@ -218,6 +218,11 @@ test('storyFromBead: criteria from metadata, or from the Done when paragraph spl
   assert.deepEqual(texts({ id: 'x', description: 'done when a script runs unchanged after the next install.' }), ['a script runs unchanged after the next install.']);
   assert.deepEqual(texts({ id: 'x', description: 'Done when: (1) ignored', metadata: { criteria: ['first', ' second '] } }), ['first', 'second']);
   assert.equal(G.storyFromBead({ id: 'x', description: 'Fix it. Proof: it works.' }), null);
+  // prose after the list is not part of the last criterion (the real 0ba), and a blank line after the colon is allowed
+  assert.deepEqual(texts({ id: 'x', description: 'Done when: the job, (c) leaves no role behind, and (d) never installs an older version. Tests cover gated and ungated cases. Depends on 8wz (PR 124).' }),
+    ['the job, leaves no role behind', 'the job, never installs an older version.']);
+  assert.deepEqual(texts({ id: 'x', description: 'Done when: (1) it shows; (2) it logs it Related: y.' }), ['it shows', 'it logs it']);
+  assert.deepEqual(texts({ id: 'x', description: 'Done when:\n\n(1) it shows;\n(2) it logs.\n\nNotes.' }), ['it shows', 'it logs.']);
   const s = G.storyFromBead({ id: 'x', title: 'T', description: 'Done when: it shows.', metadata: { surface: 'S2' } });
   assert.deepEqual([s.meta.title, s.meta.surface, s.criteria[0].probe.by], ['T', 'S2', 'reality-check']);
   assert.equal(G.checkCovered(s, { id: 'S2', scriptable: true }).length, 1, 'covered on a scriptable surface too: the bead names no test probe');

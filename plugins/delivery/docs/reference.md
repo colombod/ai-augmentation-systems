@@ -427,7 +427,9 @@ whose probe says `by: reality-check` (every criterion on a surface that is not s
 no story file, such as a bug fix, is planned from the criteria it states itself: `metadata.criteria`,
 else its description's `Done when:` paragraph split at `(1)` `(2)` or `(a)` `(b)`, each checked by the
 Reality Checker, on the initiative and surface its metadata names (`initiative`, `surface`) or its
-parent's), each step
+parent's; the last item ends at its first sentence or at `Depends on` / `Related:`; those criteria are
+pinned by their hash, `metadata.criteria_hash`, when planned before the deploy or at the deploy, and
+a criterion cut after that is a D1 drift that keeps the bead unverified), each step
 with an action, the expected observation and what to capture (screenshot, page text, log), a pass
 rule per criterion, and a cap (attempts, default 2, and minutes, default 30). Scripts live in the
 shared project checkout (the project root every role's marker names), which `run-record` reads; no

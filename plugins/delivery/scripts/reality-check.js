@@ -189,6 +189,10 @@ function plan(who, store, id, a, at) {
     if (!Number.isInteger(n) || n < 1) return { code: 2, out: `reality-check.js: --${k} must be a whole number of at least 1` };
     cap[k] = n;
   }
+  // criteria the bead states itself are pinned when planned before deploy (the deploy pins them too);
+  // after deploy a change stays a D1 drift, so a plan cannot re-pin a cut criterion
+  const bm = bead.metadata || {};
+  if (inp.checkStory.fromBead && !bm.deployed_sha) store.update(id, { metadata: { ...bm, criteria_hash: G.storyHash(inp.checkStory) } });
   const script = writeScript(who.root, bead, inp, { cap, at, by: who.instance });
   const lines = [`${scriptRel(id)}: ${groups.length} criterion group(s) on ${inp.surface.id}, cap ${script.cap.attempts} attempts and ${script.cap.minutes} minutes`];
   for (const w of versionedSteps(script)) lines.push(`warning: ${w} names one installed version of the plugin, which the next install deletes: refine it version-free (reality-check.js refine ${id} ... --command)`);

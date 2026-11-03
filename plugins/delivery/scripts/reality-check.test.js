@@ -152,6 +152,76 @@ test('7k3.1.1.1.5: a fix with no story file is planned from the criteria in its 
   assert.match(call(rc, ['plan', 'ex-fix-4'], T.plan).out, /has no readable story file .* and states no criteria of its own \(a "Done when:" paragraph in its description, or metadata.criteria\)/);
 });
 
+// 7k3.1.1.1.5 review: criteria stated on the bead are pinned, so cutting one after deploy cannot verify it
+test('7k3.1.1.1.5: a criterion cut from the bead after deploy does not let it verify, from the description or metadata.criteria; with the criteria intact it verifies', () => {
+  const root = makeProject();
+  const DESC = 'Done when: (1) the chat shows the summary; (2) the log shows the file; and (3) the card count shows.';
+  const mk = (id, meta = {}) => storyBead({ id, title: 'Fix', labels: ['bug'], parent: ID, description: DESC, metadata: { story_file: undefined, roadmap_ref: undefined, surface: undefined, ...meta } });
+  const store = memBd([mk('ex-pin-1'), mk('ex-pin-2'), mk('ex-pin-3', { criteria: ['the chat shows the summary', 'the log shows the file', 'the card count shows'] }), mk('ex-pin-4'), storyBead({ assignee: 't@pc/builder-1' })]);
+  const call = (mod, instance, argv, now) => mod.main(argv, { cwd: root, env: {}, bd: store, now, who: whoFor(root, instance) });
+  let k = 0;
+  const pass = (id, n) => {
+    const dir = path.join(root, '.delivery', 'evidence', 'artifacts', id);
+    fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, `c${n}-${++k}.txt`);
+    fs.writeFileSync(f, `Imported 212 cards (v1.4.2), run ${k}\n`);
+    return call(rc, 'reality-checker', ['run-record', id, '--criterion', String(n), '--result', 'pass', '--artifact', f, '--observed-version', 'v1.4.2'], T.run);
+  };
+  const ship = (id) => {
+    const p = call(rc, 'delivery-lead', ['plan', id], T.plan);
+    assert.equal(p.code, 0, p.out);
+    const d = call(evidence, 'delivery-lead', ['state', id, 'deployed', '--sha', SHA, '--version', 'v1.4.2'], T.deploy);
+    assert.equal(d.code, 0, d.out);
+  };
+  const check = (id) => call(evidence, 'delivery-lead', ['check', id], T.run);
+  const verified = (id) => (store.show(id).labels || []).includes(G.STATE.verified);
+  // the reviewer's probe: three criteria, one pass row, not verified; the description cut to one: still not
+  ship('ex-pin-1');
+  assert.ok(store.show('ex-pin-1').metadata.criteria_hash, 'pinned when planned');
+  const one = pass('ex-pin-1', 1);
+  assert.equal(one.code, 0, one.out);
+  assert.equal(check('ex-pin-1').code, 1);
+  store.beads.get('ex-pin-1').description = 'Done when: (1) the chat shows the summary.';
+  const cut = check('ex-pin-1');
+  assert.equal(cut.code, 1, cut.out);
+  assert.match(cut.out, /criteria stated on the bead changed since its check was pinned .* \(D1\)/);
+  assert.ok(!verified('ex-pin-1'));
+  // planning again after the deploy does not re-pin the cut list
+  call(rc, 'delivery-lead', ['plan', 'ex-pin-1'], T.run);
+  assert.equal(check('ex-pin-1').code, 1);
+  // metadata.criteria cut to one: the same
+  ship('ex-pin-3');
+  assert.equal(pass('ex-pin-3', 1).code, 0);
+  store.update('ex-pin-3', { metadata: { ...store.show('ex-pin-3').metadata, criteria: ['the chat shows the summary'] } });
+  assert.match(check('ex-pin-3').out, /changed since its check was pinned/);
+  // a bead deployed with no stamp (before the pin existed) is held by its planned script's criteria
+  ship('ex-pin-4');
+  store.update('ex-pin-4', { metadata: { ...store.show('ex-pin-4').metadata, criteria_hash: undefined } });
+  store.beads.get('ex-pin-4').description = 'Done when: (1) the chat shows the summary';
+  assert.match(check('ex-pin-4').out, /no longer include planned criteria 2, 3 of its check script \(D1\)/);
+  // the other direction: every criterion intact and passed verifies
+  ship('ex-pin-2');
+  for (const n of [1, 2, 3]) { const r = pass('ex-pin-2', n); assert.equal(r.code, 0, r.out); }
+  const all = check('ex-pin-2');
+  assert.equal(all.code, 0, all.out);
+  assert.ok(verified('ex-pin-2'));
+});
+
+test('7k3.1.1.1.5: a bead with a story file uses the story only, and an unreadable story file does not fall back to the description', () => {
+  const root = makeProject();
+  const DESC = 'Done when: (1) one; (2) two; (3) three; (4) four.';
+  const missing = path.join('.delivery', 'stories', 'missing.md');
+  const store = memBd([storyBead({ id: 'ex-sf-1', description: DESC }), storyBead({ id: 'ex-sf-2', description: DESC, metadata: { story_file: missing } }), storyBead({ assignee: 't@pc/builder-1' })]);
+  const call = (argv) => rc.main(argv, { cwd: root, env: {}, bd: store, now: T.plan, who: whoFor(root, 'delivery-lead') });
+  const ok = call(['plan', 'ex-sf-1']);
+  assert.equal(ok.code, 0, ok.out);
+  assert.match(ok.out, /2 criterion group\(s\) on S1/, 'the story\'s two criteria, not the description\'s four');
+  assert.equal(store.show('ex-sf-1').metadata.criteria_hash, undefined, 'a story is pinned by ready, not here');
+  const no = call(['plan', 'ex-sf-2']);
+  assert.equal(no.code, 1, no.out);
+  assert.match(no.out, /has no readable story file/);
+});
+
 test('7k3.1.1: materialise plans the script of every open story that needs one, keeps refined steps, and skips a closed or test-checked story', () => {
   const { planChecks } = require('./materialise.js');
   const root = makeProject({ checkScript: false });
