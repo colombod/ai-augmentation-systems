@@ -34,7 +34,7 @@ function setup() {
     'ex-vault-0n9-1': { id: 'ex-vault-0n9-1', parent: 'ex-vault-ph1', status: 'closed', labels: ['roadmap', 'phase-1', 'story', 'state-verified'], metadata: { ...meta, story: 'vault-0n9-1', story_file: 'vault-0n9-1.md' } },
   };
   fs.mkdirSync(path.join(root, '.delivery', 'evidence'), { recursive: true });
-  fs.writeFileSync(path.join(root, '.delivery', 'evidence', 'ex-vault-0n9-1.ndjson'), `${JSON.stringify({ seq: 1, prev: 'start', id: 'ev-ex-vault-0n9-1-1', type: 'row', criterion: 1, result: 'pass', via: 'reality-check' })}\n`);
+  fs.writeFileSync(path.join(root, '.delivery', 'evidence', 'ex-vault-0n9-1.ndjson'), `${JSON.stringify({ seq: 1, prev: 'start', id: 'ev-ex-vault-0n9-1-1', type: 'row', criterion: 1, result: 'pass', via: 'reality-check', by: 'reality-checker' })}\n`);
   for (const b of plan.beads.filter((x) => x.labels.includes('spike'))) beads[b.id] = { id: b.id, labels: b.labels, metadata: b.metadata };
   const h = harness({ root, beads, deps: [{ id: 'ex-vault-0n9-3', blockedBy: 'ex-vault-spike-a-8' }] });
   h.S = (inst, args) => h.bash(inst, `${h.script('assumptions.js')} ${args}`);
