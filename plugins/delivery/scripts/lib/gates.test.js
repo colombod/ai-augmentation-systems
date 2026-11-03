@@ -209,3 +209,41 @@ test('criteria: an angle-bracket argument inside a code span is part of a comman
   assert.equal(s.placeholders, 1);
   assert.equal(G.checkCovered(s, { id: 'S1' }).length, 2);
 });
+
+test('storyFromBead: criteria from metadata, or from the Done when paragraph split at its markers, the lead-in kept on each; none without either', () => {
+  const texts = (b) => { const s = G.storyFromBead(b); return s && s.criteria.map((c) => c.text); };
+  assert.deepEqual(texts({ id: 'x', description: 'Seen 11-02.\n\nDone when: the job, on each pass, (a) sees the new version, (b) installs it (a gated one only), and (c) logs it.\n\nDepends on y.' }),
+    ['the job, on each pass, sees the new version', 'the job, on each pass, installs it (a gated one only)', 'the job, on each pass, logs it.']);
+  assert.deepEqual(texts({ id: 'x', description: 'Done when: (1) one;\n(2) two; and (10) ten.' }), ['one', 'two', 'ten.']);
+  assert.deepEqual(texts({ id: 'x', description: 'done when a script runs unchanged after the next install.' }), ['a script runs unchanged after the next install.']);
+  assert.deepEqual(texts({ id: 'x', description: 'Done when: (1) ignored', metadata: { criteria: ['first', ' second '] } }), ['first', 'second']);
+  assert.equal(G.storyFromBead({ id: 'x', description: 'Fix it. Proof: it works.' }), null);
+  // prose after the list is not part of the last criterion (the real 0ba), and a blank line after the colon is allowed
+  assert.deepEqual(texts({ id: 'x', description: 'Done when: the job, (c) leaves no role behind, and (d) never installs an older version. Tests cover gated and ungated cases. Depends on 8wz (PR 124).' }),
+    ['the job, leaves no role behind', 'the job, never installs an older version.']);
+  assert.deepEqual(texts({ id: 'x', description: 'Done when: (1) it shows; (2) it logs it Related: y.' }), ['it shows', 'it logs it']);
+  // a common abbreviation does not end the last criterion's sentence
+  assert.deepEqual(texts({ id: 'x', description: 'Done when: (1) it shows; (2) a status, e.g. Done or Failed, i.e. One of Two, etc. Also X vs. Y is shown. Tests cover it.' }),
+    ['it shows', 'a status, e.g. Done or Failed, i.e. One of Two, etc. Also X vs. Y is shown.']);
+  assert.deepEqual(texts({ id: 'x', description: 'Done when:\n\n(1) it shows;\n(2) it logs.\n\nNotes.' }), ['it shows', 'it logs.']);
+  const s = G.storyFromBead({ id: 'x', title: 'T', description: 'Done when: it shows.', metadata: { surface: 'S2' } });
+  assert.deepEqual([s.meta.title, s.meta.surface, s.criteria[0].probe.by], ['T', 'S2', 'reality-check']);
+  assert.equal(G.checkCovered(s, { id: 'S2', scriptable: true }).length, 1, 'covered on a scriptable surface too: the bead names no test probe');
+});
+
+test('beadCriteriaDrift: a stamp that matches does not excuse a planned script group the bead no longer states; evidence before an owner re-pin is not a trace', () => {
+  const three = { id: 'x', description: 'Done when: (1) one; (2) two; (3) three' };
+  const one = { id: 'x', description: 'Done when: (1) one' };
+  const full = G.storyFromBead(three);
+  const cut = G.storyFromBead(one);
+  const script = { criteria: full.criteria.map((c) => ({ criterion: c.n, criterion_hash: G.criterionHash(c) })) };
+  const stamped = { ...one, metadata: { criteria_hash: G.storyHash(cut) } };
+  assert.match(G.beadCriteriaDrift(cut, stamped, script).detail, /no longer include planned criteria 2, 3 of its check script/);
+  assert.equal(G.beadCriteriaDrift(full, { ...three, metadata: { criteria_hash: G.storyHash(full) } }, script), null);
+  const rows = [{ type: 'row', criterion: 2, criterion_hash: G.criterionHash(full.criteria[1]), at: '2026-10-13T10:00:00Z' }];
+  assert.match(G.beadCriteriaDrift(cut, { ...one, metadata: {} }, null, rows).detail, /evidence rows were recorded for criteria 2/);
+  const repinned = { ...one, metadata: { criteria_restamped_at: '2026-10-13T11:00:00Z', criteria_record: 'dec-o-1' } };
+  assert.equal(G.beadCriteriaDrift(cut, repinned, null, rows, (id) => id === 'dec-o-1'), null);
+  // a re-pin counts only while its owner record verifies
+  assert.match(G.beadCriteriaDrift(cut, repinned, null, rows, () => false).detail, /re-pinned under dec-o-1, which no longer verifies/);
+});
