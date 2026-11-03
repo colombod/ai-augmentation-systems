@@ -10,8 +10,18 @@
 // decides pass or fail itself (exit 0, and the step's `match` pattern found in stdout when it has one),
 // and records the row through reality-check.js run-record, so every refusal there applies: the deployed
 // sha, the run cap, a capture that backs one run. The agent running this never types a result.
-// Exit codes: 0 the command ran and a row was recorded (a fail row is recorded too); 1 refused; 2 usage.
+//
+// scripts/verify-run.js probe <spike> --step <file> [--minutes <n>] — the Reality Checker's runner for a
+// spike about an external host. Why: assumptions.js probe takes an external-host probe from the Reality
+// Checker only, whose lane runs commands only through this script, and a spike has no story, script or
+// deploy for `run`. So this runs a step file committed in the project repository (the text at HEAD, so the
+// capture names exactly what ran) with /bin/sh on the host, in a fresh temporary directory (a spike tests
+// the host, not the product, so nothing is checked out), saves the capture and prints the
+// assumptions.js probe command that records it. A non-zero exit is still a capture: it is what the host did.
+// Exit codes: 0 the command ran and a row was recorded (a fail row is recorded too), or a probe ran and its
+// capture was saved, whatever its exit; 1 refused; 2 usage.
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const RR = require('./review-run.js');
@@ -19,9 +29,13 @@ const RC = require('./reality-check.js');
 const L = require('./lib/launcher.js');
 const PLUGIN_ROOT = path.join(__dirname, '..');
 const G = require('./lib/gates.js');
+const A = require('./lib/assumptions.js');
+const { isSpike } = require('./assumptions.js');
 const { whoAmI, writerProblem } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: verify-run.js run <bead> --criterion <n>';
+const USAGE = 'usage: verify-run.js run <bead> --criterion <n> | probe <spike> --step <file committed in the project repo> [--minutes <n>]';
+// a host probe drives a real app (a sign-in, a model's reply), so its default is generous
+const PROBE_MINUTES = 15;
 const CAPTURE_MAX = 256 * 1024;
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const refuse = (text) => ({ code: 1, out: `verify-run.js: ${text}` });
@@ -29,7 +43,7 @@ const refuse = (text) => ({ code: 1, out: `verify-run.js: ${text}` });
 function parse(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--criterion') { if (argv[i + 1] === undefined) throw new Error(`${argv[i]} needs a value`); out[argv[i].slice(2)] = argv[++i]; }
+    if (['--criterion', '--step', '--minutes'].includes(argv[i])) { if (argv[i + 1] === undefined) throw new Error(`${argv[i]} needs a value`); out[argv[i].slice(2)] = argv[++i]; }
     else if (argv[i].startsWith('--')) throw new Error(`unknown option ${argv[i]}`);
     else out._.push(argv[i]);
   }
@@ -87,6 +101,8 @@ function stepEnv(env, who, step) {
   return { ...clean, ...role, DELIVERY_ROLE: who.instance, DELIVERY_ROLE_DIR: who.roleDir, BEADS_ACTOR: who.actor };
 }
 
+const clip = (t) => (t.length > CAPTURE_MAX ? `${t.slice(0, CAPTURE_MAX)}\n[truncated: ${t.length - CAPTURE_MAX} more characters not kept]\n` : t);
+
 // operator.js's refusal without a role (its code, and the message's words); either names the fix
 const NO_ROLE = /not_allowed|no valid role marker/;
 
@@ -130,7 +146,6 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
   const code = r.status === null ? null : r.status;
   const stdout = String(r.stdout || '');
-  const clip = (t) => (t.length > CAPTURE_MAX ? `${t.slice(0, CAPTURE_MAX)}\n[truncated: ${t.length - CAPTURE_MAX} more characters not kept]\n` : t);
   let matched = true;
   if (step.match) { try { matched = new RegExp(step.match).test(stdout); } catch (err) { return refuse(`step ${step.n} has a match that is not a pattern (${err.message})`); } }
   const pass = !timedOut && code === 0 && matched;
@@ -148,14 +163,82 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   return { code: rec.code, out: `verify-run.js: criterion ${n} of ${bead}: \`${step.command}\` in verify/${bead}-${sha.slice(0, 12)} at ${co.sha}: ${pass ? 'pass' : 'fail'} (${why})${hint}\n${rec.out}`, row: rec.row };
 }
 
+// What the step file says an exit code means ("Exit 0 = answered; 2 = not signed in (owner step)"), so
+// the output can repeat it without this runner knowing any one host
+function exitMeaning(text, code) {
+  for (const line of text.split('\n').filter((l) => /\bexit\b/i.test(l))) {
+    for (const piece of line.split(';')) {
+      const m = /(?:^|[\s#])(\d{1,3})\s*=\s*(.+?)\.?\s*$/.exec(piece);
+      if (m && Number(m[1]) === code) return m[2];
+    }
+  }
+  return null;
+}
+
+// The step file as committed at the project's HEAD; refused when untracked or changed, since the capture
+// must name the exact text that ran
+function committedStep(root, rel, { env, spawn }) {
+  const genv = { ...RR.cleanEnv(env), GIT_TERMINAL_PROMPT: '0' };
+  const git = (...args) => spawn('git', ['-C', root, ...args], { env: genv, encoding: 'utf8', timeout: 60e3 });
+  if (git('ls-files', '--error-unmatch', '--', rel).status !== 0) return { problem: `${rel} is not committed in the project repository: commit it, then probe` };
+  const st = git('status', '--porcelain', '--', rel);
+  if (st.status !== 0 || String(st.stdout || '').trim()) return { problem: `${rel} differs from its committed text: commit or restore it, then probe` };
+  const commit = String(git('rev-parse', 'HEAD').stdout || '').trim();
+  const blob = String(git('rev-parse', `HEAD:./${rel}`).stdout || '').trim();
+  const shown = git('show', `HEAD:./${rel}`);
+  if (!SHA.test(commit) || !SHA.test(blob) || shown.status !== 0) return { problem: `${rel} could not be read at HEAD of the project repository` };
+  return { commit, blob, text: String(shown.stdout) };
+}
+
+function probe(who, store, id, a, { env, now, spawn }) {
+  const wp = writerProblem(who, ['reality-checker']);
+  if (wp) return refuse(wp.replace("the Delivery Manager's", "the Reality Checker's"));
+  const minutes = a.minutes === undefined ? PROBE_MINUTES : Number(a.minutes);
+  if (!(minutes > 0)) return { code: 2, out: USAGE };
+  let b = null;
+  try { b = store.show(id); } catch (err) { b = null; }
+  if (!b) return refuse(`no bead ${id}`);
+  if (!isSpike(b)) return refuse(`${id} is not a spike bead: a story is checked with verify-run.js run ${id} --criterion <n>`);
+  const m = b.metadata || {};
+  const slug = G.initiativeOf(b);
+  const asm = slug && m.assumption ? A.loadRegister(who.root, slug).rows.find((r) => r.id === m.assumption) || null : null;
+  // only an external host needs the Reality Checker; other kinds are probed by the Spike Researcher or a builder
+  if (!asm || asm.kind !== 'external-host') return refuse(`${id} has no external-host assumption in its register (${asm ? `${asm.id} is ${asm.kind}` : `${m.assumption || 'none'} not found`}): message the Delivery Manager`);
+  const rel = path.normalize(String(a.step));
+  if (path.isAbsolute(rel) || rel.split(path.sep)[0] === '..') return refuse(`--step names a file in the project repository, relative to its root (got ${a.step})`);
+  if (!who.roleDir) return refuse('not in a role directory, so the capture area (the project clone of the role directory) is not known.');
+  const step = committedStep(who.root, rel, { env, spawn });
+  if (step.problem) return refuse(step.problem);
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-'));
+  const started = Date.now();
+  let r;
+  try { r = spawn('/bin/sh', ['-c', step.text], { cwd: work, env: RR.cleanEnv(env), encoding: 'utf8', timeout: minutes * 60e3, maxBuffer: 16 * 1024 * 1024 }); } finally { fs.rmSync(work, { recursive: true, force: true }); }
+  const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
+  const code = r.status === null ? null : r.status;
+  const meaning = timedOut || code === null ? null : exitMeaning(step.text, code);
+  const why = timedOut ? `stopped after ${minutes} minutes` : `exit ${code === null ? 'by signal' : code}${meaning ? ` (the step says: ${meaning})` : ''}`;
+  // the capture sits in the checker's own project clone, where its lane writes, as for run
+  const dir = path.join(who.roleDir, 'project', '.delivery', 'evidence', 'artifacts', id);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `probe-${step.blob.slice(0, 7)}-${Date.parse(now) || started}.txt`);
+  fs.writeFileSync(file, [`$ /bin/sh -c "$(git show ${step.commit}:${rel})"`, `step: ${rel}`, `project commit: ${step.commit}`, `step blob: ${step.blob}`, `at: ${now}`, `spike: ${id} (${asm.id})`, `result: ${why}`, '',
+    '--- step ---', step.text, '--- stdout ---', clip(String(r.stdout || '')), '--- stderr ---', clip(String(r.stderr || '')), `--- exit ${code === null ? 'signal' : code} after ${Math.round((Date.now() - started) / 1000)}s ---`, ''].join('\n'));
+  const owner = meaning && /\bowner\b/i.test(meaning) ? '\nthe host needs an owner step: message the Delivery Manager with this capture' : '';
+  const next = `node ${path.join(__dirname, 'assumptions.js')} probe ${id} --host '<app and mode>' --observed '<what the capture shows>' --artifact ${file}`;
+  return { code: 0, file, out: `verify-run.js: ${rel} at ${step.commit.slice(0, 12)} on ${id}: ${why}${owner}\ncapture: ${file}\nNext: ${next}` };
+}
+
 function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: given, spawn = spawnSync, verifyRecord } = {}) {
   let a;
   try { a = parse(argv); } catch (err) { return { code: 2, out: `verify-run.js: ${err.message}\n${USAGE}` }; }
   const [cmd, id] = a._;
-  if (cmd !== 'run' || !id || a._.length !== 2 || a.criterion === undefined) return { code: 2, out: USAGE };
+  const shape = cmd === 'run' ? a.criterion !== undefined && a.step === undefined && a.minutes === undefined
+    : cmd === 'probe' ? a.step !== undefined && a.criterion === undefined : false;
+  if (!shape || !id || a._.length !== 2) return { code: 2, out: USAGE };
   const who = given || whoAmI({ cwd, env });
   if (!who.root) return { code: 2, out: 'verify-run.js: no project found; run it from the role directory' };
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
+  if (cmd === 'probe') return probe(who, store, id, a, { env, now: now || new Date().toISOString(), spawn });
   return run(who, store, id, a, { cwd, env, now: now || new Date().toISOString(), spawn, verifyRecord });
 }
 
