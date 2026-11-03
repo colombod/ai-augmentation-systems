@@ -1587,3 +1587,118 @@ test('7ax: the Delivery Manager is woken past a worker\'s daily caps, still one 
   assert.match(plan('builder-1', msgs(48), [msg('builder-1')]).held[0].reason, /woken 48 times in a day/);
   assert.match(plan(DM, msgs(96), [msg(DM)]).held[0].reason, /woken 96 times in a day/);
 });
+
+// bqj (dec-chief-of-staff-000266): work waiting on the Delivery Manager itself is a stall the plugin
+// recovers: its stopped session is restarted within the cycle, and the owner's briefing says so
+const R = require('./lib/reviews.js');
+const HEAD = 'a'.repeat(40);
+function reviewRows(root, pr, kinds, at) {
+  const rows = { request: { type: 'request', head: HEAD, beads: [`ex-pr-${pr}`], reviewer: `pr-reviewer-${pr}`, title: 'A change' },
+    pass: { type: 'review', head: HEAD, result: 'pass', reviewer: `pr-reviewer-${pr}`, kind: 'independent', summary: 'ok' },
+    changes: { type: 'review', head: HEAD, result: 'changes', reviewer: `pr-reviewer-${pr}`, kind: 'independent', summary: 'a finding' },
+    ci_fail: { type: 'ci', head: HEAD, result: 'fail', run: '1' },
+    sent: { type: 'sent-back', head: HEAD, reason: 'changes' },
+    merged: { type: 'merged', head: HEAD, beads: [`ex-pr-${pr}`] } };
+  for (const k of kinds) R.append(root, String(pr), { ...rows[k], at }, DM);
+}
+
+test('bqj: a merge, a review or a send-back waiting on a quiet Delivery Manager is a stall; never when it is working, limited or off the roster', () => {
+  const now = Date.parse('2026-11-03T12:00:00Z');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bqj-'));
+  reviewRows(root, 1, ['request', 'pass'], iso(now - H));
+  reviewRows(root, 2, ['request'], iso(now - H));
+  reviewRows(root, 3, ['request', 'changes'], iso(now - H));
+  reviewRows(root, 4, ['request', 'pass', 'ci_fail'], iso(now - H));
+  reviewRows(root, 5, ['request', 'changes', 'sent'], iso(now - H));
+  reviewRows(root, 6, ['request', 'pass', 'merged'], iso(now - H));
+  const parts = [];
+  const prs = WD.managerPrs(root, parts);
+  assert.deepEqual(parts, []);
+  assert.deepEqual(prs.map((p) => [p.pr, p.state]), [[1, 'passed'], [2, 'waiting'], [3, 'changes'], [4, 'failing']], 'sent back and merged are not the Delivery Manager\'s');
+  const dm = (quietMin, extra = {}) => ({ instance: DM, role: DM, session: 's-dm', roleDir: os.tmpdir(), lastActive: now - quietMin * 60e3, ...extra });
+  const manager = (sessions) => WD.stalls({ now: iso(now), prs, sessions }).stalls.filter((s) => s.kind === 'manager');
+  const found = manager([dm(40)]);
+  assert.deepEqual(found.map((s) => [s.pr, s.target, s.bead]), [[1, DM, 'ex-pr-1'], [2, DM, 'ex-pr-2'], [3, DM, 'ex-pr-3'], [4, DM, 'ex-pr-4']]);
+  assert.match(found[0].line, /^Waiting on the Delivery Manager: PR 1 has a passing review and waits for its merge, and its session has been quiet for 40 min\.$/);
+  assert.match(found[0].prompt, /^PR 1 \(ex-pr-1\) has a passing review and waits for its merge\. Take it now, before anything else: merge-gate\.js check 1/);
+  assert.match(found[2].prompt, /review\.js send-back 3 --reason changes/);
+  assert.match(found[3].prompt, /review\.js send-back 4 --reason ci/);
+  // the key is the record's last row: the same row is the same stall, a new row is new work
+  assert.equal(found[0].key, `manager:1:${R.read(root, '1').rows.slice(-1)[0].id}`);
+  assert.deepEqual(manager([dm(5)]), [], 'active five minutes ago: it is working');
+  assert.deepEqual(manager([dm(40, { waitUntil: now + H })]), [], 'inside its own watch.js wait');
+  assert.deepEqual(manager([dm(40, { limit: { at: iso(now - 40 * 60e3), resetsAt: iso(now + H) } })]), [], 'on its usage limit: the limit stall reports its resume time');
+  assert.deepEqual(manager([]), [], 'no Delivery Manager session on this host to restart');
+  // a chain that cannot be read is said, never read as nothing waiting
+  reviewRows(root, 7, ['request'], iso(now - H));
+  fs.appendFileSync(R.fileOf(root, '7', DM), '{torn\n');
+  const bad = [];
+  WD.managerPrs(root, bad);
+  assert.equal(bad.length, 1);
+  assert.match(bad[0], /^the review record of PR 7/);
+  assert.match(watchdog.checkLines({ stalls: [], polls: [], unreadableParts: bad }).join('\n'), /^Unreadable: the review record of PR 7 .*; a stall waiting on it is not known\.$/m);
+  assert.doesNotMatch(watchdog.checkLines({ stalls: [], polls: [], unreadableParts: bad }).join('\n'), /No stall/);
+});
+
+test('bqj: the first wake for the Delivery Manager\'s waiting merge goes at once, past its stall hour and its daily caps; the same one again backs off', () => {
+  const t0 = Date.parse('2026-11-03T12:00:00Z');
+  const ago = (m) => iso(t0 - m * 60e3);
+  const merge = (row = 'rv-1-delivery-lead-2') => ({ kind: 'manager', key: `manager:1:${row}`, bead: 'ex-pr-1', target: DM, due: true, line: 'Waiting on the Delivery Manager: PR 1', prompt: 'merge it' });
+  const plan = (rows, stalls) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-bqj-'));
+    for (const r of rows) WD.log(root, { type: 'wake', instance: DM, pid: 7, ...r });
+    return WD.plan({ stalls }, { root, now: iso(t0), alive: () => false });
+  };
+  // woken for a P0 20 minutes ago: a stall would wait the hour; the waiting merge does not
+  assert.equal(plan([{ at: ago(20), keys: ['p0:x'] }], [merge()]).wakes.length, 1);
+  // its 24 stall wakes and 96 handovers spent today: the merge still goes
+  const spent = [...Array.from({ length: 24 }, (_, i) => ({ at: ago(30 + 50 * i), keys: [`p0:old-${i}`] })), ...Array.from({ length: 96 }, (_, i) => ({ at: ago(5 + 14 * i), keys: [`message:x:${i}`] }))];
+  assert.equal(plan(spent, [merge()]).wakes.length, 1, 'never held by a cap the first time');
+  // a wake that carried it 20 minutes ago and found the Delivery Manager still stopped: a stall now, an hour apart, then 2 h
+  assert.match(plan([{ at: ago(20), keys: [merge().key] }], [merge()]).held[0].reason, /one wake an hour/);
+  assert.equal(plan([{ at: ago(70), keys: [merge().key] }], [merge()]).wakes.length, 1);
+  assert.match(plan([{ at: ago(190), keys: [merge().key] }, { at: ago(70), keys: [merge().key] }], [merge()]).held[0].reason, /woken for these already/);
+  // a new row on the record (a verdict, a re-request) is new work: at once again
+  assert.equal(plan([{ at: ago(20), keys: [merge().key] }], [merge('rv-1-delivery-lead-3')]).wakes.length, 1);
+  // it is a stall in the ledger, not a silent handover
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rec-bqj-'));
+  WD.recordAll(root, { stalls: [merge()] }, [], { now: iso(t0) });
+  assert.ok(Wn.list(root).some((w) => w.kind === 'stall' && w.bead === 'ex-pr-1'));
+});
+
+test('bqj TR-5: the Delivery Manager stopped while a merge waits on it is restarted by the next host-job run, and the owner\'s briefing reports the restart', () => {
+  const now = Date.now();
+  const h = harness({ beads: { 'ex-pr-1': { id: 'ex-pr-1', status: 'in_progress', assignee: 'dev@pc/builder-1', labels: ['state-in-review'], updated_at: iso(now - 30 * 60e3) } } });
+  session(h, DM, { seen: iso(now - 45 * 60e3) });
+  session(h, 'builder-1', { seen: iso(now - 60e3) });
+  reviewRows(h.root, 1, ['request', 'pass'], iso(now - 40 * 60e3));
+  // nothing is said to it: no message, no handoff; the record alone
+  assert.match(h.bash(DM, `${h.script('watchdog.js')} check`).out, /^Waiting on the Delivery Manager: PR 1 has a passing review and waits for its merge/m);
+  const log = scratchLog();
+  const run = hostJob(h, ['run'], claudeEnv(log));
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /^Woke delivery-lead \(resume of sess-delivery-lead\): Waiting on the Delivery Manager: PR 1/m);
+  const [c] = calls(log);
+  assert.deepEqual(c.argv.slice(2, 4), ['--resume', `sess-${DM}`]);
+  assert.match(c.argv[c.argv.length - 1], /^Watchdog \(a host job, not the owner\): PR 1 \(ex-pr-1\) has a passing review and waits for its merge\. Take it now/);
+  // the owner hears it in the briefing, in plain words
+  const brief = h.bash(COS, `${h.script('plan.js')} brief`).out;
+  assert.match(brief, /^The plugin restarted stopped sessions on its own: the Delivery Manager once when a merge or review waited on it\.$/m, brief);
+  assert.doesNotMatch(brief, /PR 1|ex-pr-1|delivery-lead/, 'no internal ids in the owner\'s briefing');
+  // the next run, with the session still quiet, does not wake it again within the hour
+  assert.doesNotMatch(hostJob(h, ['run'], claudeEnv(log)).stdout, /^Woke delivery-lead/m);
+});
+
+test('bqj: the briefing never shows a team healthy when the watchdog could not read the record', () => {
+  const DP = require('./lib/daily-plan.js');
+  const f = { now: '2026-11-03T12:00:00Z', team: { roles: [] }, stalls: [], stalls_unreadable: 'the review record of PR 7', restarts: [], queue: [], questions: [], checks: [], andon: { stops: [], ci: {}, flaky: [], chains: [] }, unknowns: [], spikes: [], next: [], known: new Map(), titles: new Map(), stories: [], fixes: [], prs: {} };
+  assert.match(DP.brief(f).join('\n'), /^The plugin could not read part of the team's record, so a stall there is not known yet\.$/m);
+  assert.doesNotMatch(DP.brief({ ...f, stalls_unreadable: null }).join('\n'), /could not read/);
+  // restarts older than the last plan are not reported again; routine handovers are not restarts
+  const rows = [{ type: 'wake', at: '2026-11-03T08:00:00Z', instance: 'builder-1', keys: ['quiet:ex-a:x'] }, { type: 'wake', at: '2026-11-03T09:00:00Z', instance: 'builder-2', keys: ['quiet:ex-b:x'] }];
+  assert.equal(DP.restartLine({ ...f, restarts: rows }, { at: '2026-11-03T08:30:00Z' }), 'The plugin restarted stopped sessions on its own: 1 other team member.');
+  assert.equal(DP.restartLine({ ...f, restarts: rows }, { at: '2026-11-03T10:00:00Z' }), null);
+  assert.equal(DP.isRecovery('message:delivery-lead:3'), false);
+  assert.equal(DP.isRecovery('assigned:ex-a'), false);
+  assert.equal(DP.isRecovery('manager:1:rv-1'), true);
+});
