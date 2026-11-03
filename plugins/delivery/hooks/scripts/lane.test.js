@@ -1302,6 +1302,38 @@ test('nativeApproval approves nothing for a non-Bash tool, an any lane or the re
   assert.ok(nativeApproval(cmd(`node ${path.join(PLUGIN_ROOT, 'scripts', 'team-status.js')}`), reads, groups, ctx).allow);
 });
 
+// the Delivery Manager's pass reads the team and, with --record, writes bead notes, an assignment and its
+// own row: it runs in a role session like `check`, its record needs bd-structure; the wake verbs stay refused
+test('lane: the Delivery Manager runs watchdog.js pass and pass --record; a role that cannot assign beads only reads it', () => {
+  const bash = (policy, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx() });
+  const wd = path.join(PLUGIN_ROOT, 'scripts', 'watchdog.js');
+  const dm = POLICIES['delivery-lead'];
+  assert.equal(bash(dm, `node ${wd} pass`).allow, true);
+  assert.equal(bash(dm, `node ${wd} pass --json`).allow, true);
+  assert.equal(bash(dm, `node ${wd} pass --record`).allow, true);
+  assert.equal(bash(dm, `node ${wd} pass --record --project /p`).allow, true);
+  assert.equal(bash(dm, `node ${wd} check --record`).allow, false, 'check takes no --record');
+  for (const c of [`node ${wd} pass --dry-run`, `node ${wd} pass wake`, `node ${wd} pass --record; node ${wd} wake`]) {
+    const d = bash(dm, c);
+    assert.equal(d.allow, false, c);
+    assert.match(d.reason, /host job/, c);
+  }
+  const reader = { roleId: 'observer', writes: [], bash: ['read'] };
+  assert.equal(bash(reader, `node ${wd} pass`).allow, true);
+  assert.equal(bash(reader, `node ${wd} pass --record`).allow, false, 'the record writes bead notes');
+  // the record also assigns a bead to a free builder: a lane that may only append notes cannot run it
+  const notesOnly = { roleId: 'staffing', writes: [], bash: ['read', 'bd-notes'] };
+  assert.equal(bash(notesOnly, `node ${wd} pass`).allow, true);
+  assert.equal(bash(notesOnly, `node ${wd} pass --record`).allow, false, 'the record assigns beads');
+  // a role whose lane runs any command, or holds bd-structure, still only reads the pass: the record is the manager's
+  for (const other of [{ roleId: 'chief-of-staff', writes: [], bash: ['any'] }, { roleId: 'product-manager', writes: [], bash: ['read', 'bd-structure'] }]) {
+    assert.equal(bash(other, `node ${wd} pass`).allow, true, other.roleId);
+    const d = bash(other, `node ${wd} pass --json --record`);
+    assert.equal(d.allow, false, other.roleId);
+    assert.match(d.reason, /Delivery Manager's/, other.roleId);
+  }
+});
+
 // the Technical Writer edits documentation in its product worktree, never product code; Staffing adds a
 // shipped role through team-role.js, never by a free-form edit of team.json
 test('lane: the Technical Writer edits product docs only; Staffing runs team-role.js add', () => {

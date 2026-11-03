@@ -1154,6 +1154,42 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   for a message, a handoff or assigned work). When the watchdog could not read the record, the
   brief says so ("could not read part of the team's record") instead of showing no stall;
   `team-status.js` lists them under the idle line. Times are the host's local time with its zone.
+- **The Delivery Manager's pass.** `watchdog.js pass [--record] [--json]` (lib/role-watch.js) runs in a
+  role session and reads the team as a whole, in this order:
+  1. what waits on the Delivery Manager itself: a handoff or message for it, a pull request whose review
+     state (`waiting`, `stale`, `changes`, `failing`, `passed`, `ready`, `damaged`) is the manager's to
+     move, a merged or deployed bead in progress;
+  2. each role instance other than the manager holding a bead in progress: running (its last wake still
+     runs, or its session was active in the last 10 minutes; never while stopped on a usage limit),
+     moving (a held bead updated within `stall_hours`, or a `watch.js until` wait), and wasted wakes
+     (wakes in the last 24 h that named beads, none of which was updated after the wake). A held bead
+     whose pull request waits on the manager, or that is merged or deployed, is not the holder's to move;
+  3. what fails: not on the roster, a usage limit (with its resume time), a send-back newer than the
+     holder's last move or activity, 3 or more wasted wakes, or work the holder can move unmoved for
+     `stall_hours`; when nothing else fails, held work that waits on the manager quiet past `stall_hours`
+     (the watchdog raises it as a quiet stall, so the pass names it as the manager's wait). Each failing instance gets one action, the first that applies: `report` a usage
+     limit (or `reassign` its top-priority work when a builder holds nothing), `unblock` (the message
+     that hands it the sent-back review), `note-block` (wasted wakes on, or quiet work in, what waits on
+     the manager),
+     `restart` (not running and not moving), `reassign` to a builder holding nothing, else `raise`.
+     For the team: a ready, unassigned top-priority bead goes to a builder holding nothing (`assign`);
+     with none free and every builder failing, `add-builder` names `team-role.js add builder --count
+     <n+1>` for Staffing to run. A builder whose only failure is work waiting on the manager is not
+     stuck (that wait is the manager's), so it never adds a builder. At `budget.builders_cap`, where the
+     roster command refuses, `raise-cap` asks the Chief of Staff instead, for the owner to raise the cap.
+     The manager, Staffing and the Chief of Staff are named by their instances in team.json.
+  `--record` appends the pass to `passes.ndjson` in the watchdog's directory and writes the action and
+  its reason as a note on every bead the failing instance holds, once per change of action (a count in
+  a reason may grow without a new note). It also carries out the team's action, once per change:
+  `assign` sets the bead's assignee to the free builder (in the recording `BEADS_ACTOR`'s form) and
+  queues it a message; `add-builder` queues Staffing the roster command (only Staffing's lane runs
+  `team-role.js`) and notes the bead, and the pass after the new builder is on the team assigns it;
+  `raise-cap` queues the Chief of Staff one message and notes the bead. "Once per change" is against the
+  last pass that carried a team action, so a pass with none in between does not queue it again.
+  Data that cannot be read is one line saying so: no pass row, no note, never a healthy team. The lane
+  lets any role run `pass`; `pass --record` assigns beads, so it needs `bd-structure`, and it is the
+  manager's alone: the lane refuses it to every other role (even one whose lane runs any command), and
+  `watchdog.js` refuses it in a role session of another instance.
 - **The wake.** `watchdog.js wake [--dry-run]` wakes, for each due stall, its session: the holder of a
   stalled bead or of a bead stopped by the usage limit, else the Delivery Manager. One run carries every
   line for that session in one prompt. The command, in the session's role directory with
