@@ -122,13 +122,33 @@ function otherRoleSessionsReached(name, team, own) {
   }
 }
 
+// the live sessions outside this team that a send to this team's full name `full` can reach: none when a live
+// session of ours holds that name exactly (an exact name is delivered to directly); [{ name }] when the
+// records cannot be read (it may be another team's)
+function otherSessionsReachedByOwnName(full, team, own) {
+  try {
+    const reached = liveSessionsReached(own.dir || sessionsDir(), full);
+    if (reached.some((s) => slug(s.name) === slug(full) && ourSession(s, team, own))) return [];
+    return reached.filter((s) => !ourSession(s, team, own));
+  } catch (err) {
+    return [{ name: 'an unreadable session record' }];
+  }
+}
+
 // null (allow), { reason } (deny) or { warn } (allow with a warning), for a send from a role session of
 // `team` on `host` to `to`; own: { teamDir, projectRoot } of the sender, for the bare-name fallback
 function judge(team, to, host, own = null) {
   const SN = require('../../scripts/lib/session-name.js');
   if (!team || !SN.teamTag(team.prefix) || typeof to !== 'string') return null;
   const { instance, prefix } = SN.parseSessionName(to);
-  if (prefix !== null && SN.samePrefix(prefix, team.prefix)) return null;
+  if (prefix !== null && SN.samePrefix(prefix, team.prefix)) {
+    // our own full name is safe unless, with no live session of ours holding it, it is the start of another
+    // team's live session's name: "chief-of-staff@alpha" reaches "chief-of-staff@alpha-scratch"
+    const full = SN.sessionName(slug(instance), team.prefix);
+    const other = own ? otherSessionsReachedByOwnName(full, team, own) : [];
+    if (!other.length) return null;
+    return { reason: `"${SN.bareTarget(to)}" is this team's name, but no session of this team holds it now and it is the start of ${other.map((x) => `"${x.name}"`).join(', ')}, a live session outside this team, which a send to it can reach.\nWait for ${full} to run (a send to a teammate that is not running is kept for it once it is), or send to another of this team's sessions: ${teamSessions(team).join(', ')}.` };
+  }
   // "builder@" or "@alpha": an "@" with no team after it, or no instance before it, names no session of ours
   if (prefix === null && instance.includes('@')) {
     return { reason: `"${SN.bareTarget(to)}" is no full session name: an "@" needs an instance before it and a team after it.\nRole sessions are named <instance>@<team>; this team's sessions are ${teamSessions(team).join(', ')}.` };

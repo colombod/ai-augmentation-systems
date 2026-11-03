@@ -174,6 +174,35 @@ test('two teams with qualified names: a bare name or a prefix that reaches the o
   assert.equal(runHook(send(a.roleDir, 'chief'), 'builder-1', sessionsDir([{ ...theirCos, pid: DEAD }])).stdout, '');
 });
 
+// A team tag can be the start of another team's ("alpha" and "alpha-scratch"): our own full name, with no
+// session of ours holding it, would be resolved by prefix to the other team's session.
+test('our own full name that is the start of another team\'s live session is refused unless our session holds it', () => {
+  const a = teamWith('alpha', 'builder-1', 'chief-of-staff');
+  const b = teamWith('alpha-scratch', 'builder-1', 'chief-of-staff');
+  const ourCos = { pid: process.pid, cwd: path.join(a.teamDir, 'chief-of-staff'), name: 'chief-of-staff@alpha' };
+  const theirCos = { pid: process.pid, cwd: path.join(b.teamDir, 'chief-of-staff'), name: 'chief-of-staff@alpha-scratch' };
+  // the reviewer's case: ours is not running, the scratch team's is
+  for (const to of ['chief-of-staff@alpha', 'chief-of-staff@alpha- [ex-1]', 'Chief of Staff@alpha']) {
+    const d = decision(runHook(send(a.roleDir, to), 'builder-1', sessionsDir([theirCos])));
+    assert.equal(d && d.permissionDecision, 'deny', to);
+    assert.match(d.permissionDecisionReason, /no session of this team holds it now and it is the start of "chief-of-staff@alpha-scratch".*Wait for chief-of-staff@alpha to run/s, to);
+  }
+  // ours is live and holds the name exactly: it is delivered there, allowed
+  assert.equal(runHook(send(a.roleDir, 'chief-of-staff@alpha'), 'builder-1', sessionsDir([ourCos, theirCos])).stdout, '');
+  // the same name live outside our role directory is not ours: refused
+  const elsewhere = { ...ourCos, cwd: os.tmpdir() };
+  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff@alpha'), 'builder-1', sessionsDir([elsewhere]))).permissionDecision, 'deny');
+  // nothing live, or only a stale scratch record: allowed (kept for ours if undelivered)
+  assert.equal(runHook(send(a.roleDir, 'chief-of-staff@alpha'), 'builder-1').stdout, '');
+  assert.equal(runHook(send(a.roleDir, 'chief-of-staff@alpha'), 'builder-1', sessionsDir([{ ...theirCos, pid: DEAD }])).stdout, '');
+  // records that cannot be read: refused (fail closed)
+  const broken = sessionsDir([]);
+  fs.writeFileSync(path.join(broken, '999999.json'), '{not json');
+  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff@alpha'), 'builder-1', broken)).permissionDecision, 'deny');
+  // the scratch team's own full name does not start ours: its send to its own name passes while ours runs
+  assert.equal(runHook(send(b.roleDir, 'chief-of-staff@alpha-scratch'), 'builder-1', sessionsDir([ourCos])).stdout, '');
+});
+
 test('an "@" with nothing on one side is refused, naming this team\'s sessions', () => {
   const a = teamWith('alpha', 'builder-1');
   for (const to of ['builder@', 'chief-of-staff@ [ex-1]', '@alpha', 'main@']) {
