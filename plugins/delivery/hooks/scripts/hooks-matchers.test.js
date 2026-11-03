@@ -29,6 +29,9 @@ test('bd guard, operator channel guard and invocation recorder match their exact
   const bd = matcherFor('PreToolUse', 'bd-guard-hook.js');
   for (const t of ['Bash', 'Monitor', 'PowerShell']) assert.ok(bd.test(t), t);
   for (const t of [...NEVER, 'Write']) assert.ok(!bd.test(t), t);
+  const sendGuard = matcherFor('PreToolUse', 'send-guard.js');
+  for (const t of ['SendMessage', 'mcp__ccd_session_mgmt__send_message']) assert.ok(sendGuard.test(t), t);
+  for (const t of [...NEVER, 'SendMessages', 'mcp__slack__send_message']) assert.ok(!sendGuard.test(t), t);
   const ask = matcherFor('PreToolUse', 'ask-guard.js');
   for (const t of ['AskUserQuestion', 'PushNotification', 'SendUserFile']) assert.ok(ask.test(t), t);
   for (const t of [...NEVER, 'AskUserQuestions', 'MySendUserFile']) assert.ok(!ask.test(t), t);

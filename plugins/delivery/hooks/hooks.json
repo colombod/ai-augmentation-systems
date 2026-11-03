@@ -139,6 +139,19 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "^(SendMessage|mcp__ccd_session_mgmt__send_message)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/send-guard.js"
+            ],
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
