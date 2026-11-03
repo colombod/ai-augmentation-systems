@@ -118,6 +118,29 @@ function parseStory(text) {
   };
 }
 
+// A bead with no story file (a bug, a fix) states its criteria in its own words: metadata.criteria (a
+// list), else the description's first "Done when:" paragraph, split at (1) (2) or (a) (b) markers, with any
+// lead-in kept on each item. They carry no probe line, so on a scriptable surface a plain test is not
+// asked of them: the check on the customer's surface is what they wait for (byRealityCheck below).
+// null when the bead states no criteria.
+function storyFromBead(bead) {
+  if (!bead) return null;
+  const m = bead.metadata || {};
+  let items = Array.isArray(m.criteria) ? m.criteria.map((x) => normText(x)).filter(Boolean) : null;
+  if (!items) {
+    const d = String(bead.description || '');
+    const at = /\bdone when\s*:?\s*/i.exec(d);
+    if (!at) return null;
+    const body = normText(d.slice(at.index + at[0].length).split(/\n\s*\n/)[0]);
+    const parts = body.split(/(?:^|\s)\((?:\d{1,2}|[a-h])\)\s+/i);
+    const lead = parts.length > 1 ? parts.shift().trim() : '';
+    items = parts.map((p) => p.replace(/[\s;,]*(?:\band)?[\s;,]*$/i, '').trim()).filter(Boolean).map((p) => (lead ? `${lead} ${p}` : p));
+  }
+  if (!items.length) return null;
+  return { meta: { id: bead.id, title: bead.title || bead.id, ...(m.surface ? { surface: m.surface } : {}) }, fromBead: true, placeholders: 0,
+    criteria: items.map((text, i) => ({ n: i + 1, text, probe: { text: 'stated in the bead, no probe line', where: m.surface || null, by: 'reality-check' } })) };
+}
+
 const normText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
 // One criterion's own hash: evidence and waivers bind to it, so a reworded or reordered criterion
 // needs new evidence.
@@ -381,5 +404,5 @@ function doneCheck({ story, bead, rows = [], surface, noSurface = false, instanc
 
 const initiativeOf = (bead) => { const m = /^([a-z0-9][a-z0-9-]*)\//.exec(String((bead && bead.metadata && bead.metadata.roadmap_ref) || '')); return m ? m[1] : null; };
 
-module.exports = { byRealityCheck, checkCovered, checkScriptGap, parseStory, storyHash, criterionHash, storySurface, isStoryBead, readyFindings, shippableState, scopeDrift, claimDivergence, stateOf, stateCounts, unverifiedOver, areaOf,
+module.exports = { byRealityCheck, checkCovered, checkScriptGap, parseStory, storyFromBead, storyHash, criterionHash, storySurface, isStoryBead, readyFindings, shippableState, scopeDrift, claimDivergence, stateOf, stateCounts, unverifiedOver, areaOf,
   readEvidence, readEvidenceChecked, headProblem, appendEvidence, evidenceFile, roleOfActor, authorsOf, shaMatch, rowProblem, doneCheck, initiativeOf, STATE, DEFAULT_MAX_UNVERIFIED };

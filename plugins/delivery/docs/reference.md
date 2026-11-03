@@ -423,7 +423,11 @@ control or computer use, by script, never by the owner. `node ${CLAUDE_PLUGIN_RO
 account by name (from `surface.json` `test_account`; never a secret; a sign-in is an owner-queue
 step), the artifact under test (the deployed sha and the version string to read on screen, from
 `version_on_screen`), setup steps that confirm the app, mode and version, one step group per criterion
-whose probe says `by: reality-check` (every criterion on a surface that is not scriptable), each step
+whose probe says `by: reality-check` (every criterion on a surface that is not scriptable; a bead with
+no story file, such as a bug fix, is planned from the criteria it states itself: `metadata.criteria`,
+else its description's `Done when:` paragraph split at `(1)` `(2)` or `(a)` `(b)`, each checked by the
+Reality Checker, on the initiative and surface its metadata names (`initiative`, `surface`) or its
+parent's), each step
 with an action, the expected observation and what to capture (screenshot, page text, log), a pass
 rule per criterion, and a cap (attempts, default 2, and minutes, default 30). Scripts live in the
 shared project checkout (the project root every role's marker names), which `run-record` reads; no

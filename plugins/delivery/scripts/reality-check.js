@@ -178,9 +178,9 @@ function plan(who, store, id, a, at) {
   const bead = store.show(id);
   if (!bead) return refuse(`no bead ${id}`);
   const inp = gateInputs(who.root, bead, { bd: store, team: who.team });
-  if (!inp.story) return refuse(`${id} has no readable story file (metadata story_file under .delivery/stories/)`);
-  if (!inp.surface) return refuse(`${id} names no declared customer surface (surface.json), so there is nothing to set up: declare it first (R-09)`);
-  const groups = covered(inp.story, inp.surface);
+  if (!inp.checkStory) return refuse(`${id} has no readable story file (metadata story_file under .delivery/stories/) and states no criteria of its own (a "Done when:" paragraph in its description, or metadata.criteria)`);
+  if (!inp.surface) return refuse(`${id} names no declared customer surface (surface.json), so there is nothing to set up: declare it first (R-09)${inp.story ? '' : `; a bead with no story file takes its parent's initiative, or names one: metadata initiative=<slug> and surface=<id>`}`);
+  const groups = covered(inp.checkStory, inp.surface);
   if (!groups.length) return refuse(`${id} has no criterion whose probe says by: reality-check, and ${inp.surface.id} is scriptable: its probes run as tests`);
   const cap = {};
   for (const k of ['attempts', 'minutes']) {
@@ -204,7 +204,7 @@ function plan(who, store, id, a, at) {
 // Writes the bead's script (scriptRel) from the story, keeping every step group already refined
 // for an unchanged criterion. Shared by plan, materialise (a planned story gets its script) and the deploy.
 function writeScript(root, bead, inp, { cap = {}, at, by }) {
-  const script = buildScript({ bead, story: inp.story, surface: inp.surface, old: readScript(root, bead.id), cap, at, by });
+  const script = buildScript({ bead, story: inp.checkStory, surface: inp.surface, old: readScript(root, bead.id), cap, at, by });
   fs.mkdirSync(path.join(root, '.delivery', 'reality-checks'), { recursive: true });
   fs.writeFileSync(path.join(root, scriptRel(bead.id)), `${JSON.stringify(script, null, 2)}\n`);
   return script;
@@ -217,7 +217,7 @@ function dispatch(who, store, bead, inp, sha) {
   const lines = [];
   const child = `${id}-rc-${String(sha).slice(0, 7)}`;
   if (!store.show(child)) {
-    store.create({ id: child, parent: id, type: 'task', labels: [LABEL], title: `Reality check: ${inp.story.meta.title || id} on ${inp.surface.id} at ${String(sha).slice(0, 7)}`,
+    store.create({ id: child, parent: id, type: 'task', labels: [LABEL], title: `Reality check: ${inp.checkStory.meta.title || id} on ${inp.surface.id} at ${String(sha).slice(0, 7)}`,
       metadata: { reality_check_for: id, script: scriptRel(id), deployed_sha: sha } });
     lines.push(`${child}: created for the Reality Checker (label ${LABEL})`);
   } else lines.push(`${child}: already dispatched`);
@@ -292,7 +292,7 @@ function runRecord(who, store, id, a, { cwd, env, now, verifyRecord }) {
   if (!group) return refuse(`criterion ${a.criterion} is not in the script (${(script.criteria || []).map((g) => g.criterion).join(', ') || 'none'}): its probe runs as a test`);
   // the steps that were run must be the ones for this wording of the criterion
   const inp = gateInputs(who.root, bead, { bd: store, team: who.team });
-  const current = inp.story && inp.story.criteria.find((c) => c.n === n);
+  const current = inp.checkStory && inp.checkStory.criteria.find((c) => c.n === n);
   if (!current || group.criterion_hash !== G.criterionHash(current)) return refuse(`criterion ${n} changed since the script was planned, so its steps checked another outcome.\nMessage the Delivery Manager to plan it again (reality-check.js plan ${id})`);
   // the build on screen must be the deployed one: a run on another build checks nothing here (D3)
   const seen = String(a.observed_version).trim();

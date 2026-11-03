@@ -65,13 +65,21 @@ function readStory(root, bead) {
 // Everything a gate reads about one bead. Missing pieces stay null; nothing throws on a bad read.
 function gateInputs(root, bead, { bd, team } = {}) {
   const story = readStory(root, bead);
-  const initiative = G.initiativeOf(bead);
-  const s = initiative ? loadSurface(root, initiative) : { surfaces: [], missing: true, problems: [], warnings: [] };
-  const { id: surfaceId, surface } = G.storySurface(story || { meta: {} }, bead, s.surfaces);
-  let instances = [];
-  try { instances = team ? expandInstances(team) : []; } catch (err) { instances = []; }
   let parent = null;
   if (bead.parent && bd) { try { parent = bd.show(bead.parent); } catch (err) { parent = null; } }
+  // a bead with no story file (a bug, a fix) and no roadmap_ref names its initiative in metadata, or
+  // takes its parent's initiative and surface, else it has no declared surface and its check could never
+  // be planned
+  const bm = bead.metadata || {};
+  const fileless = !bm.story_file;
+  const namedOf = (b) => { const v = String((b && b.metadata && b.metadata.initiative) || ''); return /^[a-z0-9][a-z0-9-]*$/.test(v) ? v : null; };
+  const named = namedOf(bead);
+  const inherited = fileless && !G.initiativeOf(bead) && !named ? G.initiativeOf(parent) || namedOf(parent) : null;
+  const initiative = G.initiativeOf(bead) || (fileless ? named || inherited : null);
+  const s = initiative ? loadSurface(root, initiative) : { surfaces: [], missing: true, problems: [], warnings: [] };
+  const { id: surfaceId, surface } = G.storySurface(story || { meta: inherited && !bm.surface ? { surface: (parent.metadata || {}).surface } : {} }, bead, s.surfaces);
+  let instances = [];
+  try { instances = team ? expandInstances(team) : []; } catch (err) { instances = []; }
   const ev = G.readEvidenceChecked(root, bead.id);
   // no surface declared for this story (no surface.json, no initiative, several and none named):
   // evidence counts without the surface check, with a warning (R-09 is warn-level)
@@ -79,7 +87,10 @@ function gateInputs(root, bead, { bd, team } = {}) {
   // the planned reality-check script (reality-check.js scriptRel), null when there is none
   let checkScript = null;
   try { checkScript = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'reality-checks', `${bead.id}.json`), 'utf8')); } catch (err) { checkScript = null; }
-  return { checkScript, story, initiative, surfaces: s.surfaces, surfaceMissing: s.missing || s.problems.length > 0, surfaceId, surface, noSurface,
+  // what a reality check and its evidence rows are planned against: the story, or for a bead that names
+  // no story file, the criteria it states itself (G.storyFromBead); the ready gate keeps `story`
+  const checkStory = story || (fileless ? G.storyFromBead(bead) : null);
+  return { checkScript, story, checkStory, initiative, surfaces: s.surfaces, surfaceMissing: s.missing || s.problems.length > 0, surfaceId, surface, noSurface,
     rows: ev.rows, evidenceProblem: G.headProblem(ev, bead), instances, parent, parentStory: parent ? readStory(root, parent) : null };
 }
 

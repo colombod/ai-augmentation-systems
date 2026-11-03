@@ -39,7 +39,7 @@ function done(bead, inp) {
   if (inp.evidenceProblem) return { ok: false, criteria: [], problem: inp.evidenceProblem };
   const drift = G.scopeDrift(inp.story, bead);
   if (drift) return { ok: false, criteria: [], problem: `${drift.detail} (D1)` };
-  return G.doneCheck({ story: inp.story, bead, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances, recordOk: inp.recordOk });
+  return G.doneCheck({ story: inp.checkStory, bead, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances, recordOk: inp.recordOk });
 }
 
 // Append a row and record the new chain head in the bead (evidence_head), so the gate can tell a row
@@ -124,7 +124,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       }
       // the check bead for this sha, with the script stamped with it, so the Reality Checker has both
       const checks = [];
-      if (!d.ok && G.checkCovered(inp.story, inp.surface).length) {
+      if (!d.ok && G.checkCovered(inp.checkStory, inp.surface).length) {
         const rc = require('./reality-check.js');
         const fresh = store.show(id);
         rc.writeScript(who.root, fresh, inp, { at, by: who.instance });
@@ -132,7 +132,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       }
       // a bead checked on a surface with no story to plan from (a bug or a fix): no script can be planned
       // for it, so nothing would ever run its check; say so rather than pass in silence (7k3.1.1)
-      if (!d.ok && !inp.story && inp.surface) checks.push(`warning: ${id} names surface ${inp.surface.id} but has no readable story file, so no reality-check script can be planned for it and its check on the customer's app cannot run. Give it a story file (story_file), or check it by hand with evidence.js add`);
+      if (!d.ok && !inp.checkStory && inp.surface) checks.push(`warning: ${id} names surface ${inp.surface.id} but has no readable story file and states no criteria of its own (a "Done when:" paragraph in its description), so no reality-check script can be planned for it and its check on the customer's app cannot run. Give it a story file (story_file), or check it by hand with evidence.js add`);
       return { code: 0, out: [`${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}${handed}`, ...checks].join('\n') };
     }
     return { code: 2, out: USAGE };
@@ -147,7 +147,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
     return { code: 0, out: `${row.id}: ${id} cut under ${a.record}; it may close without verification` };
   }
 
-  const criteria = inp.story ? inp.story.criteria : [];
+  const criteria = inp.checkStory ? inp.checkStory.criteria : [];
   const c = criteria.find((x) => x.n === Number(a.criterion));
   if (!c) return refuse(`${id} has no criterion ${a.criterion} (criteria: ${criteria.map((x) => x.n).join(', ') || 'none'})`);
 

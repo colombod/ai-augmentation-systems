@@ -209,3 +209,16 @@ test('criteria: an angle-bracket argument inside a code span is part of a comman
   assert.equal(s.placeholders, 1);
   assert.equal(G.checkCovered(s, { id: 'S1' }).length, 2);
 });
+
+test('storyFromBead: criteria from metadata, or from the Done when paragraph split at its markers, the lead-in kept on each; none without either', () => {
+  const texts = (b) => { const s = G.storyFromBead(b); return s && s.criteria.map((c) => c.text); };
+  assert.deepEqual(texts({ id: 'x', description: 'Seen 11-02.\n\nDone when: the job, on each pass, (a) sees the new version, (b) installs it (a gated one only), and (c) logs it.\n\nDepends on y.' }),
+    ['the job, on each pass, sees the new version', 'the job, on each pass, installs it (a gated one only)', 'the job, on each pass, logs it.']);
+  assert.deepEqual(texts({ id: 'x', description: 'Done when: (1) one;\n(2) two; and (10) ten.' }), ['one', 'two', 'ten.']);
+  assert.deepEqual(texts({ id: 'x', description: 'done when a script runs unchanged after the next install.' }), ['a script runs unchanged after the next install.']);
+  assert.deepEqual(texts({ id: 'x', description: 'Done when: (1) ignored', metadata: { criteria: ['first', ' second '] } }), ['first', 'second']);
+  assert.equal(G.storyFromBead({ id: 'x', description: 'Fix it. Proof: it works.' }), null);
+  const s = G.storyFromBead({ id: 'x', title: 'T', description: 'Done when: it shows.', metadata: { surface: 'S2' } });
+  assert.deepEqual([s.meta.title, s.meta.surface, s.criteria[0].probe.by], ['T', 'S2', 'reality-check']);
+  assert.equal(G.checkCovered(s, { id: 'S2', scriptable: true }).length, 1, 'covered on a scriptable surface too: the bead names no test probe');
+});

@@ -110,11 +110,46 @@ test('7k3.1.1: a deploy of a bead that names a surface but has no story file war
   const deploy = (id) => evidence.main(['state', id, 'deployed', '--sha', SHA], { cwd: root, env: {}, bd, now: T.deploy, who: whoFor(root, 'delivery-lead') });
   const r = deploy('ex-fix-1');
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /^warning: ex-fix-1 names surface S1 but has no readable story file, so no reality-check script can be planned for it and its check on the customer's app cannot run/m);
+  assert.match(r.out, /^warning: ex-fix-1 names surface S1 but has no readable story file and states no criteria of its own \(a "Done when:" paragraph in its description\), so no reality-check script can be planned for it and its check on the customer's app cannot run/m);
   // a story with its script planned gets its check bead, and no such warning
   const ok = deploy(ID);
   assert.equal(ok.code, 0, ok.out);
   assert.doesNotMatch(ok.out, /no readable story file/);
+});
+
+// 7k3.1.1.1.5: a deployed fix states its criteria in its description; its check is planned from them
+test('7k3.1.1.1.5: a fix with no story file is planned from the criteria in its description, on its parent\'s surface, and its deploy dispatches the check', () => {
+  const root = makeProject();
+  const DESC = 'Reported on the chat.\n\nDone when: (1) the chat shows the summary; (2) the server log shows the file argument; and (3) tests cover each.\n\nRelated: ex-other.';
+  const fix = storyBead({ id: 'ex-fix-2', title: 'The summary is missing', labels: ['bug'], parent: ID, description: DESC, metadata: { story_file: undefined, roadmap_ref: undefined, surface: undefined } });
+  const bare = storyBead({ id: 'ex-fix-3', labels: ['bug'], parent: null, description: 'Done when: the chat shows the summary.', metadata: { story_file: undefined, roadmap_ref: undefined, surface: undefined } });
+  const vague = storyBead({ id: 'ex-fix-4', labels: ['bug'], description: 'Fix the summary. Proof: it shows.', metadata: { story_file: undefined } });
+  const bd = memBd([fix, bare, vague, storyBead({ assignee: 't@pc/builder-1' })]);
+  const call = (mod, argv, now) => mod.main(argv, { cwd: root, env: {}, bd, now, who: whoFor(root, 'delivery-lead') });
+  const planned = call(rc, ['plan', 'ex-fix-2'], T.plan);
+  assert.equal(planned.code, 0, planned.out);
+  assert.match(planned.out, /3 criterion group\(s\) on S1/);
+  const s = JSON.parse(fs.readFileSync(path.join(root, rc.scriptRel('ex-fix-2')), 'utf8'));
+  assert.deepEqual(s.criteria.map((g) => g.text), ['the chat shows the summary', 'the server log shows the file argument', 'tests cover each.']);
+  assert.equal(s.story_file, null);
+  // the deploy dispatches the check bead for its sha, and the Reality Checker's row binds to criterion 1
+  const d = call(evidence, ['state', 'ex-fix-2', 'deployed', '--sha', SHA], T.deploy);
+  assert.equal(d.code, 0, d.out);
+  assert.match(d.out, /ex-fix-2-rc-d478aa1: created for the Reality Checker/);
+  assert.doesNotMatch(d.out, /no readable story file/);
+  assert.match(bd.show('ex-fix-2-rc-d478aa1').title, /^Reality check: The summary is missing on S1 at d478aa1$/);
+  assert.match(call(evidence, ['add', 'ex-fix-2', '--criterion', '9', '--result', 'pass'], T.run).out, /has no criterion 9 \(criteria: 1, 2, 3\)/);
+  // no parent and no initiative of its own: no surface, and the refusal says how to name one
+  assert.match(call(rc, ['plan', 'ex-fix-3'], T.plan).out, /names no declared customer surface .*metadata initiative=<slug> and surface=<id>/);
+  bd.update('ex-fix-3', { metadata: { initiative: 'vault', surface: 'S1' } });
+  const named = call(rc, ['plan', 'ex-fix-3'], T.plan);
+  assert.equal(named.code, 0, named.out);
+  assert.match(named.out, /1 criterion group\(s\) on S1/);
+  // its child takes the initiative and surface the parent names in metadata
+  bd.beads.set('ex-fix-3.1', storyBead({ id: 'ex-fix-3.1', labels: ['bug'], parent: 'ex-fix-3', description: 'Done when: the log shows it.', metadata: { story_file: undefined, roadmap_ref: undefined, surface: undefined } }));
+  assert.match(call(rc, ['plan', 'ex-fix-3.1'], T.plan).out, /1 criterion group\(s\) on S1/);
+  // a bead that states no criteria is still refused, and says where they go
+  assert.match(call(rc, ['plan', 'ex-fix-4'], T.plan).out, /has no readable story file .* and states no criteria of its own \(a "Done when:" paragraph in its description, or metadata.criteria\)/);
 });
 
 test('7k3.1.1: materialise plans the script of every open story that needs one, keeps refined steps, and skips a closed or test-checked story', () => {
