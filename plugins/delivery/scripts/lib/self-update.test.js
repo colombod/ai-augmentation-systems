@@ -25,7 +25,7 @@ const setVersion = (work, v) => fs.writeFileSync(path.join(work, 'plugins', 'del
 
 // A product repo with the installed version, its clone as the marketplace, then main moved on by
 // `commits` ([{ version?, subject }]); a config dir whose install is the installed version.
-function fixture({ installed = '0.43.30', commits = [{ version: '0.43.31', subject: 'delivery 0.43.31: x (#140)' }], root, extra = [] } = {}) {
+function fixture({ installed = '0.43.30', commits = [{ version: '0.43.31', subject: 'delivery 0.43.31: x (#140)' }], root, extra = [], shallow = false, padding = 0 } = {}) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'self-update-'));
   const origin = path.join(base, 'origin.git');
   const work = path.join(base, 'work');
@@ -40,7 +40,12 @@ function fixture({ installed = '0.43.30', commits = [{ version: '0.43.31', subje
   const installedSha = git(work, 'rev-parse', 'HEAD');
   const config = path.join(base, 'config');
   const clone = path.join(config, 'plugins', 'marketplaces', 'm');
-  spawnSync('git', ['clone', '-q', origin, clone]);
+  // commits outside the plugin between the install and the update, so a shallow clone must deepen past them
+  for (let i = 0; i < padding; i++) { fs.writeFileSync(path.join(work, 'README.md'), String(i)); git(work, 'add', '-A'); git(work, 'commit', '-q', '-m', `docs ${i}`); }
+  if (padding) git(work, 'push', '-q', 'origin', 'main');
+  // as Claude Code keeps it: a depth-1 clone of main's tip, made after the install, so it lacks the installed sha
+  if (shallow) spawnSync('git', ['clone', '-q', '--depth', '1', `file://${origin}`, clone]);
+  else spawnSync('git', ['clone', '-q', origin, clone]);
   const shaOf = {};
   for (const c of commits) {
     if (c.version) setVersion(work, c.version); else fs.writeFileSync(path.join(work, 'plugins', 'delivery', `f${Math.random()}`), 'x');
@@ -354,4 +359,24 @@ test('a wake whose row is in the rotated log still holds the install', () => {
   WD.rotate(file, 0);
   assert.ok(fs.existsSync(`${file}.1`) && !fs.existsSync(file), 'the wake row is only in the rotated file');
   assert.match(run(f, claude(f), { alive: (pid) => pid === 4242 }).lines[0], /held: a run is in progress \(wake pid 4242\)/);
+});
+
+
+// Claude Code's marketplace clone is shallow: it held only main's tip, never the installed sha, so every
+// gated update was refused with "the installed sha is not known" (wintermute, 0.43.36 to 0.43.37)
+test('a shallow marketplace clone is deepened until it holds the installed sha, then the gated version installs', () => {
+  const f = fixture({ shallow: true, padding: 60 });
+  const clone = path.join(f.config, 'plugins', 'marketplaces', 'm');
+  assert.equal(git(clone, 'rev-parse', '--is-shallow-repository'), 'true');
+  assert.notEqual(spawnSync('git', ['-C', clone, 'cat-file', '-e', `${f.installedSha}^{commit}`]).status, 0, 'the clone starts without the installed sha');
+  merged(f, 140, true);
+  const r = run(f, claude(f));
+  assert.match(r.lines[0], /installed plugin delivery 0\.43\.31 .*gated through PR 140/, r.lines.join('\n'));
+  assert.equal(spawnSync('git', ['-C', clone, 'cat-file', '-e', `${f.installedSha}^{commit}`]).status, 0, 'deepened to the installed sha');
+});
+
+test('a shallow clone deepened to the installed sha still refuses an ungated merge', () => {
+  const g = fixture({ shallow: true });
+  merged(g, 140, false);
+  assert.match(run(g, claude(g)).lines[0], /refused: PR 140 was merged without passing the team's gate/);
 });

@@ -1213,7 +1213,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   directory's own older install), then checks the installed record. A role directory still on an older
   version once the job's own install is current (a failed or partial pass, or one installed later) is
   updated on a later pass, after the same check over the commits since its own installed sha. A commit that only names a pull
-  request in its subject, or an installed sha the clone does not know, is refused. It never installs
+  request in its subject, or an installed sha the clone does not know, is refused. Claude Code keeps the
+  marketplace clone shallow, so a clone that lacks the installed sha is first deepened (`git fetch --deepen`,
+  50, then 200, then 1000 commits) until it holds it. It never installs
   while a wake is running (held to the next cycle), refuses an ungated or older version, retries a failed
   update once an hour, and logs each outcome as a `self-update` row. If main moved during the update, so
   the installed sha is not the one checked, the row says `ungated-install` and an `install-ungated`
