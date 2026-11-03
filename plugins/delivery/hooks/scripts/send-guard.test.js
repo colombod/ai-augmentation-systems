@@ -18,7 +18,8 @@ const PLUGIN_ROOT = path.join(__dirname, '..', '..');
 const FIXTURE = path.join(PLUGIN_ROOT, 'scripts', 'testing', 'manifest');
 
 // a project whose manifest is the fixture with `prefix`, and the role directory prepared for `instance`
-function teamWith(prefix, instance) {
+// (and for each of `others`, in the same team directory)
+function teamWith(prefix, instance, ...others) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), `send-${prefix}-`));
   execFileSync('git', ['init', '-q'], { cwd: projectRoot });
   fs.mkdirSync(path.join(projectRoot, '.delivery', 'team'), { recursive: true });
@@ -27,11 +28,23 @@ function teamWith(prefix, instance) {
   fs.copyFileSync(path.join(FIXTURE, 'hosts.json'), path.join(projectRoot, '.delivery', 'team', 'hosts.json'));
   const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), `send-${prefix}-team-`));
   const { roleDir } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
-  return { projectRoot, roleDir, team: { ...team, project: prefix, prefix } };
+  for (const o of others) prepareRole({ projectRoot, instance: o, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  return { projectRoot, roleDir, teamDir, team: { ...team, project: prefix, prefix } };
 }
 
-function runHook(input, instance) {
-  const env = { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT };
+// Claude Code's live-session records (~/.claude/sessions/<pid>.json); none by default
+const EMPTY_SESSIONS = fs.mkdtempSync(path.join(os.tmpdir(), 'send-sessions-none-'));
+function sessionsDir(rows) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'send-sessions-'));
+  // one file per record (the guard reads the pid inside, not the file name)
+  rows.forEach((r, i) => fs.writeFileSync(path.join(dir, `${i + 1}.json`), JSON.stringify({ sessionId: `s${i}`, status: 'idle', ...r })));
+  return dir;
+}
+// a pid that ran and has ended
+const DEAD = spawnSync(process.execPath, ['-e', '0']).pid;
+
+function runHook(input, instance, sessions = EMPTY_SESSIONS) {
+  const env = { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, DELIVERY_CLAUDE_SESSIONS_DIR: sessions };
   delete env.DELIVERY_ROLE_DIR;
   if (instance) env.DELIVERY_ROLE = instance; else delete env.DELIVERY_ROLE;
   return spawnSync(process.execPath, [path.join(__dirname, 'send-guard.js')], { input: typeof input === 'string' ? input : JSON.stringify(input), env, encoding: 'utf8' });
@@ -80,4 +93,41 @@ test('inert outside a role session, with another session\'s marker, for another 
   fs.rmSync(path.join(projectRoot, '.delivery', 'team', 'team.json'));
   assert.equal(runHook(send(roleDir, 'chief-of-staff'), 'builder-2').stdout, '');
   assert.equal(decideSend(null), null);
+});
+
+// TODO(delivery-plugin-planning-tqv.5): drop these with the bare-name fallback.
+// Sessions started before qualified names still run under bare names: a bare send to one of this team's
+// instances passes, with a warning, while every live session of that name is in that instance's role
+// directory of this team. Anything else, or sessions that cannot be read, is refused.
+test('transition: a bare name of our own instance passes with a warning only while its live sessions are all ours', () => {
+  const a = teamWith('alpha', 'builder-1', 'chief-of-staff');
+  const b = teamWith('beta', 'builder-1', 'chief-of-staff');
+  const ourCos = path.join(a.teamDir, 'chief-of-staff');
+  const theirCos = path.join(b.teamDir, 'chief-of-staff');
+  const live = (cwd) => ({ pid: process.pid, cwd, name: 'chief-of-staff' });
+  // ours alone, and a stale record of the same name in the other team (its pid has ended): allowed
+  const ours = sessionsDir([live(ourCos), { pid: DEAD, cwd: theirCos, name: 'chief-of-staff' }]);
+  const ok = JSON.parse(runHook(send(a.roleDir, 'chief-of-staff [ex-1]'), 'builder-1', ours).stdout);
+  assert.equal(ok.hookSpecificOutput.permissionDecision, undefined, 'a warning, not a decision');
+  assert.match(ok.hookSpecificOutput.additionalContext, /bare session name; allowed for now.*Send to chief-of-staff@alpha from now on/);
+  assert.equal(ok.systemMessage, ok.hookSpecificOutput.additionalContext);
+  // the scratch team's bare send while the live chief-of-staff is ours: refused, naming its own
+  const fromB = decision(runHook(send(b.roleDir, 'chief-of-staff'), 'builder-1', ours));
+  assert.equal(fromB.permissionDecision, 'deny');
+  assert.match(fromB.permissionDecisionReason, /send to chief-of-staff@beta\.$/);
+  // two live sessions of that name, one in each team: refused from both sides
+  const both = sessionsDir([live(ourCos), live(theirCos)]);
+  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', both)).permissionDecision, 'deny');
+  assert.equal(decision(runHook(send(b.roleDir, 'chief-of-staff'), 'builder-1', both)).permissionDecision, 'deny');
+  // a live one elsewhere on the machine (not a role directory): refused
+  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([live(ourCos), live(os.tmpdir())]))).permissionDecision, 'deny');
+  // none live, no sessions directory, or a record that cannot be read: refused (fail closed)
+  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([{ pid: DEAD, cwd: ourCos, name: 'chief-of-staff' }]))).permissionDecision, 'deny');
+  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', path.join(EMPTY_SESSIONS, 'missing'))).permissionDecision, 'deny');
+  const broken = sessionsDir([live(ourCos)]);
+  fs.writeFileSync(path.join(broken, '999999.json'), '{not json');
+  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', broken)).permissionDecision, 'deny');
+  // a name that is no instance of this team (an alias) gets no fallback, even with a live session of ours
+  const dm = sessionsDir([{ pid: process.pid, cwd: ourCos, name: 'delivery-manager' }]);
+  assert.equal(decision(runHook(send(a.roleDir, 'delivery-manager'), 'builder-1', dm)).permissionDecision, 'deny');
 });

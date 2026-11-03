@@ -9,10 +9,13 @@
 //   - a bare team role or instance name ("chief-of-staff", "builder-2", "delivery-manager", "steward"),
 //     or any role the plugin defines, which another team on the host may run;
 //   - a role name qualified with another team's prefix ("chief-of-staff@other").
-// The refusal names this team's session to send to. A name that is no role at all ("main", a subagent
-// or raw agent id) and this team's qualified names pass. A trailing " [ref]" is ignored. Deny JSON or
-// nothing; inert outside a role session (no valid role marker); exit 0 always.
+// The refusal names this team's session to send to; for a while, a bare name of this team's own
+// instance passes with a warning when its live session is provably this team's (below). A name that
+// is no role at all ("main", a subagent or raw agent id) and this team's qualified names pass. A
+// trailing " [ref]" is ignored. Deny JSON, warning JSON or nothing; inert outside a role session (no
+// valid role marker); exit 0 always.
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const TOOLS = new Set(['SendMessage', 'mcp__ccd_session_mgmt__send_message']);
 
@@ -47,14 +50,61 @@ function teamSessions(team) {
   return require('../../scripts/lib/manifest.js').expandInstances(team || {}).filter((i) => !(i.role && i.role.retired)).map((i) => SN.sessionName(i.instance, team.prefix));
 }
 
-// null (allow) or { reason } (deny), for a send from a role session of `team` on `host` to `to`
-function judge(team, to, host) {
+// TODO(delivery-plugin-planning-tqv.5): remove this bare-name fallback once every role has started fresh under its qualified name.
+// Sessions started before qualified names still run under their bare instance name, so a bare send to
+// one of this team's instances passes, with a warning, while every live session of that name is this
+// team's: its cwd is that instance's role directory (<team dir>/<instance>, beside the sender's) and the
+// directory holds that instance's role marker for this project. Claude Code writes one JSON per session
+// to ~/.claude/sessions/<pid>.json (pid, cwd, name, status); a pid that no longer runs is no session.
+// Any live one elsewhere (a scratch team's chief-of-staff), none at all, or a directory or record that
+// cannot be read: refused, as without the fallback.
+function sessionsDir() {
+  return process.env.DELIVERY_CLAUDE_SESSIONS_DIR || path.join(os.homedir(), '.claude', 'sessions');
+}
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code !== 'ESRCH'; }
+}
+// the live sessions named `name` (any case); throws when the directory or a record cannot be read
+function liveSessionsNamed(dir, name) {
+  const want = String(name).toLowerCase();
+  const out = [];
+  for (const f of fs.readdirSync(dir).filter((x) => /^\d+\.json$/.test(x))) {
+    const s = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+    if (!s || !Number.isInteger(s.pid) || s.pid <= 0 || !pidAlive(s.pid)) continue;
+    if (typeof s.name === 'string' && s.name.trim().toLowerCase() === want) out.push(s);
+  }
+  return out;
+}
+const real = (p) => { try { return fs.realpathSync(p); } catch (err) { return null; } };
+// true when every live session named `instance` runs in that instance's role directory of this team
+function ownLiveSessions(instance, { teamDir, projectRoot, dir = sessionsDir() }) {
+  try {
+    const live = liveSessionsNamed(dir, instance);
+    const roleDir = real(path.join(teamDir, instance));
+    if (!live.length || !roleDir) return false;
+    const marker = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8'));
+    if (!marker || marker.instance !== instance || real(marker.project_root) !== real(projectRoot)) return false;
+    return live.every((s) => typeof s.cwd === 'string' && real(s.cwd) === roleDir);
+  } catch (err) {
+    return false;
+  }
+}
+
+// null (allow), { reason } (deny) or { warn } (allow with a warning), for a send from a role session of
+// `team` on `host` to `to`; own: { teamDir, projectRoot } of the sender, for the bare-name fallback
+function judge(team, to, host, own = null) {
   const SN = require('../../scripts/lib/session-name.js');
   if (!team || !SN.teamTag(team.prefix) || typeof to !== 'string') return null;
   const { instance, prefix } = SN.parseSessionName(to);
   if (prefix !== null && SN.samePrefix(prefix, team.prefix)) return null;
   if (!roleish(instance, team)) return null;
   const mine = ownTarget(team, instance, host);
+  if (prefix === null && own) {
+    const inst = require('../../scripts/lib/manifest.js').expandInstances(team).find((i) => i.instance.toLowerCase() === instance.toLowerCase());
+    if (inst && ownLiveSessions(inst.instance, own)) {
+      return { warn: `delivery: "${SN.bareTarget(to)}" is a bare session name; allowed for now because its only live session is this team's. Send to ${SN.sessionName(inst.instance, team.prefix)} from now on: session names are shared by every team on this machine.` };
+    }
+  }
   const where = mine ? `send to ${mine}` : `no session of this team is "${instance}"; this team's sessions are ${teamSessions(team).join(', ')}`;
   const why = prefix !== null
     ? `"${SN.bareTarget(to)}" is a session of another team (prefix ${prefix}), not of this one (${SN.teamTag(team.prefix)})`
@@ -75,7 +125,7 @@ function decideSend(input) {
     const { findRoleMarker, validMarker } = require('./role-context.js');
     const valid = validMarker(findRoleMarker(input.cwd));
     if (!valid || !valid.role) return null;
-    return judge(valid.team, targetOf(input), valid.role.host);
+    return judge(valid.team, targetOf(input), valid.role.host, { teamDir: path.dirname(valid.roleDir), projectRoot: valid.marker.project_root });
   } catch (err) {
     return null;
   }
@@ -86,7 +136,8 @@ module.exports = { decideSend, judge, TOOLS };
 if (require.main === module) {
   try {
     const d = decideSend(require('./role-context.js').readHookInput());
-    if (d) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.reason } }));
+    if (d && d.warn) process.stdout.write(JSON.stringify({ systemMessage: d.warn, hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: d.warn } }));
+    else if (d) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.reason } }));
   } catch (err) { /* allow */ }
   process.exit(0);
 }
