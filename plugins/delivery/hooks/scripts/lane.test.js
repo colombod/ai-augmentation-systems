@@ -1325,6 +1325,13 @@ test('lane: the Delivery Manager runs watchdog.js pass and pass --record; a role
   const notesOnly = { roleId: 'staffing', writes: [], bash: ['read', 'bd-notes'] };
   assert.equal(bash(notesOnly, `node ${wd} pass`).allow, true);
   assert.equal(bash(notesOnly, `node ${wd} pass --record`).allow, false, 'the record assigns beads');
+  // a role whose lane runs any command, or holds bd-structure, still only reads the pass: the record is the manager's
+  for (const other of [{ roleId: 'chief-of-staff', writes: [], bash: ['any'] }, { roleId: 'product-manager', writes: [], bash: ['read', 'bd-structure'] }]) {
+    assert.equal(bash(other, `node ${wd} pass`).allow, true, other.roleId);
+    const d = bash(other, `node ${wd} pass --json --record`);
+    assert.equal(d.allow, false, other.roleId);
+    assert.match(d.reason, /Delivery Manager's/, other.roleId);
+  }
 });
 
 // the Technical Writer edits documentation in its product worktree, never product code; Staffing adds a

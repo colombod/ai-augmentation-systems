@@ -35,8 +35,8 @@ const instanceOf = (assignee) => { const a = String(assignee || ''); return a.in
 const beadOfKey = (k) => { const m = /^(assigned|quiet|evidence):([^:]+)/.exec(String(k || '')); return m ? m[2] : null; };
 
 // facts: { now, dm, staffing, builders, beads, ready, sessions (lib/watchdog sessions()), wakes (wake rows),
-// prs: [{ pr, state, beads, sentBackAt, note }], handoffs, messages, stallHours, alive }
-function pass({ now, dm = 'delivery-lead', staffing = 'staffing', builders = [], beads = [], ready = [], sessions = [], wakes = [], prs = [], handoffs = [], messages = [], stallHours = 2, alive = () => false, caps = W.capsOf } = {}) {
+// prs: [{ pr, state, beads, sentBackAt, note }], handoffs, messages, stallHours, alive, cap (budget.builders_cap), chief }
+function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief-of-staff', cap, builders = [], beads = [], ready = [], sessions = [], wakes = [], prs = [], handoffs = [], messages = [], stallHours = 2, alive = () => false, caps = W.capsOf } = {}) {
   const t = ms(now || new Date().toISOString());
   const byId = new Map(beads.filter(Boolean).map((b) => [b.id, b]));
   const G = require('./gates.js');
@@ -105,9 +105,15 @@ function pass({ now, dm = 'delivery-lead', staffing = 'staffing', builders = [],
   const holdingBuilders = instances.filter((x) => builders.includes(x.instance));
   let team = null;
   if (p0.length && free.length) team = { kind: 'assign', bead: p0[0].id, to: free[0], why: `top-priority ${p0[0].id} is ready and ${free[0]} holds no work`, command: `bd update ${p0[0].id} --assignee <actor>/${free[0]}, then message ${free[0]} (--record does both)` };
-  else if (p0.length && builders.length && holdingBuilders.length === builders.length && holdingBuilders.every((x) => x.fails.length)) {
-    team = { kind: 'add-builder', bead: p0[0].id, count: builders.length + 1, to: staffing, why: `every builder (${builders.join(', ')}) holds stuck work and top-priority ${p0[0].id} is ready`,
-      command: `Message ${staffing} to add one with its roster command (approved, dec-chief-of-staff-000265; the owner is not asked): node \${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js add builder --count ${builders.length + 1}; then assign ${p0[0].id} to the new builder (--record queues the message; the pass after the builder registers assigns it)` };
+  // a builder whose only failure is work waiting on the manager is not stuck: that wait is the manager's,
+  // and another builder would only queue behind the same review
+  else if (p0.length && builders.length && holdingBuilders.length === builders.length && holdingBuilders.every((x) => x.fails.length && !x.quietOnly)) {
+    const why = `every builder (${builders.join(', ')}) holds stuck work and top-priority ${p0[0].id} is ready`;
+    // at budget.builders_cap the roster command refuses: raising the cap is the owner's, asked once through the Chief of Staff
+    if (Number.isFinite(Number(cap)) && cap !== null && builders.length + 1 > Number(cap)) team = { kind: 'raise-cap', bead: p0[0].id, count: builders.length + 1, to: chief, why: `${why}, and builders_cap ${cap} is reached`,
+      command: `Message ${chief} once: one more builder needs the owner to raise builders_cap to ${builders.length + 1} (team-role.js set-cap builders ${builders.length + 1} --record <dec-id>) (--record queues the message)` };
+    else team = { kind: 'add-builder', bead: p0[0].id, count: builders.length + 1, to: staffing,
+      why, command: `Message ${staffing} to add one with its roster command (approved, dec-chief-of-staff-000265; the owner is not asked): node \${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js add builder --count ${builders.length + 1}; then assign ${p0[0].id} to the new builder (--record queues the message; the pass after the builder registers assigns it)` };
   }
   return { at: new Date(t).toISOString(), dm, own, instances, team };
 }
@@ -151,10 +157,12 @@ function read(root, { bd, now, team, rows } = {}) {
     const expanded = M.expandInstances(t);
     const dm = (expanded.find((i) => i.role.id === 'delivery-lead') || {}).instance || 'delivery-lead';
     const staffing = (expanded.find((i) => i.role.id === 'staffing' && !i.role.retired) || {}).instance || 'staffing';
+    const chief = (expanded.find((i) => i.role.id === 'chief-of-staff' && !i.role.retired) || {}).instance || 'chief-of-staff';
+    const cap = t.budget && t.budget.builders_cap !== undefined ? t.budget.builders_cap : undefined;
     const builders = expanded.filter((i) => i.role.id === 'builder' && !i.role.retired).map((i) => i.instance);
     const beads = bd.list({ all: true }) || [];
     const ready = bd.ready() || [];
-    return { now, dm, staffing, builders, beads, ready, sessions: W.sessions(root, { team: t, rows }), wakes: W.logRows(root).filter((r) => r.type === 'wake'), prs: prsOf(root),
+    return { now, dm, staffing, chief, cap, builders, beads, ready, sessions: W.sessions(root, { team: t, rows }), wakes: W.logRows(root).filter((r) => r.type === 'wake'), prs: prsOf(root),
       handoffs: require('./handoff.js').pending(root), messages: require('./inbox.js').pending(root), stallHours: require('./goal.js').value(root, 'stall_hours'), alive: W.pidAlive };
   } catch (err) { return { unreadable: String(err.message).split('\n')[0] }; }
 }
@@ -209,7 +217,8 @@ function record(root, res, { bd, actor } = {}) {
   // and told; with every builder stuck, Staffing (the one lane that runs the roster command) is sent the
   // command to add one, and the pass after the new builder registers assigns the bead to it (TR-6)
   let teamDone = null;
-  const lastTeam = before.length ? before[before.length - 1].teamKey || null : null;
+  // against the last row that carried a team action: a quiet pass in between does not queue it again
+  const lastTeam = (before.slice().reverse().find((r) => r.teamKey) || {}).teamKey || null;
   if (res.team && teamKey(res.team) !== lastTeam) {
     const T = res.team;
     const I = require('./inbox.js');
@@ -217,6 +226,9 @@ function record(root, res, { bd, actor } = {}) {
       if (T.kind === 'assign') {
         bd.update(T.bead, { assignee: assigneeFor(actor, T.to), appendNotes: `${res.at.slice(0, 10)} ${dm} pass: assigned to ${T.to}: ${T.why}` });
         I.queue(root, { to: T.to, from: dm, summary: `${T.bead} assigned to you`, message: `${dm} here: top-priority ${T.bead} is assigned to you (${T.why}). Claim it and build it.`, at: res.at });
+      } else if (T.kind === 'raise-cap') {
+        bd.update(T.bead, { appendNotes: `${res.at.slice(0, 10)} ${dm} pass: ${T.why}; asked ${T.to} once for the owner to raise builders_cap to ${T.count}` });
+        I.queue(root, { to: T.to, from: dm, summary: `builders_cap for ${T.bead}`, message: `${dm} here: ${T.why}. One more builder needs the owner to raise builders_cap to ${T.count} (team-role.js set-cap builders ${T.count} --record <dec-id>); please put it in the owner queue once. Staffing adds the builder after it.`, at: res.at });
       } else if (T.kind === 'add-builder') {
         bd.update(T.bead, { appendNotes: `${res.at.slice(0, 10)} ${dm} pass: ${T.why}; asked ${T.to} to add builder ${T.count} through its roster command; the pass after it registers assigns this bead` });
         I.queue(root, { to: T.to, from: dm, summary: `add a builder for ${T.bead}`, message: `${dm} here: ${T.why}. Add one builder with your roster command (approved, dec-chief-of-staff-000265): node \${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js add builder --count ${T.count}. My next pass assigns ${T.bead} to it.`, at: res.at });

@@ -100,12 +100,15 @@ function rolePass(root, o, { bd, now, team, rows, env = {} }) {
   const RW = require('./lib/role-watch.js');
   const store = bd || require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 });
   const facts = RW.read(root, { bd: store, now, team, rows });
+  // the record notes, assigns and messages as the manager: a role session of another instance only reads
+  // the pass (the lane refuses it too; this holds for a lane that runs any command)
+  if (o.record && env.DELIVERY_ROLE && !facts.unreadable && env.DELIVERY_ROLE !== facts.dm) return { code: 1, out: `watchdog.js: pass --record is ${facts.dm}'s; ${env.DELIVERY_ROLE} runs watchdog.js pass to read it and messages ${facts.dm}` };
   const res = facts.unreadable ? facts : RW.pass(facts);
   const rec = o.record ? RW.record(root, res, { bd: store, actor: env.BEADS_ACTOR }) : null;
   if (o.json) return { code: 0, out: JSON.stringify({ ...res, noted: rec ? rec.noted : null }, null, 2) };
   const out = RW.lines(res);
   if (rec && rec.noted.length) out.push(`Noted on ${rec.noted.join(', ')}.`);
-  if (rec && rec.team) out.push(res.team.kind === 'assign' ? `Assigned ${res.team.bead} to ${res.team.to} and messaged it.` : `Asked ${res.team.to} to add builder ${res.team.count}; the next pass assigns ${res.team.bead} to it.`);
+  if (rec && rec.team) out.push(res.team.kind === 'assign' ? `Assigned ${res.team.bead} to ${res.team.to} and messaged it.` : res.team.kind === 'raise-cap' ? `Asked ${res.team.to} for the owner to raise builders_cap to ${res.team.count}.` : `Asked ${res.team.to} to add builder ${res.team.count}; the next pass assigns ${res.team.bead} to it.`);
   return { code: 0, out: out.join('\n') };
 }
 

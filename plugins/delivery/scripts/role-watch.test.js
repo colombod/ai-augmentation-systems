@@ -291,3 +291,70 @@ test('watchdog.js pass runs in a role session, reads the roster and the wake log
   assert.match(String(bd.show('ex-a').notes), /delivery-lead pass: builder-1 fails \(nothing moved for 6\.0 h \(limit 2 h\)\); action restart/);
   assert.equal(RW.previous(h.root).length, 1);
 });
+
+// review waits are the manager's, not the holder's: builders whose only failure is held work waiting on
+// the manager are not stuck, so no builder is added for them
+test('TR-6: builders that only wait on review are not stuck: no builder is added', () => {
+  const now = '2026-11-03T02:00:00Z';
+  const quiet = '2026-11-02T22:30:00Z';
+  const beads = [
+    { id: 'ex-r1', status: 'in_progress', assignee: 'dev@pc/builder-1', priority: 1, updated_at: quiet, created_at: quiet },
+    { id: 'ex-r2', status: 'in_progress', assignee: 'dev@pc/builder-2', priority: 1, updated_at: quiet, created_at: quiet },
+  ];
+  const prs = [{ pr: 160, state: 'waiting', beads: ['ex-r1'] }, { pr: 161, state: 'waiting', beads: ['ex-r2'] }];
+  const ready = [{ id: 'ex-p0', status: 'open', priority: 0, created_at: '2026-11-02T22:00:00Z' }];
+  const res = RW.pass(facts({ now, beads, prs, ready, sessions: sessionsAt('2026-11-03T01:58:00Z'), wakes: [] }));
+  for (const i of ['builder-1', 'builder-2']) {
+    assert.equal(of(res, i).running, true, i);
+    assert.equal(of(res, i).quietOnly, true, i);
+    assert.equal(of(res, i).action.kind, 'note-block', i);
+  }
+  assert.equal(res.team, null);
+});
+
+// at budget.builders_cap the roster command refuses: the pass asks the Chief of Staff once instead
+test('TR-6: at builders_cap the pass raises the cap to the Chief of Staff once instead of queuing a refused command', () => {
+  const ready = [{ id: 'ex-p0', status: 'open', priority: 0, created_at: '2026-11-02T22:00:00Z' }];
+  const h = harness({ beads: Object.fromEntries([...nightBeads(), ...ready].map((b) => [b.id, b])) });
+  const bd = require('./lib/bd.js').makeBd({ cwd: h.root, env: { ...process.env, BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, 'testing')}${path.delimiter}${process.env.PATH}` } });
+  const inbox = (to) => { try { return fs.readFileSync(path.join(h.root, '.delivery', 'watchdog', 'inbox', `${to}.ndjson`), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch (err) { return []; } };
+  const now = '2026-11-03T02:00:00Z';
+  const res = RW.pass(facts({ now, ready, cap: 2, chief: 'cos-1', wakes: nightWakes(now) }));
+  assert.deepEqual([res.team.kind, res.team.to, res.team.count], ['raise-cap', 'cos-1', 3]);
+  assert.match(res.team.why, /builders_cap 2 is reached/);
+  assert.doesNotMatch(res.team.command, /team-role\.js add builder/);
+  assert.equal(RW.record(h.root, res, { bd, actor: 'dev@pc/delivery-lead' }).team, 'raise-cap');
+  assert.equal(inbox('staffing').length, 0, 'no command the roster refuses is queued');
+  assert.equal(inbox('cos-1').length, 1);
+  assert.match(inbox('cos-1')[0].message, /raise builders_cap to 3/);
+  assert.match(String(bd.show('ex-p0').notes), /asked cos-1 once for the owner to raise builders_cap to 3/);
+  const later = '2026-11-03T02:16:00Z';
+  RW.record(h.root, RW.pass(facts({ now: later, ready, cap: 2, chief: 'cos-1', wakes: nightWakes(later) })), { bd, actor: 'dev@pc/delivery-lead' });
+  assert.equal(inbox('cos-1').length, 1, 'asked once');
+  // under the cap Staffing adds the builder as before
+  assert.equal(RW.pass(facts({ now, ready, cap: 3, wakes: nightWakes(now) })).team.kind, 'add-builder');
+});
+
+test('TR-6: a quiet pass between two passes with the same team action does not queue it again', () => {
+  const ready = [{ id: 'ex-p0', status: 'open', priority: 0, created_at: '2026-11-02T22:00:00Z' }];
+  const h = harness({ beads: Object.fromEntries([...nightBeads(), ...ready].map((b) => [b.id, b])) });
+  const bd = require('./lib/bd.js').makeBd({ cwd: h.root, env: { ...process.env, BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, 'testing')}${path.delimiter}${process.env.PATH}` } });
+  const asked = () => { try { return fs.readFileSync(path.join(h.root, '.delivery', 'watchdog', 'inbox', 'staffing.ndjson'), 'utf8').trim().split('\n').length; } catch (err) { return 0; } };
+  const at = (now, r) => RW.record(h.root, RW.pass(facts({ now, ready: r, wakes: nightWakes(now) })), { bd, actor: 'dev@pc/delivery-lead' });
+  assert.equal(at('2026-11-03T02:00:00Z', ready).team, 'add-builder');
+  assert.equal(at('2026-11-03T02:16:00Z', []).team, null, 'a pass with no team action');
+  assert.equal(at('2026-11-03T02:32:00Z', ready).team, null);
+  assert.equal(asked(), 1);
+});
+
+test('watchdog.js pass --record is the manager\'s: another role session is refused and nothing is written', () => {
+  const h = harness({ beads: { 'ex-a': { id: 'ex-a', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: '2026-11-02T20:00:00Z' } } });
+  const env = { ...process.env, DELIVERY_ROLE: 'builder-1', BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, 'testing')}${path.delimiter}${process.env.PATH}` };
+  const bd = require('./lib/bd.js').makeBd({ cwd: h.root, env });
+  const out = watchdog.main(['pass', '--record'], { cwd: h.root, env, now: '2026-11-03T02:00:00Z', bd });
+  assert.equal(out.code, 1);
+  assert.match(out.out, /pass --record is delivery-lead's; builder-1 runs watchdog\.js pass to read it/);
+  assert.ok(!fs.existsSync(RW.file(h.root)));
+  assert.equal(String(bd.show('ex-a').notes || ''), '');
+  assert.equal(watchdog.main(['pass'], { cwd: h.root, env, now: '2026-11-03T02:00:00Z', bd }).code, 0, 'reading the pass stays open');
+});

@@ -1356,6 +1356,10 @@ function usageShellWrite(command, { cwd, dirs = [], mention = USAGE_MENTION, hit
 // merge in whatever form: `gh pr merge`, the merge endpoint through `gh api`, a push to the default
 // branch, `git merge` while on it, or an MCP merge tool.
 const MERGER = 'delivery-lead';
+// the pass record notes, assigns and messages as the Delivery Manager: another role (even one whose lane runs
+// any command) only reads the pass, so two writers never act on the same stall
+const PASS_RECORD_REASON = 'the pass record (watchdog.js pass --record) is the Delivery Manager\'s: it notes, assigns and messages as the manager.\nRun watchdog.js pass to read it, and message the Delivery Manager';
+const passRecordAttempt = (command) => /watchdog\.js\b[^;&|\n]*\bpass\b[^;&|\n]*--record\b/.test(String(command || ''));
 const MERGE_REASON = 'merging is the Delivery Manager\'s.\nOpen the pull request and message the Delivery Manager; resolve conflicts when it asks';
 const DEFAULT_BRANCHES = ['main', 'master'];
 
@@ -1606,6 +1610,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (usageShellWrite(command, { cwd, dirs: planDirs({ projectRoot, roleDir }), mention: PLANS_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
+    if (pol.roleId !== MERGER && passRecordAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${PASS_RECORD_REASON}.` };
     const run = refusedRun(command);
     if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? testsReason(command, pluginRootOf({ pluginRoot })) : RESUME_REASON}.` };
     if (bash.includes('any')) {
