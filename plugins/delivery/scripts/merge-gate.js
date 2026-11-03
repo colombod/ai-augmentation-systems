@@ -249,7 +249,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     if (!head) return { code: 2, out: `merge-gate.js: gh cannot read PR ${pr} (${view.unavailable}); name the merged head: merge-gate.js merged ${pr} --head <sha>` };
     // a merge without a passing review on its head (outside the gate) is recorded, and is a warning
     const v = R.evaluate(pr, rows, { head, ci: { state: 'green', names: [] }, mergeable: null, botsCount: botsCountOf(who.team), repo });
-    row = R.append(who.root, pr, { type: 'merged', repo, head, merged_at: view.mergedAt || null, beads: req ? req.beads || [] : [], gated: v.ok, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
+    // merge_commit is the commit the merge put on the base: the self-update installs a commit only when it
+    // is one of these, so a direct push that names the pull request in its subject is not taken for it
+    row = R.append(who.root, pr, { type: 'merged', repo, head, merged_at: view.mergedAt || null, merge_commit: (view.mergeCommit && view.mergeCommit.oid) || null, beads: req ? req.beads || [] : [], gated: v.ok, by: who.roleId, actor: who.actor || who.instance, at }, who.instance);
     out.push(`${row.id}: PR ${pr} merged at ${R.short(head)}`);
     const unpublished = R.publish(who.root, pr, who.instance, 'merged', { env });
     if (unpublished) out.push(unpublished);

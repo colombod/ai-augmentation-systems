@@ -67,12 +67,12 @@ if (group === 'api') {
   if (m[4] === '/merge') {
     if (method !== 'PUT') out({ message: 'Not Found' });
     if (fields.sha && fields.sha !== pr.headRefOid) fail('gh: Head branch was modified. Review and try the merge again. (HTTP 409)');
-    pr.state = 'MERGED';
+    Object.assign(pr, { state: 'MERGED', mergeCommit: { oid: 'f'.repeat(40) } });
     fs.writeFileSync(store, JSON.stringify(s, null, 2));
     out({ sha: 'f'.repeat(40), merged: true, message: 'Pull Request successfully merged' });
   }
   const conflicting = String(pr.mergeable || '').toUpperCase() === 'CONFLICTING';
-  out({ number: Number(m[3]), state: pr.state === 'MERGED' ? 'closed' : 'open', merged: pr.state === 'MERGED', merged_at: pr.mergedAt || null, head: { sha: pr.headRefOid, ref: pr.headRefName },
+  out({ number: Number(m[3]), state: pr.state === 'MERGED' ? 'closed' : 'open', merged: pr.state === 'MERGED', merged_at: pr.mergedAt || null, merge_commit_sha: (pr.mergeCommit && pr.mergeCommit.oid) || null, head: { sha: pr.headRefOid, ref: pr.headRefName },
     mergeable: String(pr.mergeable || '').toUpperCase() === 'MERGEABLE' ? true : conflicting ? false : null, additions: pr.additions, deletions: pr.deletions, body: pr.body, title: pr.title });
 }
 if (group === 'run' && cmd === 'list') {
@@ -96,6 +96,7 @@ if (!pr) fail(`GraphQL: Could not resolve to a PullRequest with the number of ${
 if (cmd === 'view') { fs.writeSync(1, `${JSON.stringify({ number: Number(n), state: 'OPEN', ...pr })}\n`); process.exit(0); }
 const at = args.indexOf('--match-head-commit');
 if (at >= 0 && args[at + 1] !== pr.headRefOid) fail('Head branch was modified. Review and try the merge again.');
-pr.state = 'MERGED';
+// the squash commit GitHub made on the base: the merge-gate records it, self-update binds to it
+Object.assign(pr, { state: 'MERGED', mergeCommit: { oid: 'e'.repeat(40) } });
 fs.writeFileSync(store, JSON.stringify(s, null, 2));
 process.stdout.write(`✓ Merged pull request #${n}\n`);

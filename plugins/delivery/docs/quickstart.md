@@ -431,7 +431,7 @@ What `verify` proves and what it does not is listed under **Limits** in the READ
 
 - **Other hosts are started on those hosts.** `start.js --launch` starts the roles whose host is this machine and names the ones that are elsewhere: run it on each of those hosts. Adding a role later means `scripts/team-role.js add <role-id>` (Staffing runs it) or editing `team.json`, then `start.js` (or `prepare-role`) again.
 - **The roster is per host.** `/delivery:team` reports only the roles on the host it runs on.
-- **The watchdog is installed once per host.** A session that stopped (a usage limit, a closed terminal) is woken by a host job. Starting the team with the keep-alive option installs it. By hand, `watchdog.js install` shows what it writes, `watchdog.js install --apply` writes it, and `watchdog.js uninstall` removes it ([details](reference.md#the-watchdog-stalls-and-the-wake)). Run it from a terminal outside any role directory: role sessions cannot. Without it, start a stopped session again in its role directory; the SessionStart hook restores the role.
+- **The watchdog is installed once per host.** A session that stopped (a usage limit, a closed terminal) is woken by a host job. Starting the team with the keep-alive option installs it. By hand, `watchdog.js install` shows what it writes, `watchdog.js install --apply` writes it, and `watchdog.js uninstall` removes it ([details](reference.md#the-watchdog-stalls-and-the-wake)). Run it from a terminal outside any role directory: role sessions cannot. The job also installs each plugin version the team's gate merged, so nobody runs `claude plugin update` by hand. Without it, start a stopped session again in its role directory; the SessionStart hook restores the role.
 
 ## Quick start for an agent
 

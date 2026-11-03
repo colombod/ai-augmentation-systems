@@ -13,6 +13,8 @@
 //                                                   `claude --resume <id> -p` in the role directory, or a fork
 //                                                   when the session is open; logged in .delivery/watchdog/
 //   watchdog.js run [--project <root>]              sweep test leftovers, check, then wake, under one lock: what the host job runs
+//                                                   Each run also installs the plugin main carries when it is newer and every
+//                                                   change to it passed the team's gate, never under a running wake (lib/self-update.js)
 //   watchdog.js install [--every 15m] [--apply] [--project <root>]
 //                                                   the host job (launchd on macOS, a systemd user timer
 //                                                   or cron on Linux) that runs `run`; prints what it would
@@ -475,7 +477,7 @@ function uninstall(root, { platform = process.platform, home = os.homedir(), env
   return { code: 0, out: lines.length ? `${lines.join('\n')}\nThe watchdog job for ${root} is removed from this host.` : `Nothing to remove: no watchdog job for ${root} on this host.` };
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {} } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -488,6 +490,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   if (!who.root) return { code: 2, out: 'watchdog.js: no project found; pass --project <root>' };
   if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has });
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
+  const state = { installed: false };
   const go = ({ first = true } = {}) => {
     // the kicks that started this run (lib/kick.js) are taken before the record is read: one dropped
     // after this point starts the next pass, so nothing it announces is missed
@@ -497,7 +500,14 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       if (o.json) return { code: 0, out: JSON.stringify({ paused: res.paused || null, stalls: res.stalls, polls: res.polls, unreadable: res.unreadable || null }, null, 2) };
       return { code: 0, out: checkLines(res).join('\n') };
     }
-    const woke = wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked) });
+    // The plugin the gate merged is installed before this pass wakes anyone (lib/self-update.js). Before,
+    // not after: a wake started first is a run in progress the install must not go under, and this
+    // process runs the old plugin, so its wakes would carry the old version as installed and resume
+    // sessions 8wz must start fresh. After an install the pass wakes no one and kicks: the next run
+    // starts in a new process under the new plugin, whose wakes start the old-version sessions fresh.
+    const updated = cmd === 'run' && first ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: (pid) => !endedPids(kicked).has(pid) && WD.pidAlive(pid), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
+    if (updated.installed) { KICK.kick(who.root, `plugin ${updated.version} installed`); state.installed = true; }
+    const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked) }))];
     // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
     let swept = kicked.length ? [`Kicked: ${kicked.length} (${[...new Set(kicked.map((k) => k.replace(/^\S+\s*/, '').replace(/ \(pid \d+\)$/, '') || 'a kick'))].join('; ').slice(0, 300)})`] : [];
@@ -525,7 +535,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   // under the same lock, a few at most: the scheduler starts a new run for any left after that
   const drain = () => {
     const outs = [go()];
-    for (let i = 0; i < KICK_PASSES - 1 && KICK.waiting(who.root); i++) outs.push(go({ first: false }));
+    // after an install this process still holds the old plugin: the kick it left starts a new one
+    for (let i = 0; i < KICK_PASSES - 1 && !state.installed && KICK.waiting(who.root); i++) outs.push(go({ first: false }));
     return { code: 0, out: outs.map((x) => x.out).join('\n') };
   };
   const r = withRunLock(who.root, drain, { waitMs: KICK.waiting(who.root) ? (lockWaitMs !== undefined ? lockWaitMs : KICK_LOCK_WAIT_MS) : 0 });
