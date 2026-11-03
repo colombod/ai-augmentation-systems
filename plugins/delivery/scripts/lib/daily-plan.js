@@ -141,8 +141,11 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord, 
     return d.ok && !d.cut;
   }, false);
   // stalls first (R-04, R-43): the watchdog's own reading of the record; it fails open, never refuses the view
-  const watch = safe(() => require('./watchdog.js').read(root, { bd, now, team }), { stalls: [] });
-  return { root, now, team, stalls: (watch && watch.stalls) || [], stalls_paused: (watch && watch.paused) || null, stories, fixes: fixBeads.filter((b) => !known.has(b.id)), titles, spikes: openSpikes, checks, andon, unknowns, queue, questions, budget: ctx.budget, areas: W.areas(stories), next, known, prs, storyOf: ctx.storyOf, checked };
+  const watch = safe(() => require('./watchdog.js').read(root, { bd, now, team }), { stalls: [], unreadable: 'the watchdog could not run' });
+  // what the watchdog recovered by itself, for the briefing to report (bqj): its restarts this week
+  const restarts = safe(() => require('./watchdog.js').logRows(root).filter((r) => r && r.type === 'wake' && Array.isArray(r.keys) && r.keys.some(isRecovery)), []);
+  const unreadableStalls = watch && (watch.unreadable || (watch.unreadableParts || []).join('; '));
+  return { root, now, team, stalls: (watch && watch.stalls) || [], stalls_paused: (watch && watch.paused) || null, stalls_unreadable: unreadableStalls || null, restarts, stories, fixes: fixBeads.filter((b) => !known.has(b.id)), titles, spikes: openSpikes, checks, andon, unknowns, queue, questions, budget: ctx.budget, areas: W.areas(stories), next, known, prs, storyOf: ctx.storyOf, checked };
 }
 
 // ---- the plan for the day ----
@@ -157,6 +160,25 @@ function roleOfInstance(team, instance) {
 const stallRef = (s) => s.bead || (s.kind === 'limit' ? `limit:${s.target}` : s.kind);
 function stallItems(f) {
   return (f.stalls || []).filter((s) => !s.scheduled).map((s) => ({ section: 0, kind: 'stall', fn: 'stall', ref: stallRef(s), key: `stall:${stallRef(s)}`, role: roleOfInstance(f.team, s.target), instance: s.target, action: s.line, plain: s.plain, match: [stallRef(s)] }));
+}
+// A wake that recovered a stall, as against a routine handover (a message, a handoff, assigned work):
+// the watchdog restarted a stopped session because work waited on it
+const isRecovery = (k) => /^(?:manager|quiet|evidence|idle|p0|limit):/.test(String(k));
+// "The plugin restarted ..." for the briefing: the recoveries since the last plan (a day when none),
+// the Delivery Manager named, any other role counted
+function restartLine(f, prev) {
+  const from = prev && prev.at ? Date.parse(prev.at) : Date.parse(f.now || new Date().toISOString()) - DAY;
+  const rows = (f.restarts || []).filter((r) => Date.parse(r.at) > from);
+  if (!rows.length) return null;
+  // the Delivery Manager by the team's own instances: an instance the team does not list is another member
+  const dms = new Set(instancesOf(f.team).filter((i) => i.role.id === DM).map((i) => i.instance));
+  const dm = rows.filter((r) => dms.has(r.instance));
+  const others = new Set(rows.filter((r) => !dm.includes(r)).map((r) => r.instance)).size;
+  const waited = dm.some((r) => r.keys.some((k) => /^manager:/.test(k))) ? ' when a merge or review waited on it' : ' when work waited on it';
+  const parts = [];
+  if (dm.length) parts.push(`the Delivery Manager ${dm.length === 1 ? 'once' : `${dm.length} times`}${waited}`);
+  if (others) parts.push(plural(others, 'other team member'));
+  return `The plugin restarted stopped sessions on its own: ${parts.join(', and ')}.`;
 }
 // when the team resumes after a usage limit: the earliest scheduled wake
 function resumesAt(f) {
@@ -358,6 +380,10 @@ function brief(f, { prev, limit = 12 } = {}) {
   const r = resumesAt(f);
   if (r) problems.push(`The team resumes at ${require('./watchdog.js').clock(Date.parse(r))}, when the usage limit resets (restart scheduled).`);
   problems.push(...[...new Set(stallItems(f).map((x) => x.plain))].slice(0, r ? 1 : 2));
+  // a stall the plugin recovered by itself is still reported; a record it could not read is never healthy
+  const restarted = restartLine(f, prev);
+  if (restarted) problems.push(restarted);
+  if (f.stalls_unreadable) problems.push('The plugin could not read part of the team\'s record, so a stall there is not known yet.');
   problems.push(...AN.plainLines(f.andon).slice(0, 2));
   // the plan's blocking unknowns in the owner's words: assumptions and open technical spikes (Copilot 509)
   for (const p of items(f).filter((x) => x.section === 3).map((x) => x.plain).slice(0, 2)) problems.push(`${p}.`);
@@ -440,4 +466,4 @@ function sheet(f, { verifyRecord } = {}) {
   return out;
 }
 
-module.exports = { resumesAt, stallItems, ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };
+module.exports = { restartLine, isRecovery, resumesAt, stallItems, ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };

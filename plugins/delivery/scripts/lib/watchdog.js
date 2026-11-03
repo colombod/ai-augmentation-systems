@@ -61,6 +61,14 @@ const MIN_POLL_S = 240;
 const WAKE_TIMEOUT_H = 2;
 const LOG_MAX_BYTES = 1 << 20;
 const DM = 'delivery-lead';
+// the review record states (lib/reviews.js stateOf, read without gh) that wait on the Delivery Manager
+const MANAGER_STEP = {
+  passed: { what: 'has a passing review and waits for its merge', plain: 'passed its review and waits to be merged', next: (pr) => `merge-gate.js check ${pr}, then merge it` },
+  ready: { what: 'has a passing review and waits for its merge', plain: 'passed its review and waits to be merged', next: (pr) => `merge-gate.js check ${pr}, then merge it` },
+  waiting: { what: 'waits for its independent review', plain: 'waits for its review', next: (pr) => `dispatch its reviewer (review.js request ${pr})` },
+  changes: { what: 'has a review asking for changes', plain: 'has review findings to send back', next: (pr) => `send it back to its owner (review.js send-back ${pr} --reason changes)` },
+  failing: { what: 'has a passing review but red CI', plain: 'has a failing build to send back', next: (pr) => `send it back to its owner (review.js send-back ${pr} --reason ci)` },
+};
 
 const ms = (x) => { const t = Date.parse(x); return Number.isNaN(t) ? -Infinity : t; };
 const span = (m) => (m === Infinity ? 'a long time' : m >= 2880 ? `${(m / 1440).toFixed(1)} days` : m >= 120 ? `${(m / 60).toFixed(1)} h` : `${Math.max(0, Math.round(m))} min`);
@@ -231,7 +239,7 @@ const typeOf = (b) => b.type || b.issue_type || null;
 // ---- the stalls ----
 // facts: { beads, ready, now, idleMinutes, stallHours, pause, openSteps, sessions, team, installed }
 // { paused?, stalls: [{ kind, key, bead?, target, line, plain, detail, prompt, due, scheduled?, wakeAt? }] }
-function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [], claimable = () => true } = {}) {
+function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [], prs = [], claimable = () => true } = {}) {
   const t = ms(now || new Date().toISOString());
   if (pause && pause.paused) return { paused: pause.by || true, stalls: [] };
   const out = [];
@@ -361,6 +369,30 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       detail: `P0 open and unclaimed since ${b.created_at || b.updated_at}`,
       prompt: `Top-priority ${b.id} has waited ${span(minutes)} unclaimed. Assign it to a builder now (bd show ${b.id}).` });
   }
+  // Work waiting on the Delivery Manager itself (bqj, dec-chief-of-staff-000266): a pull request whose
+  // review passed and waits for the merge, a review asked for with no verdict yet, or a verdict to send
+  // back. Its session stopped with that waiting stalled the whole team three times (7ax), and nothing
+  // woke it but a message or the two-hour quiet rule. Read from the review records alone; the key is
+  // the record's last row, so a new row (a verdict, a send-back) is new work and the same row is the
+  // same stall: plan() wakes for a key at once the first time and backs it off like a stall after that.
+  const dmSession = list.find((s) => s.instance === dm) || null;
+  const dmQuiet = dmSession ? (t - (Number.isFinite(dmSession.lastActive) ? dmSession.lastActive : -Infinity)) / 60000 : 0;
+  if (dmSession && !limited.has(dm) && !(dmSession.waitUntil > t) && dmQuiet > ASSIGNED_IDLE_MIN) {
+    for (const p of prs.filter((x) => x && x.pr && MANAGER_STEP[x.state])) {
+      // no age cut-off: an old record with its bead open is still work stuck on the Delivery Manager. A
+      // pull request merged or closed on GitHub with no merged row (PR 102) ends with its beads closed.
+      const named = beads.filter((x) => x && (p.beads || []).includes(x.id));
+      if (named.length && named.every((x) => x.status === 'closed')) continue;
+      const b = named.find((x) => x.status !== 'closed') || null;
+      if (b && inStop(b) && !recovering(b)) continue;
+      const step = MANAGER_STEP[p.state];
+      out.push({ kind: 'manager', key: `manager:${p.pr}:${p.last || p.state}`, bead: (p.beads || [])[0], pr: p.pr, target: dm, due: true,
+        line: `Waiting on the Delivery Manager: PR ${p.pr} ${step.what}, and its session has been quiet for ${span(dmQuiet)}.`,
+        plain: `A change ${step.plain}; the Delivery Manager was stopped and is restarted to take it.`,
+        detail: `PR ${p.pr} ${p.state}; ${dm} quiet since ${Number.isFinite(dmSession.lastActive) ? new Date(dmSession.lastActive).toISOString() : 'unknown'}`,
+        prompt: `PR ${p.pr}${(p.beads || []).length ? ` (${p.beads.join(', ')})` : ''} ${step.what}. Take it now, before anything else: ${step.next(p.pr)}.` });
+    }
+  }
   // messages sent to a role while its session was not running (lib/inbox.js): its next turn starts with them
   for (const m of messages.filter((x) => x && x.to && x.entries && x.entries.length)) {
     // "steward" goes to the steward role; a name no role on the team answers to wakes nobody (the
@@ -401,7 +433,7 @@ function pollWarnings(list) {
     line: `Polling: ${s.instance} ran ${s.polls.length} gh polling loop${s.polls.length > 1 ? 's' : ''} every ${Math.min(...s.polls.map((p) => p.every))} s; use watch.js (at least every 4 min, with an exit and a time limit).` }));
 }
 
-const KIND = { idle: 'idle', quiet: 'stall', p0: 'p0-unclaimed', limit: 'usage-limit' };
+const KIND = { idle: 'idle', quiet: 'stall', p0: 'p0-unclaimed', limit: 'usage-limit', manager: 'stall' };
 // no fixed instance: each host appends to its own ledger file, as team-status does (review on aaea37c)
 function recordAll(root, res, polls, { now, instance } = {}) {
   for (const s of res.stalls) {
@@ -443,7 +475,8 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
     const Goal = require('./goal.js');
     const Q = require('./owner-queue.js');
     const beads = bd.list({ all: true }) || [];
-    const ready = bd.ready() || [];
+    // a store with no readiness of its own has nothing ready, as the daily plan reads it (lib/daily-plan.js)
+    const ready = (typeof bd.ready === 'function' && bd.ready()) || [];
     const beadOf = (id) => { try { return bd.show(id); } catch (err) { return null; } };
     const list = sessions(root, { team, rows });
     // the claim check's red-main rule for open assigned work, CI read once per pass and only when asked;
@@ -460,11 +493,33 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
         return !AN.ciRedBlock(b, ciNow, fix);
       } catch (err) { return true; }
     };
-    const res = stalls({ claimable, beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
+    const parts = [];
+    const prs = managerPrs(root, parts);
+    const res = stalls({ prs, claimable, beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
       pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root) });
     // a verified pause silences the polling warnings too
-    return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list };
+    return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list, ...(parts.length ? { unreadableParts: parts } : {}) };
   } catch (err) { return { stalls: [], polls: [], sessions: [], unreadable: String(err.message).split('\n')[0] }; }
+}
+
+// The pull requests the review records show waiting on the Delivery Manager, read without gh: { pr,
+// state, beads, last, at }. A chain that cannot be read is named in parts, never read as nothing waiting.
+function managerPrs(root, parts) {
+  const out = [];
+  let R;
+  try { R = require('./reviews.js'); } catch (err) { parts.push(`the review records (${String(err.message).split('\n')[0]})`); return out; }
+  for (const pr of R.listPrs(root)) {
+    try {
+      const r = R.read(root, pr);
+      if (r.problem) { parts.push(`the review record of PR ${pr} (${r.problem})`); continue; }
+      const req = R.lastRequest(r.rows);
+      if (!req) continue;
+      const state = R.stateOf(r.rows, null);
+      const last = r.rows[r.rows.length - 1];
+      if (MANAGER_STEP[state]) out.push({ pr: Number(pr), state, beads: Array.isArray(req.beads) ? req.beads : [], last: (last && last.id) || null, at: (last && last.at) || null });
+    } catch (err) { parts.push(`the review record of PR ${pr} (${String(err.message).split('\n')[0]})`); }
+  }
+  return out;
 }
 
 // ---- the wake log: what the watchdog did, append-only, rotated at LOG_MAX_BYTES ----
@@ -499,7 +554,7 @@ function pidAlive(pid) {
 }
 
 // a message and a handoff (lib/handoff.js) are the team's handovers, not stalls: woken by the message rules
-const isHandoff = (s) => s.kind === 'message' || s.kind === 'handoff' || s.kind === 'assigned';
+const isHandover = (s) => s.kind === 'message' || s.kind === 'handoff' || s.kind === 'assigned';
 // what a wake hands over: the inbox messages (marked delivered by count) and the handoff rows it carries
 const deliversOf = (stalls) => stalls.filter((s) => s.kind === 'message').map((s) => ({ to: s.inbox || s.target, upTo: s.upTo }));
 const handoffsOf = (stalls) => stalls.filter((s) => s.kind === 'handoff').map((s) => s.handoff);
@@ -527,6 +582,10 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     const cap = capsOf(w.target);
     const last = mine[mine.length - 1];
     const lines = w.stalls.map((s) => s.line);
+    // work waiting on the Delivery Manager is a handover the first time a wake would carry it (bqj): its
+    // stopped session is restarted at once, within the cycle; after that it is a stall like any other
+    const carried = new Set(mine.flatMap((r) => r.keys || []));
+    const isHandoff = (s) => isHandover(s) || (s.kind === 'manager' && !carried.has(s.key));
     // a message is a handoff, not a stall: its target is woken at once, not at the stall's hour
     const onlyMessages = w.stalls.every((s) => isHandoff(s));
     let reason = null;
@@ -538,7 +597,10 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     const handover = (items) => {
       if (last && alive(last.pid)) return { go: [], hold: items, why: 'its last wake is still running; it is woken again when that wake ends' };
       if (items.every((s) => s.kind === 'assigned') && last && t - ms(last.at) < MESSAGE_EVERY_MS) return { go: [], hold: items, why: `woken at ${clock(ms(last.at))}; assigned work waits ${MESSAGE_EVERY_MS / 60000} min between wakes` };
-      if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= cap.messages) return { go: items.filter((s) => s.kind === 'handoff'), hold: items.filter((s) => s.kind !== 'handoff'), why: `woken ${cap.messages} times in a day; alarm only until the count falls` };
+      // a handoff row, and the Delivery Manager's own waiting merge or review, are never held by the
+      // daily cap: merges and deploys bound the one, the record's new rows the other (bqj)
+      const uncapped = (s) => s.kind === 'handoff' || s.kind === 'manager';
+      if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= cap.messages) return { go: items.filter(uncapped), hold: items.filter((s) => !uncapped(s)), why: `woken ${cap.messages} times in a day; alarm only until the count falls` };
       return { go: items, hold: [] };
     };
     const handoverWake = (go) => ({ target: w.target, keys: go.map((s) => s.key), lines: go.map((s) => s.line), delivers: deliversOf(go), handoffs: handoffsOf(go), prompt: wakePrompt(go.map((s) => s.prompt), 'did') });
@@ -643,4 +705,4 @@ function wakeArgs(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { MANAGER_STEP, managerPrs, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

@@ -1124,6 +1124,17 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
     to its builder, who has nothing to continue;
   - a top-priority (P0) bead that can be taken now (in `bd ready`: open, not blocked, not an epic) and
     unclaimed for more than an hour;
+  - work waiting on the Delivery Manager itself while its session has been quiet more than 10 minutes:
+    a pull request whose review record (`.delivery/reviews/prs/`, read without gh) shows a passing
+    review waiting for the merge, a review asked for with no verdict, or a verdict (changes, red CI) to
+    send back ("Waiting on the Delivery Manager: PR <n> ..."); never while it is working, inside its own
+    `watch.js` wait, on its usage limit (the limit stall says when it resumes) or not on this host's
+    roster. The key is the record's last row: the first wake for it goes at once, past the stall hour
+    and both daily caps, so a stopped Delivery Manager is restarted within one cycle; the same row
+    again is a stall like any other (an hour apart, then the doubling wait), and a new row is new work.
+    A record stops counting only when every bead it names is closed (a pull request merged or closed on
+    GitHub without a merged row ends that way); it never expires by age, so an old record with an open
+    bead stays a stall (delivery-plugin-planning-bqj);
   - a session stopped on a usage limit: "The team resumes at <reset + 5 min> (restart scheduled)" once the
     job is installed, else "the team is stalled; the watchdog is not installed", and "Resume now" once it
     has reset (its held beads are not also reported as stalled);
@@ -1131,13 +1142,19 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
     `while`, `until` or `for` that runs, not loop text quoted as an argument;
     `watch -n`, gh's own `--watch`/`--interval`) more often than every 4 minutes (R-25).
   Each is a warning in the ledger (`idle`, `stall`, `p0-unclaimed`, `usage-limit`, `tight-poll`), once per
-  stall, in this host's own ledger file. Nothing is paused or blocked. An owner pause that verifies silences all of it, the polling
+  stall, in this host's own ledger file. A review record that cannot be read is a line of its own
+  ("Unreadable: the review record of PR <n> ...; a stall waiting on it is not known"), and a pass with
+  one never says "No stall: work is moving". Nothing is paused or blocked. An owner pause that verifies silences all of it, the polling
   warnings included; an open andon (a failed check row) silences idle, quiet and P0 stalls for beads in
   its area only (they wait for its fix); a message telling the team to stop is not a pause. `plan.js
   today` lists stalls first ("0. Stalls first"), each routed to the session the watchdog wakes for it
   (sending it to another instance of the same role is a misroute, and it stays unrouted),
   and the resume time when a restart is scheduled; `plan.js brief` puts them first among the open
-  problems, after what shipped, in plain words;
+  problems, after what shipped, in plain words, then what the watchdog recovered by itself since the
+  last plan (a day when none): "The plugin restarted stopped sessions on its own: the Delivery Manager
+  once when a merge or review waited on it, and 1 other team member" (every wake for a stall, not
+  for a message, a handoff or assigned work). When the watchdog could not read the record, the
+  brief says so ("could not read part of the team's record") instead of showing no stall;
   `team-status.js` lists them under the idle line. Times are the host's local time with its zone.
 - **The Delivery Manager's pass.** `watchdog.js pass [--record] [--json]` (lib/role-watch.js) runs in a
   role session and reads the team as a whole, in this order:

@@ -90,6 +90,8 @@ function checkLines(res) {
   if (res.paused) return [`Paused by the owner (${res.paused === true ? 'a verified pause' : res.paused}): no stall is raised and nobody is woken.`];
   const lines = res.stalls.map((s) => s.line);
   lines.push(...res.polls.map((p) => p.line));
+  // a part of the record that could not be read is said, so the pass never reads as "work is moving" (bqj)
+  for (const p of res.unreadableParts || []) lines.push(`Unreadable: ${p}; a stall waiting on it is not known.`);
   if (res.note) lines.push(`Note: ${res.note}.`);
   return lines.length ? lines : ['No stall: work is moving.'];
 }
@@ -523,7 +525,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     const kicked = cmd !== 'check' && !o.dryRun ? KICK.take(who.root) : [];
     const res = check(who.root, { bd, now, team: who.team, rows, record: !(cmd === 'wake' && o.dryRun) });
     if (cmd === 'check') {
-      if (o.json) return { code: 0, out: JSON.stringify({ paused: res.paused || null, stalls: res.stalls, polls: res.polls, unreadable: res.unreadable || null }, null, 2) };
+      if (o.json) return { code: 0, out: JSON.stringify({ paused: res.paused || null, stalls: res.stalls, polls: res.polls, unreadable: res.unreadable || null, unreadable_parts: res.unreadableParts || [] }, null, 2) };
       return { code: 0, out: checkLines(res).join('\n') };
     }
     // The plugin the gate merged is installed before this pass wakes anyone (lib/self-update.js). Before,
