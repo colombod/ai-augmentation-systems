@@ -1139,9 +1139,9 @@ const shellPath = (p) => (/^[A-Za-z0-9_./@+,=-]+$/.test(p) ? p : `'${p}'`);
 const TMP_ALL_WORDS = new Set(['tee', 'truncate', 'mkdir', 'touch']); // every path argument is written
 const TMP_DEST_WORDS = new Set(['cp', 'mv', 'ln', 'install', 'rsync']); // the destination is written
 // $TMPDIR, ${TMPDIR}, ${TMPDIR:-x}, $HOME and ~ as the shell would expand them. Any other variable or
-// substitution is judged by the literal directory before it (rv-152: `> /tmp/suite-$ID.log` and
-// `> /tmp/$f.log` in a loop had gone through): /tmp/suite-$ID.log is judged as /tmp/, out-$ID.log as the
-// current directory. A word that starts with one ($D/a.log) names no directory we can see: not judged.
+// substitution is judged by the literal text before it (rv-152: `> /tmp/suite-$ID.log`, `> /tmp$X/a.log`
+// and `> /tmp/$f.log` in a loop had gone through): /tmp/suite-$ID.log is judged as /tmp/suite-, out-$ID.log
+// as out- in the current directory. A word that starts with one ($D/a.log) names no directory we can see: not judged.
 function tmpExpand(w) {
   const tmp = process.env.TMPDIR || os.tmpdir();
   const home = os.homedir();
@@ -1150,8 +1150,8 @@ function tmpExpand(w) {
   const i = x.search(/[$`]/);
   if (i < 0) return x;
   if (i === 0) return null;
-  const dir = x.slice(0, x.lastIndexOf('/', i - 1) + 1);
-  return dir || '.';
+  // the literal text before it, not just its directory: /tmp$X/a.log is judged as /tmp (rv-152)
+  return x.slice(0, i);
 }
 function mktempTarget(args, base) {
   let dir = null;
@@ -1179,8 +1179,14 @@ function shellWriteWords(w, base) {
   // install -d creates every path it names, like mkdir (rv-152)
   if (first === 'install' && args.some((x) => x === '--directory' || /^-[A-Za-z]*d/.test(x))) return paths;
   if (TMP_DEST_WORDS.has(first)) {
-    const t = args.find((x, i) => args[i - 1] === '-t' || args[i - 1] === '--target-directory' || x.startsWith('--target-directory=') || /^-t./.test(x));
-    if (t) return [t.startsWith('--target-directory=') ? t.slice(19) : t.startsWith('-t') ? t.slice(2) : t];
+    // -t DIR, -rt DIR, -tDIR, -rtDIR and --target-directory name the destination; rsync's -t keeps times
+    for (let i = 0; i < args.length; i++) {
+      const x = args[i];
+      if (x === '--target-directory') return args[i + 1] ? [args[i + 1]] : [];
+      if (x.startsWith('--target-directory=')) return [x.slice(19)];
+      const m = first !== 'rsync' && x.match(/^-[A-Za-z]*?t(.*)$/);
+      if (m) return m[1] ? [m[1]] : args[i + 1] ? [args[i + 1]] : [];
+    }
     return paths.length >= 2 ? [paths[paths.length - 1]].filter((x) => !/^[^/]*:/.test(x)) : []; // host:path is remote
   }
   if (first === 'dd') return args.filter((x) => x.startsWith('of=')).map((x) => x.slice(3));
@@ -1191,7 +1197,8 @@ function shellWriteWords(w, base) {
 // The first write that lands in the host's temporary directory, as its real path, or null.
 function tmpShellWrite(command, { cwd, roleDir } = {}, depth = 0) {
   // what $(...) and backticks run writes too (x=$(mktemp))
-  if (depth < 3) for (const inner of substitutions(command)) { const hit = tmpShellWrite(inner, { cwd, roleDir }, depth + 1); if (hit) return hit; }
+  // a quoted heredoc's body expands nothing; an unquoted one expands like the command line
+  if (depth < 3) for (const inner of substitutions(withoutHeredocBodies(command, { quotedOnly: true }))) { const hit = tmpShellWrite(inner, { cwd, roleDir }, depth + 1); if (hit) return hit; }
   // /tmp as well: a session whose TMPDIR points elsewhere still must not leave files in the host's /tmp
   const tmp = [os.tmpdir(), process.env.TMPDIR, process.platform === 'win32' ? null : '/tmp'].filter(Boolean).map(realish);
   const rd = roleDir ? realish(roleDir) : null;
@@ -1215,19 +1222,59 @@ function tmpShellWrite(command, { cwd, roleDir } = {}, depth = 0) {
   return null;
 }
 // A heredoc's body is the input of its command, not commands (rv-152: a script written into scratch/
-// that mentions /tmp was refused): drop the lines between <<WORD and WORD before the split.
-function withoutHeredocBodies(command) {
-  const lines = String(command).split('\n');
-  const out = [];
-  let end = null;
-  let tabs = false;
-  for (const line of lines) {
-    if (end !== null) { if ((tabs ? line.replace(/^\t+/, '') : line) === end) { end = null; out.push(''); } continue; }
-    out.push(line);
-    const m = line.match(/<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
-    if (m && !/<<</.test(line)) { end = m[3]; tabs = m[1] === '-'; }
-  }
-  return out.join('\n');
+// that mentions /tmp was refused): drop the lines between <<WORD and the line WORD before the split.
+// Only an unquoted << opens one (`echo "see <<EOF"` does not); the end word is the whole word up to
+// blank or one of ;|&<>(), quotes removed (<<END.X, <<'EOF', <<"EOF", <<\EOF); <<- strips leading
+// tabs from the end line; a heredoc with no end line drops nothing. With quotedOnly, only the bodies
+// of quoted heredocs are dropped: an unquoted body still expands $(...) and backticks.
+function withoutHeredocBodies(command, { quotedOnly = false } = {}) {
+  const s = String(command);
+  const drop = [];
+  let pending = [];
+  scan(s, (c, i, q) => {
+    if (q) return 0;
+    if (c === '<' && s[i + 1] === '<' && s[i - 1] !== '<') {
+      if (s[i + 2] === '<') return 2; // <<< here-string
+      let j = i + 2;
+      const tabs = s[j] === '-';
+      if (tabs) j++;
+      while (s[j] === ' ' || s[j] === '\t') j++;
+      let word = '';
+      let quoted = false;
+      let wq = null;
+      for (; j < s.length; j++) {
+        const d = s[j];
+        if (wq) { if (d === wq) wq = null; else word += d; continue; }
+        if (d === "'" || d === '"') { wq = d; quoted = true; continue; }
+        if (d === '\\') { quoted = true; if (j + 1 < s.length) word += s[++j]; continue; }
+        if (/\s/.test(d) || ';|&<>()'.includes(d)) break;
+        word += d;
+      }
+      if (word) pending.push({ word, tabs, quoted });
+      return j - i - 1;
+    }
+    if (c !== '\n' || !pending.length) return 0;
+    // the bodies follow this line, one after another in the order their << appeared
+    let pos = i + 1;
+    for (const h of pending) {
+      let end = -1;
+      for (let p = pos; p <= s.length;) {
+        const e = s.indexOf('\n', p) < 0 ? s.length : s.indexOf('\n', p);
+        const line = s.slice(p, e);
+        if ((h.tabs ? line.replace(/^\t+/, '') : line) === h.word) { end = e; break; }
+        p = e + 1;
+      }
+      if (end < 0) break;
+      if (!quotedOnly || h.quoted) drop.push([pos, end]);
+      pos = Math.min(end + 1, s.length);
+    }
+    pending = [];
+    return pos - i - 1;
+  });
+  let out = '';
+  let at = 0;
+  for (const [a, b] of drop) { out += s.slice(at, a); at = b; }
+  return out + s.slice(at);
 }
 // one segment's redirect targets and written paths, judged from base
 function tmpSegmentWrite(w, targets, base, rd, tmp) {
@@ -1259,7 +1306,11 @@ function segRe(seg) {
     else if (c === '[') { const e = seg.indexOf(']', k + 2); if (e < 0) { out += '\\['; continue; } out += `[${seg.slice(k + 1, e).replace(/^!/, '^').replace(/\\/g, '\\\\')}]`; k = e; }
     else out += c.replace(/[.+^${}()|\\/]/g, '\\$&');
   }
-  return new RegExp(`^${out}$`, 'i');
+  // a class the engine will not compile ([z-a], from a command or a body of code) matches as literal
+  // text, with * and ? still wild, rather than crashing the hook
+  try { return new RegExp(`^${out}$`, 'i'); } catch (e) {
+    return new RegExp(`^${seg.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&').replace(/\\\*/g, '[^/]*').replace(/\\\?/g, '[^/]')}$`, 'i');
+  }
 }
 function deepHit(x, dirs, remover) {
   const ds = dirs.map((d) => d.toLowerCase());

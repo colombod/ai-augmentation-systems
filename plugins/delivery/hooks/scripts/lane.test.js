@@ -1611,6 +1611,17 @@ test('an any-lane shell write into the host temporary directory is refused; scra
         `install -d ${tmp}/x`,
         `(cd ${tmp} && echo x > out.log)`,
         `(cd ${tmp}; npm test > out.log); ls`,
+        // only an unquoted << starts a heredoc, its end word is the whole word, and with no end line nothing is dropped
+        `cat > run.sh <<END.X\nhi\nEND.X\necho x > ${tmp}/after.log`,
+        `echo "see <<EOF in docs"\necho x > ${tmp}/after.log`,
+        `git commit -m "a <<EOF b"\necho x > ${tmp}/after.log`,
+        `echo "see <<EOF in docs"\necho x > ${tmp}/after.log\nEOF`,
+        `git commit -m "a <<EOF b"\necho x > ${tmp}/after.log\nEOF`,
+        `cat > run.sh <<EOF\nhi\necho x > ${tmp}/after.log`,
+        `cp -rt ${tmp} lane.js`,
+        `echo x > ${tmp}$X/a.log`,
+        // an unquoted heredoc body expands its substitutions
+        `cat > run.sh <<EOF\nx=$(mktemp -p ${tmp})\nEOF`,
       ]) {
         const d = run(command);
         assert.equal(d.allow, false, command);
@@ -1644,6 +1655,14 @@ test('an any-lane shell write into the host temporary directory is refused; scra
       '(cd /tmp && ls); echo x > out.log',
       `cat > ${scratch}/notes.sh <<'EOF'\necho hi > /tmp/x.log\nEOF`,
       `cat > ${scratch}/notes.sh <<-EOF\n\tnpm test > /tmp/x.log\n\tEOF\nls`,
+      `cat > ${scratch}/notes.sh <<"END.X"\necho hi > /tmp/x.log\nEND.X\nls`,
+      `cat > ${scratch}/notes.sh << 'EOF'\nx=$(mktemp)\nEOF`,
+      `cat > ${scratch}/notes.sh <<\\EOF\nx=$(mktemp)\nEOF`,
+      `cat <<EOF > ${scratch}/notes.sh\nnpm test > /tmp/x.log\nEOF\nls`,
+      'rsync -t a.log b.log',
+      // a body of code with [ { ( in it is input, and builds no pattern that can fail to compile
+      `cat > ${scratch}/mk.js <<'EOF'\nfs.writeFileSync(tr,[{type:\`assistant\`,z-a,message:{content:[]}}].map((x) => x));\nrm -rf .delivery/[z-a]*\nEOF`,
+      'ls .delivery/[z-a]* > /dev/null',
       'echo x > out-$ID.log',
       'echo x > $D/a.log',
       'cp /tmp/x lane.js',
