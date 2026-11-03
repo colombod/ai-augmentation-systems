@@ -199,13 +199,23 @@ function recordProblem(root, field, value, record, verifyRecord, judge, windowHo
     const text = questionText(field, value);
     if (asked.length !== 1 || asked[0].text !== text) return `${record} answers a question that is not goal.js's question for ${field} = ${shown(value)} (goal.js ask ${field} <value>)`;
     const input = (v.chain || []).find((h) => h.kind === 'input') || {};
-    // the only proof the owner was shown it: the harness's AskUserQuestion answer to that exact text, in
-    // a box with exactly the options Yes and No, single choice, and Yes chosen. A typed yes never counts:
-    // the question in a message can sit in a code block or a quote while the owner answers something else.
-    const a = input.asked || {};
-    const box = a.via === 'AskUserQuestion' && a.question === text && same(a.options, ['Yes', 'No']) && a.multiSelect === false;
+    // the only proof the owner was shown it: a question box answer to that exact text, with exactly the
+    // options Yes and No, single choice, and Yes chosen. A typed yes never counts: the question in a
+    // message can sit in a code block or a quote while the owner answers something else. The record is a
+    // delivery.confirmation: /0 (a capture from before the contract) is read as stored; /1 must first be
+    // verified by its provider's adapter, and refused or unresolved decides nothing.
+    const C = require('./confirmation.js');
+    if (!input.asked || (input.asked.contract === undefined && C.majorOf(input.asked) !== 0)) return `the owner did not answer goal.js's question in a Yes/No question box (AskUserQuestion with the input goal.js ask prints) in ${record}`;
+    const c = C.check(root, input);
+    if (c.verdict === 'unresolved') return `confirmation ${input.id} unresolved: ${c.reason}`;
+    if (c.verdict !== 'verified') return `confirmation ${input.id} refused: ${c.reason}`;
+    const a = C.fieldsOf(input.asked);
+    const box = a.question === text && same(a.choices, ['Yes', 'No']) && a.multiSelect === false;
     if (!box) return `the owner did not answer goal.js's question in a Yes/No question box (AskUserQuestion with the input goal.js ask prints) in ${record}`;
-    if (input.text !== 'Yes') return `the owner's answer in ${record} is not Yes`;
+    if (input.text !== 'Yes' || (c.major !== 0 && a.answer !== 'Yes')) return `the owner's answer in ${record} is not Yes`;
+    // a /1 record that names what it may decide decides only that
+    const sc = c.major !== 0 && input.asked.scope ? GOAL_LABEL.exec(String(input.asked.scope)) : null;
+    if (c.major !== 0 && input.asked.scope && (!sc || sc[1] !== field || parseValue(field, sc[2]).error || !same(parseValue(field, sc[2]).value, value))) return `confirmation ${input.id} refused: it is scoped to ${input.asked.scope}, not ${field} = ${shown(value)}`;
     const minutes = asked[0].minutes_before_answer;
     // the window for changing the window itself is the default, so it cannot widen its own yes
     // the window a change was accepted under stays its window: a later window change never undoes it
@@ -236,7 +246,11 @@ function bindingOf(root, record, verifyRecord) {
     const v = (verifyRecord || require('./operator-records.js').verifyRecord)(root, record);
     const head = (v && v.chain || [])[0] || {};
     const input = (v && v.chain || []).find((h) => h.kind === 'input') || {};
-    return { question: ((head.answers_questions || [])[0] || {}).id || null, input: input.id || null };
+    // a /1 confirmation's event_id is the provider's own event: one event sets at most one decision,
+    // whichever writer or host captured it
+    const a = input.asked;
+    const event = a && typeof a === 'object' && a.contract !== undefined && typeof a.event_id === 'string' && a.event_id ? a.event_id : null;
+    return { question: ((head.answers_questions || [])[0] || {}).id || null, input: input.id || null, ...(event ? { event } : {}) };
   } catch (err) { return { question: null, input: null }; }
 }
 
@@ -325,7 +339,7 @@ const beadOfTrigger = (trigger) => { const m = /^andon:ev-(.+)-\d+$/.exec(String
 function commitOnce(root, key, entry, { append = false } = {}) {
   return withLock(path.join(root, '.delivery', '.goal.lock'), () => {
     const g = read(root);
-    const used = g.history.find((h) => h.record === entry.record || (entry.question && h.question === entry.question) || (entry.input && h.input === entry.input));
+    const used = g.history.find((h) => h.record === entry.record || (entry.question && h.question === entry.question) || (entry.input && h.input === entry.input) || (entry.event && h.event === entry.event));
     if (used) return { ok: false, error: `the owner's yes in ${entry.record} was already used for ${used.field} at ${used.at}` };
     if (append) g.fields[key] = [...(Array.isArray(g.fields[key]) ? g.fields[key] : []), entry];
     else g.fields[key] = entry;
@@ -389,7 +403,7 @@ function resolveScope(root, { g, verifyRecord, warn, logKey = 'scope_log', addFi
   for (const e of log) {
     const field = e.op === 'remove' ? 'scope_remove' : addField;
     // a yes applies once: a second entry on the same question or input is ignored
-    const keys = [e.record, e.question, e.input].filter(Boolean);
+    const keys = [e.record, e.question, e.input, e.event].filter(Boolean);
     const dup = keys.some((x) => seen.has(x));
     keys.forEach((x) => seen.add(x));
     const why = dup ? `${e.record} was already applied` : e.record ? recordProblem(root, field, e.value, e.record, verifyRecord, e.judge || null, e.window_hours) : 'no owner record';
@@ -423,7 +437,7 @@ function resolve(root, field, { g = read(root), verifyRecord, warn = true } = {}
   // entry (not genuine above) still falls to the default. A revoked record fails recordProblem like any
   // other, so revocation steps back to the verified value before it, or to the default.
   const held = genuine ? heldEntry(root, g, field, latest, verifyRecord) : null;
-  if (held) return { value: held.value, from: held.record, held: true, ignored: why, unresolved: e.input || e.record };
+  if (held) return { value: held.value, from: held.record, held: true, ignored: why, input: e.input || e.record };
   return { value: fallback, from: 'default', ignored: why };
 }
 
@@ -431,7 +445,7 @@ function resolve(root, field, { g = read(root), verifyRecord, warn = true } = {}
 // once: an entry sharing its record, question or input with an earlier history entry is skipped.
 function heldEntry(root, g, field, latest, verifyRecord) {
   const at = g.history.lastIndexOf(latest);
-  const keysOf = (h) => [h.record, h.question, h.input].filter(Boolean);
+  const keysOf = (h) => [h.record, h.question, h.input, h.event].filter(Boolean);
   for (let i = at - 1; i >= 0; i--) {
     const h = g.history[i];
     if (h.field !== field || !h.record || h.value === undefined) continue;
@@ -464,6 +478,9 @@ function activePause(root, { verifyRecord, g = read(root), warn = true, beadOf, 
   return { paused: false, stops, ...(owner.ignored ? { lapsed: owner.ignored } : {}), ...(closed.length ? { lapsed: `${[...new Set(closed.map((t) => t.trigger))].join(', ')} closed` } : {}) };
 }
 
+// a confirmation its adapter refused or could not check names itself; any other failed change is shown
+// as unresolved under its input, the form story -01 fixed
+const HELD_RE = /^confirmation \S+ (unresolved|refused): /;
 const SHOWN = [...Object.keys(FIELDS).filter((f) => !FIELDS[f].op), 'scope', 'areas'];
 function showLines(root, opts = {}) {
   const g = read(root);
@@ -472,7 +489,7 @@ function showLines(root, opts = {}) {
     const r = resolve(root, field, { ...opts, g });
     const e = field === 'scope' || field === 'areas' ? null : g.fields[field];
     let s;
-    if (r.held) s = `held: ${shown(r.value)} (confirmation ${r.unresolved} unresolved: ${r.ignored})`;
+    if (r.held) s = `held: ${shown(r.value)} (${HELD_RE.test(r.ignored) ? r.ignored : `confirmation ${r.input} unresolved: ${r.ignored}`})`;
     else if (r.ignored) s = `${r.value === null ? 'not set' : `${shown(r.value)}${field === 'scope' || field === 'areas' ? '' : ' (default)'}`}; the written value is ignored: ${r.ignored}`;
     else if (e) s = `${shown(r.value)} (${r.from}, ${e.at})`;
     else if (r.value === null) s = field.startsWith('budget.') ? 'not set by the owner (budget checks only warn)' : 'not set';

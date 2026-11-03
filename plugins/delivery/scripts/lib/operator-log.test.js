@@ -587,3 +587,26 @@ test('a cursor written before the recognised count is read without a false forma
   for (const n of [5, 6, 7]) fs.appendFileSync(tr, JSON.stringify(noOrigin(n)) + '\n');
   assert.strictEqual(sync(root, tr).status, 'ok');
 });
+
+test('recordInputs stores another provider\'s delivery.confirmation/1 record whole, once per event_id, and refuses an input without one', () => {
+  const root = project();
+  const asked = { contract: 'delivery.confirmation/1', question: "Pause the team's work now?", choices: ['Yes', 'No'], multi_select: false, answer: 'Yes',
+    question_id: 'q-chief-of-staff-000001', scope: 'goal:pause=paused', event_id: 'codex:call_1', asked_at: '2026-10-13T10:00:00.000Z', answered_at: '2026-10-13T10:01:00.000Z',
+    provenance: { provider: 'codex', mechanism: 'request_user_input', native_ref: { call_id: 'call_1' }, transcript_ref: { file: 'rollout.jsonl', line: 7 } } };
+  const inp = { text: 'Yes', asked, timestamp: '2026-10-13T10:01:00.000Z', session_id: 'codex-s1' };
+  assert.strictEqual(log.recordInputs({ projectRoot: root, host: 'pc', inputs: [inp], instance: 'chief-of-staff', role: 'chief-of-staff' }).added, 1);
+  assert.strictEqual(log.recordInputs({ projectRoot: root, host: 'pc', inputs: [{ ...inp, ext_id: 'again' }] }).added, 0);
+  const all = log.listInputs(root, {});
+  assert.strictEqual(all.length, 1);
+  assert.deepStrictEqual(all[0].asked, asked);
+  assert.deepStrictEqual([all[0].source, all[0].ext_id, all[0].session_id, all[0].transcript_ref], ['human', 'codex:call_1', 'codex-s1', null]);
+  assert.strictEqual(log.verifyInputs(root).ok, true);
+  assert.throws(() => log.recordInputs({ projectRoot: root, host: 'pc', inputs: [{ text: 'Yes', asked: { question: 'x' } }] }), /delivery\.confirmation\/1 or later record/);
+  // a handed record below /1 is refused: one naming /0, one with no contract key (a /0 capture's shape), a malformed one
+  for (const bad of [{ ...asked, contract: 'delivery.confirmation/0', event_id: 'forged:0' }, { via: 'AskUserQuestion', question: 'x', options: ['Yes', 'No'], multiSelect: false, event_id: 'forged:1' }, { ...asked, contract: 'confirmation-1', event_id: 'forged:2' }]) {
+    assert.throws(() => log.recordInputs({ projectRoot: root, host: 'pc', inputs: [{ text: 'Yes', asked: bad }] }), /delivery\.confirmation\/1 or later record/, JSON.stringify(bad.contract));
+  }
+  // a later major this plugin cannot read is still stored, and reads as unresolved
+  assert.strictEqual(log.recordInputs({ projectRoot: root, host: 'pc', inputs: [{ text: 'Yes', asked: { ...asked, contract: 'delivery.confirmation/2', event_id: 'codex:call_2' } }] }).added, 1);
+  assert.strictEqual(log.listInputs(root, {}).length, 2);
+});

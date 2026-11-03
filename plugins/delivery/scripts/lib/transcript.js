@@ -1,8 +1,10 @@
 // scripts/lib/transcript.js — read the harness-written transcript JSONL and classify user input
 // by the harness's own `origin` stamp, never by message wording. All format knowledge lives here.
 const fs = require('fs');
+const path = require('path');
 
 const { WAKE_OPENING } = require('./watchdog.js');
+const C = require('./confirmation.js');
 
 const SYSTEM_PREFIXES = ['<system-reminder>', '<command-name>', '<local-command', '<task-notification'];
 
@@ -120,7 +122,7 @@ function readHumanInputs(file, opts = {}) {
     if (rec.type === 'assistant' && rec.message && Array.isArray(rec.message.content)) {
       const text = rec.message.content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n');
       if (text.trim()) out.lastAssistant = { line: lineNo, sha256: require('crypto').createHash('sha256').update(text).digest('hex'), tail: text.trim().slice(-400) };
-      for (const b of rec.message.content) if (b && b.type === 'tool_use' && b.name === 'AskUserQuestion' && b.id && b.input && Array.isArray(b.input.questions)) asks.set(b.id, { uuid: rec.uuid, questions: b.input.questions });
+      for (const b of rec.message.content) if (b && b.type === 'tool_use' && b.name === 'AskUserQuestion' && b.id && b.input && Array.isArray(b.input.questions)) asks.set(b.id, { uuid: rec.uuid, questions: b.input.questions, ts: rec.timestamp || null });
       continue;
     }
     // the harness's answer to AskUserQuestion: a tool_result it writes, with the owner's selection per
@@ -142,8 +144,11 @@ function readHumanInputs(file, opts = {}) {
         if (!used) return;
         out.inputs.push({ line: lineNo, source: 'human', text: tur.answers[q.question], ext_id: `${rec.uuid || lineNo}#q${i}`, timestamp: rec.timestamp || null,
           session_id: rec.sessionId || null, uuid: rec.uuid ? `${rec.uuid}#q${i}` : null,
-          // the options and choice mode as the tool_use put them (the result's copy when it is not in this read)
-          asked: { question: q.question, options: (used.options || []).map((o) => o && o.label).filter((x) => typeof x === 'string'), multiSelect: used.multiSelect === true, via: 'AskUserQuestion' } });
+          // a delivery.confirmation/1 record: the question, choices and choice mode as the tool_use put
+          // them, and the harness's own ids for the question and the answer, so any session can check it
+          asked: C.claudeCode({ question: q.question, choices: (used.options || []).map((o) => o && o.label).filter((x) => typeof x === 'string'),
+            multiSelect: used.multiSelect === true, answer: tur.answers[q.question], toolUseId: block.tool_use_id, assistantUuid: inv.uuid, resultUuid: rec.uuid || null,
+            index: i, askedAt: inv.ts, answeredAt: rec.timestamp || null, file: path.basename(file), line: lineNo }) });
       });
       continue;
     }
