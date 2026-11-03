@@ -157,11 +157,20 @@ const lastItem = (p) => {
 // criterion cut from the description or metadata.criteria afterwards would otherwise let the bead verify
 // on fewer criteria. A bead deployed before the stamp existed is held by what was recorded for it: its
 // check script's step groups and its evidence rows (those before an owner's re-pin are void), each of
-// which names a criterion the bead must still state. null when nothing recorded is lost.
-function beadCriteriaDrift(checkStory, bead, checkScript, rows = []) {
-  if (!checkStory || !checkStory.fromBead) return null;
+// which names a criterion the bead must still state. A re-pin counts only while the owner's record it
+// cites still verifies (recordOk). A pinned bead that later names a story file keeps its pin: the
+// story's criteria replace the pinned ones only when the story was made ready under the owner's record
+// after the pin (ready.js --record --owner-record), else naming a shorter story would verify the bead on
+// fewer criteria. null when nothing recorded is lost.
+function beadCriteriaDrift(checkStory, bead, checkScript, rows = [], recordOk = () => false) {
+  if (!checkStory) return null;
   const m = (bead && bead.metadata) || {};
   const pinned = m.criteria_hash;
+  if (m.criteria_restamped_at && !recordOk(m.criteria_record)) return block('criteria-changed', 'D1', `the criteria were re-pinned under ${m.criteria_record || 'no record'}, which no longer verifies as the owner's record`);
+  if (!checkStory.fromBead) {
+    if (!pinned || storyFileReplacesPin(m, recordOk)) return null;
+    return block('criteria-changed', 'D1', `the bead's own criteria were pinned (${pinned}) and it now names story file ${m.story_file}, which was not made ready under the owner's record after the pin`);
+  }
   if (pinned) {
     const now = storyHash(checkStory);
     if (pinned !== now) return block('criteria-changed', 'D1', `the criteria stated on the bead changed since its check was pinned (${pinned}, now ${now}); a criterion cut after deploy does not count as met`);
@@ -174,6 +183,11 @@ function beadCriteriaDrift(checkStory, bead, checkScript, rows = []) {
   const traced = [...new Set((rows || []).filter((r) => r && r.type === 'row' && r.criterion_hash && !have.has(r.criterion_hash) && !(since && String(r.at) < String(since))).map((r) => Number(r.criterion)))];
   return traced.length ? block('criteria-changed', 'D1', `evidence rows were recorded for criteria ${traced.join(', ')} in a wording the bead no longer states`) : null;
 }
+
+// The pin's time: the owner's re-pin, else the first stamp, else (a pin from before the stamp had a time)
+// the deploy.
+const pinnedAt = (m) => m.criteria_restamped_at || m.criteria_pinned_at || m.deployed_at || '';
+const storyFileReplacesPin = (m, recordOk) => Boolean(m.ready_record && m.ready_at && recordOk(m.ready_record) && String(m.ready_at) >= String(pinnedAt(m)));
 
 const normText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
 // One criterion's own hash: evidence and waivers bind to it, so a reworded or reordered criterion
@@ -423,7 +437,7 @@ function doneCheck({ story, bead, rows = [], surface, noSurface = false, instanc
   const cut = rows.find((r) => r.type === 'cut' && recordOk(r.record));
   if (cut) return { ok: true, cut: cut.id, criteria: [] };
   if (!story || !story.criteria.length) return { ok: false, criteria: [], empty: true };
-  const ctx = { surface, noSurface, sha: m.deployed_sha || null, deployedAt: m.deployed_at || null, repinnedAt: m.criteria_restamped_at || null, repinnedBy: m.criteria_record || null, authors: authorsOf(bead, instances), recordOk };
+  const ctx = { surface, noSurface, sha: m.deployed_sha || null, deployedAt: m.deployed_at || null, ...(m.criteria_hash && !story.fromBead ? { repinnedAt: m.ready_at || null, repinnedBy: m.ready_record || null } : { repinnedAt: m.criteria_restamped_at || null, repinnedBy: m.criteria_record || null }), authors: authorsOf(bead, instances), recordOk };
   const out = story.criteria.map((c) => {
     const waiver = rows.find((r) => r.type === 'waiver' && Number(r.criterion) === c.n && r.criterion_hash === criterionHash(c) && (!m.deployed_at || r.at < m.deployed_at) && recordOk(r.record));
     if (waiver) return { n: c.n, waiver: waiver.id };

@@ -242,5 +242,8 @@ test('beadCriteriaDrift: a stamp that matches does not excuse a planned script g
   assert.equal(G.beadCriteriaDrift(full, { ...three, metadata: { criteria_hash: G.storyHash(full) } }, script), null);
   const rows = [{ type: 'row', criterion: 2, criterion_hash: G.criterionHash(full.criteria[1]), at: '2026-10-13T10:00:00Z' }];
   assert.match(G.beadCriteriaDrift(cut, { ...one, metadata: {} }, null, rows).detail, /evidence rows were recorded for criteria 2/);
-  assert.equal(G.beadCriteriaDrift(cut, { ...one, metadata: { criteria_restamped_at: '2026-10-13T11:00:00Z' } }, null, rows), null);
+  const repinned = { ...one, metadata: { criteria_restamped_at: '2026-10-13T11:00:00Z', criteria_record: 'dec-o-1' } };
+  assert.equal(G.beadCriteriaDrift(cut, repinned, null, rows, (id) => id === 'dec-o-1'), null);
+  // a re-pin counts only while its owner record verifies
+  assert.match(G.beadCriteriaDrift(cut, repinned, null, rows, () => false).detail, /re-pinned under dec-o-1, which no longer verifies/);
 });

@@ -25,7 +25,7 @@ const crypto = require('crypto');
 const G = require('./lib/gates.js');
 const W = require('./lib/warnings.js');
 const { tupleOf, TUPLE } = require('./lib/surface.js');
-const { whoAmI, gateInputs, writerProblem, ownerRecord, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
+const { whoAmI, gateInputs, writerProblem, ownerRecord, recordChecker, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
 const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] [--owner-record dec-...] | refine <bead> --from <file> | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
 const VALUE = ['--criterion', '--result', '--artifact', '--observed-version', '--attempts', '--minutes', '--project', '--host', '--app', '--mode', '--install-artifact',
@@ -197,8 +197,16 @@ function plan(who, store, id, a, at, verifyRecord) {
   // deliberate change goes through the owner's record, which re-pins and voids the evidence before it.
   const bm = bead.metadata || {};
   if (a.owner_record !== undefined && !inp.checkStory.fromBead) return refuse(`${id}'s criteria come from its story file: re-record them with ready.js ${id} --record --owner-record ${a.owner_record}`);
+  // a pinned bead that now names a story file plans from that story only once it was made ready under the
+  // owner's record after the pin
+  if (!inp.checkStory.fromBead) {
+    const drift = G.beadCriteriaDrift(inp.checkStory, bead, inp.checkScript, inp.rows, recordChecker(who.root, verifyRecord));
+    if (drift) return refuse(`${drift.detail} (D1), so nothing is written.\nRestore its criteria, or make the story ready under the owner's record: ready.js ${id} --record --owner-record <dec-...>`);
+  }
   if (inp.checkStory.fromBead) {
     const hash = G.storyHash(inp.checkStory);
+    const recordOk = recordChecker(who.root, verifyRecord);
+    const pin = { criteria_hash: hash, ...(bm.criteria_hash === hash && bm.criteria_pinned_at ? {} : { criteria_pinned_at: at }) };
     if (a.owner_record !== undefined) {
       // the owner's record: a peer agent's message is never one (as ready.js re-records changed criteria)
       const v = ownerRecord(who.root, a.owner_record, verifyRecord);
@@ -207,10 +215,10 @@ function plan(who, store, id, a, at, verifyRecord) {
       // new criteria need new evidence: an earlier verification no longer stands
       if ((bead.labels || []).includes(G.STATE.verified)) store.update(id, { removeLabels: [G.STATE.verified] });
     } else if (bm.deployed_sha) {
-      const drift = G.beadCriteriaDrift(inp.checkStory, bead, inp.checkScript, inp.rows);
+      const drift = G.beadCriteriaDrift(inp.checkStory, bead, inp.checkScript, inp.rows, recordOk);
       if (drift) return refuse(`${drift.detail} (D1): a plan after the deploy keeps the criteria it was checked on, so nothing is written.\nRestore them, or change them deliberately under the owner's record: reality-check.js plan ${id} --owner-record <dec-...> (it voids the evidence recorded before it)`);
-      if (!bm.criteria_hash) store.update(id, { metadata: { ...bm, criteria_hash: hash } });
-    } else store.update(id, { metadata: { ...bm, criteria_hash: hash } });
+      if (!bm.criteria_hash) store.update(id, { metadata: { ...bm, ...pin } });
+    } else store.update(id, { metadata: { ...bm, ...pin } });
   }
   const script = writeScript(who.root, bead, inp, { cap, at, by: who.instance });
   const lines = [`${scriptRel(id)}: ${groups.length} criterion group(s) on ${inp.surface.id}, cap ${script.cap.attempts} attempts and ${script.cap.minutes} minutes`];

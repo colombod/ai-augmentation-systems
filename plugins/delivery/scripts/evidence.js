@@ -39,7 +39,7 @@ function done(bead, inp) {
   if (inp.evidenceProblem) return { ok: false, criteria: [], problem: inp.evidenceProblem };
   const drift = G.scopeDrift(inp.story, bead);
   if (drift) return { ok: false, criteria: [], problem: `${drift.detail} (D1)` };
-  const cut = G.beadCriteriaDrift(inp.checkStory, bead, inp.checkScript, inp.rows);
+  const cut = G.beadCriteriaDrift(inp.checkStory, bead, inp.checkScript, inp.rows, inp.recordOk);
   if (cut) return { ok: false, criteria: [], problem: `${cut.detail} (D1)` };
   return G.doneCheck({ story: inp.checkStory, bead, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances, recordOk: inp.recordOk });
 }
@@ -107,6 +107,14 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       return { code: 0, out: `${id}: merged${a.pr ? ` (${a.pr})` : ''}, not verified` };
     }
     if (word === 'deployed' && a.sha) {
+      // criteria the bead states itself are pinned at deploy, so cutting one later cannot verify it. Every
+      // deploy, the first and any again, checks them against what was recorded: the pin, the script's step
+      // groups and the evidence rows; on drift nothing is marked, and no script is rewritten from the cut list
+      // or dispatched. A pinned bead that now names a story file is held the same way (gates.js).
+      if (inp.checkStory) {
+        const lost = G.beadCriteriaDrift(inp.checkStory, bead, inp.checkScript, inp.rows, inp.recordOk);
+        if (lost) return refuse(`${id} is not marked deployed: ${lost.detail} (D1). Restore the criteria it stated, or change them under the owner's record (${inp.checkStory.fromBead ? `reality-check.js plan ${id} --owner-record <dec-...>` : `ready.js ${id} --record --owner-record <dec-...>`}), then record the deploy again.`);
+      }
       // a story the Reality Checker verifies is deployed only with its check planned: otherwise the deploy
       // leaves a check nobody can run (R-33)
       const gap = G.checkScriptGap(inp.story, inp.surface, inp.checkScript);
@@ -114,15 +122,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       // the same sha again keeps its deploy time, so its rows still count
       const same = G.shaMatch(m.deployed_sha, a.sha);
       const meta = { ...m, deployed_sha: same ? m.deployed_sha : a.sha, deployed_at: same && m.deployed_at ? m.deployed_at : at };
-      // criteria the bead states itself are pinned at deploy, so cutting one later cannot verify it; with no
-      // stamp yet (a bead deployed before it existed) what was recorded for it, its script's step groups and
-      // its evidence rows, must all still be stated, or the deploy would pin the cut list and the script
-      // rewritten below would lose the cut criteria
-      if (inp.checkStory && inp.checkStory.fromBead && !meta.criteria_hash) {
-        const lost = G.beadCriteriaDrift(inp.checkStory, bead, inp.checkScript, inp.rows);
-        if (lost) return refuse(`${id} is not marked deployed: ${lost.detail} (D1). Restore the criteria it stated, or re-plan them under the owner's record (reality-check.js plan ${id} --owner-record <dec-...>), then record the deploy again.`);
-        meta.criteria_hash = G.storyHash(inp.checkStory);
-      }
+      if (inp.checkStory && inp.checkStory.fromBead && !meta.criteria_hash) Object.assign(meta, { criteria_hash: G.storyHash(inp.checkStory), criteria_pinned_at: at });
       if (a.version) meta.deployed_version = a.version;
       else if (!same) delete meta.deployed_version;
       store.update(id, { addLabels: [G.STATE.merged, G.STATE.deployed], metadata: meta });

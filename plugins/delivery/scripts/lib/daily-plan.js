@@ -136,7 +136,7 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord, 
   const recordOk = C.recordChecker(root, verifyRecord);
   const checked = (b) => G.stateOf(b) === 'verified' && safe(() => {
     const inp = C.gateInputs(root, b, { team });
-    if (inp.evidenceProblem || G.scopeDrift(inp.story, b) || G.beadCriteriaDrift(inp.checkStory, b, inp.checkScript, inp.rows)) return false;
+    if (inp.evidenceProblem || G.scopeDrift(inp.story, b) || G.beadCriteriaDrift(inp.checkStory, b, inp.checkScript, inp.rows, recordOk)) return false;
     const d = G.doneCheck({ story: inp.checkStory, bead: b, rows: inp.rows, surface: inp.surface, noSurface: inp.noSurface, instances: inp.instances, recordOk });
     return d.ok && !d.cut;
   }, false);

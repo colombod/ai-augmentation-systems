@@ -433,7 +433,11 @@ by the first plan or at the deploy, and never again by a plan after the deploy; 
 that, or one the check script or an evidence row still names, is a D1 drift that keeps the bead
 unverified, and a plan or deploy that would pin the cut list is refused; a deliberate change after the
 deploy is `plan <bead> --owner-record dec-...`, verified as `ready.js` verifies one, which re-pins the
-criteria and voids every evidence row recorded before it), each step
+criteria and voids every evidence row recorded before it, and counts only while that record still
+verifies; every deploy, again or first, refuses on drift and plans no script from the cut list; a
+pinned bead that is later given a `story_file` keeps its pin until that story is made ready under the
+owner's record after the pin, `ready.js <bead> --record --owner-record dec-...`, which voids the rows
+before it), each step
 with an action, the expected observation and what to capture (screenshot, page text, log), a pass
 rule per criterion, and a cap (attempts, default 2, and minutes, default 30). Scripts live in the
 shared project checkout (the project root every role's marker names), which `run-record` reads; no
