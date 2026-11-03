@@ -457,28 +457,13 @@ test('a role install refused over its own range does not stop the job installing
   assert.equal(rows(f).filter((x) => x.result === 'refused').length, 1);
 });
 
-test('a role install behind a job own install this job gated is checked over the job own range only', () => {
-  // the role sits at the original install, an ancestor of the job's, and this job installed the job's
-  // sha through the gate: the commits before it are carried by that install, so only #142 is checked
+test('a role install behind the job own install is checked over its own range: a hand push in it is refused', () => {
+  // the role sits at the original install, an ancestor of the job's; the hand push between them is in the
+  // role's range and was never gated, so the role is refused while the job's own still installs
   const { f, role } = layered();
-  WD.log(f.project, { type: 'self-update', from: '0.43.30', version: '0.43.31', sha: f.shaOf.h, at: T0, result: 'installed' });
   const exec = claude(f, { to: '0.43.32' });
-  const r = run(f, exec, { roleDirs: [role], now: later(60e3) });
+  const r = run(f, exec, { roleDirs: [role] });
   assert.equal(r.installed, true, r.lines.join('\n'));
-  assert.deepEqual(exec.calls.filter((c) => /^plugin update/.test(c.args)).map((c) => [c.args, c.cwd]), [['plugin update delivery@m --scope user', f.project], ['plugin update delivery@m --scope local', role]]);
-  assert.ok(!r.lines.some((l) => /refused/.test(l)), r.lines.join('\n'));
+  assert.deepEqual(exec.calls.filter((c) => /^plugin update/.test(c.args)).map((c) => c.args), ['plugin update delivery@m --scope user']);
+  assert.ok(r.lines.some((l) => new RegExp(`refused: commit ${f.shaOf.h.slice(0, 12)} names no pull request.*for local`).test(l)), r.lines.join('\n'));
 });
-
-// the job's own sha not proven gated: the hand push between the role and the job's own is in the role's
-// range, so the role is refused while the job's own still installs
-for (const [how, row] of [['installed by hand', null], ['logged as an ungated install', 'ungated-install']]) {
-  test(`a role install behind a job own install ${how} is checked over its own range and refused`, () => {
-    const { f, role } = layered();
-    if (row) WD.log(f.project, { type: 'self-update', from: '0.43.30', version: '0.43.31', sha: f.shaOf.h, at: T0, result: row });
-    const exec = claude(f, { to: '0.43.32' });
-    const r = run(f, exec, { roleDirs: [role], now: later(60e3) });
-    assert.equal(r.installed, true, r.lines.join('\n'));
-    assert.deepEqual(exec.calls.filter((c) => /^plugin update/.test(c.args)).map((c) => c.args), ['plugin update delivery@m --scope user']);
-    assert.ok(r.lines.some((l) => new RegExp(`refused: commit ${f.shaOf.h.slice(0, 12)} names no pull request.*for local`).test(l)), r.lines.join('\n'));
-  });
-}
