@@ -19,6 +19,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { loadManifest, validateManifest, manifestWarnings, expandInstances, TEAM_REL, HOSTS_REL, RUNNERS } = require('./lib/manifest.js');
+const { sessionName } = require('./lib/session-name.js');
 
 const PLUGIN_ROOT = path.join(__dirname, '..');
 const PLUGIN_ID = 'delivery@ai-augmentation-systems';
@@ -218,7 +219,9 @@ function sealRow({ env = process.env, bwrap, freeBytes } = {}) {
 // roster, so the watchdog (--keep-alive) can resume it whenever work is due. Before this, the operator
 // started every session by hand and, in their default mode, approved its steps: the opposite of rule 0.
 const JOIN_PROMPT = '/delivery:team join';
-function launchTeam({ projectRoot, prepared, host, permissionMode, env, dryRun, w, say }) {
+// Each session is named `<instance>@<team>` (lib/session-name.js): names are machine-wide, and a bare
+// "chief-of-staff" reached another team's Chief of Staff on the same host.
+function launchTeam({ projectRoot, prepared, host, permissionMode, prefix, env, dryRun, w, say }) {
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const here = prepared.filter((p) => p.host === host);
   const elsewhere = prepared.filter((p) => p.host !== host).map((p) => `${p.instance} (${p.host})`);
@@ -229,7 +232,7 @@ function launchTeam({ projectRoot, prepared, host, permissionMode, env, dryRun, 
   for (const { instance, roleDir } of here) {
     const known = roster[instance] && roster[instance].session_id;
     if (known) { say(`    ${instance}: already started (session ${known}); the watchdog resumes it when work is due`); continue; }
-    const args = ['-p', JOIN_PROMPT, ...(permissionMode && permissionMode !== 'default' ? ['--permission-mode', permissionMode] : []), '--name', instance];
+    const args = ['-p', JOIN_PROMPT, ...(permissionMode && permissionMode !== 'default' ? ['--permission-mode', permissionMode] : []), '--name', sessionName(instance, prefix)];
     if (dryRun) { say(`    ${instance}: would start in ${roleDir}: ${bin} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`); continue; }
     const logPath = path.join(projectRoot, '.delivery', 'watchdog', 'logs', `launch-${instance}-${at}.log`);
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
@@ -506,9 +509,9 @@ function formatManifestJson(team) {
   return `{\n${top.join(',\n')},\n  "roles": [\n${roles.map((r) => `    ${JSON.stringify(r)}`).join(',\n')}\n  ]\n}\n`;
 }
 
-function startCommand(roleDir, instance, permissionMode) {
+function startCommand(roleDir, instance, permissionMode, prefix) {
   const mode = permissionMode && permissionMode !== 'default' ? ` --permission-mode ${permissionMode}` : '';
-  return `cd ${shellQuote(roleDir)} && claude${mode} --name ${instance}`;
+  return `cd ${shellQuote(roleDir)} && claude${mode} --name ${shellQuote(sessionName(instance, prefix))}`;
 }
 
 function scaffold(opts) {
@@ -716,7 +719,7 @@ function scaffold(opts) {
   }
 
   if (launch) {
-    const launched = launchTeam({ projectRoot, prepared, host, permissionMode, env, dryRun, w, say });
+    const launched = launchTeam({ projectRoot, prepared, host, permissionMode, prefix: team.prefix, env, dryRun, w, say });
     if (keepAlive) keepTeamAlive({ projectRoot, env, dryRun, w, say });
     if (launched.code) return { code: launched.code, out };
     say('');
@@ -726,7 +729,7 @@ function scaffold(opts) {
   }
   say('');
   say(`${dryRun ? 'After a real run, start' : 'Start'} each session in its own terminal, the Chief of Staff first:`);
-  for (const { instance, roleDir } of prepared) say(`  ${startCommand(roleDir, instance, permissionMode)}`);
+  for (const { instance, roleDir } of prepared) say(`  ${startCommand(roleDir, instance, permissionMode, team.prefix)}`);
   // auto by default: a team whose sessions ask the operator to approve each step puts the operator
   // to work as the team's approver, which is what the team exists to remove (team rule 0). The lane
   // hook and the native deny rules still bound what each role can do in any mode.
