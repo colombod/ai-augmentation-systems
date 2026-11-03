@@ -205,6 +205,54 @@ test('a role directory with its own older install is updated too, in that direct
   assert.match(run(g, userOnly, { roleDirs: [role] }).lines[0], /failed: still on the old version: /);
 });
 
+test('a role directory a failed pass left on the old version is caught up by a later pass once the job is current', () => {
+  const role = fs.mkdtempSync(path.join(os.tmpdir(), 'role-'));
+  const f = fixture({ extra: [{ scope: 'local', projectPath: role }] });
+  merged(f, 140, true);
+  const real = claude(f);
+  const userOnly = (bin, args, o) => (args[4] === 'local' ? '' : real(bin, args, o));
+  assert.match(run(f, userOnly, { roleDirs: [role] }).lines[0], /failed: still on the old version: /);
+  const ip = () => JSON.parse(fs.readFileSync(f.ipFile, 'utf8')).plugins['delivery@m'];
+  assert.deepEqual(ip().map((e) => e.version), ['0.43.31', '0.43.30']);
+  // within the hour the failure waits; after it the role directory alone is updated
+  assert.match(run(f, claude(f), { roleDirs: [role], now: later(60e3) }).lines[0], /tried again an hour after/);
+  const exec = claude(f);
+  const r = run(f, exec, { roleDirs: [role], now: later(3700e3) });
+  assert.equal(r.installed, true, r.lines.join('\n'));
+  assert.deepEqual(exec.calls.map((c) => [c.args, c.cwd]), [['plugin marketplace update m', f.project], ['plugin update delivery@m --scope local', role]]);
+  assert.deepEqual(ip().map((e) => e.version), ['0.43.31', '0.43.31']);
+  const last = rows(f).pop();
+  assert.equal(last.result, 'installed');
+  assert.equal(last.from, '0.43.30');
+  assert.equal(last.scope, 'local');
+  // and once every install is current, a pass does nothing
+  const idle = claude(f);
+  assert.deepEqual(run(f, idle, { roleDirs: [role], now: later(3800e3) }).lines, []);
+  assert.deepEqual(idle.calls, []);
+});
+
+test('a role directory behind a current job install passes the same gate check from its own sha', () => {
+  const role = fs.mkdtempSync(path.join(os.tmpdir(), 'role-'));
+  const f = fixture({ extra: [{ scope: 'local', projectPath: role }] });
+  // the job's own install is already main; the role directory is not
+  const j = JSON.parse(fs.readFileSync(f.ipFile, 'utf8'));
+  Object.assign(j.plugins['delivery@m'][0], { version: '0.43.31', gitCommitSha: f.mainSha });
+  fs.writeFileSync(f.ipFile, JSON.stringify(j));
+  merged(f, 140, false);
+  const exec = claude(f);
+  assert.match(run(f, exec, { roleDirs: [role] }).lines[0], /refused: PR 140 was merged without passing the team's gate/);
+  assert.deepEqual(exec.calls, []);
+  // a role directory the job does not count as the team's is never touched
+  const g = fixture({ extra: [{ scope: 'local', projectPath: role }] });
+  const k = JSON.parse(fs.readFileSync(g.ipFile, 'utf8'));
+  Object.assign(k.plugins['delivery@m'][0], { version: '0.43.31', gitCommitSha: g.mainSha });
+  fs.writeFileSync(g.ipFile, JSON.stringify(k));
+  merged(g, 140, true);
+  const none = claude(g);
+  assert.deepEqual(run(g, none, { roleDirs: [] }).lines, []);
+  assert.deepEqual(none.calls, []);
+});
+
 // through the host job: an install wakes no one this pass and kicks the next run; a failure keeps the wakes
 const memStore = (h) => { const b = Object.values(h.db().issues); return { list: () => b, ready: () => b.filter((x) => x.status === 'open'), show: (id) => b.find((x) => x.id === id) || null }; };
 function jobRun(h, f, exec) {

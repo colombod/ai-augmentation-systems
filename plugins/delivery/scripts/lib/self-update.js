@@ -2,7 +2,8 @@
 // (delivery-plugin-planning-0ba). After every merge someone had to run `claude plugin marketplace update`
 // and `claude plugin update` on the host and restart the roles: the owner was the installer. Each `run`
 // pass now reads the product's main from the marketplace's own clone and installs it when:
-//   - main's plugin version is newer than the job's own install (same or older: nothing);
+//   - main's plugin version is newer than the job's own install, or than a role directory's install
+//     while the job's own is current (one a failed or partial pass left behind catches up later);
 //   - every commit that changed the plugin since the installed one is the merge commit of a pull
 //     request the Delivery Manager recorded as merged through the gate, for the marketplace's repository
 //     (an ungated commit in the range would ride into the install under the gated version: refused).
@@ -67,10 +68,15 @@ function readMain(clone, name, base) {
   try { const p = (JSON.parse(git(clone, ['show', `${sha}:.claude-plugin/marketplace.json`])).plugins || []).find((x) => x.name === name); if (p && typeof p.source === 'string') src = p.source.replace(/^\.\//, '').replace(/\/$/, ''); } catch (err) { /* the conventional layout */ }
   const manifest = `${src}/.claude-plugin/plugin.json`;
   const version = JSON.parse(git(clone, ['show', `${sha}:${manifest}`])).version;
+  return { sha, version, src, ...rangeFrom(clone, src, base, sha) };
+}
+
+// the commits that changed the plugin from `base` to `sha`, or known false when the clone lacks `base`
+function rangeFrom(clone, src, base, sha) {
   let known = false;
   try { git(clone, ['cat-file', '-e', `${base}^{commit}`]); known = /^[0-9a-f]{7,40}$/.test(String(base)); } catch (err) { known = false; }
   const commits = known ? commitsOf(git(clone, ['log', '--format=%H%x00%s', `${base}..${sha}`, '--', src])) : [];
-  return { sha, version, known, commits };
+  return { known, commits };
 }
 
 // Is commit `sha` the gated merge of pull request `pr`: a merged row the Delivery Manager wrote (only it
@@ -128,11 +134,22 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     // logRows reads the current log and the one rotation kept; a wake older than both (over 2 MB of
     // rows ago) is not seen, which the wake timeout makes moot: such a wake has long been stopped
     const running = [...new Set(WD.logRows(root).filter((r) => r.type === 'wake').map((r) => r.pid))].filter((pid) => alive(pid));
-    const d = decide({ installed: own.entry.version, main, gatedOf: (pr, sha) => gatedMerge(root, pr, own.repo, sha, ghMergeCommit(exec, own.repo, root)), running });
+    const gatedOf = (pr, sha) => gatedMerge(root, pr, own.repo, sha, ghMergeCommit(exec, own.repo, root));
+    const vs = compare(main.version, own.entry.version);
+    const ownBehind = vs === 1;
+    // role directories behind main: looked for on every pass, not only when the job's own install is,
+    // so one a failed or partial pass left on the old version (or that was not there then) catches up
+    const others = entriesOf(readJson(path.join(pluginsDir(configDir || env.CLAUDE_CONFIG_DIR), 'installed_plugins.json')), own.key)
+      .filter((e) => (vs === 0 || vs === 1) && e !== own.entry && e.projectPath && roleDirs.some((r) => same(r, e.projectPath)) && compare(main.version, e.version) === 1 && !(same(e.projectPath, own.entry.projectPath) && e.scope === own.entry.scope));
+    // each install passes the same gate check, over the commits since its own installed sha
+    const checkOf = (e) => decide({ installed: e.version, main: e === own.entry ? main : { ...main, ...rangeFrom(own.clone, main.src, e.gitCommitSha, main.sha) }, gatedOf, running });
+    const checks = [...(ownBehind ? [own.entry] : []), ...others].map(checkOf);
+    const d = checks.find((x) => x.action === 'refuse') || checks.find((x) => x.action === 'held') || checks[0] || checkOf(own.entry);
+    const first = ownBehind ? own.entry : others[0];
     const label = `plugin ${own.name} ${main.version} (main ${main.sha.slice(0, 12)})`;
     if (d.action === 'none') return { lines: [], installed: false };
     if (d.action === 'held') return { lines: [`self-update: ${label} held: ${d.why}; tried again next cycle.`], installed: false };
-    const row = { type: 'self-update', from: own.entry.version, version: main.version, sha: main.sha, pr: d.pr, scope: own.entry.scope, at };
+    const row = { type: 'self-update', from: first.version, version: main.version, sha: main.sha, pr: d.pr, scope: first.scope, at };
     if (d.action === 'refuse') {
       // once per version: a refusal that stands is not news every fifteen minutes
       if (!dryRun && !rows.some((r) => r.result === 'refused')) WD.log(root, { ...row, result: 'refused', why: d.why });
@@ -142,9 +159,7 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     if (failed && Date.parse(at) - Date.parse(failed.at) < RETRY_MS) return { lines: [`self-update: ${label} failed at ${failed.at}; tried again an hour after.`], installed: false };
     const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
     const key = `${own.name}@${own.marketplace}`;
-    const others = entriesOf(readJson(path.join(pluginsDir(configDir || env.CLAUDE_CONFIG_DIR), 'installed_plugins.json')), own.key)
-      .filter((e) => e !== own.entry && e.projectPath && roleDirs.some((r) => same(r, e.projectPath)) && compare(main.version, e.version) === 1 && !(same(e.projectPath, own.entry.projectPath) && e.scope === own.entry.scope));
-    const targets = [own.entry, ...others].map((e) => ({ scope: e.scope || 'user', cwd: e.projectPath && e.scope !== 'user' ? e.projectPath : root }));
+    const targets = [...(ownBehind ? [own.entry] : []), ...others].map((e) => ({ scope: e.scope || 'user', cwd: e.projectPath && e.scope !== 'user' ? e.projectPath : root }));
     if (dryRun) return { lines: [`self-update: would install ${label} (${d.why}) for ${targets.map((t) => (t.scope === 'user' ? 'user' : `${t.scope} ${t.cwd}`)).join(', ')}.`], installed: false };
     let detail = '';
     try {
@@ -159,20 +174,20 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     // looked at first, since a newer version than the checked one is that case too, not a failure
     const got = (now0 && now0.gitCommitSha) || null;
     const untouched = now0 && now0.version === own.entry.version && got === (own.entry.gitCommitSha || null);
-    if (now0 && !untouched && got !== main.sha) {
+    if (ownBehind && now0 && !untouched && got !== main.sha) {
       const why = `installed ${got ? got.slice(0, 12) : 'an unrecorded sha'}, not the checked ${main.sha.slice(0, 12)}: main moved during the update`;
       WD.log(root, { ...row, result: 'ungated-install', version: now0.version, sha: got, checked: main.sha, detail: why });
       const w = require('./warnings.js').record(root, { kind: 'install-ungated', rule: 'R-32', bead: null, detail: `plugin ${own.name} ${now0.version}: ${why}`, raisedBy: 'watchdog', instance: 'watchdog', now: at });
       return { lines: [`self-update: warning ${w ? w.id : 'unrecorded'}: ${label} ${why}; what it carries was not checked against the gate.`], installed: false };
     }
-    if (!detail && (!now0 || now0.version !== main.version)) detail = `the install still records ${now0 ? now0.version : 'nothing'} after the update`;
+    if (!detail && ownBehind && (!now0 || now0.version !== main.version)) detail = `the install still records ${now0 ? now0.version : 'nothing'} after the update`;
     const behind = others.filter((o) => !after.some((e) => same(e.projectPath, o.projectPath) && e.scope === o.scope && e.version === main.version)).map((o) => o.projectPath);
     if (!detail && behind.length) detail = `still on the old version: ${behind.join(', ')}`;
     if (detail) {
       WD.log(root, { ...row, result: 'failed', detail });
       return { lines: [`self-update: ${label} failed: ${detail}.`], installed: false };
     }
-    WD.log(root, { ...row, result: 'installed', sha: got, detail: `${d.why}; ${targets.length} install(s)` });
+    WD.log(root, { ...row, result: 'installed', sha: ownBehind ? got : main.sha, detail: `${d.why}; ${targets.length} install(s)` });
     return { lines: [`self-update: installed ${label}, ${d.why}.`], installed: true, version: main.version };
   } catch (err) {
     return { lines: [`self-update: not checked (${brief(err)}); the wakes go on.`], installed: false };

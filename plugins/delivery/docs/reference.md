@@ -1195,7 +1195,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   Delivery Manager recorded as merged with `gated: true` for the marketplace's repository (the row's
   `merge_commit`; for an older row without one, GitHub's merge commit for that pull request), runs
   `claude plugin marketplace update` and `claude plugin update` for the job's scope (and for a role
-  directory's own older install), then checks the installed record. A commit that only names a pull
+  directory's own older install), then checks the installed record. A role directory still on an older
+  version once the job's own install is current (a failed or partial pass, or one installed later) is
+  updated on a later pass, after the same check over the commits since its own installed sha. A commit that only names a pull
   request in its subject, or an installed sha the clone does not know, is refused. It never installs
   while a wake is running (held to the next cycle), refuses an ungated or older version, retries a failed
   update once an hour, and logs each outcome as a `self-update` row. If main moved during the update, so
