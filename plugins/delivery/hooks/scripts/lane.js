@@ -182,14 +182,15 @@ function tokens(seg) {
 // The words the shell passes to the command: tokens() with every redirection and its target removed,
 // apart (`2> /dev/null`) or attached (`x.test.js>/dev/null`, `2>&1`); a quoted < or > is literal
 // (Copilot on #117: `node 2>/dev/null --test` read the redirection as the script).
-function argWords(seg) {
+// targets, when given, collects the words written to (the targets of >, >>, >|, &>, 2>), never those read (<).
+function argWords(seg, targets) {
   const s = String(seg == null ? '' : seg);
   const out = [];
   let cur = null;
   let q = null;
   let quoted = false;
-  let skip = false; // the next word is a redirection's target
-  const end = () => { if (cur !== null) { if (skip) skip = false; else out.push(cur); } cur = null; quoted = false; };
+  let skip = false; // the next word is a redirection's target: 'w' written, 'r' read
+  const end = () => { if (cur !== null) { if (skip) { if (skip === 'w' && targets) targets.push(cur); skip = false; } else out.push(cur); } cur = null; quoted = false; };
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
     if (q === "'") { if (c === "'") q = null; else cur += c; continue; }
@@ -213,7 +214,7 @@ function argWords(seg) {
         while (k < s.length && /[\d-]/.test(s[k])) k++;
         if (k > j && (k === s.length || /[\s;&|)]/.test(s[k]))) { i = k - 1; continue; }
       }
-      skip = true;
+      skip = c === '>' ? 'w' : 'r'; // &> and 2> reach here at their >, the & or digit already dropped
       continue;
     }
     if (cur === null) cur = '';
@@ -1126,6 +1127,89 @@ const SEALED_FORM = /^(?:DELIVERY_TEST_FILES=[A-Za-z0-9_./:@+,=-]* )?(?:node|[A-
 // a path as the shell must be given it: as is when plain, else single-quoted (none of ours holds a quote)
 const shellPath = (p) => (/^[A-Za-z0-9_./@+,=-]+$/.test(p) ? p : `'${p}'`);
 
+// The team leaves no files in the host's temporary directory (operator decision, 7zz): builders had
+// written their logs and mutation backups there (`> /tmp/b2-full.log`, `cp lane.js /tmp/riv.bak`,
+// `mkdir /tmp/vrp-mut`), and nothing ever removes them. An unrestricted (`any`) lane is otherwise
+// unchecked, so its shell writes are judged here: a redirect target and the paths the write words
+// write, against os.tmpdir(), $TMPDIR and /tmp by real path. Inside the role directory the lane patterns
+// still decide, even when the role directory sits under tmp (as test roots do). Best effort: a write
+// inside `sh -c '...'` or a variable other than $TMPDIR/$HOME is not followed, and quoted text is not
+// a redirect, so the sealed runner's `-- '<command>'`, which runs in its own private /tmp, is unaffected.
+// rm, rmdir and a mv out of tmp only clean up, and reads (`cat /tmp/x`, `cp /tmp/x .`) write nothing there.
+const TMP_ALL_WORDS = new Set(['tee', 'truncate', 'mkdir', 'touch']); // every path argument is written
+const TMP_DEST_WORDS = new Set(['cp', 'mv', 'ln', 'install', 'rsync']); // the destination is written
+// $TMPDIR, ${TMPDIR}, ${TMPDIR:-x}, $HOME and ~ as the shell would expand them; any other variable is not judged
+function tmpExpand(w) {
+  const tmp = process.env.TMPDIR || os.tmpdir();
+  const home = os.homedir();
+  const x = String(w).replace(/\$\{TMPDIR(?::?[-=][^}]*)?\}|\$TMPDIR(?![A-Za-z0-9_])/g, tmp)
+    .replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, home).replace(/^~(?=\/|$)/, home);
+  return /[$`]/.test(x) ? null : x;
+}
+function mktempTarget(args, base) {
+  let dir = null;
+  let viaTmp = false; // -t: the template is placed in $TMPDIR (or the -p directory)
+  const rest = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-p' || a === '--tmpdir') { if (a === '-p') dir = args[++i] || ''; else viaTmp = true; continue; }
+    if (a.startsWith('--tmpdir=')) { dir = a.slice(9); continue; }
+    if (/^-[A-Za-z]*p./.test(a)) { dir = a.slice(a.indexOf('p') + 1); continue; }
+    if (/^-[A-Za-z]*t/.test(a)) viaTmp = true;
+    if (a.startsWith('-')) continue;
+    rest.push(a);
+  }
+  // with no explicit directory, mktemp creates in $TMPDIR unless a template is given without -t or --tmpdir
+  if (dir) return dir;
+  if (rest.length && !viaTmp) return rest[0].includes('/') ? rest[0] : `${base}${path.sep}${rest[0]}`;
+  return process.env.TMPDIR || os.tmpdir();
+}
+function shellWriteWords(w, base) {
+  const first = baseOf(w[0]);
+  const args = w.slice(1);
+  const paths = args.filter((x) => !x.startsWith('-'));
+  if (TMP_ALL_WORDS.has(first)) return paths;
+  if (TMP_DEST_WORDS.has(first)) {
+    const t = args.find((x, i) => args[i - 1] === '-t' || x.startsWith('--target-directory=') || /^-t./.test(x));
+    if (t) return [t.startsWith('--target-directory=') ? t.slice(19) : t.startsWith('-t') ? t.slice(2) : t];
+    return paths.length >= 2 ? [paths[paths.length - 1]].filter((x) => !/^[^/]*:/.test(x)) : []; // host:path is remote
+  }
+  if (first === 'dd') return args.filter((x) => x.startsWith('of=')).map((x) => x.slice(3));
+  if (first === 'sort') return args.flatMap((x, i) => (args[i - 1] === '-o' ? [x] : x.startsWith('--output=') ? [x.slice(9)] : /^-[A-Za-z]*o./.test(x) ? [x.slice(x.indexOf('o') + 1)] : []));
+  if (first === 'mktemp') return [mktempTarget(args, base)];
+  return [];
+}
+// The first write that lands in the host's temporary directory, as its real path, or null.
+function tmpShellWrite(command, { cwd, roleDir } = {}, depth = 0) {
+  // what $(...) and backticks run writes too (x=$(mktemp))
+  if (depth < 3) for (const inner of substitutions(command)) { const hit = tmpShellWrite(inner, { cwd, roleDir }, depth + 1); if (hit) return hit; }
+  // /tmp as well: a session whose TMPDIR points elsewhere still must not leave files in the host's /tmp
+  const tmp = [os.tmpdir(), process.env.TMPDIR, process.platform === 'win32' ? null : '/tmp'].filter(Boolean).map(realish);
+  const rd = roleDir ? realish(roleDir) : null;
+  let base = cwd || process.cwd();
+  for (const seg of splitCommand(command)) {
+    const targets = [];
+    const w = commandWords(stripGrammar(argWords(seg, targets)));
+    if (['cd', 'pushd'].includes(w[0])) {
+      const d = w.length === 2 && !w[1].startsWith('-') ? tmpExpand(w[1]) : null;
+      if (d) base = path.isAbsolute(d) ? d : `${base}${path.sep}${d}`;
+      continue;
+    }
+    for (const raw of [...targets, ...(w.length ? shellWriteWords(w, base) : [])]) {
+      const x = tmpExpand(raw);
+      if (!x) continue;
+      const abs = realish(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`);
+      if (rd && under(abs, rd)) continue;
+      if (tmp.some((t) => under(abs, t))) return abs;
+    }
+  }
+  return null;
+}
+function tmpReason(abs, roleDir) {
+  const scratch = roleDir ? `${path.join(realish(roleDir), 'scratch')}${path.sep}` : '<role directory>/scratch/';
+  return `the team leaves no files in the host's temporary directory, and ${abs} is there: write logs, outputs and mutation backups in your scratch directory, ${scratch}, or beside the file in its worktree`;
+}
+
 // deep: a deletion or move of a protected folder's parent (rm -rf .delivery), or a glob that reaches the
 // folder or names files in it (rm -rf .delivery/an*, rm .delivery/andon/*.ndjson), counts as a write too
 const GLOB = /[*?[]/;
@@ -1436,7 +1520,10 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     const run = refusedRun(command);
     if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? testsReason(command, pluginRootOf({ pluginRoot })) : RESUME_REASON}.` };
-    if (bash.includes('any')) return { allow: true };
+    if (bash.includes('any')) {
+      const tmpHit = tmpShellWrite(command, { cwd, roleDir });
+      return tmpHit ? { allow: false, reason: `Role ${pol.roleId}: ${tmpReason(tmpHit, roleDir)}.` } : { allow: true };
+    }
     if (name === 'PowerShell') {
       return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
     }
@@ -1578,4 +1665,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };

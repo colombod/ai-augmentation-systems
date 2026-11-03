@@ -748,7 +748,8 @@ test('shell writes into the operator directory are denied; reads are not', () =>
   }
   assert.equal(run(BUILDER, 'cat .delivery/operator/records/b.ndjson | jq .id').allow, true);
   assert.equal(run(BUILDER, 'grep -c human .delivery/operator/inputs/pc/2026-10.ndjson 2>&1').allow, true);
-  assert.equal(run(BUILDER, 'echo x > /tmp/other.txt').allow, true);
+  // a write elsewhere is not the operator rule's; the host's /tmp is refused on its own (7zz), so scratch/
+  assert.equal(run(BUILDER, `echo x > ${path.join(roleDir, 'scratch', 'other.txt')}`).allow, true);
   assert.equal(run(BUILDER, `node ${PLUGIN_ROOT}/scripts/operator.js ack --input in-pc-000001 --reason "chat" 2>&1`).allow, true);
   assert.equal(run(COS, 'ls .delivery/operator/records').allow, true);
 });
@@ -1563,5 +1564,78 @@ test('the project launcher is judged only when the plugin it resolves to has the
     assert.equal(run().allow, true, 'it has one now');
   } finally {
     if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+  }
+});
+
+// 7zz: the team leaves no files in the host's temporary directory. An any-lane builder had written its
+// logs and mutation backups there; its shell writes into os.tmpdir() or $TMPDIR are refused, pointing
+// to its scratch/, while writes in its role directory, stream redirects and reads from /tmp still run.
+test('an any-lane shell write into the host temporary directory is refused; scratch, worktree, streams and reads are not', () => {
+  const builder = { roleId: 'builder', writes: ['product/**', 'scratch/**'], bash: ['any'] };
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-7zz-'));
+  const wt = path.join(rd, 'scratch', 'wt-1');
+  fs.mkdirSync(wt, { recursive: true });
+  // a TMPDIR outside /tmp (it need not exist: paths are judged lexically past the first missing part)
+  const envTmp = path.join(path.parse(rd).root, 'nonexistent-7zz', 'tmp');
+  const run = (command, cwd = wt) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: builder, ...ctx({ roleDir: rd, cwd }) });
+  const prev = process.env.TMPDIR;
+  const hostTmp = fs.realpathSync(os.tmpdir());
+  // both the host's /tmp and $TMPDIR count, by real path, also when TMPDIR points somewhere else
+  process.env.TMPDIR = envTmp;
+  try {
+    for (const tmp of [hostTmp, '/tmp', envTmp]) {
+      for (const command of [
+        `npm test > ${tmp}/b2-full.log`,
+        `npm test >> ${tmp}/b2-full.log 2>&1`,
+        `npm test &> ${tmp}/b2-full.log`,
+        `echo x >| ${tmp}/x.txt`,
+        `npm test 2> ${tmp}/err.txt`,
+        `npm test 2>&1 | tee ${tmp}/wd-test.txt`,
+        `echo x | tee -a ${tmp}/wd-test.txt`,
+        `cp lane.js ${tmp}/riv.bak`,
+        `cp -t ${tmp} lane.js`,
+        `mv lane.js ${tmp}/riv.bak`,
+        `mkdir -p ${tmp}/vrp-mut`,
+        `touch ${tmp}/x`,
+        `mktemp -p ${tmp}`,
+        `cd ${tmp} && echo x > out.log`,
+      ]) {
+        const d = run(command);
+        assert.equal(d.allow, false, command);
+        assert.match(d.reason, /temporary directory/, command);
+        assert.ok(d.reason.includes(`${path.join(fs.realpathSync(rd), 'scratch')}${path.sep}`), `the reason names scratch/: ${d.reason}`);
+      }
+    }
+    // mktemp creates in $TMPDIR unless told otherwise; $TMPDIR in a word is the host's tmp too
+    for (const command of ['mktemp', 'mktemp -d', 'mktemp -t run.XXXX', 'x=$(mktemp)', 'echo x > "$TMPDIR/k.log"', 'echo x > ${TMPDIR:-/tmp}/k.log']) {
+      assert.equal(run(command).allow, false, command);
+    }
+    const scratch = path.join(rd, 'scratch');
+    for (const command of [
+      `npm test > ${scratch}/b2-full.log 2>&1`,
+      `npm test >> ${scratch}/b2-full.log`,
+      `npm test 2>&1 | tee ${scratch}/wd-test.txt`,
+      `cp lane.js ${scratch}/riv.bak`,
+      `mv lane.js ${scratch}/riv.bak`,
+      `mkdir -p ${scratch}/vrp-mut`,
+      `mktemp -p ${scratch}`,
+      `mktemp -d ${scratch}/mut.XXXX`,
+      'cp lane.js lane.js.bak',
+      'npm test > test.log 2>&1',
+      'mkdir -p mut',
+      'npm test 2>/dev/null',
+      'npm test >/dev/null 2>&1',
+      'npm test 2>&1 | head',
+      'cat /tmp/x',
+      `cat ${envTmp}/x | grep y`,
+      'cp /tmp/x lane.js',
+      'rm -rf /tmp/old-run',
+      'git commit -m "logs no longer go to /tmp > anywhere"',
+      `node ${PLUGIN_ROOT}/scripts/testing/run-tests.js`,
+      `DELIVERY_TEST_FILES=plugins/delivery/hooks/scripts/lane.test.js node ${PLUGIN_ROOT}/scripts/testing/run-tests.js`,
+      `node ${PLUGIN_ROOT}/scripts/testing/run-tests.js -- 'sh x.sh > /tmp/in-seal.log'`,
+    ]) assert.equal(run(command).allow, true, command);
+  } finally {
+    if (prev === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = prev;
   }
 });
