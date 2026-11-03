@@ -18,8 +18,9 @@
 // Each install (the job's own and each role directory's) is decided on its own range and goes when it
 // passes: an old role install refused over its range never blocks the others (seen on wintermute: role
 // installs at 0.41.2 held every install back at 0.43.39). A role install whose sha is an ancestor of the
-// job's own, while the job's own is being updated, is checked over the job's range: the job's install
-// already carries the commits before it.
+// job's own, while the job's own is being updated, is checked over the job's range when this job
+// installed the job's own sha through the gate (its install then carries the commits before it), and
+// over its own range otherwise.
 // Main is read with `git fetch` only: `claude plugin marketplace update` runs after the gate passed,
 // since a refreshed catalog would make an ungated version installable by hand. A development checkout
 // (not an install) is never updated. Failures are logged and retried at most once an hour; nothing here
@@ -178,7 +179,9 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     const mergeCommitOf = ghMergeCommit(exec, own.repo, root);
     const prOf = ghPrOfCommit(exec, own.repo, root);
     // a pull request found by its merge commit was matched to `sha` by GitHub already; a recorded
-    // merge_commit still has to agree with it
+    // merge_commit still has to agree with it. `() => sha` stands for GitHub's merge commit only because
+    // ghPrOfCommit returns a pull request solely when its merge_commit_sha equals `sha` exactly: loosen
+    // that match and this must pass GitHub's merge_commit_sha through instead
     const gatedOf = (pr, sha, byCommit) => gatedMerge(root, pr, own.repo, sha, byCommit ? () => sha : mergeCommitOf);
     const vs = compare(main.version, own.entry.version);
     const ownBehind = vs === 1;
@@ -189,14 +192,18 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     // each install passes the same gate check, over the commits since its own installed sha; a role
     // install the job's own is ahead of, while the job's own is checked this pass, is checked over the
     // job's range (the job's install carries what lies before it). Not when the job's own is current:
-    // its range is then empty and checks nothing, so the role's own range is read
+    // its range is then empty and checks nothing, so the role's own range is read. And only when the
+    // job's own sha is proven gated, by a row this job wrote installing that sha: a hand install, or one
+    // logged as ungated-install, carries commits nobody checked, which the shortcut would let ride into
+    // the role install. A gated merge commit alone is not that proof: a hand push before it is on main.
+    const ownGated = WD.logRows(root).some((r) => r.type === 'self-update' && r.result === 'installed' && r.sha && r.sha === own.entry.gitCommitSha);
     const ancestor = (a, b) => {
       if (!a || !b || !holdsBase(own.clone, a)) return false;
       try { git(own.clone, ['merge-base', '--is-ancestor', a, b]); return true; } catch (err) { return false; }
     };
     const rangeOf = (e) => {
       if (e === own.entry) return main;
-      if (ownBehind && main.known && ancestor(e.gitCommitSha, own.entry.gitCommitSha)) return main;
+      if (ownBehind && ownGated && main.known && ancestor(e.gitCommitSha, own.entry.gitCommitSha)) return main;
       return { ...main, ...rangeFrom(own.clone, main.src, e.gitCommitSha, main.sha) };
     };
     const entries = [...(ownBehind ? [own.entry] : []), ...others];
