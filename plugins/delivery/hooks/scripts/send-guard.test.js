@@ -141,6 +141,49 @@ test('transition: a bare name of our own instance passes with a warning unless a
   }
 });
 
+// Once sessions run qualified names, a bare name matches no live session exactly, yet Claude Code resolves
+// a send by prefix too: "chief-of-staff" reaches "chief-of-staff@beta". The other team's qualified session
+// counts as holding the bare name, and a name that is no role ("chief") is judged by what it can reach.
+test('two teams with qualified names: a bare name or a prefix that reaches the other team\'s live session is refused; ours passes', () => {
+  const a = teamWith('alpha', 'builder-1', 'chief-of-staff');
+  const b = teamWith('beta', 'builder-1', 'chief-of-staff');
+  const ourCos = { pid: process.pid, cwd: path.join(a.teamDir, 'chief-of-staff'), name: 'chief-of-staff@alpha' };
+  const theirCos = { pid: process.pid, cwd: path.join(b.teamDir, 'chief-of-staff'), name: 'chief-of-staff@beta' };
+  // the reviewer's case: beta sends the bare name while alpha's qualified chief of staff is live
+  const fromB = decision(runHook(send(b.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([ourCos])));
+  assert.equal(fromB.permissionDecision, 'deny');
+  assert.match(fromB.permissionDecisionReason, /send to chief-of-staff@beta\.$/);
+  // the same from alpha while only its own qualified session runs: allowed with the warning
+  const ours = JSON.parse(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([ourCos])).stdout);
+  assert.match(ours.hookSpecificOutput.additionalContext, /Send to chief-of-staff@alpha from now on/);
+  // our own qualified name in another instance's role directory is not ours: refused
+  const misplaced = { ...ourCos, cwd: path.join(a.teamDir, 'builder-1') };
+  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([misplaced]))).permissionDecision, 'deny');
+  // a prefix that is no role reaches both teams' chiefs of staff: refused from either side while the other runs
+  for (const to of ['chief', 'Chief of', 'chief-of-st']) {
+    const d = decision(runHook(send(a.roleDir, to), 'builder-1', sessionsDir([ourCos, theirCos])));
+    assert.equal(d && d.permissionDecision, 'deny', to);
+    assert.match(d.permissionDecisionReason, /is the start of "chief-of-staff@beta", a live session outside this team.*this team's sessions are chief-of-staff@alpha, /s, to);
+  }
+  const deliv = sessionsDir([{ pid: process.pid, cwd: path.join(b.teamDir, 'builder-1'), name: 'delivery-lead@beta' }]);
+  assert.equal(decision(runHook(send(a.roleDir, 'deliv'), 'builder-1', deliv)).permissionDecision, 'deny');
+  // the same prefix when only our own session (or no role session) answers it: passes
+  assert.equal(runHook(send(a.roleDir, 'chief'), 'builder-1', sessionsDir([ourCos])).stdout, '');
+  assert.equal(runHook(send(a.roleDir, 'main'), 'builder-1', sessionsDir([ourCos, theirCos, { pid: process.pid, cwd: os.tmpdir(), name: 'main-scratch' }])).stdout, '');
+  // a stale record of the other team (its pid has ended) reaches nothing
+  assert.equal(runHook(send(a.roleDir, 'chief'), 'builder-1', sessionsDir([{ ...theirCos, pid: DEAD }])).stdout, '');
+});
+
+test('an "@" with nothing on one side is refused, naming this team\'s sessions', () => {
+  const a = teamWith('alpha', 'builder-1');
+  for (const to of ['builder@', 'chief-of-staff@ [ex-1]', '@alpha', 'main@']) {
+    const d = decision(runHook(send(a.roleDir, to), 'builder-1'));
+    assert.equal(d && d.permissionDecision, 'deny', to);
+    assert.match(d.permissionDecisionReason, /is no full session name.*this team's sessions are chief-of-staff@alpha, /s, to);
+  }
+  assert.match(judge(a.team, 'builder@', 'pc').reason, /is no full session name/, 'without the sender\'s context too');
+});
+
 // A message to a teammate that is not running is kept for it and the watchdog wakes it with it
 // (route-check.js, PostToolUse): a bare name of our own instance is never refused for not being live.
 test('a bare name of our own instance that is not live passes with a warning, and the send is kept for the watchdog', () => {

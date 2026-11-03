@@ -8,7 +8,10 @@
 // (scripts/lib/session-name.js) and this guard refuses:
 //   - a bare team role or instance name ("chief-of-staff", "builder-2", "delivery-manager", "steward"),
 //     or any role the plugin defines, which another team on the host may run;
-//   - a role name qualified with another team's prefix ("chief-of-staff@other").
+//   - a role name qualified with another team's prefix ("chief-of-staff@other");
+//   - an "@" with nothing on one side ("builder@");
+//   - a name that is no role but starts another team's live role session's name ("chief"), since Claude
+//     Code resolves a send by prefix too.
 // The refusal names this team's session to send to; for a while, a bare name of this team's own
 // instance passes with a warning, running or not, unless another team's live session holds it (below). A name that
 // is no role at all ("main", a subagent or raw agent id) and this team's qualified names pass. A
@@ -57,8 +60,8 @@ function teamSessions(team) {
 
 // TODO(delivery-plugin-planning-tqv.5): remove this bare-name fallback once every role has started fresh under its qualified name.
 // Sessions started before qualified names still run under their bare instance name, so a bare send to
-// one of this team's instances passes, with a warning, unless a live session of another team holds that
-// name. A teammate that is not running is no reason to refuse: the send fails as unreachable, route-check.js
+// one of this team's instances passes, with a warning, unless a live session it can reach is not this
+// team's: the name exactly or as a prefix, so "chief-of-staff" while "chief-of-staff@beta" runs is refused. A teammate that is not running is no reason to refuse: the send fails as unreachable, route-check.js
 // (PostToolUse) keeps it for that role and the watchdog wakes the role with it. A live session counts as
 // this team's when its cwd is that instance's role directory (<team dir>/<instance>, beside the sender's)
 // and the directory holds that instance's role marker for this project. Claude Code writes one JSON per
@@ -71,8 +74,10 @@ function sessionsDir() {
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (err) { return err.code !== 'ESRCH'; }
 }
-// the live sessions named `name` (as a slug); throws when a record cannot be read
-function liveSessionsNamed(dir, name) {
+// the live sessions a send to `name` can reach: Claude Code resolves a name exactly or as a prefix, so
+// every live session whose name (as a slug) starts with it: "chief-of-staff" reaches "chief-of-staff@beta"
+// and "chief" reaches both teams' chiefs of staff. Throws when a record cannot be read
+function liveSessionsReached(dir, name) {
   const want = slug(name);
   const out = [];
   let files;
@@ -80,24 +85,40 @@ function liveSessionsNamed(dir, name) {
   for (const f of files.filter((x) => /^\d+\.json$/.test(x))) {
     const s = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
     if (!s || !Number.isInteger(s.pid) || s.pid <= 0 || !pidAlive(s.pid)) continue;
-    if (typeof s.name === 'string' && slug(s.name) === want) out.push(s);
+    if (typeof s.name === 'string' && want && slug(s.name).startsWith(want)) out.push(s);
   }
   return out;
 }
 const real = (p) => { try { return fs.realpathSync(p); } catch (err) { return null; } };
-// true when no live session named `instance` runs outside that instance's role directory of this team
-// (none live at all included)
-function noOtherLiveSession(instance, { teamDir, projectRoot, dir = sessionsDir() }) {
+// true when live session `s` is this team's: its name is one of this team's instances, bare or with this
+// team's prefix, and its cwd is that instance's role directory, holding that instance's marker for this project
+function ourSession(s, team, { teamDir, projectRoot }) {
+  const SN = require('../../scripts/lib/session-name.js');
+  const { instance, prefix } = SN.parseSessionName(s.name);
+  if (prefix !== null && !SN.samePrefix(prefix, team.prefix)) return false;
+  const inst = require('../../scripts/lib/manifest.js').expandInstances(team).find((i) => i.instance.toLowerCase() === slug(instance));
+  if (!inst) return false;
+  const roleDir = real(path.join(teamDir, inst.instance));
+  if (!roleDir || typeof s.cwd !== 'string' || real(s.cwd) !== roleDir) return false;
+  const marker = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8'));
+  return !!marker && marker.instance === inst.instance && real(marker.project_root) === real(projectRoot);
+}
+// true when every live session a send to `name` can reach is this team's (none live at all included)
+function noOtherLiveSession(name, team, own) {
   try {
-    const live = liveSessionsNamed(dir, instance);
-    if (!live.length) return true;
-    const roleDir = real(path.join(teamDir, instance));
-    if (!roleDir) return false;
-    const marker = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8'));
-    if (!marker || marker.instance !== instance || real(marker.project_root) !== real(projectRoot)) return false;
-    return live.every((s) => typeof s.cwd === 'string' && real(s.cwd) === roleDir);
+    return liveSessionsReached(own.dir || sessionsDir(), name).every((s) => ourSession(s, team, own));
   } catch (err) {
     return false;
+  }
+}
+// the live role sessions of another team a send to `name` can reach (a role name, bare or qualified, outside
+// this team's role directories); [{ name }] when the records cannot be read (it may be another team's)
+function otherRoleSessionsReached(name, team, own) {
+  const SN = require('../../scripts/lib/session-name.js');
+  try {
+    return liveSessionsReached(own.dir || sessionsDir(), name).filter((s) => roleish(SN.parseSessionName(s.name).instance, team) && !ourSession(s, team, own));
+  } catch (err) {
+    return [{ name: 'an unreadable session record' }];
   }
 }
 
@@ -108,11 +129,21 @@ function judge(team, to, host, own = null) {
   if (!team || !SN.teamTag(team.prefix) || typeof to !== 'string') return null;
   const { instance, prefix } = SN.parseSessionName(to);
   if (prefix !== null && SN.samePrefix(prefix, team.prefix)) return null;
-  if (!roleish(instance, team)) return null;
+  // "builder@" or "@alpha": an "@" with no team after it, or no instance before it, names no session of ours
+  if (prefix === null && instance.includes('@')) {
+    return { reason: `"${SN.bareTarget(to)}" is no full session name: an "@" needs an instance before it and a team after it.\nRole sessions are named <instance>@<team>; this team's sessions are ${teamSessions(team).join(', ')}.` };
+  }
+  if (!roleish(instance, team)) {
+    // a name that is no role ("main", an agent id) passes, unless it is the start of another team's live
+    // role session's name ("chief", "deliv"), which a prefix send would reach
+    const other = prefix === null && own ? otherRoleSessionsReached(instance, team, own) : [];
+    if (!other.length) return null;
+    return { reason: `"${SN.bareTarget(to)}" is the start of ${other.map((s) => `"${s.name}"`).join(', ')}, a live session outside this team, and a send to it can reach that session.\nRole sessions are named <instance>@<team>: this team's sessions are ${teamSessions(team).join(', ')}.` };
+  }
   const mine = ownTarget(team, instance, host);
   if (prefix === null && own) {
     const inst = require('../../scripts/lib/manifest.js').expandInstances(team).find((i) => i.instance.toLowerCase() === slug(instance));
-    if (inst && noOtherLiveSession(inst.instance, own)) {
+    if (inst && noOtherLiveSession(instance, team, own)) {
       return { warn: `delivery: "${SN.bareTarget(to)}" is a bare session name; allowed for now because it is this team's instance and no other team's live session holds it. Send to ${SN.sessionName(inst.instance, team.prefix)} from now on: session names are shared by every team on this machine.` };
     }
   }
