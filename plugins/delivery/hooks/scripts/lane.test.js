@@ -1579,9 +1579,13 @@ test('an any-lane shell write into the host temporary directory is refused; scra
   const envTmp = path.join(path.parse(rd).root, 'nonexistent-7zz', 'tmp');
   const run = (command, cwd = wt) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: builder, ...ctx({ roleDir: rd, cwd }) });
   const prev = process.env.TMPDIR;
-  const hostTmp = fs.realpathSync(os.tmpdir());
-  // both the host's /tmp and $TMPDIR count, by real path, also when TMPDIR points somewhere else
+  // os.tmpdir() held apart from both, so each of the three is shown to count on its own
+  const hostTmp = path.join(path.parse(rd).root, 'nonexistent-7zz', 'os-tmpdir');
+  // both the host's /tmp and $TMPDIR count, by real path, also when TMPDIR points somewhere else; on
+  // POSIX os.tmpdir() follows TMPDIR, on Windows it does not (TEMP)
   process.env.TMPDIR = envTmp;
+  const tmpdir = os.tmpdir;
+  os.tmpdir = () => hostTmp;
   try {
     for (const tmp of [hostTmp, '/tmp', envTmp]) {
       for (const command of [
@@ -1636,6 +1640,7 @@ test('an any-lane shell write into the host temporary directory is refused; scra
       `node ${PLUGIN_ROOT}/scripts/testing/run-tests.js -- 'sh x.sh > /tmp/in-seal.log'`,
     ]) assert.equal(run(command).allow, true, command);
   } finally {
+    os.tmpdir = tmpdir;
     if (prev === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = prev;
   }
 });
