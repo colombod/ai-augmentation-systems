@@ -207,6 +207,142 @@ test('7k3.1.1.1.5: a criterion cut from the bead after deploy does not let it ve
   assert.ok(verified('ex-pin-2'));
 });
 
+// 7k3.1.1.1.5 re-review: a bead deployed with no stamp (the beads deployed before the stamp existed) is
+// held by what was recorded for it, its check script and its evidence rows; a plan or a deploy never
+// pins a cut list after the deploy
+function unstamped() {
+  const root = makeProject();
+  const DESC = 'Done when: (1) the chat shows the summary; (2) the log shows the file; and (3) the card count shows.';
+  const mk = (id) => storyBead({ id, title: 'Fix', labels: ['bug'], parent: ID, description: DESC, metadata: { story_file: undefined, roadmap_ref: undefined, surface: undefined } });
+  const store = memBd([mk('ex-un-1'), mk('ex-un-2'), mk('ex-un-3'), mk('ex-un-4'), mk('ex-un-5'), storyBead({ assignee: 't@pc/builder-1' })]);
+  const verifyRecord = require('./testing/gate-fixture.js').ownerVerify('dec-chief-of-staff-77');
+  const call = (mod, instance, argv, now) => mod.main(argv, { cwd: root, env: {}, bd: store, now, verifyRecord, who: whoFor(root, instance) });
+  let k = 0;
+  const pass = (id, n, now = T.run) => {
+    const dir = path.join(root, '.delivery', 'evidence', 'artifacts', id);
+    fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, `c${n}-${++k}.txt`);
+    fs.writeFileSync(f, `Imported 212 cards (v1.4.2), run ${k}\n`);
+    return call(rc, 'reality-checker', ['run-record', id, '--criterion', String(n), '--result', 'pass', '--artifact', f, '--observed-version', 'v1.4.2'], now);
+  };
+  const plan = (id, extra = [], now = T.run) => call(rc, 'delivery-lead', ['plan', id, ...extra], now);
+  const deploy = (id, sha = SHA, now = T.deploy) => call(evidence, 'delivery-lead', ['state', id, 'deployed', '--sha', sha, '--version', 'v1.4.2'], now);
+  const check = (id, now = T.run) => call(evidence, 'delivery-lead', ['check', id], now);
+  const unstamp = (id) => store.update(id, { metadata: { ...store.show(id).metadata, criteria_hash: undefined } });
+  const cut = (id) => { store.beads.get(id).description = 'Done when: (1) the chat shows the summary'; };
+  const groups = (id) => { try { return JSON.parse(fs.readFileSync(path.join(root, rc.scriptRel(id)), 'utf8')).criteria.map((g) => g.criterion); } catch (err) { return null; } };
+  return { root, store, call, pass, plan, deploy, check, unstamp, cut, groups };
+}
+
+test('7k3.1.1.1.5: an unstamped deployed bead cut to fewer criteria: a plan keeps its script and refuses, and it does not verify (probe a)', () => {
+  const t = unstamped();
+  assert.equal(t.plan('ex-un-1', [], T.plan).code, 0);
+  assert.equal(t.deploy('ex-un-1').code, 0);
+  t.unstamp('ex-un-1');
+  assert.equal(t.pass('ex-un-1', 1).code, 0);
+  t.cut('ex-un-1');
+  const p = t.plan('ex-un-1');
+  assert.equal(p.code, 1, p.out);
+  assert.match(p.out, /no longer include planned criteria 2, 3 of its check script \(D1\).*--owner-record/s);
+  assert.deepEqual(t.groups('ex-un-1'), [1, 2, 3], 'the script keeps its groups');
+  assert.equal(t.store.show('ex-un-1').metadata.criteria_hash, undefined, 'the cut list is not pinned');
+  const c = t.check('ex-un-1');
+  assert.equal(c.code, 1, c.out);
+  assert.match(c.out, /\(D1\)/);
+  // the other direction: deployed, unstamped, criteria intact: the first plan pins them and keeps the groups
+  assert.equal(t.plan('ex-un-4', [], T.plan).code, 0);
+  assert.equal(t.deploy('ex-un-4').code, 0);
+  const pinned = t.store.show('ex-un-4').metadata.criteria_hash;
+  t.unstamp('ex-un-4');
+  const again = t.plan('ex-un-4');
+  assert.equal(again.code, 0, again.out);
+  assert.equal(t.store.show('ex-un-4').metadata.criteria_hash, pinned, 'the first plan after the deploy stamps what the bead states');
+  assert.deepEqual(t.groups('ex-un-4'), [1, 2, 3]);
+});
+
+test('7k3.1.1.1.5: an unstamped deployed bead with no script, cut to fewer criteria than its evidence names: the first plan refuses (probe b)', () => {
+  const t = unstamped();
+  assert.equal(t.plan('ex-un-2', [], T.plan).code, 0);
+  assert.equal(t.deploy('ex-un-2').code, 0);
+  assert.equal(t.pass('ex-un-2', 1).code, 0);
+  assert.equal(t.pass('ex-un-2', 2).code, 0);
+  // deployed before the stamp and the script existed: neither is recorded, only the evidence rows
+  t.unstamp('ex-un-2');
+  fs.rmSync(path.join(t.root, rc.scriptRel('ex-un-2')));
+  t.cut('ex-un-2');
+  const c = t.check('ex-un-2');
+  assert.equal(c.code, 1, c.out);
+  assert.match(c.out, /evidence rows .*criteria 2 .*no longer states.*\(D1\)/);
+  const p = t.plan('ex-un-2');
+  assert.equal(p.code, 1, p.out);
+  assert.equal(t.store.show('ex-un-2').metadata.criteria_hash, undefined);
+  assert.equal(t.groups('ex-un-2'), null, 'no script is written for the cut list');
+  assert.equal(t.check('ex-un-2').code, 1);
+  // nothing recorded beyond what the bead states: the first plan stamps what it states then
+  assert.equal(t.plan('ex-un-5', [], T.plan).code, 0);
+  assert.equal(t.deploy('ex-un-5').code, 0);
+  t.unstamp('ex-un-5');
+  fs.rmSync(path.join(t.root, rc.scriptRel('ex-un-5')));
+  const first = t.plan('ex-un-5');
+  assert.equal(first.code, 0, first.out);
+  assert.ok(t.store.show('ex-un-5').metadata.criteria_hash);
+  assert.deepEqual(t.groups('ex-un-5'), [1, 2, 3]);
+});
+
+test('7k3.1.1.1.5: an unstamped bead whose script names more criteria than it now states is not deployed again, so the deploy never pins the cut list (probe c)', () => {
+  const t = unstamped();
+  assert.equal(t.plan('ex-un-3', [], T.plan).code, 0);
+  assert.equal(t.deploy('ex-un-3').code, 0);
+  t.unstamp('ex-un-3');
+  t.cut('ex-un-3');
+  const d = t.deploy('ex-un-3', 'e5f6a7b8', T.run);
+  assert.equal(d.code, 1, d.out);
+  assert.match(d.out, /not marked deployed: .*no longer include planned criteria 2, 3/);
+  const m = t.store.show('ex-un-3').metadata;
+  assert.deepEqual([m.deployed_sha, m.criteria_hash], [SHA, undefined], 'the earlier deploy stands, unpinned');
+  assert.deepEqual(t.groups('ex-un-3'), [1, 2, 3]);
+  assert.equal(t.pass('ex-un-3', 1, '2026-10-13T11:00:00Z').code, 0);
+  assert.equal(t.check('ex-un-3', '2026-10-13T11:00:00Z').code, 1);
+});
+
+test('7k3.1.1.1.5: criteria changed on purpose after the deploy are re-pinned only under a verifying owner record, which voids the evidence before it', () => {
+  const t = unstamped();
+  assert.equal(t.plan('ex-un-1', [], T.plan).code, 0);
+  assert.equal(t.deploy('ex-un-1').code, 0);
+  for (const n of [1, 2, 3]) assert.equal(t.pass('ex-un-1', n).code, 0);
+  assert.equal(t.check('ex-un-1').code, 0);
+  assert.ok((t.store.show('ex-un-1').labels || []).includes(G.STATE.verified));
+  const before = t.store.show('ex-un-1').metadata.criteria_hash;
+  t.store.beads.get('ex-un-1').description = 'Done when: (1) the chat shows the summary; (2) the log shows the file.';
+  assert.match(t.check('ex-un-1').out, /changed since its check was pinned/);
+  const bare = t.plan('ex-un-1');
+  assert.equal(bare.code, 1, bare.out);
+  assert.match(bare.out, /reality-check\.js plan ex-un-1 --owner-record <dec-\.\.\.>/);
+  const bad = t.plan('ex-un-1', ['--owner-record', 'dec-nobody-1']);
+  assert.equal(bad.code, 1, bad.out);
+  assert.match(bad.out, /dec-nobody-1 does not verify/);
+  assert.equal(t.store.show('ex-un-1').metadata.criteria_hash, before, 'nothing re-pinned without the owner');
+  assert.deepEqual(t.groups('ex-un-1'), [1, 2, 3]);
+  const RESTAMP = '2026-10-13T11:00:00Z';
+  const ok = t.plan('ex-un-1', ['--owner-record', 'dec-chief-of-staff-77'], RESTAMP);
+  assert.equal(ok.code, 0, ok.out);
+  const m = t.store.show('ex-un-1').metadata;
+  assert.notEqual(m.criteria_hash, before);
+  assert.deepEqual([m.criteria_record, m.criteria_restamped_at], ['dec-chief-of-staff-77', RESTAMP]);
+  assert.deepEqual(t.groups('ex-un-1'), [1, 2]);
+  assert.ok(!(t.store.show('ex-un-1').labels || []).includes(G.STATE.verified), 'the earlier verification no longer stands');
+  // the rows recorded before the re-pin are void, even for the criteria that did not change
+  const voided = t.check('ex-un-1', RESTAMP);
+  assert.equal(voided.code, 1, voided.out);
+  assert.match(voided.out, /recorded before the criteria were re-pinned under dec-chief-of-staff-77/);
+  const LATER = '2026-10-13T12:00:00Z';
+  for (const n of [1, 2]) { const r = t.pass('ex-un-1', n, LATER); assert.equal(r.code, 0, r.out); }
+  const done = t.check('ex-un-1', LATER);
+  assert.equal(done.code, 0, done.out);
+  // a story bead's criteria are re-recorded through ready.js, not here
+  assert.match(t.call(rc, 'delivery-lead', ['plan', ID, '--owner-record', 'dec-chief-of-staff-77'], T.plan).out, /ready\.js/);
+});
+
 test('7k3.1.1.1.5: a bead with a story file uses the story only, and an unreadable story file does not fall back to the description', () => {
   const root = makeProject();
   const DESC = 'Done when: (1) one; (2) two; (3) three; (4) four.';

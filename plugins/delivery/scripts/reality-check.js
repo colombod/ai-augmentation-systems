@@ -2,9 +2,11 @@
 // scripts/reality-check.js — reality checks (R-33): an agent verifies a deployed story on the real
 // customer surface by script, never the owner. One script per story, from its criteria and probes;
 // the Reality Checker runs it with browser control or computer use and records one row per criterion.
-//   reality-check.js plan <bead> [--attempts <n>] [--minutes <n>]   Delivery Manager: write
-//       .delivery/reality-checks/<bead>.json (templates/reality-check.json is the format); once the story
-//       is deployed, also create its reality-check child bead for the Reality Checker
+//   reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] [--owner-record dec-...]   Delivery
+//       Manager: write .delivery/reality-checks/<bead>.json (templates/reality-check.json is the format);
+//       once the story is deployed, also create its reality-check child bead for the Reality Checker. A bead
+//       with no story file has the criteria it states pinned (metadata.criteria_hash); after its deploy they
+//       change only under the owner's record (--owner-record), which voids the evidence recorded before it
 //   reality-check.js refine <bead> [--criterion <n> (--step <k> | --add-step) | --setup <k>]
 //       [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..]
 //       [--precondition <o-id>]   Delivery Manager: edit the shared script (the only way to change it)
@@ -23,11 +25,11 @@ const crypto = require('crypto');
 const G = require('./lib/gates.js');
 const W = require('./lib/warnings.js');
 const { tupleOf, TUPLE } = require('./lib/surface.js');
-const { whoAmI, gateInputs, writerProblem, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
+const { whoAmI, gateInputs, writerProblem, ownerRecord, EVIDENCE_WRITERS } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] | refine <bead> --from <file> | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
+const USAGE = 'usage: reality-check.js plan <bead> [--attempts <n>] [--minutes <n>] [--owner-record dec-...] | refine <bead> --from <file> | refine <bead> [--criterion <n> (--step <k>|--add-step) | --setup <k>] [--action ..] [--expect ..] [--command ..] [--match ..] [--as-role|--no-as-role] [--capture a,b] [--pass-rule ..] [--account <name>] [--read-on-screen ..] [--precondition <o-id>] | show <bead> | run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v> [--host h] [--app a] [--mode m] [--install-artifact x]';
 const VALUE = ['--criterion', '--result', '--artifact', '--observed-version', '--attempts', '--minutes', '--project', '--host', '--app', '--mode', '--install-artifact',
-  '--step', '--setup', '--action', '--expect', '--command', '--match', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition', '--from'];
+  '--step', '--setup', '--action', '--expect', '--command', '--match', '--capture', '--pass-rule', '--account', '--read-on-screen', '--precondition', '--from', '--owner-record'];
 // a test account is named, never given: anything that looks like a password or token is refused
 const SECRETISH = /pass(?:word|wd)?|secret|token|api[_-]?key|[:=]\S|\b[A-Za-z0-9+/_-]{24,}\b/i;
 const DEFAULT_CAP = { attempts: 2, minutes: 30 };
@@ -172,7 +174,7 @@ function versionedSteps(script) {
   return out;
 }
 
-function plan(who, store, id, a, at) {
+function plan(who, store, id, a, at, verifyRecord) {
   const wp = writerProblem(who);
   if (wp) return refuse(wp);
   const bead = store.show(id);
@@ -189,10 +191,27 @@ function plan(who, store, id, a, at) {
     if (!Number.isInteger(n) || n < 1) return { code: 2, out: `reality-check.js: --${k} must be a whole number of at least 1` };
     cap[k] = n;
   }
-  // criteria the bead states itself are pinned when planned before deploy (the deploy pins them too);
-  // after deploy a change stays a D1 drift, so a plan cannot re-pin a cut criterion
+  // criteria the bead states itself are pinned by the first plan, and by every plan before the deploy (the
+  // deploy pins them too). After the deploy a plan never re-pins: one that would drop a criterion pinned,
+  // planned in the script or named by an evidence row is refused, and the script keeps its groups. A
+  // deliberate change goes through the owner's record, which re-pins and voids the evidence before it.
   const bm = bead.metadata || {};
-  if (inp.checkStory.fromBead && !bm.deployed_sha) store.update(id, { metadata: { ...bm, criteria_hash: G.storyHash(inp.checkStory) } });
+  if (a.owner_record !== undefined && !inp.checkStory.fromBead) return refuse(`${id}'s criteria come from its story file: re-record them with ready.js ${id} --record --owner-record ${a.owner_record}`);
+  if (inp.checkStory.fromBead) {
+    const hash = G.storyHash(inp.checkStory);
+    if (a.owner_record !== undefined) {
+      // the owner's record: a peer agent's message is never one (as ready.js re-records changed criteria)
+      const v = ownerRecord(who.root, a.owner_record, verifyRecord);
+      if (!v.ok) return refuse(`${id}'s criteria are not re-pinned: ${v.why}`);
+      store.update(id, { metadata: { ...bm, criteria_hash: hash, criteria_record: a.owner_record, criteria_restamped_at: at } });
+      // new criteria need new evidence: an earlier verification no longer stands
+      if ((bead.labels || []).includes(G.STATE.verified)) store.update(id, { removeLabels: [G.STATE.verified] });
+    } else if (bm.deployed_sha) {
+      const drift = G.beadCriteriaDrift(inp.checkStory, bead, inp.checkScript, inp.rows);
+      if (drift) return refuse(`${drift.detail} (D1): a plan after the deploy keeps the criteria it was checked on, so nothing is written.\nRestore them, or change them deliberately under the owner's record: reality-check.js plan ${id} --owner-record <dec-...> (it voids the evidence recorded before it)`);
+      if (!bm.criteria_hash) store.update(id, { metadata: { ...bm, criteria_hash: hash } });
+    } else store.update(id, { metadata: { ...bm, criteria_hash: hash } });
+  }
   const script = writeScript(who.root, bead, inp, { cap, at, by: who.instance });
   const lines = [`${scriptRel(id)}: ${groups.length} criterion group(s) on ${inp.surface.id}, cap ${script.cap.attempts} attempts and ${script.cap.minutes} minutes`];
   for (const w of versionedSteps(script)) lines.push(`warning: ${w} names one installed version of the plugin, which the next install deletes: refine it version-free (reality-check.js refine ${id} ... --command)`);
@@ -459,7 +478,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   }
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
   const at = now || new Date().toISOString();
-  if (cmd === 'plan') return plan(who, store, id, a, at);
+  if (cmd === 'plan') return plan(who, store, id, a, at, verifyRecord);
   if (cmd === 'refine') return refine(who, id, a, at, cwd);
   return runRecord(who, store, id, a, { cwd, env, now: at, verifyRecord });
 }

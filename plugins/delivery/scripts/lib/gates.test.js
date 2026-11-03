@@ -230,3 +230,17 @@ test('storyFromBead: criteria from metadata, or from the Done when paragraph spl
   assert.deepEqual([s.meta.title, s.meta.surface, s.criteria[0].probe.by], ['T', 'S2', 'reality-check']);
   assert.equal(G.checkCovered(s, { id: 'S2', scriptable: true }).length, 1, 'covered on a scriptable surface too: the bead names no test probe');
 });
+
+test('beadCriteriaDrift: a stamp that matches does not excuse a planned script group the bead no longer states; evidence before an owner re-pin is not a trace', () => {
+  const three = { id: 'x', description: 'Done when: (1) one; (2) two; (3) three' };
+  const one = { id: 'x', description: 'Done when: (1) one' };
+  const full = G.storyFromBead(three);
+  const cut = G.storyFromBead(one);
+  const script = { criteria: full.criteria.map((c) => ({ criterion: c.n, criterion_hash: G.criterionHash(c) })) };
+  const stamped = { ...one, metadata: { criteria_hash: G.storyHash(cut) } };
+  assert.match(G.beadCriteriaDrift(cut, stamped, script).detail, /no longer include planned criteria 2, 3 of its check script/);
+  assert.equal(G.beadCriteriaDrift(full, { ...three, metadata: { criteria_hash: G.storyHash(full) } }, script), null);
+  const rows = [{ type: 'row', criterion: 2, criterion_hash: G.criterionHash(full.criteria[1]), at: '2026-10-13T10:00:00Z' }];
+  assert.match(G.beadCriteriaDrift(cut, { ...one, metadata: {} }, null, rows).detail, /evidence rows were recorded for criteria 2/);
+  assert.equal(G.beadCriteriaDrift(cut, { ...one, metadata: { criteria_restamped_at: '2026-10-13T11:00:00Z' } }, null, rows), null);
+});

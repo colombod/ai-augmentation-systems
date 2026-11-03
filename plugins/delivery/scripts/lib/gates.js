@@ -152,22 +152,27 @@ const lastItem = (p) => {
   return (end ? t.slice(0, end.index + 1) : t).trim();
 };
 
-// A bead-stated criteria list is pinned by its hash (metadata.criteria_hash, stamped when its check is
-// planned before deploy, or at deploy): a criterion cut from the description or metadata.criteria after
-// that would otherwise let the bead verify on fewer criteria. With no stamp, the planned check script's
-// criteria pin it. null when unpinned or unchanged.
-function beadCriteriaDrift(checkStory, bead, checkScript) {
+// A bead-stated criteria list is pinned by its hash (metadata.criteria_hash, stamped by the first plan or
+// at deploy, and after the deploy only again under the owner's record, metadata.criteria_record): a
+// criterion cut from the description or metadata.criteria afterwards would otherwise let the bead verify
+// on fewer criteria. A bead deployed before the stamp existed is held by what was recorded for it: its
+// check script's step groups and its evidence rows (those before an owner's re-pin are void), each of
+// which names a criterion the bead must still state. null when nothing recorded is lost.
+function beadCriteriaDrift(checkStory, bead, checkScript, rows = []) {
   if (!checkStory || !checkStory.fromBead) return null;
-  const pinned = bead && bead.metadata && bead.metadata.criteria_hash;
+  const m = (bead && bead.metadata) || {};
+  const pinned = m.criteria_hash;
   if (pinned) {
     const now = storyHash(checkStory);
-    return pinned === now ? null : block('criteria-changed', 'D1', `the criteria stated on the bead changed since its check was pinned (${pinned}, now ${now}); a criterion cut after deploy does not count as met`);
+    if (pinned !== now) return block('criteria-changed', 'D1', `the criteria stated on the bead changed since its check was pinned (${pinned}, now ${now}); a criterion cut after deploy does not count as met`);
   }
-  const groups = (checkScript && Array.isArray(checkScript.criteria)) ? checkScript.criteria : [];
-  if (!groups.length) return null;
   const have = new Set(checkStory.criteria.map((c) => criterionHash(c)));
+  const groups = (checkScript && Array.isArray(checkScript.criteria)) ? checkScript.criteria : [];
   const lost = groups.filter((g) => !have.has(g.criterion_hash)).map((g) => g.criterion);
-  return lost.length ? block('criteria-changed', 'D1', `the criteria stated on the bead no longer include planned criteria ${lost.join(', ')} of its check script`) : null;
+  if (lost.length) return block('criteria-changed', 'D1', `the criteria stated on the bead no longer include planned criteria ${lost.join(', ')} of its check script`);
+  const since = m.criteria_restamped_at;
+  const traced = [...new Set((rows || []).filter((r) => r && r.type === 'row' && r.criterion_hash && !have.has(r.criterion_hash) && !(since && String(r.at) < String(since))).map((r) => Number(r.criterion)))];
+  return traced.length ? block('criteria-changed', 'D1', `evidence rows were recorded for criteria ${traced.join(', ')} in a wording the bead no longer states`) : null;
 }
 
 const normText = (t) => String(t || '').replace(/\s+/g, ' ').trim();
@@ -392,7 +397,7 @@ const checkScriptGap = (story, surface, script) => {
 };
 
 // Why a row does not count for criterion c, or null when it does (D2, D3, R-33).
-function rowProblem(row, { c, surface, noSurface, sha, deployedAt, authors, recordOk = () => false }) {
+function rowProblem(row, { c, surface, noSurface, sha, deployedAt, repinnedAt = null, repinnedBy = null, authors, recordOk = () => false }) {
   if (row.type !== 'row' || Number(row.criterion) !== c.n) return 'not this criterion';
   if (row.criterion_hash !== criterionHash(c)) return `${row.id} checked another wording of criterion ${c.n}`;
   if (row.result !== 'pass') return `${row.id} is a ${row.result}`;
@@ -401,6 +406,9 @@ function rowProblem(row, { c, surface, noSurface, sha, deployedAt, authors, reco
   if (!sha) return 'no deployed sha recorded';
   if (!shaMatch(row.sha, sha)) return `${row.id} is on ${String(row.sha).slice(0, 12)}, not the deployed ${String(sha).slice(0, 12)}`;
   if (deployedAt && String(row.at) < String(deployedAt)) return `${row.id} was recorded before the deploy`;
+  // criteria re-pinned under the owner's record (reality-check.js plan --owner-record): what was checked
+  // before was checked against another list
+  if (repinnedAt && String(row.at) < String(repinnedAt)) return `${row.id} was recorded before the criteria were re-pinned under ${repinnedBy}`;
   if (authors.actors.includes(row.actor) || authors.roles.includes(row.by)) return `${row.id} was recorded by the author (${row.by})`;
   // the Reality Checker's run through reality-check.js, or a row that cites the owner's record
   if (byRealityCheck(c, surface) && !(row.via === 'reality-check' && row.by === 'reality-checker') && !(row.record && recordOk(row.record))) return `${row.id} is not a reality check (R-33): criterion ${c.n} is verified on the surface by the Reality Checker`;
@@ -415,7 +423,7 @@ function doneCheck({ story, bead, rows = [], surface, noSurface = false, instanc
   const cut = rows.find((r) => r.type === 'cut' && recordOk(r.record));
   if (cut) return { ok: true, cut: cut.id, criteria: [] };
   if (!story || !story.criteria.length) return { ok: false, criteria: [], empty: true };
-  const ctx = { surface, noSurface, sha: m.deployed_sha || null, deployedAt: m.deployed_at || null, authors: authorsOf(bead, instances), recordOk };
+  const ctx = { surface, noSurface, sha: m.deployed_sha || null, deployedAt: m.deployed_at || null, repinnedAt: m.criteria_restamped_at || null, repinnedBy: m.criteria_record || null, authors: authorsOf(bead, instances), recordOk };
   const out = story.criteria.map((c) => {
     const waiver = rows.find((r) => r.type === 'waiver' && Number(r.criterion) === c.n && r.criterion_hash === criterionHash(c) && (!m.deployed_at || r.at < m.deployed_at) && recordOk(r.record));
     if (waiver) return { n: c.n, waiver: waiver.id };
