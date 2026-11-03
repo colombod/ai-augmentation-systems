@@ -10,7 +10,7 @@
 //     or any role the plugin defines, which another team on the host may run;
 //   - a role name qualified with another team's prefix ("chief-of-staff@other").
 // The refusal names this team's session to send to; for a while, a bare name of this team's own
-// instance passes with a warning when its live session is provably this team's (below). A name that
+// instance passes with a warning, running or not, unless another team's live session holds it (below). A name that
 // is no role at all ("main", a subagent or raw agent id) and this team's qualified names pass. A
 // trailing " [ref]" is ignored. Deny JSON, warning JSON or nothing; inert outside a role session (no
 // valid role marker); exit 0 always.
@@ -57,23 +57,27 @@ function teamSessions(team) {
 
 // TODO(delivery-plugin-planning-tqv.5): remove this bare-name fallback once every role has started fresh under its qualified name.
 // Sessions started before qualified names still run under their bare instance name, so a bare send to
-// one of this team's instances passes, with a warning, while every live session of that name is this
-// team's: its cwd is that instance's role directory (<team dir>/<instance>, beside the sender's) and the
-// directory holds that instance's role marker for this project. Claude Code writes one JSON per session
-// to ~/.claude/sessions/<pid>.json (pid, cwd, name, status); a pid that no longer runs is no session.
-// Any live one elsewhere (a scratch team's chief-of-staff), none at all, or a directory or record that
-// cannot be read: refused, as without the fallback.
+// one of this team's instances passes, with a warning, unless a live session of another team holds that
+// name. A teammate that is not running is no reason to refuse: the send fails as unreachable, route-check.js
+// (PostToolUse) keeps it for that role and the watchdog wakes the role with it. A live session counts as
+// this team's when its cwd is that instance's role directory (<team dir>/<instance>, beside the sender's)
+// and the directory holds that instance's role marker for this project. Claude Code writes one JSON per
+// session to ~/.claude/sessions/<pid>.json (pid, cwd, name, status); a pid that no longer runs is no
+// session, and no such directory means none runs. A live one elsewhere (a scratch team's chief-of-staff),
+// or a record or role directory that cannot be read (it may be another team's): refused.
 function sessionsDir() {
   return process.env.DELIVERY_CLAUDE_SESSIONS_DIR || path.join(os.homedir(), '.claude', 'sessions');
 }
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (err) { return err.code !== 'ESRCH'; }
 }
-// the live sessions named `name` (as a slug); throws when the directory or a record cannot be read
+// the live sessions named `name` (as a slug); throws when a record cannot be read
 function liveSessionsNamed(dir, name) {
   const want = slug(name);
   const out = [];
-  for (const f of fs.readdirSync(dir).filter((x) => /^\d+\.json$/.test(x))) {
+  let files;
+  try { files = fs.readdirSync(dir); } catch (err) { if (err.code === 'ENOENT') return out; throw err; }
+  for (const f of files.filter((x) => /^\d+\.json$/.test(x))) {
     const s = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
     if (!s || !Number.isInteger(s.pid) || s.pid <= 0 || !pidAlive(s.pid)) continue;
     if (typeof s.name === 'string' && slug(s.name) === want) out.push(s);
@@ -81,12 +85,14 @@ function liveSessionsNamed(dir, name) {
   return out;
 }
 const real = (p) => { try { return fs.realpathSync(p); } catch (err) { return null; } };
-// true when every live session named `instance` runs in that instance's role directory of this team
-function ownLiveSessions(instance, { teamDir, projectRoot, dir = sessionsDir() }) {
+// true when no live session named `instance` runs outside that instance's role directory of this team
+// (none live at all included)
+function noOtherLiveSession(instance, { teamDir, projectRoot, dir = sessionsDir() }) {
   try {
     const live = liveSessionsNamed(dir, instance);
+    if (!live.length) return true;
     const roleDir = real(path.join(teamDir, instance));
-    if (!live.length || !roleDir) return false;
+    if (!roleDir) return false;
     const marker = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8'));
     if (!marker || marker.instance !== instance || real(marker.project_root) !== real(projectRoot)) return false;
     return live.every((s) => typeof s.cwd === 'string' && real(s.cwd) === roleDir);
@@ -106,8 +112,8 @@ function judge(team, to, host, own = null) {
   const mine = ownTarget(team, instance, host);
   if (prefix === null && own) {
     const inst = require('../../scripts/lib/manifest.js').expandInstances(team).find((i) => i.instance.toLowerCase() === slug(instance));
-    if (inst && ownLiveSessions(inst.instance, own)) {
-      return { warn: `delivery: "${SN.bareTarget(to)}" is a bare session name; allowed for now because its only live session is this team's. Send to ${SN.sessionName(inst.instance, team.prefix)} from now on: session names are shared by every team on this machine.` };
+    if (inst && noOtherLiveSession(inst.instance, own)) {
+      return { warn: `delivery: "${SN.bareTarget(to)}" is a bare session name; allowed for now because it is this team's instance and no other team's live session holds it. Send to ${SN.sessionName(inst.instance, team.prefix)} from now on: session names are shared by every team on this machine.` };
     }
   }
   const where = mine ? `send to ${mine}` : `no session of this team is "${instance}"; this team's sessions are ${teamSessions(team).join(', ')}`;

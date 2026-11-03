@@ -52,10 +52,11 @@ function runHook(input, instance, sessions = EMPTY_SESSIONS) {
 const send = (cwd, to, tool = 'SendMessage') => ({ cwd, session_id: 's', hook_event_name: 'PreToolUse', tool_name: tool, tool_input: tool === 'SendMessage' ? { to, message: 'joined: builder-1, idle' } : { session_id: to, message: 'x' } });
 const decision = (r) => (r.stdout ? JSON.parse(r.stdout).hookSpecificOutput : null);
 
-test('two teams on one host: A\'s bare "chief-of-staff" and B\'s qualified name are refused from A, naming A\'s session; A\'s own qualified name passes', () => {
+test('two teams on one host: A\'s bare "chief-of-staff" while B\'s is live, and B\'s qualified name, are refused from A, naming A\'s session; A\'s own qualified name passes', () => {
   const a = teamWith('alpha', 'builder-1');
-  teamWith('beta', 'builder-1');
-  const bare = decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1'));
+  const b = teamWith('beta', 'builder-1', 'chief-of-staff');
+  const theirs = sessionsDir([{ pid: process.pid, cwd: path.join(b.teamDir, 'chief-of-staff'), name: 'chief-of-staff' }]);
+  const bare = decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', theirs));
   assert.equal(bare.permissionDecision, 'deny');
   assert.match(bare.permissionDecisionReason, /^"chief-of-staff" is a bare role name; session names are shared by every team on this machine/);
   assert.match(bare.permissionDecisionReason, /send to chief-of-staff@alpha\.$/);
@@ -66,13 +67,15 @@ test('two teams on one host: A\'s bare "chief-of-staff" and B\'s qualified name 
   assert.equal(runHook(send(a.roleDir, 'chief-of-staff@alpha'), 'builder-1').stdout, '', 'this team\'s qualified name passes');
   assert.equal(runHook(send(a.roleDir, 'chief-of-staff@alpha- [ex-1]'), 'builder-1').stdout, '', 'a trailing "-" and a [ref] change nothing');
   // the session tool is guarded the same way
-  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff', 'mcp__ccd_session_mgmt__send_message'), 'builder-1')).permissionDecision, 'deny');
+  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff', 'mcp__ccd_session_mgmt__send_message'), 'builder-1', theirs)).permissionDecision, 'deny');
 });
 
 test('a bare instance, alias, steward or a role this team does not have is refused; names that are no role pass', () => {
   const { team } = teamWith('alpha', 'builder-1');
   const reason = (to) => { const d = judge(team, to, 'pc'); return d && d.reason; };
+  // judged without the sender's own context (no sessions to read), even our own instance is refused
   assert.match(reason('builder-2 [ex-1]'), /^"builder-2" is a bare role name.*\nRole sessions are named <instance>@<team>: send to builder-2@alpha\.$/s);
+  assert.match(reason('builder-7'), /no session of this team is "builder-7"/, 'a numbered instance outside the manifest');
   assert.match(reason('Delivery-Manager'), /send to delivery-lead@alpha\.$/);
   assert.match(reason('builder'), /no session of this team is "builder"; this team's sessions are chief-of-staff@alpha, .*builder-1@alpha, builder-2@alpha/);
   assert.match(reason('tech-writer'), /no session of this team is "tech-writer"/, 'a role another team on the host may run');
@@ -99,7 +102,7 @@ test('inert outside a role session, with another session\'s marker, for another 
 // Sessions started before qualified names still run under bare names: a bare send to one of this team's
 // instances passes, with a warning, while every live session of that name is in that instance's role
 // directory of this team. Anything else, or sessions that cannot be read, is refused.
-test('transition: a bare name of our own instance passes with a warning only while its live sessions are all ours', () => {
+test('transition: a bare name of our own instance passes with a warning unless another team\'s live session holds it', () => {
   const a = teamWith('alpha', 'builder-1', 'chief-of-staff');
   const b = teamWith('beta', 'builder-1', 'chief-of-staff');
   const ourCos = path.join(a.teamDir, 'chief-of-staff');
@@ -121,9 +124,7 @@ test('transition: a bare name of our own instance passes with a warning only whi
   assert.equal(decision(runHook(send(b.roleDir, 'chief-of-staff'), 'builder-1', both)).permissionDecision, 'deny');
   // a live one elsewhere on the machine (not a role directory): refused
   assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([live(ourCos), live(os.tmpdir())]))).permissionDecision, 'deny');
-  // none live, no sessions directory, or a record that cannot be read: refused (fail closed)
-  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([{ pid: DEAD, cwd: ourCos, name: 'chief-of-staff' }]))).permissionDecision, 'deny');
-  assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', path.join(EMPTY_SESSIONS, 'missing'))).permissionDecision, 'deny');
+  // a record that cannot be read may be another team's live session: refused (fail closed)
   const broken = sessionsDir([live(ourCos)]);
   fs.writeFileSync(path.join(broken, '999999.json'), '{not json');
   assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', broken)).permissionDecision, 'deny');
@@ -138,4 +139,43 @@ test('transition: a bare name of our own instance passes with a warning only whi
     const w = JSON.parse(runHook(send(a.roleDir, to), 'builder-1', shown).stdout);
     assert.match(w.hookSpecificOutput.additionalContext, /Send to chief-of-staff@alpha from now on/, to);
   }
+});
+
+// A message to a teammate that is not running is kept for it and the watchdog wakes it with it
+// (route-check.js, PostToolUse): a bare name of our own instance is never refused for not being live.
+test('a bare name of our own instance that is not live passes with a warning, and the send is kept for the watchdog', () => {
+  const a = teamWith('alpha', 'builder-1', 'chief-of-staff');
+  const b = teamWith('beta', 'builder-1', 'builder-2');
+  const ourCos = path.join(a.teamDir, 'chief-of-staff');
+  const warned = (to, sessions) => {
+    const r = runHook(send(a.roleDir, to), 'builder-1', sessions);
+    assert.notEqual(r.stdout, '', `${to}: a warning`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.hookSpecificOutput.permissionDecision, undefined, `${to}: a warning, not a decision`);
+    return out.hookSpecificOutput.additionalContext;
+  };
+  // builder-2 is in our manifest, never started (no role directory), nothing live: allowed, naming the qualified form
+  assert.match(warned('builder-2', EMPTY_SESSIONS), /"builder-2" is a bare session name; allowed for now.*Send to builder-2@alpha from now on/);
+  assert.match(warned('Builder_2 [ex-1]', EMPTY_SESSIONS), /Send to builder-2@alpha from now on/);
+  // only a stale record of that name (its pid has ended), or no sessions directory at all: nothing live, allowed
+  assert.match(warned('chief-of-staff', sessionsDir([{ pid: DEAD, cwd: ourCos, name: 'chief-of-staff' }])), /Send to chief-of-staff@alpha from now on/);
+  assert.match(warned('chief-of-staff', path.join(EMPTY_SESSIONS, 'missing')), /Send to chief-of-staff@alpha from now on/);
+  // another team's live builder-2 holds the name: refused, naming ours
+  const theirs = sessionsDir([{ pid: process.pid, cwd: path.join(b.teamDir, 'builder-2'), name: 'builder-2' }]);
+  const d = decision(runHook(send(a.roleDir, 'builder-2'), 'builder-1', theirs));
+  assert.equal(d.permissionDecision, 'deny');
+  assert.match(d.permissionDecisionReason, /send to builder-2@alpha\.$/);
+  // the send goes out, finds no running builder-2, and the PostToolUse hook keeps it for builder-2
+  const { check } = require('./route-check.js');
+  const IB = require('../../scripts/lib/inbox.js');
+  const post = { ...send(a.roleDir, 'builder-2'), hook_event_name: 'PostToolUse', tool_response: "No agent named 'builder-2' is reachable" };
+  const prev = process.env.DELIVERY_ROLE;
+  process.env.DELIVERY_ROLE = 'builder-1';
+  delete process.env.DELIVERY_ROLE_DIR;
+  try {
+    const kept = check(post);
+    assert.ok(kept && /kept for it/.test(kept.context), kept && kept.context);
+  } finally { if (prev === undefined) delete process.env.DELIVERY_ROLE; else process.env.DELIVERY_ROLE = prev; }
+  const box = IB.pending(a.projectRoot).find((p) => p.to === 'builder-2');
+  assert.ok(box && box.entries.length === 1 && box.entries[0].from === 'builder-1', JSON.stringify(IB.pending(a.projectRoot)));
 });
