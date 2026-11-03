@@ -1,0 +1,4 @@
+cursors/
+*.lock
+*.lock.stale-*
+*.stale-*

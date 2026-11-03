@@ -94,6 +94,13 @@ function truncateText(text) {
 function dedupeKey(e) {
   return e.source === 'human' ? e.ext_id : (e.uuid || e.ext_id);
 }
+// Every key an input is known by: its dedupe key and, for a delivery.confirmation/1 answer, its event_id,
+// which is stable across re-capture by any writer, so one provider event is one operator input.
+function dedupeKeys(e) {
+  const a = e.asked;
+  const ev = a && typeof a === 'object' && a.contract !== undefined && typeof a.event_id === 'string' && a.event_id ? `event:${a.event_id}` : null;
+  return [dedupeKey(e), ev].filter(Boolean);
+}
 
 function loadIndex(root, host) {
   const file = path.join(opDir(root), 'cursors', `inputs-index-${host}.json`);
@@ -109,7 +116,7 @@ function loadIndex(root, host) {
   }
   const map = new Map();
   for (const f of files) {
-    for (const e of readEntries(path.join(hostDir(root, host), f))) { const k = dedupeKey(e); if (k) map.set(k, e.id); }
+    for (const e of readEntries(path.join(hostDir(root, host), f))) for (const k of dedupeKeys(e)) map.set(k, e.id);
   }
   return { file, last_id: lastId, map, dirty: true };
 }
@@ -204,6 +211,88 @@ function dropHead(root, key) {
   });
 }
 
+// Append inputs to this host's chain under its lock (held by the caller), skipping any already stored
+// under one of its keys; advances the host's head. Returns the number added.
+function appendLocked(projectRoot, host, inputs, idx, { sessionId, instance, role, now, transcriptPath, roleSince }) {
+  const monthName = `${now.toISOString().slice(0, 7)}.ndjson`;
+  const dir = hostDir(projectRoot, host);
+  let added = 0;
+  for (const inp of inputs) {
+    if (inp.source === 'system') continue;
+    const extId = inp.ext_id || `${sessionId}:${inp.line}`;
+    const keys = dedupeKeys({ source: inp.source, ext_id: extId, uuid: inp.uuid, asked: inp.asked });
+    if (keys.some((k) => idx.map.has(k))) continue;
+    const files = monthFiles(projectRoot, host);
+    const latest = files.length ? files[files.length - 1] : null;
+    // never write into an older month than the newest existing file: keep one linear chain
+    const target = latest && latest > monthName ? latest : monthName;
+    const prevFile = latest && latest !== target ? path.join(dir, latest) : null;
+    const full = inp.text;
+    const t = truncateText(full);
+    const stored = chain.appendEntry(path.join(dir, target), (last) => {
+      const seq = last ? (parseId(last.id) || { seq: 0 }).seq + 1 : 1;
+      const e = {
+        id: `in-${host}-${pad(seq)}`,
+        host,
+        ts: inp.timestamp || now.toISOString(),
+        captured_at: now.toISOString(),
+        session_id: inp.session_id || sessionId || null,
+        instance: instance || null,
+        role: role || null,
+        source: inp.source,
+        text: t.text,
+        text_sha256: sha256(full),
+        ext_id: extId,
+        uuid: inp.uuid || null,
+        transcript_ref: inp.transcript_ref || (transcriptPath ? { file: path.basename(transcriptPath), line: inp.line } : null),
+      };
+      if (t.truncated) e.truncated = true;
+      // what the owner answered: the question box record (delivery.confirmation, kept whole as handed
+      // over, its provider never rewritten), or the session's message before a typed reply
+      if (inp.asked) e.asked = inp.asked;
+      if (inp.after_assistant) e.after_assistant = inp.after_assistant;
+      // a prompt typed before this session became the role (a resumed or adopted session): kept
+      // and citable, never pending (see roleSince)
+      if (roleSince && Date.parse(e.ts) < Date.parse(roleSince)) e.pre_role = true;
+      return e;
+    }, { alreadyLocked: true, prevFile });
+    for (const k of keys) idx.map.set(k, stored.id);
+    idx.last_id = stored.id;
+    added++;
+  }
+  if (added) {
+    // a head only ever advances: a log that was truncated stays flagged by verify
+    const h = verifyHostRaw(projectRoot, host);
+    const cur = readHeads(projectRoot)[host];
+    if (h.ok && (!cur || (h.count >= cur.count && (cur.count === 0 || h.hashes[cur.count - 1] === cur.last_hash)))) {
+      setHead(projectRoot, host, { count: h.count, last_hash: h.last_hash });
+    }
+  }
+  return added;
+}
+
+// Store operator inputs another writer captured, each carrying its delivery.confirmation record in
+// `asked` (the Codex port writes its own records under the contract): kept whole, its provider never
+// rewritten, and one provider event (event_id) stored once. inputs: [{ text, asked, timestamp,
+// session_id, ext_id?, uuid?, transcript_ref? }]. Returns { added }.
+function recordInputs({ projectRoot, host: h, inputs, instance, role, now: at }) {
+  const host = safeHost(h);
+  const now = at ? new Date(at) : new Date();
+  ensureGitignore(projectRoot);
+  const ok = (inputs || []).filter((i) => i && typeof i.text === 'string' && i.asked && typeof i.asked === 'object' && (require('./confirmation.js').majorOf(i.asked) || 0) >= 1 && typeof i.asked.event_id === 'string' && i.asked.event_id);
+  // a handed record is /1 or later: /0 is the reading of a capture this plugin made itself, from before
+  // the contract, and a handed one would be read as stored without any transcript being opened
+  if (ok.length !== (inputs || []).length) throw new Error('each input needs its text and a delivery.confirmation/1 or later record (contract, event_id) in asked');
+  let added = 0;
+  fs.mkdirSync(hostDir(projectRoot, host), { recursive: true });
+  chain.withLock(path.join(hostDir(projectRoot, host), '.host.lock'), () => {
+    const idx = loadIndex(projectRoot, host);
+    added = appendLocked(projectRoot, host, ok.map((i) => ({ ...i, source: 'human', ext_id: i.ext_id || i.asked.event_id })), idx, { sessionId: null, instance, role, now, transcriptPath: null });
+    if (added || idx.dirty) writeJsonAtomic(idx.file, { last_id: idx.last_id, map: Object.fromEntries(idx.map) });
+  });
+  return { added };
+}
+
 function syncTranscript(opts) {
   const { projectRoot, transcriptPath, sessionId, instance, role } = opts;
   const host = safeHost(opts.host);
@@ -233,63 +322,11 @@ function syncTranscript(opts) {
     base = { total_user_records: 0, with_origin: 0, recognised: 0 };
   }
 
-  const monthName = `${now.toISOString().slice(0, 7)}.ndjson`;
-  const dir = hostDir(projectRoot, host);
-  const lockFile = path.join(dir, '.host.lock');
   let added = 0;
 
-  chain.withLock(lockFile, () => {
+  chain.withLock(path.join(hostDir(projectRoot, host), '.host.lock'), () => {
     const idx = loadIndex(projectRoot, host);
-    for (const inp of read.inputs) {
-      if (inp.source === 'system') continue;
-      const extId = inp.ext_id || `${sessionId}:${inp.line}`;
-      const key = dedupeKey({ source: inp.source, ext_id: extId, uuid: inp.uuid });
-      if (idx.map.has(key)) continue;
-      const files = monthFiles(projectRoot, host);
-      const latest = files.length ? files[files.length - 1] : null;
-      // never write into an older month than the newest existing file: keep one linear chain
-      const target = latest && latest > monthName ? latest : monthName;
-      const prevFile = latest && latest !== target ? path.join(dir, latest) : null;
-      const full = inp.text;
-      const t = truncateText(full);
-      const stored = chain.appendEntry(path.join(dir, target), (last) => {
-        const seq = last ? (parseId(last.id) || { seq: 0 }).seq + 1 : 1;
-        const e = {
-          id: `in-${host}-${pad(seq)}`,
-          host,
-          ts: inp.timestamp || now.toISOString(),
-          captured_at: now.toISOString(),
-          session_id: inp.session_id || sessionId || null,
-          instance: instance || null,
-          role: role || null,
-          source: inp.source,
-          text: t.text,
-          text_sha256: sha256(full),
-          ext_id: extId,
-          uuid: inp.uuid || null,
-          transcript_ref: { file: path.basename(transcriptPath), line: inp.line },
-        };
-        if (t.truncated) e.truncated = true;
-        // what the owner answered: the AskUserQuestion question, or the session's message before a typed reply
-        if (inp.asked) e.asked = inp.asked;
-        if (inp.after_assistant) e.after_assistant = inp.after_assistant;
-        // a prompt typed before this session became the role (a resumed or adopted session): kept
-        // and citable, never pending (see roleSince)
-        if (opts.roleSince && Date.parse(e.ts) < Date.parse(opts.roleSince)) e.pre_role = true;
-        return e;
-      }, { alreadyLocked: true, prevFile });
-      idx.map.set(key, stored.id);
-      idx.last_id = stored.id;
-      added++;
-    }
-    if (added) {
-      // a head only ever advances: a log that was truncated stays flagged by verify
-      const h = verifyHostRaw(projectRoot, host);
-      const cur = readHeads(projectRoot)[host];
-      if (h.ok && (!cur || (h.count >= cur.count && (cur.count === 0 || h.hashes[cur.count - 1] === cur.last_hash)))) {
-        setHead(projectRoot, host, { count: h.count, last_hash: h.last_hash });
-      }
-    }
+    added = appendLocked(projectRoot, host, read.inputs, idx, { sessionId, instance, role, now, transcriptPath, roleSince: opts.roleSince });
     if (added || idx.dirty) writeJsonAtomic(idx.file, { last_id: idx.last_id, map: Object.fromEntries(idx.map) });
     // cursor advances only after the entries are on disk
     cursor = {
@@ -495,4 +532,4 @@ function unpublished(projectRoot, opts = {}) {
   return store.unpublished(projectRoot, { filter });
 }
 
-module.exports = { roleBoundary, roleSince, headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };
+module.exports = { roleBoundary, roleSince, headsProblem, unpublished, dropHead, lastPublishReason, syncTranscript, recordInputs, getInput, listInputs, verifyInputs, publish, refresh, safeHost, parseId, listHosts, readHeads, setHead, opDir };

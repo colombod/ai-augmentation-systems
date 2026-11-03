@@ -58,7 +58,7 @@ function goalProject({ freeText = false } = {}) {
     cos(shown === undefined ? `One decision for you. ${text}` : shown);
     return decide(say(reply, { laterMin }), reply, `goal:${field}=${value}`, [q]);
   };
-  return { root, say, cos, askUser, ask, decide, confirmAsk, confirmTyped };
+  return { root, tr, say, cos, askUser, ask, decide, confirmAsk, confirmTyped };
 }
 // set a field on the owner's Yes in the box, as goal.js set does
 const ownerSets = (t, field, value) => Goal.set({ root: t.root, who: { root: t.root, roleId: 'chief-of-staff', instance: 'chief-of-staff' }, field, value: String(value), record: t.confirmAsk(field, String(value)) });
