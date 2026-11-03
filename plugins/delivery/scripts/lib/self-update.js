@@ -9,10 +9,17 @@
 //     (an ungated commit in the range would ride into the install under the gated version: refused).
 //     The "(#N)" in the subject only says which record to read; anyone can type it, so the commit must
 //     equal that record's merge_commit (or, for a row written before merge_commit was recorded,
-//     GitHub's merge commit for the pull request). The installed sha must be known to the clone, or
-//     the range cannot be read: refused, never guessed;
+//     GitHub's merge commit for the pull request). A subject with no "(#N)" (a squash merge whose
+//     title ends "(Refs <bead>)") asks GitHub which merged pull request has exactly this merge commit,
+//     then reads that record the same way; with no answer, refused. The installed sha must be known to
+//     the clone, or the range cannot be read: refused, never guessed;
 //   - no wake is running (its session loaded the old plugin; installing under it is the run in
-//     progress the bead forbids): held, tried again next cycle.
+//     progress the bead forbids): held, tried again next cycle, for every install.
+// Each install (the job's own and each role directory's) is decided on its own range and goes when it
+// passes: an old role install refused over its range never blocks the others (seen on wintermute: role
+// installs at 0.41.2 held every install back at 0.43.39). A role install is always checked over its own
+// range, never the job's: what the job's install carries proves nothing about the commits below it (a
+// hand push under a later gated install would ride into an older role install).
 // Main is read with `git fetch` only: `claude plugin marketplace update` runs after the gate passed,
 // since a refreshed catalog would make an ungated version installable by hand. A development checkout
 // (not an install) is never updated. Failures are logged and retried at most once an hour; nothing here
@@ -112,6 +119,17 @@ function gatedMerge(root, pr, repo, sha, mergeCommitOf = () => null) {
   return mc === sha ? { ok: true } : { ok: false, why: `commit ${sha.slice(0, 12)} names PR ${pr} but is not its merge (${String(mc).slice(0, 12)})` };
 }
 
+// The pull request GitHub says commit `sha` is the merge of, or null: merged, and its merge commit is
+// exactly `sha` (a pull request that merely contains the commit is not its merge). Bounded, never throws.
+const ghPrOfCommit = (exec, repo, cwd) => (sha) => {
+  if (!repo) return null;
+  try {
+    const list = JSON.parse(String(exec('gh', ['api', `repos/${repo}/commits/${sha}/pulls`], { cwd, timeout: GH_TIMEOUT_MS }) || '[]'));
+    const p = (Array.isArray(list) ? list : []).find((x) => x && x.merged_at && x.merge_commit_sha === sha && Number.isInteger(x.number));
+    return p ? p.number : null;
+  } catch (err) { return null; }
+};
+
 // GitHub's merge commit for a pull request, or null: bounded, and never throws
 const ghMergeCommit = (exec, repo, cwd) => (pr) => {
   try {
@@ -120,20 +138,25 @@ const ghMergeCommit = (exec, repo, cwd) => (pr) => {
   } catch (err) { return null; }
 };
 
-// The decision, pure: { action: 'none' | 'install' | 'held' | 'refuse', why, pr }.
-function decide({ installed, main, gatedOf, running }) {
+// The decision, pure: { action: 'none' | 'install' | 'held' | 'refuse', why, pr }. `prOf(sha)` names the
+// pull request GitHub merged as a commit whose subject names none; gatedOf(pr, sha, true) is then told
+// GitHub already matched that pull request's merge commit to `sha`.
+function decide({ installed, main, gatedOf, running, prOf = () => null }) {
   const c = compare(main.version, installed);
   if (c !== 1) return { action: 'none', why: c === null ? `unreadable version (${main.version} vs ${installed})` : `main carries ${main.version}, installed ${installed}` };
   if (!main.known) return { action: 'refuse', why: 'the installed sha is not known, so the commits since it cannot be checked', pr: null };
   if (!main.commits.length) return { action: 'refuse', why: 'no commit on main changed the plugin since the installed one', pr: null };
+  const prs = [];
   for (const k of main.commits) {
-    if (!k.pr) return { action: 'refuse', why: `commit ${k.sha.slice(0, 12)} names no pull request`, pr: null };
-    const g = gatedOf(k.pr, k.sha);
-    if (!g.ok) return { action: 'refuse', why: g.why, pr: k.pr };
+    const pr = k.pr || prOf(k.sha);
+    if (!pr) return { action: 'refuse', why: `commit ${k.sha.slice(0, 12)} names no pull request and GitHub names none`, pr: null };
+    const g = gatedOf(pr, k.sha, !k.pr);
+    if (!g.ok) return { action: 'refuse', why: g.why, pr };
+    prs.push(pr);
   }
-  const pr = main.commits[0].pr;
+  const pr = prs[0];
   if (running.length) return { action: 'held', why: `a run is in progress (wake pid ${running.join(', ')})`, pr };
-  return { action: 'install', why: `gated through PR ${main.commits.map((k) => k.pr).filter((x, i, a) => a.indexOf(x) === i).join(', PR ')}`, pr };
+  return { action: 'install', why: `gated through PR ${prs.filter((x, i, a) => a.indexOf(x) === i).join(', PR ')}`, pr };
 }
 
 const defaultExec = (bin, args, { cwd, timeout = EXEC_TIMEOUT_MS }) => execFileSync(bin, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
@@ -152,7 +175,13 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     // logRows reads the current log and the one rotation kept; a wake older than both (over 2 MB of
     // rows ago) is not seen, which the wake timeout makes moot: such a wake has long been stopped
     const running = [...new Set(WD.logRows(root).filter((r) => r.type === 'wake').map((r) => r.pid))].filter((pid) => alive(pid));
-    const gatedOf = (pr, sha) => gatedMerge(root, pr, own.repo, sha, ghMergeCommit(exec, own.repo, root));
+    const mergeCommitOf = ghMergeCommit(exec, own.repo, root);
+    const prOf = ghPrOfCommit(exec, own.repo, root);
+    // a pull request found by its merge commit was matched to `sha` by GitHub already; a recorded
+    // merge_commit still has to agree with it. `() => sha` stands for GitHub's merge commit only because
+    // ghPrOfCommit returns a pull request solely when its merge_commit_sha equals `sha` exactly: loosen
+    // that match and this must pass GitHub's merge_commit_sha through instead
+    const gatedOf = (pr, sha, byCommit) => gatedMerge(root, pr, own.repo, sha, byCommit ? () => sha : mergeCommitOf);
     const vs = compare(main.version, own.entry.version);
     const ownBehind = vs === 1;
     // role directories behind main: looked for on every pass, not only when the job's own install is,
@@ -160,25 +189,37 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     const others = entriesOf(readJson(path.join(pluginsDir(configDir || env.CLAUDE_CONFIG_DIR), 'installed_plugins.json')), own.key)
       .filter((e) => (vs === 0 || vs === 1) && e !== own.entry && e.projectPath && roleDirs.some((r) => same(r, e.projectPath)) && compare(main.version, e.version) === 1 && !(same(e.projectPath, own.entry.projectPath) && e.scope === own.entry.scope));
     // each install passes the same gate check, over the commits since its own installed sha
-    const checkOf = (e) => decide({ installed: e.version, main: e === own.entry ? main : { ...main, ...rangeFrom(own.clone, main.src, e.gitCommitSha, main.sha) }, gatedOf, running });
-    const checks = [...(ownBehind ? [own.entry] : []), ...others].map(checkOf);
-    const d = checks.find((x) => x.action === 'refuse') || checks.find((x) => x.action === 'held') || checks[0] || checkOf(own.entry);
-    const first = ownBehind ? own.entry : others[0];
+    const rangeOf = (e) => (e === own.entry ? main : { ...main, ...rangeFrom(own.clone, main.src, e.gitCommitSha, main.sha) });
+    const entries = [...(ownBehind ? [own.entry] : []), ...others];
+    if (!entries.length) return { lines: [], installed: false };
+    // each install is decided on its own: one refused never blocks another that passes
+    const checks = entries.map((e) => ({ e, d: decide({ installed: e.version, main: rangeOf(e), gatedOf, running, prOf }) }));
     const label = `plugin ${own.name} ${main.version} (main ${main.sha.slice(0, 12)})`;
-    if (d.action === 'none') return { lines: [], installed: false };
-    if (d.action === 'held') return { lines: [`self-update: ${label} held: ${d.why}; tried again next cycle.`], installed: false };
-    const row = { type: 'self-update', from: first.version, version: main.version, sha: main.sha, pr: d.pr, scope: first.scope, at };
-    if (d.action === 'refuse') {
-      // once per version: a refusal that stands is not news every fifteen minutes
-      if (!dryRun && !rows.some((r) => r.result === 'refused')) WD.log(root, { ...row, result: 'refused', why: d.why });
-      return { lines: [`self-update: ${label} refused: ${d.why}.`], installed: false };
+    const targetOf = (e) => (!e.scope || e.scope === 'user' ? 'user' : `${e.scope} ${e.projectPath}`);
+    const forOf = (e) => (e === own.entry ? '' : ` (for ${targetOf(e)})`);
+    const refusals = [];
+    for (const { e, d } of checks.filter((c) => c.d.action === 'refuse')) {
+      const target = targetOf(e);
+      // once per version and install: a refusal that stands is not news every fifteen minutes (a row
+      // from before targets were recorded counts as the job's own)
+      if (!dryRun && !rows.some((r) => r.result === 'refused' && (r.target || targetOf(own.entry)) === target)) WD.log(root, { type: 'self-update', from: e.version, version: main.version, sha: main.sha, pr: d.pr, scope: e.scope, target, at, result: 'refused', why: d.why });
+      refusals.push(`self-update: ${label} refused: ${d.why}${forOf(e)}.`);
     }
+    // a running wake holds every install that passed: its session loaded the old plugin
+    const held = checks.find((c) => c.d.action === 'held');
+    if (held) return { lines: [`self-update: ${label} held: ${held.d.why}; tried again next cycle.`, ...refusals], installed: false };
+    const go = checks.filter((c) => c.d.action === 'install');
+    if (!go.length) return { lines: refusals, installed: false };
+    const { e: first, d } = go[0];
+    const ownGo = go.some((c) => c.e === own.entry);
+    const goOthers = go.map((c) => c.e).filter((e) => e !== own.entry);
+    const row = { type: 'self-update', from: first.version, version: main.version, sha: main.sha, pr: d.pr, scope: first.scope, at };
     const failed = rows.filter((r) => r.result === 'failed').pop();
-    if (failed && Date.parse(at) - Date.parse(failed.at) < RETRY_MS) return { lines: [`self-update: ${label} failed at ${failed.at}; tried again an hour after.`], installed: false };
+    if (failed && Date.parse(at) - Date.parse(failed.at) < RETRY_MS) return { lines: [`self-update: ${label} failed at ${failed.at}; tried again an hour after.`, ...refusals], installed: false };
     const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
     const key = `${own.name}@${own.marketplace}`;
-    const targets = [...(ownBehind ? [own.entry] : []), ...others].map((e) => ({ scope: e.scope || 'user', cwd: e.projectPath && e.scope !== 'user' ? e.projectPath : root }));
-    if (dryRun) return { lines: [`self-update: would install ${label} (${d.why}) for ${targets.map((t) => (t.scope === 'user' ? 'user' : `${t.scope} ${t.cwd}`)).join(', ')}.`], installed: false };
+    const targets = go.map(({ e }) => ({ scope: e.scope || 'user', cwd: e.projectPath && e.scope !== 'user' ? e.projectPath : root }));
+    if (dryRun) return { lines: [`self-update: would install ${label} (${d.why}) for ${targets.map((t) => (t.scope === 'user' ? 'user' : `${t.scope} ${t.cwd}`)).join(', ')}.`, ...refusals], installed: false };
     let detail = '';
     try {
       exec(bin, ['plugin', 'marketplace', 'update', own.marketplace], { cwd: root });
@@ -192,21 +233,21 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     // looked at first, since a newer version than the checked one is that case too, not a failure
     const got = (now0 && now0.gitCommitSha) || null;
     const untouched = now0 && now0.version === own.entry.version && got === (own.entry.gitCommitSha || null);
-    if (ownBehind && now0 && !untouched && got !== main.sha) {
+    if (ownGo && now0 && !untouched && got !== main.sha) {
       const why = `installed ${got ? got.slice(0, 12) : 'an unrecorded sha'}, not the checked ${main.sha.slice(0, 12)}: main moved during the update`;
       WD.log(root, { ...row, result: 'ungated-install', version: now0.version, sha: got, checked: main.sha, detail: why });
       const w = require('./warnings.js').record(root, { kind: 'install-ungated', rule: 'R-32', bead: null, detail: `plugin ${own.name} ${now0.version}: ${why}`, raisedBy: 'watchdog', instance: 'watchdog', now: at });
-      return { lines: [`self-update: warning ${w ? w.id : 'unrecorded'}: ${label} ${why}; what it carries was not checked against the gate.`], installed: false };
+      return { lines: [`self-update: warning ${w ? w.id : 'unrecorded'}: ${label} ${why}; what it carries was not checked against the gate.`, ...refusals], installed: false };
     }
-    if (!detail && ownBehind && (!now0 || now0.version !== main.version)) detail = `the install still records ${now0 ? now0.version : 'nothing'} after the update`;
-    const behind = others.filter((o) => !after.some((e) => same(e.projectPath, o.projectPath) && e.scope === o.scope && e.version === main.version)).map((o) => o.projectPath);
+    if (!detail && ownGo && (!now0 || now0.version !== main.version)) detail = `the install still records ${now0 ? now0.version : 'nothing'} after the update`;
+    const behind = goOthers.filter((o) => !after.some((e) => same(e.projectPath, o.projectPath) && e.scope === o.scope && e.version === main.version)).map((o) => o.projectPath);
     if (!detail && behind.length) detail = `still on the old version: ${behind.join(', ')}`;
     if (detail) {
       WD.log(root, { ...row, result: 'failed', detail });
-      return { lines: [`self-update: ${label} failed: ${detail}.`], installed: false };
+      return { lines: [`self-update: ${label} failed: ${detail}.`, ...refusals], installed: false };
     }
-    WD.log(root, { ...row, result: 'installed', sha: ownBehind ? got : main.sha, detail: `${d.why}; ${targets.length} install(s)` });
-    return { lines: [`self-update: installed ${label}, ${d.why}.`], installed: true, version: main.version };
+    WD.log(root, { ...row, result: 'installed', sha: ownGo ? got : main.sha, detail: `${d.why}; ${targets.length} install(s)` });
+    return { lines: [`self-update: installed ${label}, ${d.why}.`, ...refusals], installed: true, version: main.version };
   } catch (err) {
     return { lines: [`self-update: not checked (${brief(err)}); the wakes go on.`], installed: false };
   }
