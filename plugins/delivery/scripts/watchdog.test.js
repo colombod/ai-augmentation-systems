@@ -1458,12 +1458,15 @@ test('hjx.1 (Copilot 4436744698): logged assigned wakes do not hold a due stall 
 });
 
 // Copilot on PR 113 (023505b): a stall wake carries the holder's assigned work, not drops it on the stall backoff
-test('hjx.1 (Copilot 4436815462): assigned work woken 7 min ago rides the newly due stall wake', () => {
+test('hjx.1 (Copilot 4436815462), 6z5: assigned work rides the newly due stall wake; an open bead queued behind the stalled one waits for it', () => {
   const now = Date.parse('2026-11-01T12:00:00Z');
   const stuck = { id: 'ex-q', status: 'in_progress', assignee: 'builder-2', updated_at: iso(now - 3 * H) };
   const next = { id: 'ex-a', status: 'open', assignee: 'builder-2', updated_at: iso(now - 30 * 60e3) };
   const st = WD.stalls({ now: iso(now), beads: [stuck, next], ready: [next], sessions: [{ instance: 'builder-2', role: 'builder', session: 's-b2', roleDir: os.tmpdir(), lastActive: now - 3 * H }], stallHours: 2 });
-  assert.deepEqual(st.stalls.map((x) => x.key).sort(), ['assigned:ex-a', `quiet:ex-q:${iso(now - 3 * H)}`]);
+  // 6z5: the open bead waits behind its holder's own work in progress; the stall wakes it for that work
+  assert.deepEqual(st.stalls.map((x) => x.key).sort(), [`quiet:ex-q:${iso(now - 3 * H)}`]);
+  // assigned work that is due (an in-progress bead of its own) rides the stall wake
+  st.stalls.push({ kind: 'assigned', key: 'assigned:ex-a', bead: 'ex-a', target: 'builder-2', due: true, line: 'Assigned and waiting: ex-a', prompt: 'ex-a is assigned to you and waiting (in_progress).' });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hjx1-mix-'));
   try {
     WD.log(root, { type: 'wake', at: iso(now - 7 * 60e3), keys: ['assigned:ex-a'], instance: 'builder-2', pid: 7 });
@@ -1722,4 +1725,146 @@ test('bqj: the briefing never shows a team healthy when the watchdog could not r
   assert.equal(DP.isRecovery('message:delivery-lead:3'), false);
   assert.equal(DP.isRecovery('assigned:ex-a'), false);
   assert.equal(DP.isRecovery('manager:1:rv-1'), true);
+});
+
+// 6z5: a builder was woken every pass overnight for beads it could not move, spent its 48 handover wakes
+// by midday, and the review that sent its pull request back was held behind "alarm only"
+const B2 = 'builder-2';
+const sess6 = (inst, lastActive) => ({ instance: inst, role: inst.replace(/-\d+$/, ''), session: `s-${inst}`, roleDir: os.tmpdir(), lastActive });
+const assigned6 = (r) => r.stalls.filter((s) => s.kind === 'assigned').map((s) => s.bead);
+const dir6 = () => fs.mkdtempSync(path.join(os.tmpdir(), 'wd-6z5-'));
+const plan6 = (rows, stalls, now) => {
+  const where = dir6();
+  for (const r of rows) WD.log(where, { type: 'wake', instance: B2, pid: 7, ...r });
+  return WD.plan({ stalls }, { root: where, now, alive: () => false });
+};
+
+test('6z5: assigned work waiting on its review, or queued behind its holder\'s own work in progress, does not wake the holder', () => {
+  const now = Date.parse('2026-11-03T02:00:00Z');
+  const mine = (id, status, extra = {}) => ({ id, status, assignee: `dev@pc/${B2}`, updated_at: iso(now - 30 * 60e3), ...extra });
+  const prog = mine('ex-review', 'in_progress');
+  const queued = mine('ex-next', 'open');
+  const sessions = [sess6(B2, now - 30 * 60e3), sess6(DM, now - 30 * 60e3)];
+  const st = (reviews, beads = [prog, queued]) => WD.stalls({ now: iso(now), beads, ready: [queued], sessions, reviews });
+  // its PR waits for review (any state but changes or sent back): neither bead wakes it
+  for (const state of ['waiting', 'passed', 'ready', 'stale', 'failing']) assert.deepEqual(assigned6(st([{ pr: '151', state, beads: ['ex-review'], owners: [B2] }])), [], state);
+  // the other direction: changes asked, or sent back, it is the builder's again; the queued bead still waits behind it
+  for (const state of ['changes', 'sent-back']) assert.deepEqual(assigned6(st([{ pr: '151', state, beads: ['ex-review'], owners: [B2] }])), ['ex-review'], state);
+  // no review record: the in-progress bead wakes it, the queued one waits behind it
+  assert.deepEqual(assigned6(st([])), ['ex-review']);
+  // the queued bead alone (its holder's other work is merged and waits on evidence, not its work): woken
+  assert.deepEqual(assigned6(st([], [{ ...prog, labels: ['state-merged'] }, queued])), ['ex-next']);
+  assert.deepEqual(assigned6(st([], [queued])), ['ex-next']);
+  // another holder's work in progress does not hold it
+  assert.deepEqual(assigned6(st([], [{ ...prog, assignee: 'dev@pc/builder' }, queued])), ['ex-next']);
+});
+
+test('6z5: a bead whose PR has waited past stall_hours for its review is the Delivery Manager\'s, not its builder\'s', () => {
+  const now = Date.parse('2026-11-03T08:00:00Z');
+  const prog = { id: 'ex-review', status: 'in_progress', assignee: `dev@pc/${B2}`, updated_at: iso(now - 3 * H) };
+  const sessions = [sess6(B2, now - 3 * H), sess6(DM, now - 10 * 60e3)];
+  const quiet = (reviews) => WD.stalls({ now: iso(now), beads: [prog], sessions, reviews, stallHours: 2 }).stalls.filter((s) => s.kind === 'quiet').map((s) => [s.key, s.target]);
+  assert.deepEqual(quiet([{ pr: '151', state: 'waiting', beads: ['ex-review'], owners: [B2] }]), [['reviewing:ex-review', DM]]);
+  // the other direction: sent back, the stall is its holder's
+  const back = quiet([{ pr: '151', state: 'sent-back', beads: ['ex-review'], owners: [B2] }]);
+  assert.equal(back.length, 1);
+  assert.equal(back[0][1], B2);
+});
+
+test('6z5: a pull request sent back to its author wakes it once, past any daily cap; a new request ends it', () => {
+  const t0 = Date.parse('2026-11-03T12:30:00Z');
+  const ago = (m) => new Date(t0 - m * 60e3).toISOString();
+  const sb = { id: 'rv-151-delivery-lead-9', at: ago(5), reason: 'changes', note: 'two pin bypasses' };
+  const review = { pr: '151', state: 'sent-back', beads: ['ex-review'], owners: [B2], sentBack: sb };
+  const sessions = [sess6(B2, t0 - 60 * 60e3)];
+  const st = (o = {}) => WD.stalls({ now: iso(t0), beads: [], sessions, reviews: [review], ...o }).stalls.filter((s) => s.kind === 'review');
+  const one = st();
+  assert.deepEqual(one.map((s) => [s.key, s.target]), [['review:151:rv-151-delivery-lead-9', B2]]);
+  assert.match(one[0].prompt, /PR 151 was sent back to you .*two pin bypasses.*ex-review/);
+  // once a wake carried it, it is handed over; a new request (state no longer sent-back) ends it; an owner off the roster wakes nobody
+  assert.deepEqual(st({ woken: ['review:151:rv-151-delivery-lead-9'] }), []);
+  assert.deepEqual(st({ reviews: [{ ...review, state: 'waiting' }] }), []);
+  assert.deepEqual(st({ sessions: [] }), []);
+  // planned past the message day: 60 handover wakes logged, it still goes
+  const sixty = Array.from({ length: 60 }, (_, i) => ({ at: ago(10 * (i + 1)), keys: [`message:${B2}:${i}`] }));
+  const p = plan6(sixty, one, iso(t0));
+  assert.deepEqual(p.wakes.map((w) => w.keys), [['review:151:rv-151-delivery-lead-9']]);
+  assert.deepEqual(p.held, []);
+});
+
+test('6z5: wakes for assigned work alone have their own day, so they never hold a message; their own cap and backoff hold them', () => {
+  const t0 = Date.parse('2026-11-03T12:00:00Z');
+  const ago = (m) => new Date(t0 - m * 60e3).toISOString();
+  const asg = (id) => ({ kind: 'assigned', key: `assigned:${id}`, bead: id, target: B2, due: true, line: `Assigned and waiting: ${id}`, prompt: `work ${id}` });
+  const msg = { kind: 'message', key: `message:${B2}:1`, target: B2, due: true, line: 'Waiting: 1 message', prompt: 'read it.', upTo: 1 };
+  const plan = (rows, stalls) => plan6(rows, stalls, iso(t0));
+  const assignedRows = (n) => Array.from({ length: n }, (_, i) => ({ at: ago(16 * (i + 1)), keys: [`assigned:old-${i}`] }));
+  // 48 wakes for assigned work alone: a message still goes, and the assigned work rides it
+  const m = plan(assignedRows(48), [msg, asg('ex-a')]);
+  assert.deepEqual(m.wakes.map((w) => w.keys), [[`message:${B2}:1`, 'assigned:ex-a']]);
+  // assigned work alone stops at its own cap, with its own reason
+  const capped = plan(assignedRows(WD.ASSIGNED_DAILY_CAP), [asg('ex-a')]);
+  assert.equal(capped.wakes.length, 0);
+  assert.match(capped.held[0].reason, new RegExp(`woken ${WD.ASSIGNED_DAILY_CAP} times in a day for assigned work alone`));
+  assert.equal(plan(assignedRows(WD.ASSIGNED_DAILY_CAP - 1), [asg('ex-a')]).wakes.length, 1, 'one under the cap: woken');
+  // the message day counts messages, not assigned work: 48 message wakes hold the message, not the assigned work
+  const msgRows = Array.from({ length: 48 }, (_, i) => ({ at: ago(16 * (i + 1)), keys: [`message:${B2}:old-${i}`] }));
+  const full = plan(msgRows, [msg, asg('ex-a')]);
+  assert.deepEqual(full.wakes.map((w) => w.keys), [['assigned:ex-a']]);
+  assert.match(full.held[0].reason, /woken 48 times in a day; alarm only/);
+  // each assigned bead backs off: woken 3 times for it, the next waits 20 min after the last
+  const wait = plan([ago(60), ago(40), ago(15)].map((at) => ({ at, keys: ['assigned:ex-a'] })), [asg('ex-a')]);
+  assert.equal(wait.wakes.length, 0);
+  assert.match(wait.held[0].reason, /waiting longer before the next try/);
+  assert.equal(plan([ago(60), ago(40), ago(21)].map((at) => ({ at, keys: ['assigned:ex-a'] })), [asg('ex-a')]).wakes.length, 1, '21 min after: woken');
+});
+
+test('6z5: the review facts come from the review records: a request waits, a send-back names its owners and row, a new request clears it', () => {
+  const R = require('./lib/reviews.js');
+  const where = dir6();
+  const head = 'a'.repeat(40);
+  R.append(where, '151', { type: 'request', head, owner: B2, reviewer: 'pr-reviewer', beads: ['ex-review'], at: '2026-11-03T10:00:00Z' }, DM);
+  assert.deepEqual(WD.reviewFacts(where).map((r) => [r.pr, r.state, r.beads, r.owners, r.sentBack]), [['151', 'waiting', ['ex-review'], [B2], null]]);
+  const sb = R.append(where, '151', { type: 'sent-back', head, reason: 'changes', note: 'fix it', owners: [B2], at: '2026-11-03T11:00:00Z' }, DM);
+  const back = WD.reviewFacts(where)[0];
+  assert.deepEqual([back.state, back.owners, back.sentBack.id, back.sentBack.note], ['sent-back', [B2], sb.id, 'fix it']);
+  R.append(where, '151', { type: 'request', head: 'b'.repeat(40), owner: B2, reviewer: 'pr-reviewer', beads: ['ex-review'], at: '2026-11-03T12:00:00Z' }, DM);
+  assert.equal(WD.reviewFacts(where)[0].state, 'waiting');
+  // no records: nothing, never a throw
+  assert.deepEqual(WD.reviewFacts(dir6()), []);
+});
+
+test('6z5: a night of watchdog passes over blocked work wakes the builder for none of it, and the morning\'s send-back and message go at once', () => {
+  const start = Date.parse('2026-11-02T20:33:00Z');
+  const end = Date.parse('2026-11-03T07:49:00Z');
+  const where = dir6();
+  const mine = (id, status, labels = []) => ({ id, status, assignee: `dev@pc/${B2}`, labels, updated_at: iso(start - 5 * 60e3), created_at: iso(start - 5 * H) });
+  // as on the night: two beads waiting on their review, two merged waiting on evidence, one queued behind them
+  const beads = [mine('ex-4', 'in_progress'), mine('ex-8-2', 'in_progress'), mine('ex-2ys', 'in_progress', ['state-merged']), mine('ex-0ba', 'in_progress', ['state-deployed']), mine('ex-5', 'open')];
+  const reviews = [{ pr: '150', state: 'waiting', beads: ['ex-4'], owners: [B2] }, { pr: '151', state: 'waiting', beads: ['ex-8-2'], owners: [B2] }];
+  let active = start - 60 * 60e3;
+  let builderWakes = 0;
+  const pass = (t, extra = {}) => {
+    const sessions = [sess6(B2, active), sess6(DM, t - 5 * 60e3)];
+    const st = WD.stalls({ now: iso(t), beads, ready: [beads[4]], sessions, reviews, stallHours: 2, ...extra });
+    const p = WD.plan(st, { root: where, now: iso(t), alive: () => false });
+    for (const w of p.wakes) {
+      WD.log(where, { type: 'wake', instance: w.target, pid: 7, at: iso(t), keys: w.keys });
+      // a wake that finds nothing to do still notes it on the bead, as on the night, so the beads stay fresh
+      if (w.target === B2) { builderWakes++; active = t + 2 * 60e3; for (const x of beads) x.updated_at = iso(t + 60e3); }
+    }
+    return p;
+  };
+  for (let t = start; t <= end; t += 16 * 60e3) pass(t);
+  assert.ok(builderWakes <= 2, `at most a few assigned wakes overnight (${builderWakes})`);
+  // the morning: PR 151 is sent back and a message waits; both reach the builder in the next pass, even
+  // after the 48 wakes for assigned work alone that spent the day before this change
+  for (let i = 0; i < 48; i++) WD.log(where, { type: 'wake', instance: B2, pid: 7, at: iso(end - (i + 1) * 13 * 60e3), keys: ['assigned:ex-old'] });
+  reviews[1] = { ...reviews[1], state: 'sent-back', sentBack: { id: 'rv-151-delivery-lead-9', at: iso(end), reason: 'changes' } };
+  const messages = [{ to: B2, upTo: 4, entries: [{ from: DM, message: 'PR 151 sent back' }] }];
+  const p = pass(end + 60e3, { messages });
+  const w = p.wakes.find((x) => x.target === B2);
+  assert.ok(w, JSON.stringify(p.held));
+  assert.ok(w.keys.includes('review:151:rv-151-delivery-lead-9'));
+  assert.ok(w.keys.includes(`message:${B2}:4`));
 });
