@@ -51,8 +51,14 @@ const MESSAGE_DAILY_CAP = 48;
 // (the hourly gate and each stall's doubling backoff are unchanged), and twice the handover wakes.
 const MANAGER_DAILY_CAP = 24;
 const MANAGER_MESSAGE_DAILY_CAP = 96;
+// Wakes that carry assigned work alone have a day of their own, so they can never spend the one that
+// carries messages and handoffs (6z5): on a real team a builder was woken every pass overnight for beads
+// it could not move, spent its 48 by midday, and the review that sent its pull request back was held.
+// Each assigned bead also waits twice as long after each wake that carried it (5, 10, 20 ... min).
+const ASSIGNED_DAILY_CAP = 12;
+const MANAGER_ASSIGNED_DAILY_CAP = 24;
 const isManagerInstance = (instance) => /^delivery-lead(?:-\d+)?$/.test(String(instance || ''));
-const capsOf = (instance) => (isManagerInstance(instance) ? { daily: MANAGER_DAILY_CAP, messages: MANAGER_MESSAGE_DAILY_CAP } : { daily: DAILY_CAP, messages: MESSAGE_DAILY_CAP });
+const capsOf = (instance) => (isManagerInstance(instance) ? { daily: MANAGER_DAILY_CAP, messages: MANAGER_MESSAGE_DAILY_CAP, assigned: MANAGER_ASSIGNED_DAILY_CAP } : { daily: DAILY_CAP, messages: MESSAGE_DAILY_CAP, assigned: ASSIGNED_DAILY_CAP });
 const RESET_GRACE_MIN = 5;
 const TAIL_BYTES = 512 * 1024;
 const MIN_POLL_S = 240;
@@ -231,7 +237,7 @@ const typeOf = (b) => b.type || b.issue_type || null;
 // ---- the stalls ----
 // facts: { beads, ready, now, idleMinutes, stallHours, pause, openSteps, sessions, team, installed }
 // { paused?, stalls: [{ kind, key, bead?, target, line, plain, detail, prompt, due, scheduled?, wakeAt? }] }
-function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [], claimable = () => true } = {}) {
+function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [], reviews = [], woken = [], claimable = () => true } = {}) {
   const t = ms(now || new Date().toISOString());
   if (pause && pause.paused) return { paused: pause.by || true, stalls: [] };
   const out = [];
@@ -304,10 +310,16 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   // owner-queue step names waits for the owner, as the idle and P0 rules read it (bd ready does not
   // know those steps). In a stopped area only the stop's recovery work runs (recovering, as for handoffs).
   const readySet = new Set((ready || []).map((b) => b && b.id));
+  // 6z5: work its holder cannot move is not woken. A bead whose pull request waits for its review (any
+  // state but changes asked or sent back: those are the builder's, and a send-back wakes it below), and
+  // an open bead queued behind another bead its holder has in progress (one at a time).
+  const reviewing = (b) => reviews.some((r) => (r.beads || []).includes(b.id) && !['changes', 'sent-back', 'merged'].includes(r.state));
+  const busyWith = (b, h) => b.status === 'open' && beads.some((x) => x && x.id !== b.id && x.status === 'in_progress' && !waitingEvidence(x) && typeOf(x) !== 'epic' && (holderOf(x, list) || {}).instance === h.instance);
   for (const b of beads.filter((x) => x && x.assignee && !(inStop(x) && !recovering(x)) && !waiting.has(x.id) && !waitingEvidence(x) && typeOf(x) !== 'epic'
     && (x.status === 'in_progress' || (x.status === 'open' && readySet.has(x.id))))) {
     const h = holderOf(b, list);
     if (!h || limited.has(h.instance) || (h.waitUntil && h.waitUntil > t)) continue;
+    if (reviewing(b) || busyWith(b, h)) continue;
     const quiet = (t - (Number.isFinite(h.lastActive) ? h.lastActive : -Infinity)) / 60000;
     if (!(quiet > ASSIGNED_IDLE_MIN)) continue;
     // an open bead must still be one its holder may claim: bd ready knows nothing of a red main, which
@@ -335,6 +347,20 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       prompt: `${b.id} is ${st} and has not moved for ${span(minutes)}. Take its next step now: ${st === 'merged' ? 'deploy it and record it (evidence.js state deployed)' : 'dispatch its reality check (reality-check.js plan) or record its evidence (evidence.js add)'}, or note on the bead what blocks it.` });
   }
   for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && !waitingEvidence(x))) {
+    // a bead whose pull request waits for its review is the Delivery Manager's to move (it asks for the
+    // review), as a story waiting on evidence is: keyed on the bead alone, so it backs off (6z5)
+    if (reviewing(b)) {
+      const since = Math.max(ms(b.updated_at), ms(b.created_at));
+      const waited = (t - since) / 60000;
+      if (!(waited > stallHours * 60)) continue;
+      const pr = reviews.filter((r) => (r.beads || []).includes(b.id) && !['changes', 'sent-back', 'merged'].includes(r.state)).map((r) => r.pr).join(', ');
+      out.push({ kind: 'quiet', key: `reviewing:${b.id}`, bead: b.id, target: dm, due: true,
+        line: `Waiting on review: ${b.id}'s PR ${pr} has waited ${span(waited)} for its review.`,
+        plain: `A finished item has waited ${span(waited)} for its review; the Delivery Manager moves it.`,
+        detail: `PR ${pr} open for review; no bead update since ${Number.isFinite(since) ? new Date(since).toISOString() : 'unknown'}`,
+        prompt: `${b.id}'s PR ${pr} has waited ${span(waited)} for its review. Take its next step now: request the review (review.js request), record it, or merge it; or note on the bead what blocks it.` });
+      continue;
+    }
     const h = holderOf(b, list);
     if (h && limited.has(h.instance)) continue;
     // a holder inside a watch.js wait is waiting within the limit it declared
@@ -376,6 +402,23 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       detail: `${m.entries.length} undelivered message(s) for ${m.to}`,
       prompt: `${m.entries.length > 5 ? `${m.entries.length} messages arrived; the last 5:` : `Message${m.entries.length > 1 ? 's' : ''} sent to you while your session was not running:`} ${shown.join(' ')} Act on them now, as your brief says.` });
   }
+  // 6z5: a pull request sent back to its author is handed to it at once, like a handoff: never held by a
+  // daily cap, once per send-back (a wake that carried its key already handed it over), and only while
+  // the send-back is the pull request's last review record (a new request means the fix is in)
+  const wokenKeys = new Set(woken);
+  for (const r of reviews.filter((x) => x && x.state === 'sent-back' && x.sentBack && x.sentBack.id)) {
+    const key = `review:${r.pr}:${r.sentBack.id}`;
+    if (wokenKeys.has(key)) continue;
+    for (const owner of r.owners || []) {
+      if (!list.some((x) => x.instance === owner)) continue;
+      const named = (r.beads || []).join(', ') || 'its bead';
+      out.push({ kind: 'review', key, bead: (r.beads || [])[0], target: owner, due: true,
+        line: `Sent back: PR ${r.pr} (${named}) went back to ${owner} at ${clock(ms(r.sentBack.at))}${r.sentBack.reason ? ` (${r.sentBack.reason})` : ''}.`,
+        plain: 'A pull request went back to its builder to fix; it is woken to fix it.',
+        detail: `PR ${r.pr} sent back to ${owner} (${r.sentBack.id})`,
+        prompt: `PR ${r.pr} was sent back to you (${r.sentBack.id}${r.sentBack.reason ? `, ${r.sentBack.reason}` : ''})${r.sentBack.note ? `: ${String(r.sentBack.note).replace(/\s+/g, ' ').slice(0, 600)}` : ''}. Read the send-back note on ${named}, fix it on your branch, push, and tell the Delivery Manager.` });
+    }
+  }
   // the next step a merge or a deploy handed to a role (lib/handoff.js): a handoff, woken like a message,
   // once; a step the record already shows taken is closed instead (handoffsDone), with no wake
   const HO = require('./handoff.js');
@@ -407,7 +450,7 @@ function recordAll(root, res, polls, { now, instance } = {}) {
   for (const s of res.stalls) {
     // a message or a handoff is a handover, not a warning; KIND has no entry for either, and the ledger
     // refuses a row with no kind, so this skip is the first of two guards
-    if (s.kind === 'message' || s.kind === 'handoff' || s.kind === 'assigned') continue;
+    if (s.kind === 'message' || s.kind === 'handoff' || s.kind === 'assigned' || s.kind === 'review') continue;
     if (s.kind === 'idle') I.recordIdle(root, s.idle, { now, instance });
     else W.record(root, { kind: KIND[s.kind], rule: 'R-04', bead: s.bead, detail: s.detail, raisedBy: instance || 'watchdog', instance, now });
   }
@@ -436,6 +479,22 @@ function withA3s(root, pause) {
   } catch (err) { return pause; }
 }
 
+// Where each pull request's review stands, from the review records alone (no gh): its state, the beads
+// and owners its last request names, and its last send-back. A damaged chain gives nothing. Fails open.
+function reviewFacts(root) {
+  try {
+    const R = require('./reviews.js');
+    return R.listPrs(root).map((pr) => {
+      const { rows, problem } = R.read(root, pr);
+      if (problem || !rows.length) return null;
+      const req = R.lastRequest(rows);
+      const sb = [...rows].reverse().find((r) => r.type === 'sent-back') || null;
+      const owners = sb && sb.owners && sb.owners.length ? sb.owners : req ? (req.owner ? [req.owner] : (req.authors || [])) : [];
+      return { pr: String(pr), state: R.stateOf(rows, null), beads: (req && req.beads) || [], owners: [...new Set(owners.map(R.norm))], sentBack: sb ? { id: sb.id, at: sb.at, reason: sb.reason || null, note: sb.note || null } : null };
+    }).filter(Boolean);
+  } catch (err) { return []; }
+}
+
 // Read the record for a project: beads from bd (a lib/bd.js store), the goal sheet, the owner queue,
 // the roster and the transcripts. Fails open: a failed read gives no stalls and says so.
 function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
@@ -461,7 +520,7 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
       } catch (err) { return true; }
     };
     const res = stalls({ claimable, beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
-      pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root) });
+      pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root), reviews: reviewFacts(root), woken: logRows(root).filter((r) => r.type === 'wake').flatMap((r) => r.keys || []).filter((k) => /^review:/.test(String(k))) });
     // a verified pause silences the polling warnings too
     return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list };
   } catch (err) { return { stalls: [], polls: [], sessions: [], unreadable: String(err.message).split('\n')[0] }; }
@@ -499,7 +558,10 @@ function pidAlive(pid) {
 }
 
 // a message and a handoff (lib/handoff.js) are the team's handovers, not stalls: woken by the message rules
-const isHandoff = (s) => s.kind === 'message' || s.kind === 'handoff' || s.kind === 'assigned';
+const isHandoff = (s) => s.kind === 'message' || s.kind === 'handoff' || s.kind === 'assigned' || s.kind === 'review';
+// never held by a daily cap: a merge's deploy, a deploy's check, a send-back to its author
+const uncapped = (s) => s.kind === 'handoff' || s.kind === 'review';
+const assignedOnly = (r) => (r.keys || []).length > 0 && r.keys.every((k) => /^assigned:/.test(String(k)));
 // what a wake hands over: the inbox messages (marked delivered by count) and the handoff rows it carries
 const deliversOf = (stalls) => stalls.filter((s) => s.kind === 'message').map((s) => ({ to: s.inbox || s.target, upTo: s.upTo }));
 const handoffsOf = (stalls) => stalls.filter((s) => s.kind === 'handoff').map((s) => s.handoff);
@@ -535,22 +597,40 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     // (whose end kicks the next run, lib/kick.js); the five-minute gap holds a wake that would carry
     // assigned work alone, a standing condition that would otherwise re-wake a role every pass. A handoff
     // row (a merge's deploy, a deploy's check) is never held by a daily cap: merges and deploys bound it.
+    const day = (f) => mine.filter((r) => f(r) && t - ms(r.at) < 24 * 3600e3);
     const handover = (items) => {
-      if (last && alive(last.pid)) return { go: [], hold: items, why: 'its last wake is still running; it is woken again when that wake ends' };
-      if (items.every((s) => s.kind === 'assigned') && last && t - ms(last.at) < MESSAGE_EVERY_MS) return { go: [], hold: items, why: `woken at ${clock(ms(last.at))}; assigned work waits ${MESSAGE_EVERY_MS / 60000} min between wakes` };
-      if (mine.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= cap.messages) return { go: items.filter((s) => s.kind === 'handoff'), hold: items.filter((s) => s.kind !== 'handoff'), why: `woken ${cap.messages} times in a day; alarm only until the count falls` };
-      return { go: items, hold: [] };
+      if (last && alive(last.pid)) return { go: [], holds: [{ items, why: 'its last wake is still running; it is woken again when that wake ends' }] };
+      if (items.every((s) => s.kind === 'assigned') && last && t - ms(last.at) < MESSAGE_EVERY_MS) return { go: [], holds: [{ items, why: `woken at ${clock(ms(last.at))}; assigned work waits ${MESSAGE_EVERY_MS / 60000} min between wakes` }] };
+      const holds = [];
+      // the message day counts every wake but those for assigned work alone (6z5)
+      const messagesFull = day((r) => !assignedOnly(r)).length >= cap.messages;
+      const asg = items.filter((s) => s.kind === 'assigned');
+      const rest = items.filter((s) => s.kind !== 'assigned');
+      const go = rest.filter((s) => uncapped(s) || !messagesFull);
+      if (go.length < rest.length) holds.push({ items: rest.filter((s) => !go.includes(s)), why: `woken ${cap.messages} times in a day; alarm only until the count falls` });
+      if (!asg.length) return { go, holds };
+      // assigned work rides any wake that goes; alone, it waits out its own backoff and its own day
+      if (go.length) return { go: [...go, ...asg], holds };
+      if (day(assignedOnly).length >= cap.assigned) return { go, holds: [...holds, { items: asg, why: `woken ${cap.assigned} times in a day for assigned work alone; alarm only until the count falls` }] };
+      const backoff = (s) => {
+        const k = mine.filter((r) => (r.keys || []).includes(s.key) && t - ms(r.at) < 24 * 3600e3);
+        return k.length > 0 && t - ms(k[k.length - 1].at) < MESSAGE_EVERY_MS * 2 ** (k.length - 1);
+      };
+      const due = asg.filter((s) => !backoff(s));
+      if (due.length < asg.length) holds.push({ items: asg.filter((s) => !due.includes(s)), why: 'woken for this assigned work already; waiting longer before the next try' });
+      return { go: due, holds };
     };
+    const holdAll = (g) => { for (const h of g.holds) held.push({ target: w.target, lines: h.items.map((s) => s.line), reason: h.why }); };
     const handoverWake = (go) => ({ target: w.target, keys: go.map((s) => s.key), lines: go.map((s) => s.line), delivers: deliversOf(go), handoffs: handoffsOf(go), prompt: wakePrompt(go.map((s) => s.prompt), 'did') });
     if (onlyMessages) {
       const g = handover(w.stalls);
       if (g.go.length) wakes.push(handoverWake(g.go));
-      if (g.hold.length) held.push({ target: w.target, lines: g.hold.map((s) => s.line), reason: g.why });
+      holdAll(g);
       continue;
     }
     // the stall gates count stall wakes only: a role woken often for messages is still told about its
     // stall (each message wake would otherwise push "one wake an hour" forward and fill the day's six)
-    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !/^(message|handoff|assigned):/.test(String(k))));
+    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !/^(message|handoff|assigned|review):/.test(String(k))));
     const lastStall = stallRows[stallRows.length - 1];
     if (last && alive(last.pid)) reason = 'its last wake is still running';
     else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
@@ -575,7 +655,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
       // the stall's own cap or hour never holds a handover back (hjx.1.3): each line says its own cause
       const g = handover(msgs);
       if (g.go.length) wakes.push(handoverWake(g.go));
-      if (g.hold.length) held.push({ target: w.target, lines: g.hold.map((s) => s.line), reason: g.why });
+      holdAll(g);
       const rest = w.stalls.filter((s) => !isHandoff(s));
       if (rest.length) held.push({ target: w.target, lines: rest.map((s) => s.line), reason });
       continue;
@@ -643,4 +723,4 @@ function wakeArgs(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
