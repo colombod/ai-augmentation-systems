@@ -194,3 +194,18 @@ test('evidence file under parallel writers: one chain, every seq once', async ()
   assert.equal(c.problem, null);
   assert.equal(c.rows.length, 10);
 });
+
+test('criteria: an angle-bracket argument inside a code span is part of a command, not a template placeholder', () => {
+  const s = G.parseStory(`## Acceptance criteria
+
+1. A reviewer running \`node <plugin root>/scripts/tool.js check x\` reads \`ok\`.
+   - Probe: run \`node <plugin root>/scripts/tool.js\` on the host; where: S1; by: reality-check
+2. A reviewer running \`bd update <a bead> --append-notes '<text>'\` reads \`ok\`.
+   - Probe: the same command on the host; where: S1; by: reality-check
+3. <persona> in <surface> does <X> and sees <Y>.
+   - Probe: <what is observed>; where: <surface id>; by: <test | reality-check>
+`);
+  assert.deepEqual(s.criteria.map((c) => [c.n, c.probe && c.probe.by]), [[1, 'reality-check'], [2, 'reality-check']]);
+  assert.equal(s.placeholders, 1);
+  assert.equal(G.checkCovered(s, { id: 'S1' }).length, 2);
+});

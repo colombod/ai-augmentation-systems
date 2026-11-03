@@ -56,7 +56,8 @@ function criteriaOf(section) {
     if (item) {
       const text = item[1].trim();
       last = null;
-      if (PLACEHOLDER.test(text)) { placeholders++; continue; }
+      // `<...>` inside a code span is a command's argument (`bd update <a bead>`), not template text
+      if (PLACEHOLDER.test(text.replace(/`[^`\n]*`/g, ''))) { placeholders++; continue; }
       if (placeholderFree(text.replace(/`?FR-\d+`?/g, ''))) { last = { n: out.length + 1, text, probe: null }; out.push(last); }
       continue;
     }
