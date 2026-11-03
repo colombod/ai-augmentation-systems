@@ -264,12 +264,12 @@ test('a role directory behind a current job install passes the same gate check f
 
 // through the host job: an install wakes no one this pass and kicks the next run; a failure keeps the wakes
 const memStore = (h) => { const b = Object.values(h.db().issues); return { list: () => b, ready: () => b.filter((x) => x.status === 'open'), show: (id) => b.find((x) => x.id === id) || null }; };
-function jobRun(h, f, exec) {
+function jobRun(h, f, exec, { alive = () => false } = {}) {
   registerInstance(h.root, { instance: 'delivery-lead', session_id: 'sess-dl', host: 'pc', model: 'sonnet', role_dir: h.roleDir('delivery-lead'), now: later(-30 * 60e3) });
   IB.queue(h.root, { to: 'delivery-lead', from: 'builder-1', message: 'PR ready', at: T0 });
   KICK.take(h.root);
   const woke = [];
-  const r = watchdog.main(['run'], { cwd: h.root, env: { ...process.env, DELIVERY_ROLE: '', BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, '..', 'testing')}${path.delimiter}${process.env.PATH}` }, now: later(2e3), live: [], bd: memStore(h), sweep: () => ({ removed: [], failed: [] }), spawn: (bin, args, o) => { woke.push(o.env.DELIVERY_ROLE); return 999999999; }, update: { pluginRoot: f.pluginRoot, configDir: f.config, exec, alive: () => false } });
+  const r = watchdog.main(['run'], { cwd: h.root, env: { ...process.env, DELIVERY_ROLE: '', BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, '..', 'testing')}${path.delimiter}${process.env.PATH}` }, now: later(2e3), live: [], bd: memStore(h), sweep: () => ({ removed: [], failed: [] }), spawn: (bin, args, o) => { woke.push(o.env.DELIVERY_ROLE); return 999999999; }, update: { pluginRoot: f.pluginRoot, configDir: f.config, exec, alive } });
   return { out: r.out, woke };
 }
 
@@ -466,4 +466,38 @@ test('a role install behind the job own install is checked over its own range: a
   assert.equal(r.installed, true, r.lines.join('\n'));
   assert.deepEqual(exec.calls.filter((c) => /^plugin update/.test(c.args)).map((c) => c.args), ['plugin update delivery@m --scope user']);
   assert.ok(r.lines.some((l) => new RegExp(`refused: commit ${f.shaOf.h.slice(0, 12)} names no pull request.*for local`).test(l)), r.lines.join('\n'));
+});
+
+// delivery-plugin-planning-0ba.6: wakes ran back to back, so some wake was always running when the job
+// looked and every merged release was held for hours. A held install now starts no new wake, so the
+// running ones end and the next cycle installs.
+test('a held install starts no new wake, and the next cycle installs once the running wake has ended', () => {
+  const h = harness({});
+  const f = fixture({ root: h.root });
+  merged(f, 140, true);
+  WD.log(h.root, { type: 'wake', at: T0, instance: 'builder-1', pid: 4242 });
+  const exec = claude(f);
+  const first = jobRun(h, f, exec, { alive: (pid) => pid === 4242 });
+  assert.match(first.out, /self-update: plugin delivery 0\.43\.31 .* held: a run is in progress \(wake pid 4242\)/);
+  assert.match(first.out, /No new wake starts until plugin delivery 0\.43\.31 \(main [0-9a-f]{12}\) is installed/);
+  assert.deepEqual(first.woke, [], 'a wake started now would hold the install another cycle');
+  assert.equal(exec.calls.length, 0);
+  const second = jobRun(h, f, exec, { alive: () => false });
+  assert.match(second.out, /self-update: installed plugin delivery 0\.43\.31 \(main [0-9a-f]{12}\)/);
+  assert.deepEqual(rows(f).filter((r) => r.result === 'installed').map((r) => [r.version, r.sha]), [['0.43.31', f.mainSha]]);
+});
+
+test('a kick taken while an install is held retries the install, and wakes no one while it stays held', () => {
+  const h = harness({});
+  const f = fixture({ root: h.root });
+  merged(f, 140, true);
+  WD.log(h.root, { type: 'wake', at: T0, instance: 'builder-1', pid: 4242 });
+  const exec = claude(f);
+  let calls = 0;
+  // alive on the first look, ended on the second: the wake ended while this run went, and its kick
+  // starts a second pass under the same lock, which installs
+  const r = jobRun(h, f, exec, { alive: (pid) => { if (pid !== 4242 || calls++) return false; KICK.kick(h.root, 'wake ended (pid 4242)'); return true; } });
+  assert.match(r.out, /held: a run is in progress/);
+  assert.match(r.out, /self-update: installed plugin delivery 0\.43\.31/);
+  assert.deepEqual(r.woke, []);
 });

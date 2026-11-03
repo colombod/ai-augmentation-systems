@@ -14,7 +14,11 @@
 //     then reads that record the same way; with no answer, refused. The installed sha must be known to
 //     the clone, or the range cannot be read: refused, never guessed;
 //   - no wake is running (its session loaded the old plugin; installing under it is the run in
-//     progress the bead forbids): held, tried again next cycle, for every install.
+//     progress the bead forbids): held, tried again next cycle, for every install. A held pass says so
+//     (`held`), and the job starts no new wake while it is: wakes ran back to back on wintermute, so some
+//     wake was always running when the job looked and merged releases sat uninstalled for hours
+//     (delivery-plugin-planning-0ba.6). The running wakes end (the wake timeout bounds them) and the
+//     next look installs.
 // Each install (the job's own and each role directory's) is decided on its own range and goes when it
 // passes: an old role install refused over its range never blocks the others (seen on wintermute: role
 // installs at 0.41.2 held every install back at 0.43.39). A role install is always checked over its own
@@ -207,7 +211,7 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     }
     // a running wake holds every install that passed: its session loaded the old plugin
     const held = checks.find((c) => c.d.action === 'held');
-    if (held) return { lines: [`self-update: ${label} held: ${held.d.why}; tried again next cycle.`, ...refusals], installed: false };
+    if (held) return { lines: [`self-update: ${label} held: ${held.d.why}; tried again next cycle.`, ...refusals], installed: false, held: label };
     const go = checks.filter((c) => c.d.action === 'install');
     if (!go.length) return { lines: refusals, installed: false };
     const { e: first, d } = go[0];
