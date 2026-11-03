@@ -142,11 +142,29 @@ test('minimal preset: a valid manifest, four prepared roles, BEADS_DIR, a builde
     assert.equal(readJson(path.join(dir, '.delivery-role.json')).instance, i);
     assert.equal(readJson(path.join(dir, '.claude', 'settings.local.json')).env.BEADS_DIR, path.join(project, '.beads'));
     assert.ok(fs.existsSync(path.join(dir, 'project', '.delivery', 'team', 'team.json')), `${i} clone carries the committed manifest`);
-    assert.ok(r.out.includes(`cd ${dir} && claude --permission-mode acceptEdits --name ${i}`), r.out);
+    assert.ok(r.out.includes(`cd ${dir} && claude --permission-mode acceptEdits --name ${i}@acme`), r.out);
   }
   assert.ok(fs.existsSync(path.join(base, 'acme-team', 'builder', 'product', '.git')));
-  assert.ok(r.out.indexOf('--name chief-of-staff') < r.out.indexOf('--name builder'), 'the Chief of Staff starts first');
+  assert.ok(r.out.indexOf('--name chief-of-staff@acme') < r.out.indexOf('--name builder@acme'), 'the Chief of Staff starts first');
   assert.match(r.out, /Open the Chief of Staff session and talk to it/);
+});
+
+// Session names are machine-wide: two teams on one host that both name a session "chief-of-staff"
+// share it, and a scratch team's join report reached another team's Chief of Staff. Each session is
+// named <instance>@<team>, from the team's bead prefix, trimmed of a trailing "-".
+test('two teams on one host: the same roles get distinct session names, from each team\'s prefix', () => {
+  const base = mk('start-two-teams-');
+  const a = start(['--project', path.join(base, 'alpha'), '--host', 'laptop', '--prefix', 'alpha']);
+  const b = start(['--project', path.join(base, 'beta'), '--host', 'laptop', '--prefix', 'beta']);
+  assert.equal(a.status, 0, a.out);
+  assert.equal(b.status, 0, b.out);
+  const names = (r) => [...r.out.matchAll(/ --name (\S+)/g)].map((m) => m[1]);
+  assert.deepEqual(names(a), ['chief-of-staff@alpha', 'product-manager@alpha', 'delivery-lead@alpha', 'builder@alpha']);
+  assert.deepEqual(names(b), ['chief-of-staff@beta', 'product-manager@beta', 'delivery-lead@beta', 'builder@beta']);
+  assert.equal(names(a).filter((n) => names(b).includes(n)).length, 0, 'no session name is shared between the teams');
+  const { sessionName } = require('./lib/session-name.js');
+  assert.equal(sessionName('builder', 'delivery-plugin-planning-'), 'builder@delivery-plugin-planning');
+  assert.equal(sessionName('builder', ''), 'builder', 'no prefix: nothing to qualify the name with');
 });
 
 test('full preset: nine instances, the Reality Checker and the Technical Writer among them, and a valid manifest', () => {
@@ -163,7 +181,7 @@ test('full preset: nine instances, the Reality Checker and the Technical Writer 
   for (const i of ids) assert.ok(fs.existsSync(path.join(base, 'shop-team', i, '.delivery-role.json')), i);
   assert.match(r.out, /no product worktree/);
   // auto by default (team rule 0: the operator is not the team's approver)
-  assert.match(r.out, /claude --permission-mode auto --name chief-of-staff/);
+  assert.match(r.out, /claude --permission-mode auto --name chief-of-staff@sh\n/);
   assert.match(r.out, /--permission-mode auto: the sessions run without asking you to approve each step/);
 });
 
@@ -171,7 +189,7 @@ test('--permission-mode default is still available and prints no flag', () => {
   const project = path.join(mk('start-default-mode-'), 'acme');
   const r = start(['--project', project, '--host', 'laptop', '--permission-mode', 'default']);
   assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /cd \S+ && claude --name chief-of-staff/);
+  assert.match(r.out, /cd \S+ && claude --name chief-of-staff@acme\n/);
   assert.doesNotMatch(r.out, /claude --permission-mode/);
   assert.match(r.out, /--permission-mode default: each session uses your own Claude Code default and may ask you/);
 });
@@ -561,7 +579,7 @@ test('--launch starts every role on this host in its role directory, in auto mod
     assert.equal(call.parent, null, `${i} inherited the launching session's identity`);
     // a headless first turn waits for the background subagents it starts (claude stops them 10 min after the turn otherwise)
     assert.equal(call.bgWait, '0', i);
-    assert.deepEqual(call.args, ['-p', '/delivery:team join', '--permission-mode', 'auto', '--name', i]);
+    assert.deepEqual(call.args, ['-p', '/delivery:team join', '--permission-mode', 'auto', '--name', `${i}@acme`]);
     assert.match(r.out, new RegExp(`${i}: started \\(pid \\d+\\), joining the team`));
   }
   assert.match(r.out, /The team is starting: each role on this machine runs its first turn/);
@@ -572,7 +590,7 @@ test('--launch skips a role already on the roster, starts nothing for other host
   const project = path.join(mk('start-launch2-'), 'acme');
   const rec = recordingClaude();
   const dry = start(['--project', project, '--host', 'laptop', '--launch', '--dry-run'], { env: { DELIVERY_CLAUDE_BIN: rec.bin } });
-  assert.match(dry.out, /chief-of-staff: would start in \S+: \S+ -p "\/delivery:team join" --permission-mode auto --name chief-of-staff/);
+  assert.match(dry.out, /chief-of-staff: would start in \S+: \S+ -p "\/delivery:team join" --permission-mode auto --name chief-of-staff@acme\n/);
   assert.equal(start(['--project', project, '--host', 'laptop'], { env: { DELIVERY_CLAUDE_BIN: rec.bin } }).status, 0);
   require('./lib/roster.js').registerInstance(project, { instance: 'chief-of-staff', session_id: 'sess-cos-1', host: 'laptop', model: 'opus', role_dir: '/x', now: new Date().toISOString() });
   const r = start(['--project', project, '--host', 'laptop', '--launch'], { env: { DELIVERY_CLAUDE_BIN: rec.bin } });

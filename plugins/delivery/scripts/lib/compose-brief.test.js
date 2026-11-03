@@ -52,6 +52,10 @@ test('composeBrief contains rules, routing table, role text and host limits', ()
   assert.ok(out.includes('You build.'));
   assert.ok(out.includes('Host pc: pc, bd via wrapper, has a display, has desktop apps'));
   assert.ok(out.includes('Your beads actor is'));
+  // the session is named <instance>@<team>, and the table names every peer's session the same way
+  assert.ok(out.includes(`You are the session "builder-1@${team.prefix}" (instance builder-1).`), out.slice(0, 600));
+  assert.ok(out.includes(`| chief-of-staff | pc | opus | delivery/chief-of-staff | \`chief-of-staff@${team.prefix}\` |`));
+  assert.ok(out.includes(`\`builder-1@${team.prefix}\`, \`builder-2@${team.prefix}\``));
 });
 
 test('composeBrief says a headless host cannot run browser or desktop checks', () => {

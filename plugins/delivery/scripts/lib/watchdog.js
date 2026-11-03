@@ -601,13 +601,15 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
 // its conversation names that version's script paths, which the lane refuses after the install
 // (delivery-plugin-planning-8wz). A wake still running is never stopped; the next one starts fresh.
 const FRESH_ABOVE = 120000;
-function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null } = {}) {
+// prefix: the team's bead prefix; the fresh session is named <instance>@<team> (lib/session-name.js)
+function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null, prefix = null } = {}) {
   const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
   const r = wakeArgs(s, prompt, live);
   const older = Boolean(installed) && require('./plugin-version.js').compare(s && s.pluginVersion, installed) === -1;
   if (r.mode === 'resume' && (older || (freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove))) {
     // named like every role session (start.js --name), so peers reach it by name (team rule 13)
-    return { mode: 'fresh', why: older ? 'plugin' : 'context', args: [...m, '--name', s.instance, '-p', freshPrompt(s, prompt, older ? installed : null)] };
+    const name = require('./session-name.js').sessionName(s.instance, prefix);
+    return { mode: 'fresh', why: older ? 'plugin' : 'context', args: [...m, '--name', name, '-p', freshPrompt(s, prompt, older ? installed : null)] };
   }
   return r.args ? { ...r, args: [...m, ...r.args] } : r;
 }

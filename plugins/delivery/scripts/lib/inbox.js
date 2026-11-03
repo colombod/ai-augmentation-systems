@@ -62,11 +62,16 @@ function unreachableTarget(response) {
 // name, the watchdog found no session for it at every run, and nobody ever read it.
 // -> { to, via } for a role instance on the team ("steward" is this host's steward role), or
 //    { unknown: true, names } when no instance on the team answers to it
+// Sessions are named <instance>@<team> (lib/session-name.js): a qualified name with this team's prefix
+// is its instance; one with another team's prefix is no session of this team (unknown).
 function resolveTarget(team, name, host) {
   const M = require('./manifest.js');
+  const SN = require('./session-name.js');
   const active = M.expandInstances(team || {}).filter((i) => !(i.role && i.role.retired));
   const names = active.map((i) => i.instance);
-  const want = M.canonicalRoleId(String(name || '').trim());
+  const parsed = SN.parseSessionName(name);
+  if (parsed.prefix !== null && !SN.samePrefix(parsed.prefix, team && team.prefix)) return { unknown: true, names };
+  const want = M.canonicalRoleId(parsed.instance);
   if (want === 'steward') {
     const s = active.find((i) => i.role && i.role.steward && (!host || i.role.host === host));
     return s ? { to: s.instance, via: 'steward' } : { unknown: true, names };

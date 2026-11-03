@@ -244,8 +244,13 @@ function record(root, f, { by, now } = {}) {
 // display names and the short names the register uses (DM, PM)
 const NAMES = { ...Object.fromEntries(Object.entries(ROLE_WORD).map(([id, w]) => [w.toLowerCase(), id])), dm: DM, pm: 'product-manager', cos: COS, rc: 'reality-checker' };
 // { instance, role } for a SendMessage `to` or a session id, from the manifest and the roster
+// A session name <instance>@<team> (lib/session-name.js) is its instance when the team is this one; with
+// another team's prefix it is no role here.
 function recipient(root, team, to) {
-  const name = String(to || '').replace(/\s*\[[^\]]*\]\s*$/, '').trim();
+  const SN = require('./session-name.js');
+  const parsed = SN.parseSessionName(to);
+  if (parsed.prefix !== null && !SN.samePrefix(parsed.prefix, team && team.prefix)) return { instance: SN.bareTarget(to) || null, role: null };
+  const name = parsed.instance;
   const inst = instancesOf(team);
   const hit = inst.find((i) => i.instance === name) || inst.find((i) => name.toLowerCase() === i.instance.toLowerCase());
   if (hit) return { instance: hit.instance, role: hit.role.id };
