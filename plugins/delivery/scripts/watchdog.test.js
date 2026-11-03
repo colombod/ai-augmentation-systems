@@ -1565,8 +1565,8 @@ test('7ax: the Delivery Manager is woken past a worker\'s daily caps, still one 
   assert.equal(plan('delivery-lead-2', six, [stall('delivery-lead-2')]).wakes.length, 1, 'a counted Delivery Manager too');
   // the hour still holds, and the Delivery Manager's own cap is 24
   assert.match(plan(DM, [{ at: ago(20), keys: ['p0:old'] }], [stall(DM)]).held[0].reason, /one wake an hour/);
-  const day = Array.from({ length: 24 }, (_, i) => ({ at: ago(61 * (i + 1) - 60), keys: [`p0:old-${i}`] }));
-  assert.match(plan(DM, day.map((r, i) => ({ ...r, at: ago(62 + 55 * i) })), [stall(DM)]).held[0].reason, /woken 24 times in a day/);
+  const day = Array.from({ length: 24 }, (_, i) => ({ at: ago(62 + 55 * i), keys: [`p0:old-${i}`] }));
+  assert.match(plan(DM, day, [stall(DM)]).held[0].reason, /woken 24 times in a day/);
   // handovers: 48 a day for a worker, 96 for the Delivery Manager
   const msgs = (n) => Array.from({ length: n }, (_, i) => ({ at: ago(14 * (i + 1)), keys: [`message:x:${i}`] }));
   assert.equal(plan(DM, msgs(48), [msg(DM)]).wakes.length, 1, 'the 49th handover wake goes for the Delivery Manager');
