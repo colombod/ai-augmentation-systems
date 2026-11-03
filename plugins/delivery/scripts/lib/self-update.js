@@ -71,10 +71,28 @@ function readMain(clone, name, base) {
   return { sha, version, src, ...rangeFrom(clone, src, base, sha) };
 }
 
+// Claude Code keeps the marketplace clone shallow (depth 1): after an install it holds main's tip and
+// nothing behind it, so the installed sha was never in it and every update was refused (seen on wintermute,
+// 0.43.36 to 0.43.37). A shallow clone is deepened, in bounded steps, until it holds `base`; a sha that is
+// still missing after the last step stays unknown, and decide refuses as before.
+const DEEPEN_STEPS = [50, 200, 1000];
+function holdsBase(clone, base) {
+  if (!/^[0-9a-f]{7,40}$/.test(String(base))) return false;
+  const has = () => { try { git(clone, ['cat-file', '-e', `${base}^{commit}`]); return true; } catch (err) { return false; } };
+  if (has()) return true;
+  let shallow = false;
+  try { shallow = git(clone, ['rev-parse', '--is-shallow-repository']) === 'true'; } catch (err) { shallow = false; }
+  if (!shallow) return false;
+  for (const n of DEEPEN_STEPS) {
+    try { git(clone, ['fetch', '--quiet', `--deepen=${n}`, 'origin']); } catch (err) { return false; }
+    if (has()) return true;
+  }
+  return false;
+}
+
 // the commits that changed the plugin from `base` to `sha`, or known false when the clone lacks `base`
 function rangeFrom(clone, src, base, sha) {
-  let known = false;
-  try { git(clone, ['cat-file', '-e', `${base}^{commit}`]); known = /^[0-9a-f]{7,40}$/.test(String(base)); } catch (err) { known = false; }
+  const known = holdsBase(clone, base);
   const commits = known ? commitsOf(git(clone, ['log', '--format=%H%x00%s', `${base}..${sha}`, '--', src])) : [];
   return { known, commits };
 }
