@@ -191,6 +191,10 @@ test('R-43 and R-42: idle with ready work wakes the Delivery Manager; a busy ses
   assert.equal(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'idle' }]).mode, 'fork');
   assert.deepEqual(WD.wakeCommand({ ...sessions[0], session: null }, 'go', []).args, ['--permission-mode', 'auto', '-c', '-p', 'go']);
   assert.match(WD.wakeCommand({ ...sessions[0], roleDir: '/nowhere/role' }, 'go', []).skip, /not on this host/);
+  // a fresh wake is named <instance>@<team>; the same instance of another team gets another name
+  const fresh = (prefix) => WD.wakeCommand({ ...sessions[0], context: WD.FRESH_ABOVE + 1 }, 'go', [], 'auto', { prefix }).args.slice(2, 4);
+  assert.deepEqual(fresh('alpha'), ['--name', `${sessions[0].instance}@alpha`]);
+  assert.deepEqual(fresh('beta-'), ['--name', `${sessions[0].instance}@beta`]);
 });
 
 test('R-04: a bead in progress is stalled only when neither the bead nor its holder\'s session moved for stall_hours', () => {
@@ -861,6 +865,14 @@ test('dlv-2ex: a send to no role is refused with the roles there are; "steward" 
   assert.match(send('steward').context, /^builder-1 \(this host's steward\) is not running, so the message is kept/);
   session(h, DM, { seen: new Date().toISOString() });
   assert.match(send('delivery-manager').context, /^delivery-lead is not running/, 'the role alias still resolves');
+  // sessions are named <instance>@<team>: this team's qualified name is kept for its instance, another
+  // team's (same role, other prefix) is no session of this team and is not kept
+  const before = IB.pending(h.root).find((p) => p.to === 'builder-1').entries.length;
+  assert.match(send('builder-1@ex').context, /^builder-1 is not running, so the message is kept/);
+  assert.match(send('delivery-manager@ex- [ex-1]').context, /^delivery-lead is not running/);
+  assert.equal(IB.pending(h.root).find((p) => p.to === 'builder-1').entries.length, before + 1, 'kept under the instance, not the session name');
+  assert.match(send('builder-1@other').context, /^builder-1@other is not a role on this team, so the message was not kept/);
+  assert.deepEqual(IB.resolveTarget(require('./lib/manifest.js').loadManifest(h.root).team, 'chief-of-staff@ex'), { to: 'chief-of-staff', via: null });
 });
 
 test('dlv-2ex: the watchdog wakes the steward for a message kept under "steward", and nobody for a name no role has', () => {
@@ -1038,8 +1050,9 @@ test('a wake starts a fresh session when the last turn carried more than the lim
   };
   const heavy = run({ tokens: 236000 });
   assert.equal(heavy.wake, 'fresh');
-  // named like every role session, so peers reach it by name; its own beads, by its actor
-  assert.deepEqual(heavy.args.slice(0, 5), ['--permission-mode', 'auto', '--name', COS, '-p']);
+  // named like every role session, <instance>@<team> from the manifest's prefix (two teams on one host
+  // never share a name), so peers reach it by name; its own beads, by its actor
+  assert.deepEqual(heavy.args.slice(0, 5), ['--permission-mode', 'auto', '--name', `${COS}@ex`, '-p']);
   assert.ok(!heavy.args.includes('--resume'), 'a fresh session, not a resume');
   assert.match(heavy.args[5], /starting a fresh session: your earlier conversation \(236k tokens\) is not loaded.*bd list --assignee "\$BEADS_ACTOR" --status in_progress.*merge the story branch/);
   // the run's fresh wake opens with the watchdog's words, so the capture hook never takes it for the operator

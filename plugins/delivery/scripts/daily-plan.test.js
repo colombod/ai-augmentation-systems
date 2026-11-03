@@ -221,6 +221,10 @@ test('routing table: each function has one owning role, with the fallback when i
   assert.deepEqual(DP.routeOf('reality_check', team), { role: 'delivery-lead', instance: 'delivery-lead' }, 'no Reality Checker on this team');
   assert.deepEqual(DP.recipient(makeProject(), team, 'builder-2 [3fa9c1]'), { instance: 'builder-2', role: 'builder' });
   assert.deepEqual(DP.recipient(makeProject(), team, 'Delivery Manager'), { instance: 'delivery-lead', role: 'delivery-lead' });
+  // sessions are named <instance>@<team>: this team's name is its instance, another team's is no role here
+  assert.deepEqual(DP.recipient(makeProject(), team, `builder-2@${team.prefix} [3fa9c1]`), { instance: 'builder-2', role: 'builder' });
+  assert.deepEqual(DP.recipient(makeProject(), team, `delivery-lead@${team.prefix}-`), { instance: 'delivery-lead', role: 'delivery-lead' });
+  assert.deepEqual(DP.recipient(makeProject(), team, 'delivery-lead@other'), { instance: 'delivery-lead@other', role: null });
   assert.equal(DP.carries('see [#47]', { match: ['#478'] }), false);
   assert.equal(DP.carries('see [ex-vault-0n9-4].', { match: ['ex-vault-0n9-4'] }), true);
   assert.equal(DP.carries('see ex-vault-0n9-4.', { match: ['ex-vault-0n9-4'] }), false);
