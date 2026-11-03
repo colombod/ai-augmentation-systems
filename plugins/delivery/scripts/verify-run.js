@@ -16,6 +16,8 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const RR = require('./review-run.js');
 const RC = require('./reality-check.js');
+const L = require('./lib/launcher.js');
+const PLUGIN_ROOT = path.join(__dirname, '..');
 const G = require('./lib/gates.js');
 const { whoAmI, writerProblem } = require('./lib/gate-context.js');
 
@@ -76,8 +78,10 @@ function checkoutDeployed({ roleDir, team, sha, bead, env, spawn }) {
 // as the Reality Checker itself: a writer such as operator.js sync finds its role only through
 // DELIVERY_ROLE (role-context.js validMarker), and the code it runs is the deployed sha, not a pull
 // request. Git's repository variables are cleared either way.
+// DELIVERY_PLUGIN_ROOT names the plugin this runner runs from (the launcher's installed one), so a step
+// reaches plugin files version-free and survives the next install (lib/launcher.js versionFree).
 function stepEnv(env, who, step) {
-  const clean = RR.cleanEnv(env);
+  const clean = { ...RR.cleanEnv(env), [L.ROOT_ENV]: PLUGIN_ROOT };
   if (!step.as_role) return clean;
   const role = Object.fromEntries(Object.entries(env).filter(([k]) => RR.ROLE_VARS.test(k)));
   return { ...clean, ...role, DELIVERY_ROLE: who.instance, DELIVERY_ROLE_DIR: who.roleDir, BEADS_ACTOR: who.actor };
@@ -105,6 +109,10 @@ function run(who, store, bead, a, { cwd, env, now, spawn, verifyRecord }) {
   if (withCommand.length > 1) return refuse(`criterion ${n} has ${withCommand.length} steps with a command (steps ${withCommand.map((s) => s.n).join(', ')}): the runner runs exactly one, so none is silently ignored. The Delivery Manager keeps one command on the criterion (reality-check.js refine ${bead} --criterion ${n} --step <k> --command '<the one command>') and splits the rest into criteria`);
   const step = withCommand[0];
   if (!step) return refuse(`criterion ${n} has no step with a command: the Delivery Manager adds it (reality-check.js refine ${bead} --criterion ${n} --step 1 --command '<the command>' [--match '<pattern stdout must show>'])`);
+  // a path into one installed version is gone after the next install: refused before any checkout, with the fix
+  const vf = L.versionFree(step.command, who.root);
+  if (vf.problem) return refuse(`criterion ${n} step ${step.n}: ${vf.problem}. Message the Delivery Manager to refine it (reality-check.js refine ${bead} --criterion ${n} --step ${step.n} --command ...)`);
+  if (vf.command !== step.command) return refuse(`criterion ${n} step ${step.n}: the command names one installed version of the plugin, which the next install deletes. Message the Delivery Manager to refine it to: ${vf.command}`);
   if (!who.roleDir) return refuse('not in a role directory, so the scratch area (verify/) is not known.');
   // refine refuses --as-role on any other command; checked again here for a script edited by hand, and
   // here alone with the checker's role directory, the only directory a cd in such a step may enter

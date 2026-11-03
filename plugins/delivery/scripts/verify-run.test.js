@@ -470,3 +470,101 @@ test('run: a step naming operator.js sync through the project launcher is refine
   assert.equal(edited.code, 1, edited.out);
   assert.match(edited.out, /not the launcher the plugin writes/);
 });
+
+// 8wz.4: a check written at one plugin version runs unchanged after the next install. A command that names
+// .../plugins/cache/<m>/delivery/<version>/ is made version-free when it is stored, or refused; the runner
+// names the plugin it runs from in DELIVERY_PLUGIN_ROOT, and refuses a stored versioned path with the fix.
+const VCACHE = (v) => `/srv/u/.claude/plugins/cache/m/delivery/${v}`;
+
+test('8wz.4 refine: a versioned plugin path is stored version-free: the launcher for a script, DELIVERY_PLUGIN_ROOT for any other path', () => {
+  const L = require('./lib/launcher.js');
+  const s = setup();
+  s.dm('plan', ID);
+  const step = (n) => JSON.parse(fs.readFileSync(path.join(s.root, rc.scriptRel(ID)), 'utf8')).criteria.find((g) => g.criterion === n).steps[0];
+  const lp = L.launcherPath(s.root);
+  for (const [command, stored] of [
+    [`cd /tmp && node ${VCACHE('0.43.13')}/scripts/operator.js pending --json`, `cd /tmp && node ${lp} operator.js pending --json`],
+    ['node ~/.claude/plugins/cache/m/delivery/0.43.20/scripts/start.js --check 2>&1', `node ${lp} start.js --check 2>&1`],
+    [`DELIVERY_SEAL_ACTIVE=1 node ${VCACHE('0.43.20')}/scripts/testing/run-tests.js; echo exit=$?`, 'DELIVERY_SEAL_ACTIVE=1 node ${DELIVERY_PLUGIN_ROOT}/scripts/testing/run-tests.js; echo exit=$?'],
+    [`test -f "${VCACHE('0.43.20')}/scripts/operator.js" && echo found`, 'test -f "${DELIVERY_PLUGIN_ROOT}/scripts/operator.js" && echo found'],
+    ['echo plain', 'echo plain'],
+  ]) {
+    const r = s.refine(1, command, '.');
+    assert.equal(r.code, 0, r.out);
+    assert.equal(step(1).command, stored, command);
+    assert.doesNotMatch(step(1).command, L.VERSIONED);
+  }
+  // refine --from rewrites the same way
+  const f = path.join(s.root, 'cmds.json');
+  fs.writeFileSync(f, JSON.stringify({ 2: { command: `node ${VCACHE('0.43.3')}/scripts/team-status.js --json`, match: '.' } }));
+  assert.equal(s.dm('refine', ID, '--from', f).code, 0);
+  assert.equal(step(2).command, `node ${lp} team-status.js --json`);
+  // a path the shell cannot fill in (inside node -e '...', or built in code) is refused, and nothing is written
+  const before = fs.readFileSync(path.join(s.root, rc.scriptRel(ID)), 'utf8');
+  for (const bad of [
+    `node -e 'require("${VCACHE('0.43.24')}/scripts/lib/goal.js")'`,
+    'node -e "require(p.join(o.homedir(),\\".claude/plugins/cache/m/delivery/0.43.17/scripts\\"))"',
+  ]) {
+    const r = s.refine(1, bad, '.');
+    assert.equal(r.code, 1, bad);
+    assert.match(r.out, /names one installed version of the plugin.*process\.env\.DELIVERY_PLUGIN_ROOT/s);
+    fs.writeFileSync(f, JSON.stringify({ 1: { command: bad, match: '.' } }));
+    const rf = s.dm('refine', ID, '--from', f);
+    assert.equal(rf.code, 1, bad);
+    assert.match(rf.out, /criterion 1: the command names one installed version/);
+  }
+  assert.equal(fs.readFileSync(path.join(s.root, rc.scriptRel(ID)), 'utf8'), before);
+});
+
+test('8wz.4 run: the step sees DELIVERY_PLUGIN_ROOT; a versioned command left in a script is refused with the version-free one, and plan warns of it', () => {
+  const s = ready();
+  assert.equal(s.refine(1, 'test -f "${DELIVERY_PLUGIN_ROOT}/scripts/verify-run.js" && echo "root=$DELIVERY_PLUGIN_ROOT"', 'root=').code, 0);
+  const r = s.verify(1);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /: pass \(exit 0\)/);
+  const dir = path.join(s.root, rc.artifactsRel(ID));
+  const cap = fs.readdirSync(dir, { recursive: true }).filter((x) => fs.statSync(path.join(dir, x)).isFile()).map((x) => fs.readFileSync(path.join(dir, x), 'utf8')).join('');
+  assert.ok(cap.includes(`root=${path.join(__dirname, '..')}`), cap);
+  // a script edited by hand back to a versioned path: refused before any checkout, with the fix
+  const file = path.join(s.root, rc.scriptRel(ID));
+  const sc = JSON.parse(fs.readFileSync(file, 'utf8'));
+  sc.criteria.find((g) => g.criterion === 2).steps[0].command = `node ${VCACHE('0.43.20')}/scripts/testing/sweep.js --dry-run`;
+  fs.writeFileSync(file, JSON.stringify(sc));
+  let spawned = 0;
+  const who = { root: s.root, team: { ...loadManifest(s.root).team, product_url: s.prod.dir }, instance: 'reality-checker', roleId: 'reality-checker', actor: 't@pc/reality-checker', roleDir: s.roleDir };
+  const v = vr.main(['run', ID, '--criterion', '2'], { cwd: s.root, env: {}, bd: s.bd, now: T.run, who, spawn: (...a) => { spawned++; return spawnSync(...a); } });
+  assert.equal(v.code, 1, v.out);
+  assert.equal(spawned, 0);
+  assert.ok(v.out.includes('refine it to: node ${DELIVERY_PLUGIN_ROOT}/scripts/testing/sweep.js --dry-run'), v.out);
+  const p = s.dm('plan', ID);
+  assert.equal(p.code, 0, p.out);
+  assert.match(p.out, /warning: criterion 2 step 1 names one installed version of the plugin/);
+});
+
+test('8wz.4: a step refined at one installed version runs unchanged after the next install deletes it', () => {
+  const L = require('./lib/launcher.js');
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'vr-8wz4-cfg-'));
+  const install = (v) => {
+    const dir = path.join(cfg, 'plugins', 'cache', 'm', 'delivery', v);
+    fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'scripts', 'watchdog.js'), '');
+    fs.writeFileSync(path.join(dir, 'scripts', 'probe.js'), `console.log('probe ${v}')\n`);
+    fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'delivery@m': [{ installPath: dir, version: v, scope: 'user' }] } }));
+    return dir;
+  };
+  const s = setup();
+  s.dm('plan', ID);
+  const old = install('9.9.8');
+  assert.equal(L.ensureLauncher(s.root, old, cfg), null);
+  assert.equal(s.refine(1, `node ${old}/scripts/probe.js`, 'probe').code, 0);
+  const stored = JSON.parse(fs.readFileSync(path.join(s.root, rc.scriptRel(ID)), 'utf8')).criteria[0].steps[0].command;
+  assert.equal(stored, `node ${L.launcherPath(s.root)} probe.js`);
+  const runIt = () => spawnSync('/bin/sh', ['-c', stored], { encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: cfg } });
+  assert.equal(runIt().stdout.trim(), 'probe 9.9.8');
+  // the next install: a new version directory, the old one deleted, the launcher left as it was
+  install('9.9.9');
+  fs.rmSync(old, { recursive: true, force: true });
+  const r = runIt();
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), 'probe 9.9.9');
+});
