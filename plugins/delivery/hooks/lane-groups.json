@@ -40,7 +40,8 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.js", "sub": ["check"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/a3.js", "sub": ["show", "list"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/andon.js", "sub": ["show"] },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watchdog.js", "sub": ["check"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watchdog.js", "sub": ["check"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watchdog.js", "sub": ["pass"], "flags_none": ["--record"] }
   ],
   "git-read": [
     { "first": "git", "sub": ["status", "log", "diff", "show", "rev-parse", "remote -v", "remote show", "remote get-url", "blame", "describe", "tag -l", "tag --list", "stash list", "worktree list", "merge-base", "shortlog", "cat-file", "rev-list"], "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] },
@@ -91,7 +92,8 @@
   ],
   "bd-structure": [
     { "first": "bd", "sub": ["create", "dep add", "dep remove", "dep relate", "dep unrelate", "label add", "label remove", "label propagate", "delete", "update", "assign", "tag", "todo", "import", "reopen", "duplicates", "link", "duplicate", "supersede", "rename", "rename-prefix", "set-state", "mol", "epic", "swarm"] },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/materialise.js" }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/materialise.js" },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watchdog.js", "sub": ["pass"], "flags_any": ["--record"] }
   ],
   "operator-read": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/operator.js", "sub": ["verify", "show", "pending", "sync", "ledger", "find", "problems", "refresh"], "flags_none": ["--transcript", "--session"] }
