@@ -222,6 +222,9 @@ test('storyFromBead: criteria from metadata, or from the Done when paragraph spl
   assert.deepEqual(texts({ id: 'x', description: 'Done when: the job, (c) leaves no role behind, and (d) never installs an older version. Tests cover gated and ungated cases. Depends on 8wz (PR 124).' }),
     ['the job, leaves no role behind', 'the job, never installs an older version.']);
   assert.deepEqual(texts({ id: 'x', description: 'Done when: (1) it shows; (2) it logs it Related: y.' }), ['it shows', 'it logs it']);
+  // a common abbreviation does not end the last criterion's sentence
+  assert.deepEqual(texts({ id: 'x', description: 'Done when: (1) it shows; (2) a status, e.g. Done or Failed, i.e. One of Two, etc. Also X vs. Y is shown. Tests cover it.' }),
+    ['it shows', 'a status, e.g. Done or Failed, i.e. One of Two, etc. Also X vs. Y is shown.']);
   assert.deepEqual(texts({ id: 'x', description: 'Done when:\n\n(1) it shows;\n(2) it logs.\n\nNotes.' }), ['it shows', 'it logs.']);
   const s = G.storyFromBead({ id: 'x', title: 'T', description: 'Done when: it shows.', metadata: { surface: 'S2' } });
   assert.deepEqual([s.meta.title, s.meta.surface, s.criteria[0].probe.by], ['T', 'S2', 'reality-check']);

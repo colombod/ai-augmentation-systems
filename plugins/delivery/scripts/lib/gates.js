@@ -147,7 +147,8 @@ function storyFromBead(bead) {
 const lastItem = (p) => {
   const cut = /\b(?:depends on|related\s*:)/i.exec(p);
   const t = cut ? p.slice(0, cut.index) : p;
-  const end = /[.!?](?=\s+[A-Z])/.exec(t);
+  // a full stop after a common abbreviation (e.g. Done, i.e. One, etc. Also, X vs. Y) ends no sentence
+  const end = /(?<!\b(?:[Ee]\.[Gg]|[Ii]\.[Ee]|[Ee]tc|[Vv]s))[.!?](?=\s+[A-Z])/.exec(t);
   return (end ? t.slice(0, end.index + 1) : t).trim();
 };
 
