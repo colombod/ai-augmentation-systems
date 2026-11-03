@@ -423,7 +423,21 @@ control or computer use, by script, never by the owner. `node ${CLAUDE_PLUGIN_RO
 account by name (from `surface.json` `test_account`; never a secret; a sign-in is an owner-queue
 step), the artifact under test (the deployed sha and the version string to read on screen, from
 `version_on_screen`), setup steps that confirm the app, mode and version, one step group per criterion
-whose probe says `by: reality-check` (every criterion on a surface that is not scriptable), each step
+whose probe says `by: reality-check` (every criterion on a surface that is not scriptable; a bead with
+no story file, such as a bug fix, is planned from the criteria it states itself: `metadata.criteria`,
+else its description's `Done when:` paragraph split at `(1)` `(2)` or `(a)` `(b)`, each checked by the
+Reality Checker, on the initiative and surface its metadata names (`initiative`, `surface`) or its
+parent's; the last item ends at its first sentence (a full stop after e.g., i.e., etc. or vs. ends
+none) or at `Depends on` / `Related:`; those criteria are pinned by their hash, `metadata.criteria_hash`,
+by the first plan or at the deploy, and never again by a plan after the deploy; a criterion cut after
+that, or one the check script or an evidence row still names, is a D1 drift that keeps the bead
+unverified, and a plan or deploy that would pin the cut list is refused; a deliberate change after the
+deploy is `plan <bead> --owner-record dec-...`, verified as `ready.js` verifies one, which re-pins the
+criteria and voids every evidence row recorded before it, and counts only while that record still
+verifies; every deploy, again or first, refuses on drift and plans no script from the cut list; a
+pinned bead that is later given a `story_file` keeps its pin until that story is made ready under the
+owner's record after the pin, `ready.js <bead> --record --owner-record dec-...`, which voids the rows
+before it), each step
 with an action, the expected observation and what to capture (screenshot, page text, log), a pass
 rule per criterion, and a cap (attempts, default 2, and minutes, default 30). Scripts live in the
 shared project checkout (the project root every role's marker names), which `run-record` reads; no

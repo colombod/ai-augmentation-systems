@@ -83,7 +83,7 @@ function andonProof(who, store, f, proof) {
   const c = inp.story && inp.story.criteria.find((x) => x.n === Number(f.row.criterion));
   if (!c) return [`criterion ${f.row.criterion} of ${f.beadId} is not in its story any more`, 'Message the Delivery Manager: the failure needs re-reading against the story'];
   const bm = (f.bead && f.bead.metadata) || {};
-  const why = G.rowProblem(pass, { c, surface: inp.surface, noSurface: inp.noSurface, sha: bm.deployed_sha, deployedAt: bm.deployed_at, authors: G.authorsOf(f.bead || {}, inp.instances), recordOk: C.recordChecker(who.root) });
+  const why = G.rowProblem(pass, { c, surface: inp.surface, noSurface: inp.noSurface, sha: bm.deployed_sha, deployedAt: bm.deployed_at, repinnedAt: bm.criteria_restamped_at || null, repinnedBy: bm.criteria_record || null, authors: G.authorsOf(f.bead || {}, inp.instances), recordOk: C.recordChecker(who.root) });
   return why ? [why, again] : null;
 }
 
