@@ -332,13 +332,13 @@ const byRealityCheck = (c, surface) => Boolean((c.probe && c.probe.by === 'reali
 const checkCovered = (story, surface) => (story && surface ? story.criteria.filter((c) => (c.probe && c.probe.by === 'reality-check') || surface.scriptable === false || surface.command_line === true) : []);
 
 // The areas where a reality check has worked end to end: a story there holds a pass row the Reality
-// Checker recorded through reality-check.js run-record on a real target. The operator's ruling on
+// Checker recorded through reality-check.js run-record on a real target (no side arm, as rowProblem). The operator's ruling on
 // 7k3.1.1.1 (2026-11-01): the plan starts no more product stories in an area until this holds.
 function checkedAreas(root, beads) {
   const out = new Set();
   for (const b of beads) {
     if (!isStoryBead(b) || out.has(areaOf(b))) continue;
-    if (readEvidence(root, b.id).some((r) => r.type === 'row' && r.via === 'reality-check' && r.result === 'pass')) out.add(areaOf(b));
+    if (readEvidence(root, b.id).some((r) => r.type === 'row' && r.via === 'reality-check' && r.by === 'reality-checker' && r.result === 'pass' && r.arm !== 'side')) out.add(areaOf(b));
   }
   return out;
 }

@@ -505,21 +505,30 @@ test('7k3.1.1.1.1: no more product stories start in an area until its reality ch
   };
   const GATE = /R-33.*no reality check has passed end to end in area collection yet, and ex-pilot there already needs one|no reality check has passed end to end in area collection yet, and ex-pilot there already needs one.*\(R-33\)/;
   // refused: no run, a failed run, a pass recorded by hand rather than by the Reality Checker's run
-  for (const rows of [[], [row(1, 'start', { result: 'fail', via: 'reality-check' })], [row(1, 'start', { result: 'pass' })]]) {
+  // refused also: a side-arm pass of the Reality Checker's run, and a run-record pass by another role
+  for (const rows of [[], [row(1, 'start', { result: 'fail', via: 'reality-check', by: 'reality-checker' })], [row(1, 'start', { result: 'pass' })],
+    [row(1, 'start', { result: 'pass', via: 'reality-check', by: 'reality-checker', arm: 'side', why: 'staging' })], [row(1, 'start', { result: 'pass', via: 'reality-check', by: 'delivery-lead' })]]) {
     const r = await look(rows);
     assert.match(r.refused || '', GATE, `select, rows ${rows.length}`);
     assert.match(r.deny || '', GATE, `claim, rows ${rows.length}`);
   }
   // allowed once the check passed end to end on a real target
-  const ok = await look([row(1, 'start', { result: 'pass', via: 'reality-check' })]);
+  const ok = await look([row(1, 'start', { result: 'pass', via: 'reality-check', by: 'reality-checker' })]);
   assert.equal(ok.refused, null);
   assert.equal(ok.deny, null);
   // the area's first story may start: its deploy is where the first run happens
   const first = JSON.parse((await plan.main(['select', '--json'], { who, bd: F.memBd([{ ...pilot, status: 'open', assignee: '' }]), budget: NO_BUDGET })).out);
   assert.equal(first.ranked[0].refused, null);
+  // two unbuilt stories in one area: the first claim goes through; once it is in progress, the other is refused
+  fs.writeFileSync(path.join(root, '.delivery', 'evidence', 'ex-pilot.ndjson'), '');
+  const openPilot = { ...pilot, status: 'open', assignee: '' };
+  assert.equal((await claim({ root }, F.memBd([openPilot, next]), 'ex-pilot', NO_BUDGET)).deny, null);
+  assert.match((await claim({ root }, F.memBd([pilot, next]), 'ex-next', NO_BUDGET)).deny || '', GATE);
   // a linked fix is exempt (fixing the check is how an area gets one), and so is a story the Reality Checker does not check
   const ctx = { beads: [pilot, next], checkedAreas: new Set(), needsCheck: () => true };
   assert.ok(W.claimFindings(next, ctx).some((x) => x.code === 'area-unchecked'));
   assert.ok(!W.claimFindings(next, { ...ctx, fix: { ok: true } }).some((x) => x.code === 'area-unchecked'));
+  // a bug labelled as a fix but not linked to a check is ordinary work: refused like any story
+  assert.ok(W.claimFindings(next, { ...ctx, fix: { labelled: true, ok: false, why: 'no criterion linked' } }).some((x) => x.code === 'area-unchecked'));
   assert.ok(!W.claimFindings(next, { ...ctx, needsCheck: () => false }).some((x) => x.code === 'area-unchecked'));
 });

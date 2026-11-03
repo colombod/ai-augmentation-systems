@@ -364,7 +364,7 @@ function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now, dea
   const covers = new Map();
   const needsCheck = (b) => {
     if (!covers.has(b.id)) {
-      try { const inp = C.gateInputs(root, b, { bd, team }); covers.set(b.id, G.checkCovered(inp.story, inp.surface).length > 0); } catch (err) { covers.set(b.id, false); }
+      try { const inp = C.gateInputs(root, b, { bd, team }); covers.set(b.id, G.checkCovered(inp.story, inp.surface).length > 0); } catch (err) { covers.set(b.id, true); } // unreadable: fail closed, the area gate holds
     }
     return covers.get(b.id);
   };
