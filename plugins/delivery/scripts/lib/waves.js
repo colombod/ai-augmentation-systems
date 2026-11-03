@@ -192,8 +192,9 @@ const block = (code, rule, detail) => ({ level: 'block', code, rule, detail });
 const u = B.n1;
 
 // Findings for claiming `bead`. ctx: { beads (story beads), budget (B.state), team, fix (fixLink),
-// reason (areaReason or null), filesOf(bead) -> [{ path }], builders }.
-function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = { ok: false }, reason = null, filesOf = () => [], builders = 1 } = {}) {
+// reason (areaReason or null), filesOf(bead) -> [{ path }], builders, checkedAreas (G.checkedAreas, or
+// null when not read), needsCheck(bead) -> whether the Reality Checker checks any of its criteria }.
+function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = { ok: false }, reason = null, filesOf = () => [], builders = 1, checkedAreas = null, needsCheck = () => false } = {}) {
   const f = [];
   const t = budget.table || B.table(null);
   const est = B.estimate(bead, { t, team });
@@ -231,6 +232,13 @@ function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = 
       if (halfBuilt && budget.set && laterNeed + curNeed > available) f.push(block('wave-half-built', 'D5', `${w ? `wave ${w}` : 'unwaved work'} while wave ${cur} of ${area} is unfinished: ${B.units(available)} available, wave ${cur} needs ${u(curNeed)}, ${w ? `wave ${w}` : 'this'} needs ${u(laterNeed)}; it would leave wave ${cur} half-built`));
       else f.push(warn('outside-wave', 'D5', `${what}: finish or cut wave ${cur} first`));
     }
+  }
+  // no product stories in an area before its reality check has passed end to end there (R-33). One story
+  // that needs the check may start, since its deploy is where the first run happens; the rest wait for a
+  // pass row. A linked fix is exempt: fixing the check itself is how an area gets one.
+  if (checkedAreas && !tier1 && !already && G.isStoryBead(bead) && !checkedAreas.has(area) && needsCheck(bead)) {
+    const pilot = beads.find((b) => b.id !== bead.id && G.isStoryBead(b) && areaOf(b) === area && built(b) && needsCheck(b));
+    if (pilot) f.push(block('area-unchecked', 'R-33', `no reality check has passed end to end in area ${area} yet, and ${pilot.id} there already needs one: run its check (reality-check.js run-record ${pilot.id}) before more stories start in ${area}`));
   }
   // file-disjoint parallel builders and WIP (R-23, R-31)
   const mine = filesOf(bead);
@@ -277,7 +285,7 @@ function claimFindings(bead, { beads = [], budget = { set: false }, team, fix = 
 // Ranks ready candidates: tier 1 linked fixes, tier 2 compounding work by score, tier 3 new areas;
 // budget-scaled admission refuses what may not start now. ctx as claimFindings plus storyOf(bead),
 // fixOf(bead), reasonOf(area). Returns [{ id, tier, score, reasons, refused, warnings }].
-function rank(candidates, { beads = [], budget = { set: false }, team, storyOf = () => null, fixOf = () => ({ ok: false }), reasonOf = () => null, gateBlocks = () => [] } = {}) {
+function rank(candidates, { beads = [], budget = { set: false }, team, storyOf = () => null, fixOf = () => ({ ok: false }), reasonOf = () => null, gateBlocks = () => [], checkedAreas = null, needsCheck } = {}) {
   const t = budget.table || B.table(null);
   const A = areas(beads);
   const verified = beads.filter((b) => G.stateOf(b) === 'verified');
@@ -317,7 +325,7 @@ function rank(candidates, { beads = [], budget = { set: false }, team, storyOf =
     // admission: the claim check itself, so select never offers what a claim refuses, nor hides what
     // it allows (review I-5)
     const reason = isNew ? reasonOf(area) : null;
-    const found = claimFindings(c, { beads, budget, team, fix, reason, builders: Infinity });
+    const found = claimFindings(c, { beads, budget, team, fix, reason, builders: Infinity, checkedAreas, needsCheck });
     const blocks = [...gateBlocks(c), ...found.filter((x) => x.level === 'block')];
     const refused = blocks.length ? blocks.map((x) => `${x.detail} (${x.rule})`).join('; ') : null;
     if (!refused) for (const x of found) if (['new-area', 'new-area-lean', 'outside-wave'].includes(x.code)) warnings.push(x.detail);
@@ -353,8 +361,16 @@ function contextFor(root, { bd, team, beads = [], verifyRecord, budget, now, dea
   try { builders = require('./manifest.js').expandInstances(team).filter((i) => i.role.id === 'builder' && !i.role.retired).length || 1; } catch (err) { builders = 1; }
   let ownerAreas = null;
   try { ownerAreas = require('./goal.js').value(root, 'areas', { warn: false, verifyRecord }); } catch (err) { ownerAreas = null; }
+  const covers = new Map();
+  const needsCheck = (b) => {
+    if (!covers.has(b.id)) {
+      try { const inp = C.gateInputs(root, b, { bd, team }); covers.set(b.id, G.checkCovered(inp.story, inp.surface).length > 0); } catch (err) { covers.set(b.id, false); }
+    }
+    return covers.get(b.id);
+  };
   return {
-    beads, team, builders, storyOf,
+    beads, team, builders, storyOf, needsCheck,
+    checkedAreas: G.checkedAreas(root, beads),
     budget: budget || B.state(root, { team, beads: [...beads, ...activeFixes(bd, known)], now, verifyRecord, deadline, ...budgetOpts }),
     // the claim check's own deterministic refusals (changed criteria, an unknown surface), so select
     // lists such work under Not now (Copilot 929)

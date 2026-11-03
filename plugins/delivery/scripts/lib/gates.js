@@ -331,6 +331,18 @@ const byRealityCheck = (c, surface) => Boolean((c.probe && c.probe.by === 'reali
 // surface that is not scriptable, or is a command line (verify-run.js runs its commands), every one.
 const checkCovered = (story, surface) => (story && surface ? story.criteria.filter((c) => (c.probe && c.probe.by === 'reality-check') || surface.scriptable === false || surface.command_line === true) : []);
 
+// The areas where a reality check has worked end to end: a story there holds a pass row the Reality
+// Checker recorded through reality-check.js run-record on a real target. The operator's ruling on
+// 7k3.1.1.1 (2026-11-01): the plan starts no more product stories in an area until this holds.
+function checkedAreas(root, beads) {
+  const out = new Set();
+  for (const b of beads) {
+    if (!isStoryBead(b) || out.has(areaOf(b))) continue;
+    if (readEvidence(root, b.id).some((r) => r.type === 'row' && r.via === 'reality-check' && r.result === 'pass')) out.add(areaOf(b));
+  }
+  return out;
+}
+
 // The covered criteria that the planned script (reality-check.js scriptRel) has no step group
 // for at their current wording. A story with any of them cannot be checked, so it is neither ready nor
 // deployed (R-33): the Reality Checker would have nothing to run.
@@ -381,5 +393,5 @@ function doneCheck({ story, bead, rows = [], surface, noSurface = false, instanc
 
 const initiativeOf = (bead) => { const m = /^([a-z0-9][a-z0-9-]*)\//.exec(String((bead && bead.metadata && bead.metadata.roadmap_ref) || '')); return m ? m[1] : null; };
 
-module.exports = { byRealityCheck, checkCovered, checkScriptGap, parseStory, storyHash, criterionHash, storySurface, isStoryBead, readyFindings, shippableState, scopeDrift, claimDivergence, stateOf, stateCounts, unverifiedOver, areaOf,
+module.exports = { byRealityCheck, checkCovered, checkedAreas, checkScriptGap, parseStory, storyHash, criterionHash, storySurface, isStoryBead, readyFindings, shippableState, scopeDrift, claimDivergence, stateOf, stateCounts, unverifiedOver, areaOf,
   readEvidence, readEvidenceChecked, headProblem, appendEvidence, evidenceFile, roleOfActor, authorsOf, shaMatch, rowProblem, doneCheck, initiativeOf, STATE, DEFAULT_MAX_UNVERIFIED };
