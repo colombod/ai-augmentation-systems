@@ -40,7 +40,8 @@
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.js", "sub": ["check"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/a3.js", "sub": ["show", "list"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/andon.js", "sub": ["show"] },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watchdog.js", "sub": ["check"] }
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watchdog.js", "sub": ["check"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watchdog.js", "sub": ["pass"], "flags_none": ["--record"] }
   ],
   "git-read": [
     { "first": "git", "sub": ["status", "log", "diff", "show", "rev-parse", "remote -v", "remote show", "remote get-url", "blame", "describe", "tag -l", "tag --list", "stash list", "worktree list", "merge-base", "shortlog", "cat-file", "rev-list"], "flags_none": ["--output", "-o", "--upload-pack", "--exec", "--ext-diff", "--textconv", "--receive-pack"] },
@@ -79,7 +80,8 @@
   ],
   "bd-notes": [
     { "first": "bd", "sub": ["update"], "flags_any": ["--append-notes", "--notes"], "flags_none": ["--parent", "--claim", "--status", "--assignee", "--title", "--type", "--priority", "--add-label", "--remove-label", "--metadata", "--description", "--design", "--acceptance", "-s", "-a", "-p", "-t", "-d", "-l"] },
-    { "first": "bd", "sub": ["comments add", "comment add"] }
+    { "first": "bd", "sub": ["comments add", "comment add"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/watchdog.js", "sub": ["pass"], "flags_any": ["--record"] }
   ],
   "bd-claim": [
     { "first": "bd", "sub": ["update"], "flags_any": ["--claim"], "flags_none": ["--parent", "--title", "--type", "--priority", "--add-label", "--remove-label", "--metadata", "--description", "--design", "--acceptance", "-p", "-t", "-d", "-l"] },

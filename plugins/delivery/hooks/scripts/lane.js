@@ -889,7 +889,7 @@ function registerHit({ projectRoot, roleDir }) {
 // The watchdog's wake, run, install and uninstall are the host job's, installed by the owner (R-04,
 // R-42): refused to every role, `any` included, in any form (a chain, a wrapper, `node -e`, its shim),
 // and so is resuming or continuing another Claude session by hand. Only `node .../watchdog.js check`
-// runs in a role session; the script refuses the rest inside a role directory as well.
+// and `pass` run in a role session; the script refuses the rest inside a role directory as well.
 const WATCHDOG_REASON = 'the watchdog\'s wake, run, install and uninstall are the host job\'s, which the owner installs from a shell outside any role directory; read the stalls with `watchdog.js check`';
 // A suite run straight with `node --test` (or `node x.test.js`) writes its fixtures into the host's
 // shared /tmp and leaves them there: one such run left 6,156 fixture folders (456 MB, 192,000 inodes)
@@ -938,7 +938,7 @@ const INTERPRETERS = new Set(['node', 'nodejs', 'bun', 'deno', 'tsx', 'ts-node']
 // -i (interactive) takes no value: `node -i x.test.js` runs the file (Copilot on #117)
 const CODE_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-r', '--require', '--import', '--loader']);
 const WATCHDOG_VERBS = new Set(['wake', 'run', 'install', 'uninstall']);
-const CHECK_FLAGS = new Set(['--json']);
+const READ_VERBS = { check: new Set(['--json']), pass: new Set(['--json', '--record']) };
 const RESUME_FLAGS = new Set(['-r', '--resume', '-c', '--continue', '--fork-session', '--teleport', '--from-pr']);
 const CLAUDE_RESUME = /(?:^|[;&|(`\s'"])(?:\S*\/)?claude\s+(?:[^;&|\n]*\s)?(?:-r|--resume|-c|--continue|--fork-session|--teleport|--from-pr)(?=$|[\s=])|(?:^|[;&|(`\s'"])(?:\S*\/)?claude\s+(?:respawn|attach)\b/;
 const WATCHDOG_TEXT = /watchdog/i;
@@ -998,10 +998,12 @@ function commandWords(t) {
     return t.slice(i);
   }
 }
+// `check` reads the stalls; `pass` is the Delivery Manager's read of the team, whose --record writes
+// only bead notes and its own pass row: neither wakes, resumes or installs anything
 function checkOnly(args) {
-  if (args[0] !== 'check') return false;
+  if (!READ_VERBS[args[0]]) return false;
   for (let i = 1; i < args.length; i++) {
-    if (CHECK_FLAGS.has(args[i])) continue;
+    if (READ_VERBS[args[0]].has(args[i])) continue;
     if (args[i] === '--project' && args[i + 1] && !args[i + 1].startsWith('-')) { i++; continue; }
     return false;
   }

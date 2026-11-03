@@ -7,6 +7,12 @@
 //                                                   the ledger. Never pauses or blocks anything. A message
 //                                                   or a step handed to a role (lib/inbox.js, lib/handoff.js)
 //                                                   is listed too: a handover, not a warning.
+//   watchdog.js pass [--record] [--json] [--project <root>]
+//                                                   the Delivery Manager's pass (lib/role-watch.js): its own
+//                                                   waiting work first, then each role instance holding work
+//                                                   (running, moving, wasted wakes today) with one action for
+//                                                   each that fails a check. --record keeps the pass and notes
+//                                                   each action on the held bead. Runs in a role session.
 //   watchdog.js wake [--dry-run] [--project <root>] wakes the session each due stall names, within the
 //                                                   caps (one wake per session an hour, six a day, a doubling
 //                                                   wait per stall); a usage-limit wake waits for the reset.
@@ -31,7 +37,7 @@ const { whoAmI } = require('./lib/gate-context.js');
 const LAUNCHER = require('./lib/launcher.js');
 const KICK = require('./lib/kick.js');
 
-const USAGE = 'usage: watchdog.js check [--json] | watchdog.js wake [--dry-run] | watchdog.js run | watchdog.js install [--every 15m] [--apply] | watchdog.js uninstall   (each takes --project <root>)';
+const USAGE = 'usage: watchdog.js check [--json] | watchdog.js pass [--record] [--json] | watchdog.js wake [--dry-run] | watchdog.js run | watchdog.js install [--every 15m] [--apply] | watchdog.js uninstall   (each takes --project <root>)';
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
 const RUN_LOCK_STALE_MS = 20 * 60e3;
 // a kicked run waits this long for another run's lock; passes one run takes for kicks that came meanwhile
@@ -40,12 +46,13 @@ const KICK_PASSES = 3;
 const KEEP_WAKE_LOGS = 50;
 
 function parse(argv) {
-  const o = { _: [], json: false, apply: false, dryRun: false };
+  const o = { _: [], json: false, apply: false, dryRun: false, record: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') o.json = true;
     else if (a === '--apply') o.apply = true;
     else if (a === '--dry-run') o.dryRun = true;
+    else if (a === '--record') o.record = true;
     else if (['--project', '--every'].includes(a)) { if (argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw new Error(`${a} needs a value`); o[a.slice(2)] = argv[++i]; }
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
     else o._.push(a);
@@ -85,6 +92,20 @@ function checkLines(res) {
   lines.push(...res.polls.map((p) => p.line));
   if (res.note) lines.push(`Note: ${res.note}.`);
   return lines.length ? lines : ['No stall: work is moving.'];
+}
+
+// The Delivery Manager's pass: read-only unless --record, which keeps the pass row and notes each
+// action on the bead it names. Unreadable data is a line that says so, never a healthy team.
+function rolePass(root, o, { bd, now, team, rows }) {
+  const RW = require('./lib/role-watch.js');
+  const store = bd || require('./lib/bd.js').makeBd({ cwd: root, timeoutMs: 10000 });
+  const facts = RW.read(root, { bd: store, now, team, rows });
+  const res = facts.unreadable ? facts : RW.pass(facts);
+  const rec = o.record ? RW.record(root, res, { bd: store }) : null;
+  if (o.json) return { code: 0, out: JSON.stringify({ ...res, noted: rec ? rec.noted : null }, null, 2) };
+  const out = RW.lines(res);
+  if (rec && rec.noted.length) out.push(`Noted on ${rec.noted.join(', ')}.`);
+  return { code: 0, out: out.join('\n') };
 }
 
 // the sessions open on this host (`claude agents --json`), or null when that cannot be read
@@ -481,13 +502,14 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
-  if (!['check', 'wake', 'run', 'install', 'uninstall'].includes(cmd)) return { code: 2, out: USAGE };
-  if (cmd !== 'check') {
+  if (!['check', 'pass', 'wake', 'run', 'install', 'uninstall'].includes(cmd)) return { code: 2, out: USAGE };
+  if (!['check', 'pass'].includes(cmd)) {
     const role = roleContext(cwd, env);
     if (role) return { code: 1, out: `watchdog.js: ${cmd} is the host job's, installed by the owner from a shell outside any role directory (${role}); a role session reads the stalls with \`watchdog.js check\` and acts on its own items.` };
   }
   const who = whoAmI({ cwd, env, project: o.project });
   if (!who.root) return { code: 2, out: 'watchdog.js: no project found; pass --project <root>' };
+  if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows });
   if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has });
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
   const state = { installed: false };

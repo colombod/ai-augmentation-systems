@@ -1302,6 +1302,27 @@ test('nativeApproval approves nothing for a non-Bash tool, an any lane or the re
   assert.ok(nativeApproval(cmd(`node ${path.join(PLUGIN_ROOT, 'scripts', 'team-status.js')}`), reads, groups, ctx).allow);
 });
 
+// the Delivery Manager's pass reads the team and, with --record, writes only bead notes and its own row:
+// it runs in a role session like `check`, and its record needs the notes group; the wake verbs stay refused
+test('lane: the Delivery Manager runs watchdog.js pass and pass --record; a role without bead notes only reads it', () => {
+  const bash = (policy, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx() });
+  const wd = path.join(PLUGIN_ROOT, 'scripts', 'watchdog.js');
+  const dm = POLICIES['delivery-lead'];
+  assert.equal(bash(dm, `node ${wd} pass`).allow, true);
+  assert.equal(bash(dm, `node ${wd} pass --json`).allow, true);
+  assert.equal(bash(dm, `node ${wd} pass --record`).allow, true);
+  assert.equal(bash(dm, `node ${wd} pass --record --project /p`).allow, true);
+  assert.equal(bash(dm, `node ${wd} check --record`).allow, false, 'check takes no --record');
+  for (const c of [`node ${wd} pass --dry-run`, `node ${wd} pass wake`, `node ${wd} pass --record; node ${wd} wake`]) {
+    const d = bash(dm, c);
+    assert.equal(d.allow, false, c);
+    assert.match(d.reason, /host job/, c);
+  }
+  const reader = { roleId: 'observer', writes: [], bash: ['read'] };
+  assert.equal(bash(reader, `node ${wd} pass`).allow, true);
+  assert.equal(bash(reader, `node ${wd} pass --record`).allow, false, 'the record writes bead notes');
+});
+
 // the Technical Writer edits documentation in its product worktree, never product code; Staffing adds a
 // shipped role through team-role.js, never by a free-form edit of team.json
 test('lane: the Technical Writer edits product docs only; Staffing runs team-role.js add', () => {
