@@ -1131,8 +1131,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
     `watch.js` wait, on its usage limit (the limit stall says when it resumes) or not on this host's
     roster. The key is the record's last row: the first wake for it goes at once, past the stall hour
     and both daily caps, so a stopped Delivery Manager is restarted within one cycle; the same row
-    again is a stall like any other (an hour apart, then the doubling wait), and a new row is new work
-    (delivery-plugin-planning-bqj);
+    again is a stall like any other (an hour apart, then the doubling wait), and a new row is new work.
+    A record stops counting only when every bead it names is closed (a pull request merged or closed on
+    GitHub without a merged row ends that way); it never expires by age, so an old record with an open
+    bead stays a stall (delivery-plugin-planning-bqj);
   - a session stopped on a usage limit: "The team resumes at <reset + 5 min> (restart scheduled)" once the
     job is installed, else "the team is stalled; the watchdog is not installed", and "Resume now" once it
     has reset (its held beads are not also reported as stalled);

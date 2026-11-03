@@ -1640,19 +1640,19 @@ test('bqj: a merge, a review or a send-back waiting on a quiet Delivery Manager 
   assert.doesNotMatch(watchdog.checkLines({ stalls: [], polls: [], unreadableParts: bad }).join('\n'), /No stall/);
 });
 
-test('bqj: a review record with no live work raises no manager stall: an old last row, or every bead it names closed; a stopped area waits unless the PR is its recovery', () => {
+test('bqj: a review record raises no manager stall once every bead it names is closed; an old record with an open bead still does; a stopped area waits unless the PR is its recovery', () => {
   const now = Date.parse('2026-11-03T12:00:00Z');
   const dm = { instance: DM, role: DM, session: 's-dm', roleDir: os.tmpdir(), lastActive: now - 40 * 60e3 };
   const pr = (beads, at = iso(now - H)) => ({ pr: 1, state: 'passed', beads, last: 'rv-1-delivery-lead-2', at });
   const manager = (prs, beads = [], pause) => WD.stalls({ now: iso(now), prs, beads, sessions: [dm], ...(pause ? { pause } : {}) }).stalls.filter((s) => s.kind === 'manager').map((s) => s.pr);
   assert.deepEqual(manager([pr(['ex-a'])]), [1], 'a fresh record waits on the Delivery Manager');
-  assert.deepEqual(manager([pr(['ex-a'], iso(now - (WD.MANAGER_LIVE_H - 1) * H))]), [1], 'inside the live window');
-  // PR 102: merged on GitHub with no merged row; its record is three days old
-  assert.deepEqual(manager([pr(['ex-a'], iso(now - 3 * 24 * H))]), [], 'a record past the live window is not live work');
-  assert.deepEqual(manager([pr(['ex-a'], null)]), [], 'a record with no time is not live work');
+  // a week-old record whose bead is still open is still stuck: never dropped silently
+  assert.deepEqual(manager([pr(['ex-a'], iso(now - 7 * 24 * H))], [{ id: 'ex-a', status: 'in_progress' }]), [1], 'old record, open bead: still a stall');
   const closed = { id: 'ex-a', status: 'closed' };
   const open = { id: 'ex-b', status: 'in_progress' };
   assert.deepEqual(manager([pr(['ex-a'])], [closed]), [], 'every bead it names is closed');
+  // PR 102: merged on GitHub with no merged row; its bead closed, so it is no longer waiting
+  assert.deepEqual(manager([pr(['ex-a'], iso(now - 3 * 24 * H))], [closed]), [], 'old record, bead closed: no stall');
   assert.deepEqual(manager([pr(['ex-a', 'ex-b'])], [closed, open]), [1], 'one named bead still open');
   // the andon stop: a bead in a stopped area waits, unless it is the stop's recovery work
   const area = require('./lib/gates.js').areaOf({ id: 'ex-fail', metadata: { area: 'import' } });

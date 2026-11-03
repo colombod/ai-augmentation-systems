@@ -69,9 +69,6 @@ const MANAGER_STEP = {
   changes: { what: 'has a review asking for changes', plain: 'has review findings to send back', next: (pr) => `send it back to its owner (review.js send-back ${pr} --reason changes)` },
   failing: { what: 'has a passing review but red CI', plain: 'has a failing build to send back', next: (pr) => `send it back to its owner (review.js send-back ${pr} --reason ci)` },
 };
-// a review record is live work only this long after its last row: a pull request merged or closed on
-// GitHub with no merged row (PR 102) is otherwise a manager stall for ever
-const MANAGER_LIVE_H = 48;
 
 const ms = (x) => { const t = Date.parse(x); return Number.isNaN(t) ? -Infinity : t; };
 const span = (m) => (m === Infinity ? 'a long time' : m >= 2880 ? `${(m / 1440).toFixed(1)} days` : m >= 120 ? `${(m / 60).toFixed(1)} h` : `${Math.max(0, Math.round(m))} min`);
@@ -382,7 +379,8 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   const dmQuiet = dmSession ? (t - (Number.isFinite(dmSession.lastActive) ? dmSession.lastActive : -Infinity)) / 60000 : 0;
   if (dmSession && !limited.has(dm) && !(dmSession.waitUntil > t) && dmQuiet > ASSIGNED_IDLE_MIN) {
     for (const p of prs.filter((x) => x && x.pr && MANAGER_STEP[x.state])) {
-      if (!(t - ms(p.at) <= MANAGER_LIVE_H * 3600e3)) continue;
+      // no age cut-off: an old record with its bead open is still work stuck on the Delivery Manager. A
+      // pull request merged or closed on GitHub with no merged row (PR 102) ends with its beads closed.
       const named = beads.filter((x) => x && (p.beads || []).includes(x.id));
       if (named.length && named.every((x) => x.status === 'closed')) continue;
       const b = named.find((x) => x.status !== 'closed') || null;
@@ -707,4 +705,4 @@ function wakeArgs(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { MANAGER_STEP, MANAGER_LIVE_H, managerPrs, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { MANAGER_STEP, managerPrs, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
