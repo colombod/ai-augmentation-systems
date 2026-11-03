@@ -162,6 +162,16 @@ function buildScript({ bead, story, surface, old, cap, at, by }) {
   };
 }
 
+// The steps of a script whose command still names one installed version of the plugin (a script refined
+// before refine made commands version-free, or edited by hand).
+function versionedSteps(script) {
+  const { VERSIONED } = require('./lib/launcher.js');
+  const out = [];
+  (script.setup || []).forEach((st, i) => { if (typeof st.command === 'string' && VERSIONED.test(st.command)) out.push(`setup step ${i + 1}`); });
+  for (const g of script.criteria || []) for (const st of g.steps || []) if (typeof st.command === 'string' && VERSIONED.test(st.command)) out.push(`criterion ${g.criterion} step ${st.n}`);
+  return out;
+}
+
 function plan(who, store, id, a, at) {
   const wp = writerProblem(who);
   if (wp) return refuse(wp);
@@ -181,6 +191,7 @@ function plan(who, store, id, a, at) {
   }
   const script = writeScript(who.root, bead, inp, { cap, at, by: who.instance });
   const lines = [`${scriptRel(id)}: ${groups.length} criterion group(s) on ${inp.surface.id}, cap ${script.cap.attempts} attempts and ${script.cap.minutes} minutes`];
+  for (const w of versionedSteps(script)) lines.push(`warning: ${w} names one installed version of the plugin, which the next install deletes: refine it version-free (reality-check.js refine ${id} ... --command)`);
   const sha = (bead.metadata || {}).deployed_sha;
   if (!sha) {
     lines.push(`not deployed yet: after \`evidence.js state ${id} deployed --sha <sha>\`, run plan again to dispatch the check`);
@@ -327,7 +338,12 @@ function refine(who, id, a, at, cwd) {
     if (a.action !== undefined) step.action = a.action;
     if (a.expect !== undefined) step.expect = a.expect;
     // a command-line surface: verify-run.js runs this at the deployed sha and decides pass or fail from it
-    if (a.command !== undefined) step.command = a.command;
+    // a path into one installed version is made version-free, or refused, so the step survives installs
+    if (a.command !== undefined) {
+      const v = require('./lib/launcher.js').versionFree(a.command, who.root);
+      if (v.problem) return v.problem;
+      step.command = v.command;
+    }
     if (a.match !== undefined) step.match = a.match;
     // operator.js sync writes as a role, so it needs the checker's identity, which the runner otherwise
     // clears; --as-role keeps it for this step only, and only for the one form asRoleProblem allows
@@ -400,6 +416,9 @@ function refineFrom(who, id, s, a, at, cwd = process.cwd()) {
     if (typeof e.command !== 'string' || !e.command.trim() || typeof e.match !== 'string' || !e.match.trim()) return refuse(`${a.from}: criterion ${n}: command and match must both be non-empty strings`);
     try { new RegExp(e.match); } catch (err) { return refuse(`${a.from}: criterion ${n}: match is not a valid regular expression (${err.message})`); }
     if (e.as_role !== undefined && typeof e.as_role !== 'boolean') return refuse(`${a.from}: criterion ${n}: as_role must be true or false`);
+    const v = require('./lib/launcher.js').versionFree(e.command, who.root);
+    if (v.problem) return refuse(`${a.from}: criterion ${n}: ${v.problem}`);
+    e.command = v.command;
     const k = e.step === undefined ? 1 : e.step;
     const step = Number.isInteger(k) ? g.steps.find((x) => x.n === k) : null;
     if (!step) return refuse(`${a.from}: criterion ${n} has no step ${k} (1..${g.steps.length})`);
@@ -448,4 +467,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, buildScript, readScript, writeScript, dispatch, pending, scriptRel, artifactsRel, asRoleProblem, DEFAULT_CAP, LABEL };
+module.exports = { main, buildScript, readScript, writeScript, dispatch, pending, scriptRel, artifactsRel, asRoleProblem, versionedSteps, DEFAULT_CAP, LABEL };

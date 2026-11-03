@@ -121,4 +121,55 @@ function resolveLauncher(projectRoot, pluginRoot, configDir) {
 
 function launcherCommand(projectRoot, script) { return `node ${shellPath(launcherPath(projectRoot))} ${script}`; }
 
-module.exports = { LAUNCHER_REL, SCRIPT_NAME, resolveInstalledRoot, checkoutRoot, launcherPath, launcherBody, ensureLauncher, resolveLauncher, launcherCommand };
+// A stored command (a reality-check step) that names one installed version, .../plugins/cache/<m>/delivery/
+// <version>/, breaks at the next install: the directory is deleted and the lane refuses the old path. The
+// version-free forms: a top-level script run by node goes through the project launcher; any other plugin
+// path (testing/, lib/, a require from node -e) is named through DELIVERY_PLUGIN_ROOT, which the runner
+// (verify-run.js) sets to the plugin it runs from: ${DELIVERY_PLUGIN_ROOT} in the shell,
+// process.env.DELIVERY_PLUGIN_ROOT in node code.
+const ROOT_ENV = 'DELIVERY_PLUGIN_ROOT';
+const VERSIONED = /plugins\/cache\/[^/\s'"`]+\/delivery\/\d+\.\d+\.\d+[^/\s'"`]*/;
+// a path word that ends at the version directory: absolute, ~ or $HOME first, never inside a word
+const VERSIONED_WORD = /(?<![^\s"=;&|(:])(?:~|\$HOME|\$\{HOME\}|\/)[^\s'"`;&|()<>]*?\/plugins\/cache\/[^/\s'"`]+\/delivery\/\d+\.\d+\.\d+[^/\s'"`;&|()<>]*(?=\/|[\s'"`;&|()<>]|$)/g;
+const VERSION_FREE_FORM = `node <project>/${LAUNCHER_REL.split(path.sep).join('/')} <name>.js for a script, \${${ROOT_ENV}}/scripts/... for any other path in the shell, process.env.${ROOT_ENV} in node code`;
+
+// Quote state at index i of a shell command: null, "'" or '"'.
+function quoteAt(text, i) {
+  let q = null;
+  for (let k = 0; k < i; k++) {
+    const c = text[k];
+    if (q === "'") { if (c === "'") q = null; } else if (q === '"') { if (c === '\\') k++; else if (c === '"') q = null; } else if (c === '\\') k++; else if (c === "'" || c === '"') q = c;
+  }
+  return q;
+}
+
+// { command, problem }: the command with every versioned plugin path made version-free, or the problem
+// when one cannot be rewritten safely (inside single quotes, as in node -e '...', or a relative form).
+function versionFree(command, projectRoot) {
+  const text = String(command == null ? '' : command);
+  if (!VERSIONED.test(text)) return { command: text, problem: null };
+  let out = '';
+  let at = 0;
+  let problem = null;
+  for (const m of text.matchAll(VERSIONED_WORD)) {
+    const q = quoteAt(text, m.index);
+    if (q === "'") { problem = problem || `${m[0]} is inside single quotes, where the shell cannot fill in a variable`; continue; }
+    const rest = text.slice(m.index + m[0].length);
+    const script = /^\/scripts\/([^/\s'"`;&|()<>]+)(?=[\s;&|()<>]|$)/.exec(rest);
+    const byNode = /(?:^|[\s;&|(])node\s+$/.test(text.slice(0, m.index));
+    out += text.slice(at, m.index);
+    if (script && SCRIPT_NAME.test(script[1]) && byNode && !q && projectRoot) {
+      out += `${shellPath(launcherPath(projectRoot))} ${script[1]}`;
+      at = m.index + m[0].length + script[0].length;
+    } else {
+      out += `\${${ROOT_ENV}}`;
+      at = m.index + m[0].length;
+    }
+  }
+  out += text.slice(at);
+  if (!problem && VERSIONED.test(out)) problem = `${VERSIONED.exec(out)[0]} is not a plain path the shell reads`;
+  if (problem) return { command: text, problem: `the command names one installed version of the plugin, which the next install deletes (${problem}). Name it version-free: ${VERSION_FREE_FORM}` };
+  return { command: out, problem: null };
+}
+
+module.exports = { LAUNCHER_REL, SCRIPT_NAME, ROOT_ENV, VERSIONED, resolveInstalledRoot, checkoutRoot, launcherPath, launcherBody, ensureLauncher, resolveLauncher, launcherCommand, versionFree };
