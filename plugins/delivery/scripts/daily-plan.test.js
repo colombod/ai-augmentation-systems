@@ -155,7 +155,7 @@ test('R-45 (10-17 23:07): a long briefing or one with ids still warns; plan.js b
   const lines = b.out.split('\n');
   assert.ok(lines.length <= 12, b.out);
   assert.equal(lines[lines.length - 1], 'Ask for details on any item');
-  assert.match(b.out, /^So far: 1 change merged, 1 live, 1 checked on the customer's app \(Show the collection summary\)\.$/m);
+  assert.match(b.out, /^So far: 1 change merged, 1 live, 1 checked on the customer's app\.\nShow the collection summary: checked on the customer's app\.$/m);
   assert.match(b.out, /^Waiting on you: 6 steps only you can take, in one list\.$/m);
   const cmd = `node ${h.script('plan.js').split(' ')[1]} brief`;
   assert.deepEqual(MC.messageFindings({ message: b.out, role: COS, commands: [cmd], outputs: [{ command: cmd, text: b.out }], prefix: 'ex' }).warnings, []);
@@ -178,7 +178,7 @@ function stopImport(root, beads) {
 }
 const who = (root) => ({ root, team: JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'team', 'team.json'), 'utf8')), roleId: COS, instance: COS });
 
-test('R-22 (10-17 21:04): a day with the import stopped: the brief leads with it, and the plan routes the stop to the Delivery Manager', async () => {
+test('R-22 (10-17 21:04): a day with the import stopped: the brief puts it first after what shipped, and the plan routes the stop to the Delivery Manager', async () => {
   const root = makeProject();
   const beads = [storyOf('vault-0n9-4', 'Show the collection summary')];
   stopImport(root, beads);
@@ -188,7 +188,9 @@ test('R-22 (10-17 21:04): a day with the import stopped: the brief leads with it
   assert.equal(t.code, 0, t.out);
   assert.match(t.out, /^2\. Stops:\n {3}- Delivery Manager \(delivery-lead\): the import area is stopped on ev-ex-vault-imp-1-1: open the A3/m);
   const b = await plan.main(['brief'], deps);
-  assert.match(b.out.split('\n')[0], /^The import area is stopped until we fix why "Import by file drop" failed on the customer's app; the cause is being looked into\.$/);
+  // what shipped leads (dec-chief-of-staff-000221): the stopped story did reach live, and says so
+  assert.deepEqual(b.out.split('\n').slice(0, 2), ["So far: 1 change merged, 1 live, 0 checked on the customer's app.", 'Import by file drop: live.']);
+  assert.match(b.out.split('\n')[2], /^The import area is stopped until we fix why "Import by file drop" failed on the customer's app; the cause is being looked into\.$/);
   // the goal sheet lists the stopped area as a blocking unknown
   const s = await require('./goal.js').main(['sheet'], deps);
   assert.match(s.out, /^Blocking unknowns: The import area is stopped until/m);

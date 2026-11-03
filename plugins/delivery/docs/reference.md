@@ -1039,12 +1039,17 @@ judgement in between (`scripts/lib/daily-plan.js`).
   mismatch. Warn only. `plan.js routed [--json]` lists today's items not yet sent to their role, and the
   misroutes. The recipient is read from the manifest's instance names, the roster's session ids, a
   role's display name, or DM, PM, CoS and RC; anything else is an unknown session.
-- **The briefing.** `plan.js brief` renders the owner's briefing: a stopped area first ("The import area
-  is stopped until we fix why ..."), then what changed since the last plan of an earlier day ("since
-  yesterday", or "since <date>" when that plan is older; merged, live, checked on the customer's app,
+- **The briefing.** `plan.js brief` renders the owner's briefing. It leads with what shipped since the last
+  plan of an earlier day ("since yesterday", or "since <date>" when that plan is older): a count line,
+  then one plain line per story or fix (`bug`, `security`) that moved, up to four ("And N more
+  changes"), each marked from its `state-*` label as merged, live or checked on the customer's app,
   checked only on the done gate's own verdict: the file matches the recorded evidence head, and the
-  latest counting row of every criterion on the deployed sha is a pass), up to two blocking unknowns in
-  the owner's words (assumptions and open technical spikes), what waits on the owner, today's stories,
+  latest counting row of every criterion on the deployed sha is a pass. The plan row records fix states
+  too (`tracks`); against an older row no fix counts as shipped. The open problems follow: the resume
+  time and stalls, a stopped area ("The import area is stopped until we fix why ..."), up to two blocking unknowns in
+  the owner's words (assumptions and open technical spikes), what waits on the owner (open owner steps,
+  and open questions whose scoped beads are not all closed: answered, withdrawn and stale questions are
+  not counted), today's stories,
   pull requests and checks; no ids; at most `briefing_lines` (`--limit <n>` asks for fewer; one line is
   the first line with the offer), the last words always "Ask for details on any item". The Chief of
   Staff sends it instead of its own summary; the owner-message checks still apply, and a live or checked
@@ -1116,7 +1121,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   its area only (they wait for its fix); a message telling the team to stop is not a pause. `plan.js
   today` lists stalls first ("0. Stalls first"), each routed to the session the watchdog wakes for it
   (sending it to another instance of the same role is a misroute, and it stays unrouted),
-  and the resume time when a restart is scheduled; `plan.js brief` leads with them in plain words;
+  and the resume time when a restart is scheduled; `plan.js brief` puts them first among the open
+  problems, after what shipped, in plain words;
   `team-status.js` lists them under the idle line. Times are the host's local time with its zone.
 - **The wake.** `watchdog.js wake [--dry-run]` wakes, for each due stall, its session: the holder of a
   stalled bead or of a bead stopped by the usage limit, else the Delivery Manager. One run carries every

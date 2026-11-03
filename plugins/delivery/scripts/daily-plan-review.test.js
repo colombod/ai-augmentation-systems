@@ -46,7 +46,7 @@ const sheetOf = async (root, beads) => (await goal.main(['sheet'], deps(root, be
 test('B1 (Copilot 500, I1): checked on the customer\'s app only by the done gate\'s rule, in the brief and on the goal sheet', async () => {
   const good = makeProject();
   const b = verified(good);
-  assert.match(await briefOf(good, [b]), /1 checked on the customer's app \(Show the collection summary\)/);
+  assert.match(await briefOf(good, [b]), /^So far: 1 change merged, 1 live, 1 checked on the customer's app\.\nShow the collection summary: checked on the customer's app\.$/m);
   assert.match(await sheetOf(good, [b]), /1 story is checked so far/);
   // the newest row cut off the file by hand: the file no longer ends at the recorded head
   const cut = makeProject();
@@ -220,7 +220,7 @@ test('minors: a one-line brief, the CoS plans only its own project, every open p
   assert.equal(A.plainLine('Import a collection', { status: 'refuted', statement: 'The ChatGPT app passes a file link.' }), 'Import a collection: on hold until the design changes: we checked, and it is not true that the ChatGPT app passes a file link');
 });
 
-test('M5: a stop whose bead cannot be read stays on the plan and leads the brief (fail closed)', async () => {
+test('M5: a stop whose bead cannot be read stays on the plan and leads the open problems in the brief (fail closed)', async () => {
   const root = makeProject();
   const beads = [storyOf('vault-0n9-4', 'Show the collection summary')];
   stopImport(root, beads, { inBd: false });
@@ -228,7 +228,8 @@ test('M5: a stop whose bead cannot be read stays on the plan and leads the brief
   const stop = r.items.find((x) => x.section === 2);
   assert.equal(stop.role, 'delivery-lead');
   assert.match(stop.action, /could not be read: check it \(bd show ex-vault-imp-1\)/);
-  assert.equal((await briefOf(root, beads)).split('\n')[0], 'A stop could not be read; the Delivery Manager checks it.');
+  // what shipped leads (dec-chief-of-staff-000221); the stop is the first open problem after it
+  assert.deepEqual((await briefOf(root, beads)).split('\n').slice(0, 2), ["So far: nothing new merged, live or checked on the customer's app.", 'A stop could not be read; the Delivery Manager checks it.']);
 });
 
 // ---- Copilot on 7b39be3 ----

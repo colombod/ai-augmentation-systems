@@ -106,7 +106,14 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord, 
   const covered = new Set(unknowns.map((u) => u.spike));
   const openSpikes = spikes.filter((b) => b.status !== 'closed' && !covered.has(b.id));
   const queue = must(() => Q.open(root), 'the owner queue');
-  const questions = ownerQuestions(root, pending);
+  // a question is waiting on the owner while it is open (pending() drops answered and withdrawn ones)
+  // and the work it is about is not finished: once every bead in its scope is closed, the question is
+  // stale and the owner is not asked it again (dec-chief-of-staff-000221: 8 of 10 "decisions" were stale)
+  const finished = (q) => {
+    const ids = ((q && q.scope) || {}).beads || [];
+    return ids.length > 0 && ids.every((id) => { const b = beadOf(id); return b && b.status === 'closed'; });
+  };
+  const questions = ownerQuestions(root, pending).filter((q) => !finished(q));
   const ctx = W.contextFor(root, { bd, team, beads: stories, now, verifyRecord, budget, budgetOpts });
   must(() => bd.ready && bd.ready(), 'bd');
   const { ranked, byId } = W.selectRanked(bd, stories, ctx);
@@ -135,7 +142,7 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord, 
   }, false);
   // stalls first (R-04, R-43): the watchdog's own reading of the record; it fails open, never refuses the view
   const watch = safe(() => require('./watchdog.js').read(root, { bd, now, team }), { stalls: [] });
-  return { root, now, team, stalls: (watch && watch.stalls) || [], stalls_paused: (watch && watch.paused) || null, stories, titles, spikes: openSpikes, checks, andon, unknowns, queue, questions, budget: ctx.budget, areas: W.areas(stories), next, known, prs, storyOf: ctx.storyOf, checked };
+  return { root, now, team, stalls: (watch && watch.stalls) || [], stalls_paused: (watch && watch.paused) || null, stories, fixes: fixBeads.filter((b) => !known.has(b.id)), titles, spikes: openSpikes, checks, andon, unknowns, queue, questions, budget: ctx.budget, areas: W.areas(stories), next, known, prs, storyOf: ctx.storyOf, checked };
 }
 
 // ---- the plan for the day ----
@@ -199,8 +206,10 @@ function items(f) {
   return out;
 }
 
-function snapshot(stories) {
-  return Object.fromEntries(stories.map((b) => [b.id, G.stateOf(b) || (b.status === 'closed' ? 'closed' : 'open')]));
+// the state of each story and fix on the record; fixes are tracked since the briefing first said what
+// shipped (a plan row without them names no fix, so none counts as shipped against it)
+function snapshot(stories, fixes = []) {
+  return Object.fromEntries([...stories, ...fixes].map((b) => [b.id, G.stateOf(b) || (b.status === 'closed' ? 'closed' : 'open')]));
 }
 
 // ---- the append-only record ----
@@ -228,7 +237,7 @@ function previous(root, date) {
 
 function record(root, f, { by, now } = {}) {
   const at = now || new Date().toISOString();
-  return append(root, today(at), { type: 'plan', at, by: by || null, items: items(f), states: snapshot(f.stories) });
+  return append(root, today(at), { type: 'plan', at, by: by || null, items: items(f), states: snapshot(f.stories, f.fixes), tracks: ['story', 'fix'] });
 }
 
 // ---- routing: which plan items a message carries, and to whom ----
@@ -298,41 +307,73 @@ const RANK = { open: 0, closed: 0, merged: 1, deployed: 2, verified: 3, cut: -1 
 const DAY = 86400e3;
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-function brief(f, { prev, limit = 12 } = {}) {
-  const lines = [];
-  const AN = require('./andon.js');
-  // a stall or the resume time first: nothing else matters while nobody works (R-43)
-  const r = resumesAt(f);
-  if (r) lines.push(`The team resumes at ${require('./watchdog.js').clock(Date.parse(r))}, when the usage limit resets (restart scheduled).`);
-  lines.push(...[...new Set(stallItems(f).map((x) => x.plain))].slice(0, r ? 1 : 2));
-  lines.push(...AN.plainLines(f.andon).slice(0, 2));
-  // what changed since yesterday's plan, by the story states on the record
+// the owner asked for progress and read the briefing as "issues and blocked work" (dec-chief-of-staff-000221):
+// it leads with what shipped since the last plan, one plain line per change marked from the record
+// (merged, live, checked on the customer's app), and only then the open problems
+const SHIPPED_LINES = 4;
+const WORD = { 1: 'merged', 2: 'live', 3: 'checked on the customer\'s app' };
+const plainTitle = (t) => String(t || '').replace(/^(?:\s*\[[^\]]*\]\s*)+/, '').replace(/^Build [\w-]+:\s*/, '').trim();
+function shipped(f, prev) {
   const before = (prev && prev.states) || {};
-  let merged = 0; let live = 0; let done = 0; let doneTitle = null;
+  // a plan row from before fixes were tracked names none, so no fix counts as shipped against it
+  const fixesTracked = !prev || (prev.tracks || []).includes('fix');
+  const out = [];
   for (const b of f.stories) {
     const now = RANK[G.stateOf(b) || 'open'];
     const was = RANK[before[b.id] || 'open'] || 0;
-    if (now >= 1 && was < 1) merged++;
-    if (now >= 2 && was < 2) live++;
-    if (now === 3 && was < 3 && f.checked(b)) { done++; doneTitle = doneTitle || f.titles.get(String((b.metadata || {}).story || '')) || b.title; }
+    // checked only by the done gate's own verdict on the evidence (B1); otherwise it is at most live
+    const reached = now === 3 && !f.checked(b) ? Math.min(now, 2) : now;
+    if (now >= 1 && was < reached) out.push({ title: f.titles.get(String((b.metadata || {}).story || '')) || plainTitle(b.title), now, was, reached });
   }
+  for (const b of f.fixes || []) {
+    if (!fixesTracked && !(b.id in before)) continue;
+    const now = RANK[G.stateOf(b) || 'open'];
+    const was = RANK[before[b.id] || 'open'] || 0;
+    if (now >= 1 && was < now) out.push({ title: plainTitle(b.title), now, was, reached: now });
+  }
+  return out.sort((a, b) => b.reached - a.reached);
+}
+
+function brief(f, { prev, limit = 12 } = {}) {
+  const lines = [];
+  const AN = require('./andon.js');
+  // what shipped first, by the story and fix states on the record against the last plan
+  const changes = shipped(f, prev);
+  const merged = changes.filter((c) => c.now >= 1 && c.was < 1).length;
+  const live = changes.filter((c) => c.now >= 2 && c.was < 2).length;
+  const done = changes.filter((c) => c.reached === 3 && c.was < 3).length;
   // a plan more than a day before today is named by its date (M1)
   const gap = prev ? Date.parse(today(f.now)) - Date.parse(today(prev.at)) : 0;
   const since = !prev ? 'So far' : gap <= DAY ? 'Since yesterday' : `Since ${today(prev.at)}`;
   lines.push(merged || live || done
-    ? `${since}: ${plural(merged, 'change')} merged, ${live} live, ${done} checked on the customer's app${doneTitle && done ? ` (${doneTitle})` : ''}.`
+    ? `${since}: ${plural(merged, 'change')} merged, ${live} live, ${done} checked on the customer's app.`
     : `${since}: nothing new merged, live or checked on the customer's app.`);
+  // then the open problems: the resume time and stalls lead them (R-43)
+  const problems = [];
+  const r = resumesAt(f);
+  if (r) problems.push(`The team resumes at ${require('./watchdog.js').clock(Date.parse(r))}, when the usage limit resets (restart scheduled).`);
+  problems.push(...[...new Set(stallItems(f).map((x) => x.plain))].slice(0, r ? 1 : 2));
+  problems.push(...AN.plainLines(f.andon).slice(0, 2));
   // the plan's blocking unknowns in the owner's words: assumptions and open technical spikes (Copilot 509)
-  for (const p of items(f).filter((x) => x.section === 3).map((x) => x.plain).slice(0, 2)) lines.push(`${p}.`);
+  for (const p of items(f).filter((x) => x.section === 3).map((x) => x.plain).slice(0, 2)) problems.push(`${p}.`);
   const waits = [];
   if (f.queue.length) waits.push(`${plural(f.queue.length, 'step')} only you can take, in one list`);
   if (f.questions.length) waits.push(`${plural(f.questions.length, 'decision')} for you`);
-  lines.push(waits.length ? `Waiting on you: ${waits.join('; ')}.` : 'Nothing is waiting on you.');
+  problems.push(waits.length ? `Waiting on you: ${waits.join('; ')}.` : 'Nothing is waiting on you.');
+  const waitsAt = problems.length;
   const next = items(f).filter((x) => x.section === 4).map((x) => x.plain);
-  if (next.length) lines.push(`Today the team works on: ${next.slice(0, 2).join('; ')}${next.length > 2 ? `, and ${next.length - 2} more` : ''}.`);
+  if (next.length) problems.push(`Today the team works on: ${next.slice(0, 2).join('; ')}${next.length > 2 ? `, and ${next.length - 2} more` : ''}.`);
   const prs = ['waiting for review', 'ready to merge', 'review passed'].reduce((n, k) => n + ((f.prs || {})[k] || []).length, 0);
-  if (prs) lines.push(`${plural(prs, 'change')} waiting for review or merge.`);
-  if (f.checks.length) lines.push(`${plural(f.checks.length, 'check')} on the customer's app planned.`);
+  if (prs) problems.push(`${plural(prs, 'change')} waiting for review or merge.`);
+  if (f.checks.length) problems.push(`${plural(f.checks.length, 'check')} on the customer's app planned.`);
+  // one line per change, up to four, but never so many that the line on what waits on the owner falls
+  // past the limit: on a busy day the rest of what shipped is a count ("And N more changes"), and with
+  // room for one line only the count line above stands for them all
+  const budget = limit - 2 - waitsAt;
+  const shown = changes.length <= Math.min(SHIPPED_LINES, budget) ? changes.length : Math.max(0, Math.min(SHIPPED_LINES, budget - 1));
+  for (const c of changes.slice(0, shown)) lines.push(`${c.title}: ${WORD[c.reached]}.`);
+  if (shown && changes.length > shown) lines.push(`And ${plural(changes.length - shown, 'more change')}.`);
+  lines.push(...problems);
   const end = 'Ask for details on any item';
   // one line: the most important one, ending with the offer
   if (limit <= 1) return [`${lines[0]} ${end}`];
