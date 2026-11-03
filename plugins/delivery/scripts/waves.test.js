@@ -483,3 +483,52 @@ test('7k3.1.1.1: select lists a story with no planned reality-check script as re
     else assert.match(sel.ranked[0].refused, /criteria 1, 2 are checked on S1 by the Reality Checker, and no reality-check script is planned.*\(R-33\)/);
   }
 });
+
+test('7k3.1.1.1.1: no more product stories start in an area until its reality check has passed end to end there; select and the claim agree', async () => {
+  const F = require('./testing/gate-fixture.js');
+  const Gt = require('./lib/gates.js');
+  const ready = { ready_hash: Gt.storyHash(Gt.parseStory(F.STORY)) };
+  const root = F.makeProject();
+  const pilot = F.storyBead({ id: 'ex-pilot', metadata: ready });
+  const next = F.storyBead({ id: 'ex-next', status: 'open', assignee: '', metadata: ready });
+  F.planCheck(root, pilot);
+  F.planCheck(root, next);
+  const who = { root, roleId: 'delivery-lead', team: TEAM };
+  const row = (seq, prev, r) => JSON.stringify({ seq, prev, id: `ev-ex-pilot-${seq}`, type: 'row', criterion: 1, sha: 'a'.repeat(40), ...r });
+  const look = async (rows) => {
+    fs.mkdirSync(path.join(root, '.delivery', 'evidence'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.delivery', 'evidence', 'ex-pilot.ndjson'), rows.length ? `${rows.join('\n')}\n` : '');
+    const bd = F.memBd([pilot, next]);
+    const sel = JSON.parse((await plan.main(['select', '--json'], { who, bd, budget: NO_BUDGET })).out);
+    const g = await claim({ root }, bd, 'ex-next', NO_BUDGET);
+    return { refused: sel.ranked.find((r) => r.id === 'ex-next').refused, deny: g.deny };
+  };
+  const GATE = /R-33.*no reality check has passed end to end in area collection yet, and ex-pilot there already needs one|no reality check has passed end to end in area collection yet, and ex-pilot there already needs one.*\(R-33\)/;
+  // refused: no run, a failed run, a pass recorded by hand rather than by the Reality Checker's run
+  // refused also: a side-arm pass of the Reality Checker's run, and a run-record pass by another role
+  for (const rows of [[], [row(1, 'start', { result: 'fail', via: 'reality-check', by: 'reality-checker' })], [row(1, 'start', { result: 'pass' })],
+    [row(1, 'start', { result: 'pass', via: 'reality-check', by: 'reality-checker', arm: 'side', why: 'staging' })], [row(1, 'start', { result: 'pass', via: 'reality-check', by: 'delivery-lead' })]]) {
+    const r = await look(rows);
+    assert.match(r.refused || '', GATE, `select, rows ${rows.length}`);
+    assert.match(r.deny || '', GATE, `claim, rows ${rows.length}`);
+  }
+  // allowed once the check passed end to end on a real target
+  const ok = await look([row(1, 'start', { result: 'pass', via: 'reality-check', by: 'reality-checker' })]);
+  assert.equal(ok.refused, null);
+  assert.equal(ok.deny, null);
+  // the area's first story may start: its deploy is where the first run happens
+  const first = JSON.parse((await plan.main(['select', '--json'], { who, bd: F.memBd([{ ...pilot, status: 'open', assignee: '' }]), budget: NO_BUDGET })).out);
+  assert.equal(first.ranked[0].refused, null);
+  // two unbuilt stories in one area: the first claim goes through; once it is in progress, the other is refused
+  fs.writeFileSync(path.join(root, '.delivery', 'evidence', 'ex-pilot.ndjson'), '');
+  const openPilot = { ...pilot, status: 'open', assignee: '' };
+  assert.equal((await claim({ root }, F.memBd([openPilot, next]), 'ex-pilot', NO_BUDGET)).deny, null);
+  assert.match((await claim({ root }, F.memBd([pilot, next]), 'ex-next', NO_BUDGET)).deny || '', GATE);
+  // a linked fix is exempt (fixing the check is how an area gets one), and so is a story the Reality Checker does not check
+  const ctx = { beads: [pilot, next], checkedAreas: new Set(), needsCheck: () => true };
+  assert.ok(W.claimFindings(next, ctx).some((x) => x.code === 'area-unchecked'));
+  assert.ok(!W.claimFindings(next, { ...ctx, fix: { ok: true } }).some((x) => x.code === 'area-unchecked'));
+  // a bug labelled as a fix but not linked to a check is ordinary work: refused like any story
+  assert.ok(W.claimFindings(next, { ...ctx, fix: { labelled: true, ok: false, why: 'no criterion linked' } }).some((x) => x.code === 'area-unchecked'));
+  assert.ok(!W.claimFindings(next, { ...ctx, needsCheck: () => false }).some((x) => x.code === 'area-unchecked'));
+});
