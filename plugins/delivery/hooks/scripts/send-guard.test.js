@@ -130,4 +130,12 @@ test('transition: a bare name of our own instance passes with a warning only whi
   // a name that is no instance of this team (an alias) gets no fallback, even with a live session of ours
   const dm = sessionsDir([{ pid: process.pid, cwd: ourCos, name: 'delivery-manager' }]);
   assert.equal(decision(runHook(send(a.roleDir, 'delivery-manager'), 'builder-1', dm)).permissionDecision, 'deny');
+  // a display name ("Chief of Staff") is the role all the same, as a target and as a live session's name:
+  // the scratch team's send to "Chief of Staff [a1fbfe]" is refused, ours passes with the warning
+  const shown = sessionsDir([{ pid: process.pid, cwd: ourCos, name: 'Chief of Staff' }]);
+  assert.equal(decision(runHook(send(b.roleDir, 'Chief of Staff [a1fbfe]'), 'builder-1', shown)).permissionDecision, 'deny');
+  for (const to of ['Chief of Staff [a1fbfe]', 'chief-of-staff']) {
+    const w = JSON.parse(runHook(send(a.roleDir, to), 'builder-1', shown).stdout);
+    assert.match(w.hookSpecificOutput.additionalContext, /Send to chief-of-staff@alpha from now on/, to);
+  }
 });

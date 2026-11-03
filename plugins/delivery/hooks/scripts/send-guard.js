@@ -27,10 +27,15 @@ function pluginRoleIds() {
   return pluginRoles;
 }
 
+// a session name as a role id: any case, spaces and underscores as hyphens. A session can carry a display
+// name ("Chief of Staff"), and a send to it reaches the role all the same: the quick-start team that
+// reached ours sent to "Chief of Staff [a1fbfe]" as well as "chief-of-staff" (tqv.5)
+const slug = (name) => String(name || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
+
 // true when `name` (an unqualified name, any case) is a role or instance name a session could carry
 function roleish(name, team) {
   const M = require('../../scripts/lib/manifest.js');
-  const n = String(name || '').toLowerCase();
+  const n = slug(name);
   if (!n) return false;
   const insts = M.expandInstances(team || {});
   const names = new Set(['steward', 'delivery-manager', ...pluginRoleIds(), ...insts.map((i) => i.instance), ...insts.map((i) => i.role && i.role.id)].filter(Boolean).map((x) => String(x).toLowerCase()));
@@ -41,7 +46,7 @@ function roleish(name, team) {
 // the name a message to `name` should go to on this team, or null when no session of the team answers
 function ownTarget(team, name, host) {
   const SN = require('../../scripts/lib/session-name.js');
-  const r = require('../../scripts/lib/inbox.js').resolveTarget(team, String(name || '').toLowerCase(), host);
+  const r = require('../../scripts/lib/inbox.js').resolveTarget(team, slug(name), host);
   return r.unknown ? null : SN.sessionName(r.to, team.prefix);
 }
 
@@ -64,14 +69,14 @@ function sessionsDir() {
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (err) { return err.code !== 'ESRCH'; }
 }
-// the live sessions named `name` (any case); throws when the directory or a record cannot be read
+// the live sessions named `name` (as a slug); throws when the directory or a record cannot be read
 function liveSessionsNamed(dir, name) {
-  const want = String(name).toLowerCase();
+  const want = slug(name);
   const out = [];
   for (const f of fs.readdirSync(dir).filter((x) => /^\d+\.json$/.test(x))) {
     const s = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
     if (!s || !Number.isInteger(s.pid) || s.pid <= 0 || !pidAlive(s.pid)) continue;
-    if (typeof s.name === 'string' && s.name.trim().toLowerCase() === want) out.push(s);
+    if (typeof s.name === 'string' && slug(s.name) === want) out.push(s);
   }
   return out;
 }
@@ -100,7 +105,7 @@ function judge(team, to, host, own = null) {
   if (!roleish(instance, team)) return null;
   const mine = ownTarget(team, instance, host);
   if (prefix === null && own) {
-    const inst = require('../../scripts/lib/manifest.js').expandInstances(team).find((i) => i.instance.toLowerCase() === instance.toLowerCase());
+    const inst = require('../../scripts/lib/manifest.js').expandInstances(team).find((i) => i.instance.toLowerCase() === slug(instance));
     if (inst && ownLiveSessions(inst.instance, own)) {
       return { warn: `delivery: "${SN.bareTarget(to)}" is a bare session name; allowed for now because its only live session is this team's. Send to ${SN.sessionName(inst.instance, team.prefix)} from now on: session names are shared by every team on this machine.` };
     }
