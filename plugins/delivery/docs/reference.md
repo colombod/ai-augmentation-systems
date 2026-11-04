@@ -95,7 +95,73 @@ session its role and keep it:
   - PreToolUse: the lane (writes, shell commands, MCP), the leak guard (product repo), the bd
     guard (claims, structure, the ready and done gates) and the operator channel guard (`AskUserQuestion`,
     `PushNotification`, `SendUserFile` for roles other than the Chief of Staff and the Product
-    Manager).
+    Manager). The setup guard (`hooks/scripts/setup-guard.js`: decisions before the tool in
+    `setup.js`, the after-check in `setup-net.js`; on Write, Edit, MultiEdit, NotebookEdit, Bash,
+    Monitor and PowerShell, before and after the tool) is the exception to "inert outside a role
+    session": it binds every Claude Code session on the host, team role or not, because the session
+    that once moved the team's temp files into the home directory was not a role session. It runs as a
+    plugin hook and as a user-level hook: `lib/user-guard.js` writes a launcher at a stable path,
+    `<config dir>/delivery/bin/setup-guard.js`, and adds PreToolUse, PostToolUse and
+    PostToolUseFailure entries naming it to `<config dir>/settings.json`, merged beside every other key
+    and hook, idempotent, with an atomic write. The watchdog host job does it every cycle (never inside
+    the sealed test runner), and the team can run `scripts/setup-guard.js install`; it is never the
+    operator's. The launcher runs the installed plugin's guard, or, with no plugin installed, a small
+    embedded temp-variable check, so a project that disables the plugin, or removing the plugin, does
+    not switch the guard off.
+
+    Before the tool it refuses any change of where temp files go (`TMPDIR`, `CLAUDE_CODE_TMPDIR`,
+    `TMP`, `TEMP`, `TEMPDIR` added or changed) in a Claude settings file (any `settings.json` or
+    `settings.local.json` under a `.claude` directory, `CLAUDE_CONFIG_DIR`, managed settings), a shell
+    or session environment file (`~/.bashrc`, `~/.bash_aliases`, `~/.bashrc.d/*`, `~/.profile`,
+    `~/.zshrc` and the like, any `.envrc`, `~/.config/fish/*`, `~/.config/environment.d`, systemd user
+    units, `/etc/environment`, `/etc/profile.d`, `$CLAUDE_ENV_FILE`), or by a command: one that
+    persists it (`systemctl --user set-environment`, `launchctl setenv`, `setx`,
+    `[Environment]::SetEnvironmentVariable`, `claude config set`, `claude --settings`), a redirect,
+    `tee` or `sed -i` onto one of those files, a `cp` or `mv` of a file whose content sets one, or a
+    heredoc or inline script (`python3 - <<EOF`, `node -e`, `bash -c`, ...) that names a temp
+    variable, whole or assembled from quoted parts, names one of those files and writes to one: the
+    target of each write call is judged, so a script that reads settings and writes `report.txt`
+    passes, while a target that cannot be resolved (a variable from a glob, an argument) counts as
+    guarded. That refusal stands even when no operator record can be read. Removing such a setting is
+    allowed (that is how a wrong one is reverted), and so are a one-off `TMPDIR=x cmd` (also beside a
+    `cp` or a redirect elsewhere), `export` inside one command, reading (`echo $TMPDIR`,
+    `grep TMPDIR ~/.bashrc`, a script that only loads a settings file), and fixtures: a project
+    settings file or `.envrc` under a `test`, `tests` or `fixtures` directory or in the host's temp
+    directory is not guarded unless it is a role directory's. It also refuses switching the guard off:
+    `claude plugin disable|uninstall|remove` of delivery, a delivery `enabledPlugins` entry set to
+    false (or removed from a user settings file), `disableAllHooks` or `allowManagedHooksOnly` set to
+    true in any settings file (they switch off every settings and plugin hook, both copies of this
+    guard included), by an edit, `jq`, a script or `claude config set`, and removing the user-level
+    guard hook or removing, moving, truncating or overwriting its launcher. Its own installer's write
+    adds the hook and passes. A change of another environment
+    variable (upper-case, matched case-sensitively), or of a settings key named beside "settings",
+    "env" or "config", is refused only when a recorded operator decision or settled answer forbids it:
+    the key and a prohibition (never, not, no, must not) in the same sentence, with no request for the
+    change ahead of the key ("Repair the PATH" asks for it). A host reboot is refused when a record says
+    never to rely on a restart.
+
+    After the tool, the after-check compares the guarded files (the user config dir's settings, managed
+    settings, the shell and environment files above, and the `.claude` settings of every role directory
+    of each project the host serves, from its roster and its default team directory) with a snapshot
+    taken before it: only the temp variable values, the delivery `enabledPlugins` values,
+    `disableAllHooks` and `allowManagedHooksOnly`, the guard hook entries, the launcher and the temp
+    assignment lines, kept in the plugin's state directory (`CLAUDE_PLUGIN_DATA`,
+    else `<config dir>/delivery/state`, never /tmp) and deleted after the check. A temp variable added
+    or changed, the plugin disabled, a hook switch turned on or the guard hook removed is put back in
+    place (those keys or lines only, the rest of the file as the tool left it; a removed or overwritten
+    launcher is written again by its installer, with its hook entries), and the result is blocked with the same reason,
+    saying what was reverted. So a `cp` from a variable, a script run from a file or a name built at run
+    time is caught too. Restoring is idempotent: the plugin hook and the user-level hook both running
+    after one tool is harmless. Known limit: a write made after the tool returns (a `run_in_background`
+    command, `nohup` or a `&` job) lands after the after-check and is not reverted; the host job's next
+    cycle reinstalls the user-level hook entries and launcher, but not a temp variable or a hook switch.
+
+    The records read are those of the session's role project, of every project the watchdog host job
+    serves on this host (its systemd units or launchd agents), and of `DELIVERY_PROJECTS`, and only when
+    a call is a candidate setup change (after the tool, only once a change was found). The reason names
+    the record ids, says the change is not a session's call, and points to the Chief of Staff; it never
+    asks the operator to approve or undo anything. On an internal error it allows, except an input that
+    plainly targets a settings file and names a temp variable.
   - Stop: captures operator input, then the operator checks for the Chief of Staff and the Product
     Manager (an unrecorded input, a relay request, asked of the [typed judge](#the-typed-judge) first
     when it is on), at most two blocking stops per turn.
