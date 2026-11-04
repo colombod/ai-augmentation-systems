@@ -85,7 +85,7 @@ function andonProof(who, store, f, proof) {
   const drift = G.beadCriteriaDrift(inp.checkStory, f.bead || { id: f.beadId }, inp.checkScript, inp.rows, C.recordChecker(who.root));
   if (drift) return [`the criteria of ${f.beadId} changed: ${drift.detail}`, 'Message the Delivery Manager: the failure needs re-reading against the criteria'];
   const c = inp.checkStory && inp.checkStory.criteria.find((x) => x.n === Number(f.row.criterion));
-  if (!c) return [`criterion ${f.row.criterion} of ${f.beadId} is not in its ${inp.story ? 'story' : 'stated criteria'} any more`, 'Message the Delivery Manager: the failure needs re-reading against the story'];
+  if (!c) return [`criterion ${f.row.criterion} of ${f.beadId} is not in its ${inp.story ? 'story' : 'stated criteria'} any more`, `Message the Delivery Manager: the failure needs re-reading against ${inp.story ? 'the story' : 'the criteria the bead states'}`];
   const bm = (f.bead && f.bead.metadata) || {};
   const why = G.rowProblem(pass, { c, surface: inp.surface, noSurface: inp.noSurface, sha: bm.deployed_sha, deployedAt: bm.deployed_at, repinnedAt: bm.criteria_restamped_at || null, repinnedBy: bm.criteria_record || null, authors: G.authorsOf(f.bead || {}, inp.instances), recordOk: C.recordChecker(who.root) });
   return why ? [why, again] : null;

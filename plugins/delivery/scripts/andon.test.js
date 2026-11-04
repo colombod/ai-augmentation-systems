@@ -91,11 +91,12 @@ test('R-22 10-17: the intake fails in the real app; the area stops, the fix goes
   assert.match(h.tool('builder-1', 'Write', { file_path: ledger, content: '{}' }).deny, /written only by `a3\.js` and `andon\.js`/);
 });
 
-// 6y3: a bug bead with no story file states its criteria in its own "Done when:" (pinned at deploy); its
-// A3 closes on a later pass of the same criterion, read from those criteria as the done gate reads them
-test('R-22 6y3: the A3 of a failed check on a bug bead with no story file closes on a later pass of the same criterion', () => {
+// the A3 of a failed check of criterion 1 on a story-less bug bead, its fix merged and the fix deployed:
+// what is left is a later pass and the close
+const BUG_DONE = 'Done when: (1) the import shows the card count; and (2) the import names the deck.';
+function bugA3() {
   const BUG = 'ex-bug-7';
-  const h = intake({ [BUG]: storyBead({ id: BUG, title: 'The count is missing', labels: ['bug'], parent: null, assignee: 'dev@pc/builder-1', description: 'Done when: (1) the import shows the card count; and (2) the import names the deck.', metadata: { story_file: undefined, roadmap_ref: undefined, initiative: 'vault', authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } }) });
+  const h = intake({ [BUG]: storyBead({ id: BUG, title: 'The count is missing', labels: ['bug'], parent: null, assignee: 'dev@pc/builder-1', description: BUG_DONE, metadata: { story_file: undefined, roadmap_ref: undefined, initiative: 'vault', authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } }) });
   let k = 0;
   const run = (n, result, version) => {
     const f = path.join(h.root, '.delivery', 'evidence', 'artifacts', BUG, `run-${++k}.txt`);
@@ -115,13 +116,43 @@ test('R-22 6y3: the A3 of a failed check on a bug bead with no story file closes
   require('./lib/reviews.js').append(h.root, '502', { type: 'merged', head: H(502), beads: ['ex-fix-count'], at: new Date().toISOString() }, 'delivery-lead');
   const sections = "--cause 'The count was read before the import finished.' --class 'Every summary read state before its job ended.' --countermeasure 'Summaries wait on the job; a test reads each after it ends.' --check 'The reality check on the deployed build passed.'";
   deploy('e5550000', 'v1.4.3');
+  return { h, BUG, ev, a3, run, close: (proof) => h.a3('delivery-lead', `close ${a3} --fix ex-fix-count --proof ${proof} ${sections}`) };
+}
+
+// 6y3: a bug bead with no story file states its criteria in its own "Done when:" (pinned at deploy); its
+// A3 closes on a later pass of the same criterion, read from those criteria as the done gate reads them
+test('R-22 6y3: the A3 of a failed check on a bug bead with no story file closes on a later pass of the same criterion', () => {
+  const { h, BUG, ev, a3, run, close } = bugA3();
+  // the draft says what was expected: the criterion as the bead itself words it
+  assert.match(h.a3('delivery-lead', `show ${a3}`).out, /Criterion 1: the import shows the card count/);
   // a pass of another criterion proves nothing
   const other = run(2, 'pass', 'v1.4.3');
-  assert.match(h.a3('delivery-lead', `close ${a3} --fix ex-fix-count --proof ${evIdOf(other.out)} ${sections}`).out, new RegExp(`is not a pass of criterion 1 of ${BUG} after ${ev}`));
+  assert.match(close(evIdOf(other.out)).out, new RegExp(`is not a pass of criterion 1 of ${BUG} after ${ev}`));
   const pass = run(1, 'pass', 'v1.4.3');
   assert.equal(pass.code, 0, pass.deny || pass.out);
-  const closed = h.a3('delivery-lead', `close ${a3} --fix ex-fix-count --proof ${evIdOf(pass.out)} ${sections}`);
+  const proof = evIdOf(pass.out);
+  // criterion 2 cut from what the bead states after its criteria were pinned (metadata.criteria wins over
+  // the description): the pass proves nothing until the failure is re-read against what it states now
+  assert.equal(h.bash('delivery-lead', `bd update ${BUG} --metadata '{"criteria":["the import shows the card count"]}'`).code, 0);
+  const cut = close(proof);
+  assert.notEqual(cut.code, 0, cut.out);
+  assert.match(cut.out, new RegExp(`the criteria of ${BUG} changed: the criteria stated on the bead changed since its check was pinned`));
+  assert.match(cut.out, /re-reading against the criteria/);
+  assert.equal(h.bash('delivery-lead', `bd update ${BUG} --metadata '{"criteria":null}'`).code, 0);
+  const closed = close(proof);
   assert.equal(closed.code, 0, closed.out);
+});
+
+// 6y3: the pinned criteria hold when the bead later names a story file that was not made ready under the
+// owner's record after the pin; the story's criteria do not replace them
+test('R-22 6y3: a story-less bug bead pinned at deploy that later names a story file cannot close its A3 on that story', () => {
+  const { h, BUG, run, close } = bugA3();
+  const pass = run(1, 'pass', 'v1.4.3');
+  assert.equal(pass.code, 0, pass.deny || pass.out);
+  assert.equal(h.bash('delivery-lead', `bd update ${BUG} --metadata '{"story_file":"vault-0n9-3.md"}'`).code, 0);
+  const r = close(evIdOf(pass.out));
+  assert.notEqual(r.code, 0, r.out);
+  assert.match(r.out, new RegExp(`the criteria of ${BUG} changed: the bead's own criteria were pinned \\(.+\\) and it now names story file vault-0n9-3\\.md`));
 });
 
 // fbk: a stop halts new building, never the proving of what is already deployed
