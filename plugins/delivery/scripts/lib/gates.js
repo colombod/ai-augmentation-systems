@@ -241,6 +241,8 @@ function readyFindings({ story, surfaces = [], surfaceMissing = false, bead = nu
   if (checkScript !== undefined && surface) {
     const gap = checkScriptGap(story, surface, checkScript);
     if (gap.length) f.push(block('reality-check-script', 'R-33', `criteria ${gap.map((c) => c.n).join(', ')} are checked on ${surface.id} by the Reality Checker, and ${checkScript ? 'the script has no step group for their current wording' : 'no reality-check script is planned'}: materialise the initiative again, or reality-check.js plan <bead>`));
+    const bare = checkScriptCommandless(story, surface, checkScript);
+    if (bare.length) f.push(block('reality-check-command', 'R-33', `criteria ${bare.map((c) => c.n).join(', ')} are checked on ${surface.id}, a command line, and their script steps carry no command, so verify-run.js has nothing to run: reality-check.js refine <bead> --criterion <n> --step 1 --command '<the command>' --match '<what stdout shows>' (or refine --from <file>)`));
   }
   if (judged && !judged.skipped && !judged.error && (judged.answer === 'no' || judged.answer === 'partial')) {
     f.push(warn('shippable-judge', 'R-35', `the typed judge rates this story "${judged.answer}" as a shippable unit (confidence ${Number(judged.confidence).toFixed(2)}, advisory)`));
@@ -422,6 +424,19 @@ const checkScriptGap = (story, surface, script) => {
   return checkCovered(story, surface).filter((c) => !planned.has(criterionHash(c)));
 };
 
+// On a command-line surface, the covered criteria whose step group (at their current wording) has no step
+// carrying a command. verify-run.js runs only a step's command, so a group of actions alone is a check the
+// Reality Checker cannot run: 17 checks at a6aecad were planned this way and every one was blocked. Kept
+// apart from checkScriptGap because planning again cannot fill it: only refine writes a command.
+const checkScriptCommandless = (story, surface, script) => {
+  if (!surface || surface.command_line !== true) return [];
+  const groups = new Map(((script && script.criteria) || []).map((g) => [g.criterion_hash, g]));
+  return checkCovered(story, surface).filter((c) => {
+    const g = groups.get(criterionHash(c));
+    return g && !(g.steps || []).some((s) => typeof s.command === 'string' && s.command.trim());
+  });
+};
+
 // Why a row does not count for criterion c, or null when it does (D2, D3, R-33).
 function rowProblem(row, { c, surface, noSurface, sha, deployedAt, repinnedAt = null, repinnedBy = null, authors, recordOk = () => false }) {
   if (row.type !== 'row' || Number(row.criterion) !== c.n) return 'not this criterion';
@@ -467,5 +482,5 @@ function doneCheck({ story, bead, rows = [], surface, noSurface = false, instanc
 
 const initiativeOf = (bead) => { const m = /^([a-z0-9][a-z0-9-]*)\//.exec(String((bead && bead.metadata && bead.metadata.roadmap_ref) || '')); return m ? m[1] : null; };
 
-module.exports = { byRealityCheck, checkCovered, checkedAreas, checkScriptGap, parseStory, storyFromBead, beadCriteriaDrift, storyHash, criterionHash, storySurface, isStoryBead, readyFindings, shippableState, scopeDrift, claimDivergence, stateOf, stateCounts, unverifiedOver, areaOf,
+module.exports = { byRealityCheck, checkCovered, checkedAreas, checkScriptGap, checkScriptCommandless,parseStory, storyFromBead, beadCriteriaDrift, storyHash, criterionHash, storySurface, isStoryBead, readyFindings, shippableState, scopeDrift, claimDivergence, stateOf, stateCounts, unverifiedOver, areaOf,
   readEvidence, readEvidenceChecked, headProblem, appendEvidence, evidenceFile, roleOfActor, authorsOf, shaMatch, rowProblem, doneCheck, initiativeOf, STATE, DEFAULT_MAX_UNVERIFIED };

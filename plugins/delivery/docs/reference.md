@@ -542,7 +542,11 @@ The Delivery Manager puts the command in the script step with `reality-check.js 
 commands that hold quotes, from a JSON file with `reality-check.js refine <bead> --from <file>`, where the
 file is `{"<criterion>": {"command": ..., "match": ..., "step": <k, default 1>, "as_role": <bool>}}`;
 the whole file is checked (known criteria and steps, known keys, a valid `match`) before anything is
-written. The runner
+written. Plan writes steps with actions only, so on a command-line surface a story is neither ready
+(`ready.js` blocks with `reality-check-command`, R-33) nor deployed (`evidence.js state <bead> deployed`
+refuses) while a planned step group has no step carrying a command; both name the criteria still
+without one. A bead with no script before its deploy (one planned from its own criteria at the
+deploy) is deployed with a warning naming those criteria instead. The runner
 checks out the bead's deployed sha (the full sha) in `verify/<bead>-<sha12>` of the role directory,
 runs the command there with the role's variables cleared (a step refined with `--as-role` keeps the
 Reality Checker's own role variables instead, and only for the one command that needs them,

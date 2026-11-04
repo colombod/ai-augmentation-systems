@@ -57,13 +57,56 @@ function setup() {
   return { prod, root, roleDir, bd, dm, refine, deploy, verify, rows };
 }
 
+// planned and deployed: a command-line deploy needs a command on every step group first (7k3.1.1.1.6), so
+// each criterion gets a placeholder the test refines to what it runs
 function ready() {
   const s = setup();
   assert.equal(s.dm('plan', ID).code, 0);
-  s.deploy();
+  for (const n of [1, 2]) assert.equal(s.refine(n, 'true').code, 0);
+  const d = s.deploy();
+  assert.equal(d.code, 0, d.out);
   assert.equal(s.dm('plan', ID).code, 0);
   return s;
 }
+
+// 7k3.1.1.1.6: 17 checks at a6aecad were dispatched with scripts whose steps had no command, so the
+// Reality Checker had nothing to run. On a command line, ready and deployed refuse such a script and name
+// the criteria still without one.
+test('7k3.1.1.1.6: on a command line, ready and deployed refuse a script whose step group has no command, naming the criterion', async () => {
+  const s = setup();
+  const readyNow = () => require('./ready.js').main([ID], { cwd: s.root, env: {}, bd: s.bd, now: T.plan, who: { root: s.root, team: loadManifest(s.root).team, instance: 'delivery-lead', roleId: 'delivery-lead', actor: 't@pc/delivery-lead' } });
+  assert.equal(s.dm('plan', ID).code, 0);
+  const pre = await readyNow();
+  assert.equal(pre.code, 1, pre.out);
+  assert.match(pre.out, /block R-33 reality-check-command: criteria 1, 2 are checked on S3, a command line, and their script steps carry no command/);
+  const refused = s.deploy();
+  assert.equal(refused.code, 1, refused.out);
+  assert.match(refused.out, /ex-vault-0n9-3 is not marked deployed: criteria 1, 2 are checked on S3, a command line, and their script steps carry no command.*reality-check\.js refine ex-vault-0n9-3 --criterion <n>/);
+  assert.equal(s.bd.show(ID).metadata.deployed_sha, undefined, 'nothing recorded');
+  assert.equal(s.bd.show(`${ID}-rc-${s.prod.deployed.slice(0, 7)}`), null, 'no check bead');
+  // one refined: the other is still named, by both gates
+  assert.equal(s.refine(1, 'sh tool.sh', 'imported').code, 0);
+  assert.match((await readyNow()).out, /reality-check-command: criteria 2 are/);
+  assert.match(s.deploy().out, /not marked deployed: criteria 2 are checked on S3/);
+  // both refined: ready and deployed pass
+  assert.equal(s.refine(2, 'sh tool.sh').code, 0);
+  const post = await readyNow();
+  assert.equal(post.code, 0, post.out);
+  assert.doesNotMatch(post.out, /reality-check-command/);
+  const ok = s.deploy();
+  assert.equal(ok.code, 0, ok.out);
+  assert.doesNotMatch(ok.out, /carry no command/);
+});
+
+// a bead that states its own criteria and has no script until its deploy is planned there, with no command
+// yet: the deploy says which criteria still need one rather than dispatch a check nobody can run
+test('7k3.1.1.1.6: a command-line deploy that plans its script just now warns which criteria carry no command', () => {
+  const s = setup();
+  s.bd.beads.set('ex-fix-9', storyBead({ id: 'ex-fix-9', title: 'The count is missing', labels: ['bug'], parent: ID, description: 'Done when: (1) the tool prints the card count.', metadata: { story_file: undefined, roadmap_ref: undefined, initiative: 'vault', surface: 'S3' } }));
+  const d = evidence.main(['state', 'ex-fix-9', 'deployed', '--sha', s.prod.deployed], { cwd: s.root, env: {}, bd: s.bd, now: T.deploy, who: { root: s.root, team: loadManifest(s.root).team, instance: 'delivery-lead', roleId: 'delivery-lead', actor: 't@pc/delivery-lead' } });
+  assert.equal(d.code, 0, d.out);
+  assert.match(d.out, /warning: criteria 1 of ex-fix-9 are checked on S3, a command line, and their script steps carry no command yet: refine them/);
+});
 
 test('run: the deployed sha, not the newest commit, runs the command, and the runner writes a pass row', () => {
   const s = ready();
@@ -111,6 +154,11 @@ test('run: only the Reality Checker runs it; the builder and the Delivery Manage
 
 test('run: refused with the fix named when the step has no command, the script is for another deploy, or the sha is short', () => {
   const s = ready();
+  // the deploy gate refuses a step group with no command; one emptied by hand afterwards is refused here
+  const file = path.join(s.root, rc.scriptRel(ID));
+  const script = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete script.criteria[0].steps[0].command;
+  fs.writeFileSync(file, JSON.stringify(script));
   assert.match(s.verify(1).out, /no step with a command: the Delivery Manager adds it \(reality-check\.js refine/);
   assert.match(s.verify(7).out, /criterion 7 is not in the script/);
   const short = setup();
