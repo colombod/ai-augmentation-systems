@@ -1914,3 +1914,89 @@ test('team-runtime-10: prepare-role.js is in Staffing\'s lane only', () => {
   }
   assert.ok(!GROUPS.read.some((r) => String(r.arg_prefix || '').endsWith('/prepare-role.js')));
 });
+
+// team-runtime-10 c2: a role's marker and settings are written only by prepare-role.js (a node process,
+// not a tool call): refused for every role, the `any` lanes included, in its own role directory and another's
+test('team-runtime-10 c2: Write, Edit and shell writes to a role marker or settings are refused for every lane', () => {
+  const team = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-guard-'));
+  const own = path.join(team, 'me');
+  const other = path.join(team, 'reality-checker');
+  for (const d of [own, other]) {
+    fs.mkdirSync(path.join(d, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(d, 'product', '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(d, 'scratch'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.delivery-role.json'), '{}');
+  }
+  const lane = (policy, toolName, toolInput, cwd = own) => decideLane({ toolName, toolInput, policy, roleDir: own, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd });
+  const why = /role marker and settings .* are written only by `prepare-role\.js`/;
+  const ids = fs.readdirSync(path.join(PLUGIN_ROOT, 'roles')).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3));
+  assert.ok(ids.includes('builder') && ids.includes('spike-researcher') && ids.includes('staffing'));
+  for (const id of ids) {
+    const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${id}` });
+    for (const dir of [own, other]) {
+      for (const rel of ['.delivery-role.json', '.claude/settings.local.json', '.claude/settings.json']) {
+        const file = path.join(dir, rel);
+        const shown = dir === own ? rel : path.relative(own, file);
+        const tries = [
+          ['Write', { file_path: file, content: '{}' }],
+          ['Edit', { file_path: file, old_string: 'a', new_string: 'b' }],
+          ['MultiEdit', { file_path: file, edits: [{ old_string: 'a', new_string: 'b' }] }],
+          ['Bash', { command: `echo {} > ${shown}` }],
+          ['Bash', { command: `echo {} >> ${file}` }],
+          ['Bash', { command: `echo {} | tee ${shown}` }],
+          ['Bash', { command: `cp scratch/x.json ${shown}` }],
+          ['Bash', { command: `mv scratch/x.json ${shown}` }],
+          ['Bash', { command: `sed -i s/a/b/ ${shown}` }],
+          ['Bash', { command: `node -e "require('fs').writeFileSync('${shown}', '{}')"` }],
+          ['Bash', { command: `python3 -c "open('${shown}', 'w').write('{}')"` }],
+          ['Bash', { command: `bash -c 'echo {} > ${shown}'` }],
+          ['Bash', { command: `cd ${path.dirname(file)} && echo {} > ${path.basename(file)}` }],
+          ['Monitor', { command: `echo {} > ${shown}` }],
+        ];
+        for (const [tool, input] of tries) {
+          const d = lane(policy, tool, input);
+          assert.equal(d.allow, false, `${id} ${tool} ${JSON.stringify(input)}`);
+          assert.match(d.reason, why, `${id} ${tool} ${JSON.stringify(input)}`);
+        }
+        // reading stays allowed
+        assert.equal(lane(policy, 'Bash', { command: `cat ${shown}` }).allow, true, `${id} cat ${shown}`);
+      }
+      assert.equal(lane(policy, 'Bash', { command: `cp scratch/x ${path.relative(own, path.join(dir, '.claude'))}` }).allow, false, `${id} cp into .claude`);
+    }
+    assert.equal(lane(policy, 'Bash', { command: 'cat .delivery-role.json | head -3' }).allow, true, `${id} cat | head`);
+  }
+  // a product's own .claude/settings.json is not a role's settings: the builder still edits it
+  const builder = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/builder' });
+  assert.equal(lane(builder, 'Write', { file_path: path.join(own, 'product', '.claude', 'settings.json'), content: '{}' }).allow, true);
+  assert.equal(lane(builder, 'Bash', { command: 'echo {} > .claude/settings.json' }, path.join(own, 'product')).allow, true);
+  assert.equal(lane(builder, 'Bash', { command: `node -e "require('fs').writeFileSync('.claude/settings.json', '{}')"` }, path.join(own, 'product')).allow, true);
+  // a new role marker is never written by hand, wherever it would go
+  assert.equal(lane(builder, 'Write', { file_path: path.join(own, 'product', '.delivery-role.json'), content: '{}' }).allow, false);
+  // prepare-role.js itself runs (Staffing's lane), and the marker it writes is not in its command line
+  const staffing = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/staffing' });
+  assert.equal(lane(staffing, 'Bash', { command: `node ${path.join(PLUGIN_ROOT, 'scripts', 'prepare-role.js')} --project /p --instance reality-checker` }).allow, true);
+});
+
+// the same through the real hook process, in role sessions of a scratch team (criterion 2's 36 calls)
+test('team-runtime-10 c2: through the lane hook, staffing, builder and spike-researcher are refused writes to role settings', () => {
+  const { harness } = require('../../scripts/testing/role-harness.js');
+  const h = harness();
+  const insts = ['staffing', 'builder-1', 'spike-researcher'];
+  for (const inst of insts) h.roleDir(inst);
+  let refused = 0;
+  for (const inst of insts) {
+    for (const dirOf of [inst, insts.find((x) => x !== inst)]) {
+      for (const rel of ['.delivery-role.json', path.join('.claude', 'settings.local.json')]) {
+        const file = path.join(h.roleDir(dirOf), rel);
+        const tries = [
+          h.tool(inst, 'Write', { file_path: file, content: '{}' }).deny,
+          h.tool(inst, 'Edit', { file_path: file, old_string: 'a', new_string: 'b' }).deny,
+          h.bash(inst, `echo {} > ${file}`, { run: false }).deny,
+        ];
+        for (const d of tries) { assert.match(d || '', /prepare-role\.js/, `${inst} on ${dirOf}/${rel}`); refused++; }
+      }
+    }
+    assert.equal(h.bash(inst, 'cat .delivery-role.json', { run: false }).deny, null, `${inst} cat`);
+  }
+  assert.equal(refused, 36);
+});
