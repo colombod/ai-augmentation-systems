@@ -391,3 +391,123 @@ test('prepareRole writes a PATH that finds bd for a session started with a bare 
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).env.PATH, '');
   } finally { process.env.PATH = saved; fs.rmSync(home, { recursive: true, force: true }); }
 });
+
+// Who may prepare a role directory: Staffing, the steward of the instance's host, or a run outside any
+// role session (start.js); from a role session the saved actor stays; a marker is complete or not written.
+function teamWith(projectRoot, edit) {
+  const file = path.join(projectRoot, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.roles.push({ id: 'reality-checker', brief: 'delivery/reality-checker', host: 'pc', model: 'sonnet' });
+  if (edit) edit(team);
+  fs.writeFileSync(file, JSON.stringify(team, null, 2));
+}
+const roleEnv = (instance, roleId) => ({ DELIVERY_ROLE: instance, DELIVERY_ROLE_ID: roleId || instance.replace(/-\d+$/, '') });
+function dirSum(dir) {
+  if (!fs.existsSync(dir)) return 'absent';
+  const h = require('crypto').createHash('sha256');
+  const walk = (d) => { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n); const s = fs.lstatSync(p); h.update(p); if (s.isDirectory()) { if (n !== '.git') walk(p); } else h.update(fs.readFileSync(p)); } };
+  walk(dir);
+  return h.digest('hex');
+}
+
+test('team-runtime-10: only Staffing, the host\'s steward or a run outside a role prepares a role directory', () => {
+  const projectRoot = scratchProjectRepo();
+  teamWith(projectRoot);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const prep = (instance, env, user = 'tester') => prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user, env });
+  // outside any role session (start.js, the owner's shell): prepared
+  const { roleDir } = prep('reality-checker', {});
+  const before = dirSum(roleDir);
+  for (const caller of ['spike-researcher', 'chief-of-staff', 'delivery-lead']) {
+    assert.throws(() => prep('reality-checker', roleEnv(caller)), (err) => {
+      assert.ok(!err.message.includes('\n'), 'one line');
+      assert.match(err.message, new RegExp(`^role ${caller} may not prepare reality-checker: only Staffing, the steward of host pc, or start\\.js run outside a role session prepares a role directory`));
+      return true;
+    }, caller);
+    assert.equal(dirSum(roleDir), before, `${caller} left the role directory unchanged`);
+  }
+  // a refused caller writes nothing, not even a new role directory
+  assert.throws(() => prep('builder-2', roleEnv('spike-researcher')), /may not prepare builder-2/);
+  assert.ok(!fs.existsSync(path.join(teamDir, 'builder-2')));
+  // the steward of pc (builder is one in this team) prepares an instance on pc
+  prep('reality-checker', roleEnv('builder-1'));
+  // but not one on another host (progress-observer runs on buildbox)
+  assert.throws(() => prep('progress-observer', roleEnv('builder-1')), /may not prepare progress-observer: only Staffing, the steward of host buildbox/);
+  // a session whose DELIVERY_ROLE_ID does not match its team.json entry is not that role
+  assert.throws(() => prep('reality-checker', roleEnv('builder-1', 'staffing')), /may not prepare/);
+  assert.throws(() => prep('reality-checker', roleEnv('nobody', 'staffing')), /may not prepare/);
+  // Staffing prepares any instance, on any host
+  prep('reality-checker', roleEnv('staffing'));
+  prep('progress-observer', roleEnv('staffing'));
+});
+
+test('team-runtime-10: a builder that is not a steward may not prepare', () => {
+  const projectRoot = scratchProjectRepo();
+  teamWith(projectRoot, (team) => {
+    for (const r of team.roles) if (r.id === 'builder') delete r.steward;
+    team.roles.find((r) => r.id === 'staffing').steward = true; // pc still has a steward
+  });
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  assert.throws(() => prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', env: roleEnv('builder-1') }), /role builder-1 may not prepare reality-checker/);
+});
+
+test('team-runtime-10: from a role session --user cannot change the saved actor', () => {
+  const projectRoot = scratchProjectRepo();
+  teamWith(projectRoot);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, user: 'alice', env: {} });
+  const before = dirSum(roleDir);
+  for (const caller of ['builder-1', 'staffing']) {
+    assert.throws(() => prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, user: 'mallory', env: roleEnv(caller) }), (err) => {
+      assert.ok(!err.message.includes('\n'));
+      assert.match(err.message, /--user mallory differs from the actor saved for reality-checker \(alice\)/);
+      return true;
+    });
+    assert.equal(dirSum(roleDir), before);
+  }
+  // the same user, or none, keeps the actor
+  prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, user: 'alice', env: roleEnv('builder-1') });
+  prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, env: roleEnv('builder-1') });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')).actor, 'alice@pc/reality-checker');
+  // outside a role session the owner may still change it
+  prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, user: 'bob', env: {} });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')).actor, 'bob@pc/reality-checker');
+});
+
+test('team-runtime-10: prepare-role.js run from a role session it may not act for exits non-zero with one line', () => {
+  const projectRoot = scratchProjectRepo();
+  teamWith(projectRoot);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const script = path.join(__dirname, 'prepare-role.js');
+  const run = (env) => require('child_process').spawnSync(process.execPath, [script, '--project', projectRoot, '--instance', 'reality-checker', '--team-dir', teamDir, '--user', 'tester'], { env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env }, encoding: 'utf8' });
+  const refused = run(roleEnv('spike-researcher'));
+  assert.notEqual(refused.status, 0);
+  assert.equal(refused.stderr.trim().split('\n').length, 1, refused.stderr);
+  assert.match(refused.stderr, /role spike-researcher may not prepare reality-checker: only Staffing, the steward of host pc, or start\.js/);
+  assert.ok(!fs.existsSync(path.join(teamDir, 'reality-checker')));
+  const ok = run({});
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.ok(fs.existsSync(path.join(teamDir, 'reality-checker', '.delivery-role.json')));
+});
+
+test('team-runtime-10: a marker missing a required field is refused naming it, and nothing is written', () => {
+  const { markerProblem } = require('./prepare-role.js');
+  const full = { instance: 'x', role: 'x', project_root: '/p', actor: 'a@h/x', host: 'h', model: 'opus', prepared_at: '2026-11-04T00:00:00.000Z' };
+  assert.equal(markerProblem(full), null);
+  for (const field of ['instance', 'role', 'project_root', 'actor', 'host', 'model', 'prepared_at']) {
+    for (const bad of [undefined, '', 7]) {
+      const m = { ...full, [field]: bad };
+      if (bad === undefined) delete m[field];
+      assert.match(markerProblem(m) || '', new RegExp(`"${field}"`), `${field}=${bad}`);
+    }
+  }
+  assert.match(markerProblem({ ...full, project_root: 'relative/p' }), /"project_root"/);
+  // through prepareRole: a project brief with no default_model, and no model in team.json
+  const projectRoot = scratchProjectRepo();
+  fs.mkdirSync(path.join(projectRoot, '.delivery', 'team', 'briefs'), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, '.delivery', 'team', 'briefs', 'custom.md'), '---\nid: custom\ntouches_code: false\n---\n\nA custom role.\n');
+  teamWith(projectRoot, (team) => team.roles.push({ id: 'custom', brief: 'project/custom', host: 'pc' }));
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  assert.throws(() => prepareRole({ projectRoot, instance: 'custom', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', env: {} }), /"model"/);
+  assert.ok(!fs.existsSync(path.join(teamDir, 'custom')), 'nothing written');
+});
