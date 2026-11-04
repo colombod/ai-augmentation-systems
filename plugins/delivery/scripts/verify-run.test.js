@@ -57,6 +57,15 @@ function setup() {
   return { prod, root, roleDir, bd, dm, refine, deploy, verify, rows };
 }
 
+// The operator.js step as refine stores it in any layout: through the project's launcher. In an installed
+// plugin __dirname names one version (.../plugins/cache/<m>/delivery/<v>/), which refine refuses inside
+// single quotes and rewrites to this form otherwise (8wz.6: these tests passed only from a checkout).
+function opStep(s) {
+  const L = require('./lib/launcher.js');
+  assert.equal(L.ensureLauncher(s.root, path.join(__dirname, '..')), null);
+  return L.launcherCommand(s.root, 'operator.js');
+}
+
 // planned and deployed: a command-line deploy needs a command on every step group first (7k3.1.1.1.6), so
 // each criterion gets a placeholder the test refines to what it runs
 function ready() {
@@ -328,7 +337,7 @@ test('run: operator.js sync in the role directory is refused not_allowed without
   delete env.DELIVERY_PROJECT_ROOT;
   const who = { root: s.root, team: { ...loadManifest(s.root).team, product_url: s.prod.dir }, instance: 'reality-checker', roleId: 'reality-checker', actor: 't@pc/reality-checker', roleDir: s.roleDir };
   const verify = () => vr.main(['run', ID, '--criterion', '1'], { cwd: s.root, env, bd: s.bd, now: T.run, who });
-  const command = `cd '${s.roleDir}' && node '${path.join(__dirname, 'operator.js')}' sync --format-check`;
+  const command = `cd '${s.roleDir}' && ${opStep(s)} sync --format-check`;
   assert.equal(s.refine(1, command).code, 0);
   const without = verify();
   assert.equal(without.code, 0, without.out);
@@ -357,10 +366,12 @@ test('run: operator.js sync in the role directory is refused not_allowed without
 test('refine: --as-role is refused for any command but operator.js sync, and the runner refuses a hand-edited one', () => {
   const s = ready();
   const step = () => rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0];
-  const op = `'${path.join(__dirname, 'operator.js')}'`;
-  for (const ok of [`node ${op} sync`, `cd '/r d/rc' && node ${op} sync --format-check`, `'${process.execPath}' ${op} sync --all --json`]) {
+  const abs = `'${path.join(__dirname, 'operator.js')}'`;
+  for (const ok of [`node ${abs} sync`, `cd '/r d/rc' && node ${abs} sync --format-check`, `'${process.execPath}' ${abs} sync --all --json`]) {
     assert.equal(rc.asRoleProblem(ok), null, ok);
   }
+  // what refine stores: the launcher form (an absolute path inside an installed plugin names its version)
+  const op = opStep(s).replace(/^node /, '');
   for (const bad of [
     `node /p/reality-check.js run-record ${ID} --criterion 1 --result pass`,
     `node /p/evidence.js add ${ID} --criterion 1 --result pass`,
@@ -436,7 +447,7 @@ test('as-role: only the real operator.js, run by node, from the checker\'s role 
   assert.equal(rc.asRoleProblem(`cd '${elsewhere}' && node '${OP}' sync`), null);
   assert.ok(rc.asRoleProblem(`cd '${elsewhere}' && node '${OP}' sync`, { roleDir: null }));
   const s = ready();
-  assert.equal(s.refine(1, `cd '${elsewhere}' && node '${OP}' sync`).code, 0);
+  assert.equal(s.refine(1, `cd '${elsewhere}' && ${opStep(s)} sync`).code, 0);
   assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--as-role').code, 0);
   const r = s.verify(1);
   assert.equal(r.code, 1, r.out);
@@ -444,7 +455,7 @@ test('as-role: only the real operator.js, run by node, from the checker\'s role 
   assert.equal(s.rows().length, 0);
   assert.ok(!fs.existsSync(path.join(s.roleDir, 'verify')));
   // and the same step with a cd into the checker's own role directory gets past the check to the run
-  assert.equal(s.refine(1, `cd '${s.roleDir}' && node '${OP}' sync --format-check`).code, 0);
+  assert.equal(s.refine(1, `cd '${s.roleDir}' && ${opStep(s)} sync --format-check`).code, 0);
   assert.doesNotMatch(s.verify(1).out, /--as-role is only for the form/);
 });
 
@@ -454,7 +465,7 @@ test('run: the hint names --as-role on either wording of the role refusal, and n
   const OP = path.join(__dirname, 'operator.js');
   const hinted = (stderr) => {
     const s = ready();
-    assert.equal(s.refine(1, `node '${OP}' sync`).code, 0);
+    assert.equal(s.refine(1, `${opStep(s)} sync`).code, 0);
     const r = verifyWith(s, (cmd, args, opts) => (cmd === '/bin/sh' ? { status: 1, stdout: '', stderr } : spawnSync(cmd, args, opts)));
     assert.match(r.out, /: fail \(exit 1\)/);
     return /--step 1 --as-role/.test(r.out);
