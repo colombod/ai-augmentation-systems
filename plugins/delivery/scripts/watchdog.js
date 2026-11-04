@@ -504,7 +504,14 @@ function uninstall(root, { platform = process.platform, home = os.homedir(), env
   return { code: 0, out: lines.length ? `${lines.join('\n')}\nThe watchdog job for ${root} is removed from this host.` : `Nothing to remove: no watchdog job for ${root} on this host.` };
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {} } = {}) {
+// A run inside the sealed test runner never installs into the host's own settings: the suite runs the
+// host job against fixtures with the real home, and a test must never change the machine it runs on.
+function defaultUserGuard(env, home) {
+  if (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN) return null;
+  try { return require('./lib/user-guard.js').ensureUserGuard({ configDir: env.CLAUDE_CONFIG_DIR || path.join(home, '.claude'), pluginRoot: PLUGIN_ROOT }).line; } catch (err) { return `setup guard: not installed (${String(err && err.message || err).slice(0, 200)})`; }
+}
+
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -553,6 +560,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       // clone or a cleanup; a failure is reported and never stops the wakes
       const lp = o.dryRun ? null : LAUNCHER.ensureLauncher(who.root, PLUGIN_ROOT, env.CLAUDE_CONFIG_DIR);
       if (lp) swept.push(`launcher: ${lp}`);
+      // the setup guard as a user-level hook (lib/user-guard.js), so it binds every session on this host,
+      // plugin enabled or not; a failure is reported and never stops the wakes
+      const ug = o.dryRun ? null : (userGuard || defaultUserGuard)(env, home);
+      if (ug) swept.push(ug);
       try {
         const S = require('./testing/sweep.js');
         // a dry run says what the sweep would remove and removes nothing
@@ -583,4 +594,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit };
+module.exports = { main, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit };
