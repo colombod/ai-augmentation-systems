@@ -310,8 +310,10 @@ const norm = (id) => String(id || '').trim().toLowerCase().split('/').pop().repl
 
 // A check of shipped work: a stop halts new building, never the proving of what is already deployed
 // (fbk). A reality-check bead that is no story itself, whose checked bead (reality_check_for, which must
-// be its parent when it has one, else its parent) is deployed or verified. The label alone is not
-// enough: a bug about reality checks carries it too, and checks nothing that shipped.
+// match its parent, or, when it has none, the bead parent) is deployed or verified. The label alone is
+// not enough: a bug about reality checks carries it too, and checks nothing that shipped. The label and
+// the parent are any session's to write, so the shape alone exempts nothing: callers also need the
+// Reality Checker to be the one taking it (rv-163).
 function checksShipped(bead, beadOf = () => null) {
   if (!bead || G.isStoryBead(bead) || !(bead.labels || []).includes('reality-check')) return false;
   const named = (bead.metadata || {}).reality_check_for;
@@ -324,16 +326,17 @@ function checksShipped(bead, beadOf = () => null) {
 }
 
 // The claim block a red main puts on `bead` (ciState's c), or null: a valid fix (fixLink), the work of
-// the open ci:main A3 and a check of shipped work still start. One rule for the claim check and the
-// watchdog's assigned-work wake.
-function ciRedBlock(bead, c, fix = { ok: false }, beadOf = () => null) {
+// the open ci:main A3 and a check of shipped work the Reality Checker takes (prover) still start. One
+// rule for the claim check and the watchdog's assigned-work wake.
+function ciRedBlock(bead, c, fix = { ok: false }, { beadOf = () => null, prover = false } = {}) {
   const m = (bead && bead.metadata) || {};
-  if (!c || !c.red || fix.ok || (c.a3 && m.a3 && String(m.a3) === c.a3.id) || checksShipped(bead, beadOf)) return null;
+  if (!c || !c.red || fix.ok || (c.a3 && m.a3 && String(m.a3) === c.a3.id) || (prover && checksShipped(bead, beadOf))) return null;
   return block('ci-red', 'D3', `CI on ${c.repo ? `${c.repo} ` : ''}${c.branch} is red since ${String(c.since).slice(0, 16)}${c.workflows && c.workflows.length ? ` (${c.workflows.join(', ')})` : ''}: fixes only until every required workflow is green (${c.a3 ? `A3 ${c.a3.id} is open` : 'a3.js new --trigger ci:main'})`);
 }
 
-// Findings for claiming `bead`. ctx: { root, parent, fix (fixLink), stories, beadOf, team, now, ci, builder, starts, wipPerSession }
-function claimFindings(bead, { root, parent = null, fix = { ok: false }, stories = [], beadOf = () => null, team, now, ci, builder, starts = true, wipPerSession } = {}) {
+// Findings for claiming `bead`. ctx: { root, parent, fix (fixLink), stories, beadOf, team, now, ci, builder, starts, wipPerSession,
+// prover (the Reality Checker takes it, or the Delivery Manager assigns it to the Reality Checker) }
+function claimFindings(bead, { root, parent = null, fix = { ok: false }, stories = [], beadOf = () => null, team, now, ci, builder, starts = true, wipPerSession, prover = false } = {}) {
   const f = [];
   if (!root || !bead) return f;
   const rows = read(root).rows;
@@ -345,7 +348,7 @@ function claimFindings(bead, { root, parent = null, fix = { ok: false }, stories
   // an area stopped on a failed check: only the recovery work of a failure there goes on (D3c): a fix
   // linked to it, its own story, or its A3's work; recovery for one failure is never held by another
   const look = (x) => (parent && parent.id === x ? parent : beadOf(x));
-  const proving = checksShipped(bead, look);
+  const proving = Boolean(prover) && checksShipped(bead, look);
   const here = proving ? [] : areaStops(root, { beadOf }).filter((s) => s.area === area);
   const recovery = (s) => bead.id === s.bead || bead.parent === s.bead || (fix.ok && [s.row, s.bead, s.story].includes(link)) || tagged(s.a3);
   if (here.length && !here.some(recovery)) {
@@ -354,7 +357,7 @@ function claimFindings(bead, { root, parent = null, fix = { ok: false }, stories
     f.push(block('area-stopped', 'D3', `area ${area} is stopped: ${s.row} failed criterion ${s.criterion} of ${s.bead} on the customer's app; fixes only until its A3 closes on a passing check of the fix (${next})`, { stop: s }));
   }
   // a red main stops new claims across the product, until green or an A3 closed after it went red
-  const red = ciRedBlock(bead, ci || ciState(root, { team, rows }), fix, look);
+  const red = ciRedBlock(bead, ci || ciState(root, { team, rows }), fix, { beadOf: look, prover });
   if (red) f.push(red);
   // a flaky test wants an A3 within 24 h: a warning; a stop (D3) only on a named area, once the Delivery
   // Manager confirmed the record and no A3 was opened within 24 h; never the whole product

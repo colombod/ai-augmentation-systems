@@ -497,7 +497,11 @@ async function gateChecks({ command, roleId, actor, instance, bd: rawBd, root, t
           const status = p.sub === 'update' && statusOf(p) ? statusOf(p) : p.sub === 'update' && p.flags.has('--claim') ? 'in_progress' : bead.status;
           const starts = status === 'in_progress';
           const seen = (stories || []).map((s) => (held.has(s.id) ? { ...s, ...held.get(s.id) } : s));
-          findings.push(...AN.claimFindings(bead, { root, parent: inp.parent, fix, stories: seen, beadOf, team, ci, builder: who && who.actor, starts, wipPerSession: team && team.budget && team.budget.wip_per_session }));
+          // a check of shipped work passes a stop only on its way to the Reality Checker: its own claim, or the
+          // Delivery Manager's assignment to it. Never a builder's: the label and the parent are anyone's to write.
+          const to = typeof assignee(p) === 'string' && assignee(p) ? assignee(p) : actor;
+          const prover = ['reality-checker', 'delivery-lead'].includes(roleId) && G.roleOfActor(to, inp.instances) === 'reality-checker';
+          findings.push(...AN.claimFindings(bead, { root, parent: inp.parent, fix, stories: seen, beadOf, team, ci, builder: who && who.actor, starts, wipPerSession: team && team.budget && team.budget.wip_per_session, prover }));
           if (who) held.set(id, { assignee: who.actor, status: starts ? 'in_progress' : 'open' });
         } catch (err) { /* fail open */ }
         const blocks = findings.filter((f) => f.level === 'block');

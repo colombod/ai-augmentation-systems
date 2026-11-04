@@ -879,12 +879,14 @@ asked to verify (R-22, R-23, R-24; D3).
   recorded without `merge-gate.js merged` is not seen.
 - **Checks of shipped work go on (fbk).** A stop halts new building, never the proving of what is
   already deployed. None of the three stops (a stopped area, a red main, an overdue flaky test) refuses
-  the claim or assignment of a check of shipped work: a bead labelled `reality-check`, not a story
-  itself, whose checked bead (`metadata.reality_check_for`, which must be its parent when it has one,
-  else its parent) is deployed or verified. The `<bead>-rc-<sha>` beads `reality-check.js plan`
-  dispatches are such checks once their story is deployed. A check of unbuilt work, a bug labelled
-  `reality-check` that checks nothing, and other work under a shipped story are still refused. The
-  watchdog's red-main rule for assigned work reads the same check.
+  the Reality Checker's claim of a check of shipped work, or the Delivery Manager's assignment of one
+  to the Reality Checker: a bead labelled `reality-check`, not a story itself, whose checked bead
+  (`metadata.reality_check_for`, which must match its parent, or, when it has none, the bead parent)
+  is deployed or verified. The `<bead>-rc-<sha>` beads `reality-check.js plan` dispatches are such
+  checks once their story is deployed. Any other session's claim of the same bead is refused, since
+  the label and the parent are anyone's to write; so are a check of unbuilt work, a bug labelled
+  `reality-check` that checks nothing, and other work under a shipped story. The watchdog's red-main
+  rule for assigned work reads the same check, for work the Reality Checker holds.
 - **The ledger.** `.delivery/andon/<writer>.ndjson`, append-only and chained like the review records
   (`n`, `prev`), written only by `a3.js`, `andon.js` and `merge-gate.js`. Every lane refuses a hand
   write, and a deletion or move of the folder, of its parent, or by a glob that reaches it. A chain
