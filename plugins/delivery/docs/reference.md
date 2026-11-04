@@ -542,7 +542,12 @@ The Delivery Manager puts the command in the script step with `reality-check.js 
 commands that hold quotes, from a JSON file with `reality-check.js refine <bead> --from <file>`, where the
 file is `{"<criterion>": {"command": ..., "match": ..., "step": <k, default 1>, "as_role": <bool>}}`;
 the whole file is checked (known criteria and steps, known keys, a valid `match`) before anything is
-written. The runner
+written. Plan writes steps with actions only, so on a command-line surface a story is neither ready
+(`ready.js` blocks with `reality-check-command`, R-33) nor deployed (`evidence.js state <bead> deployed`
+refuses) while a planned step group has no step carrying a command; both name the criteria still
+without one. A bead with no script yet (one that states its own criteria) is refused deployed on a
+command line too: plan it and refine its commands first, so no check bead is dispatched with nothing
+to run. The runner
 checks out the bead's deployed sha (the full sha) in `verify/<bead>-<sha12>` of the role directory,
 runs the command there with the role's variables cleared (a step refined with `--as-role` keeps the
 Reality Checker's own role variables instead, and only for the one command that needs them,
@@ -1384,7 +1389,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   marketplace clone shallow, so a clone that lacks the installed sha is first deepened (`git fetch --deepen`,
   50, then 200, then 1000 commits) until it holds it. It never installs
   while a wake is running (held to the next cycle), and while an install is held it starts no new wake,
-  so the running wakes end and the next cycle (or the kick a wake leaves as it ends) installs; it refuses an ungated or older version, retries a failed
+  so the running wakes end and the next cycle (or the kick a wake leaves as it ends) installs. A hold past the wake timeout and a cycle (2.5 h) means a wake outlived its stop: it is logged once as `held-overdue` and the owner briefing says which version waits, until it installs. It refuses an ungated or older version, retries a failed
   update once an hour, and logs each outcome as a `self-update` row. If main moved during the update, so
   the installed sha is not the one checked, the row says `ungated-install` and an `install-ungated`
   warning is recorded. After an install the pass wakes no one and kicks the next run, which runs the new

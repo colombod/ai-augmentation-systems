@@ -119,6 +119,14 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       // leaves a check nobody can run (R-33)
       const gap = G.checkScriptGap(inp.story, inp.surface, inp.checkScript);
       if (gap.length) return refuse(`${id} is not marked deployed: criteria ${gap.map((c) => c.n).join(', ')} are checked on ${inp.surface.id} by the Reality Checker and ${inp.checkScript ? 'its script has no step group for their current wording' : 'no reality-check script is planned'}. Plan it (reality-check.js plan ${id}), then record the deploy again.`);
+      // on a command line the planned steps must also carry a command: verify-run.js runs nothing else, and a
+      // script of actions alone dispatched 17 checks at a6aecad that could not run (7k3.1.1.1.6)
+      // a bead with no script yet (one that states its own criteria) would be planned at this deploy with
+      // actions only, so on a command line it is refused the same way: plan and refine it first
+      const unplanned = !inp.checkScript && inp.surface && inp.surface.command_line === true ? G.checkCovered(inp.checkStory, inp.surface) : [];
+      if (unplanned.length) return refuse(`${id} is not marked deployed: criteria ${unplanned.map((c) => c.n).join(', ')} are checked on ${inp.surface.id}, a command line, and no reality-check script is planned, so the Reality Checker would have nothing to run. Plan it (reality-check.js plan ${id}), write each step's command (reality-check.js refine ${id} --criterion <n> --step 1 --command '<the command>' --match '<what stdout shows>', or refine ${id} --from <file>), then record the deploy again.`);
+      const bare = G.checkScriptCommandless(inp.checkStory, inp.surface, inp.checkScript);
+      if (bare.length) return refuse(`${id} is not marked deployed: criteria ${bare.map((c) => c.n).join(', ')} are checked on ${inp.surface.id}, a command line, and their script steps carry no command, so the Reality Checker has nothing to run. Write each one (reality-check.js refine ${id} --criterion <n> --step 1 --command '<the command>' --match '<what stdout shows>', or refine ${id} --from <file>), then record the deploy again.`);
       // the same sha again keeps its deploy time, so its rows still count
       const same = G.shaMatch(m.deployed_sha, a.sha);
       const meta = { ...m, deployed_sha: same ? m.deployed_sha : a.sha, deployed_at: same && m.deployed_at ? m.deployed_at : at };

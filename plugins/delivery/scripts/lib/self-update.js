@@ -39,6 +39,11 @@ const { resolveInstalledRoot } = require('./launcher.js');
 const { sameRepo, repoOf } = require('./gh-pr.js');
 
 const RETRY_MS = 3600e3;
+// how long an install may be held: no new wake starts while it is, so the longest it can wait is the
+// wake timeout (the supervisor stops a wake then) and the next cycle. A hold past it means a wake outlived
+// its supervisor's stop; it is logged once (`held-overdue`) and the owner briefing reports it
+// (delivery-plugin-planning-0ba.5)
+const HOLD_BOUND_MS = WD.WAKE_TIMEOUT_H * 3600e3 + 30 * 60e3;
 const EXEC_TIMEOUT_MS = 5 * 60e3;
 const GH_TIMEOUT_MS = 30e3;
 const PR_OF = /\(#(\d+)\)\s*$/;
@@ -211,7 +216,22 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     }
     // a running wake holds every install that passed: its session loaded the old plugin
     const held = checks.find((c) => c.d.action === 'held');
-    if (held) return { lines: [`self-update: ${label} held: ${held.d.why}; tried again next cycle.`, ...refusals], installed: false, held: label };
+    if (held) {
+      // the hold's start is logged once per hold, so its age is read from the log, not this process; an
+      // install tried since (failed or not) ended the hold before, so each hold is timed from its own start
+      const tried = rows.findLastIndex((r) => ['failed', 'installed', 'ungated-install'].includes(r.result));
+      const current = rows.slice(tried + 1);
+      const since = current.find((r) => r.result === 'held');
+      const base = { type: 'self-update', from: held.e.version, version: main.version, sha: main.sha, pr: held.d.pr, at };
+      if (!since && !dryRun) WD.log(root, { ...base, result: 'held', why: held.d.why });
+      const age = since ? Date.parse(at) - Date.parse(since.at) : 0;
+      const overdue = age > HOLD_BOUND_MS;
+      if (overdue && !dryRun && !current.some((r) => r.result === 'held-overdue')) WD.log(root, { ...base, result: 'held-overdue', since: since.at, why: held.d.why });
+      const line = overdue
+        ? `self-update: ${label} held since ${since.at} (over ${Math.floor(age / 3600e3)} h, past the ${HOLD_BOUND_MS / 3600e3} h bound): ${held.d.why}, a wake that outlived its timeout; tried again next cycle.`
+        : `self-update: ${label} held: ${held.d.why}; tried again next cycle.`;
+      return { lines: [line, ...refusals], installed: false, held: label };
+    }
     const go = checks.filter((c) => c.d.action === 'install');
     if (!go.length) return { lines: refusals, installed: false };
     const { e: first, d } = go[0];
@@ -257,4 +277,4 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
   }
 }
 
-module.exports = { RETRY_MS, findInstall, readMain, gatedMerge, decide, selfUpdate };
+module.exports = { RETRY_MS, HOLD_BOUND_MS, findInstall, readMain, gatedMerge, decide, selfUpdate };
