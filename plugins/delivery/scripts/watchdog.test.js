@@ -1046,7 +1046,7 @@ test('a wake starts a fresh session when the last turn carried more than the lim
     IB.queue(h.root, { to: COS, from: DM, summary: 'x', message: 'merge the story branch', at: t0 });
     const spawn = spawner();
     at(h, t0, ['run'], { spawn, bd: memStore(h), live: agents });
-    return spawn.list[0];
+    return { ...spawn.list[0], root: h.root };
   };
   const heavy = run({ tokens: 236000 });
   assert.equal(heavy.wake, 'fresh');
@@ -1055,9 +1055,11 @@ test('a wake starts a fresh session when the last turn carried more than the lim
   assert.deepEqual(heavy.args.slice(0, 5), ['--permission-mode', 'auto', '--name', `${COS}@ex`, '-p']);
   assert.ok(!heavy.args.includes('--resume'), 'a fresh session, not a resume');
   assert.match(heavy.args[5], /starting a fresh session: your earlier conversation \(236k tokens\) is not loaded.*bd list --assignee "\$BEADS_ACTOR" --status in_progress.*merge the story branch/);
-  // the run's fresh wake opens with the watchdog's words, so the capture hook never takes it for the operator
+  // the run's fresh wake opens with the watchdog's words, and the wake ledger holds the exact prompt
+  // sent, preamble and all, so the capture hook never takes it for the operator (hb1.2)
   assert.ok(heavy.args[5].startsWith(`${WD.WAKE_OPENING}: You are ${COS}, starting a fresh session`), heavy.args[5].slice(0, 80));
-  assert.equal(require('./lib/transcript.js').classifyRecord({ type: 'user', promptSource: 'sdk', message: { role: 'user', content: heavy.args[5] } }).source, 'system');
+  const isWake = require('./lib/wake-ledger.js').matcher(heavy.root);
+  assert.equal(require('./lib/transcript.js').classifyRecord({ type: 'user', promptSource: 'sdk', timestamp: t0, message: { role: 'user', content: heavy.args[5] } }, { isWake }).source, 'system');
   // the Chief of Staff is told to look for operator input left unrecorded in the old session
   assert.match(heavy.args[5], /operator input still unrecorded \(operator\.js pending\)/);
   assert.equal(run({ tokens: 50000 }).wake, 'resume');
@@ -1893,4 +1895,26 @@ test('6z5: a night of watchdog passes over blocked work wakes the builder for no
   assert.ok(w, JSON.stringify(p.held));
   assert.ok(w.keys.includes('review:151:rv-151-delivery-lead-9'));
   assert.ok(w.keys.includes(`message:${B2}:4`));
+});
+
+test('hb1.2: each wake\'s exact prompt is in the wake ledger before the session starts; a typed copy of the opening is not', () => {
+  const h = vaultLimit();
+  const L = require('./lib/wake-ledger.js');
+  const seen = [];
+  const spawn = (bin, args, o) => { seen.push({ role: o.env.DELIVERY_ROLE, prompt: args[args.indexOf('-p') + 1], heldBefore: L.matcher(h.root)(args[args.indexOf('-p') + 1], '2026-10-17T15:15:05Z') }); return 1; };
+  const w = at(h, '2026-10-17T15:15:00Z', ['wake'], { spawn });
+  assert.match(w.out, /^Woke builder-1/m);
+  assert.ok(seen.length >= 1);
+  for (const s of seen) assert.strictEqual(s.heldBefore, true, `${s.role}: the row is written before the spawn`);
+  assert.strictEqual(L.matcher(h.root)(`${WD.WAKE_OPENING}: The usage limit has reset. Continue where you stopped.`, '2026-10-17T15:15:05Z'), false);
+});
+
+test('hb1.2: a wake whose ledger row cannot be written is not started', () => {
+  const h = vaultLimit();
+  const L = require('./lib/wake-ledger.js');
+  fs.mkdirSync(L.fileOf(h.root), { recursive: true }); // a directory where the ledger file goes: the append fails
+  const spawned = [];
+  const w = at(h, '2026-10-17T15:15:00Z', ['wake'], { spawn: (bin, args, o) => { spawned.push(o.env.DELIVERY_ROLE); return 1; } });
+  assert.strictEqual(spawned.length, 0, w.out);
+  assert.match(w.out, /^Not woken: builder-1: the wake ledger could not be written/m);
 });

@@ -282,7 +282,10 @@ test('a role session in the 2.1.312 format: no format problem, the typed prompt 
     sessionId: SID, version: '2.1.312', entrypoint: 'sdk-cli', userType: 'external', promptSource: 'sdk', turnOrigin: 'sdk',
     message: { role: 'user', content: text } });
   const launcher = { type: 'user', turnOrigin: 'sdk', uuid: 'u0', timestamp: '2099-10-13T10:00:00.000Z', sessionId: SID, message: { role: 'user', content: '<command-name>/start</command-name>' } };
-  const tr = transcript([launcher, typed(wakePrompt(['Continue bead x.'], 'did'), 1), peer(2), typed('record the store choice', 3)]);
+  // the watchdog records each wake prompt it sends in the project's wake ledger (hb1.2)
+  const sent = wakePrompt(['Continue bead x.'], 'did');
+  require('../../scripts/lib/wake-ledger.js').record(projectRoot, { at: '2099-10-13T10:00:00.000Z', instance: 'chief-of-staff', session: SID, wakeId: 'w1', prompts: [sent] });
+  const tr = transcript([launcher, typed(sent, 1), peer(2), typed('record the store choice', 3)]);
   registerInstance(projectRoot, { instance: 'chief-of-staff', session_id: SID, host: 'pc', model: 'opus', role_dir: roleDir, now: '2026-10-13T09:59:00Z' });
   const res = withEnv({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: undefined }, () =>
     captureFromHookInput({ cwd: roleDir, session_id: SID, transcript_path: tr, hook_event_name: 'UserPromptSubmit' }, PLUGIN_ROOT));

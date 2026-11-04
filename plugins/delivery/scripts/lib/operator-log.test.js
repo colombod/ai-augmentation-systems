@@ -610,3 +610,17 @@ test('recordInputs stores another provider\'s delivery.confirmation/1 record who
   assert.strictEqual(log.recordInputs({ projectRoot: root, host: 'pc', inputs: [{ text: 'Yes', asked: { ...asked, contract: 'delivery.confirmation/2', event_id: 'codex:call_2' } }] }).added, 1);
   assert.strictEqual(log.listInputs(root, {}).length, 2);
 });
+
+test('hb1.2: sync asks the project\'s wake ledger: a recorded wake is not stored, the same opening typed by the operator is', () => {
+  const { WAKE_OPENING, wakePrompt } = require('./watchdog.js');
+  const root = project();
+  const sent = wakePrompt(['Continue bead x.'], 'did');
+  require('./wake-ledger.js').record(root, { at: '2026-10-13T10:00:00.000Z', instance: 'chief-of-staff', session: SID, wakeId: 'w1', prompts: [sent] });
+  const typed = `${WAKE_OPENING}: hold every wake until I say so.`;
+  // a role session's prompt: no origin, promptSource sdk
+  const rs = (text, n) => ({ type: 'user', promptId: 'p' + n, uuid: 'u' + n, timestamp: `2026-10-13T10:00:${String(n).padStart(2, '0')}.000Z`,
+    sessionId: SID, promptSource: 'sdk', message: { role: 'user', content: text } });
+  const r = sync(root, transcript([rs(sent, 1), rs(typed, 2)]));
+  assert.strictEqual(r.added, 1);
+  assert.deepStrictEqual(log.listInputs(root).map((e) => [e.source, e.text]), [['human', typed]]);
+});

@@ -29,7 +29,10 @@ function textOf(content) {
   return null;
 }
 
-function classifyRecord(record) {
+// `isWake(text, timestamp)` answers from the watchdog's own record of the prompts it sent
+// (lib/wake-ledger.js). The opening words alone prove nothing: the operator can type them too, so a
+// prompt that opens with them and that the record does not hold is the operator's.
+function classifyRecord(record, { isWake } = {}) {
   if (!record || typeof record !== 'object') return null;
 
   if (record.type === 'attachment') {
@@ -69,9 +72,11 @@ function classifyRecord(record) {
     source = SYSTEM_PREFIXES.some((p) => head.startsWith(p)) ? 'system' : 'human';
   } else if (isRoleSessionPrompt(record)) {
     // a role session's typed prompt; a watchdog wake is stamped identically and differs only in its
-    // opening words, and the harness's own injected tags are never the operator's
+    // opening words, so it is a wake only when the watchdog's ledger holds it; the harness's own
+    // injected tags are never the operator's
     const head = text.trim();
-    source = head.startsWith(WAKE_OPENING) || SYSTEM_PREFIXES.some((p) => head.startsWith(p)) ? 'system' : 'human';
+    const wake = head.startsWith(WAKE_OPENING) && typeof isWake === 'function' && isWake(text, record.timestamp || null) === true;
+    source = wake || SYSTEM_PREFIXES.some((p) => head.startsWith(p)) ? 'system' : 'human';
   } else {
     const head = text.trim();
     // harness-injected UI notes that carry no origin at all are not operator input either
@@ -152,7 +157,7 @@ function readHumanInputs(file, opts = {}) {
       });
       continue;
     }
-    const c = classifyRecord(rec);
+    const c = classifyRecord(rec, { isWake: opts.isWake });
     if (rec.type === 'user' && c) {
       out.total_user_records++;
       if (c.origin && c.origin.kind) out.with_origin++;
@@ -192,16 +197,16 @@ function formatStatus(read) {
 // never throws. outputs: each command's tool result text, for checks that need what a command printed.
 // A turn longer than the window is read again from further back (doubling, up to capBytes), so the
 // owner's words and an early evidence read are not lost.
-function currentTurn(file, { maxBytes = 8 * 1024 * 1024, capBytes = 64 * 1024 * 1024 } = {}) {
+function currentTurn(file, { maxBytes = 8 * 1024 * 1024, capBytes = 64 * 1024 * 1024, isWake } = {}) {
   let size = 0;
   try { size = fs.statSync(file).size; } catch (e) { return { owner: null, commands: [], outputs: [] }; }
   for (let n = maxBytes; ; n *= 2) {
-    const r = turnIn(file, size, n);
+    const r = turnIn(file, size, n, isWake);
     if (r.owner !== null || n >= size || n >= capBytes) return r;
   }
 }
 
-function turnIn(file, size, maxBytes) {
+function turnIn(file, size, maxBytes, isWake) {
   const out = { owner: null, commands: [], outputs: [] };
   const byId = new Map();
   let text;
@@ -216,7 +221,7 @@ function turnIn(file, size, maxBytes) {
     if (!l.trim()) continue;
     let rec;
     try { rec = JSON.parse(l); } catch (e) { continue; }
-    const c = classifyRecord(rec);
+    const c = classifyRecord(rec, { isWake });
     // the owner's words, and every new prompt (a slash command too) starts this turn's commands
     if (c && c.source === 'human') { out.owner = c.text; out.commands = []; out.outputs = []; continue; }
     if (c && /^\s*<command-name>/.test(c.text)) { out.commands = []; out.outputs = []; continue; }

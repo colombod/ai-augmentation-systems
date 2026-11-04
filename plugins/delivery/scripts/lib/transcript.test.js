@@ -372,12 +372,20 @@ test('role-session format with a SYSTEM_PREFIXES tag is not human', () => {
   }
 });
 
-test('a watchdog wake built by the watchdog is never human; the prefix mid-text is', () => {
+// the watchdog's ledger (lib/wake-ledger.js) holding each prompt given, in a fresh project
+const ledgerOf = (prompts, at = ts(0)) => {
+  const L = require('./wake-ledger.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tr-ledger-'));
+  L.record(root, { at, instance: 'x', session: 'S', wakeId: 'w', prompts });
+  return L.matcher(root);
+};
+
+test('a watchdog wake the ledger holds is never human; the prefix mid-text is', () => {
   const wake = RS.typed(wakePrompt(['Continue bead x.'], 'did'), 9);
   assert.ok(wake.message.content.startsWith(WAKE_OPENING));
-  assert.strictEqual(t.classifyRecord(wake).source, 'system');
+  assert.strictEqual(t.classifyRecord(wake, { isWake: ledgerOf([wake.message.content]) }).source, 'system');
   const mention = RS.typed(`why did the ${WAKE_OPENING} wake me?`, 10);
-  assert.strictEqual(t.classifyRecord(mention).source, 'human');
+  assert.strictEqual(t.classifyRecord(mention, { isWake: () => true }).source, 'human', 'only a prompt that opens with the words is asked about');
   // the classifier takes the prefix from the watchdog's export, not a copy
   assert.strictEqual(t.WAKE_OPENING, WAKE_OPENING);
 });
@@ -395,7 +403,9 @@ test('every wake the watchdog sends is never human, in each mode it wakes a sess
   for (const [mode, c] of Object.entries(cases)) {
     assert.strictEqual(c.mode, mode);
     const text = c.args[c.args.indexOf('-p') + 1];
-    assert.strictEqual(t.classifyRecord(RS.typed(text, 12)).source, 'system', mode);
+    // the watchdog records exactly the args that open with the wake words (watchdog.js wake)
+    const isWake = ledgerOf(c.args.filter((a) => typeof a === 'string' && a.trim().startsWith(WAKE_OPENING)));
+    assert.strictEqual(t.classifyRecord(RS.typed(text, 12), { isWake }).source, 'system', mode);
   }
   // the fresh session's preamble follows the opening, and the carried message is still there
   const fresh = cases.fresh.args[cases.fresh.args.indexOf('-p') + 1];
@@ -403,7 +413,33 @@ test('every wake the watchdog sends is never human, in each mode it wakes a sess
 });
 
 test('a wake with leading whitespace is still a wake', () => {
-  assert.strictEqual(t.classifyRecord(RS.typed(`\n  ${wakePrompt(['Continue bead x.'], 'did')}`, 13)).source, 'system');
+  const sent = wakePrompt(['Continue bead x.'], 'did');
+  assert.strictEqual(t.classifyRecord(RS.typed(`\n  ${sent}`, 13), { isWake: ledgerOf([sent]) }).source, 'system');
+});
+
+test('hb1.2: a prompt that opens with the wake words and that no ledger holds is the operator\'s', () => {
+  const sent = wakePrompt(['Continue bead x.'], 'did');
+  const typed = `${WAKE_OPENING}: stop all wakes until I say so.`;
+  const isWake = ledgerOf([sent]);
+  assert.strictEqual(t.classifyRecord(RS.typed(typed, 14), { isWake }).source, 'human', 'typed by the operator');
+  assert.strictEqual(t.classifyRecord(RS.typed(sent, 15), { isWake }).source, 'system', 'sent by the watchdog');
+  // with no ledger to ask, the opening words decide nothing
+  assert.strictEqual(t.classifyRecord(RS.typed(sent, 16)).source, 'human');
+  // the record's own stamp is what the ledger is asked about
+  const seen = [];
+  t.classifyRecord(RS.typed(sent, 17), { isWake: (text, at) => { seen.push(at); return true; } });
+  assert.deepStrictEqual(seen, [ts(17)]);
+});
+
+test('hb1.2: reading a transcript keeps a ledger-held wake out of the operator\'s words and a typed copy in', () => {
+  const sent = wakePrompt(['Continue bead x.'], 'did');
+  const typed = `${WAKE_OPENING}: stop all wakes until I say so.`;
+  const f = writeJsonl([RS.typed(sent, 1), RS.typed(typed, 2), RS.typed('ship it', 3)]);
+  const r = t.readHumanInputs(f, { isWake: ledgerOf([sent]) });
+  assert.deepStrictEqual(r.inputs.map((i) => [i.ext_id, i.source]), [['p1', 'system'], ['p2', 'human'], ['p3', 'human']]);
+  // the Stop hook's view of the turn: a ledger-held wake is not the owner's words
+  assert.strictEqual(t.currentTurn(writeJsonl([RS.typed('ship it', 1), RS.typed(sent, 2)]), { isWake: ledgerOf([sent]) }).owner, 'ship it');
+  assert.strictEqual(t.currentTurn(writeJsonl([RS.typed('ship it', 1), RS.typed(typed, 2)]), { isWake: ledgerOf([sent]) }).owner, typed);
 });
 
 test('formatStatus is ok for 3+ role-session prompts with no peer message', () => {

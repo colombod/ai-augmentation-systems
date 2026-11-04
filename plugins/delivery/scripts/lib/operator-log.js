@@ -310,15 +310,17 @@ function syncTranscript(opts) {
   if (cursor.offset && cursor.tail_sha256 && tailHash(transcriptPath, cursor.offset) !== cursor.tail_sha256) {
     rewritten = true; // bytes before the stored offset changed: rescan from the top (dedupe is safe)
   }
+  // a prompt that opens like a watchdog wake is one only when this host's wake ledger holds it
+  const isWake = opts.isWake || require('./wake-ledger.js').matcher(projectRoot);
   let read = transcript.readHumanInputs(transcriptPath, rewritten
-    ? { fromLine: 0 } : { fromLine: cursor.line, fromOffset: cursor.offset || 0, lastAssistant: cursor.last_assistant || null, pendingAsks: cursor.pending_asks || {} });
+    ? { fromLine: 0, isWake } : { fromLine: cursor.line, fromOffset: cursor.offset || 0, lastAssistant: cursor.last_assistant || null, pendingAsks: cursor.pending_asks || {}, isWake });
   // a cursor from before the recognised count starts its format counts afresh from here: its old
   // records were counted when role-session prompts were not recognised, and would read as unrecognised
   const fresh = rewritten || typeof cursor.recognised !== 'number';
   let base = fresh ? { total_user_records: 0, with_origin: 0, recognised: 0 }
     : { total_user_records: cursor.total_user_records || 0, with_origin: cursor.with_origin || 0, recognised: cursor.recognised };
   if (read.rescanned || read.lastLine < cursor.line) { // rewritten: rescan (dedupe protects)
-    if (!read.rescanned) read = transcript.readHumanInputs(transcriptPath, { fromLine: 0 });
+    if (!read.rescanned) read = transcript.readHumanInputs(transcriptPath, { fromLine: 0, isWake });
     base = { total_user_records: 0, with_origin: 0, recognised: 0 };
   }
 

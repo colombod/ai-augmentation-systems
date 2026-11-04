@@ -228,6 +228,13 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     // owner's open session, never in its place
     // each wake has its own id: a fork records its session under it (lib/roster.js sessionLocator)
     const wakeId = crypto.randomBytes(6).toString('hex');
+    // the sender's record of the exact prompt, written before the session can read it: the capture
+    // hook counts a prompt that opens like a wake as one only when this ledger holds it (hb1.2)
+    // A wake with no row would read as the operator's words, so one that cannot be recorded waits.
+    try { require('./lib/wake-ledger.js').record(root, { at, instance: w.target, session: s.session, wakeId, prompts: c.args.filter((a) => typeof a === 'string' && a.trim().startsWith(WD.WAKE_OPENING)) }); } catch (err) {
+      lines.push(`Not woken: ${w.target}: the wake ledger could not be written (${String(err.message).split('\n')[0]}). ${w.lines[0]}`);
+      continue;
+    }
     // DELIVERY_WAKE_KICK: the supervisor kicks the next run when this wake ends (lib/kick.js)
     const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, DELIVERY_WAKE_KICK: KICK.dirOf(root), ...HEADLESS_WAIT }), logPath });
     WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
