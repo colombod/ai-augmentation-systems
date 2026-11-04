@@ -60,11 +60,23 @@ function readJson(projectRoot, rel) {
 const PLUGIN_ROOT = path.join(__dirname, '..', '..');
 
 // The brief's own `default_model:` frontmatter, the fallback when a manifest role names no model.
-function defaultModelFor(role, projectRoot) {
-  const m = /^(delivery|project)\/([a-z0-9][a-z0-9-]*)$/.exec(String(role && role.brief || ''));
+// The file a brief names: delivery/<x> is the plugin's roles/<x>.md, project/<x> the project's
+// .delivery/team/briefs/<x>.md; null for a malformed brief (or a project brief without a project).
+function briefFile(brief, projectRoot) {
+  const m = /^(delivery|project)\/([a-z0-9][a-z0-9-]*)$/.exec(String(brief || ''));
   if (!m) return null;
-  const file = m[1] === 'delivery' ? path.join(PLUGIN_ROOT, 'roles', `${m[2]}.md`)
+  return m[1] === 'delivery' ? path.join(PLUGIN_ROOT, 'roles', `${m[2]}.md`)
     : (projectRoot ? path.join(projectRoot, '.delivery', 'team', 'briefs', `${m[2]}.md`) : null);
+}
+const briefExists = (brief, projectRoot) => { const f = briefFile(brief, projectRoot); return Boolean(f) && fs.existsSync(f); };
+// Every brief a role entry may name: the plugin's roles and the project's own briefs.
+function knownBriefs(projectRoot) {
+  const ls = (dir, prefix) => { try { return fs.readdirSync(dir).filter((f) => /^[a-z0-9][a-z0-9-]*\.md$/.test(f)).map((f) => `${prefix}/${f.slice(0, -3)}`).sort(); } catch (e) { return []; } };
+  return [...ls(path.join(PLUGIN_ROOT, 'roles'), 'delivery'), ...(projectRoot ? ls(path.join(projectRoot, '.delivery', 'team', 'briefs'), 'project') : [])];
+}
+
+function defaultModelFor(role, projectRoot) {
+  const file = briefFile(role && role.brief, projectRoot);
   if (!file) return null;
   try {
     const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(fs.readFileSync(file, 'utf8'));
@@ -156,11 +168,20 @@ function validateManifest(team, hosts) {
     if (role.mode && !MODES.has(role.mode)) problems.push(`team.json: role "${role.id}" has mode "${role.mode}"`);
     if (role.count !== undefined && (!Number.isInteger(role.count) || role.count < 1)) problems.push(`team.json: role "${role.id}" has invalid count`);
     if (role.instances !== undefined) {
-      const names = role.instances;
+      // each entry a name, or { "id", "retired"?, "model"? } so one instance can be retired or run
+      // another model while its siblings keep running
+      const list = role.instances;
       const shape = new RegExp(`^${role.id}(?:-[1-9][0-9]*)?$`);
-      if (!Array.isArray(names) || !names.length || names.some((x) => typeof x !== 'string' || !shape.test(x))) problems.push(`team.json: role "${role.id}" has invalid "instances": a list of names, each "${role.id}" or "${role.id}-<n>"`);
+      const okEntry = (x) => (typeof x === 'string' ? shape.test(x)
+        : Boolean(x) && typeof x === 'object' && !Array.isArray(x) && typeof x.id === 'string' && shape.test(x.id) && Object.keys(x).every((k) => INSTANCE_KEYS.includes(k)));
+      const names = Array.isArray(list) ? list.map(instanceId) : [];
+      if (!Array.isArray(list) || !list.length || !list.every(okEntry)) problems.push(`team.json: role "${role.id}" has invalid "instances": a list of names or {"id", "retired"?, "model"?}, each id "${role.id}" or "${role.id}-<n>"`);
       else if (new Set(names).size !== names.length) problems.push(`team.json: role "${role.id}" lists an instance twice`);
       else if (role.count !== undefined && role.count !== names.length) problems.push(`team.json: role "${role.id}" has count ${role.count} but ${names.length} instances`);
+      for (const x of Array.isArray(list) ? list.filter((y) => y && typeof y === 'object' && !Array.isArray(y)) : []) {
+        if (x.retired !== undefined && typeof x.retired !== 'boolean') problems.push(`team.json: instance "${x.id}" has non-boolean "retired"`);
+        if (x.model !== undefined && (typeof x.model !== 'string' || !x.model.trim())) problems.push(`team.json: instance "${x.id}" has an invalid "model"; name a model such as ${[...MODELS].join(', ')}`);
+      }
     }
     if (role.retired !== undefined && typeof role.retired !== 'boolean') problems.push(`team.json: role "${role.id}" has non-boolean "retired"`);
     // reach: browser, desktop and computer-use tools for a role whose brief does not have them (R-05).
@@ -169,15 +190,27 @@ function validateManifest(team, hosts) {
     else if (role.reach === true && isManager(role)) problems.push(`team.json: role "${role.id}" cannot have "reach": managers never drive the owner's apps; real-surface runs are the Reality Checker's`);
     if (role.steward) stewards.add(role.host);
   }
+  // an instance id names one session, its branch and its records: never two in the whole team
+  const owners = new Map();
+  for (const role of team.roles) {
+    if (!role || !role.id) continue;
+    let names;
+    try { names = instanceNames(role); } catch (e) { names = []; }
+    for (const n of new Set(names)) {
+      if (owners.has(n) && owners.get(n) !== role.id) problems.push(`team.json: instance id "${n}" is used by both "${owners.get(n)}" and "${role.id}"`);
+      else owners.set(n, role.id);
+    }
+  }
   problems.push(...require('./judge.js').configProblems(team.judge).problems);
   if (team.budget && team.budget.builders_cap !== undefined) {
-    const builders = team.roles.filter((r) => r.id === 'builder' && !r.retired).reduce((n, r) => n + instanceNames(r).length, 0);
+    // a retired builder does not run, so it does not count
+    const builders = team.roles.filter((r) => r.id === 'builder').reduce((n, r) => n + liveInstanceNames(r).length, 0);
     if (builders > team.budget.builders_cap) problems.push(`team.json: ${builders} builders exceed builders_cap ${team.budget.builders_cap}`);
   }
   // a steward converges a host's sessions; a team whose active roles are on one host needs none. The
   // count is of every active host, cloud included (a PC-plus-cloud team needs the PC steward); a cloud
   // host itself has no steward, and a retired role does not run, so its host does not count
-  const activeHosts = [...new Set(team.roles.filter((r) => !r.retired).map((r) => r.host))].filter((h) => hostNames.has(h));
+  const activeHosts = [...new Set(team.roles.filter((r) => !roleRetired(r)).map((r) => r.host))].filter((h) => hostNames.has(h));
   const stewardHosts = activeHosts.filter((h) => hosts.hosts[h].kind !== 'cloud');
   for (const host of activeHosts.length > 1 ? stewardHosts : []) {
     if (!stewards.has(host)) {
@@ -191,16 +224,32 @@ function validateManifest(team, hosts) {
 // else the bare id. The list exists so a role can grow without renaming a live instance: claims, pull
 // requests, branches (team/<instance>) and role directories are all keyed by the instance name, so the
 // builder that was "builder" stays "builder" when builder-2 joins (team-role.js writes the list).
+// An entry of `instances` is a name or { id, retired?, model? }.
+const INSTANCE_KEYS = ['id', 'retired', 'model'];
+const instanceId = (x) => (x && typeof x === 'object' ? x.id : x);
 function instanceNames(role) {
-  if (Array.isArray(role.instances) && role.instances.length) return role.instances.slice();
+  if (Array.isArray(role.instances) && role.instances.length) return role.instances.map(instanceId);
   if (role.count && role.count > 1) return Array.from({ length: role.count }, (_, i) => `${role.id}-${i + 1}`);
   return [role.id];
 }
 
+// The role each instance runs as: the entry, with the instance's own `retired` and `model` laid over
+// it, so a retired builder-2 is retired everywhere a reader checks role.retired and builder stays live.
 function expandInstances(team) {
   const out = [];
-  for (const role of team.roles) for (const instance of instanceNames(role)) out.push({ instance, role });
+  for (const role of team.roles) {
+    const objs = new Map((Array.isArray(role.instances) ? role.instances : []).filter((x) => x && typeof x === 'object').map((x) => [x.id, x]));
+    for (const instance of instanceNames(role)) {
+      const x = objs.get(instance);
+      const own = x && (x.retired === true || (typeof x.model === 'string' && x.model));
+      out.push({ instance, role: own ? { ...role, ...(x.model ? { model: x.model } : {}), ...(x.retired === true ? { retired: true } : {}) } : role });
+    }
+  }
   return out;
 }
+// The instances of one role entry that run (none for a retired entry).
+const liveInstanceNames = (role) => expandInstances({ roles: [role] }).filter((i) => !i.role.retired).map((i) => i.instance);
+// A role entry is retired when it says so, or when every one of its instances is.
+const roleRetired = (role) => Boolean(role) && (role.retired === true || liveInstanceNames(role).length === 0);
 
-module.exports = { reachOf, isManager, canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, expandInstances, instanceNames, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };
+module.exports = { reachOf, isManager, canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, briefFile, briefExists, knownBriefs, expandInstances, instanceNames, instanceId, liveInstanceNames, roleRetired, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };

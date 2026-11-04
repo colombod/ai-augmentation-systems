@@ -187,3 +187,38 @@ test('validateManifest: permission_mode, test_command and wake_fresh_above_token
     [{ wake_fresh_above_tokens: -1 }, /"wake_fresh_above_tokens" must be a whole number/],
   ]) assert.ok(problems(bad).some((p) => re.test(p)), JSON.stringify(bad));
 });
+
+// an instance may be a name or { id, retired?, model? }: one builder retires or runs another model while
+// its siblings stay live, and every reader of role.retired sees it through expandInstances
+test('team-runtime-08 c1: instances are names or objects; a retired one is retired everywhere and its sibling stays live', () => {
+  const { loadManifest: load, roleRetired, liveInstanceNames } = require('./manifest.js');
+  const { team, hosts } = load(scratchProject());
+  const withBuilders = (instances, over = {}) => ({ ...team, ...over, roles: team.roles.map((r) => (r.id === 'builder' ? (({ count, ...rest }) => ({ ...rest, instances }))(r) : r)) });
+  const mixed = withBuilders(['builder', { id: 'builder-2', model: 'opus' }, { id: 'builder-3', retired: true }]);
+  assert.deepEqual(validateManifest(mixed, hosts), []);
+  const b = Object.fromEntries(expandInstances(mixed).filter((i) => i.role.id === 'builder').map((i) => [i.instance, i.role]));
+  assert.deepEqual(Object.keys(b), ['builder', 'builder-2', 'builder-3']);
+  assert.equal(b.builder.model, 'sonnet');
+  assert.equal(b['builder-2'].model, 'opus');
+  assert.equal(b['builder-3'].retired, true);
+  assert.equal(Boolean(b.builder.retired) || Boolean(b['builder-2'].retired), false);
+  const entry = mixed.roles.find((r) => r.id === 'builder');
+  assert.deepEqual(liveInstanceNames(entry), ['builder', 'builder-2']);
+  assert.equal(roleRetired(entry), false);
+  assert.equal(roleRetired({ ...entry, instances: [{ id: 'builder', retired: true }] }), true, 'all retired: the role is retired');
+  // the string-only form the live team.json uses stays valid
+  assert.deepEqual(validateManifest(withBuilders(['builder', 'builder-2']), hosts), []);
+  // builders_cap counts the live ones only
+  assert.deepEqual(validateManifest(withBuilders(['builder', { id: 'builder-2', retired: true }], { budget: { builders_cap: 1 } }), hosts), []);
+  assert.ok(validateManifest(withBuilders(['builder', 'builder-2'], { budget: { builders_cap: 1 } }), hosts).some((p) => /2 builders exceed builders_cap 1/.test(p)));
+  for (const [instances, re] of [
+    [[{ id: 'builder' }, { id: 'builder-2', retired: 'yes' }], /instance "builder-2" has non-boolean "retired"/],
+    [[{ id: 'builder' }, { id: 'builder-2', model: '' }], /instance "builder-2" has an invalid "model"/],
+    [[{ id: 'builder', host: 'pc' }], /invalid "instances"/],
+    [[{ id: 'helper-2' }], /invalid "instances"/],
+    [['builder', { id: 'builder' }], /lists an instance twice/],
+  ]) assert.ok(validateManifest(withBuilders(instances), hosts).some((p) => re.test(p)), JSON.stringify(instances));
+  // an instance id is used once in the whole team, across role entries too
+  const clash = { ...withBuilders(['builder', 'builder-2']), roles: [...withBuilders(['builder', 'builder-2']).roles, { id: 'builder-2', brief: 'delivery/builder', host: 'pc', model: 'sonnet' }] };
+  assert.ok(validateManifest(clash, hosts).some((p) => /instance id "builder-2" is used by both "builder" and "builder-2"/.test(p)));
+});

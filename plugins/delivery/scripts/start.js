@@ -18,7 +18,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { loadManifest, validateManifest, manifestWarnings, expandInstances, TEAM_REL, HOSTS_REL, RUNNERS } = require('./lib/manifest.js');
+const { loadManifest, validateManifest, manifestWarnings, expandInstances, roleRetired, TEAM_REL, HOSTS_REL, RUNNERS } = require('./lib/manifest.js');
 const { sessionName } = require('./lib/session-name.js');
 
 const PLUGIN_ROOT = path.join(__dirname, '..');
@@ -572,7 +572,7 @@ function scaffold(opts) {
     if (st.ok && st.out) { if (dryRun) say('  manifest: would commit the uncommitted manifest files'); else wroteManifest = true; }
     say(`  manifest: keeping the existing ${TEAM_REL} and ${HOSTS_REL} (project "${team.project}", ${expandInstances(team).length} instance(s)); --preset, --models, --host, --prefix and --runner are not applied to it`);
     const unscriptable = unscriptableSurfaces(projectRoot);
-    if (unscriptable.length && !team.roles.some((r) => r.id === 'reality-checker' && !r.retired)) say(`  manifest: warning: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'need' : 'needs'} the Reality Checker (not scriptable, or a command line) and the team has none: add {"id": "reality-checker", "brief": "delivery/reality-checker", "host": "<a host with desktop apps>"} to roles`);
+    if (unscriptable.length && !team.roles.some((r) => r.id === 'reality-checker' && !roleRetired(r))) say(`  manifest: warning: ${unscriptable.join(', ')} ${unscriptable.length > 1 ? 'need' : 'needs'} the Reality Checker (not scriptable, or a command line) and the team has none: add {"id": "reality-checker", "brief": "delivery/reality-checker", "host": "<a host with desktop apps>"} to roles`);
   } else {
     const project = slug(path.basename(projectRoot), 'project');
     const prefix = slug(prefixFlag || project, 'proj');
