@@ -242,3 +242,25 @@ test('Copilot round 2 (118, 145, 157, 170, 183, 197, 218, 231)', () => {
   const ts = require('./team-status.js');
   assert.match(ts.renderStatus(ts.teamStatus(h.root, { bdCheck: () => false, gh: () => ({ unavailable: 'x' }) }), null), /Pull requests: review record damaged 1 \(#478\)/);
 });
+
+// a builder added as an instance of the builder role entry ({"id": "builder-2"} in its instances list)
+// opens pull requests from team/builder-2, and its review request binds to it like any builder's
+test('team-runtime-08 c5: Staffing runs team-role.js pre-allowed, and a review request for a PR on team/builder-2 of an instances list is accepted', () => {
+  const h = setup({ 478: view({ headRefName: 'team/builder-2', body: `Refs ${OTHER}` }) });
+  const tj = path.join(h.root, '.delivery', 'team', 'team.json');
+  const t = JSON.parse(fs.readFileSync(tj, 'utf8'));
+  t.roles = t.roles.map((r) => (r.id === 'builder' ? (({ count, ...rest }) => ({ ...rest, instances: [{ id: 'builder' }, { id: 'builder-2' }] }))(r) : r));
+  fs.writeFileSync(tj, JSON.stringify(t, null, 2));
+  for (const args of ['add builder --instance builder-3', 'change builder-2 --model opus', 'remove builder-2', 'host add lab --kind ssh --bd native --headless true --desktop-apps false']) {
+    const d = h.tool('staffing', 'Bash', { command: `${h.script('team-role.js')} ${args}` });
+    assert.equal(d.deny, null, args);
+    assert.match(d.allow || '', /^Role staffing: in its lane \(pre-allowed/, args);
+  }
+  assert.match(h.tool('builder-2', 'Bash', { command: `${h.script('team-role.js')} remove builder` }).allow || '', /^$/, 'a builder gets no pre-allow for it');
+  const r = h.review('delivery-lead', 'request 478 --reviewer agent-r1');
+  assert.equal(r.deny, null);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /review of PR 478 at a1b2c3d4e5f6 requested from agent-r1/);
+  const row = R.read(h.root, '478').rows.find((x) => x.type === 'request');
+  assert.equal(row.owner, 'builder-2');
+});

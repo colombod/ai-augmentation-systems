@@ -49,7 +49,7 @@ function harness({ root = makeProject(), beads = {}, deps = [], prs = null, runs
     let j = null;
     try { j = r.stdout.trim() ? JSON.parse(r.stdout) : null; } catch (err) { j = null; }
     const h = (j && j.hookSpecificOutput) || {};
-    return { deny: h.permissionDecision === 'deny' ? h.permissionDecisionReason : null, ctx: h.additionalContext || '' };
+    return { deny: h.permissionDecision === 'deny' ? h.permissionDecisionReason : null, allow: h.permissionDecision === 'allow' ? h.permissionDecisionReason : null, ctx: h.additionalContext || '' };
   };
   // the PreToolUse chain for Bash, then the command itself when both hooks allow it
   const bash = (inst, command, { run = true } = {}) => {
