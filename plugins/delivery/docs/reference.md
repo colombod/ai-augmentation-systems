@@ -1243,7 +1243,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   - a self-update the job refused (`lib/self-update.js`) that still stands: per install, its latest
     `refused` row in the job log, until a later `installed` row names that install (installed rows list
     their `targets`; one written before they did covers the user install only) at that version or a
-    newer one, or until that install is no longer in `installed_plugins.json` (removed; an unreadable record keeps it) ("Install refused: plugin <version> for <install> (still on <old>) since <time>: <why>").
+    newer one, or until `installed_plugins.json` no longer lists that install (removed) or lists it at the refused version or newer (updated outside the job, by `claude plugin update`); an unreadable record, or an install with no version, keeps it ("Install refused: plugin <version> for <install> (still on <old>) since <time>: <why>").
     It goes to the Delivery Manager, who records the gate row the refusal names or has the stale install
     removed; the job retries the install every pass by itself. The key is the version and the install,
     so a newer refusal is new work. The owner's briefing always names it, past the other stall lines:
