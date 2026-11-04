@@ -2065,3 +2065,30 @@ test('team-runtime-10 c5: through the role harness, a damaged marker stops the s
   assert.match(h.tool('reality-checker', 'Write', { file_path: path.join(dir, 'x.md'), content: 'x' }).deny || '', /re-prepare/);
   assert.equal(h.send('reality-checker', 'SendMessage', { to: 'delivery-lead@example', message: 'my marker is damaged' }).deny, null);
 });
+
+// team-runtime-10 c4: what each brief declares it may write is what the lane lets it write (agreement)
+test('team-runtime-10 c4: every lane_writes pattern of every brief is allowed by the lane', () => {
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'agree-role-'));
+  fs.writeFileSync(path.join(rd, '.delivery-role.json'), '{}');
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agree-proj-'));
+  const sample = (pattern) => pattern.replace(/\*\*/g, 'a/b').replace(/\*/g, 'x') + (pattern.endsWith('**') ? '.md' : '');
+  const refused = [];
+  let checked = 0;
+  for (const file of fs.readdirSync(path.join(PLUGIN_ROOT, 'roles')).filter((f) => f.endsWith('.md'))) {
+    const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${file.slice(0, -3)}` });
+    for (const pattern of policy.writes) {
+      const target = path.join(rd, sample(pattern));
+      const d = decideLane({ toolName: 'Write', toolInput: { file_path: target, content: 'x' }, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd, projectRoot });
+      checked++;
+      if (!d.allow) refused.push(`${policy.roleId} ${pattern} (${sample(pattern)}): ${d.reason.split('\n')[0]}`);
+    }
+  }
+  assert.ok(checked > 10, `${checked} patterns checked`);
+  assert.deepEqual(refused, []);
+  // the progress observer declares no write under .delivery/reviews/, and the lane refuses one
+  const po = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/progress-observer' });
+  assert.deepEqual(po.writes, []);
+  const d = decideLane({ toolName: 'Write', toolInput: { file_path: path.join(rd, 'project', '.delivery', 'reviews', 'finding.md'), content: 'x' }, policy: po, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd, projectRoot });
+  assert.equal(d.allow, false);
+  assert.doesNotMatch(fs.readFileSync(path.join(PLUGIN_ROOT, 'roles', 'progress-observer.md'), 'utf8'), /go to `?\.delivery\/reviews/);
+});
