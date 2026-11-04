@@ -1753,6 +1753,169 @@ test('bqj: the briefing never shows a team healthy when the watchdog could not r
   assert.equal(DP.isRecovery('manager:1:rv-1'), true);
 });
 
+// bqj.2: the job's self-update refused every stale per-role install for a day (0ba.4.1, job.log) and
+// nothing but the job's own log said so: the watchdog read the team as healthy
+const refusedRow = (at, target, version = '0.43.44', extra = {}) => ({ type: 'self-update', from: '0.43.30', version, sha: 'a'.repeat(40), pr: 140, scope: target === 'user' ? 'user' : 'local', target, at, result: 'refused', why: 'PR 140 was merged without passing the team\'s gate', ...extra });
+const installedRow = (at, version, extra = {}) => ({ type: 'self-update', from: '0.43.30', version, sha: 'b'.repeat(40), pr: 141, scope: 'user', at, result: 'installed', detail: 'gated through PR 141; 1 install(s)', ...extra });
+
+test('bqj.2: a refused self-update stands as an install stall for the Delivery Manager until a later install of it or a newer one covers that install', () => {
+  const now = Date.parse('2026-11-04T12:00:00Z');
+  const ROLE = 'local /team/builder';
+  // refused for the user install and a role's local install; the same install refused again later keeps its latest refusal only
+  const rows = [refusedRow(iso(now - 3 * H), 'user', '0.43.43'), refusedRow(iso(now - 2 * H), 'user'), refusedRow(iso(now - 2 * H), ROLE)];
+  assert.deepEqual(WD.refusedInstalls(rows).map((r) => [r.target, r.version]), [['user', '0.43.44'], [ROLE, '0.43.44']]);
+  const res = WD.stalls({ now: iso(now), refusedInstalls: WD.refusedInstalls(rows), sessions: [{ instance: DM, role: DM, session: 's-dm', roleDir: os.tmpdir(), lastActive: now - 60e3 }] });
+  const found = res.stalls.filter((s) => s.kind === 'install');
+  assert.deepEqual(found.map((s) => [s.key, s.target, s.due]), [['install:0.43.44:user', DM, true], [`install:0.43.44:${ROLE}`, DM, true]]);
+  assert.match(found[0].line, /^Install refused: plugin 0\.43\.44 for the user install \(still on 0\.43\.30\) since 2026-11-04 10:00 UTC: PR 140 was merged without passing the team's gate\.$/);
+  assert.match(found[1].line, /for the install \/team\/builder /);
+  assert.match(found[0].prompt, /Settle it now/);
+  assert.doesNotMatch(found[0].plain, /0\.43|PR 140|delivery-lead/, 'the owner\'s words carry no internal ids');
+  // recovery: a later install that names the install ends its stall; one that names another install, an older version, or comes before the refusal does not
+  const cover = (r) => WD.refusedInstalls([...rows, r]).map((x) => x.target);
+  assert.deepEqual(cover(installedRow(iso(now - H), '0.43.44', { targets: ['user'] })), [ROLE]);
+  assert.deepEqual(cover(installedRow(iso(now - H), '0.43.45', { targets: ['user', ROLE] })), []);
+  assert.deepEqual(cover(installedRow(iso(now - H), '0.43.43', { targets: ['user', ROLE] })), ['user', ROLE], 'an older version does not cover the refusal');
+  assert.deepEqual(cover(installedRow(iso(now - 3 * H), '0.43.44', { targets: ['user', ROLE] })), ['user', ROLE], 'an install before the refusal does not end it');
+  // a row from before installs were named covers the user install only: it never hides a role's refusal
+  assert.deepEqual(cover(installedRow(iso(now - H), '0.43.44')), [ROLE]);
+  // a verified pause silences it like every stall
+  assert.deepEqual(WD.stalls({ now: iso(now), refusedInstalls: WD.refusedInstalls(rows), pause: { paused: true } }).stalls, []);
+});
+
+test('bqj.2: a refused install in the job log is a stall on watchdog.js check, a warning in the ledger, and a line in the owner\'s briefing, never a healthy team', () => {
+  const now = Date.now();
+  const h = harness({ beads: {} });
+  session(h, DM, { seen: iso(now - 60e3) });
+  session(h, 'builder-1', { seen: iso(now - 60e3) });
+  WD.log(h.root, refusedRow(iso(now - 2 * H), 'local /team/builder'));
+  // the role install is recorded (rv-167), so its refusal stands whatever this machine has installed
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'bqj2-'));
+  fs.mkdirSync(path.join(cfg, 'plugins'));
+  fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'delivery@ai-augmentation-systems': [{ scope: 'local', projectPath: '/team/builder', version: '0.43.30' }] } }));
+  const was = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    const check = h.bash(DM, `${h.script('watchdog.js')} check`).out;
+    assert.match(check, /^Install refused: plugin 0\.43\.44 for the install \/team\/builder \(still on 0\.43\.30\)/m, check);
+    assert.ok(Wn.list(h.root).some((w) => w.kind === 'install-refused' && /0\.43\.44 refused for local \/team\/builder/.test(w.detail)), 'recorded in the ledger');
+    const brief = h.bash(COS, `${h.script('plan.js')} brief`).out;
+    assert.match(brief, /^An update of the team's plugin was refused, so part of the team still runs an older version; the Delivery Manager is asked to settle it\.$/m, brief);
+    // settled: the next install covers it, and the briefing and check say nothing of it
+    WD.log(h.root, installedRow(iso(now - H), '0.43.44', { targets: ['user', 'local /team/builder'] }));
+    assert.doesNotMatch(h.bash(DM, `${h.script('watchdog.js')} check`).out, /Install refused/);
+    assert.doesNotMatch(h.bash(COS, `${h.script('plan.js')} brief`).out, /plugin was refused/);
+  } finally { if (was === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = was; }
+});
+
+// rv-167: removing the stale install is one way the Delivery Manager settles a refusal, and no install
+// row names a removed install again: its refusal must end then, or the stall and the briefing line stay forever
+test('rv-167: a refusal for an install no longer recorded ends; one still recorded, or with the record unreadable, stays', () => {
+  const now = Date.parse('2026-11-04T12:00:00Z');
+  const ROLE = 'local /team/builder';
+  const rows = [refusedRow(iso(now - 2 * H), 'user'), refusedRow(iso(now - 2 * H), ROLE)];
+  const left = (installs) => WD.refusedInstalls(rows, { installs }).map((r) => r.target);
+  assert.deepEqual(left(['user']), ['user'], 'the role install was removed: its refusal ends');
+  assert.deepEqual(left(['user', ROLE]), ['user', ROLE], 'both still installed: both stand');
+  assert.deepEqual(left(null), ['user', ROLE], 'an unreadable record keeps every refusal');
+  // the record as self-update reads it: the delivery plugin's entries only, named as selfUpdate names them
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'rv167-'));
+  const SU = require('./lib/self-update.js');
+  assert.equal(SU.installTargets('delivery', cfg), null);
+  fs.mkdirSync(path.join(cfg, 'plugins'));
+  const write = (plugins) => fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins }));
+  const both = { 'delivery@ai-augmentation-systems': [{ scope: 'user', version: '0.43.30' }, { scope: 'local', projectPath: '/team/builder', version: '0.43.30' }], 'attractor@ai-augmentation-systems': [{ scope: 'local', projectPath: '/team/other' }] };
+  const userOnly = { 'delivery@ai-augmentation-systems': [{ scope: 'user', version: '0.43.30' }] };
+  write(both);
+  assert.deepEqual(SU.installTargets('delivery', cfg), [{ key: 'delivery@ai-augmentation-systems', target: 'user', version: '0.43.30' }, { key: 'delivery@ai-augmentation-systems', target: ROLE, version: '0.43.30' }]);
+  write(userOnly);
+  assert.deepEqual(SU.installTargets('delivery', cfg), [{ key: 'delivery@ai-augmentation-systems', target: 'user', version: '0.43.30' }]);
+  // through watchdog.js check: still installed, the stall is reported; removed, it is not
+  const h = harness({ beads: {} });
+  session(h, DM, { seen: iso(Date.now() - 60e3) });
+  WD.log(h.root, refusedRow(iso(Date.now() - 2 * H), ROLE));
+  const was = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    const check = () => h.bash(DM, `${h.script('watchdog.js')} check`).out;
+    write(both);
+    assert.match(check(), /^Install refused: plugin 0\.43\.44 for the install \/team\/builder /m);
+    write(userOnly);
+    assert.doesNotMatch(check(), /Install refused/);
+  } finally { if (was === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = was; }
+});
+
+// rv-167 (second review): an operator or a role can bring an install up with `claude plugin update`,
+// outside the job, which then writes no installed row for it: the record's own version must end the
+// refusal, or the stall and the briefing line stay for good
+test('rv-167: a refusal ends when its install is recorded at the refused version or newer; an older or unknown version keeps it', () => {
+  const now = Date.parse('2026-11-04T12:00:00Z');
+  const ROLE = 'local /team/builder';
+  const rows = [refusedRow(iso(now - 2 * H), 'user'), refusedRow(iso(now - 2 * H), ROLE)];
+  const left = (installs) => WD.refusedInstalls(rows, { installs }).map((r) => r.target);
+  const at = (v) => [{ target: 'user', version: '0.43.30' }, { target: ROLE, version: v }];
+  assert.deepEqual(left(at('0.43.44')), ['user'], 'updated outside the job to the refused version: its refusal ends');
+  assert.deepEqual(left(at('0.43.50')), ['user'], 'updated past it: ends too');
+  assert.deepEqual(left(at('0.43.43')), ['user', ROLE], 'still below the refused version: stands');
+  assert.deepEqual(left(at(null)), ['user', ROLE], 'no recorded version: stands');
+  assert.deepEqual(left(at('not-a-version')), ['user', ROLE], 'an unreadable version: stands');
+  // end to end: the record as installTargets reads it, through watchdog.js check
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'rv167b-'));
+  fs.mkdirSync(path.join(cfg, 'plugins'));
+  const write = (v) => fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'delivery@ai-augmentation-systems': [{ scope: 'user', version: '0.43.44' }, { scope: 'local', projectPath: '/team/builder', version: v }] } }));
+  const h = harness({ beads: {} });
+  session(h, DM, { seen: iso(Date.now() - 60e3) });
+  WD.log(h.root, refusedRow(iso(Date.now() - 2 * H), ROLE));
+  const was = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    const check = () => h.bash(DM, `${h.script('watchdog.js')} check`).out;
+    write('0.43.30');
+    assert.match(check(), /^Install refused: plugin 0\.43\.44 for the install \/team\/builder /m);
+    write('0.43.44');
+    assert.doesNotMatch(check(), /Install refused/);
+  } finally { if (was === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = was; }
+});
+
+// rv-167 (third review): a same-named plugin from another marketplace must not settle a refusal, and an
+// installed row whose version cannot be read must not cover one (compare returns null for it)
+test('rv-167: only the refused key\'s own install settles a refusal; another marketplace\'s or an unreadable installed version never does', () => {
+  const now = Date.parse('2026-11-04T12:00:00Z');
+  const ROLE = 'local /team/builder';
+  const OWN = 'delivery@ai-augmentation-systems';
+  const FORK = 'delivery@someone-else';
+  const rows = [refusedRow(iso(now - 2 * H), ROLE, '0.43.44', { key: OWN })];
+  const left = (installs, rs = rows) => WD.refusedInstalls(rs, { installs }).map((r) => r.target);
+  assert.deepEqual(left([{ key: OWN, target: ROLE, version: '0.43.30' }, { key: FORK, target: ROLE, version: '9.0.0' }]), [ROLE], 'another marketplace at a higher version: stands');
+  assert.deepEqual(left([{ key: FORK, target: ROLE, version: '9.0.0' }]), [], 'its own install gone (only the other marketplace left): ends');
+  assert.deepEqual(left([{ key: OWN, target: ROLE, version: '0.43.44' }, { key: FORK, target: ROLE, version: '0.1.0' }]), [], 'its own install caught up: ends');
+  // a refusal recorded before keys were: matched while one key holds the name, kept when two do
+  const legacy = [refusedRow(iso(now - 2 * H), ROLE)];
+  assert.deepEqual(left([{ key: OWN, target: ROLE, version: '0.43.44' }], legacy), [], 'one key, caught up: ends');
+  assert.deepEqual(left([{ key: OWN, target: ROLE, version: '0.43.30' }, { key: FORK, target: ROLE, version: '9.0.0' }], legacy), [ROLE], 'two keys: cannot tell, stands');
+  // an installed row with an unreadable version never covers the refusal; a readable newer one does
+  const user = (v) => [refusedRow(iso(now - 2 * H), 'user'), installedRow(iso(now - H), v)];
+  assert.deepEqual(WD.refusedInstalls(user('not-a-version')).map((r) => r.target), ['user'], 'unreadable installed version: stands');
+  assert.deepEqual(WD.refusedInstalls(user('0.43.45')).map((r) => r.target), [], 'installed at a newer version: ends');
+  // through the record as installTargets reads it: two marketplaces, the other one ahead
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'rv167c-'));
+  fs.mkdirSync(path.join(cfg, 'plugins'));
+  fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { [OWN]: [{ scope: 'local', projectPath: '/team/builder', version: '0.43.30' }], [FORK]: [{ scope: 'local', projectPath: '/team/builder', version: '9.0.0' }] } }));
+  const SU = require('./lib/self-update.js');
+  assert.deepEqual(left(SU.installTargets('delivery', cfg)), [ROLE]);
+});
+
+test('bqj.2: the briefing names a refused install even when other stalls fill its stall lines', () => {
+  const DP = require('./lib/daily-plan.js');
+  const f = { now: '2026-11-04T12:00:00Z', team: { roles: [] }, stalls_unreadable: null, restarts: [], queue: [], questions: [], checks: [], andon: { stops: [], ci: {}, flaky: [], chains: [] }, unknowns: [], spikes: [], next: [], known: new Map(), titles: new Map(), stories: [], fixes: [], prs: {} };
+  const stall = (kind, plain, i) => ({ kind, key: `${kind}:${i}`, bead: kind === 'install' ? undefined : `ex-${i}`, target: DM, line: plain, plain });
+  const stalls = [stall('quiet', 'A started item has not moved.', 1), stall('p0', 'A top-priority item waits.', 2), stall('install', 'An update of the team\'s plugin was refused, so part of the team still runs an older version; the Delivery Manager is asked to settle it.', 3)];
+  const out = DP.brief({ ...f, stalls }).join('\n');
+  assert.match(out, /^An update of the team's plugin was refused/m, out);
+  assert.match(out, /^A started item has not moved\.$/m);
+  assert.doesNotMatch(DP.brief({ ...f, stalls: stalls.slice(0, 2) }).join('\n'), /plugin was refused/);
+});
+
 // 6z5: a builder was woken every pass overnight for beads it could not move, spent its 48 handover wakes
 // by midday, and the review that sent its pull request back was held behind "alarm only"
 const B2 = 'builder-2';
