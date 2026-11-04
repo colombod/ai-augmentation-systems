@@ -96,11 +96,17 @@ test('R-22 fbk: under an area stop, an overdue flaky test and a red main, the Re
   const shipped = story('ex-vault-0n9-2', { labels: ['roadmap', 'phase-1', 'story', 'state-merged', 'state-deployed'], metadata: { deployed_sha: '235e4a04b3' } });
   const traded = story('ex-trade-0', { labels: ['roadmap', 'phase-1', 'story', 'state-merged', 'state-deployed'], metadata: { area: 'trade', deployed_sha: '235e4a04b3' } });
   const unbuilt = story('ex-vault-0n9-5');
+  // verified already, then deployed again: its new check is still the proving of shipped work
+  const proven = story('ex-vault-0n9-1', { labels: ['roadmap', 'phase-1', 'story', 'state-merged', 'state-deployed', 'state-verified'], metadata: { deployed_sha: '235e4a04b3' } });
   const rc = (id, parent, over = {}) => ({ id, title: `Reality check of ${parent}`, parent, labels: ['reality-check'], ...over });
   const h = intake({
     [shipped.id]: shipped,
     [traded.id]: traded,
     [unbuilt.id]: unbuilt,
+    [proven.id]: proven,
+    'ex-vault-0n9-1-rc-235e4a0': rc('ex-vault-0n9-1-rc-235e4a0', proven.id, { metadata: { reality_check_for: proven.id, deployed_sha: '235e4a04b3' } }),
+    // a check that names itself checks nothing, even when it carries a shipped state
+    'ex-rc-self': { id: 'ex-rc-self', title: 'Reality check', labels: ['reality-check', 'state-deployed'], metadata: { area: 'collection', reality_check_for: 'ex-rc-self' } },
     // as reality-check.js plan dispatches it, and a hand-made check child with only the label
     'ex-vault-0n9-2-rc-235e4a0': rc('ex-vault-0n9-2-rc-235e4a0', shipped.id, { metadata: { reality_check_for: shipped.id, deployed_sha: '235e4a04b3' } }),
     'ex-vault-0n9-2.2': rc('ex-vault-0n9-2.2', shipped.id),
@@ -133,11 +139,12 @@ test('R-22 fbk: under an area stop, an overdue flaky test and a red main, the Re
   assert.equal(assigned.deny, null, 'assigning a check of shipped work to the Reality Checker is accepted under the stop');
   assert.equal(claim(h, 'reality-checker', 'ex-vault-0n9-2-rc-235e4a0').deny, null);
   assert.equal(claim(h, 'reality-checker', 'ex-vault-0n9-2.2').deny, null, 'a check child of a deployed story, by its label');
+  assert.equal(claim(h, 'reality-checker', 'ex-vault-0n9-1-rc-235e4a0').deny, null, 'the new check of a verified story, deployed again');
   // new building stays stopped, the Reality Checker's included
   for (const id of [unbuilt.id, 'ex-vault-0n9-5-rc-aaaaaaa', 'ex-rc-bug', 'ex-rc-odd', 'ex-vault-0n9-2.3', 'ex-vault-0n9-6']) {
     assert.match(claim(h, 'builder-2', id).deny || '', STOPPED, id);
   }
-  for (const id of ['ex-vault-0n9-5-rc-aaaaaaa', 'ex-rc-odd', 'ex-vault-0n9-2.3', 'ex-vault-0n9-6']) {
+  for (const id of ['ex-vault-0n9-5-rc-aaaaaaa', 'ex-rc-odd', 'ex-rc-self', 'ex-vault-0n9-2.3', 'ex-vault-0n9-6']) {
     assert.match(claim(h, 'reality-checker', id).deny || '', STOPPED, `${id} is no check of shipped work, whoever takes it`);
   }
   // 2. an overdue confirmed flaky test in another area: it holds a builder there, not the Reality Checker's check
