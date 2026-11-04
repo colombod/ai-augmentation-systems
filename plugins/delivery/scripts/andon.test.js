@@ -301,7 +301,7 @@ test('R-22: a flaky test warns and wants an A3 within 24 h; a confirmed one with
   assert.equal(claim(h, 'builder-2', 'ex-c').deny, null, 'another area goes on');
 });
 
-const fixPr = (n) => ({ headRefOid: H(n), headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'desktop/loader.js', additions: 20, deletions: 5 }], body: `Fixes the desktop loader.\n\nRefs ex-${n}`, title: `Desktop loader fix ${n}` });
+const fixPr = (n) => ({ headRefOid: H(n), headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'desktop/loader.js', additions: 20, deletions: 5 }], body: `Fixes the desktop loader.\n\nRefs ex-${n}\nDoc-impact: none (a test fixture)`, title: `Desktop loader fix ${n}` });
 const fixBead = (n) => ({ id: `ex-${n}`, title: `Desktop app loader blank again (${n})`, labels: ['bug'], status: 'in_progress', assignee: 'dev@pc/builder-1', metadata: { fixes: 'ex-desk' } });
 
 test('R-22 #453 to #480: the second fix on the desktop loader within 48 h requires a spike; later fixes on it warn until it is acknowledged', () => {
