@@ -95,7 +95,31 @@ session its role and keep it:
   - PreToolUse: the lane (writes, shell commands, MCP), the leak guard (product repo), the bd
     guard (claims, structure, the ready and done gates) and the operator channel guard (`AskUserQuestion`,
     `PushNotification`, `SendUserFile` for roles other than the Chief of Staff and the Product
-    Manager).
+    Manager). The setup guard (`hooks/scripts/setup-guard.js`, decisions in `setup.js`, on Write,
+    Edit, MultiEdit, NotebookEdit, Bash, Monitor and PowerShell) is the exception to "inert outside a
+    role session": the plugin is enabled at user scope, so it binds every Claude Code session on the
+    host, team role or not, because the session that once moved the team's temp files into the home
+    directory was not a role session. It refuses any change of where temp files go (`TMPDIR`,
+    `CLAUDE_CODE_TMPDIR`, `TMP`, `TEMP`, `TEMPDIR` added or changed) in a Claude settings file (any
+    `settings.json` or `settings.local.json` under a `.claude` directory, `CLAUDE_CONFIG_DIR`, managed
+    settings), a shell or session environment file (`~/.bashrc`, `~/.profile`, `~/.zshrc` and the
+    like, `~/.config/environment.d`, systemd user units, `/etc/environment`, `/etc/profile.d`,
+    `$CLAUDE_ENV_FILE`), or a command that persists one (`systemctl --user set-environment`,
+    `launchctl setenv`, `setx`, `[Environment]::SetEnvironmentVariable`, `claude config set`, a
+    redirect, `tee`, `sed -i` or inline script writing one of those files); that refusal stands even
+    when no operator record can be read. Removing such a setting is allowed (that is how a wrong one
+    is reverted), and so are a one-off `TMPDIR=x cmd`, `export` inside one command, and reading
+    (`echo $TMPDIR`, `grep TMPDIR ~/.bashrc`). Any other change to those files whose changed key (an
+    environment variable, matched case-sensitively, or a settings key of four characters or more) a
+    recorded operator decision or settled answer names is refused naming the record; no record names
+    it, it passes. It also refuses disabling the delivery plugin in a settings file (that would switch
+    the guard off) and a host reboot when a record says never to rely on a restart. The records read
+    are those of the session's role project, of every project the watchdog host job serves on this
+    host (its systemd units or launchd agents), and of `DELIVERY_PROJECTS`, and only when a call is a
+    candidate setup change. The reason names the record ids, says the change is not a session's call,
+    and points to the Chief of Staff; it never asks the operator to approve or undo anything. On an
+    internal error it allows, except an input that plainly targets a settings file and names a temp
+    variable.
   - Stop: captures operator input, then the operator checks for the Chief of Staff and the Product
     Manager (an unrecorded input, a relay request, asked of the [typed judge](#the-typed-judge) first
     when it is on), at most two blocking stops per turn.
