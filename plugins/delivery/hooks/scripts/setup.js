@@ -4,26 +4,34 @@
 // .claude/settings.local.json, against a recorded operator decision that temp files stay in the sealed
 // runner's private /tmp and are never relocated. The lane and leak guards could not stop it: they are
 // inert without a role marker. This guard is the opposite: setup-guard.js runs it in EVERY session on
-// the host (the plugin is enabled at user scope), team role or not.
+// the host, team role or not (as a plugin hook, and as a user-level hook the team installs, so it
+// holds where the plugin is not enabled and after the plugin is removed: lib/user-guard.js).
 //
-// What it refuses:
+// What it refuses before a tool runs (decideSetup):
 //   1. Any change of where temp files go (TMPDIR, CLAUDE_CODE_TMPDIR, TMP, TEMP, TEMPDIR) in a Claude
-//      settings file, a shell or session environment file, or through a command that persists it
-//      (systemctl --user set-environment, launchctl setenv, setx, ...). A hard rule: refused even when
-//      no operator record can be read, because the sealed test runner depends on it.
-//   2. Any other change to those machine-setup files whose changed key a recorded operator decision
-//      names (a decision, or a settled answer, that is neither revoked nor superseded). The reason
-//      names the record. No record names it: allowed.
-//   3. Disabling this plugin in a Claude settings file (it would switch this guard off).
-//   4. Rebooting the host when a record says never to rely on a restart.
+//      settings file, a shell or session environment file, through a command or script that writes
+//      one, or through a command that persists it (systemctl --user set-environment, launchctl
+//      setenv, setx, claude --settings, ...). A hard rule: refused even when no operator record can be
+//      read, because the sealed test runner depends on it.
+//   2. Switching this guard off: disabling or uninstalling the delivery plugin, setting its
+//      enabledPlugins entry to false, or removing the user-level setup guard hook.
+//   3. Rebooting the host when a record says never to rely on a restart.
+//   4. Changing an environment variable (or a settings key named next to "settings", "env",
+//      "config") that a recorded operator decision forbids changing, in the same sentence as a
+//      prohibition (never, not, no, must not). A record that asks for the change ("Fix the bd PATH")
+//      does not block it.
 // Removing a temp-location setting is allowed: that is how a wrong one is reverted.
+// What a command does is not always visible in its text (a cp of a staged file, a script that builds
+// the name): setup-net.js snapshots the guarded files before a tool runs and reverts such a change
+// after it, with the same reason.
 //
 // The refusal never tells the session to ask the operator: a ruled-on change goes to the Chief of
 // Staff with the record id, and the operator is never asked to approve or undo it.
 //
-// decideSetup is pure: files and records come in through readFile and records (an array, or a
+// decideSetup is pure: files and records come in through readFile, exists and records (an array, or a
 // function returning one, called only when a candidate machine-setup change is found, so ordinary
 // tool calls never read the operator store).
+const os = require('os');
 const path = require('path');
 const { isDeepStrictEqual } = require('util');
 
@@ -34,42 +42,60 @@ const TEMP_WORD_SRC = `(?<![A-Za-z0-9_])(?:${TEMP_VARS.join('|')})(?![A-Za-z0-9_
 const TEMP_WORD = new RegExp(TEMP_WORD_SRC);
 const FILE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
 const PLUGIN_KEY = /^delivery@/;
+// the user-level hook command lib/user-guard.js installs; a settings change that drops it is refused
+const GUARD_HOOK_MARK = path.join('delivery', 'bin', 'setup-guard.js');
 const MAX_QUOTE = 160;
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
 // ---------- which files are machine setup ----------
 
-const RC_FILES = ['.bashrc', '.bash_profile', '.bash_login', '.profile', '.zshrc', '.zshenv', '.zprofile', '.zlogin', '.pam_environment'];
+const RC_FILES = ['.bashrc', '.bash_profile', '.bash_login', '.bash_aliases', '.profile', '.zshrc', '.zshenv', '.zprofile', '.zlogin', '.kshrc', '.pam_environment'];
 const ETC_FILES = ['/etc/environment', '/etc/profile', '/etc/bash.bashrc', '/etc/zshenv', '/etc/zsh/zshenv', '/etc/zsh/zshrc', '/etc/zprofile'];
+// directories that hold test fixtures: a settings file there configures no real session
+const FIXTURE_DIRS = ['test', 'tests', 'fixtures', '__fixtures__', 'testdata'];
 
 function expandHome(p, home) {
   const s = String(p);
   if (s === '~' || s.startsWith('~/')) return path.join(home, s.slice(1));
   return s.replace(/^\$\{?HOME\}?(?=\/|$)/, home);
 }
+const under = (p, dir) => p === dir || p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+const configDirOf = (home, env = {}) => (env.CLAUDE_CONFIG_DIR ? path.resolve(expandHome(env.CLAUDE_CONFIG_DIR, home)) : path.join(home, '.claude'));
 
 // { kind: 'settings' | 'env', file, userScope } or null. 'settings' is a Claude settings file; 'env' a
 // shell or session environment file. userScope: a settings file that applies to every project (the
 // user's, CLAUDE_CONFIG_DIR's, managed settings).
-function classifyFile(file, { cwd, home, env = {} }) {
+// A project settings file or .envrc under a test or fixture directory, or in the host's temp directory
+// (the sealed runner's private /tmp), is a fixture and not guarded, unless it is a role directory's
+// (a .delivery-role.json beside its .claude).
+function classifyFile(file, { cwd, home, env = {}, exists, tmpdir } = {}) {
   if (!file || typeof file !== 'string') return null;
   // Claude Code's per-session environment file: what is appended there reaches every later command
   if (/^\$\{?CLAUDE_ENV_FILE\}?$/.test(file) || (env.CLAUDE_ENV_FILE && path.resolve(file) === path.resolve(env.CLAUDE_ENV_FILE))) return { kind: 'env', file };
   const abs = path.resolve(cwd || '/', expandHome(file, home));
   const base = path.basename(abs);
   const dir = path.dirname(abs);
-  const configDir = env.CLAUDE_CONFIG_DIR ? path.resolve(expandHome(env.CLAUDE_CONFIG_DIR, home)) : null;
+  const fixture = () => {
+    const roleDir = path.basename(dir) === '.claude' ? path.dirname(dir) : dir;
+    let isRole = false;
+    try { isRole = !!(exists || require('fs').existsSync)(path.join(roleDir, '.delivery-role.json')); } catch (e) { isRole = false; }
+    if (isRole) return false;
+    const t = tmpdir === undefined ? os.tmpdir() : tmpdir;
+    return (t && under(abs, path.resolve(t))) || abs.split(path.sep).some((s) => FIXTURE_DIRS.includes(s));
+  };
   if (base === 'managed-settings.json') return { kind: 'settings', file: abs, userScope: true };
   if (base === 'settings.json' || base === 'settings.local.json') {
-    const userDirs = [path.join(home, '.claude'), configDir].filter(Boolean);
+    const userDirs = [path.join(home, '.claude'), configDirOf(home, env)];
     if (userDirs.includes(dir)) return { kind: 'settings', file: abs, userScope: true };
-    if (abs.split(path.sep).includes('.claude')) return { kind: 'settings', file: abs, userScope: false };
+    if (abs.split(path.sep).includes('.claude') && !fixture()) return { kind: 'settings', file: abs, userScope: false };
     return null;
   }
+  if (base === '.envrc') return fixture() ? null : { kind: 'env', file: abs };
   if (dir === home && RC_FILES.includes(base)) return { kind: 'env', file: abs };
+  if (dir === path.join(home, '.bashrc.d') || dir === path.join(home, '.zshrc.d')) return { kind: 'env', file: abs };
   if (ETC_FILES.includes(abs) || dir === '/etc/profile.d') return { kind: 'env', file: abs };
   if (dir === path.join(home, '.config', 'environment.d') && base.endsWith('.conf')) return { kind: 'env', file: abs };
-  if (dir === path.join(home, '.config', 'fish') && base === 'config.fish') return { kind: 'env', file: abs };
+  if (under(abs, path.join(home, '.config', 'fish')) && abs !== path.join(home, '.config', 'fish')) return { kind: 'env', file: abs };
   if (abs.startsWith(path.join(home, '.config', 'systemd', 'user') + path.sep)) return { kind: 'env', file: abs };
   return null;
 }
@@ -102,9 +128,11 @@ function afterText(toolName, input, before) {
 const parseObject = (t) => { try { const v = JSON.parse(t); return v && typeof v === 'object' && !Array.isArray(v) ? v : null; } catch (e) { return null; } };
 const envOf = (s) => (s && s.env && typeof s.env === 'object' ? s.env : {});
 const tempMentions = (t) => (String(t).match(new RegExp(TEMP_WORD_SRC, 'g')) || []).join(',');
+const ENV_NAME = /^[A-Z][A-Z0-9_]{2,}$/;
+const hasGuardHook = (s) => !!(s && s.hooks) && JSON.stringify(s.hooks).includes(GUARD_HOOK_MARK.split(path.sep).join('/'));
 
 // A Claude settings change: temp keys added or changed, every other changed key (for the record
-// search), and a disable of this plugin.
+// search), and anything that switches this guard off.
 function settingsChange(beforeText, after, cls) {
   const b = parseObject(beforeText) || {};
   const a = parseObject(after);
@@ -121,24 +149,30 @@ function settingsChange(beforeText, after, cls) {
   for (const k of new Set([...Object.keys(be), ...Object.keys(ae)])) {
     if (isDeepStrictEqual(be[k], ae[k])) continue;
     if (isTempVar(k)) { if (has(ae, k)) temp.push(k); continue; } // a removal is allowed
-    keys.push({ name: k, exact: true });
+    if (ENV_NAME.test(k)) keys.push({ name: k, exact: true });
   }
   for (const k of new Set([...Object.keys(b), ...Object.keys(a)])) {
     if (k === 'env' || isDeepStrictEqual(b[k], a[k])) continue;
-    keys.push({ name: k });
+    keys.push({ name: k, setting: true });
   }
-  // Disabling the plugin switches this guard off. false in any settings file disables it for that
-  // scope; removing a true from a user-scope file leaves it off everywhere. Removing it from a project
-  // file falls back to the user's setting, so that is allowed.
+  return { temp, keys, plugin: pluginOff(b, a, cls) };
+}
+
+// Switching the guard off. false in any settings file disables the plugin for that scope; removing a
+// true from a user-scope file leaves it off everywhere (removing it from a project file falls back to
+// the user's setting, so that is allowed). Dropping the user-level guard hook switches off the copy
+// that holds where the plugin is not enabled.
+function pluginOff(b, a, cls) {
   const bp = b.enabledPlugins && typeof b.enabledPlugins === 'object' ? b.enabledPlugins : {};
   const ap = a.enabledPlugins && typeof a.enabledPlugins === 'object' ? a.enabledPlugins : {};
-  let plugin = false;
+  let off = false;
   for (const k of new Set([...Object.keys(bp), ...Object.keys(ap)])) {
     if (!PLUGIN_KEY.test(k)) continue;
-    if (ap[k] === false && bp[k] !== false) plugin = k;
-    if (bp[k] === true && !has(ap, k) && cls.userScope) plugin = k;
+    if (ap[k] === false && bp[k] !== false) off = k;
+    if (bp[k] === true && !has(ap, k) && cls.userScope) off = k;
   }
-  return { temp, keys, plugin };
+  if (!off && hasGuardHook(b) && !hasGuardHook(a)) off = 'the user-level setup guard hook';
+  return off;
 }
 
 // Variable assignments in a shell or environment file: NAME=..., export NAME=..., setenv NAME ...,
@@ -168,9 +202,9 @@ function envFileChange(beforeText, after) {
   for (const [name, lines] of a) {
     const prev = b.get(name);
     if (prev && [...lines].every((l) => prev.has(l))) continue;
-    if (isTempVar(name)) temp.push(name); else keys.push({ name, exact: true });
+    if (isTempVar(name)) temp.push(name); else if (ENV_NAME.test(name)) keys.push({ name, exact: true });
   }
-  for (const name of b.keys()) if (!a.has(name) && !isTempVar(name)) keys.push({ name, exact: true });
+  for (const name of b.keys()) if (!a.has(name) && !isTempVar(name) && ENV_NAME.test(name)) keys.push({ name, exact: true });
   return { temp, keys, plugin: false };
 }
 
@@ -181,8 +215,36 @@ function wordsOf(command) {
   return String(command).split(/[\s;&|()<>`]+/).map((w) => w.replace(/^['"]+|['"]+$/g, '')).filter(Boolean);
 }
 
-// The temp variable a command sets: NAME=, "NAME": , .env.NAME, env["NAME"] =, setenv/setx NAME,
-// or none. Removals (unset, jq del(...), a sed /.../d delete) are stripped first: they revert.
+// Heredoc bodies taken out of the command: what they hold is a script or a file's text, never shell
+// words at command position (an `export TMPDIR=` line in a heredoc is written somewhere).
+function splitHeredocs(cmd) {
+  const lines = String(cmd).split('\n');
+  const shell = [];
+  const bodies = [];
+  for (let i = 0; i < lines.length; i++) {
+    shell.push(lines[i]);
+    const tags = [...lines[i].matchAll(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g)].map((m) => m[2]);
+    for (const tag of tags) {
+      const body = [];
+      while (++i < lines.length && lines[i].trim() !== tag) body.push(lines[i]);
+      bodies.push(body.join('\n'));
+    }
+  }
+  return { shell: shell.join('\n'), bodies };
+}
+
+// A one-off `NAME=value cmd` prefix or a bare `export NAME=value` at command position sets nothing that
+// outlives the command; taken out before the text is judged.
+function stripOneOff(shell) {
+  return String(shell).replace(/(^|[;&|(\n]\s*)(?:export\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;&|]*)\s*)+/g, '$1');
+}
+
+// Quote-joined fragments put back together: 'TMP' + 'DIR', "TMP" "DIR", ['TM', 'PDIR'].join(''),
+// TMP""DIR, so a name assembled from parts is seen as the name.
+const joinFragments = (t) => String(t).replace(/(['"`])\s*(?:\+|\.|,)?\s*(['"`])/g, '');
+
+// The temp variable a text sets: NAME=, "NAME": , env.NAME, ["NAME"] =, setenv/setx NAME, or none.
+// Removals (unset, jq del(...), a sed /.../d delete) are stripped first: they revert.
 function setsTemp(text) {
   const t = String(text)
     .replace(/\bdel\s*\([^)]*\)/g, ' ')
@@ -201,49 +263,177 @@ function setsTemp(text) {
   return null;
 }
 
-// The files a command may write: redirect targets, tee's files, and, for an in-place editor, an inline
-// interpreter or a copy, every word it names (which file such a command writes is not parsed). A
-// read of a guarded file (cat, grep, echo $TMPDIR, grep ... > out.txt) is therefore never refused.
-const OTHER_WRITER = /\bsed\b[^|;&]*\s-[a-zA-Z]*i|\b(?:perl|ruby)\b[^|;&]*\s-[a-zA-Z]*i|\b(?:python[0-9.]*|node|perl|ruby|deno|bun)\b[^|;&]*\s-[ce]\b|\b(?:cp|mv|install|ln|sponge|dd|ed|ex|crudini|Set-Content|Add-Content|Out-File)\b/;
+// A temp variable a script names at all, written whole or assembled from quoted parts.
+function namesTemp(text) {
+  const m = String(text).match(TEMP_WORD) || joinFragments(text).match(TEMP_WORD);
+  return m ? m[0] : null;
+}
+
+// An interpreter given its script inline or on stdin: the script text is then judged as a whole.
+const INTERPRETER = /(?:^|[\s;&|(/])(?:python[0-9.]*|node|nodejs|perl|ruby|deno|bun|php|bash|sh|zsh|dash|ksh|fish|pwsh|powershell|osascript|jq)(?=\s|$)/;
+const INLINE_FLAG = /(?:^|[\s;&|(/])(?:python[0-9.]*|node|nodejs|perl|ruby|php|bash|sh|zsh|dash|ksh|fish)\s+(?:-\S+\s+)*-[a-zA-Z]*[ce]\b|\bdeno\s+eval\b|\b(?:pwsh|powershell)\b[^;&|]*-(?:c|Command)\b/i;
+// A script call that writes: open(..., 'w'/'a'), write*/append*, json.dump, a rename or copy. A bare
+// '>' is not counted: in a script it is a comparison or an arrow far more often than a redirect.
+// A read (require, json.load, readFileSync) is no write: such a script is never refused.
+const WRITE_CALL = /\bopen\s*\([^)]*['"][wax]\+?b?['"]|\.write(?:_text|_bytes|lines)?\s*\(|\bwrite(?:FileSync|File|Sync)?\s*\(|\bappend(?:FileSync|File)?\s*\(|\bjson\.dump\s*\(|\b(?:rename|copy|copyfile|copy2|move|replace|copyFile|cp|rm|unlink)(?:Sync)?\s*\(|\bshutil\.|\bSet-Content\b|\bAdd-Content\b|\bOut-File\b|\bsponge\b|\bprint\s*\([^)]*\bfile\s*=|\bsed\b[^|;&]*\s-[a-zA-Z]*i|\btee\b/;
+// guarded file names as text can name them (a script joins its paths at run time)
+const GUARDED_NAME = /(?:managed-)?settings(?:\.local)?\.json|\.claude\b|\.bashrc|\.bash_profile|\.bash_aliases|\.bash_login|\.profile\b|\.zshrc|\.zshenv|\.zprofile|\.zlogin|\.kshrc|\.pam_environment|\.envrc|environment\.d|\.config\/fish|systemd\/user|\/etc\/environment|\/etc\/profile|CLAUDE_ENV_FILE|CLAUDE_CONFIG_DIR/;
+
+// Does a script's text name a guarded file? A full plain path is judged by classifyFile (so a fixture
+// under test/ is not); a bare name, a glob or a variable cannot be resolved and counts as guarded.
+function namesGuarded(text, ctx) {
+  const tokens = String(text).match(/[^\s'"`,()[\]{};=<>|&]*(?:(?:managed-)?settings(?:\.local)?\.json|\.claude\b|\.bashrc[^\s'"`,()]*|\.bash_profile|\.bash_aliases|\.bash_login|\.profile\b|\.zshrc|\.zshenv|\.zprofile|\.zlogin|\.kshrc|\.pam_environment|\.envrc|environment\.d|\.config\/fish|systemd\/user|\/etc\/environment|\/etc\/profile)[^\s'"`,()[\]{};<>|&]*|CLAUDE_ENV_FILE|CLAUDE_CONFIG_DIR/g) || [];
+  return tokens.some((tok) => {
+    if (!tok.includes('/') || /[*?$]/.test(tok) || /^(?:CLAUDE_ENV_FILE|CLAUDE_CONFIG_DIR)$/.test(tok)) return true;
+    if (/\.claude\/?$/.test(tok)) return !classifyFixtureDir(tok, ctx);
+    return !!classifyFile(tok, ctx);
+  });
+}
+// a path ending in .claude: guarded unless its settings file would be a fixture
+function classifyFixtureDir(tok, ctx) { return !classifyFile(path.join(tok, 'settings.json'), ctx); }
+
+// The files a plain command may write: redirect targets, tee's files, and, for an in-place editor or
+// a copy, every word it names. A read of a guarded file (cat, grep, echo $TMPDIR, grep ... > out.txt)
+// is therefore never refused.
+// Only at command position: "install" or "cp" inside a commit message writes nothing.
+const OTHER_WRITER = /(?:^|[;&|(\n]\s*)(?:sudo\s+(?:-\S+\s+)*)?(?:(?:sed|perl|ruby)\b[^|;&\n]*\s-[a-zA-Z]*i|(?:cp|mv|install|ln|sponge|dd|ed|ex|crudini|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item)\b)|\|\s*(?:sponge|dd)\b/;
+// Quoted text blanked to spaces (same length): an operator or a command word inside a quoted string
+// (a commit message, an echo) is not the shell's. Positions found in the blanked text are read back
+// from the original, so a quoted target ("~/.bashrc") is still seen.
+function blankQuotes(s) {
+  return String(s).replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, (q) => q[0] + ' '.repeat(Math.max(0, q.length - 2)) + q[q.length - 1]);
+}
 function writeTargets(cmd) {
   const out = [];
-  const redirect = /(?:^|[^<>&0-9])[0-9]*>>?\|?\s*(["']?)([^\s"';|&<>]+)\1/g;
+  const text = String(cmd);
+  const b = blankQuotes(text);
+  const redirect = /(?:^|[^<>&0-9])[0-9]*>>?\|?/g;
+  const target = /\s*(["']?)([^\s"';|&<>]+)\1/y;
   let m;
-  while ((m = redirect.exec(cmd))) out.push(m[2]);
-  const tee = /\btee\b([^;|&]*)/g;
-  while ((m = tee.exec(cmd))) out.push(...wordsOf(m[1]).filter((w) => !w.startsWith('-')));
-  if (OTHER_WRITER.test(cmd)) out.push(...wordsOf(cmd));
+  while ((m = redirect.exec(b))) { target.lastIndex = m.index + m[0].length; const t = target.exec(text); if (t) out.push(t[2]); }
+  const tee = /\btee\b[^;|&]*/g;
+  while ((m = tee.exec(b))) out.push(...wordsOf(text.slice(m.index + 3, m.index + m[0].length)).filter((w) => !w.startsWith('-')));
+  if (OTHER_WRITER.test(b)) out.push(...wordsOf(text));
   return out;
 }
+const writesSomething = (cmd) => writeTargets(cmd).some((w) => w !== '/dev/null' && !/^&?\d$/.test(w));
+
+// cp / mv / install of one file onto a guarded file: judged by the source file's content.
+function copyFindings(shell, ctx, readFile) {
+  const out = [];
+  const re = /(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?:cp|mv|install|Copy-Item|Move-Item)\s+((?:[^;&|\n])+)/g;
+  const b = blankQuotes(shell);
+  let m;
+  while ((m = re.exec(b))) {
+    const span = String(shell).slice(m.index + m[0].length - m[1].length, m.index + m[0].length);
+    const args = wordsOf(span).filter((w) => !w.startsWith('-'));
+    if (args.length < 2) continue;
+    const src = args[args.length - 2];
+    let dest = args[args.length - 1];
+    let cls = classifyFile(dest, ctx);
+    if (!cls) { dest = path.join(dest, path.basename(src)); cls = classifyFile(dest, ctx); }
+    if (!cls) continue;
+    let srcText = null;
+    let destText = '';
+    try { srcText = String(readFile(path.resolve(ctx.cwd, expandHome(src, ctx.home)))); } catch (e) { srcText = null; }
+    try { destText = String(readFile(cls.file)); } catch (e) { destText = ''; }
+    if (srcText === null) continue; // unreadable source: the after-diff (setup-net.js) still sees it
+    const ch = cls.kind === 'settings' ? settingsChange(destText, srcText, cls) : envFileChange(destText, srcText);
+    for (const name of ch.temp) out.push({ type: 'temp', name, where: cls.file });
+    if (ch.plugin) out.push({ type: 'plugin', name: ch.plugin, where: cls.file });
+  }
+  return out;
+}
+
+// `claude --settings <file|json>`: settings for that session, so a temp variable there moves its files.
+function claudeSettingsFinding(shell, ctx, readFile) {
+  const m = String(shell).match(/(?:^|[\s;&|(/])claude\b[^;&|\n]*?--settings(?:=|\s+)('[^']*'|"(?:[^"\\]|\\.)*"|\S+)/);
+  if (!m) return null;
+  const arg = m[1].replace(/^'(.*)'$/s, '$1').replace(/^"(.*)"$/s, '$1').replace(/\\"/g, '"');
+  let text = arg;
+  if (!arg.trim().startsWith('{')) { try { text = String(readFile(path.resolve(ctx.cwd, expandHome(arg, ctx.home)))); } catch (e) { text = ''; } }
+  const parsed = parseObject(text);
+  const name = parsed ? Object.keys(envOf(parsed)).find(isTempVar) : namesTemp(text);
+  return name ? { type: 'temp', name, where: 'claude --settings' } : null;
+}
+
+// Disabling the plugin from a command: claude plugin disable|uninstall|remove delivery, or a write
+// whose text sets a delivery@ enabledPlugins entry to false or deletes it.
+const PLUGIN_CLI = /(?:^|[\s;&|(/])claude\s+plugins?\s+(?:disable|uninstall|remove|rm)\b[^;&|\n]*?(?:^|[\s'"])(delivery(?:@[A-Za-z0-9._-]+)?)(?![A-Za-z0-9_-])/;
+const PLUGIN_OFF = [
+  /(delivery@[A-Za-z0-9._-]+)['"]?\s*\]?\s*(?::|=(?!=))\s*(?:false|False|FALSE|0|\$false)\b/,
+  /(?:\bdel\b|\bdelete\b|\.pop\s*\(|\bRemove\s*\(|\bunset\b)[^;\n]{0,80}?(delivery@[A-Za-z0-9._-]+)/,
+];
+
+function pluginFindings(shell, scripts) {
+  const cli = String(shell).match(PLUGIN_CLI);
+  if (cli) return [{ type: 'plugin', name: cli[1], where: 'claude plugin' }];
+  for (const text of [shell, ...scripts]) {
+    for (const re of PLUGIN_OFF) {
+      const m = joinFragments(text).match(re);
+      if (m && (writesSomething(shell) || WRITE_CALL.test(text))) return [{ type: 'plugin', name: m[1], where: 'enabledPlugins' }];
+    }
+  }
+  return [];
+}
+
 const REBOOT = /(?:^|[;&|(]|\n)\s*(?:sudo\s+(?:-\S+\s+)*)?(?:reboot|poweroff|halt|shutdown)(?=\s|$|;|&|\|)|\bsystemctl\s+(?:--\S+\s+)*(?:reboot|poweroff|halt|kexec|soft-reboot)\b|(?:^|[;&|(]|\n)\s*(?:sudo\s+)?init\s+[06]\b|\bRestart-Computer\b|\bStop-Computer\b/;
 
-function shellFindings(command, ctx) {
+function shellFindings(command, ctx, readFile = () => { throw new Error('no reader'); }, depth = 0) {
   const findings = [];
-  const cmd = String(command);
-  const temp = setsTemp(cmd);
+  // a shell given its script inline (bash -c '...', eval '...'): that script is a command line too
+  if (depth < 3) {
+    const inner = String(command).match(/(?:^|[\s;&|(/])(?:(?:bash|sh|zsh|dash|ksh)\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*c|eval)\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/);
+    if (inner) findings.push(...shellFindings(inner[1] !== undefined ? inner[1] : inner[2].replace(/\\(["\\$`])/g, '$1'), ctx, readFile, depth + 1));
+  }
+  const { shell: rawShell, bodies } = splitHeredocs(command);
+  const shell = stripOneOff(rawShell);
+  const dequoted = shell.replace(/['"]/g, '');
+  const temp = setsTemp(shell) || setsTemp(dequoted);
   // Persistent environments with no file to name: the user's session manager, launchd, Windows.
-  // A one-off `TMPDIR=x cmd` sets nothing that outlives the command and is not refused.
-  if (temp && /\bsystemctl\b[^;&|]*\b(?:set-environment|import-environment)\b/.test(cmd)) findings.push({ type: 'temp', name: temp, where: 'the user session manager (systemctl --user)' });
-  else if (temp && /\blaunchctl\s+(?:setenv|putenv)\b/.test(cmd)) findings.push({ type: 'temp', name: temp, where: 'launchd (launchctl setenv)' });
-  else if (temp && /\bsetx\b/i.test(cmd)) findings.push({ type: 'temp', name: temp, where: 'the Windows user environment (setx)' });
-  else if (/\[(?:System\.)?Environment\]::SetEnvironmentVariable\s*\(\s*['"](?:TMPDIR|TMP|TEMP|TEMPDIR|CLAUDE_CODE_TMPDIR)['"]/i.test(cmd)) findings.push({ type: 'temp', name: cmd.match(/SetEnvironmentVariable\s*\(\s*['"]([A-Za-z_]+)/i)[1], where: 'the Windows environment (SetEnvironmentVariable)' });
-  else if (temp && /\bclaude\s+config\s+(?:set|add)\b/.test(cmd)) findings.push({ type: 'temp', name: temp, where: 'Claude Code settings (claude config)' });
+  if (temp && /\bsystemctl\b[^;&|]*\b(?:set-environment|import-environment)\b/.test(shell)) findings.push({ type: 'temp', name: temp, where: 'the user session manager (systemctl --user)' });
+  else if (temp && /\blaunchctl\s+(?:setenv|putenv)\b/.test(shell)) findings.push({ type: 'temp', name: temp, where: 'launchd (launchctl setenv)' });
+  else if (temp && /\bsetx\b/i.test(shell)) findings.push({ type: 'temp', name: temp, where: 'the Windows user environment (setx)' });
+  else if (/\[(?:System\.)?Environment\]::SetEnvironmentVariable\s*\(\s*['"](?:TMPDIR|TMP|TEMP|TEMPDIR|CLAUDE_CODE_TMPDIR)['"]/i.test(shell)) findings.push({ type: 'temp', name: shell.match(/SetEnvironmentVariable\s*\(\s*['"]([A-Za-z_]+)/i)[1], where: 'the Windows environment (SetEnvironmentVariable)' });
+  else if (temp && /\bclaude\s+config\s+(?:set|add)\b/.test(shell)) findings.push({ type: 'temp', name: temp, where: 'Claude Code settings (claude config)' });
   else if (temp) {
-    const target = writeTargets(cmd).map((w) => classifyFile(w, ctx)).find(Boolean);
+    const target = writeTargets(shell).map((w) => classifyFile(w, ctx)).find(Boolean);
     if (target) findings.push({ type: 'temp', name: temp, where: target.file });
   }
+  const cs = claudeSettingsFinding(shell, ctx, readFile);
+  if (cs) findings.push(cs);
+  // A heredoc body or an inline script: judged as a whole. It names a temp variable (whole or from
+  // parts), names a guarded file, and calls something that writes: refused. A heredoc fed to a plain
+  // writer (cat > ~/.bashrc <<EOF) is judged with the shell's write targets instead.
+  const scripts = [...bodies];
+  if (INLINE_FLAG.test(rawShell)) scripts.push(rawShell);
+  const fedToInterpreter = bodies.length && INTERPRETER.test(rawShell);
+  if (!findings.some((f) => f.type === 'temp')) {
+    for (const text of scripts) {
+      const name = namesTemp(text);
+      const isScript = text === rawShell || fedToInterpreter;
+      if (!name) continue;
+      if (isScript && namesGuarded(text, ctx) && WRITE_CALL.test(text)) { findings.push({ type: 'temp', name, where: 'a script that writes a settings or environment file' }); break; }
+      if (!isScript && setsTemp(text)) {
+        const target = writeTargets(rawShell).map((w) => classifyFile(w, ctx)).find(Boolean);
+        if (target) { findings.push({ type: 'temp', name, where: target.file }); break; }
+      }
+    }
+  }
+  findings.push(...copyFindings(shell, ctx, readFile));
+  findings.push(...pluginFindings(rawShell, bodies));
   // Other variables made persistent the same way: searched in the records.
   if (!findings.length) {
-    const m = cmd.match(/\b(?:systemctl\b[^;&|]*\bset-environment|launchctl\s+(?:setenv|putenv)|setx(?:\s+\/m)?)\s+((?:[A-Za-z_][A-Za-z0-9_]*(?:=\S*)?\s*)+)/i);
+    const m = shell.match(/\b(?:systemctl\b[^;&|]*\bset-environment|launchctl\s+(?:setenv|putenv)|setx(?:\s+\/m)?)\s+((?:[A-Za-z_][A-Za-z0-9_]*(?:=\S*)?\s*)+)/i);
     if (m) {
-      const names = m[1].trim().split(/\s+/).map((x) => x.split('=')[0]).filter((x) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(x) && !isTempVar(x));
+      const names = m[1].trim().split(/\s+/).map((x) => x.split('=')[0]).filter((x) => ENV_NAME.test(x) && !isTempVar(x));
       // launchctl setenv and setx take NAME VALUE: only the first word is a name
       if (/launchctl|setx/i.test(m[0])) names.splice(1);
       if (names.length) findings.push({ type: 'keys', keys: names.map((name) => ({ name, exact: true })), where: 'the persistent user environment' });
     }
   }
   // Restarting the host; `systemctl restart <unit>` restarts a service and is not this.
-  if (REBOOT.test(cmd)) findings.push({ type: 'restart' });
+  if (REBOOT.test(rawShell)) findings.push({ type: 'restart' });
   return findings;
 }
 
@@ -251,15 +441,31 @@ function shellFindings(command, ctx) {
 
 const usable = (r) => r && typeof r.statement === 'string' && (r.kind === 'decision' || (r.kind === 'answer' && r.confidence === 'settled'));
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const sentencesOf = (s) => String(s).split(/(?<=[.!?])\s+|\n+/);
+const PROHIBIT = /\b(?:never|not|no|don't|do not|must not|mustn't|nobody|no one)\b/i;
+const SETTINGS_CTX = /\b(?:settings?|settings\.json|env|environment|config|configuration|machine setup)\b/i;
+const REQUEST = /\b(?:fix|set|add|restore|repair|install|update|change|put)\b/i;
 
-// A key is named by a record when its statement holds it as a word: case-sensitive for an environment
-// variable (exact) or an upper-case name (PATH, not "path"); case-insensitive otherwise but only from
-// four characters, so a short settings key ("env", "ui") matches nothing by accident.
-function keyMatcher(key, exact = false) {
-  const k = String(key);
-  if (exact || /^[A-Z][A-Z0-9_]*$/.test(k)) return new RegExp(`(?<![A-Za-z0-9_])${escapeRe(k)}(?![A-Za-z0-9_])`);
-  if (k.length < 4) return null;
-  return new RegExp(`(?<![A-Za-z0-9_])${escapeRe(k)}(?![A-Za-z0-9_])`, 'i');
+// The records that forbid changing a key. Matched sentence by sentence: the key as a word
+// (case-sensitive for an environment variable, any case for a settings key), a prohibition in the same
+// sentence, and no request for the change ahead of the key ("Fix the bd PATH bug" asks for it). A
+// settings key also needs "settings", "env", "config" or "machine setup" within a few words, so a
+// record that says "model" or "hooks" in passing blocks nothing.
+function recordsNaming(all, key, { exact, setting }) {
+  const word = new RegExp(`(?<![A-Za-z0-9_])${escapeRe(key)}(?![A-Za-z0-9_])`, exact ? '' : 'i');
+  return all.filter((r) => sentencesOf(r.statement).some((s) => {
+    const m = word.exec(s);
+    if (!m || !PROHIBIT.test(s)) return false;
+    // a request ahead of the key asks for the change, unless it is itself negated ("must not change")
+    const from = Math.max(0, m.index - 40);
+    const rq = REQUEST.exec(s.slice(from, m.index));
+    if (rq && !PROHIBIT.test(s.slice(Math.max(0, from + rq.index - 15), from + rq.index))) return false;
+    if (setting) {
+      const near = s.slice(Math.max(0, m.index - 40), m.index + key.length + 40);
+      if (!SETTINGS_CTX.test(near.replace(word, ' '))) return false;
+    }
+    return true;
+  }));
 }
 const TEMP_RECORD = /\/tmp\b|(?<![A-Za-z0-9_])(?:CLAUDE_CODE_)?TMPDIR(?![A-Za-z0-9_])|\btemp(?:orary)?[- ]files?\b/i;
 // "never rely on a restart", "must not rely on restarting it"; not "restart the team onto it"
@@ -285,19 +491,40 @@ function closing(ids) {
     ? `If you believe it must change, message the Chief of Staff with the record id (${ids[0]}); do not ask the operator.`
     : 'If you believe it must change, message the Chief of Staff; do not ask the operator.';
 }
+const usableRecords = (records) => {
+  let all = [];
+  try { all = (typeof records === 'function' ? records() : records) || []; } catch (e) { all = []; }
+  return Array.isArray(all) ? all.filter(usable) : [];
+};
+
+// The reason for a temp-location change or a guard switch-off, shared with the after-diff.
+function tempReason(name, where, all) {
+  // the record that rules on the location itself (names TMPDIR, or relocating) is cited first;
+  // the store lists newest first, which would put a later record that only mentions temp files ahead
+  const rank = (r) => (/(?<![A-Za-z0-9_])(?:CLAUDE_CODE_)?TMPDIR(?![A-Za-z0-9_])|\brelocat/i.test(r.statement) ? 0 : 1);
+  const named = all.filter((r) => TEMP_RECORD.test(r.statement)).map((r, i) => [rank(r), i, r]).sort((x, y) => x[0] - y[0] || x[1] - y[1]).map((x) => x[2]);
+  const ruled = named.length
+    ? `The operator ruled on it: ${cite(named)}.`
+    : 'Where temp files go is fixed on this host: tests run in the sealed runner\'s private /tmp, and temp files are not relocated.';
+  return `Refused: this changes where temp files go (${name} in ${where}). ${ruled} ${ruleClause(all)} ${closing(named.map((r) => r.id))}`;
+}
+function pluginReason(name, where, all) {
+  return `Refused: this switches off the setup guard (${name} in ${where}), which keeps machine setup the operator has ruled on. ${ruleClause(all)} ${closing([])}`;
+}
 
 // ---------- the decision ----------
 
 // null (allow) or { reason } (deny).
-function decideSetup({ toolName, toolInput, cwd, home, env = {}, readFile, records } = {}) {
+function decideSetup({ toolName, toolInput, cwd, home, env = {}, readFile, exists, tmpdir, records } = {}) {
   const input = toolInput && typeof toolInput === 'object' ? toolInput : {};
-  const ctx = { cwd: cwd || '/', home: home || '/nonexistent-home', env };
+  const ctx = { cwd: cwd || '/', home: home || '/nonexistent-home', env, exists, tmpdir };
+  const read = readFile || (() => { throw new Error('no reader'); });
   const findings = [];
   if (FILE_TOOLS.includes(toolName)) {
     const cls = classifyFile(input.file_path || input.notebook_path, ctx);
     if (!cls) return null;
     let before = '';
-    try { before = readFile ? String(readFile(cls.file)) : ''; } catch (e) { before = ''; } // a new file
+    try { before = String(read(cls.file)); } catch (e) { before = ''; } // a new file
     const after = afterText(toolName, input, before);
     const ch = cls.kind === 'settings' ? settingsChange(before, after, cls) : envFileChange(before, after);
     for (const name of ch.temp) findings.push({ type: 'temp', name, where: cls.file });
@@ -307,38 +534,23 @@ function decideSetup({ toolName, toolInput, cwd, home, env = {}, readFile, recor
     let command = null;
     try { command = require('./lane.js').shellCommandOf(toolName, input); } catch (e) { command = typeof input.command === 'string' ? input.command : null; }
     if (command === null || !command.trim()) return null;
-    findings.push(...shellFindings(command, ctx));
+    findings.push(...shellFindings(command, ctx, read));
   }
   if (!findings.length) return null;
-  let all = [];
-  try { all = (typeof records === 'function' ? records() : records) || []; } catch (e) { all = []; }
-  all = Array.isArray(all) ? all.filter(usable) : [];
+  const all = usableRecords(records);
 
   const temp = findings.find((f) => f.type === 'temp');
-  if (temp) {
-    // the record that rules on the location itself (names TMPDIR, or relocating) is cited first;
-    // the store lists newest first, which would put a later record that only mentions temp files ahead
-    const rank = (r) => (/(?<![A-Za-z0-9_])(?:CLAUDE_CODE_)?TMPDIR(?![A-Za-z0-9_])|\brelocat/i.test(r.statement) ? 0 : 1);
-    const named = all.filter((r) => TEMP_RECORD.test(r.statement)).map((r, i) => [rank(r), i, r]).sort((x, y) => x[0] - y[0] || x[1] - y[1]).map((x) => x[2]);
-    const ruled = named.length
-      ? `The operator ruled on it: ${cite(named)}.`
-      : 'Where temp files go is fixed on this host: tests run in the sealed runner\'s private /tmp, and temp files are not relocated.';
-    return { reason: `Refused: this changes where temp files go (${temp.name} in ${temp.where}). ${ruled} ${ruleClause(all)} ${closing(named.map((r) => r.id))}` };
-  }
+  if (temp) return { reason: tempReason(temp.name, temp.where, all) };
   const plugin = findings.find((f) => f.type === 'plugin');
-  if (plugin) {
-    return { reason: `Refused: this disables the delivery plugin (${plugin.name} in ${plugin.where}), which switches off the guard over machine setup the operator has ruled on. ${ruleClause(all)} ${closing([])}` };
-  }
+  if (plugin) return { reason: pluginReason(plugin.name, plugin.where, all) };
   if (findings.some((f) => f.type === 'restart')) {
     const named = all.filter((r) => RESTART_RECORD.test(r.statement));
     if (named.length) return { reason: `Refused: this restarts the machine. The operator ruled on it: ${cite(named)}. ${ruleClause(all)} ${closing(named.map((r) => r.id))}` };
   }
   for (const f of findings.filter((x) => x.type === 'keys')) {
-    for (const { name: key, exact } of f.keys) {
-      const re = keyMatcher(key, exact);
-      if (!re) continue;
-      const named = all.filter((r) => re.test(r.statement));
-      if (named.length) return { reason: `Refused: this changes ${key} in ${f.where}, machine setup the operator ruled on: ${cite(named)}. ${ruleClause(all)} ${closing(named.map((r) => r.id))}` };
+    for (const k of f.keys) {
+      const named = recordsNaming(all, k.name, k);
+      if (named.length) return { reason: `Refused: this changes ${k.name} in ${f.where}, machine setup the operator ruled on: ${cite(named)}. ${ruleClause(all)} ${closing(named.map((r) => r.id))}` };
     }
   }
   return null;
@@ -397,7 +609,11 @@ function obviousTempSettings(toolInput, ctx) {
   const file = input.file_path || input.notebook_path;
   const isSettings = (w) => { const c = classifyFile(w, ctx); return !!c && c.kind === 'settings'; };
   if (file) return isSettings(file);
-  return typeof input.command === 'string' && wordsOf(input.command).some(isSettings);
+  return typeof input.command === 'string' && (wordsOf(input.command).some(isSettings) || /settings(?:\.local)?\.json/.test(input.command));
 }
 
-module.exports = { decideSetup, classifyFile, afterText, settingsChange, envFileChange, shellFindings, setsTemp, keyMatcher, projectRoots, loadRecords, obviousTempSettings, TEMP_VARS };
+module.exports = {
+  decideSetup, classifyFile, afterText, settingsChange, envFileChange, assignments, shellFindings, setsTemp, namesTemp,
+  recordsNaming, projectRoots, loadRecords, obviousTempSettings, tempReason, pluginReason, usableRecords, configDirOf,
+  hasGuardHook, isTempVar, TEMP_VARS, RC_FILES, GUARD_HOOK_MARK, PLUGIN_KEY,
+};

@@ -21,7 +21,7 @@ const mk = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
 const TEMP_DEC = { id: 'dec-chief-of-staff-000014', kind: 'decision', statement: 'Standing rule: the team never leaves files in /tmp and never fills shared storage. Tests must run in a sealed, capped private /tmp. No relocating temp files elsewhere.' };
 const RULE_DEC = { id: 'dec-chief-of-staff-000155', kind: 'decision', statement: 'Any session must check recorded operator decisions before changing machine settings or where files go.' };
 const PROXY_DEC = { id: 'dec-chief-of-staff-000300', kind: 'decision', statement: 'Sessions on this host use HTTPS_PROXY as set by the machine setup; it is not changed per session.' };
-const PERM_DEC = { id: 'dec-chief-of-staff-000301', kind: 'decision', statement: 'The permissions of role sessions are written by prepare-role only.' };
+const PERM_DEC = { id: 'dec-chief-of-staff-000301', kind: 'decision', statement: 'The permissions settings of role sessions are never edited by hand; prepare-role writes them.' };
 const REBOOT_DEC = { id: 'dec-chief-of-staff-000211', kind: 'decision', statement: 'Wintermute is a server: never rely on a restart to clear team leftovers.' };
 const RECORDS = [TEMP_DEC, RULE_DEC, PROXY_DEC, PERM_DEC, REBOOT_DEC];
 
@@ -165,11 +165,35 @@ test('a settings env key named by a decision is refused naming it; one no decisi
   assert.equal(decide('Edit', { file_path: ROLE_SETTINGS, old_string: '"DELIVERY_ROLE": "builder"', new_string: '"DELIVERY_ROLE": "builder", "https_proxy": "x"' }), null, 'an env-like key matches case-sensitively');
 });
 
-test('a settings top-level key named by a decision is refused; a short key never matches by accident', () => {
+test('a settings key a decision forbids next to "settings" is refused; a key a record only mentions is not', () => {
   const d = decide('Write', { file_path: ROLE_SETTINGS, content: JSON.stringify({ ...JSON.parse(BEFORE), permissions: { allow: ['Bash(*)'] } }) });
   assert.ok(d && /changes permissions in .* dec-chief-of-staff-000301/.test(d.reason));
-  assert.equal(S.keyMatcher('ui'), null);
-  assert.ok(S.keyMatcher('Permissions').test('the permissions of'));
+  const passing = [{ id: 'dec-m', kind: 'decision', statement: 'Never use Fable as the model for a subagent; Opus is the default.' }];
+  assert.equal(decide('Write', { file_path: ROLE_SETTINGS, content: JSON.stringify({ ...JSON.parse(BEFORE), model: 'opus' }) }, { records: passing }), null, 'model named with no settings context');
+  assert.equal(decide('Write', { file_path: ROLE_SETTINGS, content: JSON.stringify({ ...JSON.parse(BEFORE), permissions: {} }) }, { records: [{ id: 'dec-p', kind: 'decision', statement: 'The permissions settings of role sessions are written by prepare-role.' }] }), null, 'no prohibition');
+});
+
+// This host's record texts, reworded but with the same shape: a standing rule with "never" in one
+// sentence and a request to repair the bd PATH in the next; the temp rule; the restart rule.
+const HOST_RECORDS = [
+  { id: 'dec-chief-of-staff-000082', kind: 'decision', statement: 'Standing rule: the chief of staff never states status from memory or a message, only from a record read in the same turn; a record it cannot read means no status. Repair the PATH problem for bd at once (a session restarted by the host drops ~/.local/bin and then cannot read records).' },
+  { id: 'dec-chief-of-staff-000014', kind: 'decision', statement: 'Standing rule: the team never leaves files in /tmp and never fills shared storage. Tests run in a sealed, capped private /tmp the OS removes on exit; test commands outside that runner are refused. No relocating temp files elsewhere. Nobody asks the operator to restart or clean the server.' },
+  { id: 'dec-chief-of-staff-000213', kind: 'decision', statement: 'The host is a server: the team must not rely on restarting it, and must never fill its disk again. Growth of disk and temp-file use from team runs is a defect to prevent.' },
+];
+
+test('against this host\'s records, editing model, hooks and PATH is allowed; a request to repair PATH does not block it', () => {
+  const over = { records: HOST_RECORDS };
+  assert.equal(decide('Write', { file_path: ROLE_SETTINGS, content: JSON.stringify({ ...JSON.parse(BEFORE), model: 'opus' }) }, over), null, 'model');
+  assert.equal(decide('Write', { file_path: ROLE_SETTINGS, content: JSON.stringify({ ...JSON.parse(BEFORE), hooks: { Stop: [] } }) }, over), null, 'hooks');
+  assert.equal(decide('Edit', { file_path: '/hm/u/.bashrc', old_string: 'export PATH=/usr/bin', new_string: 'export PATH=/usr/bin:/hm/u/.local/bin' }, over), null, 'PATH in .bashrc');
+  assert.equal(decide('Edit', { file_path: ROLE_SETTINGS, old_string: '"DELIVERY_ROLE": "builder"', new_string: '"DELIVERY_ROLE": "builder", "PATH": "/usr/bin"' }, over), null, 'PATH in settings env');
+  // the same key under a prohibition is refused; a request ahead of the key in the sentence is not one
+  assert.ok(decide('Edit', { file_path: '/hm/u/.bashrc', old_string: 'export PATH=/usr/bin', new_string: 'export PATH=/x' }, { records: [{ id: 'dec-b', kind: 'decision', statement: 'Sessions must not change PATH in shell files.' }] }));
+  assert.deepEqual(S.recordsNaming(HOST_RECORDS, 'PATH', { exact: true }), []);
+  // an environment variable is matched case-sensitively: "the path" in a record is not PATH
+  assert.equal(decide('Edit', { file_path: '/hm/u/.bashrc', old_string: 'export PATH=/usr/bin', new_string: 'export PATH=/x' }, { records: [{ id: 'dec-l', kind: 'decision', statement: 'Never move the path of the team directory.' }] }), null);
+  assert.equal(S.recordsNaming([{ statement: 'Do not edit the model setting by hand.' }], 'model', { setting: true }).length, 1);
+  assert.deepEqual(S.recordsNaming([{ statement: 'Repair the PATH; never leave it broken.' }], 'PATH', { exact: true }), []);
 });
 
 test('a record of another kind or an inferred answer does not refuse; a settled answer does', () => {
@@ -189,7 +213,7 @@ test('an env file assignment named by a decision is refused; a persistent sessio
 test('disabling the delivery plugin is refused; removing it from a project file is allowed', () => {
   const off = { ...JSON.parse(BEFORE), enabledPlugins: { 'delivery@ai-augmentation-systems': false } };
   const d = decide('Write', { file_path: ROLE_SETTINGS, content: JSON.stringify(off) });
-  assert.ok(d && /disables the delivery plugin/.test(d.reason));
+  assert.ok(d && /switches off the setup guard/.test(d.reason));
   assertNoOperatorAsk(d.reason);
   const gone = { env: { DELIVERY_ROLE: 'builder' }, enabledPlugins: {} };
   assert.ok(decide('Write', { file_path: '/hm/u/.claude/settings.json', content: JSON.stringify(gone) }), 'removed at user scope');
@@ -244,7 +268,9 @@ test('the fail-safe recognises a settings file plus a temp name, and nothing els
 // ---- the hook, end to end ----
 
 function runHook(input, env = {}) {
-  const e = { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, ...env };
+  // the snapshot store is a fixture: never the real config dir's
+  const e = { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, CLAUDE_PLUGIN_DATA: mk('setup-data-'), ...env };
+  delete e.CLAUDE_CONFIG_DIR;
   for (const k of Object.keys(env)) if (env[k] === undefined) delete e[k];
   return spawnSync(process.execPath, [path.join(__dirname, 'setup-guard.js')], { input: typeof input === 'string' ? input : JSON.stringify(input), env: e, encoding: 'utf8' });
 }
@@ -287,6 +313,8 @@ test('end to end: a session that is no team role is refused the incident, naming
   const target = path.join(mk('setup-t-'), 'builder', '.claude', 'settings.local.json');
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, JSON.stringify({ env: { DELIVERY_ROLE: 'builder' } }, null, 2));
+  // a role directory (its marker beside .claude), so the file is guarded although it sits in the temp dir
+  fs.writeFileSync(path.join(path.dirname(path.dirname(target)), '.delivery-role.json'), '{}');
   const plain = mk('setup-plain-');
   const d = denial(runHook(incident(plain, target), { HOME: home, DELIVERY_PROJECTS: root, ...NO_ROLE }));
   assert.equal(d.permissionDecision, 'deny');
