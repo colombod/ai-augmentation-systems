@@ -110,6 +110,48 @@ test('one-off variables next to a copy or a redirect, read-only script loads and
   refusedTemp(decide('Write', { file_path: '/tmp/cfg/settings.json', content: JSON.stringify({ env: { TMPDIR: '/x' } }) }, { env: { CLAUDE_CONFIG_DIR: '/tmp/cfg' } }), 'the config dir in tmp');
 });
 
+// ---- settings keys that switch off every hook ----
+
+test('disableAllHooks or allowManagedHooksOnly set to true is refused by Write, jq + mv, a script and claude config', () => {
+  for (const key of ['disableAllHooks', 'allowManagedHooksOnly']) {
+    for (const f of ['/hm/u/.claude/settings.json', ROLE]) {
+      refusedOff(decide('Write', { file_path: f, content: JSON.stringify({ ...JSON.parse(SETTINGS), [key]: true }) }), `${key} ${f}`);
+      refusedOff(decide('Edit', { file_path: f, old_string: '"env": {', new_string: `"${key}": true,\n  "env": {` }), `${key} Edit ${f}`);
+    }
+    refusedOff(bash(`jq '.${key} = true' ~/.claude/settings.json > /hm/u/s.json && mv /hm/u/s.json ~/.claude/settings.json`), `${key} jq`);
+    refusedOff(bash(`python3 -c "import json;p='${ROLE}';d=json.load(open(p));d['${key}']=True;json.dump(d,open(p,'w'))"`), `${key} python`);
+    refusedOff(bash(`claude config set -g ${key} true`), `${key} claude config`);
+  }
+  // false, or a value already true, is no switch-off; reading it is fine
+  assert.equal(decide('Write', { file_path: ROLE, content: JSON.stringify({ ...JSON.parse(SETTINGS), disableAllHooks: false }) }), null);
+  assert.equal(decide('Write', { file_path: ROLE, content: JSON.stringify({ disableAllHooks: true, model: 'x' }) }, { readFile: () => JSON.stringify({ disableAllHooks: true }) }), null);
+  assert.equal(bash('jq .disableAllHooks ~/.claude/settings.json'), null);
+});
+
+// ---- where a script writes ----
+
+test('a script that reads settings, names TMPDIR and writes an unrelated file passes; one that writes a settings file does not', () => {
+  assert.equal(bash(`python3 -c "import json;d=json.load(open('/hm/u/.claude/settings.json'));open('report.txt','w').write(str(d.get('env',{}).get('TMPDIR')))"`), null, 'report.txt');
+  assert.equal(bash(`python3 - <<'EOF'\nimport json\nout = 'report.txt'\nd = json.load(open('/hm/u/.claude/settings.json'))\nwith open(out, 'w') as f:\n    f.write(str(d['env'].get('TMPDIR')))\nEOF`), null, 'a variable assigned report.txt');
+  assert.equal(bash(`node -e "const fs=require('fs');const s=require('/hm/u/.claude/settings.json');fs.writeFileSync('/hm/u/work/report.txt', String((s.env||{}).TMPDIR))"`), null, 'node, absolute report path');
+  refusedTemp(bash(`node -e "const fs=require('fs'),path=require('path');const f=path.join(process.env.HOME,'.claude','settings.json');const s=JSON.parse(fs.readFileSync(f));s.env.TMPDIR='/x';fs.writeFileSync(f,JSON.stringify(s))"`), 'a path built from guarded parts');
+  refusedTemp(bash(`python3 -c "import json;d={'env':{'TMPDIR':'/x'}};json.dump(d,open('/hm/u/.claude/settings.json','w'))"`), 'a literal guarded path');
+  refusedTemp(bash(`python3 -c "import json,sys;d={'env':{'TMPDIR':'/x'}};json.dump(d,open(sys.argv[1],'w'))" ~/.claude/settings.json`), 'a target that cannot be resolved');
+});
+
+// ---- the user-level launcher ----
+
+test('removing, moving, truncating or overwriting the user-level guard launcher is refused; reading it and the installer pass', () => {
+  const L = '/hm/u/.claude/delivery/bin/setup-guard.js';
+  refusedOff(decide('Write', { file_path: L, content: 'process.exit(0)' }), 'Write');
+  refusedOff(decide('Edit', { file_path: L, old_string: 'a', new_string: 'b' }), 'Edit');
+  for (const c of [`rm ${L}`, 'rm -f ~/.claude/delivery/bin/setup-guard.js', `mv ${L} /hm/u/x.js`, `: > ${L}`, `truncate -s 0 ${L}`, `cp /dev/null ${L}`, `python3 -c "import os;os.remove('${L}')"`]) refusedOff(bash(c), c);
+  refusedOff(bash('rm /c/cfg/delivery/bin/setup-guard.js', { env: { CLAUDE_CONFIG_DIR: '/c/cfg' } }), 'under CLAUDE_CONFIG_DIR');
+  assert.equal(bash(`cat ${L}`), null);
+  assert.equal(bash('node /hm/u/plugin/scripts/setup-guard.js install'), null);
+  assert.equal(bash('rm /hm/u/work/delivery/bin/setup-guard.js'), null, 'a file of that name elsewhere');
+});
+
 test('a commit message that names install, cp or a settings path writes nothing', () => {
   assert.equal(bash('git commit -m "install the guard; cp is judged; one-off TMPDIR=x cmd passes; .claude/settings.local.json is guarded"'), null);
 });

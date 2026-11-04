@@ -54,6 +54,8 @@ function guardedFiles({ home, env = {}, cwd, roots = [] }) {
   for (const n of list(path.join(home, '.config', 'fish', 'conf.d'))) add(path.join(home, '.config', 'fish', 'conf.d', n), 'env');
   for (const n of list(path.join(home, '.config', 'systemd', 'user')).filter((x) => /\.(?:service|conf)$/.test(x))) add(path.join(home, '.config', 'systemd', 'user', n), 'env');
   add('/etc/environment', 'env');
+  // the user-level guard launcher: removed or overwritten, it is written again by its installer
+  add(path.join(S.configDirOf(home, env), S.GUARD_HOOK_MARK), 'launcher');
   if (env.CLAUDE_ENV_FILE) add(path.resolve(env.CLAUDE_ENV_FILE), 'env');
   const roleDirs = [];
   if (cwd) {
@@ -68,6 +70,7 @@ function guardedFiles({ home, env = {}, cwd, roots = [] }) {
 // What is kept of one file: null when it does not exist.
 function stateOf(kind, text) {
   if (text === null) return null;
+  if (kind === 'launcher') return { sha: crypto.createHash('sha256').update(text).digest('hex'), text };
   if (kind === 'env') {
     const lines = String(text).split(/\r?\n/).filter((l) => [...S.assignments(l).keys()].some(S.isTempVar));
     return { lines };
@@ -85,7 +88,9 @@ function stateOf(kind, text) {
     const mine = Array.isArray(entries) ? entries.filter((e) => JSON.stringify(e).includes(mark)) : [];
     if (mine.length) guard[ev] = mine;
   }
-  return { temp, plugins, guard };
+  const hooksOff = {};
+  for (const k of S.HOOKS_OFF_KEYS) if (Object.prototype.hasOwnProperty.call(j, k)) hooksOff[k] = j[k];
+  return { temp, plugins, guard, hooksOff };
 }
 
 const readText = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch (e) { return null; } };
@@ -104,8 +109,16 @@ function writeAtomic(file, text) {
 }
 
 // The changes to put back for one file: [{ what, restore(json|lines) }], described for the reason.
-function changesOf(kind, before, after) {
+const PLUGIN_ROOT = path.join(__dirname, '..', '..');
+const configOfLauncher = (file) => path.dirname(path.dirname(path.dirname(file)));
+function launcherBodyFor(file) { try { return require('../../scripts/lib/user-guard.js').launcherBody(configOfLauncher(file), PLUGIN_ROOT); } catch (e) { return null; } }
+function changesOf(kind, before, after, file) {
   const out = [];
+  if (kind === 'launcher') {
+    // only a launcher that was there; the installer's own bytes are no change
+    if (before && (!after || after.sha !== before.sha) && !(after && after.text === launcherBodyFor(file))) out.push({ type: 'plugin', name: 'the user-level setup guard launcher', launcher: true });
+    return out;
+  }
   if (!after) return out;
   if (kind === 'env') {
     const had = new Set((before && before.lines) || []);
@@ -113,7 +126,8 @@ function changesOf(kind, before, after) {
     return out;
   }
   if (after.unparsable) return out; // a file Claude Code cannot load sets nothing; nothing to restore safely
-  const b = before && !before.unparsable ? before : { temp: {}, plugins: {}, guard: {} };
+  const b = before && !before.unparsable ? before : { temp: {}, plugins: {}, guard: {}, hooksOff: {} };
+  for (const k of S.HOOKS_OFF_KEYS) if ((after.hooksOff || {})[k] === true && (b.hooksOff || {})[k] !== true) out.push({ type: 'plugin', name: k, top: k, value: (b.hooksOff || {})[k] });
   for (const [k, v] of Object.entries(after.temp)) if (!Object.prototype.hasOwnProperty.call(b.temp, k) || JSON.stringify(b.temp[k]) !== JSON.stringify(v)) out.push({ type: 'temp', name: k, key: k, value: b.temp[k] });
   for (const k of new Set([...Object.keys(b.plugins), ...Object.keys(after.plugins)])) {
     const was = b.plugins[k];
@@ -130,6 +144,11 @@ function changesOf(kind, before, after) {
 
 // Put the changes back in place: only those keys (JSON) or lines (text); the rest of the file stays.
 function restore(file, kind, changes) {
+  if (kind === 'launcher') {
+    // the installer writes the launcher and its hook entries again (idempotent)
+    const r = require('../../scripts/lib/user-guard.js').ensureUserGuard({ configDir: configOfLauncher(file), pluginRoot: PLUGIN_ROOT });
+    return !/not installed|does not parse|not a settings object/.test(r.line || '') && fs.existsSync(file);
+  }
   const text = readText(file);
   if (text === null) return false;
   if (kind === 'env') {
@@ -146,6 +165,8 @@ function restore(file, kind, changes) {
     } else if (c.plugin) {
       j.enabledPlugins = j.enabledPlugins && typeof j.enabledPlugins === 'object' ? j.enabledPlugins : {};
       if (c.value === undefined) delete j.enabledPlugins[c.plugin]; else j.enabledPlugins[c.plugin] = c.value;
+    } else if (c.top) {
+      if (c.value === undefined) delete j[c.top]; else j[c.top] = c.value;
     } else if (c.event) {
       j.hooks = j.hooks && typeof j.hooks === 'object' ? j.hooks : {};
       j.hooks[c.event] = [...(Array.isArray(j.hooks[c.event]) ? j.hooks[c.event] : []), ...c.entries];
@@ -181,7 +202,7 @@ function afterTool(input, { home, env = process.env, records = [] } = {}) {
   if (!snap) return null;
   const found = [];
   for (const [f, { kind, state }] of Object.entries(snap)) {
-    const changes = changesOf(kind, state, stateOf(kind, readText(f)));
+    const changes = changesOf(kind, state, stateOf(kind, readText(f)), f);
     if (changes.length) found.push({ file: f, kind, changes });
   }
   if (!found.length) return null;

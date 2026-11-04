@@ -128,6 +128,50 @@ test('nothing changed: no reason, no write, no records read; a second after-chec
   assert.equal(fs.readFileSync(f, 'utf8'), text);
 });
 
+test('disableAllHooks or allowManagedHooksOnly turned on is put back; one already on is left', () => {
+  const h = host();
+  const f = path.join(h.home, '.claude', 'settings.json');
+  fs.writeFileSync(roleFile(h.builder), JSON.stringify({ allowManagedHooksOnly: false, env: {} }));
+  fs.writeFileSync(roleFile(h.other), JSON.stringify({ disableAllHooks: true }));
+  N.beforeTool(h.input, { home: h.home, env: h.env, roots: [h.root] });
+  const j = readJ(f);
+  j.disableAllHooks = true;
+  fs.writeFileSync(f, JSON.stringify(j));
+  fs.writeFileSync(roleFile(h.builder), JSON.stringify({ allowManagedHooksOnly: true, env: {} }));
+  fs.writeFileSync(roleFile(h.other), JSON.stringify({ disableAllHooks: true, model: 'x' }));
+  const r = N.afterTool(h.input, { home: h.home, env: h.env });
+  assert.ok(r && /^Refused: this switches off the setup guard \((?:disableAllHooks|allowManagedHooksOnly) in /.test(r.reason), r && r.reason);
+  assert.equal(Object.prototype.hasOwnProperty.call(readJ(f), 'disableAllHooks'), false, 'added: removed again');
+  assert.equal(readJ(f).model, 'opus');
+  assert.equal(readJ(roleFile(h.builder)).allowManagedHooksOnly, false, 'changed: put back to its old value');
+  assert.deepEqual(readJ(roleFile(h.other)), { disableAllHooks: true, model: 'x' }, 'already on before the tool: not this tool\'s change');
+});
+
+test('the user-level launcher removed or overwritten is written again by its installer, with its hook entries', () => {
+  const h = host();
+  const cfg = path.join(h.home, '.claude');
+  const UG = require('../../scripts/lib/user-guard.js');
+  UG.ensureUserGuard({ configDir: cfg, pluginRoot: path.join(__dirname, '..', '..') });
+  const L = UG.launcherPath(cfg);
+  const body = fs.readFileSync(L, 'utf8');
+  for (const spoil of [() => fs.rmSync(L), () => fs.writeFileSync(L, 'process.exit(0)\n')]) {
+    N.beforeTool(h.input, { home: h.home, env: h.env, roots: [] });
+    spoil();
+    const s = readJ(path.join(cfg, 'settings.json'));
+    s.hooks = {};
+    fs.writeFileSync(path.join(cfg, 'settings.json'), JSON.stringify(s));
+    const r = N.afterTool(h.input, { home: h.home, env: h.env });
+    assert.ok(r && /switches off the setup guard/.test(r.reason) && /It was reverted/.test(r.reason), r && r.reason);
+    assert.equal(fs.readFileSync(L, 'utf8'), body);
+    assert.ok(JSON.stringify(readJ(path.join(cfg, 'settings.json')).hooks.PostToolUse).includes('delivery/bin/setup-guard.js'));
+  }
+  // the installer replacing an older launcher during a tool (its own bytes) is no change
+  fs.writeFileSync(L, '// an older launcher\n');
+  N.beforeTool(h.input, { home: h.home, env: h.env, roots: [] });
+  UG.ensureUserGuard({ configDir: cfg, pluginRoot: path.join(__dirname, '..', '..') });
+  assert.equal(N.afterTool(h.input, { home: h.home, env: h.env }), null);
+});
+
 test('without CLAUDE_PLUGIN_DATA the snapshot goes under the config dir, never the temp dir', () => {
   assert.equal(N.stateDir({ home: '/h', env: {} }), path.join('/h', '.claude', 'delivery', 'state'));
   assert.equal(N.stateDir({ home: '/h', env: { CLAUDE_CONFIG_DIR: '/c' } }), path.join('/c', 'delivery', 'state'));

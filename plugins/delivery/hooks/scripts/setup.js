@@ -42,6 +42,10 @@ const TEMP_WORD_SRC = `(?<![A-Za-z0-9_])(?:${TEMP_VARS.join('|')})(?![A-Za-z0-9_
 const TEMP_WORD = new RegExp(TEMP_WORD_SRC);
 const FILE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
 const PLUGIN_KEY = /^delivery@/;
+// settings keys that switch off every hook from settings files and plugins, this guard's two copies
+// included (Claude Code's settings schema: disableAllHooks; allowManagedHooksOnly drops user, project,
+// local and user-installed plugin hooks). Set to true anywhere, they are refused and reverted.
+const HOOKS_OFF_KEYS = ['disableAllHooks', 'allowManagedHooksOnly'];
 // the user-level hook command lib/user-guard.js installs; a settings change that drops it is refused
 const GUARD_HOOK_MARK = path.join('delivery', 'bin', 'setup-guard.js');
 const MAX_QUOTE = 160;
@@ -171,6 +175,7 @@ function pluginOff(b, a, cls) {
     if (ap[k] === false && bp[k] !== false) off = k;
     if (bp[k] === true && !has(ap, k) && cls.userScope) off = k;
   }
+  for (const k of HOOKS_OFF_KEYS) if (!off && a[k] === true && b[k] !== true) off = k;
   if (!off && hasGuardHook(b) && !hasGuardHook(a)) off = 'the user-level setup guard hook';
   return off;
 }
@@ -275,7 +280,7 @@ const INLINE_FLAG = /(?:^|[\s;&|(/])(?:python[0-9.]*|node|nodejs|perl|ruby|php|b
 // A script call that writes: open(..., 'w'/'a'), write*/append*, json.dump, a rename or copy. A bare
 // '>' is not counted: in a script it is a comparison or an arrow far more often than a redirect.
 // A read (require, json.load, readFileSync) is no write: such a script is never refused.
-const WRITE_CALL = /\bopen\s*\([^)]*['"][wax]\+?b?['"]|\.write(?:_text|_bytes|lines)?\s*\(|\bwrite(?:FileSync|File|Sync)?\s*\(|\bappend(?:FileSync|File)?\s*\(|\bjson\.dump\s*\(|\b(?:rename|copy|copyfile|copy2|move|replace|copyFile|cp|rm|unlink)(?:Sync)?\s*\(|\bshutil\.|\bSet-Content\b|\bAdd-Content\b|\bOut-File\b|\bsponge\b|\bprint\s*\([^)]*\bfile\s*=|\bsed\b[^|;&]*\s-[a-zA-Z]*i|\btee\b/;
+const WRITE_CALL = /\bopen\s*\([^)]*['"][wax]\+?b?['"]|\.write(?:_text|_bytes|lines)?\s*\(|\bwrite(?:FileSync|File|Sync)?\s*\(|\bappend(?:FileSync|File)?\s*\(|\bjson\.dump\s*\(|\b(?:rename|copy|copyfile|copy2|move|replace|copyFile|cp|rm|unlink|remove|truncate)(?:Sync)?\s*\(|\bshutil\.|\bSet-Content\b|\bAdd-Content\b|\bOut-File\b|\bsponge\b|\bprint\s*\([^)]*\bfile\s*=|\bsed\b[^|;&]*\s-[a-zA-Z]*i|\btee\b/;
 // guarded file names as text can name them (a script joins its paths at run time)
 const GUARDED_NAME = /(?:managed-)?settings(?:\.local)?\.json|\.claude\b|\.bashrc|\.bash_profile|\.bash_aliases|\.bash_login|\.profile\b|\.zshrc|\.zshenv|\.zprofile|\.zlogin|\.kshrc|\.pam_environment|\.envrc|environment\.d|\.config\/fish|systemd\/user|\/etc\/environment|\/etc\/profile|CLAUDE_ENV_FILE|CLAUDE_CONFIG_DIR/;
 
@@ -291,6 +296,73 @@ function namesGuarded(text, ctx) {
 }
 // a path ending in .claude: guarded unless its settings file would be a fixture
 function classifyFixtureDir(tok, ctx) { return !classifyFile(path.join(tok, 'settings.json'), ctx); }
+
+// Where a script writes: the target of each write call (open(X, 'w'), writeFileSync(X), appendFile(X),
+// Path(X).write_text, the destination of rename / copy / move, Set-Content X, a shell redirect or tee
+// in a shell script). A target that is a string literal is judged as a path; a variable assigned one
+// literal is read through; an expression naming a guarded file (path.join(d, '.claude',
+// 'settings.json')) is guarded; one with no literal at all (the loop variable of a glob) cannot be
+// resolved and counts as guarded. A script that reads settings and writes report.txt passes.
+function callArgs(text, open) {
+  const args = [];
+  let depth = 0;
+  let q = null;
+  let cur = '';
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (q) { cur += c; if (c === '\\') { cur += text[++i] || ''; } else if (c === q) q = null; continue; }
+    if (c === '"' || c === "'" || c === '`') { q = c; cur += c; continue; }
+    if (c === '(' || c === '[' || c === '{') { depth++; cur += c; continue; }
+    if (c === ')' || c === ']' || c === '}') { if (depth === 0) { args.push(cur.trim()); return args; } depth--; cur += c; continue; }
+    if (c === ',' && depth === 0) { args.push(cur.trim()); cur = ''; continue; }
+    cur += c;
+  }
+  args.push(cur.trim());
+  return args;
+}
+const FIRST_ARG_WRITERS = /\b(?:open|writeFileSync|writeFile|appendFileSync|appendFile|createWriteStream|write_text|write_bytes|truncate|truncateSync|unlink|unlinkSync|remove|rmSync|rm)\s*\(/g;
+const SECOND_ARG_WRITERS = /\b(?:rename|renameSync|copy|copyfile|copy2|copyFile|copyFileSync|move|replace|symlink|symlinkSync|link)\s*\(/g;
+function scriptWriteTargets(text) {
+  const t = String(text);
+  const out = [];
+  let m;
+  FIRST_ARG_WRITERS.lastIndex = 0;
+  while ((m = FIRST_ARG_WRITERS.exec(t))) {
+    const args = callArgs(t, m.index + m[0].length);
+    // open(X) with no mode, or a read mode, reads
+    if (/\bopen\s*\($/.test(m[0]) && !(args[1] && /^['"][wax]\+?b?['"]$|mode\s*=\s*['"][wax]/.test(args[1]))) continue;
+    // Path(X).write_text(...): the path is the receiver
+    if (/write_(?:text|bytes)/.test(m[0])) { const r = t.slice(0, m.index).match(/Path\s*\(([^()]*)\)\s*\.$/); out.push(r ? r[1] : ''); continue; }
+    out.push(args[0] || '');
+  }
+  SECOND_ARG_WRITERS.lastIndex = 0;
+  while ((m = SECOND_ARG_WRITERS.exec(t))) out.push(callArgs(t, m.index + m[0].length)[1] || '');
+  const ps = /\b(?:Set-Content|Add-Content|Out-File)\s+(?:-(?:Path|FilePath|LiteralPath)\s+)?(\S+)/g;
+  while ((m = ps.exec(t))) out.push(m[1]);
+  for (const w of writeTargets(t)) out.push(JSON.stringify(w));
+  return out;
+}
+function scriptWritesGuarded(text, ctx) {
+  const t = String(text);
+  const targets = scriptWriteTargets(t);
+  // a write call whose target could not be found at all (f.write on a handle opened elsewhere)
+  if (!targets.length) return true;
+  const literal = (e) => { const m = String(e).trim().match(/^(['"`])((?:(?!\1).)*)\1$/); return m ? m[2] : null; };
+  const assigned = (name) => { const m = t.match(new RegExp(`(?:^|[\\s;(])(?:const\\s+|let\\s+|var\\s+|my\\s+\\$?)?\\$?${name.replace(/[^A-Za-z0-9_]/g, '')}\\s*=\\s*(['"])([^'"]*)\\1`)); return m ? m[2] : null; };
+  const pathGuarded = (p) => {
+    if (/[*?$]/.test(p)) return true;
+    if (!p.includes('/')) return GUARDED_NAME.test(p) && new RegExp(`^(?:${GUARDED_NAME.source})$`).test(p);
+    return !!classifyFile(p, ctx);
+  };
+  return targets.some((e) => {
+    const lit = literal(e);
+    if (lit !== null) return pathGuarded(lit);
+    if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(String(e).trim())) { const v = assigned(String(e).trim()); if (v !== null) return pathGuarded(v); }
+    const lits = String(e).match(/(['"`])((?:(?!\1).)*)\1/g) || [];
+    if (!lits.length) return true;
+    return lits.some((l) => GUARDED_NAME.test(l.slice(1, -1)));
+  });
+}
 
 // The files a plain command may write: redirect targets, tee's files, and, for an in-place editor or
 // a copy, every word it names. A read of a guarded file (cat, grep, echo $TMPDIR, grep ... > out.txt)
@@ -363,18 +435,43 @@ const PLUGIN_CLI = /(?:^|[\s;&|(/])claude\s+plugins?\s+(?:disable|uninstall|remo
 const PLUGIN_OFF = [
   /(delivery@[A-Za-z0-9._-]+)['"]?\s*\]?\s*(?::|=(?!=))\s*(?:false|False|FALSE|0|\$false)\b/,
   /(?:\bdel\b|\bdelete\b|\.pop\s*\(|\bRemove\s*\(|\bunset\b)[^;\n]{0,80}?(delivery@[A-Za-z0-9._-]+)/,
+  /(disableAllHooks|allowManagedHooksOnly)['"]?\s*\]?\s*(?::|=(?!=))\s*(?:true|True|TRUE|1|\$true)\b/,
 ];
+// claude config set disableAllHooks true: the CLI writes the settings file itself
+const HOOKS_OFF_CLI = /(?:^|[\s;&|(/])claude\s+config\s+(?:set|add)\b[^;&|\n]*?\b(disableAllHooks|allowManagedHooksOnly)\b/;
 
 function pluginFindings(shell, scripts) {
   const cli = String(shell).match(PLUGIN_CLI);
   if (cli) return [{ type: 'plugin', name: cli[1], where: 'claude plugin' }];
+  const cfgOff = String(shell).match(HOOKS_OFF_CLI);
+  if (cfgOff) return [{ type: 'plugin', name: cfgOff[1], where: 'claude config' }];
   for (const text of [shell, ...scripts]) {
     for (const re of PLUGIN_OFF) {
       const m = joinFragments(text).match(re);
-      if (m && (writesSomething(shell) || WRITE_CALL.test(text))) return [{ type: 'plugin', name: m[1], where: 'enabledPlugins' }];
+      if (m && (writesSomething(shell) || WRITE_CALL.test(text))) return [{ type: 'plugin', name: m[1], where: /delivery@/.test(m[1]) ? 'enabledPlugins' : 'settings' }];
     }
   }
   return [];
+}
+
+// The user-level guard launcher (lib/user-guard.js): only its installer writes it. A command that
+// removes, moves, truncates or overwrites it, or a script that writes it, switches the guard off.
+const LAUNCHER_NAME = GUARD_HOOK_MARK.split(path.sep).join('/');
+function isLauncher(file, ctx) {
+  if (!file) return false;
+  const abs = path.resolve(ctx.cwd || '/', expandHome(String(file), ctx.home));
+  return abs === path.join(configDirOf(ctx.home, ctx.env), GUARD_HOOK_MARK) || abs === path.join(ctx.home, '.claude', GUARD_HOOK_MARK);
+}
+const REMOVER = /(?:^|[;&|(\n]\s*)(?:sudo\s+(?:-\S+\s+)*)?(?:rm|unlink|mv|truncate|shred|cp|ln|install|chmod|dd|Remove-Item|Move-Item|Copy-Item|Clear-Content)\b/;
+function launcherFindings(shell, scripts, ctx) {
+  const text = String(shell);
+  if (!text.includes('bin/setup-guard.js')) return [];
+  const words = wordsOf(text).filter((w) => /bin\/setup-guard\.js$/.test(w));
+  const named = words.some((w) => isLauncher(w, ctx) || /^(?:\$\{?CLAUDE_CONFIG_DIR\}?|~|\$\{?HOME\}?)?\/?(?:\.claude\/)?delivery\/bin\/setup-guard\.js$/.test(w));
+  if (!named) return [];
+  const writes = REMOVER.test(blankQuotes(text)) || writeTargets(text).some((w) => /bin\/setup-guard\.js$/.test(w))
+    || scripts.some((sc) => WRITE_CALL.test(sc) || /\bremove\s*\(/.test(sc));
+  return writes ? [{ type: 'plugin', name: 'the user-level setup guard launcher', where: words[0] }] : [];
 }
 
 const REBOOT = /(?:^|[;&|(]|\n)\s*(?:sudo\s+(?:-\S+\s+)*)?(?:reboot|poweroff|halt|shutdown)(?=\s|$|;|&|\|)|\bsystemctl\s+(?:--\S+\s+)*(?:reboot|poweroff|halt|kexec|soft-reboot)\b|(?:^|[;&|(]|\n)\s*(?:sudo\s+)?init\s+[06]\b|\bRestart-Computer\b|\bStop-Computer\b/;
@@ -413,7 +510,7 @@ function shellFindings(command, ctx, readFile = () => { throw new Error('no read
       const name = namesTemp(text);
       const isScript = text === rawShell || fedToInterpreter;
       if (!name) continue;
-      if (isScript && namesGuarded(text, ctx) && WRITE_CALL.test(text)) { findings.push({ type: 'temp', name, where: 'a script that writes a settings or environment file' }); break; }
+      if (isScript && namesGuarded(text, ctx) && WRITE_CALL.test(text) && scriptWritesGuarded(text, ctx)) { findings.push({ type: 'temp', name, where: 'a script that writes a settings or environment file' }); break; }
       if (!isScript && setsTemp(text)) {
         const target = writeTargets(rawShell).map((w) => classifyFile(w, ctx)).find(Boolean);
         if (target) { findings.push({ type: 'temp', name, where: target.file }); break; }
@@ -422,6 +519,7 @@ function shellFindings(command, ctx, readFile = () => { throw new Error('no read
   }
   findings.push(...copyFindings(shell, ctx, readFile));
   findings.push(...pluginFindings(rawShell, bodies));
+  findings.push(...launcherFindings(rawShell, scripts, ctx));
   // Other variables made persistent the same way: searched in the records.
   if (!findings.length) {
     const m = shell.match(/\b(?:systemctl\b[^;&|]*\bset-environment|launchctl\s+(?:setenv|putenv)|setx(?:\s+\/m)?)\s+((?:[A-Za-z_][A-Za-z0-9_]*(?:=\S*)?\s*)+)/i);
@@ -521,6 +619,7 @@ function decideSetup({ toolName, toolInput, cwd, home, env = {}, readFile, exist
   const read = readFile || (() => { throw new Error('no reader'); });
   const findings = [];
   if (FILE_TOOLS.includes(toolName)) {
+    if (isLauncher(input.file_path || input.notebook_path, ctx)) return { reason: pluginReason('the user-level setup guard launcher', path.resolve(ctx.cwd, expandHome(input.file_path || input.notebook_path, ctx.home)), usableRecords(records)) };
     const cls = classifyFile(input.file_path || input.notebook_path, ctx);
     if (!cls) return null;
     let before = '';
@@ -615,5 +714,5 @@ function obviousTempSettings(toolInput, ctx) {
 module.exports = {
   decideSetup, classifyFile, afterText, settingsChange, envFileChange, assignments, shellFindings, setsTemp, namesTemp,
   recordsNaming, projectRoots, loadRecords, obviousTempSettings, tempReason, pluginReason, usableRecords, configDirOf,
-  hasGuardHook, isTempVar, TEMP_VARS, RC_FILES, GUARD_HOOK_MARK, PLUGIN_KEY,
+  hasGuardHook, isTempVar, isLauncher, scriptWriteTargets, TEMP_VARS, RC_FILES, GUARD_HOOK_MARK, PLUGIN_KEY, HOOKS_OFF_KEYS,
 };

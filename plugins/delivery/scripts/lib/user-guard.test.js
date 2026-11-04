@@ -91,6 +91,15 @@ test('with no plugin installed the launcher falls back to its own check, so remo
   assert.match(JSON.parse(r.stdout).hookSpecificOutput.permissionDecisionReason, /delivery plugin is not installed/);
   assert.match(runLauncher(cfg, JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'claude plugin uninstall delivery' } }), home).stdout, /deny/);
   assert.equal(runLauncher(cfg, JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }), home).stdout, '');
+  // the switches that turn every hook off, by Write and by a command, and removing the launcher itself
+  const pre = (tool_name, tool_input) => runLauncher(cfg, JSON.stringify({ hook_event_name: 'PreToolUse', tool_name, tool_input }), home).stdout;
+  for (const key of ['disableAllHooks', 'allowManagedHooksOnly']) {
+    assert.match(pre('Write', { file_path: path.join(home, '.claude', 'settings.json'), content: JSON.stringify({ [key]: true }) }), /deny/, `${key} Write`);
+    assert.match(pre('Bash', { command: `jq '.${key} = true' s.json > t && mv t s.json` }), /deny/, `${key} jq`);
+    assert.match(pre('Bash', { command: `claude config set ${key} true` }), /deny/, `${key} claude config`);
+  }
+  assert.match(pre('Bash', { command: `rm ${UG.launcherPath(cfg)}` }), /deny/, 'rm of the launcher');
+  assert.equal(pre('Write', { file_path: path.join(home, 'notes.md'), content: 'disableAllHooks is off' }), '', 'a mention is not a switch');
   assert.equal(runLauncher(cfg, JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: 'settings.json', content: 'TMPDIR' } }), home).stdout, '');
 });
 

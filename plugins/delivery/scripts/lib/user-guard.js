@@ -40,7 +40,7 @@ function fallback(raw) {
   const t = JSON.stringify(j.tool_input || {});
   const temp = /(?<![A-Za-z0-9_])(?:TMPDIR|CLAUDE_CODE_TMPDIR|TMP|TEMP|TEMPDIR)(?![A-Za-z0-9_])/.test(t);
   const file = /settings(?:\.local)?\.json|\.bashrc|\.bash_profile|\.bash_aliases|\.profile|\.zshrc|\.zshenv|\.zprofile|\.envrc|environment\.d|\.config\/fish|systemd\/user|\/etc\/environment|CLAUDE_ENV_FILE|set-environment|launchctl|setx|SetEnvironmentVariable|--settings/.test(t);
-  const off = /claude\s+plugins?\s+(?:disable|uninstall|remove|rm)\b[^;&|]*\bdelivery\b|delivery@[\w.-]+\\?["']?\s*\]?\s*(?::|=)\s*false/.test(t);
+  const off = /claude\s+plugins?\s+(?:disable|uninstall|remove|rm)\b[^;&|]*\bdelivery\b|delivery@[\w.-]+\\?["']?\s*\]?\s*(?::|=)\s*false|\b(?:disableAllHooks|allowManagedHooksOnly)\b\\?["']?\s*\]?\s*(?::|=|\s)\s*true|delivery\/bin\/setup-guard\.js/.test(t);
   if ((temp && file) || off) {
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Refused: this changes where temp files go or switches off the setup guard, and the delivery plugin is not installed to judge it. If you believe it must change, message the Chief of Staff; do not ask the operator.' } }));
   }
