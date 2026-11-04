@@ -53,14 +53,17 @@ const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); }
 const same = (a, b) => !!a && !!b && path.resolve(a) === path.resolve(b);
 const entriesOf = (j, key) => { const v = j && (j.plugins || j)[key]; return (Array.isArray(v) ? v : v ? [v] : []).filter((e) => e && typeof e === 'object'); };
 
-// The installs of plugin `name` this machine records now, as targets ('user', or '<scope> <path>' as
-// selfUpdate names them), or null when the record cannot be read. A refusal for an install that is gone
-// (the Delivery Manager had it removed) no longer stands (watchdog.js refusedInstalls, rv-167)
+// The installs of plugin `name` this machine records now, as { target, version }: the target as
+// selfUpdate names it ('user', or '<scope> <path>'), the version the record says it is at (null when it
+// names none). null when the record cannot be read. A refusal for an install that is gone (the Delivery
+// Manager had it removed), or that is at the refused version or newer (updated outside the job, by
+// `claude plugin update`, so the job writes no installed row for it), no longer stands (watchdog.js
+// refusedInstalls, rv-167)
 function installTargets(name, configDir) {
   const j = readJson(path.join(pluginsDir(configDir), 'installed_plugins.json'));
   if (!j || typeof j !== 'object') return null;
   const keys = Object.keys(j.plugins || j).filter((k) => k.split('@')[0] === name);
-  return keys.flatMap((k) => entriesOf(j, k)).map((e) => (!e.scope || e.scope === 'user' ? 'user' : `${e.scope} ${e.projectPath}`));
+  return keys.flatMap((k) => entriesOf(j, k)).map((e) => ({ target: !e.scope || e.scope === 'user' ? 'user' : `${e.scope} ${e.projectPath}`, version: typeof e.version === 'string' && e.version ? e.version : null }));
 }
 
 // The job's own install: the entry whose installPath is the running plugin root, else the one the job

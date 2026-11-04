@@ -582,9 +582,12 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
 // The self-update refusals still standing (bqj.2), from the job's log: per install the latest refusal,
 // unless a later installed row of its version or a newer one names that install. An installed row from
 // before installs were named covers the user install only, so an older row never hides a refusal.
-// `installs` are the targets installed now (self-update.js installTargets): a refusal for one no longer
-// there ends, since removing the stale install is one way to settle it and no install will name it
-// again (rv-167). Unknown (null) keeps every refusal: an unreadable record never reads as healthy.
+// `installs` are the installs recorded now (self-update.js installTargets: { target, version }, or a
+// bare target): a refusal for one no longer there ends, since removing the stale install is one way to
+// settle it and no install will name it again; so does one whose install is recorded at the refused
+// version or newer, since an update outside the job (`claude plugin update`) writes no installed row
+// (rv-167). Unknown (null) keeps every refusal: an unreadable record never reads as healthy, and an
+// install with no recorded version keeps its refusal.
 function refusedInstalls(rows, { installs = null } = {}) {
   const { compare } = require('./plugin-version.js');
   const ups = rows.filter((r) => r && r.type === 'self-update');
@@ -595,7 +598,9 @@ function refusedInstalls(rows, { installs = null } = {}) {
     if (!was || ms(r.at) >= ms(was.at)) latest.set(target, { target, version: r.version, from: r.from || null, why: r.why || null, at: r.at, pr: r.pr || null });
   }
   const covers = (i, target) => (Array.isArray(i.targets) ? i.targets.includes(target) : target === 'user' && (!i.scope || i.scope === 'user'));
-  return [...latest.values()].filter((r) => !Array.isArray(installs) || installs.includes(r.target)).filter((r) => !ups.some((i) => i.result === 'installed' && ms(i.at) > ms(r.at) && covers(i, r.target) && compare(String(i.version), String(r.version)) >= 0));
+  const now = Array.isArray(installs) ? installs.map((i) => (typeof i === 'string' ? { target: i, version: null } : i)).filter((i) => i && i.target) : null;
+  const caughtUp = (r) => now.some((i) => i.target === r.target && i.version && [0, 1].includes(compare(String(i.version), String(r.version))));
+  return [...latest.values()].filter((r) => !now || (now.some((i) => i.target === r.target) && !caughtUp(r))).filter((r) => !ups.some((i) => i.result === 'installed' && ms(i.at) > ms(r.at) && covers(i, r.target) && compare(String(i.version), String(r.version)) >= 0));
 }
 
 // The pull requests the review records show waiting on the Delivery Manager, read without gh: { pr,

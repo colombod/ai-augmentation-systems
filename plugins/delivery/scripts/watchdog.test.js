@@ -1827,9 +1827,9 @@ test('rv-167: a refusal for an install no longer recorded ends; one still record
   const both = { 'delivery@ai-augmentation-systems': [{ scope: 'user', version: '0.43.30' }, { scope: 'local', projectPath: '/team/builder', version: '0.43.30' }], 'attractor@ai-augmentation-systems': [{ scope: 'local', projectPath: '/team/other' }] };
   const userOnly = { 'delivery@ai-augmentation-systems': [{ scope: 'user', version: '0.43.30' }] };
   write(both);
-  assert.deepEqual(SU.installTargets('delivery', cfg), ['user', ROLE]);
+  assert.deepEqual(SU.installTargets('delivery', cfg), [{ target: 'user', version: '0.43.30' }, { target: ROLE, version: '0.43.30' }]);
   write(userOnly);
-  assert.deepEqual(SU.installTargets('delivery', cfg), ['user']);
+  assert.deepEqual(SU.installTargets('delivery', cfg), [{ target: 'user', version: '0.43.30' }]);
   // through watchdog.js check: still installed, the stall is reported; removed, it is not
   const h = harness({ beads: {} });
   session(h, DM, { seen: iso(Date.now() - 60e3) });
@@ -1841,6 +1841,38 @@ test('rv-167: a refusal for an install no longer recorded ends; one still record
     write(both);
     assert.match(check(), /^Install refused: plugin 0\.43\.44 for the install \/team\/builder /m);
     write(userOnly);
+    assert.doesNotMatch(check(), /Install refused/);
+  } finally { if (was === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = was; }
+});
+
+// rv-167 (second review): an operator or a role can bring an install up with `claude plugin update`,
+// outside the job, which then writes no installed row for it: the record's own version must end the
+// refusal, or the stall and the briefing line stay for good
+test('rv-167: a refusal ends when its install is recorded at the refused version or newer; an older or unknown version keeps it', () => {
+  const now = Date.parse('2026-11-04T12:00:00Z');
+  const ROLE = 'local /team/builder';
+  const rows = [refusedRow(iso(now - 2 * H), 'user'), refusedRow(iso(now - 2 * H), ROLE)];
+  const left = (installs) => WD.refusedInstalls(rows, { installs }).map((r) => r.target);
+  const at = (v) => [{ target: 'user', version: '0.43.30' }, { target: ROLE, version: v }];
+  assert.deepEqual(left(at('0.43.44')), ['user'], 'updated outside the job to the refused version: its refusal ends');
+  assert.deepEqual(left(at('0.43.50')), ['user'], 'updated past it: ends too');
+  assert.deepEqual(left(at('0.43.43')), ['user', ROLE], 'still below the refused version: stands');
+  assert.deepEqual(left(at(null)), ['user', ROLE], 'no recorded version: stands');
+  assert.deepEqual(left(at('not-a-version')), ['user', ROLE], 'an unreadable version: stands');
+  // end to end: the record as installTargets reads it, through watchdog.js check
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'rv167b-'));
+  fs.mkdirSync(path.join(cfg, 'plugins'));
+  const write = (v) => fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'delivery@ai-augmentation-systems': [{ scope: 'user', version: '0.43.44' }, { scope: 'local', projectPath: '/team/builder', version: v }] } }));
+  const h = harness({ beads: {} });
+  session(h, DM, { seen: iso(Date.now() - 60e3) });
+  WD.log(h.root, refusedRow(iso(Date.now() - 2 * H), ROLE));
+  const was = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    const check = () => h.bash(DM, `${h.script('watchdog.js')} check`).out;
+    write('0.43.30');
+    assert.match(check(), /^Install refused: plugin 0\.43\.44 for the install \/team\/builder /m);
+    write('0.43.44');
     assert.doesNotMatch(check(), /Install refused/);
   } finally { if (was === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = was; }
 });
