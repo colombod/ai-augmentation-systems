@@ -347,3 +347,34 @@ test('Copilot #86: the merge time is GitHub\'s, so a deploy before the merge was
   assert.equal(h.db().issues[BEAD].metadata.merged_at, MERGED_AT);
   assert.deepEqual(require('./lib/handoff.js').pending(h.root).map((r) => r.step), ['check'], 'only the reality check the deploy handed over; no deploy wake');
 });
+
+// r7w: two pull requests carried the same plugin version; the second merged after the first had put
+// that version on main, so main held new code at an installed version and nothing installed it. The
+// gate reads plugin.json at the head and on the base branch and refuses a version that does not rise.
+test('r7w: the merge gate refuses a plugin change whose version is not above main\'s, naming both and the send-back', () => {
+  const M = 'plugins/app/.claude-plugin/plugin.json';
+  const v = (x) => JSON.stringify({ name: 'delivery', version: x });
+  const files = [{ path: 'plugins/app/scripts/a.js', additions: 10, deletions: 2 }, { path: M, additions: 1, deletions: 1 }];
+  const bead = storyBead({ metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } });
+  for (const restOnly of [false, true]) {
+    const h = harness({ beads: { [BEAD]: bead }, prs: { 478: pr478({ files, baseRefName: 'main' }) }, restOnly, contents: { main: { [M]: v('0.43.54') }, [H1]: { [M]: v('0.43.54') }, [H2]: { [M]: v('0.43.55') } } });
+    h.review = (inst, args) => h.bash(inst, `${h.script('review.js')} ${args}`);
+    h.gate = (inst, args) => h.bash(inst, `${h.script('merge-gate.js')} ${args}`);
+    h.review('delivery-lead', 'request 478 --reviewer builder-2');
+    h.review('builder-2', `record 478 --head ${H1} --result pass --summary 'criteria hold; tests 41 passed'`);
+    const g = h.gate('delivery-lead', 'check 478');
+    assert.equal(g.code, 1, `${restOnly}: ${g.out}`);
+    assert.match(g.out, /refused: PR 478: plugins\/app is at 0\.43\.54 at the head, not above 0\.43\.54 on main, so the merged change would never install\./);
+    assert.match(g.out, /review\.js send-back 478 --reason 'version 0\.43\.54 is not above main 0\.43\.54'/);
+    const m = h.bash('delivery-lead', `gh pr merge 478 -R example/example --match-head-commit ${H1} --squash`);
+    assert.match(m.deny || '', /merge of PR 478 refused: PR 478: plugins\/app is at 0\.43\.54/);
+    assert.notEqual(h.gh()[478].state, 'MERGED');
+    // the builder takes the next free version and pushes: a new review on the new head passes the gate
+    h.setPr(478, (p) => { p.headRefOid = H2; });
+    h.review('delivery-lead', 'send-back 478 --reason changes --note version');
+    h.review('delivery-lead', 'request 478 --reviewer builder-2');
+    h.review('builder-2', `record 478 --head ${H2} --result pass --summary 'criteria hold; tests 41 passed'`);
+    const ok = h.gate('delivery-lead', 'check 478');
+    assert.equal(ok.code, 0, `${restOnly}: ${ok.out}`);
+  }
+});

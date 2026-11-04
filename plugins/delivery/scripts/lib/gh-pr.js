@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const FIELDS = 'number,state,mergedAt,mergeCommit,headRefOid,headRefName,mergeable,statusCheckRollup,additions,deletions,files,body,title';
+const FIELDS = 'number,state,mergedAt,mergeCommit,headRefOid,headRefName,baseRefName,mergeable,statusCheckRollup,additions,deletions,files,body,title';
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 // owner/name from a GitHub remote URL (git@github.com:o/r.git, https://github.com/o/r, a PR URL)
@@ -107,6 +107,7 @@ function viewPrRest(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
     mergeCommit: pull.merge_commit_sha && (pull.merged || pull.merged_at) ? { oid: pull.merge_commit_sha } : null,
     headRefOid: sha || null,
     headRefName: (pull.head && pull.head.ref) || null,
+    baseRefName: (pull.base && pull.base.ref) || null,
     mergeable: MERGEABLE(pull.mergeable),
     statusCheckRollup: rollup,
     additions: pull.additions,
@@ -118,4 +119,16 @@ function viewPrRest(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
   };
 }
 
-module.exports = { viewPr, viewPrRest, repoOf, productRepoOf, sameRepo, UNKNOWN, REPO };
+// One file of the repository at a ref, through the contents endpoint: { text } | { missing: true } |
+// { unavailable }. A 404 is an answer (the file is not there), any other failure is not.
+function readFileAt(repo, file, ref, { cwd, timeoutMs = 6000 } = {}) {
+  if (!repo) return { unavailable: 'the product repository is not known' };
+  const enc = String(file).split('/').map(encodeURIComponent).join('/');
+  const r = ghApi(`repos/${repo}/contents/${enc}?ref=${encodeURIComponent(ref)}`, { cwd, timeoutMs });
+  if (r.unavailable) return /\b404\b|Not Found/.test(r.unavailable) ? { missing: true } : r;
+  const j = r.json || {};
+  if (j.encoding !== 'base64' || typeof j.content !== 'string') return { unavailable: `contents of ${file} came back in no readable form` };
+  return { text: Buffer.from(j.content, 'base64').toString('utf8') };
+}
+
+module.exports = { readFileAt, viewPr, viewPrRest, repoOf, productRepoOf, sameRepo, UNKNOWN, REPO };
