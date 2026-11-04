@@ -151,11 +151,11 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord, 
   return { root, now, team, stalls: (watch && watch.stalls) || [], stalls_paused: (watch && watch.paused) || null, stalls_unreadable: unreadableStalls || null, restarts, installHold, stories, fixes: fixBeads.filter((b) => !known.has(b.id)), titles, spikes: openSpikes, checks, andon, unknowns, queue, questions, budget: ctx.budget, areas: W.areas(stories), next, known, prs, storyOf: ctx.storyOf, checked };
 }
 
-// the last self-update hold past its bound whose version has not installed since
+// the last self-update hold past its bound with no install since: a newer version installed ends it too
 function installHoldOf(root) {
   const su = require('./watchdog.js').logRows(root).filter((r) => r && r.type === 'self-update');
   const over = su.filter((r) => r.result === 'held-overdue').pop();
-  return over && !su.some((r) => r.result === 'installed' && r.version === over.version && Date.parse(r.at) >= Date.parse(over.at)) ? over : null;
+  return over && !su.some((r) => ['installed', 'ungated-install'].includes(r.result) && Date.parse(r.at) >= Date.parse(over.at)) ? over : null;
 }
 
 // ---- the plan for the day ----

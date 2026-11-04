@@ -217,13 +217,16 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
     // a running wake holds every install that passed: its session loaded the old plugin
     const held = checks.find((c) => c.d.action === 'held');
     if (held) {
-      // the hold's start is logged once per version, so its age is read from the log, not this process
-      const since = rows.find((r) => r.result === 'held');
+      // the hold's start is logged once per hold, so its age is read from the log, not this process; an
+      // install tried since (failed or not) ended the hold before, so each hold is timed from its own start
+      const tried = rows.findLastIndex((r) => ['failed', 'installed', 'ungated-install'].includes(r.result));
+      const current = rows.slice(tried + 1);
+      const since = current.find((r) => r.result === 'held');
       const base = { type: 'self-update', from: held.e.version, version: main.version, sha: main.sha, pr: held.d.pr, at };
       if (!since && !dryRun) WD.log(root, { ...base, result: 'held', why: held.d.why });
       const age = since ? Date.parse(at) - Date.parse(since.at) : 0;
       const overdue = age > HOLD_BOUND_MS;
-      if (overdue && !dryRun && !rows.some((r) => r.result === 'held-overdue')) WD.log(root, { ...base, result: 'held-overdue', since: since.at, why: held.d.why });
+      if (overdue && !dryRun && !current.some((r) => r.result === 'held-overdue')) WD.log(root, { ...base, result: 'held-overdue', since: since.at, why: held.d.why });
       const line = overdue
         ? `self-update: ${label} held since ${since.at} (over ${Math.floor(age / 3600e3)} h, past the ${HOLD_BOUND_MS / 3600e3} h bound): ${held.d.why}, a wake that outlived its timeout; tried again next cycle.`
         : `self-update: ${label} held: ${held.d.why}; tried again next cycle.`;

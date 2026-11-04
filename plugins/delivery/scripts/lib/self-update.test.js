@@ -527,6 +527,8 @@ test('with wakes overlapping without end, the install lands within the bound and
   }
   assert.match(out, /self-update: installed plugin delivery 0\.43\.31/);
   assert.ok(at - CYCLE <= SU.HOLD_BOUND_MS, `installed ${(at - CYCLE) / 60e3} min after the hold began`);
+  // the bound holds only because a held install starts no new wake (0ba.6): with one started each
+  // cycle, the overlap would never end and the install would wait without limit
   assert.deepEqual(woke, [], 'no wake started while the install was held');
   assert.equal(rows(f).filter((r) => r.result === 'held-overdue').length, 0);
 });
@@ -556,5 +558,36 @@ test('a hold past the bound is logged once and the owner briefing reports it unt
   assert.doesNotMatch(DP.brief({ ...base, installHold: null }).join('\n'), /waited since/);
   // once the wake ends the install lands and the briefing has nothing to say
   assert.match(jobRun(h, f, exec, { now: later(SU.HOLD_BOUND_MS + 31 * 60e3), alive: () => false }).out, /self-update: installed/);
+  assert.equal(DP.installHoldOf(h.root), null);
+});
+
+test('a hold after a failed install is timed from its own start, not from the hold before it', () => {
+  const h = harness({});
+  const f = fixture({ root: h.root });
+  merged(f, 140, true);
+  // an earlier hold, then an install that failed: that hold is over
+  const base = { type: 'self-update', from: '0.43.30', version: '0.43.31', sha: f.mainSha, pr: 140 };
+  WD.log(h.root, { ...base, at: T0, result: 'held', why: 'a run is in progress (wake pid 4242)' });
+  WD.log(h.root, { ...base, at: later(60e3), result: 'failed', detail: 'update failed' });
+  WD.log(h.root, { type: 'wake', at: T0, instance: 'builder-1', pid: 4242 });
+  const exec = claude(f);
+  const alive = (pid) => pid === 4242;
+  const start = SU.HOLD_BOUND_MS + 2 * 60e3;
+  assert.doesNotMatch(jobRun(h, f, exec, { now: later(start), alive }).out, /past the/, 'a new hold is not overdue from the old start');
+  assert.deepEqual(rows(f).filter((r) => r.result === 'held').map((r) => r.at), [T0, later(start)]);
+  assert.equal(rows(f).filter((r) => r.result === 'held-overdue').length, 0);
+  assert.match(jobRun(h, f, exec, { now: later(start + SU.HOLD_BOUND_MS + 60e3), alive }).out, new RegExp(`held since ${later(start).replace(/[.]/g, '\\.')} .*past the 2\\.5 h bound`));
+  assert.deepEqual(rows(f).filter((r) => r.result === 'held-overdue').map((r) => r.since), [later(start)]);
+});
+
+test('a hold past the bound is no longer reported once a newer version installs', () => {
+  const DP = require('./daily-plan.js');
+  const h = harness({});
+  WD.log(h.root, { type: 'self-update', version: '0.43.31', at: T0, result: 'held-overdue', since: T0 });
+  assert.equal(DP.installHoldOf(h.root).version, '0.43.31');
+  // an install from before the overdue row does not end it
+  WD.log(h.root, { type: 'self-update', version: '0.43.30', at: later(-60e3), result: 'installed' });
+  assert.equal(DP.installHoldOf(h.root).version, '0.43.31');
+  WD.log(h.root, { type: 'self-update', version: '0.43.32', at: later(60e3), result: 'installed' });
   assert.equal(DP.installHoldOf(h.root), null);
 });
