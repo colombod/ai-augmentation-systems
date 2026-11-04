@@ -28,7 +28,8 @@ test('8wz.6: verify-run and reality-check pass from an installed-layout copy of 
   const env = { ...process.env };
   // run as a top-level test process, not as a child reporting to this one
   delete env.NODE_TEST_CONTEXT;
-  const r = spawnSync(process.execPath, ['--test', ...FILES.map((f) => path.join(dest, 'scripts', f))], { cwd: base, env, encoding: 'utf8', timeout: 300e3, maxBuffer: 64 * 1024 * 1024 });
+  // the reporter is named: node 22 writes TAP to a pipe, node 24 (CI) writes spec, and the checks below read TAP
+  const r = spawnSync(process.execPath, ['--test', '--test-reporter=tap', ...FILES.map((f) => path.join(dest, 'scripts', f))], { cwd: base, env, encoding: 'utf8', timeout: 300e3, maxBuffer: 64 * 1024 * 1024 });
   const failed = (r.stdout.match(/^not ok \d+ - .*$/gm) || []).join('\n');
   assert.equal(r.status, 0, `failed from the installed layout:\n${failed || String(r.stderr).slice(-2000)}`);
   assert.match(r.stdout, /^# fail 0$/m);
