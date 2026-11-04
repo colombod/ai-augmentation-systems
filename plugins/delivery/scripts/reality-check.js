@@ -253,7 +253,7 @@ function dispatch(who, store, bead, inp, sha) {
     lines.push(`${child}: created for the Reality Checker (label ${LABEL})`);
   } else lines.push(`${child}: already dispatched`);
   let hasChecker = false;
-  try { hasChecker = (who.team.roles || []).some((r) => r.id === 'reality-checker' && !r.retired); } catch (err) { hasChecker = false; }
+  try { hasChecker = (who.team.roles || []).some((r) => r.id === 'reality-checker' && !require('./lib/manifest.js').roleRetired(r)); } catch (err) { hasChecker = false; }
   lines.push(hasChecker ? 'message the Reality Checker with the bead id' : 'warning: the team has no Reality Checker: add it to team.json and prepare it; the check is never the owner\'s');
   return lines;
 }

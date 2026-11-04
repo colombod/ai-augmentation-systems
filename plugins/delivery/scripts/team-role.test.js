@@ -45,7 +45,7 @@ test('team-role add: refuses an unknown role, a duplicate, a bad model and an un
   assert.match(addRole(p.root, 'tech-writer', { model: 'gpt' }).out, /--model must be one of/);
   const bad = addRole(p.root, 'tech-writer', { host: 'nowhere' });
   assert.equal(bad.code, 1);
-  assert.match(bad.out, /invalid/);
+  assert.match(bad.out, /host: unknown host "nowhere"; valid hosts: pc, buildbox, cloud/);
   assert.equal(text(), before);
 });
 
@@ -116,7 +116,7 @@ test('team-role add: an unknown role fails with exit 1 and says why on stderr', 
   assert.equal(r.status, 1);
   assert.match(r.stderr, /astronaut is not a role this plugin ships/);
   assert.equal(r.stdout, '');
-  const u = spawnSync(process.execPath, [CLI, 'remove', 'builder'], { encoding: 'utf8' });
+  const u = spawnSync(process.execPath, [CLI, 'delete', 'builder'], { encoding: 'utf8' });
   assert.equal(u.status, 2);
   assert.match(u.stderr, /usage: team-role.js add/);
 });
@@ -140,8 +140,8 @@ test('team-role add builder --count: sets the builders\' count within the cap an
   assert.match(r.stdout, /set builder count to 3 \(instances: builder, builder-2, builder-3\); committed/);
   const b = p.team().roles.filter((x) => x.id === 'builder');
   assert.equal(b.length, 1, 'still one builder entry');
-  assert.equal(b[0].count, 3);
-  assert.deepEqual(b[0].instances, ['builder', 'builder-2', 'builder-3'], 'the live builder keeps its name');
+  assert.equal(b[0].count, undefined, 'the command writes instances, never a count');
+  assert.deepEqual(b[0].instances, [{ id: 'builder' }, { id: 'builder-2' }, { id: 'builder-3' }], 'the live builder keeps its name');
   assert.equal(b[0].host, 'pc', 'the entry keeps its host');
   assert.deepEqual(lastCommit(p), ['team: 3 builders (team-role.js)', TEAM_GIT]);
   assert.equal(p.git('status', '--porcelain').trim(), '');
@@ -169,7 +169,7 @@ test('team-role add builder --count: refuses above builders_cap, naming it, and 
   assert.match(other.stderr, /--count is for the builders only/);
   const plain = cli(p.root, 'add', 'builder');
   assert.equal(plain.status, 1);
-  assert.match(plain.stderr, /builder is already on the team; more builders: team-role.js add builder --count <n>/);
+  assert.match(plain.stderr, /id: builder is already on the team; more builders: team-role.js add builder --instance builder-<n>, or --count <n>/);
   assert.equal(text(), before);
   assert.equal(p.git('rev-parse', 'HEAD'), head);
 });
@@ -207,7 +207,7 @@ test('team-role set-cap builders: raises builders_cap on a verifying owner decis
   // the raised cap is what add builder --count now reads
   const more = cli(p.root, 'add', 'builder', '--count', '5');
   assert.equal(more.status, 0, more.stderr);
-  assert.equal(p.team().roles.find((x) => x.id === 'builder').count, 5);
+  assert.equal(p.team().roles.find((x) => x.id === 'builder').instances.length, 5);
 });
 
 test('team-role set-cap builders: refuses without a verifying owner decision, and any cap the team would break', () => {
@@ -304,13 +304,17 @@ test('team-role add builder --count: keeps every live instance name, old count-o
   assert.deepEqual(names(p), ['builder', 'builder-2'], 'builder is not renamed builder-1');
   assert.equal(cli(p.root, 'add', 'builder', '--count', '3').status, 0);
   assert.deepEqual(names(p), ['builder', 'builder-2', 'builder-3']);
+  // 8l1.2.3: a lower count retires the newest; nothing leaves team.json, and a new one takes a fresh name
+  const live = (t) => expandInstances(t).filter((i) => i.role.id === 'builder' && !i.role.retired).map((i) => i.instance);
   const down = cli(p.root, 'add', 'builder', '--count', '2');
   assert.equal(down.status, 0, down.stderr);
-  assert.match(down.stdout, /removed builder-3: reassign its claims/);
-  assert.deepEqual(names(p), ['builder', 'builder-2']);
+  assert.match(down.stdout, /retired builder-3: reassign its claims/);
+  assert.deepEqual(names(p), ['builder', 'builder-2', 'builder-3'], 'builder-3 stays in team.json');
+  assert.deepEqual(live(p.team()), ['builder', 'builder-2']);
   assert.equal(cli(p.root, 'add', 'builder', '--count', '1').status, 0);
-  assert.deepEqual(names(p), ['builder']);
-  assert.equal(p.team().roles.find((r) => r.id === 'builder').instances, undefined, 'one builder is the plain entry again');
+  assert.deepEqual(live(p.team()), ['builder']);
+  assert.equal(cli(p.root, 'add', 'builder', '--count', '2').status, 0);
+  assert.deepEqual(live(p.team()), ['builder', 'builder-4'], 'a retired name is not given out again');
   // a team that already runs builder-1..n keeps those names and grows past them
   const q = project();
   rewrite(q, (t) => ({ ...t, budget: { ...(t.budget || {}), builders_cap: 4 }, roles: t.roles.map((r) => (r.id === 'builder' ? (({ instances, ...rest }) => ({ ...rest, count: 2 }))(r) : r)) }));
@@ -345,4 +349,153 @@ test('team-role add builder --count 2: a live builder stays live under its name,
   assert.deepEqual(after.drift.extra, [], 'the live session is not orphaned as an extra instance');
   assert.deepEqual(after.drift.missing.filter((x) => x.startsWith('builder')), ['builder-2'], 'only the new builder is to start');
   assert.equal(after.rows.some((x) => x.instance === 'builder-1'), false);
+});
+
+const sha = (file) => require('crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const teamFile = (p) => path.join(p.root, '.delivery', 'team', 'team.json');
+const hostsFile = (p) => path.join(p.root, '.delivery', 'team', 'hosts.json');
+// the fixture's builder as one plain entry, the way a live team starts
+const oneBuilder = (p, cap = 3) => rewrite(p, (t) => ({ ...t, budget: { ...(t.budget || {}), builders_cap: cap }, roles: t.roles.map((r) => (r.id === 'builder' ? (({ count, instances, ...rest }) => rest)(r) : r)) }));
+
+test('team-runtime-08 c1: add a second builder, change its model, remove it; team-status lists each step and builder keeps its name', () => {
+  const { teamStatus, renderStatus } = require('./team-status.js');
+  const p = project();
+  oneBuilder(p);
+  const now = new Date().toISOString();
+  const row = (inst) => teamStatus(p.root, { now }).rows.find((r) => r.instance === inst);
+  const add = cli(p.root, 'add', 'builder', '--instance', 'builder-2');
+  assert.equal(add.status, 0, add.stderr);
+  assert.match(add.stdout, /^team-role: added builder-2 to builder; committed/);
+  assert.match(add.stdout, /\| builder \| builder \| pc \| sonnet \| active \|\n\| builder-2 \| builder \| pc \| sonnet \| active \|/, 'the instances follow the change');
+  assert.deepEqual(p.team().roles.find((r) => r.id === 'builder').instances, [{ id: 'builder' }, { id: 'builder-2' }]);
+  assert.equal(row('builder').role, 'builder', 'the first builder keeps its name, so its directory and team/builder branch');
+  assert.equal(row('builder-2').state, 'missing', 'builder-2 is the one to start');
+  const change = cli(p.root, 'change', 'builder-2', '--model', 'opus');
+  assert.equal(change.status, 0, change.stderr);
+  assert.match(change.stdout, /^team-role: changed builder-2 model sonnet -> opus; committed/);
+  assert.equal(row('builder-2').model, 'opus');
+  assert.equal(row('builder').model, 'sonnet', 'only builder-2 changes');
+  const remove = cli(p.root, 'remove', 'builder-2');
+  assert.equal(remove.status, 0, remove.stderr);
+  assert.match(remove.stdout, /^team-role: retired builder-2 \(it stays in team.json/);
+  assert.match(remove.stdout, /\| builder-2 \| builder \| pc \| opus \| retired \|/);
+  assert.equal(row('builder-2').state, 'retired');
+  assert.notEqual(row('builder').state, 'retired', 'its sibling stays on the team');
+  assert.match(renderStatus(teamStatus(p.root, { now })), /\| builder-2 \| builder \| pc \| opus \|\s*\| retired \|/);
+  assert.deepEqual(p.team().roles.find((r) => r.id === 'builder').instances, [{ id: 'builder' }, { id: 'builder-2', model: 'opus', retired: true }], 'still in team.json');
+  assert.deepEqual(lastCommit(p), ['team: change builder-2 (team-role.js)', TEAM_GIT]);
+  // its id is not given out again, and it comes back with change --retired false
+  const again = cli(p.root, 'add', 'builder', '--instance', 'builder-2');
+  assert.equal(again.status, 1);
+  assert.match(again.stderr, /^team-role: id: builder-2 is already on the team \(retired; bring it back: team-role.js change builder-2 --retired false\)/);
+  const back = cli(p.root, 'change', 'builder-2', '--retired', 'false');
+  assert.equal(back.status, 0, back.stderr);
+  assert.equal(row('builder-2').state, 'missing');
+});
+
+test('team-runtime-08 c1: a retired builder is refused by prepare-role while its sibling is not; a count entry keeps its names when changed', () => {
+  const { expandInstances, validateManifest, loadManifest } = require('./lib/manifest.js');
+  const { prepareRole } = require('./prepare-role.js');
+  const p = project();
+  // the fixture's builder has count 2: builder-1 and builder-2
+  const r = cli(p.root, 'remove', 'builder-2');
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(p.team().roles.find((x) => x.id === 'builder').instances, [{ id: 'builder-1' }, { id: 'builder-2', retired: true }], 'count became instances, names kept');
+  assert.equal(p.team().roles.find((x) => x.id === 'builder').count, undefined);
+  const { team, hosts } = loadManifest(p.root);
+  assert.deepEqual(validateManifest(team, hosts), []);
+  const state = Object.fromEntries(expandInstances(team).filter((i) => i.role.id === 'builder').map((i) => [i.instance, Boolean(i.role.retired)]));
+  assert.deepEqual(state, { 'builder-1': false, 'builder-2': true });
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-role-dirs-'));
+  const prep = (instance) => { try { prepareRole({ projectRoot: p.root, instance, teamDir, pluginRoot: path.join(__dirname, '..') }); return 'prepared'; } catch (err) { return err.message; } };
+  assert.match(prep('builder-2'), /instance "builder-2" is retired/);
+  assert.doesNotMatch(prep('builder-1'), /retired/);
+  // builders_cap counts only the live ones
+  assert.deepEqual(validateManifest({ ...team, budget: { ...team.budget, builders_cap: 1 } }, hosts), []);
+  const live = { ...team, roles: team.roles.map((x) => (x.id === 'builder' ? { ...x, instances: [{ id: 'builder-1' }, { id: 'builder-2' }] } : x)), budget: { ...team.budget, builders_cap: 1 } };
+  assert.ok(validateManifest(live, hosts).some((x) => /2 builders exceed builders_cap 1/.test(x)));
+});
+
+test('team-runtime-08 c2: each refusal exits 1 on a line starting with its field (host, brief, id, model, builders_cap), team.json byte for byte as before', () => {
+  const p = project();
+  fs.mkdirSync(path.join(p.root, '.delivery', 'team', 'briefs'), { recursive: true });
+  fs.writeFileSync(path.join(p.root, '.delivery', 'team', 'briefs', 'data-eng.md'), '# Data engineer\n');
+  const before = sha(teamFile(p));
+  const refused = (args, re) => {
+    const r = cli(p.root, ...args);
+    assert.equal(r.status, 1, args.join(' '));
+    assert.match(r.stderr, re, args.join(' '));
+    assert.equal(sha(teamFile(p)), before, `team.json bytes unchanged after ${args.join(' ')}`);
+  };
+  refused(['add', 'tech-writer', '--host', 'nowhere'], /^team-role: host: unknown host "nowhere"; valid hosts: pc, buildbox, cloud/);
+  refused(['change', 'builder-1', '--host', 'nowhere'], /^team-role: host: unknown host "nowhere"; valid hosts: pc, buildbox, cloud/);
+  refused(['add', 'ml-eng', '--brief', 'project/ml-eng'], /^team-role: brief: unknown brief "project\/ml-eng" \(no brief file for it\); valid briefs: .*delivery\/builder.*project\/data-eng/);
+  refused(['change', 'builder-1', '--brief', 'delivery/astronaut'], /^team-role: brief: unknown brief "delivery\/astronaut"/);
+  refused(['add', 'builder', '--instance', 'builder-2'], /^team-role: id: builder-2 is already on the team/);
+  refused(['add', 'chief-of-staff'], /^team-role: id: chief-of-staff is already on the team/);
+  refused(['add', 'data-eng', '--brief', 'project/data-eng'], /^team-role: model: missing: project\/data-eng declares no default_model/);
+  refused(['change', 'builder-1', '--model'], /^team-role: model: missing/);
+  rewrite(p, (t) => ({ ...t, budget: { ...t.budget, builders_cap: 2 } }));
+  const capped = sha(teamFile(p));
+  const over = cli(p.root, 'add', 'builder', '--instance', 'builder-3');
+  assert.equal(over.status, 1);
+  assert.match(over.stderr, /^team-role: builders_cap: 3 builders is above builders_cap 2/);
+  assert.equal(sha(teamFile(p)), capped);
+  assert.equal(p.git('log', '-1', '--format=%s').trim(), 'fixture', 'nothing refused was committed');
+  // the same project brief with a model is accepted
+  const ok = cli(p.root, 'add', 'data-eng', '--brief', 'project/data-eng', '--model', 'sonnet');
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.deepEqual(p.team().roles.find((x) => x.id === 'data-eng'), { id: 'data-eng', brief: 'project/data-eng', host: 'pc', model: 'sonnet' });
+});
+
+test('team-runtime-08 c4: hosts are added, changed and removed with the command; a taken name, an absent field and a host a role still names are refused, hosts.json unchanged', () => {
+  const p = project();
+  const add = cli(p.root, 'host', 'add', 'lab', '--kind', 'ssh', '--bd', 'native', '--headless', 'true', '--desktop-apps', 'false');
+  assert.equal(add.status, 0, add.stderr);
+  assert.match(add.stdout, /^team-role: added host lab \(kind ssh, bd native, headless true, desktop_apps false\); committed/);
+  const hosts = () => JSON.parse(fs.readFileSync(hostsFile(p), 'utf8')).hosts;
+  assert.deepEqual(hosts().lab, { kind: 'ssh', bd: 'native', headless: true, desktop_apps: false });
+  assert.deepEqual(lastCommit(p), ['team: add host lab (team-role.js)', path.posix.join('.delivery', 'team', 'hosts.json')]);
+  const change = cli(p.root, 'host', 'change', 'lab', '--headless', 'false');
+  assert.equal(change.status, 0, change.stderr);
+  assert.match(change.stdout, /changed host lab headless true -> false/);
+  assert.equal(hosts().lab.headless, false);
+  const before = sha(hostsFile(p));
+  const refused = (args, re) => {
+    const r = cli(p.root, 'host', ...args);
+    assert.equal(r.status, 1, args.join(' '));
+    assert.match(r.stderr, re, args.join(' '));
+    assert.equal(sha(hostsFile(p)), before, `hosts.json bytes unchanged after ${args.join(' ')}`);
+  };
+  refused(['add', 'lab', '--kind', 'pc', '--bd', 'native', '--headless', 'false', '--desktop-apps', 'true'], /^team-role: host: lab is already in hosts.json/);
+  refused(['add', 'lab2', '--kind', 'ssh'], /^team-role: bd: missing: host add needs --bd native\|wrapper\|remote, --headless true\|false, --desktop-apps true\|false/);
+  refused(['add', 'lab2', '--kind', 'moon', '--bd', 'native', '--headless', 'true', '--desktop-apps', 'false'], /^team-role: kind: --kind must be one of pc, ssh, cloud, not "moon"/);
+  refused(['change', 'nowhere', '--headless', 'true'], /^team-role: host: unknown host "nowhere"; valid hosts: pc, buildbox, cloud, lab/);
+  refused(['remove', 'buildbox'], /^team-role: host: buildbox is still named by role progress-observer/);
+  // a retired role still names its host: removing that host would break team.json at the next load
+  rewrite(p, (t) => ({ ...t, roles: [...t.roles, { id: 'old-writer', brief: 'delivery/tech-writer', host: 'cloud', model: 'sonnet', retired: true }] }));
+  const r = cli(p.root, 'host', 'remove', 'cloud');
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^team-role: host: cloud is still named by role old-writer \(retired\)/);
+  assert.ok(hosts().cloud);
+  const gone = cli(p.root, 'host', 'remove', 'lab');
+  assert.equal(gone.status, 0, gone.stderr);
+  assert.equal(hosts().lab, undefined, 'an unused host is deleted');
+  assert.match(gone.stdout, /hosts: pc, buildbox, cloud$/m);
+});
+
+test('team-role: two changes at once both land, one after the other, and team.json stays valid JSON', async () => {
+  const p = project();
+  const run = (args) => new Promise((resolve) => {
+    const c = require('child_process').spawn(process.execPath, [CLI, ...args, '--project', p.root]);
+    let err = '';
+    c.stderr.on('data', (d) => { err += d; });
+    c.on('close', (code) => resolve({ code, err }));
+  });
+  const [a, b] = await Promise.all([run(['add', 'tech-writer']), run(['add', 'reality-checker'])]);
+  assert.equal(a.code, 0, a.err);
+  assert.equal(b.code, 0, b.err);
+  const ids = p.team().roles.map((r) => r.id);
+  assert.ok(ids.includes('tech-writer') && ids.includes('reality-checker'), 'neither change is lost');
+  assert.equal(p.git('status', '--porcelain').trim(), '');
 });

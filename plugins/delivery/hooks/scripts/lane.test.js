@@ -1709,3 +1709,68 @@ test('an any-lane shell write into the host temporary directory is refused; scra
     if (prev === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = prev;
   }
 });
+
+// The team manifest changes only through team-role.js, for every role, the `any` lanes included
+// (dec-chief-of-staff-000177): a hand edit of team.json once stopped every session at its next load.
+const TEAM_DIR_REL = path.posix.join('.delivery', 'team');
+test('team-runtime-08 c3: Write, Edit and shell writes to team.json and hosts.json are refused for staffing, builder and spike-researcher, naming team-role.js', () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-guard-'));
+  fs.mkdirSync(path.join(projectRoot, TEAM_DIR_REL), { recursive: true });
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-guard-role-'));
+  fs.mkdirSync(path.join(rd, 'project', TEAM_DIR_REL), { recursive: true });
+  const lane = (policy, toolName, toolInput, cwd = projectRoot) => decideLane({ toolName, toolInput, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd, projectRoot });
+  const why = /the team manifest \(\.delivery\/team\/team\.json and hosts\.json\) changes only through `team-role\.js`/;
+  for (const id of ['staffing', 'builder', 'spike-researcher']) {
+    const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${id}` });
+    for (const name of ['team.json', 'hosts.json']) {
+      const file = path.join(projectRoot, TEAM_DIR_REL, name);
+      const rel = path.posix.join(TEAM_DIR_REL, name);
+      const tries = [
+        ['Write', { file_path: file, content: '{}' }],
+        ['Edit', { file_path: file, old_string: 'a', new_string: 'b' }],
+        ['Write', { file_path: path.join(rd, 'project', rel), content: '{}' }],
+        ['Bash', { command: `echo {} > ${rel}` }],
+        ['Bash', { command: `echo {} >> ${file}` }],
+        ['Bash', { command: `cp scratch/x.json ${rel}` }],
+        ['Bash', { command: `echo {} | tee ${rel}` }],
+        ['Bash', { command: `mv scratch/x.json ${rel}` }],
+        ['Bash', { command: `sed -i s/a/b/ ${rel}` }],
+        ['Bash', { command: `cd ${TEAM_DIR_REL} && sed -i s/a/b/ ${name}` }],
+      ];
+      for (const [tool, input] of tries) {
+        const d = lane(policy, tool, input);
+        assert.equal(d.allow, false, `${id} ${tool} ${JSON.stringify(input)}`);
+        assert.match(d.reason, why, `${id} ${tool} ${JSON.stringify(input)}`);
+      }
+      // still allowed: reading it, and putting a broken one back from git in the role's own clone
+      const clone = path.join(rd, 'project');
+      assert.equal(lane(policy, 'Bash', { command: `git checkout -- ${rel}` }, clone).allow, true, `${id} git checkout ${name}`);
+      assert.equal(lane(policy, 'Bash', { command: `git restore -- ${rel}` }, clone).allow, true, `${id} git restore ${name}`);
+      assert.equal(lane(policy, 'Bash', { command: `cat ${rel}` }).allow, true, `${id} cat ${name}`);
+    }
+  }
+  // the rest of the lanes are as they were: Staffing writes its briefs and runs the command
+  const staffing = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/staffing' });
+  assert.equal(lane(staffing, 'Write', { file_path: path.join(rd, 'project', TEAM_DIR_REL, 'briefs', 'data.md'), content: 'x' }).allow, true);
+  const cmd = path.join(PLUGIN_ROOT, 'scripts', 'team-role.js');
+  for (const args of ['change builder-2 --model opus', 'remove builder-2', 'host add lab --kind ssh --bd native --headless true --desktop-apps false', 'host remove lab']) {
+    assert.equal(lane(staffing, 'Bash', { command: `node ${cmd} ${args}` }).allow, true, args);
+  }
+  const builder = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/builder' });
+  assert.equal(lane(builder, 'Write', { file_path: path.join(rd, 'product', 'src', 'a.js'), content: 'x' }).allow, true);
+});
+
+// the same through the real hook processes (role-lane.js), in role sessions of a scratch team
+test('team-runtime-08 c3: through the lane hook, a hand edit of the manifest is refused and a git restore of it is not', () => {
+  const { harness } = require('../../scripts/testing/role-harness.js');
+  const h = harness({ clone: true });
+  for (const inst of ['staffing', 'builder-1', 'spike-researcher']) {
+    const files = [h.root, path.join(h.roleDir(inst), 'project')].flatMap((r) => ['team.json', 'hosts.json'].map((n) => path.join(r, TEAM_DIR_REL, n)));
+    for (const file of files) {
+      assert.match(h.tool(inst, 'Write', { file_path: file, content: '{}' }).deny || '', /team-role\.js/, `${inst} Write ${file}`);
+      assert.match(h.tool(inst, 'Edit', { file_path: file, old_string: 'pc', new_string: 'px' }).deny || '', /team-role\.js/, `${inst} Edit ${file}`);
+      assert.match(h.bash(inst, `echo {} > ${file}`, { run: false }).deny || '', /team-role\.js/, `${inst} redirect ${file}`);
+    }
+    assert.equal(h.bash(inst, `git -C project checkout -- ${path.posix.join(TEAM_DIR_REL, 'team.json')}`, { run: false }).deny, null, `${inst} restore`);
+  }
+});

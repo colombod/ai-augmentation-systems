@@ -9,7 +9,7 @@ const { listValue } = require('../../scripts/lib/plan-docs.js');
 // The second line of a lane refusal (R-46: two lines, ending with the way out).
 const SANCTIONED = {
   'chief-of-staff': 'Route it to the right role: `bd create --parent <id> --title "<the ask>"`, then message that session.',
-  staffing: 'Only team.json and briefs are yours: message the Delivery Manager for anything else.',
+  staffing: 'The team manifest is yours through `team-role.js`, briefs and experts by hand: message the Delivery Manager for anything else.',
   'product-manager': 'Product documents are yours; for building or plan structure, message the Delivery Manager.',
   'delivery-lead': 'Building goes to a builder bead: `bd create --parent <story> --title "<the change>"`.',
   'progress-observer': 'Record what you found in the bead (`bd update <id> --append-notes "<finding>"`); fixes go to a builder bead.',
@@ -793,9 +793,9 @@ function goalFiles({ projectRoot, roleDir }) {
 }
 const isGoalFile = (p, files) => files.includes(realish(p).toLowerCase());
 
-function goalShellWrite(command, { cwd, files = [] } = {}) {
+function goalShellWrite(command, { cwd, files = [], mention = GOAL_MENTION, gitWrites = GOAL_GIT_WRITES } = {}) {
   const text = String(command == null ? '' : command);
-  const mentioned = GOAL_MENTION.test(text);
+  const mentioned = mention.test(text);
   // the directory each segment runs in: a `cd <dir>` moves the ones after it (Copilot 658)
   let base = cwd || process.cwd();
   return splitCommand(text).some((seg) => {
@@ -808,12 +808,29 @@ function goalShellWrite(command, { cwd, files = [] } = {}) {
     // in-place editors write every file argument: sed -i, perl -i
     if ((first === 'sed' && writesFiles(['sed', ...words.slice(1)])) || (first === 'perl' && words.some((x) => /^-[a-zA-Z]*i/.test(x)))) targets.push(...words.slice(1).filter((x) => !x.startsWith('-')));
     if (files.length && targets.some((x) => isGoalFile(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`, files))) return true;
-    if (!mentioned || !GOAL_MENTION.test(seg)) return false;
+    if (!mentioned || !mention.test(seg)) return false;
     if (hasRedirect(seg) || OPERATOR_WRITE_WORDS.includes(first)) return true;
     if (first === 'sed' && writesFiles(['sed', ...words.slice(1)])) return true;
-    if (first === 'git') return GOAL_GIT_WRITES.includes(splitGlobals(['git', ...words.slice(1)]).rest[0]);
+    if (first === 'git') return gitWrites.includes(splitGlobals(['git', ...words.slice(1)]).rest[0]);
     return false;
   });
+}
+
+// The team manifest (.delivery/team/team.json and hosts.json): every session loads it, and one bad field
+// stops them all, so it changes only through team-role.js, which checks a change before it writes
+// (dec-chief-of-staff-000177). Protected for every role, Staffing and the `any` lanes included, File tools
+// and shell alike. Git is left alone: `git checkout -- .delivery/team/team.json` puts a broken manifest back
+// (role-lane.js isManifestRestore), and team-role.js commits it from its own node process.
+const MANIFEST_RELS = [path.join('.delivery', 'team', 'team.json'), path.join('.delivery', 'team', 'hosts.json')];
+const MANIFEST_REASON = 'the team manifest (.delivery/team/team.json and hosts.json) changes only through `team-role.js` (add, change, remove, host add|change|remove), which checks the change first; read it with `team-status.js`';
+const MANIFEST_MENTION = /\.delivery\/+(?:\.\/+)*team\/+(?:\.\/+)*(?:team|hosts)\.json\b/i;
+function manifestFiles({ projectRoot, roleDir }) {
+  const out = [];
+  for (const rel of MANIFEST_RELS) {
+    if (projectRoot && path.isAbsolute(String(projectRoot))) out.push(realish(path.join(String(projectRoot), rel)).toLowerCase());
+    if (roleDir) out.push(realish(path.join(String(roleDir), 'project', rel)).toLowerCase());
+  }
+  return out;
 }
 
 // The spend readings (R-34): .delivery/usage/ holds the transcript cache the budget trusts by size and
@@ -1576,6 +1593,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       const p = path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`; // not normalised: realish applies `..` physically
       if (underOperator(p, opDirs)) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
       if (isGoalFile(p, goalFiles({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
+      if (isGoalFile(p, manifestFiles({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${MANIFEST_REASON}.` };
       if (underOperator(p, usageDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
       if (registerHit({ projectRoot, roleDir })(p)) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
       if (underOperator(p, prReviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
@@ -1603,6 +1621,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   if (command !== null) {
     if (operatorShellWrite(command, { cwd, dirs: opDirs })) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
     if (goalShellWrite(command, { cwd, files: goalFiles({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
+    if (goalShellWrite(command, { cwd, files: manifestFiles({ projectRoot, roleDir }), mention: MANIFEST_MENTION, gitWrites: [] })) return { allow: false, reason: `Role ${pol.roleId}: ${MANIFEST_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: usageDirs({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
     if (usageShellWrite(command, { cwd, mention: REGISTER_MENTION, hit: registerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: prReviewDirs({ projectRoot, roleDir }), mention: PR_REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };

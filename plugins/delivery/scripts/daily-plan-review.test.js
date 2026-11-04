@@ -116,7 +116,7 @@ test('I3: the temporary-directory exemption never covers the project or a role d
   const proj = (inst, ...p) => path.join(h.roleDir(inst), 'project', ...p);
   assert.match(h.tool(COS, 'Write', { file_path: proj(COS, '.delivery', 'stories', 'x.md'), content: 'x' }).deny, /^Role chief-of-staff does not edit /);
   assert.match(h.tool(COS, 'Edit', { file_path: path.join(h.root, 'AGENTS.md'), old_string: 'a', new_string: 'b' }).deny, /^Role chief-of-staff does not edit /);
-  assert.match(h.tool('builder-1', 'Write', { file_path: path.join(h.root, '.delivery', 'team', 'team.json'), content: '{}' }).deny, /^Role builder does not edit /);
+  assert.match(h.tool('builder-1', 'Write', { file_path: path.join(h.root, '.delivery', 'team', 'team.json'), content: '{}' }).deny, /^Role builder: the team manifest .* changes only through `team-role\.js`/);
   assert.match(h.tool(COS, 'Write', { file_path: path.join(h.roleDir('builder-1'), 'product', 'src', 'x.js'), content: 'x' }).deny, /^Role chief-of-staff does not edit /);
   assert.equal(h.tool('delivery-lead', 'Write', { file_path: path.join(require('os').tmpdir(), 'scratch-note.txt'), content: 'y' }).deny, null);
 });
