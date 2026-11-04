@@ -3,7 +3,9 @@
 // BD_FAKE_STORE. Implements only what materialise and the hooks use. Never used in production.
 const fs = require('fs');
 
-const storePath = process.env.BD_FAKE_STORE;
+// BD_FAKE_STORE=beads-dir: the store is fake-store.json in BEADS_DIR, so each project reads its own
+// (a command that reads several projects sets BEADS_DIR per project)
+const storePath = process.env.BD_FAKE_STORE === 'beads-dir' && process.env.BEADS_DIR ? require('path').join(process.env.BEADS_DIR, 'fake-store.json') : process.env.BD_FAKE_STORE;
 if (!storePath) { process.stderr.write('fake-bd: BD_FAKE_STORE not set\n'); process.exit(2); }
 
 function load() {

@@ -84,6 +84,14 @@ if (group === 'run' && cmd === 'list') {
   process.stdout.write(`${JSON.stringify(runs)}\n`);
   process.exit(0);
 }
+if (group === 'pr' && cmd === 'list') {
+  // `pr list -R <repo> --state open --json ...`: the store's pull requests not merged or closed, by number
+  if (!repo) fail('failed to run git: fatal: not a git repository (or any of the parent directories): .git');
+  if (String(repo).toLowerCase() !== String(s.repo).toLowerCase()) fail(`GraphQL: Could not resolve to a Repository with the name '${repo}'.`);
+  const open = Object.entries(s.prs || {}).map(([n, pr]) => ({ number: Number(n), state: 'OPEN', ...pr })).filter((pr) => pr.state === 'OPEN').sort((a, b) => a.number - b.number);
+  fs.writeSync(1, `${JSON.stringify(open)}\n`);
+  process.exit(0);
+}
 if (group !== 'pr' || !['view', 'merge'].includes(cmd)) fail(`fake gh: unsupported ${args.join(' ')}`);
 const url = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(target || '');
 if (url) repo = url[1];
