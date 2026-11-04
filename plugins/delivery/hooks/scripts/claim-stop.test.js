@@ -423,3 +423,26 @@ test('rule 0: a builder that asks the operator to relay is blocked by its Stop h
   const fine = runStop('builder-1', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'Done. Pushed the record as 27b7541; the chief-of-staff session reads it from the project repo.' });
   assert.equal(fine.stdout, '', fine.stdout);
 });
+
+test('hb1.2 through the Stop hook: a ledger-held wake is not the owner\'s words; the same opening typed by the owner is', () => {
+  const { wakePrompt, WAKE_OPENING } = require('../../scripts/lib/watchdog.js');
+  const W = require('../../scripts/lib/warnings.js');
+  // a role session's prompt: no origin, promptSource sdk; this one asks for ids, which lets an owner
+  // message name them
+  const rs = (text, n) => ({ type: 'user', promptId: 'p' + n, uuid: 'u' + n, timestamp: `2099-10-13T10:00:${String(n).padStart(2, '0')}.000Z`,
+    sessionId: SID, promptSource: 'sdk', message: { role: 'user', content: text } });
+  const msg = 'Merged: ex-12 and ex-13 are live. Ask for details on any item';
+  const jargon = (root) => W.list(root).filter((w) => w.kind === 'jargon' && /ex-12/.test(w.detail)).length;
+  {
+    const { projectRoot, roleDir } = preparedRole('chief-of-staff');
+    const sent = wakePrompt(['Which bead ids are open?'], 'did');
+    require('../../scripts/lib/wake-ledger.js').record(projectRoot, { at: '2099-10-13T10:00:00.000Z', instance: 'chief-of-staff', session: SID, wakeId: 'w1', prompts: [sent] });
+    runStop('chief-of-staff', { cwd: roleDir, transcript_path: transcript([rs(sent, 1)]), last_assistant_message: msg });
+    assert.equal(jargon(projectRoot), 1, 'the wake asked for ids, the owner did not: ids in the owner message warn');
+  }
+  {
+    const { projectRoot, roleDir } = preparedRole('chief-of-staff');
+    runStop('chief-of-staff', { cwd: roleDir, transcript_path: transcript([rs(`${WAKE_OPENING}: Which bead ids are open?`, 1)]), last_assistant_message: msg });
+    assert.equal(jargon(projectRoot), 0, 'typed by the owner, with no ledger row: the owner asked for ids');
+  }
+});
