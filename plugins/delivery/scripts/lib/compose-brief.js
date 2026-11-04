@@ -108,7 +108,7 @@ const DELEGATE_SECTION = '# Delegate mode\n\nYou coordinate; you do not build. D
 // team has role X; `<!-- unless-role: X -->...<!-- end-unless -->` only when it does not. The markers
 // themselves never reach the session.
 function applyRoleConditions(body, team) {
-  const has = new Set(((team && team.roles) || []).filter((r) => r && !r.retired).map((r) => r.id));
+  const has = new Set(((team && team.roles) || []).filter((r) => r && !require('./manifest.js').roleRetired(r)).map((r) => r.id));
   return String(body)
     .replace(/^<!-- if-role: ([a-z0-9-]+) -->\n([\s\S]*?)^<!-- end-if -->\n?/gm, (m, id, inner) => (has.has(id) ? inner : ''))
     .replace(/^<!-- unless-role: ([a-z0-9-]+) -->\n([\s\S]*?)^<!-- end-unless -->\n?/gm, (m, id, inner) => (has.has(id) ? '' : inner));

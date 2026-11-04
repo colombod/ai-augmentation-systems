@@ -45,7 +45,7 @@ test('team-role add: refuses an unknown role, a duplicate, a bad model and an un
   assert.match(addRole(p.root, 'tech-writer', { model: 'gpt' }).out, /--model must be one of/);
   const bad = addRole(p.root, 'tech-writer', { host: 'nowhere' });
   assert.equal(bad.code, 1);
-  assert.match(bad.out, /invalid/);
+  assert.match(bad.out, /host: unknown host "nowhere"; valid hosts: pc, buildbox, cloud/);
   assert.equal(text(), before);
 });
 
@@ -116,7 +116,7 @@ test('team-role add: an unknown role fails with exit 1 and says why on stderr', 
   assert.equal(r.status, 1);
   assert.match(r.stderr, /astronaut is not a role this plugin ships/);
   assert.equal(r.stdout, '');
-  const u = spawnSync(process.execPath, [CLI, 'remove', 'builder'], { encoding: 'utf8' });
+  const u = spawnSync(process.execPath, [CLI, 'delete', 'builder'], { encoding: 'utf8' });
   assert.equal(u.status, 2);
   assert.match(u.stderr, /usage: team-role.js add/);
 });
@@ -140,8 +140,8 @@ test('team-role add builder --count: sets the builders\' count within the cap an
   assert.match(r.stdout, /set builder count to 3 \(instances: builder, builder-2, builder-3\); committed/);
   const b = p.team().roles.filter((x) => x.id === 'builder');
   assert.equal(b.length, 1, 'still one builder entry');
-  assert.equal(b[0].count, 3);
-  assert.deepEqual(b[0].instances, ['builder', 'builder-2', 'builder-3'], 'the live builder keeps its name');
+  assert.equal(b[0].count, undefined, 'the command writes instances, never a count');
+  assert.deepEqual(b[0].instances, [{ id: 'builder' }, { id: 'builder-2' }, { id: 'builder-3' }], 'the live builder keeps its name');
   assert.equal(b[0].host, 'pc', 'the entry keeps its host');
   assert.deepEqual(lastCommit(p), ['team: 3 builders (team-role.js)', TEAM_GIT]);
   assert.equal(p.git('status', '--porcelain').trim(), '');
@@ -169,7 +169,7 @@ test('team-role add builder --count: refuses above builders_cap, naming it, and 
   assert.match(other.stderr, /--count is for the builders only/);
   const plain = cli(p.root, 'add', 'builder');
   assert.equal(plain.status, 1);
-  assert.match(plain.stderr, /builder is already on the team; more builders: team-role.js add builder --count <n>/);
+  assert.match(plain.stderr, /id: builder is already on the team; more builders: team-role.js add builder --instance builder-<n>, or --count <n>/);
   assert.equal(text(), before);
   assert.equal(p.git('rev-parse', 'HEAD'), head);
 });
@@ -207,7 +207,7 @@ test('team-role set-cap builders: raises builders_cap on a verifying owner decis
   // the raised cap is what add builder --count now reads
   const more = cli(p.root, 'add', 'builder', '--count', '5');
   assert.equal(more.status, 0, more.stderr);
-  assert.equal(p.team().roles.find((x) => x.id === 'builder').count, 5);
+  assert.equal(p.team().roles.find((x) => x.id === 'builder').instances.length, 5);
 });
 
 test('team-role set-cap builders: refuses without a verifying owner decision, and any cap the team would break', () => {
@@ -304,13 +304,17 @@ test('team-role add builder --count: keeps every live instance name, old count-o
   assert.deepEqual(names(p), ['builder', 'builder-2'], 'builder is not renamed builder-1');
   assert.equal(cli(p.root, 'add', 'builder', '--count', '3').status, 0);
   assert.deepEqual(names(p), ['builder', 'builder-2', 'builder-3']);
+  // 8l1.2.3: a lower count retires the newest; nothing leaves team.json, and a new one takes a fresh name
+  const live = (t) => expandInstances(t).filter((i) => i.role.id === 'builder' && !i.role.retired).map((i) => i.instance);
   const down = cli(p.root, 'add', 'builder', '--count', '2');
   assert.equal(down.status, 0, down.stderr);
-  assert.match(down.stdout, /removed builder-3: reassign its claims/);
-  assert.deepEqual(names(p), ['builder', 'builder-2']);
+  assert.match(down.stdout, /retired builder-3: reassign its claims/);
+  assert.deepEqual(names(p), ['builder', 'builder-2', 'builder-3'], 'builder-3 stays in team.json');
+  assert.deepEqual(live(p.team()), ['builder', 'builder-2']);
   assert.equal(cli(p.root, 'add', 'builder', '--count', '1').status, 0);
-  assert.deepEqual(names(p), ['builder']);
-  assert.equal(p.team().roles.find((r) => r.id === 'builder').instances, undefined, 'one builder is the plain entry again');
+  assert.deepEqual(live(p.team()), ['builder']);
+  assert.equal(cli(p.root, 'add', 'builder', '--count', '2').status, 0);
+  assert.deepEqual(live(p.team()), ['builder', 'builder-4'], 'a retired name is not given out again');
   // a team that already runs builder-1..n keeps those names and grows past them
   const q = project();
   rewrite(q, (t) => ({ ...t, budget: { ...(t.budget || {}), builders_cap: 4 }, roles: t.roles.map((r) => (r.id === 'builder' ? (({ instances, ...rest }) => ({ ...rest, count: 2 }))(r) : r)) }));
