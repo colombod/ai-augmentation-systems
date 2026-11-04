@@ -1133,8 +1133,19 @@ function unsealedTestText(text) {
     const after = flat.slice(m.index + m[0].length);
     if (/(?:^|[\s(`=;&|])--test(?![\w-])/.test(after) || /\.test\.[cm]?[jt]s(?![\w])/.test(after)) { tests = true; break; }
   }
-  return tests && !SEALED_FORM.test(String(text || '').trim());
+  const whole = String(text || '').trim();
+  return tests && !SEALED_FORM.test(whole) && !STORED_TEXT_FORM.test(whole);
 }
+// reality-check.js refine stores its --command and --match as text and runs neither, so a step whose
+// stored command runs the test runner (a check proven by named tests) is data, not a test run. The
+// fail-safe drops quotes, so it read that text as a run and refused the Delivery Manager's refine. The
+// exemption is again an exact form: node, reality-check.js (by a plain or single-quoted path, or as the
+// first argument of the project's launcher), refine, then words made only of plain characters and
+// single-quoted literals. Inside single quotes the outer shell expands nothing, and no operator,
+// redirect, substitution or double quote can appear outside them, so nothing in the command runs a test.
+const PLAIN_WORD = "[A-Za-z0-9_./:@+,=%-]";
+const RC_SCRIPT = `(?:(?:${PLAIN_WORD}*\\/)?scripts\\/reality-check\\.js|'(?:[^']*\\/)?scripts\\/reality-check\\.js'|(?:${PLAIN_WORD}*\\/)?delivery\\.js reality-check\\.js)`;
+const STORED_TEXT_FORM = new RegExp(`^(?:node|${PLAIN_WORD}*\\/node|'[^']*\\/node') ${RC_SCRIPT} refine(?: (?:${PLAIN_WORD}+|'[^']*')+)*$`);
 // The exemption is an exact form, not a parse (Copilot on #117: a parse let `run-tests.js > >(node
 // --test)` through): optionally DELIVERY_TEST_FILES=<plain chars>, node, the runner by a plain path,
 // optionally --clock <iso>, and optionally -- '<command>' in single quotes, inside which the outer shell
