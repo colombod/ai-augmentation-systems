@@ -595,12 +595,21 @@ function refusedInstalls(rows, { installs = null } = {}) {
   for (const r of ups.filter((x) => x.result === 'refused')) {
     const target = r.target || 'user';
     const was = latest.get(target);
-    if (!was || ms(r.at) >= ms(was.at)) latest.set(target, { target, version: r.version, from: r.from || null, why: r.why || null, at: r.at, pr: r.pr || null });
+    if (!was || ms(r.at) >= ms(was.at)) latest.set(target, { target, key: r.key || null, version: r.version, from: r.from || null, why: r.why || null, at: r.at, pr: r.pr || null });
   }
   const covers = (i, target) => (Array.isArray(i.targets) ? i.targets.includes(target) : target === 'user' && (!i.scope || i.scope === 'user'));
   const now = Array.isArray(installs) ? installs.map((i) => (typeof i === 'string' ? { target: i, version: null } : i)).filter((i) => i && i.target) : null;
-  const caughtUp = (r) => now.some((i) => i.target === r.target && i.version && [0, 1].includes(compare(String(i.version), String(r.version))));
-  return [...latest.values()].filter((r) => !now || (now.some((i) => i.target === r.target) && !caughtUp(r))).filter((r) => !ups.some((i) => i.result === 'installed' && ms(i.at) > ms(r.at) && covers(i, r.target) && compare(String(i.version), String(r.version)) >= 0));
+  // a refusal names the plugin key it was refused for ('<name>@<marketplace>'), and only that key's
+  // installs settle it: a same-named plugin from another marketplace at a higher version never does. A
+  // refusal from before keys were recorded is matched only while the record holds one key for the name;
+  // with two it cannot be told apart and stands (rv-167-delivery-lead-14)
+  const keys = now ? new Set(now.map((i) => i.key || null)) : new Set();
+  const ambiguous = (r) => !r.key && keys.size > 1;
+  const mine = (r) => now.filter((i) => i.target === r.target && (!r.key || i.key === r.key));
+  // compare is null for a version it cannot read: only 0 or 1 (at or past the refused one) settles it
+  const atOrPast = (a, b) => [0, 1].includes(compare(String(a), String(b)));
+  const caughtUp = (r) => mine(r).some((i) => i.version && atOrPast(i.version, r.version));
+  return [...latest.values()].filter((r) => !now || ambiguous(r) || (mine(r).length > 0 && !caughtUp(r))).filter((r) => !ups.some((i) => i.result === 'installed' && ms(i.at) > ms(r.at) && covers(i, r.target) && atOrPast(i.version, r.version)));
 }
 
 // The pull requests the review records show waiting on the Delivery Manager, read without gh: { pr,

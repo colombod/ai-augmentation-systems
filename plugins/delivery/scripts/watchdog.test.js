@@ -1827,9 +1827,9 @@ test('rv-167: a refusal for an install no longer recorded ends; one still record
   const both = { 'delivery@ai-augmentation-systems': [{ scope: 'user', version: '0.43.30' }, { scope: 'local', projectPath: '/team/builder', version: '0.43.30' }], 'attractor@ai-augmentation-systems': [{ scope: 'local', projectPath: '/team/other' }] };
   const userOnly = { 'delivery@ai-augmentation-systems': [{ scope: 'user', version: '0.43.30' }] };
   write(both);
-  assert.deepEqual(SU.installTargets('delivery', cfg), [{ target: 'user', version: '0.43.30' }, { target: ROLE, version: '0.43.30' }]);
+  assert.deepEqual(SU.installTargets('delivery', cfg), [{ key: 'delivery@ai-augmentation-systems', target: 'user', version: '0.43.30' }, { key: 'delivery@ai-augmentation-systems', target: ROLE, version: '0.43.30' }]);
   write(userOnly);
-  assert.deepEqual(SU.installTargets('delivery', cfg), [{ target: 'user', version: '0.43.30' }]);
+  assert.deepEqual(SU.installTargets('delivery', cfg), [{ key: 'delivery@ai-augmentation-systems', target: 'user', version: '0.43.30' }]);
   // through watchdog.js check: still installed, the stall is reported; removed, it is not
   const h = harness({ beads: {} });
   session(h, DM, { seen: iso(Date.now() - 60e3) });
@@ -1875,6 +1875,34 @@ test('rv-167: a refusal ends when its install is recorded at the refused version
     write('0.43.44');
     assert.doesNotMatch(check(), /Install refused/);
   } finally { if (was === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = was; }
+});
+
+// rv-167 (third review): a same-named plugin from another marketplace must not settle a refusal, and an
+// installed row whose version cannot be read must not cover one (compare returns null for it)
+test('rv-167: only the refused key\'s own install settles a refusal; another marketplace\'s or an unreadable installed version never does', () => {
+  const now = Date.parse('2026-11-04T12:00:00Z');
+  const ROLE = 'local /team/builder';
+  const OWN = 'delivery@ai-augmentation-systems';
+  const FORK = 'delivery@someone-else';
+  const rows = [refusedRow(iso(now - 2 * H), ROLE, '0.43.44', { key: OWN })];
+  const left = (installs, rs = rows) => WD.refusedInstalls(rs, { installs }).map((r) => r.target);
+  assert.deepEqual(left([{ key: OWN, target: ROLE, version: '0.43.30' }, { key: FORK, target: ROLE, version: '9.0.0' }]), [ROLE], 'another marketplace at a higher version: stands');
+  assert.deepEqual(left([{ key: FORK, target: ROLE, version: '9.0.0' }]), [], 'its own install gone (only the other marketplace left): ends');
+  assert.deepEqual(left([{ key: OWN, target: ROLE, version: '0.43.44' }, { key: FORK, target: ROLE, version: '0.1.0' }]), [], 'its own install caught up: ends');
+  // a refusal recorded before keys were: matched while one key holds the name, kept when two do
+  const legacy = [refusedRow(iso(now - 2 * H), ROLE)];
+  assert.deepEqual(left([{ key: OWN, target: ROLE, version: '0.43.44' }], legacy), [], 'one key, caught up: ends');
+  assert.deepEqual(left([{ key: OWN, target: ROLE, version: '0.43.30' }, { key: FORK, target: ROLE, version: '9.0.0' }], legacy), [ROLE], 'two keys: cannot tell, stands');
+  // an installed row with an unreadable version never covers the refusal; a readable newer one does
+  const user = (v) => [refusedRow(iso(now - 2 * H), 'user'), installedRow(iso(now - H), v)];
+  assert.deepEqual(WD.refusedInstalls(user('not-a-version')).map((r) => r.target), ['user'], 'unreadable installed version: stands');
+  assert.deepEqual(WD.refusedInstalls(user('0.43.45')).map((r) => r.target), [], 'installed at a newer version: ends');
+  // through the record as installTargets reads it: two marketplaces, the other one ahead
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'rv167c-'));
+  fs.mkdirSync(path.join(cfg, 'plugins'));
+  fs.writeFileSync(path.join(cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { [OWN]: [{ scope: 'local', projectPath: '/team/builder', version: '0.43.30' }], [FORK]: [{ scope: 'local', projectPath: '/team/builder', version: '9.0.0' }] } }));
+  const SU = require('./lib/self-update.js');
+  assert.deepEqual(left(SU.installTargets('delivery', cfg)), [ROLE]);
 });
 
 test('bqj.2: the briefing names a refused install even when other stalls fill its stall lines', () => {

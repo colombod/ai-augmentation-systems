@@ -53,7 +53,9 @@ const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); }
 const same = (a, b) => !!a && !!b && path.resolve(a) === path.resolve(b);
 const entriesOf = (j, key) => { const v = j && (j.plugins || j)[key]; return (Array.isArray(v) ? v : v ? [v] : []).filter((e) => e && typeof e === 'object'); };
 
-// The installs of plugin `name` this machine records now, as { target, version }: the target as
+// The installs of plugin `name` this machine records now, as { key, target, version }: the key is the
+// record's '<name>@<marketplace>', so a refusal is matched to its own marketplace's install only (a
+// same-named plugin from another marketplace never ends it, rv-167-delivery-lead-14); the target as
 // selfUpdate names it ('user', or '<scope> <path>'), the version the record says it is at (null when it
 // names none). null when the record cannot be read. A refusal for an install that is gone (the Delivery
 // Manager had it removed), or that is at the refused version or newer (updated outside the job, by
@@ -63,7 +65,7 @@ function installTargets(name, configDir) {
   const j = readJson(path.join(pluginsDir(configDir), 'installed_plugins.json'));
   if (!j || typeof j !== 'object') return null;
   const keys = Object.keys(j.plugins || j).filter((k) => k.split('@')[0] === name);
-  return keys.flatMap((k) => entriesOf(j, k)).map((e) => ({ target: !e.scope || e.scope === 'user' ? 'user' : `${e.scope} ${e.projectPath}`, version: typeof e.version === 'string' && e.version ? e.version : null }));
+  return keys.flatMap((k) => entriesOf(j, k).map((e) => ({ key: k, target: !e.scope || e.scope === 'user' ? 'user' : `${e.scope} ${e.projectPath}`, version: typeof e.version === 'string' && e.version ? e.version : null })));
 }
 
 // The job's own install: the entry whose installPath is the running plugin root, else the one the job
@@ -224,7 +226,7 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
       const target = targetOf(e);
       // once per version and install: a refusal that stands is not news every fifteen minutes (a row
       // from before targets were recorded counts as the job's own)
-      if (!dryRun && !rows.some((r) => r.result === 'refused' && (r.target || targetOf(own.entry)) === target)) WD.log(root, { type: 'self-update', from: e.version, version: main.version, sha: main.sha, pr: d.pr, scope: e.scope, target, at, result: 'refused', why: d.why });
+      if (!dryRun && !rows.some((r) => r.result === 'refused' && (r.target || targetOf(own.entry)) === target)) WD.log(root, { type: 'self-update', from: e.version, version: main.version, sha: main.sha, pr: d.pr, scope: e.scope, target, key: own.key, at, result: 'refused', why: d.why });
       refusals.push(`self-update: ${label} refused: ${d.why}${forOf(e)}.`);
     }
     // a running wake holds every install that passed: its session loaded the old plugin
