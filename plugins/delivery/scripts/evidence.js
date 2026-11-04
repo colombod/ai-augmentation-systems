@@ -213,4 +213,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main };
+module.exports = { main, done };
