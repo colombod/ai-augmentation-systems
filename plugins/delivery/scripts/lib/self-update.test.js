@@ -106,6 +106,8 @@ test('a newer version merged through the gate is installed, verified and logged 
   assert.equal(row.from, '0.43.30');
   assert.equal(row.sha, f.mainSha);
   assert.equal(row.pr, 140);
+  // the installs it covers, by name: a refusal standing for one of them ends here (bqj.2)
+  assert.deepEqual(row.targets, ['user']);
 });
 
 test('an ungated merge is refused, nothing runs, and the refusal is logged once across cycles', () => {
@@ -119,6 +121,8 @@ test('an ungated merge is refused, nothing runs, and the refusal is logged once 
   assert.match(b.lines[0], /refused/);
   assert.equal(exec.calls.length, 0, 'not even the catalog is refreshed');
   assert.deepEqual(rows(f).map((x) => [x.result, x.version, x.pr]), [['refused', '0.43.31', 140]]);
+  // the plugin key it was refused for: only that marketplace's install settles it (rv-167-delivery-lead-14)
+  assert.equal(rows(f)[0].key, 'delivery@m');
 });
 
 test('no merged row, or a commit that names no pull request, is refused', () => {
