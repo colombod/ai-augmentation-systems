@@ -153,7 +153,7 @@ const GREEN = [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conc
 const BEAD = 'ex-vault-0n9-3';
 
 test('the merge gate refuses while the plan is behind, and the merge itself brings it up to date', () => {
-  const pr = (n, over = {}) => ({ headRefOid: H1, headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'src/a.js', additions: 10, deletions: 0 }], body: `x\n\nRefs ${BEAD}`, title: `change ${n}`, ...over });
+  const pr = (n, over = {}) => ({ headRefOid: H1, headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'src/a.js', additions: 10, deletions: 0 }], body: `x\n\nRefs ${BEAD}\nDoc-impact: none (a test fixture)`, title: `change ${n}`, ...over });
   const root = makeProject();
   const sf = path.join(root, '.delivery', 'stories', 'vault-0n9-3.md');
   fs.writeFileSync(sf, fs.readFileSync(sf, 'utf8').replace('size: M\n', 'size: M\nstatus: ready\n'));
