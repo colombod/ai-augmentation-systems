@@ -481,4 +481,4 @@ function sheet(f, { verifyRecord } = {}) {
   return out;
 }
 
-module.exports = { installHoldOf, restartLine, isRecovery, resumesAt, stallItems, ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };
+module.exports = { ownerQuestions, installHoldOf, restartLine, isRecovery, resumesAt, stallItems, ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };
