@@ -10,6 +10,9 @@
 //   p0     a top-priority (P0) bead ready (open, not blocked, not an epic) and unclaimed for over an hour
 //   limit  a role session whose transcript ends on a usage limit: the wake is due at the reset time
 //          plus RESET_GRACE_MIN, and the plan says when the team resumes (only if the job is installed)
+//   install  the job's self-update refused a version for an install (lib/self-update.js) and no later
+//          install of it or a newer one went through: that install runs an old plugin until the Delivery
+//          Manager settles the refusal, so it is a stall, never a healthy team (bqj.2)
 // Beads in an area stopped on a failed check (an open andon) wait for their fix and raise no stall. It
 // never pauses or blocks anything: each stall is a plain line, a warning in the ledger and, for the
 // wake (watchdog.js wake), a target session and its prompt. An owner pause that verifies silences it all.
@@ -245,7 +248,7 @@ const typeOf = (b) => b.type || b.issue_type || null;
 // ---- the stalls ----
 // facts: { beads, ready, now, idleMinutes, stallHours, pause, openSteps, sessions, team, installed }
 // { paused?, stalls: [{ kind, key, bead?, target, line, plain, detail, prompt, due, scheduled?, wakeAt? }] }
-function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [], prs = [], reviews = [], woken = [], claimable = () => true } = {}) {
+function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [], prs = [], reviews = [], woken = [], refusedInstalls: refused = [], claimable = () => true } = {}) {
   const t = ms(now || new Date().toISOString());
   if (pause && pause.paused) return { paused: pause.by || true, stalls: [] };
   const out = [];
@@ -419,6 +422,18 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
         prompt: `PR ${p.pr}${(p.beads || []).length ? ` (${p.beads.join(', ')})` : ''} ${step.what}. Take it now, before anything else: ${step.next(p.pr)}.` });
     }
   }
+  // bqj.2: a refused self-update stands until a later install covers it. The job retries it every pass
+  // on its own, so the stall is what is left: the Delivery Manager settles the refusal (the gate row it
+  // names, or the stale install), and the briefing says part of the team runs an old plugin meanwhile.
+  // The key holds the version and the install, so a newer refusal is new work and the same one backs off.
+  for (const r of refused.filter((x) => x && x.version)) {
+    const where = r.target === 'user' ? 'the user install' : `the install ${String(r.target).replace(/^\S+ /, '')}`;
+    out.push({ kind: 'install', key: `install:${r.version}:${r.target}`, target: dm, due: true,
+      line: `Install refused: plugin ${r.version} for ${where} (still on ${r.from || 'an older version'}) since ${clock(ms(r.at))}: ${r.why || 'no reason recorded'}.`,
+      plain: 'An update of the team\'s plugin was refused, so part of the team still runs an older version; the Delivery Manager is asked to settle it.',
+      detail: `self-update ${r.version} refused for ${r.target}: ${r.why || 'no reason recorded'}`,
+      prompt: `The self-update of plugin ${r.version} was refused for ${where}: ${r.why || 'no reason recorded'}. Settle it now: record the gate row it names (a merged row with its merge commit), or have the stale install removed so the user install applies; the next host-job pass installs it.` });
+  }
   // messages sent to a role while its session was not running (lib/inbox.js): its next turn starts with them
   for (const m of messages.filter((x) => x && x.to && x.entries && x.entries.length)) {
     // "steward" goes to the steward role; a name no role on the team answers to wakes nobody (the
@@ -476,7 +491,7 @@ function pollWarnings(list) {
     line: `Polling: ${s.instance} ran ${s.polls.length} gh polling loop${s.polls.length > 1 ? 's' : ''} every ${Math.min(...s.polls.map((p) => p.every))} s; use watch.js (at least every 4 min, with an exit and a time limit).` }));
 }
 
-const KIND = { idle: 'idle', quiet: 'stall', p0: 'p0-unclaimed', limit: 'usage-limit', manager: 'stall' };
+const KIND = { idle: 'idle', quiet: 'stall', p0: 'p0-unclaimed', limit: 'usage-limit', manager: 'stall', install: 'install-refused' };
 // no fixed instance: each host appends to its own ledger file, as team-status does (review on aaea37c)
 function recordAll(root, res, polls, { now, instance } = {}) {
   for (const s of res.stalls) {
@@ -558,10 +573,43 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
     const parts = [];
     const prs = managerPrs(root, parts);
     const res = stalls({ prs, claimable, beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
-      pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root), reviews: reviewFacts(root), woken: logRows(root).filter((r) => r.type === 'wake').flatMap((r) => r.keys || []).filter((k) => /^review:/.test(String(k))) });
+      pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root), reviews: reviewFacts(root), refusedInstalls: refusedInstalls(logRows(root), { installs: require('./self-update.js').installTargets('delivery') }), woken: logRows(root).filter((r) => r.type === 'wake').flatMap((r) => r.keys || []).filter((k) => /^review:/.test(String(k))) });
     // a verified pause silences the polling warnings too
     return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list, ...(parts.length ? { unreadableParts: parts } : {}) };
   } catch (err) { return { stalls: [], polls: [], sessions: [], unreadable: String(err.message).split('\n')[0] }; }
+}
+
+// The self-update refusals still standing (bqj.2), from the job's log: per install the latest refusal,
+// unless a later installed row of its version or a newer one names that install. An installed row from
+// before installs were named covers the user install only, so an older row never hides a refusal.
+// `installs` are the installs recorded now (self-update.js installTargets: { target, version }, or a
+// bare target): a refusal for one no longer there ends, since removing the stale install is one way to
+// settle it and no install will name it again; so does one whose install is recorded at the refused
+// version or newer, since an update outside the job (`claude plugin update`) writes no installed row
+// (rv-167). Unknown (null) keeps every refusal: an unreadable record never reads as healthy, and an
+// install with no recorded version keeps its refusal.
+function refusedInstalls(rows, { installs = null } = {}) {
+  const { compare } = require('./plugin-version.js');
+  const ups = rows.filter((r) => r && r.type === 'self-update');
+  const latest = new Map();
+  for (const r of ups.filter((x) => x.result === 'refused')) {
+    const target = r.target || 'user';
+    const was = latest.get(target);
+    if (!was || ms(r.at) >= ms(was.at)) latest.set(target, { target, key: r.key || null, version: r.version, from: r.from || null, why: r.why || null, at: r.at, pr: r.pr || null });
+  }
+  const covers = (i, target) => (Array.isArray(i.targets) ? i.targets.includes(target) : target === 'user' && (!i.scope || i.scope === 'user'));
+  const now = Array.isArray(installs) ? installs.map((i) => (typeof i === 'string' ? { target: i, version: null } : i)).filter((i) => i && i.target) : null;
+  // a refusal names the plugin key it was refused for ('<name>@<marketplace>'), and only that key's
+  // installs settle it: a same-named plugin from another marketplace at a higher version never does. A
+  // refusal from before keys were recorded is matched only while the record holds one key for the name;
+  // with two it cannot be told apart and stands (rv-167-delivery-lead-14)
+  const keys = now ? new Set(now.map((i) => i.key || null)) : new Set();
+  const ambiguous = (r) => !r.key && keys.size > 1;
+  const mine = (r) => now.filter((i) => i.target === r.target && (!r.key || i.key === r.key));
+  // compare is null for a version it cannot read: only 0 or 1 (at or past the refused one) settles it
+  const atOrPast = (a, b) => [0, 1].includes(compare(String(a), String(b)));
+  const caughtUp = (r) => mine(r).some((i) => i.version && atOrPast(i.version, r.version));
+  return [...latest.values()].filter((r) => !now || ambiguous(r) || (mine(r).length > 0 && !caughtUp(r))).filter((r) => !ups.some((i) => i.result === 'installed' && ms(i.at) > ms(r.at) && covers(i, r.target) && atOrPast(i.version, r.version)));
 }
 
 // The pull requests the review records show waiting on the Delivery Manager, read without gh: { pr,
@@ -786,4 +834,4 @@ function wakeArgs(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { MANAGER_STEP, managerPrs, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
