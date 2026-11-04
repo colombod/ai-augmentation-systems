@@ -251,4 +251,4 @@ function stateOf(allRows, live, { botsCount = false, repo } = {}) {
   return view && ci.state === 'green' && String(view.mergeable || '').toUpperCase() === 'MERGEABLE' ? 'ready' : 'passed';
 }
 
-module.exports = { WRITER, writerOf, dirOf, norm, branchOwner, BRANCH, FULL_SHA, REL, PR, SHA, DEFAULT_SIZE, fileOf, read, append, publish, listPrs, refsOf, storiesOf, authorsOfBeads, isAuthor, isBot, instanceOf, changedLines, scopeWarnings, ciOf, evaluate, lastRequest, stateOf, cmd, short };
+module.exports = { WRITER, writerOf, dirOf, norm, branchOwner, BRANCH, FULL_SHA, REL, PR, SHA, DEFAULT_SIZE, fileOf, read, append, publish, listPrs, refsOf, storiesOf, authorsOfBeads, isAuthor, isBot, instanceOf, changedLines, GENERATED, scopeWarnings, ciOf, evaluate, lastRequest, stateOf, cmd, short };
