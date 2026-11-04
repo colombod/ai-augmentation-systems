@@ -1900,3 +1900,17 @@ test('team-runtime-09 c1: through the lane hook, a builder (any) session is refu
   assert.equal(cat.out, before.trim());
   assert.equal(h.tool('reality-checker', 'Write', { file_path: path.join(h.roleDir('reality-checker'), 'project', EV_REL, 'artifacts', 'ex-vault-0n9-3', 'shot.png'), content: 'png' }).deny, null, 'a capture is allowed');
 });
+
+// team-runtime-10: role directories are prepared by Staffing (its lane), the host's steward or start.js
+// outside a role (prepare-role.js checks its own caller); no other restricted lane runs prepare-role.js
+test('team-runtime-10: prepare-role.js is in Staffing\'s lane only', () => {
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'prep-lane-'));
+  const cmd = `node ${path.join(PLUGIN_ROOT, 'scripts', 'prepare-role.js')} --project /p --instance reality-checker`;
+  for (const file of fs.readdirSync(path.join(PLUGIN_ROOT, 'roles')).filter((f) => f.endsWith('.md'))) {
+    const id = file.slice(0, -3);
+    const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${id}` });
+    const d = decideLane({ toolName: 'Bash', toolInput: { command: cmd }, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+    assert.equal(d.allow, id === 'staffing' || policy.bash.includes('any'), id);
+  }
+  assert.ok(!GROUPS.read.some((r) => String(r.arg_prefix || '').endsWith('/prepare-role.js')));
+});

@@ -25,7 +25,6 @@
     { "first": "stat" },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-status.js" },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/products.js" },
-    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/prepare-role.js" },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/warnings.js", "sub": ["list"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/surface.js", "sub": ["check", "show"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/ready.js", "flags_none": ["--record", "--owner-record"], "native_allow": false },
@@ -135,6 +134,9 @@
   ],
   "verify-run": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/verify-run.js", "sub": ["run", "probe"] }
+  ],
+  "prepare-role": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/prepare-role.js" }
   ],
   "team-write": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js", "sub": ["add", "set-cap", "change", "remove", "host"] }
