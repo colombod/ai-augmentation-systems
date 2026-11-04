@@ -263,4 +263,9 @@ test('team-runtime-08 c5: Staffing runs team-role.js pre-allowed, and a review r
   assert.match(r.out, /review of PR 478 at a1b2c3d4e5f6 requested from agent-r1/);
   const row = R.read(h.root, '478').rows.find((x) => x.type === 'request');
   assert.equal(row.owner, 'builder-2');
+  assert.equal(row.session, false, 'agent-r1 is a subagent');
+  // the instances list is read as the team's sessions: builder, listed as {"id": "builder"}, is one
+  const s = h.review('delivery-lead', 'request 478 --reviewer builder');
+  assert.equal(s.code, 0, s.out);
+  assert.equal(R.read(h.root, '478').rows.filter((x) => x.type === 'request').pop().session, true);
 });
