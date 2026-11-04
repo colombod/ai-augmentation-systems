@@ -25,6 +25,12 @@ test('leak guard: write and shell tools, and git-hosting MCP tools only', () => 
   for (const t of [...NEVER, 'mcp__slack__post_message', 'mcp__ccd_session_mgmt__send_message']) assert.ok(!m.test(t), t);
 });
 
+test('setup guard: exactly the write and shell tools, in every session', () => {
+  const m = matcherFor('PreToolUse', 'setup-guard.js');
+  for (const t of ['Write', 'Edit', 'NotebookEdit', 'MultiEdit', 'Bash', 'Monitor', 'PowerShell']) assert.ok(m.test(t), t);
+  for (const t of [...NEVER, 'mcp__github__create_issue']) assert.ok(!m.test(t), t);
+});
+
 test('bd guard, operator channel guard and invocation recorder match their exact tools', () => {
   const bd = matcherFor('PreToolUse', 'bd-guard-hook.js');
   for (const t of ['Bash', 'Monitor', 'PowerShell']) assert.ok(bd.test(t), t);
