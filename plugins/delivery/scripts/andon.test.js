@@ -144,12 +144,16 @@ test('R-22 fbk: under an area stop, an overdue flaky test and a red main, the Re
   require('./andon.js').main(['flaky', 'search.spec', '--sha', 'c195aa00', '--fail-run', '1', '--pass-run', '2', '--area', 'trade'], { who: { root: h.root, roleId: 'delivery-lead', instance: 'delivery-lead' }, now: new Date(Date.now() - 25 * 3600e3).toISOString() });
   const FLAKY = /^bd guard: Claim of \S+ refused \(D3: search\.spec failed then passed/;
   assert.match(claim(h, 'builder-2', 'ex-trade-0-rc-235e4a0').deny || '', FLAKY, 'the flaky stop holds a builder');
+  assert.match(h.bash('delivery-lead', 'bd update ex-trade-0.2 --assignee dev@pc/builder-2').deny || '', FLAKY, 'under the flaky stop, assigned to a builder, it is building');
+  assert.match(h.bash('builder-2', 'bd update ex-trade-0.2 --assignee dev@pc/reality-checker', { run: false }).deny || '', FLAKY, 'under the flaky stop, only the Delivery Manager hands it on');
   assert.equal(claim(h, 'reality-checker', 'ex-trade-0-rc-235e4a0').deny, null, 'and not the Reality Checker');
   // 3. a red main stops builds across the product; only the Reality Checker takes the check
   h.bash('delivery-lead', `${h.script('andon.js')} ci red --sha c195aa00 --run 195`);
   const RED = /^bd guard: Claim of \S+ refused \(D3: CI on main is red since/;
   assert.match(claim(h, 'builder-2', 'ex-trade-1').deny || '', RED);
   assert.match(claim(h, 'builder-2', 'ex-trade-0.2').deny || '', RED, 'the red main holds a builder');
+  assert.match(h.bash('delivery-lead', 'bd update ex-trade-0.2 --assignee dev@pc/builder-2').deny || '', RED, 'under a red main, assigned to a builder, it is building');
+  assert.match(h.bash('builder-2', 'bd update ex-trade-0.2 --assignee dev@pc/reality-checker', { run: false }).deny || '', RED, 'under a red main, only the Delivery Manager hands it on');
   assert.equal(h.bash('delivery-lead', 'bd update ex-trade-0.2 --assignee dev@pc/reality-checker').deny, null);
   // the watchdog's rule is the same: the Reality Checker's hands only
   const red = { red: true, branch: 'main', since: '2026-10-09' };
