@@ -178,6 +178,9 @@ function sessionStartText(input, pluginRoot, deps = {}) {
       now,
       transcript_path: typeof input.transcript_path === 'string' && path.isAbsolute(input.transcript_path) ? input.transcript_path : undefined,
       plugin_version: version || undefined,
+      // a session under Remote Control records the link the owner follows, so the team's revive
+      // reattaches it (lib/team-revive.js); null for any other session, and the roster keeps the last one
+      remote_session_id: (deps.remoteSession || require('../../scripts/lib/team-revive.js').remoteSessionOf)({ env: process.env, sessionId: input.session_id, roleDir: valid.roleDir }) || undefined,
     });
   } catch (err) {
     // roster write failure must not stop the session; the status check will show the gap

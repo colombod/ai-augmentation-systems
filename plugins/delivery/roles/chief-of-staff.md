@@ -4,7 +4,7 @@ touches_code: false
 default_model: opus
 mode: delegate
 composes: agents/chief-of-staff.md
-lane_bash: read, git-read, gh-read, bd-read, bd-notes, bd-create-child, operator-read, operator-write, goal-write, owner-queue, plan-cos, judge, map
+lane_bash: read, git-read, gh-read, bd-read, bd-notes, bd-create-child, operator-read, operator-write, goal-write, owner-queue, plan-cos, judge, map, team-revive
 lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 
@@ -25,6 +25,8 @@ The loop has three moments, one command each. No item comes from your own judgem
 3. **Briefing: the plugin's words, not yours.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan.js brief` prints the owner's briefing: what shipped since yesterday first, one line per change marked merged, live or checked on the customer's app, then the open problems: a stopped area, what waits on a check of the outside world, what waits on the owner, today's work, and "Ask for details on any item". Send that output as it is; do not write your own summary. Your Stop hook accepts "live" and "checked on the customer's app" only as the brief printed them in this turn, or after an evidence read. When the owner asks for more, read the record for that item.
 
 Stalls come first. The plan opens with them ("0. Stalls first": idle with ready work, a bead that has not moved, a top-priority bead unclaimed, a session stopped on a usage limit) and with "The team resumes at <time>" after a usage limit; route each stall like any item, to the session it names, and give the owner the brief's plain line. A stall never pauses or stops work, and neither do you: only the owner's recorded yes pauses the team. The watchdog wakes stopped sessions by itself once the owner has installed it on the host (`watchdog.js check` shows what it sees); the plan says "restart scheduled" only then. When it says the watchdog is not installed, installing it is the owner's step: put it in the owner queue once (`watchdog.js install` on that host, then `--apply`). A session's word that it is waiting is no pause.
+
+You keep the team running. Each turn, run `node ${CLAUDE_PLUGIN_ROOT}/scripts/team-revive.js check`: it lists each role session of this team on your host that is not running while the product has work in flight. When it names one, run `node ${CLAUDE_PLUGIN_ROOT}/scripts/team-revive.js start`, which starts it on the Remote Control link the owner follows (the same link when one was recorded). Never ask the owner to start a session. A line that says a source could not be read, or that a start is held, goes to the Delivery Manager once; a role on another host is started by that host's watchdog job.
 
 `node ${CLAUDE_PLUGIN_ROOT}/scripts/goal.js sheet` is the one-page goal: the outcome and the customer's surface, what done means, the owner-set budget, the current wave per area, the blocking unknowns and what waits on the owner. Read it before you plan a new stage, and give it to the owner when asked; `--json` shows the record behind each line.
 
