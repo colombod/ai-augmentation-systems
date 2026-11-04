@@ -673,6 +673,14 @@ tight; block only on serious divergence, otherwise warn (R-34, R-36, R-41, R-23,
   fit what is left with their reserve; a label alone is ordinary work with a `fix-unlinked` warning.
   A peer agent's message is captured as an input but is never the owner's record, for fixes, cuts,
   waivers or area reasons alike.
+  A prompt that no one typed into the session is kept with source `tool`, never `human`: it is never
+  pending and cannot be cited. That covers the prompt of a `claude -p` run (no origin stamp; a
+  watchdog wake is dropped as before), the command-line prompt of a `claude --bg` session (its first
+  prompt), and any prompt that opens with the relay marker. A session or tool writing a prompt for
+  another role marks it with the relay marker: it opens with its sender and
+  `(operator tooling, not the owner):`, for example
+  `From the host session (operator tooling, not the owner): ...`. The owner can still quote the
+  marker, since only an opening counts.
 - **Selection.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan.js select [--record]` ranks ready work: tier 1
   linked fixes, tier 2 compounding work by score (verified dependencies 3 each, an area or surface
   with verified work, the current wave and whether it is under way, existing files changed, `reuses:`

@@ -544,17 +544,17 @@ test('Copilot 2: a head never moves back inside the lock (a stale reader cannot 
 // ---- final review B1: after a recovered push the checkout stays pullable ----
 
 
-// a role session's typed prompt (Claude Code 2.1.312): no origin, promptSource 'sdk'
+// a prompt given to a non-interactive run (claude -p, Claude Code 2.1.312): no origin, promptSource 'sdk'
 const roleTyped = (text, n) => ({ type: 'user', promptId: 'rp' + n, uuid: 'ru' + n, timestamp: '2026-10-13T10:03:00.000Z', sessionId: SID,
   promptSource: 'sdk', turnOrigin: 'sdk', message: { role: 'user', content: text } });
 
-test('a role-session transcript syncs ok and adds the typed prompts as human inputs', () => {
+test('a transcript of claude -p prompts syncs ok and keeps them as tool inputs, never human', () => {
   const root = project();
   const tr = transcript([roleTyped('ship it', 1), roleTyped('and the docs', 2), roleTyped('yes', 3)]);
   const r = sync(root, tr);
   assert.strictEqual(r.status, 'ok');
-  const ins = log.listInputs(root, { source: 'human' });
-  assert.deepStrictEqual(ins.map((e) => e.ext_id), ['rp1', 'rp2', 'rp3']);
+  assert.deepStrictEqual(log.listInputs(root, { source: 'human' }), []);
+  assert.deepStrictEqual(log.listInputs(root, { source: 'tool' }).map((e) => e.ext_id), ['rp1', 'rp2', 'rp3']);
 });
 
 test('an old cursor resumed with nothing new, or only records of no known format, reads ok', () => {

@@ -8,14 +8,30 @@ const C = require('./confirmation.js');
 
 const SYSTEM_PREFIXES = ['<system-reminder>', '<command-name>', '<local-command', '<task-notification'];
 
-// Role sessions (Claude Code 2.1.312, entrypoint sdk-cli) stamp a typed prompt with no origin at all:
-// promptSource 'sdk', no isMeta, plain string content. Harness injections there carry isMeta or no
-// promptSource, and peer messages and task notifications keep their origin, so only this shape is a
-// candidate for the operator's words. Anything else without an origin stays unknown (fail closed).
+// A prompt handed to a non-interactive run (`claude -p`, sdk-cli: a watchdog wake, a relay, a fresh
+// session start) carries no origin at all: promptSource 'sdk', no isMeta, plain string content. That
+// run has no one at its terminal, so its prompt is never the owner's: the owner's own typing is
+// stamped with a human origin by every harness version seen so far. It is kept as source 'tool'.
 function isRoleSessionPrompt(record) {
   return record.type === 'user' && !record.origin && record.isMeta === undefined && record.promptSource === 'sdk'
     && record.message && typeof record.message.content === 'string';
 }
+
+// `claude --bg "<prompt>"` stamps its command-line prompt typed and human (sessionKind 'bg', the
+// session's first prompt), though nobody typed it into the session: whoever started the session wrote
+// it. Prompts typed later by someone attached to the session count as typed.
+function isBackgroundStartPrompt(record) {
+  const pos = record.turnPosition;
+  return record.sessionKind === 'bg' && !!pos && typeof pos.promptIndex === 'number' && pos.promptIndex <= 1;
+}
+
+// The relay marker: a prompt that one session or tool writes for another opens with its sender and
+// this parenthesis, e.g. "From the host session (operator tooling, not the owner): ...". Such a prompt
+// is never the owner's, whatever stamp the harness gives it. Only an opening counts, so the owner
+// can still quote the marker.
+const RELAY_MARKER = '(operator tooling, not the owner';
+const RELAY_OPENING = /^[^\n(:]{1,120}\(operator tooling, not the owner[^)\n]*\):/;
+const isRelay = (text) => RELAY_OPENING.test(String(text).trim());
 
 function textOf(content) {
   if (typeof content === 'string') return content;
@@ -43,7 +59,8 @@ function classifyRecord(record) {
     if (kind === 'human') {
       const head = text.trim();
       const injected = SYSTEM_PREFIXES.some((p) => head.startsWith(p));
-      source = a.commandMode === 'prompt' && !injected ? 'human' : 'system';
+      if (a.commandMode !== 'prompt' || injected) source = 'system';
+      else source = isRelay(text) ? 'tool' : 'human';
     } else if (kind === 'peer') source = 'peer';
     else if (kind) source = 'system';
     else source = 'unknown';
@@ -66,12 +83,13 @@ function classifyRecord(record) {
   else if (kind && kind !== 'human') source = 'system';
   else if (kind === 'human') {
     const head = text.trim();
-    source = SYSTEM_PREFIXES.some((p) => head.startsWith(p)) ? 'system' : 'human';
+    if (SYSTEM_PREFIXES.some((p) => head.startsWith(p))) source = 'system';
+    else source = isRelay(text) || isBackgroundStartPrompt(record) ? 'tool' : 'human';
   } else if (isRoleSessionPrompt(record)) {
-    // a role session's typed prompt; a watchdog wake is stamped identically and differs only in its
-    // opening words, and the harness's own injected tags are never the operator's
+    // a non-interactive run's prompt: a watchdog wake (the watchdog keeps its own record of those) and
+    // the harness's injected tags are dropped as system; anything else is kept as a tool's input
     const head = text.trim();
-    source = head.startsWith(WAKE_OPENING) || SYSTEM_PREFIXES.some((p) => head.startsWith(p)) ? 'system' : 'human';
+    source = head.startsWith(WAKE_OPENING) || SYSTEM_PREFIXES.some((p) => head.startsWith(p)) ? 'system' : 'tool';
   } else {
     const head = text.trim();
     // harness-injected UI notes that carry no origin at all are not operator input either
@@ -234,4 +252,4 @@ function turnIn(file, size, maxBytes) {
   return out;
 }
 
-module.exports = { classifyRecord, readHumanInputs, formatStatus, currentTurn, WAKE_OPENING };
+module.exports = { classifyRecord, readHumanInputs, formatStatus, currentTurn, WAKE_OPENING, RELAY_MARKER };
