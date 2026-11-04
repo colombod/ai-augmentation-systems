@@ -1385,8 +1385,11 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   session and wake id, to `wake-ledger.ndjson` beside the wake log (rotated past 1 MB). Operator-input
   capture and the Stop hook treat a prompt carrying that lead-in as a wake only when a ledger row holds
   it, written up to 5 minutes after or 2 hours before the prompt's own time; any other prompt is the
-  owner's and is captured. A wake log row from before the ledger (it carries the prompt) counts the same
-  way. When the row cannot be written, that session is not woken, and the run says so.
+  owner's and is captured. A wake log row written before the ledger's first row (it carries the prompt)
+  counts the same way; later wake log rows are not asked. A prompt stamped before the oldest row the
+  host still keeps in either file (both rotate) is older than any record that could settle it, so the
+  lead-in decides for it as before: a transcript reread from the top keeps its old wakes as wakes. When
+  the row cannot be written, that session is not woken, and the run says so.
 - **The plugin installs itself after a gated merge.** Each `run` reads the product's main in the
   marketplace's clone (a fetch, nothing installable changes) and, when it carries a newer plugin version
   and every commit to the plugin since the installed one is the merge commit of a pull request the

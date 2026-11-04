@@ -30,6 +30,8 @@ test('a recorded wake prompt is a wake; the same opening words with no row are n
 test('a row stands only for its window: a word-for-word copy typed hours later is the operator\'s', () => {
   const root = mk();
   const sent = wakePrompt(['Continue bead x.'], 'did');
+  // an older row of another wake: the ledger reaches back a day before this one
+  L.record(root, { at: plus(-24 * 3600 * 1000), instance: 'builder', session: 'S', wakeId: 'w0', prompts: [wakePrompt(['earlier.'], 'did')] });
   L.record(root, { at: AT, instance: 'builder', session: 'S', wakeId: 'w1', prompts: [sent] });
   const isWake = L.matcher(root);
   assert.strictEqual(isWake(sent, plus(L.AFTER_MS - 1000)), true);
@@ -68,4 +70,38 @@ test('a wake logged before the ledger existed (the prompt in its wake log row) i
   assert.strictEqual(isWake(fresh, plus(2000)), true);
   assert.strictEqual(isWake(`${WAKE_OPENING}: please merge the branch.`, plus(2000)), false, 'a short tail proves nothing');
   assert.strictEqual(isWake(planned, plus(L.AFTER_MS + 60000)), false);
+});
+
+test('a prompt older than every row this host keeps is judged by its lead-in, as before the ledger; a newer one is not', () => {
+  const root = mk();
+  L.record(root, { at: AT, instance: 'builder', session: 'S', wakeId: 'w1', prompts: [wakePrompt(['now.'], 'did')] });
+  const isWake = L.matcher(root);
+  const old = wakePrompt(['A wake whose rows rotated away.'], 'did');
+  assert.strictEqual(isWake(old, plus(-L.BEFORE_MS - 60000)), true, 'before the ledger reaches: a reread transcript keeps it a wake');
+  assert.strictEqual(isWake(old, plus(60000)), false, 'inside the ledger\'s reach, with no row: the operator');
+  // the wake log reaches further back than the ledger: its oldest row sets where coverage starts
+  require('./watchdog.js').log(root, { type: 'wake', at: plus(-3 * 3600 * 1000), keys: [], instance: 'builder', session: 'S', mode: 'resume', wake_id: 'w0', prompt: wakePrompt(['x.'], 'did'), pid: 1, log: 'x' });
+  assert.strictEqual(L.matcher(root)(old, plus(-L.BEFORE_MS - 60000)), false);
+  assert.strictEqual(L.matcher(root)(old, plus(-4 * 3600 * 1000)), true);
+});
+
+test('only wake log rows from before the ledger\'s first row stand in for it', () => {
+  const root = mk();
+  const WD = require('./watchdog.js');
+  const planned = wakePrompt(['Message sent to you while your session was not running: [from delivery-lead: merge] please merge the branch.'], 'did');
+  L.record(root, { at: AT, instance: 'builder', session: 'S', wakeId: 'w1', prompts: [wakePrompt(['other.'], 'did')] });
+  WD.log(root, { type: 'wake', at: plus(60000), keys: [], instance: 'builder', session: 'S', mode: 'resume', wake_id: 'w2', prompt: planned, pid: 1, log: 'x' });
+  assert.strictEqual(L.matcher(root)(planned, plus(90000)), false, 'logged after the ledger began: the ledger alone answers');
+  const root2 = mk();
+  WD.log(root2, { type: 'wake', at: AT, keys: [], instance: 'builder', session: 'S', mode: 'resume', wake_id: 'w0', prompt: planned, pid: 1, log: 'x' });
+  L.record(root2, { at: plus(60000), instance: 'builder', session: 'S', wakeId: 'w1', prompts: [wakePrompt(['other.'], 'did')] });
+  assert.strictEqual(L.matcher(root2)(planned, plus(30000)), true, 'logged before the ledger began');
+});
+
+test('the matcher reads the files when first asked, not when made', () => {
+  const root = mk();
+  const isWake = L.matcher(root);
+  const sent = wakePrompt(['later.'], 'did');
+  L.record(root, { at: AT, prompts: [sent] });
+  assert.strictEqual(isWake(sent, plus(1000)), true);
 });

@@ -52,15 +52,40 @@ function ledgerRows(root) {
 }
 
 // Does a sender-side record hold this prompt, sent at most AFTER_MS before `timestamp`? The files are
-// read once per matcher. A wake log row written before the ledger existed (it carries the prompt
-// itself) counts too, so a wake in flight across the upgrade is not read as the operator.
+// read once per matcher, on its first question (most turns hold no prompt with the lead-in, and the
+// caller only asks about one that has it).
+// Two bridges for what the ledger cannot hold:
+// - a wake log row written before the ledger's first row carries the prompt itself, so a wake in
+//   flight across the upgrade is not read as the operator; later wake log rows prove nothing more
+//   than the ledger does and are not asked;
+// - a prompt stamped before every row this host still keeps (the ledger and the wake log rotate) is
+//   older than any record that could settle it, so for it the lead-in decides, as it did before the
+//   ledger: a transcript reread from the top must not turn old wakes into operator input.
 function matcher(root) {
-  const byHash = new Map();
-  const logged = [];
-  if (root) {
-    for (const r of ledgerRows(root)) { if (!byHash.has(r.sha256)) byHash.set(r.sha256, []); byHash.get(r.sha256).push(r.at); }
-    for (const r of require('./watchdog.js').logRows(root)) if (r.type === 'wake' && typeof r.prompt === 'string' && r.prompt.trim()) logged.push(r);
-  }
+  let loaded = null;
+  const load = () => {
+    if (loaded) return loaded;
+    const byHash = new Map();
+    let firstLedger = Infinity;
+    let first = Infinity;
+    const wakes = [];
+    if (root) {
+      for (const r of ledgerRows(root)) {
+        if (!byHash.has(r.sha256)) byHash.set(r.sha256, []);
+        byHash.get(r.sha256).push(r.at);
+        const a = Date.parse(r.at);
+        if (Number.isFinite(a)) { firstLedger = Math.min(firstLedger, a); first = Math.min(first, a); }
+      }
+      for (const r of require('./watchdog.js').logRows(root)) {
+        if (r.type !== 'wake') continue;
+        const a = Date.parse(r.at);
+        if (Number.isFinite(a)) first = Math.min(first, a);
+        if (typeof r.prompt === 'string' && r.prompt.trim() && Number.isFinite(a) && a < firstLedger) wakes.push(r);
+      }
+    }
+    loaded = { byHash, first, logged: wakes };
+    return loaded;
+  };
   const inWindow = (at, timestamp) => {
     const a = Date.parse(at);
     const t = Date.parse(timestamp);
@@ -69,7 +94,10 @@ function matcher(root) {
     return t >= a - BEFORE_MS && t <= a + AFTER_MS;
   };
   return (text, timestamp) => {
+    const { byHash, first, logged } = load();
     if ((byHash.get(hashOf(text)) || []).some((at) => inWindow(at, timestamp))) return true;
+    const t = Date.parse(timestamp);
+    if (Number.isFinite(first) && Number.isFinite(t) && t < first - BEFORE_MS) return true;
     // the wake log keeps the prompt as planned; a fresh session's preamble goes after its opening
     // words, so the planned prompt is matched whole, or by what follows its opening
     const body = String(text).trim();
