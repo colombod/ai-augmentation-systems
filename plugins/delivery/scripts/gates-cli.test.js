@@ -139,7 +139,7 @@ test('evidence.js: deploy, then a pass per criterion verifies; a re-deploy of th
   assert.equal(add('01').code, 0, '--criterion 01 is criterion 1');
   assert.match(add(2).out, /all criteria verified/);
   assert.equal(G.stateOf(bead()), 'verified');
-  assert.equal(add(3).code, 1, 'no criterion 3');
+  assert.equal(add(3).code, 2, 'no criterion 3: --criterion names one of the story\'s criteria');
   ev('state', ID, 'deployed', '--sha', 'D478AA1');
   assert.equal(G.stateOf(bead()), 'verified');
   ev('state', ID, 'deployed', '--sha', 'd479bb22');
@@ -215,4 +215,47 @@ test('evidence.js: state merged records merged_at; a retry of the same PR keeps 
   assert.equal(ev('state', ID, 'merged', '--pr', '479').code, 0);
   assert.notEqual(bead().metadata.merged_at, '2000-01-01T00:00:00.000Z', 'a follow-up PR records its own time');
   assert.equal(bead().metadata.merged_pr, '479');
+});
+
+test('team-runtime-09 c2: evidence.js add refuses a missing or unknown criterion, a result not pass or fail, a missing result and a sha not hexadecimal, naming the flag; no row is added', () => {
+  const { root, ev, add } = setup();
+  assert.equal(ev('state', ID, 'deployed', '--sha', 'd478aa11').code, 0);
+  assert.equal(add(1).code, 0, 'a well-formed add still succeeds');
+  const rows = () => G.readEvidence(root, ID).length;
+  const before = rows();
+  const base = { criterion: ['--criterion', '1'], result: ['--result', 'pass'], surface: ['--surface', 'S1'], sha: ['--sha', 'd478aa11'] };
+  const argv = (over) => ['add', ID, ...Object.entries({ ...base, ...over }).flatMap(([, v]) => v), '--record', 'dec-chief-of-staff-41'];
+  const cases = [
+    [{ criterion: [] }, /^evidence\.js: --criterion must name one of ex-vault-0n9-3's criteria \(criteria: 1, 2\); none was given\nusage: evidence\.js/],
+    [{ criterion: ['--criterion', '9'] }, /^evidence\.js: --criterion must name one of ex-vault-0n9-3's criteria: ex-vault-0n9-3 has no criterion 9 \(criteria: 1, 2\)\nusage: evidence\.js/],
+    [{ result: ['--result', 'passed'] }, /^evidence\.js: --result must be pass or fail \(got "passed"\)\nusage: evidence\.js/],
+    [{ result: [] }, /^evidence\.js: --result must be pass or fail \(got nothing\)\nusage: evidence\.js/],
+    [{ sha: ['--sha', 'zz478aa1'] }, /^evidence\.js: --sha must be a commit sha, 7 to 40 hexadecimal characters \(got "zz478aa1"\)\nusage: evidence\.js/],
+    [{ sha: [] }, /^evidence\.js: --sha must be a commit sha, 7 to 40 hexadecimal characters \(got nothing\)\nusage: evidence\.js/],
+    [{ surface: [] }, /^evidence\.js: --surface must name the customer surface the run was on \(got nothing\)\nusage: evidence\.js/],
+  ];
+  for (const [over, want] of cases) {
+    const r = ev(...argv(over));
+    assert.equal(r.code, 2, JSON.stringify(over));
+    assert.match(r.out, want, JSON.stringify(over));
+    assert.equal(rows(), before, `no row added for ${JSON.stringify(over)}`);
+  }
+});
+
+test('team-runtime-09 c2: evidence.js state deployed with no sha or a bad one, and an unknown state, are refused naming the flag; nothing is marked', () => {
+  const { ev, bead } = setup();
+  const cases = [
+    [['state', ID, 'deployed'], /^evidence\.js: --sha must be a commit sha, 7 to 40 hexadecimal characters \(got nothing\)\nusage: evidence\.js/],
+    [['state', ID, 'deployed', '--sha', 'main'], /^evidence\.js: --sha must be a commit sha, 7 to 40 hexadecimal characters \(got "main"\)\nusage: evidence\.js/],
+    [['state', ID, 'shipped'], /^evidence\.js: state must be merged or deployed \(got "shipped"\)\nusage: evidence\.js/],
+    [['state', ID], /^evidence\.js: state must be merged or deployed \(got nothing\)\nusage: evidence\.js/],
+  ];
+  for (const [argv, want] of cases) {
+    const r = ev(...argv);
+    assert.equal(r.code, 2, argv.join(' '));
+    assert.match(r.out, want, argv.join(' '));
+    assert.equal(G.stateOf(bead()), null, `nothing marked by ${argv.join(' ')}`);
+  }
+  assert.equal(ev('state', ID, 'deployed', '--sha', 'd478aa11').code, 0, 'a well-formed deploy still succeeds');
+  assert.equal(G.stateOf(bead()), 'deployed');
 });
