@@ -922,7 +922,10 @@ asked to verify (R-22, R-23, R-24; D3).
   - a fix bead that does not exist, is not linked to the failure (`fixes:` as above, or `a3: <id>`),
     or is not merged (its state label, or a merged review record that carried it);
   - for a failed check, a proof that is not a counting pass (the done gate's row rule, so the
-    criterion's current wording) on the sha deployed now, a later build than the one that failed;
+    criterion's current wording) on the sha deployed now, a later build than the one that failed.
+    The criterion is read as the done gate reads it: from the story, or for a bead with no story file
+    (a bug, a fix) from the criteria it states itself, pinned at deploy; a pinned list changed since
+    then is refused;
   - for `ci:main`, any required workflow still red (every one that went red must be green again), or a
     proof that is not a green run of main newer than its workflow's last red run, read through gh
     (where gh cannot read CI, the Delivery Manager's `ci green --workflow <w>` row after that
