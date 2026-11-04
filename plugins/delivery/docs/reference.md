@@ -545,8 +545,9 @@ the whole file is checked (known criteria and steps, known keys, a valid `match`
 written. Plan writes steps with actions only, so on a command-line surface a story is neither ready
 (`ready.js` blocks with `reality-check-command`, R-33) nor deployed (`evidence.js state <bead> deployed`
 refuses) while a planned step group has no step carrying a command; both name the criteria still
-without one. A bead with no script before its deploy (one planned from its own criteria at the
-deploy) is deployed with a warning naming those criteria instead. The runner
+without one. A bead with no script yet (one that states its own criteria) is refused deployed on a
+command line too: plan it and refine its commands first, so no check bead is dispatched with nothing
+to run. The runner
 checks out the bead's deployed sha (the full sha) in `verify/<bead>-<sha12>` of the role directory,
 runs the command there with the role's variables cleared (a step refined with `--as-role` keeps the
 Reality Checker's own role variables instead, and only for the one command that needs them,

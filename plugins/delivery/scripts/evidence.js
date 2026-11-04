@@ -121,6 +121,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       if (gap.length) return refuse(`${id} is not marked deployed: criteria ${gap.map((c) => c.n).join(', ')} are checked on ${inp.surface.id} by the Reality Checker and ${inp.checkScript ? 'its script has no step group for their current wording' : 'no reality-check script is planned'}. Plan it (reality-check.js plan ${id}), then record the deploy again.`);
       // on a command line the planned steps must also carry a command: verify-run.js runs nothing else, and a
       // script of actions alone dispatched 17 checks at a6aecad that could not run (7k3.1.1.1.6)
+      // a bead with no script yet (one that states its own criteria) would be planned at this deploy with
+      // actions only, so on a command line it is refused the same way: plan and refine it first
+      const unplanned = !inp.checkScript && inp.surface && inp.surface.command_line === true ? G.checkCovered(inp.checkStory, inp.surface) : [];
+      if (unplanned.length) return refuse(`${id} is not marked deployed: criteria ${unplanned.map((c) => c.n).join(', ')} are checked on ${inp.surface.id}, a command line, and no reality-check script is planned, so the Reality Checker would have nothing to run. Plan it (reality-check.js plan ${id}), write each step's command (reality-check.js refine ${id} --criterion <n> --step 1 --command '<the command>' --match '<what stdout shows>', or refine ${id} --from <file>), then record the deploy again.`);
       const bare = G.checkScriptCommandless(inp.checkStory, inp.surface, inp.checkScript);
       if (bare.length) return refuse(`${id} is not marked deployed: criteria ${bare.map((c) => c.n).join(', ')} are checked on ${inp.surface.id}, a command line, and their script steps carry no command, so the Reality Checker has nothing to run. Write each one (reality-check.js refine ${id} --criterion <n> --step 1 --command '<the command>' --match '<what stdout shows>', or refine ${id} --from <file>), then record the deploy again.`);
       // the same sha again keeps its deploy time, so its rows still count
@@ -143,10 +147,6 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
         const rc = require('./reality-check.js');
         const fresh = store.show(id);
         rc.writeScript(who.root, fresh, inp, { at, by: who.instance });
-        // a bead with no script before this deploy (one that states its own criteria) is planned just now,
-        // so its steps carry no command yet: say which, or its check bead waits on a script nobody refines
-        const planned = G.checkScriptCommandless(inp.checkStory, inp.surface, rc.readScript(who.root, id));
-        if (planned.length) checks.push(`warning: criteria ${planned.map((c) => c.n).join(', ')} of ${id} are checked on ${inp.surface.id}, a command line, and their script steps carry no command yet: refine them (reality-check.js refine ${id} --criterion <n> --step 1 --command '<the command>') before the Reality Checker runs the check`);
         checks.push(...rc.dispatch(who, store, fresh, inp, meta.deployed_sha));
       }
       // a bead checked on a surface with no story to plan from (a bug or a fix): no script can be planned
