@@ -1509,6 +1509,32 @@ test('hjx.1 (Copilot 4437000590): on a red main only claimable open work wakes i
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+// fbk (rv-163-delivery-lead-5): under a red main the same check of shipped work wakes the Reality Checker
+// it is assigned to, never a builder, as the claim check holds it (andon.js checksShipped)
+test('fbk: on a red main a check of a deployed story wakes its holder only when the Reality Checker holds it', () => {
+  const A = require('./lib/andon.js');
+  const now = Date.parse('2026-11-04T12:00:00Z');
+  const prefix = path.join(os.tmpdir(), 'fbk-ci-');
+  const root = fs.mkdtempSync(prefix);
+  try {
+    const shipped = { id: 'ex-shipped', status: 'in_progress', labels: ['story', 'state-merged', 'state-deployed'], metadata: { deployed_sha: '235e4a04b3' }, updated_at: iso(now - 9 * H) };
+    const rc = { id: 'ex-shipped-rc-235e4a0', status: 'open', parent: shipped.id, labels: ['reality-check'], metadata: { reality_check_for: shipped.id, deployed_sha: '235e4a04b3' }, updated_at: iso(now - H) };
+    const beads = [shipped, rc];
+    for (const i of ['builder-1', 'reality-checker']) registerInstance(root, { instance: i, session_id: `s-${i}`, host: 'pc', model: 'opus', role_dir: root, now: iso(now - 30 * 60e3) });
+    const bd = { list: () => beads, ready: () => beads.filter((b) => b.status === 'open'), show: (x) => beads.find((b) => b.id === x) || null };
+    const woken = () => {
+      const res = WD.read(root, { bd, now: iso(now), installed: true, pause: { paused: false } });
+      assert.equal(res.unreadable, undefined, res.unreadable);
+      return res.stalls.filter((s) => s.kind === 'assigned').map((s) => s.bead).sort();
+    };
+    A.append(root, { type: 'ci', result: 'red', sha: 'c195aa00', run: '195', at: iso(now - 2 * H) }, 'delivery-lead');
+    rc.assignee = 'dev@pc/reality-checker';
+    assert.deepEqual(woken(), [rc.id], 'the Reality Checker takes the check under a red main');
+    rc.assignee = 'dev@pc/builder-1';
+    assert.deepEqual(woken(), [], 'a builder holding the same check is held by the red main');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 // dec-chief-of-staff-000211: every host-job run sweeps the test runs' leftovers from the temp directory
 // and says what it removed in the job log; a failing sweep never stops the run
 test('run sweeps test leftovers every cycle and logs them; check and a dry run do not sweep', () => {
