@@ -14,6 +14,7 @@
 const path = require('path');
 const R = require('./lib/reviews.js');
 const G = require('./lib/gates.js');
+const DI = require('./lib/doc-impact.js');
 const { whoAmI, writerProblem } = require('./lib/gate-context.js');
 const { viewPr, readFileAt, productRepoOf, sameRepo, repoOf, UNKNOWN } = require('./lib/gh-pr.js');
 
@@ -48,6 +49,13 @@ function gate(root, pr, { head: named, gh, team, repo, planDrift, readFile } = {
   const req = R.lastRequest(rows);
   const lines = view.unavailable ? (req ? req.lines : null) : R.changedLines(view);
   const warnings = R.scopeWarnings({ pr, lines: lines == null ? NaN : lines, stories: req ? req.stories || [] : [], threshold: sizeThreshold(root) });
+  // Docs ship with the change that makes them stale: a change users can see carries a doc-impact line
+  // (lib/doc-impact.js). Where gh cannot read the pull request, it is a warning, never a silent pass.
+  if (v.ok) {
+    const di = view.unavailable ? { ok: true, warning: 'doc impact not checked: gh cannot read the pull request' } : DI.check(view);
+    if (di.warning) warnings.push({ kind: 'doc-impact', detail: di.warning });
+    if (!di.ok) return { ...v, ok: false, why: `PR ${pr}: ${di.why}`, fix: `${di.fix}, then check again: ${R.cmd('merge-gate.js', `check ${pr}`)}`, head, warnings, view, rows };
+  }
   // The plan must be true to what already shipped before anything more ships (the owner, 2026-10-31:
   // a planning repo and feature map that diverge from the product defeat the product).
   if (v.ok) {
