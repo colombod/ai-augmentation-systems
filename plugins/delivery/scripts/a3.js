@@ -80,8 +80,12 @@ function andonProof(who, store, f, proof) {
   const inp = C.gateInputs(who.root, f.bead || { id: f.beadId }, { bd: store(), team: who.team });
   // the done gate's own check: rows past the head evidence.js recorded do not count
   if (inp.evidenceProblem) return [`the evidence of ${f.beadId} does not match what evidence.js wrote: ${inp.evidenceProblem}`, `Restore .delivery/evidence/${f.beadId}.ndjson to its last evidence.js write, then close`];
-  const c = inp.story && inp.story.criteria.find((x) => x.n === Number(f.row.criterion));
-  if (!c) return [`criterion ${f.row.criterion} of ${f.beadId} is not in its story any more`, 'Message the Delivery Manager: the failure needs re-reading against the story'];
+  // the criteria the done gate reads (evidence.js done): the story, or for a bead with no story file the
+  // criteria it states itself, pinned at deploy; a pinned list cut since then proves nothing
+  const drift = G.beadCriteriaDrift(inp.checkStory, f.bead || { id: f.beadId }, inp.checkScript, inp.rows, C.recordChecker(who.root));
+  if (drift) return [`the criteria of ${f.beadId} changed: ${drift.detail}`, 'Message the Delivery Manager: the failure needs re-reading against the criteria'];
+  const c = inp.checkStory && inp.checkStory.criteria.find((x) => x.n === Number(f.row.criterion));
+  if (!c) return [`criterion ${f.row.criterion} of ${f.beadId} is not in its ${inp.story ? 'story' : 'stated criteria'} any more`, `Message the Delivery Manager: the failure needs re-reading against ${inp.story ? 'the story' : 'the criteria the bead states'}`];
   const bm = (f.bead && f.bead.metadata) || {};
   const why = G.rowProblem(pass, { c, surface: inp.surface, noSurface: inp.noSurface, sha: bm.deployed_sha, deployedAt: bm.deployed_at, repinnedAt: bm.criteria_restamped_at || null, repinnedBy: bm.criteria_record || null, authors: G.authorsOf(f.bead || {}, inp.instances), recordOk: C.recordChecker(who.root) });
   return why ? [why, again] : null;
@@ -172,7 +176,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: give
       if (f.why) return refuse(f.why);
       area = f.bead ? G.areaOf(f.bead) : null;
       title = title || `${f.bead ? f.bead.title || f.bead.id : f.beadId} failed criterion ${f.row.criterion}`;
-      const crit = f.bead ? ((require('./lib/gate-context.js').readStory(who.root, f.bead) || { criteria: [] }).criteria.find((c) => c.n === Number(f.row.criterion))) : null;
+      const crit = f.bead ? ((require('./lib/gate-context.js').gateInputs(who.root, f.bead, { bd: store(), team: who.team }).checkStory || { criteria: [] }).criteria.find((c) => c.n === Number(f.row.criterion))) : null;
       if (crit) draft.expected = `Criterion ${crit.n}: ${crit.text}`;
       draft.evidence = `${f.row.id}: criterion ${f.row.criterion} failed on ${f.row.surface || 'the declared surface'} at ${String(f.row.sha || '').slice(0, 12)}${f.row.capture ? ` (capture ${f.row.capture.path})` : ''}${f.row.run ? `, run ${f.row.run}` : ''}.`;
     } else if (t === 'ci:main') {
