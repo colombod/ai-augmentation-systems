@@ -472,10 +472,12 @@ test('role-lane hook denies an out-of-lane edit for chief-of-staff and allows fo
   assert.equal(out2, '');
 });
 
-test('role-lane hook is inert without a role, with a mismatched DELIVERY_ROLE, and on garbage stdin', () => {
+test('role-lane hook is inert without a role and on garbage stdin, closed with a mismatched DELIVERY_ROLE', () => {
   assert.equal(runHook('role-lane.js', { cwd: os.tmpdir(), tool_name: 'Bash', tool_input: { command: 'rm -rf /' } }, {}), '');
   const { roleDir } = preparedRole('staffing');
-  assert.equal(runHook('role-lane.js', { cwd: roleDir, tool_name: 'Bash', tool_input: { command: 'npm test' } }, { DELIVERY_ROLE: 'other' }), '');
+  assert.equal(runHook('role-lane.js', { cwd: roleDir, tool_name: 'Bash', tool_input: { command: 'npm test' } }, {}), '');
+  // a role session that finds another instance's marker is not let through (team-runtime-10)
+  assert.equal(JSON.parse(runHook('role-lane.js', { cwd: roleDir, tool_name: 'Bash', tool_input: { command: 'npm test' } }, { DELIVERY_ROLE: 'other' })).hookSpecificOutput.permissionDecision, 'deny');
   const raw = execFileSync(process.execPath, [path.join(__dirname, 'role-lane.js')], { input: 'not json', stdio: ['pipe', 'pipe', 'pipe'] }).toString();
   assert.equal(raw, '');
 });
@@ -600,7 +602,8 @@ test('H.6: role-lane hook fails open on a thrown error, denies Bash and headless
     const denied = JSON.parse(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command } }, env('chief-of-staff')));
     assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny', command);
   }
-  assert.equal(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, env('someone-else')), '');
+  // a session whose DELIVERY_ROLE names another instance than the marker it finds is not let through (team-runtime-10)
+  assert.equal(JSON.parse(runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, env('someone-else'))).hookSpecificOutput.permissionDecision, 'deny');
   // Copilot 1: only ONE literal restore of the manifest is let through; any shell syntax is denied
   const pr = broken.projectRoot;
   for (const ok of [`git -C ${pr} checkout -- .delivery/team/team.json`, `git -C ${pr} restore -- .delivery/team/hosts.json`]) {
@@ -624,10 +627,11 @@ test('H.6: role-lane hook fails open on a thrown error, denies Bash and headless
     const out = runHook('role-lane.js', { cwd: broken.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: bad } }, env('chief-of-staff'));
     assert.equal(out && JSON.parse(out).hookSpecificOutput.permissionDecision, 'deny', bad);
   }
-  // A corrupt role marker: inert.
+  // A corrupt role marker in a role session: closed (team-runtime-10); with no DELIVERY_ROLE: inert.
   const marker = preparedRole('chief-of-staff');
   fs.writeFileSync(path.join(marker.roleDir, '.delivery-role.json'), '{ not json');
-  assert.equal(runHook('role-lane.js', { cwd: marker.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, env('chief-of-staff')), '');
+  assert.equal(JSON.parse(runHook('role-lane.js', { cwd: marker.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, env('chief-of-staff'))).hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(runHook('role-lane.js', { cwd: marker.roleDir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }, { CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT }), '');
   // A Bash deny through the hook, logged on one line with control characters stripped.
   const { roleDir: cos } = preparedRole('chief-of-staff');
   const out = runHook('role-lane.js', { cwd: cos, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test\r\x1b[2Kfake\tline' } }, env('chief-of-staff'));
@@ -1999,4 +2003,65 @@ test('team-runtime-10 c2: through the lane hook, staffing, builder and spike-res
     assert.equal(h.bash(inst, 'cat .delivery-role.json', { run: false }).deny, null, `${inst} cat`);
   }
   assert.equal(refused, 36);
+});
+
+// team-runtime-10 c5: a role session (DELIVERY_ROLE set) whose own marker is damaged, missing or another
+// instance's fails closed, naming re-preparation; messaging and the manifest restore stay open; a session
+// with no DELIVERY_ROLE in the same directory gets no decision
+test('team-runtime-10 c5: a damaged or foreign role marker in a role session denies every call but the ways out', () => {
+  const base = (dir, extra = {}) => {
+    const out = { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, ...extra };
+    for (const k of Object.keys(out)) if (/^DELIVERY_ROLE|^DELIVERY_PROJECT_ROOT$/.test(k) && !(k in extra)) delete out[k];
+    return out;
+  };
+  const hook = (roleDir, toolName, toolInput, env) => {
+    const out = execFileSync(process.execPath, [path.join(__dirname, 'role-lane.js')], { input: JSON.stringify({ cwd: roleDir, session_id: 's', tool_name: toolName, tool_input: toolInput }), env, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
+    return out ? JSON.parse(out).hookSpecificOutput : null;
+  };
+  const damages = {
+    'without instance': [(m) => { delete m.instance; return m; }, /has no instance/],
+    'with a relative project_root': [(m) => { m.project_root = 'project'; return m; }, /has no absolute project_root/],
+    'naming another instance': [(m) => { m.instance = 'reality-checker'; return m; }, /names another instance \(reality-checker\)/],
+    'missing from DELIVERY_ROLE_DIR': [() => null, /is missing or unreadable in /],
+  };
+  for (const [label, [damage, problem]] of Object.entries(damages)) {
+    const { projectRoot, roleDir } = preparedRole('chief-of-staff');
+    const file = path.join(roleDir, '.delivery-role.json');
+    const m = damage(JSON.parse(fs.readFileSync(file, 'utf8')));
+    if (m) fs.writeFileSync(file, JSON.stringify(m)); else fs.rmSync(file);
+    const env = base(roleDir, { DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: roleDir, DELIVERY_PROJECT_ROOT: projectRoot });
+    for (const [tool, input] of [['Write', { file_path: path.join(roleDir, 'notes.md'), content: 'x' }], ['Bash', { command: 'ls' }], ['Read', { file_path: path.join(roleDir, 'CLAUDE.local.md') }], ['mcp__x__list_items', {}]]) {
+      const d = hook(roleDir, tool, input, env);
+      assert.equal(d && d.permissionDecision, 'deny', `${label}: ${tool}`);
+      assert.match(d.permissionDecisionReason, problem, `${label}: ${tool}`);
+      assert.match(d.permissionDecisionReason, /^Role chief-of-staff: this session's role marker [^\n]*nothing that writes or runs is allowed[\s\S]*re-prepared[\s\S]*by Staffing or the steward of (?:host \S+|its host)/, `${label}: ${tool}`);
+    }
+    // the ways out: messaging, and the one literal manifest restore (its root from DELIVERY_PROJECT_ROOT when the marker cannot give it)
+    assert.equal(hook(roleDir, 'SendMessage', { to: 'staffing@example', message: 'x' }, env), null, `${label}: SendMessage`);
+    assert.equal(hook(roleDir, 'mcp__ccd_session_mgmt__send_message', { message: 'x' }, env), null, `${label}: send_message`);
+    assert.equal(hook(roleDir, 'Bash', { command: `git -C ${projectRoot} checkout -- .delivery/team/team.json` }, env), null, `${label}: restore`);
+    assert.equal(hook(roleDir, 'Bash', { command: `git -C ${projectRoot} checkout -- .delivery/team/team.json && ls` }, env).permissionDecision, 'deny', `${label}: restore plus more`);
+    // an operator session in the same directory: no DELIVERY_ROLE, no decision
+    assert.equal(hook(roleDir, 'Write', { file_path: path.join(roleDir, 'notes.md'), content: 'x' }, base(roleDir)), null, `${label}: operator Write`);
+    assert.equal(hook(roleDir, 'Bash', { command: 'ls' }, base(roleDir)), null, `${label}: operator Bash`);
+  }
+  // a sound marker is not touched by this: the lane decides as before
+  const { roleDir } = preparedRole('chief-of-staff');
+  const env = base(roleDir, { DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: roleDir });
+  assert.equal(hook(roleDir, 'Bash', { command: 'ls' }, env).permissionDecision, 'allow');
+});
+
+// the same through the role harness: a reality-checker session whose marker the setup damaged
+test('team-runtime-10 c5: through the role harness, a damaged marker stops the session at its next call', () => {
+  const { harness } = require('../../scripts/testing/role-harness.js');
+  const h = harness();
+  const dir = h.roleDir('reality-checker');
+  assert.equal(h.bash('reality-checker', 'ls', { run: false }).deny, null);
+  const file = path.join(dir, '.delivery-role.json');
+  const m = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete m.instance;
+  fs.writeFileSync(file, JSON.stringify(m));
+  assert.match(h.bash('reality-checker', 'ls', { run: false }).deny || '', /re-prepare/);
+  assert.match(h.tool('reality-checker', 'Write', { file_path: path.join(dir, 'x.md'), content: 'x' }).deny || '', /re-prepare/);
+  assert.equal(h.send('reality-checker', 'SendMessage', { to: 'delivery-lead@example', message: 'my marker is damaged' }).deny, null);
 });
