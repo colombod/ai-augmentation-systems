@@ -564,7 +564,10 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
         const G = require('./gates.js');
         const fix = require('./waves.js').fixLink(b, null, { root, beadOf, ownerRecord: (r) => require('./gate-context.js').ownerRecord(root, r),
           byStoryId: (sid) => beads.find((x) => G.isStoryBead(x) && String((x.metadata || {}).story || '') === sid) || null });
-        return !AN.ciRedBlock(b, ciNow, fix);
+        // a check of shipped work starts under a red main only in the Reality Checker's hands, as at the claim
+        let insts = [];
+        try { insts = require('./manifest.js').expandInstances(team); } catch (err) { insts = []; }
+        return !AN.ciRedBlock(b, ciNow, fix, { beadOf, prover: G.roleOfActor(b.assignee, insts) === 'reality-checker' });
       } catch (err) { return true; }
     };
     const parts = [];

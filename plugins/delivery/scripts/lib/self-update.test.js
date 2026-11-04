@@ -159,7 +159,9 @@ test('a wake still running holds the install; it goes once the wake has ended', 
   const held = run(f, exec, { alive: (pid) => pid === 4242 });
   assert.match(held.lines[0], /held: a run is in progress \(wake pid 4242\); tried again next cycle/);
   assert.equal(exec.calls.length, 0);
-  assert.equal(rows(f).length, 0);
+  assert.deepEqual(rows(f).map((r) => r.result), ['held'], 'the hold is logged once, when it starts');
+  run(f, exec, { alive: (pid) => pid === 4242 });
+  assert.deepEqual(rows(f).map((r) => r.result), ['held']);
   assert.equal(run(f, exec, { alive: () => false }).installed, true);
 });
 
@@ -266,12 +268,12 @@ test('a role directory behind a current job install passes the same gate check f
 
 // through the host job: an install wakes no one this pass and kicks the next run; a failure keeps the wakes
 const memStore = (h) => { const b = Object.values(h.db().issues); return { list: () => b, ready: () => b.filter((x) => x.status === 'open'), show: (id) => b.find((x) => x.id === id) || null }; };
-function jobRun(h, f, exec, { alive = () => false } = {}) {
+function jobRun(h, f, exec, { alive = () => false, now = later(2e3) } = {}) {
   registerInstance(h.root, { instance: 'delivery-lead', session_id: 'sess-dl', host: 'pc', model: 'sonnet', role_dir: h.roleDir('delivery-lead'), now: later(-30 * 60e3) });
   IB.queue(h.root, { to: 'delivery-lead', from: 'builder-1', message: 'PR ready', at: T0 });
   KICK.take(h.root);
   const woke = [];
-  const r = watchdog.main(['run'], { cwd: h.root, env: { ...process.env, DELIVERY_ROLE: '', BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, '..', 'testing')}${path.delimiter}${process.env.PATH}` }, now: later(2e3), live: [], bd: memStore(h), sweep: () => ({ removed: [], failed: [] }), spawn: (bin, args, o) => { woke.push(o.env.DELIVERY_ROLE); return 999999999; }, update: { pluginRoot: f.pluginRoot, configDir: f.config, exec, alive } });
+  const r = watchdog.main(['run'], { cwd: h.root, env: { ...process.env, DELIVERY_ROLE: '', BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, '..', 'testing')}${path.delimiter}${process.env.PATH}` }, now, live: [], bd: memStore(h), sweep: () => ({ removed: [], failed: [] }), spawn: (bin, args, o) => { woke.push(o.env.DELIVERY_ROLE); return 999999999; }, update: { pluginRoot: f.pluginRoot, configDir: f.config, exec, alive } });
   return { out: r.out, woke };
 }
 
@@ -502,4 +504,92 @@ test('a kick taken while an install is held retries the install, and wakes no on
   assert.match(r.out, /held: a run is in progress/);
   assert.match(r.out, /self-update: installed plugin delivery 0\.43\.31/);
   assert.deepEqual(r.woke, []);
+});
+
+// delivery-plugin-planning-0ba.5: the hold waited for the whole team to be idle at once, which with
+// four builders and the Delivery Manager taking turns never came. Wakes overlapping without end: each
+// one started before the last ended, so some wake was running at every look.
+test('with wakes overlapping without end, the install lands within the bound and starts none of its own', () => {
+  const h = harness({});
+  const f = fixture({ root: h.root });
+  merged(f, 140, true);
+  const CYCLE = 15 * 60e3;
+  // under the old rule every cycle started a wake that ran 40 minutes, so two always overlapped; these
+  // are the ones running when the release merged, the last ending 100 minutes in
+  const ends = { 5001: 40 * 60e3, 5002: 70 * 60e3, 5003: 100 * 60e3 };
+  for (const pid of Object.keys(ends)) WD.log(h.root, { type: 'wake', at: T0, instance: 'builder-1', pid: Number(pid) });
+  const exec = claude(f);
+  let at = 0;
+  let out = '';
+  const woke = [];
+  for (; at <= SU.HOLD_BOUND_MS && !/self-update: installed/.test(out); at += CYCLE) {
+    const r = jobRun(h, f, exec, { now: later(at), alive: (pid) => ends[pid] > at });
+    out = r.out;
+    woke.push(...r.woke);
+  }
+  assert.match(out, /self-update: installed plugin delivery 0\.43\.31/);
+  assert.ok(at - CYCLE <= SU.HOLD_BOUND_MS, `installed ${(at - CYCLE) / 60e3} min after the hold began`);
+  // the bound holds only because a held install starts no new wake (0ba.6): with one started each
+  // cycle, the overlap would never end and the install would wait without limit
+  assert.deepEqual(woke, [], 'no wake started while the install was held');
+  assert.equal(rows(f).filter((r) => r.result === 'held-overdue').length, 0);
+});
+
+test('a hold past the bound is logged once and the owner briefing reports it until the version installs', () => {
+  const DP = require('./daily-plan.js');
+  const h = harness({});
+  const f = fixture({ root: h.root });
+  merged(f, 140, true);
+  // a wake that outlived its supervisor's stop: running at every look
+  WD.log(h.root, { type: 'wake', at: T0, instance: 'builder-1', pid: 4242 });
+  const exec = claude(f);
+  const alive = (pid) => pid === 4242;
+  const at = (ms) => jobRun(h, f, exec, { now: later(ms), alive }).out;
+  assert.doesNotMatch(at(0), /past the/);
+  assert.equal(DP.installHoldOf(h.root), null, 'a hold inside the bound is not news');
+  assert.doesNotMatch(at(SU.HOLD_BOUND_MS - 60e3), /past the/);
+  assert.equal(DP.installHoldOf(h.root), null);
+  assert.match(at(SU.HOLD_BOUND_MS + 60e3), /held since .* past the 2\.5 h bound\): a run is in progress \(wake pid 4242\), a wake that outlived its timeout/);
+  at(SU.HOLD_BOUND_MS + 16 * 60e3);
+  assert.equal(rows(f).filter((r) => r.result === 'held-overdue').length, 1, 'logged once, not every cycle');
+  const hold = DP.installHoldOf(h.root);
+  assert.equal(hold.version, '0.43.31');
+  const base = { now: later(SU.HOLD_BOUND_MS + 20 * 60e3), team: { roles: [] }, stalls: [], restarts: [], queue: [], questions: [], checks: [], andon: { stops: [], ci: {}, flaky: [], chains: [] }, unknowns: [], spikes: [], next: [], known: new Map(), titles: new Map(), stories: [], fixes: [], prs: {} };
+  const brief = DP.brief({ ...base, installHold: hold }).join('\n');
+  assert.match(brief, /^Version 0\.43\.31 of the plugin was merged but has waited since .+ to install, because a run has not stopped\.$/m, brief);
+  assert.doesNotMatch(DP.brief({ ...base, installHold: null }).join('\n'), /waited since/);
+  // once the wake ends the install lands and the briefing has nothing to say
+  assert.match(jobRun(h, f, exec, { now: later(SU.HOLD_BOUND_MS + 31 * 60e3), alive: () => false }).out, /self-update: installed/);
+  assert.equal(DP.installHoldOf(h.root), null);
+});
+
+test('a hold after a failed install is timed from its own start, not from the hold before it', () => {
+  const h = harness({});
+  const f = fixture({ root: h.root });
+  merged(f, 140, true);
+  // an earlier hold, then an install that failed: that hold is over
+  const base = { type: 'self-update', from: '0.43.30', version: '0.43.31', sha: f.mainSha, pr: 140 };
+  WD.log(h.root, { ...base, at: T0, result: 'held', why: 'a run is in progress (wake pid 4242)' });
+  WD.log(h.root, { ...base, at: later(60e3), result: 'failed', detail: 'update failed' });
+  WD.log(h.root, { type: 'wake', at: T0, instance: 'builder-1', pid: 4242 });
+  const exec = claude(f);
+  const alive = (pid) => pid === 4242;
+  const start = SU.HOLD_BOUND_MS + 2 * 60e3;
+  assert.doesNotMatch(jobRun(h, f, exec, { now: later(start), alive }).out, /past the/, 'a new hold is not overdue from the old start');
+  assert.deepEqual(rows(f).filter((r) => r.result === 'held').map((r) => r.at), [T0, later(start)]);
+  assert.equal(rows(f).filter((r) => r.result === 'held-overdue').length, 0);
+  assert.match(jobRun(h, f, exec, { now: later(start + SU.HOLD_BOUND_MS + 60e3), alive }).out, new RegExp(`held since ${later(start).replace(/[.]/g, '\\.')} .*past the 2\\.5 h bound`));
+  assert.deepEqual(rows(f).filter((r) => r.result === 'held-overdue').map((r) => r.since), [later(start)]);
+});
+
+test('a hold past the bound is no longer reported once a newer version installs', () => {
+  const DP = require('./daily-plan.js');
+  const h = harness({});
+  WD.log(h.root, { type: 'self-update', version: '0.43.31', at: T0, result: 'held-overdue', since: T0 });
+  assert.equal(DP.installHoldOf(h.root).version, '0.43.31');
+  // an install from before the overdue row does not end it
+  WD.log(h.root, { type: 'self-update', version: '0.43.30', at: later(-60e3), result: 'installed' });
+  assert.equal(DP.installHoldOf(h.root).version, '0.43.31');
+  WD.log(h.root, { type: 'self-update', version: '0.43.32', at: later(60e3), result: 'installed' });
+  assert.equal(DP.installHoldOf(h.root), null);
 });

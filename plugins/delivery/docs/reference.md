@@ -542,7 +542,12 @@ The Delivery Manager puts the command in the script step with `reality-check.js 
 commands that hold quotes, from a JSON file with `reality-check.js refine <bead> --from <file>`, where the
 file is `{"<criterion>": {"command": ..., "match": ..., "step": <k, default 1>, "as_role": <bool>}}`;
 the whole file is checked (known criteria and steps, known keys, a valid `match`) before anything is
-written. The runner
+written. Plan writes steps with actions only, so on a command-line surface a story is neither ready
+(`ready.js` blocks with `reality-check-command`, R-33) nor deployed (`evidence.js state <bead> deployed`
+refuses) while a planned step group has no step carrying a command; both name the criteria still
+without one. A bead with no script yet (one that states its own criteria) is refused deployed on a
+command line too: plan it and refine its commands first, so no check bead is dispatched with nothing
+to run. The runner
 checks out the bead's deployed sha (the full sha) in `verify/<bead>-<sha12>` of the role directory,
 runs the command there with the role's variables cleared (a step refined with `--as-role` keeps the
 Reality Checker's own role variables instead, and only for the one command that needs them,
@@ -943,6 +948,16 @@ asked to verify (R-22, R-23, R-24; D3).
   Delivery Manager acknowledges it (`andon.js ack <chain row> --reason '<the spike's answer>'`); closing
   the spike bead alone is not an answer. After the answer only fixes merged later pair again. A merge
   recorded without `merge-gate.js merged` is not seen.
+- **Checks of shipped work go on (fbk).** A stop halts new building, never the proving of what is
+  already deployed. None of the three stops (a stopped area, a red main, an overdue flaky test) refuses
+  the Reality Checker's claim of a check of shipped work, or the Delivery Manager's assignment of one
+  to the Reality Checker: a bead labelled `reality-check`, not a story itself, whose checked bead
+  (`metadata.reality_check_for`, which must match its parent, or, when it has none, the bead parent)
+  is deployed or verified. The `<bead>-rc-<sha>` beads `reality-check.js plan` dispatches are such
+  checks once their story is deployed. Any other session's claim of the same bead is refused, since
+  the label and the parent are anyone's to write; so are a check of unbuilt work, a bug labelled
+  `reality-check` that checks nothing, and other work under a shipped story. The watchdog's red-main
+  rule for assigned work reads the same check, for work the Reality Checker holds.
 - **The ledger.** `.delivery/andon/<writer>.ndjson`, append-only and chained like the review records
   (`n`, `prev`), written only by `a3.js`, `andon.js` and `merge-gate.js`. Every lane refuses a hand
   write, and a deletion or move of the folder, of its parent, or by a glob that reaches it. A chain
@@ -1383,7 +1398,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   marketplace clone shallow, so a clone that lacks the installed sha is first deepened (`git fetch --deepen`,
   50, then 200, then 1000 commits) until it holds it. It never installs
   while a wake is running (held to the next cycle), and while an install is held it starts no new wake,
-  so the running wakes end and the next cycle (or the kick a wake leaves as it ends) installs; it refuses an ungated or older version, retries a failed
+  so the running wakes end and the next cycle (or the kick a wake leaves as it ends) installs. A hold past the wake timeout and a cycle (2.5 h) means a wake outlived its stop: it is logged once as `held-overdue` and the owner briefing says which version waits, until it installs. It refuses an ungated or older version, retries a failed
   update once an hour, and logs each outcome as a `self-update` row. If main moved during the update, so
   the installed sha is not the one checked, the row says `ungated-install` and an `install-ungated`
   warning is recorded. After an install the pass wakes no one and kicks the next run, which runs the new

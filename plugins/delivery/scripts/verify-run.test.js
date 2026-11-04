@@ -57,13 +57,85 @@ function setup() {
   return { prod, root, roleDir, bd, dm, refine, deploy, verify, rows };
 }
 
+// The operator.js step as refine stores it in any layout: through the project's launcher. In an installed
+// plugin __dirname names one version (.../plugins/cache/<m>/delivery/<v>/), which refine refuses inside
+// single quotes and rewrites to this form otherwise (8wz.6: these tests passed only from a checkout).
+function opStep(s) {
+  const L = require('./lib/launcher.js');
+  assert.equal(L.ensureLauncher(s.root, path.join(__dirname, '..')), null);
+  return L.launcherCommand(s.root, 'operator.js');
+}
+
+// planned and deployed: a command-line deploy needs a command on every step group first (7k3.1.1.1.6), so
+// each criterion gets a placeholder the test refines to what it runs
 function ready() {
   const s = setup();
   assert.equal(s.dm('plan', ID).code, 0);
-  s.deploy();
+  for (const n of [1, 2]) assert.equal(s.refine(n, 'true').code, 0);
+  const d = s.deploy();
+  assert.equal(d.code, 0, d.out);
   assert.equal(s.dm('plan', ID).code, 0);
   return s;
 }
+
+// 7k3.1.1.1.6: 17 checks at a6aecad were dispatched with scripts whose steps had no command, so the
+// Reality Checker had nothing to run. On a command line, ready and deployed refuse such a script and name
+// the criteria still without one.
+test('7k3.1.1.1.6: on a command line, ready and deployed refuse a script whose step group has no command, naming the criterion', async () => {
+  const s = setup();
+  const readyNow = () => require('./ready.js').main([ID], { cwd: s.root, env: {}, bd: s.bd, now: T.plan, who: { root: s.root, team: loadManifest(s.root).team, instance: 'delivery-lead', roleId: 'delivery-lead', actor: 't@pc/delivery-lead' } });
+  assert.equal(s.dm('plan', ID).code, 0);
+  const pre = await readyNow();
+  assert.equal(pre.code, 1, pre.out);
+  assert.match(pre.out, /block R-33 reality-check-command: criteria 1, 2 are checked on S3, a command line, and their script steps carry no command/);
+  const refused = s.deploy();
+  assert.equal(refused.code, 1, refused.out);
+  assert.match(refused.out, /ex-vault-0n9-3 is not marked deployed: criteria 1, 2 are checked on S3, a command line, and their script steps carry no command.*reality-check\.js refine ex-vault-0n9-3 --criterion <n>/);
+  assert.equal(s.bd.show(ID).metadata.deployed_sha, undefined, 'nothing recorded');
+  assert.equal(s.bd.show(`${ID}-rc-${s.prod.deployed.slice(0, 7)}`), null, 'no check bead');
+  // one refined: the other is still named, by both gates
+  assert.equal(s.refine(1, 'sh tool.sh', 'imported').code, 0);
+  assert.match((await readyNow()).out, /reality-check-command: criteria 2 are/);
+  assert.match(s.deploy().out, /not marked deployed: criteria 2 are checked on S3/);
+  // both refined: ready and deployed pass
+  assert.equal(s.refine(2, 'sh tool.sh').code, 0);
+  const post = await readyNow();
+  assert.equal(post.code, 0, post.out);
+  assert.doesNotMatch(post.out, /reality-check-command/);
+  const ok = s.deploy();
+  assert.equal(ok.code, 0, ok.out);
+  assert.doesNotMatch(ok.out, /carry no command/);
+});
+
+// a bead that states its own criteria (no story file) is planned from them; on a command line its deploy
+// is refused until the script is planned and each step carries a command, and no check bead is dispatched
+test('7k3.1.1.1.6: a command-line bug with no story file is refused deployed unplanned and while its planned steps carry no command', () => {
+  const s = setup();
+  const FIX = 'ex-fix-9';
+  s.bd.beads.set(FIX, storyBead({ id: FIX, title: 'The count is missing', labels: ['bug'], parent: ID, description: 'Done when: (1) the tool prints the card count; and (2) the tool prints the deck name.', metadata: { story_file: undefined, roadmap_ref: undefined, initiative: 'vault', surface: 'S3' } }));
+  const lead = { root: s.root, team: loadManifest(s.root).team, instance: 'delivery-lead', roleId: 'delivery-lead', actor: 't@pc/delivery-lead' };
+  const deploy = () => evidence.main(['state', FIX, 'deployed', '--sha', s.prod.deployed], { cwd: s.root, env: {}, bd: s.bd, now: T.deploy, who: lead });
+  const noCheck = () => assert.deepEqual([...s.bd.beads.keys()].filter((k) => k.startsWith(`${FIX}-rc-`)), [], 'no check bead');
+  // no script yet: refused, nothing recorded, nothing planned or dispatched
+  const unplanned = deploy();
+  assert.equal(unplanned.code, 1, unplanned.out);
+  assert.match(unplanned.out, /ex-fix-9 is not marked deployed: criteria 1, 2 are checked on S3, a command line, and no reality-check script is planned.*reality-check\.js plan ex-fix-9/);
+  assert.equal(s.bd.show(FIX).metadata.deployed_sha, undefined);
+  assert.equal(fs.existsSync(path.join(s.root, rc.scriptRel(FIX))), false, 'no script written');
+  noCheck();
+  // planned before the deploy, steps without a command: refused naming both criteria
+  assert.equal(s.dm('plan', FIX).code, 0);
+  const bare = deploy();
+  assert.equal(bare.code, 1, bare.out);
+  assert.match(bare.out, /ex-fix-9 is not marked deployed: criteria 1, 2 are checked on S3, a command line, and their script steps carry no command/);
+  assert.equal(s.bd.show(FIX).metadata.deployed_sha, undefined);
+  noCheck();
+  // refined: deployed, and the check bead is dispatched
+  for (const n of [1, 2]) assert.equal(s.dm('refine', FIX, '--criterion', String(n), '--step', '1', '--command', 'sh tool.sh').code, 0);
+  const ok = deploy();
+  assert.equal(ok.code, 0, ok.out);
+  assert.match(ok.out, /ex-fix-9-rc-[0-9a-f]{7}: created for the Reality Checker/);
+});
 
 test('run: the deployed sha, not the newest commit, runs the command, and the runner writes a pass row', () => {
   const s = ready();
@@ -111,6 +183,11 @@ test('run: only the Reality Checker runs it; the builder and the Delivery Manage
 
 test('run: refused with the fix named when the step has no command, the script is for another deploy, or the sha is short', () => {
   const s = ready();
+  // the deploy gate refuses a step group with no command; one emptied by hand afterwards is refused here
+  const file = path.join(s.root, rc.scriptRel(ID));
+  const script = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete script.criteria[0].steps[0].command;
+  fs.writeFileSync(file, JSON.stringify(script));
   assert.match(s.verify(1).out, /no step with a command: the Delivery Manager adds it \(reality-check\.js refine/);
   assert.match(s.verify(7).out, /criterion 7 is not in the script/);
   const short = setup();
@@ -260,7 +337,7 @@ test('run: operator.js sync in the role directory is refused not_allowed without
   delete env.DELIVERY_PROJECT_ROOT;
   const who = { root: s.root, team: { ...loadManifest(s.root).team, product_url: s.prod.dir }, instance: 'reality-checker', roleId: 'reality-checker', actor: 't@pc/reality-checker', roleDir: s.roleDir };
   const verify = () => vr.main(['run', ID, '--criterion', '1'], { cwd: s.root, env, bd: s.bd, now: T.run, who });
-  const command = `cd '${s.roleDir}' && node '${path.join(__dirname, 'operator.js')}' sync --format-check`;
+  const command = `cd '${s.roleDir}' && ${opStep(s)} sync --format-check`;
   assert.equal(s.refine(1, command).code, 0);
   const without = verify();
   assert.equal(without.code, 0, without.out);
@@ -289,10 +366,12 @@ test('run: operator.js sync in the role directory is refused not_allowed without
 test('refine: --as-role is refused for any command but operator.js sync, and the runner refuses a hand-edited one', () => {
   const s = ready();
   const step = () => rc.readScript(s.root, ID).criteria.find((g) => g.criterion === 1).steps[0];
-  const op = `'${path.join(__dirname, 'operator.js')}'`;
-  for (const ok of [`node ${op} sync`, `cd '/r d/rc' && node ${op} sync --format-check`, `'${process.execPath}' ${op} sync --all --json`]) {
+  const abs = `'${path.join(__dirname, 'operator.js')}'`;
+  for (const ok of [`node ${abs} sync`, `cd '/r d/rc' && node ${abs} sync --format-check`, `'${process.execPath}' ${abs} sync --all --json`]) {
     assert.equal(rc.asRoleProblem(ok), null, ok);
   }
+  // what refine stores: the launcher form (an absolute path inside an installed plugin names its version)
+  const op = opStep(s).replace(/^node /, '');
   for (const bad of [
     `node /p/reality-check.js run-record ${ID} --criterion 1 --result pass`,
     `node /p/evidence.js add ${ID} --criterion 1 --result pass`,
@@ -368,7 +447,7 @@ test('as-role: only the real operator.js, run by node, from the checker\'s role 
   assert.equal(rc.asRoleProblem(`cd '${elsewhere}' && node '${OP}' sync`), null);
   assert.ok(rc.asRoleProblem(`cd '${elsewhere}' && node '${OP}' sync`, { roleDir: null }));
   const s = ready();
-  assert.equal(s.refine(1, `cd '${elsewhere}' && node '${OP}' sync`).code, 0);
+  assert.equal(s.refine(1, `cd '${elsewhere}' && ${opStep(s)} sync`).code, 0);
   assert.equal(s.dm('refine', ID, '--criterion', '1', '--step', '1', '--as-role').code, 0);
   const r = s.verify(1);
   assert.equal(r.code, 1, r.out);
@@ -376,7 +455,7 @@ test('as-role: only the real operator.js, run by node, from the checker\'s role 
   assert.equal(s.rows().length, 0);
   assert.ok(!fs.existsSync(path.join(s.roleDir, 'verify')));
   // and the same step with a cd into the checker's own role directory gets past the check to the run
-  assert.equal(s.refine(1, `cd '${s.roleDir}' && node '${OP}' sync --format-check`).code, 0);
+  assert.equal(s.refine(1, `cd '${s.roleDir}' && ${opStep(s)} sync --format-check`).code, 0);
   assert.doesNotMatch(s.verify(1).out, /--as-role is only for the form/);
 });
 
@@ -386,7 +465,7 @@ test('run: the hint names --as-role on either wording of the role refusal, and n
   const OP = path.join(__dirname, 'operator.js');
   const hinted = (stderr) => {
     const s = ready();
-    assert.equal(s.refine(1, `node '${OP}' sync`).code, 0);
+    assert.equal(s.refine(1, `${opStep(s)} sync`).code, 0);
     const r = verifyWith(s, (cmd, args, opts) => (cmd === '/bin/sh' ? { status: 1, stdout: '', stderr } : spawnSync(cmd, args, opts)));
     assert.match(r.out, /: fail \(exit 1\)/);
     return /--step 1 --as-role/.test(r.out);
