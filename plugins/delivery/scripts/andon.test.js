@@ -91,6 +91,39 @@ test('R-22 10-17: the intake fails in the real app; the area stops, the fix goes
   assert.match(h.tool('builder-1', 'Write', { file_path: ledger, content: '{}' }).deny, /written only by `a3\.js` and `andon\.js`/);
 });
 
+// 6y3: a bug bead with no story file states its criteria in its own "Done when:" (pinned at deploy); its
+// A3 closes on a later pass of the same criterion, read from those criteria as the done gate reads them
+test('R-22 6y3: the A3 of a failed check on a bug bead with no story file closes on a later pass of the same criterion', () => {
+  const BUG = 'ex-bug-7';
+  const h = intake({ [BUG]: storyBead({ id: BUG, title: 'The count is missing', labels: ['bug'], parent: null, assignee: 'dev@pc/builder-1', description: 'Done when: (1) the import shows the card count; and (2) the import names the deck.', metadata: { story_file: undefined, roadmap_ref: undefined, initiative: 'vault', authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } }) });
+  let k = 0;
+  const run = (n, result, version) => {
+    const f = path.join(h.root, '.delivery', 'evidence', 'artifacts', BUG, `run-${++k}.txt`);
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, `run ${k}: ${result}\n`);
+    return h.bash('reality-checker', `${h.script('reality-check.js')} run-record ${BUG} --criterion ${n} --result ${result} --artifact ${f} --observed-version ${version}`);
+  };
+  const deploy = (sha, version) => { const r = h.bash('delivery-lead', `${h.script('evidence.js')} state ${BUG} deployed --sha ${sha} --version ${version}`); assert.equal(r.code, 0, r.out); const p = h.bash('delivery-lead', `${h.script('reality-check.js')} plan ${BUG}`); assert.equal(p.code, 0, p.out); };
+  deploy('d478aa11', 'v1.4.2');
+  const fail = run(1, 'fail', 'v1.4.2');
+  assert.equal(fail.code, 0, fail.deny || fail.out);
+  const ev = evIdOf(fail.out);
+  const draft = h.a3('reality-checker', `new --trigger andon:${ev} --problem 'After the import finished, the summary showed no card count at all.'`);
+  assert.equal(draft.code, 0, draft.deny || draft.out);
+  const a3 = /^(a3-[a-z0-9-]+):/.exec(draft.out)[1];
+  assert.equal(h.bash('delivery-lead', `bd create --id ex-fix-count --title 'Count the cards' --labels bug --metadata '{"fixes":"${ev}","area":"collection"}'`).code, 0);
+  require('./lib/reviews.js').append(h.root, '502', { type: 'merged', head: H(502), beads: ['ex-fix-count'], at: new Date().toISOString() }, 'delivery-lead');
+  const sections = "--cause 'The count was read before the import finished.' --class 'Every summary read state before its job ended.' --countermeasure 'Summaries wait on the job; a test reads each after it ends.' --check 'The reality check on the deployed build passed.'";
+  deploy('e5550000', 'v1.4.3');
+  // a pass of another criterion proves nothing
+  const other = run(2, 'pass', 'v1.4.3');
+  assert.match(h.a3('delivery-lead', `close ${a3} --fix ex-fix-count --proof ${evIdOf(other.out)} ${sections}`).out, new RegExp(`is not a pass of criterion 1 of ${BUG} after ${ev}`));
+  const pass = run(1, 'pass', 'v1.4.3');
+  assert.equal(pass.code, 0, pass.deny || pass.out);
+  const closed = h.a3('delivery-lead', `close ${a3} --fix ex-fix-count --proof ${evIdOf(pass.out)} ${sections}`);
+  assert.equal(closed.code, 0, closed.out);
+});
+
 // fbk: a stop halts new building, never the proving of what is already deployed
 test('R-22 fbk: under an area stop, an overdue flaky test and a red main, the Reality Checker still takes the check of a shipped story; nobody else does', () => {
   const shipped = story('ex-vault-0n9-2', { labels: ['roadmap', 'phase-1', 'story', 'state-merged', 'state-deployed'], metadata: { deployed_sha: '235e4a04b3' } });
