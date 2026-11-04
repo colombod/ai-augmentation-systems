@@ -1774,3 +1774,43 @@ test('team-runtime-08 c3: through the lane hook, a hand edit of the manifest is 
     assert.equal(h.bash(inst, `git -C project checkout -- ${path.posix.join(TEAM_DIR_REL, 'team.json')}`, { run: false }).deny, null, `${inst} restore`);
   }
 });
+
+// 74y: reality-check.js refine stores --command and --match as text and runs nothing, so a stored step
+// that runs the plugin's own test runner (a check proven by named tests) is data, not a test run. A test
+// run straight from the shell, or one the shell would run while expanding refine's arguments, is still
+// refused, for every role.
+test('74y: the Delivery Manager stores a refine step that runs the test runner; a direct test run stays refused', () => {
+  const rc = `${PLUGIN_ROOT}/scripts/reality-check.js`;
+  const launcher = 'proj/bin/delivery.js';
+  const stored = 'DELIVERY_TEST_FILES="$P/scripts/team-role.test.js" node "$P/scripts/testing/run-tests.js"';
+  const run = (command, role = DL) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: POLICIES[role], ...ctx() });
+  for (const command of [
+    `node ${rc} refine ex-1 --criterion 1 --step 1 --command '${stored}' --match 'ok [0-9]+ - c1:'`,
+    `node ${rc} refine ex-1 --criterion 2 --command 'node --test "$P/scripts/x.test.js"' --match '# fail 0'`,
+    `node ${rc} refine ex-1 --criterion 1 --match 'x.test.js passed' --command 'node "$P/scripts/testing/run-tests.js"'`,
+    `node ${rc} refine ex-1 --criterion 1 --command=' node --test a.test.js' --match=x`,
+  ]) {
+    const d = run(command);
+    assert.equal(d.allow, true, `${command}: ${d.reason}`);
+  }
+  // the launcher form is not refused as a test run (the launcher's own trust check is a separate guard)
+  assert.doesNotMatch(String(run(`node ${launcher} reality-check.js refine ex-1 --criterion 1 --command '${stored}' --match 'fail 0'`).reason || ''), /sealed runner/);
+  // still refused: a test run outside refine's quoted text, or text the outer shell would run
+  for (const command of [
+    'DELIVERY_TEST_FILES=a.test.js node --test a.test.js',
+    `node ${rc} refine ex-1 --criterion 1 --command '${stored}' --match x; node --test a.test.js`,
+    `node ${rc} refine ex-1 --criterion 1 --command '${stored}' --match x && node a.test.js`,
+    `node ${rc} refine ex-1 --criterion 1 --command "$(node --test a.test.js)" --match x`,
+    `node ${rc} refine ex-1 --criterion 1 --command "node --test a.test.js" --match x`,
+    `node ${rc} refine ex-1 --criterion 1 --command \`node --test\` --match x`,
+    `node ${rc} refine ex-1 --criterion 1 --command x --match y | node --test`,
+    `node ${rc} show ex-1 --command 'node --test a.test.js'`,
+    `node ${rc} refine ex-1 --command 'x' > >(node --test)`,
+    `node ${rc} refine ex-1 --command 'x'$(node --test)`,
+    `node ${rc}x refine ex-1 --command 'node --test a.test.js'`,
+  ]) {
+    const d = run(command);
+    assert.equal(d.allow, false, command);
+  }
+  for (const role of [BUILDER, COS]) assert.equal(run('node --test a.test.js', role).allow, false, role);
+});
