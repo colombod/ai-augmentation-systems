@@ -1225,10 +1225,19 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   - a session stopped on a usage limit: "The team resumes at <reset + 5 min> (restart scheduled)" once the
     job is installed, else "the team is stalled; the watchdog is not installed", and "Resume now" once it
     has reset (its held beads are not also reported as stalled);
+  - a self-update the job refused (`lib/self-update.js`) that still stands: per install, its latest
+    `refused` row in the job log, until a later `installed` row names that install (installed rows list
+    their `targets`; one written before they did covers the user install only) at that version or a
+    newer one ("Install refused: plugin <version> for <install> (still on <old>) since <time>: <why>").
+    It goes to the Delivery Manager, who records the gate row the refusal names or has the stale install
+    removed; the job retries the install every pass by itself. The key is the version and the install,
+    so a newer refusal is new work. The owner's briefing always names it, past the other stall lines:
+    part of the team runs an older plugin, so the team is never shown healthy
+    (delivery-plugin-planning-bqj.2);
   - a role whose transcript polls gh in a loop (gh and a sleep, with its s/m/h/d unit, inside one
     `while`, `until` or `for` that runs, not loop text quoted as an argument;
     `watch -n`, gh's own `--watch`/`--interval`) more often than every 4 minutes (R-25).
-  Each is a warning in the ledger (`idle`, `stall`, `p0-unclaimed`, `usage-limit`, `tight-poll`), once per
+  Each is a warning in the ledger (`idle`, `stall`, `p0-unclaimed`, `usage-limit`, `install-refused`, `tight-poll`), once per
   stall, in this host's own ledger file. A review record that cannot be read is a line of its own
   ("Unreadable: the review record of PR <n> ...; a stall waiting on it is not known"), and a pass with
   one never says "No stall: work is moving". Nothing is paused or blocked. An owner pause that verifies silences all of it, the polling

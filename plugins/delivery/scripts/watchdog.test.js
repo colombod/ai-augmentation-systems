@@ -1727,6 +1727,64 @@ test('bqj: the briefing never shows a team healthy when the watchdog could not r
   assert.equal(DP.isRecovery('manager:1:rv-1'), true);
 });
 
+// bqj.2: the job's self-update refused every stale per-role install for a day (0ba.4.1, job.log) and
+// nothing but the job's own log said so: the watchdog read the team as healthy
+const refusedRow = (at, target, version = '0.43.44', extra = {}) => ({ type: 'self-update', from: '0.43.30', version, sha: 'a'.repeat(40), pr: 140, scope: target === 'user' ? 'user' : 'local', target, at, result: 'refused', why: 'PR 140 was merged without passing the team\'s gate', ...extra });
+const installedRow = (at, version, extra = {}) => ({ type: 'self-update', from: '0.43.30', version, sha: 'b'.repeat(40), pr: 141, scope: 'user', at, result: 'installed', detail: 'gated through PR 141; 1 install(s)', ...extra });
+
+test('bqj.2: a refused self-update stands as an install stall for the Delivery Manager until a later install of it or a newer one covers that install', () => {
+  const now = Date.parse('2026-11-04T12:00:00Z');
+  const ROLE = 'local /team/builder';
+  // refused for the user install and a role's local install; the same install refused again later keeps its latest refusal only
+  const rows = [refusedRow(iso(now - 3 * H), 'user', '0.43.43'), refusedRow(iso(now - 2 * H), 'user'), refusedRow(iso(now - 2 * H), ROLE)];
+  assert.deepEqual(WD.refusedInstalls(rows).map((r) => [r.target, r.version]), [['user', '0.43.44'], [ROLE, '0.43.44']]);
+  const res = WD.stalls({ now: iso(now), refusedInstalls: WD.refusedInstalls(rows), sessions: [{ instance: DM, role: DM, session: 's-dm', roleDir: os.tmpdir(), lastActive: now - 60e3 }] });
+  const found = res.stalls.filter((s) => s.kind === 'install');
+  assert.deepEqual(found.map((s) => [s.key, s.target, s.due]), [['install:0.43.44:user', DM, true], [`install:0.43.44:${ROLE}`, DM, true]]);
+  assert.match(found[0].line, /^Install refused: plugin 0\.43\.44 for the user install \(still on 0\.43\.30\) since 2026-11-04 10:00 UTC: PR 140 was merged without passing the team's gate\.$/);
+  assert.match(found[1].line, /for the install \/team\/builder /);
+  assert.match(found[0].prompt, /Settle it now/);
+  assert.doesNotMatch(found[0].plain, /0\.43|PR 140|delivery-lead/, 'the owner\'s words carry no internal ids');
+  // recovery: a later install that names the install ends its stall; one that names another install, an older version, or comes before the refusal does not
+  const cover = (r) => WD.refusedInstalls([...rows, r]).map((x) => x.target);
+  assert.deepEqual(cover(installedRow(iso(now - H), '0.43.44', { targets: ['user'] })), [ROLE]);
+  assert.deepEqual(cover(installedRow(iso(now - H), '0.43.45', { targets: ['user', ROLE] })), []);
+  assert.deepEqual(cover(installedRow(iso(now - H), '0.43.43', { targets: ['user', ROLE] })), ['user', ROLE], 'an older version does not cover the refusal');
+  assert.deepEqual(cover(installedRow(iso(now - 3 * H), '0.43.44', { targets: ['user', ROLE] })), ['user', ROLE], 'an install before the refusal does not end it');
+  // a row from before installs were named covers the user install only: it never hides a role's refusal
+  assert.deepEqual(cover(installedRow(iso(now - H), '0.43.44')), [ROLE]);
+  // a verified pause silences it like every stall
+  assert.deepEqual(WD.stalls({ now: iso(now), refusedInstalls: WD.refusedInstalls(rows), pause: { paused: true } }).stalls, []);
+});
+
+test('bqj.2: a refused install in the job log is a stall on watchdog.js check, a warning in the ledger, and a line in the owner\'s briefing, never a healthy team', () => {
+  const now = Date.now();
+  const h = harness({ beads: {} });
+  session(h, DM, { seen: iso(now - 60e3) });
+  session(h, 'builder-1', { seen: iso(now - 60e3) });
+  WD.log(h.root, refusedRow(iso(now - 2 * H), 'local /team/builder'));
+  const check = h.bash(DM, `${h.script('watchdog.js')} check`).out;
+  assert.match(check, /^Install refused: plugin 0\.43\.44 for the install \/team\/builder \(still on 0\.43\.30\)/m, check);
+  assert.ok(Wn.list(h.root).some((w) => w.kind === 'install-refused' && /0\.43\.44 refused for local \/team\/builder/.test(w.detail)), 'recorded in the ledger');
+  const brief = h.bash(COS, `${h.script('plan.js')} brief`).out;
+  assert.match(brief, /^An update of the team's plugin was refused, so part of the team still runs an older version; the Delivery Manager is asked to settle it\.$/m, brief);
+  // settled: the next install covers it, and the briefing and check say nothing of it
+  WD.log(h.root, installedRow(iso(now - H), '0.43.44', { targets: ['user', 'local /team/builder'] }));
+  assert.doesNotMatch(h.bash(DM, `${h.script('watchdog.js')} check`).out, /Install refused/);
+  assert.doesNotMatch(h.bash(COS, `${h.script('plan.js')} brief`).out, /plugin was refused/);
+});
+
+test('bqj.2: the briefing names a refused install even when other stalls fill its stall lines', () => {
+  const DP = require('./lib/daily-plan.js');
+  const f = { now: '2026-11-04T12:00:00Z', team: { roles: [] }, stalls_unreadable: null, restarts: [], queue: [], questions: [], checks: [], andon: { stops: [], ci: {}, flaky: [], chains: [] }, unknowns: [], spikes: [], next: [], known: new Map(), titles: new Map(), stories: [], fixes: [], prs: {} };
+  const stall = (kind, plain, i) => ({ kind, key: `${kind}:${i}`, bead: kind === 'install' ? undefined : `ex-${i}`, target: DM, line: plain, plain });
+  const stalls = [stall('quiet', 'A started item has not moved.', 1), stall('p0', 'A top-priority item waits.', 2), stall('install', 'An update of the team\'s plugin was refused, so part of the team still runs an older version; the Delivery Manager is asked to settle it.', 3)];
+  const out = DP.brief({ ...f, stalls }).join('\n');
+  assert.match(out, /^An update of the team's plugin was refused/m, out);
+  assert.match(out, /^A started item has not moved\.$/m);
+  assert.doesNotMatch(DP.brief({ ...f, stalls: stalls.slice(0, 2) }).join('\n'), /plugin was refused/);
+});
+
 // 6z5: a builder was woken every pass overnight for beads it could not move, spent its 48 handover wakes
 // by midday, and the review that sent its pull request back was held behind "alarm only"
 const B2 = 'builder-2';

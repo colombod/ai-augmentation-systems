@@ -250,7 +250,8 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
       WD.log(root, { ...row, result: 'failed', detail });
       return { lines: [`self-update: ${label} failed: ${detail}.`, ...refusals], installed: false };
     }
-    WD.log(root, { ...row, result: 'installed', sha: ownGo ? got : main.sha, detail: `${d.why}; ${targets.length} install(s)` });
+    // the installs it covers by name: a refusal standing for one of them ends here (watchdog.js refusedInstalls)
+    WD.log(root, { ...row, result: 'installed', sha: ownGo ? got : main.sha, targets: go.map((c) => targetOf(c.e)), detail: `${d.why}; ${targets.length} install(s)` });
     return { lines: [`self-update: installed ${label}, ${d.why}.`, ...refusals], installed: true, version: main.version };
   } catch (err) {
     return { lines: [`self-update: not checked (${brief(err)}); the wakes go on.`], installed: false };

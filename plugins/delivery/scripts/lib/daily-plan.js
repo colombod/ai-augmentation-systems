@@ -380,6 +380,10 @@ function brief(f, { prev, limit = 12 } = {}) {
   const r = resumesAt(f);
   if (r) problems.push(`The team resumes at ${require('./watchdog.js').clock(Date.parse(r))}, when the usage limit resets (restart scheduled).`);
   problems.push(...[...new Set(stallItems(f).map((x) => x.plain))].slice(0, r ? 1 : 2));
+  // a refused plugin install is always named (bqj.2): the team is not healthy while part of it runs an
+  // older plugin, however many other stalls lead the list
+  const refusedInstall = (f.stalls || []).find((x) => x.kind === 'install');
+  if (refusedInstall && !problems.includes(refusedInstall.plain)) problems.push(refusedInstall.plain);
   // a stall the plugin recovered by itself is still reported; a record it could not read is never healthy
   const restarted = restartLine(f, prev);
   if (restarted) problems.push(restarted);

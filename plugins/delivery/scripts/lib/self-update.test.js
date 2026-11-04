@@ -106,6 +106,8 @@ test('a newer version merged through the gate is installed, verified and logged 
   assert.equal(row.from, '0.43.30');
   assert.equal(row.sha, f.mainSha);
   assert.equal(row.pr, 140);
+  // the installs it covers, by name: a refusal standing for one of them ends here (bqj.2)
+  assert.deepEqual(row.targets, ['user']);
 });
 
 test('an ungated merge is refused, nothing runs, and the refusal is logged once across cycles', () => {
