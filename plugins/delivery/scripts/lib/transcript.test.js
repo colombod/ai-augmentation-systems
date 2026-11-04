@@ -272,15 +272,20 @@ test('readHumanInputs: an AskUserQuestion answer is an owner input bound to its 
   fs.writeFileSync(f, `${[
     { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'One decision: Set the weekly budget to 5 units?' }] } },
     { type: 'user', origin: { kind: 'human' }, uuid: 'u1', promptId: 'p1', message: { role: 'user', content: 'yes' } },
-    { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions } }] } },
-    { type: 'user', uuid: 'u2', sourceToolAssistantUUID: 'a2', toolUseResult: { questions, answers: { [questions[0].question]: 'Yes' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'answered' }] } },
+    { type: 'assistant', uuid: 'a2', timestamp: '2026-11-02T15:40:02.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: { questions } }] } },
+    { type: 'user', uuid: 'u2', timestamp: '2026-11-02T15:41:10.000Z', sourceToolAssistantUUID: 'a2', toolUseResult: { questions, answers: { [questions[0].question]: 'Yes' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'answered' }] } },
   ].map((r) => JSON.stringify(r)).join('\n')}\n`);
   const r = T.readHumanInputs(f);
   const [typed, asked] = r.inputs.filter((i) => i.source === 'human');
   assert.equal(typed.text, 'yes');
   assert.match(typed.after_assistant.tail, /Set the weekly budget to 5 units\?$/);
   assert.equal(asked.text, 'Yes');
-  assert.deepEqual(asked.asked, { question: "Pause the team's work now?", options: ['Yes', 'No'], multiSelect: false, via: 'AskUserQuestion' });
+  // stored as a delivery.confirmation/1 record: what the operator saw and chose, and the harness's own ids
+  assert.deepEqual(asked.asked, {
+    contract: 'delivery.confirmation/1', question: "Pause the team's work now?", choices: ['Yes', 'No'], multi_select: false, answer: 'Yes',
+    question_id: null, scope: null, event_id: 'claude:u2#q0', asked_at: '2026-11-02T15:40:02.000Z', answered_at: '2026-11-02T15:41:10.000Z',
+    provenance: { provider: 'claude-code', mechanism: 'AskUserQuestion', native_ref: { tool_use_id: 'tu1', assistant_uuid: 'a2', result_uuid: 'u2' }, transcript_ref: { file: 't.jsonl', line: 4 } },
+  });
 });
 
 test('readHumanInputs: the message before counts for one input only; a result that does not answer its tool_use is no input', () => {

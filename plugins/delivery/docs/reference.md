@@ -920,8 +920,23 @@ The owner runs the enterprise; the Chief of Staff runs the team for the owner (R
     the team's work now?"), records it with `operator.js ask`, and prints the AskUserQuestion input to
     use: that question, the options Yes and No, single choice;
   - the capture hooks read the session's transcript, which the harness writes: the AskUserQuestion
-    answer (the harness's tool_result) becomes an owner input bound to the question text, the options
-    and the choice mode the tool_use put, and the option chosen;
+    answer (the harness's tool_result) becomes an owner input whose `asked` is a
+    `delivery.confirmation/1` record: the question, `choices` and `multi_select` as the tool_use put
+    them, the `answer` chosen, `event_id` (`claude:<result uuid>#q<n>`), `asked_at` and `answered_at`
+    from the transcript, and `provenance` (`provider: claude-code`, `mechanism: AskUserQuestion`,
+    `native_ref`: the harness's ids, as `result_uuid`, `assistant_uuid` and `tool_use_id`, and
+    `transcript_ref`). Another provider's writer (the Codex port) hands its `/1` record over whole; its
+    `provenance.provider` is never rewritten. One `event_id` is one owner input, however often it is
+    captured;
+  - the confirmation is checked by its provider's adapter before anything else, and gives exactly one
+    of verified, refused (the record contradicts the provider's transcript: a `native_ref` that does
+    not resolve, a different question, choices, answer or time) or unresolved (this plugin cannot check
+    it: an unknown contract major, a provider with no adapter here, a transcript not readable from this
+    host). Only verified sets a field. Refused or unresolved holds the field at its last verified value,
+    and `goal.js show` prints `held: <value> (confirmation <in-id> unresolved: <reason>)`, or
+    `(confirmation <in-id> refused: <reason>)` when the adapter refused it or its scope names another
+    change. A record handed to the writer must be `/1` or later:
+    `/0` is only the reading of a capture with no `contract` key, and a record naming `/0` is refused;
   - the Chief of Staff records it with `operator.js record --answers <q> --goal <field>=<value>`;
   - `goal.js set <field> <value> --record <dec-id>` accepts it only when the question is goal.js's text
     for that field and value, the box offered exactly Yes and No as a single choice, the owner chose
@@ -931,6 +946,12 @@ The owner runs the enterprise; the Chief of Staff runs the team for the owner (R
     while the owner answers something else;
   - a yes applies once: a second change on the same question, answer or record is refused, and only the
     latest change to a field counts on read, so an older yes never re-applies.
+  - migration: an owner input captured before the contract carries `asked` with `via: AskUserQuestion`
+    and no `contract`. It reads as `delivery.confirmation/0` and is checked exactly as before; the
+    operator log is a hash chain, so it is never rewritten. New captures write `/1`. A plugin older than
+    0.43.51 cannot read `/1`: there a change confirmed in `/1` sets nothing and the field reads as the
+    last value that plugin can verify, so a pause set under `/1` reads as not paused. Every session
+    reading the goal must run 0.43.51 or later (the self-update installs it).
   The transcript is the harness's file, but a session with unrestricted Bash could append to its own
   transcript; like the rest of the capture, this is cooperative trust, detectable in the store's chains.
 - **Free text is off.** An instruction the owner types in their own words sets nothing until

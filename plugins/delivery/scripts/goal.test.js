@@ -517,3 +517,235 @@ test('portable-confirmations-01: the held value is never a copy of an earlier ye
   assert.deepEqual([r2.value, r2.from, r2.held], ['off', 'default', undefined]);
   assert.match(r2.ignored, /is not the latest change to pause/);
 });
+
+// ---- portable-confirmations-03: the versioned, provider-neutral confirmation record ----
+const cp = require('child_process');
+const C = require('./lib/confirmation.js');
+const OPERATOR_CLI = path.join(__dirname, 'operator.js');
+// operator.js verify --json run as any session would, outside a role
+const verifyJson = (root, id) => {
+  const env = { ...process.env };
+  delete env.DELIVERY_PROJECT_ROOT; delete env.DELIVERY_ROLE; delete env.DELIVERY_ROLE_DIR;
+  const r = cp.spawnSync('node', [OPERATOR_CLI, 'verify', id, '--json', '--project', root], { cwd: root, env, encoding: 'utf8' });
+  return JSON.parse(r.stdout);
+};
+const inputOf = (v) => v.chain.find((h) => h.kind === 'input');
+const pauseLine = (t) => showOut(t).split('\n').find((l) => l.startsWith('pause:'));
+// a change whose confirmation is the given /1 record, handed whole to the writer another provider uses,
+// cited by a decision for goal.js's question, and committed as goal.js set would were it accepted
+const handed = (t, field, value, asked, { host = 'pc', session_id = SID } = {}) => {
+  const { q } = t.ask(field, value);
+  log.recordInputs({ projectRoot: t.root, host, inputs: [{ text: asked.answer, asked, timestamp: new Date(Date.now() + 120e3).toISOString(), session_id }], instance: 'chief-of-staff', role: 'chief-of-staff' });
+  const input = log.listInputs(t.root, { source: 'human' }).find((i) => i.asked && i.asked.event_id === asked.event_id && i.host === host);
+  const dec = t.decide(input.id, asked.answer, `goal:${field}=${value}`, [q]);
+  const r = Goal.commitOnce(t.root, field, { value, record: dec, window_hours: 24, ...Goal.bindingOf(t.root, dec), by: 'chief-of-staff', at: new Date().toISOString() });
+  assert.equal(r.ok, true, r.error);
+  return { dec, input: input.id };
+};
+// a /1 record for goal.js's question as the Claude Code writer would build it, then altered
+const claudeRecord = (t, field, value, over = {}) => ({ ...C.claudeCode({ question: Goal.questionText(field, value), choices: ['Yes', 'No'], multiSelect: false, answer: 'Yes',
+  toolUseId: 'tuX', assistantUuid: 'askX', resultUuid: 'resX', index: 0, askedAt: null, answeredAt: null, file: path.basename(t.tr), line: 1 }), ...over });
+
+test('portable-confirmations-03 c1: a Yes in the question box sets the pause and is stored as delivery.confirmation/1 whose native ids are in the transcript', () => {
+  const t = project();
+  const dec = ownerSet(t, 'pause', 'paused');
+  assert.match(pauseLine(t), new RegExp(`^pause: paused \\(${dec}, `));
+  assert.match(showOut(t), new RegExp(`work: paused \\(${dec}\\)`));
+  const v = verifyJson(t.root, dec);
+  assert.equal(v.ok, true, JSON.stringify(v));
+  const a = inputOf(v).asked;
+  assert.equal(a.contract, 'delivery.confirmation/1');
+  assert.equal(a.provenance.provider, 'claude-code');
+  assert.equal(a.provenance.mechanism, 'AskUserQuestion');
+  assert.equal(a.question, "Pause the team's work now?");
+  assert.deepEqual([a.choices, a.multi_select, a.answer], [['Yes', 'No'], false, 'Yes']);
+  assert.match(a.event_id, /^claude:res\d+#q0$/);
+  assert.ok(a.asked_at && a.answered_at && a.asked_at < a.answered_at);
+  const recs = fs.readFileSync(t.tr, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const { tool_use_id: tu, assistant_uuid: au, result_uuid: ru } = a.provenance.native_ref;
+  assert.ok(recs.some((r) => r.uuid === au && r.message.content.some((b) => b.type === 'tool_use' && b.id === tu)), 'assistant_uuid and tool_use_id in the transcript');
+  assert.ok(recs.some((r) => r.uuid === ru && r.message.content.some((b) => b.type === 'tool_result' && b.tool_use_id === tu)), 'result_uuid in the transcript');
+  assert.deepEqual(C.check(t.root, inputOf(v)), { verdict: 'verified', major: 1 });
+});
+
+test('portable-confirmations-03 c2: a pause set by a persisted delivery.confirmation/0 chain reads as on the base commit', () => {
+  // the operator log and goal.json written by the plugin at fe0aaa0 (the base commit), copied unchanged;
+  // there, goal.js show printed: pause: paused (dec-chief-of-staff-000002, 2026-11-03T13:57:57.507Z)
+  const fixtureCopy = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-v0-'));
+  const root = fixtureCopy;
+  fs.cpSync(path.join(__dirname, 'testing', 'confirmation-v0'), path.join(root, '.delivery'), { recursive: true });
+  const t = { root };
+  const input = log.getInput(root, 'in-pc-000001');
+  assert.equal(input.asked.contract, undefined);
+  assert.equal(C.majorOf(input.asked), 0);
+  const r = Goal.resolve(root, 'pause', { warn: false });
+  assert.deepEqual([r.value, r.from, r.held, r.ignored], ['paused', 'dec-chief-of-staff-000002', undefined, undefined]);
+  assert.equal(pauseLine(t), 'pause: paused (dec-chief-of-staff-000002, 2026-11-03T13:57:57.507Z)');
+  assert.match(showOut(t), /work: paused \(dec-chief-of-staff-000002\)/);
+});
+
+test('portable-confirmations-03 c3: a confirmation of an unknown contract major or provider is unresolved; the verified pause holds, with the reason', () => {
+  for (const [over, why] of [
+    [{ contract: 'delivery.confirmation/9' }, /contract major 9 \(delivery\.confirmation\/9\) is unknown/],
+    [{ provenance: { provider: 'gemini-cli', mechanism: 'ask', native_ref: { id: 'x' }, transcript_ref: { file: 'x', line: 1 } } }, /provider "gemini-cli" has no adapter/],
+  ]) {
+    const t = project();
+    const pauseRec = ownerSet(t, 'pause', 'paused');
+    const { input } = handed(t, 'pause', 'off', claudeRecord(t, 'pause', 'off', { event_id: `x:${Math.random()}`, ...over }));
+    const r = Goal.resolve(t.root, 'pause', { warn: false });
+    assert.deepEqual([r.value, r.from, r.held], ['paused', pauseRec, true]);
+    assert.match(r.ignored, new RegExp(`^confirmation ${input} unresolved: `));
+    assert.match(r.ignored, why);
+    assert.equal(pauseLine(t), `pause: held: paused (${r.ignored})`);
+    assert.match(pauseLine(t), new RegExp(`^pause: held: paused \\(confirmation ${input} unresolved: `));
+    assert.equal(Goal.activePause(t.root, { warn: false }).paused, true);
+  }
+});
+
+test('portable-confirmations-03 c4: a claude-code confirmation whose native_ref does not resolve, or whose question is not the transcript\'s, is refused and the pause held', () => {
+  // the native ids name nothing in the session transcript
+  const a = project();
+  const pa = ownerSet(a, 'pause', 'paused');
+  const ia = handed(a, 'pause', 'off', claudeRecord(a, 'pause', 'off')).input;
+  const ra = Goal.resolve(a.root, 'pause', { warn: false });
+  assert.deepEqual([ra.value, ra.from, ra.held], ['paused', pa, true]);
+  assert.match(ra.ignored, new RegExp(`^confirmation ${ia} refused: its native_ref does not resolve in t\\.jsonl: no AskUserQuestion tuX in assistant record askX`));
+  assert.equal(pauseLine(a), `pause: held: paused (${ra.ignored})`);
+  assert.match(pauseLine(a), new RegExp(`^pause: held: paused \\(confirmation ${ia} refused: its native_ref does not resolve`));
+  // a real answer in the transcript, its tool_use_id altered: the question it names is not there
+  const d = project();
+  const pd = ownerSet(d, 'pause', 'paused');
+  const real = log.getInput(d.root, d.askUser(Goal.questionText('pause', 'off'), 'Yes')).asked;
+  const id = handed(d, 'pause', 'off', { ...real, provenance: { ...real.provenance, native_ref: { ...real.provenance.native_ref, tool_use_id: 'tuZ' } } }, { host: 'mac' }).input;
+  const rd = Goal.resolve(d.root, 'pause', { warn: false });
+  assert.deepEqual([rd.value, rd.from, rd.held], ['paused', pd, true]);
+  assert.match(rd.ignored, new RegExp(`^confirmation ${id} refused: its native_ref does not resolve in t\\.jsonl: no AskUserQuestion tuZ`));
+  // the native ids are a real answer in the transcript, to another question than the record's
+  const b = project();
+  const pb = ownerSet(b, 'pause', 'paused');
+  const other = log.getInput(b.root, b.askUser('Merge the export fix?', 'Yes')).asked;
+  const ib = handed(b, 'pause', 'off', { ...other, question: Goal.questionText('pause', 'off'), event_id: `${other.event_id}x` }).input;
+  const rb = Goal.resolve(b.root, 'pause', { warn: false });
+  assert.deepEqual([rb.value, rb.from, rb.held], ['paused', pb, true]);
+  assert.match(rb.ignored, new RegExp(`^confirmation ${ib} refused: (its event_id|its question differs from the transcript's \\("Merge the export fix\\?"\\))`));
+  // with an event_id true to its native_ref, the question mismatch itself is the reason
+  const c = project();
+  const pc = ownerSet(c, 'pause', 'paused');
+  const otherC = log.getInput(c.root, c.askUser('Merge the export fix?', 'Yes')).asked;
+  const ic = handed(c, 'pause', 'off', { ...otherC, question: Goal.questionText('pause', 'off') }, { host: 'mac' }).input;
+  const rc = Goal.resolve(c.root, 'pause', { warn: false });
+  assert.deepEqual([rc.value, rc.from, rc.held], ['paused', pc, true]);
+  assert.match(rc.ignored, new RegExp(`^confirmation ${ic} refused: its question differs from the transcript's \\("Merge the export fix\\?"\\)`));
+  assert.match(pauseLine(c), new RegExp(`^pause: held: paused \\(confirmation ${ic} refused: its question differs from the transcript's`));
+});
+
+test('portable-confirmations-03 c5: one event captured twice is one operator input, and a second decision citing it changes nothing', () => {
+  const t = project();
+  const dec = ownerSet(t, 'pause', 'paused');
+  const before = log.listInputs(t.root, { source: 'human' });
+  const first = before[before.length - 1];
+  // the capture runs again over the same transcript from its first line (cursors and index gone)
+  fs.rmSync(path.join(t.root, '.delivery', 'operator', 'cursors'), { recursive: true, force: true });
+  log.syncTranscript({ projectRoot: t.root, transcriptPath: t.tr, sessionId: SID, instance: 'chief-of-staff', role: 'chief-of-staff', host: 'pc', now: new Date() });
+  // and another writer hands over the same record whole, under its own ids
+  log.recordInputs({ projectRoot: t.root, host: 'pc', inputs: [{ text: 'Yes', asked: first.asked, ext_id: 'other-writer:1', session_id: SID }] });
+  const after = log.listInputs(t.root, { source: 'human' });
+  assert.equal(after.length, before.length);
+  assert.equal(after.filter((i) => i.asked && i.asked.event_id === first.asked.event_id).length, 1);
+  const shown = showOut(t);
+  // a second decision citing that input is refused by the records; goal.js show is unchanged
+  const { q } = t.ask('pause', 'paused');
+  assert.throws(() => t.decide(first.id, 'Yes', 'goal:pause=paused', [q]), { code: 'input_already_answers' });
+  assert.equal(showOut(t), shown);
+  // the same event stored on another host is a second input, yet still sets at most one decision
+  const { q: q3 } = t.ask('pause', 'paused');
+  log.recordInputs({ projectRoot: t.root, host: 'mac', inputs: [{ text: 'Yes', asked: first.asked, timestamp: new Date(Date.now() + 120e3).toISOString(), session_id: SID }] });
+  const onMac = log.listInputs(t.root, { source: 'human' }).find((i) => i.host === 'mac');
+  assert.ok(onMac && onMac.id !== first.id);
+  const r3 = set(t.root, 'pause', 'paused', t.decide(onMac.id, 'Yes', 'goal:pause=paused', [q3]));
+  assert.equal(r3.ok, false);
+  assert.match(r3.error, /already used/);
+  assert.equal(showOut(t), shown);
+  assert.equal(Goal.resolve(t.root, 'pause', { warn: false }).from, dec);
+});
+
+test('portable-confirmations-03 c4: each field the claude-code adapter checks against the transcript refuses a record that differs from it, and the pause holds', () => {
+  const text = Goal.questionText('pause', 'off');
+  const cases = [
+    // a Yes recorded over a transcript answer of No: goal.js compares the answer against the record only
+    ['answer', (t) => ({ ...log.getInput(t.root, t.askUser(text, 'No')).asked, answer: 'Yes' }), {}, /its answer differs from the transcript's \("No"\)/],
+    ['choices', (t) => ({ ...log.getInput(t.root, t.askUser(text, 'Yes', { options: ['Yes', 'No', 'Later'] })).asked, choices: ['Yes', 'No'] }), {}, /its choices differ from the transcript's \(\["Yes","No","Later"\]\)/],
+    ['multi_select', (t) => ({ ...log.getInput(t.root, t.askUser(text, 'Yes', { multiSelect: true })).asked, multi_select: false }), {}, /its multi_select differs from the transcript's/],
+    ['asked_at', (t) => { const a = log.getInput(t.root, t.askUser(text, 'Yes')).asked; return { ...a, asked_at: new Date(Date.parse(a.asked_at) - 60e3).toISOString() }; }, {}, /its asked_at or answered_at differs from the transcript's/],
+    ['answered_at', (t) => { const a = log.getInput(t.root, t.askUser(text, 'Yes')).asked; return { ...a, answered_at: new Date(Date.parse(a.answered_at) + 60e3).toISOString() }; }, {}, /its asked_at or answered_at differs from the transcript's/],
+    ['session', (t) => log.getInput(t.root, t.askUser(text, 'Yes')).asked, { session_id: 'another-session' }, new RegExp(`its session another-session is not the transcript's \\(${SID}\\)`)],
+    // the answer's record written before its question's: the last two transcript lines swapped
+    ['order', (t) => {
+      const a = log.getInput(t.root, t.askUser(text, 'Yes')).asked;
+      const lines = fs.readFileSync(t.tr, 'utf8').split('\n').filter(Boolean);
+      lines.push(...lines.splice(-2).reverse());
+      fs.writeFileSync(t.tr, `${lines.join('\n')}\n`);
+      return a;
+    }, {}, /in t\.jsonl the answer \(line \d+\) does not follow the question \(line \d+\)/],
+  ];
+  for (const [what, record, opts, why] of cases) {
+    const t = project();
+    const p = ownerSet(t, 'pause', 'paused');
+    const { input } = handed(t, 'pause', 'off', record(t), { host: 'mac', ...opts });
+    const r = Goal.resolve(t.root, 'pause', { warn: false });
+    assert.deepEqual([r.value, r.from, r.held], ['paused', p, true], what);
+    assert.match(r.ignored, new RegExp(`^confirmation ${input} refused: `), what);
+    assert.match(pauseLine(t), new RegExp(`^pause: held: paused \\(confirmation ${input} refused: `), what);
+    assert.match(r.ignored, why, what);
+    assert.equal(Goal.activePause(t.root, { warn: false }).paused, true, what);
+  }
+});
+
+test('portable-confirmations-03 c4: a /1 confirmation scoped to one change decides that change and is refused for any other', () => {
+  const text = Goal.questionText('pause', 'off');
+  // scoped to this very change: verified, and the pause lifts
+  const ok = project();
+  ownerSet(ok, 'pause', 'paused');
+  const { dec } = handed(ok, 'pause', 'off', { ...log.getInput(ok.root, ok.askUser(text, 'Yes')).asked, scope: 'goal:pause=off' }, { host: 'mac' });
+  const rk = Goal.resolve(ok.root, 'pause', { warn: false });
+  assert.deepEqual([rk.value, rk.from, rk.held, rk.ignored], ['off', dec, undefined, undefined]);
+  // scoped to another value of the field, to another field, or to something that is no goal change
+  for (const scope of ['goal:pause=paused', 'goal:budget.weekly_units=5', 'bead:delivery-plugin-planning-x']) {
+    const t = project();
+    const p = ownerSet(t, 'pause', 'paused');
+    const { input } = handed(t, 'pause', 'off', { ...log.getInput(t.root, t.askUser(text, 'Yes')).asked, scope }, { host: 'mac' });
+    const r = Goal.resolve(t.root, 'pause', { warn: false });
+    assert.deepEqual([r.value, r.from, r.held], ['paused', p, true], scope);
+    assert.equal(r.ignored, `confirmation ${input} refused: it is scoped to ${scope}, not pause = off`, scope);
+    assert.equal(pauseLine(t), `pause: held: paused (${r.ignored})`, scope);
+  }
+});
+
+test('portable-confirmations-03 c4: a record that names delivery.confirmation/0 itself is refused, never read as a capture from before the contract', () => {
+  // the reviewer's probe: a /0-shaped record that claims its contract, handed to the writer, would pass as stored
+  const t = project();
+  const p = ownerSet(t, 'pause', 'paused');
+  const forged = { contract: 'delivery.confirmation/0', via: 'AskUserQuestion', question: Goal.questionText('pause', 'off'), options: ['Yes', 'No'], multiSelect: false, event_id: 'forged:1' };
+  assert.equal(C.majorOf(forged), null);
+  assert.deepEqual(C.check(t.root, { asked: forged }), { verdict: 'refused', reason: 'its contract "delivery.confirmation/0" is never written: /0 is only the reading of a capture with no contract key' });
+  assert.throws(() => handed(t, 'pause', 'off', { ...forged, answer: 'Yes' }), /delivery\.confirmation\/1 or later record/);
+  assert.equal(log.listInputs(t.root, { source: 'human' }).some((i) => i.asked && i.asked.event_id === 'forged:1'), false);
+  // were one stored anyway (the writer's check bypassed), it is refused on read and the pause holds
+  const { q } = t.ask('pause', 'off');
+  const majorOf = C.majorOf;
+  C.majorOf = (a) => (a && a.contract === 'delivery.confirmation/0' ? 1 : majorOf(a));
+  try { log.recordInputs({ projectRoot: t.root, host: 'mac', inputs: [{ text: 'Yes', asked: forged, timestamp: new Date(Date.now() + 120e3).toISOString(), session_id: SID }] }); } finally { C.majorOf = majorOf; }
+  const id = log.listInputs(t.root, { source: 'human' }).find((i) => i.asked && i.asked.event_id === 'forged:1').id;
+  const dec = t.decide(id, 'Yes', 'goal:pause=off', [q]);
+  assert.equal(Goal.commitOnce(t.root, 'pause', { value: 'off', record: dec, window_hours: 24, ...Goal.bindingOf(t.root, dec), by: 'chief-of-staff', at: new Date().toISOString() }).ok, true);
+  const r = Goal.resolve(t.root, 'pause', { warn: false });
+  assert.deepEqual([r.value, r.from, r.held], ['paused', p, true]);
+  assert.equal(r.ignored, `confirmation ${id} refused: its contract "delivery.confirmation/0" is never written: /0 is only the reading of a capture with no contract key`);
+  assert.equal(pauseLine(t), `pause: held: paused (${r.ignored})`);
+  assert.equal(Goal.activePause(t.root, { warn: false }).paused, true);
+  // the other direction: a capture from before the contract (no contract key) still reads as /0
+  assert.equal(C.majorOf({ via: 'AskUserQuestion', question: 'x', options: ['Yes', 'No'], multiSelect: false }), 0);
+  assert.equal(C.majorOf({ ...forged, contract: 'delivery.confirmation/1' }), 1);
+  // a major with a leading zero is no contract at all
+  assert.deepEqual(C.check(t.root, { asked: { ...forged, contract: 'delivery.confirmation/01' } }), { verdict: 'refused', reason: 'its contract "delivery.confirmation/01" is malformed' });
+});

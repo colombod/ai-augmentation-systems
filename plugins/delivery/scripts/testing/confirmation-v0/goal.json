@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "fields": {
+    "pause": {
+      "value": "paused",
+      "record": "dec-chief-of-staff-000002",
+      "question": "q-chief-of-staff-000001",
+      "input": "in-pc-000001",
+      "window_hours": 24,
+      "by": "chief-of-staff",
+      "at": "2026-11-03T13:57:57.507Z"
+    }
+  },
+  "history": [
+    {
+      "field": "pause",
+      "value": "paused",
+      "record": "dec-chief-of-staff-000002",
+      "question": "q-chief-of-staff-000001",
+      "input": "in-pc-000001",
+      "window_hours": 24,
+      "by": "chief-of-staff",
+      "at": "2026-11-03T13:57:57.507Z"
+    }
+  ]
+}
