@@ -784,7 +784,11 @@ test('refine --from sets and clears as_role, and refuses it on any command but o
   const script = () => fs.readFileSync(path.join(root, rc.scriptRel(ID)), 'utf8');
   const step = () => JSON.parse(script()).criteria.find((g) => g.criterion === 1).steps[0];
   const write = (body) => { const f = path.join(root, 'as-role.json'); fs.writeFileSync(f, JSON.stringify(body)); return f; };
-  const sync = `node '${path.join(__dirname, 'operator.js')}' sync --format-check`;
+  // through the project's launcher: an absolute path inside an installed plugin names its version, which
+  // refine refuses inside single quotes (8wz.6: this passed only from a checkout)
+  const L = require('./lib/launcher.js');
+  assert.equal(L.ensureLauncher(root, PLUGIN_ROOT), null);
+  const sync = `${L.launcherCommand(root, 'operator.js')} sync --format-check`;
   let r = dm('refine', ID, '--from', write({ 1: { command: sync, match: 'ok', as_role: true } }));
   assert.equal(r.code, 0, r.out);
   assert.deepEqual([step().command, step().as_role], [sync, true]);
