@@ -549,7 +549,7 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
         const G = require('./gates.js');
         const fix = require('./waves.js').fixLink(b, null, { root, beadOf, ownerRecord: (r) => require('./gate-context.js').ownerRecord(root, r),
           byStoryId: (sid) => beads.find((x) => G.isStoryBead(x) && String((x.metadata || {}).story || '') === sid) || null });
-        return !AN.ciRedBlock(b, ciNow, fix);
+        return !AN.ciRedBlock(b, ciNow, fix, beadOf);
       } catch (err) { return true; }
     };
     const parts = [];

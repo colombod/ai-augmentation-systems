@@ -18,11 +18,12 @@ const GREEN = [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conc
 const claim = (h, inst, id) => h.bash(inst, `bd update ${id} --claim`);
 
 // 10-17: vault-0n9.3 deployed to the real app, its Reality Checker run, the next story in the same area
-function intake() {
+function intake(more = {}) {
   const beads = {
     [ID]: storyBead({ assignee: 'dev@pc/builder-1', metadata: { story: 'vault-0n9-3', authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } }),
     'ex-vault-0n9-4': story('ex-vault-0n9-4'),
     'ex-trade-1': story('ex-trade-1', { metadata: { area: 'trade' } }),
+    ...more,
   };
   const h = harness({ beads });
   let k = 0;
@@ -88,6 +89,48 @@ test('R-22 10-17: the intake fails in the real app; the area stops, the fix goes
   const ledger = path.join(h.root, '.delivery', 'andon', 'delivery-lead.ndjson');
   assert.match(h.bash('delivery-lead', `echo '{}' >> ${ledger}`, { run: false }).deny, /written only by `a3\.js` and `andon\.js`/);
   assert.match(h.tool('builder-1', 'Write', { file_path: ledger, content: '{}' }).deny, /written only by `a3\.js` and `andon\.js`/);
+});
+
+// fbk: a stop halts new building, never the proving of what is already deployed
+test('R-22 fbk: with an area stopped and main red, the check of a shipped story still starts; new builds stay refused', () => {
+  const shipped = story('ex-vault-0n9-2', { labels: ['roadmap', 'phase-1', 'story', 'state-merged', 'state-deployed'], metadata: { deployed_sha: '235e4a04b3' } });
+  const unbuilt = story('ex-vault-0n9-5');
+  const h = intake({
+    [shipped.id]: shipped,
+    [unbuilt.id]: unbuilt,
+    // as reality-check.js plan dispatches it, and a hand-made check child with only the label
+    'ex-vault-0n9-2-rc-235e4a0': { id: 'ex-vault-0n9-2-rc-235e4a0', title: 'Reality check: Story ex-vault-0n9-2 on S1 at 235e4a0', parent: shipped.id, labels: ['reality-check'], metadata: { reality_check_for: shipped.id, deployed_sha: '235e4a04b3' } },
+    'ex-vault-0n9-2.2': { id: 'ex-vault-0n9-2.2', title: 'Reality check of the shipped story', parent: shipped.id, labels: ['reality-check'] },
+    // not checks of shipped work: an unbuilt story's check, a labelled bug with nothing it checks, one naming another bead
+    'ex-vault-0n9-5-rc-aaaaaaa': { id: 'ex-vault-0n9-5-rc-aaaaaaa', title: 'Reality check of an unbuilt story', parent: unbuilt.id, labels: ['reality-check'], metadata: { reality_check_for: unbuilt.id } },
+    'ex-rc-bug': { id: 'ex-rc-bug', title: 'Reality checks are slow', labels: ['bug', 'reality-check'], metadata: { area: 'collection' } },
+    'ex-rc-odd': { id: 'ex-rc-odd', title: 'Check', parent: unbuilt.id, labels: ['reality-check'], metadata: { reality_check_for: shipped.id } },
+    // building under a shipped story: a child task without the label, and a story that carries it
+    'ex-vault-0n9-2.3': { id: 'ex-vault-0n9-2.3', title: 'Follow-up work on the shipped story', parent: shipped.id, labels: [] },
+    'ex-vault-0n9-6': story('ex-vault-0n9-6', { parent: shipped.id, labels: ['roadmap', 'phase-1', 'story', 'reality-check'] }),
+  });
+  h.deploy('d478aa11', 'v1.4.2');
+  const ev = evIdOf(h.run(1, 'fail', 'v1.4.2').out);
+  assert.match(ev, /^ev-/);
+  // the Delivery Manager assigns the shipped story's check to the Reality Checker, who claims it
+  const assigned = h.bash('delivery-lead', 'bd update ex-vault-0n9-2-rc-235e4a0 --assignee dev@pc/reality-checker');
+  assert.equal(assigned.deny, null, 'assigning a check of shipped work is accepted under the stop');
+  assert.equal(claim(h, 'reality-checker', 'ex-vault-0n9-2-rc-235e4a0').deny, null);
+  assert.equal(claim(h, 'reality-checker', 'ex-vault-0n9-2.2').deny, null, 'a check child of a deployed story, by its label');
+  // new building stays stopped
+  for (const id of [unbuilt.id, 'ex-vault-0n9-5-rc-aaaaaaa', 'ex-rc-bug', 'ex-rc-odd', 'ex-vault-0n9-2.3', 'ex-vault-0n9-6']) {
+    assert.match(claim(h, 'builder-2', id).deny || '', /D3: area collection is stopped/, id);
+  }
+  // an overdue confirmed flaky test in the area holds builds, not the check
+  require('./andon.js').main(['flaky', 'search.spec', '--sha', 'c195aa00', '--fail-run', '1', '--pass-run', '2', '--area', 'collection'], { who: { root: h.root, roleId: 'delivery-lead', instance: 'delivery-lead' }, now: new Date(Date.now() - 25 * 3600e3).toISOString() });
+  assert.match(claim(h, 'builder-2', unbuilt.id).deny || '', /D3: search\.spec failed then p/);
+  assert.equal(claim(h, 'reality-checker', 'ex-vault-0n9-2.2').deny, null, 'the overdue flaky test does not hold the check');
+  // a red main stops builds across the product, and the check of shipped work still starts
+  h.bash('delivery-lead', `${h.script('andon.js')} ci red --sha c195aa00 --run 195`);
+  assert.match(claim(h, 'builder-2', 'ex-trade-1').deny || '', /CI on main is red since/);
+  assert.equal(h.bash('delivery-lead', 'bd update ex-vault-0n9-2.2 --assignee dev@pc/reality-checker').deny, null);
+  assert.equal(AN.ciRedBlock(h.db().issues['ex-vault-0n9-2.2'], { red: true, branch: 'main', since: '2026-10-09' }, { ok: false }, (x) => h.db().issues[x]), null, 'the watchdog\'s rule is the same');
+  assert.ok(AN.ciRedBlock(h.db().issues['ex-rc-bug'], { red: true, branch: 'main', since: '2026-10-09' }, { ok: false }, (x) => h.db().issues[x]));
 });
 
 test('R-22: an A3 close needs every section, the fix beads and a pass on the deployed version; one A3 per failure', () => {
