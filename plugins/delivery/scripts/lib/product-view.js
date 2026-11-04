@@ -27,6 +27,8 @@ const { spawnSync } = require('child_process');
 
 const OPEN_STATUSES = ['in_progress', 'blocked', 'open'];
 const SECTIONS = ['open', 'reviews', 'notInstalled', 'unchecked', 'blockers'];
+// gh pr list's --limit: a list this long may have been cut short, so the in-review section is named incomplete
+const PR_LIMIT = 200;
 const SECTION_NAMES = { open: 'open work', reviews: 'in review', notInstalled: 'merged, not installed', unchecked: 'installed, not checked', blockers: 'blockers and owner questions' };
 
 const byStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -139,11 +141,12 @@ function readProduct(root, deps = {}) {
   // pull requests in review: the product repository's open ones, with the review record's state
   if (!out.repo) miss('gh', 'in review', 'team.json names no product_github, so gh cannot be asked which pull requests are open');
   else {
-    const r = (deps.gh || defaultGh)(['pr', 'list', '-R', out.repo, '--state', 'open', '--limit', '200', '--json', 'number,title,headRefName,headRefOid,isDraft,body'], { cwd: abs });
+    const r = (deps.gh || defaultGh)(['pr', 'list', '-R', out.repo, '--state', 'open', '--limit', String(PR_LIMIT), '--json', 'number,title,headRefName,headRefOid,isDraft,body'], { cwd: abs });
     let list = null;
     if (r && r.status === 0) { try { list = JSON.parse(r.stdout); } catch (err) { list = null; } }
     if (!Array.isArray(list)) miss('gh', 'in review', r && r.error ? (r.error.code === 'ENOENT' ? 'gh is not installed' : r.error) : `gh pr list -R ${out.repo}: ${(r && (r.stderr || r.stdout)) || 'no JSON'}`);
     else {
+      if (list.length >= PR_LIMIT) miss('gh', 'in review', `gh pr list -R ${out.repo} returned ${list.length} open pull requests, its limit of ${PR_LIMIT}; more may be open, so the list is incomplete`);
       const recorded = R.listPrs(abs);
       out.reviews = list.map((p) => {
         let review = 'no review requested';
@@ -172,17 +175,19 @@ function readProduct(root, deps = {}) {
     for (const b of shipping.sort((x, y) => byStr(x.id, y.id))) {
       const m = b.metadata || {};
       const state = G.stateOf(b);
-      if (state === 'merged' && !m.deployed_sha) {
-        const pr = prNumber(m.merged_pr);
-        let merge = null;
-        if (pr) { const rec = R.read(abs, pr); merge = ((rec.rows || []).find((x) => x.type === 'merged') || {}).merge_commit || null; }
-        const inside = install.unavailable ? null : inInstall(merge, install, git);
-        if (inside === true) unchecked.push({ id: b.id, state, sha: null, pr, merge, installed: install.sha, criteria: null, problem: 'no deploy recorded' });
+      // the story's latest merge, judged against the install, whatever was deployed before it
+      const pr = prNumber(m.merged_pr);
+      let merge = null;
+      if (pr) { const rec = R.read(abs, pr); merge = ([...(rec.rows || [])].reverse().find((x) => x.type === 'merged') || {}).merge_commit || null; }
+      const inside = install.unavailable ? null : inInstall(merge, install, git);
+      if (state === 'merged' || (state === 'deployed' && inside === false)) {
+        if (state === 'merged' && inside === true) unchecked.push({ id: b.id, state, sha: null, pr, merge, installed: install.sha, criteria: null, problem: 'no deploy recorded' });
         else if (!install.unavailable) notInstalled.push({ id: b.id, pr, merge, installed: { version: install.version, sha: install.sha }, known: inside === false });
       } else if (state === 'deployed' && m.deployed_sha) {
         let d;
         try { d = checkOf(abs, b, { bd, team, verifyRecord: deps.verifyRecord }); } catch (err) { d = { ok: false, criteria: [], problem: `the evidence could not be read (${firstLine(err)})` }; }
-        if (d && d.ok && !d.cut) continue;
+        // a cut story closes without verification (evidence.js cut), as a state-cut one is not listed here
+        if (d && d.ok) continue;
         const problem = d.problem || (d.empty ? 'the story has no acceptance criteria' : null);
         unchecked.push({ id: b.id, state, sha: m.deployed_sha, pr: prNumber(m.merged_pr), merge: null, installed: install.unavailable ? null : install.sha,
           criteria: (d.criteria || []).map((c) => ({ n: c.n, row: c.row || null, waiver: c.waiver || null, why: c.why || null })), problem });
@@ -227,4 +232,4 @@ function readProducts(roots, deps = {}) {
 // true when a product has work in flight: open beads, open pull requests, unshipped or unchecked work, blockers
 const inFlight = (v) => SECTIONS.some((s) => Array.isArray(v[s]) && v[s].length > 0);
 
-module.exports = { readProduct, readProducts, installOf, inInstall, inFlight, SECTIONS, SECTION_NAMES, OPEN_STATUSES };
+module.exports = { readProduct, readProducts, installOf, inInstall, inFlight, SECTIONS, SECTION_NAMES, OPEN_STATUSES, PR_LIMIT };

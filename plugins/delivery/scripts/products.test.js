@@ -298,3 +298,73 @@ test('9cp.1 c1: a deployed story whose check is complete is not listed as instal
   assert.doesNotMatch(r.out, /installed, not checked: alpha-6/);
   assert.match(r.out, /^\[alpha\] open work: alpha-6 open/m);
 });
+
+test('9cp.1 c1: a follow-up merge on a deployed story the install does not hold is merged, not installed', () => {
+  const a = product('alpha');
+  const SHA_FOLLOW = 'f'.repeat(40);
+  // alpha-4 was deployed at SHA_DEPLOYED; a later pull request on the same story merged at SHA_FOLLOW
+  a.rec.beads[3].metadata.merged_pr = '23';
+  R.append(a.root, 23, { type: 'merged', repo: a.repo, merge_commit: SHA_FOLLOW, at: '2026-11-02T00:00:00Z' }, 'delivery-lead');
+  const r = main(['--project', a.root], fakes([a]));
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^\[alpha\] merged, not installed: alpha-4 PR #23 merge ffffffffffff; install 1\.2\.3 at aaaaaaaaaaaa: the install does not contain it$/m);
+  assert.doesNotMatch(r.out, /installed, not checked: alpha-4/);
+});
+
+test('9cp.1 c1: a merged story that still carries a deployed sha is in one of the two sections, never neither', () => {
+  const a = product('alpha');
+  // alpha-3 merged PR 21 after an earlier deploy: state-merged with a deployed_sha
+  a.rec.beads[2].metadata.deployed_sha = SHA_DEPLOYED;
+  const r = main(['--project', a.root], fakes([a]));
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^\[alpha\] merged, not installed: alpha-3 PR #21 merge cccccccccccc; install 1\.2\.3 at aaaaaaaaaaaa: the install does not contain it$/m);
+  // and once the install holds that merge, it waits on its check
+  const f = fakes([a]);
+  f.git = (args) => ({ status: args.includes(SHA_MERGE) ? 0 : 1 });
+  const held = main(['--project', a.root], f);
+  assert.equal(held.code, 0, held.out);
+  assert.match(held.out, /^\[alpha\] installed, not checked: alpha-3 /m);
+  assert.doesNotMatch(held.out, /merged, not installed: alpha-3/);
+});
+
+test('9cp.1 c1: a cut story is not listed as installed, not checked', () => {
+  const a = product('alpha');
+  // the cut row is on the evidence ledger; the bead has not (yet) been labelled state-cut
+  a.rec.verdicts['alpha-4'] = { ok: true, cut: 'ev-alpha-4-cut', criteria: [] };
+  const r = main(['--project', a.root], fakes([a]));
+  assert.equal(r.code, 0, r.out);
+  assert.doesNotMatch(r.out, /installed, not checked: alpha-4/);
+  assert.match(r.out, /^\[alpha\] installed, not checked: 0 /m);
+});
+
+test('9cp.1 c4: a pull request list as long as its limit is named incomplete, and the exit is non-zero', () => {
+  const a = product('alpha');
+  const pr = (n) => ({ number: n, title: `change ${n}`, headRefName: 'team/b', headRefOid: 'e'.repeat(40), isDraft: false, body: '' });
+  a.rec.prs = Array.from({ length: PV.PR_LIMIT }, (_, i) => pr(i + 1));
+  const r = main(['--project', a.root], fakes([a]));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, new RegExp(`^\\[alpha\\] SOURCE UNAVAILABLE: gh for product alpha \\(in review\\): .*${PV.PR_LIMIT}.*limit`, 'm'));
+  assert.match(r.out, /^INCOMPLETE: alpha \(gh\)/m);
+  // one fewer than the limit is the whole list
+  a.rec.prs = a.rec.prs.slice(1);
+  const whole = main(['--project', a.root], fakes([a]));
+  assert.equal(whole.code, 0, whole.out);
+});
+
+test('9cp.1 c1: an advisory pass counts as the review only where team.json sets review.bots_count', () => {
+  const run = (botsCount) => {
+    const a = product('alpha');
+    const file = path.join(a.root, '.delivery', 'team', 'team.json');
+    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), review: { bots_count: botsCount } }));
+    const head = 'e'.repeat(40);
+    R.append(a.root, 22, { type: 'request', repo: a.repo, head, owner: 'builder-alpha', beads: ['alpha-1'], at: '2026-11-01T00:00:00Z' }, 'delivery-lead');
+    R.append(a.root, 22, { type: 'review', repo: a.repo, head, kind: 'advisory', reviewer: 'some-bot', result: 'pass', at: '2026-11-01T01:00:00Z' }, 'delivery-lead');
+    return main(['--project', a.root], fakes([a]));
+  };
+  const counted = run(true);
+  assert.equal(counted.code, 0, counted.out);
+  assert.match(counted.out, /^\[alpha\] in review: PR #22 .*, review passed, /m);
+  const ignored = run(false);
+  assert.equal(ignored.code, 0, ignored.out);
+  assert.match(ignored.out, /^\[alpha\] in review: PR #22 .*, review waiting, /m);
+});
