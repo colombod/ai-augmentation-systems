@@ -573,7 +573,7 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
     const parts = [];
     const prs = managerPrs(root, parts);
     const res = stalls({ prs, claimable, beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
-      pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root), reviews: reviewFacts(root), refusedInstalls: refusedInstalls(logRows(root)), woken: logRows(root).filter((r) => r.type === 'wake').flatMap((r) => r.keys || []).filter((k) => /^review:/.test(String(k))) });
+      pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root), reviews: reviewFacts(root), refusedInstalls: refusedInstalls(logRows(root), { installs: require('./self-update.js').installTargets('delivery') }), woken: logRows(root).filter((r) => r.type === 'wake').flatMap((r) => r.keys || []).filter((k) => /^review:/.test(String(k))) });
     // a verified pause silences the polling warnings too
     return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list, ...(parts.length ? { unreadableParts: parts } : {}) };
   } catch (err) { return { stalls: [], polls: [], sessions: [], unreadable: String(err.message).split('\n')[0] }; }
@@ -582,7 +582,10 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
 // The self-update refusals still standing (bqj.2), from the job's log: per install the latest refusal,
 // unless a later installed row of its version or a newer one names that install. An installed row from
 // before installs were named covers the user install only, so an older row never hides a refusal.
-function refusedInstalls(rows) {
+// `installs` are the targets installed now (self-update.js installTargets): a refusal for one no longer
+// there ends, since removing the stale install is one way to settle it and no install will name it
+// again (rv-167). Unknown (null) keeps every refusal: an unreadable record never reads as healthy.
+function refusedInstalls(rows, { installs = null } = {}) {
   const { compare } = require('./plugin-version.js');
   const ups = rows.filter((r) => r && r.type === 'self-update');
   const latest = new Map();
@@ -592,7 +595,7 @@ function refusedInstalls(rows) {
     if (!was || ms(r.at) >= ms(was.at)) latest.set(target, { target, version: r.version, from: r.from || null, why: r.why || null, at: r.at, pr: r.pr || null });
   }
   const covers = (i, target) => (Array.isArray(i.targets) ? i.targets.includes(target) : target === 'user' && (!i.scope || i.scope === 'user'));
-  return [...latest.values()].filter((r) => !ups.some((i) => i.result === 'installed' && ms(i.at) > ms(r.at) && covers(i, r.target) && compare(String(i.version), String(r.version)) >= 0));
+  return [...latest.values()].filter((r) => !Array.isArray(installs) || installs.includes(r.target)).filter((r) => !ups.some((i) => i.result === 'installed' && ms(i.at) > ms(r.at) && covers(i, r.target) && compare(String(i.version), String(r.version)) >= 0));
 }
 
 // The pull requests the review records show waiting on the Delivery Manager, read without gh: { pr,

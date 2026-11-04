@@ -53,6 +53,16 @@ const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); }
 const same = (a, b) => !!a && !!b && path.resolve(a) === path.resolve(b);
 const entriesOf = (j, key) => { const v = j && (j.plugins || j)[key]; return (Array.isArray(v) ? v : v ? [v] : []).filter((e) => e && typeof e === 'object'); };
 
+// The installs of plugin `name` this machine records now, as targets ('user', or '<scope> <path>' as
+// selfUpdate names them), or null when the record cannot be read. A refusal for an install that is gone
+// (the Delivery Manager had it removed) no longer stands (watchdog.js refusedInstalls, rv-167)
+function installTargets(name, configDir) {
+  const j = readJson(path.join(pluginsDir(configDir), 'installed_plugins.json'));
+  if (!j || typeof j !== 'object') return null;
+  const keys = Object.keys(j.plugins || j).filter((k) => k.split('@')[0] === name);
+  return keys.flatMap((k) => entriesOf(j, k)).map((e) => (!e.scope || e.scope === 'user' ? 'user' : `${e.scope} ${e.projectPath}`));
+}
+
 // The job's own install: the entry whose installPath is the running plugin root, else the one the job
 // shim would run for this project. null for a development checkout, which nobody installs.
 function findInstall(pluginRoot, project, configDir) {
@@ -278,4 +288,4 @@ function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = def
   }
 }
 
-module.exports = { RETRY_MS, HOLD_BOUND_MS, findInstall, readMain, gatedMerge, decide, selfUpdate };
+module.exports = { RETRY_MS, HOLD_BOUND_MS, installTargets, findInstall, readMain, gatedMerge, decide, selfUpdate };
