@@ -270,3 +270,31 @@ test('9cp.1 c5: the Chief of Staff brief starts every session and every briefing
   assert.ok(groups.read.some((g) => g.first === 'node' && g.arg_prefix === '${CLAUDE_PLUGIN_ROOT}/scripts/products.js' && !g.sub), 'products.js is not in the read lane group');
   assert.match(brief, /^lane_bash: read,/m);
 });
+
+// the review state of an open pull request is read against the head gh reports now
+test('9cp.1 c1: an open PR shows its review state on its current head, and a pass on an older head is stale', () => {
+  const reviewed = (head) => {
+    const a = product('alpha');
+    R.append(a.root, 22, { type: 'request', repo: a.repo, head, owner: 'builder-alpha', beads: ['alpha-1'], at: '2026-11-01T00:00:00Z' }, 'delivery-lead');
+    R.append(a.root, 22, { type: 'review', repo: a.repo, head, kind: 'independent', reviewer: 'agent-1', result: 'pass', at: '2026-11-01T01:00:00Z' }, 'delivery-lead');
+    return main(['--project', a.root], fakes([a]));
+  };
+  const now = reviewed('e'.repeat(40));
+  assert.equal(now.code, 0, now.out);
+  assert.match(now.out, /^\[alpha\] in review: PR #22 at eeeeeeeeeeee on team\/builder-alpha, review passed, refs alpha-1: alpha change$/m);
+  const old = reviewed('b'.repeat(40));
+  assert.equal(old.code, 0, old.out);
+  assert.match(old.out, /^\[alpha\] in review: PR #22 at eeeeeeeeeeee on team\/builder-alpha, review stale, refs alpha-1: alpha change$/m);
+  assert.doesNotMatch(old.out, /review passed/);
+});
+
+test('9cp.1 c1: a deployed story whose check is complete is not listed as installed, not checked', () => {
+  const a = product('alpha');
+  a.rec.beads.push(bead('alpha-6', { status: 'open', labels: ['story', 'state-deployed'], metadata: { merged_pr: '19', deployed_sha: SHA_DEPLOYED } }));
+  a.rec.verdicts['alpha-6'] = { ok: true, criteria: [{ n: 1, row: 'ev-alpha-6-1' }] };
+  const r = main(['--project', a.root], fakes([a]));
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^\[alpha\] installed, not checked: alpha-4 /m);
+  assert.doesNotMatch(r.out, /installed, not checked: alpha-6/);
+  assert.match(r.out, /^\[alpha\] open work: alpha-6 open/m);
+});

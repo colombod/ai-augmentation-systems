@@ -149,7 +149,9 @@ function readProduct(root, deps = {}) {
         let review = 'no review requested';
         if (recorded.includes(String(p.number))) {
           const rec = R.read(abs, p.number);
-          review = rec.problem ? 'review record damaged' : R.stateOf(rec.rows, null, { repo: out.repo });
+          // read against the head gh reports now, as team-status.js does: a pass on an older head is stale
+          review = rec.problem ? 'review record damaged' : R.stateOf(rec.rows, p.headRefOid ? { headRefOid: p.headRefOid } : null,
+            { botsCount: Boolean(team && team.review && team.review.bots_count === true), repo: out.repo });
         }
         return { pr: Number(p.number), title: p.title || '', branch: p.headRefName || null, head: p.headRefOid || null, draft: Boolean(p.isDraft), refs: R.refsOf(p.body), review };
       }).sort((a, b) => a.pr - b.pr);
