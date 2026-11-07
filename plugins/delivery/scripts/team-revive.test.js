@@ -305,6 +305,54 @@ test('the watchdog\'s host-job run starts the missing role sessions after its wa
   assert.equal(watchdog.main(['run', '--project', p.root], { ...deps, revive: undefined, env: { ...env, DELIVERY_SEALED_RUN: '1' } }).code, 0);
 });
 
+// the facts a start reads, injected, for revive() called directly (as the watchdog's host job does)
+const reviveDeps = (p, spawn) => ({ start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn });
+const lockFile = (p) => path.join(p.root, '.delivery', 'watchdog', 'revive.lock');
+
+test('two start passes at once (the Chief of Staff\'s and the host job\'s) open one link per instance: the second finds the start lock held', () => {
+  const p = project();
+  const calls = [];
+  let inner = null;
+  let entered = false;
+  const spawn = (bin, args, opts) => {
+    calls.push(opts.cwd);
+    // a second pass starts while the first is spawning, before it recorded anything
+    if (!entered) { entered = true; inner = TR.revive(p.root, p.team, reviveDeps(p, spawn)); }
+    return 4000 + calls.length;
+  };
+  const outer = TR.revive(p.root, p.team, reviveDeps(p, spawn));
+  assert.deepEqual(calls, [p.dir('chief-of-staff'), p.dir('builder')], 'one spawn per instance');
+  assert.deepEqual(inner.started, {});
+  assert.match(inner.lines.join('\n'), new RegExp(`another start pass holds the start lock \\(pid ${process.pid}\\b`));
+  assert.deepEqual(Object.keys(outer.started), ['chief-of-staff', 'builder']);
+  assert.equal(fs.existsSync(lockFile(p)), false, 'the lock is released after the pass');
+  // check and --dry-run never take the lock
+  fs.mkdirSync(path.dirname(lockFile(p)), { recursive: true });
+  fs.writeFileSync(lockFile(p), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+  assert.equal(run(p, ['check']).code, 0);
+  assert.match(run(p, ['start', '--dry-run'], { now: iso(Date.parse(T0) + 2 * H) }).out, /would start/);
+});
+
+test('a fresh start lock held by a live pass starts nothing; a stale lock (old, or its pid gone) is broken', () => {
+  const p = project();
+  fs.mkdirSync(path.dirname(lockFile(p)), { recursive: true });
+  fs.writeFileSync(lockFile(p), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+  const held = run(p, ['start']);
+  assert.equal(held.calls.length, 0);
+  assert.match(held.out, new RegExp(`another start pass holds the start lock \\(pid ${process.pid}\\b`));
+  assert.ok(fs.existsSync(lockFile(p)), 'a lock that is not ours is left in place');
+  // the same lock, older than the stale limit: broken, and the start runs
+  const old = (Date.now() - 10 * 60e3) / 1000;
+  fs.utimesSync(lockFile(p), old, old);
+  assert.equal(run(p, ['start']).calls.length, 2);
+  // a fresh lock whose pid no longer runs: broken
+  const q = project();
+  fs.mkdirSync(path.dirname(lockFile(q)), { recursive: true });
+  fs.writeFileSync(lockFile(q), JSON.stringify({ pid: 2 ** 30, at: new Date().toISOString() }));
+  assert.equal(run(q, ['start']).calls.length, 2);
+  assert.equal(fs.existsSync(lockFile(q)), false);
+});
+
 // `claude remote-control --help` on claude 2.1.318 (wintermute, 2026-11-07), the flags team-revive uses, verbatim
 const RC_HELP_2_1_318 = `
   --session-id <id>                Reattach to a specific session by ID (cannot be

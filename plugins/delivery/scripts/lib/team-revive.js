@@ -100,6 +100,45 @@ function ledger(root) {
   }
   return rows;
 }
+// One start pass at a time per project: the Chief of Staff's `team-revive.js start` and the host job's
+// pass both go through revive(start), and two passes within seconds would each read a ledger without the
+// other's start and open two links in one directory. An exclusive lock file ('wx') beside the ledger
+// holds { pid, at }; a lock older than LOCK_STALE_MS (a pass spawns and records in well under that) or
+// whose pid no longer runs is a pass that died, and is broken. Held: { held: { pid } }; taken: { release }.
+const LOCK = 'revive.lock';
+const lockFile = (root) => path.join(root, WD.REL, LOCK);
+const LOCK_STALE_MS = 2 * 60e3;
+function pidRuns(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+}
+function startLock(root, { now = Date.now(), runs = pidRuns } = {}) {
+  const file = lockFile(root);
+  WD.ensureDir(root);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let fd = null;
+    try { fd = fs.openSync(file, 'wx'); } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      let holder = null;
+      let age = 0;
+      try { age = now - fs.statSync(file).mtimeMs; holder = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { /* not written yet, or gone */ }
+      const pid = holder && Number(holder.pid);
+      // a lock whose content is not written yet is judged by its age alone
+      if (age > LOCK_STALE_MS || (pid && !runs(pid))) { try { fs.unlinkSync(file); } catch (e) { /* another pass broke it first */ } continue; }
+      return { held: { pid: pid || null } };
+    }
+    const token = `${process.pid}-${now}-${Math.random().toString(36).slice(2)}`;
+    try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date(now).toISOString(), token })); } finally { fs.closeSync(fd); }
+    return {
+      release() {
+        // only our own lock: one broken as stale and taken by another pass is that pass's
+        try { if (JSON.parse(fs.readFileSync(file, 'utf8')).token === token) fs.unlinkSync(file); } catch (e) { /* gone already */ }
+      },
+    };
+  }
+  return { held: { pid: null } };
+}
+
 function record(root, row) {
   WD.ensureDir(root);
   WD.rotate(ledgerFile(root));
@@ -212,4 +251,4 @@ function lines(a, { bin = 'claude', started = null, dryRun = false } = {}) {
   return out;
 }
 
-module.exports = { LEDGER, ledgerFile, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, assess, lines, shown };
+module.exports = { LEDGER, ledgerFile, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, assess, lines, shown };

@@ -118,7 +118,21 @@ function spawnRemote(bin, args, { cwd, env, logPath }) {
 
 // check, or start: { a, lines, started }. The remote session ids claude recorded are copied into the
 // roster on a start pass, so the next start reattaches the owner's link even when claude's own files go.
-function revive(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, ...deps } = {}) {
+// A start pass holds the project's start lock (lib/team-revive.js startLock) from its read of the facts to
+// its last ledger row, so a second pass (the Chief of Staff's beside the host job's) sees the first's
+// starts or starts nothing. check and --dry-run read only and take no lock.
+function revive(root, team, opts = {}) {
+  if (!opts.start || opts.dryRun) return revivePass(root, team, opts);
+  const lock = R.startLock(root);
+  if (lock.held) {
+    const { start, dryRun, env = process.env, spawn, ...deps } = opts;
+    const a = { ...R.assess(gather(root, team, { env, ...deps })), go: false, locked: lock.held };
+    return { a, started: {}, lines: [`Not started now: another start pass holds the start lock (pid ${lock.held.pid || 'unknown'}, ${path.relative(root, R.lockFile(root))}); it starts what is missing.`] };
+  }
+  try { return revivePass(root, team, opts); } finally { lock.release(); }
+}
+
+function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, ...deps } = {}) {
   const f = gather(root, team, { env, ...deps });
   const a = R.assess(f);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
