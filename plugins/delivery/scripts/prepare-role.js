@@ -48,14 +48,19 @@ function rolePath(env, home = os.homedir(), cwd = process.cwd()) {
 
 // The role's owner-approved permission rules: { rules, refused: [{ allow, why }] }. A rule counts only
 // while its record verifies, rests on the owner's own captured words (gate-context ownerRecord), and is
-// scoped to this role and this rule: its scope carries the label permission:<role>=<rule>. Any verified
-// owner record would otherwise authorise any rule on any role (PR 184 review), so the record must name
-// both, as an assumption's acknowledgement must name its spike (assumptions scopedTo). A rule broader
-// than one specific command is refused whatever its record says (manifest permissionRuleProblem).
-const permissionLabel = (roleId, allow) => `permission:${roleId}=${allow}`;
+// scoped to this role and this command: its scope carries the label permission:<role>=<command>, the
+// command as the rule names it without Bash( ) or the trailing :* (permission:builder=gh pr close).
+// The rule itself is not the label: the operator store refuses a * in any scope entry, so a label
+// holding Bash(gh pr close:*) could never be recorded (PR 184 re-review). Any verified owner record
+// would otherwise authorise any rule on any role, so the record must name both, as an assumption's
+// acknowledgement must name its spike (assumptions scopedTo). The scope is written by the recording
+// agent, so the command must also be in the owner's own words (the quote or the captured input). A
+// rule broader than one specific command is refused whatever its record says (permissionRuleProblem).
+const permissionLabel = (roleId, allow) => `permission:${roleId}=${require('./lib/manifest.js').permissionCommand(allow)}`;
+const wordsOf = (t) => ` ${String(t || '').toLowerCase().replace(/[^a-z0-9._-]+/g, ' ').trim()} `;
 function ownerApproved(projectRoot, role, verifyRecord) {
   const { ownerRecord } = require('./lib/gate-context.js');
-  const { permissionRuleProblem } = require('./lib/manifest.js');
+  const { permissionRuleProblem, permissionCommand } = require('./lib/manifest.js');
   const out = { rules: [], refused: [] };
   for (const p of Array.isArray(role.permissions) ? role.permissions : []) {
     const allow = p && typeof p.allow === 'string' ? p.allow.trim() : '';
@@ -68,6 +73,8 @@ function ownerApproved(projectRoot, role, verifyRecord) {
     const want = permissionLabel(role.id, allow);
     const labels = (v.head && v.head.scope && Array.isArray(v.head.scope.labels)) ? v.head.scope.labels : [];
     if (!labels.includes(want)) { out.refused.push({ allow, why: `${p.record} is not scoped to this rule for role ${role.id} (its scope needs the label ${want})` }); continue; }
+    const cmd = permissionCommand(allow);
+    if (!wordsOf(v.text).includes(wordsOf(cmd))) { out.refused.push({ allow, why: `the owner's own words in ${p.record} do not name the command "${cmd}"` }); continue; }
     out.rules.push(allow);
   }
   out.rules = [...new Set(out.rules)];
@@ -195,6 +202,11 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     laneError = err;
     files.push(`warning: lane permission rules not written (${err.message})`);
   }
+  // The sidecars name the rules this script wrote, so they are written only after the settings file
+  // (PR 184 re-review): a sidecar written first and settings that then failed to write would claim
+  // rules the settings never got, and a later run would take out the same rule once the user added it
+  // by hand. A sidecar write that fails after the settings throws out of prepareRole, so it is seen.
+  const sidecars = [];
   // A separate step: when the lane cannot be loaded, a rule whose record stopped verifying must still
   // be taken out, never left in place by the same failure (PR 184 review).
   try {
@@ -204,7 +216,12 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     // as the owner's own words; one that does not is refused and named. The rules written are listed
     // in a sidecar, so a rule whose record stops verifying, or that leaves the manifest, is taken out
     // again; an allow rule the user wrote is never touched.
-    const approved = ownerApproved(projectRoot, role, verifyRecord);
+    // a failure to read the records authorises nothing, and the rules written earlier still leave
+    let approved;
+    try { approved = module.exports.ownerApproved(projectRoot, role, verifyRecord); } catch (err) {
+      approved = { rules: [], refused: [] };
+      files.push(`warning: owner-approved permission rules not checked, none written (${err.message})`);
+    }
     for (const r of approved.refused) files.push(`warning: permission rule ${r.allow} not written: ${r.why}`);
     const allowFile = path.join(roleDir, '.claude', '.delivery-managed-allow.json');
     let ownedAllow = [];
@@ -213,8 +230,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     const userAllow = haveAllow.filter((r) => !ownedAllow.includes(r) || laneRules.includes(r));
     const allow = [...new Set([...userAllow, ...approved.rules])];
     if (allow.length) settings.permissions.allow = allow; else delete settings.permissions.allow;
-    fs.mkdirSync(path.dirname(allowFile), { recursive: true });
-    fs.writeFileSync(allowFile, JSON.stringify({ allow: approved.rules.filter((r) => !userAllow.includes(r)) }, null, 2) + '\n');
+    sidecars.push([allowFile, { allow: approved.rules.filter((r) => !userAllow.includes(r)) }]);
   } catch (err) {
     files.push(`warning: owner-approved permission rules not written (${err.message})`);
   }
@@ -242,8 +258,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     const users = haveDeny.filter((r) => !owned.includes(r));
     const deny = [...new Set([...users, ...want])];
     if (deny.length) settings.permissions.deny = deny; else delete settings.permissions.deny;
-    fs.mkdirSync(path.dirname(ownedFile), { recursive: true });
-    fs.writeFileSync(ownedFile, JSON.stringify({ deny: want.filter((r) => !users.includes(r)) }, null, 2) + '\n');
+    sidecars.push([ownedFile, { deny: want.filter((r) => !users.includes(r)) }]);
   } catch (err) {
     if (err !== laneError) files.push(`warning: lane permission rules not written (${err.message})`);
   }
@@ -260,6 +275,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   if (Object.keys(settings.permissions).length === 0) delete settings.permissions;
   fs.writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
   files.push(settingsFile);
+  for (const [f, body] of sidecars) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, `${JSON.stringify(body, null, 2)}\n`); }
 
   const ignoreFile = path.join(projectRoot, '.delivery', 'team', '.gitignore');
   if (!fs.existsSync(ignoreFile)) {

@@ -267,14 +267,33 @@ const roleRetired = (role) => Boolean(role) && (role.retired === true || liveIns
 // "Bash(gh pr close:*)" or "Bash(gh pr close 136)", never "Bash", "Bash(*)", "Bash(git:*)", "Write" or
 // "mcp__*". A record approves one command for one role, so a broad rule would grant what nobody approved
 // (PR 184 review). Returns why the rule is refused, or null.
+// A first word that runs another program or arbitrary code: a rule on it would allow any command
+// (Bash(bash -c:*), Bash(env sh:*), Bash(xargs sh:*), Bash(node -e:*)), so it is never a specific
+// command whatever follows it (PR 184 re-review).
+const RULE_WRAPPERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'csh', 'tcsh', 'busybox',
+  'env', 'sudo', 'doas', 'su', 'runuser', 'pkexec', 'xargs', 'nohup', 'nice', 'ionice', 'timeout', 'time', 'exec', 'eval',
+  'command', 'builtin', 'source', '.', 'setsid', 'chroot', 'unshare', 'nsenter', 'stdbuf', 'flock', 'watch', 'script', 'strace', 'ltrace', 'gdb',
+  'ssh', 'parallel', 'find', 'awk', 'gawk', 'mawk', 'sed', 'perl', 'ruby', 'php', 'lua', 'tclsh', 'python', 'python2', 'python3',
+  'node', 'nodejs', 'deno', 'bun', 'npx', 'pnpx', 'bunx', 'make', 'docker', 'podman', 'kubectl', 'bwrap', 'firejail']);
+// commands the role settings deny natively (prepare-role LANE_BACKSTOP_DENY, MERGE_DENY): an owner rule
+// never lifts them, so one that names them is refused rather than left fighting the deny rule
+const RULE_DENIED_PREFIXES = ['git push', 'sudo', 'curl', 'wget', 'rm', 'gh pr merge'];
 function permissionRuleProblem(allow) {
   const m = /^Bash\((.*)\)$/s.exec(String(allow || '').trim());
   if (!m) return 'only a Bash rule for a specific command is accepted, as Bash(<command> <subcommand>:*)';
   const cmd = m[1].replace(/:\*$/, '').trim();
   if (!cmd || /[*?\[\]{}]/.test(cmd)) return 'the command must be spelled out, with no wildcard but a trailing :*';
-  if (/[;&|`$<>()\\\n'"]/.test(cmd)) return 'the command may not hold shell operators, quotes or substitutions';
-  if (cmd.split(/\s+/).length < 2) return 'it must name a command and its subcommand (Bash(gh pr close:*)), not a whole program';
+  if (/[;&|`$<>()\\\n'",=]/.test(cmd)) return 'the command may not hold shell operators, quotes, commas, = or substitutions';
+  const words = cmd.split(/\s+/);
+  if (words.length < 2) return 'it must name a command and its subcommand (Bash(gh pr close:*)), not a whole program';
+  if (/[/~]/.test(words[0]) || words[0].startsWith('.')) return 'the command must be a program name, not a path';
+  if (RULE_WRAPPERS.has(words[0].toLowerCase())) return `${words[0]} runs other programs or code, so a rule on it allows any command`;
+  if (words[1].startsWith('-')) return 'the second word must be a subcommand, not a flag';
+  const denied = RULE_DENIED_PREFIXES.find((d) => cmd === d || cmd.startsWith(`${d} `));
+  if (denied) return `${denied} is denied to every restricted role and an owner rule does not lift it`;
   return null;
 }
+// the command a rule names: Bash(gh pr close:*) -> "gh pr close"
+const permissionCommand = (allow) => String(allow || '').trim().replace(/^Bash\(/, '').replace(/\)$/, '').replace(/:\*$/, '').trim().replace(/\s+/g, ' ');
 
-module.exports = { permissionRuleProblem, reachOf, isManager, canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, briefFile, briefExists, knownBriefs, expandInstances, instanceNames, instanceId, liveInstanceNames, roleRetired, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };
+module.exports = { permissionRuleProblem, permissionCommand, reachOf, isManager, canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, briefFile, briefExists, knownBriefs, expandInstances, instanceNames, instanceId, liveInstanceNames, roleRetired, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };
