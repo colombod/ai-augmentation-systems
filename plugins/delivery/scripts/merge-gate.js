@@ -15,7 +15,7 @@ const path = require('path');
 const R = require('./lib/reviews.js');
 const G = require('./lib/gates.js');
 const { whoAmI, writerProblem } = require('./lib/gate-context.js');
-const { viewPr, productRepoOf, sameRepo, repoOf, UNKNOWN } = require('./lib/gh-pr.js');
+const { viewPr, readFileAt, productRepoOf, sameRepo, repoOf, UNKNOWN } = require('./lib/gh-pr.js');
 
 const USAGE = 'usage: merge-gate.js check <pr> [--head <sha>] | merge-gate.js merged <pr> [--head <sha>]';
 
@@ -35,7 +35,7 @@ const restMergeCmd = (pr, repo, head) => `\`gh api -X PUT repos/${repo}/pulls/${
 const mergeCmdFor = (view) => (view && view.via === 'rest' ? restMergeCmd : mergeCmd);
 
 // { ok, why, fix, head, review, warnings, view }
-function gate(root, pr, { head: named, gh, team, repo, planDrift } = {}) {
+function gate(root, pr, { head: named, gh, team, repo, planDrift, readFile } = {}) {
   const view = ghFor(root, gh, repo)(pr) || { unavailable: 'no answer' };
   const { rows, problem } = R.read(root, pr);
   const seen = view.headRefOid || null;
@@ -51,10 +51,24 @@ function gate(root, pr, { head: named, gh, team, repo, planDrift } = {}) {
   // The plan must be true to what already shipped before anything more ships (the owner, 2026-10-31:
   // a planning repo and feature map that diverge from the product defeat the product).
   if (v.ok) {
+    const ver = versionStep(pr, view, head, { repo, root, readFile });
+    if (ver) return { ...v, ok: false, why: ver.why, fix: ver.fix, head, warnings, view, rows };
     const d = (planDrift || defaultPlanDrift)(root);
     if (d.length) return { ...v, ok: false, why: `the plan is behind what shipped: ${d[0].detail}${d.length > 1 ? ` (and ${d.length - 1} more)` : ''}`, fix: `Bring it up to date: ${R.cmd('plan-sync.js', 'apply')}, then check again`, head, warnings, view, rows };
   }
   return { ...v, head, warnings, view, rows };
+}
+
+// A pull request that changes a plugin must raise its version above its base branch's, or the merged
+// change never installs (lib/version-gate.js). Read from GitHub; when the pull request itself could not
+// be read the gate already relies on the record, and says so, so this check is skipped with it.
+function versionStep(pr, view, head, { repo, root, readFile }) {
+  if (view.unavailable || !Array.isArray(view.files)) return null;
+  const read = readFile || ((file, ref) => readFileAt(repo, file, ref, { cwd: root }));
+  const baseRef = view.baseRefName || 'main';
+  const r = require('./lib/version-gate.js').checkVersions({ paths: view.files.map((f) => f.path), headRef: head, baseRef, read });
+  if (r.ok) return null;
+  return { why: `PR ${pr}: ${r.why}`, fix: `Send it back to take the next free version above ${baseRef}'s (merge ${baseRef} in, raise the version, push): ${R.cmd('review.js', `send-back ${pr} --reason '${r.base ? `version ${r.head || 'missing'} is not above ${baseRef} ${r.base}` : 'plugin version not checkable'}' --note 'merge ${baseRef} in and take the next free version'`)}` };
 }
 
 function defaultPlanDrift(root) {
