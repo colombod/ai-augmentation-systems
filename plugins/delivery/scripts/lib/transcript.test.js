@@ -378,12 +378,24 @@ test('a prompt stamped origin human is the owner\'s, ext_id promptId', () => {
 test('the command-line prompt of a background session is a tool input; a later typed prompt is the owner\'s', () => {
   // claude --bg probes started under a role directory
   assert.strictEqual(t.classifyRecord(RS.bgStart('answer OK and stop', 1)).source, 'tool');
-  assert.strictEqual(t.classifyRecord(RS.bgStart('arm a monitor on a file', 2, 0)).source, 'tool');
   // typed by someone attached to the background session after its start
   assert.strictEqual(t.classifyRecord(RS.bgStart('now stop', 3, 2)).source, 'human');
   // the same first prompt in an interactive session is the owner's
   const interactive = RS.bgStart('answer OK', 4); delete interactive.sessionKind;
   assert.strictEqual(t.classifyRecord(interactive).source, 'human');
+});
+
+// Claude Code 2.1.318 numbers the prompts typed into a session from 1: in every transcript on this
+// host its typed prompts read promptIndex 1, 2, 3 ..., and promptIndex 0 is only ever on prompts not
+// typed (sdk, peer, task-notification). So a background session's command-line prompt is
+// promptIndex 1, and the first prompt anyone types into it afterwards is promptIndex 2.
+test('in a background session only promptIndex 1, the command line, is a tool input; the next typed prompt is the owner\'s', () => {
+  assert.strictEqual(t.classifyRecord(RS.bgStart('answer OK and stop', 1, 1)).source, 'tool');
+  // the owner's first typed prompt, at the harness's base, is never a tool input
+  assert.strictEqual(t.classifyRecord(RS.bgStart('now stop', 2, 2)).source, 'human');
+  assert.strictEqual(t.classifyRecord(RS.bgStart('and report', 3, 3)).source, 'human');
+  // a typed human prompt numbered 0 is not the command line (the harness gives 0 only to untyped prompts)
+  assert.strictEqual(t.classifyRecord(RS.bgStart('ship it', 4, 0)).source, 'human');
 });
 
 test('a prompt opening with the relay marker is never human, in any shape', () => {

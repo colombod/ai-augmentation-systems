@@ -19,10 +19,13 @@ function isRoleSessionPrompt(record) {
 
 // `claude --bg "<prompt>"` stamps its command-line prompt typed and human (sessionKind 'bg', the
 // session's first prompt), though nobody typed it into the session: whoever started the session wrote
-// it. Prompts typed later by someone attached to the session count as typed.
+// it. Prompts typed later by someone attached to the session count as typed. The harness numbers
+// typed prompts from 1 (2.1.318: 1, 2, 3 ...; 0 only on prompts not typed), so the command line is
+// promptIndex 1 and the first prompt typed into the session after it is 2.
+const BG_START_PROMPT_INDEX = 1;
 function isBackgroundStartPrompt(record) {
   const pos = record.turnPosition;
-  return record.sessionKind === 'bg' && !!pos && typeof pos.promptIndex === 'number' && pos.promptIndex <= 1;
+  return record.sessionKind === 'bg' && !!pos && pos.promptIndex === BG_START_PROMPT_INDEX;
 }
 
 // The relay marker: a prompt that one session or tool writes for another opens with its sender and
