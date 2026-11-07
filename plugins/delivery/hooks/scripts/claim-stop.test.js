@@ -423,3 +423,17 @@ test('rule 0: a builder that asks the operator to relay is blocked by its Stop h
   const fine = runStop('builder-1', { cwd: roleDir, transcript_path: tr, last_assistant_message: 'Done. Pushed the record as 27b7541; the chief-of-staff session reads it from the project repo.' });
   assert.equal(fine.stdout, '', fine.stdout);
 });
+
+// The incident: the Chief of Staff sent the operator into the Staffing session to grant an edit. Its
+// stop blocks once with the rewrite reason, quoting the clause, and the continuation passes.
+test('a final message that sends the operator into another session blocks once with the relay reason', () => {
+  const { roleDir } = preparedRole('chief-of-staff');
+  const tr = transcript([]);
+  const msg = '**The one thing needed from you:** in the Staffing session, tell it "you may edit team.json to add the plugin builder". After that it\'s the team\'s job again: register, review, merge, ship.\n\nAsk for details on any item';
+  const first = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, last_assistant_message: msg }));
+  assert.equal(first.decision, 'block');
+  assert.equal(first.reason, NO_ID('The one thing needed from you: in the Staffing session, tell it'));
+  const second = reasonOf(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: msg }));
+  assert.equal(second.reason, first.reason);
+  assert.equal(runStop('chief-of-staff', { cwd: roleDir, transcript_path: tr, stop_hook_active: true, last_assistant_message: msg }).stdout, '');
+});
