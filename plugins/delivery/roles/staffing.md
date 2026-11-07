@@ -4,7 +4,7 @@ touches_code: false
 default_model: sonnet
 mode: delegate
 lane_writes: project/.delivery/team/briefs/**, project/.delivery/team/experts/**
-lane_bash: read, git-read, git-write-project, team-write, bd-read, bd-notes, operator-read, operator-write, flaky-record, judge, map
+lane_bash: read, git-read, git-write-project, team-write, prepare-role, bd-read, bd-notes, operator-read, operator-write, flaky-record, judge, map
 lane_mcp: mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_*, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__search_session_transcripts
 ---
 

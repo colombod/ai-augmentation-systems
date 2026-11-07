@@ -5,7 +5,9 @@
 // Fail closed only for a role session: when this session's own role marker is present but the lane
 // cannot be decided (the manifest does not load, or an internal error), the call is denied with the
 // way out, because prepare-role pre-allows in-lane commands and a silent allow would then bypass
-// both the lane and the permission prompt. Without a role marker the hook stays inert.
+// both the lane and the permission prompt. A role session (DELIVERY_ROLE set) whose own marker is
+// missing, damaged or another instance's is closed the same way, until Staffing or the host's steward
+// re-prepares it. Without DELIVERY_ROLE the hook stays inert.
 const path = require('path');
 const { shellPath } = require('../../scripts/lib/plugin-root.js');
 
@@ -50,7 +52,20 @@ let input = null;
 try { input = require('./role-context.js').readHookInput(); } catch (err) { input = null; }
 // While the lane cannot be checked, the session may still tell the Chief of Staff (the advised way out).
 const MESSAGE_TOOLS = ['SendMessage', 'mcp__ccd_session_mgmt__send_message'];
-try {
+const deny = (reason) => process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
+let damaged = null;
+if (input && input.tool_name) {
+  try { damaged = require('./role-context.js').damagedMarker(input.cwd); } catch (err) {
+    damaged = process.env.DELIVERY_ROLE ? { instance: process.env.DELIVERY_ROLE, problem: 'cannot be read', projectRoot: process.env.DELIVERY_PROJECT_ROOT || null } : null;
+  }
+}
+if (damaged) {
+  const cmd = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : '';
+  const root = damaged.projectRoot && path.isAbsolute(damaged.projectRoot) ? damaged.projectRoot : null;
+  if (!MESSAGE_TOOLS.includes(input.tool_name) && !(input.tool_name === 'Bash' && root && isManifestRestore(cmd, { project_root: root }, input.cwd))) {
+    deny(`Role ${damaged.instance}: this session's role marker ${damaged.problem}, so the lane cannot be checked and nothing that writes or runs is allowed.\nIt must be re-prepared (\`prepare-role.js --instance ${damaged.instance}\`) by Staffing or the steward of ${process.env.DELIVERY_HOST ? `host ${process.env.DELIVERY_HOST}` : 'its host'}: message Staffing.${root ? ` If the manifest broke, restore it: \`git -C ${shellPath(root)} checkout -- .delivery/team/team.json\`.` : ''}`);
+  }
+} else try {
   const { laneDecisionForHook } = require('./lane.js');
   const d = input && input.tool_name ? laneDecisionForHook(input, path.join(__dirname, '..', '..')) : null;
   if (d) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: d.allow ? 'allow' : 'deny', permissionDecisionReason: d.reason } }));
