@@ -219,6 +219,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
     const row = R.append(who.root, pr, { type: 'sent-back', head, reason: a.reason, note: a.note || null, owners, ...base }, who.instance);
     const text = `${at.slice(0, 10)}: PR ${pr} sent back at ${R.short(head)}: ${what}${a.note ? ` (${a.note})` : ''}; a new review is needed after the fix (${row.id})`;
     for (const id of req.beads || []) { try { store().update(id, { appendNotes: text }); } catch (err) { /* the row and the message still stand */ } }
+    // hjx.1.1: a send-back is a handover to the builder: the host job starts a run now (lib/kick.js), as for
+    // a message or a handoff, instead of at its next timer pass
+    require('./lib/kick.js').kick(who.root, `a send-back of PR ${pr}`);
     return { code: 0, row, out: `${row.id}: PR ${pr} sent back to ${owners.join(', ') || 'its owner'}; noted in ${(req.beads || []).join(', ')}\nMessage ${owners.join(', ') || 'the owner'}: "PR ${pr}: ${what}${a.note ? `: ${a.note}` : ''}. Fix it on your branch, push, and tell me; I will ask for a new review."${published(row)}` };
   }
   return { code: 2, out: USAGE };
