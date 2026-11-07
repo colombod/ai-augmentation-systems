@@ -1447,6 +1447,32 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   looks up the plugin or wakes anyone. Paths with spaces are quoted for each scheduler.
   `.delivery/watchdog/installed.json` records the install; the plan and the brief promise a restart only
   while it and the job file exist. An operator's own `watchdog.js wake` works without the job.
+- **The team comes back on the owner's links.** After a network loss the role sessions the owner follows
+  in the Claude app through Remote Control dropped, and a wake brings work back only as a headless run.
+  `team-revive.js check [--json]` lists, for each role instance of the team on this host (team.json
+  `host` against `DELIVERY_HOST`, else the machine's short hostname), whether a session runs in its role
+  directory (`claude agents --json`), the work in flight (a bead in progress, an open pull request from a
+  `team/<instance>` branch, a message or handoff waiting) and, per missing instance, the command a start
+  runs. A source that cannot be read is a line that says so, never "all running"; a session list that
+  cannot be read starts nothing. `team-revive.js start [--dry-run]` starts each missing instance while
+  work is in flight and the owner has not paused the team: detached, in its role directory,
+  `claude remote-control --name <instance>@<team> --spawn session --permission-mode <mode>` (team.json
+  `permission_mode`, auto when unset; a mode Remote Control does not take, such as `manual`, starts
+  nothing and says why), or with `--session-id <id>` in place of `--spawn session` when a Remote Control
+  session is known for the directory, so the link the owner follows comes back. The id comes from the
+  open session's own file in Claude Code's `sessions/` (`bridgeSessionId`), else the
+  `bridge-pointer.json` claude keeps for the directory under `projects/`, else the roster's
+  `remote_session_id`; a start copies a newer one into the roster, and a session started under Remote
+  Control (`CLAUDE_CODE_ENVIRONMENT_KIND=bridge`) records its own at its start. Both files are claude's,
+  undocumented: when they cannot be read the start is a new link. A reattach whose session never joined
+  (its roster `last_seen` did not move past the start) is not tried again; the next start makes a new
+  link. One start per instance an hour, six a day; an instance whose last started server still runs is
+  not started again. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
+  time, arguments, the id it reattached), its output in `logs/revive-<instance>-<time>.log` beside it.
+  The host job runs `start` at each `run`, after the wakes and never while a plugin install is held or
+  under way; the sealed test runner starts none. In a role session only the Chief of Staff may run
+  `start` (lane group `team-revive`), and its brief runs `check` each turn; any other role session is
+  refused, whatever its lane. Each host's job covers the roles on that host.
 - **Watching GitHub within a budget (R-25).** `watch.js until <text> --every <5m> --max <2h> -- gh <read>`
   repeats a gh read until its output shows `<text>` (a pattern, any case), exit 0, or the time limit
   passes, exit 1. Outside a project its cache is a private folder in the temporary directory (0700,
