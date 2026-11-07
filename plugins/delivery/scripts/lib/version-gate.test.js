@@ -40,6 +40,14 @@ test('r7w: an unreadable plugin.json, a removed one or one with no valid version
   assert.match(checkVersions({ paths, headRef: 'h1', baseRef: 'main', read: reader({ h1: 'down', main: { [M]: manifest('1.0.0') } }) }).why, /at the head could not be read/);
   assert.match(checkVersions({ paths, headRef: 'h1', baseRef: 'main', read: reader({ h1: {}, main: { [M]: manifest('1.0.0') } }) }).why, /is gone at the head, while main has 1\.0\.0/);
   assert.match(checkVersions({ paths, headRef: 'h1', baseRef: 'main', read: reader({ h1: { [M]: '{"version": 7}' }, main: { [M]: manifest('1.0.0') } }) }).why, /no valid version/);
+  // a base with no valid version is a failed read: refused, and the head is never read
+  for (const bad of ['{"version": 7}', '{"name": "app"}', manifest('latest'), 'not json']) {
+    let headReads = 0;
+    const r = checkVersions({ paths, headRef: 'h1', baseRef: 'main', read: (p, ref) => { if (ref === 'h1') { headReads++; return { text: manifest('9.9.9') }; } return { text: bad }; } });
+    assert.equal(r.ok, false, bad);
+    assert.match(r.why, /on main has no valid version .*so the version step cannot be checked/, bad);
+    assert.equal(headReads, 0, bad);
+  }
   // every plugin the change reaches is checked, not only the first
   const two = checkVersions({ paths: ['plugins/app/a.js', 'plugins/other/b.js'], headRef: 'h1', baseRef: 'main',
     read: reader({ h1: { [M]: manifest('2.0.0'), 'plugins/other/.claude-plugin/plugin.json': manifest('0.2.0') }, main: { [M]: manifest('1.0.0'), 'plugins/other/.claude-plugin/plugin.json': manifest('0.2.0') } }) });

@@ -378,3 +378,30 @@ test('r7w: the merge gate refuses a plugin change whose version is not above mai
     assert.equal(ok.code, 0, `${restOnly}: ${ok.out}`);
   }
 });
+
+// r7w: when GitHub cannot be read, or answers without the changed files, the gate already relies on
+// the record for the head and CI and says so; the version step is skipped with it and reads no file.
+test('r7w: the version step is skipped, without a read, when the pull request or its file list cannot be read', () => {
+  const root = makeProject();
+  const bd = memBd([storyBead({ metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } })]);
+  const team = { ...loadManifest(root).team, product_github: 'example/example' };
+  const who = (instance) => ({ root, team, instance, roleId: instance.replace(/-\d+$/, ''), actor: `dev@pc/${instance}` });
+  const down = () => ({ unavailable: 'gh is not installed' });
+  const call = (inst, argv) => review.main(argv, { bd, gh: down, who: who(inst) });
+  assert.equal(call('delivery-lead', ['request', '478', '--reviewer', 'agent-1', '--head', H1, '--branch', 'team/builder-1', '--bead', BEAD, '--lines', '120']).code, 0);
+  assert.equal(call('delivery-lead', ['record', '478', '--head', H1, '--result', 'pass', '--by', 'agent-1', '--summary', 'ok']).code, 0);
+  assert.equal(call('delivery-lead', ['ci', '478', '--head', H1, '--result', 'pass', '--run', 'https://ci.example/run/9']).code, 0);
+  let reads = 0;
+  const readFile = () => { reads++; return { unavailable: 'the reader was asked' }; };
+  const noFiles = () => { const p = pr478(); delete p.files; return p; };
+  for (const [label, gh] of [['GitHub unreadable', down], ['no file list', noFiles], ['file list not a list', () => pr478({ files: 'n/a' })]]) {
+    const g = mergeGate.gate(root, '478', { head: H1, gh, team, repo: 'example/example', planDrift: () => [], readFile });
+    assert.equal(g.ok, true, `${label}: ${g.why}`);
+  }
+  assert.equal(reads, 0, 'no plugin.json is read when the file list is not known');
+  // with a plugin file in the list, the same reader is asked and its failure refuses
+  const g = mergeGate.gate(root, '478', { head: H1, gh: () => pr478({ files: [{ path: 'plugins/app/a.js', additions: 1, deletions: 0 }] }), team, repo: 'example/example', planDrift: () => [], readFile });
+  assert.equal(g.ok, false);
+  assert.match(g.why, /could not be read \(the reader was asked\)/);
+  assert.ok(reads > 0);
+});

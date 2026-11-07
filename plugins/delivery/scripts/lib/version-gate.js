@@ -51,14 +51,16 @@ function checkVersions({ paths, headRef, baseRef, read }) {
     if (b.unavailable) return { ok: false, dir, why: `${file} on ${baseRef} could not be read (${b.unavailable}), so the version step cannot be checked` };
     if (b.missing) continue; // not a plugin on the base branch (a new plugin starts at any version)
     const base = versionOf(b.text);
+    // a base whose version cannot be read leaves nothing to compare against: a failed read, so a refusal
+    const pb = parse(base);
+    if (!pb) return { ok: false, dir, base, why: `${file} on ${baseRef} has no valid version (${base === null ? 'none' : JSON.stringify(base)}), so the version step cannot be checked` };
     const h = read(file, headRef);
     if (h.unavailable) return { ok: false, dir, why: `${file} at the head could not be read (${h.unavailable}), so the version step cannot be checked` };
     if (h.missing) return { ok: false, dir, base, why: `${file} is gone at the head, while ${baseRef} has ${base || 'no version'}` };
     const head = versionOf(h.text);
-    const pb = parse(base);
     const ph = parse(head);
     if (!ph) return { ok: false, dir, base, head, why: `${file} at the head has no valid version (${head === null ? 'none' : JSON.stringify(head)})` };
-    if (pb && compare(ph, pb) <= 0) {
+    if (compare(ph, pb) <= 0) {
       return { ok: false, dir, base, head, why: `${dir} is at ${head} at the head, not above ${base} on ${baseRef}, so the merged change would never install` };
     }
     checked.push({ dir, base, head });
