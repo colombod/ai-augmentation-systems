@@ -323,6 +323,9 @@ function parseArgs(argv) {
   return out;
 }
 
+// exported before the CLI runs: prepareRole calls ownerApproved through module.exports (a test seam)
+module.exports = { rolePath, reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole, ownerApproved, permissionLabel };
+
 if (require.main === module) {
   const args = parseArgs(process.argv.slice(2));
   if (!args.project || !args.instance) {
@@ -340,5 +343,3 @@ if (require.main === module) {
   for (const f of files) if (f.startsWith('warning:') || f.startsWith('removed (expert retired):')) console.error(f);
   console.log(roleDir);
 }
-
-module.exports = { rolePath, reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole, ownerApproved, permissionLabel };
