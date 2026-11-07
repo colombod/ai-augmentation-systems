@@ -41,6 +41,28 @@ function findRoleMarker(cwd) {
   }
 }
 
+// A role session is known by DELIVERY_ROLE, which prepare-role wrote into its settings, not by its marker:
+// a marker that is missing from DELIVERY_ROLE_DIR, unreadable, without a string instance or an absolute
+// project_root, or another instance's would otherwise turn the lane off. Returns null for a sound marker
+// or a session with no DELIVERY_ROLE (inert); else { instance, problem, projectRoot }, the root from the
+// marker when it can give it, else from DELIVERY_PROJECT_ROOT, for the manifest-restore way out.
+function damagedMarker(cwd, env = process.env) {
+  const instance = env.DELIVERY_ROLE;
+  if (!instance) return null;
+  const envDir = env.DELIVERY_ROLE_DIR;
+  const own = envDir && path.isAbsolute(envDir);
+  const found = own ? readMarker(path.join(envDir, '.delivery-role.json')) : findRoleMarker(cwd);
+  const m = found && found.marker && typeof found.marker === 'object' ? found.marker : null;
+  let problem = null;
+  if (!found) problem = own ? `is missing or unreadable in ${envDir}` : 'is missing';
+  else if (!m || typeof m.instance !== 'string') problem = 'has no instance';
+  else if (m.instance !== instance) problem = `names another instance (${m.instance})`;
+  else if (typeof m.project_root !== 'string' || !path.isAbsolute(m.project_root)) problem = 'has no absolute project_root';
+  if (!problem) return null;
+  const fromEnv = env.DELIVERY_PROJECT_ROOT && path.isAbsolute(env.DELIVERY_PROJECT_ROOT) ? env.DELIVERY_PROJECT_ROOT : null;
+  return { instance, problem, projectRoot: m && m.instance === instance && typeof m.project_root === 'string' && path.isAbsolute(m.project_root) ? m.project_root : fromEnv };
+}
+
 // launcherProject: the project whose script launcher was just written; the brief names scripts through it
 function composeForMarker(marker, pluginRoot, launcherProject) {
   const { team, hosts } = loadManifest(marker.project_root);
@@ -238,4 +260,5 @@ const JUDGE_REMINDER = '.delivery-judge-reminder';
 const MESSAGE_REMINDER = '.delivery-message-reminder';
 const LAST_CLAIM = '.delivery-last-claim';
 
-module.exports = { CLAIM_REMINDER, JUDGE_REMINDER, MESSAGE_REMINDER, operatorCaptureNote, readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };
+module.exports = {
+  damagedMarker, CLAIM_REMINDER, JUDGE_REMINDER, MESSAGE_REMINDER, operatorCaptureNote, readHookInput, findRoleMarker, validMarker, actorOf, bdOptionsFor, composeForMarker, currentClaim, sessionStartText, promptSubmitText, shortBrief };

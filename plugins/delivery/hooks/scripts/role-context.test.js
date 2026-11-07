@@ -219,7 +219,9 @@ test('F: the lane hook judges a session that left its role directory', () => {
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-outside-'));
   const run = (env) => execFileSync(process.execPath, [path.join(__dirname, 'role-lane.js')], { input: JSON.stringify({ cwd: outside, session_id: 's', tool_name: 'Bash', tool_input: { command: 'npm test' } }), env: { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, ...env }, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
   assert.equal(JSON.parse(run({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: roleDir })).hookSpecificOutput.permissionDecision, 'deny');
-  assert.equal(run({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: '' }), '');
+  // a role session that finds no marker at all is closed too (team-runtime-10); with no DELIVERY_ROLE it is inert
+  assert.match(JSON.parse(run({ DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_DIR: '' })).hookSpecificOutput.permissionDecisionReason, /role marker is missing/);
+  assert.equal(run({ DELIVERY_ROLE: '', DELIVERY_ROLE_DIR: '' }), '');
 });
 
 // Operator decisions: capture runs first in the role hooks and never changes their own output.

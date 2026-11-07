@@ -833,6 +833,51 @@ function manifestFiles({ projectRoot, roleDir }) {
   return out;
 }
 
+// A role's marker and settings (.delivery-role.json, and .claude/settings.json or settings.local.json in a
+// role directory): every lane rests on them, so they are written only by prepare-role.js (a node process,
+// not a tool call), which Staffing or the host's steward runs. Protected for every role, `any` included,
+// in its own role directory and in another's; reading them stays open. A marker is refused wherever it
+// would go (one would make a directory a role's); a settings file only in a directory holding a marker,
+// so a product's own .claude/settings.json stays the builder's to edit.
+const ROLE_SETTINGS_REASON = 'a role marker and settings (.delivery-role.json, .claude/settings.json and .claude/settings.local.json in a role directory) are written only by `prepare-role.js`, run by Staffing or the host\'s steward; message Staffing';
+const MARKER_MENTION = /\.delivery-role\.json\b/i;
+const SETTINGS_WORD = /[^\s'"`;&|()<>=,]*\.claude[\\/]+(?:\.[\\/]+)*settings(?:\.local)?\.json\b/gi;
+function roleSettingsHit(roleDir) {
+  const own = roleDir ? realish(String(roleDir)) : null;
+  const isRoleDir = (d) => d === own || fs.existsSync(path.join(d, '.delivery-role.json'));
+  return (p) => {
+    const real = realish(p);
+    const name = path.basename(real).toLowerCase();
+    if (name === '.delivery-role.json') return true;
+    if (name === '.claude') return isRoleDir(path.dirname(real)); // cp or mv into, or over, the directory
+    if (!['settings.json', 'settings.local.json'].includes(name) || path.basename(path.dirname(real)).toLowerCase() !== '.claude') return false;
+    return isRoleDir(path.dirname(path.dirname(real)));
+  };
+}
+// node -e, python -c, perl -e, bash -c: the code names what it writes, so the names in it count
+function runsCode(words) {
+  const first = path.basename(words[0] || '');
+  if (!INTERPRETERS.has(first) && !SHELLS.has(first) && !/^(?:python[0-9.]*|perl|ruby|php)$/.test(first)) return false;
+  return words.slice(1).some((x) => CODE_FLAGS.has(x) || /^-[A-Za-z]*[ce]$/.test(x));
+}
+function roleSettingsShellWrite(command, { cwd, roleDir } = {}) {
+  const hit = roleSettingsHit(roleDir);
+  if (usageShellWrite(command, { cwd, mention: MARKER_MENTION, hit })) return true;
+  let base = cwd || process.cwd();
+  return splitCommand(String(command == null ? '' : command)).some((seg) => {
+    const t = tokens(seg);
+    if (!t.length) return false;
+    if (t[0] === 'cd') { const c = cdTarget(t); if (!c.unknown) base = path.resolve(base, c.dir); return false; }
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    const first = path.basename(words[0] || '');
+    const code = runsCode(words);
+    if (code && MARKER_MENTION.test(seg)) return true;
+    const writes = code || hasRedirect(seg) || OPERATOR_WRITE_WORDS.includes(first)
+      || (first === 'sed' && writesFiles(['sed', ...words.slice(1)])) || (first === 'perl' && words.some((x) => /^-[a-zA-Z]*i/.test(x)));
+    return writes && (seg.match(SETTINGS_WORD) || []).some((x) => hit(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`));
+  });
+}
+
 // The spend readings (R-34): .delivery/usage/ holds the transcript cache the budget trusts by size and
 // mtime and the status line's weekly reading. A forged cache would hide spend, so only the plugin's own
 // readers write it (lib/usage.js runs inside the hooks and scripts, not through a tool call).
@@ -1642,6 +1687,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     const base = cwd || process.cwd();
     for (const fp of filePathsOf(name, toolInput)) {
       const p = path.isAbsolute(fp) ? fp : `${base}${path.sep}${fp}`; // not normalised: realish applies `..` physically
+      if (roleSettingsHit(roleDir)(p)) return { allow: false, reason: `Role ${pol.roleId}: ${ROLE_SETTINGS_REASON}.` };
       if (underOperator(p, opDirs)) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
       if (isGoalFile(p, goalFiles({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
       if (isGoalFile(p, manifestFiles({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${MANIFEST_REASON}.` };
@@ -1671,6 +1717,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   }
   const command = shellCommandOf(name, toolInput);
   if (command !== null) {
+    if (roleSettingsShellWrite(command, { cwd, roleDir })) return { allow: false, reason: `Role ${pol.roleId}: ${ROLE_SETTINGS_REASON}.` };
     if (operatorShellWrite(command, { cwd, dirs: opDirs })) return { allow: false, reason: `Role ${pol.roleId}: ${OPERATOR_REASON}.` };
     if (goalShellWrite(command, { cwd, files: goalFiles({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${GOAL_REASON}.` };
     if (goalShellWrite(command, { cwd, files: manifestFiles({ projectRoot, roleDir }), mention: MANIFEST_MENTION, gitWrites: [] })) return { allow: false, reason: `Role ${pol.roleId}: ${MANIFEST_REASON}.` };

@@ -46,7 +46,34 @@ function rolePath(env, home = os.homedir(), cwd = process.cwd()) {
   return [...new Set(parts)].join(path.delimiter);
 }
 
-function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, user, now }) {
+// The role marker's fields: a session's lane rests on them, so one is never written without all of them.
+const MARKER_FIELDS = ['instance', 'role', 'project_root', 'actor', 'host', 'model', 'prepared_at'];
+function markerProblem(marker) {
+  for (const field of MARKER_FIELDS) {
+    const v = marker ? marker[field] : undefined;
+    if (typeof v !== 'string' || !v.trim()) return `the role marker would have no "${field}"${field === 'model' ? ' (name a "model" for the role in team.json)' : ''}, so it is not written`;
+  }
+  if (!path.isAbsolute(marker.project_root)) return `the role marker's "project_root" is not an absolute path, so it is not written`;
+  return null;
+}
+
+// Who may prepare a role directory: Staffing; the steward of the instance's host (stewards converge
+// their own host's sessions, and Staffing runs on one host only); or a run outside any role session
+// (start.js, the owner's shell). A role session is known by DELIVERY_ROLE and DELIVERY_ROLE_ID, which
+// this script wrote into its settings, checked against the caller's own entry in team.json. The lane
+// cannot judge this for a role whose lane runs any command, so the script does.
+function callerProblem(team, target, env) {
+  const caller = env.DELIVERY_ROLE;
+  if (!caller) return null;
+  const entry = expandInstances(team).find((i) => i.instance === caller);
+  const id = entry && entry.role.id;
+  const ok = entry && !entry.role.retired && (!env.DELIVERY_ROLE_ID || env.DELIVERY_ROLE_ID === id)
+    && (id === 'staffing' || (entry.role.steward === true && entry.role.host === target.role.host));
+  if (ok) return null;
+  return `role ${caller} may not prepare ${target.instance}: only Staffing, the steward of host ${target.role.host}, or start.js run outside a role session prepares a role directory; message Staffing`;
+}
+
+function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, user, now, env = process.env }) {
   instance = canonicalRoleId(instance); // --instance delivery-manager means delivery-lead
   projectRoot = path.resolve(projectRoot);
   const { team, hosts } = loadManifest(projectRoot);
@@ -56,9 +83,36 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   if (!found) throw new Error(`unknown instance "${instance}" (not in team.json)`);
   const { role } = found;
   if (role.retired) throw new Error(`instance "${instance}" is retired in team.json; it is kept so its records verify, not started`);
+  const refused = callerProblem(team, found, env);
+  if (refused) throw new Error(refused);
   const brief = loadRoleBrief(pluginRoot, projectRoot, role.brief);
   teamDir = path.resolve(teamDir || path.join(projectRoot, '..', `${team.project}-team`));
   const roleDir = path.join(teamDir, instance);
+  const markerFile = path.join(roleDir, '.delivery-role.json');
+
+  // a re-preparation without --user keeps the role's saved actor: whoever re-runs start.js (say, to
+  // change the permission mode) is not the role's identity, and a new actor loses the role's claims;
+  // from a role session (a steward, Staffing) a different --user is refused outright
+  let savedUser;
+  try {
+    const saved = JSON.parse(fs.readFileSync(markerFile, 'utf8')).actor;
+    if (typeof saved === 'string' && saved.lastIndexOf('@') > 0) savedUser = saved.slice(0, saved.lastIndexOf('@'));
+  } catch (err) { savedUser = undefined; }
+  if (env.DELIVERY_ROLE && user && savedUser && user !== savedUser) {
+    throw new Error(`--user ${user} differs from the actor saved for ${instance} (${savedUser}): a role session never changes another role's actor; leave out --user`);
+  }
+  const actor = `${user || savedUser || os.userInfo().username}@${role.host}/${instance}`;
+  const marker = {
+    instance,
+    role: role.id,
+    project_root: projectRoot,
+    actor,
+    host: role.host,
+    model: role.model,
+    prepared_at: now || new Date().toISOString(),
+  };
+  const badMarker = markerProblem(marker);
+  if (badMarker) throw new Error(`${instance}: ${badMarker}`);
   fs.mkdirSync(roleDir, { recursive: true });
   const files = [];
   for (const w of manifestWarnings(team)) if (w.includes(`"${role.id}"`)) files.push(`warning: ${w}`);
@@ -86,14 +140,6 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
 
   if (brief.meta.touches_code && !productRepo) files.push('warning: no product worktree (pass --product-repo)');
 
-  // a re-preparation without --user keeps the role's saved actor: whoever re-runs start.js (say, to
-  // change the permission mode) is not the role's identity, and a new actor loses the role's claims
-  let savedUser;
-  try {
-    const saved = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')).actor;
-    if (typeof saved === 'string' && saved.lastIndexOf('@') > 0) savedUser = saved.slice(0, saved.lastIndexOf('@'));
-  } catch (err) { savedUser = undefined; }
-  const actor = `${user || savedUser || os.userInfo().username}@${role.host}/${instance}`;
   fs.mkdirSync(path.join(roleDir, '.claude'), { recursive: true });
   const settingsFile = path.join(roleDir, '.claude', 'settings.local.json');
   let settings = {};
@@ -122,7 +168,6 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   // Hooks and bd run from the role directory, where bd cannot find the project database on its own.
   // A value this script wrote earlier (remembered in the marker) follows the project when it moves;
   // any other value was set by the user and is never touched.
-  const markerFile = path.join(roleDir, '.delivery-role.json');
   let previouslyWritten;
   try { previouslyWritten = JSON.parse(fs.readFileSync(markerFile, 'utf8')).beads_dir_written; } catch (err) { previouslyWritten = undefined; }
   const beadsDir = path.join(projectRoot, '.beads');
@@ -221,15 +266,6 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   for (const r of ex.removed) files.push(`removed (expert retired): ${r}`);
   for (const w of ex.warnings) files.push(`warning: ${w}`);
 
-  const marker = {
-    instance,
-    role: role.id,
-    project_root: projectRoot,
-    actor,
-    host: role.host,
-    model: role.model,
-    prepared_at: now || new Date().toISOString(),
-  };
   if (beadsDirWritten) marker.beads_dir_written = beadsDirWritten;
   if (pathWritten) marker.path_written = pathWritten;
   fs.writeFileSync(markerFile, `${JSON.stringify(marker, null, 2)}\n`);
@@ -253,16 +289,23 @@ if (require.main === module) {
     console.error('usage: prepare-role.js --project <projectRoot> --instance <id> [--team-dir <dir>] [--product-repo <path>] [--user <name>]');
     process.exit(2);
   }
-  const { roleDir, files } = prepareRole({
-    projectRoot: args.project,
-    instance: args.instance,
-    teamDir: args.team_dir,
-    pluginRoot: path.join(__dirname, '..'),
-    productRepo: args.product_repo,
-    user: args.user,
-  });
+  let result;
+  try {
+    result = prepareRole({
+      projectRoot: args.project,
+      instance: args.instance,
+      teamDir: args.team_dir,
+      pluginRoot: path.join(__dirname, '..'),
+      productRepo: args.product_repo,
+      user: args.user,
+    });
+  } catch (err) {
+    console.error(`prepare-role: ${String(err.message).split('\n')[0]}`);
+    process.exit(1);
+  }
+  const { roleDir, files } = result;
   for (const f of files) if (f.startsWith('warning:') || f.startsWith('removed (expert retired):')) console.error(f);
   console.log(roleDir);
 }
 
-module.exports = { rolePath, reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole };
+module.exports = { rolePath, reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole, markerProblem, callerProblem };
