@@ -323,10 +323,23 @@ test('Copilot round 5: an answer needs its AskUserQuestion tool_use (kept across
   assert.deepEqual(ins.map((i) => [i.text, !!i.asked, !!i.after_assistant]), [['Yes', true, false], ['yes', false, false]]);
 });
 
-// Role sessions (Claude Code 2.1.312, sdk-cli) write a typed prompt with no origin: promptSource and
-// turnOrigin 'sdk'. A watchdog wake writes the very same shape; only its leading WAKE_OPENING differs.
+// A prompt handed to a non-interactive run (claude -p: a watchdog wake, a relay, a fresh-session
+// start) is stamped with no origin, promptSource and turnOrigin 'sdk' (Claude Code 2.1.312, 2.1.318).
+// The owner's own typing at the session carries origin.kind 'human' (RS.owner).
 const { WAKE_OPENING, wakePrompt } = require('./watchdog.js');
 const RS = {
+  owner: (text = 'ship it', n = 1) => ({
+    type: 'user', promptId: 'p' + n, uuid: 'u' + n, timestamp: ts(n), sessionId: 'S', version: '2.1.318', entrypoint: 'sdk-cli',
+    userType: 'external', promptSource: 'sdk', turnOrigin: 'human', origin: { kind: 'human' }, turnPosition: { promptIndex: n, turnIndex: n },
+    message: { role: 'user', content: text },
+  }),
+  // the prompt on the command line of `claude --bg "<prompt>"` (2.1.318): the harness stamps it typed
+  // and human, though nobody typed it into the session
+  bgStart: (text = 'Reply READY', n = 1, promptIndex = 1) => ({
+    type: 'user', promptId: 'p' + n, uuid: 'u' + n, timestamp: ts(n), sessionId: 'S', version: '2.1.318', entrypoint: 'sdk-cli',
+    userType: 'external', promptSource: 'typed', turnOrigin: 'human', origin: { kind: 'human' }, sessionKind: 'bg',
+    turnPosition: { promptIndex, turnIndex: promptIndex }, message: { role: 'user', content: text },
+  }),
   typed: (text = 'ship it', n = 1) => ({
     type: 'user', promptId: 'p' + n, uuid: 'u' + n, timestamp: ts(n), sessionId: 'S', version: '2.1.312', entrypoint: 'sdk-cli',
     userType: 'external', promptSource: 'sdk', turnOrigin: 'sdk', turnPosition: { promptIndex: 0, turnIndex: 1 },
@@ -344,11 +357,61 @@ const RS = {
   }),
 };
 
-test('role-session typed prompt (no origin, promptSource sdk) is human, ext_id promptId', () => {
+test('a prompt given to a non-interactive run (no origin, promptSource sdk) is a tool input, kept, never human', () => {
   const c = t.classifyRecord(RS.typed());
-  assert.strictEqual(c.source, 'human');
+  assert.strictEqual(c.source, 'tool');
   assert.strictEqual(c.ext_id, 'p1');
   assert.strictEqual(c.text, 'ship it');
+  // a relay or a fresh-session start given with claude -p
+  const relay = RS.typed('From the host session (operator tooling, not the owner): you are delivery-lead, start fresh', 14);
+  assert.strictEqual(t.classifyRecord(relay).source, 'tool');
+  const plain = RS.typed('print the beads location and stop', 15);
+  assert.strictEqual(t.classifyRecord(plain).source, 'tool');
+});
+
+test('a prompt stamped origin human is the owner\'s, ext_id promptId', () => {
+  const c = t.classifyRecord(RS.owner('ship it', 3));
+  assert.strictEqual(c.source, 'human');
+  assert.strictEqual(c.ext_id, 'p3');
+});
+
+test('the command-line prompt of a background session is a tool input; a later typed prompt is the owner\'s', () => {
+  // claude --bg probes started under a role directory
+  assert.strictEqual(t.classifyRecord(RS.bgStart('answer OK and stop', 1)).source, 'tool');
+  // typed by someone attached to the background session after its start
+  assert.strictEqual(t.classifyRecord(RS.bgStart('now stop', 3, 2)).source, 'human');
+  // the same first prompt in an interactive session is the owner's
+  const interactive = RS.bgStart('answer OK', 4); delete interactive.sessionKind;
+  assert.strictEqual(t.classifyRecord(interactive).source, 'human');
+});
+
+// Claude Code 2.1.318 numbers the prompts typed into a session from 1: in every transcript on this
+// host its typed prompts read promptIndex 1, 2, 3 ..., and promptIndex 0 is only ever on prompts not
+// typed (sdk, peer, task-notification). So a background session's command-line prompt is
+// promptIndex 1, and the first prompt anyone types into it afterwards is promptIndex 2.
+test('in a background session only promptIndex 1, the command line, is a tool input; the next typed prompt is the owner\'s', () => {
+  assert.strictEqual(t.classifyRecord(RS.bgStart('answer OK and stop', 1, 1)).source, 'tool');
+  // the owner's first typed prompt, at the harness's base, is never a tool input
+  assert.strictEqual(t.classifyRecord(RS.bgStart('now stop', 2, 2)).source, 'human');
+  assert.strictEqual(t.classifyRecord(RS.bgStart('and report', 3, 3)).source, 'human');
+  // a typed human prompt numbered 0 is not the command line (the harness gives 0 only to untyped prompts)
+  assert.strictEqual(t.classifyRecord(RS.bgStart('ship it', 4, 0)).source, 'human');
+});
+
+test('a prompt opening with the relay marker is never human, in any shape', () => {
+  assert.strictEqual(t.RELAY_MARKER, '(operator tooling, not the owner');
+  const marked = 'From the host session (operator tooling, not the owner): you are delivery-lead, start fresh';
+  const semi = 'From the host session (operator tooling, not the owner; a relay): hi';
+  for (const text of [marked, semi, `\n  ${marked}`]) {
+    assert.strictEqual(t.classifyRecord(RS.owner(text, 5)).source, 'tool', text);
+    assert.strictEqual(t.classifyRecord(RS.typed(text, 6)).source, 'tool', text);
+    assert.strictEqual(t.classifyRecord(RS.bgStart(text, 7, 3)).source, 'tool', text);
+    const att = { type: 'attachment', uuid: 'a1', attachment: { type: 'queued_command', commandMode: 'prompt', origin: { kind: 'human' }, prompt: text } };
+    assert.strictEqual(t.classifyRecord(att).source, 'tool', text);
+  }
+  // quoted mid-text, or on a later line, the owner's own words stay theirs
+  assert.strictEqual(t.classifyRecord(RS.owner('why did a prompt say (operator tooling, not the owner)?', 8)).source, 'human');
+  assert.strictEqual(t.classifyRecord(RS.owner('look at this:\nFrom X (operator tooling, not the owner): hi', 9)).source, 'human');
 });
 
 test('role-session peer message, isMeta text blocks and launcher record are never human', () => {
@@ -376,7 +439,7 @@ test('a watchdog wake built by the watchdog is never human; the prefix mid-text 
   const wake = RS.typed(wakePrompt(['Continue bead x.'], 'did'), 9);
   assert.ok(wake.message.content.startsWith(WAKE_OPENING));
   assert.strictEqual(t.classifyRecord(wake).source, 'system');
-  const mention = RS.typed(`why did the ${WAKE_OPENING} wake me?`, 10);
+  const mention = RS.owner(`why did the ${WAKE_OPENING} wake me?`, 10);
   assert.strictEqual(t.classifyRecord(mention).source, 'human');
   // the classifier takes the prefix from the watchdog's export, not a copy
   assert.strictEqual(t.WAKE_OPENING, WAKE_OPENING);
@@ -406,13 +469,14 @@ test('a wake with leading whitespace is still a wake', () => {
   assert.strictEqual(t.classifyRecord(RS.typed(`\n  ${wakePrompt(['Continue bead x.'], 'did')}`, 13)).source, 'system');
 });
 
-test('formatStatus is ok for 3+ role-session prompts with no peer message', () => {
+test('formatStatus is ok for 3+ non-interactive prompts with no peer message; none is human', () => {
   const f = writeJsonl([RS.launcher(), RS.typed('a', 1), RS.typed('b', 2), RS.typed('c', 3)]);
   const r = t.readHumanInputs(f);
   assert.strictEqual(r.total_user_records, 4);
   assert.strictEqual(r.recognised, 3);
   assert.strictEqual(t.formatStatus(r), 'ok');
-  assert.deepStrictEqual(r.inputs.filter((i) => i.source === 'human').map((i) => i.ext_id), ['p1', 'p2', 'p3']);
+  assert.deepStrictEqual(r.inputs.filter((i) => i.source === 'human').map((i) => i.ext_id), []);
+  assert.deepStrictEqual(r.inputs.filter((i) => i.source === 'tool').map((i) => i.ext_id), ['p1', 'p2', 'p3']);
 });
 
 test('formatStatus without a recognised count (an old cursor) falls back to with_origin', () => {
