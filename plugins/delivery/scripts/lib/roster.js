@@ -64,7 +64,7 @@ function withRosterLock(projectRoot, fn) {
   }
 }
 
-function registerInstance(projectRoot, { instance, session_id, host, model, role_dir, now, transcript_path, plugin_version }) {
+function registerInstance(projectRoot, { instance, session_id, host, model, role_dir, now, transcript_path, plugin_version, remote_session_id }) {
   return withRosterLock(projectRoot, () => {
     const roster = readRoster(projectRoot);
     const existing = roster.instances[instance] || {};
@@ -79,6 +79,10 @@ function registerInstance(projectRoot, { instance, session_id, host, model, role
     // the plugin version this session started or resumed under: the watchdog wakes it fresh rather than
     // resume a conversation that remembers an older version's script paths (lib/plugin-version.js)
     if (typeof plugin_version === 'string' && plugin_version) roster.instances[instance].plugin_version = plugin_version;
+    // the Remote Control session the owner follows (lib/team-revive.js): kept across a start that is not
+    // under Remote Control, so the next revive reattaches the owner's link instead of making a new one
+    const remote = (typeof remote_session_id === 'string' && remote_session_id) || existing.remote_session_id;
+    if (remote) roster.instances[instance].remote_session_id = remote;
     // the capture hook may have recorded this session's transcript first: keep it for the same session
     if (typeof transcript_path === 'string' && transcript_path) roster.instances[instance].transcript_path = transcript_path;
     else if (existing.transcript_path && existing.session_id === session_id) roster.instances[instance].transcript_path = existing.transcript_path;
@@ -132,6 +136,20 @@ function recordFork(projectRoot, { instance, session_id, transcript_path, now })
   });
 }
 
+// Record the Remote Control session id seen for an instance (lib/team-revive.js reads it from claude's
+// own files each pass). Writes only a change, and only on an instance already registered.
+function setRemoteSession(projectRoot, { instance, remote_session_id }) {
+  const cur = readRoster(projectRoot).instances[instance];
+  if (!cur || !remote_session_id || cur.remote_session_id === remote_session_id) return false;
+  return withRosterLock(projectRoot, () => {
+    const roster = readRoster(projectRoot);
+    if (!roster.instances[instance]) return false;
+    roster.instances[instance].remote_session_id = remote_session_id;
+    writeRoster(projectRoot, roster);
+    return true;
+  });
+}
+
 function touchInstance(projectRoot, { instance, now }) {
   return withRosterLock(projectRoot, () => {
     const roster = readRoster(projectRoot);
@@ -142,4 +160,4 @@ function touchInstance(projectRoot, { instance, now }) {
   });
 }
 
-module.exports = { sessionLocator, recordFork, readRoster, writeRoster, registerInstance, touchInstance, setTranscriptPath, withRosterLock, ROSTER_REL };
+module.exports = { setRemoteSession, sessionLocator, recordFork, readRoster, writeRoster, registerInstance, touchInstance, setTranscriptPath, withRosterLock, ROSTER_REL };
