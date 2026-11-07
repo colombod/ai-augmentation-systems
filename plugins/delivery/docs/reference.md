@@ -871,7 +871,8 @@ owner and is reviewed again; gates block only on authority or serious divergence
   at the start of a line: `Doc-impact: <the docs it updates>`, with at least one doc file (Markdown,
   a `docs/` tree, a README) changed in the same pull request, or `Doc-impact: none (<why users see
   no change>)`. Tests, generated files, lockfiles and the team's own record directories need no
-  line, and a pull request that changes only docs is its own doc impact. Editing the description is
+  line (a tool users run, such as `scripts/testing/run-tests.js`, still does, and a `.txt` file counts
+  as a doc only inside `docs/`), and a pull request that changes only docs is its own doc impact. Editing the description is
   not a new commit, so the review still counts. Where gh cannot read the pull request, the check is
   a warning. The lane runs the same check before it allows the Delivery Manager's
   `gh pr merge`, which must name the pull request by number with `-R <product>` (or by its URL in
