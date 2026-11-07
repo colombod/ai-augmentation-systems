@@ -274,7 +274,20 @@ const RULE_WRAPPERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'fish
   'env', 'sudo', 'doas', 'su', 'runuser', 'pkexec', 'xargs', 'nohup', 'nice', 'ionice', 'timeout', 'time', 'exec', 'eval',
   'command', 'builtin', 'source', '.', 'setsid', 'chroot', 'unshare', 'nsenter', 'stdbuf', 'flock', 'watch', 'script', 'strace', 'ltrace', 'gdb',
   'ssh', 'parallel', 'find', 'awk', 'gawk', 'mawk', 'sed', 'perl', 'ruby', 'php', 'lua', 'tclsh', 'python', 'python2', 'python3',
-  'node', 'nodejs', 'deno', 'bun', 'npx', 'pnpx', 'bunx', 'make', 'docker', 'podman', 'kubectl', 'bwrap', 'firejail']);
+  'node', 'nodejs', 'deno', 'bun', 'npx', 'pnpx', 'bunx', 'make', 'docker', 'podman', 'kubectl', 'bwrap', 'firejail',
+  'pwsh', 'powershell', 'tmux', 'screen', 'systemd-run', 'uvx', 'tsx', 'ts-node', 'ts-node-esm', 'esno', 'jiti',
+  // yarn runs any package script by its bare name (yarn build), so no yarn subcommand is a specific command
+  'yarn']);
+// versioned interpreters (python3.12, node22, perl5.36, ruby3.3) are the same interpreters
+const RULE_WRAPPER_PATTERNS = [/^python[\d.]*$/, /^node[\d.]*$/, /^(perl|ruby|php|lua|tclsh|pypy)[\d.]*$/];
+// a subcommand that runs another program, a package script or arbitrary code: the program alone is not
+// a wrapper, but this program and subcommand pair allows any command (PR 184 re-review rv-184-delivery-lead-9)
+const RULE_WRAPPER_SUBCOMMANDS = {
+  npm: ['exec', 'x', 'run', 'run-script', 'rum', 'urn', 'dlx', 'start', 'stop', 'restart', 'test', 't', 'tst', 'explore'],
+  pnpm: ['exec', 'x', 'run', 'run-script', 'dlx', 'start', 'stop', 'restart', 'test', 't', 'tst', 'create'],
+  uv: ['run', 'tool'], pipx: ['run'], cargo: ['run'], go: ['run', 'generate', 'tool'],
+  git: ['config', 'submodule', 'bisect', 'filter-branch'], gh: ['extension', 'ext', 'alias'],
+};
 // commands the role settings deny natively (prepare-role LANE_BACKSTOP_DENY, MERGE_DENY): an owner rule
 // never lifts them, so one that names them is refused rather than left fighting the deny rule
 const RULE_DENIED_PREFIXES = ['git push', 'sudo', 'curl', 'wget', 'rm', 'gh pr merge'];
@@ -287,9 +300,13 @@ function permissionRuleProblem(allow) {
   const words = cmd.split(/\s+/);
   if (words.length < 2) return 'it must name a command and its subcommand (Bash(gh pr close:*)), not a whole program';
   if (/[/~]/.test(words[0]) || words[0].startsWith('.')) return 'the command must be a program name, not a path';
-  if (RULE_WRAPPERS.has(words[0].toLowerCase())) return `${words[0]} runs other programs or code, so a rule on it allows any command`;
+  const program = words[0].toLowerCase();
+  if (RULE_WRAPPERS.has(program) || RULE_WRAPPER_PATTERNS.some((re) => re.test(program))) return `${words[0]} runs other programs or code, so a rule on it allows any command`;
+  if ((RULE_WRAPPER_SUBCOMMANDS[program] || []).includes(words[1].toLowerCase())) return `${words[0]} ${words[1]} runs other programs, scripts or code, so a rule on it allows any command`;
   if (words[1].startsWith('-')) return 'the second word must be a subcommand, not a flag';
-  const denied = RULE_DENIED_PREFIXES.find((d) => cmd === d || cmd.startsWith(`${d} `));
+  // compared on the words, so extra spaces (git  push) do not slip past it
+  const spoken = words.join(' ');
+  const denied = RULE_DENIED_PREFIXES.find((d) => spoken === d || spoken.startsWith(`${d} `));
   if (denied) return `${denied} is denied to every restricted role and an owner rule does not lift it`;
   return null;
 }

@@ -483,13 +483,20 @@ test('8l1.3.4.1.1: a permission rule broader than one specific command is refuse
   const broad = ['Bash', 'Bash(*)', 'Bash(:*)', 'Bash(git:*)', 'Bash(gh pr *:*)', 'Bash(gh pr close; rm -rf x:*)', 'Bash(gh $(id):*)', 'Write', 'Edit(**)', 'mcp__*', 'WebFetch',
     // a shell, interpreter or wrapper as the first word runs anything; a flag is no subcommand; a denied command stays denied
     'Bash(bash -c:*)', 'Bash(sh -c:*)', 'Bash(node -e:*)', 'Bash(python3 -c:*)', 'Bash(env sh:*)', 'Bash(sudo rm:*)', 'Bash(xargs sh:*)',
-    'Bash(/bin/sh -c:*)', 'Bash(./run thing:*)', 'Bash(rm -rf:*)', 'Bash(git -c:*)', 'Bash(git push:*)', 'Bash(git push origin:*)', 'Bash(gh pr merge:*)', 'Bash(gh pr close,x:*)'];
+    'Bash(/bin/sh -c:*)', 'Bash(./run thing:*)', 'Bash(rm -rf:*)', 'Bash(git -c:*)', 'Bash(git push:*)', 'Bash(git push origin:*)', 'Bash(gh pr merge:*)', 'Bash(gh pr close,x:*)',
+    // versioned interpreters, package and language runners, terminal multiplexers and config writers run anything too
+    'Bash(python3.12 -c:*)', 'Bash(python3.12 script:*)', 'Bash(node22 script:*)', 'Bash(ruby3.3 x:*)', 'Bash(npm exec x:*)', 'Bash(npm run build:*)', 'Bash(npm x y:*)',
+    'Bash(pnpm exec x:*)', 'Bash(pnpm dlx x:*)', 'Bash(pnpm run x:*)', 'Bash(yarn exec x:*)', 'Bash(yarn run x:*)', 'Bash(yarn dlx x:*)', 'Bash(yarn build:*)',
+    'Bash(uvx ruff:*)', 'Bash(uv run x:*)', 'Bash(pipx run x:*)', 'Bash(cargo run x:*)', 'Bash(go run x:*)', 'Bash(tsx script:*)', 'Bash(ts-node script:*)',
+    'Bash(pwsh -c:*)', 'Bash(pwsh script:*)', 'Bash(tmux new-session:*)', 'Bash(screen x:*)', 'Bash(systemd-run x:*)', 'Bash(git config alias.x:*)', 'Bash(git submodule foreach:*)',
+    // extra spaces do not slip a denied command past the check
+    'Bash(git  push:*)', 'Bash(git \tpush origin:*)', 'Bash(gh pr  merge:*)'];
   for (const allow of broad) {
     assert.ok(permissionRuleProblem(allow), allow);
     builder.permissions = [{ allow, record: REC }];
     assert.ok(validateManifest(team, hosts).some((p) => p.startsWith(`team.json: role "builder" permission rule ${allow} is refused: `)), allow);
   }
-  for (const allow of [CLOSE, 'Bash(gh pr close 136)', 'Bash(git pushd x:*)', 'Bash(gh run view:*)']) assert.equal(permissionRuleProblem(allow), null, allow);
+  for (const allow of [CLOSE, 'Bash(gh pr close 136)', 'Bash(git pushd x:*)', 'Bash(gh run view:*)', 'Bash(npm ci:*)', 'Bash(cargo build:*)', 'Bash(go test ./...:*)', 'Bash(git status:*)', 'Bash(nodemon x:*)']) assert.equal(permissionRuleProblem(allow), null, allow);
   // a broad rule that reaches prepare-role (a hand-edited manifest) is refused there too, even with a scoped record
   const { ownerApproved } = require('./prepare-role.js');
   const got = ownerApproved('/nowhere', { id: 'builder', permissions: [{ allow: 'Bash(*)', record: REC }] }, fakeVerify([REC], ownerSaid(['permission:builder=Bash(*)'])));
@@ -559,7 +566,28 @@ test('8l1.3.4.1.1: a record scoped to the rule whose owner words do not name the
   const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
   const { roleDir, files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC], ownerSaid([LABEL], 'yes, go ahead with that')) });
   assert.ok(!settingsAllow(roleDir).includes(CLOSE));
-  assert.ok(files.some((f) => f.includes(`not written: the owner's own words in ${REC} do not name the command "gh pr close"`)), files.join('\n'));
+  assert.ok(files.some((f) => f.includes(`not written: the owner's quote in ${REC} does not name the command "gh pr close"`)), files.join('\n'));
+});
+
+test('8l1.3.4.1.1: only the owner\'s quote counts, and a negated quote approves nothing', () => {
+  const { ownerApproved } = require('./prepare-role.js');
+  const role = { id: 'builder', permissions: [{ allow: CLOSE, record: REC }] };
+  const withInput = (quote, input) => ({ ok: true, chain: [{ kind: 'record', quote, scope: { beads: [], labels: [LABEL], initiatives: [] } }, { kind: 'input', source: 'human', text: input }] });
+  const run = (v) => ownerApproved('/nowhere', role, fakeVerify([REC], v));
+  // the command only in the captured input, outside the quote: refused, even when the input says it plainly
+  for (const input of ['never let builders run gh pr close', 'yes, go ahead. let builders run gh pr close']) {
+    const got = run(withInput('yes, go ahead with the cleanup', input));
+    assert.deepEqual(got.rules, [], input);
+    assert.match(got.refused[0].why, /the owner's quote in dec-chief-of-staff-000309 does not name the command "gh pr close"/, input);
+  }
+  // the command in a negated quote: refused
+  for (const quote of ['never let builders run gh pr close', 'do not let builders run gh pr close', "builders shouldn't run gh pr close", 'builders run gh pr close? no']) {
+    const got = run(withInput(quote, quote));
+    assert.deepEqual(got.rules, [], quote);
+    assert.match(got.refused[0].why, /the owner's quote in dec-chief-of-staff-000309 carries a negation/, quote);
+  }
+  // the command in the quote, with no negation: written, whatever else the input says around it
+  assert.deepEqual(run(withInput('let builders run gh pr close on superseded pull requests', 'let builders run gh pr close on superseded pull requests. thanks')).rules, [CLOSE]);
 });
 
 test('8l1.3.4.1.1: when checking the owner records throws, a rule written earlier still leaves', () => {
@@ -587,4 +615,124 @@ test('8l1.3.4.1.1: the managed-rule sidecars are written only after the settings
   fs.mkdirSync(path.join(roleDir, '.claude', 'settings.local.json'), { recursive: true });
   assert.throws(() => prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC]) }));
   for (const f of ['.delivery-managed-allow.json', '.delivery-managed-deny.json']) assert.ok(!fs.existsSync(path.join(roleDir, '.claude', f)), f);
+});
+
+// Who may prepare a role directory: Staffing, the steward of the instance's host, or a run outside any
+// role session (start.js); from a role session the saved actor stays; a marker is complete or not written.
+function teamWith(projectRoot, edit) {
+  const file = path.join(projectRoot, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(file, 'utf8'));
+  team.roles.push({ id: 'reality-checker', brief: 'delivery/reality-checker', host: 'pc', model: 'sonnet' });
+  if (edit) edit(team);
+  fs.writeFileSync(file, JSON.stringify(team, null, 2));
+}
+const roleEnv = (instance, roleId) => ({ DELIVERY_ROLE: instance, DELIVERY_ROLE_ID: roleId || instance.replace(/-\d+$/, '') });
+function dirSum(dir) {
+  if (!fs.existsSync(dir)) return 'absent';
+  const h = require('crypto').createHash('sha256');
+  const walk = (d) => { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n); const s = fs.lstatSync(p); h.update(p); if (s.isDirectory()) { if (n !== '.git') walk(p); } else h.update(fs.readFileSync(p)); } };
+  walk(dir);
+  return h.digest('hex');
+}
+
+test('team-runtime-10: only Staffing, the host\'s steward or a run outside a role prepares a role directory', () => {
+  const projectRoot = scratchProjectRepo();
+  teamWith(projectRoot);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const prep = (instance, env, user = 'tester') => prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user, env });
+  // outside any role session (start.js, the owner's shell): prepared
+  const { roleDir } = prep('reality-checker', {});
+  const before = dirSum(roleDir);
+  for (const caller of ['spike-researcher', 'chief-of-staff', 'delivery-lead']) {
+    assert.throws(() => prep('reality-checker', roleEnv(caller)), (err) => {
+      assert.ok(!err.message.includes('\n'), 'one line');
+      assert.match(err.message, new RegExp(`^role ${caller} may not prepare reality-checker: only Staffing, the steward of host pc, or start\\.js run outside a role session prepares a role directory`));
+      return true;
+    }, caller);
+    assert.equal(dirSum(roleDir), before, `${caller} left the role directory unchanged`);
+  }
+  // a refused caller writes nothing, not even a new role directory
+  assert.throws(() => prep('builder-2', roleEnv('spike-researcher')), /may not prepare builder-2/);
+  assert.ok(!fs.existsSync(path.join(teamDir, 'builder-2')));
+  // the steward of pc (builder is one in this team) prepares an instance on pc
+  prep('reality-checker', roleEnv('builder-1'));
+  // but not one on another host (progress-observer runs on buildbox)
+  assert.throws(() => prep('progress-observer', roleEnv('builder-1')), /may not prepare progress-observer: only Staffing, the steward of host buildbox/);
+  // a session whose DELIVERY_ROLE_ID does not match its team.json entry is not that role
+  assert.throws(() => prep('reality-checker', roleEnv('builder-1', 'staffing')), /may not prepare/);
+  assert.throws(() => prep('reality-checker', roleEnv('nobody', 'staffing')), /may not prepare/);
+  // Staffing prepares any instance, on any host
+  prep('reality-checker', roleEnv('staffing'));
+  prep('progress-observer', roleEnv('staffing'));
+});
+
+test('team-runtime-10: a builder that is not a steward may not prepare', () => {
+  const projectRoot = scratchProjectRepo();
+  teamWith(projectRoot, (team) => {
+    for (const r of team.roles) if (r.id === 'builder') delete r.steward;
+    team.roles.find((r) => r.id === 'staffing').steward = true; // pc still has a steward
+  });
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  assert.throws(() => prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', env: roleEnv('builder-1') }), /role builder-1 may not prepare reality-checker/);
+});
+
+test('team-runtime-10: from a role session --user cannot change the saved actor', () => {
+  const projectRoot = scratchProjectRepo();
+  teamWith(projectRoot);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, user: 'alice', env: {} });
+  const before = dirSum(roleDir);
+  for (const caller of ['builder-1', 'staffing']) {
+    assert.throws(() => prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, user: 'mallory', env: roleEnv(caller) }), (err) => {
+      assert.ok(!err.message.includes('\n'));
+      assert.match(err.message, /--user mallory differs from the actor saved for reality-checker \(alice\)/);
+      return true;
+    });
+    assert.equal(dirSum(roleDir), before);
+  }
+  // the same user, or none, keeps the actor
+  prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, user: 'alice', env: roleEnv('builder-1') });
+  prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, env: roleEnv('builder-1') });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')).actor, 'alice@pc/reality-checker');
+  // outside a role session the owner may still change it
+  prepareRole({ projectRoot, instance: 'reality-checker', teamDir, pluginRoot: PLUGIN_ROOT, user: 'bob', env: {} });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8')).actor, 'bob@pc/reality-checker');
+});
+
+test('team-runtime-10: prepare-role.js run from a role session it may not act for exits non-zero with one line', () => {
+  const projectRoot = scratchProjectRepo();
+  teamWith(projectRoot);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const script = path.join(__dirname, 'prepare-role.js');
+  const run = (env) => require('child_process').spawnSync(process.execPath, [script, '--project', projectRoot, '--instance', 'reality-checker', '--team-dir', teamDir, '--user', 'tester'], { env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env }, encoding: 'utf8' });
+  const refused = run(roleEnv('spike-researcher'));
+  assert.notEqual(refused.status, 0);
+  assert.equal(refused.stderr.trim().split('\n').length, 1, refused.stderr);
+  assert.match(refused.stderr, /role spike-researcher may not prepare reality-checker: only Staffing, the steward of host pc, or start\.js/);
+  assert.ok(!fs.existsSync(path.join(teamDir, 'reality-checker')));
+  const ok = run({});
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.ok(fs.existsSync(path.join(teamDir, 'reality-checker', '.delivery-role.json')));
+});
+
+test('3k4.1.2.3 c3: a marker missing a required field is refused naming it, and nothing is written', () => {
+  const { markerProblem } = require('./prepare-role.js');
+  const full = { instance: 'x', role: 'x', project_root: '/p', actor: 'a@h/x', host: 'h', model: 'opus', prepared_at: '2026-11-04T00:00:00.000Z' };
+  assert.equal(markerProblem(full), null);
+  for (const field of ['instance', 'role', 'project_root', 'actor', 'host', 'model', 'prepared_at']) {
+    for (const bad of [undefined, '', 7]) {
+      const m = { ...full, [field]: bad };
+      if (bad === undefined) delete m[field];
+      assert.match(markerProblem(m) || '', new RegExp(`"${field}"`), `${field}=${bad}`);
+    }
+  }
+  assert.match(markerProblem({ ...full, project_root: 'relative/p' }), /"project_root"/);
+  // through prepareRole: a project brief with no default_model, and no model in team.json
+  const projectRoot = scratchProjectRepo();
+  fs.mkdirSync(path.join(projectRoot, '.delivery', 'team', 'briefs'), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, '.delivery', 'team', 'briefs', 'custom.md'), '---\nid: custom\ntouches_code: false\n---\n\nA custom role.\n');
+  teamWith(projectRoot, (team) => team.roles.push({ id: 'custom', brief: 'project/custom', host: 'pc' }));
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  assert.throws(() => prepareRole({ projectRoot, instance: 'custom', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', env: {} }), /"model"/);
+  assert.ok(!fs.existsSync(path.join(teamDir, 'custom')), 'nothing written');
 });

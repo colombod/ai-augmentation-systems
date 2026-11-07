@@ -119,7 +119,9 @@ function ownerRecord(root, id, verifyRecord) {
   const labels = (head.scope && head.scope.labels) || [];
   // only the owner's own words: the verified quote and the captured input, never the statement or the
   // scope the recording agent wrote (PR 54 re-review I-a)
-  return { ok: true, head, text: [head.quote, ...inputs.map((h) => h.text)].filter(Boolean).join(' '), goal: labels.some((l) => /^goal:/.test(String(l))) };
+  // quote alone is the span the store checked against the input for a negation around it; text adds the
+  // whole captured inputs, which may say anything else (PR 184 re-review: "never let builders run X")
+  return { ok: true, head, quote: String(head.quote || ''), text: [head.quote, ...inputs.map((h) => h.text)].filter(Boolean).join(' '), goal: labels.some((l) => /^goal:/.test(String(l))) };
 }
 
 // recordOk(id) for the gates: a cut, waiver or reason must cite the owner's record, still verifying.
