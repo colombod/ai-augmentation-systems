@@ -46,7 +46,23 @@ function rolePath(env, home = os.homedir(), cwd = process.cwd()) {
   return [...new Set(parts)].join(path.delimiter);
 }
 
-function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, user, now }) {
+// The role's owner-approved permission rules: { rules, refused: [{ allow, why }] }. A rule counts only
+// while its record verifies and rests on the owner's own captured words (gate-context ownerRecord).
+function ownerApproved(projectRoot, role, verifyRecord) {
+  const { ownerRecord } = require('./lib/gate-context.js');
+  const out = { rules: [], refused: [] };
+  for (const p of Array.isArray(role.permissions) ? role.permissions : []) {
+    const allow = p && typeof p.allow === 'string' ? p.allow.trim() : '';
+    if (!allow) continue;
+    if (!p.record) { out.refused.push({ allow, why: 'it cites no owner record' }); continue; }
+    const v = ownerRecord(projectRoot, String(p.record), verifyRecord);
+    if (v.ok) out.rules.push(allow); else out.refused.push({ allow, why: v.why });
+  }
+  out.rules = [...new Set(out.rules)];
+  return out;
+}
+
+function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, user, now, verifyRecord }) {
   instance = canonicalRoleId(instance); // --instance delivery-manager means delivery-lead
   projectRoot = path.resolve(projectRoot);
   const { team, hosts } = loadManifest(projectRoot);
@@ -160,6 +176,23 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
       const have = Array.isArray(settings.permissions.allow) ? settings.permissions.allow : [];
       settings.permissions.allow = [...new Set([...have, ...rules])];
     }
+    // Owner-approved rules (team.json role "permissions": [{ "allow", "record" }]): a rule the owner
+    // approved for a role reached no settings file, since no lane may write a role's settings and
+    // prepare-role wrote lane rules only (8l1.3.4.1.1). Each is written only while its record verifies
+    // as the owner's own words; one that does not is refused and named. The rules written are listed
+    // in a sidecar, so a rule whose record stops verifying, or that leaves the manifest, is taken out
+    // again; an allow rule the user wrote is never touched.
+    const approved = ownerApproved(projectRoot, role, verifyRecord);
+    for (const r of approved.refused) files.push(`warning: permission rule ${r.allow} not written: ${r.why}`);
+    const allowFile = path.join(roleDir, '.claude', '.delivery-managed-allow.json');
+    let ownedAllow = [];
+    try { ownedAllow = JSON.parse(fs.readFileSync(allowFile, 'utf8')).allow || []; } catch (e) { ownedAllow = []; }
+    const haveAllow = Array.isArray(settings.permissions.allow) ? settings.permissions.allow : [];
+    const userAllow = haveAllow.filter((r) => !ownedAllow.includes(r) || rules.includes(r));
+    const allow = [...new Set([...userAllow, ...approved.rules])];
+    if (allow.length) settings.permissions.allow = allow; else delete settings.permissions.allow;
+    fs.mkdirSync(path.dirname(allowFile), { recursive: true });
+    fs.writeFileSync(allowFile, JSON.stringify({ allow: approved.rules.filter((r) => !userAllow.includes(r)) }, null, 2) + '\n');
     // Native deny rules: they hold where a hook cannot (no node, a broken manifest, a moved plugin,
     // bypassPermissions). Workers and managers never address the operator; a lane without `any`
     // never needs these commands, so a hook that fails open still cannot run them. Recomputed on

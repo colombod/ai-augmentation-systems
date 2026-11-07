@@ -391,3 +391,64 @@ test('prepareRole writes a PATH that finds bd for a session started with a bare 
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).env.PATH, '');
   } finally { process.env.PATH = saved; fs.rmSync(home, { recursive: true, force: true }); }
 });
+
+// 8l1.3.4.1.1: an owner-approved permission rule reaches the role's settings, only on a verified record
+function withPermissions(projectRoot, permissions) {
+  const f = path.join(projectRoot, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(f, 'utf8'));
+  team.roles.find((r) => r.id === 'builder').permissions = permissions;
+  fs.writeFileSync(f, JSON.stringify(team, null, 2));
+}
+const OWNER_OK = { ok: true, chain: [{ kind: 'record', quote: 'builders close superseded pull requests' }, { kind: 'input', source: 'human', text: 'let builders close superseded pull requests' }] };
+const fakeVerify = (good) => (root, id) => (good.includes(id) ? OWNER_OK : { ok: false, error: 'no such record' });
+const CLOSE = 'Bash(gh pr close:*)';
+const REC = 'dec-chief-of-staff-000309';
+
+test('8l1.3.4.1.1: an owner-approved permission rule is written for every instance of the role while its record verifies', () => {
+  const projectRoot = scratchProjectRepo();
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const allowOf = (instance, verifyRecord) => {
+    const { roleDir, files } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord });
+    const s = JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8'));
+    return { roleDir, files, allow: (s.permissions && s.permissions.allow) || [] };
+  };
+  for (const i of ['builder-1', 'builder-2']) assert.deepEqual(allowOf(i, fakeVerify([REC])).allow, [CLOSE], i);
+  // another role does not get it
+  assert.ok(!allowOf('spike-researcher', fakeVerify([REC])).allow.includes(CLOSE));
+  // a user's own allow rule stays; once the record no longer verifies the plugin's rule is taken out
+  const { roleDir } = allowOf('builder-1', fakeVerify([REC]));
+  const sf = path.join(roleDir, '.claude', 'settings.local.json');
+  const s = JSON.parse(fs.readFileSync(sf, 'utf8'));
+  s.permissions.allow.push('Bash(make:*)');
+  fs.writeFileSync(sf, JSON.stringify(s));
+  const gone = allowOf('builder-1', fakeVerify([]));
+  assert.deepEqual(gone.allow, ['Bash(make:*)']);
+  assert.ok(gone.files.some((f) => /permission rule Bash\(gh pr close:\*\) not written: dec-chief-of-staff-000309 does not verify/.test(f)), gone.files.join('\n'));
+});
+
+test('8l1.3.4.1.1: a permission rule whose record does not verify, or rests on no owner words, is refused and named', () => {
+  const projectRoot = scratchProjectRepo();
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const notOwner = () => ({ ok: true, chain: [{ kind: 'record' }, { kind: 'input', source: 'agent', text: 'an agent said so' }] });
+  for (const verifyRecord of [fakeVerify([]), notOwner]) {
+    const { roleDir, files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord });
+    const s = JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8'));
+    assert.equal((s.permissions || {}).allow, undefined);
+    assert.ok(files.some((f) => /^warning: permission rule Bash\(gh pr close:\*\) not written: dec-chief-of-staff-000309 /.test(f)), files.join('\n'));
+  }
+});
+
+test('8l1.3.4.1.1: the manifest refuses a permissions entry without a record id', () => {
+  const { validateManifest } = require('./lib/manifest.js');
+  const team = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), 'utf8'));
+  const hosts = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), 'utf8'));
+  const builder = team.roles.find((r) => r.id === 'builder');
+  builder.permissions = [{ allow: CLOSE, record: REC }];
+  assert.deepEqual(validateManifest(team, hosts).filter((p) => /permissions/.test(p)), []);
+  for (const bad of [[{ allow: CLOSE }], [{ allow: CLOSE, record: 'the owner said so' }], [{ allow: '', record: REC }], { allow: CLOSE, record: REC }]) {
+    builder.permissions = bad;
+    assert.ok(validateManifest(team, hosts).some((p) => /role "builder" has invalid "permissions"/.test(p)), JSON.stringify(bad));
+  }
+});

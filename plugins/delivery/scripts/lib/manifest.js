@@ -188,6 +188,13 @@ function validateManifest(team, hosts) {
     // Managers never drive the owner's apps; real-surface runs are the Reality Checker's.
     if (role.reach !== undefined && typeof role.reach !== 'boolean') problems.push(`team.json: role "${role.id}" has non-boolean "reach"`);
     else if (role.reach === true && isManager(role)) problems.push(`team.json: role "${role.id}" cannot have "reach": managers never drive the owner's apps; real-surface runs are the Reality Checker's`);
+    // permissions: native allow rules the owner approved for this role, each citing its record;
+    // prepare-role writes one only while that record verifies (8l1.3.4.1.1)
+    if (role.permissions !== undefined) {
+      const ok = (p) => Boolean(p) && typeof p === 'object' && !Array.isArray(p) && typeof p.allow === 'string' && p.allow.trim()
+        && typeof p.record === 'string' && /^(dec|ans)-.+-\d{6,}$/.test(p.record) && Object.keys(p).every((k) => ['allow', 'record'].includes(k));
+      if (!Array.isArray(role.permissions) || !role.permissions.every(ok)) problems.push(`team.json: role "${role.id}" has invalid "permissions": a list of {"allow": "<permission rule>", "record": "<dec- or ans- record id>"}`);
+    }
     if (role.steward) stewards.add(role.host);
   }
   // an instance id names one session, its branch and its records: never two in the whole team
