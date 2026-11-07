@@ -947,3 +947,21 @@ test('sending the operator into another session to grant or tell something is a 
     'In the builder session, tests pass at the new head.',
   ]) assert.equal(findRelayRequest(m, { parties }), null, m);
 });
+
+// The judge half of the incident: with the judge on, a p under 0.5 overrules a regex hit, so the live
+// smoke set (scripts/judge-smoke.js) must carry the incident as a labelled yes case and a session named
+// only as information as a no case. These pin both cases to the set and to the detector's own reading.
+test('the live judge smoke set carries the incident as a yes case and a session named as information as a no case', () => {
+  const { cases } = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'judge', 'smoke-relay-cases.json'), 'utf8'));
+  const parties = ['staffing', 'delivery-lead', 'builder'];
+  const yes = cases.find((c) => c.state.message.startsWith(INTO_ANOTHER_SESSION));
+  assert.ok(yes, 'the incident message is in the smoke set');
+  assert.equal(yes.label, true);
+  assert.ok(findRelayRequest(yes.state.message, { parties }));
+  const no = cases.find((c) => c.id === 'R12');
+  assert.equal(no.label, false);
+  assert.match(no.state.message, /Staffing session/);
+  assert.equal(findRelayRequest(no.state.message, { parties }), null);
+  assert.equal(new Set(cases.map((c) => c.id)).size, cases.length);
+  for (const c of cases) assert.deepEqual(Object.keys(c.state).sort(), ['message', 'recipient', 'sender_role']);
+});

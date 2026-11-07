@@ -372,7 +372,9 @@ The catalogue is `judge/questions.json`, versioned per question:
   is not yet re-measured live. `divergence` is re-measured on real gate summaries (about 10, at least 3 minor)
   before it may ever block.
 - **Live check:** `node ${CLAUDE_PLUGIN_ROOT}/scripts/judge-smoke.js` (opt-in, not in the test suite)
-  sends the 10 labelled relay cases in `judge/smoke-relay-cases.json` and fails below 9 of 10;
+  sends the 12 labelled relay cases in `judge/smoke-relay-cases.json` (R11 is the incident where the
+  owner was sent into the Staffing session to grant an edit, R12 a session named only as information) and
+  fails below 11 of 12 or when any yes case scores under 0.5, where the judge would overrule a regex hit;
   `judge-smoke.js --set message` sends the 30 owner-message cases in `judge/smoke-message-cases.json`
   and prints, per question, the score and any wrong answer at or above 0.8. A question may block only at
   9 of 10 or better with no such wrong answer. Measured once (0.23.0, jev-1.13.0): `orders_owner` 10/10
