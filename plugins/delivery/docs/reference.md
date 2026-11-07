@@ -1499,22 +1499,24 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `start` (lane group `team-revive`), and its brief runs `check` each turn; any other role session is
   refused, whatever its lane. Each host's job covers the roles on that host.
 - **The outage drill.** Recovery after an outage is seen working once, on a host whose owner consented
-  to it. `outage-drill.js plan [--cut-minutes <n>] [--restart-after-minutes <m>] [--record <id>]` starts,
+  to it. `outage-drill.js plan [--cut-minutes <n>] [--record <id>]` starts,
   schedules and writes nothing: it prints the cut length, when the network comes back and when the host
   restarts, whether the consent record verifies and whether a drill already spent it, and a pre-flight
   line naming any leftover `claude` child with both `--print` and `--sdk-url` (a process-group kill can
   leave one, and it must be gone before a reattach). `outage-drill.js run --record <id> --cut-minutes <n>
-  --restart [--restart-after-minutes <m>]` is the Reality Checker's only (lane group `outage-drill`, and
+  --restart` is the Reality Checker's only (lane group `outage-drill`, and
   the script refuses any other role whatever its lane). It refuses a record that is not the owner's
   verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
   record. The cut drops the session that runs it, so in this order it schedules the restore
   (`systemd-run --on-active=<n*60>s --unit=delivery-drill-restore-<id> nmcli networking on`), schedules
-  the restart (`--on-active=<(n+m)*60>s --unit=delivery-drill-restart-<id> systemctl reboot`, m 1 by
-  default), writes the drill's row to the watchdog directory's `drills.ndjson`, and only then runs
+  the restart (`--on-active=<(n+1)*60>s --unit=delivery-drill-restart-<id> systemctl reboot`, a minute
+  after the network is back), writes the drill's row to the watchdog directory's `drills.ndjson`, and only then runs
   `nmcli networking off`. The timers are transient system units owned by PID 1, so they outlive the
   session; they and the cut need root, through `sudo -n` by default (`DELIVERY_DRILL_PRIVILEGE` replaces
   it, for example with `pkexec`, or empty under root). A schedule that fails cuts nothing and stops the
-  timer made before it; a cut that fails stops both timers, and the record stays spent.
+  timer made before it; a cut that fails stops both timers, and the record stays spent. The
+  consent is one cut of up to 30 minutes and one restart, so an offline gap longer than the cut is
+  not covered and no option stretches it.
 - **Watching GitHub within a budget (R-25).** `watch.js until <text> --every <5m> --max <2h> -- gh <read>`
   repeats a gh read until its output shows `<text>` (a pattern, any case), exit 0, or the time limit
   passes, exit 1. Outside a project its cache is a private folder in the temporary directory (0700,

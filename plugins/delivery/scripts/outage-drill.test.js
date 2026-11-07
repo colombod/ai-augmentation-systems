@@ -26,7 +26,7 @@ function setup() {
   const run = (argv, extra = {}) => D.main(argv, { cwd: dir, env: {}, now: NOW, exec, ps: () => '', verifyRecord: (r, id, opts) => { events.push({ kind: 'verify', id, opts }); return verifyRecord(r, id); }, who: { root: dir, roleId: 'reality-checker', actor: 'dev@pc/reality-checker' }, ...extra });
   return { root: dir, events, run };
 }
-const RUN = ['run', '--record', REC, '--cut-minutes', '30', '--restart', '--restart-after-minutes', '90'];
+const RUN = ['run', '--record', REC, '--cut-minutes', '30', '--restart'];
 
 test('run verifies the record, then schedules the restore, then the restart, then writes the row, and only then cuts', () => {
   const t = setup();
@@ -37,16 +37,16 @@ test('run verifies the record, then schedules the restore, then the restart, the
   const [, restore, restart, cut] = t.events;
   // system timers (no --user): they belong to PID 1 and outlive the session the cut drops
   assert.deepEqual(restore.args, ['sudo', '-n', 'systemd-run', '--on-active=1800s', '--timer-property=AccuracySec=1s', `--unit=delivery-drill-restore-${REC}`, `--description=delivery outage drill restore (${REC})`, 'nmcli', 'networking', 'on']);
-  assert.deepEqual(restart.args, ['sudo', '-n', 'systemd-run', '--on-active=7200s', '--timer-property=AccuracySec=1s', `--unit=delivery-drill-restart-${REC}`, `--description=delivery outage drill restart (${REC})`, 'systemctl', 'reboot']);
+  assert.deepEqual(restart.args, ['sudo', '-n', 'systemd-run', '--on-active=1860s', '--timer-property=AccuracySec=1s', `--unit=delivery-drill-restart-${REC}`, `--description=delivery outage drill restart (${REC})`, 'systemctl', 'reboot']);
   assert.ok(!restore.args.includes('--user') && !restart.args.includes('--user'));
   assert.deepEqual(cut.args, ['sudo', '-n', 'nmcli', 'networking', 'off']);
   assert.equal(restore.rowWritten, false);
   assert.equal(restart.rowWritten, false);
   assert.equal(cut.rowWritten, true, 'the row is on disk before the cut');
   const row = L.drillOf(t.root, REC);
-  assert.deepEqual(row, { type: 'drill', record: REC, started_at: NOW, restore_at: '2026-11-07T10:30:00.000Z', restart_at: '2026-11-07T12:00:00.000Z', cut_minutes: 30, restart_after_minutes: 90, units: [`delivery-drill-restore-${REC}.timer`, `delivery-drill-restart-${REC}.timer`], by: 'dev@pc/reality-checker' });
+  assert.deepEqual(row, { type: 'drill', record: REC, started_at: NOW, restore_at: '2026-11-07T10:30:00.000Z', restart_at: '2026-11-07T10:31:00.000Z', cut_minutes: 30, restart_after_minutes: 1, units: [`delivery-drill-restore-${REC}.timer`, `delivery-drill-restart-${REC}.timer`], by: 'dev@pc/reality-checker' });
   assert.equal(L.ledgerFile(t.root), path.join(t.root, '.delivery', 'watchdog', 'drills.ndjson'));
-  // the restart defaults to a minute after the network is back; the privilege is configurable
+  // the restart comes a minute after the network is back; the privilege is configurable
   const u = setup();
   assert.equal(u.run(['run', '--record', REC, '--cut-minutes', '5', '--restart'], { env: { DELIVERY_DRILL_PRIVILEGE: 'pkexec' } }).code, 0);
   assert.deepEqual(u.events[2].args.slice(0, 3), ['pkexec', 'systemd-run', '--on-active=360s']);
@@ -77,7 +77,8 @@ test('run refuses a cut outside 1..30 minutes, a run without --restart, and any 
   const t = setup();
   for (const n of ['0', '31', '2.5', 'ten']) assert.equal(t.run(['run', '--record', REC, '--cut-minutes', n, '--restart']).code, 2, n);
   assert.match(t.run(['run', '--record', REC, '--restart']).out, /--cut-minutes must be a whole number from 1 to 30/);
-  assert.match(t.run(['run', '--record', REC, '--cut-minutes', '10', '--restart', '--restart-after-minutes', '0']).out, /--restart-after-minutes/);
+  // the consent covers one cut of up to 30 minutes and one restart; no option stretches the gap
+  assert.equal(t.run(['run', '--record', REC, '--cut-minutes', '10', '--restart', '--restart-after-minutes', '90']).code, 2);
   assert.match(t.run(['run', '--record', REC, '--cut-minutes', '10']).out, /run needs --restart/);
   assert.match(t.run(['run', '--cut-minutes', '10', '--restart']).out, /run needs --record/);
   for (const roleId of ['builder', 'spike-researcher', 'chief-of-staff', null]) {
@@ -113,11 +114,12 @@ test('plan prints the times, the consent and its use, and the leftover-child pre
   const t = setup();
   const before = fs.readdirSync(t.root);
   const ps = () => ['  PID COMMAND', '  101 /usr/bin/claude --print --sdk-url wss://x --verbose', '  102 claude --print hello', '  103 node /opt/claude/cli.js', '  104 bash -c echo claude --print --sdk-url'].join('\n');
-  const r = t.run(['plan', '--record', REC, '--cut-minutes', '20', '--restart-after-minutes', '90'], { ps });
+  const r = t.run(['plan', '--record', REC, '--cut-minutes', '20'], { ps });
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /network cut: 20 minutes/);
   assert.match(r.out, /network back: 2026-11-07T10:20:00.000Z/);
-  assert.match(r.out, /host restart: 2026-11-07T11:50:00.000Z \(90 minutes after/);
+  assert.match(r.out, /host restart: 2026-11-07T10:21:00.000Z \(1 minute after/);
+  assert.match(r.out, /not covered: an offline gap longer than the cut/);
   assert.match(r.out, new RegExp(`consent: ${REC} verifies as the owner's word`));
   assert.match(r.out, /used: no drill on it yet/);
   assert.match(r.out, /pre-flight: 1 leftover claude child with --print and --sdk-url running \(pid 101\)/);

@@ -2,11 +2,11 @@
 // scripts/outage-drill.js — one owner-consented outage drill on this host: the network is cut for up to
 // 30 minutes and the host restarts once, so the team's recovery after an outage is seen working.
 // lib/outage-drill.js holds the rules.
-//   outage-drill.js plan [--cut-minutes <n>] [--restart-after-minutes <m>] [--record <id>]
+//   outage-drill.js plan [--cut-minutes <n>] [--record <id>]
 //       read-only: the cut length, when the network comes back, when the host restarts, the consent
 //       record and whether a drill already spent it, and whether a leftover headless claude child
 //       (--print with --sdk-url) is running. Starts, schedules and writes nothing.
-//   outage-drill.js run --record <id> --cut-minutes <n> --restart [--restart-after-minutes <m>]
+//   outage-drill.js run --record <id> --cut-minutes <n> --restart
 //       the Reality Checker's only. The cut drops the session that runs it, so before the cut it makes
 //       two transient system timers (systemd-run, owned by PID 1, outliving the session): the network
 //       restore at n minutes and the restart m minutes later (default 1), then writes the drill's row
@@ -15,9 +15,9 @@
 const L = require('./lib/outage-drill.js');
 const { whoAmI, ownerRecord } = require('./lib/gate-context.js');
 
-const USAGE = 'usage: outage-drill.js plan [--cut-minutes <n>] [--restart-after-minutes <m>] [--record <id>] | outage-drill.js run --record <id> --cut-minutes <n> --restart [--restart-after-minutes <m>]   (each takes --project <root>)';
+const USAGE = 'usage: outage-drill.js plan [--cut-minutes <n>] [--record <id>] | outage-drill.js run --record <id> --cut-minutes <n> --restart   (each takes --project <root>)';
 const ROLE = 'reality-checker';
-const VALUED = { '--cut-minutes': 'cut', '--restart-after-minutes': 'after', '--record': 'record', '--project': 'project' };
+const VALUED = { '--cut-minutes': 'cut', '--record': 'record', '--project': 'project' };
 
 function parse(argv) {
   const o = { _: [], restart: false };
@@ -43,14 +43,15 @@ function consent(root, id, verifyRecord) {
 
 function plan(who, o, { now, verifyRecord, ps }) {
   const cut = o.cut === undefined ? String(L.MAX_CUT_MINUTES) : o.cut;
-  const after = o.after === undefined ? String(L.DEFAULT_RESTART_AFTER) : o.after;
-  const bad = L.checkMinutes(cut, after);
+  const after = L.RESTART_AFTER;
+  const bad = L.checkMinutes(cut);
   if (bad) return { code: 2, out: `outage-drill.js: ${bad}` };
-  const t = L.times(now, Number(cut), Number(after));
+  const t = L.times(now, Number(cut), after);
   const lines = ['Outage drill plan (nothing is started, scheduled or written):',
     `  network cut: ${cut} minutes, from the run (${t.started_at} if run now)`,
     `  network back: ${t.restore_at}`,
-    `  host restart: ${t.restart_at} (${after} minutes after the network is back)`];
+    `  host restart: ${t.restart_at} (${after} minute after the network is back)`,
+    '  not covered: an offline gap longer than the cut (the consent is one cut of up to 30 minutes and one restart)'];
   if (!o.record) lines.push('  consent: no record named (pass --record <id>)');
   else {
     const v = consent(who.root, o.record, verifyRecord);
@@ -64,7 +65,7 @@ function plan(who, o, { now, verifyRecord, ps }) {
   if (left === null) lines.push('  pre-flight: the process list could not be read (ps failed)');
   else if (!left.length) lines.push('  pre-flight: no leftover claude child with --print and --sdk-url is running');
   else lines.push(`  pre-flight: ${left.length} leftover claude child${left.length > 1 ? 'ren' : ''} with --print and --sdk-url running (pid ${left.map((p) => p.pid).join(', ')}); stop ${left.length > 1 ? 'them' : 'it'} before a reattach`);
-  lines.push(`  to run: outage-drill.js run --record ${o.record || '<id>'} --cut-minutes ${cut} --restart --restart-after-minutes ${after}`);
+  lines.push(`  to run: outage-drill.js run --record ${o.record || '<id>'} --cut-minutes ${cut} --restart`);
   return { code: 0, out: lines.join('\n') };
 }
 
@@ -78,7 +79,7 @@ function run(who, o, { env, now, verifyRecord, exec }) {
   const used = L.drillOf(who.root, o.record);
   if (used) return refuse(`refused: ${o.record} was already used for a drill started ${used.started_at}; one drill per consent, nothing scheduled or cut`);
   const cut = Number(o.cut);
-  const after = Number(o.after === undefined ? L.DEFAULT_RESTART_AFTER : o.after);
+  const after = L.RESTART_AFTER;
   const t = L.times(now, cut, after);
   const made = [];
   const undo = () => { for (const kind of made) { try { exec(L.stopArgs(kind, o.record, env)); } catch (err) { /* the timer may be gone */ } } };
@@ -110,7 +111,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord,
   const who = given || whoAmI({ cwd, env, project: o.project });
   if (cmd === 'run') {
     if (!o.record) return { code: 2, out: `outage-drill.js: run needs --record <id>, the owner's consent\n${USAGE}` };
-    const bad = L.checkMinutes(o.cut, o.after === undefined ? L.DEFAULT_RESTART_AFTER : o.after);
+    const bad = L.checkMinutes(o.cut);
     if (bad) return { code: 2, out: `outage-drill.js: ${bad}` };
     if (!o.restart) return { code: 2, out: 'outage-drill.js: run needs --restart: the consent is a cut and one restart, never a cut alone' };
     // the lane gives run to the Reality Checker only; a role whose lane runs anything meets this

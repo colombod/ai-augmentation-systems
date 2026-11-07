@@ -7,7 +7,7 @@ const path = require('path');
 const WD = require('./watchdog.js');
 
 const MAX_CUT_MINUTES = 30;
-const DEFAULT_RESTART_AFTER = 1;
+const RESTART_AFTER = 1;
 // The cut drops the session that runs it, so the restore and the restart run in transient system units
 // (systemd-run without --user): they belong to PID 1, not to the session, its process group or the
 // user manager, and outlive all three. Their services run as root, so the restore needs no polkit rule.
@@ -34,15 +34,14 @@ function timerArgs(kind, record, seconds, cmd, env) {
 const stopArgs = (kind, record, env) => [...privilegeOf(env), 'systemctl', 'stop', `${unitName(kind, record)}.timer`];
 const cutArgs = (env) => [...privilegeOf(env), ...COMMANDS.cut];
 
-// n in 1..30 minutes of cut; m >= 1 minutes from the restore to the restart (90 makes the sessions see a
-// gap of over an hour while the network is down 30 minutes at most).
-function checkMinutes(cut, after) {
+// n in 1..30 minutes of cut; the restart follows the restore after a fixed minute. The consent is one
+// cut of up to 30 minutes and one restart: a longer offline gap is not covered.
+function checkMinutes(cut) {
   if (!/^\d+$/.test(String(cut)) || Number(cut) < 1 || Number(cut) > MAX_CUT_MINUTES) return `--cut-minutes must be a whole number from 1 to ${MAX_CUT_MINUTES} (got ${cut === undefined ? 'nothing' : cut})`;
-  if (!/^\d+$/.test(String(after)) || Number(after) < 1) return `--restart-after-minutes must be a whole number of at least 1 (got ${after})`;
   return null;
 }
 
-function times(now, cut, after) {
+function times(now, cut, after = RESTART_AFTER) {
   const t0 = Date.parse(now);
   const restore = t0 + cut * 60e3;
   return { started_at: new Date(t0).toISOString(), restore_at: new Date(restore).toISOString(), restart_at: new Date(restore + after * 60e3).toISOString() };
@@ -83,4 +82,4 @@ function leftoverChildren(psText) {
   return found;
 }
 
-module.exports = { MAX_CUT_MINUTES, DEFAULT_RESTART_AFTER, COMMANDS, privilegeOf, unitName, timerArgs, stopArgs, cutArgs, checkMinutes, times, ledgerFile, drills, drillOf, append, leftoverChildren };
+module.exports = { MAX_CUT_MINUTES, RESTART_AFTER, COMMANDS, privilegeOf, unitName, timerArgs, stopArgs, cutArgs, checkMinutes, times, ledgerFile, drills, drillOf, append, leftoverChildren };
