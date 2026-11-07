@@ -248,7 +248,7 @@ const typeOf = (b) => b.type || b.issue_type || null;
 // ---- the stalls ----
 // facts: { beads, ready, now, idleMinutes, stallHours, pause, openSteps, sessions, team, installed }
 // { paused?, stalls: [{ kind, key, bead?, target, line, plain, detail, prompt, due, scheduled?, wakeAt? }] }
-function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [], prs = [], reviews = [], woken = [], refusedInstalls: refused = [], claimable = () => true } = {}) {
+function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [], prs = [], reviews = [], woken = [], wakes = [], refusedInstalls: refused = [], claimable = () => true } = {}) {
   const t = ms(now || new Date().toISOString());
   if (pause && pause.paused) return { paused: pause.by || true, stalls: [] };
   const out = [];
@@ -325,12 +325,37 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   // state but changes asked or sent back: those are the builder's, and a send-back wakes it below), and
   // an open bead queued behind another bead its holder has in progress (one at a time).
   const reviewing = (b) => reviews.some((r) => (r.beads || []).includes(b.id) && !['changes', 'sent-back', 'merged'].includes(r.state));
+  // hjx.1.1: work its holder has said it cannot move is not woken either: the bead's last note names a
+  // blocker (team rule 7 raises a blocker as a bead note). Only the deliberate marker counts: the entry
+  // starts "Blocked:" after its date and author. Matching the word anywhere caught prose ("no longer
+  // blocked") and the Delivery Manager's own pass notes ("action unblock"), and left work its holder
+  // could move unwoken (rv-179). Pass notes are the watchdog's, not the holder's, so they are skipped:
+  // the holder's last dated entry decides, and a later note that moves the work on makes it the
+  // holder's again. Past stall_hours it is the Delivery Manager's, below.
+  const PASS_NOTE = /^\d{4}-\d{2}-\d{2}\S*\s+[^\s:]+\s+pass:/;
+  const BLOCKED_NOTE = /^\d{4}-\d{2}-\d{2}[^\s:]*(?:\s+[^:\n]+?)?:\s*Blocked:/;
+  const blockedBy = (b) => {
+    const entries = String((b && b.notes) || '').split(/\n(?=\d{4}-\d{2}-\d{2})/).map((x) => x.trim()).filter((x) => x && !PASS_NOTE.test(x));
+    const last = entries[entries.length - 1] || '';
+    return BLOCKED_NOTE.test(last) ? last : null;
+  };
+  // hjx.1.1: a wake's own turn is not a move. lastMove took the holder's lastActive, so every wake reset
+  // the stall clock and a bead its holder could not move never reached stall_hours: the holder was woken
+  // to its daily cap instead. Session activity counts only from before this bead's last wake (the wake
+  // log's assigned: and quiet: keys); the bead's own updates still count.
+  const lastWakeOf = (id) => Math.max(-Infinity, ...(wakes || []).filter((w) => w && (w.keys || []).some((k) => k === `assigned:${id}` || String(k).startsWith(`quiet:${id}:`))).map((w) => ms(w.at)).filter(Number.isFinite));
+  const activeFor = (b, h) => {
+    const a = h && Number.isFinite(h.lastActive) ? h.lastActive : -Infinity;
+    const w = lastWakeOf(b.id);
+    return Number.isFinite(w) && a >= w ? -Infinity : a;
+  };
   const busyWith = (b, h) => b.status === 'open' && beads.some((x) => x && x.id !== b.id && x.status === 'in_progress' && !waitingEvidence(x) && typeOf(x) !== 'epic' && (holderOf(x, list) || {}).instance === h.instance);
   for (const b of beads.filter((x) => x && x.assignee && !(inStop(x) && !recovering(x)) && !waiting.has(x.id) && !waitingEvidence(x) && typeOf(x) !== 'epic'
     && (x.status === 'in_progress' || (x.status === 'open' && readySet.has(x.id))))) {
     const h = holderOf(b, list);
     if (!h || limited.has(h.instance) || (h.waitUntil && h.waitUntil > t)) continue;
     if (reviewing(b) || busyWith(b, h)) continue;
+    if (b.status === 'in_progress' && blockedBy(b)) continue;
     const quiet = (t - (Number.isFinite(h.lastActive) ? h.lastActive : -Infinity)) / 60000;
     if (!(quiet > ASSIGNED_IDLE_MIN)) continue;
     // an open bead must still be one its holder may claim: bd ready knows nothing of a red main, which
@@ -338,13 +363,13 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
     if (b.status === 'open' && !claimable(b)) continue;
     // past stall_hours the in-progress stall below wakes the holder already: one wake, not two. That
     // stall skips a stopped area, so recovery work there keeps its assigned wake.
-    const lastMove = Math.max(ms(b.updated_at), ms(b.created_at), Number.isFinite(h.lastActive) ? h.lastActive : -Infinity);
+    const lastMove = Math.max(ms(b.updated_at), ms(b.created_at), activeFor(b, h));
     if (b.status === 'in_progress' && !inStop(b) && (t - lastMove) / 60000 > stallHours * 60) continue;
     out.push({ kind: 'assigned', key: `assigned:${b.id}`, bead: b.id, target: h.instance, due: true,
       line: `Assigned and waiting: ${b.id} is with ${h.instance}, whose session has been quiet for ${span(quiet)}.`,
       plain: 'Work handed to a team member is waiting for them; they are started on it.',
       detail: `${b.status}, assigned to ${b.assignee}; session quiet since ${Number.isFinite(h.lastActive) ? new Date(h.lastActive).toISOString() : 'unknown'}`,
-      prompt: `${b.id} is assigned to you and waiting (${b.status}). Work it now: bd show ${b.id}, take its next step and keep going to a pull request or a recorded result; if something blocks it, note the blocker on the bead and who can unblock it.` });
+      prompt: `${b.id} is assigned to you and waiting (${b.status}). Work it now: bd show ${b.id}, take its next step and keep going to a pull request or a recorded result; if something blocks it, add a bead note that starts "Blocked:" naming the blocker and who can unblock it.` });
   }
   for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && waitingEvidence(x))) {
     const last = Math.max(ms(b.updated_at), ms(b.created_at));
@@ -376,7 +401,23 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
     if (h && limited.has(h.instance)) continue;
     // a holder inside a watch.js wait is waiting within the limit it declared
     if (h && h.waitUntil > t) continue;
-    const last = Math.max(ms(b.updated_at), ms(b.created_at), h ? h.lastActive : -Infinity);
+    // hjx.1.1: a noted blocker is the Delivery Manager's to clear (rule 7), not its holder's to be woken for.
+    // Keyed and timed on the bead's own update alone, as a story waiting on evidence is: the holder's
+    // session activity is not the blocker moving, so it neither renews the key nor holds the ask back,
+    // and one blocker note is one ask (rv-179)
+    const blocker = blockedBy(b);
+    if (blocker) {
+      const since = Math.max(ms(b.updated_at), ms(b.created_at));
+      const waited = (t - since) / 60000;
+      if (!(waited > stallHours * 60)) continue;
+      out.push({ kind: 'quiet', key: `blocked:${b.id}:${Number.isFinite(since) ? new Date(since).toISOString() : 'never'}`, bead: b.id, target: dm, due: true,
+        line: `Blocked: ${b.id} has a blocker noted and nothing has moved for ${span(waited)}.`,
+        plain: `A started item has been blocked for ${span(waited)}; the Delivery Manager clears it.`,
+        detail: `in progress with ${h ? h.instance : b.assignee || 'nobody named'}; last note names a blocker`,
+        prompt: `${b.id} has a blocker noted by its holder and has not moved for ${span(waited)}: ${blocker.replace(/\s+/g, ' ').slice(0, 400)} Clear it now (unblock, reassign or release it), or note on the bead what it waits for.` });
+      continue;
+    }
+    const last = Math.max(ms(b.updated_at), ms(b.created_at), activeFor(b, h));
     const minutes = (t - last) / 60000;
     if (minutes <= stallHours * 60) continue;
     const who = h ? h.instance : b.assignee || 'nobody named';
@@ -385,7 +426,7 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       plain: `A started item has not moved for ${span(minutes)}; its holder is asked to continue it.`,
       detail: `in progress with ${who}; no bead update or session activity since ${Number.isFinite(last) ? new Date(last).toISOString() : 'unknown'}`,
       prompt: h && ['verified', 'cut'].includes(G.stateOf(b)) ? `${b.id} is ${G.stateOf(b)} and has not moved for ${span(minutes)}. Close it now (bd close ${b.id}), or note in the bead what blocks the close.`
-        : h ? `${b.id} has not moved for ${span(minutes)}. Continue it now (bd show ${b.id}), or note in the bead what blocks it and tell the Delivery Manager.` : `${b.id} is in progress with ${who}, whose session is not on this host's roster, and has not moved for ${span(minutes)}: release or reassign it.` });
+        : h ? `${b.id} has not moved for ${span(minutes)}. Continue it now (bd show ${b.id}), or add a bead note that starts "Blocked:" saying what blocks it, and tell the Delivery Manager.` : `${b.id} is in progress with ${who}, whose session is not on this host's roster, and has not moved for ${span(minutes)}: release or reassign it.` });
   }
   // a P0 counts when it can be taken now: ready (not blocked), not an epic, not in a stopped area
   const readyIds = new Set(ready.map((b) => b && b.id));
@@ -573,7 +614,7 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
     const parts = [];
     const prs = managerPrs(root, parts);
     const res = stalls({ prs, claimable, beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
-      pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root), reviews: reviewFacts(root), refusedInstalls: refusedInstalls(logRows(root), { installs: require('./self-update.js').installTargets('delivery') }), woken: logRows(root).filter((r) => r.type === 'wake').flatMap((r) => r.keys || []).filter((k) => /^review:/.test(String(k))) });
+      pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root), reviews: reviewFacts(root), wakes: logRows(root).filter((r) => r.type === 'wake').map((r) => ({ at: r.at, keys: r.keys || [] })), refusedInstalls: refusedInstalls(logRows(root), { installs: require('./self-update.js').installTargets('delivery') }), woken: logRows(root).filter((r) => r.type === 'wake').flatMap((r) => r.keys || []).filter((k) => /^review:/.test(String(k))) });
     // a verified pause silences the polling warnings too
     return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list, ...(parts.length ? { unreadableParts: parts } : {}) };
   } catch (err) { return { stalls: [], polls: [], sessions: [], unreadable: String(err.message).split('\n')[0] }; }
