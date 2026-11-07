@@ -291,6 +291,8 @@ function parseArgs(argv) {
   return out;
 }
 
+module.exports = { loadInputs, applyPlan, planChecks, reconcile, writeDenylist, renderDrift, hasDrift };
+
 if (require.main === module) {
   const args = parseArgs(process.argv.slice(2));
   if (args.error) { console.error(`materialise: ${args.error}`); process.exit(2); }
@@ -332,5 +334,3 @@ if (require.main === module) {
     process.exit(2);
   }
 }
-
-module.exports = { loadInputs, applyPlan, planChecks, reconcile, writeDenylist, renderDrift, hasDrift };

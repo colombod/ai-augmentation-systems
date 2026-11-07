@@ -491,11 +491,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   return runRecord(who, store, id, a, { cwd, env, now: at, verifyRecord });
 }
 
+module.exports = { main, buildScript, readScript, writeScript, dispatch, pending, scriptRel, artifactsRel, asRoleProblem, versionedSteps, DEFAULT_CAP, LABEL };
+
 if (require.main === module) {
   let r;
   try { r = main(process.argv.slice(2)); } catch (err) { r = { code: 2, out: `reality-check.js: ${err.message}\n${USAGE}` }; }
   process.stdout.write(`${r.out}\n`);
   process.exitCode = r.code;
 }
-
-module.exports = { main, buildScript, readScript, writeScript, dispatch, pending, scriptRel, artifactsRel, asRoleProblem, versionedSteps, DEFAULT_CAP, LABEL };

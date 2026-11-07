@@ -22,10 +22,10 @@ function main(argv, { cwd = process.cwd(), env = process.env } = {}) {
   return { code: s.problems.length ? 1 : 0, out: lines.join('\n') };
 }
 
+module.exports = { main };
+
 if (require.main === module) {
   const r = main(process.argv.slice(2));
   process.stdout.write(`${r.out}\n`);
   process.exitCode = r.code;
 }
-
-module.exports = { main };

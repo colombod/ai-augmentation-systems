@@ -217,11 +217,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   return { code: 0, row, out: `${row.id}: criterion ${c.n} ${a.result} at ${a.sha}${note}\n${doneText(d)}` };
 }
 
+module.exports = { main, done };
+
 if (require.main === module) {
   let r;
   try { r = main(process.argv.slice(2)); } catch (err) { r = { code: 2, out: `evidence.js: ${err.message}\n${USAGE}` }; }
   process.stdout.write(`${r.out}\n`);
   process.exitCode = r.code;
 }
-
-module.exports = { main, done };

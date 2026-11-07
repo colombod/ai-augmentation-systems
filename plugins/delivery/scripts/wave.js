@@ -115,11 +115,11 @@ function readFiles(root, b) {
   return (s && s.files) || [];
 }
 
+module.exports = { main, readLedger };
+
 if (require.main === module) {
   let r;
   try { r = main(process.argv.slice(2)); } catch (err) { r = { code: 2, out: `wave.js: ${err.message}\n${USAGE}` }; }
   (r.code ? process.stderr : process.stdout).write(`${r.out}\n`);
   process.exitCode = r.code;
 }
-
-module.exports = { main, readLedger };

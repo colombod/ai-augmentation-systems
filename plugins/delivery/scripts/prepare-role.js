@@ -283,6 +283,8 @@ function parseArgs(argv) {
   return out;
 }
 
+module.exports = { rolePath, reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole, markerProblem, callerProblem };
+
 if (require.main === module) {
   const args = parseArgs(process.argv.slice(2));
   if (!args.project || !args.instance) {
@@ -307,5 +309,3 @@ if (require.main === module) {
   for (const f of files) if (f.startsWith('warning:') || f.startsWith('removed (expert retired):')) console.error(f);
   console.log(roleDir);
 }
-
-module.exports = { rolePath, reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole, markerProblem, callerProblem };

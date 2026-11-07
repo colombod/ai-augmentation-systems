@@ -242,11 +242,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: give
   return run(who, store, id, a, { cwd, env, now: now || new Date().toISOString(), spawn, verifyRecord });
 }
 
+module.exports = { main, checkoutDeployed };
+
 if (require.main === module) {
   let r;
   try { r = main(process.argv.slice(2)); } catch (err) { r = { code: 2, out: `verify-run.js: ${err.message}\n${USAGE}` }; }
   process.stdout.write(`${r.out}\n`);
   process.exitCode = r.code;
 }
-
-module.exports = { main, checkoutDeployed };

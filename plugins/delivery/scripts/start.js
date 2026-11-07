@@ -795,6 +795,6 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
   }
 }
 
-if (require.main === module) process.exitCode = main(process.argv.slice(2));
-
 module.exports = { sealRow, doltUrlOf, githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };
+
+if (require.main === module) process.exitCode = main(process.argv.slice(2));

@@ -56,10 +56,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, run, sleep = sleep
     : { code: 1, out: `Stopped at the time limit (${o.max}) after ${r.polls} reads: the read never showed ${o.until}. Last read:\n${r.out}` };
 }
 
+module.exports = { main };
+
 if (require.main === module) {
   const r = main(process.argv.slice(2));
   (r.code === 2 ? process.stderr : process.stdout).write(`${r.out}\n`);
   process.exitCode = r.code;
 }
-
-module.exports = { main };
