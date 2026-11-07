@@ -32,7 +32,7 @@ test('"none" passes only with a reason', () => {
 });
 
 test('a change users cannot see needs no line: tests, lockfiles, the team\'s own records', () => {
-  for (const paths of [['src/import.test.js'], ['scripts/testing/harness.js', 'tests/a.py'], ['package-lock.json'], ['plugins/x/.superpowers/p.md', '.github/workflows/ci.yml', '.beads/config.yaml'], ['src/__tests__/a.js']]) {
+  for (const paths of [['src/import.test.js'], ['tests/a.py', 'src/fixtures/a.json'], ['package-lock.json'], ['plugins/x/.superpowers/p.md', '.github/workflows/ci.yml', '.beads/config.yaml'], ['src/__tests__/a.js']]) {
     assert.equal(D.check(pr(paths, 'Refs ex-1')).ok, true, paths.join(','));
   }
 });
@@ -49,4 +49,29 @@ test('an unreadable file list is a warning, never a pass presented as checked', 
   const r = D.check({ body: 'Refs ex-1' });
   assert.equal(r.ok, true);
   assert.match(r.warning, /doc impact not checked: the pull request's files could not be read/);
+});
+
+test('a tool users run is not a test: scripts/testing/run-tests.js needs the line', () => {
+  const r = D.check(pr(['plugins/delivery/scripts/testing/run-tests.js'], 'Refs ex-1'));
+  assert.equal(r.ok, false);
+  assert.match(r.why, /changes what users see \(plugins\/delivery\/scripts\/testing\/run-tests\.js\)/);
+});
+
+test('a .txt outside docs/ is data, not a doc: it neither needs nor satisfies the doc-impact line', () => {
+  assert.equal(D.isDoc('src/fixtures/words.txt'), false);
+  assert.equal(D.isDoc('requirements.txt'), false);
+  assert.equal(D.isDoc('plugins/x/docs/reference.txt'), true);
+  assert.equal(D.isDoc('README.txt'), true);
+  assert.equal(D.check(pr(['requirements.txt'], 'Refs ex-1')).ok, false, 'a changed requirements.txt is user-visible');
+  const r = D.check(pr(['src/import.js', 'requirements.txt'], 'Doc-impact: the import guide'));
+  assert.equal(r.ok, false);
+  assert.match(r.why, /names docs \("the import guide"\) but changes no doc file/);
+});
+
+test('an empty doc-impact line is refused, and the next line is not read as its value', () => {
+  for (const body of ['Refs ex-1\nDoc-impact:', 'Refs ex-1\nDoc-impact:   \nREADME', 'Doc-impact:\t\n']) {
+    const r = D.check(pr(['src/import.js', 'README.md'], body));
+    assert.equal(r.ok, false, JSON.stringify(body));
+    assert.match(r.why, /its doc-impact line is empty/);
+  }
 });

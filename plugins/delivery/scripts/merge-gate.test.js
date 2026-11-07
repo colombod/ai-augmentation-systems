@@ -421,3 +421,25 @@ test('r7w: the version step is skipped, without a read, when the pull request or
   assert.match(g.why, /could not be read \(the reader was asked\)/);
   assert.ok(reads > 0);
 });
+
+// When gh cannot read the pull request, its description and files are unknown: the doc-impact check
+// cannot run, and the gate says so as a warning rather than passing it as checked.
+test('the doc-impact check is a warning, never a silent pass, when GitHub cannot read the pull request', () => {
+  const root = makeProject();
+  const bd = memBd([storyBead({ metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } })]);
+  const team = { ...loadManifest(root).team, product_github: 'example/example' };
+  const who = (instance) => ({ root, team, instance, roleId: instance.replace(/-\d+$/, ''), actor: `dev@pc/${instance}` });
+  const down = () => ({ unavailable: 'gh is not installed' });
+  const call = (inst, argv) => review.main(argv, { bd, gh: down, who: who(inst) });
+  assert.equal(call('delivery-lead', ['request', '478', '--reviewer', 'agent-1', '--head', H1, '--branch', 'team/builder-1', '--bead', BEAD, '--lines', '120']).code, 0);
+  assert.equal(call('delivery-lead', ['record', '478', '--head', H1, '--result', 'pass', '--by', 'agent-1', '--summary', 'ok']).code, 0);
+  assert.equal(call('delivery-lead', ['ci', '478', '--head', H1, '--result', 'pass', '--run', 'https://ci.example/run/9']).code, 0);
+  const opts = (gh) => ({ head: H1, gh, team, repo: 'example/example', planDrift: () => [], readFile: () => ({ unavailable: 'unused' }) });
+  const g = mergeGate.gate(root, '478', opts(down));
+  assert.equal(g.ok, true, g.why);
+  assert.deepEqual(g.warnings.filter((w) => w.kind === 'doc-impact'), [{ kind: 'doc-impact', detail: 'doc impact not checked: gh cannot read the pull request' }]);
+  // the same record with the pull request readable and no line is refused: the warning stands in only for an unreadable PR
+  const r = mergeGate.gate(root, '478', opts(() => pr478({ body: `Refs ${BEAD}` })));
+  assert.equal(r.ok, false);
+  assert.match(r.why, /no doc-impact line/);
+});
