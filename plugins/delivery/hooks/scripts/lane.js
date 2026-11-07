@@ -870,6 +870,46 @@ function prReviewDirs({ projectRoot, roleDir }) {
   if (roleDir) out.push(realish(path.join(String(roleDir), 'project', PR_REVIEWS_REL)));
   return out;
 }
+// The evidence ledger (one ndjson file per story in the project's evidence folder, R-11): "checked" is
+// trusted because each row was written by evidence.js (or reality-check.js run-record, which calls it),
+// so no role writes a row by hand, the Delivery Manager and the `any` lanes included. The artifacts
+// folder beside the rows holds the Reality Checker's captures and stays as its lane declares. A read,
+// a redirect of a read elsewhere, and git are left alone; the hash chain and the recorded head remain the
+// tamper check.
+const EVIDENCE_REL = path.join('.delivery', 'evidence');
+const EVIDENCE_REASON = `the evidence ledger in ${path.join('.delivery', 'evidence')}${path.sep} is written only by \`evidence.js add\` (the Delivery Manager) and \`reality-check.js run-record\` (the Reality Checker); read it with \`evidence.js list <bead>\``;
+const EVIDENCE_TEXT = /(?:^|[\\/])\.delivery[\\/]+(?:\.[\\/]+)*evidence(?:[\\/]|$)/i;
+const ARTIFACTS_TEXT = /(?:^|[\\/])\.delivery[\\/]+(?:\.[\\/]+)*evidence[\\/]+(?:\.[\\/]+)*artifacts(?:[\\/]|$)/i;
+function evidenceDirs({ projectRoot, roleDir }) {
+  const out = [];
+  if (projectRoot && path.isAbsolute(String(projectRoot))) out.push(realish(path.join(String(projectRoot), EVIDENCE_REL)));
+  if (roleDir) out.push(realish(path.join(String(roleDir), 'project', EVIDENCE_REL)));
+  return out;
+}
+// a path in the evidence folder (the folder itself included) and not in its artifacts folder
+function evidenceLedgerHit(ctx) {
+  const dirs = evidenceDirs(ctx);
+  return (p) => {
+    const real = realish(p).toLowerCase();
+    return dirs.some((d) => under(real, d.toLowerCase()) && !under(real, path.join(d, 'artifacts').toLowerCase()));
+  };
+}
+// a shell segment that writes into the ledger: a redirect, a write word's argument or an in-place edit
+// whose target resolves there, or names it in text the lane cannot resolve ($P/.delivery/evidence/x)
+function evidenceShellWrite(command, { cwd, hit }) {
+  let base = cwd || process.cwd();
+  return splitCommand(String(command == null ? '' : command)).some((seg) => {
+    const t = tokens(seg);
+    if (!t.length) return false;
+    if (t[0] === 'cd') { const c = cdTarget(t); if (!c.unknown) base = path.resolve(base, c.dir); return false; }
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    const first = path.basename(words[0] || '');
+    const targets = writeTargets(seg, t);
+    if ((first === 'sed' && writesFiles(['sed', ...words.slice(1)])) || (first === 'perl' && words.some((x) => /^-[a-zA-Z]*i/.test(x)))) targets.push(...words.slice(1).filter((x) => !x.startsWith('-')));
+    return targets.some((x) => hit(path.isAbsolute(x) ? x : `${base}${path.sep}${x}`)
+      || (EVIDENCE_TEXT.test(x) && (!ARTIFACTS_TEXT.test(x) || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(x))));
+  });
+}
 // The andon ledger (.delivery/andon/, R-22): what stops the line and the A3 closes that lift it, written
 // only by a3.js, andon.js and merge-gate.js (node processes). Protected for every role, `any` included.
 const ANDON_REL = path.join('.delivery', 'andon');
@@ -1608,6 +1648,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       if (underOperator(p, usageDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
       if (registerHit({ projectRoot, roleDir })(p)) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
       if (underOperator(p, prReviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
+      if (evidenceLedgerHit({ projectRoot, roleDir })(p)) return { allow: false, reason: `Role ${pol.roleId}: ${EVIDENCE_REASON}.` };
       if (underOperator(p, andonDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${ANDON_REASON}.` };
       if (underOperator(p, planDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
       if (!REVIEW_WRITERS.includes(pol.roleId) && underOperator(p, reviewDirs({ projectRoot, roleDir }))) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
@@ -1636,6 +1677,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (usageShellWrite(command, { cwd, dirs: usageDirs({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${USAGE_REASON}.` };
     if (usageShellWrite(command, { cwd, mention: REGISTER_MENTION, hit: registerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${REGISTER_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: prReviewDirs({ projectRoot, roleDir }), mention: PR_REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${PR_REVIEWS_REASON}.` };
+    if (evidenceShellWrite(command, { cwd, hit: evidenceLedgerHit({ projectRoot, roleDir }) })) return { allow: false, reason: `Role ${pol.roleId}: ${EVIDENCE_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: andonDirs({ projectRoot, roleDir }), mention: ANDON_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${ANDON_REASON}.` };
     if (usageShellWrite(command, { cwd, dirs: planDirs({ projectRoot, roleDir }), mention: PLANS_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };

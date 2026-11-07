@@ -34,6 +34,12 @@ function parse(argv) {
 }
 
 const refuse = (text) => ({ code: 1, out: `evidence.js: ${text}` });
+// a flag whose value is missing or not one it accepts: usage (exit 2), the flag named first, then what it
+// accepts, then the usage line, so a mistyped `--result passed` says which flag is wrong
+const got = (v) => (v === undefined ? 'got nothing' : `got ${JSON.stringify(v)}`);
+const badFlag = (text) => ({ code: 2, out: `evidence.js: ${text}\n${USAGE}` });
+const SHA_FLAG = (v) => badFlag(`--sha must be a commit sha, 7 to 40 hexadecimal characters (${got(v)})`);
+const SHA = /^[0-9a-f]{7,40}$/i; // as lib/reviews.js SHA
 
 function done(bead, inp) {
   if (inp.evidenceProblem) return { ok: false, criteria: [], problem: inp.evidenceProblem };
@@ -106,7 +112,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       store.update(id, { addLabels: [G.STATE.merged], metadata: { ...m, ...(a.pr ? { merged_pr: a.pr } : {}), merged_at: again ? m.merged_at : at } });
       return { code: 0, out: `${id}: merged${a.pr ? ` (${a.pr})` : ''}, not verified` };
     }
-    if (word === 'deployed' && a.sha) {
+    if (word === 'deployed' && !SHA.test(a.sha || '')) return SHA_FLAG(a.sha);
+    if (word === 'deployed') {
       // criteria the bead states itself are pinned at deploy, so cutting one later cannot verify it. Every
       // deploy, the first and any again, checks them against what was recorded: the pin, the script's step
       // groups and the evidence rows; on drift nothing is marked, and no script is rewritten from the cut list
@@ -154,7 +161,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
       if (!d.ok && !inp.checkStory && inp.surface) checks.push(`warning: ${id} names surface ${inp.surface.id} but has no readable story file and states no criteria of its own (a "Done when:" paragraph in its description), so no reality-check script can be planned for it and its check on the customer's app cannot run. Give it a story file (story_file), or check it by hand with evidence.js add`);
       return { code: 0, out: [`${id}: deployed at ${meta.deployed_sha}, ${d.ok ? 'verified' : 'not verified'}${handed}`, ...checks].join('\n') };
     }
-    return { code: 2, out: USAGE };
+    return badFlag(`state must be merged or deployed (${got(word)})`);
   }
 
   if (cmd === 'cut') {
@@ -167,8 +174,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   }
 
   const criteria = inp.checkStory ? inp.checkStory.criteria : [];
+  const listed = `criteria: ${criteria.map((x) => x.n).join(', ') || 'none'}`;
+  if (a.criterion === undefined) return badFlag(`--criterion must name one of ${id}'s criteria (${listed}); none was given`);
   const c = criteria.find((x) => x.n === Number(a.criterion));
-  if (!c) return refuse(`${id} has no criterion ${a.criterion} (criteria: ${criteria.map((x) => x.n).join(', ') || 'none'})`);
+  if (!c) return badFlag(`--criterion must name one of ${id}'s criteria: ${id} has no criterion ${a.criterion} (${listed})`);
 
   if (cmd === 'waive') {
     if (['deployed', 'verified'].includes(G.stateOf(bead)) || bead.status === 'closed') return refuse(`criterion ${c.n} of ${id} is past its gate (D3); a waiver comes before the deploy. To stop the story: evidence.js cut ${id} --record <dec-...> --reason '<why>'`);
@@ -180,7 +189,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   }
 
   if (cmd !== 'add') return { code: 2, out: USAGE };
-  if (!['pass', 'fail'].includes(a.result) || !a.surface || !a.sha) return { code: 2, out: USAGE };
+  if (!['pass', 'fail'].includes(a.result)) return badFlag(`--result must be pass or fail (${got(a.result)})`);
+  if (!a.surface) return badFlag(`--surface must name the customer surface the run was on (${got(a.surface)})`);
+  if (!SHA.test(a.sha || '')) return SHA_FLAG(a.sha);
   if (by === 'reality-checker' && !via) return refuse('a Reality Checker records through the script, which checks the version on screen and the capture: reality-check.js run-record <bead> --criterion <n> --result pass|fail --artifact <path> --observed-version <v>');
   const authors = G.authorsOf(bead, inp.instances);
   if (authors.actors.includes(actor) || authors.roles.includes(by)) return refuse(`${actor} (${by}) is among the authors of ${id}, so its rows do not count: the builder is not its own inspector.`);

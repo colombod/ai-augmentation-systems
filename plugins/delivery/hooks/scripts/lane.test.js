@@ -1814,3 +1814,89 @@ test('74y: the Delivery Manager stores a refine step that runs the test runner; 
   }
   for (const role of [BUILDER, COS]) assert.equal(run('node --test a.test.js', role).allow, false, role);
 });
+
+// The evidence ledger (each story's ndjson file in the project's evidence folder) is written only by
+// evidence.js and, for the Reality Checker, reality-check.js run-record; its captures in the artifacts
+// folder beside it stay writable
+const EV_REL = path.posix.join('.delivery', 'evidence');
+const EV_WHY = /the evidence ledger in \.delivery\/evidence\/ is written only by `evidence\.js add`.*`reality-check\.js run-record`/;
+const EV_ROLES = ['builder', 'spike-researcher', 'reality-checker', 'delivery-lead'];
+function evidenceLane() {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-guard-'));
+  fs.mkdirSync(path.join(projectRoot, EV_REL, 'artifacts', 'ex-1'), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, EV_REL, 'ex-1.ndjson'), '{"id":"ev-ex-1-1"}\n');
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-guard-role-'));
+  fs.mkdirSync(path.join(rd, 'project', EV_REL, 'artifacts'), { recursive: true });
+  const lane = (policy, toolName, toolInput, cwd = projectRoot) => decideLane({ toolName, toolInput, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd, projectRoot });
+  const policyOf = (id) => loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${id}` });
+  return { projectRoot, rd, lane, policyOf };
+}
+
+test('team-runtime-09 c1: Write, Edit and shell appends to a story\'s evidence ledger are refused for builder, spike-researcher, reality-checker and delivery-lead, naming evidence.js', () => {
+  const { projectRoot, rd, lane, policyOf } = evidenceLane();
+  const file = path.join(projectRoot, EV_REL, 'ex-1.ndjson');
+  const rel = path.posix.join(EV_REL, 'ex-1.ndjson');
+  const row = '{"type":"row","criterion":1,"result":"pass"}';
+  for (const id of EV_ROLES) {
+    const policy = policyOf(id);
+    const tries = [
+      ['Write', { file_path: file, content: `${row}\n` }],
+      ['Edit', { file_path: file, old_string: 'ev-ex-1-1', new_string: 'ev-ex-1-2' }],
+      ['Write', { file_path: path.join(rd, 'project', rel), content: `${row}\n` }],
+      ['Edit', { file_path: path.join(rd, 'project', rel), old_string: 'a', new_string: 'b' }],
+      ['Write', { file_path: path.join(projectRoot, EV_REL, 'ex-2.ndjson'), content: `${row}\n` }],
+      ['Bash', { command: `echo '${row}' >> ${rel}` }],
+      ['Bash', { command: `echo '${row}' >> ${file}` }],
+      ['Bash', { command: `echo '${row}' | tee -a ${rel}` }],
+      ['Bash', { command: `cp scratch/forged.ndjson ${rel}` }],
+      ['Bash', { command: `mv scratch/forged.ndjson ${file}` }],
+      ['Bash', { command: `rm ${rel}` }],
+      ['Bash', { command: `cd ${EV_REL} && echo '${row}' >> ex-1.ndjson` }],
+      ['Bash', { command: `echo '${row}' >> "$P/${rel}"` }],
+    ];
+    for (const [tool, input] of tries) {
+      const d = lane(policy, tool, input);
+      assert.equal(d.allow, false, `${id} ${tool} ${JSON.stringify(input)}`);
+      assert.match(d.reason, EV_WHY, `${id} ${tool} ${JSON.stringify(input)}`);
+    }
+  }
+});
+
+test('team-runtime-09 c1: a reality-checker capture in the evidence artifacts folder is allowed, and reading the ledger stays allowed', () => {
+  const { rd, lane, policyOf } = evidenceLane();
+  const rc = policyOf('reality-checker');
+  assert.equal(lane(rc, 'Write', { file_path: path.join(rd, 'project', EV_REL, 'artifacts', 'ex-1', 'shot.png'), content: 'png' }).allow, true, 'capture in its own clone');
+  const rel = path.posix.join(EV_REL, 'ex-1.ndjson');
+  for (const id of EV_ROLES) {
+    const policy = policyOf(id);
+    assert.equal(lane(policy, 'Bash', { command: `cat ${rel}` }).allow, true, `${id} cat`);
+    assert.equal(lane(policy, 'Bash', { command: `node ${PLUGIN_ROOT}/scripts/evidence.js list ex-1` }).allow, true, `${id} evidence.js list`);
+  }
+  const builder = policyOf('builder');
+  // run from the role directory: the scratch project lives in the host's temporary directory, which the lane refuses
+  assert.equal(lane(builder, 'Bash', { command: `cp scratch/shot.png project/${EV_REL}/artifacts/ex-1/shot.png` }, rd).allow, true, 'a capture copied into artifacts is not a ledger write');
+  assert.equal(lane(builder, 'Bash', { command: `cat project/${rel} > scratch/rows.ndjson` }, rd).allow, true, 'a read redirected elsewhere');
+});
+
+test('team-runtime-09 c1: through the lane hook, a builder (any) session is refused a hand-written row and the ledger is unchanged', () => {
+  const { harness } = require('../../scripts/testing/role-harness.js');
+  const h = harness({ clone: true });
+  const file = path.join(h.root, EV_REL, 'ex-vault-0n9-3.ndjson');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '{"id":"ev-ex-vault-0n9-3-1"}\n');
+  const before = fs.readFileSync(file, 'utf8');
+  const row = '{"type":"row","criterion":1,"result":"pass"}';
+  for (const inst of ['builder-1', 'spike-researcher', 'reality-checker', 'delivery-lead']) {
+    const own = path.join(h.roleDir(inst), 'project', EV_REL, 'ex-vault-0n9-3.ndjson');
+    for (const f of [file, own]) {
+      assert.match(h.tool(inst, 'Write', { file_path: f, content: `${row}\n` }).deny || '', /evidence\.js/, `${inst} Write ${f}`);
+      assert.match(h.tool(inst, 'Edit', { file_path: f, old_string: 'ev', new_string: 'ew' }).deny || '', /evidence\.js/, `${inst} Edit ${f}`);
+    }
+    assert.match(h.bash(inst, `echo '${row}' >> ${file}`).deny || '', /evidence\.js/, `${inst} redirect`);
+  }
+  assert.equal(fs.readFileSync(file, 'utf8'), before, 'the ledger is unchanged');
+  const cat = h.bash('builder-1', `cat ${file}`);
+  assert.equal(cat.deny, null);
+  assert.equal(cat.out, before.trim());
+  assert.equal(h.tool('reality-checker', 'Write', { file_path: path.join(h.roleDir('reality-checker'), 'project', EV_REL, 'artifacts', 'ex-vault-0n9-3', 'shot.png'), content: 'png' }).deny, null, 'a capture is allowed');
+});

@@ -39,6 +39,19 @@ function parse(argv) {
 }
 
 const refuse = (why, fix) => ({ code: 1, out: `review.js: ${why}.${fix ? `\n${fix}` : ''}` });
+// a flag whose value is missing or not one it accepts: usage (exit 2), the flag named first, then what it
+// accepts, then the usage line, as evidence.js does
+const got = (v) => (v === undefined ? 'got nothing' : `got ${JSON.stringify(v)}`);
+const badFlag = (text) => ({ code: 2, out: `review.js: ${text}\n${USAGE}` });
+// the first flag of a command that is wrong, or null: [flag, ok(value), what it must be or name]
+function flagProblem(a, checks) {
+  for (const [flag, ok, accepts] of checks) {
+    const v = a[flag.slice(2)];
+    if (!ok(v)) return badFlag(`${flag} must ${accepts} (${got(v)})`);
+  }
+  return null;
+}
+const HEAD_FLAG = ['--head', (v) => R.SHA.test(v || ''), 'be a commit sha, 7 to 40 hexadecimal characters'];
 
 // The pull request as gh sees it in the product repository (or { unavailable })
 function ghFor(who, gh, repo) {
@@ -132,7 +145,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   if (sub === 'request') {
     const wp = writerProblem(who, [DM]);
     if (wp) return refuse(wp.replace(/\.$/, ''));
-    if (!a.reviewer) return { code: 2, out: USAGE };
+    const bad = flagProblem(a, [['--reviewer', Boolean, 'name the session or subagent asked to review'], ...(a.head !== undefined ? [HEAD_FLAG] : [])]);
+    if (bad) return bad;
     if (!repo) { const [why, fix] = UNKNOWN(pr).split('\n'); return refuse(why.replace(/\.$/, ''), fix); }
     const view = ghFor(who, gh, repo)(pr) || { unavailable: 'no answer' };
     const head = view.headRefOid || a.head;
@@ -160,7 +174,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   if (sub === 'record') {
     if (!who.roleId) return refuse('a review is recorded from a role session; none is active here');
     const by = a.by || who.instance;
-    if (!a.head || !R.SHA.test(a.head) || !['pass', 'changes'].includes(a.result) || !a.summary) return { code: 2, out: USAGE };
+    const bad = flagProblem(a, [HEAD_FLAG, ['--result', (v) => ['pass', 'changes'].includes(v), 'be pass or changes'], ['--summary', Boolean, 'be one line saying what the review found']]);
+    if (bad) return bad;
     const req = R.lastRequest(rows);
     if (!req) return refuse(`no review was requested for PR ${pr}, so its authors are not known`, `The Delivery Manager asks first: ${R.cmd('review.js', `request ${pr} --reviewer ${by}`)}`);
     let authors = req.authors || [];
@@ -185,7 +200,8 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   if (sub === 'ci') {
     const wp = writerProblem(who, [DM]);
     if (wp) return refuse(wp.replace(/\.$/, ''));
-    if (!a.head || !R.SHA.test(a.head) || !['pass', 'fail'].includes(a.result) || !a.run) return { code: 2, out: USAGE };
+    const bad = flagProblem(a, [HEAD_FLAG, ['--result', (v) => ['pass', 'fail'].includes(v), 'be pass or fail'], ['--run', Boolean, 'name the CI run, its id or URL']]);
+    if (bad) return bad;
     const row = R.append(who.root, pr, { type: 'ci', head: a.head, result: a.result, run: a.run, ...base }, who.instance);
     return { code: 0, row, out: `${row.id}: CI ${a.result} on ${R.short(a.head)} (${a.run})${published(row)}` };
   }

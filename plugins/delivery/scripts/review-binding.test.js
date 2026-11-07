@@ -269,3 +269,46 @@ test('team-runtime-08 c5: Staffing runs team-role.js pre-allowed, and a review r
   assert.equal(s.code, 0, s.out);
   assert.equal(R.read(h.root, '478').rows.filter((x) => x.type === 'request').pop().session, true);
 });
+
+test('team-runtime-09 c3: review.js record refuses a head that is not a sha, a result not pass or changes, and no summary, naming the flag; no review row is added', () => {
+  const h = setup();
+  assert.equal(h.review('delivery-lead', 'request 478 --reviewer builder-2').code, 0);
+  const rows = () => h.review('builder-2', 'show 478').out.split('\n').filter((l) => l.startsWith('{')).length;
+  const before = rows();
+  const usage = 'usage: review\\.js';
+  const cases = [
+    [`record 478 --head not-a-sha --result pass --summary 'ok'`, new RegExp(`^review\\.js: --head must be a commit sha, 7 to 40 hexadecimal characters \\(got "not-a-sha"\\)\\n${usage}`)],
+    [`record 478 --result pass --summary 'ok'`, new RegExp(`^review\\.js: --head must be a commit sha, 7 to 40 hexadecimal characters \\(got nothing\\)\\n${usage}`)],
+    [`record 478 --head ${H1} --result approve --summary 'ok'`, new RegExp(`^review\\.js: --result must be pass or changes \\(got "approve"\\)\\n${usage}`)],
+    [`record 478 --head ${H1} --result pass`, new RegExp(`^review\\.js: --summary must be one line saying what the review found \\(got nothing\\)\\n${usage}`)],
+  ];
+  for (const [args, want] of cases) {
+    const r = h.review('builder-2', args);
+    assert.equal(r.code, 2, args);
+    assert.match(r.out, want, args);
+    assert.equal(rows(), before, `no review row for ${args}`);
+  }
+  assert.equal(h.rec('builder-2', '').code, 0, 'a well-formed record still succeeds');
+  assert.equal(rows(), before + 1);
+});
+
+test('team-runtime-09 c3: review.js ci and request name the flag at fault (--head, --result, --run, --reviewer); no row is added', () => {
+  const h = setup();
+  const rows = () => h.review('delivery-lead', 'show 478').out.split('\n').filter((l) => l.startsWith('{')).length;
+  const cases = [
+    [`ci 478 --head zz --result pass --run 12`, /^review\.js: --head must be a commit sha, 7 to 40 hexadecimal characters \(got "zz"\)\nusage: review\.js/],
+    [`ci 478 --head ${H1} --result green --run 12`, /^review\.js: --result must be pass or fail \(got "green"\)\nusage: review\.js/],
+    [`ci 478 --head ${H1} --result pass`, /^review\.js: --run must name the CI run, its id or URL \(got nothing\)\nusage: review\.js/],
+    ['request 478', /^review\.js: --reviewer must name the session or subagent asked to review \(got nothing\)\nusage: review\.js/],
+    ['request 478 --reviewer agent-r1 --head nope', /^review\.js: --head must be a commit sha, 7 to 40 hexadecimal characters \(got "nope"\)\nusage: review\.js/],
+  ];
+  for (const [args, want] of cases) {
+    const r = h.review('delivery-lead', args);
+    assert.equal(r.code, 2, args);
+    assert.match(r.out, want, args);
+    assert.equal(rows(), 0, `no row for ${args}`);
+  }
+  assert.equal(h.review('delivery-lead', `ci 478 --head ${H1} --result pass --run 12`).code, 0, 'a well-formed ci row still records');
+  assert.equal(h.review('delivery-lead', 'request 478 --reviewer agent-r1').code, 0, 'a well-formed request still records');
+  assert.equal(rows(), 2);
+});
