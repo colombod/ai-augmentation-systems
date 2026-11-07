@@ -180,7 +180,8 @@ function readProduct(root, deps = {}) {
       let merge = null;
       if (pr) { const rec = R.read(abs, pr); merge = ([...(rec.rows || [])].reverse().find((x) => x.type === 'merged') || {}).merge_commit || null; }
       const inside = install.unavailable ? null : inInstall(merge, install, git);
-      if (state === 'merged' || (state === 'deployed' && inside === false)) {
+      // a verified story still carries state-deployed: its follow-up merge is judged the same way
+      if (state === 'merged' || ((state === 'deployed' || state === 'verified') && inside === false)) {
         if (state === 'merged' && inside === true) unchecked.push({ id: b.id, state, sha: null, pr, merge, installed: install.sha, criteria: null, problem: 'no deploy recorded' });
         else if (!install.unavailable) notInstalled.push({ id: b.id, pr, merge, installed: { version: install.version, sha: install.sha }, known: inside === false });
       } else if (state === 'deployed' && m.deployed_sha) {

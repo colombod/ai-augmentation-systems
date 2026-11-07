@@ -311,6 +311,32 @@ test('9cp.1 c1: a follow-up merge on a deployed story the install does not hold 
   assert.doesNotMatch(r.out, /installed, not checked: alpha-4/);
 });
 
+test('9cp.1 c1: a follow-up merge on a verified story the install does not hold is merged, not installed', () => {
+  const a = product('alpha');
+  const SHA_FOLLOW = 'f'.repeat(40);
+  // alpha-4 was verified (it keeps state-deployed); a later pull request on the same story merged at SHA_FOLLOW
+  a.rec.beads[3].labels.push('state-verified');
+  a.rec.beads[3].metadata.merged_pr = '23';
+  R.append(a.root, 23, { type: 'merged', repo: a.repo, merge_commit: SHA_FOLLOW, at: '2026-11-02T00:00:00Z' }, 'delivery-lead');
+  const r = main(['--project', a.root], fakes([a]));
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^\[alpha\] merged, not installed: alpha-4 PR #23 merge ffffffffffff; install 1\.2\.3 at aaaaaaaaaaaa: the install does not contain it$/m);
+  assert.doesNotMatch(r.out, /installed, not checked: alpha-4/);
+});
+
+test('9cp.1 c1: a pull request with two merged rows is judged on the latest', () => {
+  const a = product('alpha');
+  const SHA_FOLLOW = 'f'.repeat(40);
+  a.rec.beads[3].metadata.merged_pr = '23';
+  R.append(a.root, 23, { type: 'merged', repo: a.repo, merge_commit: SHA_INSTALLED, at: '2026-11-01T00:00:00Z' }, 'delivery-lead');
+  R.append(a.root, 23, { type: 'merged', repo: a.repo, merge_commit: SHA_FOLLOW, at: '2026-11-02T00:00:00Z' }, 'delivery-lead');
+  const f = fakes([a]);
+  f.git = (args) => ({ status: args.includes(SHA_FOLLOW) ? 1 : 0 });
+  const r = main(['--project', a.root], f);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^\[alpha\] merged, not installed: alpha-4 PR #23 merge ffffffffffff;/m);
+});
+
 test('9cp.1 c1: a merged story that still carries a deployed sha is in one of the two sections, never neither', () => {
   const a = product('alpha');
   // alpha-3 merged PR 21 after an earlier deploy: state-merged with a deployed_sha
