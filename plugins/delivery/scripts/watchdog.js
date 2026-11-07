@@ -19,6 +19,7 @@
 //                                                   `claude --resume <id> -p` in the role directory, or a fork
 //                                                   when the session is open; logged in .delivery/watchdog/
 //   watchdog.js run [--project <root>]              sweep test leftovers, check, then wake, under one lock: what the host job runs
+//                                                   Each run then starts the team's missing role sessions while work is in flight (team-revive.js)
 //                                                   Each run also installs the plugin main carries when it is newer and every
 //                                                   change to it passed the team's gate, never under a running wake (lib/self-update.js)
 //   watchdog.js install [--every 15m] [--apply] [--project <root>]
@@ -511,7 +512,16 @@ function defaultUserGuard(env, home) {
   try { return require('./lib/user-guard.js').ensureUserGuard({ configDir: env.CLAUDE_CONFIG_DIR || path.join(home, '.claude'), pluginRoot: PLUGIN_ROOT }).line; } catch (err) { return `setup guard: not installed (${String(err && err.message || err).slice(0, 200)})`; }
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard } = {}) {
+// The team's missing role sessions on this host, started on the owner's Remote Control links while
+// work is in flight (team-revive.js, dec-chief-of-staff-000279): the job runs it each pass, so a team
+// dropped by a network loss comes back with no step from the owner. A run inside the sealed test
+// runner starts none: a test must never start a real session on the machine it runs on.
+function defaultRevive(root, { team, env, now, dryRun, bd, live }) {
+  if (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN) return [];
+  return require('./team-revive.js').revive(root, team, { start: true, dryRun, env, now, bd, ...(live !== undefined ? { live } : {}) }).lines;
+}
+
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -550,6 +560,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked) }))];
     // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
+    // after the wakes, so a role a wake now runs is seen running; never under an install (the next run's)
+    let revived = [];
+    if (cmd === 'run' && first && !updated.installed && !updated.held) {
+      try { revived = (revive || defaultRevive)(who.root, { team: who.team, env, now, dryRun: !!o.dryRun, bd, live }).map((l) => `Team: ${l}`); } catch (err) { revived = [`Team: the missing role sessions were not checked (${String(err && err.message || err).split('\n')[0].slice(0, 200)})`]; }
+    }
     let swept = kicked.length ? [`Kicked: ${kicked.length} (${[...new Set(kicked.map((k) => k.replace(/^\S+\s*/, '').replace(/ \(pid \d+\)$/, '') || 'a kick'))].join('; ').slice(0, 300)})`] : [];
     if (cmd === 'run' && first) {
       // a job installed before the kick watch existed gets it here, so an update needs no reinstall
@@ -571,7 +586,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
         if (r.removed.length || r.failed.length) swept.push(...S.summary(r, !!o.dryRun).split('\n'));
       } catch (err) { swept.push(`sweep: failed (${String(err && err.message || err).slice(0, 200)})`); }
     }
-    const out = cmd === 'run' ? [`${now || new Date().toISOString()} watchdog`, ...swept, ...checkLines(res), ...woke] : (woke.length ? woke : checkLines(res));
+    const out = cmd === 'run' ? [`${now || new Date().toISOString()} watchdog`, ...swept, ...checkLines(res), ...woke, ...revived] : (woke.length ? woke : checkLines(res));
     return { code: 0, out: out.join('\n') };
   };
   if (cmd === 'check' || o.dryRun) return go();
@@ -594,4 +609,4 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit };
+module.exports = { main, liveSessions, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit };

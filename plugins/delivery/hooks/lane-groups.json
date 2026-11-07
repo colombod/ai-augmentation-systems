@@ -161,6 +161,9 @@
   "judge": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/judge.js", "sub": ["ask", "questions", "stats"] }
   ],
+  "team-revive": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-revive.js", "sub": ["check", "start"] }
+  ],
   "any": [
     { "first": "*" }
   ]
