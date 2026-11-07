@@ -2149,3 +2149,46 @@ test('hjx.1.1: the blocked ask to the Delivery Manager is keyed and timed on the
   const fresh = { ...b, updated_at: iso(now - 30 * 60e3) };
   assert.deepEqual(WD.stalls({ now: iso(now), beads: [fresh], sessions: [sess6(B2, now - 3 * H)], stallHours: 2 }).stalls.filter((s) => s.kind === 'quiet'), []);
 });
+
+// hjx.1.1.1 (rv-179 low notes 2-4): the blocked ask is timed and keyed on the Blocked: note itself, so a
+// later pass note that touches updated_at does not re-arm it; it reaches the Delivery Manager while the
+// holder sits on a usage limit or in a watch wait; and a note stamped with a full time is a blocker too
+test('hjx.1.1.1: a Blocked: note stamped with a full time is a blocker, with or without an author', () => {
+  const now = Date.parse('2026-11-07T12:00:00Z');
+  const prog = (notes) => ({ id: 'ex-ft', status: 'in_progress', assignee: `dev@pc/${B2}`, updated_at: iso(now - 40 * 60e3), notes });
+  const sessions = [sess6(B2, now - 40 * 60e3), sess6(DM, now - 5 * 60e3)];
+  const woken = (notes) => assigned6(WD.stalls({ now: iso(now), beads: [prog(notes)], sessions, stallHours: 2 }));
+  assert.deepEqual(woken('2026-11-07T11:20:00Z builder-2: Blocked: the story is a draft.'), []);
+  assert.deepEqual(woken('2026-11-07T11:20:00.123Z: Blocked: waits on a sign-in.'), []);
+  assert.deepEqual(woken('2026-11-07T11:20:00+01:00 builder-2: Blocked: waits on a sign-in.'), []);
+  // the other direction: a full-time note that is not a blocker leaves it the holder's
+  assert.deepEqual(woken('2026-11-07T11:20:00Z builder-2: no longer blocked; building.'), ['ex-ft']);
+});
+
+test('hjx.1.1.1: the blocked ask is timed and keyed on the Blocked: note, so a later pass note does not re-arm it', () => {
+  const now = Date.parse('2026-11-07T12:00:00Z');
+  const note = `${iso(now - 3 * H)} builder-2: Blocked: the story is a draft.`;
+  const pass = `${iso(now - 20 * 60e3)} delivery-lead pass: builder-2 fails (quiet); action note-block: waits on delivery-lead`;
+  const sessions = [sess6(B2, now - 3 * H), sess6(DM, now - 5 * 60e3)];
+  const ask = (b) => WD.stalls({ now: iso(now), beads: [b], sessions, stallHours: 2 }).stalls.filter((s) => s.kind === 'quiet').map((s) => [s.key, s.target]);
+  // the pass note moved updated_at 20 minutes ago; the blocker is 3 h old, so the ask goes, keyed on the note
+  assert.deepEqual(ask({ id: 'ex-pn', status: 'in_progress', assignee: `dev@pc/${B2}`, updated_at: iso(now - 20 * 60e3), notes: `${note}\n${pass}` }),
+    [[`blocked:ex-pn:${iso(now - 3 * H)}`, DM]]);
+  // the other direction: a fresh blocker note is not asked about yet, whatever updated_at says
+  const fresh = `${iso(now - 30 * 60e3)} builder-2: Blocked: the story is a draft.`;
+  assert.deepEqual(ask({ id: 'ex-pn', status: 'in_progress', assignee: `dev@pc/${B2}`, updated_at: iso(now - 3 * H), created_at: iso(now - 5 * H), notes: fresh }), []);
+  // a date-only note is bounded by its own day: a pass note on a later day does not re-arm it
+  const day = { id: 'ex-pd', status: 'in_progress', assignee: `dev@pc/${B2}`, updated_at: iso(now - 20 * 60e3), notes: `2026-11-06 builder-2: Blocked: the story is a draft.\n2026-11-07 delivery-lead pass: builder-2 fails (quiet); action note-block` };
+  assert.deepEqual(ask(day), [[`blocked:ex-pd:${iso(Date.parse('2026-11-07T00:00:00Z') - 1)}`, DM]]);
+});
+
+test('hjx.1.1.1: a blocker reaches the Delivery Manager while its holder is on a usage limit or in a watch wait', () => {
+  const now = Date.parse('2026-11-07T12:00:00Z');
+  const b = { id: 'ex-lw', status: 'in_progress', assignee: `dev@pc/${B2}`, updated_at: iso(now - 3 * H), notes: `${iso(now - 3 * H)} builder-2: Blocked: the story is a draft.` };
+  const asks = (holder) => WD.stalls({ now: iso(now), beads: [b], sessions: [holder, sess6(DM, now - 5 * 60e3)], stallHours: 2 }).stalls.filter((s) => s.bead === 'ex-lw' && s.kind === 'quiet').map((s) => s.target);
+  assert.deepEqual(asks({ ...sess6(B2, now - 3 * H), waitUntil: now + H }), [DM]);
+  assert.deepEqual(asks({ ...sess6(B2, now - 3 * H), limit: { at: iso(now - 3 * H), resetsAt: iso(now + H), window: 'five_hour', text: 'limit' } }), [DM]);
+  // the other direction: work that is not blocked stays held while its holder waits or is limited
+  const free = { ...b, notes: `${iso(now - 3 * H)} builder-2: building.` };
+  assert.deepEqual(WD.stalls({ now: iso(now), beads: [free], sessions: [{ ...sess6(B2, now - 3 * H), waitUntil: now + H }, sess6(DM, now - 5 * 60e3)], stallHours: 2 }).stalls.filter((s) => s.bead === 'ex-lw' && s.kind === 'quiet'), []);
+});
