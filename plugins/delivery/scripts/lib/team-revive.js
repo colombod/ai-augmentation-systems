@@ -33,8 +33,13 @@ const ledgerFile = (root) => path.join(root, WD.REL, LEDGER);
 const START_EVERY_MS = WD.WAKE_EVERY_MS;
 const DAILY_CAP = WD.DAILY_CAP;
 const DAY = 24 * 3600e3;
-// the modes `claude remote-control --permission-mode` takes; "manual" is a Claude Code mode it does not
-const RC_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'default', 'dontAsk', 'plan'];
+// the modes `claude remote-control --permission-mode` takes on claude 2.1.318: its help lists acceptEdits,
+// auto, bypassPermissions, default, dontAsk, plan, and its parser takes acceptEdits, auto, bypassPermissions,
+// manual, dontAsk, plan. Only the five both agree on are passed: "default" (the help's) and "manual" (the
+// parser's) are claude's own default mode, which a start gets by sending no --permission-mode at all
+// (team-revive.test.js pins this to the quoted help).
+const RC_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk', 'plan'];
+const RC_DEFAULT_MODES = ['default', 'manual'];
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const ms = (x) => { const t = Date.parse(x); return Number.isNaN(t) ? -Infinity : t; };
 
@@ -103,11 +108,13 @@ function record(root, row) {
 }
 
 // The mode a started session runs in: team.json permission_mode, as for a wake; auto, start.js's default,
-// when the team has none. A mode Remote Control does not take is no start, with the reason: a session
-// must never run with more than the owner chose, and claude exits on a mode it refuses.
+// when the team has none. default or manual is claude's own default: no mode flag ({ mode: null }). Any
+// other mode Remote Control does not take is no start, with the reason: a session must never run with
+// more than the owner chose, and claude exits on a mode it refuses.
 function modeOf(team) {
   const m = team && team.permission_mode;
   if (m === undefined) return { mode: 'auto' };
+  if (RC_DEFAULT_MODES.includes(m)) return { mode: null };
   return RC_MODES.includes(m) ? { mode: m } : { skip: `team.json permission_mode "${String(m).slice(0, 40)}" is not one Remote Control takes (${RC_MODES.join(', ')})` };
 }
 
