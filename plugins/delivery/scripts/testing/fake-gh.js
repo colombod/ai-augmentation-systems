@@ -39,6 +39,17 @@ if (group === 'api') {
     else if (!a.startsWith('-')) endpoint = a;
   }
   method = method || (Object.keys(fields).length ? 'POST' : 'GET');
+  // contents/<path>?ref=<ref>: the store's contents { "<ref>": { "<path>": "<text>" } }; contents_down fails every read
+  const c = /^\/?repos\/([^/]+\/[^/]+)\/contents\/([^?]+)\?ref=(.+)$/.exec(endpoint || '');
+  if (c) {
+    if (c[1].toLowerCase() !== String(s.repo).toLowerCase()) fail('gh: Not Found (HTTP 404)');
+    if (s.contents_down) fail('gh: Server Error (HTTP 502)');
+    const file = c[2].split('/').map(decodeURIComponent).join('/');
+    const text = ((s.contents || {})[decodeURIComponent(c[3])] || {})[file];
+    if (typeof text !== 'string') fail('gh: Not Found (HTTP 404)');
+    fs.writeSync(1, `${JSON.stringify({ type: 'file', path: file, encoding: 'base64', content: Buffer.from(text, 'utf8').toString('base64') })}\n`);
+    process.exit(0);
+  }
   const m = /^\/?repos\/([^/]+\/[^/]+)\/(pulls\/(\d+)(\/files|\/merge)?|commits\/([0-9a-f]+)\/(check-runs|status))(?:\?(.*))?$/.exec(endpoint || '');
   if (!m) fail(`fake gh: unsupported api ${endpoint}`);
   if (m[1].toLowerCase() !== String(s.repo).toLowerCase()) fail('gh: Not Found (HTTP 404)');
