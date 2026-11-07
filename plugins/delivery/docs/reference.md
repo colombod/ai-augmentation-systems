@@ -1455,8 +1455,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   cannot be read starts nothing. `team-revive.js start [--dry-run]` starts each missing instance while
   work is in flight and the owner has not paused the team: detached, in its role directory,
   `claude remote-control --name <instance>@<team> --spawn session --permission-mode <mode>` (team.json
-  `permission_mode`, auto when unset; a mode Remote Control does not take, such as `manual`, starts
-  nothing and says why), or with `--session-id <id>` in place of `--spawn session` when a Remote Control
+  `permission_mode`, auto when unset; `default` or `manual` sends no `--permission-mode`, claude's own
+  default, since claude 2.1.318's help lists `default` and its parser accepts `manual`; any other mode
+  Remote Control does not take starts nothing and says why), or with `--session-id <id>` in place of `--spawn session` when a Remote Control
   session is known for the directory, so the link the owner follows comes back. The id comes from the
   open session's own file in Claude Code's `sessions/` (`bridgeSessionId`), else the
   `bridge-pointer.json` claude keeps for the directory under `projects/`, else the roster's
@@ -1465,7 +1466,11 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   undocumented: when they cannot be read the start is a new link. A reattach whose session never joined
   (its roster `last_seen` did not move past the start) is not tried again; the next start makes a new
   link. One start per instance an hour, six a day; an instance whose last started server still runs is
-  not started again. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
+  not started again, and one whose process list cannot be read (`ps` fails) is neither counted running
+  nor started: the check names it. A start pass holds `revive.lock` in the watchdog directory, so the
+  Chief of Staff's `start` and the host job's never start the same instance twice; a pass that finds
+  it held starts nothing and names the holder's pid, and a lock older than two minutes or whose pid is
+  gone is broken. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
   time, arguments, the id it reattached), its output in `logs/revive-<instance>-<time>.log` beside it.
   The host job runs `start` at each `run`, after the wakes and never while a plugin install is held or
   under way; the sealed test runner starts none. In a role session only the Chief of Staff may run

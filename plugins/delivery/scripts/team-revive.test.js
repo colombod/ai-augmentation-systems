@@ -190,12 +190,15 @@ test('the owner\'s pause, or a pause that cannot be read, starts nothing; no pau
   assert.equal(run(project(), ['start'], { pause: () => ({ paused: false }) }).calls.length, 2);
 });
 
-test('a team mode Remote Control does not take starts nothing, with the reason; default is passed as it is', () => {
-  const m = run(project({ mode: 'manual' }), ['start']);
+test('a team mode Remote Control does not take starts nothing, with the reason; default and manual send no mode flag (claude\'s own default)', () => {
+  const m = run(project({ mode: 'bogus' }), ['start']);
   assert.equal(m.calls.length, 0);
-  assert.match(m.out, /not started: team.json permission_mode "manual" is not one Remote Control takes/);
-  const d = run(project({ mode: 'default' }), ['start']);
-  assert.deepEqual(d.calls[0].args.slice(-2), ['--permission-mode', 'default']);
+  assert.match(m.out, /not started: team.json permission_mode "bogus" is not one Remote Control takes/);
+  for (const mode of ['default', 'manual']) {
+    const d = run(project({ mode }), ['start']);
+    assert.equal(d.calls.length, 2, `${mode}: ${d.out}`);
+    for (const c of d.calls) assert.ok(!c.args.includes('--permission-mode'), `${mode}: ${c.args.join(' ')}`);
+  }
 });
 
 test('start is refused in a builder\'s role session and allowed in the Chief of Staff\'s and outside any role; check runs in any', () => {
@@ -300,4 +303,139 @@ test('the watchdog\'s host-job run starts the missing role sessions after its wa
   assert.equal(seen.length, 1, 'check starts nothing');
   // the default in the sealed test runner starts nothing, whatever the record says
   assert.equal(watchdog.main(['run', '--project', p.root], { ...deps, revive: undefined, env: { ...env, DELIVERY_SEALED_RUN: '1' } }).code, 0);
+});
+
+// the facts a start reads, injected, for revive() called directly (as the watchdog's host job does)
+const reviveDeps = (p, spawn) => ({ start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn });
+const lockFile = (p) => path.join(p.root, '.delivery', 'watchdog', 'revive.lock');
+
+test('two start passes at once (the Chief of Staff\'s and the host job\'s) open one link per instance: the second finds the start lock held', () => {
+  const p = project();
+  const calls = [];
+  let inner = null;
+  let entered = false;
+  const spawn = (bin, args, opts) => {
+    calls.push(opts.cwd);
+    // a second pass starts while the first is spawning, before it recorded anything
+    if (!entered) { entered = true; inner = TR.revive(p.root, p.team, reviveDeps(p, spawn)); }
+    return 4000 + calls.length;
+  };
+  const outer = TR.revive(p.root, p.team, reviveDeps(p, spawn));
+  assert.deepEqual(calls, [p.dir('chief-of-staff'), p.dir('builder')], 'one spawn per instance');
+  assert.deepEqual(inner.started, {});
+  assert.match(inner.lines.join('\n'), new RegExp(`another start pass holds the start lock \\(pid ${process.pid}\\b`));
+  assert.deepEqual(Object.keys(outer.started), ['chief-of-staff', 'builder']);
+  assert.equal(fs.existsSync(lockFile(p)), false, 'the lock is released after the pass');
+  // check and --dry-run never take the lock
+  fs.mkdirSync(path.dirname(lockFile(p)), { recursive: true });
+  fs.writeFileSync(lockFile(p), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+  assert.equal(run(p, ['check']).code, 0);
+  assert.match(run(p, ['start', '--dry-run'], { now: iso(Date.parse(T0) + 2 * H) }).out, /would start/);
+});
+
+test('a fresh start lock held by a live pass starts nothing; a stale lock (old, or its pid gone) is broken', () => {
+  const p = project();
+  fs.mkdirSync(path.dirname(lockFile(p)), { recursive: true });
+  fs.writeFileSync(lockFile(p), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+  const held = run(p, ['start']);
+  assert.equal(held.calls.length, 0);
+  assert.match(held.out, new RegExp(`another start pass holds the start lock \\(pid ${process.pid}\\b`));
+  assert.ok(fs.existsSync(lockFile(p)), 'a lock that is not ours is left in place');
+  // the same lock, older than the stale limit: broken, and the start runs
+  const old = (Date.now() - 10 * 60e3) / 1000;
+  fs.utimesSync(lockFile(p), old, old);
+  assert.equal(run(p, ['start']).calls.length, 2);
+  // a fresh lock whose pid no longer runs: broken
+  const q = project();
+  fs.mkdirSync(path.dirname(lockFile(q)), { recursive: true });
+  fs.writeFileSync(lockFile(q), JSON.stringify({ pid: 2 ** 30, at: new Date().toISOString() }));
+  assert.equal(run(q, ['start']).calls.length, 2);
+  assert.equal(fs.existsSync(lockFile(q)), false);
+});
+
+test('a process list that cannot be read is not a running server: the instance is not started, and the check says why', () => {
+  // serverAlive: ps failing is unknown (null), never running
+  const kill = () => true;
+  assert.equal(TR.serverAlive(4242, { kill, exec: () => { throw new Error('ps: timed out'); } }), null);
+  assert.equal(TR.serverAlive(4242, { kill, exec: () => '/usr/bin/vim notes.txt\n' }), false);
+  assert.equal(TR.serverAlive(4242, { kill, exec: () => 'claude remote-control --name builder@ex\n' }), true);
+  assert.equal(TR.serverAlive(4242, { kill: () => { const e = new Error('no such process'); e.code = 'ESRCH'; throw e; }, exec: () => 'claude remote-control' }), false);
+  // its last started server's liveness unknown: not running, not started, named
+  const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  R.record(p.root, { type: 'start', at: iso(Date.parse(T0) - 2 * H), instance: 'builder', pid: 777, args: [] });
+  const r = run(p, ['start'], { alive: () => null });
+  assert.equal(r.calls.length, 0, r.out);
+  assert.match(r.out, /Missing: builder .*held: the process list could not be read, so whether its Remote Control server started .* \(pid 777\) still runs is not known/);
+  assert.doesNotMatch(r.out, /All \d+ role sessions/);
+  const j = JSON.parse(run(p, ['check', '--json'], { alive: () => null }).out).instances[0];
+  assert.equal(j.running, null);
+});
+
+// `claude remote-control --help` on claude 2.1.318 (wintermute, 2026-11-07), the flags team-revive uses, verbatim
+const RC_HELP_2_1_318 = `
+  --session-id <id>                Reattach to a specific session by ID (cannot be
+                                   used with spawn flags or --continue)
+  --permission-mode <mode>         Permission mode for spawned sessions
+                                   (acceptEdits, auto, bypassPermissions, default, dontAsk, plan)
+  --spawn <mode>                   Spawn mode: same-dir, worktree, session
+                                   (default: same-dir)
+  --name <name>                    Name for the session (shown in claude.ai/code)
+`;
+// what the same claude's parser said to `--permission-mode bogus` (it says "manual" where the help says "default")
+const RC_PARSER_MODES = 'Error: Invalid permission mode \'bogus\'. Valid modes: acceptEdits, auto, bypassPermissions, manual, dontAsk, plan';
+// and to `--session-id x --spawn session`: the flags a reattach never takes
+const RC_SESSION_ID_EXCLUDES = ['--spawn', '--capacity', '--create-session-in-dir', '--continue'];
+
+function helpFacts(text) {
+  const flat = text.replace(/\s+/g, ' ');
+  const flags = new Set((text.match(/(?:^|\s)(--[a-z][a-z-]*)/g) || []).map((x) => x.trim()));
+  const spawn = (flat.match(/--spawn <[^>]*> Spawn mode: ([a-z-]+(?:, [a-z-]+)*)/) || [])[1];
+  const modes = (flat.match(/--permission-mode <[^>]*> Permission mode for spawned sessions \(([^)]*)\)/) || [])[1];
+  return { flags, spawn: spawn ? spawn.split(', ') : [], modes: modes ? modes.split(/,\s*/) : [] };
+}
+// the argv a start builds, for every mode team.json may hold, with a reattach id and without
+function builtArgs() {
+  const out = [];
+  for (const mode of [undefined, 'default', 'manual', ...R.RC_MODES]) {
+    for (const remote of [null, 'session_abc']) {
+      const p = project({ mode, roles: [{ id: 'builder', host: 'pc' }] });
+      if (remote) register(p, 'builder', { remote_session_id: remote });
+      const it = JSON.parse(run(p, ['check', '--json']).out).instances[0];
+      assert.ok(!it.skip, `${mode}: ${it.skip}`);
+      out.push({ mode, remote, args: it.args });
+    }
+  }
+  return out;
+}
+function assertArgsMatchHelp(text) {
+  const h = helpFacts(text);
+  const parser = RC_PARSER_MODES.split('Valid modes: ')[1].split(/,\s*/);
+  assert.ok(h.spawn.length && h.modes.length, 'the help names the spawn modes and the permission modes');
+  for (const { mode, remote, args } of builtArgs()) {
+    const at = `${mode || 'no mode'}${remote ? ', reattach' : ''}: ${args.join(' ')}`;
+    assert.equal(args[0], 'remote-control', at);
+    const used = args.filter((a) => a.startsWith('--'));
+    for (const f of used) assert.ok(h.flags.has(f), `${f} is not in the help (${at})`);
+    const val = (f) => args[args.indexOf(f) + 1];
+    if (used.includes('--spawn')) assert.ok(h.spawn.includes(val('--spawn')), `--spawn ${val('--spawn')} (${at})`);
+    if (used.includes('--permission-mode')) {
+      assert.ok(h.modes.includes(val('--permission-mode')), `--permission-mode ${val('--permission-mode')} is not in the help (${at})`);
+      assert.ok(parser.includes(val('--permission-mode')), `--permission-mode ${val('--permission-mode')} is refused by the parser (${at})`);
+    }
+    if (used.includes('--session-id')) for (const f of RC_SESSION_ID_EXCLUDES) assert.ok(!used.includes(f), `--session-id with ${f} (${at})`);
+    assert.equal(used.includes('--session-id'), Boolean(remote), at);
+  }
+}
+
+test('the argv a start builds is one claude remote-control 2.1.318 takes: flags in its help, --spawn and --permission-mode values it lists, --session-id never with spawn flags', () => {
+  assertArgsMatchHelp(RC_HELP_2_1_318);
+});
+
+// never `claude remote-control` without --help: that starts a server
+test('the argv matches the live `claude remote-control --help` on this host (DELIVERY_CLAUDE_HELP_LIVE=1 only)', (t) => {
+  if (process.env.DELIVERY_CLAUDE_HELP_LIVE !== '1') { t.skip('set DELIVERY_CLAUDE_HELP_LIVE=1 to read the host claude'); return; }
+  const r = require('child_process').spawnSync('claude', ['remote-control', '--help'], { encoding: 'utf8', timeout: 30000 });
+  if (r.error && r.error.code === 'ENOENT') { t.skip('claude is not on PATH'); return; }
+  assert.equal(r.status, 0, String(r.stderr || r.error || ''));
+  assertArgsMatchHelp(`${r.stdout}\n${r.stderr}`);
 });

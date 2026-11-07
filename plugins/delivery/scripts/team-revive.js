@@ -42,13 +42,15 @@ function parse(argv) {
 }
 
 // A Remote Control server alive at pid: a pid the system gave to another program since is not ours.
-function serverAlive(pid) {
+// true, false, or null when ps fails (throws, exits non-zero, times out): the process list could not be
+// read, which is neither running nor gone (lib/team-revive.js assess names it and starts nothing).
+const psCommand = (pid) => require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
+function serverAlive(pid, { exec = psCommand, kill = (p) => process.kill(p, 0) } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); } catch (err) { if (err.code !== 'EPERM') return false; }
-  try {
-    const cmd = require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
-    return !cmd.trim() || /remote-control/.test(cmd);
-  } catch (err) { return true; }
+  try { kill(pid); } catch (err) { if (err.code !== 'EPERM') return false; }
+  let cmd;
+  try { cmd = String(exec(pid)); } catch (err) { return null; }
+  return !cmd.trim() || /remote-control/.test(cmd);
 }
 
 // The open pull requests of the product repository, or { unreadable } with why.
@@ -118,7 +120,21 @@ function spawnRemote(bin, args, { cwd, env, logPath }) {
 
 // check, or start: { a, lines, started }. The remote session ids claude recorded are copied into the
 // roster on a start pass, so the next start reattaches the owner's link even when claude's own files go.
-function revive(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, ...deps } = {}) {
+// A start pass holds the project's start lock (lib/team-revive.js startLock) from its read of the facts to
+// its last ledger row, so a second pass (the Chief of Staff's beside the host job's) sees the first's
+// starts or starts nothing. check and --dry-run read only and take no lock.
+function revive(root, team, opts = {}) {
+  if (!opts.start || opts.dryRun) return revivePass(root, team, opts);
+  const lock = R.startLock(root);
+  if (lock.held) {
+    const { start, dryRun, env = process.env, spawn, ...deps } = opts;
+    const a = { ...R.assess(gather(root, team, { env, ...deps })), go: false, locked: lock.held };
+    return { a, started: {}, lines: [`Not started now: another start pass holds the start lock (pid ${lock.held.pid || 'unknown'}, ${path.relative(root, R.lockFile(root))}); it starts what is missing.`] };
+  }
+  try { return revivePass(root, team, opts); } finally { lock.release(); }
+}
+
+function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, ...deps } = {}) {
   const f = gather(root, team, { env, ...deps });
   const a = R.assess(f);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
