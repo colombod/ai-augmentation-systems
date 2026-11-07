@@ -439,3 +439,181 @@ test('the argv matches the live `claude remote-control --help` on this host (DEL
   assert.equal(r.status, 0, String(r.stderr || r.error || ''));
   assertArgsMatchHelp(`${r.stdout}\n${r.stderr}`);
 });
+
+// ---- a role session still open on an older plugin than the installed one (delivery-plugin-planning-hjx.1.6.7) ----
+// The chief-of-staff session on a real host ran 0.43.55 hooks three days after 0.43.74 was installed: Claude
+// Code loads a plugin's hooks at a session's start, so only a restart moves its lane onto the new version.
+const COS_DIR = (p) => p.dir('chief-of-staff');
+const bridgeFile = (p, { pid = 5100, sessionId = 'sess-chief-of-staff', cwd, bridgeSessionId = 'session_cos' } = {}) => {
+  fs.mkdirSync(path.join(p.config, 'sessions'), { recursive: true });
+  fs.writeFileSync(path.join(p.config, 'sessions', `${pid}.json`), JSON.stringify({ pid, sessionId, cwd, bridgeSessionId }));
+};
+// the chief on 0.43.55, open and idle under a Remote Control server (pid 5000); builder open and current
+function staleTeam({ version = '0.43.55', status = 'idle', rosterSession = 'sess-chief-of-staff' } = {}) {
+  const p = project();
+  register(p, 'chief-of-staff', { plugin_version: version, session_id: rosterSession });
+  register(p, 'builder', { plugin_version: '0.43.74' });
+  bridgeFile(p, { cwd: COS_DIR(p) });
+  const live = [
+    { cwd: COS_DIR(p), sessionId: 'sess-chief-of-staff', pid: 5100, name: 'Chief of Staff', status },
+    { cwd: p.dir('builder'), sessionId: 'sess-builder', pid: 5200, name: 'builder@ex', status: 'idle' },
+  ];
+  return { p, live };
+}
+const RC_OF_CHIEF = (pid) => (pid === 5100 ? { pid: 5000, self: false } : null);
+function restartRun(p, argv, { live, server = RC_OF_CHIEF, stop = () => true, relist, pause, installed = '0.43.74', spawnThrows } = {}) {
+  const spawn = spawner();
+  if (spawnThrows) spawn.fn = () => { throw new Error(spawnThrows); };
+  const stops = [];
+  const r = TR.main(argv, { cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live, prs: [], alive: () => false, configDir: p.config, spawn: spawn.fn, installed, server, stop: (s, c) => { stops.push([s, c]); return stop(s, c); }, relist, pause, who: { root: p.root, team: p.team, roleId: null } });
+  return { ...r, calls: spawn.calls, stops };
+}
+
+test('an idle role session on an older plugin is restarted on the installed one: its Remote Control server stops, and a new one reattaches the same link', () => {
+  const { p, live } = staleTeam();
+  const r = restartRun(p, ['start'], { live });
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(r.stops, [[5000, 5100]], 'the server of the chief session is stopped, nothing else');
+  assert.equal(r.calls.length, 1, r.out);
+  assert.deepEqual(r.calls[0].args, ['remote-control', '--name', 'chief-of-staff@ex', '--session-id', 'session_cos', '--permission-mode', 'auto']);
+  assert.equal(r.calls[0].cwd, COS_DIR(p));
+  assert.equal(r.calls[0].env.DELIVERY_ROLE, 'chief-of-staff');
+  const row = R.ledger(p.root).find((x) => x.type === 'restart');
+  assert.ok(row, 'the restart is a ledger row');
+  assert.equal(row.instance, 'chief-of-staff');
+  assert.equal(row.from, '0.43.55');
+  assert.equal(row.to, '0.43.74');
+  assert.equal(row.stopped, 5000);
+  assert.equal(row.session_id, 'session_cos');
+  assert.match(r.out, /Restarted: chief-of-staff on 0\.43\.74 \(pid 4001\)/);
+  assert.doesNotMatch(r.out, /Stale: builder/, 'a session on the installed version is left alone');
+});
+
+test('check and start --dry-run name the stale session and stop nothing', () => {
+  for (const argv of [['check'], ['start', '--dry-run']]) {
+    const { p, live } = staleTeam();
+    const r = restartRun(p, argv, { live });
+    assert.equal(r.stops.length, 0, argv.join(' '));
+    assert.equal(r.calls.length, 0, argv.join(' '));
+    assert.match(r.out, /Stale: chief-of-staff runs the delivery plugin 0\.43\.55 and 0\.43\.74 is installed; (restart runs|would restart): stop its Remote Control server \(pid 5000\)/, argv.join(' '));
+    assert.equal(R.ledger(p.root).length, 0);
+  }
+});
+
+test('a session on the installed version, a newer one, or with no version known is not restarted', () => {
+  for (const version of ['0.43.74', '0.43.80', null]) {
+    const { p, live } = staleTeam({ version });
+    const r = restartRun(p, ['start'], { live });
+    assert.equal(r.stops.length, 0, String(version));
+    assert.doesNotMatch(r.out, /Stale:/, String(version));
+  }
+});
+
+test('the roster version of another session says nothing about the one open now: not restarted', () => {
+  const { p, live } = staleTeam({ rosterSession: 'sess-older' });
+  const r = restartRun(p, ['start'], { live });
+  assert.equal(r.stops.length, 0);
+  assert.doesNotMatch(r.out, /Stale:/);
+});
+
+test('a stale session that is working is held until it is idle between turns, read twice', () => {
+  const { p, live } = staleTeam({ status: 'busy' });
+  const r = restartRun(p, ['start'], { live });
+  assert.equal(r.stops.length, 0);
+  assert.match(r.out, /Stale: chief-of-staff .*held: it is busy; it is restarted only when idle between turns/);
+  // idle at the first read, busy at the read just before the stop
+  const t2 = staleTeam();
+  const r2 = restartRun(t2.p, ['start'], { live: t2.live, relist: () => t2.live.map((s) => ({ ...s, status: 'busy' })) });
+  assert.equal(r2.stops.length, 0);
+  assert.equal(r2.calls.length, 0);
+  assert.match(r2.out, /not restarted: it became busy just before the stop/);
+});
+
+test('a stale session not under a Remote Control server, or one this pass runs inside, is not stopped', () => {
+  const a = staleTeam();
+  const r = restartRun(a.p, ['start'], { live: a.live, server: () => null });
+  assert.equal(r.stops.length, 0);
+  assert.match(r.out, /not restarted: it does not run under a Remote Control server/);
+  const b = staleTeam();
+  const r2 = restartRun(b.p, ['start'], { live: b.live, server: () => ({ pid: 5000, self: true }) });
+  assert.equal(r2.stops.length, 0);
+  assert.match(r2.out, /not restarted: this pass runs inside it/);
+  const c = staleTeam();
+  const r3 = restartRun(c.p, ['start'], { live: c.live, server: () => ({ unreadable: 'ps failed' }) });
+  assert.equal(r3.stops.length, 0);
+  assert.match(r3.out, /held: the process list could not be read/);
+});
+
+test('a stale session with no Remote Control id recorded is not stopped: the owner would get a new link', () => {
+  const { p, live } = staleTeam();
+  fs.rmSync(path.join(p.config, 'sessions'), { recursive: true });
+  const r = restartRun(p, ['start'], { live });
+  assert.equal(r.stops.length, 0);
+  assert.match(r.out, /not restarted: no Remote Control session id is recorded for it/);
+});
+
+test('a server that does not stop is never doubled: no start, a restart-failed row', () => {
+  const { p, live } = staleTeam();
+  const r = restartRun(p, ['start'], { live, stop: () => false });
+  assert.equal(r.calls.length, 0);
+  assert.match(r.out, /not restarted: its Remote Control server \(pid 5000\) did not stop/);
+  assert.equal(R.ledger(p.root)[0].type, 'restart-failed');
+});
+
+test('a restart whose new server does not start leaves a restart-failed row, and the hourly cap counts it', () => {
+  const { p, live } = staleTeam();
+  const r = restartRun(p, ['start'], { live, spawnThrows: 'spawn EAGAIN' });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /its Remote Control server stopped, and the new one did not start: spawn EAGAIN/);
+  const row = R.ledger(p.root).find((x) => x.type === 'restart-failed');
+  assert.ok(row, r.out);
+  assert.equal(row.stopped, 5000);
+  assert.equal(row.error, 'spawn EAGAIN');
+  const again = restartRun(p, ['start'], { live: [] });
+  assert.ok(!again.calls.some((c) => c.env.DELIVERY_ROLE === 'chief-of-staff'), again.out);
+  assert.match(again.out, /chief-of-staff \(no session in [^)]*\); held: started .* \(one start an hour\)/);
+});
+
+test('the owner pause holds a restart; a restart onto a version that did not take is not tried again; the hourly cap holds', () => {
+  const a = staleTeam();
+  const r = restartRun(a.p, ['start'], { live: a.live, pause: () => ({ paused: true }) });
+  assert.equal(r.stops.length, 0, r.out);
+  assert.match(r.out, /not restarted now \(paused\)/);
+  // restarted two hours ago onto 0.43.74, and the session seen since still records 0.43.55
+  const b = staleTeam();
+  R.record(b.p.root, { type: 'restart', at: iso(Date.parse(T0) - 2 * H), instance: 'chief-of-staff', pid: 1, session_id: 'session_cos', from: '0.43.55', to: '0.43.74' });
+  register(b.p, 'chief-of-staff', { plugin_version: '0.43.55', now: iso(Date.parse(T0) - H) });
+  const r2 = restartRun(b.p, ['start'], { live: b.live });
+  assert.equal(r2.stops.length, 0, r2.out);
+  assert.match(r2.out, /held: restarted .* onto 0\.43\.74, and its session still records 0\.43\.55; not tried again/);
+  // within the hour of any start, the hourly cap holds it
+  const c = staleTeam();
+  R.record(c.p.root, { type: 'start', at: iso(Date.parse(T0) - 10 * 60e3), instance: 'chief-of-staff', pid: 1 });
+  const r3 = restartRun(c.p, ['start'], { live: c.live });
+  assert.equal(r3.stops.length, 0, r3.out);
+  assert.match(r3.out, /held: started .*one start an hour/);
+});
+
+test('serverOf finds the claude remote-control parent of a session, and knows when this process runs inside it', () => {
+  const ps = { 5100: '5000 /opt/claude/versions/2.1.318 --print --sdk-url https://x', 5000: '1456 /opt/claude/bin/claude remote-control --name Chief of Staff --permission-mode auto', 1456: '1 /lib/systemd/systemd --user', 7000: '6999 node watchdog.js run', 6999: '1456 bash', 8000: '5100 node team-revive.js start' };
+  const exec = (pid) => { if (!ps[pid]) throw new Error('no such pid'); return `${ps[pid]}\n`; };
+  assert.deepEqual(TR.serverOf(5100, { exec, self: 7000 }), { pid: 5000, self: false });
+  assert.deepEqual(TR.serverOf(5100, { exec, self: 8000 }), { pid: 5000, self: true });
+  // a session whose parent is a terminal shell is no Remote Control session
+  ps[5300] = '6999 claude --name x';
+  assert.equal(TR.serverOf(5300, { exec, self: 7000 }), null);
+  assert.equal(TR.serverOf(0, { exec }), null);
+  assert.ok(TR.serverOf(5100, { exec: () => { throw new Error('ps: not found'); }, self: 7000 }).unreadable);
+});
+
+test('stopServer sends SIGTERM to the server and reports whether the server and its session are gone', () => {
+  const alive = new Set([5000, 5100]);
+  const sent = [];
+  const kill = (pid, sig) => {
+    if (sig !== 0) { sent.push([pid, sig]); alive.clear(); return; }
+    if (!alive.has(pid)) { const e = new Error('ESRCH'); e.code = 'ESRCH'; throw e; }
+  };
+  assert.equal(TR.stopServer(5000, 5100, { kill, waitMs: 50, stepMs: 10 }), true);
+  assert.deepEqual(sent, [[5000, 'SIGTERM']]);
+  assert.equal(TR.stopServer(5000, 5100, { kill: () => {}, waitMs: 30, stepMs: 10 }), false);
+});
