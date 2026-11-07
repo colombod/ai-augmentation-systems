@@ -859,7 +859,14 @@ owner and is reviewed again; gates block only on authority or serious divergence
   every check completed with success, neutral or skipped; pending waits; where gh cannot read the
   checks, or none are configured, the Delivery Manager's `review.js ci <pr> --head <sha> --result
   pass|fail --run <ref>` row stands in); and gh reports the pull request mergeable (`CONFLICTING` is
-  sent back, `UNKNOWN` waits: GitHub is still computing). A new commit changes the head, so the old
+  sent back, `UNKNOWN` waits: GitHub is still computing). For each plugin the pull request changes (a
+  `plugins/<name>/` directory, at any depth, whose `.claude-plugin/plugin.json` exists on the base
+  branch), the version at the head must be greater than the base branch's: an equal or lower version
+  would merge new code at a version already installed, so the self-update would never install it. The
+  refusal names both versions and the send-back command; a plugin.json that cannot be read, or one on
+  the base branch with no valid version, refuses too, and a product with no plugin directory is never
+  asked. When gh cannot read the pull request or its list of changed files, the gate already stands
+  on the record for the head and CI, and the version step is skipped with it. A new commit changes the head, so the old
   review no longer counts. The lane runs the same check before it allows the Delivery Manager's
   `gh pr merge`, which must name the pull request by number with `-R <product>` (or by its URL in
   that repository) and the full 40-character head with `--match-head-commit`, so GitHub merges
