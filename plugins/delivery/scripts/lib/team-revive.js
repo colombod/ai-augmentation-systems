@@ -33,8 +33,13 @@ const ledgerFile = (root) => path.join(root, WD.REL, LEDGER);
 const START_EVERY_MS = WD.WAKE_EVERY_MS;
 const DAILY_CAP = WD.DAILY_CAP;
 const DAY = 24 * 3600e3;
-// the modes `claude remote-control --permission-mode` takes; "manual" is a Claude Code mode it does not
-const RC_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'default', 'dontAsk', 'plan'];
+// the modes `claude remote-control --permission-mode` takes on claude 2.1.318: its help lists acceptEdits,
+// auto, bypassPermissions, default, dontAsk, plan, and its parser takes acceptEdits, auto, bypassPermissions,
+// manual, dontAsk, plan. Only the five both agree on are passed: "default" (the help's) and "manual" (the
+// parser's) are claude's own default mode, which a start gets by sending no --permission-mode at all
+// (team-revive.test.js pins this to the quoted help).
+const RC_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk', 'plan'];
+const RC_DEFAULT_MODES = ['default', 'manual'];
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const ms = (x) => { const t = Date.parse(x); return Number.isNaN(t) ? -Infinity : t; };
 
@@ -95,6 +100,45 @@ function ledger(root) {
   }
   return rows;
 }
+// One start pass at a time per project: the Chief of Staff's `team-revive.js start` and the host job's
+// pass both go through revive(start), and two passes within seconds would each read a ledger without the
+// other's start and open two links in one directory. An exclusive lock file ('wx') beside the ledger
+// holds { pid, at }; a lock older than LOCK_STALE_MS (a pass spawns and records in well under that) or
+// whose pid no longer runs is a pass that died, and is broken. Held: { held: { pid } }; taken: { release }.
+const LOCK = 'revive.lock';
+const lockFile = (root) => path.join(root, WD.REL, LOCK);
+const LOCK_STALE_MS = 2 * 60e3;
+function pidRuns(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+}
+function startLock(root, { now = Date.now(), runs = pidRuns } = {}) {
+  const file = lockFile(root);
+  WD.ensureDir(root);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let fd = null;
+    try { fd = fs.openSync(file, 'wx'); } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      let holder = null;
+      let age = 0;
+      try { age = now - fs.statSync(file).mtimeMs; holder = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { /* not written yet, or gone */ }
+      const pid = holder && Number(holder.pid);
+      // a lock whose content is not written yet is judged by its age alone
+      if (age > LOCK_STALE_MS || (pid && !runs(pid))) { try { fs.unlinkSync(file); } catch (e) { /* another pass broke it first */ } continue; }
+      return { held: { pid: pid || null } };
+    }
+    const token = `${process.pid}-${now}-${Math.random().toString(36).slice(2)}`;
+    try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date(now).toISOString(), token })); } finally { fs.closeSync(fd); }
+    return {
+      release() {
+        // only our own lock: one broken as stale and taken by another pass is that pass's
+        try { if (JSON.parse(fs.readFileSync(file, 'utf8')).token === token) fs.unlinkSync(file); } catch (e) { /* gone already */ }
+      },
+    };
+  }
+  return { held: { pid: null } };
+}
+
 function record(root, row) {
   WD.ensureDir(root);
   WD.rotate(ledgerFile(root));
@@ -103,11 +147,13 @@ function record(root, row) {
 }
 
 // The mode a started session runs in: team.json permission_mode, as for a wake; auto, start.js's default,
-// when the team has none. A mode Remote Control does not take is no start, with the reason: a session
-// must never run with more than the owner chose, and claude exits on a mode it refuses.
+// when the team has none. default or manual is claude's own default: no mode flag ({ mode: null }). Any
+// other mode Remote Control does not take is no start, with the reason: a session must never run with
+// more than the owner chose, and claude exits on a mode it refuses.
 function modeOf(team) {
   const m = team && team.permission_mode;
   if (m === undefined) return { mode: 'auto' };
+  if (RC_DEFAULT_MODES.includes(m)) return { mode: null };
   return RC_MODES.includes(m) ? { mode: m } : { skip: `team.json permission_mode "${String(m).slice(0, 40)}" is not one Remote Control takes (${RC_MODES.join(', ')})` };
 }
 
@@ -142,10 +188,13 @@ function assess(f) {
     const open = (f.live || []).find((s) => same(s.cwd));
     const starts = rows.filter((r) => r.type === 'start' && r.instance === instance);
     const last = starts[starts.length - 1] || null;
+    // alive(pid) is true, false, or null when the process list could not be read: unknown is neither
+    // running (the instance is named, not hidden in "all running") nor a start (it may be a second link)
+    const alive = open || !last ? false : f.alive(last.pid);
     if (open) it.running = `session ${open.name || open.sessionId || 'open'} in ${roleDir}`;
     // the server this started last still runs: its session may not be listed yet, and a second server
     // in one directory would be a second link
-    else if (last && f.alive(last.pid)) it.running = `its Remote Control server started ${WD.clock(ms(last.at))} (pid ${last.pid}) still runs`;
+    else if (alive === true) it.running = `its Remote Control server started ${WD.clock(ms(last.at))} (pid ${last.pid}) still runs`;
     else if (f.live === null) it.running = 'not known';
     // the link: the session open there now, else the one claude last recorded for the directory, else the roster's
     const bridge = (f.bridges || []).find((s) => same(s.cwd));
@@ -162,6 +211,7 @@ function assess(f) {
       const today = starts.filter((r) => t - ms(r.at) < DAY);
       if (!it.skip && last && t - ms(last.at) < START_EVERY_MS) it.held = `started ${WD.clock(ms(last.at))}; the next start is after ${WD.clock(ms(last.at) + START_EVERY_MS)} (one start an hour)`;
       else if (!it.skip && today.length >= DAILY_CAP) it.held = `started ${today.length} times in the last day, the most a day allows; the next start is after ${WD.clock(ms(today[today.length - DAILY_CAP].at) + DAY)}`;
+      if (!it.skip && alive === null) it.held = `the process list could not be read, so whether its Remote Control server started ${WD.clock(ms(last.at))} (pid ${last.pid}) still runs is not known`;
       it.args = ['remote-control', '--name', it.name, ...(it.remoteId ? ['--session-id', it.remoteId] : ['--spawn', 'session']), ...(it.mode ? ['--permission-mode', it.mode] : [])];
     }
     out.instances.push(it);
@@ -205,4 +255,4 @@ function lines(a, { bin = 'claude', started = null, dryRun = false } = {}) {
   return out;
 }
 
-module.exports = { LEDGER, ledgerFile, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, assess, lines, shown };
+module.exports = { LEDGER, ledgerFile, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, assess, lines, shown };
