@@ -5,10 +5,11 @@
 // It is a line, not a guess from the diff, because only the author knows whether a code change alters
 // what a README or quick start says; the gate makes the author say so, where the reviewer reads it.
 // What users cannot see needs no line: tests, generated files and lockfiles, and the team's own records.
+// A tool users run (scripts/testing/run-tests.js) is not a test, and a .txt is data unless it sits in docs/.
 const { GENERATED } = require('./reviews.js');
 
-const INTERNAL = /(?:^|\/)(?:\.(?:delivery|superpowers|github|beads)|tests?|__tests__|testing|spec|fixtures)\/|\.(?:test|spec)\.[a-z0-9]+$|(?:^|\/)test_[^/]*\.py$/i;
-const DOC = /(?:^|\/)docs?\/|\.(?:md|mdx|markdown|rst|adoc|txt)$|(?:^|\/)(?:README|CHANGELOG|LICENSE|NOTICE)(?:\.[a-z]+)?$/i;
+const INTERNAL = /(?:^|\/)(?:\.(?:delivery|superpowers|github|beads)|tests?|__tests__|spec|fixtures)\/|\.(?:test|spec)\.[a-z0-9]+$|(?:^|\/)test_[^/]*\.py$/i;
+const DOC = /(?:^|\/)docs?\/|\.(?:md|mdx|markdown|rst|adoc)$|(?:^|\/)(?:README|CHANGELOG|LICENSE|NOTICE)(?:\.[a-z]+)?$/i;
 const LINE = /^[ \t>*-]*doc[- ]?impact[ \t]*:[ \t]*(.*)$/im;
 const NONE = /^none\b[\s:,.;()–—-]*(.*)$/i;
 const FIX = 'Add one line to the pull request\'s description: `Doc-impact: <the docs this pull request updates>` (and update them in it), or `Doc-impact: none (<why users see no change>)`';
