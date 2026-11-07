@@ -353,6 +353,24 @@ test('a fresh start lock held by a live pass starts nothing; a stale lock (old, 
   assert.equal(fs.existsSync(lockFile(q)), false);
 });
 
+test('a process list that cannot be read is not a running server: the instance is not started, and the check says why', () => {
+  // serverAlive: ps failing is unknown (null), never running
+  const kill = () => true;
+  assert.equal(TR.serverAlive(4242, { kill, exec: () => { throw new Error('ps: timed out'); } }), null);
+  assert.equal(TR.serverAlive(4242, { kill, exec: () => '/usr/bin/vim notes.txt\n' }), false);
+  assert.equal(TR.serverAlive(4242, { kill, exec: () => 'claude remote-control --name builder@ex\n' }), true);
+  assert.equal(TR.serverAlive(4242, { kill: () => { const e = new Error('no such process'); e.code = 'ESRCH'; throw e; }, exec: () => 'claude remote-control' }), false);
+  // its last started server's liveness unknown: not running, not started, named
+  const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  R.record(p.root, { type: 'start', at: iso(Date.parse(T0) - 2 * H), instance: 'builder', pid: 777, args: [] });
+  const r = run(p, ['start'], { alive: () => null });
+  assert.equal(r.calls.length, 0, r.out);
+  assert.match(r.out, /Missing: builder .*held: the process list could not be read, so whether its Remote Control server started .* \(pid 777\) still runs is not known/);
+  assert.doesNotMatch(r.out, /All \d+ role sessions/);
+  const j = JSON.parse(run(p, ['check', '--json'], { alive: () => null }).out).instances[0];
+  assert.equal(j.running, null);
+});
+
 // `claude remote-control --help` on claude 2.1.318 (wintermute, 2026-11-07), the flags team-revive uses, verbatim
 const RC_HELP_2_1_318 = `
   --session-id <id>                Reattach to a specific session by ID (cannot be

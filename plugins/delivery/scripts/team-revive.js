@@ -42,13 +42,15 @@ function parse(argv) {
 }
 
 // A Remote Control server alive at pid: a pid the system gave to another program since is not ours.
-function serverAlive(pid) {
+// true, false, or null when ps fails (throws, exits non-zero, times out): the process list could not be
+// read, which is neither running nor gone (lib/team-revive.js assess names it and starts nothing).
+const psCommand = (pid) => require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
+function serverAlive(pid, { exec = psCommand, kill = (p) => process.kill(p, 0) } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); } catch (err) { if (err.code !== 'EPERM') return false; }
-  try {
-    const cmd = require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
-    return !cmd.trim() || /remote-control/.test(cmd);
-  } catch (err) { return true; }
+  try { kill(pid); } catch (err) { if (err.code !== 'EPERM') return false; }
+  let cmd;
+  try { cmd = String(exec(pid)); } catch (err) { return null; }
+  return !cmd.trim() || /remote-control/.test(cmd);
 }
 
 // The open pull requests of the product repository, or { unreadable } with why.

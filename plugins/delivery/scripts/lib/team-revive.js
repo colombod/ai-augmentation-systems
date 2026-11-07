@@ -188,10 +188,13 @@ function assess(f) {
     const open = (f.live || []).find((s) => same(s.cwd));
     const starts = rows.filter((r) => r.type === 'start' && r.instance === instance);
     const last = starts[starts.length - 1] || null;
+    // alive(pid) is true, false, or null when the process list could not be read: unknown is neither
+    // running (the instance is named, not hidden in "all running") nor a start (it may be a second link)
+    const alive = open || !last ? false : f.alive(last.pid);
     if (open) it.running = `session ${open.name || open.sessionId || 'open'} in ${roleDir}`;
     // the server this started last still runs: its session may not be listed yet, and a second server
     // in one directory would be a second link
-    else if (last && f.alive(last.pid)) it.running = `its Remote Control server started ${WD.clock(ms(last.at))} (pid ${last.pid}) still runs`;
+    else if (alive === true) it.running = `its Remote Control server started ${WD.clock(ms(last.at))} (pid ${last.pid}) still runs`;
     else if (f.live === null) it.running = 'not known';
     // the link: the session open there now, else the one claude last recorded for the directory, else the roster's
     const bridge = (f.bridges || []).find((s) => same(s.cwd));
@@ -208,6 +211,7 @@ function assess(f) {
       const today = starts.filter((r) => t - ms(r.at) < DAY);
       if (!it.skip && last && t - ms(last.at) < START_EVERY_MS) it.held = `started ${WD.clock(ms(last.at))}; the next start is after ${WD.clock(ms(last.at) + START_EVERY_MS)} (one start an hour)`;
       else if (!it.skip && today.length >= DAILY_CAP) it.held = `started ${today.length} times in the last day, the most a day allows; the next start is after ${WD.clock(ms(today[today.length - DAILY_CAP].at) + DAY)}`;
+      if (!it.skip && alive === null) it.held = `the process list could not be read, so whether its Remote Control server started ${WD.clock(ms(last.at))} (pid ${last.pid}) still runs is not known`;
       it.args = ['remote-control', '--name', it.name, ...(it.remoteId ? ['--session-id', it.remoteId] : ['--spawn', 'session']), ...(it.mode ? ['--permission-mode', it.mode] : [])];
     }
     out.instances.push(it);
