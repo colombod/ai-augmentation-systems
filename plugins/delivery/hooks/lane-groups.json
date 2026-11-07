@@ -166,6 +166,9 @@
   "team-revive": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-revive.js", "sub": ["check", "start"] }
   ],
+  "outage-drill": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/outage-drill.js", "sub": ["plan", "run"] }
+  ],
   "any": [
     { "first": "*" }
   ]
