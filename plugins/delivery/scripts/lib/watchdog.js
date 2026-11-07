@@ -333,11 +333,26 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   // the holder's last dated entry decides, and a later note that moves the work on makes it the
   // holder's again. Past stall_hours it is the Delivery Manager's, below.
   const PASS_NOTE = /^\d{4}-\d{2}-\d{2}\S*\s+[^\s:]+\s+pass:/;
-  const BLOCKED_NOTE = /^\d{4}-\d{2}-\d{2}[^\s:]*(?:\s+[^:\n]+?)?:\s*Blocked:/;
+  // the stamp is a date, or a date with a full time (2026-11-07T12:00:00Z): a time's own colons are not
+  // the author's (rv-179 note 4)
+  const NOTE_STAMP = /^(\d{4}-\d{2}-\d{2})(T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?/;
+  const BLOCKED_NOTE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?(?:\s+[^:\n]+?)?:\s*Blocked:/;
   const blockedBy = (b) => {
     const entries = String((b && b.notes) || '').split(/\n(?=\d{4}-\d{2}-\d{2})/).map((x) => x.trim()).filter((x) => x && !PASS_NOTE.test(x));
     const last = entries[entries.length - 1] || '';
     return BLOCKED_NOTE.test(last) ? last : null;
+  };
+  // hjx.1.1.1 (rv-179 note 2): when the blocker was noted. updated_at moves on every later note, the
+  // Delivery Manager's own pass notes included, and re-armed the ask each pass. A full-time stamp is
+  // exact; a date-only stamp bounds the bead's update to that day, so a note on a later day leaves it.
+  const blockedSince = (b, note) => {
+    const m = NOTE_STAMP.exec(note);
+    const upd = Math.max(ms(b.updated_at), ms(b.created_at));
+    if (!m) return upd;
+    if (m[2]) { const at = ms(m[1] + m[2]); if (Number.isFinite(at)) return at; }
+    const day = ms(`${m[1]}T00:00:00Z`);
+    if (!Number.isFinite(day)) return upd;
+    return Number.isFinite(upd) ? Math.min(Math.max(upd, day), day + 24 * 60 * 60e3 - 1) : day;
   };
   // hjx.1.1: a wake's own turn is not a move. lastMove took the holder's lastActive, so every wake reset
   // the stall clock and a bead its holder could not move never reached stall_hours: the holder was woken
@@ -398,16 +413,17 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       continue;
     }
     const h = holderOf(b, list);
-    if (h && limited.has(h.instance)) continue;
-    // a holder inside a watch.js wait is waiting within the limit it declared
-    if (h && h.waitUntil > t) continue;
     // hjx.1.1: a noted blocker is the Delivery Manager's to clear (rule 7), not its holder's to be woken for.
-    // Keyed and timed on the bead's own update alone, as a story waiting on evidence is: the holder's
-    // session activity is not the blocker moving, so it neither renews the key nor holds the ask back,
-    // and one blocker note is one ask (rv-179)
+    // Keyed and timed on the blocker note alone: the holder's session activity and later notes are not
+    // the blocker moving, so they neither renew the key nor hold the ask back, and one blocker note is one
+    // ask (rv-179). Asked before the holder's own limit and wait skips: they hold the holder's wake, not
+    // the Delivery Manager's (rv-179 note 3).
     const blocker = blockedBy(b);
+    if (!blocker && h && limited.has(h.instance)) continue;
+    // a holder inside a watch.js wait is waiting within the limit it declared
+    if (!blocker && h && h.waitUntil > t) continue;
     if (blocker) {
-      const since = Math.max(ms(b.updated_at), ms(b.created_at));
+      const since = blockedSince(b, blocker);
       const waited = (t - since) / 60000;
       if (!(waited > stallHours * 60)) continue;
       out.push({ kind: 'quiet', key: `blocked:${b.id}:${Number.isFinite(since) ? new Date(since).toISOString() : 'never'}`, bead: b.id, target: dm, due: true,
