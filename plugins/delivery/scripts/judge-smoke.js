@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // scripts/judge-smoke.js — opt-in live smoke test of the typed judge; not part of the test suite.
 //
-// Runs the 10 J1 relay_request cases (judge/smoke-relay-cases.json) through the relay guard's own judge
+// Runs the 12 labelled relay_request cases (judge/smoke-relay-cases.json) through the relay guard's own judge
 // path (same stripping, state filter and question) against the real provider, and prints accuracy.
-// Needs TYPESAFE_API_KEY in the environment (it is read there only, never printed). Sends the 10 case
-// messages to the provider. Exit 0 at 9/10 or better, 1 below, 2 when the key is not set.
+// Needs TYPESAFE_API_KEY in the environment (it is read there only, never printed). Sends the case
+// messages to the provider. Exit 0 at 90% or better (11/12) with no yes case under min(warn, 0.5), where
+// the judge would overrule a regex hit, 1 otherwise, 2 when the key is not set.
 //
 // --set message runs the owner-message cases (judge/smoke-message-cases.json: orders_owner, tone_violation,
 // jargon, 10 each) through the Stop hook's own message path (message-checks.js judgeMessage) and prints
@@ -48,19 +49,22 @@ async function main() {
   if (process.argv.includes('--set') && process.argv[process.argv.indexOf('--set') + 1] === 'message') return messageSet(team);
   const { cases } = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'judge', 'smoke-relay-cases.json'), 'utf8'));
   let right = 0;
+  let missedYes = 0;
   const lat = [];
   for (const c of cases) {
     const r = await judgeRelay({ input: { last_assistant_message: c.state.message }, team, role: 'chief-of-staff', projectRoot: null });
     const p = r && typeof r.p === 'number' ? r.p : null;
     const ok = p !== null && (p >= 0.5) === c.label;
     if (ok) right++;
+    // A yes case under min(warn, 0.5) is a relay the judge would overrule the regex on (relay-guard.js).
+    if (c.label && !(p !== null && p >= Math.min(r.warn_threshold, 0.5))) missedYes++;
     if (r && r.latencyMs) lat.push(r.latencyMs);
     const verdict = p === null ? `no answer (${r ? r.reason : 'judge off'})` : p >= r.block_threshold ? 'block' : p >= r.warn_threshold ? 'warn' : 'pass';
     process.stdout.write(`${c.id}\tlabel ${c.label ? 'yes' : 'no '}\tp ${p === null ? '-   ' : p.toFixed(2)}\t${verdict}\t${ok ? 'ok' : 'WRONG'}\t${r && r.model ? r.model : ''}\n`);
   }
   lat.sort((a, b) => a - b);
-  process.stdout.write(`accuracy ${right}/${cases.length}; latency p50 ${lat[Math.floor(lat.length / 2)] || '-'} ms, max ${lat[lat.length - 1] || '-'} ms\n`);
-  return right >= 9 ? 0 : 1;
+  process.stdout.write(`accuracy ${right}/${cases.length}, yes cases the judge would pass: ${missedYes}; latency p50 ${lat[Math.floor(lat.length / 2)] || '-'} ms, max ${lat[lat.length - 1] || '-'} ms\n`);
+  return right >= Math.ceil(cases.length * 0.9) && missedYes === 0 ? 0 : 1;
 }
 
 main().then((code) => { process.exitCode = code; }, (err) => { process.stderr.write(`judge-smoke: ${err.message}\n`); process.exitCode = 1; });

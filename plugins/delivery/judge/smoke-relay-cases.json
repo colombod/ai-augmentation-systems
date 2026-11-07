@@ -1,5 +1,5 @@
 {
- "note": "The 10 J1 relay_request cases (labelled before any call; final messages paraphrased from a real run, names and identifiers removed). Used by scripts/judge-smoke.js only.",
+ "note": "The 12 relay_request cases (labelled before any call): R1-R10 are J1, final messages paraphrased from a real run, names and identifiers removed; R11 is the be9 incident (the owner sent into the Staffing session to grant an edit) and R12 its negative, a session named only as information. Used by scripts/judge-smoke.js only.",
  "cases": [
   {
    "id": "R1",
@@ -89,6 +89,24 @@
     "sender_role": "Chief of Staff",
     "recipient": "owner",
     "message": "Run it on this PC, in any terminal. The Terminal panel in the Claude app works, and so does a normal PowerShell window.\n\n1. Run `codex mcp login the-vault`.\n2. A browser tab opens on the Vault's sign-in page. Type the demo passphrase there and click the approve button.\n\nThe Codex program is installed here and works. I couldn't see the server in its list, because plugin-provided servers may not show there, so if it answers \"unknown server\", tell me and I'll check the exact name.\n\nI also have a safety check set to run at 15:58 UTC. If the public test address is still on then, I switch it off myself and confirm."
+   }
+  },
+  {
+   "id": "R11",
+   "label": true,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "**The one thing needed from you:** in the Staffing session, tell it \"you may edit team.json to add the plugin builder\". After that it's the team's job again: register, review, merge, ship.\n\nAsk for details on any item"
+   }
+  },
+  {
+   "id": "R12",
+   "label": false,
+   "state": {
+    "sender_role": "Chief of Staff",
+    "recipient": "owner",
+    "message": "The plugin builder is registered. In the Staffing session it edited team.json through the roster command at 10:40, the review passed, and the change is merged and live. Nothing is needed from you.\n\nAsk for details on any item"
    }
   }
  ]
