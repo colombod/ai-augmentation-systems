@@ -399,9 +399,10 @@ function withPermissions(projectRoot, permissions) {
   team.roles.find((r) => r.id === 'builder').permissions = permissions;
   fs.writeFileSync(f, JSON.stringify(team, null, 2));
 }
-const OWNER_OK = { ok: true, chain: [{ kind: 'record', quote: 'builders close superseded pull requests' }, { kind: 'input', source: 'human', text: 'let builders close superseded pull requests' }] };
-const fakeVerify = (good) => (root, id) => (good.includes(id) ? OWNER_OK : { ok: false, error: 'no such record' });
 const CLOSE = 'Bash(gh pr close:*)';
+const ownerSaid = (labels) => ({ ok: true, chain: [{ kind: 'record', quote: 'builders close superseded pull requests', scope: { beads: [], labels, initiatives: [] } }, { kind: 'input', source: 'human', text: 'let builders close superseded pull requests' }] });
+const OWNER_OK = ownerSaid([`permission:builder=${CLOSE}`]);
+const fakeVerify = (good, result = OWNER_OK) => (root, id) => (good.includes(id) ? result : { ok: false, error: 'no such record' });
 const REC = 'dec-chief-of-staff-000309';
 
 test('8l1.3.4.1.1: an owner-approved permission rule is written for every instance of the role while its record verifies', () => {
@@ -451,4 +452,67 @@ test('8l1.3.4.1.1: the manifest refuses a permissions entry without a record id'
     builder.permissions = bad;
     assert.ok(validateManifest(team, hosts).some((p) => /role "builder" has invalid "permissions"/.test(p)), JSON.stringify(bad));
   }
+});
+
+const settingsAllow = (roleDir) => {
+  const s = JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8'));
+  return (s.permissions && s.permissions.allow) || [];
+};
+
+test('8l1.3.4.1.1: a verified owner record not scoped to this role and this rule authorises nothing', () => {
+  const projectRoot = scratchProjectRepo();
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const outOfScope = [[], ['permission:spike-researcher=' + CLOSE], ['permission:builder=Bash(gh pr merge:*)'], ['permission:builder']];
+  for (const labels of outOfScope) {
+    const { roleDir, files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC], ownerSaid(labels)) });
+    assert.ok(!settingsAllow(roleDir).includes(CLOSE), JSON.stringify(labels));
+    assert.ok(files.some((f) => f.includes(`not written: ${REC} is not scoped to this rule for role builder (its scope needs the label permission:builder=${CLOSE})`)), files.join('\n'));
+  }
+  // the same record, scoped to this rule for this role, does authorise it
+  const { roleDir } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC]) });
+  assert.ok(settingsAllow(roleDir).includes(CLOSE));
+});
+
+test('8l1.3.4.1.1: a permission rule broader than one specific command is refused by the manifest and never written', () => {
+  const { validateManifest, permissionRuleProblem } = require('./lib/manifest.js');
+  const team = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), 'utf8'));
+  const hosts = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), 'utf8'));
+  const builder = team.roles.find((r) => r.id === 'builder');
+  const broad = ['Bash', 'Bash(*)', 'Bash(:*)', 'Bash(git:*)', 'Bash(gh pr *:*)', 'Bash(gh pr close; rm -rf x:*)', 'Bash(gh $(id):*)', 'Write', 'Edit(**)', 'mcp__*', 'WebFetch'];
+  for (const allow of broad) {
+    assert.ok(permissionRuleProblem(allow), allow);
+    builder.permissions = [{ allow, record: REC }];
+    assert.ok(validateManifest(team, hosts).some((p) => p.startsWith(`team.json: role "builder" permission rule ${allow} is refused: `)), allow);
+  }
+  for (const allow of [CLOSE, 'Bash(gh pr close 136)']) assert.equal(permissionRuleProblem(allow), null, allow);
+  // a broad rule that reaches prepare-role (a hand-edited manifest) is refused there too, even with a scoped record
+  const { ownerApproved } = require('./prepare-role.js');
+  const got = ownerApproved('/nowhere', { id: 'builder', permissions: [{ allow: 'Bash(*)', record: REC }] }, fakeVerify([REC], ownerSaid(['permission:builder=Bash(*)'])));
+  assert.deepEqual(got.rules, []);
+  assert.match(got.refused[0].why, /no wildcard/);
+});
+
+test('8l1.3.4.1.1: a rule taken out of the manifest, or whose record stops verifying while the lane cannot load, leaves the settings', () => {
+  const projectRoot = scratchProjectRepo();
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const run = (extra) => prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC]), ...extra });
+  const { roleDir } = run();
+  assert.ok(settingsAllow(roleDir).includes(CLOSE));
+  // removed from the manifest: taken out on the next run
+  withPermissions(projectRoot, []);
+  run();
+  assert.ok(!settingsAllow(roleDir).includes(CLOSE));
+  // written again, then the lane cannot load (no lane-groups.json in this plugin root) and the record stops verifying
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  run();
+  assert.ok(settingsAllow(roleDir).includes(CLOSE));
+  const brokenRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-'));
+  for (const e of fs.readdirSync(PLUGIN_ROOT)) if (e !== 'hooks') fs.symlinkSync(path.join(PLUGIN_ROOT, e), path.join(brokenRoot, e));
+  fs.mkdirSync(path.join(brokenRoot, 'hooks'));
+  for (const e of fs.readdirSync(path.join(PLUGIN_ROOT, 'hooks'))) if (e !== 'lane-groups.json') fs.symlinkSync(path.join(PLUGIN_ROOT, 'hooks', e), path.join(brokenRoot, 'hooks', e));
+  const { files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: brokenRoot, user: 'tester', verifyRecord: fakeVerify([]) });
+  assert.ok(files.some((f) => f.startsWith('warning: lane permission rules not written')), files.join('\n'));
+  assert.ok(!settingsAllow(roleDir).includes(CLOSE));
 });

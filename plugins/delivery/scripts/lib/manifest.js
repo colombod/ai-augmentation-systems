@@ -194,6 +194,10 @@ function validateManifest(team, hosts) {
       const ok = (p) => Boolean(p) && typeof p === 'object' && !Array.isArray(p) && typeof p.allow === 'string' && p.allow.trim()
         && typeof p.record === 'string' && /^(dec|ans)-.+-\d{6,}$/.test(p.record) && Object.keys(p).every((k) => ['allow', 'record'].includes(k));
       if (!Array.isArray(role.permissions) || !role.permissions.every(ok)) problems.push(`team.json: role "${role.id}" has invalid "permissions": a list of {"allow": "<permission rule>", "record": "<dec- or ans- record id>"}`);
+      else for (const p of role.permissions) {
+        const why = permissionRuleProblem(p.allow);
+        if (why) problems.push(`team.json: role "${role.id}" permission rule ${p.allow} is refused: ${why}`);
+      }
     }
     if (role.steward) stewards.add(role.host);
   }
@@ -259,4 +263,18 @@ const liveInstanceNames = (role) => expandInstances({ roles: [role] }).filter((i
 // A role entry is retired when it says so, or when every one of its instances is.
 const roleRetired = (role) => Boolean(role) && (role.retired === true || liveInstanceNames(role).length === 0);
 
-module.exports = { reachOf, isManager, canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, briefFile, briefExists, knownBriefs, expandInstances, instanceNames, instanceId, liveInstanceNames, roleRetired, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };
+// An owner-approved allow rule must name one specific command, never a whole tool or a whole program:
+// "Bash(gh pr close:*)" or "Bash(gh pr close 136)", never "Bash", "Bash(*)", "Bash(git:*)", "Write" or
+// "mcp__*". A record approves one command for one role, so a broad rule would grant what nobody approved
+// (PR 184 review). Returns why the rule is refused, or null.
+function permissionRuleProblem(allow) {
+  const m = /^Bash\((.*)\)$/s.exec(String(allow || '').trim());
+  if (!m) return 'only a Bash rule for a specific command is accepted, as Bash(<command> <subcommand>:*)';
+  const cmd = m[1].replace(/:\*$/, '').trim();
+  if (!cmd || /[*?\[\]{}]/.test(cmd)) return 'the command must be spelled out, with no wildcard but a trailing :*';
+  if (/[;&|`$<>()\\\n'"]/.test(cmd)) return 'the command may not hold shell operators, quotes or substitutions';
+  if (cmd.split(/\s+/).length < 2) return 'it must name a command and its subcommand (Bash(gh pr close:*)), not a whole program';
+  return null;
+}
+
+module.exports = { permissionRuleProblem, reachOf, isManager, canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, briefFile, briefExists, knownBriefs, expandInstances, instanceNames, instanceId, liveInstanceNames, roleRetired, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };

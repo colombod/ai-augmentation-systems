@@ -47,16 +47,28 @@ function rolePath(env, home = os.homedir(), cwd = process.cwd()) {
 }
 
 // The role's owner-approved permission rules: { rules, refused: [{ allow, why }] }. A rule counts only
-// while its record verifies and rests on the owner's own captured words (gate-context ownerRecord).
+// while its record verifies, rests on the owner's own captured words (gate-context ownerRecord), and is
+// scoped to this role and this rule: its scope carries the label permission:<role>=<rule>. Any verified
+// owner record would otherwise authorise any rule on any role (PR 184 review), so the record must name
+// both, as an assumption's acknowledgement must name its spike (assumptions scopedTo). A rule broader
+// than one specific command is refused whatever its record says (manifest permissionRuleProblem).
+const permissionLabel = (roleId, allow) => `permission:${roleId}=${allow}`;
 function ownerApproved(projectRoot, role, verifyRecord) {
   const { ownerRecord } = require('./lib/gate-context.js');
+  const { permissionRuleProblem } = require('./lib/manifest.js');
   const out = { rules: [], refused: [] };
   for (const p of Array.isArray(role.permissions) ? role.permissions : []) {
     const allow = p && typeof p.allow === 'string' ? p.allow.trim() : '';
     if (!allow) continue;
+    const broad = permissionRuleProblem(allow);
+    if (broad) { out.refused.push({ allow, why: broad }); continue; }
     if (!p.record) { out.refused.push({ allow, why: 'it cites no owner record' }); continue; }
     const v = ownerRecord(projectRoot, String(p.record), verifyRecord);
-    if (v.ok) out.rules.push(allow); else out.refused.push({ allow, why: v.why });
+    if (!v.ok) { out.refused.push({ allow, why: v.why }); continue; }
+    const want = permissionLabel(role.id, allow);
+    const labels = (v.head && v.head.scope && Array.isArray(v.head.scope.labels)) ? v.head.scope.labels : [];
+    if (!labels.includes(want)) { out.refused.push({ allow, why: `${p.record} is not scoped to this rule for role ${role.id} (its scope needs the label ${want})` }); continue; }
+    out.rules.push(allow);
   }
   out.rules = [...new Set(out.rules)];
   return out;
@@ -166,16 +178,26 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
   settings.enabledPlugins = Object.assign({}, settings.enabledPlugins, { 'delivery@ai-augmentation-systems': true });
   // Pre-allow the lane's own commands (spec 8.6, permission prompts): a manager session should not
   // stop on a prompt only the operator can clear for a command its lane already permits.
+  if (!settings.permissions || typeof settings.permissions !== 'object') settings.permissions = {};
+  let policy = null;
+  let laneRules = [];
+  let laneError = null;
   try {
     const { loadPolicy, laneAllowRules } = require('../hooks/scripts/lane.js');
     const groups = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'lane-groups.json'), 'utf8'));
-    const policy = loadPolicy({ pluginRoot, projectRoot, briefRef: role.brief });
-    const rules = laneAllowRules(policy, groups, pluginRoot);
-    if (!settings.permissions || typeof settings.permissions !== 'object') settings.permissions = {};
-    if (rules.length) {
+    policy = loadPolicy({ pluginRoot, projectRoot, briefRef: role.brief });
+    laneRules = laneAllowRules(policy, groups, pluginRoot);
+    if (laneRules.length) {
       const have = Array.isArray(settings.permissions.allow) ? settings.permissions.allow : [];
-      settings.permissions.allow = [...new Set([...have, ...rules])];
+      settings.permissions.allow = [...new Set([...have, ...laneRules])];
     }
+  } catch (err) {
+    laneError = err;
+    files.push(`warning: lane permission rules not written (${err.message})`);
+  }
+  // A separate step: when the lane cannot be loaded, a rule whose record stopped verifying must still
+  // be taken out, never left in place by the same failure (PR 184 review).
+  try {
     // Owner-approved rules (team.json role "permissions": [{ "allow", "record" }]): a rule the owner
     // approved for a role reached no settings file, since no lane may write a role's settings and
     // prepare-role wrote lane rules only (8l1.3.4.1.1). Each is written only while its record verifies
@@ -188,11 +210,16 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     let ownedAllow = [];
     try { ownedAllow = JSON.parse(fs.readFileSync(allowFile, 'utf8')).allow || []; } catch (e) { ownedAllow = []; }
     const haveAllow = Array.isArray(settings.permissions.allow) ? settings.permissions.allow : [];
-    const userAllow = haveAllow.filter((r) => !ownedAllow.includes(r) || rules.includes(r));
+    const userAllow = haveAllow.filter((r) => !ownedAllow.includes(r) || laneRules.includes(r));
     const allow = [...new Set([...userAllow, ...approved.rules])];
     if (allow.length) settings.permissions.allow = allow; else delete settings.permissions.allow;
     fs.mkdirSync(path.dirname(allowFile), { recursive: true });
     fs.writeFileSync(allowFile, JSON.stringify({ allow: approved.rules.filter((r) => !userAllow.includes(r)) }, null, 2) + '\n');
+  } catch (err) {
+    files.push(`warning: owner-approved permission rules not written (${err.message})`);
+  }
+  try {
+    if (laneError) throw laneError;
     // Native deny rules: they hold where a hook cannot (no node, a broken manifest, a moved plugin,
     // bypassPermissions). Workers and managers never address the operator; a lane without `any`
     // never needs these commands, so a hook that fails open still cannot run them. Recomputed on
@@ -201,7 +228,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     const unrestricted = policy.bash.includes('any');
     const want = [
       ...(operatorFacing ? [] : OPERATOR_CHANNEL_TOOLS),
-      ...(unrestricted ? [] : LANE_BACKSTOP_DENY.filter((r) => !rules.includes(r))),
+      ...(unrestricted ? [] : LANE_BACKSTOP_DENY.filter((r) => !laneRules.includes(r))),
       ...(role.id === 'delivery-lead' ? [] : MERGE_DENY),
       ...reachDeny(policy.reach || reachOf(role)),
     ];
@@ -218,7 +245,7 @@ function prepareRole({ projectRoot, instance, teamDir, pluginRoot, productRepo, 
     fs.mkdirSync(path.dirname(ownedFile), { recursive: true });
     fs.writeFileSync(ownedFile, JSON.stringify({ deny: want.filter((r) => !users.includes(r)) }, null, 2) + '\n');
   } catch (err) {
-    files.push(`warning: lane permission rules not written (${err.message})`);
+    if (err !== laneError) files.push(`warning: lane permission rules not written (${err.message})`);
   }
   // The team's permission mode is the role's default too, not only the flag a launch passes: a session
   // started any other way (the owner's Claude app through Remote Control, a start command typed by
@@ -298,4 +325,4 @@ if (require.main === module) {
   console.log(roleDir);
 }
 
-module.exports = { rolePath, reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole };
+module.exports = { rolePath, reachDeny, REACH_DENY, OPERATOR_CHANNEL_TOOLS, LANE_BACKSTOP_DENY, MERGE_DENY, prepareRole, ownerApproved, permissionLabel };
