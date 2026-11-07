@@ -2098,6 +2098,54 @@ test('hjx.1.1: a wake\'s own turn is not a move: the holder\'s activity after th
 });
 
 test('hjx.1.1: read() hands the wake log to the stall rules', () => {
-  const src = fs.readFileSync(path.join(__dirname, 'lib', 'watchdog.js'), 'utf8');
-  assert.match(src, /wakes: logRows\(root\)\.filter\(\(r\) => r\.type === 'wake'\)/);
+  const now = Date.parse('2026-11-07T12:00:00Z');
+  const root = dir6();
+  try {
+    const beads = [{ id: 'ex-w', status: 'in_progress', assignee: `dev@pc/${B2}`, labels: [], updated_at: iso(now - 3 * H) }];
+    registerInstance(root, { instance: B2, session_id: 's-b2', host: 'pc', model: 'opus', role_dir: root, now: iso(now - 20 * 60e3) });
+    const store = { list: () => beads, ready: () => [], show: (x) => beads.find((b) => b.id === x) || null };
+    const quiet = () => {
+      const res = WD.read(root, { bd: store, now: iso(now), installed: true, pause: { paused: false } });
+      assert.equal(res.unreadable, undefined, res.unreadable);
+      return res.stalls.filter((s) => s.kind === 'quiet').map((s) => s.bead);
+    };
+    // no wake logged: the holder's activity 20 minutes ago is its own move
+    assert.deepEqual(quiet(), []);
+    // woken for the bead 25 minutes ago: that activity is the wake's own turn, so the bead has stalled
+    WD.log(root, { type: 'wake', at: iso(now - 25 * 60e3), target: B2, keys: ['assigned:ex-w'] });
+    assert.deepEqual(quiet(), ['ex-w']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// rv-179-delivery-lead-3: only a deliberate "Blocked:" note is a blocker. The Delivery Manager's pass
+// notes (role-watch.js record: "<date> <dm> pass: ... action unblock ...") and prose that names a
+// blocker ("no longer blocked", "the blocker half was open") are not
+test('hjx.1.1: only a note that starts with Blocked: after its date and author is a blocker; pass notes and prose are not', () => {
+  const now = Date.parse('2026-11-07T12:00:00Z');
+  const prog = (notes) => ({ id: 'ex-b', status: 'in_progress', assignee: `dev@pc/${B2}`, updated_at: iso(now - 40 * 60e3), notes });
+  const sessions = [sess6(B2, now - 40 * 60e3), sess6(DM, now - 5 * 60e3)];
+  const woken = (notes) => assigned6(WD.stalls({ now: iso(now), beads: [prog(notes)], sessions, stallHours: 2 }));
+  const claimed = '2026-11-07 builder-2: claimed.';
+  assert.deepEqual(woken(`${claimed}\n2026-11-07 builder-2: no longer blocked; building.`), ['ex-b']);
+  assert.deepEqual(woken(`${claimed}\n2026-11-07 builder-2: checked. Blocker half was open; built it.`), ['ex-b']);
+  assert.deepEqual(woken(`${claimed}\n2026-11-07 delivery-lead pass: builder-2 fails (sent back); action unblock: PR 179 was sent back and builder-2 has not taken it`), ['ex-b']);
+  // the deliberate marker blocks, with or without an author
+  assert.deepEqual(woken(`${claimed}\n2026-11-07 builder-2: Blocked: the story is a draft.`), []);
+  assert.deepEqual(woken(`${claimed}\n2026-11-07: Blocked: waits on the owner's sign-in.`), []);
+  // a pass note after a blocker note is skipped: the blocker still stands
+  assert.deepEqual(woken(`${claimed}\n2026-11-07 builder-2: Blocked: the story is a draft.\n2026-11-07 delivery-lead pass: builder-2 fails (quiet); action note-block: waits on delivery-lead`), []);
+});
+
+// rv-179-delivery-lead-3: the Delivery Manager's ask for a blocker is keyed and measured on the bead's
+// own updated_at, so the holder's session activity neither renews the key nor holds the ask back
+test('hjx.1.1: the blocked ask to the Delivery Manager is keyed and timed on the bead update alone', () => {
+  const now = Date.parse('2026-11-07T12:00:00Z');
+  const b = { id: 'ex-bk', status: 'in_progress', assignee: `dev@pc/${B2}`, updated_at: iso(now - 3 * H), notes: '2026-11-07 builder-2: Blocked: the story is a draft.' };
+  const ask = (active) => WD.stalls({ now: iso(now), beads: [b], sessions: [sess6(B2, active), sess6(DM, now - 5 * 60e3)], stallHours: 2 }).stalls.filter((s) => s.kind === 'quiet').map((s) => [s.key, s.target]);
+  // the holder active since (no wake logged, so it is its own activity): the ask still goes, keyed on the bead
+  assert.deepEqual(ask(now - 30 * 60e3), [[`blocked:ex-bk:${iso(now - 3 * H)}`, DM]]);
+  assert.deepEqual(ask(now - 10 * 60e3), [[`blocked:ex-bk:${iso(now - 3 * H)}`, DM]]);
+  // the other direction: the bead itself moved recently, so no ask yet
+  const fresh = { ...b, updated_at: iso(now - 30 * 60e3) };
+  assert.deepEqual(WD.stalls({ now: iso(now), beads: [fresh], sessions: [sess6(B2, now - 3 * H)], stallHours: 2 }).stalls.filter((s) => s.kind === 'quiet'), []);
 });

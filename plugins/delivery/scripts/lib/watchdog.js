@@ -326,13 +326,18 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   // an open bead queued behind another bead its holder has in progress (one at a time).
   const reviewing = (b) => reviews.some((r) => (r.beads || []).includes(b.id) && !['changes', 'sent-back', 'merged'].includes(r.state));
   // hjx.1.1: work its holder has said it cannot move is not woken either: the bead's last note names a
-  // blocker (team rule 7 raises a blocker as a bead note). Read from the last dated entry only, so a
-  // later note that moves the work on makes it the holder's again. Past stall_hours it is the Delivery
-  // Manager's, below. A note saying "no longer blocked" reads as blocked; the next note clears it.
+  // blocker (team rule 7 raises a blocker as a bead note). Only the deliberate marker counts: the entry
+  // starts "Blocked:" after its date and author. Matching the word anywhere caught prose ("no longer
+  // blocked") and the Delivery Manager's own pass notes ("action unblock"), and left work its holder
+  // could move unwoken (rv-179). Pass notes are the watchdog's, not the holder's, so they are skipped:
+  // the holder's last dated entry decides, and a later note that moves the work on makes it the
+  // holder's again. Past stall_hours it is the Delivery Manager's, below.
+  const PASS_NOTE = /^\d{4}-\d{2}-\d{2}\S*\s+[^\s:]+\s+pass:/;
+  const BLOCKED_NOTE = /^\d{4}-\d{2}-\d{2}[^\s:]*(?:\s+[^:\n]+?)?:\s*Blocked:/;
   const blockedBy = (b) => {
-    const entries = String((b && b.notes) || '').split(/\n(?=\d{4}-\d{2}-\d{2})/).map((x) => x.trim()).filter(Boolean);
+    const entries = String((b && b.notes) || '').split(/\n(?=\d{4}-\d{2}-\d{2})/).map((x) => x.trim()).filter((x) => x && !PASS_NOTE.test(x));
     const last = entries[entries.length - 1] || '';
-    return /\b(blocked|blocker)\b|\bunblock:/i.test(last) ? last : null;
+    return BLOCKED_NOTE.test(last) ? last : null;
   };
   // hjx.1.1: a wake's own turn is not a move. lastMove took the holder's lastActive, so every wake reset
   // the stall clock and a bead its holder could not move never reached stall_hours: the holder was woken
@@ -364,7 +369,7 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       line: `Assigned and waiting: ${b.id} is with ${h.instance}, whose session has been quiet for ${span(quiet)}.`,
       plain: 'Work handed to a team member is waiting for them; they are started on it.',
       detail: `${b.status}, assigned to ${b.assignee}; session quiet since ${Number.isFinite(h.lastActive) ? new Date(h.lastActive).toISOString() : 'unknown'}`,
-      prompt: `${b.id} is assigned to you and waiting (${b.status}). Work it now: bd show ${b.id}, take its next step and keep going to a pull request or a recorded result; if something blocks it, note the blocker on the bead and who can unblock it.` });
+      prompt: `${b.id} is assigned to you and waiting (${b.status}). Work it now: bd show ${b.id}, take its next step and keep going to a pull request or a recorded result; if something blocks it, add a bead note that starts "Blocked:" naming the blocker and who can unblock it.` });
   }
   for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && waitingEvidence(x))) {
     const last = Math.max(ms(b.updated_at), ms(b.created_at));
@@ -396,27 +401,32 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
     if (h && limited.has(h.instance)) continue;
     // a holder inside a watch.js wait is waiting within the limit it declared
     if (h && h.waitUntil > t) continue;
+    // hjx.1.1: a noted blocker is the Delivery Manager's to clear (rule 7), not its holder's to be woken for.
+    // Keyed and timed on the bead's own update alone, as a story waiting on evidence is: the holder's
+    // session activity is not the blocker moving, so it neither renews the key nor holds the ask back,
+    // and one blocker note is one ask (rv-179)
+    const blocker = blockedBy(b);
+    if (blocker) {
+      const since = Math.max(ms(b.updated_at), ms(b.created_at));
+      const waited = (t - since) / 60000;
+      if (!(waited > stallHours * 60)) continue;
+      out.push({ kind: 'quiet', key: `blocked:${b.id}:${Number.isFinite(since) ? new Date(since).toISOString() : 'never'}`, bead: b.id, target: dm, due: true,
+        line: `Blocked: ${b.id} has a blocker noted and nothing has moved for ${span(waited)}.`,
+        plain: `A started item has been blocked for ${span(waited)}; the Delivery Manager clears it.`,
+        detail: `in progress with ${h ? h.instance : b.assignee || 'nobody named'}; last note names a blocker`,
+        prompt: `${b.id} has a blocker noted by its holder and has not moved for ${span(waited)}: ${blocker.replace(/\s+/g, ' ').slice(0, 400)} Clear it now (unblock, reassign or release it), or note on the bead what it waits for.` });
+      continue;
+    }
     const last = Math.max(ms(b.updated_at), ms(b.created_at), activeFor(b, h));
     const minutes = (t - last) / 60000;
     if (minutes <= stallHours * 60) continue;
-    // hjx.1.1: a noted blocker is the Delivery Manager's to clear (rule 7), not its holder's to be woken for:
-    // keyed on the bead's last move, so one blocker note is one ask
-    const blocker = blockedBy(b);
-    if (blocker) {
-      out.push({ kind: 'quiet', key: `blocked:${b.id}:${Number.isFinite(last) ? new Date(last).toISOString() : 'never'}`, bead: b.id, target: dm, due: true,
-        line: `Blocked: ${b.id} has a blocker noted and nothing has moved for ${span(minutes)}.`,
-        plain: `A started item has been blocked for ${span(minutes)}; the Delivery Manager clears it.`,
-        detail: `in progress with ${h ? h.instance : b.assignee || 'nobody named'}; last note names a blocker`,
-        prompt: `${b.id} has a blocker noted by its holder and has not moved for ${span(minutes)}: ${blocker.replace(/\s+/g, ' ').slice(0, 400)} Clear it now (unblock, reassign or release it), or note on the bead what it waits for.` });
-      continue;
-    }
     const who = h ? h.instance : b.assignee || 'nobody named';
     out.push({ kind: 'quiet', key: `quiet:${b.id}:${Number.isFinite(last) ? new Date(last).toISOString() : 'never'}`, bead: b.id, target: h ? h.instance : dm, due: true,
       line: `Stalled: ${b.id} is in progress with ${who}, and nothing has moved for ${span(minutes)} (the limit is ${stallHours} h).`,
       plain: `A started item has not moved for ${span(minutes)}; its holder is asked to continue it.`,
       detail: `in progress with ${who}; no bead update or session activity since ${Number.isFinite(last) ? new Date(last).toISOString() : 'unknown'}`,
       prompt: h && ['verified', 'cut'].includes(G.stateOf(b)) ? `${b.id} is ${G.stateOf(b)} and has not moved for ${span(minutes)}. Close it now (bd close ${b.id}), or note in the bead what blocks the close.`
-        : h ? `${b.id} has not moved for ${span(minutes)}. Continue it now (bd show ${b.id}), or note in the bead what blocks it and tell the Delivery Manager.` : `${b.id} is in progress with ${who}, whose session is not on this host's roster, and has not moved for ${span(minutes)}: release or reassign it.` });
+        : h ? `${b.id} has not moved for ${span(minutes)}. Continue it now (bd show ${b.id}), or add a bead note that starts "Blocked:" saying what blocks it, and tell the Delivery Manager.` : `${b.id} is in progress with ${who}, whose session is not on this host's roster, and has not moved for ${span(minutes)}: release or reassign it.` });
   }
   // a P0 counts when it can be taken now: ready (not blocked), not an epic, not in a stopped area
   const readyIds = new Set(ready.map((b) => b && b.id));
