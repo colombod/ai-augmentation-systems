@@ -490,7 +490,7 @@ test('team-runtime-10: prepare-role.js run from a role session it may not act fo
   assert.ok(fs.existsSync(path.join(teamDir, 'reality-checker', '.delivery-role.json')));
 });
 
-test('team-runtime-10: a marker missing a required field is refused naming it, and nothing is written', () => {
+test('3k4.1.2.3 c3: a marker missing a required field is refused naming it, and nothing is written', () => {
   const { markerProblem } = require('./prepare-role.js');
   const full = { instance: 'x', role: 'x', project_root: '/p', actor: 'a@h/x', host: 'h', model: 'opus', prepared_at: '2026-11-04T00:00:00.000Z' };
   assert.equal(markerProblem(full), null);
