@@ -392,6 +392,231 @@ test('prepareRole writes a PATH that finds bd for a session started with a bare 
   } finally { process.env.PATH = saved; fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+// 8l1.3.4.1.1: an owner-approved permission rule reaches the role's settings, only on a verified record
+function withPermissions(projectRoot, permissions) {
+  const f = path.join(projectRoot, '.delivery', 'team', 'team.json');
+  const team = JSON.parse(fs.readFileSync(f, 'utf8'));
+  team.roles.find((r) => r.id === 'builder').permissions = permissions;
+  fs.writeFileSync(f, JSON.stringify(team, null, 2));
+}
+const CLOSE = 'Bash(gh pr close:*)';
+const ownerSaid = (labels, words = 'let builders run gh pr close on superseded pull requests') => ({ ok: true, chain: [{ kind: 'record', quote: words, scope: { beads: [], labels, initiatives: [] } }, { kind: 'input', source: 'human', text: words }] });
+const LABEL = 'permission:builder=gh pr close';
+const OWNER_OK = ownerSaid([LABEL]);
+const fakeVerify = (good, result = OWNER_OK) => (root, id) => (good.includes(id) ? result : { ok: false, error: 'no such record' });
+const REC = 'dec-chief-of-staff-000309';
+
+test('8l1.3.4.1.1: an owner-approved permission rule is written for every instance of the role while its record verifies', () => {
+  const projectRoot = scratchProjectRepo();
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const allowOf = (instance, verifyRecord) => {
+    const { roleDir, files } = prepareRole({ projectRoot, instance, teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord });
+    const s = JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8'));
+    return { roleDir, files, allow: (s.permissions && s.permissions.allow) || [] };
+  };
+  for (const i of ['builder-1', 'builder-2']) assert.deepEqual(allowOf(i, fakeVerify([REC])).allow, [CLOSE], i);
+  // another role does not get it
+  assert.ok(!allowOf('spike-researcher', fakeVerify([REC])).allow.includes(CLOSE));
+  // a user's own allow rule stays; once the record no longer verifies the plugin's rule is taken out
+  const { roleDir } = allowOf('builder-1', fakeVerify([REC]));
+  const sf = path.join(roleDir, '.claude', 'settings.local.json');
+  const s = JSON.parse(fs.readFileSync(sf, 'utf8'));
+  s.permissions.allow.push('Bash(make:*)');
+  fs.writeFileSync(sf, JSON.stringify(s));
+  const gone = allowOf('builder-1', fakeVerify([]));
+  assert.deepEqual(gone.allow, ['Bash(make:*)']);
+  assert.ok(gone.files.some((f) => /permission rule Bash\(gh pr close:\*\) not written: dec-chief-of-staff-000309 does not verify/.test(f)), gone.files.join('\n'));
+});
+
+test('8l1.3.4.1.1: a permission rule whose record does not verify, or rests on no owner words, is refused and named', () => {
+  const projectRoot = scratchProjectRepo();
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const notOwner = () => ({ ok: true, chain: [{ kind: 'record' }, { kind: 'input', source: 'agent', text: 'an agent said so' }] });
+  for (const verifyRecord of [fakeVerify([]), notOwner]) {
+    const { roleDir, files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord });
+    const s = JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8'));
+    assert.equal((s.permissions || {}).allow, undefined);
+    assert.ok(files.some((f) => /^warning: permission rule Bash\(gh pr close:\*\) not written: dec-chief-of-staff-000309 /.test(f)), files.join('\n'));
+  }
+});
+
+test('8l1.3.4.1.1: the manifest refuses a permissions entry without a record id', () => {
+  const { validateManifest } = require('./lib/manifest.js');
+  const team = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), 'utf8'));
+  const hosts = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), 'utf8'));
+  const builder = team.roles.find((r) => r.id === 'builder');
+  builder.permissions = [{ allow: CLOSE, record: REC }];
+  assert.deepEqual(validateManifest(team, hosts).filter((p) => /permissions/.test(p)), []);
+  for (const bad of [[{ allow: CLOSE }], [{ allow: CLOSE, record: 'the owner said so' }], [{ allow: '', record: REC }], { allow: CLOSE, record: REC }]) {
+    builder.permissions = bad;
+    assert.ok(validateManifest(team, hosts).some((p) => /role "builder" has invalid "permissions"/.test(p)), JSON.stringify(bad));
+  }
+});
+
+const settingsAllow = (roleDir) => {
+  const s = JSON.parse(fs.readFileSync(path.join(roleDir, '.claude', 'settings.local.json'), 'utf8'));
+  return (s.permissions && s.permissions.allow) || [];
+};
+
+test('8l1.3.4.1.1: a verified owner record not scoped to this role and this rule authorises nothing', () => {
+  const projectRoot = scratchProjectRepo();
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const outOfScope = [[], ['permission:spike-researcher=gh pr close'], ['permission:builder=gh pr merge'], ['permission:builder'], ['permission:builder=gh pr']];
+  for (const labels of outOfScope) {
+    const { roleDir, files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC], ownerSaid(labels)) });
+    assert.ok(!settingsAllow(roleDir).includes(CLOSE), JSON.stringify(labels));
+    assert.ok(files.some((f) => f.includes(`not written: ${REC} is not scoped to this rule for role builder (its scope needs the label ${LABEL})`)), files.join('\n'));
+  }
+  // the same record, scoped to this rule for this role, does authorise it
+  const { roleDir } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC]) });
+  assert.ok(settingsAllow(roleDir).includes(CLOSE));
+});
+
+test('8l1.3.4.1.1: a permission rule broader than one specific command is refused by the manifest and never written', () => {
+  const { validateManifest, permissionRuleProblem } = require('./lib/manifest.js');
+  const team = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'team.json'), 'utf8'));
+  const hosts = JSON.parse(fs.readFileSync(path.join(MANIFEST_FIXTURE, 'hosts.json'), 'utf8'));
+  const builder = team.roles.find((r) => r.id === 'builder');
+  const broad = ['Bash', 'Bash(*)', 'Bash(:*)', 'Bash(git:*)', 'Bash(gh pr *:*)', 'Bash(gh pr close; rm -rf x:*)', 'Bash(gh $(id):*)', 'Write', 'Edit(**)', 'mcp__*', 'WebFetch',
+    // a shell, interpreter or wrapper as the first word runs anything; a flag is no subcommand; a denied command stays denied
+    'Bash(bash -c:*)', 'Bash(sh -c:*)', 'Bash(node -e:*)', 'Bash(python3 -c:*)', 'Bash(env sh:*)', 'Bash(sudo rm:*)', 'Bash(xargs sh:*)',
+    'Bash(/bin/sh -c:*)', 'Bash(./run thing:*)', 'Bash(rm -rf:*)', 'Bash(git -c:*)', 'Bash(git push:*)', 'Bash(git push origin:*)', 'Bash(gh pr merge:*)', 'Bash(gh pr close,x:*)',
+    // versioned interpreters, package and language runners, terminal multiplexers and config writers run anything too
+    'Bash(python3.12 -c:*)', 'Bash(python3.12 script:*)', 'Bash(node22 script:*)', 'Bash(ruby3.3 x:*)', 'Bash(npm exec x:*)', 'Bash(npm run build:*)', 'Bash(npm x y:*)',
+    'Bash(pnpm exec x:*)', 'Bash(pnpm dlx x:*)', 'Bash(pnpm run x:*)', 'Bash(yarn exec x:*)', 'Bash(yarn run x:*)', 'Bash(yarn dlx x:*)', 'Bash(yarn build:*)',
+    'Bash(uvx ruff:*)', 'Bash(uv run x:*)', 'Bash(pipx run x:*)', 'Bash(cargo run x:*)', 'Bash(go run x:*)', 'Bash(tsx script:*)', 'Bash(ts-node script:*)',
+    'Bash(pwsh -c:*)', 'Bash(pwsh script:*)', 'Bash(tmux new-session:*)', 'Bash(screen x:*)', 'Bash(systemd-run x:*)', 'Bash(git config alias.x:*)', 'Bash(git submodule foreach:*)',
+    // extra spaces do not slip a denied command past the check
+    'Bash(git  push:*)', 'Bash(git \tpush origin:*)', 'Bash(gh pr  merge:*)'];
+  for (const allow of broad) {
+    assert.ok(permissionRuleProblem(allow), allow);
+    builder.permissions = [{ allow, record: REC }];
+    assert.ok(validateManifest(team, hosts).some((p) => p.startsWith(`team.json: role "builder" permission rule ${allow} is refused: `)), allow);
+  }
+  for (const allow of [CLOSE, 'Bash(gh pr close 136)', 'Bash(git pushd x:*)', 'Bash(gh run view:*)', 'Bash(npm ci:*)', 'Bash(cargo build:*)', 'Bash(go test ./...:*)', 'Bash(git status:*)', 'Bash(nodemon x:*)']) assert.equal(permissionRuleProblem(allow), null, allow);
+  // a broad rule that reaches prepare-role (a hand-edited manifest) is refused there too, even with a scoped record
+  const { ownerApproved } = require('./prepare-role.js');
+  const got = ownerApproved('/nowhere', { id: 'builder', permissions: [{ allow: 'Bash(*)', record: REC }] }, fakeVerify([REC], ownerSaid(['permission:builder=Bash(*)'])));
+  assert.deepEqual(got.rules, []);
+  assert.match(got.refused[0].why, /no wildcard/);
+});
+
+test('8l1.3.4.1.1: a rule taken out of the manifest, or whose record stops verifying while the lane cannot load, leaves the settings', () => {
+  const projectRoot = scratchProjectRepo();
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const run = (extra) => prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC]), ...extra });
+  const { roleDir } = run();
+  assert.ok(settingsAllow(roleDir).includes(CLOSE));
+  // removed from the manifest: taken out on the next run
+  withPermissions(projectRoot, []);
+  run();
+  assert.ok(!settingsAllow(roleDir).includes(CLOSE));
+  // written again, then the lane cannot load (no lane-groups.json in this plugin root) and the record stops verifying
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  run();
+  assert.ok(settingsAllow(roleDir).includes(CLOSE));
+  const brokenRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-'));
+  for (const e of fs.readdirSync(PLUGIN_ROOT)) if (e !== 'hooks') fs.symlinkSync(path.join(PLUGIN_ROOT, e), path.join(brokenRoot, e));
+  fs.mkdirSync(path.join(brokenRoot, 'hooks'));
+  for (const e of fs.readdirSync(path.join(PLUGIN_ROOT, 'hooks'))) if (e !== 'lane-groups.json') fs.symlinkSync(path.join(PLUGIN_ROOT, 'hooks', e), path.join(brokenRoot, 'hooks', e));
+  const { files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: brokenRoot, user: 'tester', verifyRecord: fakeVerify([]) });
+  assert.ok(files.some((f) => f.startsWith('warning: lane permission rules not written')), files.join('\n'));
+  assert.ok(!settingsAllow(roleDir).includes(CLOSE));
+});
+
+// the owner's words, captured the way the hooks capture them, into the project's real operator store
+function ownerInput(root, text) {
+  const log = require('./lib/operator-log.js');
+  const tr = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'prep-tr-')), 't.jsonl');
+  fs.writeFileSync(tr, `${JSON.stringify({ sessionId: 's1', type: 'user', origin: { kind: 'human' }, promptId: 'p1', uuid: 'u1', timestamp: new Date(Date.now() + 60e3).toISOString(), message: { role: 'user', content: text } })}\n`);
+  log.syncTranscript({ projectRoot: root, transcriptPath: tr, sessionId: 's1', instance: 'chief-of-staff', role: 'chief-of-staff', host: 'pc', now: new Date() });
+  return log.listInputs(root, { source: 'human' }).pop().id;
+}
+const COS_BY = { instance: 'chief-of-staff', role: 'chief-of-staff', session_id: 's1', host: 'pc' };
+
+test('8l1.3.4.1.1: the permission scope label is recorded and verified by the real operator store, and authorises the rule', () => {
+  const R = require('./lib/operator-records.js');
+  const projectRoot = scratchProjectRepo();
+  const said = 'let builders run gh pr close on superseded pull requests';
+  const input = ownerInput(projectRoot, said);
+  const decide = (label) => R.recordDecision({ projectRoot, cite: input, quote: said, statement: 'builders close superseded pull requests', scope: { beads: [], labels: [label], initiatives: [] }, by: COS_BY, noLedger: true });
+  // the rule itself as the label could never be recorded: the store refuses a * in any scope entry
+  assert.throws(() => decide(`permission:builder=${CLOSE}`), /wildcard/);
+  const rec = decide(LABEL).id;
+  assert.equal(R.verifyRecord(projectRoot, rec).ok, true);
+  withPermissions(projectRoot, [{ allow: CLOSE, record: rec }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  // no verifyRecord passed: prepare-role verifies through the store itself
+  const { roleDir, files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  assert.ok(settingsAllow(roleDir).includes(CLOSE), files.join('\n'));
+  // the same store, a record scoped to another role: refused
+  const other = decide('permission:spike-researcher=gh pr close').id;
+  withPermissions(projectRoot, [{ allow: CLOSE, record: other }]);
+  const again = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester' });
+  assert.ok(!settingsAllow(roleDir).includes(CLOSE), again.files.join('\n'));
+});
+
+test('8l1.3.4.1.1: a record scoped to the rule whose owner words do not name the command authorises nothing', () => {
+  const projectRoot = scratchProjectRepo();
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir, files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC], ownerSaid([LABEL], 'yes, go ahead with that')) });
+  assert.ok(!settingsAllow(roleDir).includes(CLOSE));
+  assert.ok(files.some((f) => f.includes(`not written: the owner's quote in ${REC} does not name the command "gh pr close"`)), files.join('\n'));
+});
+
+test('8l1.3.4.1.1: only the owner\'s quote counts, and a negated quote approves nothing', () => {
+  const { ownerApproved } = require('./prepare-role.js');
+  const role = { id: 'builder', permissions: [{ allow: CLOSE, record: REC }] };
+  const withInput = (quote, input) => ({ ok: true, chain: [{ kind: 'record', quote, scope: { beads: [], labels: [LABEL], initiatives: [] } }, { kind: 'input', source: 'human', text: input }] });
+  const run = (v) => ownerApproved('/nowhere', role, fakeVerify([REC], v));
+  // the command only in the captured input, outside the quote: refused, even when the input says it plainly
+  for (const input of ['never let builders run gh pr close', 'yes, go ahead. let builders run gh pr close']) {
+    const got = run(withInput('yes, go ahead with the cleanup', input));
+    assert.deepEqual(got.rules, [], input);
+    assert.match(got.refused[0].why, /the owner's quote in dec-chief-of-staff-000309 does not name the command "gh pr close"/, input);
+  }
+  // the command in a negated quote: refused
+  for (const quote of ['never let builders run gh pr close', 'do not let builders run gh pr close', "builders shouldn't run gh pr close", 'builders run gh pr close? no']) {
+    const got = run(withInput(quote, quote));
+    assert.deepEqual(got.rules, [], quote);
+    assert.match(got.refused[0].why, /the owner's quote in dec-chief-of-staff-000309 carries a negation/, quote);
+  }
+  // the command in the quote, with no negation: written, whatever else the input says around it
+  assert.deepEqual(run(withInput('let builders run gh pr close on superseded pull requests', 'let builders run gh pr close on superseded pull requests. thanks')).rules, [CLOSE]);
+});
+
+test('8l1.3.4.1.1: when checking the owner records throws, a rule written earlier still leaves', () => {
+  const mod = require('./prepare-role.js');
+  const projectRoot = scratchProjectRepo();
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const { roleDir } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC]) });
+  assert.ok(settingsAllow(roleDir).includes(CLOSE));
+  const real = mod.ownerApproved;
+  mod.ownerApproved = () => { throw new Error('records unreadable'); };
+  try {
+    const { files } = prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC]) });
+    assert.ok(!settingsAllow(roleDir).includes(CLOSE));
+    assert.ok(files.some((f) => /owner-approved permission rules not checked, none written \(records unreadable\)/.test(f)), files.join('\n'));
+  } finally { mod.ownerApproved = real; }
+});
+
+test('8l1.3.4.1.1: the managed-rule sidecars are written only after the settings file', () => {
+  const projectRoot = scratchProjectRepo();
+  withPermissions(projectRoot, [{ allow: CLOSE, record: REC }]);
+  const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-'));
+  const roleDir = path.join(teamDir, 'builder-1');
+  // the settings file cannot be written: a directory stands in its place
+  fs.mkdirSync(path.join(roleDir, '.claude', 'settings.local.json'), { recursive: true });
+  assert.throws(() => prepareRole({ projectRoot, instance: 'builder-1', teamDir, pluginRoot: PLUGIN_ROOT, user: 'tester', verifyRecord: fakeVerify([REC]) }));
+  for (const f of ['.delivery-managed-allow.json', '.delivery-managed-deny.json']) assert.ok(!fs.existsSync(path.join(roleDir, '.claude', f)), f);
+});
+
 // Who may prepare a role directory: Staffing, the steward of the instance's host, or a run outside any
 // role session (start.js); from a role session the saved actor stays; a marker is complete or not written.
 function teamWith(projectRoot, edit) {

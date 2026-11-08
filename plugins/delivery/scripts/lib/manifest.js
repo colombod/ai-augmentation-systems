@@ -188,6 +188,17 @@ function validateManifest(team, hosts) {
     // Managers never drive the owner's apps; real-surface runs are the Reality Checker's.
     if (role.reach !== undefined && typeof role.reach !== 'boolean') problems.push(`team.json: role "${role.id}" has non-boolean "reach"`);
     else if (role.reach === true && isManager(role)) problems.push(`team.json: role "${role.id}" cannot have "reach": managers never drive the owner's apps; real-surface runs are the Reality Checker's`);
+    // permissions: native allow rules the owner approved for this role, each citing its record;
+    // prepare-role writes one only while that record verifies (8l1.3.4.1.1)
+    if (role.permissions !== undefined) {
+      const ok = (p) => Boolean(p) && typeof p === 'object' && !Array.isArray(p) && typeof p.allow === 'string' && p.allow.trim()
+        && typeof p.record === 'string' && /^(dec|ans)-.+-\d{6,}$/.test(p.record) && Object.keys(p).every((k) => ['allow', 'record'].includes(k));
+      if (!Array.isArray(role.permissions) || !role.permissions.every(ok)) problems.push(`team.json: role "${role.id}" has invalid "permissions": a list of {"allow": "<permission rule>", "record": "<dec- or ans- record id>"}`);
+      else for (const p of role.permissions) {
+        const why = permissionRuleProblem(p.allow);
+        if (why) problems.push(`team.json: role "${role.id}" permission rule ${p.allow} is refused: ${why}`);
+      }
+    }
     if (role.steward) stewards.add(role.host);
   }
   // an instance id names one session, its branch and its records: never two in the whole team
@@ -252,4 +263,54 @@ const liveInstanceNames = (role) => expandInstances({ roles: [role] }).filter((i
 // A role entry is retired when it says so, or when every one of its instances is.
 const roleRetired = (role) => Boolean(role) && (role.retired === true || liveInstanceNames(role).length === 0);
 
-module.exports = { reachOf, isManager, canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, briefFile, briefExists, knownBriefs, expandInstances, instanceNames, instanceId, liveInstanceNames, roleRetired, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };
+// An owner-approved allow rule must name one specific command, never a whole tool or a whole program:
+// "Bash(gh pr close:*)" or "Bash(gh pr close 136)", never "Bash", "Bash(*)", "Bash(git:*)", "Write" or
+// "mcp__*". A record approves one command for one role, so a broad rule would grant what nobody approved
+// (PR 184 review). Returns why the rule is refused, or null.
+// A first word that runs another program or arbitrary code: a rule on it would allow any command
+// (Bash(bash -c:*), Bash(env sh:*), Bash(xargs sh:*), Bash(node -e:*)), so it is never a specific
+// command whatever follows it (PR 184 re-review).
+const RULE_WRAPPERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'csh', 'tcsh', 'busybox',
+  'env', 'sudo', 'doas', 'su', 'runuser', 'pkexec', 'xargs', 'nohup', 'nice', 'ionice', 'timeout', 'time', 'exec', 'eval',
+  'command', 'builtin', 'source', '.', 'setsid', 'chroot', 'unshare', 'nsenter', 'stdbuf', 'flock', 'watch', 'script', 'strace', 'ltrace', 'gdb',
+  'ssh', 'parallel', 'find', 'awk', 'gawk', 'mawk', 'sed', 'perl', 'ruby', 'php', 'lua', 'tclsh', 'python', 'python2', 'python3',
+  'node', 'nodejs', 'deno', 'bun', 'npx', 'pnpx', 'bunx', 'make', 'docker', 'podman', 'kubectl', 'bwrap', 'firejail',
+  'pwsh', 'powershell', 'tmux', 'screen', 'systemd-run', 'uvx', 'tsx', 'ts-node', 'ts-node-esm', 'esno', 'jiti',
+  // yarn runs any package script by its bare name (yarn build), so no yarn subcommand is a specific command
+  'yarn']);
+// versioned interpreters (python3.12, node22, perl5.36, ruby3.3) are the same interpreters
+const RULE_WRAPPER_PATTERNS = [/^python[\d.]*$/, /^node[\d.]*$/, /^(perl|ruby|php|lua|tclsh|pypy)[\d.]*$/];
+// a subcommand that runs another program, a package script or arbitrary code: the program alone is not
+// a wrapper, but this program and subcommand pair allows any command (PR 184 re-review rv-184-delivery-lead-9)
+const RULE_WRAPPER_SUBCOMMANDS = {
+  npm: ['exec', 'x', 'run', 'run-script', 'rum', 'urn', 'dlx', 'start', 'stop', 'restart', 'test', 't', 'tst', 'explore'],
+  pnpm: ['exec', 'x', 'run', 'run-script', 'dlx', 'start', 'stop', 'restart', 'test', 't', 'tst', 'create'],
+  uv: ['run', 'tool'], pipx: ['run'], cargo: ['run'], go: ['run', 'generate', 'tool'],
+  git: ['config', 'submodule', 'bisect', 'filter-branch'], gh: ['extension', 'ext', 'alias'],
+};
+// commands the role settings deny natively (prepare-role LANE_BACKSTOP_DENY, MERGE_DENY): an owner rule
+// never lifts them, so one that names them is refused rather than left fighting the deny rule
+const RULE_DENIED_PREFIXES = ['git push', 'sudo', 'curl', 'wget', 'rm', 'gh pr merge'];
+function permissionRuleProblem(allow) {
+  const m = /^Bash\((.*)\)$/s.exec(String(allow || '').trim());
+  if (!m) return 'only a Bash rule for a specific command is accepted, as Bash(<command> <subcommand>:*)';
+  const cmd = m[1].replace(/:\*$/, '').trim();
+  if (!cmd || /[*?\[\]{}]/.test(cmd)) return 'the command must be spelled out, with no wildcard but a trailing :*';
+  if (/[;&|`$<>()\\\n'",=]/.test(cmd)) return 'the command may not hold shell operators, quotes, commas, = or substitutions';
+  const words = cmd.split(/\s+/);
+  if (words.length < 2) return 'it must name a command and its subcommand (Bash(gh pr close:*)), not a whole program';
+  if (/[/~]/.test(words[0]) || words[0].startsWith('.')) return 'the command must be a program name, not a path';
+  const program = words[0].toLowerCase();
+  if (RULE_WRAPPERS.has(program) || RULE_WRAPPER_PATTERNS.some((re) => re.test(program))) return `${words[0]} runs other programs or code, so a rule on it allows any command`;
+  if ((RULE_WRAPPER_SUBCOMMANDS[program] || []).includes(words[1].toLowerCase())) return `${words[0]} ${words[1]} runs other programs, scripts or code, so a rule on it allows any command`;
+  if (words[1].startsWith('-')) return 'the second word must be a subcommand, not a flag';
+  // compared on the words, so extra spaces (git  push) do not slip past it
+  const spoken = words.join(' ');
+  const denied = RULE_DENIED_PREFIXES.find((d) => spoken === d || spoken.startsWith(`${d} `));
+  if (denied) return `${denied} is denied to every restricted role and an owner rule does not lift it`;
+  return null;
+}
+// the command a rule names: Bash(gh pr close:*) -> "gh pr close"
+const permissionCommand = (allow) => String(allow || '').trim().replace(/^Bash\(/, '').replace(/\)$/, '').replace(/:\*$/, '').trim().replace(/\s+/g, ' ');
+
+module.exports = { permissionRuleProblem, permissionCommand, reachOf, isManager, canonicalRoleId, normalizeAliases, findProjectRoot, loadManifest, validateManifest, manifestWarnings, defaultModelFor, briefFile, briefExists, knownBriefs, expandInstances, instanceNames, instanceId, liveInstanceNames, roleRetired, TEAM_REL, HOSTS_REL, MODELS, RUNNERS };
