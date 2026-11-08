@@ -3,6 +3,9 @@
 // job's command line, and through main().
 // owner-facing times are the host's local time: the tests read them in UTC
 process.env.TZ = 'UTC';
+// a role session's own variables are cleared first, as run-tests.js clears them, so a direct run from a
+// role session (a reality check) sees what CI sees (hjx.1.1.2)
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
