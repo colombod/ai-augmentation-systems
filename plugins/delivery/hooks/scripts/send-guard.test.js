@@ -110,10 +110,10 @@ test('transition: a bare name of our own instance passes with a warning unless a
   const live = (cwd) => ({ pid: process.pid, cwd, name: 'chief-of-staff' });
   // ours alone, and a stale record of the same name in the other team (its pid has ended): allowed
   const ours = sessionsDir([live(ourCos), { pid: DEAD, cwd: theirCos, name: 'chief-of-staff' }]);
-  const ok = JSON.parse(runHook(send(a.roleDir, 'chief-of-staff [ex-1]'), 'builder-1', ours).stdout);
-  assert.equal(ok.hookSpecificOutput.permissionDecision, undefined, 'a warning, not a decision');
-  assert.match(ok.hookSpecificOutput.additionalContext, /bare session name; allowed for now.*Send to chief-of-staff@alpha from now on/);
-  assert.equal(ok.systemMessage, ok.hookSpecificOutput.additionalContext);
+  // hjx.1.6.13: it is a live session of ours by its role directory, so it passes with no warning; the
+  // warning said to send to chief-of-staff@alpha, a name SendMessage refuses
+  const ok = runHook(send(a.roleDir, 'chief-of-staff [ex-1]'), 'builder-1', ours);
+  assert.equal(ok.stdout, '', 'allowed, and nothing to say');
   // the scratch team's bare send while the live chief-of-staff is ours: refused, naming its own
   const fromB = decision(runHook(send(b.roleDir, 'chief-of-staff'), 'builder-1', ours));
   assert.equal(fromB.permissionDecision, 'deny');
@@ -128,16 +128,18 @@ test('transition: a bare name of our own instance passes with a warning unless a
   const broken = sessionsDir([live(ourCos)]);
   fs.writeFileSync(path.join(broken, '999999.json'), '{not json');
   assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', broken)).permissionDecision, 'deny');
-  // a name that is no instance of this team (an alias) gets no fallback, even with a live session of ours
+  // a name that is no instance of this team (an alias) gets no fallback while no live session of ours holds
+  // it exactly; a live session of ours that does is that session, in our role directory (hjx.1.6.13)
+  assert.equal(decision(runHook(send(a.roleDir, 'delivery-manager'), 'builder-1', ours)).permissionDecision, 'deny');
   const dm = sessionsDir([{ pid: process.pid, cwd: ourCos, name: 'delivery-manager' }]);
-  assert.equal(decision(runHook(send(a.roleDir, 'delivery-manager'), 'builder-1', dm)).permissionDecision, 'deny');
+  assert.equal(runHook(send(a.roleDir, 'delivery-manager'), 'builder-1', dm).stdout, '');
   // a display name ("Chief of Staff") is the role all the same, as a target and as a live session's name:
   // the scratch team's send to "Chief of Staff [a1fbfe]" is refused, ours passes with the warning
   const shown = sessionsDir([{ pid: process.pid, cwd: ourCos, name: 'Chief of Staff' }]);
   assert.equal(decision(runHook(send(b.roleDir, 'Chief of Staff [a1fbfe]'), 'builder-1', shown)).permissionDecision, 'deny');
   for (const to of ['Chief of Staff [a1fbfe]', 'chief-of-staff']) {
-    const w = JSON.parse(runHook(send(a.roleDir, to), 'builder-1', shown).stdout);
-    assert.match(w.hookSpecificOutput.additionalContext, /Send to chief-of-staff@alpha from now on/, to);
+    // a live session of ours under its display name: allowed with nothing to say (hjx.1.6.13)
+    assert.equal(runHook(send(a.roleDir, to), 'builder-1', shown).stdout, '', to);
   }
 });
 
