@@ -958,7 +958,6 @@ test('A1: every pipeline output path is writable by at least one role of the min
     'initiatives/checkout/roadmap.md': 'product-manager', 'initiatives/checkout/notes.md': 'product-manager',
     'glossary.md': 'product-manager', 'personas/casual-carl.md': 'product-manager', 'interviews/casual-carl-01.md': 'product-manager',
     'simulations/checkout-journey.md': 'product-manager', 'decisions/ADR-007-queue.md': 'product-manager',
-    'stories/checkout-01-cart.md': 'delivery-lead', 'stories/README.md': 'delivery-lead',
     'sprints/1-checkout.md': 'delivery-lead', 'sprints/1-checkout-handoff.md': 'delivery-lead', 'sprints/1-checkout-review.md': 'delivery-lead',
     'sprints/1-realign.md': 'product-manager', 'reviews/checkout-prd-01.md': 'product-manager', 'reviews/checkout-sprint-1-01.md': 'delivery-lead',
     'team/denylist.txt': 'delivery-lead',
@@ -973,6 +972,8 @@ test('A1: every pipeline output path is writable by at least one role of the min
   for (const rel of ['product/src/cart.js', 'scratch/spike/notes.md', 'project/.delivery/decisions/ADR-008-spike.md']) {
     assert.ok(pathAllowed(path.join(rd, ...rel.split('/')), { roleDir: rd, writes: policies.builder.writes }), rel);
   }
+  // story files and their index are written by stories.js only, never through a lane pattern
+  for (const rel of ['stories/checkout-01-cart.md', 'stories/README.md']) assert.deepEqual(minimal.filter((id) => pathAllowed(path.join(rd, 'project', '.delivery', ...rel.split('/')), { roleDir: rd, writes: policies[id].writes })), [], rel);
   // nobody in the minimal team but the Product Manager rewrites the roadmap, and no one writes the operator directory
   assert.ok(!pathAllowed(path.join(rd, 'project/.delivery/initiatives/checkout/roadmap.md'), { roleDir: rd, writes: policies['delivery-lead'].writes }));
   assert.ok(!pathAllowed(path.join(rd, 'project/.delivery/sprints/1-checkout.md'), { roleDir: rd, writes: policies['product-manager'].writes }), 'the PM writes only the realign record under sprints/');
@@ -2091,4 +2092,32 @@ test('team-runtime-10 c4: every lane_writes pattern of every brief is allowed by
   const d = decideLane({ toolName: 'Write', toolInput: { file_path: path.join(rd, 'project', '.delivery', 'reviews', 'finding.md'), content: 'x' }, policy: po, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd, projectRoot });
   assert.equal(d.allow, false);
   assert.doesNotMatch(fs.readFileSync(path.join(PLUGIN_ROOT, 'roles', 'progress-observer.md'), 'utf8'), /go to `?\.delivery\/reviews/);
+});
+
+// team-runtime-11 c4: a story file or the index, by Write, Edit or the shell, from the Delivery Manager,
+// the Product Manager or a builder (an `any` lane): each refused, the refusal naming stories.js
+test('team-runtime-11 c4: Write, Edit and shell writes of a story or its index are refused for delivery-lead, product-manager and builder, naming stories.js', () => {
+  const { reasonProblems } = require('../../scripts/lib/short-reason.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'stories-guard-'));
+  const decide = (role, toolName, toolInput) => decideLane({ toolName, toolInput, policy: POLICIES[role], roleDir: proj, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: proj, projectRoot: proj, hostHeadless: false });
+  for (const role of [DL, PM, BUILDER]) {
+    for (const name of ['a-01-cart.md', 'README.md']) {
+      const abs = path.join(proj, '.delivery', 'stories', name);
+      const rel = ['.delivery', 'stories', name].join('/');
+      for (const [tool, input] of [['Write', { file_path: abs, content: 'x' }], ['Edit', { file_path: abs, old_string: 'a', new_string: 'b' }],
+        ['Bash', { command: `printf x > ${rel}` }], ['Bash', { command: `sed -i 's/ready/done/' ${rel}` }], ['Bash', { command: `cp /tmp/x ${abs}` }]]) {
+        const d = decide(role, tool, input);
+        assert.ok(d && !d.allow && /change only through `stories\.js`/.test(d.reason), `${role} ${tool} ${JSON.stringify(input)}: ${d && d.reason}`);
+        assert.deepEqual(reasonProblems(d.reason), []);
+      }
+    }
+  }
+  // the other direction: a draft in a temporary directory, other plan files, and the command itself
+  assert.equal(decide(DL, 'Write', { file_path: path.join(os.tmpdir(), 'story-draft.md'), content: 'x' }).allow, true);
+  assert.equal(decide(DL, 'Write', { file_path: path.join(proj, 'project', '.delivery', 'sprints', '1.md'), content: 'x' }).allow, true);
+  const cmd = (sub) => `node ${PLUGIN_ROOT}/scripts/stories.js ${sub}`;
+  for (const sub of ['new --from /tmp/story-draft.md', 'set a-01-cart size M', `criterion ${['.delivery', 'stories', 'a-01-cart.md'].join('/')} 1 --text t --probe p`, 'section a-01-cart --heading Goal --body x', 'index']) {
+    assert.equal(decide(DL, 'Bash', { command: cmd(sub) }).allow, true, sub);
+  }
+  assert.equal(decide(PM, 'Bash', { command: cmd('set a-01-cart size M') }).allow, false);
 });
