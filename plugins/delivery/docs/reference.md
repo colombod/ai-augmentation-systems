@@ -197,6 +197,11 @@ plans. Subagents go through the same hook. Refusals are logged to `.delivery-lan
 directory. A role file without `lane_bash` gets read-only groups; every role may write the
 harness's own plan and memory files under `~/.claude`.
 
+The `host-fault` group is Staffing's alone, as the host's steward: `amplifier.js detect`,
+`amplifier run`, `ps`, and `sort` and `uniq` with no option that writes a file or runs a program,
+so a host fault such as refused forks reaches Amplifier without the owner. A `lane_bash: any`
+role (builder, spike researcher) is not limited by groups at all.
+
 The lane covers every shell channel and MCP: `Monitor` commands are judged like Bash,
 `PowerShell` is allowed only for roles with `any`, and any other tool carrying a `command` is
 treated as Bash when `hooks.json` routes it to the hook. For roles without `any`, MCP tools are

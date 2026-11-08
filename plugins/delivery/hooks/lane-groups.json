@@ -138,6 +138,13 @@
   "prepare-role": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/prepare-role.js" }
   ],
+  "host-fault": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/amplifier.js", "sub": ["detect"], "flags_only": ["--json"] },
+    { "first": "amplifier", "sub": ["run"] },
+    { "first": "ps" },
+    { "first": "sort", "flags_none": ["-o", "--output", "--compress-program", "-T", "--temporary-directory"], "native_allow": false },
+    { "first": "uniq", "no_positional": true, "flags_only": ["-c", "-d", "-D", "-u", "-i", "--count", "--repeated", "--unique", "--ignore-case"], "native_allow": false }
+  ],
   "team-write": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-role.js", "sub": ["add", "set-cap", "change", "remove", "host"] }
   ],

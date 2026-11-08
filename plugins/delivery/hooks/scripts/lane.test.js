@@ -2092,3 +2092,61 @@ test('team-runtime-10 c4: every lane_writes pattern of every brief is allowed by
   assert.equal(d.allow, false);
   assert.doesNotMatch(fs.readFileSync(path.join(PLUGIN_ROOT, 'roles', 'progress-observer.md'), 'utf8'), /go to `?\.delivery\/reviews/);
 });
+
+// Staffing is the host steward: a host fault (process exhaustion, a dead service) goes to Amplifier
+// first (skills/amplifier), so its lane reaches `amplifier.js detect`, one `amplifier run` and a
+// read-only look at the process table; no other restricted lane does.
+const hostFaultCmds = () => ({
+  detect: `node ${path.join(PLUGIN_ROOT, 'scripts', 'amplifier.js')} detect`,
+  run: 'amplifier run "the work tracker service is dead; restart it and prove bd list answers"',
+  ps: 'ps -eo user=,comm=',
+  // a literal user: `$USER` is variable expansion, which no restricted lane runs
+  pipeline: 'ps -u alice -o comm= | sort | uniq -c | sort -rn | head',
+});
+const laneFor = (id, command) => {
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'host-fault-'));
+  const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${id}` });
+  return decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+};
+
+test('host-fault: staffing runs amplifier.js detect', () => {
+  assert.equal(laneFor('staffing', hostFaultCmds().detect).allow, true);
+});
+test('host-fault: staffing runs one amplifier run', () => {
+  assert.equal(laneFor('staffing', hostFaultCmds().run).allow, true);
+});
+test('host-fault: staffing lists processes with ps', () => {
+  assert.equal(laneFor('staffing', hostFaultCmds().ps).allow, true);
+});
+test('host-fault: staffing counts processes with a ps | sort | uniq -c | sort -rn | head pipeline', () => {
+  assert.equal(laneFor('staffing', hostFaultCmds().pipeline).allow, true);
+});
+test('host-fault: staffing reads /proc through the read group', () => {
+  assert.equal(laneFor('staffing', 'cat /proc/loadavg').allow, true);
+  assert.ok(classifySegment('cat /proc/loadavg', GROUPS, ctx()).includes('read'));
+});
+test('host-fault: staffing claims a bead', () => {
+  assert.equal(laneFor('staffing', 'bd update ex-1 --claim').allow, true);
+});
+
+test('host-fault: delivery-lead and other restricted lanes are refused detect, amplifier run and ps', () => {
+  // the builder brief is `lane_bash: any`, so the restricted lanes checked besides the Delivery
+  // Manager's are the Tech Writer's and the Product Manager's
+  const c = hostFaultCmds();
+  for (const id of ['delivery-lead', 'tech-writer', 'product-manager']) {
+    for (const k of ['detect', 'run', 'ps', 'pipeline']) assert.equal(laneFor(id, c[k]).allow, false, `${id} ${k}`);
+  }
+});
+
+test('host-fault: the group cannot write a file or run a program through sort or uniq', () => {
+  for (const cmd of ['sort -o out', 'sort --output=out', 'sort --output out', 'sort --compress-program=sh x', 'uniq in out', 'uniq -c in out', 'uniq -- -a -b', 'ps -e > out']) {
+    assert.ok(!classifySegment(cmd, GROUPS, ctx()).includes('host-fault'), cmd);
+  }
+  for (const cmd of ['sort', 'sort -rn', 'uniq -c', 'uniq']) assert.ok(classifySegment(cmd, GROUPS, ctx()).includes('host-fault'), cmd);
+});
+
+test('host-fault: only the staffing brief holds the host-fault group', () => {
+  const holders = fs.readdirSync(path.join(PLUGIN_ROOT, 'roles')).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3))
+    .filter((id) => loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${id}` }).bash.includes('host-fault'));
+  assert.deepEqual(holders, ['staffing']);
+});
