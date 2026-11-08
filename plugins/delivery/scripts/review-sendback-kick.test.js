@@ -1,6 +1,9 @@
 // scripts/review-sendback-kick.test.js — hjx.1.1: a pull request sent back to its builder is a handover,
 // so review.js send-back starts a watchdog run now (lib/kick.js), as a message and a handoff do. Before,
 // it waited for the next timer pass to reach the builder.
+// a role session's own variables are cleared first, as run-tests.js clears them, so a direct run from a
+// role session (a reality check) sees what CI sees (hjx.1.1.2)
+require('./testing/role-env.js').clearRoleEnv();
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { makeProject, storyBead, memBd } = require('./testing/gate-fixture.js');
