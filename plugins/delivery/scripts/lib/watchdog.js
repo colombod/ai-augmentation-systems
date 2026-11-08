@@ -49,6 +49,10 @@ const DAILY_CAP = 6;
 const MESSAGE_EVERY_MS = 5 * 60e3;
 // a role quiet this long while holding assigned or claimed work it can start is woken for it (hjx.1)
 const ASSIGNED_IDLE_MIN = 10;
+// a session the team revive started gets its first turn once it has had this long to come up, and only
+// while the start is this fresh (hjx.1.6.12)
+const START_SETTLE_MIN = 2;
+const START_FRESH_H = 6;
 const MESSAGE_DAILY_CAP = 48;
 // The Delivery Manager assigns, reviews and merges for every other role, so its wakes are the team's
 // flow: on a real team it spent its six stall wakes by mid-day and ready top-priority work then waited
@@ -250,7 +254,7 @@ const typeOf = (b) => b.type || b.issue_type || null;
 // ---- the stalls ----
 // facts: { beads, ready, now, idleMinutes, stallHours, pause, openSteps, sessions, team, installed }
 // { paused?, stalls: [{ kind, key, bead?, target, line, plain, detail, prompt, due, scheduled?, wakeAt? }] }
-function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [], prs = [], reviews = [], woken = [], wakes = [], refusedInstalls: refused = [], claimable = () => true } = {}) {
+function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2, pause = { paused: false }, openSteps = [], sessions: list = [], team, installed = true, messages = [], handoffs = [], prs = [], reviews = [], woken = [], wakes = [], refusedInstalls: refused = [], claimable = () => true, starts = [] } = {}) {
   const t = ms(now || new Date().toISOString());
   if (pause && pause.paused) return { paused: pause.by || true, stalls: [] };
   const out = [];
@@ -387,6 +391,33 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
       plain: 'Work handed to a team member is waiting for them; they are started on it.',
       detail: `${b.status}, assigned to ${b.assignee}; session quiet since ${Number.isFinite(h.lastActive) ? new Date(h.lastActive).toISOString() : 'unknown'}`,
       prompt: `${b.id} is assigned to you and waiting (${b.status}). Work it now: bd show ${b.id}, take its next step and keep going to a pull request or a recorded result; if something blocks it, add a bead note that starts "Blocked:" naming the blocker and who can unblock it.` });
+  }
+  // hjx.1.6.12 criterion 1: `claude remote-control` takes no prompt, so a session the team revive starts
+  // (lib/team-revive.js, a start row in revive.ndjson) comes up with no turn and sat idle with ready work.
+  // Its newest start, once it has had time to come up and while the session has not been active since,
+  // is a handover: one wake, keyed on that start, carrying the first turn (wakePrompt). An older start is
+  // the revive's own to retry, not a first turn.
+  const newestStart = new Map();
+  for (const r of starts || []) {
+    if (!r || r.type !== 'start' || !r.instance || !Number.isFinite(ms(r.at))) continue;
+    const had = newestStart.get(r.instance);
+    if (!had || ms(r.at) > ms(had.at)) newestStart.set(r.instance, r);
+  }
+  const carriedKeys = new Set((wakes || []).flatMap((w) => (w && w.keys) || []));
+  for (const r of newestStart.values()) {
+    const at = ms(r.at);
+    const age = (t - at) / 60000;
+    if (!(age >= START_SETTLE_MIN && age <= START_FRESH_H * 60)) continue;
+    const h = list.find((s) => s && s.instance === r.instance);
+    if (!h || limited.has(h.instance)) continue;
+    if (Number.isFinite(h.lastActive) && h.lastActive >= at) continue;
+    const key = `started:${r.instance}:${r.at}`;
+    if (carriedKeys.has(key)) continue;
+    out.push({ kind: 'started', key, target: r.instance, due: true,
+      line: `Started with no turn: ${r.instance} was started by the team revive at ${clock(at)} and has done nothing since.`,
+      plain: 'A team member restarted after an outage is given its first turn, so it picks its work up.',
+      detail: `revive start at ${r.at}; session last active ${Number.isFinite(h.lastActive) ? new Date(h.lastActive).toISOString() : 'unknown'}`,
+      prompt: `Your session was started by the team revive at ${clock(at)} and has had no turn yet.` });
   }
   for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && waitingEvidence(x))) {
     const last = Math.max(ms(b.updated_at), ms(b.created_at));
@@ -603,6 +634,19 @@ function reviewFacts(root) {
 
 // Read the record for a project: beads from bd (a lib/bd.js store), the goal sheet, the owner queue,
 // the roster and the transcripts. Fails open: a failed read gives no stalls and says so.
+// the team revive's start rows (lib/team-revive.js keeps revive.ndjson beside this log; it requires this
+// file, so the ledger is read here directly rather than through it). An unreadable line is skipped.
+function reviveStarts(root) {
+  let text = '';
+  try { text = fs.readFileSync(path.join(root, REL, 'revive.ndjson'), 'utf8'); } catch (err) { return []; }
+  const out = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try { const r = JSON.parse(line); if (r && r.type === 'start') out.push(r); } catch (err) { /* a torn line */ }
+  }
+  return out;
+}
+
 function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
   try {
     const Goal = require('./goal.js');
@@ -631,7 +675,7 @@ function read(root, { bd, now, team, rows, installed, pause: given } = {}) {
     };
     const parts = [];
     const prs = managerPrs(root, parts);
-    const res = stalls({ prs, claimable, beads, ready, now, team, idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
+    const res = stalls({ prs, claimable, beads, ready, now, team, starts: reviveStarts(root), idleMinutes: Goal.value(root, 'idle_minutes'), stallHours: Goal.value(root, 'stall_hours'),
       pause: withA3s(root, given || Goal.activePause(root, { beadOf, maxLookups: 4 })), openSteps: Q.open(root), sessions: list, installed: installed !== undefined ? installed : Boolean(installedJob(root)), messages: require('./inbox.js').pending(root), handoffs: require('./handoff.js').pending(root), reviews: reviewFacts(root), wakes: logRows(root).filter((r) => r.type === 'wake').map((r) => ({ at: r.at, keys: r.keys || [] })), refusedInstalls: refusedInstalls(logRows(root), { installs: require('./self-update.js').installTargets('delivery') }), woken: logRows(root).filter((r) => r.type === 'wake').flatMap((r) => r.keys || []).filter((k) => /^review:/.test(String(k))) });
     // a verified pause silences the polling warnings too
     return { ...res, polls: res.paused ? [] : pollWarnings(list), sessions: list, ...(parts.length ? { unreadableParts: parts } : {}) };
@@ -723,7 +767,7 @@ function pidAlive(pid) {
 }
 
 // a message and a handoff (lib/handoff.js) are the team's handovers, not stalls: woken by the message rules
-const isHandover = (s) => s.kind === 'message' || s.kind === 'handoff' || s.kind === 'assigned' || s.kind === 'review';
+const isHandover = (s) => s.kind === 'message' || s.kind === 'handoff' || s.kind === 'assigned' || s.kind === 'review' || s.kind === 'started';
 // never held by a daily cap: a merge's deploy, a deploy's check, a send-back to its author, and the
 // Delivery Manager's own waiting merge or review (bqj), each bounded by the record's new rows
 const uncapped = (s) => s.kind === 'handoff' || s.kind === 'review' || s.kind === 'manager';
@@ -893,4 +937,4 @@ function wakeArgs(s, prompt, live) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
