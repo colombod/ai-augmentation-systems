@@ -464,3 +464,69 @@ test('run-tests: an unsealed run, a stray seal flag, or an unverified opt-out is
     }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(outer, { recursive: true, force: true }); }
 });
+
+// 3k4.1.2.2.1: a reality check's capture of the full suite stopped near test 1055 and named no failing
+// test. The runner closes with the name and file:line of every top-level test that failed, so the last
+// lines of any capture name them, however much of the middle was cut.
+test('run-tests: failingTests reads the top-level not ok tests and their locations from TAP', () => {
+  const { failingTests } = require('./run-tests.js');
+  const tap = [
+    'TAP version 13',
+    '# Subtest: outer',
+    '    # Subtest: inner',
+    '    not ok 1 - inner',
+    "      location: '/s/a.test.js:4:3'",
+    'not ok 1 - outer',
+    '  ---',
+    "  location: '/s/a.test.js:3:1'",
+    '  ...',
+    'ok 2 - fine',
+    "  location: '/s/a.test.js:9:1'",
+    'not ok 3 - later # TODO',
+    "  location: '/s/a.test.js:11:1'",
+    'not ok 4 - /s/broken.test.js',
+    '  ---',
+    '  error: boom',
+    '  ...',
+    'not ok 5 - says \\#2 and "quotes"',
+    "  location: '/s/b.test.js:2:1'",
+    '1..5',
+  ].join('\n');
+  assert.deepStrictEqual(failingTests(tap), [
+    { n: 1, name: 'outer', location: '/s/a.test.js:3:1' },
+    { n: 4, name: '/s/broken.test.js', location: null },
+    { n: 5, name: 'says \\#2 and "quotes"', location: '/s/b.test.js:2:1' },
+  ]);
+  assert.deepStrictEqual(failingTests(''), []);
+});
+
+test('run-tests: a failing run ends with the name and file:line of every failing test; a passing run adds nothing', () => {
+  const fs = require('fs');
+  const { spawnSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(__dirname, '.fail-summary-'));
+  try {
+    const bad = path.join(dir, 'bad.test.js');
+    const good = path.join(dir, 'good.test.js');
+    fs.writeFileSync(bad, "const test = require('node:test');\n" +
+      "test('first breaks', () => { throw new Error('x'); });\n" +
+      "test('passes', () => {});\n" +
+      "test('second breaks', async (t) => { await t.test('inner', () => { throw new Error('y'); }); });\n");
+    fs.writeFileSync(good, "require('node:test')('all good', () => {});\n");
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT; // a node:test child of a test would otherwise skip its files
+    const run = (files) => spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js')], { env: { ...env, DELIVERY_SEAL_ACTIVE: process.env.DELIVERY_SEAL_ACTIVE || '0', DELIVERY_TEST_UNSEALED: '1', DELIVERY_TEST_FILES: files.join(path.delimiter) }, encoding: 'utf8', timeout: 60000 });
+    const r = run([good, bad]);
+    assert.equal(r.status, 1, r.stderr.slice(-300));
+    const tail = r.stdout.trimEnd().split('\n').slice(-3);
+    assert.deepStrictEqual(tail, [
+      '# failing tests (2):',
+      `# not ok - first breaks (${bad}:2:1)`,
+      `# not ok - second breaks (${bad}:4:1)`,
+    ]);
+    // the suite's own output is still there, ahead of the summary
+    assert.match(r.stdout, /# fail 2/);
+    const ok = run([good]);
+    assert.equal(ok.status, 0, ok.stderr.slice(-300));
+    assert.doesNotMatch(ok.stdout, /# failing tests/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
