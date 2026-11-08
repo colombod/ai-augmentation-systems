@@ -114,7 +114,8 @@ test('I2: only a [reference] carries a plan item; a plain mention for context is
 test('I3: the temporary-directory exemption never covers the project or a role directory', () => {
   const h = team();
   const proj = (inst, ...p) => path.join(h.roleDir(inst), 'project', ...p);
-  assert.match(h.tool(COS, 'Write', { file_path: proj(COS, '.delivery', 'stories', 'x.md'), content: 'x' }).deny, /^Role chief-of-staff does not edit /);
+  // a story file is refused to every role by name (team-runtime-11 c4), tmp or not
+  assert.match(h.tool(COS, 'Write', { file_path: proj(COS, '.delivery', 'stories', 'x.md'), content: 'x' }).deny, /^Role chief-of-staff: story files .* only through `stories\.js`/);
   assert.match(h.tool(COS, 'Edit', { file_path: path.join(h.root, 'AGENTS.md'), old_string: 'a', new_string: 'b' }).deny, /^Role chief-of-staff does not edit /);
   assert.match(h.tool('builder-1', 'Write', { file_path: path.join(h.root, '.delivery', 'team', 'team.json'), content: '{}' }).deny, /^Role builder: the team manifest .* changes only through `team-role\.js`/);
   assert.match(h.tool(COS, 'Write', { file_path: path.join(h.roleDir('builder-1'), 'product', 'src', 'x.js'), content: 'x' }).deny, /^Role chief-of-staff does not edit /);
@@ -128,8 +129,10 @@ test('I3 final: the shared checkout root is refused to every role, under tmp or 
   assert.match(h.tool('product-manager', 'Write', { file_path: root('.delivery', 'initiatives', 'x.md'), content: 'x' }).deny, /^Role product-manager does not edit /);
   assert.equal(h.tool('product-manager', 'Write', { file_path: clone('product-manager', '.delivery', 'initiatives', 'x.md'), content: 'x' }).deny, null);
   assert.match(h.tool('builder-1', 'Write', { file_path: root('src', 'x'), content: 'x' }).deny, /^Role builder does not edit /);
-  assert.match(h.tool('delivery-lead', 'Write', { file_path: root('.delivery', 'stories', 'y.md'), content: 'y' }).deny, /^Role delivery-lead does not edit /);
-  assert.equal(h.tool('delivery-lead', 'Write', { file_path: clone('delivery-lead', '.delivery', 'stories', 'y.md'), content: 'y' }).deny, null);
+  assert.match(h.tool('delivery-lead', 'Write', { file_path: root('.delivery', 'sprints', 'y.md'), content: 'y' }).deny, /^Role delivery-lead does not edit /);
+  assert.equal(h.tool('delivery-lead', 'Write', { file_path: clone('delivery-lead', '.delivery', 'sprints', 'y.md'), content: 'y' }).deny, null);
+  // a story file, in the shared root or the role's own clone, goes through stories.js (team-runtime-11 c4)
+  for (const f of [root('.delivery', 'stories', 'y.md'), clone('delivery-lead', '.delivery', 'stories', 'y.md')]) assert.match(h.tool('delivery-lead', 'Write', { file_path: f, content: 'y' }).deny, /only through `stories\.js`/, f);
 });
 
 test('I4: reading plan.js brief backs only the claims that appear in its output this turn', () => {

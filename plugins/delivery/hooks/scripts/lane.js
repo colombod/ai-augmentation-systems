@@ -993,6 +993,20 @@ function registerHit({ projectRoot, roleDir }) {
 const STORIES_REASON = 'story files and their index change only through `stories.js` (new --from a draft, set, criterion, section, index)';
 const STORIES_MENTION = /\.delivery\/+(?:\.\/+)*stories\/+[^/\s'"]+\.md\b/i;
 const STORIES_REL = /^\.delivery[\\/]stories[\\/][^\\/]+\.md$/i;
+// The allowed groups for a refusal, cut to fit one reason line (short-reason.js, R-46): a lane with many
+// groups names the first ones and how many more, never a line past the limit.
+function groupsList(groups, room = 160) {
+  if (!groups.length) return 'none';
+  const shown = [];
+  for (const g of groups) {
+    const rest = groups.length - shown.length - 1;
+    if ([...shown, g].join(', ').length + (rest ? ` and ${rest} more`.length : 0) > room) break;
+    shown.push(g);
+  }
+  const more = groups.length - shown.length;
+  return more ? `${shown.join(', ')} and ${more} more` : shown.join(', ');
+}
+
 function storiesHit({ projectRoot, roleDir }) {
   const bases = [];
   if (projectRoot && path.isAbsolute(String(projectRoot))) bases.push(realish(String(projectRoot)));
@@ -1751,7 +1765,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       return tmpHit ? { allow: false, reason: `Role ${pol.roleId}: ${tmpReason(tmpHit, roleDir)}.` } : { allow: true };
     }
     if (name === 'PowerShell') {
-      return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
+      return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${groupsList(bash)}).${tail}` };
     }
     const segs = splitWithOps(command);
     let live = [cwd ? path.resolve(cwd) : path.resolve(process.cwd())];
