@@ -121,6 +121,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord,
   return cmd === 'plan' ? plan(who, o, { now: at, verifyRecord, ps }) : run(who, o, { env, now: at, verifyRecord, exec });
 }
 
+// Exports come first so a module that requires this file sees them even while main runs.
+module.exports = { main, parse };
+
 if (require.main === module) {
   let r;
   try { r = main(process.argv.slice(2)); } catch (err) { r = { code: 2, out: `outage-drill.js: ${err.message}\n${USAGE}` }; }
@@ -128,4 +131,3 @@ if (require.main === module) {
   process.exitCode = r.code;
 }
 
-module.exports = { main, parse };
