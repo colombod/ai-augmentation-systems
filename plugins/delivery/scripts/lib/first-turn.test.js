@@ -109,6 +109,62 @@ test('a pass reads the revive ledger: a session on the roster started since it w
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+// criterion 4: idle with ready work is a stall within one pass. The team-wide idle rule (lib/idle.js)
+// fires only when nothing at all is in progress, so one builder idle beside ready stories went unseen
+// while any other bead moved. Each idle builder is now woken to claim a ready story of its own.
+const bld = (instance, quietMin, extra = {}) => ({ instance, role: 'builder', session: `s-${instance}`, roleDir: os.tmpdir(), lastActive: NOW - quietMin * 60e3, ...extra });
+const story = (id, extra = {}) => ({ id, status: 'open', labels: ['story'], updated_at: iso(NOW - 3600e3), ...extra });
+const unclaimed = (facts) => WD.stalls({ now: iso(NOW), ...facts }).stalls.filter((x) => x.kind === 'unclaimed');
+
+test('each builder holding nothing and quiet past the assigned gap is woken for a ready story of its own', () => {
+  const ready = [story('ex-1'), story('ex-2'), story('ex-3')];
+  const s = unclaimed({ beads: ready, ready, sessions: [bld('builder', 30), bld('builder-2', 45)] });
+  assert.deepEqual(s.map((x) => [x.target, x.bead]), [['builder', 'ex-1'], ['builder-2', 'ex-2']], 'one item each, never the same one');
+  assert.equal(s[0].key, 'unclaimed:builder:ex-1');
+  assert.match(s[0].prompt, /You hold nothing and ex-1 is ready.*bd update ex-1 --claim/);
+});
+
+test('no idle-builder wake for a builder with work, a quiet spell under the gap, a limit, or a non-builder role', () => {
+  const ready = [story('ex-1'), story('ex-2')];
+  const facts = (sessions, beads = ready) => ({ beads, ready, sessions });
+  assert.deepEqual(unclaimed(facts([bld('builder', 30)], [...ready, { id: 'ex-ip', status: 'in_progress', assignee: 'u@h/builder', updated_at: iso(NOW - 60e3) }])), [], 'it holds work in progress');
+  const mine = story('ex-mine', { assignee: 'u@h/builder' });
+  assert.deepEqual(unclaimed({ beads: [mine, ...ready], ready: [mine, ...ready], sessions: [bld('builder', 30)] }), [], 'it holds assigned ready work: the assigned rule wakes it');
+  assert.deepEqual(unclaimed(facts([bld('builder', 5)])), [], 'quiet five minutes: not idle yet');
+  assert.deepEqual(unclaimed(facts([bld('builder', 30, { waitUntil: NOW + 60e3 })])), [], 'it is waiting on something it named');
+  assert.deepEqual(unclaimed(facts([{ ...bld('reality-checker', 30), role: 'reality-checker' }])), [], 'only builders claim stories');
+});
+
+test('only unassigned, claimable story beads are offered', () => {
+  const taken = story('ex-taken', { assignee: 'u@h/builder-4' });
+  const spike = { id: 'ex-spike', status: 'open', labels: ['spike'], updated_at: iso(NOW - 3600e3) };
+  const red = story('ex-red');
+  const ok = story('ex-ok');
+  const ready = [taken, spike, red, ok];
+  const s = unclaimed({ beads: ready, ready, sessions: [bld('builder', 30), bld('builder-2', 30)], claimable: (b) => b.id !== 'ex-red' });
+  assert.deepEqual(s.map((x) => [x.target, x.bead]), [['builder', 'ex-ok']], 'one claimable story, one wake');
+});
+
+test('an idle-builder wake waits the assigned gap after the last wake, and is recorded as an idle-role warning', () => {
+  const ready = [story('ex-1')];
+  const st = WD.stalls({ now: iso(NOW), beads: ready, ready, sessions: [bld('builder', 30)] });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-unclaimed-'));
+  try {
+    WD.log(root, { type: 'wake', at: iso(NOW - 2 * 60e3), keys: ['message:builder:3'], instance: 'builder', pid: 7 });
+    const held = WD.plan(st, { root, now: iso(NOW), alive: () => false });
+    // nothing else is in progress here, so the team-wide idle rule wakes the Delivery Manager as well
+    const mine = (p) => p.wakes.filter((w) => w.target === 'builder');
+    assert.equal(mine(held).length, 0, JSON.stringify(held));
+    assert.match(held.held.find((x) => x.target === 'builder').reason, /waits 5 min between wakes/);
+    const later = WD.plan(st, { root, now: iso(NOW + 4 * 60e3), alive: () => false });
+    assert.deepEqual(mine(later).map((w) => w.keys).flat(), ['unclaimed:builder:ex-1']);
+    WD.recordAll(root, st, [], { now: iso(NOW) });
+    const rows = require('./warnings.js').list(root).filter((w) => w.kind === 'idle-role');
+    assert.equal(rows.length, 1, JSON.stringify(require('./warnings.js').list(root)));
+    assert.match(rows[0].detail, /builder holds nothing.*ex-1/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('every watchdog wake prompt carries the first turn, after the opening and before the reply line', () => {
   const p = WD.wakePrompt(['ex-a is assigned to you and waiting (open).'], 'did');
   assert.ok(p.startsWith(`${WD.WAKE_OPENING}: `), 'the opening stays first: transcript.js tells a wake from a typed prompt by it');
