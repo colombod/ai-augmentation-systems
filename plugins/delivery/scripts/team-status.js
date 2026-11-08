@@ -303,6 +303,8 @@ function renderStatus({ rows, drift, recovered_from, bd_reachable, operator, gat
   return lines.join('\n');
 }
 
+module.exports = { teamStatus, renderStatus, operatorStatus, gateStatus, idleStatus, reviewStatus, andonStatus };
+
 if (require.main === module) {
   const idx = process.argv.indexOf('--project');
   if (idx >= 0 && (process.argv[idx + 1] === undefined || process.argv[idx + 1].startsWith('--'))) {
@@ -315,5 +317,3 @@ if (require.main === module) {
   console.log(renderStatus(status, root));
   process.exit(hasDrift(status.drift) ? 1 : 0);
 }
-
-module.exports = { teamStatus, renderStatus, operatorStatus, gateStatus, idleStatus, reviewStatus, andonStatus };

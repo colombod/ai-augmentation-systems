@@ -192,5 +192,5 @@ test('writes into /tmp and waits', async () => {
   });
 }
 
-if (require.main === module) main().then((code) => process.exit(code));
 module.exports = { main, checkoutVisible };
+if (require.main === module) main().then((code) => process.exit(code));

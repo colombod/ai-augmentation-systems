@@ -266,11 +266,11 @@ function list(root, a, live, { botsCount = false, repo } = {}) {
   return { code: 0, out: out.map((p) => `PR ${p.pr}: ${p.state}${p.problem ? ` (${p.problem})` : ''}${p.reviewer ? ` (reviewer ${p.reviewer})` : ''}${p.title ? ` ${p.title}` : ''}`).join('\n') };
 }
 
+module.exports = { main, list };
+
 if (require.main === module) {
   let r;
   try { r = main(process.argv.slice(2)); } catch (err) { r = { code: 2, out: `review.js: ${err.message}\n${USAGE}` }; }
   process.stdout.write(`${r.out}\n`);
   process.exitCode = r.code;
 }
-
-module.exports = { main, list };

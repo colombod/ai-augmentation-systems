@@ -152,9 +152,9 @@ async function main(argv, { cwd = process.cwd(), env = process.env, bd, now, ver
   return { code: findings.some((f) => f.level === 'block') ? 1 : 0, out: render(id, findings, extra, a.flags.has('json')) };
 }
 
+module.exports = { main };
+
 if (require.main === module) {
   main(process.argv.slice(2)).then((r) => { process.stdout.write(`${r.out}\n`); process.exitCode = r.code; },
     (err) => { process.stderr.write(`ready.js: ${err.message}\n${USAGE}\n`); process.exitCode = 2; });
 }
-
-module.exports = { main };

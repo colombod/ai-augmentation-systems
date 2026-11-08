@@ -238,10 +238,6 @@ function main() {
   }
 }
 
-if (require.main === module) {
-  main();
-}
-
 module.exports = {
   recordArtifactWrite,
   findDeliveryRoot,
@@ -254,3 +250,7 @@ module.exports = {
   recordInvocation,
   CAPTURE_TOOL_ACTIONS,
 };
+
+if (require.main === module) {
+  main();
+}

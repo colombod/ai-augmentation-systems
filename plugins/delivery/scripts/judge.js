@@ -67,6 +67,8 @@ async function main(argv, { stdin = () => fs.readFileSync(0, 'utf8'), cwd = proc
   throw new Error(USAGE);
 }
 
+module.exports = { main };
+
 if (require.main === module) {
   main(process.argv.slice(2)).then(({ code, out }) => {
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
@@ -76,5 +78,3 @@ if (require.main === module) {
     process.exitCode = 2;
   });
 }
-
-module.exports = { main };

@@ -241,11 +241,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, who: give
   return { code: 2, out: USAGE };
 }
 
+module.exports = { main };
+
 if (require.main === module) {
   let r;
   try { r = main(process.argv.slice(2)); } catch (err) { r = { code: 2, out: `a3.js: ${err.message}\n${USAGE}` }; }
   process.stdout.write(`${r.out}\n`);
   process.exitCode = r.code;
 }
-
-module.exports = { main };
