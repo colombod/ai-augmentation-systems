@@ -96,7 +96,11 @@ session its role and keep it:
   - SessionStart rewrites `CLAUDE.local.md` from the manifest, registers the session in the
     roster and captures operator input. On clear and compact it restates the role; on startup
     and resume it restates it only when `CLAUDE.local.md` changed in this run (otherwise the
-    natively loaded copy is current) and adds the claim line.
+    natively loaded copy is current) and adds the claim line. A role holding work is told to continue
+    it, then read `bd ready` and its messages; a role holding nothing is given the first turn
+    (`scripts/lib/first-turn.js`): read its in-progress beads, then `bd ready`, then its messages, and
+    take the next ready item its brief gives it, or add a note that starts `Blocked:` with the reason.
+    The UserPromptSubmit line for a role with no claim says the same in short.
   - UserPromptSubmit captures operator input, marks the turn and, when the claim changed, adds a
     one-line reminder of it (and, once, a reminder that the last turn left no note on its claim).
   - PreToolUse: the lane (writes, shell commands, MCP), the leak guard (product repo), the bd
@@ -1363,6 +1367,17 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   this plugin, its reason says so and gives the same command at the current plugin root (or says
   that the lane would refuse it there too) (delivery-plugin-planning-8wz).
 - **Assigned work runs.** A role holding assigned or claimed work it can start (in progress, or open and ready) whose session has been quiet more than 10 minutes is woken to work it, message or not, never a busy, usage-limited or epic case. A wake for assigned work alone comes at least five minutes after the role's last wake, waits twice as long after each wake that carried the same bead (5, 10, 20 ... minutes), and has a day of its own: 12 such wakes (24 for the Delivery Manager), which never count toward the 48 that messages and handoffs have. Work its holder cannot move is not woken: a bead whose pull request waits for its review (any review state but changes asked or sent back), and an open bead queued behind another bead its holder has in progress. Past `stall_hours` a bead waiting for its review is the Delivery Manager's stall, not its builder's. Work an open owner-queue step names waits for the owner and is not woken. While main is red, open work is woken only when the claim check would let it start (a valid fix, or work of the open `ci:main` A3); work already in progress is still woken. In an area stopped on a failed check only the stop's recovery work is woken (the failed bead or its children, a fix linked through `metadata.fixes`, the stop's A3 work). Past `stall_hours` the in-progress stall wakes it instead, except recovery work in a stopped area, which the stall skips and so keeps its assigned wake. Assigned wakes do not count toward the stall wakes' hourly gate, daily cap or per-stall backoff, and a stall wake that goes out carries the holder's assigned work with it (hjx.1).
+- **Every wake gives the first turn.** A wake prompt names what woke the role, then gives the same
+  first turn a session start gives (`scripts/lib/first-turn.js`): read your in-progress beads, then
+  `bd ready`, then your messages; continue what you hold; holding nothing, take the next ready item or
+  add a note that starts `Blocked:`. A wake never names only its one stall (hjx.1.6.12).
+- **An idle builder takes the next story.** The idle stall above fires only when nothing at all is in
+  progress. Each pass also finds every builder that holds nothing it can move (work waiting on its
+  evidence rows does not count) and whose session has been quiet more than 10 minutes, while a story
+  bead is ready, unassigned and claimable, and wakes it to claim that story, a different one for each
+  idle builder. The wake is paced like assigned work (five minutes apart, the assigned day and
+  backoff) and is also recorded as an `idle-role` warning, so idle with ready work is never a quiet
+  state (hjx.1.6.12).
 - **Handoffs.** `merge-gate.js merged` hands the deploy of each story it marked merged to the watchdog,
   and `evidence.js state <bead> deployed` hands the reality check (`.delivery/watchdog/handoffs.ndjson`,
   `lib/handoff.js`): if the Delivery Manager's turn ends there, the watchdog wakes it for that step with
@@ -1494,6 +1509,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   it held starts nothing and names the holder's pid, and a lock older than two minutes or whose pid is
   gone is broken. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
   time, arguments, the id it reattached), its output in `logs/revive-<instance>-<time>.log` beside it.
+  `claude remote-control` takes no prompt, so a session it starts comes up with no turn. The watchdog
+  reads these rows: the newest start of an instance, from two minutes to six hours old, whose session
+  has not been active since, wakes that session once (keyed on the start) with the first turn, not held
+  by the hourly stall gate (hjx.1.6.12).
   The host job runs `start` at each `run`, after the wakes and never while a plugin install is held or
   under way; the sealed test runner starts none. In a role session only the Chief of Staff may run
   `start` (lane group `team-revive`), and its brief runs `check` each turn; any other role session is
