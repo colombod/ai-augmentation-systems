@@ -292,11 +292,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, gh, now, who: 
   return { code: 0, out: [...out, ...plan].join('\n') };
 }
 
+module.exports = { main, gate, check, ghPrCalls, mergeCommandProblem, handOver };
+
 if (require.main === module) {
   let r;
   try { r = main(process.argv.slice(2)); } catch (err) { r = { code: 2, out: `merge-gate.js: ${err.message}\n${USAGE}` }; }
   process.stdout.write(`${r.out}\n`);
   process.exitCode = r.code;
 }
-
-module.exports = { main, gate, check, ghPrCalls, mergeCommandProblem, handOver };

@@ -124,6 +124,8 @@ async function judgeFor(argv, { cwd = process.cwd(), env = process.env } = {}) {
   return { p: typeof r.p === 'number' ? r.p : 0, model: r.model || null };
 }
 
+module.exports = { main, judgeFor };
+
 if (require.main === module) {
   (async () => {
     let r;
@@ -132,5 +134,3 @@ if (require.main === module) {
     process.exitCode = r.code;
   })();
 }
-
-module.exports = { main, judgeFor };

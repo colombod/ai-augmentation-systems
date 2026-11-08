@@ -47,11 +47,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, who: given } 
   return { code: 2, out: USAGE };
 }
 
+module.exports = { main };
+
 if (require.main === module) {
   let r;
   try { r = main(process.argv.slice(2)); } catch (err) { r = { code: 2, out: `warnings.js: ${err.message}\n${USAGE}` }; }
   (r.code ? process.stderr : process.stdout).write(`${r.out}\n`);
   process.exitCode = r.code;
 }
-
-module.exports = { main };

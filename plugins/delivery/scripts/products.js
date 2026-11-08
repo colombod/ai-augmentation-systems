@@ -104,11 +104,11 @@ function main(argv, { cwd = process.cwd(), findRoot, ...deps } = {}) {
   return { code: missing ? 1 : 0, out: lines.join('\n') };
 }
 
+module.exports = { main, render, parse };
+
 if (require.main === module) {
   let r;
   try { r = main(process.argv.slice(2)); } catch (err) { r = { code: 2, out: `products.js: ${err.message}` }; }
   process.stdout.write(`${r.out}\n`);
   process.exitCode = r.code;
 }
-
-module.exports = { main, render, parse };

@@ -172,11 +172,11 @@ function daily(cmd, who, { bd: givenBd, now, budget, budgetOpts, gh, ci, json, l
   return { code: 0, out: lines.join('\n') };
 }
 
+module.exports = { main };
+
 if (require.main === module) {
   main(process.argv.slice(2)).then((r) => r, (err) => ({ code: 2, out: `plan.js: ${err.message}\n${USAGE}` })).then((r) => {
     (r.code ? process.stderr : process.stdout).write(`${r.out}\n`);
     process.exitCode = r.code;
   });
 }
-
-module.exports = { main };

@@ -29,6 +29,8 @@ function show(root, { now } = {}) {
   ].join('\n');
 }
 
+module.exports = { statusline, show };
+
 if (require.main === module) {
   const [cmd] = process.argv.slice(2);
   if (cmd === 'statusline') {
@@ -41,5 +43,3 @@ if (require.main === module) {
     if (!root) { process.stderr.write('usage.js: no project found; pass --project <root>\n'); process.exitCode = 2; } else process.stdout.write(`${show(root)}\n`);
   } else { process.stderr.write('usage: usage.js show [--project <root>] | usage.js statusline\n'); process.exitCode = 2; }
 }
-
-module.exports = { statusline, show };
