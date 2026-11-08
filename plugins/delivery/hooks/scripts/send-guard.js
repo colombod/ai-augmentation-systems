@@ -85,7 +85,8 @@ function liveSessionsReached(dir, name) {
   for (const f of files.filter((x) => /^\d+\.json$/.test(x))) {
     const s = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
     if (!s || !Number.isInteger(s.pid) || s.pid <= 0 || !pidAlive(s.pid)) continue;
-    if (typeof s.name === 'string' && want && slug(s.name).startsWith(want)) out.push(s);
+    // name null: every live session (hjx.1.6.13, the addresses a refusal offers)
+    if (typeof s.name === 'string' && (name === null || (want && slug(s.name).startsWith(want)))) out.push(s);
   }
   return out;
 }
@@ -102,6 +103,49 @@ function ourSession(s, team, { teamDir, projectRoot }) {
   if (!roleDir || typeof s.cwd !== 'string' || real(s.cwd) !== roleDir) return false;
   const marker = JSON.parse(fs.readFileSync(path.join(roleDir, '.delivery-role.json'), 'utf8'));
   return !!marker && marker.instance === inst.instance && real(marker.project_root) === real(projectRoot);
+}
+// hjx.1.6.13: the instance of this team whose role directory live session `s` runs in (holding that
+// instance's marker for this project), whatever the session is called; null when it is no session of ours.
+// A role session started by team-revive, a wake or by hand runs under a name Claude Code made up
+// ("builder-92"), and SendMessage refuses any name with "@", so the directory, not the name, says whose it is.
+function teamInstanceOf(s, team, { teamDir, projectRoot }) {
+  if (!s || typeof s.cwd !== 'string' || !teamDir) return null;
+  const at = real(s.cwd);
+  if (!at) return null;
+  const inst = require('../../scripts/lib/manifest.js').expandInstances(team).find((i) => real(path.join(teamDir, i.instance)) === at);
+  if (!inst) return null;
+  try {
+    const marker = JSON.parse(fs.readFileSync(path.join(at, '.delivery-role.json'), 'utf8'));
+    return marker && marker.instance === inst.instance && real(marker.project_root) === real(projectRoot) ? inst.instance : null;
+  } catch (err) {
+    return null;
+  }
+}
+// the live sessions holding exactly `name`, when every one is this team's: a send to an exact name goes to
+// that session. [] when none, when any is another team's, or when the records cannot be read.
+function exactOwnLive(name, team, own) {
+  try {
+    const exact = liveSessionsReached(own.dir || sessionsDir(), name).filter((s) => slug(s.name) === slug(name));
+    return exact.length && exact.every((s) => teamInstanceOf(s, team, own)) ? exact : [];
+  } catch (err) {
+    return [];
+  }
+}
+// this team's live sessions as a sender can address them: the name ListAgents shows, or the session's
+// socket (uds:<path>) when its name holds "@", which SendMessage refuses. [] when unreadable.
+function liveTeamAddresses(team, own) {
+  const out = [];
+  try {
+    for (const s of liveSessionsReached(own.dir || sessionsDir(), null)) {
+      const instance = teamInstanceOf(s, team, own);
+      if (!instance) continue;
+      const to = !String(s.name).includes('@') ? s.name : (typeof s.messagingSocketPath === 'string' && s.messagingSocketPath ? `uds:${s.messagingSocketPath}` : null);
+      if (to) out.push({ to, instance });
+    }
+  } catch (err) {
+    return [];
+  }
+  return out.sort((a, b) => a.to.localeCompare(b.to));
 }
 // true when every live session a send to `name` can reach is this team's (none live at all included)
 function noOtherLiveSession(name, team, own) {
@@ -141,6 +185,10 @@ function judge(team, to, host, own = null) {
   const SN = require('../../scripts/lib/session-name.js');
   if (!team || !SN.teamTag(team.prefix) || typeof to !== 'string') return null;
   const { instance, prefix } = SN.parseSessionName(to);
+  // hjx.1.6.13: a name that exactly names a live session of this team (by its role directory) is that
+  // session, whatever Claude Code called it; asked first, since a made-up name ("builder-92") looks like
+  // a bare role name to every rule below
+  if (prefix === null && own && exactOwnLive(instance, team, own).length) return null;
   if (prefix !== null && SN.samePrefix(prefix, team.prefix)) {
     // our own full name is safe unless, with no live session of ours holding it, it is the start of another
     // team's live session's name: "chief-of-staff@alpha" reaches "chief-of-staff@alpha-scratch"
@@ -187,7 +235,15 @@ function decideSend(input) {
     const { findRoleMarker, validMarker } = require('./role-context.js');
     const valid = validMarker(findRoleMarker(input.cwd));
     if (!valid || !valid.role) return null;
-    return judge(valid.team, targetOf(input), valid.role.host, { teamDir: path.dirname(valid.roleDir), projectRoot: valid.marker.project_root });
+    const own = { teamDir: path.dirname(valid.roleDir), projectRoot: valid.marker.project_root };
+    const d = judge(valid.team, targetOf(input), valid.role.host, own);
+    // a refusal says how this team's live sessions can be reached now: a sender cannot see role
+    // directories in ListAgents, and the <instance>@<team> names it is told to use SendMessage refuses
+    if (d && d.reason) {
+      const live = liveTeamAddresses(valid.team, own);
+      if (live.length) d.reason += `\nThis team's live sessions, by the name to send to: ${live.map((x) => `${x.to} (${x.instance})`).join(', ')}.`;
+    }
+    return d;
   } catch (err) {
     return null;
   }
