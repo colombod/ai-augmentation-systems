@@ -1491,11 +1491,15 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   runs. A source that cannot be read is a line that says so, never "all running"; a session list that
   cannot be read starts nothing. `team-revive.js start [--dry-run]` starts each missing instance while
   work is in flight and the owner has not paused the team: detached, in its role directory,
-  `claude remote-control --name <instance>@<team> --spawn session --permission-mode <mode>` (team.json
+  `claude remote-control --name <instance>@<team> --spawn same-dir --capacity 1 --permission-mode <mode>` (team.json
   `permission_mode`, auto when unset; `default` or `manual` sends no `--permission-mode`, claude's own
   default, since claude 2.1.318's help lists `default` and its parser accepts `manual`; any other mode
-  Remote Control does not take starts nothing and says why), or with `--session-id <id>` in place of `--spawn session` when a Remote Control
-  session is known for the directory, so the link the owner follows comes back. The id comes from the
+  Remote Control does not take starts nothing and says why), or with `--session-id <id>` in place of the spawn flags when a Remote Control
+  session is known for the directory, so the link the owner follows comes back. A same-dir server stays up
+  after its session completes (claude archives the session and returns to idle); `--spawn session` and
+  every `--session-id` reattach are claude's single-session mode, which exits when its one session
+  completes, so a link is reattached once only, and a role whose session ran and whose server has gone
+  is started again on the next pass rather than after the hour. The id comes from the
   open session's own file in Claude Code's `sessions/` (`bridgeSessionId`), else the
   `bridge-pointer.json` claude keeps for the directory under `projects/`, else the roster's
   `remote_session_id`; a start copies a newer one into the roster, and a session started under Remote
