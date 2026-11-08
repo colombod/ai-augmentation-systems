@@ -58,7 +58,8 @@ test('a missing role session with work in flight is started on a new Remote Cont
   assert.equal(r.calls.length, 1, 'only the missing builder on this host: the chief runs, tech-writer is on another host');
   const c = r.calls[0];
   assert.equal(c.bin, 'claude');
-  assert.deepEqual(c.args, ['remote-control', '--name', 'builder@ex', '--spawn', 'session', '--permission-mode', 'acceptEdits']);
+  // a server that stays up (same-dir, one session at a time), never --spawn session, which exits when its one session completes
+  assert.deepEqual(c.args, ['remote-control', '--name', 'builder@ex', '--spawn', 'same-dir', '--capacity', '1', '--permission-mode', 'acceptEdits']);
   assert.equal(c.cwd, p.dir('builder'));
   // the new session answers as its own role, never as the session that started it
   assert.equal(c.env.DELIVERY_ROLE, 'builder');
@@ -81,16 +82,17 @@ test('a role session with a recorded Remote Control session is reattached to it 
   const a = run(p, ['start'], { live: [{ cwd: p.dir('chief-of-staff') }] });
   assert.deepEqual(a.calls[0].args, ['remote-control', '--name', 'builder@ex', '--session-id', 'session_roster', '--permission-mode', 'auto']);
   assert.match(a.out, /reattaching Remote Control session session_roster/);
-  // an hour later (past the cap) claude's pointer for the directory names a newer link
-  pointer(p, p.dir('builder'), 'session_pointer');
-  RO.touchInstance(p.root, { instance: 'builder', now: iso(Date.parse(T0) + 30 * 60e3) });
-  const b = run(p, ['start'], { live: [{ cwd: p.dir('chief-of-staff') }], now: iso(Date.parse(T0) + H) });
+  // claude's pointer for the directory names a newer link than the roster's
+  const q = project();
+  register(q, 'builder', { remote_session_id: 'session_roster' });
+  pointer(q, q.dir('builder'), 'session_pointer');
+  const b = run(q, ['start'], { live: [{ cwd: q.dir('chief-of-staff') }] });
   assert.deepEqual(b.calls[0].args.slice(3, 5), ['--session-id', 'session_pointer']);
-  assert.equal(RO.readRoster(p.root).instances.builder.remote_session_id, 'session_pointer');
+  assert.equal(RO.readRoster(q.root).instances.builder.remote_session_id, 'session_pointer');
   // a check reads it and writes nothing
-  pointer(p, p.dir('builder'), 'session_newer');
-  run(p, ['check'], { live: [{ cwd: p.dir('chief-of-staff') }] });
-  assert.equal(RO.readRoster(p.root).instances.builder.remote_session_id, 'session_pointer');
+  pointer(q, q.dir('builder'), 'session_newer');
+  run(q, ['check'], { live: [{ cwd: q.dir('chief-of-staff') }] });
+  assert.equal(RO.readRoster(q.root).instances.builder.remote_session_id, 'session_pointer');
 });
 
 test('a reattach whose session never joined is not tried again: the next start makes a new link', () => {
@@ -99,15 +101,44 @@ test('a reattach whose session never joined is not tried again: the next start m
   run(p, ['start'], { live: [{ cwd: p.dir('chief-of-staff') }] });
   const later = iso(Date.parse(T0) + H);
   const b = run(p, ['start'], { live: [{ cwd: p.dir('chief-of-staff') }], now: later });
-  assert.deepEqual(b.calls[0].args.slice(3, 5), ['--spawn', 'session']);
+  assert.deepEqual(b.calls[0].args.slice(3, 7), ['--spawn', 'same-dir', '--capacity', '1']);
   assert.match(b.out, /its reattach to session_gone never joined/);
-  // the other direction: a reattach that joined (its SessionStart moved last_seen past it) is tried again
+});
+
+// hjx.1.6.12: a reattach (--session-id) is claude's single-session mode, "exits when complete", so a role
+// started that way ended after one task and waited an hour for the next start with its work left
+test('a role whose server ended after its session ran is started again at once, on a server that stays up', () => {
+  const live = (p) => [{ cwd: p.dir('chief-of-staff') }];
+  const at = (min) => iso(Date.parse(T0) + min * 60e3);
+  const p = project();
+  register(p, 'builder', { remote_session_id: 'session_ok' });
+  assert.deepEqual(run(p, ['start'], { live: live(p) }).calls[0].args.slice(3, 5), ['--session-id', 'session_ok']);
+  // its session joined, did its task, and the single-session server exited: ten minutes on, not an hour
+  RO.touchInstance(p.root, { instance: 'builder', now: at(1) });
+  const again = run(p, ['start'], { live: live(p), now: at(10) });
+  assert.equal(again.calls.length, 1, again.out);
+  assert.deepEqual(again.calls[0].args.slice(3, 7), ['--spawn', 'same-dir', '--capacity', '1'], 'never a second reattach, which would end the same way');
+  assert.match(again.out, /its reattach to session_ok ran and ended/);
+  // a server that stays up but was stopped after its session ran is started again too, still not a reattach
+  RO.touchInstance(p.root, { instance: 'builder', now: at(12) });
+  const third = run(p, ['start'], { live: live(p), now: at(20) });
+  assert.equal(third.calls.length, 1, third.out);
+  assert.deepEqual(third.calls[0].args.slice(3, 7), ['--spawn', 'same-dir', '--capacity', '1']);
+  // the other direction: a start whose session never joined is held for the hour
   const q = project();
-  register(q, 'builder', { remote_session_id: 'session_ok' });
-  run(q, ['start'], { live: [{ cwd: q.dir('chief-of-staff') }] });
-  RO.touchInstance(q.root, { instance: 'builder', now: iso(Date.parse(T0) + 60e3) });
-  const c = run(q, ['start'], { live: [{ cwd: q.dir('chief-of-staff') }], now: later });
-  assert.deepEqual(c.calls[0].args.slice(3, 5), ['--session-id', 'session_ok']);
+  run(q, ['start'], { live: live(q) });
+  const held = run(q, ['start'], { live: live(q), now: at(10) });
+  assert.equal(held.calls.length, 0);
+  assert.match(held.out, /Missing: builder .*held: started 2026-11-04 09:00 UTC/);
+  // and the daily cap still bounds a server that runs and ends over and over
+  const c = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  register(c, 'builder');
+  let n = 0;
+  for (let i = 0; i < 8; i++) {
+    n += run(c, ['start'], { now: at(i * 10) }).calls.length;
+    RO.touchInstance(c.root, { instance: 'builder', now: at(i * 10 + 1) });
+  }
+  assert.equal(n, 6, 'six starts a day');
 });
 
 test('a role session already open, or whose started server still runs, is not started', () => {
@@ -223,7 +254,7 @@ test('--dry-run says what it would start and starts nothing; --json gives the fa
   const p = project();
   const d = run(p, ['start', '--dry-run']);
   assert.equal(d.calls.length, 0);
-  assert.match(d.out, /Missing: builder .*would start: claude remote-control --name builder@ex --spawn session --permission-mode auto/);
+  assert.match(d.out, /Missing: builder .*would start: claude remote-control --name builder@ex --spawn same-dir --capacity 1 --permission-mode auto/);
   assert.equal(R.ledger(p.root).length, 0);
   const j = JSON.parse(run(p, ['check', '--json']).out);
   assert.equal(j.go, true);
@@ -380,6 +411,8 @@ const RC_HELP_2_1_318 = `
   --spawn <mode>                   Spawn mode: same-dir, worktree, session
                                    (default: same-dir)
   --name <name>                    Name for the session (shown in claude.ai/code)
+  --capacity <N>                   Max concurrent sessions in worktree or
+                                   same-dir mode (default: 32)
 `;
 // what the same claude's parser said to `--permission-mode bogus` (it says "manual" where the help says "default")
 const RC_PARSER_MODES = 'Error: Invalid permission mode \'bogus\'. Valid modes: acceptEdits, auto, bypassPermissions, manual, dontAsk, plan';
