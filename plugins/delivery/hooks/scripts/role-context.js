@@ -118,10 +118,12 @@ function actorOf(marker) {
   return process.env.BEADS_ACTOR || marker.actor;
 }
 
+// hjx.1.6.12: a start with nothing held takes the next ready item, not only looks at it (lib/first-turn.js)
 function claimTail(claim) {
+  const FT = require('../../scripts/lib/first-turn.js');
   return claim
-    ? `\nYou currently hold: ${claim}. Continue it; append a note before anything else.\n`
-    : '\nYou hold no claim. Run `bd prime` then `bd ready`, and say what you could take.\n';
+    ? `\nYou currently hold: ${claim}. Continue it; append a note before anything else. ${FT.HELD_TURN}\n`
+    : `\nYou hold no claim. ${FT.FIRST_TURN}\n`;
 }
 
 // Operator capture runs first in every role hook; its failure never changes the hook's own output.
@@ -224,7 +226,7 @@ function promptSubmitText(input, deps = {}) {
   const { marker } = valid;
   require('./turn.js').markTurnStart(valid.roleDir, deps.now, input.session_id);
   const claim = (deps.claim || currentClaim)(actorOf(marker), bdOptionsFor(marker, input.cwd));
-  const claimText = claim ? `${claim}.` : 'none (idle; say so and what you could take).';
+  const claimText = claim ? `${claim}.` : 'none (idle: take the next ready item now, or note Blocked: with the reason).';
   try {
     const now = deps.now || new Date().toISOString();
     const entry = readRoster(marker.project_root).instances[marker.instance];

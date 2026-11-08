@@ -36,7 +36,9 @@ const I = require('./idle.js');
 // the same record shape, and these words are the one difference, so lib/transcript.js requires this
 // copy instead of keeping its own: rewording the wake can never let one pass as the operator's.
 const WAKE_OPENING = 'Watchdog (a host job, not the owner)';
-const wakePrompt = (prompts, verb) => `${WAKE_OPENING}: ${prompts.join(' ')} Reply in one line with what you ${verb}.`;
+// hjx.1.6.12: a wake names the stall that caused it, then gives the same first turn as a session start
+// (lib/first-turn.js), so a woken role reads its whole backlog and takes the next item, not only the one stall
+const wakePrompt = (prompts, verb) => `${WAKE_OPENING}: ${prompts.join(' ')} ${require('./first-turn.js').FIRST_TURN} Reply in one line with what you ${verb}.`;
 
 const REL = path.join('.delivery', 'watchdog');
 const P0_HOURS = 1;
