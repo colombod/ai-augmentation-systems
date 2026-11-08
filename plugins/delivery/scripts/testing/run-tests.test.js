@@ -523,8 +523,8 @@ test('run-tests: a failing run ends with the name and file:line of every failing
       `# not ok - first breaks (${bad}:2:1)`,
       `# not ok - second breaks (${bad}:4:1)`,
     ]);
-    // the suite's own output is still there, ahead of the summary
-    assert.match(r.stdout, /# fail 2/);
+    // the suite's own output is still there, ahead of the summary (node counts the failing subtest too)
+    assert.match(r.stdout, /# fail 3/);
     const ok = run([good]);
     assert.equal(ok.status, 0, ok.stderr.slice(-300));
     assert.doesNotMatch(ok.stdout, /# failing tests/);
