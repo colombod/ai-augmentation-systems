@@ -1371,13 +1371,17 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   first turn a session start gives (`scripts/lib/first-turn.js`): read your in-progress beads, then
   `bd ready`, then your messages; continue what you hold; holding nothing, take the next ready item or
   add a note that starts `Blocked:`. A wake never names only its one stall (hjx.1.6.12).
-- **An idle builder takes the next story.** The idle stall above fires only when nothing at all is in
-  progress. Each pass also finds every builder that holds nothing it can move (work waiting on its
-  evidence rows does not count) and whose session has been quiet more than 10 minutes, while a story
-  bead is ready, unassigned and claimable, and wakes it to claim that story, a different one for each
-  idle builder. The wake is paced like assigned work (five minutes apart, the assigned day and
-  backoff) and is also recorded as an `idle-role` warning, so idle with ready work is never a quiet
-  state (hjx.1.6.12).
+- **An idle builder takes the next ready item.** The idle stall above fires only when nothing at all is
+  in progress. Each pass also finds every builder that holds nothing it can move (work waiting on its
+  evidence rows does not count) and whose session has been quiet more than 10 minutes, while a story,
+  bug or security bead is ready, unassigned and claimable, and wakes it to claim that item, a
+  different one for each idle builder. Fix work is offered first: a fix linked to a failed check or a
+  stop (`metadata.fixes`, or the stop's recovery work), then security, then other bugs, then stories,
+  each in `bd ready` order. In a stopped area only the stop's recovery work is offered. The wake is paced
+  like assigned work (five minutes apart, the assigned day and backoff), spends none of the stall
+  wakes' hourly gate or daily cap, and is also recorded as an `idle-role` warning, so idle with ready
+  work is never a quiet state (hjx.1.6.12). A session the team revive started, or restarted onto the
+  installed plugin, that has had no turn since is woken once with the first turn, paced the same way.
 - **Handoffs.** `merge-gate.js merged` hands the deploy of each story it marked merged to the watchdog,
   and `evidence.js state <bead> deployed` hands the reality check (`.delivery/watchdog/handoffs.ndjson`,
   `lib/handoff.js`): if the Delivery Manager's turn ends there, the watchdog wakes it for that step with

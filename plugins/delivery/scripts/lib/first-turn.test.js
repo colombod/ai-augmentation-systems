@@ -88,7 +88,20 @@ test('the pass reads the start rows from the file the team revive writes, and on
     fs.appendFileSync(TR.ledgerFile(root), '{torn\n');
     const rows = WD.reviveStarts(root);
     assert.deepEqual(rows.map((r) => [r.type, r.instance]), [['start', 'builder-3']]);
+    // a restart onto the installed plugin brings a session up too; a restart that failed brings none up
+    TR.record(root, { type: 'restart', at: iso(NOW - 4 * 60e3), instance: 'builder-2', pid: 2, session_id: 'session_x', from: '0.1.0', to: '0.2.0' });
+    TR.record(root, { type: 'restart-failed', at: iso(NOW - 4 * 60e3), instance: 'builder', stopped: 9, from: '0.1.0', to: '0.2.0' });
+    assert.deepEqual(WD.reviveStarts(root).map((r) => [r.type, r.instance]), [['start', 'builder-3'], ['restart', 'builder-2']]);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a session restarted onto the installed plugin is given its first turn, as a started one is', () => {
+  const at = NOW - 5 * 60e3;
+  const restart = { type: 'restart', at: iso(at), instance: 'builder-3', pid: 2, session_id: 'session_x' };
+  const s = WD.stalls({ now: iso(NOW), sessions: [b3(NOW - 3600e3)], starts: [restart] }).stalls.filter((x) => x.kind === 'started');
+  assert.deepEqual(s.map((x) => x.key), [`started:builder-3:${iso(at)}`]);
+  // the other direction: one that has had a turn since its restart is not woken
+  assert.deepEqual(WD.stalls({ now: iso(NOW), sessions: [b3(NOW - 60e3)], starts: [restart] }).stalls.filter((x) => x.kind === 'started'), []);
 });
 
 test('a pass reads the revive ledger: a session on the roster started since it was last seen gets the start wake', () => {
@@ -171,4 +184,86 @@ test('every watchdog wake prompt carries the first turn, after the opening and b
   const at = p.indexOf(FT.FIRST_TURN);
   assert.ok(at > p.indexOf('ex-a is assigned'), p);
   assert.ok(p.endsWith('Reply in one line with what you did.'), p);
+});
+
+// review rv-190: the cases each guard of the idle-builder wake and its pacing needs, both directions
+const wakeRoot = (rows) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-pace-'));
+  for (const r of rows) WD.log(root, { type: 'wake', pid: 7, instance: 'builder', ...r });
+  return root;
+};
+const quietStall = { kind: 'quiet', key: 'quiet:ex-9', bead: 'ex-9', target: 'builder', due: true, line: 'ex-9 has not moved', prompt: 'Move ex-9.' };
+
+test('start and idle-builder wakes do not spend the stall budget: a stall after them is not held to the hour or the day', () => {
+  for (const kind of ['unclaimed:builder:ex-1', 'started:builder:2026-11-08T22:00:00.000Z']) {
+    const recent = wakeRoot([{ at: iso(NOW - 20 * 60e3), keys: [kind] }]);
+    const day = wakeRoot(Array.from({ length: 6 }, (_, i) => ({ at: iso(NOW - (i + 1) * 70 * 60e3), keys: [kind] })));
+    try {
+      for (const root of [recent, day]) {
+        const p = WD.plan({ stalls: [quietStall] }, { root, now: iso(NOW), alive: () => false });
+        assert.deepEqual(p.wakes.map((w) => w.keys).flat(), ['quiet:ex-9'], `${kind}: ${JSON.stringify(p.held)}`);
+      }
+    } finally { for (const r of [recent, day]) fs.rmSync(r, { recursive: true, force: true }); }
+  }
+  // the other direction: a stall wake twenty minutes ago still holds the next stall to the hour
+  const stalled = wakeRoot([{ at: iso(NOW - 20 * 60e3), keys: ['quiet:ex-8'] }]);
+  try {
+    const p = WD.plan({ stalls: [quietStall] }, { root: stalled, now: iso(NOW), alive: () => false });
+    assert.equal(p.wakes.length, 0);
+    assert.match(p.held[0].reason, /one wake an hour/);
+  } finally { fs.rmSync(stalled, { recursive: true, force: true }); }
+});
+
+test('idle-builder wakes alone do not fill the day of message wakes: a message still goes', () => {
+  const cap = WD.capsOf('builder').messages;
+  const root = wakeRoot(Array.from({ length: cap }, (_, i) => ({ at: iso(NOW - (i + 1) * 20 * 60e3), keys: [`unclaimed:builder:ex-${i}`] })));
+  const msg = { kind: 'message', key: 'message:builder:1', target: 'builder', inbox: 'builder', upTo: 1, due: true, line: 'a message waits', prompt: 'Read your message.' };
+  try {
+    const p = WD.plan({ stalls: [msg] }, { root, now: iso(NOW), alive: () => false });
+    assert.deepEqual(p.wakes.map((w) => w.keys).flat(), ['message:builder:1'], JSON.stringify(p.held));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  // the other direction: a day of message wakes does hold the next message
+  const full = wakeRoot(Array.from({ length: cap }, (_, i) => ({ at: iso(NOW - (i + 1) * 20 * 60e3), keys: [`message:builder:${i}`] })));
+  try {
+    const p = WD.plan({ stalls: [msg] }, { root: full, now: iso(NOW), alive: () => false });
+    assert.equal(p.wakes.length, 0);
+  } finally { fs.rmSync(full, { recursive: true, force: true }); }
+});
+
+test('a builder whose only bead waits on its evidence rows holds nothing it can move, and is woken for a ready item', () => {
+  const ready = [story('ex-1')];
+  const merged = { id: 'ex-done', status: 'in_progress', assignee: 'u@h/builder', labels: ['story', 'state-merged'], updated_at: iso(NOW - 60e3) };
+  const deployed = { ...merged, id: 'ex-live', labels: ['story', 'state-deployed'] };
+  for (const b of [merged, deployed]) {
+    assert.deepEqual(unclaimed({ beads: [b, ...ready], ready, sessions: [bld('builder', 30)] }).map((x) => x.bead), ['ex-1'], b.id);
+  }
+  // the other direction: the same bead still being built is work it holds
+  const building = { ...merged, id: 'ex-build', labels: ['story'] };
+  assert.deepEqual(unclaimed({ beads: [building, ...ready], ready, sessions: [bld('builder', 30)] }), []);
+});
+
+test('a ready item in a stopped area is not offered, unless it is that stop\'s recovery work', () => {
+  const area = 'import';
+  const inArea = story('ex-stopped', { metadata: { area } });
+  const fix = { id: 'ex-fix', status: 'open', labels: ['bug'], metadata: { area, fixes: 'ev-ex-fail-1' }, updated_at: iso(NOW - 3600e3) };
+  const failed = { id: 'ex-fail', status: 'in_progress', labels: ['story'], metadata: { area }, updated_at: iso(NOW - 3600e3) };
+  const pause = { paused: false, stops: [{ trigger: 'andon:ev-ex-fail-1', area }] };
+  const s = (ready) => unclaimed({ beads: [failed, ...ready], ready, sessions: [bld('builder', 30)], pause });
+  assert.deepEqual(s([inArea]), [], 'the stopped area runs only its recovery work');
+  assert.deepEqual(s([inArea, fix]).map((x) => x.bead), ['ex-fix'], 'its linked fix is offered');
+  // the other direction: with no stop the same story is offered
+  assert.deepEqual(unclaimed({ beads: [inArea], ready: [inArea], sessions: [bld('builder', 30)] }).map((x) => x.bead), ['ex-stopped']);
+});
+
+test('ready fix work is offered before stories: a linked fix, then a security bead, then a bug, then a story', () => {
+  const st = story('ex-story');
+  const bug = { id: 'ex-bug', status: 'open', labels: ['bug'], updated_at: iso(NOW - 3600e3) };
+  const sec = { id: 'ex-sec', status: 'open', labels: ['security'], updated_at: iso(NOW - 3600e3) };
+  const linked = { id: 'ex-linked', status: 'open', labels: ['bug'], metadata: { fixes: 'ev-ex-a-1' }, updated_at: iso(NOW - 3600e3) };
+  const other = { id: 'ex-chore', status: 'open', labels: ['chore'], updated_at: iso(NOW - 3600e3) };
+  const ready = [other, st, bug, sec, linked];
+  const sessions = ['builder', 'builder-2', 'builder-3', 'builder-4', 'builder-5'].map((i) => bld(i, 30));
+  const s = unclaimed({ beads: ready, ready, sessions });
+  assert.deepEqual(s.map((x) => x.bead), ['ex-linked', 'ex-sec', 'ex-bug', 'ex-story'], 'a bead that is neither fix nor story is not offered');
+  assert.match(s[0].prompt, /bd update ex-linked --claim.*the next one from bd ready/);
 });

@@ -399,7 +399,8 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   // the revive's own to retry, not a first turn.
   const newestStart = new Map();
   for (const r of starts || []) {
-    if (!r || r.type !== 'start' || !r.instance || !Number.isFinite(ms(r.at))) continue;
+    // a restart onto the installed plugin (lib/team-revive.js staleOf) also brings a session up with no turn
+    if (!r || !['start', 'restart'].includes(r.type) || !r.instance || !Number.isFinite(ms(r.at))) continue;
     const had = newestStart.get(r.instance);
     if (!had || ms(r.at) > ms(had.at)) newestStart.set(r.instance, r);
   }
@@ -427,8 +428,16 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
   // wake is paced like assigned work (handover() below), and recorded as a warning the Delivery Manager sees.
   const holdsWork = (h) => beads.some((x) => x && typeOf(x) !== 'epic' && !waitingEvidence(x)
     && (x.status === 'in_progress' || (x.status === 'open' && readySet.has(x.id))) && (holderOf(x, list) || {}).instance === h.instance);
-  const offer = (ready || []).filter((b) => b && b.status === 'open' && !b.assignee && (b.labels || []).includes('story')
-    && !waiting.has(b.id) && !(inStop(b) && !recovering(b)));
+  // what a builder may be offered: a story, or a fix (a bug or security bead). Fix work goes first (rv-190):
+  // a fix linked to a failed check or a stop (metadata.fixes, or a stop's recovery work), then security,
+  // then any other bug, then stories, each in bd ready's own order
+  const hasLabel = (b, l) => (b.labels || []).includes(l);
+  const isFix = (b) => hasLabel(b, 'bug') || hasLabel(b, 'security');
+  const rankOf = (b) => (isFix(b) && (String((b.metadata || {}).fixes || '').trim() || (inStop(b) && recovering(b))) ? 0
+    : hasLabel(b, 'security') ? 1 : hasLabel(b, 'bug') ? 2 : 3);
+  const offer = (ready || []).filter((b) => b && b.status === 'open' && !b.assignee && (hasLabel(b, 'story') || isFix(b))
+    && !waiting.has(b.id) && !(inStop(b) && !recovering(b)))
+    .map((b, i) => ({ b, i, r: rankOf(b) })).sort((x, y) => x.r - y.r || x.i - y.i).map((x) => x.b);
   let nextOffer = 0;
   for (const h of list.filter((s) => s && s.role === 'builder')) {
     if (limited.has(h.instance) || (h.waitUntil && h.waitUntil > t) || holdsWork(h)) continue;
@@ -439,9 +448,9 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
     if (!b) break;
     out.push({ kind: 'unclaimed', key: `unclaimed:${h.instance}:${b.id}`, bead: b.id, target: h.instance, due: true,
       line: `Idle with ready work: ${h.instance} holds nothing and has been quiet for ${span(quiet)} while ${b.id} is ready.`,
-      plain: 'A builder with nothing to do is started on the next ready story.',
-      detail: `${h.instance} holds nothing; ready story ${b.id}; session quiet since ${Number.isFinite(h.lastActive) ? new Date(h.lastActive).toISOString() : 'unknown'}`,
-      prompt: `You hold nothing and ${b.id} is ready${b.title ? ` (${b.title})` : ''}. Claim it now: bd update ${b.id} --claim, then read its story file and build it; if another builder claimed it first, take the next one from bd ready --label story.` });
+      plain: 'A builder with nothing to do is started on the next ready item.',
+      detail: `${h.instance} holds nothing; ready ${hasLabel(b, 'story') ? 'story' : 'fix'} ${b.id}; session quiet since ${Number.isFinite(h.lastActive) ? new Date(h.lastActive).toISOString() : 'unknown'}`,
+      prompt: `You hold nothing and ${b.id} is ready${b.title ? ` (${b.title})` : ''}. Claim it now: bd update ${b.id} --claim, then ${hasLabel(b, 'story') ? 'read its story file and build it' : 'fix it test-first'}; if another builder claimed it first, take the next one from bd ready.` });
   }
   for (const b of beads.filter((x) => x && x.status === 'in_progress' && !inStop(x) && waitingEvidence(x))) {
     const last = Math.max(ms(b.updated_at), ms(b.created_at));
@@ -667,7 +676,7 @@ function reviveStarts(root) {
   const out = [];
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
-    try { const r = JSON.parse(line); if (r && r.type === 'start') out.push(r); } catch (err) { /* a torn line */ }
+    try { const r = JSON.parse(line); if (r && (r.type === 'start' || r.type === 'restart')) out.push(r); } catch (err) { /* a torn line */ }
   }
   return out;
 }
@@ -872,7 +881,9 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     }
     // the stall gates count stall wakes only: a role woken often for messages is still told about its
     // stall (each message wake would otherwise push "one wake an hour" forward and fill the day's six)
-    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !/^(message|handoff|assigned|review):/.test(String(k))));
+    // a start's first turn and an idle builder's ready item are handovers (isHandover) with their own pacing,
+    // so they spend none of the stall budget either (rv-190)
+    const stallRows = mine.filter((r) => (r.keys || []).some((k) => !/^(message|handoff|assigned|review|started|unclaimed):/.test(String(k))));
     const lastStall = stallRows[stallRows.length - 1];
     if (last && alive(last.pid)) reason = 'its last wake is still running';
     else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;

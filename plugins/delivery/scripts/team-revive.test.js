@@ -141,6 +141,28 @@ test('a role whose server ended after its session ran is started again at once, 
   assert.equal(n, 6, 'six starts a day');
 });
 
+// rv-190 with PR 186: a restart onto the installed plugin reattaches with --session-id, so the owner keeps
+// the link and the conversation; that is claude's single-session mode, which ends after the task. The
+// restart row is a reattach of that link, so the next start is a server that stays up, at once.
+test('a session restarted onto the installed plugin that ran and ended is started again at once, on a server that stays up', () => {
+  const at = (min) => iso(Date.parse(T0) + min * 60e3);
+  const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  register(p, 'builder', { remote_session_id: 'session_x' });
+  R.record(p.root, { type: 'restart', at: at(0), instance: 'builder', pid: 901, args: ['remote-control', '--name', 'builder@ex', '--session-id', 'session_x'], session_id: 'session_x', from: '0.1.0', to: '0.2.0', stopped: 900 });
+  RO.touchInstance(p.root, { instance: 'builder', now: at(2) });
+  const r = run(p, ['start'], { now: at(15) });
+  assert.equal(r.calls.length, 1, r.out);
+  assert.deepEqual(r.calls[0].args.slice(3, 7), ['--spawn', 'same-dir', '--capacity', '1']);
+  assert.match(r.out, /its reattach to session_x ran and ended/);
+  // the other direction: a restart whose session never came up is held for the hour, as a start is
+  const q = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  register(q, 'builder', { remote_session_id: 'session_x' });
+  R.record(q.root, { type: 'restart', at: at(0), instance: 'builder', pid: 901, session_id: 'session_x', from: '0.1.0', to: '0.2.0', stopped: 900 });
+  const held = run(q, ['start'], { now: at(15) });
+  assert.equal(held.calls.length, 0);
+  assert.match(held.out, /held: started 2026-11-04 09:00 UTC/);
+});
+
 test('a role session already open, or whose started server still runs, is not started', () => {
   const p = project();
   const open = [{ cwd: p.dir('chief-of-staff') }, { cwd: `${p.dir('builder')}/` }];
