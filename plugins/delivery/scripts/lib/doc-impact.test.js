@@ -75,3 +75,38 @@ test('an empty doc-impact line is refused, and the next line is not read as its 
     assert.match(r.why, /its doc-impact line is empty/);
   }
 });
+
+// delivery-plugin-planning-8l1.4.1: a builder cannot edit a pull request's description (gh pr edit fails,
+// and the lane refuses body files and gh api writes), so the line also counts from a comment on the
+// pull request, which gh pr comment posts and which adds no commit, or from a commit message in it.
+// Where it appears more than once the latest says it: description, then commits, then comments, in order.
+test('the line counts from a comment on the pull request or a commit message in it, not only the description', () => {
+  const fromComment = { ...pr(['src/import.js'], 'Refs ex-1'), comments: [{ body: 'Looks good' }, { body: 'Doc-impact: none (a refactor users never see)' }] };
+  assert.deepEqual(D.check(fromComment), { ok: true });
+  const fromCommit = { ...pr(['src/import.js'], 'Refs ex-1'), commits: [{ messageHeadline: 'Import a CSV', messageBody: 'Refs ex-1\n\nDoc-impact: none (an internal parser change)' }] };
+  assert.deepEqual(D.check(fromCommit), { ok: true });
+  // a comment or a commit with no line changes nothing
+  const r = D.check({ ...pr(['src/import.js'], 'Refs ex-1'), comments: [{ body: 'Rebased.' }], commits: [{ messageHeadline: 'x', messageBody: '' }] });
+  assert.equal(r.ok, false);
+  assert.match(r.why, /no doc-impact line/);
+});
+
+test('the latest line says the doc impact: a later comment corrects the description, either way', () => {
+  // the description names docs it does not touch; a later comment says none, with a reason
+  const fixed = { ...pr(['src/import.js'], 'Doc-impact: README import section'), comments: [{ body: 'Doc-impact: none (the README does not describe the parser)' }] };
+  assert.deepEqual(D.check(fixed), { ok: true });
+  // the description says none; a later comment leaves the line empty: refused
+  const broken = { ...pr(['src/import.js'], 'Doc-impact: none (internal)'), comments: [{ body: 'Doc-impact:' }] };
+  assert.match(D.check(broken).why, /its doc-impact line is empty/);
+  // the description's line comes before the commits', so a commit's line wins over it
+  const commit = { ...pr(['src/import.js'], 'Doc-impact:'), commits: [{ messageHeadline: 'x', messageBody: 'Doc-impact: none (a fixture only)' }] };
+  assert.deepEqual(D.check(commit), { ok: true });
+});
+
+test('the refusal names the comment a builder can post, with the pull request number', () => {
+  const r = D.check(pr(['src/import.js'], 'Refs ex-1'), { pr: 478 });
+  assert.match(r.fix, /gh pr comment 478 --body 'Doc-impact: <the docs this pull request updates>'/);
+  assert.match(r.fix, /gh pr comment 478 --body 'Doc-impact: none \(<why users see no change>\)'/);
+  assert.match(r.fix, /a comment adds no commit, so a passing review still counts/);
+  assert.match(D.check(pr(['src/import.js'], 'Refs ex-1')).fix, /gh pr comment <pr> --body/, 'no number known: a placeholder');
+});

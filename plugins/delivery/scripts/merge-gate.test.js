@@ -104,7 +104,7 @@ test('a reviewed, green change users can see is refused at the gate and the merg
   h.pass('builder-2');
   const g = h.gate('delivery-lead', 'check 478');
   assert.equal(g.code, 1);
-  assert.match(g.out, /refused: PR 478: it changes what users see \(src\/import\.js\) and its description has no doc-impact line\.\nAdd one line to the pull request's description: `Doc-impact: <the docs this pull request updates>`/);
+  assert.match(g.out, /refused: PR 478: it changes what users see \(src\/import\.js\) and its description has no doc-impact line\.\nAdd one line saying the doc impact as a comment on the pull request: gh pr comment 478 --body 'Doc-impact: <the docs this pull request updates>'/);
   assert.match(h.merge('delivery-lead', `478 --match-head-commit ${H1}`).deny, /no doc-impact line/);
   // the line names docs the pull request does not touch: still refused
   h.setPr(478, (p) => { p.body += '\nDoc-impact: README import section'; });
@@ -112,6 +112,52 @@ test('a reviewed, green change users can see is refused at the gate and the merg
   // the docs are updated in it: the same reviewed head passes (a description edit is not a new commit)
   h.setPr(478, (p) => { p.files = [...p.files, { path: 'README.md', additions: 4, deletions: 1 }]; });
   assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/);
+});
+
+// delivery-plugin-planning-8l1.4.1: the gate applies the moment it installs, so a pull request already open
+// then would be refused with no notice. The gate records when it first ran in the project; a pull request
+// created before that is warned, not refused, and told how to add the line. Unreadable record: no grace.
+test('a pull request opened before the doc-impact gate first ran here is warned, not refused; one opened after is refused', () => {
+  const since = path.join('.delivery', 'reviews', 'doc-impact-since.json');
+  const noLine = (createdAt) => pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, createdAt });
+  const h = setup({ 478: noLine('2026-11-01T10:00:00Z') });
+  fs.mkdirSync(path.join(h.root, '.delivery', 'reviews'), { recursive: true });
+  fs.writeFileSync(path.join(h.root, since), JSON.stringify({ since: '2026-11-05T00:00:00Z' }));
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  const g = h.gate('delivery-lead', 'check 478');
+  assert.equal(g.code, 0, g.out);
+  assert.match(g.out, /warning: PR 478 was opened before the doc-impact gate first ran here \(2026-11-05T00:00:00Z\), so it is not refused: it changes what users see \(src\/import\.js\) and its description has no doc-impact line; Add one line saying the doc impact as a comment on the pull request: gh pr comment 478 --body 'Doc-impact:/);
+  assert.equal(h.merge('delivery-lead', `478 --match-head-commit ${H1}`).deny, null, 'the lane merge check gives the same grace');
+  // opened after the gate first ran: refused as before
+  h.setPr(478, (p) => { p.createdAt = '2026-11-06T10:00:00Z'; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /refused: PR 478: it changes what users see/);
+  // no creation time known: refused, never a silent grace
+  h.setPr(478, (p) => { delete p.createdAt; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /refused: PR 478: it changes what users see/);
+  // an unreadable record gives no grace
+  h.setPr(478, (p) => { p.createdAt = '2026-11-01T10:00:00Z'; });
+  fs.writeFileSync(path.join(h.root, since), '{not json');
+  assert.match(h.gate('delivery-lead', 'check 478').out, /refused: PR 478: it changes what users see/);
+});
+
+test('the first gate run in a project records when it ran, so pull requests already open then are the ones warned', () => {
+  const h = setup({ 478: pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, createdAt: '2020-01-01T00:00:00Z' }) });
+  const file = path.join(h.root, '.delivery', 'reviews', 'doc-impact-since.json');
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  const before = Date.now();
+  const g = h.gate('delivery-lead', 'check 478');
+  const at = Date.parse(JSON.parse(fs.readFileSync(file, 'utf8')).since);
+  assert.ok(at >= before - 1000 && at <= Date.now() + 1000, `recorded at the first run: ${at}`);
+  assert.match(g.out, /warning: PR 478 was opened before the doc-impact gate first ran here/);
+  // a later run keeps the first time
+  const first = fs.readFileSync(file, 'utf8');
+  h.gate('delivery-lead', 'check 478');
+  assert.equal(fs.readFileSync(file, 'utf8'), first);
+  // a line in a comment clears it outright, with no warning
+  h.setPr(478, (p) => { p.comments = [{ body: 'Doc-impact: none (a test fixture)' }]; });
+  assert.doesNotMatch(h.gate('delivery-lead', 'check 478').out, /doc-impact gate first ran/);
 });
 
 test('R-32: a conflict goes back to its owner (bead note and message); after the fix only a new review counts', () => {
@@ -442,4 +488,34 @@ test('the doc-impact check is a warning, never a silent pass, when GitHub cannot
   const r = mergeGate.gate(root, '478', opts(() => pr478({ body: `Refs ${BEAD}` })));
   assert.equal(r.ok, false);
   assert.match(r.why, /no doc-impact line/);
+});
+
+// 8l1.4.1 (finding from a second look): the first-run record is written on the gate's first readable run,
+// whatever it finds. Written only on a refusal, a pull request opened after the gate installed but before
+// its first refusal would have been taken for one already open, and passed.
+test('the first-run record is written on a passing run too: a pull request opened after it is refused', () => {
+  const root = makeProject();
+  const store = memBd([storyBead({ metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } })]);
+  const team = { ...loadManifest(root).team, product_github: 'example/example' };
+  const who = (instance) => ({ root, team, instance, roleId: instance.replace(/-\d+$/, ''), actor: `dev@pc/${instance}` });
+  const down = () => ({ unavailable: 'gh is not installed' });
+  const call = (inst, argv) => review.main(argv, { bd: store, gh: down, who: who(inst) });
+  assert.equal(call('delivery-lead', ['request', '478', '--reviewer', 'agent-1', '--head', H1, '--branch', 'team/builder-1', '--bead', BEAD, '--lines', '120']).code, 0);
+  assert.equal(call('delivery-lead', ['record', '478', '--head', H1, '--result', 'pass', '--by', 'agent-1', '--summary', 'ok']).code, 0);
+  assert.equal(call('delivery-lead', ['ci', '478', '--head', H1, '--result', 'pass', '--run', 'https://ci.example/run/9']).code, 0);
+  const T0 = Date.parse('2026-11-09T10:00:00Z');
+  const at = (t) => new Date(t).toISOString();
+  const run = (view, t) => mergeGate.gate(root, '478', { head: H1, gh: () => view, team, repo: 'example/example', planDrift: () => [], readFile: () => ({ unavailable: 'unused' }), now: at(t) });
+  // the first readable run passes (its line is there) and still records the time
+  assert.equal(run(pr478({ createdAt: at(T0 - 60e3) }), T0).ok, true);
+  const file = path.join(root, '.delivery', 'reviews', 'doc-impact-since.json');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).since, at(T0));
+  // opened an hour after that, with no line, checked an hour later: refused, not taken for an old one
+  const late = run(pr478({ body: `Refs ${BEAD}`, createdAt: at(T0 + 3600e3) }), T0 + 2 * 3600e3);
+  assert.equal(late.ok, false);
+  assert.match(late.why, /no doc-impact line/);
+  // an unreadable pull request records nothing: the first readable run is the one that counts
+  const root2 = makeProject();
+  mergeGate.gate(root2, '478', { head: H1, gh: down, team, repo: 'example/example', planDrift: () => [], readFile: () => ({ unavailable: 'unused' }), now: at(T0) });
+  assert.equal(fs.existsSync(path.join(root2, '.delivery', 'reviews', 'doc-impact-since.json')), false);
 });
