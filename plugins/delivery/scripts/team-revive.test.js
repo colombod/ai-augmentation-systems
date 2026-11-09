@@ -662,7 +662,7 @@ test('revive() itself refuses a start from a role session that may not start ses
 
 // hjx.1.6.10.1: a role session started by the host job's service ran in that service's cgroup and shared
 // its TasksMax with every role (eight starts aborted at once), and kept the oneshot from ending.
-const startDeps = (p, extra) => ({ start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, systemdRun: null, ...extra });
+const startDeps = (p, extra) => ({ start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, systemdRun: null, ...extra });
 
 test('each start runs in its own systemd user scope with its own limits where systemd runs, and as a plain child where it does not', () => {
   const c = R.scopedCommand('claude', ['remote-control', '--name', 'builder@ex'], { instance: 'builder-2', at: T0, systemdRun: '/usr/bin/systemd-run' });
@@ -753,7 +753,7 @@ function fakeBin(dir, name, body) {
   fs.chmodSync(f, 0o755);
   return f;
 }
-const realDeps = (p, env) => ({ start: true, env: { DELIVERY_HOST: 'pc', PATH: process.env.PATH, ...env }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config });
+const realDeps = (p, env) => ({ start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc', PATH: process.env.PATH, ...env }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config });
 
 test('with the real spawn and no settle given, a start whose process exits at once is recorded failed', () => {
   const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
