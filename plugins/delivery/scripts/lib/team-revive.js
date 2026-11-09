@@ -59,6 +59,10 @@ function scopedCommand(bin, args, { instance, at, systemdRun = null } = {}) {
 // (team-revive.test.js pins this to the quoted help).
 const RC_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk', 'plan'];
 const RC_DEFAULT_MODES = ['default', 'manual'];
+// A new start is a Remote Control server that stays up: same-dir keeps serving after its session completes
+// (claude 2.1.318 archives the session and returns to idle), where --spawn session exits with it and the role
+// is gone after one task. Capacity 1: one session in a role directory at a time, never a second link.
+const STAY_UP = ['--spawn', 'same-dir', '--capacity', '1'];
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const ms = (x) => { const t = Date.parse(x); return Number.isNaN(t) ? -Infinity : t; };
 
@@ -268,19 +272,26 @@ function assess(f) {
     const pointer = f.pointer(roleDir);
     it.remoteId = (bridge && bridge.bridgeSessionId) || (pointer && pointer.sessionId) || (ID_RE.test(String(e.remote_session_id || '')) ? e.remote_session_id : null);
     if (!it.running) {
+      // its last start's session joined (the roster's last_seen moved past the start) and its server is gone:
+      // it ran and ended, so it is started again at once, not after the hour that holds a start that died
+      const ran = Boolean(last) && ms(e.last_seen) > ms(last.at);
       if (!f.exists(roleDir)) it.skip = `its role directory ${roleDir} is not on this host (prepare-role.js prepares it)`;
       // a reattach whose session never joined (the roster's last_seen did not move past it) is not tried
       // again: the id is gone or refused, and the owner gets a new link rather than none
       else if (it.remoteId && last && last.session_id === it.remoteId && ms(e.last_seen) < ms(last.at)) { it.staleId = it.remoteId; it.remoteId = null; }
+      // a reattach is claude's single-session mode ("exits when complete": --session-id takes no --spawn), so
+      // one that joined has ended after its task; reattaching that link again would end the same way, so a
+      // link is reattached once and the role then gets a server that stays up (hjx.1.6.12), on a new link
+      else if (it.remoteId && starts.some((r) => r.session_id === it.remoteId)) { it.endedId = it.remoteId; it.remoteId = null; }
       const m = modeOf(team);
       if (!it.skip && m.skip) it.skip = m.skip;
       it.mode = m.mode || null;
       const today = starts.filter((r) => t - ms(r.at) < DAY);
       if (failed) it.failed = `its start ${WD.clock(ms(last.at))} (pid ${last.pid}) exited within ${Math.round(SETTLE_MS / 1000)}s`;
-      if (!it.skip && last && !failed && t - ms(last.at) < START_EVERY_MS) it.held = `started ${WD.clock(ms(last.at))}; the next start is after ${WD.clock(ms(last.at) + START_EVERY_MS)} (one start an hour)`;
+      if (!it.skip && last && !failed && !ran && t - ms(last.at) < START_EVERY_MS) it.held = `started ${WD.clock(ms(last.at))}; the next start is after ${WD.clock(ms(last.at) + START_EVERY_MS)} (one start an hour)`;
       else if (!it.skip && today.length >= DAILY_CAP) it.held = `started ${today.length} times in the last day, the most a day allows; the next start is after ${WD.clock(ms(today[today.length - DAILY_CAP].at) + DAY)}`;
       if (!it.skip && alive === null && !failed) it.held = `the process list could not be read, so whether its Remote Control server started ${WD.clock(ms(last.at))} (pid ${last.pid}) still runs is not known`;
-      it.args = ['remote-control', '--name', it.name, ...(it.remoteId ? ['--session-id', it.remoteId] : ['--spawn', 'session']), ...(it.mode ? ['--permission-mode', it.mode] : [])];
+      it.args = ['remote-control', '--name', it.name, ...(it.remoteId ? ['--session-id', it.remoteId] : STAY_UP), ...(it.mode ? ['--permission-mode', it.mode] : [])];
     }
     out.instances.push(it);
   }
@@ -314,7 +325,7 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
     const why = `no session in ${i.roleDir}`;
     if (i.skip) { out.push(`Missing: ${i.instance} (${why}); not started: ${i.skip}.`); continue; }
     if (i.held) { out.push(`Missing: ${i.instance} (${why}); held: ${i.held}.`); continue; }
-    const how = `${i.failed ? `retry after a failed start (${i.failed}): ` : ''}${shown(bin, i.args)} in ${i.roleDir}${i.remoteId ? `, reattaching Remote Control session ${i.remoteId}` : ', a new Remote Control session'}${i.staleId ? ` (its reattach to ${i.staleId} never joined)` : ''}`;
+    const how = `${i.failed ? `retry after a failed start (${i.failed}): ` : ''}${shown(bin, i.args)} in ${i.roleDir}${i.remoteId ? `, reattaching Remote Control session ${i.remoteId}` : ', a new Remote Control session'}${i.staleId ? ` (its reattach to ${i.staleId} never joined)` : ''}${i.endedId ? ` (its reattach to ${i.endedId} ran and ended, as a single-session server does after its task)` : ''}`;
     const s = started && started[i.instance];
     const where = s ? (s.unit ? `, scope ${s.unit}` : s.fallbackFrom ? `, a plain start: systemd-run refused scope ${s.fallbackFrom}` : '') : '';
     if (s && s.failed) out.push(`Failed: ${i.instance} (pid ${s.pid}${where}): its process exited within ${Math.round(SETTLE_MS / 1000)}s of the start, so it is not counted as started and is retried at the next pass; ${how}; log ${s.log}.`);
@@ -342,4 +353,4 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
   return out;
 }
 
-module.exports = { LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
+module.exports = { STAY_UP, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
