@@ -518,7 +518,10 @@ function defaultUserGuard(env, home) {
 // runner starts none: a test must never start a real session on the machine it runs on.
 function defaultRevive(root, { team, env, now, dryRun, bd, live }) {
   if (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN) return [];
-  return require('./team-revive.js').revive(root, team, { start: true, dryRun, env, now, bd, ...(live !== undefined ? { live } : {}) }).lines;
+  // a stale session is stopped only after a read of the open sessions made just then finds it idle,
+  // never on the pass's first read, which may be minutes old by then (lib/team-revive.js staleOf)
+  const relist = () => liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
+  return require('./team-revive.js').revive(root, team, { start: true, dryRun, env, now, bd, relist, ...(live !== undefined ? { live } : {}) }).lines;
 }
 
 function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive } = {}) {
