@@ -1056,6 +1056,17 @@ test('hjx.1.6.18: the Delivery Manager closes and reopens pull requests; no othe
     assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
   }
   for (const c of ['gh pr view 187', 'gh pr list --state closed', 'gh api repos/o/r/pulls/187']) assert.equal(run(POLICIES[BUILDER], c).allow, true, `builder: ${c}`);
+  // the other ways to the same close: a pull request is an issue too (its issue endpoint and gh issue
+  // close/reopen close it), and the GraphQL mutations
+  for (const c of [
+    'gh api -X PATCH repos/o/r/issues/187 -f state=closed',
+    'gh issue close 187', 'gh issue reopen 187', 'gh -R o/r issue close 187 --comment x',
+    "gh api graphql -f query='mutation { closePullRequest(input: {pullRequestId: \"X\"}) { clientMutationId } }'",
+    "gh api graphql -f query='mutation { reopenPullRequest(input: {pullRequestId: \"X\"}) { clientMutationId } }'",
+    "gh api graphql -f query='mutation { closeIssue(input: {issueId: \"X\"}) { clientMutationId } }'",
+    'gh api graphql -f query=@close.graphql', 'gh api graphql --input q.json',
+  ]) assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
+  for (const c of ["gh api graphql -f query='{ repository(owner: \"o\", name: \"r\") { pullRequest(number: 1) { state } } }'", 'gh api repos/o/r/issues/187']) assert.equal(run(POLICIES[BUILDER], c).allow, true, `builder reads: ${c}`);
 });
 
 // Copilot review of PR 49

@@ -1552,10 +1552,12 @@ function decodeEscapes(x) {
   return s;
 }
 
-// A pull request closed or reopened in whatever form: `gh pr close`, `gh pr reopen`, or a REST call
-// that sets a pull request's state (gh api ... pulls/<n> -f state=closed). Closing is the Delivery
-// Manager's alone (dec-chief-of-staff-000314), like merging: a role with an open lane ("any") would
-// otherwise close a pull request its own lane says nothing about.
+// A pull request closed or reopened in whatever form: `gh pr close`/`reopen`; `gh issue close`/`reopen`
+// and a REST call that sets the state of pulls/<n> or issues/<n> (a pull request is an issue too, and
+// its issue closes it); the GraphQL close and reopen mutations, and a GraphQL query read from a file or
+// stdin, which cannot be read and so cannot be cleared. Closing is the Delivery Manager's alone
+// (dec-chief-of-staff-000314), like merging: a role with an open lane ("any") would otherwise close a
+// pull request its own lane says nothing about.
 // The allowed groups for a refusal's first line, cut to fit it (a reason's line is at most MAX_LINE,
 // R-46): the groups that fit, then how many more. lead: the line's text before the list.
 function groupsShown(bash, lead, close = ').') {
@@ -1588,10 +1590,20 @@ function closeAttempt(command) {
       while (k < rest.length && (rest[k] === '-R' || rest[k] === '--repo' || /^--repo=/.test(rest[k]))) k += rest[k].startsWith('--repo=') ? 1 : 2;
       return rest[k] === 'close' || rest[k] === 'reopen';
     }
+    if (rest[0] === 'issue') {
+      let k = 1;
+      while (k < rest.length && (rest[k] === '-R' || rest[k] === '--repo' || /^--repo=/.test(rest[k]))) k += rest[k].startsWith('--repo=') ? 1 : 2;
+      return rest[k] === 'close' || rest[k] === 'reopen';
+    }
     if (rest[0] === 'api') {
       const c = ghApiCall(['gh', ...rest]);
       const eps = ((c && c.positionals) || []).map((x) => x.split(/[?#]/)[0].replace(/\/{2,}/g, '/').replace(/\/+$/, ''));
-      return eps.some((ep) => /\/pulls\/[^/]+$/i.test(ep)) && Object.keys((c && c.fields) || {}).some((k) => k === 'state');
+      const fields = (c && c.fields) || {};
+      if (eps.some((ep) => /\/(?:pulls|issues)\/[^/]+$/i.test(ep)) && Object.keys(fields).some((k) => k === 'state')) return true;
+      if (eps.some((ep) => /(?:^|\/)graphql$/i.test(ep))) {
+        if (rest.some((a) => /^--input/.test(a)) || Object.values(fields).some((v) => String(v).startsWith('@'))) return true;
+        if (/\b(?:close|reopen)(?:PullRequest|Issue)\b/i.test(Object.values(fields).join(' '))) return true;
+      }
     }
     return false;
   });
