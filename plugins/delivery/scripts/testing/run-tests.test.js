@@ -18,16 +18,40 @@ test('run-tests: finds the suite CI ran (scripts/**, hooks/scripts), itself incl
   assert.ok(rel.length > 50);
 });
 
+// A nested run with no time limit hung once and held the whole suite open for 32 hours, with no
+// test named and the capture cut off mid-run. A nested run is bounded: one that does not finish is
+// killed and fails as its own test, with the end of what it printed.
+const NESTED_MS = 60000;
+function nested(args, opts = {}, timeout = NESTED_MS) {
+  const { spawnSync } = require('child_process');
+  const r = spawnSync(process.execPath, args, { encoding: 'utf8', ...opts, timeout, killSignal: 'SIGKILL' });
+  r.hung = r.error && r.error.code === 'ETIMEDOUT'
+    ? `the nested run did not finish within ${timeout / 1000} s and was killed; its output ends: ${String(r.stdout || '').slice(-400)}${String(r.stderr || '').slice(-400)}`
+    : null;
+  return r;
+}
+
+test('run-tests: a nested run that does not finish is killed and named, never a hung suite', () => {
+  const t0 = Date.now();
+  const r = nested(['-e', 'console.log("started"); setTimeout(() => {}, 60000)'], {}, 500);
+  assert.ok(Date.now() - t0 < 20000, 'killed at its limit, not left to run');
+  assert.match(String(r.hung), /did not finish within 0.5 s and was killed; its output ends: started/);
+  // the other direction: a run that finishes is not called hung
+  const ok = nested(['-e', 'console.log("done")'], {}, 20000);
+  assert.equal(ok.hung, null);
+  assert.equal(ok.status, 0);
+});
+
 // A day of suite runs left 245,000 fixture directories in /tmp and filled the disk: the runner gives
 // the suite a temporary directory of its own and removes it, whatever the run's result.
 test('run-tests: the suite runs in a temporary directory of its own, removed afterwards', () => {
   const fs = require('fs');
   const os = require('os');
-  const { spawnSync } = require('child_process');
   const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-outer-'));
   try {
     // a pattern no test has: every file loads, no test body runs (so this test does not run itself)
-    const r = spawnSync(process.execPath, [path.join(__dirname, 'run-tests.js'), '--test-name-pattern=^no test has this name$'], { env: { ...process.env, TMPDIR: outer }, encoding: 'utf8' });
+    const r = nested([path.join(__dirname, 'run-tests.js'), '--test-name-pattern=^no test has this name$'], { env: { ...process.env, TMPDIR: outer } });
+    assert.equal(r.hung, null, r.hung);
     assert.equal(r.status, 0, r.stderr.slice(-500));
     assert.deepEqual(fs.readdirSync(outer).filter((f) => f.startsWith('delivery-tests-')), [], 'its directory is gone');
   } finally { fs.rmSync(outer, { recursive: true, force: true }); }
