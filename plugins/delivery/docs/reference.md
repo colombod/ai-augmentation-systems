@@ -236,7 +236,9 @@ A builder pushes its own branch and merges the default branch into it to resolve
 Delivery Manager requests an independent review (a reviewer subagent or another session, never the
 author) and merges only on a passing review of the pull request's current head; a conflict or new
 commits send the pull request back to its owner and to review again. Its own `gh pr merge` sits in
-the `gh-merge` group and passes only through the merge gate (below).
+the `gh-merge` group and passes only through the merge gate (below). Closing and reopening a pull
+request (`gh pr close`, `gh pr reopen`) is the Delivery Manager's alone too: the `gh-close` group, in no
+other role's lane, so a pull request replaced by another is closed by the role that merges.
 
 Where `gh pr create` (GraphQL) is refused, a role opens its pull request through REST:
 `gh api -X POST repos/<owner>/<repo>/pulls -f title='<the change>' -f head=team/<instance> -f base=main -f body='Refs <bead id> ...'`.

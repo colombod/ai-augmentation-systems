@@ -1033,6 +1033,31 @@ test('merging is the Delivery Manager\'s: builder and spike researcher lanes are
   assert.equal(run(POLICIES[COS], 'gh pr merge 12').allow, false);
 });
 
+// hjx.1.6.18: pull requests are closed and merged only by the Delivery Manager (dec-chief-of-staff-000314).
+// Its lane refused gh pr close, so a replaced pull request could not be closed by anyone and held its
+// builder's team branch.
+test('hjx.1.6.18: the Delivery Manager closes and reopens pull requests; no other role does', () => {
+  const run = (policy, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx() });
+  // the forms the Delivery Manager runs (gh's -R before the subcommand matches no gh group, merge included)
+  const close = ['gh pr close 187', 'gh pr close 187 -R colombod/ai-augmentation-systems', "gh pr close 187 --comment 'replaced by 190'", 'gh pr reopen 187'];
+  for (const c of close) assert.equal(run(POLICIES[DL], c).allow, true, `delivery-lead: ${c}`);
+  for (const id of [BUILDER, COS, PM, PO]) {
+    for (const c of [...close, 'gh -R org/repo pr close 12']) assert.equal(run(POLICIES[id], c).allow, false, `${id}: ${c}`);
+  }
+  for (const id of ['builder', 'reality-checker', 'spike-researcher', 'tech-writer', 'staffing']) {
+    const p = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/' + id });
+    assert.equal(run(p, 'gh pr close 187').allow, false, `${id} never closes a pull request`);
+  }
+  // a builder's lane is open ("any"): the close is refused by its own rule, which names who closes,
+  // in every form, the REST call that sets the state included; reading a pull request stays open
+  const b = run(POLICIES[BUILDER], 'gh pr close 187 --comment x');
+  assert.match(b.reason, /closing or reopening a pull request is the Delivery Manager's \(dec-chief-of-staff-000314\)/);
+  for (const c of ['cd /tmp && gh pr close 1', 'GH_REPO=o/r gh pr reopen 2', 'gh api -X PATCH repos/o/r/pulls/187 -f state=closed', 'gh api repos/o/r/pulls/187 -X PATCH -f state=open']) {
+    assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
+  }
+  for (const c of ['gh pr view 187', 'gh pr list --state closed', 'gh api repos/o/r/pulls/187']) assert.equal(run(POLICIES[BUILDER], c).allow, true, `builder: ${c}`);
+});
+
 // Copilot review of PR 49
 test('Copilot: the fail-closed path still sees the role marker when lane.js itself fails to load', () => {
   const { roleDir } = preparedRole('builder-1');

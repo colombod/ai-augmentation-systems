@@ -1552,6 +1552,52 @@ function decodeEscapes(x) {
   return s;
 }
 
+// A pull request closed or reopened in whatever form: `gh pr close`, `gh pr reopen`, or a REST call
+// that sets a pull request's state (gh api ... pulls/<n> -f state=closed). Closing is the Delivery
+// Manager's alone (dec-chief-of-staff-000314), like merging: a role with an open lane ("any") would
+// otherwise close a pull request its own lane says nothing about.
+// The allowed groups for a refusal's first line, cut to fit it (a reason's line is at most MAX_LINE,
+// R-46): the groups that fit, then how many more. lead: the line's text before the list.
+function groupsShown(bash, lead, close = ').') {
+  const all = bash.length ? bash : ['none'];
+  const max = require('../../scripts/lib/short-reason.js').MAX_LINE;
+  const full = all.join(', ');
+  if (lead.length + full.length + close.length <= max) return full;
+  const shown = [];
+  for (const g of all) {
+    const more = `, and ${all.length - shown.length - 1} more`;
+    if (lead.length + [...shown, g].join(', ').length + more.length + close.length > max) break;
+    shown.push(g);
+  }
+  return `${shown.join(', ')}, and ${all.length - shown.length} more`;
+}
+
+function closeAttempt(command) {
+  const text = String(command == null ? '' : command);
+  return splitCommand(text).some((seg) => {
+    const t = tokens(seg);
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    if (path.basename(words[0] || '') !== 'gh') return false;
+    let i = 1;
+    for (; i < words.length && words[i].startsWith('-'); i++) {
+      if (words[i] === '-R' || words[i] === '--repo') i++;
+    }
+    const rest = words.slice(i);
+    if (rest[0] === 'pr') {
+      let k = 1;
+      while (k < rest.length && (rest[k] === '-R' || rest[k] === '--repo' || /^--repo=/.test(rest[k]))) k += rest[k].startsWith('--repo=') ? 1 : 2;
+      return rest[k] === 'close' || rest[k] === 'reopen';
+    }
+    if (rest[0] === 'api') {
+      const c = ghApiCall(['gh', ...rest]);
+      const eps = ((c && c.positionals) || []).map((x) => x.split(/[?#]/)[0].replace(/\/{2,}/g, '/').replace(/\/+$/, ''));
+      return eps.some((ep) => /\/pulls\/[^/]+$/i.test(ep)) && Object.keys((c && c.fields) || {}).some((k) => k === 'state');
+    }
+    return false;
+  });
+}
+const CLOSE_REASON = 'closing or reopening a pull request is the Delivery Manager\'s (dec-chief-of-staff-000314).\nMessage the Delivery Manager with the pull request and why it should close';
+
 function mergeAttempt(command, cwd) {
   const text = String(command == null ? '' : command);
   return splitCommand(text).some((seg) => {
@@ -1729,6 +1775,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (usageShellWrite(command, { cwd, dirs: planDirs({ projectRoot, roleDir }), mention: PLANS_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
+    if (pol.roleId !== MERGER && closeAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${CLOSE_REASON}.` };
     if (pol.roleId !== MERGER && passRecordAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${PASS_RECORD_REASON}.` };
     const run = refusedRun(command);
     if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? testsReason(command, pluginRootOf({ pluginRoot })) : RESUME_REASON}.` };
@@ -1737,7 +1784,8 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       return tmpHit ? { allow: false, reason: `Role ${pol.roleId}: ${tmpReason(tmpHit, roleDir)}.` } : { allow: true };
     }
     if (name === 'PowerShell') {
-      return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
+      const psLead = `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: `;
+      return { allow: false, reason: `${psLead}${groupsShown(bash, psLead)}).${tail}` };
     }
     const segs = splitWithOps(command);
     let live = [cwd ? path.resolve(cwd) : path.resolve(process.cwd())];
@@ -1759,8 +1807,9 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
         }
         const construct = expansionConstruct(text);
         // a refused construct is the whole story; otherwise the allowed groups say what the lane runs
-        const why = construct ? `. Refused construct: ${construct}; put literal text in single quotes.` : ` (allowed groups: ${bash.join(', ') || 'none'}).`;
-        return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`${why}${tail}` };
+        const lead = `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\``;
+        const why = construct ? `. Refused construct: ${construct}; put literal text in single quotes.` : ` (allowed groups: ${groupsShown(bash, `${lead} (allowed groups: `)}).`;
+        return { allow: false, reason: `${lead}${why}${tail}` };
       }
       const t = tokens(text);
       if (t[0] !== 'cd') continue;
