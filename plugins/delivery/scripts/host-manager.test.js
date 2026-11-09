@@ -75,19 +75,42 @@ function machine({ alphaRoles, betaRoles, beads = {}, live, units, bd = {}, host
   });
   const alive = new Set();
   const spawned = [];
-  const spawn = (bin, args, opts) => { const pid = 5000 + spawned.length; spawned.push({ args, cwd: opts.cwd }); if (!machine.dies) alive.add(pid); return pid; };
+  const stops = [];
+  // a started server: alive unless machine.dies; with m.join set (a plugin version) its session also
+  // joins, as a real one does: it is listed in its role directory and records its version in the roster
+  const spawn = (bin, args, opts) => {
+    const pid = 5000 + spawned.length;
+    spawned.push({ args, cwd: opts.cwd });
+    if (!machine.dies) alive.add(pid);
+    if (m.join && !machine.dies) {
+      const sessionId = `s-${pid}`;
+      m.live = [...(m.live || []), { cwd: opts.cwd, sessionId, pid, status: 'idle' }];
+      const root = path.join(path.dirname(path.dirname(opts.cwd)), path.basename(path.dirname(opts.cwd)).replace(/-team$/, ''));
+      require('./lib/roster.js').registerInstance(root, { instance: path.basename(opts.cwd), session_id: sessionId, host: 'pc', role_dir: opts.cwd, now: m.now, plugin_version: m.join });
+    }
+    return pid;
+  };
   const config = path.join(base, 'claude-config');
   fs.mkdirSync(config, { recursive: true });
   const m = {
-    base, home, alpha, beta, sd, spawned, alive, config,
+    base, home, alpha, beta, sd, spawned, alive, config, stops,
     beads: { [alpha.root]: beads.alpha || [], [beta.root]: beads.beta || [] },
     live: live !== undefined ? live : [],
     now: T0,
+    installed: '1.2.0',
+    join: '1.2.0',
+    // the restart's wait: a clock that moves only when the restart sleeps
+    clockMs: Date.parse(T0),
+    sleeps: [],
   };
   m.deps = () => ({
     env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev' },
-    home, exec: sd.exec, has: () => true, live: m.live, spawn, cwd: base, who: { roleId: null }, now: m.now,
-    teamDeps: (root) => ({ bd: bd[root] || store(m.beads[root]), prs: [], alive: (pid) => alive.has(pid), pause: () => ({ paused: false }), configDir: config, now: m.now, hostname: 'pc' }),
+    home, exec: sd.exec, has: () => true, live: () => m.live, spawn, cwd: base, who: { roleId: null }, now: m.now,
+    sleep: (msec) => { m.sleeps.push(msec); m.clockMs += msec; }, clock: () => m.clockMs,
+    stop: (server, pid) => { stops.push({ server, pid }); return true; },
+    // each team's host job ran a pass five minutes ago unless a test says otherwise
+    lastPass: () => Date.parse(m.now) - 5 * MIN,
+    teamDeps: (root) => ({ bd: bd[root] || store(m.beads[root]), prs: [], alive: (pid) => alive.has(pid), pause: () => ({ paused: false }), configDir: config, now: m.now, hostname: 'pc', installed: m.installed, server: () => null }),
   });
   m.run = (argv, more = {}) => HMS.main(argv, { ...m.deps(), ...more });
   return m;
@@ -130,8 +153,10 @@ test('restart: the stopped host job and the two working instances come back; the
   assert.deepEqual(m.spawned.map((s) => s.cwd).sort(), [m.alpha.dir('builder'), m.alpha.dir('chief-of-staff')].sort());
   for (const s of m.spawned) assert.deepEqual(s.args.slice(0, 2), ['remote-control', '--name']);
   const lines = r.out.split('\n');
-  for (const l of [`Back: delivery-watchdog-${a}.timer is running.`, 'Back: alpha chief-of-staff is running.', 'Back: alpha builder is running.', 'Left down (no work held): alpha tech-writer.']) assert.ok(lines.includes(l), `${l}\n${r.out}`);
+  for (const l of [`Back: delivery-watchdog-${a}.timer is running.`, 'Back: alpha chief-of-staff is running, listed, on the installed plugin 1.2.0.', 'Back: alpha builder is running, listed, on the installed plugin 1.2.0.', 'Left down (no work held): alpha tech-writer.']) assert.ok(lines.includes(l), `${l}\n${r.out}`);
   assert.doesNotMatch(r.out, /Not back/);
+  // listed at once: no wait
+  assert.deepEqual(m.sleeps, []);
   // each start is a row of the team's own revive ledger, as team-revive.js writes it
   assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'start').map((x) => x.instance).sort(), ['builder', 'chief-of-staff']);
   // nothing down holding work: nothing restarted
@@ -145,9 +170,43 @@ test('a session that did not come back is named as not back, from the read after
   machine.dies = true;
   try {
     const r = m.run(['restart']);
-    assert.match(r.out, /^Not back: alpha builder\.$/m, r.out);
+    assert.match(r.out, /^Not back: alpha builder: started \(pid 5000\) but not listed after 5 min\.$/m, r.out);
     assert.doesNotMatch(r.out, /Back: alpha builder/);
   } finally { machine.dies = false; }
+});
+
+test('restart says Back only for a session the fresh session list shows on the installed plugin: a live pid is not enough', () => {
+  const work = { alpha: [{ id: 'al-1', status: 'in_progress', assignee: 'builder', updated_at: ago(10) }] };
+  // the server runs (its pid is alive) but its session never joins: polled every 10 s for 5 min, then not back
+  const m = machine({ beads: work });
+  m.join = null;
+  const r = m.run(['restart']);
+  assert.ok(m.alive.has(5000), 'the server it started is alive');
+  assert.match(r.out, /^Not back: alpha builder: started \(pid 5000\) but not listed after 5 min\.$/m, r.out);
+  assert.doesNotMatch(r.out, /^Back: alpha builder/m);
+  assert.equal(m.sleeps.length, 30, 'a read every 10 s for 5 min');
+  assert.ok(m.sleeps.every((x) => x === 10e3));
+  // listed, on an older plugin than the installed one
+  const old = machine({ beads: work });
+  old.join = '1.1.0';
+  const o = old.run(['restart']);
+  assert.match(o.out, /^Not back: alpha builder: running an older plugin \(1\.1\.0, installed 1\.2\.0\)\.$/m, o.out);
+  assert.doesNotMatch(o.out, /^Back: alpha builder/m);
+  // listed only after 30 s: the restart waits for it, then says Back
+  const slow = machine({ beads: work });
+  slow.join = null;
+  const live = slow.deps().live;
+  const r2 = slow.run(['restart'], {
+    live: () => {
+      if (slow.clockMs - Date.parse(T0) >= 30e3 && !(slow.live || []).some((x) => x.sessionId === 's-5000')) {
+        slow.live = [...slow.live, { cwd: slow.alpha.dir('builder'), sessionId: 's-5000', status: 'idle' }];
+        require('./lib/roster.js').registerInstance(slow.alpha.root, { instance: 'builder', session_id: 's-5000', host: 'pc', role_dir: slow.alpha.dir('builder'), now: T0, plugin_version: '1.2.0' });
+      }
+      return live();
+    },
+  });
+  assert.match(r2.out, /^Back: alpha builder is running, listed, on the installed plugin 1\.2\.0\.$/m, r2.out);
+  assert.equal(slow.sleeps.length, 3);
 });
 
 test('a team whose beads cannot be read is SOURCE UNAVAILABLE, and a session list that cannot be read counts nobody running', () => {
@@ -185,6 +244,41 @@ test('a restart refused by a start cap is named, with when it can run', () => {
   assert.equal(m.spawned.filter((s) => s.cwd === m.alpha.dir('builder')).length, 0);
 });
 
+test('restart reads the sessions again just before stopping a session on an older plugin: busy on that read, it is not stopped and the reply says why; idle, it is restarted and the reply says so', () => {
+  const stale = () => {
+    const m = machine({ beads: { alpha: [{ id: 'al-1', status: 'in_progress', assignee: 'builder', updated_at: ago(10) }] } });
+    const dir = m.alpha.dir('builder');
+    require('./lib/roster.js').registerInstance(m.alpha.root, { instance: 'builder', session_id: 's-old', host: 'pc', role_dir: dir, now: ago(60), plugin_version: '1.1.0' });
+    fs.mkdirSync(path.join(m.config, 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(m.config, 'sessions', '77.json'), JSON.stringify({ sessionId: 's-old', cwd: dir, bridgeSessionId: 'session_b1', pid: 77 }));
+    const base = m.deps().teamDeps;
+    const reads = [];
+    const more = {
+      teamDeps: (root) => ({ ...base(root), server: (pid) => (pid === 77 ? { pid: 99, self: false } : null) }),
+      live: () => { reads.push(m.liveStatus(reads.length)); return [{ cwd: dir, sessionId: 's-old', pid: 77, status: reads[reads.length - 1] }]; },
+    };
+    return { m, more, reads };
+  };
+  // the first read finds it idle; the second, just before the stop, finds it busy
+  const busy = stale();
+  busy.m.liveStatus = (n) => (n === 0 ? 'idle' : 'busy');
+  const r = busy.m.run(['restart'], busy.more);
+  assert.equal(r.code, 0, r.out);
+  assert.ok(busy.reads.length >= 2, 'a second read of the sessions was made');
+  assert.equal(busy.reads[1], 'busy');
+  assert.deepEqual(busy.m.stops, [], 'not stopped');
+  assert.equal(busy.m.spawned.length, 0);
+  assert.match(r.out, /^Not restarted: alpha builder \(it ran the older plugin 1\.1\.0, installed 1\.2\.0\): it became busy just before the stop\.$/m, r.out);
+  // idle on both reads: stopped once and restarted, and the reply names it
+  const idle = stale();
+  idle.m.liveStatus = () => 'idle';
+  const r2 = idle.m.run(['restart'], idle.more);
+  assert.deepEqual(idle.m.stops, [{ server: 99, pid: 77 }]);
+  assert.equal(idle.m.spawned.length, 1);
+  assert.match(r2.out, /^Restarted: alpha builder \(pid 5000\): it ran the older plugin 1\.1\.0, installed 1\.2\.0\.$/m, r2.out);
+  assert.deepEqual(R.ledger(idle.m.alpha.root).filter((x) => x.type === 'restart').map((x) => [x.instance, x.from, x.to]), [['builder', '1.1.0', '1.2.0']]);
+});
+
 test('tick: 30 minutes silent with work in flight is a restart and one alert; a second tick in the same outage sends none; a new outage alerts again', () => {
   const roles = [{ id: 'chief-of-staff', host: 'pc' }, { id: 'builder', host: 'pc' }, { id: 'host-manager', host: 'pc' }];
   const bead = { id: 'al-1', status: 'in_progress', assignee: 'dev@pc/builder', updated_at: ago(40) };
@@ -201,7 +295,8 @@ test('tick: 30 minutes silent with work in flight is a restart and one alert; a 
     const rows = () => HM.readLedger(HM.outageFile({}, m.home));
     assert.deepEqual(rows().map((r) => r.type), ['open', 'alert']);
     const alert = rows()[1];
-    assert.match(alert.text, /^The team on this machine went silent: alpha builder \(holding al-1; no note or wake since .*\)\. I restarted what was down\. Came back: nothing\. Not back: alpha builder\.$/);
+    assert.match(alert.text, /^The team on this machine went silent: alpha builder \(holding al-1; no note or wake since .*\)\. I restarted what was down\. Not back: alpha builder: started \(pid 5000\) but not listed after 5 min\.$/);
+    assert.doesNotMatch(alert.text, /Came back: nothing/);
     // it reaches the host manager's own session through its team's inbox
     const inbox = require('./lib/inbox.js').pending(m.alpha.root).find((x) => x.to === 'host-manager');
     assert.ok(inbox, first.out);
@@ -211,7 +306,7 @@ test('tick: 30 minutes silent with work in flight is a restart and one alert; a 
     // five minutes on, still down (the session died again, and a cap holds the next start): no second alert
     m.now = iso(Date.parse(T0) + 5 * MIN);
     const second = m.run(['tick'], { lastPass });
-    assert.match(second.out, /still silent, in the outage open since/);
+    assert.match(second.out, /^Still silent, in an open outage: alpha builder \(holding al-1.*\(open since 2026-11-08T10:00:00Z, the owner was alerted then\)\.$/m, second.out);
     assert.deepEqual(rows().map((r) => r.type), ['open', 'alert']);
     assert.equal(require('./lib/inbox.js').pending(m.alpha.root).find((x) => x.to === 'host-manager').entries.length, 1, 'no second message');
     // the bead moves: the outage closes
@@ -240,8 +335,99 @@ test('tick: work noted within 30 minutes, or a wake, is no silence; a host job w
   const old = () => Date.parse(T0) - 40 * MIN;
   const j = m.run(['tick'], { lastPass: old });
   assert.match(j.out, /silent: alpha's host job \(no pass since 2026-11-08T09:20:00\.000Z\); beta's host job/, j.out);
-  assert.deepEqual(HM.readLedger(HM.outageFile({}, m.home)).map((x) => x.type), ['open', 'alert']);
+  // two silences first seen on one pass: two outages, one alert
+  assert.deepEqual(HM.readLedger(HM.outageFile({}, m.home)).map((x) => x.type), ['open', 'open', 'alert']);
   assert.match(j.out, /No host manager instance is in any team on this host: the alert is in .*outages\.ndjson only\./);
+});
+
+test('tick: an outage per silence; a new silence while another is open alerts once more; each closes when its own silence clears', () => {
+  const beads = [{ id: 'al-1', status: 'in_progress', assignee: 'builder', updated_at: ago(40) }, { id: 'al-2', status: 'in_progress', assignee: 'chief-of-staff', updated_at: ago(10) }];
+  const m = machine({ beads: { alpha: beads } });
+  m.live = [{ cwd: m.beta.dir('chief-of-staff') }, { cwd: m.beta.dir('builder') }];
+  const at = (min) => iso(Date.parse(T0) + min * MIN);
+  const rows = () => HM.readLedger(HM.outageFile({}, m.home));
+  const alerts = () => rows().filter((r) => r.type === 'alert');
+  machine.dies = true;
+  try {
+    // A (alpha builder) goes silent: one alert
+    m.run(['tick']);
+    assert.equal(alerts().length, 1);
+    assert.deepEqual(alerts()[0].keys, [`${m.alpha.root}#instance:builder`]);
+    // B (alpha chief-of-staff) goes silent while A is still open: one more alert, for B alone
+    m.now = at(25);
+    m.run(['tick']);
+    assert.equal(alerts().length, 2);
+    assert.deepEqual(alerts()[1].keys, [`${m.alpha.root}#instance:chief-of-staff`]);
+    assert.match(alerts()[1].text, /alpha chief-of-staff/);
+    assert.doesNotMatch(alerts()[1].text, /alpha builder \(holding/);
+    // the next tick, both still silent: no alert
+    m.now = at(30);
+    m.run(['tick']);
+    assert.equal(alerts().length, 2);
+    // A clears: A's outage closes, B's stays open
+    beads[0].updated_at = iso(Date.parse(m.now) - MIN);
+    const c = m.run(['tick']);
+    assert.match(c.out, /^Closed: the outage open since 2026-11-08T10:00:00Z is over \(alpha builder/m, c.out);
+    assert.deepEqual(rows().filter((r) => r.type === 'close').map((r) => r.key), [`${m.alpha.root}#instance:builder`]);
+    assert.equal(alerts().length, 2);
+    // A goes silent again later: a new alert
+    m.now = at(200);
+    beads[1].updated_at = iso(Date.parse(m.now) - MIN);
+    m.run(['tick']);
+    assert.equal(alerts().length, 3);
+    assert.deepEqual(alerts()[2].keys, [`${m.alpha.root}#instance:builder`]);
+    assert.deepEqual(rows().filter((r) => r.type === 'close').map((r) => r.key), [`${m.alpha.root}#instance:builder`, `${m.alpha.root}#instance:chief-of-staff`]);
+  } finally { machine.dies = false; }
+});
+
+test('tick: an instance listed as running but silent for 30 minutes with work in flight gets one alert in plain words, and is neither stopped nor started', () => {
+  const roles = [{ id: 'chief-of-staff', host: 'pc' }, { id: 'builder', host: 'pc' }, { id: 'host-manager', host: 'pc' }];
+  const m = machine({ alphaRoles: roles, beads: { alpha: [{ id: 'al-1', status: 'in_progress', assignee: 'builder', updated_at: ago(45) }] } });
+  m.live = [{ cwd: m.alpha.dir('chief-of-staff'), sessionId: 'c1', status: 'idle' }, { cwd: m.alpha.dir('builder'), sessionId: 'b1', status: 'idle' }, { cwd: m.beta.dir('chief-of-staff') }, { cwd: m.beta.dir('builder') }];
+  const r = m.run(['tick']);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(m.spawned.length, 0, 'nothing started');
+  assert.deepEqual(m.stops, [], 'nothing stopped');
+  assert.ok(!m.sd.calls.some((c) => / start /.test(c)), m.sd.calls.join('\n'));
+  const alerts = () => HM.readLedger(HM.outageFile({}, m.home)).filter((x) => x.type === 'alert');
+  assert.equal(alerts().length, 1);
+  assert.equal(alerts()[0].text, 'Alpha builder is running but silent (holding al-1; no bead note and no watchdog wake since 2026-11-08T09:15:00.000Z). I did not stop it: it may be in the middle of a turn. You can ask the host manager to restart the team.');
+  assert.doesNotMatch(alerts()[0].text, /Came back|nothing failed/);
+  assert.match(r.out, /^Silent while running: alpha builder is running but silent .*Not stopped/m);
+  // the next tick: still silent, no second alert, still nothing stopped
+  m.now = iso(Date.parse(T0) + 5 * MIN);
+  m.run(['tick']);
+  assert.equal(alerts().length, 1);
+  assert.deepEqual(m.stops, []);
+  assert.equal(m.spawned.length, 0);
+});
+
+test('a host job silent while its timer runs: restart starts its service once, and the reply and the alert name it as still silent until a read shows a new pass', () => {
+  const roles = [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }];
+  const m = machine({ alphaRoles: roles });
+  m.live = [{ cwd: m.alpha.dir('chief-of-staff') }, { cwd: m.beta.dir('chief-of-staff') }, { cwd: m.beta.dir('builder') }];
+  const a = tag(m.alpha.root);
+  const passes = { [m.alpha.root]: Date.parse(T0) - 40 * MIN, [m.beta.root]: Date.parse(T0) - 5 * MIN };
+  const lastPass = (root) => passes[root];
+  const t = m.run(['tick'], { lastPass });
+  const kicks = m.sd.calls.filter((c) => c === `systemctl --user start --no-block delivery-watchdog-${a}.service`);
+  assert.equal(kicks.length, 1, m.sd.calls.join('\n'));
+  assert.ok(!m.sd.calls.some((c) => c.includes(`start delivery-watchdog-${a}.timer`)), 'its timer runs: not started');
+  assert.ok(!m.sd.calls.some((c) => c.includes(tag(m.beta.root)) && / start /.test(c)), 'a job with a recent pass is left alone');
+  assert.match(t.out, new RegExp(`^Not back: alpha's host job, still silent: its timer runs but no pass since 2026-11-08T09:20:00\\.000Z; delivery-watchdog-${a}\\.service was started once and the read after it shows no new pass\\.$`, 'm'), t.out);
+  const alert = HM.readLedger(HM.outageFile({}, m.home)).find((x) => x.type === 'alert');
+  assert.match(alert.text, /Not back: alpha's host job, still silent: its timer runs but no pass since/);
+  assert.doesNotMatch(alert.text, /Came back: nothing|Not back: nothing/);
+  // the owner's restart, with the service running a pass at once: the read after shows it, and the job is back
+  let ran = false;
+  const r = m.run(['restart'], {
+    exec: (cmd, args) => { if (args.includes('--no-block') && args.includes(`delivery-watchdog-${a}.service`)) ran = true; return m.sd.exec(cmd, args); },
+    lastPass: (root) => (ran && root === m.alpha.root ? Date.parse(T0) : passes[root]),
+  });
+  assert.match(r.out, /^Back: alpha's host job ran a pass at 2026-11-08T10:00:00\.000Z\.$/m, r.out);
+  // a start of its service that fails is named
+  const f = m.run(['restart'], { lastPass, exec: (cmd, args) => { if (args.includes('--no-block')) throw new Error('Failed to start: Unit is masked.'); return m.sd.exec(cmd, args); } });
+  assert.match(f.out, /^Not back: alpha's host job, still silent: .*starting delivery-watchdog-\w+\.service once failed \(Failed to start: Unit is masked\.\)\.$/m, f.out);
 });
 
 test('install writes the host manager\'s session unit and its tick timer, enables them, and reports lingering without running it', () => {

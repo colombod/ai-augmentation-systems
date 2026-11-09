@@ -8,6 +8,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const PV = require('./plugin-version.js');
 
 // The units the host manager owns: its own Remote Control session, kept alive by systemd, and the
 // timer that runs the unattended pass. The watchdog's host job checks the first (watchdog.js run).
@@ -148,42 +149,110 @@ function statusLines(read) {
   return out;
 }
 
-// What a restart acts on: each host job stopped (its timer not running), and per team the instances
-// down that hold work. An idle instance that is down stays down: it is listed, never started.
-function restartPlan(read) {
+// What a restart acts on: each host job stopped (its timer not running), each host job whose timer runs
+// but which is silent (its service keeps failing or never runs: one run of its service is started), and
+// per team the instances down that hold work. An idle instance that is down stays down: it is listed,
+// never started. silent: what silences() found, or none.
+function restartPlan(read, silent = []) {
   const jobs = read.units.filter((u) => u.job && u.loaded && !u.running && !u.unavailable).map((u) => u.unit);
+  const kick = [];
+  for (const s of silent.filter((x) => x.kind === 'job')) {
+    const timer = read.units.find((u) => u.root === s.root && u.service);
+    if (timer && timer.loaded && timer.running && !timer.unavailable) kick.push({ root: s.root, team: s.team, timer: timer.unit, service: timer.service, lastPass: s.lastPass, what: s.what });
+  }
   const instances = {};
   for (const t of read.teams) {
     if (t.manifestUnavailable) continue;
     const want = t.down.filter((i) => t.holding.includes(i));
     if (want.length) instances[t.root] = want;
   }
-  return { jobs, instances };
+  return { jobs, kick, instances };
 }
 
+// A minute and second count, for how long a restart waited for a session to be listed.
+function duration(msec) {
+  const sec = Math.max(0, Math.round(msec / 1000));
+  const m = Math.floor(sec / 60);
+  const r = sec % 60;
+  return m ? `${m} min${r ? ` ${r} s` : ''}` : `${r} s`;
+}
+
+// Whether an instance a restart started is confirmed back: the session list read after the restart shows
+// a session in its role directory, and the roster records, for that very session, the plugin version the
+// session started under (the version the stale-session restart reads), and it is the installed one. A
+// server whose pid is alive is not enough: it may never have joined, or joined on an older plugin.
+// live: the session list ([{ cwd, sessionId }] or null); entry: the instance's roster entry.
+// -> { state: 'back' | 'unlisted' | 'unrecorded' | 'older' | 'unread' | 'noinstalled', version, installed }
+function confirmation({ live, entry, roleDir, installed }) {
+  if (!Array.isArray(live)) return { state: 'unread', installed };
+  const row = live.find((x) => x && x.cwd && path.resolve(x.cwd) === path.resolve(roleDir));
+  if (!row) return { state: 'unlisted', installed };
+  const e = entry || {};
+  const version = e.plugin_version && e.session_id && row.sessionId && e.session_id === row.sessionId ? e.plugin_version : null;
+  if (!version) return { state: 'unrecorded', installed };
+  if (!installed) return { state: 'noinstalled', version, installed };
+  const c = PV.compare(version, installed);
+  if (c === null) return { state: 'unrecorded', installed };
+  return c < 0 ? { state: 'older', version, installed } : { state: 'back', version, installed };
+}
+// still to wait for: a session not listed yet, or listed but not yet recorded by its own start
+const waiting = (c) => c.state === 'unlisted' || c.state === 'unrecorded';
+
 // What came back and what did not, each from the read made after the restart.
-// before/after: reads; started: { root: { instance: true } } from the start passes; held: { root: [lines] }
-function restartLines(before, after, plan, { refused = {}, jobErrors = {} } = {}) {
+// before/after: reads; plan: restartPlan's; o: refused { root: { instance: why } }, jobErrors { unit: why },
+// started { root: { instance: { pid } } }, confirmed { root: { instance: confirmation() } }, waited (ms),
+// restarted { root: { instance: { pid } | { why }, from, to } } (the stale-session restarts revive made),
+// passes { root: ms of its last host job pass, read after the restart }, kickErrors { service: why },
+// silent (what silences() found)
+function restartLines(before, after, plan, o = {}) {
+  const { refused = {}, jobErrors = {}, started = {}, confirmed = {}, waited = 0, restarted = {}, passes = {}, kickErrors = {}, silent = [] } = o;
   const out = [];
   const unit = (read, name) => read.units.find((u) => u.unit === name);
+  const at = (t) => (Number.isFinite(t) ? new Date(t).toISOString() : 'an unknown time');
   for (const j of plan.jobs) {
     const u = unit(after, j);
     if (u && u.running) out.push(`Back: ${j} is running.`);
     else out.push(`Not back: ${j}${jobErrors[j] ? ` (start failed: ${jobErrors[j]})` : ''}; ${u ? unitLine(u) : 'its state could not be read'}.`);
   }
+  for (const k of plan.kick || []) {
+    const p = passes[k.root];
+    if (kickErrors[k.service]) out.push(`Not back: ${k.team}'s host job, still silent: its timer runs but no pass since ${at(k.lastPass)}, and starting ${k.service} once failed (${kickErrors[k.service]}).`);
+    else if (Number.isFinite(p) && (!Number.isFinite(k.lastPass) || p > k.lastPass)) out.push(`Back: ${k.team}'s host job ran a pass at ${at(p)}.`);
+    else out.push(`Not back: ${k.team}'s host job, still silent: its timer runs but no pass since ${at(k.lastPass)}; ${k.service} was started once and the read after it shows no new pass.`);
+  }
   for (const [root, want] of Object.entries(plan.instances)) {
     const t = after.teams.find((x) => x.root === root);
+    const name = (t && t.name) || root;
     for (const i of want) {
+      const c = (confirmed[root] || {})[i] || { state: 'unread' };
+      const s = (started[root] || {})[i];
       const why = (refused[root] || {})[i];
-      if (t && t.running.includes(i)) out.push(`Back: ${t.name} ${i} is running.`);
-      else out.push(`Not back: ${(t && t.name) || root} ${i}${why ? ` (${why})` : t && t.unknown.includes(i) ? ' (whether it runs could not be read)' : ''}.`);
+      if (c.state === 'back') out.push(`Back: ${name} ${i} is running, listed, on the installed plugin ${c.version}.`);
+      else if (s && c.state === 'unlisted') out.push(`Not back: ${name} ${i}: started (pid ${s.pid}) but not listed after ${duration(waited)}.`);
+      else if (s && c.state === 'older') out.push(`Not back: ${name} ${i}: running an older plugin (${c.version}, installed ${c.installed}).`);
+      else if (s && c.state === 'unrecorded') out.push(`Not back: ${name} ${i}: started (pid ${s.pid}) and listed, but its session recorded no plugin version after ${duration(waited)}, so it is not known to run the installed ${c.installed || 'plugin'}.`);
+      else if (s && c.state === 'noinstalled') out.push(`Not back: ${name} ${i}: started (pid ${s.pid}) and listed on ${c.version}, but the installed plugin version could not be read.`);
+      else if (s) out.push(`Not back: ${name} ${i}: started (pid ${s.pid}), but the session list could not be read after the restart.`);
+      else out.push(`Not back: ${name} ${i}${why ? ` (${why})` : t && t.unknown.includes(i) ? ' (whether it runs could not be read)' : ''}.`);
     }
+  }
+  for (const [root, byInstance] of Object.entries(restarted)) {
+    const t = after.teams.find((x) => x.root === root) || before.teams.find((x) => x.root === root);
+    const name = (t && t.name) || root;
+    for (const [i, r] of Object.entries(byInstance)) {
+      const was = `it ran the older plugin ${r.from || 'unknown'}, installed ${r.to || 'unknown'}`;
+      if (r.pid) out.push(`Restarted: ${name} ${i} (pid ${r.pid}): ${was}.`);
+      else out.push(`Not restarted: ${name} ${i} (${was}): ${r.why}.`);
+    }
+  }
+  for (const s of silent) {
+    if (s.kind === 'running') out.push(`Silent while running: ${s.what}. Not stopped: a session that may be in the middle of a turn is not stopped here; it is restarted only when it runs an older plugin and is idle between turns.`);
   }
   for (const t of before.teams) {
     const idle = (t.down || []).filter((i) => !(t.holding || []).includes(i));
     if (idle.length) out.push(`Left down (no work held): ${t.name} ${idle.join(', ')}.`);
   }
-  if (!out.length) out.push('Nothing was down that holds work: nothing was restarted.');
+  if (!out.length) out.push('Nothing was down that holds work and nothing is silent: nothing was restarted.');
   for (const u of after.unavailable || []) out.push(`SOURCE UNAVAILABLE: ${u}`);
   for (const t of after.teams) for (const u of t.unavailable || []) out.push(`SOURCE UNAVAILABLE: ${t.name}: ${u}`);
   return out;
@@ -192,31 +261,44 @@ function restartLines(before, after, plan, { refused = {}, jobErrors = {} } = {}
 const ms = (x) => { const t = Date.parse(x); return Number.isNaN(t) ? -Infinity : t; };
 
 // The silences the unattended pass acts on, from a read and each team's own records:
-//   an instance down that holds an in-progress bead, whose beads have had no note and which has had no
-//   watchdog wake for SILENT_MS; a team's host job that has run no pass for SILENT_MS.
-// facts per team root: { inProgress: [bead], wakes: [{ instance, at }], lastPass: ms | null }
+//   an instance that holds an in-progress bead, whose beads have had no note and which has had no
+//   watchdog wake for SILENT_MS: down (kind 'instance', which a restart starts) or still listed as running
+//   (kind 'running', which only an alert names: a session that may be mid-turn is never stopped by an
+//   unattended pass); a team's host job that has run no pass for SILENT_MS (kind 'job').
+// Each carries its key, team plus instance or team plus host job: the outage ledger opens, alerts and
+// closes per key.
+// facts per team root: { inProgress: [bead], wakes: [{ instance, at }], lastPass: ms | null, jobInstalled }
 function silences(read, facts, now) {
   const t0 = ms(now);
   const out = [];
+  const at = (t) => (Number.isFinite(t) ? new Date(t).toISOString() : 'an unknown time');
   for (const t of read.teams) {
     if (t.manifestUnavailable) continue;
     const f = facts[t.root] || {};
     const beads = Array.isArray(f.inProgress) ? f.inProgress : [];
-    for (const i of t.down) {
-      const mine = beads.filter((b) => holderOf(b && b.assignee) === i);
-      if (!mine.length) continue;
-      const lastNote = Math.max(...mine.map((b) => Math.max(ms(b.updated_at), ms(b.created_at))));
-      const lastWake = Math.max(-Infinity, ...(f.wakes || []).filter((w) => w && w.instance === i).map((w) => ms(w.at)));
-      if (t0 - Math.max(lastNote, lastWake) >= SILENT_MS) out.push({ kind: 'instance', team: t.name, root: t.root, instance: i, what: `${t.name} ${i} (holding ${mine.map((b) => b.id).join(', ')}; no note or wake since ${Number.isFinite(Math.max(lastNote, lastWake)) ? new Date(Math.max(lastNote, lastWake)).toISOString() : 'an unknown time'})` });
+    for (const [kind, list] of [['instance', t.down], ['running', t.running]]) {
+      for (const i of list) {
+        const mine = beads.filter((b) => holderOf(b && b.assignee) === i);
+        if (!mine.length) continue;
+        const lastNote = Math.max(...mine.map((b) => Math.max(ms(b.updated_at), ms(b.created_at))));
+        const lastWake = Math.max(-Infinity, ...(f.wakes || []).filter((w) => w && w.instance === i).map((w) => ms(w.at)));
+        const since = Math.max(lastNote, lastWake);
+        if (t0 - since < SILENT_MS) continue;
+        const what = kind === 'running'
+          ? `${t.name} ${i} is running but silent (holding ${mine.map((b) => b.id).join(', ')}; no bead note and no watchdog wake since ${at(since)})`
+          : `${t.name} ${i} (holding ${mine.map((b) => b.id).join(', ')}; no note or wake since ${at(since)})`;
+        out.push({ kind, key: `${t.root}#instance:${i}`, team: t.name, root: t.root, instance: i, since: Number.isFinite(since) ? since : null, what });
+      }
     }
     const last = f.lastPass;
-    if (f.jobInstalled && (last === null || last === undefined || t0 - last >= SILENT_MS)) out.push({ kind: 'job', team: t.name, root: t.root, what: `${t.name}'s host job (no pass since ${Number.isFinite(last) ? new Date(last).toISOString() : 'an unknown time'})` });
+    if (f.jobInstalled && (last === null || last === undefined || t0 - last >= SILENT_MS)) out.push({ kind: 'job', key: `${t.root}#job`, team: t.name, root: t.root, lastPass: Number.isFinite(last) ? last : null, what: `${t.name}'s host job (no pass since ${at(last)})` });
   }
   return out;
 }
 
-// The outage ledger: one open row when a silence is first seen, an alert row with it, a close row on the
-// first pass that finds none. A pass during an open outage restarts again but sends no second alert.
+// The outage ledger, one outage per silence key: an open row when that silence is first seen, an alert
+// row on the pass that opened one or more, a close row on the first pass that no longer finds it. A pass
+// while an outage is open restarts again but alerts only for silences not already open.
 function readLedger(file) {
   let text = '';
   try { text = fs.readFileSync(file, 'utf8'); } catch (err) { return []; }
@@ -224,12 +306,15 @@ function readLedger(file) {
   for (const l of text.split('\n')) { if (!l.trim()) continue; try { const r = JSON.parse(l); if (r && typeof r === 'object') rows.push(r); } catch (err) { /* a torn line */ } }
   return rows;
 }
-function openOutage(rows) {
-  for (let k = rows.length - 1; k >= 0; k--) {
-    if (rows[k].type === 'close') return null;
-    if (rows[k].type === 'open') return rows[k];
+// key -> its open row, for every outage opened and not closed since
+function openOutages(rows) {
+  const open = new Map();
+  for (const r of rows) {
+    if (!r || typeof r.key !== 'string') continue;
+    if (r.type === 'open') open.set(r.key, r);
+    else if (r.type === 'close') open.delete(r.key);
   }
-  return null;
+  return open;
 }
 function appendRow(file, row) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -237,11 +322,27 @@ function appendRow(file, row) {
   return row;
 }
 
-// The owner's alert, in plain words: what was down, what came back, what did not.
+// The owner's alert, in plain words: what went silent, what came back, what did not, and for a silence
+// nothing was started for (a session still running), why. Never "nothing came back, nothing failed".
 function alertText(silent, result) {
-  const back = result.filter((l) => /^Back: /.test(l)).map((l) => l.replace(/^Back: /, '').replace(/ is running\.$/, ''));
+  const back = result.filter((l) => /^Back: /.test(l)).map((l) => l.replace(/^Back: /, '').replace(/\.$/, ''));
   const notBack = result.filter((l) => /^Not back: /.test(l)).map((l) => l.replace(/^Not back: /, '').replace(/\.$/, ''));
-  return `The team on this machine went silent: ${silent.map((s) => s.what).join('; ')}. I restarted what was down. Came back: ${back.length ? back.join(', ') : 'nothing'}. Not back: ${notBack.length ? notBack.join('; ') : 'nothing'}.`;
+  const down = silent.filter((s) => s.kind !== 'running');
+  const running = silent.filter((s) => s.kind === 'running');
+  const out = [];
+  if (down.length) {
+    out.push(`The team on this machine went silent: ${down.map((s) => s.what).join('; ')}.`);
+    if (back.length || notBack.length) {
+      out.push('I restarted what was down.');
+      if (back.length) out.push(`Came back: ${back.join('; ')}.`);
+      if (notBack.length) out.push(`Not back: ${notBack.join('; ')}.`);
+    }
+    // every silence of a down instance or a host job gets a Back or Not back line from the restart; this
+    // is the guard against an alert that says nothing came back and nothing failed
+    if (!back.length && !notBack.length) out.push('Nothing was started for it: what is silent was not found down when the restart read the machine.');
+  }
+  for (const s of running) out.push(`${s.what.charAt(0).toUpperCase()}${s.what.slice(1)}. I did not stop it: it may be in the middle of a turn. You can ask the host manager to restart the team.`);
+  return out.join(' ');
 }
 
-module.exports = { UNIT, TICK_SERVICE, TICK_TIMER, ROLE, SILENT_MS, WATCHDOG_UNIT_RE, configHome, stateHome, hostFile, stateDir, outageFile, unitDir, readHostTeams, addHostTeam, unitRoots, teamRoots, parseShow, unitState, unitLine, holderOf, holding, teamState, teamLine, statusLines, restartPlan, restartLines, silences, readLedger, openOutage, appendRow, alertText };
+module.exports = { UNIT, TICK_SERVICE, TICK_TIMER, ROLE, SILENT_MS, WATCHDOG_UNIT_RE, configHome, stateHome, hostFile, stateDir, outageFile, unitDir, readHostTeams, addHostTeam, unitRoots, teamRoots, parseShow, unitState, unitLine, holderOf, holding, teamState, teamLine, statusLines, restartPlan, restartLines, silences, readLedger, openOutages, appendRow, alertText, duration, confirmation, waiting };

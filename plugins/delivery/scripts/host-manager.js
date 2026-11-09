@@ -7,13 +7,22 @@
 //                                       source that cannot be read is a SOURCE UNAVAILABLE line, never
 //                                       counted as running
 //   host-manager.js restart [--json]    starts each stopped host job (its timer and path units, and one run
-//                                       of its service), then each team's missing role sessions that hold
-//                                       work (team-revive.js, its caps applying), and replies from a read
-//                                       made after it: what came back, what did not and why
-//   host-manager.js tick                the unattended pass its timer runs every 5 minutes: a silence of 30
+//                                       of its service), one run of the service of a job whose timer runs
+//                                       but which has run no pass for 30 minutes, then each team's missing
+//                                       role sessions that hold work (team-revive.js, its caps applying, and
+//                                       its restart of a session on an older plugin, with a fresh read of the
+//                                       sessions just before any stop). It then reads the sessions every 10 s,
+//                                       for up to 5 minutes, until each session it started is listed, and
+//                                       replies from that read: Back only for a session listed in its role
+//                                       directory whose roster entry records the installed plugin; what did
+//                                       not come back, and why
+//   host-manager.js tick                the unattended pass its timer runs every 5 minutes. A silence of 30
 //                                       minutes (an instance holding work with no bead note and no wake, a
-//                                       host job with no pass) is a restart and one alert for the owner per
-//                                       outage, kept in an outage ledger in the user's state directory
+//                                       host job with no pass) is one outage per team and instance, or team
+//                                       and host job, in an outage ledger in the user's state directory; the
+//                                       pass that first sees it alerts the owner once. A down instance or a
+//                                       silent job is restarted; an instance still listed as running is only
+//                                       named in the alert, never stopped: it may be in the middle of a turn
 //   host-manager.js install [--dry-run] --project <root> [--instance <id>]
 //                                       the systemd user units: delivery-host-manager.service (the Remote
 //                                       Control session, restarted always) and the tick's service and timer
@@ -62,6 +71,14 @@ function readUnit(run, unit) {
   } catch (err) { return { unit, unavailable: `systemctl --user show failed: ${firstLine(err)}` }; }
 }
 
+// The open sessions, read now: `claude agents --json`, or the injected list (a function is a fresh read
+// on every call, as a restart's reads after its starts need).
+function sessionsNow({ env = process.env, live } = {}) {
+  if (typeof live === 'function') return live();
+  if (live !== undefined) return live;
+  return WD().liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
+}
+
 // One read of the whole machine. deps: env, home, exec (systemctl), has, live (`claude agents`), teamDeps
 // (root -> what team-revive's gather takes in a test: bd, prs, alive, pause, configDir, hostname).
 function read({ env = process.env, home = os.homedir(), exec, has, live, teamDeps } = {}) {
@@ -70,8 +87,7 @@ function read({ env = process.env, home = os.homedir(), exec, has, live, teamDep
   const fromFile = HM.readHostTeams(HM.hostFile(env, home));
   if (fromFile.unreadable) unavailable.push(`the host's team list (${fromFile.unreadable})`);
   const roots = HM.teamRoots(fromFile.teams, HM.unitRoots(HM.unitDir(home)));
-  const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
-  const sessions = live !== undefined ? live : WD().liveSessions(bin, env);
+  const sessions = sessionsNow({ env, live });
   const systemd = whichOf(has)('systemctl');
   const run = runner(exec);
   if (!systemd) unavailable.push('the host job units (no systemctl on this host)');
@@ -128,27 +144,102 @@ function guard(cmd, deps) {
   return refusal(cmd, cwd, env, who);
 }
 
-function restart(deps = {}, before) {
+// How a restart waits for the sessions it started to be listed: a Remote Control server takes seconds to
+// a minute to open its session and record its plugin version. Every read in between is a fresh one.
+const POLL_EVERY_MS = 10e3;
+const POLL_MAX_MS = 5 * 60e3;
+const sleepMs = (msec) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, msec);
+
+// The time of a team's last host job pass: its job log is written by every run (watchdog.js jobFiles)
+function lastPassOf(root) { try { return fs.statSync(path.join(root, '.delivery', 'watchdog', 'job.log')).mtimeMs; } catch (err) { return null; } }
+
+// What the silences are read from, per team: its in-progress beads, its watchdog wakes, its last pass.
+function factsOf(read, deps = {}) {
+  const WDL = require('./lib/watchdog.js');
+  const facts = {};
+  for (const t of read.teams) {
+    if (t.manifestUnavailable) continue;
+    const timer = read.units.find((u) => u.root === t.root && u.service);
+    facts[t.root] = { inProgress: t.facts.inProgress, wakes: WDL.logRows(t.root).filter((r) => r.type === 'wake'), lastPass: (deps.lastPass || lastPassOf)(t.root), jobInstalled: Boolean(timer && timer.loaded) };
+  }
+  return facts;
+}
+
+// Each started instance's confirmation (lib/host-manager.js confirmation) from a read.
+function confirmAll(read, want) {
+  const out = {};
+  for (const [root, instances] of Object.entries(want)) {
+    const t = read.teams.find((x) => x.root === root);
+    out[root] = {};
+    for (const i of instances) {
+      if (!t || !t.facts) { out[root][i] = { state: 'unread' }; continue; }
+      const entry = (t.facts.roster || {})[i] || {};
+      out[root][i] = HM.confirmation({ live: t.facts.live, entry, roleDir: entry.role_dir || t.facts.defaultDir(i), installed: t.facts.installed });
+    }
+  }
+  return out;
+}
+
+// The restart, from a read already made (the tick's) or a new one.
+// o.facts, o.silent: the tick's, else read here. o.everyTeam (the owner's restart): every team's start
+// pass runs, so a session on an older plugin is restarted by team-revive's stale-session path, with a
+// fresh read of the sessions just before any stop; the tick runs the start pass only where an instance
+// holding work is down.
+function restart(deps = {}, before, o = {}) {
   const no = guard('restart', deps);
   if (no) throw new Error(no);
   if (!before) before = read(deps);
+  const now = deps.now || new Date().toISOString();
+  const facts = o.facts || factsOf(before, deps);
+  const silent = o.silent || HM.silences(before, facts, now);
   const TR = require('./team-revive.js');
   const run = runner(deps.exec);
-  const plan = HM.restartPlan(before);
+  const plan = HM.restartPlan(before, silent);
   const jobErrors = {};
   for (const unit of plan.jobs) { try { run('systemctl', ['--user', 'start', unit]); } catch (err) { jobErrors[unit] = firstLine(err); } }
   // one pass of each restarted job at once, not at its next timer tick; --no-block: a run takes minutes
   for (const u of before.units.filter((x) => x.service && plan.jobs.includes(x.unit))) { try { run('systemctl', ['--user', 'start', '--no-block', u.service]); } catch (err) { jobErrors[u.unit] = jobErrors[u.unit] || `its service did not start: ${firstLine(err)}`; } }
+  // a job whose timer runs but which has run no pass: one run of its service, once
+  const kickErrors = {};
+  for (const k of plan.kick) { try { run('systemctl', ['--user', 'start', '--no-block', k.service]); } catch (err) { kickErrors[k.service] = firstLine(err); } }
   const refused = {};
-  for (const [root, want] of Object.entries(plan.instances)) {
-    const t = before.teams.find((x) => x.root === root);
+  const started = {};
+  const restarted = {};
+  for (const t of before.teams) {
+    if (t.manifestUnavailable || !t.team) continue;
+    const root = t.root;
+    const want = plan.instances[root] || [];
+    if (!want.length && !o.everyTeam) continue;
     refused[root] = {};
     let r;
-    try { r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, live: before.live, only: want, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) }); } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; continue; }
+    try {
+      r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, live: before.live, relist: () => sessionsNow(deps), only: want, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
+    } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; continue; }
+    started[root] = r.started || {};
     for (const i of r.a.missing) if (want.includes(i.instance) && !r.started[i.instance]) refused[root][i.instance] = whyNot(r.a, i);
+    const byStale = Object.fromEntries((r.a.stale || []).map((i) => [i.instance, i.stale]));
+    for (const [i, x] of Object.entries(r.restarted || {})) (restarted[root] = restarted[root] || {})[i] = { ...x, from: byStale[i] && byStale[i].version, to: byStale[i] && byStale[i].installed };
   }
-  const after = read(deps);
-  return { plan, before, after, lines: HM.restartLines(before, after, plan, { refused, jobErrors }) };
+  // the reply comes from a read made after the restart; while a started session is not listed (or has
+  // not recorded its plugin version yet) the read is made again, up to POLL_MAX_MS
+  const sleep = deps.sleep || sleepMs;
+  const clock = deps.clock || Date.now;
+  const every = deps.pollEveryMs !== undefined ? deps.pollEveryMs : POLL_EVERY_MS;
+  const max = deps.pollMaxMs !== undefined ? deps.pollMaxMs : POLL_MAX_MS;
+  const startedNames = Object.fromEntries(Object.entries(started).map(([root, s]) => [root, Object.keys(s)]).filter(([, l]) => l.length));
+  const t0 = clock();
+  let after = read(deps);
+  let confirmed = confirmAll(after, startedNames);
+  const pending = () => Object.values(confirmed).some((byI) => Object.values(byI).some(HM.waiting));
+  while (pending() && clock() - t0 < max) {
+    sleep(every);
+    after = read(deps);
+    confirmed = confirmAll(after, startedNames);
+  }
+  const waited = clock() - t0;
+  confirmed = { ...confirmAll(after, plan.instances), ...confirmed };
+  const passes = Object.fromEntries(plan.kick.map((k) => [k.root, (deps.lastPass || lastPassOf)(k.root)]));
+  return { plan, before, after, silent, lines: HM.restartLines(before, after, plan, { refused, jobErrors, started, confirmed, waited, restarted, passes, kickErrors, silent }) };
 }
 
 // The alert goes to the host manager's own session: a message kept in its team's inbox (lib/inbox.js),
@@ -165,9 +256,6 @@ function deliverAlert(read, text, env) {
   return out;
 }
 
-// The time of a team's last host job pass: its job log is written by every run (watchdog.js jobFiles)
-function lastPassOf(root) { try { return fs.statSync(path.join(root, '.delivery', 'watchdog', 'job.log')).mtimeMs; } catch (err) { return null; } }
-
 function tick(deps = {}) {
   const no = guard('tick', deps);
   if (no) throw new Error(no);
@@ -175,27 +263,27 @@ function tick(deps = {}) {
   const home = deps.home || os.homedir();
   const now = deps.now || new Date().toISOString();
   const before = read(deps);
-  const WDL = require('./lib/watchdog.js');
-  const facts = {};
-  for (const t of before.teams) {
-    if (t.manifestUnavailable) continue;
-    const timer = before.units.find((u) => u.root === t.root && u.service);
-    facts[t.root] = { inProgress: t.facts.inProgress, wakes: WDL.logRows(t.root).filter((r) => r.type === 'wake'), lastPass: (deps.lastPass || lastPassOf)(t.root), jobInstalled: Boolean(timer && timer.loaded) };
-  }
+  const facts = factsOf(before, deps);
   const silent = HM.silences(before, facts, now);
   const file = HM.outageFile(env, home);
-  const open = HM.openOutage(HM.readLedger(file));
-  if (!silent.length) {
-    if (open) HM.appendRow(file, { type: 'close', at: now, outage: open.id });
-    return { code: 0, out: `${now} host manager: nothing silent${open ? `; the outage open since ${open.at} is over` : ''}.`, silent };
-  }
-  const r = restart(deps, before);
-  if (open) return { code: 0, out: [`${now} host manager: still silent, in the outage open since ${open.at} (the owner was alerted then): ${silent.map((s) => s.what).join('; ')}.`, ...r.lines].join('\n'), silent };
-  const outage = HM.appendRow(file, { type: 'open', id: `out-${Date.parse(now) || Date.now()}`, at: now, silent: silent.map((s) => s.what) });
-  const text = HM.alertText(silent, r.lines);
+  const open = HM.openOutages(HM.readLedger(file));
+  const keys = new Set(silent.map((s) => s.key));
+  const over = [];
+  for (const [key, row] of open) if (!keys.has(key)) { HM.appendRow(file, { type: 'close', key, at: now, outage: row.id }); over.push(row); }
+  const overLines = over.map((r) => `the outage open since ${r.at} is over (${r.what})`);
+  if (!silent.length) return { code: 0, out: `${now} host manager: nothing silent${overLines.length ? `; ${overLines.join('; ')}` : ''}.`, silent };
+  const r = restart(deps, before, { facts, silent });
+  const fresh = silent.filter((s) => !open.has(s.key));
+  const head = [`${now} host manager: silent: ${silent.map((s) => s.what).join('; ')}.`, ...overLines.map((l) => `Closed: ${l}.`)];
+  const still = silent.filter((s) => open.has(s.key)).map((s) => `${s.what} (open since ${open.get(s.key).at}, the owner was alerted then)`);
+  if (still.length) head.push(`Still silent, in an open outage: ${still.join('; ')}.`);
+  if (!fresh.length) return { code: 0, out: [...head, ...r.lines].join('\n'), silent };
+  const t = Date.parse(now) || Date.now();
+  const ids = fresh.map((s, k) => HM.appendRow(file, { type: 'open', key: s.key, id: `out-${t}-${k}`, at: now, what: s.what }).id);
+  const text = HM.alertText(fresh, r.lines);
   const to = deliverAlert(r.after, text, env);
-  HM.appendRow(file, { type: 'alert', at: now, outage: outage.id, text, delivered_to: to });
-  return { code: 0, out: [`${now} host manager: silent: ${silent.map((s) => s.what).join('; ')}.`, ...r.lines, `Alert: ${text}`, to.length ? `Sent to ${to.join(', ')} (its team's inbox; that team's watchdog hands it to the session).` : `No host manager instance is in any team on this host: the alert is in ${file} only.`].join('\n'), silent };
+  HM.appendRow(file, { type: 'alert', at: now, outages: ids, keys: fresh.map((s) => s.key), text, delivered_to: to });
+  return { code: 0, out: [...head, ...r.lines, `Alert: ${text}`, to.length ? `Sent to ${to.join(', ')} (its team's inbox; that team's watchdog hands it to the session).` : `No host manager instance is in any team on this host: the alert is in ${file} only.`].join('\n'), silent };
 }
 
 // ---- install: the systemd user units ----
@@ -328,13 +416,13 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
     return { code: 0, out: o.json ? JSON.stringify({ teams: r.read.teams, units: r.read.units, unavailable: r.read.unavailable }, null, 2) : r.lines.join('\n') };
   }
   if (cmd === 'restart') {
-    const r = restart(d);
+    const r = restart(d, undefined, { everyTeam: true });
     return { code: 0, out: o.json ? JSON.stringify({ plan: r.plan, lines: r.lines, teams: r.after.teams, units: r.after.units, unavailable: r.after.unavailable }, null, 2) : r.lines.join('\n') };
   }
   return tick(d);
 }
 
-module.exports = { main, read, status, restart, tick, install, unitFiles, refusal, deliverAlert, lastPassOf };
+module.exports = { main, read, status, restart, tick, install, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
 
 if (require.main === module) {
   let r;
