@@ -504,6 +504,9 @@ test('install: dry run by default; --apply writes a job with no versioned path, 
   assert.match(linux.out, /loginctl enable-linger/);
   const unit = path.join(home, '.config', 'systemd', 'user');
   const service = fs.readFileSync(path.join(unit, fs.readdirSync(unit).find((f) => f.endsWith('.service'))), 'utf8');
+  // TasksMax fits the team: the wakes the run starts stay in this service's cgroup (hjx.1.6.14)
+  assert.match(service, /^TasksMax=\d+$/m);
+  assert.ok(Number(/^TasksMax=(\d+)$/m.exec(service)[1]) >= 4096);
   for (const re of [/^KillMode=process$/m, /^Environment="PATH=\/opt\/bin:/m, /^ExecStart=\/usr\/bin\/env "node" ".*job\.js"$/m]) assert.match(service, re);
   assert.equal(main(['uninstall'], { platform: 'linux', has: () => true }).code, 0);
   assert.deepEqual(fs.readdirSync(unit), []);
