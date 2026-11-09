@@ -1504,7 +1504,10 @@ function ghApiCall(t) {
     // the gate prints is often run as `... 2>&1 | tail`, and reading 2>&1 as a second endpoint refused it
     if (/^\d*>&(?:\d+|-)$/.test(x) || /^\d*>>?\/dev\/null$/.test(x)) continue;
     if (/^\d*>>?$/.test(x) && words[i + 1] === '/dev/null') { i++; continue; }
-    const [f, inline] = x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
+    // gh takes a short value flag with its value attached (-fstate=closed, -XPATCH): read as -f state=closed,
+    // or the field is lost and the call passes as one with no fields (rv-194)
+    const att = /^-([fFXHRqt])(.+)$/s.exec(x);
+    const [f, inline] = att ? [`-${att[1]}`, att[2]] : x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
     if (GH_API_VALUE.includes(f)) {
       const val = inline !== undefined ? inline : words[++i];
       if (val === undefined) { out.bad = `${f} has no value`; continue; }
@@ -1579,6 +1582,16 @@ function closeAttempt(command) {
   return splitCommand(text).some((seg) => {
     const t = tokens(seg);
     const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    if (path.basename(words[0] || '') === 'git') {
+      // a push that deletes a remote team/<instance> branch closes that branch's open pull request
+      const { rest: g } = splitGlobals(['git', ...words.slice(1)]);
+      if (g[0] !== 'push') return false;
+      const args = g.slice(1);
+      const del = args.some((a) => a === '--delete' || a === '-d' || /^-[a-z]*d[a-z]*$/.test(a) && !a.startsWith('--'));
+      const refs = args.filter((a) => !a.startsWith('-'));
+      const team = (r) => /^(?:refs\/heads\/)?team\//.test(r);
+      return refs.some((r) => (del && team(r.replace(/^\+/, ''))) || (r.startsWith(':') && team(r.slice(1))));
+    }
     if (path.basename(words[0] || '') !== 'gh') return false;
     let i = 1;
     for (; i < words.length && words[i].startsWith('-'); i++) {
@@ -1597,8 +1610,14 @@ function closeAttempt(command) {
     }
     if (rest[0] === 'api') {
       const c = ghApiCall(['gh', ...rest]);
-      const eps = ((c && c.positionals) || []).map((x) => x.split(/[?#]/)[0].replace(/\/{2,}/g, '/').replace(/\/+$/, ''));
+      // as the server reads the path: no query or fragment, repeated slashes collapsed, no trailing slash
+      // or dot segment (pulls/187/. is pulls/187)
+      const eps = ((c && c.positionals) || []).map((x) => { let e = x.split(/[?#]/)[0].replace(/\/{2,}/g, '/'); for (let n = 0; n < 8 && /(?:\/\.|\/)$/.test(e); n++) e = e.replace(/\/\.$/, '').replace(/\/+$/, ''); return e; });
       const fields = (c && c.fields) || {};
+      // a call the parser could not read whole may carry the state in what it missed
+      if (c && c.bad && eps.some((ep) => /\/(?:pulls|issues)(?:\/|$)|(?:^|\/)graphql$/i.test(ep))) return true;
+      // deleting a team branch closes its open pull request on GitHub
+      if (c && c.method === 'DELETE' && eps.some((ep) => /\/git\/refs\/heads\/team\//i.test(ep))) return true;
       if (eps.some((ep) => /\/(?:pulls|issues)\/[^/]+$/i.test(ep))) {
         if (Object.keys(fields).some((k) => k === 'state')) return true;
         // a body read from a file or stdin, or a field from a file, cannot be read: it may set the state
@@ -1606,7 +1625,10 @@ function closeAttempt(command) {
       }
       if (eps.some((ep) => /(?:^|\/)graphql$/i.test(ep))) {
         if (rest.some((a) => /^--input/.test(a)) || Object.values(fields).some((v) => String(v).startsWith('@'))) return true;
-        if (/\b(?:close|reopen)(?:PullRequest|Issue)\b/i.test(Object.values(fields).join(' '))) return true;
+        const q = Object.values(fields).join(' ');
+        if (/\b(?:close|reopen)(?:PullRequest|Issue)\b/i.test(q)) return true;
+        // an update that sets a pull request's or an issue's state closes or reopens it too
+        if (/\bupdate(?:PullRequest|Issue)\b/i.test(q) && /\bstate\s*:/i.test(q)) return true;
       }
     }
     return false;
@@ -1948,4 +1970,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { closeAttempt, tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
