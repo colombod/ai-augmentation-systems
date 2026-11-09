@@ -149,12 +149,18 @@ function liveTeamAddresses(team, own) {
 // how a refused sender reaches this team now, in a form SendMessage takes (hjx.1.6.13): this team's live
 // sessions by their listed name (or uds: socket), else that none is live and a bare instance name is kept
 // for its role. Without the sender's context (no sessions to read) it says which forms work.
-function reachHint(team, own) {
+function reachHint(team, own, refused = null) {
   if (!own) return 'Send to the name ListAgents shows for this team\'s session, or to its uds: address when that name holds "@": SendMessage refuses <instance>@<team>.';
   const live = liveTeamAddresses(team, own);
   if (live.length) return `This team's live sessions, by the name to send to: ${live.map((x) => `${x.to} (${x.instance})`).join(', ')}.`;
-  const first = (require('../../scripts/lib/manifest.js').expandInstances(team).find((i) => !(i.role && i.role.retired)) || {}).instance || 'builder-1';
-  return `No session of this team can be reached by a listed name now: a send to an instance's bare name (${first}) is kept for that role, and the watchdog wakes it with it.`;
+  // rv-191-delivery-lead-5: offer only a bare name a send to passes now (the transition fallback below:
+  // no live session outside this team holds it), never the target just refused. An allowed send that
+  // finds the role not running is kept for it by route-check.js (PostToolUse); a denied send runs no
+  // PostToolUse, so nothing is kept, and with no such name the sender is told to write a bead note.
+  const pass = require('../../scripts/lib/manifest.js').expandInstances(team).filter((i) => !(i.role && i.role.retired)).map((i) => i.instance)
+    .find((i) => slug(i) !== slug(refused) && noOtherLiveSession(i, team, own));
+  if (pass) return `No session of this team can be reached by a listed name now. A send to an instance's bare name passes while no live session outside this team holds it (${pass} does now): it finds the role not running, so it is kept for it, and the watchdog wakes it with it.`;
+  return 'No session of this team can be reached now, and no send to it would be delivered: write the message as a note on the bead it concerns, which its role reads at its next start.';
 }
 // true when every live session a send to `name` can reach is this team's (none live at all included)
 function noOtherLiveSession(name, team, own) {
@@ -204,18 +210,18 @@ function judge(team, to, host, own = null) {
     const full = SN.sessionName(slug(instance), team.prefix);
     const other = own ? otherSessionsReachedByOwnName(full, team, own) : [];
     if (!other.length) return null;
-    return { reason: `"${SN.bareTarget(to)}" is this team's name, but no session of this team holds it now and it is the start of ${other.map((x) => `"${x.name}"`).join(', ')}, a live session outside this team, which a send to it can reach.\n${reachHint(team, own)}` };
+    return { reason: `"${SN.bareTarget(to)}" is this team's name, but no session of this team holds it now and it is the start of ${other.map((x) => `"${x.name}"`).join(', ')}, a live session outside this team, which a send to it can reach.\n${reachHint(team, own, instance)}` };
   }
   // "builder@" or "@alpha": an "@" with no team after it, or no instance before it, names no session of ours
   if (prefix === null && instance.includes('@')) {
-    return { reason: `"${SN.bareTarget(to)}" is no full session name: an "@" needs an instance before it and a team after it.\n${reachHint(team, own)}` };
+    return { reason: `"${SN.bareTarget(to)}" is no full session name: an "@" needs an instance before it and a team after it.\n${reachHint(team, own, instance)}` };
   }
   if (!roleish(instance, team)) {
     // a name that is no role ("main", an agent id) passes, unless it is the start of another team's live
     // role session's name ("chief", "deliv"), which a prefix send would reach
     const other = prefix === null && own ? otherRoleSessionsReached(instance, team, own) : [];
     if (!other.length) return null;
-    return { reason: `"${SN.bareTarget(to)}" is the start of ${other.map((s) => `"${s.name}"`).join(', ')}, a live session outside this team, and a send to it can reach that session.\n${reachHint(team, own)}` };
+    return { reason: `"${SN.bareTarget(to)}" is the start of ${other.map((s) => `"${s.name}"`).join(', ')}, a live session outside this team, and a send to it can reach that session.\n${reachHint(team, own, instance)}` };
   }
   const mine = ownTarget(team, instance, host);
   if (prefix === null && own) {
@@ -229,7 +235,7 @@ function judge(team, to, host, own = null) {
   const why = prefix !== null
     ? `"${SN.bareTarget(to)}" is a session of another team (prefix ${prefix}), not of this one (${SN.teamTag(team.prefix)})`
     : `"${SN.bareTarget(to)}" is a bare role name; session names are shared by every team on this machine, so it can reach another team's session`;
-  return { reason: `${why}.\n${where}${reachHint(team, own)}` };
+  return { reason: `${why}.\n${where}${reachHint(team, own, instance)}` };
 }
 
 // the target a send names: SendMessage's `to`, the session tool's `session_id` or `name`

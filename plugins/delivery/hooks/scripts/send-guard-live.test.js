@@ -135,6 +135,46 @@ test('a live name of ours that another team\'s live session also holds is not of
   assert.match(hook(a.dir('builder-1'), 'builder-1', 'builder-77', only).permissionDecisionReason, /No session of this team can be reached by a listed name now/);
 });
 
+// rv-191-delivery-lead-5 finding 2: with nothing of the team reachable by a listed name, the refusal offers
+// a bare name only when a send to it passes now and it is not the name just refused; with none, it says
+// nothing would be delivered and to write a bead note (a denied send runs no PostToolUse, so none is kept)
+test('with nothing of this team live, a refusal offers only a bare name that passes now, never the refused one', () => {
+  const M = require('../../scripts/lib/manifest.js');
+  const team = JSON.parse(fs.readFileSync(path.join(FIXTURE, 'team.json'), 'utf8'));
+  const all = M.expandInstances(team).filter((i) => !(i.role && i.role.retired)).map((i) => i.instance);
+  const a = teamWith('alpha', 'builder-1');
+  const b = teamWith('beta', ...all);
+  // another team's live sessions hold the first instance's name: the offer skips it, and the name offered passes
+  const s = sessionsDir([live(b.dir(all[0]), all[0])]);
+  const d = hook(a.dir('builder-1'), 'builder-1', 'builder-77', s);
+  const m = /bare name passes while no live session outside this team holds it \((\S+) does now\)/.exec(d.permissionDecisionReason);
+  assert.ok(m, d.permissionDecisionReason);
+  assert.notEqual(m[1], all[0]);
+  const sent = hook(a.dir('builder-1'), 'builder-1', m[1], s);
+  assert.ok(!sent || sent.permissionDecision !== 'deny', `${m[1]} is offered, so a send to it passes: ${JSON.stringify(sent)}`);
+  // every name but builder-1 is held outside this team, and builder-1 is the one refused: nothing to offer
+  const held = sessionsDir(all.filter((i) => i !== 'builder-1').map((i) => live(b.dir(i), i)));
+  const none = hook(a.dir('builder-1'), 'builder-1', 'builder-1@beta', held);
+  assert.equal(none.permissionDecision, 'deny');
+  assert.match(none.permissionDecisionReason, /No session of this team can be reached now, and no send to it would be delivered: write the message as a note on the bead it concerns/);
+  assert.doesNotMatch(none.permissionDecisionReason, /kept for/, 'a denied send is kept for no one');
+  // the refused bare name itself is never the one offered
+  const self = hook(a.dir('builder-1'), 'builder-1', all[1], sessionsDir([live(b.dir(all[1]), all[1])]));
+  assert.equal(self.permissionDecision, 'deny');
+  assert.doesNotMatch(self.permissionDecisionReason, new RegExp(`\\(${all[1]} does now\\)`));
+});
+
+// rv-191-delivery-lead-5 finding 1: the join every role runs at start reports to the Chief of Staff, so
+// it names the listed name or the uds: address, never the instance@team form SendMessage refuses
+test('the team join step reports to the Chief of Staff by its listed name or uds: address', () => {
+  const skill = fs.readFileSync(path.join(PLUGIN_ROOT, 'skills', 'team', 'SKILL.md'), 'utf8');
+  const step = (/\*\*Report\.\*\*[^\n]*/.exec(skill) || [''])[0];
+  assert.match(step, /by the name `ListAgents` shows for its session/);
+  assert.match(step, /`uds:` address/);
+  assert.match(step, /Never by `<instance>@<team>`/);
+  assert.doesNotMatch(step, /chief-of-staff@acme|names the right session/);
+});
+
 // rv-191-delivery-lead-2 finding 2: no refusal or warning advises a form SendMessage refuses
 test('no refusal or warning advises sending to an <instance>@<team> name', () => {
   const a = teamWith('alpha', 'builder-1', 'chief-of-staff');
