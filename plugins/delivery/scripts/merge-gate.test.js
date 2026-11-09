@@ -519,3 +519,24 @@ test('the first-run record is written on a passing run too: a pull request opene
   mergeGate.gate(root2, '478', { head: H1, gh: down, team, repo: 'example/example', planDrift: () => [], readFile: () => ({ unavailable: 'unused' }), now: at(T0) });
   assert.equal(fs.existsSync(path.join(root2, '.delivery', 'reviews', 'doc-impact-since.json')), false);
 });
+
+// 8l1.4.1 through REST only (Claude Code's cloud sessions): the comments, the commits and the creation
+// time come from their own endpoints, so a line said there counts and the grace reads the same time
+test('through REST only, the doc-impact line counts from a comment or a commit, and the creation time sets the grace', () => {
+  const h = setup({ 478: pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, createdAt: '2026-11-01T10:00:00Z' }) }, { restOnly: true });
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  // no line anywhere, and no record yet: the first run records now, after the pull request was opened, so it is warned
+  assert.match(h.gate('delivery-lead', 'check 478').out, /warning: PR 478 was opened before the doc-impact gate first ran here/);
+  // opened after the record: refused through REST as through gh pr view
+  h.setPr(478, (p) => { p.createdAt = '2099-01-01T00:00:00Z'; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /refused: PR 478: it changes what users see/);
+  // the line in a comment: passes, nothing to warn
+  h.setPr(478, (p) => { p.comments = [{ body: 'Doc-impact: none (a test fixture)' }]; });
+  const c = h.gate('delivery-lead', 'check 478').out;
+  assert.match(c, /passes at a1b2c3d4e5f6/, c);
+  assert.doesNotMatch(c, /doc-impact/);
+  // the line in a commit message instead: passes
+  h.setPr(478, (p) => { p.comments = []; p.commits = [{ messageHeadline: 'Import a CSV', messageBody: 'Doc-impact: none (a parser change only)' }]; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/);
+});
