@@ -122,7 +122,15 @@ const n = url ? url[2] : target;
 const pr = s.prs && s.prs[n];
 if (!pr) fail(`GraphQL: Could not resolve to a PullRequest with the number of ${n}.`);
 // written synchronously: process.exit would cut an asynchronous write to a pipe short
-if (cmd === 'view') { fs.writeSync(1, `${JSON.stringify({ number: Number(n), state: 'OPEN', ...pr })}\n`); process.exit(0); }
+if (cmd === 'view') {
+  // like gh: only the fields --json names come back, so a field the caller never asked for is missing
+  // here as it is on GitHub (a test of a new field fails if the request does not name it)
+  const full = { number: Number(n), state: 'OPEN', ...pr };
+  const j = args.indexOf('--json');
+  const shown = j >= 0 ? Object.fromEntries(String(args[j + 1] || '').split(',').filter((k) => k in full).map((k) => [k, full[k]])) : full;
+  fs.writeSync(1, `${JSON.stringify(shown)}\n`);
+  process.exit(0);
+}
 const at = args.indexOf('--match-head-commit');
 if (at >= 0 && args[at + 1] !== pr.headRefOid) fail('Head branch was modified. Review and try the merge again.');
 // the squash commit GitHub made on the base: the merge-gate records it, self-update binds to it
