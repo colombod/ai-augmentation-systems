@@ -13,7 +13,10 @@
 //                                                      (a server that stays up after its session completes), or
 //                                                      with `--session-id <id>` in place of the spawn flags when a
 //                                                      Remote Control session was recorded for it and its last
-//                                                      start was not a reattach that ran and ended. Only with
+//                                                      start was not a reattach that ran and ended, each in its
+//                                                      own `systemd-run --user --scope` where systemd runs. A start
+//                                                      whose process exits within a minute is a failed row,
+//                                                      retried at the next pass. Only with
 //                                                      work in flight and no owner pause; one start per
 //                                                      instance an hour (none for one whose last session ran), six a day; each start is a row in
 //                                                      the watchdog's revive.ndjson, its output in its logs.
@@ -167,6 +170,47 @@ function spawnRemote(bin, args, { cwd, env, logPath }) {
   return child.pid || null;
 }
 
+// systemd-run where it can reach this user's systemd manager (Linux with a user manager: the host job's
+// service runs under it, and so does a desktop login), else null, and a start is a plain detached child.
+// The manager is reached through XDG_RUNTIME_DIR, so without it systemd-run --user would fail every start.
+function systemdRunOf(env = process.env, { platform = process.platform, exists = fs.existsSync } = {}) {
+  if (platform !== 'linux' || !env.XDG_RUNTIME_DIR) return null;
+  const rt = env.XDG_RUNTIME_DIR;
+  if (!exists(path.join(rt, 'systemd', 'private')) && !exists(path.join(rt, 'bus'))) return null;
+  for (const d of String(env.PATH || '/usr/bin:/bin').split(path.delimiter)) {
+    const f = path.join(d || '.', 'systemd-run');
+    if (d && exists(f)) return f;
+  }
+  return null;
+}
+
+// systemd-run's own refusal in a start's log, before claude ran: "Failed to start transient scope unit",
+// "Failed to connect to bus", "Failed to create bus connection", an unknown property
+const SYSTEMD_RUN_REFUSED = /^(Failed to (start transient|connect to (bus|user scope bus)|create bus connection|set unit properties)|Unknown assignment|Failed to parse)/m;
+function systemdRunRefused(logFile) {
+  try { return SYSTEMD_RUN_REFUSED.test(fs.readFileSync(logFile, 'utf8')); } catch (err) { return false; }
+}
+
+// Whether pid has exited: gone, or a zombie (a detached child of this pass that died is not reaped while
+// the pass runs synchronously). A process that cannot be read is taken as still running.
+function exited(pid) {
+  try { process.kill(pid, 0); } catch (err) { return err.code !== 'EPERM'; }
+  try {
+    const st = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return st.slice(st.lastIndexOf(')') + 2, st.lastIndexOf(')') + 3) === 'Z';
+  } catch (err) { /* no /proc: macOS */ }
+  try { return /^Z/.test(String(require('child_process').execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 })).trim()); } catch (err) { return false; }
+}
+// The pids among pids that exit within waitMs, polled every stepMs; returns early once all have exited.
+function settleStarts(pids, { waitMs = R.SETTLE_MS, stepMs = 2000, isExited = exited, sleep = (t) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, t) } = {}) {
+  const gone = new Set(pids.filter((p) => !Number.isInteger(p) || p <= 0));
+  for (let waited = 0; ; waited += stepMs) {
+    for (const p of pids) if (!gone.has(p) && isExited(p)) gone.add(p);
+    if (gone.size === pids.length || waited >= waitMs) return gone;
+    sleep(Math.min(stepMs, waitMs - waited));
+  }
+}
+
 // check, or start: { a, lines, started }. The remote session ids claude recorded are copied into the
 // roster on a start pass, so the next start reattaches the owner's link even when claude's own files go.
 // A start pass holds the project's start lock (lib/team-revive.js startLock) from its read of the facts to
@@ -185,7 +229,7 @@ function revive(root, team, opts = {}) {
 
 // A stale session is restarted only after a second read of the open sessions finds it still idle (the
 // first read may be seconds old), and only once its server stopped; each restart is a ledger row.
-function restartStale(root, f, a, { env, bin, spawn, stop, relist }) {
+function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null }) {
   const out = {};
   for (const i of a.stale.filter((x) => !x.stale.skip && !x.stale.held)) {
     const st = i.stale;
@@ -202,23 +246,29 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist }) {
     }
     const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
     let pid;
-    try { pid = spawn(bin, st.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath }); } catch (err) {
+    // a restarted session gets its own scope too, as a start does
+    const cmd = R.scopedCommand(bin, st.args, { instance: i.instance, at, systemdRun });
+    try { pid = spawn(cmd.bin, cmd.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath }); } catch (err) {
       // its server is already stopped: the row says so, the caps count it, and the next pass starts the missing session
       R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, stopped: st.server, from: st.version, to: st.installed, error: err.message });
       out[i.instance] = { why: `its Remote Control server stopped, and the new one did not start: ${err.message}` };
       continue;
     }
-    R.record(root, { type: 'restart', at, instance: i.instance, pid, args: st.args, session_id: st.remoteId, mode: st.mode, from: st.version, to: st.installed, stopped: st.server, log: path.relative(root, logPath) });
+    R.record(root, { type: 'restart', at, instance: i.instance, pid, args: st.args, ...(cmd.unit ? { unit: cmd.unit } : {}), session_id: st.remoteId, mode: st.mode, from: st.version, to: st.installed, stopped: st.server, log: path.relative(root, logPath) });
     out[i.instance] = { pid, log: path.relative(root, logPath) };
   }
   return out;
 }
 
-function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, ...deps } = {}) {
+// A start pass spawns every missing instance, then waits SETTLE_MS (settle) for any that exit at once: those
+// get a 'failed' row, are named Failed, and the next pass retries them (lib/team-revive.js assess). settle is
+// the real wait only with the real spawn; a test that injects spawn injects settle too, or gets none.
+function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, ...deps } = {}) {
   const f = gather(root, team, { env, ...deps });
   const a = R.assess(f);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const started = {};
+  const sdRun = systemdRun !== undefined ? systemdRun : systemdRunOf(env);
   if (start && !dryRun) {
     const RO = require('./lib/roster.js');
     for (const i of a.instances) if (i.remoteId && f.roster[i.instance] && f.roster[i.instance].remote_session_id !== i.remoteId) { try { RO.setRemoteSession(root, { instance: i.instance, remote_session_id: i.remoteId }); } catch (err) { /* the next pass records it */ } }
@@ -227,15 +277,39 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
     for (const i of a.missing.filter((x) => !x.skip && !x.held)) {
       const at = f.now;
       const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
-      const pid = spawn(bin, i.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath });
-      R.record(root, { type: 'start', at, instance: i.instance, pid, args: i.args, session_id: i.remoteId, mode: i.mode, log: path.relative(root, logPath) });
-      started[i.instance] = { pid, log: path.relative(root, logPath) };
+      const cmd = R.scopedCommand(bin, i.args, { instance: i.instance, at, systemdRun: sdRun });
+      const pid = spawn(cmd.bin, cmd.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath });
+      R.record(root, { type: 'start', at, instance: i.instance, pid, args: i.args, session_id: i.remoteId, mode: i.mode, log: path.relative(root, logPath), ...(cmd.unit ? { unit: cmd.unit } : {}) });
+      started[i.instance] = { pid, log: path.relative(root, logPath), at, args: i.args, roleDir: i.roleDir, ...(cmd.unit ? { unit: cmd.unit } : {}) };
+    }
+    const wait = settle !== undefined ? settle : (spawn === spawnRemote ? settleStarts : null);
+    const failStarts = (names) => {
+      if (!wait || !names.length) return [];
+      const gone = wait(names.map((n) => started[n].pid));
+      const out = names.filter((n) => gone.has(started[n].pid));
+      for (const n of out) {
+        started[n].failed = true;
+        R.record(root, { type: 'failed', at: new Date().toISOString(), instance: n, pid: started[n].pid, start_at: started[n].at, why: `exited within ${Math.round(R.SETTLE_MS / 1000)}s of its start`, log: started[n].log, ...(started[n].unit ? { unit: started[n].unit } : {}) });
+      }
+      return out;
+    };
+    // a scoped start whose log shows systemd-run's own refusal (no user manager, a refused property) never
+    // reached claude: it is started again at once as a plain detached child, which the next start of the
+    // pass waits for in turn, so a host where systemd-run fails still starts its team
+    for (const n of failStarts(Object.keys(started)).filter((x) => started[x].unit && systemdRunRefused(path.join(root, started[x].log)))) {
+      const was = started[n];
+      const at = new Date().toISOString();
+      const logPath = path.join(root, WD.REL, 'logs', `revive-${n}-${at.replace(/[:.]/g, '-')}.log`);
+      const pid = spawn(bin, was.args, { cwd: was.roleDir, env: startEnv(env, n), logPath });
+      R.record(root, { type: 'start', at, instance: n, pid, args: was.args, session_id: (a.missing.find((x) => x.instance === n) || {}).remoteId || null, log: path.relative(root, logPath), fallback_from: was.unit });
+      started[n] = { pid, log: path.relative(root, logPath), at, args: was.args, roleDir: was.roleDir, fallbackFrom: was.unit };
+      failStarts([n]);
     }
   }
   let restarted = {};
   if (start && !dryRun && a.restart && a.stale.length) {
     const again = relist || (() => (deps.live !== undefined ? deps.live : require('./watchdog.js').liveSessions(bin, env)));
-    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again });
+    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun });
   }
   return { a, started, restarted, lines: R.lines(a, { bin, started, restarted, dryRun: start && dryRun }) };
 }
@@ -265,7 +339,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { main, revive, gather, startEnv, refusal, serverAlive, serverOf, stopServer };
+module.exports = { main, revive, gather, startEnv, refusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
 
 if (require.main === module) {
   let r;

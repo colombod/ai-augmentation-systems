@@ -34,6 +34,24 @@ const ledgerFile = (root) => path.join(root, WD.REL, LEDGER);
 const START_EVERY_MS = WD.WAKE_EVERY_MS;
 const DAILY_CAP = WD.DAILY_CAP;
 const DAY = 24 * 3600e3;
+// a started process that exits this soon after its start crashed at its start (a Bun abort at a cgroup's
+// task limit, a refused flag, no login): the pass waits this long and records it failed, never started
+const SETTLE_MS = 60e3;
+// Each role session runs in its own systemd user scope, never in the cgroup of what started it. Started
+// from the host job's service, a session inherited that service's cgroup: its TasksMax (600) was shared by
+// every role, so starting eight at once aborted all eight (2026-11-08), and the oneshot service never
+// ended while its cgroup held them, so its timer never fired again. A scope of its own takes the session
+// out of the starter's cgroup and gives it its own limits, the ones the owner's manual starts used.
+const SCOPE_LIMITS = ['TasksMax=1000', 'MemoryMax=3G'];
+const unitPart = (x) => String(x || '').replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 64) || 'role';
+// The command that starts bin args for instance: under `systemd-run --user --scope` when systemdRun (its
+// path, or null where there is none: macOS, no user manager) is given, else bin args as they are.
+// at: the start's time, so each start's scope has its own unit name.
+function scopedCommand(bin, args, { instance, at, systemdRun = null } = {}) {
+  if (!systemdRun) return { bin, args, unit: null };
+  const unit = `delivery-role-${unitPart(instance)}-${String(ms(at) > 0 ? ms(at) : Date.now())}`;
+  return { bin: systemdRun, args: ['--user', '--scope', '--quiet', '--collect', `--unit=${unit}`, ...SCOPE_LIMITS.flatMap((l) => ['-p', l]), '--', bin, ...args], unit };
+}
 // the modes `claude remote-control --permission-mode` takes on claude 2.1.318: its help lists acceptEdits,
 // auto, bypassPermissions, default, dontAsk, plan, and its parser takes acceptEdits, auto, bypassPermissions,
 // manual, dontAsk, plan. Only the five both agree on are passed: "default" (the help's) and "manual" (the
@@ -235,9 +253,12 @@ function assess(f) {
     // and so is a restart whose server stopped but whose new one did not start (the session went down)
     const starts = rows.filter((r) => (r.type === 'start' || r.type === 'restart' || (r.type === 'restart-failed' && r.stopped)) && r.instance === instance);
     const last = starts[starts.length - 1] || null;
+    // a start whose process exited within SETTLE_MS of it (a 'failed' row names it) is a failed start, not
+    // a start that holds the next one for an hour: it is retried at the next pass, within the daily cap
+    const failed = last ? rows.find((r) => r.type === 'failed' && r.instance === instance && r.start_at === last.at) || null : null;
     // alive(pid) is true, false, or null when the process list could not be read: unknown is neither
     // running (the instance is named, not hidden in "all running") nor a start (it may be a second link)
-    const alive = open || !last ? false : f.alive(last.pid);
+    const alive = open || !last || failed ? false : f.alive(last.pid);
     if (open) {
       it.running = `session ${open.name || open.sessionId || 'open'} in ${roleDir}`;
       it.stale = staleOf(f, { e, open, roleDir, starts, last, t, team, name: it.name, same });
@@ -266,9 +287,10 @@ function assess(f) {
       if (!it.skip && m.skip) it.skip = m.skip;
       it.mode = m.mode || null;
       const today = starts.filter((r) => t - ms(r.at) < DAY);
-      if (!it.skip && last && !ran && t - ms(last.at) < START_EVERY_MS) it.held = `started ${WD.clock(ms(last.at))}; the next start is after ${WD.clock(ms(last.at) + START_EVERY_MS)} (one start an hour)`;
+      if (failed) it.failed = `its start ${WD.clock(ms(last.at))} (pid ${last.pid}) exited within ${Math.round(SETTLE_MS / 1000)}s`;
+      if (!it.skip && last && !failed && !ran && t - ms(last.at) < START_EVERY_MS) it.held = `started ${WD.clock(ms(last.at))}; the next start is after ${WD.clock(ms(last.at) + START_EVERY_MS)} (one start an hour)`;
       else if (!it.skip && today.length >= DAILY_CAP) it.held = `started ${today.length} times in the last day, the most a day allows; the next start is after ${WD.clock(ms(today[today.length - DAILY_CAP].at) + DAY)}`;
-      if (!it.skip && alive === null) it.held = `the process list could not be read, so whether its Remote Control server started ${WD.clock(ms(last.at))} (pid ${last.pid}) still runs is not known`;
+      if (!it.skip && alive === null && !failed) it.held = `the process list could not be read, so whether its Remote Control server started ${WD.clock(ms(last.at))} (pid ${last.pid}) still runs is not known`;
       it.args = ['remote-control', '--name', it.name, ...(it.remoteId ? ['--session-id', it.remoteId] : STAY_UP), ...(it.mode ? ['--permission-mode', it.mode] : [])];
     }
     out.instances.push(it);
@@ -303,9 +325,11 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
     const why = `no session in ${i.roleDir}`;
     if (i.skip) { out.push(`Missing: ${i.instance} (${why}); not started: ${i.skip}.`); continue; }
     if (i.held) { out.push(`Missing: ${i.instance} (${why}); held: ${i.held}.`); continue; }
-    const how = `${shown(bin, i.args)} in ${i.roleDir}${i.remoteId ? `, reattaching Remote Control session ${i.remoteId}` : ', a new Remote Control session'}${i.staleId ? ` (its reattach to ${i.staleId} never joined)` : ''}${i.endedId ? ` (its reattach to ${i.endedId} ran and ended, as a single-session server does after its task)` : ''}`;
+    const how = `${i.failed ? `retry after a failed start (${i.failed}): ` : ''}${shown(bin, i.args)} in ${i.roleDir}${i.remoteId ? `, reattaching Remote Control session ${i.remoteId}` : ', a new Remote Control session'}${i.staleId ? ` (its reattach to ${i.staleId} never joined)` : ''}${i.endedId ? ` (its reattach to ${i.endedId} ran and ended, as a single-session server does after its task)` : ''}`;
     const s = started && started[i.instance];
-    if (s) out.push(`Started: ${i.instance} (pid ${s.pid}): ${how}; log ${s.log}.`);
+    const where = s ? (s.unit ? `, scope ${s.unit}` : s.fallbackFrom ? `, a plain start: systemd-run refused scope ${s.fallbackFrom}` : '') : '';
+    if (s && s.failed) out.push(`Failed: ${i.instance} (pid ${s.pid}${where}): its process exited within ${Math.round(SETTLE_MS / 1000)}s of the start, so it is not counted as started and is retried at the next pass; ${how}; log ${s.log}.`);
+    else if (s) out.push(`Started: ${i.instance} (pid ${s.pid}${where}): ${how}; log ${s.log}.`);
     else if (a.go) out.push(`Missing: ${i.instance} (${why}); ${dryRun ? 'would start' : 'start runs'}: ${how}.`);
     else out.push(`Missing: ${i.instance} (${why}); not started now (${a.paused ? 'paused' : !a.inFlight ? 'no work in flight' : 'the open sessions could not be read'}); start would run: ${how}.`);
   }
@@ -329,4 +353,4 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
   return out;
 }
 
-module.exports = { STAY_UP, LEDGER, ledgerFile, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
+module.exports = { STAY_UP, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };

@@ -1381,7 +1381,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   like assigned work (five minutes apart, the assigned day and backoff), spends none of the stall
   wakes' hourly gate or daily cap, and is also recorded as an `idle-role` warning, so idle with ready
   work is never a quiet state (hjx.1.6.12). A session the team revive started, or restarted onto the
-  installed plugin, that has had no turn since is woken once with the first turn, paced the same way.
+  installed plugin, that has had no turn since is woken once with the first turn: a handover, which goes at
+  once (not five minutes apart) and also spends none of the stall budget.
 - **Handoffs.** `merge-gate.js merged` hands the deploy of each story it marked merged to the watchdog,
   and `evidence.js state <bead> deployed` hands the reality check (`.delivery/watchdog/handoffs.ndjson`,
   `lib/handoff.js`): if the Delivery Manager's turn ends there, the watchdog wakes it for that step with
