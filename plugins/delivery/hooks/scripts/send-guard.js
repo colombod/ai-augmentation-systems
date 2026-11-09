@@ -228,7 +228,7 @@ function judge(team, to, host, own = null) {
     const inst = require('../../scripts/lib/manifest.js').expandInstances(team).find((i) => i.instance.toLowerCase() === slug(instance));
     if (inst && noOtherLiveSession(instance, team, own)) {
       // no "@" advice: SendMessage refuses that form (hjx.1.6.13)
-      return { warn: `delivery: "${SN.bareTarget(to)}" is this team's instance ${inst.instance}, and no live session outside this team holds that name: allowed. It is not running under it, so the send is kept for ${inst.instance} and the watchdog wakes it with it.` };
+      return { warn: `delivery: "${SN.bareTarget(to)}" is this team's instance ${inst.instance}, and no live session outside this team holds that name: allowed. If it is not running, the send is kept for ${inst.instance} and the watchdog wakes it with it.` };
     }
   }
   const where = mine ? '' : `No session of this team is "${instance}". `;

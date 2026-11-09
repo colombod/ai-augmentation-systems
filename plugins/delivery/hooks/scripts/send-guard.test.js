@@ -158,7 +158,7 @@ test('two teams with qualified names: a bare name or a prefix that reaches the o
   assert.match(fromB.permissionDecisionReason, /No session of this team can be reached by a listed name now\. A send to an instance's bare name passes while no live session outside this team holds it \(staffing does now\): it finds the role not running, so it is kept for it/);
   // the same from alpha while only its own qualified session runs: allowed with the warning
   const ours = JSON.parse(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([ourCos])).stdout);
-  assert.match(ours.hookSpecificOutput.additionalContext, /is this team's instance chief-of-staff, and no live session outside this team holds that name: allowed\. It is not running under it, so the send is kept for chief-of-staff/);
+  assert.match(ours.hookSpecificOutput.additionalContext, /is this team's instance chief-of-staff, and no live session outside this team holds that name: allowed\. If it is not running, the send is kept for chief-of-staff/);
   // our own qualified name in another instance's role directory is not ours: refused
   const misplaced = { ...ourCos, cwd: path.join(a.teamDir, 'builder-1') };
   assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([misplaced]))).permissionDecision, 'deny');
@@ -230,12 +230,12 @@ test('a bare name of our own instance that is not live passes with a warning, an
     return out.hookSpecificOutput.additionalContext;
   };
   // builder-2 is in our manifest, never started (no role directory), nothing live: allowed, and kept for it
-  assert.match(warned('builder-2', EMPTY_SESSIONS), /is this team's instance builder-2, and no live session outside this team holds that name: allowed\. It is not running under it, so the send is kept for builder-2/);
+  assert.match(warned('builder-2', EMPTY_SESSIONS), /is this team's instance builder-2, and no live session outside this team holds that name: allowed\. If it is not running, the send is kept for builder-2/);
   assert.doesNotMatch(warned('builder-2', EMPTY_SESSIONS), /@alpha/, 'no advice to use a form SendMessage refuses');
-  assert.match(warned('Builder_2 [ex-1]', EMPTY_SESSIONS), /is this team's instance builder-2, and no live session outside this team holds that name: allowed\. It is not running under it, so the send is kept for builder-2/);
+  assert.match(warned('Builder_2 [ex-1]', EMPTY_SESSIONS), /is this team's instance builder-2, and no live session outside this team holds that name: allowed\. If it is not running, the send is kept for builder-2/);
   // only a stale record of that name (its pid has ended), or no sessions directory at all: nothing live, allowed
-  assert.match(warned('chief-of-staff', sessionsDir([{ pid: DEAD, cwd: ourCos, name: 'chief-of-staff' }])), /is this team's instance chief-of-staff, and no live session outside this team holds that name: allowed\. It is not running under it, so the send is kept for chief-of-staff/);
-  assert.match(warned('chief-of-staff', path.join(EMPTY_SESSIONS, 'missing')), /is this team's instance chief-of-staff, and no live session outside this team holds that name: allowed\. It is not running under it, so the send is kept for chief-of-staff/);
+  assert.match(warned('chief-of-staff', sessionsDir([{ pid: DEAD, cwd: ourCos, name: 'chief-of-staff' }])), /is this team's instance chief-of-staff, and no live session outside this team holds that name: allowed\. If it is not running, the send is kept for chief-of-staff/);
+  assert.match(warned('chief-of-staff', path.join(EMPTY_SESSIONS, 'missing')), /is this team's instance chief-of-staff, and no live session outside this team holds that name: allowed\. If it is not running, the send is kept for chief-of-staff/);
   // another team's live builder-2 holds the name: refused, and the refusal offers a bare name that passes now
   const theirs = sessionsDir([{ pid: process.pid, cwd: path.join(b.teamDir, 'builder-2'), name: 'builder-2' }]);
   const d = decision(runHook(send(a.roleDir, 'builder-2'), 'builder-1', theirs));
