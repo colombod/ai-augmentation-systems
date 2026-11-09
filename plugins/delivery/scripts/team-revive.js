@@ -55,6 +55,50 @@ function serverAlive(pid, { exec = psCommand, kill = (p) => process.kill(p, 0) }
   return !cmd.trim() || /remote-control/.test(cmd);
 }
 
+// The Remote Control server a session process runs under: its parent, when that parent's command is
+// `claude remote-control` (claude 2.1.318 runs each Remote Control session as a child `--print --sdk-url`
+// process of the server, read on a real host). { pid, self } with self when this very process runs
+// inside it (stopping it would stop this pass), null when the parent is no Remote Control server, or
+// { unreadable } when ps fails.
+const psRow = (pid) => require('child_process').execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
+function parentOf(pid, exec) {
+  const m = String(exec(pid)).trim().match(/^(\d+)\s+([\s\S]*)$/);
+  return m ? { ppid: Number(m[1]), command: m[2] } : null;
+}
+const RC_SERVER = /(^|[\s/])claude(\s|$)[\s\S]*\bremote-control\b/;
+function serverOf(pid, { exec = psRow, self = process.pid } = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const p = parentOf(pid, exec);
+    if (!p || p.ppid <= 1) return null;
+    const server = parentOf(p.ppid, exec);
+    if (!server || !RC_SERVER.test(server.command)) return null;
+    // this process inside the server's tree: walk up from here, a bounded number of steps
+    let inside = false;
+    let q = self;
+    for (let n = 0; n < 32 && q > 1; n++) {
+      if (q === p.ppid) { inside = true; break; }
+      const r = parentOf(q, exec);
+      if (!r) break;
+      q = r.ppid;
+    }
+    return { pid: p.ppid, self: inside };
+  } catch (err) { return { unreadable: String(err.message || err).split('\n')[0].slice(0, 120) }; }
+}
+
+// Stop a Remote Control server and wait for it and its session to be gone: true when both are, false
+// after waitMs (a server that did not stop is never doubled by a second one in its directory).
+const sleep = (msec) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, msec);
+function stopServer(serverPid, sessionPid, { kill = (p, sig) => process.kill(p, sig), waitMs = 15000, stepMs = 250 } = {}) {
+  const gone = (p) => { if (!p) return true; try { kill(p, 0); return false; } catch (err) { return err.code !== 'EPERM'; } };
+  try { kill(serverPid, 'SIGTERM'); } catch (err) { if (err.code !== 'ESRCH') return false; }
+  for (let waited = 0; waited <= waitMs; waited += stepMs) {
+    if (gone(serverPid) && gone(sessionPid)) return true;
+    sleep(stepMs);
+  }
+  return false;
+}
+
 // The open pull requests of the product repository, or { unreadable } with why.
 function openPrs(team, env) {
   const repo = require('./lib/gh-pr.js').productRepoOf(team);
@@ -67,7 +111,7 @@ function openPrs(team, env) {
 }
 
 // The facts the rules read, each from its own source; deps replace any of them in a test.
-function gather(root, team, { env = process.env, now, bd, live, prs, alive, hostname, home, configDir, pause } = {}) {
+function gather(root, team, { env = process.env, now, bd, live, prs, alive, hostname, home, configDir, pause, installed, server } = {}) {
   const config = configDir || R.configDirOf(env, home);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const store = bd || require('./lib/bd.js').makeBd({ cwd: root, env, timeoutMs: 15000 });
@@ -94,6 +138,9 @@ function gather(root, team, { env = process.env, now, bd, live, prs, alive, host
     paused,
     rows: R.ledger(root),
     alive: alive || serverAlive,
+    // the installed plugin: the host job runs it (watchdog.js self-update installs before a pass wakes anyone)
+    installed: installed !== undefined ? installed : require('./lib/plugin-version.js').runningVersion(),
+    serverOf: server || serverOf,
   };
 }
 
@@ -136,7 +183,38 @@ function revive(root, team, opts = {}) {
   try { return revivePass(root, team, opts); } finally { lock.release(); }
 }
 
-function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, ...deps } = {}) {
+// A stale session is restarted only after a second read of the open sessions finds it still idle (the
+// first read may be seconds old), and only once its server stopped; each restart is a ledger row.
+function restartStale(root, f, a, { env, bin, spawn, stop, relist }) {
+  const out = {};
+  for (const i of a.stale.filter((x) => !x.stale.skip && !x.stale.held)) {
+    const st = i.stale;
+    const now = relist();
+    if (!Array.isArray(now)) { out[i.instance] = { why: 'the open sessions could not be read again just before the stop' }; continue; }
+    const row = now.find((s) => s && s.sessionId === st.session);
+    if (!row) { out[i.instance] = { why: 'its session is no longer open; the next pass starts it if it is missing' }; continue; }
+    if (row.status !== 'idle') { out[i.instance] = { why: `it became ${row.status || 'busy'} just before the stop` }; continue; }
+    const at = f.now;
+    if (!stop(st.server, st.pid)) {
+      R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, from: st.version, to: st.installed });
+      out[i.instance] = { why: `its Remote Control server (pid ${st.server}) did not stop` };
+      continue;
+    }
+    const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
+    let pid;
+    try { pid = spawn(bin, st.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath }); } catch (err) {
+      // its server is already stopped: the row says so, the caps count it, and the next pass starts the missing session
+      R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, stopped: st.server, from: st.version, to: st.installed, error: err.message });
+      out[i.instance] = { why: `its Remote Control server stopped, and the new one did not start: ${err.message}` };
+      continue;
+    }
+    R.record(root, { type: 'restart', at, instance: i.instance, pid, args: st.args, session_id: st.remoteId, mode: st.mode, from: st.version, to: st.installed, stopped: st.server, log: path.relative(root, logPath) });
+    out[i.instance] = { pid, log: path.relative(root, logPath) };
+  }
+  return out;
+}
+
+function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, ...deps } = {}) {
   const f = gather(root, team, { env, ...deps });
   const a = R.assess(f);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
@@ -154,7 +232,12 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
       started[i.instance] = { pid, log: path.relative(root, logPath) };
     }
   }
-  return { a, started, lines: R.lines(a, { bin, started, dryRun: start && dryRun }) };
+  let restarted = {};
+  if (start && !dryRun && a.restart && a.stale.length) {
+    const again = relist || (() => (deps.live !== undefined ? deps.live : require('./watchdog.js').liveSessions(bin, env)));
+    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again });
+  }
+  return { a, started, restarted, lines: R.lines(a, { bin, started, restarted, dryRun: start && dryRun }) };
 }
 
 // A role session other than the Chief of Staff's never starts sessions; outside any role session (the
@@ -178,11 +261,11 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   if (cmd === 'start') { const no = refusal(cwd, env, who); if (no) return { code: 1, out: no }; }
   if (!who.root) return { code: 2, out: 'team-revive.js: no project found; pass --project <root>' };
   const r = revive(who.root, who.team, { start: cmd === 'start', dryRun: o.dryRun, env, ...rest });
-  if (o.json) return { code: 0, out: JSON.stringify({ ...r.a, started: r.started }, null, 2) };
+  if (o.json) return { code: 0, out: JSON.stringify({ ...r.a, started: r.started, restarted: r.restarted || {} }, null, 2) };
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { main, revive, gather, startEnv, refusal, serverAlive };
+module.exports = { main, revive, gather, startEnv, refusal, serverAlive, serverOf, stopServer };
 
 if (require.main === module) {
   let r;

@@ -1521,6 +1521,23 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   under way; the sealed test runner starts none. In a role session only the Chief of Staff may run
   `start` (lane group `team-revive`), and its brief runs `check` each turn; any other role session is
   refused, whatever its lane. Each host's job covers the roles on that host.
+- **A running role session moves onto a newly installed plugin.** Claude Code loads a plugin's hooks when
+  a session starts, so a role session still open when a new version is installed keeps the old
+  version's lane for as long as it runs. `team-revive.js check` names such a session (`Stale:`): open in
+  its role directory, the roster's `plugin_version` for that very session older than the installed
+  version. `start` restarts it when it is idle between turns, read once at the pass's start and again
+  just before the stop: it sends SIGTERM to the session's `claude remote-control` server, waits up to
+  15 seconds for the server and its session to end, then starts
+  `claude remote-control --name <instance>@<team> --session-id <its Remote Control id>` in the role
+  directory, so the owner's link and the conversation come back under the installed hooks. A session
+  that is busy, does not run under a Remote Control server, runs the pass itself, or has no Remote
+  Control id recorded is not stopped, and the check says why; a server that does not stop gets no
+  second one (a `restart-failed` row); a server that stopped but whose new one did not start is a
+  `restart-failed` row with the error and the server stopped, counts against the caps like a start,
+  and the next pass starts the missing session once the hour has passed. A restart is a `restart` row in `revive.ndjson` (from and to
+  versions, the server stopped) and counts against the same one-an-hour, six-a-day caps; a restart onto
+  a version whose session still records the older one afterwards is not tried again. The owner's pause
+  holds restarts; work in flight is not needed.
 - **Watching GitHub within a budget (R-25).** `watch.js until <text> --every <5m> --max <2h> -- gh <read>`
   repeats a gh read until its output shows `<text>` (a pattern, any case), exit 0, or the time limit
   passes, exit 1. Outside a project its cache is a private folder in the temporary directory (0700,
