@@ -13,6 +13,15 @@ const HM = require('./lib/host-manager.js');
 const R = require('./lib/team-revive.js');
 const watchdog = require('./watchdog.js');
 
+// The guards read the process this runs in as well as what a caller passes: the tests run from a
+// directory that is no role directory, with no role in the environment, and put both back after.
+const ROLE_VARS = ['DELIVERY_ROLE', 'DELIVERY_ROLE_ID', 'DELIVERY_ROLE_DIR'];
+const savedCwd = process.cwd();
+const savedRole = Object.fromEntries(ROLE_VARS.map((k) => [k, process.env[k]]));
+process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), 'hm-test-cwd-')));
+for (const k of ROLE_VARS) delete process.env[k];
+test.after(() => { process.chdir(savedCwd); for (const k of ROLE_VARS) { if (savedRole[k] === undefined) delete process.env[k]; else process.env[k] = savedRole[k]; } });
+
 const T0 = '2026-11-08T10:00:00Z';
 const MIN = 60e3;
 const iso = (t) => new Date(t).toISOString();
@@ -513,6 +522,37 @@ test('restart and tick are the host manager\'s in a role session; status reads i
   assert.match(m.run(['install', '--project', m.alpha.root], hm).out, /install writes this machine's user units and runs from a shell outside any role session/);
   assert.equal(m.run(['bogus']).code, 2);
   assert.equal(m.run(['install']).code, 2, 'install needs --project');
+});
+
+test('in a builder role directory, a caller passing cwd / and an empty env, or who host-manager, does not get past the guards of restart, tick, install and the start pass', () => {
+  const m = machine({ alphaRoles: [{ id: 'builder', host: 'pc' }, { id: 'host-manager', host: 'pc' }], beads: { alpha: [{ id: 'al-1', status: 'in_progress', assignee: 'builder', updated_at: ago(40) }] } });
+  const dir = m.alpha.dir('builder');
+  fs.writeFileSync(path.join(dir, '.delivery-role.json'), JSON.stringify({ instance: 'builder', project_root: m.alpha.root }));
+  const TR = require('./team-revive.js');
+  const here = process.cwd();
+  const attempts = (label) => {
+    for (const more of [{ cwd: '/', env: {}, who: undefined }, { who: { roleId: 'host-manager' } }, { cwd: '/', env: { DELIVERY_ROLE: 'host-manager', DELIVERY_ROLE_ID: 'host-manager' }, who: { roleId: 'host-manager' } }]) {
+      const deps = { ...m.deps(), ...more };
+      const tag = `${label} ${JSON.stringify(more)}`;
+      assert.throws(() => HMS.restart(deps), /restart is the host manager's/, `restart ${tag}`);
+      assert.throws(() => HMS.tick(deps), /tick is the host manager's/, `tick ${tag}`);
+      assert.match(HMS.install(m.alpha.root, {}, deps).out, /install writes this machine's user units/, `install ${tag}`);
+      assert.throws(() => TR.revive(m.alpha.root, m.alpha.team, { start: true, ...deps, ...m.deps().teamDeps(m.alpha.root) }), /start is the Chief of Staff's/, `revive ${tag}`);
+    }
+  };
+  process.chdir(dir);
+  try {
+    // the marker alone makes this process a role session
+    attempts('marker');
+    // and so does the role in the process's own environment, from any directory
+    process.chdir(here);
+    process.env.DELIVERY_ROLE = 'builder';
+    attempts('env');
+  } finally { process.chdir(here); delete process.env.DELIVERY_ROLE; }
+  assert.equal(m.spawned.length, 0);
+  assert.equal(m.sd.calls.filter((c) => / start |enable/.test(c)).length, 0);
+  // the same calls from a process that is no role session run
+  assert.doesNotThrow(() => HMS.restart({ ...m.deps(), who: { roleId: 'host-manager' } }));
 });
 
 test('the team list: the host file and the installed watchdog units together, each root once, sorted', () => {

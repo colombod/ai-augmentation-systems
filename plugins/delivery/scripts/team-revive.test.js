@@ -13,6 +13,15 @@ const R = require('./lib/team-revive.js');
 const RO = require('./lib/roster.js');
 const watchdog = require('./watchdog.js');
 
+// revive() reads the process this runs in as well as what a caller passes: the tests run from a directory
+// that is no role directory, with no role in the environment, and put both back after.
+const ROLE_VARS = ['DELIVERY_ROLE', 'DELIVERY_ROLE_ID', 'DELIVERY_ROLE_DIR'];
+const savedCwd = process.cwd();
+const savedRole = Object.fromEntries(ROLE_VARS.map((k) => [k, process.env[k]]));
+process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), 'revive-test-cwd-')));
+for (const k of ROLE_VARS) delete process.env[k];
+test.after(() => { process.chdir(savedCwd); for (const k of ROLE_VARS) { if (savedRole[k] === undefined) delete process.env[k]; else process.env[k] = savedRole[k]; } });
+
 const T0 = '2026-11-04T09:00:00Z';
 const H = 3600e3;
 const iso = (t) => new Date(t).toISOString();

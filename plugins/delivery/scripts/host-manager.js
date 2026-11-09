@@ -133,15 +133,20 @@ function whyNot(a, i) {
 // The restart, from a read already made (the tick's) or a new one.
 // restart, tick and install refuse a caller in a role session other than the host manager's, whoever
 // calls them: main(), or code that loads this module
+// The role a directory's marker names, as team-revive.js reads it: { roleId } or { roleId: null }.
+function markerWho(cwd) {
+  try { const { findRoleMarker, validMarker } = require('../hooks/scripts/role-context.js'); const v = validMarker(findRoleMarker(cwd)); if (v) return { roleId: v.role.id }; } catch (err) { /* no marker that names a role */ }
+  return { roleId: null };
+}
+// Two readings, and a refusal from either holds: the process this code runs in (its own directory and
+// environment), and what the caller passes. A caller's cwd, env or who can only make it stricter: code in
+// a builder's session that passes cwd '/' and an empty env, or who host-manager, is still in a builder's
+// session.
 function guard(cmd, deps) {
+  const own = refusal(cmd, process.cwd(), process.env, markerWho(process.cwd()));
+  if (own) return own;
   const cwd = deps.cwd || process.cwd();
-  const env = deps.env || process.env;
-  let who = deps.who;
-  if (!who) {
-    who = { roleId: null };
-    try { const { findRoleMarker, validMarker } = require('../hooks/scripts/role-context.js'); const v = validMarker(findRoleMarker(cwd)); if (v) who = { roleId: v.role.id }; } catch (err) { who = { roleId: null }; }
-  }
-  return refusal(cmd, cwd, env, who);
+  return refusal(cmd, cwd, deps.env || process.env, deps.who || markerWho(cwd));
 }
 
 // How a restart waits for the sessions it started to be listed: a Remote Control server takes seconds to

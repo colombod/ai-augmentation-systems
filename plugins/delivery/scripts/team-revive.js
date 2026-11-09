@@ -221,7 +221,9 @@ function revive(root, team, opts = {}) {
   if (!opts.start || opts.dryRun) return revivePass(root, team, opts);
   // the guard holds for every caller, a script loading this module included: a start from a role
   // session that may not start sessions is refused here as main() refuses it
-  const no = callerRefusal(opts.cwd || process.cwd(), opts.env || process.env);
+  // read twice, the process this runs in and what the caller passes, and refused when either is a role
+  // session that may not start sessions: a caller's cwd or env can only make it stricter
+  const no = callerRefusal(process.cwd(), process.env) || callerRefusal(opts.cwd || process.cwd(), opts.env || process.env);
   if (no) throw new Error(no);
   const lock = R.startLock(root);
   if (lock.held) {
