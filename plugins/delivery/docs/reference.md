@@ -1507,7 +1507,14 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   --restart` is the Reality Checker's only (lane group `outage-drill`, and
   the script refuses any other role whatever its lane). It refuses a record that is not the owner's
   verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
-  record. The cut drops the session that runs it, so in this order it schedules the restore
+  record. The record must be consent to this drill: its scope carries the label `outage-drill:<host>`
+  for the host the drill would cut, and the owner's own words name the network cut and the restart
+  with no negation. Those words are the verified quote, or, for an answer to a confirmation, the
+  question the owner was shown and the answer they picked, captured with their input; the scope and the
+  statement the recording agent wrote never count as the owner's words. Any other verified owner
+  record is refused. Before it schedules anything a run claims the record with an exclusive
+  `drill-<id>.claim` file beside `drills.ndjson`, so a second run started at the same time is refused; a
+  run that fails before its row is written gives the claim back. The cut drops the session that runs it, so in this order it schedules the restore
   (`systemd-run --on-active=<n*60>s --unit=delivery-drill-restore-<id> nmcli networking on`), schedules
   the restart (`--on-active=<(n+1)*60>s --unit=delivery-drill-restart-<id> systemctl reboot`, a minute
   after the network is back), writes the drill's row to the watchdog directory's `drills.ndjson`, and only then runs

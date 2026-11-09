@@ -12,7 +12,13 @@ const L = require('./lib/outage-drill.js');
 
 const REC = 'dec-chief-of-staff-91';
 const NOW = '2026-11-07T10:00:00.000Z';
-const verifyRecord = require('./testing/gate-fixture.js').ownerVerify(REC);
+// The owner's record of this drill: verified, scoped to a drill on this host, and in the owner's own words
+// naming the cut and the restart. Each part can be changed to show the consent refused without it.
+const QUOTE = 'Yes, cut the network for 30 minutes and restart the machine once';
+const drillRecord = ({ labels = ['outage-drill:pc'], quote = QUOTE, text, asked } = {}) => (root, id) => (id === REC
+  ? { ok: true, chain: [{ kind: 'decision', scope: { beads: [], labels }, quote }, { kind: 'input', source: 'human', text: text === undefined ? quote : text, ...(asked ? { asked } : {}) }], notes: [] }
+  : { ok: false, error: 'not found' });
+const verifyRecord = drillRecord();
 const scratchDir = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 
 function setup() {
@@ -23,7 +29,7 @@ function setup() {
     events.push({ kind, args, rowWritten: L.drillOf(dir, REC) !== null });
     return { status: 0, stdout: '', stderr: '' };
   };
-  const run = (argv, extra = {}) => D.main(argv, { cwd: dir, env: {}, now: NOW, exec, ps: () => '', verifyRecord: (r, id, opts) => { events.push({ kind: 'verify', id, opts }); return verifyRecord(r, id); }, who: { root: dir, roleId: 'reality-checker', actor: 'dev@pc/reality-checker' }, ...extra });
+  const run = (argv, extra = {}) => D.main(argv, { cwd: dir, env: { DELIVERY_HOST: 'pc' }, now: NOW, exec, ps: () => '', verifyRecord: (r, id, opts) => { events.push({ kind: 'verify', id, opts }); return verifyRecord(r, id); }, who: { root: dir, roleId: 'reality-checker', actor: 'dev@pc/reality-checker' }, ...extra });
   return { root: dir, events, run };
 }
 const RUN = ['run', '--record', REC, '--cut-minutes', '30', '--restart'];
@@ -48,7 +54,7 @@ test('run verifies the record, then schedules the restore, then the restart, the
   assert.equal(L.ledgerFile(t.root), path.join(t.root, '.delivery', 'watchdog', 'drills.ndjson'));
   // the restart comes a minute after the network is back; the privilege is configurable
   const u = setup();
-  assert.equal(u.run(['run', '--record', REC, '--cut-minutes', '5', '--restart'], { env: { DELIVERY_DRILL_PRIVILEGE: 'pkexec' } }).code, 0);
+  assert.equal(u.run(['run', '--record', REC, '--cut-minutes', '5', '--restart'], { env: { DELIVERY_HOST: 'pc', DELIVERY_DRILL_PRIVILEGE: 'pkexec' } }).code, 0);
   assert.deepEqual(u.events[2].args.slice(0, 3), ['pkexec', 'systemd-run', '--on-active=360s']);
 });
 
@@ -62,6 +68,27 @@ test('a second run on the same record is refused before anything is scheduled', 
   assert.deepEqual(t.events.map((e) => e.kind), ['verify']);
 });
 
+// Two runs at once: both would find no drill row yet and both would schedule a restart. The record is
+// claimed before anything is scheduled, so the second run started while the first is still scheduling
+// is refused; a run that fails before its row is written gives the claim back for a retry.
+test('a run started while another run on the record is still scheduling is refused; a run that failed before its row gives the record back', () => {
+  const t = setup();
+  let inner = null;
+  const exec = (args) => {
+    if (!inner && args.includes('systemd-run')) inner = t.run(RUN, { exec: () => ({ status: 0 }) });
+    return { status: 0, stdout: '', stderr: '' };
+  };
+  assert.equal(t.run(RUN, { exec }).code, 0);
+  assert.equal(inner.code, 1);
+  assert.match(inner.out, /another run on .* is under way or done; one drill per consent, nothing scheduled or cut/);
+  // a schedule that fails: nothing is cut, and the record can be used by a retry
+  const u = setup();
+  const failing = u.run(RUN, { exec: () => ({ status: 1, stderr: 'no system manager' }) });
+  assert.equal(failing.code, 1);
+  assert.match(failing.out, /could not schedule the restore/);
+  assert.equal(u.run(RUN).code, 0, 'the retry runs');
+});
+
 test('a record that does not verify, or is not the owner\'s word, is refused and nothing runs', () => {
   for (const vr of [() => ({ ok: false, error: 'not found' }), () => ({ ok: true, chain: [{ kind: 'decision' }, { kind: 'input', source: 'agent' }] }), () => { throw new Error('store unreadable'); }]) {
     const t = setup();
@@ -71,6 +98,41 @@ test('a record that does not verify, or is not the owner\'s word, is refused and
     assert.deepEqual(t.events, []);
     assert.equal(fs.existsSync(L.ledgerFile(t.root)), false);
   }
+});
+
+// A verified owner record is not consent to this drill unless it is for this drill on this host and the
+// owner's own words name the cut and the restart: any other verified owner record (an approval of a
+// pull request, a budget) would otherwise cut the network and restart the machine.
+test('only a record scoped to a drill on this host, whose owner words name the cut and the restart with no negation, is consent', () => {
+  const refused = (vr, why, env) => {
+    const t = setup();
+    const r = t.run(RUN, { verifyRecord: vr, ...(env ? { env } : {}) });
+    assert.equal(r.code, 1, why);
+    assert.match(r.out, why);
+    assert.deepEqual(t.events.filter((e) => e.kind !== 'verify'), [], 'nothing scheduled or cut');
+    assert.equal(fs.existsSync(L.ledgerFile(t.root)), false);
+  };
+  // an unrelated verified owner record: the owner's word, but about something else
+  refused(drillRecord({ labels: ['permission:builder=gh pr close'], quote: 'Yes, let builders close their own pull requests' }), /not scoped to a drill on this host \(its scope needs the label outage-drill:pc\)/);
+  // scoped to a drill on another host
+  refused(drillRecord({ labels: ['outage-drill:other'] }), /needs the label outage-drill:pc/);
+  refused(drillRecord(), /needs the label outage-drill:elsewhere/, { DELIVERY_HOST: 'elsewhere' });
+  // scoped right, but the owner's words do not name both
+  refused(drillRecord({ quote: 'Yes, restart the machine once' }), /do not name the network cut/);
+  refused(drillRecord({ quote: 'Yes, cut the network for 30 minutes' }), /do not name the restart/);
+  // the owner said no
+  refused(drillRecord({ quote: 'Do not cut the network or restart the machine' }), /carry a negation/);
+  // the owner answered a confirmation: the question shown names the cut and the restart, the answer picked is the record
+  const asked = (answer, question = 'May the team cut the network on pc for 30 minutes and restart the machine once?') => ({ contract: 'delivery.confirmation/1', question, choices: ['Yes, once (Recommended)', 'No'], multi_select: false, answer });
+  const ok = setup();
+  assert.equal(ok.run(RUN, { verifyRecord: drillRecord({ quote: 'Yes, once (Recommended)', asked: asked('Yes, once (Recommended)') }) }).code, 0, 'a yes to a confirmation that names both is consent');
+  refused(drillRecord({ quote: 'No', asked: asked('No') }), /carry a negation/);
+  refused(drillRecord({ quote: 'Yes, once (Recommended)', asked: asked('Yes, once (Recommended)', 'May the team restart the machine once?') }), /do not name the network cut/);
+  // the captured answer must be the input itself: a confirmation whose answer is not what the owner sent does not count
+  refused(drillRecord({ quote: 'Yes, once (Recommended)', text: 'Yes, once (Recommended)', asked: asked('No') }), /do not name the network cut/);
+  // the record still verifies as before, and plan says why a record is refused
+  const p = setup();
+  assert.match(p.run(['plan', '--record', REC], { verifyRecord: drillRecord({ labels: [] }), ps: () => '' }).out, new RegExp(`consent: ${REC} refused: ${REC} is not scoped to a drill on this host`));
 });
 
 test('run refuses a cut outside 1..30 minutes, a run without --restart, and any role but the Reality Checker', () => {
