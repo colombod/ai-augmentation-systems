@@ -11,6 +11,12 @@ const { cleanEnv } = require('./run-tests.js');
 
 const SEAL_VARS = ['DELIVERY_SEAL_ACTIVE', 'DELIVERY_SEALED_RUN', 'DELIVERY_TMP_REGISTRY'];
 
+// The Claude configuration becomes a fresh empty directory too (hjx.1.1.4). Run from the installed
+// plugin, as a reality check runs it, this plugin sits under the host's <config>/plugins/cache, and every
+// watchdog run a test made then ran the real self-update against the host's install (lib/self-update.js
+// findInstall): it fetched the host's marketplace clone and read its installed versions, so a run woke
+// differently whenever the host's main was ahead, and slowly. From a checkout (CI, the sealed runner)
+// the plugin is under no configuration, which is what this makes every run see.
 function clearRoleEnv(env = process.env) {
   const keep = new Set(Object.keys(cleanEnv(env)));
   for (const k of Object.keys(env)) if (!keep.has(k) && !SEAL_VARS.includes(k)) delete env[k];
@@ -19,6 +25,8 @@ function clearRoleEnv(env = process.env) {
   // the process, so the scope fails and the test's fake session never runs. A test that means a manager
   // gives one of its own (a runtime directory and a fake systemd-run).
   delete env.XDG_RUNTIME_DIR;
+  const fs = require('fs');
+  env.CLAUDE_CONFIG_DIR = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'claude-config-'));
   return env;
 }
 
