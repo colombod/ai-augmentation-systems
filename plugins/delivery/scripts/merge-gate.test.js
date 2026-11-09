@@ -118,10 +118,10 @@ test('a reviewed, green change users can see is refused at the gate and the merg
 // then would be refused with no notice. The gate records when it first ran in the project; a pull request
 // created before that is warned, not refused, and told how to add the line. Unreadable record: no grace.
 test('a pull request opened before the doc-impact gate first ran here is warned, not refused; one opened after is refused', () => {
-  const since = path.join('.delivery', 'reviews', 'doc-impact-since.json');
+  const since = path.join('.delivery', 'watchdog', 'doc-impact-since.json');
   const noLine = (createdAt) => pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, createdAt });
   const h = setup({ 478: noLine('2026-11-01T10:00:00Z') });
-  fs.mkdirSync(path.join(h.root, '.delivery', 'reviews'), { recursive: true });
+  fs.mkdirSync(path.join(h.root, '.delivery', 'watchdog'), { recursive: true });
   fs.writeFileSync(path.join(h.root, since), JSON.stringify({ since: '2026-11-05T00:00:00Z' }));
   h.review('delivery-lead', 'request 478 --reviewer builder-2');
   h.pass('builder-2');
@@ -143,7 +143,7 @@ test('a pull request opened before the doc-impact gate first ran here is warned,
 
 test('the first gate run in a project records when it ran, so pull requests already open then are the ones warned', () => {
   const h = setup({ 478: pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, createdAt: '2020-01-01T00:00:00Z' }) });
-  const file = path.join(h.root, '.delivery', 'reviews', 'doc-impact-since.json');
+  const file = path.join(h.root, '.delivery', 'watchdog', 'doc-impact-since.json');
   h.review('delivery-lead', 'request 478 --reviewer builder-2');
   h.pass('builder-2');
   const before = Date.now();
@@ -508,7 +508,7 @@ test('the first-run record is written on a passing run too: a pull request opene
   const run = (view, t) => mergeGate.gate(root, '478', { head: H1, gh: () => view, team, repo: 'example/example', planDrift: () => [], readFile: () => ({ unavailable: 'unused' }), now: at(t) });
   // the first readable run passes (its line is there) and still records the time
   assert.equal(run(pr478({ createdAt: at(T0 - 60e3) }), T0).ok, true);
-  const file = path.join(root, '.delivery', 'reviews', 'doc-impact-since.json');
+  const file = path.join(root, '.delivery', 'watchdog', 'doc-impact-since.json');
   assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).since, at(T0));
   // opened an hour after that, with no line, checked an hour later: refused, not taken for an old one
   const late = run(pr478({ body: `Refs ${BEAD}`, createdAt: at(T0 + 3600e3) }), T0 + 2 * 3600e3);
@@ -517,7 +517,7 @@ test('the first-run record is written on a passing run too: a pull request opene
   // an unreadable pull request records nothing: the first readable run is the one that counts
   const root2 = makeProject();
   mergeGate.gate(root2, '478', { head: H1, gh: down, team, repo: 'example/example', planDrift: () => [], readFile: () => ({ unavailable: 'unused' }), now: at(T0) });
-  assert.equal(fs.existsSync(path.join(root2, '.delivery', 'reviews', 'doc-impact-since.json')), false);
+  assert.equal(fs.existsSync(path.join(root2, '.delivery', 'watchdog', 'doc-impact-since.json')), false);
 });
 
 // 8l1.4.1 through REST only (Claude Code's cloud sessions): the comments, the commits and the creation
