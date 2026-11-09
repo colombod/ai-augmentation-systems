@@ -115,7 +115,23 @@ function whyNot(a, i) {
 }
 
 // The restart, from a read already made (the tick's) or a new one.
-function restart(deps = {}, before = read(deps)) {
+// restart, tick and install refuse a caller in a role session other than the host manager's, whoever
+// calls them: main(), or code that loads this module
+function guard(cmd, deps) {
+  const cwd = deps.cwd || process.cwd();
+  const env = deps.env || process.env;
+  let who = deps.who;
+  if (!who) {
+    who = { roleId: null };
+    try { const { findRoleMarker, validMarker } = require('../hooks/scripts/role-context.js'); const v = validMarker(findRoleMarker(cwd)); if (v) who = { roleId: v.role.id }; } catch (err) { who = { roleId: null }; }
+  }
+  return refusal(cmd, cwd, env, who);
+}
+
+function restart(deps = {}, before) {
+  const no = guard('restart', deps);
+  if (no) throw new Error(no);
+  if (!before) before = read(deps);
   const TR = require('./team-revive.js');
   const run = runner(deps.exec);
   const plan = HM.restartPlan(before);
@@ -128,7 +144,7 @@ function restart(deps = {}, before = read(deps)) {
     const t = before.teams.find((x) => x.root === root);
     refused[root] = {};
     let r;
-    try { r = TR.revive(root, t.team, { start: true, env: deps.env || process.env, live: before.live, only: want, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) }); } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; continue; }
+    try { r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, live: before.live, only: want, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) }); } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; continue; }
     for (const i of r.a.missing) if (want.includes(i.instance) && !r.started[i.instance]) refused[root][i.instance] = whyNot(r.a, i);
   }
   const after = read(deps);
@@ -153,6 +169,8 @@ function deliverAlert(read, text, env) {
 function lastPassOf(root) { try { return fs.statSync(path.join(root, '.delivery', 'watchdog', 'job.log')).mtimeMs; } catch (err) { return null; } }
 
 function tick(deps = {}) {
+  const no = guard('tick', deps);
+  if (no) throw new Error(no);
   const env = deps.env || process.env;
   const home = deps.home || os.homedir();
   const now = deps.now || new Date().toISOString();
@@ -230,7 +248,9 @@ function lingerLine(run, env) {
 
 // install(root, o, deps) -> { code, out }. Used by host-manager.js install and by watchdog.js install
 // (when the units are missing), so a team's first install also brings the host manager.
-function install(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname } = {}) {
+function install(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who } = {}) {
+  const no = guard('install', { cwd, env, who });
+  if (no) return { code: 1, out: no };
   if (!whichOf(has)('systemctl')) return { code: 1, out: 'host-manager.js: this host has no systemctl, so the host manager\'s units cannot be installed here; nothing was installed.' };
   let team;
   try { team = M.loadManifest(root).team; } catch (err) { return { code: 1, out: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); nothing was installed.` }; }
@@ -290,7 +310,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
     const no = refusal(cmd, cwd, env, me);
     if (no) return { code: 1, out: no };
   }
-  const d = { env, ...deps };
+  const d = { env, cwd, who, ...deps };
   if (cmd === 'install') {
     if (!o.project) return { code: 2, out: `host-manager.js: install needs --project <root> (the team whose manifest holds the host manager)\n${USAGE}` };
     return install(path.resolve(o.project), o, d);

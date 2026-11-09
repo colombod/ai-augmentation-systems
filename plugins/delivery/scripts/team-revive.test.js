@@ -306,7 +306,7 @@ test('the watchdog\'s host-job run starts the missing role sessions after its wa
 });
 
 // the facts a start reads, injected, for revive() called directly (as the watchdog's host job does)
-const reviveDeps = (p, spawn) => ({ start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn });
+const reviveDeps = (p, spawn) => ({ start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn });
 const lockFile = (p) => path.join(p.root, '.delivery', 'watchdog', 'revive.lock');
 
 test('two start passes at once (the Chief of Staff\'s and the host job\'s) open one link per instance: the second finds the start lock held', () => {
@@ -457,7 +457,7 @@ test('the host manager runs start like the Chief of Staff; --project names any t
 test('only: a start pass brings back the named instances and leaves the rest down', () => {
   const p = project();
   const s = spawner();
-  const r = TR.revive(p.root, p.team, { start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn: s.fn, only: ['builder'] });
+  const r = TR.revive(p.root, p.team, { start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn: s.fn, only: ['builder'] });
   assert.deepEqual(s.calls.map((c) => c.cwd), [p.dir('builder')]);
   assert.deepEqual(Object.keys(r.started), ['builder']);
 });
@@ -638,4 +638,24 @@ test('stopServer sends SIGTERM to the server and reports whether the server and 
   assert.equal(TR.stopServer(5000, 5100, { kill, waitMs: 50, stepMs: 10 }), true);
   assert.deepEqual(sent, [[5000, 'SIGTERM']]);
   assert.equal(TR.stopServer(5000, 5100, { kill: () => {}, waitMs: 30, stepMs: 10 }), false);
+});
+
+test('revive() itself refuses a start from a role session that may not start sessions, so code that loads it cannot skip the guard', () => {
+  const p = project();
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'revive-role-'));
+  fs.writeFileSync(path.join(roleDir, '.delivery-role.json'), '{}');
+  const s = spawner();
+  const deps = (over) => ({ ...reviveDeps(p, s.fn), ...over });
+  assert.throws(() => TR.revive(p.root, p.team, deps({ cwd: roleDir, env: { DELIVERY_HOST: 'pc' } })), /start is the Chief of Staff's, the host manager's and the host job's/);
+  assert.throws(() => TR.revive(p.root, p.team, deps({ cwd: p.root, env: { DELIVERY_HOST: 'pc', DELIVERY_ROLE: 'builder', DELIVERY_ROLE_ID: 'builder' } })), /role builder/);
+  assert.equal(s.calls.length, 0, 'nothing started');
+  // a read (check, --dry-run) is no start: it runs anywhere
+  assert.equal(TR.revive(p.root, p.team, deps({ cwd: roleDir, env: { DELIVERY_HOST: 'pc' }, start: false })).started.builder, undefined);
+  // the host manager and the Chief of Staff start; the host job (no role session) starts
+  for (const env of [{ DELIVERY_ROLE: 'host-manager', DELIVERY_ROLE_ID: 'host-manager' }, { DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_ID: 'chief-of-staff' }, {}]) {
+    const q = project();
+    const t = spawner();
+    TR.revive(q.root, q.team, { ...reviveDeps(q, t.fn), cwd: q.root, env: { DELIVERY_HOST: 'pc', ...env } });
+    assert.equal(t.calls.length, 2, JSON.stringify(env));
+  }
 });

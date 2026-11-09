@@ -492,7 +492,7 @@ function hostManagerSetup(root, { platform, home, env, exec, has }) {
   try { if (HM.addHostTeam(HM.hostFile(env, home), root)) out.push(`Added ${root} to ${HM.hostFile(env, home)}, the teams the host manager serves.`); } catch (err) { out.push(`Host manager: ${root} was not added to its team list (${String(err.message).split('\n')[0]}).`); }
   if (platform === 'darwin' || !has('systemctl')) { out.push('Host manager: not installed here: its units need systemd.'); return out; }
   if (fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return out;
-  const r = require('./host-manager.js').install(root, {}, { env, home, exec, has });
+  const r = require('./host-manager.js').install(root, {}, { env, home, exec, has, cwd: root });
   out.push(...r.out.split('\n').map((l) => `Host manager: ${l.replace(/^host-manager\.js: /, '')}`));
   return out;
 }
@@ -561,7 +561,7 @@ function defaultRevive(root, { team, env, now, dryRun, bd, live }) {
   // a stale session is stopped only after a read of the open sessions made just then finds it idle,
   // never on the pass's first read, which may be minutes old by then (lib/team-revive.js staleOf)
   const relist = () => liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
-  return require('./team-revive.js').revive(root, team, { start: true, dryRun, env, now, bd, relist, ...(live !== undefined ? { live } : {}) }).lines;
+  return require('./team-revive.js').revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, ...(live !== undefined ? { live } : {}) }).lines;
 }
 
 function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit } = {}) {

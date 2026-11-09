@@ -175,6 +175,10 @@ function spawnRemote(bin, args, { cwd, env, logPath }) {
 // starts or starts nothing. check and --dry-run read only and take no lock.
 function revive(root, team, opts = {}) {
   if (!opts.start || opts.dryRun) return revivePass(root, team, opts);
+  // the guard holds for every caller, a script loading this module included: a start from a role
+  // session that may not start sessions is refused here as main() refuses it
+  const no = callerRefusal(opts.cwd || process.cwd(), opts.env || process.env);
+  if (no) throw new Error(no);
   const lock = R.startLock(root);
   if (lock.held) {
     const { start, dryRun, env = process.env, spawn, ...deps } = opts;
@@ -254,6 +258,18 @@ function refusal(cwd, env, who) {
   return `team-revive.js: start is the Chief of Staff's, the host manager's and the host job's (${role}${id ? `, role ${id}` : ''}); run team-revive.js check and tell the Chief of Staff what is missing.`;
 }
 
+// The role of the session calling, from its role marker (the instance it names in team.json) or its
+// environment, as refusal() reads it, for a caller that gives no who.
+function callerRefusal(cwd, env) {
+  let who = { roleId: null };
+  try {
+    const { findRoleMarker, validMarker } = require('../hooks/scripts/role-context.js');
+    const v = validMarker(findRoleMarker(cwd));
+    if (v) who = { roleId: v.role.id };
+  } catch (err) { who = { roleId: null }; }
+  return refusal(cwd, env, who);
+}
+
 function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `team-revive.js: ${err.message}\n${USAGE}` }; }
@@ -271,12 +287,12 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   }
   if (cmd === 'start') { const no = refusal(cwd, env, who); if (no) return { code: 1, out: no }; }
   if (!who.root) return { code: 2, out: 'team-revive.js: no project found; pass --project <root>' };
-  const r = revive(who.root, who.team, { start: cmd === 'start', dryRun: o.dryRun, env, ...rest });
+  const r = revive(who.root, who.team, { start: cmd === 'start', dryRun: o.dryRun, env, cwd, ...rest });
   if (o.json) return { code: 0, out: JSON.stringify({ ...r.a, started: r.started, restarted: r.restarted || {} }, null, 2) };
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { main, revive, gather, startEnv, refusal, serverAlive, serverOf, stopServer };
+module.exports = { main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer };
 
 if (require.main === module) {
   let r;

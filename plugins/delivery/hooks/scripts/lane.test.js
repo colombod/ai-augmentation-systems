@@ -2160,3 +2160,66 @@ test('every lane but the host manager\'s refuses systemctl --user and the host m
   const b = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: builder, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd }).allow;
   for (const c of [`${revive} check`, `${hmjs} status`, 'systemctl --version', 'ls ~/.config/systemd/user', 'npm test']) assert.equal(b(c), true, c);
 });
+
+// The refusals read each segment's own words, as the shell will run them: quotes and backslashes taken
+// out, the command word found behind env, command, xargs, assignments and sh -c; a word the shell
+// builds at run time ($, backticks) on a service manager's command line is refused, since what it
+// becomes cannot be known. Text that only mentions these commands (a test run, a diff, a commit
+// message, a bead note) is not a run of them.
+test('the open builder lane: every spelling of a user-service command or a session start is refused; a mention is not', () => {
+  const builder = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/builder' });
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'spell-lane-'));
+  const PR = PLUGIN_ROOT;
+  const rel = ['plugins', 'delivery', 'scripts'].join('/');
+  const d = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: builder, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+  const refused = [
+    'systemctl --user stop delivery-watchdog-0a1b2c3d.timer', 'systemctl --use stop delivery-watchdog-0a1b2c3d.timer', 'systemctl --us stop delivery-watchdog-0a1b2c3d.timer',
+    "systemctl --us''er stop delivery-watchdog-0a1b2c3d.timer", 'systemctl --us\\er stop delivery-watchdog-0a1b2c3d.timer', "s''ystemctl --user stop delivery-watchdog-0a1b2c3d.timer",
+    '\\systemctl --user stop delivery-watchdog-0a1b2c3d.timer', '/usr/bin/systemctl --user stop x.timer', 'command systemctl --user stop x.timer', 'env systemctl --user stop x.timer',
+    'A=1 systemctl --user stop x.timer', 'xargs -I{} systemctl --user stop {} <<< x.timer', "sh -c 'systemctl --user stop x'", 'systemctl --user=yes stop x', 'systemctl --u stop x',
+    'systemctl -M dev@ stop x', 'systemctl --machine=dev@.host stop x', 'systemctl -Mdev@ stop x',
+    'busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager StopUnit ss delivery-watchdog-0a1b2c3d.timer replace',
+    'systemd-run --user true', 'U=--user; systemctl $U stop x.timer', 'systemctl "$(echo --user)" stop x.timer', 'systemctl `echo --user` stop x',
+    `node ${PR}/scripts/team-revive.js start`, `node ${PR}/scripts/team-revive.js st''art`, `node ${PR}/scripts/team-revive.js "sta"rt`, `node ${PR}/scripts/team-revive.js --project /p start`,
+    `node -e "require('${PR}/scripts/team-revive.js').revive(process.cwd(),null,{['sta'+'rt']:true})"`,
+    `node ${PR}/scripts/host-manager.js restart`, `node ${PR}/scripts/host-manager.js re''start`, `node ${PR}/scripts/host-manager.js tick`, `node ${PR}/scripts/host-manager.js install --project /p`,
+    `node -e "require('${PR}/scripts/host-manager.js')['re'+'start']()"`, `node -r ${PR}/scripts/host-manager.js x.js`, `node --import=${PR}/scripts/team-revive.js x.js`,
+    `node -p "require('${PR}/scripts/host-manager.js')"`, `node --input-type=module <<< "import '${PR}/scripts/host-manager.js'"`,
+    `bash -c "node ${PR}/scripts/team-revive.js start"`, `cd /tmp && node ${PR}/scripts/host-manager.js restart`,
+  ];
+  for (const c of refused) assert.equal(d(c).allow, false, c);
+  assert.match(d('systemctl --us stop x').reason, /systemctl --user\) are the host manager's/);
+  assert.match(d(`node ${PR}/scripts/team-revive.js st''art`).reason, /starting role sessions is the Chief of Staff's and the host manager's/);
+  const allowed = [
+    `DELIVERY_TEST_FILES=${PR}/scripts/team-revive.test.js:${PR}/scripts/start.test.js node ${PR}/scripts/testing/run-tests.js`,
+    `git diff origin/main -- ${rel}/team-revive.js ${rel}/start.js`,
+    `cat ${rel}/team-revive.js ${rel}/start.js`,
+    'git commit -m "host-manager.js restart replies from the read after"',
+    'grep -rn "systemctl --user" plugins/delivery',
+    'bd update x-1 --append-notes "the watchdog runs systemctl --user is-active"',
+    `node ${PR}/scripts/team-revive.js check`, `node ${PR}/scripts/host-manager.js status`, 'systemctl --version', 'systemctl status cron.service',
+  ];
+  for (const c of allowed) assert.equal(d(c).allow, true, c);
+  // the Chief of Staff keeps team-revive.js start, in every spelling, and is refused the rest
+  const cos = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/chief-of-staff' });
+  const c = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: cos, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd }).allow;
+  assert.equal(c(`node ${PR}/scripts/team-revive.js start`), true);
+  assert.equal(c(`node ${PR}/scripts/host-manager.js restart`), false);
+});
+
+test('host manager lane: operands after -- must match, value flags are not operands, job modes and --force are refused', () => {
+  const hm = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/host-manager' });
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-ops-'));
+  const sh = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: hm, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd }).allow;
+  for (const c of [
+    'systemctl --user stop -- delivery-watchdog-0a1b2c3d.timer', 'systemctl --user start --job-mode=replace delivery-watchdog-0a1b2c3d.service', 'systemctl --user start --job-mode fail delivery-watchdog-0a1b2c3d.service',
+    'systemctl --user list-units -t timer --state=failed', 'systemctl --user list-units --type timer', 'systemctl --user status delivery-host-manager.service -n 50 -o cat',
+    'systemctl --user show --property ActiveState delivery-host-manager.service', 'systemctl --user stop "delivery-watchdog-*.timer"',
+  ]) assert.equal(sh(c), true, c);
+  for (const c of [
+    'systemctl --user stop -- delivery-host-manager.service -.slice', 'systemctl --user stop -- -.slice', 'systemctl --user start --job-mode=isolate delivery-watchdog-0a1b2c3d.service',
+    'systemctl --user start --job-mode isolate delivery-watchdog-0a1b2c3d.service', 'systemctl --user start --job-mode=ignore-dependencies delivery-watchdog-0a1b2c3d.service', 'systemctl --user start --job=isolate delivery-watchdog-0a1b2c3d.service',
+    'systemctl --user stop --force delivery-host-manager.service', 'systemctl --user restart -f delivery-host-manager.service', 'systemctl --user stop --for delivery-host-manager.service',
+    'systemctl --user list-units -t timer ssh.service',
+  ]) assert.equal(sh(c), false, c);
+});

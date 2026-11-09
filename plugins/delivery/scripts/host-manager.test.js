@@ -374,3 +374,18 @@ test('watchdog install --apply adds the project to the host file and installs th
   assert.equal(b.code, 0, b.out);
   assert.match(b.out, /^Host manager: team\.json of .* has no host manager/m);
 });
+
+test('restart, tick and install refuse a caller in another role session even when loaded as a module', () => {
+  const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }], beads: { alpha: [{ id: 'al-1', status: 'in_progress', assignee: 'chief-of-staff', updated_at: ago(40) }] } });
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-caller-'));
+  fs.writeFileSync(path.join(roleDir, '.delivery-role.json'), '{}');
+  const deps = { ...m.deps(), cwd: roleDir, who: undefined, env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin' } };
+  assert.throws(() => HMS.restart(deps), /restart is the host manager's/);
+  assert.throws(() => HMS.tick(deps), /tick is the host manager's/);
+  assert.match(HMS.install(m.alpha.root, {}, deps).out, /install writes this machine's user units/);
+  assert.equal(m.spawned.length, 0);
+  assert.equal(m.sd.calls.filter((c) => / start /.test(c)).length, 0);
+  // the host manager's own session, and no role session at all (the timer, the watchdog), run them
+  assert.doesNotThrow(() => HMS.restart({ ...m.deps(), env: { DELIVERY_HOST: 'pc', DELIVERY_ROLE: 'host-manager', DELIVERY_ROLE_ID: 'host-manager' } }));
+  assert.doesNotThrow(() => HMS.restart(m.deps()));
+});

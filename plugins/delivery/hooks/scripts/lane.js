@@ -455,12 +455,29 @@ function ruleMatches(rule, t, ctx) {
     const res = rule.positional_match.map((g) => globToRegExp(String(g)));
     const args = argv.slice(subLen);
     let seen = 0;
+    let operands = false;
     for (let k = 0; k < args.length; k++) {
-      if (args[k].startsWith('-')) { if (valueFlags.includes(args[k])) k++; continue; }
+      // after `--` every word is an operand, one that starts with - included (-.slice is a unit)
+      if (!operands && args[k] === '--') { operands = true; continue; }
+      if (!operands && args[k].startsWith('-')) { if (valueFlags.includes(args[k])) k++; continue; }
       if (UNSAFE_DIR.test(args[k]) || !res.some((re) => re.test(args[k]))) return false;
       seen++;
     }
     if (rule.positional_required && !seen) return false;
+  }
+  // flag_values: { flag: [values] }: the flag, any abbreviation of it, as --flag value or --flag=value,
+  // takes only one of the listed values (systemctl --job-mode replace, never isolate)
+  if (rule.flag_values) {
+    const args = argv.slice(subLen);
+    for (const [flag, values] of Object.entries(rule.flag_values)) {
+      for (let k = 0; k < args.length; k++) {
+        if (args[k] === '--') break;
+        const opt = args[k].split('=')[0];
+        if (!opt.startsWith('--') || opt.length < 3 || !flag.startsWith(opt)) continue;
+        const v = args[k].includes('=') ? args[k].slice(args[k].indexOf('=') + 1) : args[k + 1];
+        if (!values.includes(v)) return false;
+      }
+    }
   }
   if (rule.flags_only) {
     const allowed = rule.flags_only;
@@ -1491,15 +1508,80 @@ const PASS_RECORD_REASON = 'the pass record (watchdog.js pass --record) is the D
 const passRecordAttempt = (command) => /watchdog\.js\b[^;&|\n]*\bpass\b[^;&|\n]*--record\b/.test(String(command || ''));
 // The machine's user services and the starting of role sessions are the host manager's (and a start of
 // one team's sessions the Chief of Staff's too): refused to every other role, the `any` lanes included.
-// Read over the whole command text, as the pass record is: a false refusal costs a message to the host
-// manager, a false allow lets any session stop a team's host job.
+// Read per segment, from the words the shell will pass (quotes and backslashes taken out, the command
+// word found behind assignments, env, command, xargs and the other wrappers, and inside sh -c, eval and
+// command substitutions), so a spelling cannot slip past and a mere mention (a test run, a diff, a
+// commit message, a bead note) is no run.
 const HOST_MANAGER = 'host-manager';
 const HOST_UNITS_REASON = 'this machine\'s user services (systemctl --user) are the host manager\'s: it reads and restarts the host jobs and its own unit.\nMessage the host manager (host-manager@<host>) with what is down';
-const systemctlUser = (command) => /(?:^|[\s;&|(`'"/])systemctl(?=[\s'"])[^;&|\n]*?[\s'"]--user(?=$|[\s'"=;&|)])/.test(String(command || ''));
 const START_REASON = 'starting role sessions is the Chief of Staff\'s and the host manager\'s (team-revive.js start).\nRun team-revive.js check, and message the Chief of Staff with what is missing';
-const reviveStart = (command) => /team-revive(?:\.js)?\b[^;&|\n]*?\bstart\b/.test(String(command || ''));
 const HOST_MANAGER_REASON = 'the host manager\'s restart, tick and install bring back the host jobs and role sessions of every team on this machine: they are the host manager\'s.\nMessage the host manager (host-manager@<host>) with what is down';
-const hostManagerAct = (command) => /host-manager\.js\b[^;&|\n]*?\b(?:restart|tick|install)\b/.test(String(command || ''));
+const HOST_CODE_REASON = 'code run with node -e, -p, -r or --import that loads team-revive.js or host-manager.js would start sessions past their own guard: it is the host manager\'s.\nRun the script itself, or message the host manager';
+const SERVICE_TOOLS = new Set(['systemctl', 'busctl', 'systemd-run']);
+// --user and each abbreviation getopt accepts for it (--u, --us, --use), with or without =value
+const USER_OPT = /^--u(?:s(?:e(?:r)?)?)?(?:=.*)?$/;
+const MACHINE_OPT = /^--m(?:a(?:c(?:h(?:i(?:n(?:e)?)?)?)?)?)?$/;
+// -M/--machine naming a user's manager (user@ or user@host)
+function machineUser(args) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if ((a === '-M' || MACHINE_OPT.test(a)) && /@/.test(String(args[i + 1] || ''))) return true;
+    if (/^--m[a-z]*=/.test(a) && MACHINE_OPT.test(a.split('=')[0]) && /@/.test(a)) return true;
+    if (/^-M./.test(a) && /@/.test(a)) return true;
+  }
+  return false;
+}
+const HOST_SCRIPT = /(?:team-revive|host-manager)/;
+// 'units' | 'start' | 'manager' | 'code' | null for one command line, depth-limited
+function hostRefusal(text, roleId, depth = 0) {
+  if (depth > 4 || roleId === HOST_MANAGER) return null;
+  for (const sub of substitutions(text)) { const r = hostRefusal(sub, roleId, depth + 1); if (r) return r; }
+  for (const seg of splitWithOps(text)) {
+    const t = commandWords(stripGrammar(argWords(seg.text)));
+    if (!t.length) continue;
+    const name = baseOf(t[0]);
+    const args = t.slice(1);
+    if (SHELLS.has(name) || name === 'eval') {
+      const k = args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a));
+      const inner = name === 'eval' ? args.join(' ') : k >= 0 ? args[k + 1] || '' : '';
+      const r = inner ? hostRefusal(inner, roleId, depth + 1) : null;
+      if (r) return r;
+      continue;
+    }
+    if (SERVICE_TOOLS.has(name)) {
+      // a word the shell builds at run time could become --user: its options cannot be known
+      if (args.some((a) => USER_OPT.test(a) || /[$`]/.test(a)) || machineUser(args)) return 'units';
+      continue;
+    }
+    if (!INTERPRETERS.has(name)) continue;
+    let script = null;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (CODE_FLAGS.has(a) || /^--(?:eval|print|require|import|loader)=/.test(a)) {
+        const code = a.includes('=') ? a.slice(a.indexOf('=') + 1) : args[++i] || '';
+        if (HOST_SCRIPT.test(code)) return 'code';
+        continue;
+      }
+      // code read from standard input (a here-string or a pipe): judged by the whole line's text
+      if (a === '--input-type' || a.startsWith('--input-type=')) { if (HOST_SCRIPT.test(text)) return 'code'; if (a === '--input-type') i++; continue; }
+      if (a === '--') { script = i + 1 < args.length ? i + 1 : null; break; }
+      if (NODE_VALUE_FLAGS.has(a)) { i++; continue; }
+      if (a.startsWith('-')) continue;
+      script = i;
+      break;
+    }
+    if (script === null) continue;
+    let file = args[script];
+    let rest = args.slice(script + 1);
+    // the project's launcher runs its first argument as the plugin script
+    if (isLauncher(file)) { file = rest[0]; rest = rest.slice(1); }
+    const base = baseOf(file);
+    if (base === 'team-revive.js' && rest.includes('start') && roleId !== 'chief-of-staff') return 'start';
+    if (base === 'host-manager.js' && rest.some((x) => ['restart', 'tick', 'install'].includes(x))) return 'manager';
+  }
+  return null;
+}
+const HOST_REASONS = { units: HOST_UNITS_REASON, start: START_REASON, manager: HOST_MANAGER_REASON, code: HOST_CODE_REASON };
 const MERGE_REASON = 'merging is the Delivery Manager\'s.\nOpen the pull request and message the Delivery Manager; resolve conflicts when it asks';
 const DEFAULT_BRANCHES = ['main', 'master'];
 
@@ -1757,9 +1839,8 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (pol.roleId !== MERGER && passRecordAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${PASS_RECORD_REASON}.` };
-    if (pol.roleId !== HOST_MANAGER && systemctlUser(command)) return { allow: false, reason: `Role ${pol.roleId}: ${HOST_UNITS_REASON}.` };
-    if (![HOST_MANAGER, 'chief-of-staff'].includes(pol.roleId) && reviveStart(command)) return { allow: false, reason: `Role ${pol.roleId}: ${START_REASON}.` };
-    if (pol.roleId !== HOST_MANAGER && hostManagerAct(command)) return { allow: false, reason: `Role ${pol.roleId}: ${HOST_MANAGER_REASON}.` };
+    const host = hostRefusal(command, pol.roleId);
+    if (host) return { allow: false, reason: `Role ${pol.roleId}: ${HOST_REASONS[host]}.` };
     const run = refusedRun(command);
     if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? testsReason(command, pluginRootOf({ pluginRoot })) : RESUME_REASON}.` };
     if (bash.includes('any')) {
@@ -1907,4 +1988,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { hostRefusal, tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
