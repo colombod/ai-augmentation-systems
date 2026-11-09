@@ -65,7 +65,10 @@ function check(view, { pr } = {}) {
 // 8l1.4.1: when the gate first ran in this project. The gate applies the moment it installs, so a pull
 // request already open then is warned, not refused (merge-gate.js). The first run writes the time, once
 // (wx: a second writer keeps the first); a record that cannot be read or written gives no grace: null.
-const SINCE = path.join('.delivery', 'reviews', 'doc-impact-since.json');
+// kept with the watchdog's host-local state, not the review records: a new file among the plan paths is
+// a plan not on origin, which the gate's own plan check refuses (lib/plan-sync.js PLAN_PATHS). It is per
+// host, which is where merges are gated (the Delivery Manager's).
+const SINCE = path.join('.delivery', 'watchdog', 'doc-impact-since.json');
 function since(root, now = new Date().toISOString()) {
   const file = path.join(root, SINCE);
   const read = () => { try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); return j && Number.isFinite(Date.parse(j.since)) ? j.since : null; } catch (err) { return null; } };
