@@ -52,9 +52,9 @@ test('an unreadable file list is a warning, never a pass presented as checked', 
 });
 
 test('a tool users run is not a test: scripts/testing/run-tests.js needs the line', () => {
-  const r = D.check(pr(['plugins/delivery/scripts/testing/run-tests.js'], 'Refs ex-1'));
+  const r = D.check(pr(['plugins/x/scripts/testing/run-tests.js'], 'Refs ex-1'));
   assert.equal(r.ok, false);
-  assert.match(r.why, /changes what users see \(plugins\/delivery\/scripts\/testing\/run-tests\.js\)/);
+  assert.match(r.why, /changes what users see \(plugins\/x\/scripts\/testing\/run-tests\.js\)/);
 });
 
 test('a .txt outside docs/ is data, not a doc: it neither needs nor satisfies the doc-impact line', () => {
