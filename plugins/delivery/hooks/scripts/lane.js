@@ -1555,12 +1555,21 @@ function decodeEscapes(x) {
   return s;
 }
 
-// A pull request closed or reopened in whatever form: `gh pr close`/`reopen`; `gh issue close`/`reopen`
-// and a REST call that sets the state of pulls/<n> or issues/<n> (a pull request is an issue too, and
-// its issue closes it); the GraphQL close and reopen mutations, and a GraphQL query read from a file or
-// stdin, which cannot be read and so cannot be cleared. Closing is the Delivery Manager's alone
-// (dec-chief-of-staff-000314), like merging: a role with an open lane ("any") would otherwise close a
-// pull request its own lane says nothing about.
+// A gh api endpoint as the server reads it: no query or fragment, repeated slashes collapsed, dot
+// segments resolved anywhere in the path (pulls/./187 and pulls/x/../187 are pulls/187), no trailing
+// slash. The merge and close guards both judge this form.
+function apiPath(x) {
+  const raw = String(x || '').split(/[?#]/)[0].replace(/\/{2,}/g, '/');
+  const lead = raw.startsWith('/') ? '/' : '';
+  const out = [];
+  for (const part of raw.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') { out.pop(); continue; }
+    out.push(part);
+  }
+  return lead + out.join('/');
+}
+
 // The allowed groups for a refusal's first line, cut to fit it (a reason's line is at most MAX_LINE,
 // R-46): the groups that fit, then how many more. lead: the line's text before the list.
 function groupsShown(bash, lead, close = ').') {
@@ -1577,21 +1586,12 @@ function groupsShown(bash, lead, close = ').') {
   return `${shown.join(', ')}, and ${all.length - shown.length} more`;
 }
 
-// A gh api endpoint as the server reads it: no query or fragment, repeated slashes collapsed, dot
-// segments resolved anywhere in the path (pulls/./187 and pulls/x/../187 are pulls/187), no trailing
-// slash. The merge and close guards both judge this form.
-function apiPath(x) {
-  const raw = String(x || '').split(/[?#]/)[0].replace(/\/{2,}/g, '/');
-  const lead = raw.startsWith('/') ? '/' : '';
-  const out = [];
-  for (const part of raw.split('/')) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') { out.pop(); continue; }
-    out.push(part);
-  }
-  return lead + out.join('/');
-}
-
+// A pull request closed or reopened in whatever form: `gh pr close`/`reopen`; `gh issue close`/`reopen`
+// and a REST call that sets the state of pulls/<n> or issues/<n> (a pull request is an issue too, and
+// its issue closes it); the GraphQL close and reopen mutations, and a GraphQL query read from a file or
+// stdin, which cannot be read and so cannot be cleared. Closing is the Delivery Manager's alone
+// (dec-chief-of-staff-000314), like merging: a role with an open lane ("any") would otherwise close a
+// pull request its own lane says nothing about.
 function closeAttempt(command) {
   const text = String(command == null ? '' : command);
   return splitCommand(text).some((seg) => {
