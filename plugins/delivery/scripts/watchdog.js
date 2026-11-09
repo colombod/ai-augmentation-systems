@@ -356,6 +356,13 @@ function ensureKickWatch(root, { home, exec } = {}) {
   } catch (err) { return `kick watch: not installed (${String(err.message).split('\n')[0]}); handoffs wait for the next pass`; }
 }
 
+// the role sessions of the project's team on this host, 0 when team.json cannot be read
+function teamSessionsHere(root, env) {
+  let team = null;
+  try { team = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'team', 'team.json'), 'utf8')); } catch (err) { team = null; }
+  return require('./lib/service-limits.js').sessionsOn(team, require('./lib/team-revive.js').hostOf(env));
+}
+
 function jobFiles(root, { platform, home, sec, env, has }) {
   const tag = tagOf(root);
   const logPath = path.join(root, WD.REL, 'job.log');
@@ -399,13 +406,15 @@ function jobFiles(root, { platform, home, sec, env, has }) {
     const service = path.join(dir, `${name}.service`);
     const timer = path.join(dir, `${name}.timer`);
     const watch = kickWatchUnit(root, home);
-    // KillMode=process: the wake started by the run outlives the oneshot service (Copilot 440)
+    // KillMode=process: the wake started by the run outlives the oneshot service (Copilot 440). The wakes
+    // stay in the service's cgroup, so its TasksMax fits the team on this host (lib/service-limits.js)
+    const tasks = require('./lib/service-limits.js').tasksMaxFor(teamSessionsHere(root, env));
     return {
       ...base,
       kind: 'systemd',
       file: timer,
       files: [
-        { file: service, body: `[Unit]\nDescription=delivery watchdog for ${sdPct(root)}\n\n[Service]\nType=oneshot\nKillMode=process\nWorkingDirectory=${sdPct(root)}\nEnvironment=${sdq(`PATH=${PATH}`)}\n${config ? `Environment=${sdq(`CLAUDE_CONFIG_DIR=${config}`)}\n` : ''}ExecStart=${argv[0]} ${argv.slice(1).map(sdq).join(' ')}\nStandardOutput=append:${sdPct(logPath)}\nStandardError=append:${sdPct(logPath)}\n` },
+        { file: service, body: `[Unit]\nDescription=delivery watchdog for ${sdPct(root)}\n\n[Service]\nType=oneshot\nKillMode=process\nTasksMax=${tasks}\nWorkingDirectory=${sdPct(root)}\nEnvironment=${sdq(`PATH=${PATH}`)}\n${config ? `Environment=${sdq(`CLAUDE_CONFIG_DIR=${config}`)}\n` : ''}ExecStart=${argv[0]} ${argv.slice(1).map(sdq).join(' ')}\nStandardOutput=append:${sdPct(logPath)}\nStandardError=append:${sdPct(logPath)}\n` },
         { file: timer, body: `[Unit]\nDescription=delivery watchdog every ${sec / 60} min for ${root}\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=${sec}s\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n` },
         { file: watch.file, body: watch.body },
       ],
@@ -649,7 +658,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
-module.exports = { main, liveSessions, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup };
+module.exports = { main, liveSessions, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
 
 if (require.main === module) {
   let r;
