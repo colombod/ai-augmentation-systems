@@ -1531,16 +1531,31 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   branch), and per host job unit `<unit>: running` or `stopped since <time>` (`systemctl --user show`);
   each source it cannot read is a `SOURCE UNAVAILABLE: <what>` line and is never counted as running.
   `restart [--json]` starts each stopped host job (its timer and path units, and one run of its
-  service), then the instances that are down and hold work, through `team-revive.js`'s start pass
-  with its caps (a start a cap holds is named with when it may run), and replies from a read made
-  after it: what came back, what did not and why. An instance that is down and holds nothing is listed
-  and left down. `tick`, run every five minutes by `delivery-host-manager-tick.timer`, acts when an
-  instance that is down holds an in-progress bead with no bead note and no watchdog wake for 30
-  minutes, or a team's host job has written no pass to its `job.log` for 30 minutes: it runs the
-  restart and sends one plain alert (what was silent, what came back, what did not). The outage ledger,
-  `${XDG_STATE_HOME:-~/.local/state}/delivery/host-manager/outages.ndjson`, holds an `open`, an
-  `alert` and a `close` row per outage, so a second tick in the same outage restarts again but alerts
-  no more. The alert goes into the inbox of each `host-manager` instance of the teams on this host,
+  service), runs once (`systemctl --user start --no-block`) the service of a host job whose timer is
+  active but which has written no pass for 30 minutes, then starts the instances that are down and
+  hold work, through `team-revive.js`'s start pass with its caps (a start a cap holds is named with
+  when it may run). Asked by the owner, it runs every team's start pass, so a session on an older
+  plugin goes through `team-revive.js`'s stale-session restart, whose read of the sessions just before
+  a stop is a fresh one; the reply names each such restart (`Restarted:`) and each one not made, with
+  why (`Not restarted:`). After the starts it reads the sessions again every 10 seconds, for up to 5
+  minutes, until each session it started is listed (the call can take that long). An instance is
+  `Back:` only when that read lists a session in its role directory and the roster records, for that
+  session, the installed plugin version; otherwise it is `Not back: started (pid N) but not listed
+  after <duration>`, `Not back: running an older plugin (<version>, installed <version>)`, or the
+  reason it was not started. A host job run once is `Back:` when a later read finds a new pass, else
+  named as still silent. An instance that is down and holds nothing is listed and left down.
+  `tick`, run every five minutes by `delivery-host-manager-tick.timer`, finds three silences of 30
+  minutes: an instance holding an in-progress bead with no bead note and no watchdog wake, either down
+  (it runs the restart) or still listed as running, and a team's host job that has written no pass to
+  its `job.log`. An instance still listed is never stopped or started by the tick, since its session
+  may be in the middle of a turn: the alert says what is silent, since when, and that the owner can ask
+  the host manager to restart the team. The outage ledger,
+  `${XDG_STATE_HOME:-~/.local/state}/delivery/host-manager/outages.ndjson`, keeps one outage per
+  silence, keyed by team and instance or by team and host job: an `open` row when that silence is
+  first seen, an `alert` row on the pass that opened any (one alert, naming those), and a `close` row
+  on the first pass that no longer finds it. A second tick during an open outage restarts again but
+  alerts only for a silence not already open, and each outage closes on its own. An alert names what
+  came back and what did not; when nothing was started it says why. The alert goes into the inbox of each `host-manager` instance of the teams on this host,
   which that team's watchdog hands to the session as a wake, a resume of it or a copy when it is open,
   not as a line in the open Remote Control conversation; with no such instance the ledger row is the
   only record.
@@ -1552,7 +1567,11 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `RestartSec`, `KillMode=process` (the sessions a restart starts outlive a restart of the unit),
   `TasksMax=4096` (its own unit, outside every host job's cgroup) and `WantedBy=default.target`;
   `delivery-host-manager-tick.service` and `.timer` (two minutes after boot, then every five) run
-  `tick` through the project's launcher, so a plugin update is picked up. It reloads systemd, enables
+  `tick` through the project's launcher, so a plugin update is picked up, its output appended to
+  `tick.log` in the ledger's directory, which install creates before it enables the units (systemd
+  fails the service when that directory is missing). An `XDG_STATE_HOME` or `XDG_CONFIG_HOME` set at
+  install is written into both services' `Environment=`, so the units read the same host file and
+  ledger as the shell that installed them. It reloads systemd, enables
   and starts the service and the timer, and says, without running it, when `loginctl enable-linger` is
   needed for the units to start at boot. A host without systemctl, a team with no `host-manager`
   instance (Staffing adds one: `team-role.js add host-manager`) or a role directory not yet prepared
