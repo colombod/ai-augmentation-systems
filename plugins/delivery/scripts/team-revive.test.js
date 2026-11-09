@@ -206,7 +206,7 @@ test('start is refused in a builder\'s role session and allowed in the Chief of 
   const builder = { DELIVERY_ROLE: 'builder', DELIVERY_ROLE_ID: 'builder', DELIVERY_ROLE_DIR: p.dir('builder') };
   const refused = run(p, ['start'], { env: builder, who: { root: p.root, team: p.team, roleId: 'builder' } });
   assert.equal(refused.code, 1);
-  assert.match(refused.out, /start is the Chief of Staff's and the host job's .*role builder/);
+  assert.match(refused.out, /start is the Chief of Staff's, the host manager's and the host job's .*role builder/);
   assert.equal(refused.calls.length, 0);
   assert.equal(run(p, ['check'], { env: builder, who: { root: p.root, team: p.team, roleId: 'builder' } }).code, 0);
   // the marker says builder: a chief-of-staff variable does not make it the chief
@@ -275,17 +275,17 @@ test('the role-context hook passes a Remote Control session\'s link to the roste
   } finally { if (prev === undefined) delete process.env.DELIVERY_ROLE; else process.env.DELIVERY_ROLE = prev; }
 });
 
-test('the lane lets the Chief of Staff run check and start and refuses them to a role without the group; a builder\'s open lane meets the script\'s own refusal', () => {
+test('the lane lets the Chief of Staff run check and start and refuses them to a role without the group; a builder\'s open lane refuses start too', () => {
   const { harness } = require('./testing/role-harness.js');
   const h = harness();
   const cmd = (sub) => `node ${path.join(__dirname, 'team-revive.js')} ${sub}`;
   assert.equal(h.bash('chief-of-staff', cmd('check'), { run: false }).deny, null);
   assert.equal(h.bash('chief-of-staff', cmd('start'), { run: false }).deny, null);
   assert.ok(h.bash('product-manager', cmd('start'), { run: false }).deny, 'the product manager may not start sessions');
-  // the builder's lane runs any command: the script refuses it in the builder's role directory, before any read
+  // the builder's lane runs any command but this one, refused with the way out; check still runs there
   const b = h.bash('builder-1', cmd('start'));
-  assert.equal(b.code, 1, b.out);
-  assert.match(b.out, /start is the Chief of Staff's and the host job's/);
+  assert.match(String(b.deny), /starting role sessions is the Chief of Staff's and the host manager's/);
+  assert.equal(h.bash('builder-1', cmd('check'), { run: false }).deny, null);
 });
 
 test('the watchdog\'s host-job run starts the missing role sessions after its wakes; check does not', () => {
@@ -438,4 +438,26 @@ test('the argv matches the live `claude remote-control --help` on this host (DEL
   if (r.error && r.error.code === 'ENOENT') { t.skip('claude is not on PATH'); return; }
   assert.equal(r.status, 0, String(r.stderr || r.error || ''));
   assertArgsMatchHelp(`${r.stdout}\n${r.stderr}`);
+});
+
+test('the host manager runs start like the Chief of Staff; --project names any team; a host-manager instance is never started here', () => {
+  const p = project({ roles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'builder', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  const hm = run(p, ['start'], { env: { DELIVERY_ROLE: 'host-manager', DELIVERY_ROLE_ID: 'host-manager' }, who: { root: p.root, team: p.team, roleId: 'host-manager' } });
+  assert.equal(hm.code, 0, hm.out);
+  assert.deepEqual(hm.calls.map((c) => c.cwd).sort(), [p.dir('builder'), p.dir('chief-of-staff')].sort(), 'its own unit keeps the host manager: no second server in its directory');
+  assert.doesNotMatch(hm.out, /host-manager/);
+  // --project: from another team's directory, the named team is the one read
+  const q = project();
+  fs.writeFileSync(path.join(q.root, '.delivery', 'team', 'hosts.json'), JSON.stringify({ hosts: { pc: {} } }));
+  const r = TR.main(['check', '--json', '--project', q.root], { cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: q.config });
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(JSON.parse(r.out).missing.map((i) => i.roleDir), [q.dir('chief-of-staff'), q.dir('builder')]);
+});
+
+test('only: a start pass brings back the named instances and leaves the rest down', () => {
+  const p = project();
+  const s = spawner();
+  const r = TR.revive(p.root, p.team, { start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn: s.fn, only: ['builder'] });
+  assert.deepEqual(s.calls.map((c) => c.cwd), [p.dir('builder')]);
+  assert.deepEqual(Object.keys(r.started), ['builder']);
 });

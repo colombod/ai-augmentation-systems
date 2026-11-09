@@ -167,7 +167,9 @@ function assess(f) {
   const out = { host: f.host, team: (team && SN.teamTag(team.prefix)) || null, instances: [], work: [], unreadable: [], paused: false, missing: [], inFlight: false, go: false };
   if (!team || !Array.isArray(team.roles)) { out.unreadable.push('team.json (no team manifest found)'); return out; }
   const roster = f.roster || {};
-  const mine = M.expandInstances(team).filter((i) => !(i.role && i.role.retired) && i.role.host === f.host);
+  // the host manager's session is its own systemd unit's (host-manager.js install, Restart=always): a
+  // second server started here beside it would be a second link in one directory
+  const mine = M.expandInstances(team).filter((i) => !(i.role && i.role.retired) && i.role.host === f.host && M.canonicalRoleId(i.role.id) !== 'host-manager');
   // the work in flight, product-wide: any one of them means the team must be up
   if (f.inProgress && f.inProgress.unreadable) out.unreadable.push(`beads in progress (${f.inProgress.unreadable})`);
   else if ((f.inProgress || []).length) out.work.push(`${f.inProgress.length} bead${f.inProgress.length === 1 ? '' : 's'} in progress (${f.inProgress.slice(0, 3).map((b) => b.id).join(', ')}${f.inProgress.length > 3 ? ', ...' : ''})`);

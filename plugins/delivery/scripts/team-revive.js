@@ -15,8 +15,9 @@
 //                                                      work in flight and no owner pause; one start per
 //                                                      instance an hour, six a day; each start is a row in
 //                                                      the watchdog's revive.ndjson, its output in its logs.
-// The host job runs start each pass (watchdog.js run). In a role session only the Chief of Staff may run
-// start: no other role starts sessions (R-42). Exit codes: 0 ok (a missing session is not an error); 1
+// The host job runs start each pass (watchdog.js run). In a role session only the Chief of Staff and the
+// host manager may run start: no other role starts sessions (R-42). --project names any team's root, so
+// the host manager checks and starts every team on its machine from its own role directory. Exit codes: 0 ok (a missing session is not an error); 1
 // refused; 2 usage.
 const fs = require('fs');
 const os = require('os');
@@ -27,6 +28,8 @@ const { whoAmI } = require('./lib/gate-context.js');
 
 const USAGE = 'usage: team-revive.js check [--json] | team-revive.js start [--dry-run]   (each takes --project <root>)';
 const CHIEF = 'chief-of-staff';
+// the host manager restarts every team on its machine (scripts/host-manager.js), so it starts sessions too
+const STARTERS = [CHIEF, 'host-manager'];
 
 function parse(argv) {
   const o = { _: [], json: false, dryRun: false };
@@ -134,7 +137,9 @@ function revive(root, team, opts = {}) {
   try { return revivePass(root, team, opts); } finally { lock.release(); }
 }
 
-function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, ...deps } = {}) {
+// only: the instances a start may bring back (the host manager's restart starts the ones that hold
+// work and leaves an idle one down); unset, every missing instance
+function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, only = null, ...deps } = {}) {
   const f = gather(root, team, { env, ...deps });
   const a = R.assess(f);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
@@ -144,7 +149,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
     for (const i of a.instances) if (i.remoteId && f.roster[i.instance] && f.roster[i.instance].remote_session_id !== i.remoteId) { try { RO.setRemoteSession(root, { instance: i.instance, remote_session_id: i.remoteId }); } catch (err) { /* the next pass records it */ } }
   }
   if (start && !dryRun && a.go) {
-    for (const i of a.missing.filter((x) => !x.skip && !x.held)) {
+    for (const i of a.missing.filter((x) => !x.skip && !x.held && (!only || only.includes(x.instance)))) {
       const at = f.now;
       const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
       const pid = spawn(bin, i.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath });
@@ -155,15 +160,15 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   return { a, started, lines: R.lines(a, { bin, started, dryRun: start && dryRun }) };
 }
 
-// A role session other than the Chief of Staff's never starts sessions; outside any role session (the
+// A role session other than the Chief of Staff's or the host manager's never starts sessions; outside any role session (the
 // host job, the owner's shell) start runs. The role is read from the marker in or above the directory,
 // else from the session's environment, as the watchdog reads it.
 function refusal(cwd, env, who) {
   const role = require('./watchdog.js').roleContext(cwd, env);
   if (!role) return null;
   const id = who.roleId || env.DELIVERY_ROLE_ID || require('./lib/manifest.js').canonicalRoleId(env.DELIVERY_ROLE) || null;
-  if (id === CHIEF) return null;
-  return `team-revive.js: start is the Chief of Staff's and the host job's (${role}${id ? `, role ${id}` : ''}); run team-revive.js check and tell the Chief of Staff what is missing.`;
+  if (STARTERS.includes(id)) return null;
+  return `team-revive.js: start is the Chief of Staff's, the host manager's and the host job's (${role}${id ? `, role ${id}` : ''}); run team-revive.js check and tell the Chief of Staff what is missing.`;
 }
 
 function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
@@ -172,7 +177,15 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   const [cmd] = o._;
   if (!['check', 'start'].includes(cmd) || o._.length > 1) return { code: 2, out: USAGE };
   const { who: given, ...rest } = deps;
-  const who = given || whoAmI({ cwd, env, project: o.project });
+  let who = given || whoAmI({ cwd, env, project: o.project });
+  // --project names the team, wherever this runs: in a role directory the marker names the session's own
+  // team, and the host manager reads and starts every team on its machine from its own one
+  if (!given && o.project && path.resolve(o.project) !== who.root) {
+    const root = path.resolve(o.project);
+    let team = null;
+    try { team = require('./lib/manifest.js').loadManifest(root).team; } catch (err) { team = null; }
+    who = { ...who, root, team };
+  }
   if (cmd === 'start') { const no = refusal(cwd, env, who); if (no) return { code: 1, out: no }; }
   if (!who.root) return { code: 2, out: 'team-revive.js: no project found; pass --project <root>' };
   const r = revive(who.root, who.team, { start: cmd === 'start', dryRun: o.dryRun, env, ...rest });
