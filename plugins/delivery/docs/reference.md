@@ -33,6 +33,7 @@ the commands) and they stay up.
 | Spike Researcher (optional, `full`) | `spike-researcher` | sonnet | answers `spike` beads from the architecture |
 | Reality Checker (optional, `full`) | `reality-checker` | sonnet | runs reality-check scripts on the real customer surface with browser control or computer use; writes evidence rows and captures only. On by default when a declared surface is not scriptable |
 | Technical Writer (optional, `full`) | `tech-writer` | sonnet | the product's documentation: README, quick start and reference kept true to the shipped version, and runnable quick-start steps, both for someone typing commands and for an agent following a brief, which the Reality Checker can execute; documentation only, in its own worktree (its git group, `git-write-docs`, takes path operands its lane writes and refuses checkout, reset, merge, pull, rebase, cherry-pick, stash and `restore --source`), and opens the pull request |
+| Host manager | `host-manager` | opus | optional, one per machine rather than per team, in no preset: opened from the Claude app, it reports what has stopped across every product team on the machine (host jobs and role sessions alike) and starts it again (`scripts/host-manager.js`); no product work, no bead claims, no repository writes |
 
 The role id `delivery-lead` is kept for compatibility (manifests, lanes, record ids); the role
 is shown everywhere as the Delivery Manager.
@@ -1496,8 +1497,63 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   time, arguments, the id it reattached), its output in `logs/revive-<instance>-<time>.log` beside it.
   The host job runs `start` at each `run`, after the wakes and never while a plugin install is held or
   under way; the sealed test runner starts none. In a role session only the Chief of Staff may run
-  `start` (lane group `team-revive`), and its brief runs `check` each turn; any other role session is
-  refused, whatever its lane. Each host's job covers the roles on that host.
+  `start` (lane group `team-revive`), and its brief runs `check` each turn; the host manager may too
+  (below). Any other role session is refused, by the script and by the lane, whatever its lane: a
+  builder's open lane refuses `team-revive.js start` with the way out. Each host's job covers the roles
+  on that host. `--project <root>` names the team to check or start from anywhere, a role directory of
+  another team included. An instance of the `host-manager` role is never started here: its session is
+  its own user unit's.
+- **The host manager: one session per machine.** `host-manager.js` serves every product team on the
+  machine. Its team list is the union of `${XDG_CONFIG_HOME:-~/.config}/delivery/host-teams.json`
+  (`{"teams": [<project root>, ...]}`, to which `watchdog.js install --apply` and `host-manager.js
+  install` add their project, once, sorted) and the `WorkingDirectory=` of every installed
+  `delivery-watchdog-*.service`; the file keeps a team listed after its host job unit is gone.
+  `status [--json]` prints, per team, `<team>: <n> of <m> sessions running; down: <instances>; holding
+  work: <instances>` (from `team-revive.js`'s own reading of sessions and work: an in-progress bead
+  assigned to the instance, a message or handoff waiting for it, a pull request from its `team/`
+  branch), and per host job unit `<unit>: running` or `stopped since <time>` (`systemctl --user show`);
+  each source it cannot read is a `SOURCE UNAVAILABLE: <what>` line and is never counted as running.
+  `restart [--json]` starts each stopped host job (its timer and path units, and one run of its
+  service), then the instances that are down and hold work, through `team-revive.js`'s start pass
+  with its caps (a start a cap holds is named with when it may run), and replies from a read made
+  after it: what came back, what did not and why. An instance that is down and holds nothing is listed
+  and left down. `tick`, run every five minutes by `delivery-host-manager-tick.timer`, acts when an
+  instance that is down holds an in-progress bead with no bead note and no watchdog wake for 30
+  minutes, or a team's host job has written no pass to its `job.log` for 30 minutes: it runs the
+  restart and sends one plain alert (what was silent, what came back, what did not). The outage ledger,
+  `${XDG_STATE_HOME:-~/.local/state}/delivery/host-manager/outages.ndjson`, holds an `open`, an
+  `alert` and a `close` row per outage, so a second tick in the same outage restarts again but alerts
+  no more. The alert goes into the inbox of each `host-manager` instance of the teams on this host,
+  which that team's watchdog hands to the session as a wake, a resume of it or a copy when it is open,
+  not as a line in the open Remote Control conversation; with no such instance the ledger row is the
+  only record.
+- **The host manager's units.** `host-manager.js install [--dry-run] --project <root> [--instance <id>]`
+  takes the role directory of that team's `host-manager` instance (the roster's, else the team layout's)
+  and writes three systemd user units: `delivery-host-manager.service` runs `claude remote-control
+  --name <instance>@<host>` there (`--session-id <id>` when one is recorded for the directory, else
+  `--spawn session`; the team's permission mode as a start uses it), `Restart=always`, a 30 second
+  `RestartSec`, `KillMode=process` (the sessions a restart starts outlive a restart of the unit),
+  `TasksMax=4096` (its own unit, outside every host job's cgroup) and `WantedBy=default.target`;
+  `delivery-host-manager-tick.service` and `.timer` (two minutes after boot, then every five) run
+  `tick` through the project's launcher, so a plugin update is picked up. It reloads systemd, enables
+  and starts the service and the timer, and says, without running it, when `loginctl enable-linger` is
+  needed for the units to start at boot. A host without systemctl, a team with no `host-manager`
+  instance (Staffing adds one: `team-role.js add host-manager`) or a role directory not yet prepared
+  installs nothing and says why. `watchdog.js install --apply` runs the same install when the service
+  file is missing. Each watchdog `run` checks `delivery-host-manager.service` and starts it when it is
+  installed and not active, one `host-manager-start` row in `revive.ndjson` per start: the host jobs
+  restart the host manager and the host manager restarts the host jobs.
+- **The host manager's lane.** Its brief writes nothing and runs `read`, `bd-read`, `bd-notes`,
+  `operator-read`, `judge` and the `host-manager` group: `host-manager.js status|restart|tick`,
+  `team-revive.js check|start`, `systemctl --user` (`status`, `is-active`, `show`, `start`, `restart`,
+  `stop`, which must name a unit, and `list-units`, `list-timers`, `daemon-reload`) where every unit
+  named matches `delivery-watchdog-*.service|.timer|.path` or one of the host manager's three units,
+  `amplifier run`, `ps`, `df`, `free`, `uptime`, and `sort` and `uniq` with no option or operand that
+  writes a file. A lane rule's `positional_match` lists those unit globs (with `positional_required`
+  for the commands that act on a unit). Every other lane, the `any` lanes included, is refused
+  `systemctl --user` and `host-manager.js restart|tick|install`, with the way out (message the host
+  manager); `team-revive.js start` is refused to every lane but the Chief of Staff's and the host
+  manager's.
 - **Watching GitHub within a budget (R-25).** `watch.js until <text> --every <5m> --max <2h> -- gh <read>`
   repeats a gh read until its output shows `<text>` (a pattern, any case), exit 0, or the time limit
   passes, exit 1. Outside a project its cache is a private folder in the temporary directory (0700,
