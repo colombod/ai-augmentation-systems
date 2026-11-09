@@ -659,3 +659,146 @@ test('revive() itself refuses a start from a role session that may not start ses
     assert.equal(t.calls.length, 2, JSON.stringify(env));
   }
 });
+
+// hjx.1.6.10.1: a role session started by the host job's service ran in that service's cgroup and shared
+// its TasksMax with every role (eight starts aborted at once), and kept the oneshot from ending.
+const startDeps = (p, extra) => ({ start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, systemdRun: null, ...extra });
+
+test('each start runs in its own systemd user scope with its own limits where systemd runs, and as a plain child where it does not', () => {
+  const c = R.scopedCommand('claude', ['remote-control', '--name', 'builder@ex'], { instance: 'builder-2', at: T0, systemdRun: '/usr/bin/systemd-run' });
+  assert.equal(c.bin, '/usr/bin/systemd-run');
+  assert.equal(c.unit, `delivery-role-builder-2-${Date.parse(T0)}`);
+  assert.deepEqual(c.args, ['--user', '--scope', '--quiet', '--collect', `--unit=${c.unit}`, '-p', 'TasksMax=1000', '-p', 'MemoryMax=3G', '--', 'claude', 'remote-control', '--name', 'builder@ex']);
+  assert.deepEqual(R.scopedCommand('claude', ['x'], { instance: 'builder', at: T0, systemdRun: null }), { bin: 'claude', args: ['x'], unit: null });
+  // the start pass hands the scope command to spawn and records the unit
+  const p = project({ roles: [{ id: 'builder', host: 'pc' }, { id: 'reality-checker', host: 'pc' }] });
+  const calls = [];
+  const r = TR.revive(p.root, p.team, startDeps(p, { systemdRun: '/usr/bin/systemd-run', spawn: (bin, args, opts) => { calls.push({ bin, args, cwd: opts.cwd }); return 7000 + calls.length; } }));
+  assert.equal(calls.length, 2);
+  for (const k of calls) { assert.equal(k.bin, '/usr/bin/systemd-run'); assert.equal(k.args[k.args.indexOf('--') + 1], 'claude'); }
+  assert.notEqual(calls[0].args[4], calls[1].args[4], 'one unit per role');
+  assert.match(calls[0].args[4], /^--unit=delivery-role-builder-\d+$/);
+  const rows = R.ledger(p.root).filter((x) => x.type === 'start');
+  assert.deepEqual(rows.map((x) => x.unit), [`delivery-role-builder-${Date.parse(T0)}`, `delivery-role-reality-checker-${Date.parse(T0)}`]);
+  assert.equal(rows[0].args[0], 'remote-control', 'the ledger keeps the claude argv');
+  assert.match(r.lines.join('\n'), /Started: builder \(pid 7001, scope delivery-role-builder-\d+\)/);
+});
+
+test('systemd-run is used only on Linux with a reachable user manager and systemd-run on PATH', () => {
+  const rt = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-'));
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'bin-'));
+  fs.writeFileSync(path.join(bin, 'systemd-run'), '');
+  const env = { XDG_RUNTIME_DIR: rt, PATH: `/nonexistent${path.delimiter}${bin}` };
+  assert.equal(TR.systemdRunOf(env, { platform: 'linux' }), null, 'no user manager socket');
+  fs.mkdirSync(path.join(rt, 'systemd'));
+  fs.writeFileSync(path.join(rt, 'systemd', 'private'), '');
+  assert.equal(TR.systemdRunOf(env, { platform: 'linux' }), path.join(bin, 'systemd-run'));
+  assert.equal(TR.systemdRunOf(env, { platform: 'darwin' }), null);
+  assert.equal(TR.systemdRunOf({ PATH: env.PATH }, { platform: 'linux' }), null, 'no XDG_RUNTIME_DIR');
+  assert.equal(TR.systemdRunOf({ ...env, PATH: '/nonexistent' }, { platform: 'linux' }), null, 'no systemd-run');
+});
+
+test('a start whose process exits within a minute is recorded failed, not started, and is retried at the next pass; a start that lived is held for the hour', () => {
+  const p = project({ roles: [{ id: 'builder', host: 'pc' }, { id: 'reality-checker', host: 'pc' }] });
+  const spawn = (bin, args, opts) => (opts.cwd.endsWith('builder') ? 501 : 502);
+  const first = TR.revive(p.root, p.team, startDeps(p, { spawn, settle: (pids) => { assert.deepEqual(pids, [501, 502]); return new Set([501]); } }));
+  const out = first.lines.join('\n');
+  assert.match(out, /Failed: builder \(pid 501\): its process exited within 60s of the start, so it is not counted as started/);
+  assert.match(out, /Started: reality-checker \(pid 502\)/);
+  const failed = R.ledger(p.root).filter((x) => x.type === 'failed');
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].instance, 'builder');
+  assert.equal(failed[0].start_at, T0);
+  const calls = [];
+  const next = TR.revive(p.root, p.team, startDeps(p, { now: iso(Date.parse(T0) + 5 * 60e3), settle: () => new Set(), spawn: (bin, args, opts) => { calls.push(path.basename(opts.cwd)); return 503; } }));
+  assert.deepEqual(calls, ['builder'], 'the failed start is retried five minutes later; the one that lived is held');
+  assert.match(next.lines.join('\n'), /Started: builder \(pid 503\): retry after a failed start \(its start 2026-11-04 09:00 UTC \(pid 501\) exited within 60s\)/);
+  assert.match(next.lines.join('\n'), /Missing: reality-checker .*held: started 2026-11-04 09:00 UTC/);
+});
+
+test('the daily cap counts failed starts: a role that crashes at every start is tried six times a day, never in a loop', () => {
+  const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  let t = Date.parse(T0);
+  let n = 0;
+  for (let i = 0; i < 8; i++) {
+    TR.revive(p.root, p.team, startDeps(p, { now: iso(t), spawn: () => { n += 1; return 600 + i; }, settle: (pids) => new Set(pids) }));
+    t += 5 * 60e3;
+  }
+  assert.equal(n, 6);
+});
+
+test('settle waits for exits up to its limit and returns early once every start has exited; a real child that exits is seen exited', () => {
+  let slept = 0;
+  const gone = TR.settleStarts([11, 12], { waitMs: 10e3, stepMs: 2e3, sleep: (t) => { slept += t; }, isExited: (pid) => pid === 11 && slept >= 4e3 });
+  assert.deepEqual([...gone], [11]);
+  assert.equal(slept, 10e3, 'a start still running is watched for the whole wait');
+  slept = 0;
+  assert.deepEqual([...TR.settleStarts([11], { waitMs: 60e3, stepMs: 2e3, sleep: (t) => { slept += t; }, isExited: () => true })], [11]);
+  assert.equal(slept, 0);
+  const cp = require('child_process');
+  const child = cp.spawn(process.execPath, ['-e', ''], { detached: true, stdio: 'ignore' });
+  child.unref();
+  assert.ok(TR.settleStarts([child.pid], { waitMs: 10e3, stepMs: 100 }).has(child.pid), 'an exited detached child (a zombie until reaped) counts as exited');
+  const live = cp.spawn(process.execPath, ['-e', 'setTimeout(()=>{},5000)'], { detached: true, stdio: 'ignore' });
+  live.unref();
+  try { assert.equal(TR.exited(live.pid), false); } finally { live.kill(); }
+});
+
+// The production wiring, with nothing injected but the commands: the real spawn and its real exit
+// check, and systemd-run found from the environment (rv-189 findings 1 to 3).
+function fakeBin(dir, name, body) {
+  fs.mkdirSync(dir, { recursive: true });
+  const f = path.join(dir, name);
+  fs.writeFileSync(f, `#!/bin/sh\n${body}\n`);
+  fs.chmodSync(f, 0o755);
+  return f;
+}
+const realDeps = (p, env) => ({ start: true, env: { DELIVERY_HOST: 'pc', PATH: process.env.PATH, ...env }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config });
+
+test('with the real spawn and no settle given, a start whose process exits at once is recorded failed', () => {
+  const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  const bin = fakeBin(path.join(p.root, '..', 'bin'), 'claude', 'echo crashed at start; exit 3');
+  const r = TR.revive(p.root, p.team, { ...realDeps(p, { DELIVERY_CLAUDE_BIN: bin }), systemdRun: null });
+  assert.match(r.lines.join('\n'), /Failed: builder \(pid \d+\): its process exited within 60s/);
+  const rows = R.ledger(p.root);
+  assert.deepEqual(rows.map((x) => x.type), ['start', 'failed']);
+  assert.equal(rows[1].start_at, rows[0].at);
+  assert.match(fs.readFileSync(path.join(p.root, rows[0].log), 'utf8'), /crashed at start/);
+});
+
+test('with systemdRun not given, systemd-run is found from the environment: a reachable user manager and systemd-run on PATH scope the start; without them it is a plain start', () => {
+  const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  const rt = path.join(p.root, '..', 'run');
+  fs.mkdirSync(path.join(rt, 'systemd'), { recursive: true });
+  fs.writeFileSync(path.join(rt, 'systemd', 'private'), '');
+  const sd = fakeBin(path.join(p.root, '..', 'sbin'), 'systemd-run', 'exit 0');
+  const calls = [];
+  const spawn = (bin, args) => { calls.push({ bin, args }); return 900 + calls.length; };
+  const linux = process.platform === 'linux';
+  TR.revive(p.root, p.team, { ...realDeps(p, { XDG_RUNTIME_DIR: rt, PATH: `${path.dirname(sd)}${path.delimiter}${process.env.PATH}` }), spawn, settle: () => new Set() });
+  assert.equal(calls[0].bin, linux ? sd : 'claude', 'scoped on Linux only');
+  if (linux) assert.deepEqual(calls[0].args.slice(0, 2), ['--user', '--scope']);
+  const q = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  TR.revive(q.root, q.team, { ...realDeps(q, { PATH: `${path.dirname(sd)}${path.delimiter}${process.env.PATH}` }), spawn, settle: () => new Set() });
+  assert.equal(calls[1].bin, 'claude', 'no XDG_RUNTIME_DIR: no user manager to reach, a plain start');
+});
+
+test('when systemd-run itself refuses the scope, the role is started again at once as a plain child, and the lines say so', () => {
+  const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  const dir = path.join(p.root, '..', 'bin');
+  const sd = fakeBin(dir, 'systemd-run', 'echo "Failed to start transient scope unit: Unit delivery-role-x.scope already exists." >&2; exit 1');
+  const bin = fakeBin(dir, 'claude', 'exit 4');
+  const r = TR.revive(p.root, p.team, { ...realDeps(p, { DELIVERY_CLAUDE_BIN: bin }), systemdRun: sd });
+  const rows = R.ledger(p.root);
+  assert.deepEqual(rows.map((x) => x.type), ['start', 'failed', 'start', 'failed']);
+  assert.match(rows[0].unit, /^delivery-role-builder-/);
+  assert.equal(rows[2].fallback_from, rows[0].unit, 'the plain start names the scope systemd-run refused');
+  assert.equal(rows[2].unit, undefined);
+  assert.match(r.lines.join('\n'), /Failed: builder \(pid \d+, a plain start: systemd-run refused scope delivery-role-builder-\d+\)/);
+  // a claude that crashes under a scope that systemd-run did create is not started again plain
+  const q = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  const ok = fakeBin(path.join(q.root, '..', 'bin'), 'systemd-run', 'shift 9; exec "$@"');
+  TR.revive(q.root, q.team, { ...realDeps(q, { DELIVERY_CLAUDE_BIN: bin }), systemdRun: ok });
+  assert.deepEqual(R.ledger(q.root).map((x) => x.type), ['start', 'failed']);
+  assert.equal(TR.systemdRunRefused(path.join(q.root, 'nope.log')), false);
+});
