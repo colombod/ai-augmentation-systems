@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const FIELDS = 'number,state,mergedAt,mergeCommit,headRefOid,headRefName,baseRefName,mergeable,statusCheckRollup,additions,deletions,files,body,title';
+const FIELDS = 'number,state,mergedAt,mergeCommit,headRefOid,headRefName,baseRefName,mergeable,statusCheckRollup,additions,deletions,files,body,title,createdAt,comments,commits';
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 // owner/name from a GitHub remote URL (git@github.com:o/r.git, https://github.com/o/r, a PR URL)
@@ -60,6 +60,21 @@ const MERGEABLE = (m) => (m === true ? 'MERGEABLE' : m === false ? 'CONFLICTING'
 const UP = (x) => String(x || '').toUpperCase();
 
 // The fields viewPr's callers read, in `gh pr view --json` shape, from the REST endpoints.
+function restExtras(base, pr, o) {
+  const out = {};
+  const comments = ghApi(`${base}/issues/${pr}/comments?per_page=100`, o);
+  if (!comments.unavailable && Array.isArray(comments.json)) out.comments = comments.json.map((c) => ({ body: (c && c.body) || '' }));
+  const commits = ghApi(`${base}/pulls/${pr}/commits?per_page=100`, o);
+  if (!commits.unavailable && Array.isArray(commits.json)) {
+    out.commits = commits.json.map((c) => {
+      const msg = String((c && c.commit && c.commit.message) || '');
+      const nl = msg.indexOf('\n');
+      return nl < 0 ? { messageHeadline: msg, messageBody: '' } : { messageHeadline: msg.slice(0, nl), messageBody: msg.slice(nl + 1).replace(/^\n/, '') };
+    });
+  }
+  return out;
+}
+
 function viewPrRest(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
   const o = { cwd, timeoutMs };
   const base = `repos/${repo}`;
@@ -115,6 +130,10 @@ function viewPrRest(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
     files,
     body: pull.body || '',
     title: pull.title || '',
+    createdAt: pull.created_at || null,
+    // the doc-impact line can be said in a comment or a commit message (lib/doc-impact.js); one page of
+    // each, and a page that cannot be read leaves only the description, so the gate refuses, never passes
+    ...restExtras(base, pr, o),
     via: 'rest',
   };
 }

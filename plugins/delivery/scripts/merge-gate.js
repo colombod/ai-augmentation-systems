@@ -36,7 +36,7 @@ const restMergeCmd = (pr, repo, head) => `\`gh api -X PUT repos/${repo}/pulls/${
 const mergeCmdFor = (view) => (view && view.via === 'rest' ? restMergeCmd : mergeCmd);
 
 // { ok, why, fix, head, review, warnings, view }
-function gate(root, pr, { head: named, gh, team, repo, planDrift, readFile } = {}) {
+function gate(root, pr, { head: named, gh, team, repo, planDrift, readFile, now } = {}) {
   const view = ghFor(root, gh, repo)(pr) || { unavailable: 'no answer' };
   const { rows, problem } = R.read(root, pr);
   const seen = view.headRefOid || null;
@@ -52,9 +52,15 @@ function gate(root, pr, { head: named, gh, team, repo, planDrift, readFile } = {
   // Docs ship with the change that makes them stale: a change users can see carries a doc-impact line
   // (lib/doc-impact.js). Where gh cannot read the pull request, it is a warning, never a silent pass.
   if (v.ok) {
-    const di = view.unavailable ? { ok: true, warning: 'doc impact not checked: gh cannot read the pull request' } : DI.check(view);
+    // the gate's first readable run in this project is recorded whatever it finds, so the grace below
+    // covers only what was open before it, never a pull request opened before some later refusal
+    const first = view.unavailable ? null : DI.since(root, now || undefined);
+    const di = view.unavailable ? { ok: true, warning: 'doc impact not checked: gh cannot read the pull request' } : DI.check(view, { pr });
     if (di.warning) warnings.push({ kind: 'doc-impact', detail: di.warning });
-    if (!di.ok) return { ...v, ok: false, why: `PR ${pr}: ${di.why}`, fix: `${di.fix}, then check again: ${R.cmd('merge-gate.js', `check ${pr}`)}`, head, warnings, view, rows };
+    // 8l1.4.1: a pull request already open when the gate first ran here is warned, not refused, and
+    // told how to add the line; one opened after, or with no creation time or record, is refused
+    if (!di.ok && first && DI.openedBefore(view, first)) warnings.push({ kind: 'doc-impact', detail: `PR ${pr} was opened before the doc-impact gate first ran here (${first}), so it is not refused: ${di.why}; ${di.fix}` });
+    else if (!di.ok) return { ...v, ok: false, why: `PR ${pr}: ${di.why}`, fix: `${di.fix}, then check again: ${R.cmd('merge-gate.js', `check ${pr}`)}`, head, warnings, view, rows };
   }
   // The plan must be true to what already shipped before anything more ships (the owner, 2026-10-31:
   // a planning repo and feature map that diverge from the product defeat the product).
