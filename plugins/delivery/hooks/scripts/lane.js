@@ -16,6 +16,7 @@ const SANCTIONED = {
   builder: 'Product code in your worktree is yours; for plans, message the Delivery Manager.',
   'spike-researcher': 'Answers go in the bead: `bd update <id> --append-notes "<answer>"`; product code is never yours.',
   'tech-writer': 'Documentation in your worktree is yours; a product change goes to a builder bead through the Delivery Manager.',
+  'host-manager': 'You read and restart this machine\'s host jobs and role sessions; anything else goes to the Chief of Staff of the team it belongs to.',
   'reality-checker': 'Captures go under `.delivery/evidence/artifacts/<bead>/` and rows through `reality-check.js run-record`; anything else, message the Delivery Manager.',
 };
 // Browser, desktop and computer-use tools reach the owner's apps and the customer surface (R-05, R-33):
@@ -446,6 +447,21 @@ function ruleMatches(rule, t, ctx) {
     if (!c || c.bad || !MERGE_ENDPOINT.test(c.endpoint || '') || c.method !== 'PUT') return false;
   }
   if (rule.pr_open_endpoint && !prOpenCall(ghApiCall(t))) return false;
+  // positional_match: every operand after the subcommand (a word that is not a flag, nor the value of one
+  // of value_flags) must match one of the globs, `*` standing for any run of characters but `/`; with
+  // positional_required, at least one operand must be there (a start or a stop names what it acts on)
+  if (rule.positional_match) {
+    const valueFlags = rule.value_flags || [];
+    const res = rule.positional_match.map((g) => globToRegExp(String(g)));
+    const args = argv.slice(subLen);
+    let seen = 0;
+    for (let k = 0; k < args.length; k++) {
+      if (args[k].startsWith('-')) { if (valueFlags.includes(args[k])) k++; continue; }
+      if (UNSAFE_DIR.test(args[k]) || !res.some((re) => re.test(args[k]))) return false;
+      seen++;
+    }
+    if (rule.positional_required && !seen) return false;
+  }
   if (rule.flags_only) {
     const allowed = rule.flags_only;
     if (argv.slice(subLen).some((x) => x.startsWith('-') && !allowed.includes(x.split('=')[0]))) return false;
@@ -1473,6 +1489,17 @@ const MERGER = 'delivery-lead';
 // any command) only reads the pass, so two writers never act on the same stall
 const PASS_RECORD_REASON = 'the pass record (watchdog.js pass --record) is the Delivery Manager\'s: it notes, assigns and messages as the manager.\nRun watchdog.js pass to read it, and message the Delivery Manager';
 const passRecordAttempt = (command) => /watchdog\.js\b[^;&|\n]*\bpass\b[^;&|\n]*--record\b/.test(String(command || ''));
+// The machine's user services and the starting of role sessions are the host manager's (and a start of
+// one team's sessions the Chief of Staff's too): refused to every other role, the `any` lanes included.
+// Read over the whole command text, as the pass record is: a false refusal costs a message to the host
+// manager, a false allow lets any session stop a team's host job.
+const HOST_MANAGER = 'host-manager';
+const HOST_UNITS_REASON = 'this machine\'s user services (systemctl --user) are the host manager\'s: it reads and restarts the host jobs and its own unit.\nMessage the host manager (host-manager@<host>) with what is down';
+const systemctlUser = (command) => /(?:^|[\s;&|(`'"/])systemctl(?=[\s'"])[^;&|\n]*?[\s'"]--user(?=$|[\s'"=;&|)])/.test(String(command || ''));
+const START_REASON = 'starting role sessions is the Chief of Staff\'s and the host manager\'s (team-revive.js start).\nRun team-revive.js check, and message the Chief of Staff with what is missing';
+const reviveStart = (command) => /team-revive(?:\.js)?\b[^;&|\n]*?\bstart\b/.test(String(command || ''));
+const HOST_MANAGER_REASON = 'the host manager\'s restart, tick and install bring back the host jobs and role sessions of every team on this machine: they are the host manager\'s.\nMessage the host manager (host-manager@<host>) with what is down';
+const hostManagerAct = (command) => /host-manager\.js\b[^;&|\n]*?\b(?:restart|tick|install)\b/.test(String(command || ''));
 const MERGE_REASON = 'merging is the Delivery Manager\'s.\nOpen the pull request and message the Delivery Manager; resolve conflicts when it asks';
 const DEFAULT_BRANCHES = ['main', 'master'];
 
@@ -1730,6 +1757,9 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (pol.roleId !== MERGER && passRecordAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${PASS_RECORD_REASON}.` };
+    if (pol.roleId !== HOST_MANAGER && systemctlUser(command)) return { allow: false, reason: `Role ${pol.roleId}: ${HOST_UNITS_REASON}.` };
+    if (![HOST_MANAGER, 'chief-of-staff'].includes(pol.roleId) && reviveStart(command)) return { allow: false, reason: `Role ${pol.roleId}: ${START_REASON}.` };
+    if (pol.roleId !== HOST_MANAGER && hostManagerAct(command)) return { allow: false, reason: `Role ${pol.roleId}: ${HOST_MANAGER_REASON}.` };
     const run = refusedRun(command);
     if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? testsReason(command, pluginRootOf({ pluginRoot })) : RESUME_REASON}.` };
     if (bash.includes('any')) {

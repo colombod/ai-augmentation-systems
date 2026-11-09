@@ -2092,3 +2092,71 @@ test('team-runtime-10 c4: every lane_writes pattern of every brief is allowed by
   assert.equal(d.allow, false);
   assert.doesNotMatch(fs.readFileSync(path.join(PLUGIN_ROOT, 'roles', 'progress-observer.md'), 'utf8'), /go to `?\.delivery\/reviews/);
 });
+
+// The host manager: one session per machine that reads and restarts the host jobs and role sessions of
+// every team; its lane writes nothing and claims nothing, and runs systemctl --user only on the plugin's
+// own units. Every other lane, the open builder lane included, is refused systemctl --user, the host
+// manager's restart and tick, and team-revive.js start (the Chief of Staff keeps start).
+test('host manager lane: its commands run, systemctl only on the plugin\'s units, no writes, no claims', () => {
+  const hm = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/host-manager' });
+  assert.equal(hm.roleId, 'host-manager');
+  assert.deepEqual(hm.writes, []);
+  for (const g of ['bd-claim', 'git-write-project', 'git-write-product', 'gh-write', 'any']) assert.ok(!hm.bash.includes(g), g);
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-proj-'));
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-role-'));
+  const lane = (toolName, toolInput) => decideLane({ toolName, toolInput, policy: hm, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd, projectRoot });
+  const sh = (command) => lane('Bash', { command }).allow;
+  const script = (s) => path.join(PLUGIN_ROOT, 'scripts', s);
+  for (const c of [
+    `node ${script('host-manager.js')} status`, `node ${script('host-manager.js')} status --json`, `node ${script('host-manager.js')} restart`, `node ${script('host-manager.js')} tick`,
+    `node ${script('team-revive.js')} check --project /srv/alpha`, `node ${script('team-revive.js')} start --project /srv/alpha`,
+    'systemctl --user status delivery-watchdog-0a1b2c3d.timer', 'systemctl --user start delivery-watchdog-0a1b2c3d.timer delivery-watchdog-0a1b2c3d.path',
+    'systemctl --user restart delivery-host-manager.service', 'systemctl --user stop delivery-host-manager-tick.timer',
+    'systemctl --user show delivery-watchdog-0a1b2c3d.timer -p ActiveState -p InactiveEnterTimestamp --no-pager', 'systemctl --user is-active delivery-host-manager.service',
+    'systemctl --user list-units', 'systemctl --user list-timers --all', 'systemctl --user daemon-reload',
+    'amplifier run "the dolt server refuses logins; prove it with bd list"', 'ps -o command= -p 123', 'df -h', 'free -m', 'uptime',
+    'ps aux | sort -k3 | uniq -c', 'bd list --status in_progress', 'bd update ex-1 --append-notes "host job restarted"',
+  ]) assert.equal(sh(c), true, c);
+  for (const c of [
+    'systemctl --user stop ssh.service', 'systemctl --user start delivery-watchdog-0a1b2c3d.timer ssh.service', 'systemctl --user start',
+    'systemctl --user restart delivery-watchdog-0a1b2c3d', 'systemctl --user show -p ActiveState dbus.service', 'systemctl stop delivery-host-manager.service',
+    'systemctl --user --machine x@ start delivery-host-manager.service', 'systemctl --user start delivery-host-manager.service --system',
+    'systemctl --user enable delivery-host-manager.service', 'systemctl --user edit delivery-host-manager.service', 'systemctl --user set-environment A=1',
+    'systemctl --user list-units ssh.service', 'systemctl --user start $UNIT',
+    'bd update ex-1 --claim', 'bd close ex-1', 'git -C product commit -m x', 'gh pr create --title x --body y', 'amplifier install x',
+    'sort -o out.txt in.txt', 'sort --output=out.txt in.txt', 'uniq in.txt out.txt', 'rm -rf x', `node ${script('host-manager.js')} install --project /srv/alpha`,
+  ]) assert.equal(sh(c), false, c);
+  // no Write or Edit anywhere: product repository, project repository, its own directory
+  for (const p of [path.join(rd, 'product', 'src', 'a.js'), path.join(rd, 'project', '.delivery', 'notes.md'), path.join(projectRoot, 'README.md'), path.join(rd, 'notes.md')]) {
+    for (const tool of ['Write', 'Edit']) assert.equal(lane(tool, { file_path: p, content: 'x', old_string: 'a', new_string: 'b' }).allow, false, `${tool} ${p}`);
+  }
+  assert.match(lane('Bash', { command: 'bd update ex-1 --claim' }).reason, /^Role host-manager may not run/);
+});
+
+test('every lane but the host manager\'s refuses systemctl --user and the host manager\'s restart; team-revive.js start only the Chief of Staff and the host manager run', () => {
+  const ids = fs.readdirSync(path.join(PLUGIN_ROOT, 'roles')).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3));
+  assert.ok(ids.includes('host-manager') && ids.includes('builder'));
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'units-lane-'));
+  const revive = `node ${path.join(PLUGIN_ROOT, 'scripts', 'team-revive.js')}`;
+  const hmjs = `node ${path.join(PLUGIN_ROOT, 'scripts', 'host-manager.js')}`;
+  for (const id of ids) {
+    const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${id}` });
+    const d = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+    for (const c of ['systemctl --user restart delivery-watchdog-0a1b2c3d.timer', 'systemctl --user status ssh.service', 'cd /tmp && systemctl --no-pager --user stop x.service', 'bash -c "systemctl --user stop x"', `${hmjs} restart`, `${hmjs} tick`]) {
+      const r = d(c);
+      if (id === 'host-manager') { if (!/ssh|x\.service|bash -c|stop x/.test(c)) assert.equal(r.allow, true, `${id}: ${c}`); continue; }
+      assert.equal(r.allow, false, `${id}: ${c}`);
+      if (policy.bash.includes('any')) assert.match(r.reason, /host manager/, `${id}: ${c}`);
+    }
+    const start = d(`${revive} start`);
+    if (['host-manager', 'chief-of-staff'].includes(id)) assert.equal(start.allow, true, id);
+    else {
+      assert.equal(start.allow, false, id);
+      if (policy.bash.includes('any')) assert.match(start.reason, /starting role sessions is the Chief of Staff's and the host manager's/, id);
+    }
+  }
+  // the open builder lane keeps everything else: a check, the read, other systemctl words
+  const builder = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/builder' });
+  const b = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: builder, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd }).allow;
+  for (const c of [`${revive} check`, `${hmjs} status`, 'systemctl --version', 'ls ~/.config/systemd/user', 'npm test']) assert.equal(b(c), true, c);
+});
