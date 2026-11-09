@@ -1136,6 +1136,51 @@ test('hjx.1.6.18: the Delivery Manager closes and reopens pull requests; no othe
   assert.doesNotMatch(dlMcp.reason, /closing or reopening a pull request is the Delivery Manager's/);
 });
 
+// hjx.1.6.18.1: the merge and close guards read only a segment's first word, so a merge or a close
+// wrapped in a shell, a substitution, a subshell or a wrapper passed for the roles with open lanes
+test('hjx.1.6.18.1: a merge or a close inside a substitution, a subshell, a shell string or after a wrapper is refused to builder and spike-researcher', () => {
+  const run = (policy, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx() });
+  const spike = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/spike-researcher' });
+  const wraps = (c) => [
+    `echo $(${c})`, `echo \`${c}\``, `(${c})`, `{ ${c}; }`, `bash -c '${c}'`, `sh -c "${c}"`, `bash -lc '${c}'`, `eval '${c}'`,
+    `command ${c}`, `time ${c}`, `timeout 9 ${c}`, `nohup ${c}`, `exec ${c}`, `sudo ${c}`, `env GH_TOKEN=x ${c}`, `echo 1 | xargs ${c}`,
+    `if true; then ${c}; fi`, `true && ${c}`, `cat <(${c})`, `bash -c 'echo $(${c})'`, `${c} 2>&1 | tail -3`,
+  ];
+  const merges = ['gh pr merge 187 --squash', 'gh api -X PUT repos/o/r/pulls/187/merge'];
+  const closes = ['gh pr close 187', 'gh issue close 187', 'gh api -X PATCH repos/o/r/pulls/187 -f state=closed', 'git push origin --delete team/builder-1'];
+  for (const policy of [POLICIES[BUILDER], spike]) {
+    for (const c of merges) for (const w of wraps(c)) {
+      const r = run(policy, w);
+      assert.equal(r.allow, false, `${policy.roleId}: ${w}`);
+      assert.match(r.reason, /merging is the Delivery Manager's/, `${policy.roleId}: ${w}`);
+    }
+    for (const c of closes) for (const w of wraps(c)) {
+      const r = run(policy, w);
+      assert.equal(r.allow, false, `${policy.roleId}: ${w}`);
+      assert.match(r.reason, /closing or reopening a pull request is the Delivery Manager's/, `${policy.roleId}: ${w}`);
+    }
+    // gh it cannot read: an alias defined, an alias or extension used, a command word that is not text
+    for (const c of ['gh alias set m "pr merge"', 'gh alias import aliases.yml', 'gh m 187', 'gh some-extension merge 187', '$GH pr merge 187', '"$(which gh)" pr close 187']) {
+      const r = run(policy, c);
+      assert.equal(r.allow, false, `${policy.roleId}: ${c}`);
+    }
+    // what a builder runs every day stays open, wrapped or not
+    for (const c of ['gh pr create --fill', 'gh pr view 187', 'timeout 60 gh pr checks 187', "bash -c 'gh pr list'", 'echo $(gh pr view 187 --json state)', 'gh co 187', 'gh --version', 'git push origin team/builder-1', "bash -c 'git status'", 'gh alias list']) {
+      assert.equal(run(policy, c).allow, true, `${policy.roleId}: ${c}`);
+    }
+  }
+  // the guards themselves, apart from any lane rule that refuses a form first
+  const { closeAttempt, mergeAttempt, commandsIn } = require('./lane.js');
+  // the substitution's command first, then each segment from its command word (echo keeps its words)
+  const found = commandsIn("echo $(timeout 9 gh pr close 1) && bash -c 'command gh pr merge 2'");
+  assert.deepEqual(found.map((w) => w.slice(0, 3)), [['gh', 'pr', 'close'], ['echo', '$(timeout', '9'], ['gh', 'pr', 'merge']]);
+  assert.equal(closeAttempt("bash -c 'echo `gh pr close 1`'"), true);
+  assert.equal(mergeAttempt('(nohup gh pr merge 1)', '/tmp'), true);
+  // the Delivery Manager still merges and closes in its own forms, through its lane and the merge gate
+  for (const c of ['gh pr close 187', 'gh pr close 187 -R colombod/ai-augmentation-systems', 'gh pr reopen 187']) assert.equal(run(POLICIES[DL], c).allow, true, `delivery-lead: ${c}`);
+  for (const c of ["bash -c 'gh pr merge 187'", 'timeout 9 gh pr close 187', '$(gh pr merge 187)']) assert.equal(run(POLICIES[DL], c).allow, false, `delivery-lead: ${c} (not its sanctioned form)`);
+});
+
 // Copilot review of PR 49
 test('Copilot: the fail-closed path still sees the role marker when lane.js itself fails to load', () => {
   const { roleDir } = preparedRole('builder-1');

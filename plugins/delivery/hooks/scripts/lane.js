@@ -1137,7 +1137,9 @@ function substitutions(text) {
       let depth = 1;
       let j = i + 2;
       for (; j < s.length && depth; j++) { if (s[j] === '(') depth++; else if (s[j] === ')') depth--; }
-      out.push(s.slice(i + 2, j - 1));
+      // an unterminated $( (a word whose closing paren the shell grammar took off) runs to its end:
+      // cutting one more character turned pulls/1/merge into pulls/1/merg (hjx.1.6.18.1)
+      out.push(depth ? s.slice(i + 2) : s.slice(i + 2, j - 1));
       i = j - 1;
     }
   }
@@ -1586,6 +1588,53 @@ function groupsShown(bash, lead, close = ').') {
   return `${shown.join(', ')}, and ${all.length - shown.length} more`;
 }
 
+// Every command a line runs, each as its words from its command word on (hjx.1.6.18.1): the segments,
+// what $(...), backticks and <(...) run, the string a shell runs with -c and what eval runs, with shell
+// grammar (subshells, braces, if/then), leading assignments, redirections and wrappers (env, command,
+// time, timeout, nohup, xargs, sudo, exec, ...) taken off, as refusedRun reads them. The merge and close
+// guards judge each one, so a gh pr merge inside `bash -c '...'`, `$(...)` or after `timeout 9` is seen
+// as plainly as one typed alone. Depth-limited like refusedRun.
+function commandsIn(text, depth = 0) {
+  const out = [];
+  if (depth > 4) return out;
+  for (const sub of substitutions(text)) out.push(...commandsIn(sub, depth + 1));
+  for (const seg of splitWithOps(String(text == null ? '' : text))) {
+    const t = commandWords(stripGrammar(argWords(seg.text)));
+    if (!t.length) continue;
+    const name = baseOf(t[0]);
+    if (SHELLS.has(name) || name === 'eval') {
+      const args = t.slice(1);
+      const k = args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a));
+      const inner = name === 'eval' ? args.join(' ') : k >= 0 ? args[k + 1] || '' : '';
+      if (inner) out.push(...commandsIn(inner, depth + 1));
+      continue;
+    }
+    out.push(t);
+  }
+  return out;
+}
+
+// gh's own commands (gh 2.x) and its default alias co: any other first word is an alias or an extension,
+// which may run a merge or a close the lane cannot read
+const GH_COMMANDS = new Set(['alias', 'api', 'attestation', 'auth', 'browse', 'cache', 'co', 'codespace', 'completion', 'config', 'extension', 'gist', 'gpg-key', 'help', 'issue', 'label', 'org', 'pr', 'project', 'release', 'repo', 'ruleset', 'run', 'search', 'secret', 'ssh-key', 'status', 'variable', 'workflow', 'version']);
+// A gh call the merge and close guards cannot read: an alias being defined, a first word that is no gh
+// command, or a command word that is not literal text ($GH pr merge). For every role but the Delivery
+// Manager, it may merge or close, so it is refused like one.
+function opaqueGh(command) {
+  return commandsIn(command).some((words) => {
+    const w = words[0] || '';
+    if (nonLiteral(w)) return words.slice(1).some((a) => /^(?:pr|api|issue|merge|close|reopen)$/.test(a));
+    if (path.basename(w) !== 'gh') return false;
+    let i = 1;
+    for (; i < words.length && words[i].startsWith('-'); i++) { if (words[i] === '-R' || words[i] === '--repo') i++; }
+    const sub = words[i];
+    if (sub === undefined || sub === '--version' || sub === '--help' || sub === '-h') return false;
+    if (sub === 'alias') return ['set', 'import'].includes(words[i + 1]);
+    return !GH_COMMANDS.has(sub);
+  });
+}
+const OPAQUE_GH_REASON = 'a gh alias, an extension or a command word the lane cannot read may merge or close a pull request, which is the Delivery Manager\'s (dec-chief-of-staff-000314).\nRun gh with its own command (gh pr view, gh pr create), or message the Delivery Manager';
+
 // A pull request closed or reopened in whatever form: `gh pr close`/`reopen`; `gh issue close`/`reopen`
 // and a REST call that sets the state of pulls/<n> or issues/<n> (a pull request is an issue too, and
 // its issue closes it); the GraphQL close and reopen mutations, and a GraphQL query read from a file or
@@ -1593,10 +1642,7 @@ function groupsShown(bash, lead, close = ').') {
 // (dec-chief-of-staff-000314), like merging: a role with an open lane ("any") would otherwise close a
 // pull request its own lane says nothing about.
 function closeAttempt(command) {
-  const text = String(command == null ? '' : command);
-  return splitCommand(text).some((seg) => {
-    const t = tokens(seg);
-    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+  return commandsIn(command).some((words) => {
     if (path.basename(words[0] || '') === 'git') {
       // a push that deletes a remote team/<instance> branch closes that branch's open pull request
       const { rest: g } = splitGlobals(['git', ...words.slice(1)]);
@@ -1658,10 +1704,7 @@ function closeAttempt(command) {
 const CLOSE_REASON = 'closing or reopening a pull request is the Delivery Manager\'s (dec-chief-of-staff-000314).\nMessage the Delivery Manager with the pull request and why it should close';
 
 function mergeAttempt(command, cwd) {
-  const text = String(command == null ? '' : command);
-  return splitCommand(text).some((seg) => {
-    const t = tokens(seg);
-    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+  return commandsIn(command).some((words) => {
     const first = path.basename(words[0] || '');
     if (first === 'gh') {
       // -R is gh's global option only before the subcommand; after it, a value option may take "-R"
@@ -1841,6 +1884,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (pol.roleId !== MERGER && closeAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${CLOSE_REASON}.` };
+    if (pol.roleId !== MERGER && opaqueGh(command)) return { allow: false, reason: `Role ${pol.roleId}: ${OPAQUE_GH_REASON}.` };
     if (pol.roleId !== MERGER && passRecordAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${PASS_RECORD_REASON}.` };
     const run = refusedRun(command);
     if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? testsReason(command, pluginRootOf({ pluginRoot })) : RESUME_REASON}.` };
@@ -1991,4 +2035,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { closeAttempt, tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { closeAttempt, commandsIn, opaqueGh, tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
