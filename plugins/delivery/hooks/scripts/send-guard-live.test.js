@@ -120,6 +120,40 @@ test('a live session of this team named <instance>@<team> is offered by its sock
   assert.match(d.permissionDecisionReason, /by the name to send to: uds:\/run\/x\/42\.sock \(staffing\)\./);
 });
 
+// rv-191-delivery-lead-2 finding 3: a send to a name another team's live session also holds is refused,
+// so a refusal never offers it
+test('a live name of ours that another team\'s live session also holds is not offered', () => {
+  const a = teamWith('alpha', 'builder-1', 'builder-2', 'chief-of-staff');
+  const b = teamWith('beta', 'builder-2');
+  const s = sessionsDir([live(a.dir('builder-2'), 'builder-92'), live(b.dir('builder-2'), 'builder-92'), live(a.dir('chief-of-staff'), 'chief-of-staff-bf')]);
+  const d = hook(a.dir('builder-1'), 'builder-1', 'builder-77', s);
+  assert.match(d.permissionDecisionReason, /by the name to send to: chief-of-staff-bf \(chief-of-staff\)\.$/);
+  // and a send to it is refused, as offered
+  assert.equal(hook(a.dir('builder-1'), 'builder-1', 'builder-92', s).permissionDecision, 'deny');
+  // with only the shared name live, nothing of ours is offered, and the refusal says so plainly
+  const only = sessionsDir([live(a.dir('builder-2'), 'builder-92'), live(b.dir('builder-2'), 'builder-92')]);
+  assert.match(hook(a.dir('builder-1'), 'builder-1', 'builder-77', only).permissionDecisionReason, /No session of this team can be reached by a listed name now/);
+});
+
+// rv-191-delivery-lead-2 finding 2: no refusal or warning advises a form SendMessage refuses
+test('no refusal or warning advises sending to an <instance>@<team> name', () => {
+  const a = teamWith('alpha', 'builder-1', 'chief-of-staff');
+  const b = teamWith('beta', 'builder-1', 'chief-of-staff');
+  const shapes = [
+    sessionsDir([]),
+    sessionsDir([live(b.dir('chief-of-staff'), 'chief-of-staff')]),
+    sessionsDir([live(b.dir('chief-of-staff'), 'chief-of-staff@alpha-scratch')]),
+    sessionsDir([{ ...live(a.dir('chief-of-staff'), 'chief-of-staff@alpha'), messagingSocketPath: '/run/x/7.sock' }]),
+  ];
+  for (const s of shapes) {
+    for (const to of ['chief-of-staff', 'builder-7', 'builder', 'chief-of-staff@beta', 'chief-of-staff@alpha', 'builder@', 'chief', 'builder-2']) {
+      const d = hook(a.dir('builder-1'), 'builder-1', to, s);
+      const text = d ? (d.permissionDecisionReason || d.additionalContext || '') : '';
+      assert.doesNotMatch(text, /send to \S+@|Send to \S+@\S+ from now on|this team's sessions are \S+@/, `${to}: ${text}`);
+    }
+  }
+});
+
 test('a refusal names this team\'s live sessions by the names a send reaches them by', () => {
   const a = teamWith('alpha', 'builder-1', 'builder-2', 'chief-of-staff');
   const b = teamWith('beta', 'builder-2');

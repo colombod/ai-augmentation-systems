@@ -59,11 +59,11 @@ test('two teams on one host: A\'s bare "chief-of-staff" while B\'s is live, and 
   const bare = decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', theirs));
   assert.equal(bare.permissionDecision, 'deny');
   assert.match(bare.permissionDecisionReason, /^"chief-of-staff" is a bare role name; session names are shared by every team on this machine/);
-  assert.match(bare.permissionDecisionReason, /send to chief-of-staff@alpha\.$/);
+  assert.match(bare.permissionDecisionReason, /No session of this team can be reached by a listed name now: a send to an instance's bare name \(chief-of-staff\) is kept for that role, and the watchdog wakes it with it\.$/, 'nothing of A is live: no refused @ form, the bare name that is kept');
   const other = decision(runHook(send(a.roleDir, 'chief-of-staff@beta'), 'builder-1'));
   assert.equal(other.permissionDecision, 'deny');
   assert.match(other.permissionDecisionReason, /^"chief-of-staff@beta" is a session of another team \(prefix beta\), not of this one \(alpha\)/);
-  assert.match(other.permissionDecisionReason, /send to chief-of-staff@alpha\.$/);
+  assert.match(other.permissionDecisionReason, /No session of this team can be reached by a listed name now: a send to an instance's bare name \(chief-of-staff\) is kept for that role, and the watchdog wakes it with it\.$/);
   assert.equal(runHook(send(a.roleDir, 'chief-of-staff@alpha'), 'builder-1').stdout, '', 'this team\'s qualified name passes');
   assert.equal(runHook(send(a.roleDir, 'chief-of-staff@alpha- [ex-1]'), 'builder-1').stdout, '', 'a trailing "-" and a [ref] change nothing');
   // the session tool is guarded the same way
@@ -74,12 +74,13 @@ test('a bare instance, alias, steward or a role this team does not have is refus
   const { team } = teamWith('alpha', 'builder-1');
   const reason = (to) => { const d = judge(team, to, 'pc'); return d && d.reason; };
   // judged without the sender's own context (no sessions to read), even our own instance is refused
-  assert.match(reason('builder-2 [ex-1]'), /^"builder-2" is a bare role name.*\nRole sessions are named <instance>@<team>: send to builder-2@alpha\.$/s);
-  assert.match(reason('builder-7'), /no session of this team is "builder-7"/, 'a numbered instance outside the manifest');
-  assert.match(reason('Delivery-Manager'), /send to delivery-lead@alpha\.$/);
-  assert.match(reason('builder'), /no session of this team is "builder"; this team's sessions are chief-of-staff@alpha, .*builder-1@alpha, builder-2@alpha/);
-  assert.match(reason('tech-writer'), /no session of this team is "tech-writer"/, 'a role another team on the host may run');
-  assert.match(reason('builder-1@beta'), /another team \(prefix beta\).*send to builder-1@alpha\./s);
+  assert.match(reason('builder-2 [ex-1]'), /^"builder-2" is a bare role name.*\nSend to the name ListAgents shows/s);
+  assert.match(reason('builder-2'), /Send to the name ListAgents shows for this team\'s session, or to its uds: address when that name holds "@": SendMessage refuses <instance>@<team>\.$/, 'with no sessions to read it names the forms that work');
+  assert.match(reason('builder-7'), /No session of this team is "builder-7"\./, 'a numbered instance outside the manifest');
+  assert.match(reason('Delivery-Manager'), /Send to the name ListAgents shows for this team\'s session, or to its uds: address when that name holds "@": SendMessage refuses <instance>@<team>\.$/);
+  assert.match(reason('builder'), /No session of this team is "builder"\. Send to the name ListAgents shows/);
+  assert.match(reason('tech-writer'), /No session of this team is "tech-writer"\./, 'a role another team on the host may run');
+  assert.match(reason('builder-1@beta'), /another team \(prefix beta\).*\nSend to the name ListAgents shows/s);
   for (const to of ['main', 'a1b2c3d4', 'researcher-agent', 'someone@example', 'builder-1@alpha', '*', '']) assert.equal(judge(team, to, 'pc'), null, to);
   assert.equal(judge({ ...team, prefix: '' }, 'chief-of-staff', 'pc'), null, 'a team with no prefix cannot qualify a name: inert');
 });
@@ -117,7 +118,7 @@ test('transition: a bare name of our own instance passes with a warning unless a
   // the scratch team's bare send while the live chief-of-staff is ours: refused, naming its own
   const fromB = decision(runHook(send(b.roleDir, 'chief-of-staff'), 'builder-1', ours));
   assert.equal(fromB.permissionDecision, 'deny');
-  assert.match(fromB.permissionDecisionReason, /send to chief-of-staff@beta\.$/);
+  assert.match(fromB.permissionDecisionReason, /No session of this team can be reached by a listed name now: a send to an instance's bare name \(chief-of-staff\) is kept for that role, and the watchdog wakes it with it\.$/);
   // two live sessions of that name, one in each team: refused from both sides
   const both = sessionsDir([live(ourCos), live(theirCos)]);
   assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', both)).permissionDecision, 'deny');
@@ -154,10 +155,10 @@ test('two teams with qualified names: a bare name or a prefix that reaches the o
   // the reviewer's case: beta sends the bare name while alpha's qualified chief of staff is live
   const fromB = decision(runHook(send(b.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([ourCos])));
   assert.equal(fromB.permissionDecision, 'deny');
-  assert.match(fromB.permissionDecisionReason, /send to chief-of-staff@beta\.$/);
+  assert.match(fromB.permissionDecisionReason, /No session of this team can be reached by a listed name now: a send to an instance's bare name \(chief-of-staff\) is kept for that role, and the watchdog wakes it with it\.$/);
   // the same from alpha while only its own qualified session runs: allowed with the warning
   const ours = JSON.parse(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([ourCos])).stdout);
-  assert.match(ours.hookSpecificOutput.additionalContext, /Send to chief-of-staff@alpha from now on/);
+  assert.match(ours.hookSpecificOutput.additionalContext, /is this team's instance chief-of-staff, and no live session outside this team holds that name: allowed\. It is not running under it, so the send is kept for chief-of-staff/);
   // our own qualified name in another instance's role directory is not ours: refused
   const misplaced = { ...ourCos, cwd: path.join(a.teamDir, 'builder-1') };
   assert.equal(decision(runHook(send(a.roleDir, 'chief-of-staff'), 'builder-1', sessionsDir([misplaced]))).permissionDecision, 'deny');
@@ -165,7 +166,7 @@ test('two teams with qualified names: a bare name or a prefix that reaches the o
   for (const to of ['chief', 'Chief of', 'chief-of-st']) {
     const d = decision(runHook(send(a.roleDir, to), 'builder-1', sessionsDir([ourCos, theirCos])));
     assert.equal(d && d.permissionDecision, 'deny', to);
-    assert.match(d.permissionDecisionReason, /is the start of "chief-of-staff@beta", a live session outside this team.*this team's sessions are chief-of-staff@alpha, /s, to);
+    assert.match(d.permissionDecisionReason, /is the start of "chief-of-staff@beta", a live session outside this team.*No session of this team can be reached by a listed name now/s, to);
   }
   const deliv = sessionsDir([{ pid: process.pid, cwd: path.join(b.teamDir, 'builder-1'), name: 'delivery-lead@beta' }]);
   assert.equal(decision(runHook(send(a.roleDir, 'deliv'), 'builder-1', deliv)).permissionDecision, 'deny');
@@ -187,7 +188,7 @@ test('our own full name that is the start of another team\'s live session is ref
   for (const to of ['chief-of-staff@alpha', 'chief-of-staff@alpha- [ex-1]', 'Chief of Staff@alpha']) {
     const d = decision(runHook(send(a.roleDir, to), 'builder-1', sessionsDir([theirCos])));
     assert.equal(d && d.permissionDecision, 'deny', to);
-    assert.match(d.permissionDecisionReason, /no session of this team holds it now and it is the start of "chief-of-staff@alpha-scratch".*Wait for chief-of-staff@alpha to run/s, to);
+    assert.match(d.permissionDecisionReason, /no session of this team holds it now and it is the start of "chief-of-staff@alpha-scratch".*\nNo session of this team can be reached by a listed name now/s, to);
   }
   // ours is live and holds the name exactly: it is delivered there, allowed
   assert.equal(runHook(send(a.roleDir, 'chief-of-staff@alpha'), 'builder-1', sessionsDir([ourCos, theirCos])).stdout, '');
@@ -210,7 +211,7 @@ test('an "@" with nothing on one side is refused, naming this team\'s sessions',
   for (const to of ['builder@', 'chief-of-staff@ [ex-1]', '@alpha', 'main@']) {
     const d = decision(runHook(send(a.roleDir, to), 'builder-1'));
     assert.equal(d && d.permissionDecision, 'deny', to);
-    assert.match(d.permissionDecisionReason, /is no full session name.*this team's sessions are chief-of-staff@alpha, /s, to);
+    assert.match(d.permissionDecisionReason, /is no full session name.*\nNo session of this team can be reached by a listed name now/s, to);
   }
   assert.match(judge(a.team, 'builder@', 'pc').reason, /is no full session name/, 'without the sender\'s context too');
 });
@@ -228,17 +229,18 @@ test('a bare name of our own instance that is not live passes with a warning, an
     assert.equal(out.hookSpecificOutput.permissionDecision, undefined, `${to}: a warning, not a decision`);
     return out.hookSpecificOutput.additionalContext;
   };
-  // builder-2 is in our manifest, never started (no role directory), nothing live: allowed, naming the qualified form
-  assert.match(warned('builder-2', EMPTY_SESSIONS), /"builder-2" is a bare session name; allowed for now.*Send to builder-2@alpha from now on/);
-  assert.match(warned('Builder_2 [ex-1]', EMPTY_SESSIONS), /Send to builder-2@alpha from now on/);
+  // builder-2 is in our manifest, never started (no role directory), nothing live: allowed, and kept for it
+  assert.match(warned('builder-2', EMPTY_SESSIONS), /is this team's instance builder-2, and no live session outside this team holds that name: allowed\. It is not running under it, so the send is kept for builder-2/);
+  assert.doesNotMatch(warned('builder-2', EMPTY_SESSIONS), /@alpha/, 'no advice to use a form SendMessage refuses');
+  assert.match(warned('Builder_2 [ex-1]', EMPTY_SESSIONS), /is this team's instance builder-2, and no live session outside this team holds that name: allowed\. It is not running under it, so the send is kept for builder-2/);
   // only a stale record of that name (its pid has ended), or no sessions directory at all: nothing live, allowed
-  assert.match(warned('chief-of-staff', sessionsDir([{ pid: DEAD, cwd: ourCos, name: 'chief-of-staff' }])), /Send to chief-of-staff@alpha from now on/);
-  assert.match(warned('chief-of-staff', path.join(EMPTY_SESSIONS, 'missing')), /Send to chief-of-staff@alpha from now on/);
+  assert.match(warned('chief-of-staff', sessionsDir([{ pid: DEAD, cwd: ourCos, name: 'chief-of-staff' }])), /is this team's instance chief-of-staff, and no live session outside this team holds that name: allowed\. It is not running under it, so the send is kept for chief-of-staff/);
+  assert.match(warned('chief-of-staff', path.join(EMPTY_SESSIONS, 'missing')), /is this team's instance chief-of-staff, and no live session outside this team holds that name: allowed\. It is not running under it, so the send is kept for chief-of-staff/);
   // another team's live builder-2 holds the name: refused, naming ours
   const theirs = sessionsDir([{ pid: process.pid, cwd: path.join(b.teamDir, 'builder-2'), name: 'builder-2' }]);
   const d = decision(runHook(send(a.roleDir, 'builder-2'), 'builder-1', theirs));
   assert.equal(d.permissionDecision, 'deny');
-  assert.match(d.permissionDecisionReason, /send to builder-2@alpha\.$/);
+  assert.match(d.permissionDecisionReason, /No session of this team can be reached by a listed name now: a send to an instance's bare name \(chief-of-staff\) is kept for that role, and the watchdog wakes it with it\.$/, 'its builder-2 holds the name, so the example is another instance');
   // the send goes out, finds no running builder-2, and the PostToolUse hook keeps it for builder-2
   const { check } = require('./route-check.js');
   const IB = require('../../scripts/lib/inbox.js');
