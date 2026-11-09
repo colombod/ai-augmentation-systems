@@ -14,8 +14,14 @@ const mk = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
 const GIT = cp.execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
 
 // A PATH directory with exactly the tools asked for.
-function bin({ bd = true, claude = '2.1.300 (Claude Code)', git = true } = {}) {
+// systemctl is always a fake: --check reads the user services' task limits (lib/service-limits.js), and
+// the host's own systemctl would make a case depend on the services of the machine it runs on. units:
+// { name: 'TasksMax=..\nTasksCurrent=..' }, none by default.
+function bin({ bd = true, claude = '2.1.300 (Claude Code)', git = true, units = {} } = {}) {
   const dir = mk('start-bin-');
+  // printf takes the properties as its format, so each \n in them is a line break
+  const show = Object.entries(units).map(([u, props]) => `  *${u}) printf ${JSON.stringify(`${props}\\n`)} ;;`).join('\n');
+  fs.writeFileSync(path.join(dir, 'systemctl'), `#!/bin/sh\ncase "$*" in\n  *list-units*) printf "${Object.keys(units).map((u) => `${u} loaded active running x\\n`).join('')}" ;;\n${show}\n  *) : ;;\nesac\nexit 0\n`, { mode: 0o755 });
   fs.symlinkSync(process.execPath, path.join(dir, 'node'));
   if (git) fs.symlinkSync(GIT, path.join(dir, 'git'));
   if (bd) fs.writeFileSync(path.join(dir, 'bd'), `#!/bin/sh\nexec "${process.execPath}" "${FAKE_BD}" "$@"\n`, { mode: 0o755 });
@@ -849,5 +855,21 @@ test('check: sealed test runs fail without bwrap, and say how many capped runs f
   // a lower cap fits more runs
   assert.equal(sealRow({ env: { DELIVERY_TEST_TMP_MB: '512' }, bwrap: '/usr/bin/bwrap', freeBytes: 3 * GB }).status, 'pass');
   // checkPrerequisites carries the row
-  assert.ok(checkPrerequisites({ env: { PATH: '/bin' } }).some((r) => r.name === 'sealed test runs'));
+  assert.ok(checkPrerequisites({ env: { PATH: '/bin' }, services: [] }).some((r) => r.name === 'sealed test runs'));
+});
+
+// hjx.1.6.14: --check rates each delivery and Remote Control service's task limit against the team on
+// this host, through the systemctl on PATH; a low one warns and never fails the check
+test('start.js --check warns for a service whose TasksMax is under what the team needs, with the command that raises it, and passes one that fits', () => {
+  const root = mk('start-proj-');
+  fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.delivery', 'team', 'team.json'), JSON.stringify({ project: 'ex', prefix: 'ex', roles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'builder', host: 'pc', count: 2 }] }));
+  const dir = bin({ units: { 'claude-rc-chief-of-staff.service': 'TasksMax=300\nTasksCurrent=182\nActiveState=active', 'delivery-watchdog-x.service': 'TasksMax=4096\nTasksCurrent=40\nActiveState=inactive' } });
+  const r = start(['--check', '--project', root], { path: dir, env: { DELIVERY_HOST: 'pc' } });
+  if (process.platform !== 'linux') { assert.doesNotMatch(r.out, /service claude-rc/); return; }
+  assert.match(r.out, /\[warn\] service claude-rc-chief-of-staff\.service: TasksMax 300, 182 in use; the team has 3 role sessions on this host, which need 4096\. Fix: systemctl --user set-property claude-rc-chief-of-staff\.service TasksMax=4096/);
+  assert.match(r.out, /\[pass\] service delivery-watchdog-x\.service: TasksMax 4096/);
+  assert.doesNotMatch(r.out, /\[fail\] service /, 'a low limit warns; it is never a missing prerequisite');
+  assert.doesNotMatch(r.out, /missing: .*service /);
+  assert.doesNotMatch(start(['--check', '--project', root], { path: bin(), env: { DELIVERY_HOST: 'pc' } }).out, /\] service /, 'no services: no rows');
 });
