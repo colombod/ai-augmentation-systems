@@ -1599,7 +1599,11 @@ function closeAttempt(command) {
       const c = ghApiCall(['gh', ...rest]);
       const eps = ((c && c.positionals) || []).map((x) => x.split(/[?#]/)[0].replace(/\/{2,}/g, '/').replace(/\/+$/, ''));
       const fields = (c && c.fields) || {};
-      if (eps.some((ep) => /\/(?:pulls|issues)\/[^/]+$/i.test(ep)) && Object.keys(fields).some((k) => k === 'state')) return true;
+      if (eps.some((ep) => /\/(?:pulls|issues)\/[^/]+$/i.test(ep))) {
+        if (Object.keys(fields).some((k) => k === 'state')) return true;
+        // a body read from a file or stdin, or a field from a file, cannot be read: it may set the state
+        if (rest.some((a) => /^--input/.test(a)) || Object.values(fields).some((v) => String(v).startsWith('@'))) return true;
+      }
       if (eps.some((ep) => /(?:^|\/)graphql$/i.test(ep))) {
         if (rest.some((a) => /^--input/.test(a)) || Object.values(fields).some((v) => String(v).startsWith('@'))) return true;
         if (/\b(?:close|reopen)(?:PullRequest|Issue)\b/i.test(Object.values(fields).join(' '))) return true;
@@ -1766,6 +1770,12 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     return { allow: true };
   }
   if (name.startsWith('mcp__') && pol.roleId !== MERGER && /merge_pull_request|merge_pr\b|pull_request_merge/i.test(name)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
+  // the MCP close and reopen tools, and an MCP update that sets a pull request's or an issue's state,
+  // close like gh pr close: the Delivery Manager's alone (dec-chief-of-staff-000314)
+  if (name.startsWith('mcp__') && pol.roleId !== MERGER && (/(?:close|reopen)_(?:pull_request|pr|issue)\b|(?:pull_request|issue)_(?:close|reopen)\b/i.test(name)
+    || (/(?:update|edit)_(?:pull_request|pr|issue)\b|(?:pull_request|issue)_(?:update|edit|write)\b|issue_write\b/i.test(name) && toolInput && typeof toolInput === 'object' && Object.prototype.hasOwnProperty.call(toolInput, 'state')))) {
+    return { allow: false, reason: `Role ${pol.roleId}: ${CLOSE_REASON}.` };
+  }
   if (name.startsWith('mcp__') && (pol.mcp || []).some((p) => mcpPatternMatches(p, name))) return { allow: true };
   if (name.startsWith('mcp__') && !bash.includes('any')) {
     const verb = name.split('__').pop();

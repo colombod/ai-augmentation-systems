@@ -1067,6 +1067,26 @@ test('hjx.1.6.18: the Delivery Manager closes and reopens pull requests; no othe
     'gh api graphql -f query=@close.graphql', 'gh api graphql --input q.json',
   ]) assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
   for (const c of ["gh api graphql -f query='{ repository(owner: \"o\", name: \"r\") { pullRequest(number: 1) { state } } }'", 'gh api repos/o/r/issues/187']) assert.equal(run(POLICIES[BUILDER], c).allow, true, `builder reads: ${c}`);
+  // rv-194: a body the lane cannot read (a file, stdin, an @file field) on a pull request or its issue
+  // may set the state, so it is refused like an unreadable GraphQL query
+  for (const c of ['gh api -X PATCH repos/o/r/pulls/187 --input body.json', "echo '{\"state\":\"closed\"}' | gh api -X PATCH repos/o/r/pulls/187 --input -", 'gh api -X PATCH repos/o/r/issues/187 --input=body.json', 'gh api -X PATCH repos/o/r/pulls/187 -F state=@s.txt']) {
+    assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
+  }
+  // rv-194: the MCP close and reopen tools, and an MCP update that sets the state, are the Delivery
+  // Manager's too; an MCP update of a title stays a builder's
+  const mcp = (policy, name, input = {}) => decideLane({ toolName: name, toolInput: input, policy, ...ctx() }).allow;
+  for (const id of [BUILDER, COS, PM, PO]) {
+    for (const name of ['mcp__github__close_pull_request', 'mcp__github__reopen_pull_request', 'mcp__github__close_issue', 'mcp__gh__pull_request_close']) assert.equal(mcp(POLICIES[id], name, { pullNumber: 187 }), false, `${id}: ${name}`);
+    for (const [name, input] of [['mcp__github__update_pull_request', { pullNumber: 187, state: 'closed' }], ['mcp__github__update_issue', { issue_number: 187, state: 'closed' }], ['mcp__github__update_pull_request', { pullNumber: 187, state: 'open' }]]) assert.equal(mcp(POLICIES[id], name, input), false, `${id}: ${name} ${JSON.stringify(input)}`);
+  }
+  for (const id of ['spike-researcher']) assert.equal(mcp(loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/' + id }), 'mcp__github__close_pull_request', {}), false, id);
+  assert.equal(mcp(POLICIES[BUILDER], 'mcp__github__update_pull_request', { pullNumber: 187, title: 'the change' }), true, 'a builder still edits its own pull request');
+  // the Delivery Manager's lane takes MCP tools for reads only (its merge too), so it closes with gh pr
+  // close; the refusal it gets is that rule, not the close guard
+  const dlMcp = decideLane({ toolName: 'mcp__github__close_pull_request', toolInput: { pullNumber: 187 }, policy: POLICIES[DL], ...ctx() });
+  assert.equal(dlMcp.allow, false);
+  assert.match(dlMcp.reason, /uses MCP tools only to read/);
+  assert.doesNotMatch(dlMcp.reason, /closing or reopening a pull request is the Delivery Manager's/);
 });
 
 // Copilot review of PR 49
