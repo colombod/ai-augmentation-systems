@@ -220,12 +220,17 @@ function unitFiles(root, team, instance, { env, home, host, roleDir, sessionId }
   const m = R.modeOf(team);
   const args = ['remote-control', '--name', `${instance}@${host}`, ...(sessionId ? ['--session-id', sessionId] : ['--spawn', 'session']), ...(m.mode ? ['--permission-mode', m.mode] : [])];
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
-  const vars = [`PATH=${PATH}`, `DELIVERY_ROLE=${instance}`, `DELIVERY_HOST=${host}`, ...(config ? [`CLAUDE_CONFIG_DIR=${config}`] : [])];
+  // the directories the ledger and the host file are found by: a unit started by systemd has neither
+  // variable unless the unit sets it, so one set at install is carried into the units, and the unit, the
+  // owner's shell and the ledger agree on one place
+  const xdg = ['XDG_STATE_HOME', 'XDG_CONFIG_HOME'].filter((k) => env[k]).map((k) => `${k}=${env[k]}`);
+  const vars = [`PATH=${PATH}`, `DELIVERY_ROLE=${instance}`, `DELIVERY_HOST=${host}`, ...(config ? [`CLAUDE_CONFIG_DIR=${config}`] : []), ...xdg];
   const env1 = vars.map((v) => `Environment=${W.sdq(v)}\n`).join('');
   const launcher = require('./lib/launcher.js').launcherPath(root);
   const log = path.join(HM.stateDir(env, home), 'tick.log');
   return {
     args,
+    stateDir: HM.stateDir(env, home),
     modeSkip: m.skip || null,
     files: [
       { file: path.join(dir, HM.UNIT), body: `[Unit]\nDescription=delivery host manager: the Remote Control session ${sdName(instance, host)} for every product team on this machine\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nWorkingDirectory=${W.sdPct(roleDir)}\n${env1}ExecStart=/usr/bin/env ${[bin, ...args].map(W.sdq).join(' ')}\nKillMode=process\nRestart=always\nRestartSec=${RESTART_SEC}\nTasksMax=${TASKS_MAX}\n\n[Install]\nWantedBy=default.target\n` },
@@ -281,6 +286,9 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
     const lp = require('./lib/launcher.js').ensureLauncher(root, PLUGIN_ROOT, env.CLAUDE_CONFIG_DIR);
     if (lp) throw new Error(lp);
     for (const f of u.files) { fs.mkdirSync(path.dirname(f.file), { recursive: true }); fs.writeFileSync(f.file, f.body); lines.push(`Wrote ${f.file}`); }
+    // before the units are enabled: systemd opens the tick's StandardOutput=append: file itself and
+    // fails the service (status 209/STDOUT) when its directory is missing
+    fs.mkdirSync(u.stateDir, { recursive: true });
     for (const [cmd, args] of u.commands) { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); }
   } catch (err) { return { code: 1, out: `${lines.join('\n')}\nhost-manager.js: not installed (${firstLine(err)})`.trim() }; }
   lines.push(`Installed. ${head}`);

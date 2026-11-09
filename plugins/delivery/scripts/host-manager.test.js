@@ -273,6 +273,30 @@ test('install writes the host manager\'s session unit and its tick timer, enable
   assert.deepEqual(HM.readHostTeams(HM.hostFile({}, m.home)).teams, [m.alpha.root], 'the host file lists the team once');
 });
 
+test('install creates the tick\'s state directory before it enables the units, and carries XDG_STATE_HOME and XDG_CONFIG_HOME into the units only when set', () => {
+  const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  const unit = (n) => fs.readFileSync(path.join(HM.unitDir(m.home), n), 'utf8');
+  const dir = HM.stateDir({}, m.home);
+  let seenAtEnable = null;
+  const exec = (cmd, args) => { if (args.includes('enable')) seenAtEnable = seenAtEnable === null ? fs.existsSync(dir) : seenAtEnable && fs.existsSync(dir); return m.sd.exec(cmd, args); };
+  const plain = m.run(['install', '--project', m.alpha.root], { exec });
+  assert.equal(plain.code, 0, plain.out);
+  assert.ok(fs.statSync(dir).isDirectory(), 'the tick log\'s directory exists after install');
+  assert.equal(seenAtEnable, true, 'and existed before the units were enabled');
+  for (const n of [HM.UNIT, HM.TICK_SERVICE]) assert.doesNotMatch(unit(n), /XDG_(STATE|CONFIG)_HOME/, n);
+  const state = path.join(m.base, 'state');
+  const conf = path.join(m.base, 'conf');
+  HM.addHostTeam(HM.hostFile({ XDG_CONFIG_HOME: conf }, m.home), m.alpha.root);
+  const r = m.run(['install', '--project', m.alpha.root], { env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', XDG_STATE_HOME: state, XDG_CONFIG_HOME: conf } });
+  assert.equal(r.code, 0, r.out);
+  assert.ok(fs.statSync(HM.stateDir({ XDG_STATE_HOME: state }, m.home)).isDirectory());
+  for (const n of [HM.UNIT, HM.TICK_SERVICE]) {
+    assert.ok(unit(n).includes(`Environment="XDG_STATE_HOME=${state}"\n`), unit(n));
+    assert.ok(unit(n).includes(`Environment="XDG_CONFIG_HOME=${conf}"\n`), unit(n));
+  }
+  assert.match(unit(HM.TICK_SERVICE), new RegExp(`^StandardOutput=append:${path.join(state, 'delivery', 'host-manager', 'tick.log').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
+});
+
 test('install installs nothing without systemctl, without a host manager in the team, or without its role directory', () => {
   const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
   const no = m.run(['install', '--project', m.alpha.root], { has: () => false });
