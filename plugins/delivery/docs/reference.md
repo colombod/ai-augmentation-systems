@@ -1537,8 +1537,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   when it may run). Asked by the owner, it runs every team's start pass, so a session on an older
   plugin goes through `team-revive.js`'s stale-session restart, whose read of the sessions just before
   a stop is a fresh one; the reply names each such restart (`Restarted:`) and each one not made, with
-  why (`Not restarted:`). After the starts it reads the sessions again every 10 seconds, for up to 5
-  minutes, until each session it started is listed (the call can take that long). An instance is
+  why (`Not restarted:`). After the starts it reads again every 10 seconds until each session it started
+  is listed and each host job whose service it ran has written a new pass, inside one 5 minute window
+  counted from the restart's start, every team's start pass included (the call can take that long, and
+  a start that exits at once is named as failed rather than waited for). An instance is
   `Back:` only when that read lists a session in its role directory and the roster records, for that
   session, the installed plugin version; otherwise it is `Not back: started (pid N) but not listed
   after <duration>`, `Not back: running an older plugin (<version>, installed <version>)`, or the

@@ -200,6 +200,13 @@ function restart(deps = {}, before, o = {}) {
   const TR = require('./team-revive.js');
   const run = runner(deps.exec);
   const plan = HM.restartPlan(before, silent);
+  // one window for the whole restart, from here: every team's start pass (and the settle each one waits
+  // for a start that exits at once) comes out of it, and so does the wait for what it started
+  const sleep = deps.sleep || sleepMs;
+  const clock = deps.clock || Date.now;
+  const every = deps.pollEveryMs !== undefined ? deps.pollEveryMs : POLL_EVERY_MS;
+  const max = deps.pollMaxMs !== undefined ? deps.pollMaxMs : POLL_MAX_MS;
+  const t0 = clock();
   const jobErrors = {};
   for (const unit of plan.jobs) { try { run('systemctl', ['--user', 'start', unit]); } catch (err) { jobErrors[unit] = firstLine(err); } }
   // one pass of each restarted job at once, not at its next timer tick; --no-block: a run takes minutes
@@ -220,30 +227,35 @@ function restart(deps = {}, before, o = {}) {
     try {
       r = TR.revive(root, t.team, { start: true, cwd: deps.cwd, env: deps.env || process.env, live: before.live, relist: () => sessionsNow(deps), only: want, ...(deps.spawn ? { spawn: deps.spawn } : {}), ...(deps.stop ? { stop: deps.stop } : {}), ...(deps.teamDeps ? deps.teamDeps(root) : {}) });
     } catch (err) { for (const i of want) refused[root][i] = `the start failed: ${firstLine(err)}`; continue; }
-    started[root] = r.started || {};
-    for (const i of r.a.missing) if (want.includes(i.instance) && !r.started[i.instance]) refused[root][i.instance] = whyNot(r.a, i);
+    started[root] = {};
+    // a start that exited within its settle is recorded failed by the start pass: named, not waited for
+    for (const [i, x] of Object.entries(r.started || {})) {
+      if (x && x.failed) refused[root][i] = 'its start exited at once, recorded failed; the next pass retries it';
+      else started[root][i] = x;
+    }
+    for (const i of r.a.missing) if (want.includes(i.instance) && !(r.started || {})[i.instance]) refused[root][i.instance] = whyNot(r.a, i);
     const byStale = Object.fromEntries((r.a.stale || []).map((i) => [i.instance, i.stale]));
     for (const [i, x] of Object.entries(r.restarted || {})) (restarted[root] = restarted[root] || {})[i] = { ...x, from: byStale[i] && byStale[i].version, to: byStale[i] && byStale[i].installed };
   }
   // the reply comes from a read made after the restart; while a started session is not listed (or has
-  // not recorded its plugin version yet) the read is made again, up to POLL_MAX_MS
-  const sleep = deps.sleep || sleepMs;
-  const clock = deps.clock || Date.now;
-  const every = deps.pollEveryMs !== undefined ? deps.pollEveryMs : POLL_EVERY_MS;
-  const max = deps.pollMaxMs !== undefined ? deps.pollMaxMs : POLL_MAX_MS;
-  const startedNames = Object.fromEntries(Object.entries(started).map(([root, s]) => [root, Object.keys(s)]).filter(([, l]) => l.length));
-  const t0 = clock();
+  // not recorded its plugin version yet), or a host job whose service it ran has written no new pass,
+  // the read is made again, until the window closes
+  const startedNames = Object.fromEntries(Object.entries(started).map(([root, x]) => [root, Object.keys(x)]).filter(([, l]) => l.length));
+  const passOf = deps.lastPass || lastPassOf;
+  const readPasses = () => Object.fromEntries(plan.kick.map((k) => [k.root, passOf(k.root)]));
   let after = read(deps);
   let confirmed = confirmAll(after, startedNames);
-  const pending = () => Object.values(confirmed).some((byI) => Object.values(byI).some(HM.waiting));
+  let passes = readPasses();
+  const newPass = (k) => Number.isFinite(passes[k.root]) && (!Number.isFinite(k.lastPass) || passes[k.root] > k.lastPass);
+  const pending = () => Object.values(confirmed).some((byI) => Object.values(byI).some(HM.waiting)) || plan.kick.some((k) => !kickErrors[k.service] && !newPass(k));
   while (pending() && clock() - t0 < max) {
-    sleep(every);
+    sleep(Math.min(every, max - (clock() - t0)));
     after = read(deps);
     confirmed = confirmAll(after, startedNames);
+    passes = readPasses();
   }
   const waited = clock() - t0;
   confirmed = { ...confirmAll(after, plan.instances), ...confirmed };
-  const passes = Object.fromEntries(plan.kick.map((k) => [k.root, (deps.lastPass || lastPassOf)(k.root)]));
   return { plan, before, after, silent, lines: HM.restartLines(before, after, plan, { refused, jobErrors, started, confirmed, waited, restarted, passes, kickErrors, silent }) };
 }
 

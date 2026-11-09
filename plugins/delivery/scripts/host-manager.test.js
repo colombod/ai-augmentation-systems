@@ -253,6 +253,45 @@ test('a restart refused by a start cap is named, with when it can run', () => {
   assert.equal(m.spawned.filter((s) => s.cwd === m.alpha.dir('builder')).length, 0);
 });
 
+test('restart waits for every team inside one deadline: 5 minutes in all, counted from its start, each team\'s settle included', () => {
+  const m = machine({ beads: { alpha: [{ id: 'al-1', status: 'in_progress', assignee: 'builder', updated_at: ago(10) }], beta: [{ id: 'be-1', status: 'in_progress', assignee: 'builder', updated_at: ago(10) }] } });
+  m.join = null;
+  const base = m.deps().teamDeps;
+  const settles = [];
+  // each team's start pass waits 60 s for a start that exits at once, on the restart's own clock
+  const teamDeps = (root) => ({ ...base(root), settle: (pids) => { settles.push(pids); m.clockMs += 60e3; return new Set(); } });
+  const t0 = m.clockMs;
+  const r = m.run(['restart'], { teamDeps });
+  assert.equal(settles.length, 2, 'both teams started something');
+  assert.equal(m.spawned.length, 2);
+  assert.equal(m.clockMs - t0, 5 * MIN, 'one 5 minute window for the whole restart');
+  assert.equal(m.sleeps.reduce((x, y) => x + y, 0), 3 * MIN, 'the two settles came out of it');
+  assert.match(r.out, /^Not back: alpha builder: started \(pid 5000\) but not listed after 5 min\.$/m, r.out);
+  assert.match(r.out, /^Not back: beta builder: started \(pid 5001\) but not listed after 5 min\.$/m, r.out);
+});
+
+test('a host job pass that lands while restart waits is reported back; a start that exits at once is not waited for', () => {
+  const roles = [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }];
+  const m = machine({ alphaRoles: roles });
+  m.live = [{ cwd: m.alpha.dir('chief-of-staff') }, { cwd: m.beta.dir('chief-of-staff') }, { cwd: m.beta.dir('builder') }];
+  const a = tag(m.alpha.root);
+  const t0 = m.clockMs;
+  // the run of its service started by the restart writes its pass 40 s later
+  const lastPass = (root) => (root === m.alpha.root ? (m.clockMs - t0 >= 40e3 ? t0 + 40e3 : Date.parse(T0) - 40 * MIN) : Date.parse(T0) - 5 * MIN);
+  const r = m.run(['restart'], { lastPass });
+  assert.ok(m.sd.calls.includes(`systemctl --user start --no-block delivery-watchdog-${a}.service`), m.sd.calls.join('\n'));
+  assert.match(r.out, /^Back: alpha's host job ran a pass at 2026-11-08T10:00:40\.000Z\.$/m, r.out);
+  assert.doesNotMatch(r.out, /alpha's host job, still silent/);
+  assert.deepEqual(m.sleeps, [10e3, 10e3, 10e3, 10e3], 'it waited until the pass, not the whole window');
+  // a start that exited within its settle is named, and the restart does not wait for it to be listed
+  const d = machine({ beads: { alpha: [{ id: 'al-1', status: 'in_progress', assignee: 'builder', updated_at: ago(10) }] } });
+  d.join = null;
+  const base = d.deps().teamDeps;
+  const out = d.run(['restart'], { teamDeps: (root) => ({ ...base(root), settle: (pids) => new Set(pids) }) });
+  assert.match(out.out, /^Not back: alpha builder \(its start exited at once, recorded failed; the next pass retries it\)\.$/m, out.out);
+  assert.deepEqual(d.sleeps, []);
+});
+
 test('restart reads the sessions again just before stopping a session on an older plugin: busy on that read, it is not stopped and the reply says why; idle, it is restarted and the reply says so', () => {
   const stale = () => {
     const m = machine({ beads: { alpha: [{ id: 'al-1', status: 'in_progress', assignee: 'builder', updated_at: ago(10) }] } });
