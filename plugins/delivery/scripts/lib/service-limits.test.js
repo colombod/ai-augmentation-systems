@@ -24,6 +24,7 @@ function systemctl(units) {
 test('a service needs 200 tasks per role session on its host plus its own, never under 4096', () => {
   assert.equal(SL.sessionsOn(team, 'pc'), 5, 'chief + four builders; another host and a retired role do not count');
   assert.equal(SL.sessionsOn(null, 'pc'), 0);
+  assert.equal(SL.sessionsOn({ roles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'staffing' }] }, 'pc'), 1, 'a role with no host field is counted on no host');
   assert.equal(SL.tasksMaxFor(0), 4096);
   assert.equal(SL.tasksMaxFor(5), 4096);
   assert.equal(SL.tasksMaxFor(30), 6200);

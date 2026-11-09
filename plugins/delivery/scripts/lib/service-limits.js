@@ -6,7 +6,11 @@
 // 182 tasks and started only two or three roles; the watchdog's at 600 held eight roles and aborted them
 // all at their start). Role sessions now start in scopes of their own (lib/team-revive.js scopedCommand),
 // but what a service starts inside itself (the watchdog's wakes, a session the owner started from a unit)
-// still counts against it, so a unit must allow the whole team on its host.
+// still counts against it, so a unit must allow the whole team on its host. The sizing assumes at most
+// one watchdog wake per role at once (the watchdog never wakes a role whose last wake still runs) at
+// about 200 tasks each, plus the service's own process.
+// A role counts on the host its team.json entry names; a role with no host field names no host, so it
+// is counted on none.
 const M = require('./manifest.js');
 
 // the tasks a service allows per session it may hold, with room over the 100+ a session takes

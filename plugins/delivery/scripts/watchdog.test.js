@@ -510,6 +510,21 @@ test('install: dry run by default; --apply writes a job with no versioned path, 
   for (const re of [/^KillMode=process$/m, /^Environment="PATH=\/opt\/bin:/m, /^ExecStart=\/usr\/bin\/env "node" ".*job\.js"$/m]) assert.match(service, re);
   assert.equal(main(['uninstall'], { platform: 'linux', has: () => true }).code, 0);
   assert.deepEqual(fs.readdirSync(unit), []);
+  // the unit is sized to the team on this host: 21 role sessions on pc need 200 each plus its own, 4400
+  // (rv-192: a test that only asked for at least 4096 passed with the team read as empty)
+  const teamFile = path.join(h.root, '.delivery', 'team', 'team.json');
+  const was = fs.readFileSync(teamFile, 'utf8');
+  fs.writeFileSync(teamFile, JSON.stringify({ ...JSON.parse(was), roles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'delivery-lead', host: 'pc' }, { id: 'builder', host: 'pc', count: 19 }, { id: 'tech-writer', host: 'cloud' }] }));
+  try {
+    assert.equal(watchdog.teamSessionsHere(h.root, { DELIVERY_HOST: 'pc' }), 21);
+    assert.equal(watchdog.teamSessionsHere(h.root, { DELIVERY_HOST: 'cloud' }), 1, 'only the roles on the host it runs on');
+    assert.equal(watchdog.main(['install', '--apply'], { cwd: h.root, env: { ...env, DELIVERY_HOST: 'pc' }, home, exec, platform: 'linux', has: () => true }).code, 0);
+    const sized = fs.readFileSync(path.join(unit, fs.readdirSync(unit).find((f) => f.endsWith('.service'))), 'utf8');
+    assert.match(sized, /^TasksMax=4400$/m);
+    assert.equal(main(['uninstall'], { platform: 'linux', has: () => true }).code, 0);
+  } finally { fs.writeFileSync(teamFile, was); }
+  // a team.json that cannot be read is no sessions, and the unit gets the floor
+  assert.equal(watchdog.teamSessionsHere(fs.mkdtempSync(path.join(os.tmpdir(), 'no-team-')), { DELIVERY_HOST: 'pc' }), 0);
   // cron: only an interval that divides the hour keeps its cadence (Copilot 471)
   const cronOnly = (c) => c === 'crontab';
   assert.equal(main(['install', '--apply', '--every', '45m'], { platform: 'linux', has: cronOnly }).code, 2);

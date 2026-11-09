@@ -99,7 +99,9 @@ function readJsonFile(file) {
 // ---- prerequisites ----
 
 // Each row: { name, status: 'pass' | 'fail' | 'warn' | 'unknown', detail, fix, hard }.
-function checkPrerequisites({ env = process.env, project, platform = process.platform, nodeVersion = process.versions.node } = {}) {
+// services: the user services' task limits as lib/service-limits.js readServices gives them, in place of
+// reading systemctl (a test)
+function checkPrerequisites({ env = process.env, project, platform = process.platform, nodeVersion = process.versions.node, services } = {}) {
   const rows = [];
   const runEnv = { ...env };
   const nodeMajor = Number(String(nodeVersion).split('.')[0]);
@@ -188,7 +190,7 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
     if (bd.ok && fs.existsSync(path.join(root, '.beads'))) rows.push(beadsSyncRow(run('bd', ['dolt', 'remote', 'list', '--json'], { cwd: root, env: runEnv })));
   }
   rows.push(sealRow({ env: runEnv }));
-  if (platform === 'linux') rows.push(...serviceLimitRows({ project, env: runEnv }));
+  if (platform === 'linux') rows.push(...serviceLimitRows({ project, env: runEnv, services }));
   // Amplifier is not a prerequisite; where it is installed it owns the machine's setup (skills/amplifier)
   const A = require('./lib/amplifier.js');
   rows.push(...A.checkRows(A.detect({ env: runEnv, platform, run: (c, a) => run(c, a, { env: runEnv, timeout: 60000 }) })));
