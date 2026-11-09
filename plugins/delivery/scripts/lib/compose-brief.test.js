@@ -40,6 +40,19 @@ test('loadRoleBrief reads a project brief from .delivery/team/briefs', () => {
   assert.equal(brief.body.trim(), 'Vercel text');
 });
 
+// hjx.1.6.13: SendMessage refuses any name with "@", so the brief never sends a role to the Session
+// column's <instance>@<team> form: it names the listed name, or the uds: address of a session named with "@"
+test('composeBrief tells a role to message the listed name or the uds: address, not the instance@team column', () => {
+  const { team, hosts } = templateManifest();
+  const inst = expandInstances(team).find((i) => i.instance === 'builder-1');
+  const brief = loadRoleBrief(PLUGIN_ROOT, '/nonexistent', inst.role.brief);
+  const rules = fs.readFileSync(path.join(TEMPLATES, 'team-rules.md'), 'utf8');
+  const out = composeBrief({ team, hosts, instance: inst.instance, role: inst.role, brief, rules });
+  assert.match(out, /Message another role by the name ListAgents shows for its session, or by the uds: address/);
+  assert.match(out, /SendMessage refuses its instance@team form/);
+  assert.doesNotMatch(out, /Message another role by its name in the Session column/);
+});
+
 test('composeBrief contains rules, routing table, role text and host limits', () => {
   const { team, hosts } = templateManifest();
   const inst = expandInstances(team).find((i) => i.instance === 'builder-1');
