@@ -1095,8 +1095,28 @@ test('hjx.1.6.18: the Delivery Manager closes and reopens pull requests; no othe
     assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
     assert.equal(run(spike, c).allow, false, `spike-researcher: ${c}`);
   }
+  // rv-194 on ae4bb8f: five more routes to a close
+  for (const c of [
+    'git push origin +:team/builder-1', 'git push origin +:refs/heads/team/builder-1',
+    'git push origin :heads/team/builder-1', 'git push origin --delete heads/team/builder-1', 'git push origin --delete refs/team/builder-1',
+    "gh api graphql -f query='mutation { deleteRef(input: {refId: \"R\"}) { clientMutationId } }'",
+    "gh api graphql -f query='mutation { updateRefs(input: {repositoryId: \"X\", refUpdates: [{name: \"refs/heads/team/b\", afterOid: \"0000000000000000000000000000000000000000\"}]}) { clientMutationId } }'",
+    "gh api graphql -f query='mutation($in: UpdatePullRequestInput!) { updatePullRequest(input: $in) { clientMutationId } }' -f in[state]=CLOSED",
+    "gh api graphql -f query='mutation($in: UpdateIssueInput!) { updateIssue(input: $in) { clientMutationId } }' -F in=@in.json",
+    "gh api graphql -f query='mutation($s: PullRequestUpdateState) { updatePullRequest(input: {pullRequestId: \"X\", state: $s}) { x } }' -f s=CLOSED",
+    'gh api -X PATCH repos/o/r/pulls/./187 -f state=closed', 'gh api -X PATCH repos/o/r/pulls/x/../187 -f state=closed', 'gh api -X PATCH repos/o/r/issues/1/../187/ -f state=closed',
+  ]) {
+    assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
+    assert.equal(run(spike, c).allow, false, `spike-researcher: ${c}`);
+  }
+  // and a merge through a path with dot segments inside it
+  for (const c of ['gh api -X PUT repos/o/r/pulls/./187/merge', 'gh api -X PUT repos/o/r/pulls/x/../187/merge']) {
+    assert.match(run(POLICIES[BUILDER], c).reason, /merging is the Delivery Manager's/, c);
+  }
   // the guard itself, apart from the merge guard that refuses some of these first
   const { closeAttempt } = require('./lane.js');
+  assert.equal(closeAttempt('git push origin +:team/builder-1'), true);
+  assert.equal(closeAttempt('git push origin +team/builder-1'), false, 'a force push of the branch is no deletion');
   for (const c of ['gh api -X PATCH repos/o/r/pulls/187 --flag-the-parser-does-not-know', 'gh api graphql -f query=@close.graphql', 'gh api graphql --input q.json', 'gh api -X PATCH repos/o/r/pulls/187 -fstate=closed', "gh api graphql -f query='mutation { updatePullRequest(input: {state: CLOSED}) { x } }'", 'git push origin --delete team/builder-1']) assert.equal(closeAttempt(c), true, c);
   for (const c of ['gh api repos/o/r/pulls/187', 'gh api -X PATCH repos/o/r/pulls/187 -f title=x', "gh api graphql -f query='mutation { updatePullRequest(input: {title: \"x\"}) { x } }'", 'git push origin team/builder-1', 'git push origin --delete b2/scratch', 'git push -u origin HEAD']) assert.equal(closeAttempt(c), false, c);
   // an attached value is a field like any other: the merge guard, which also gates the Delivery Manager's

@@ -1577,6 +1577,21 @@ function groupsShown(bash, lead, close = ').') {
   return `${shown.join(', ')}, and ${all.length - shown.length} more`;
 }
 
+// A gh api endpoint as the server reads it: no query or fragment, repeated slashes collapsed, dot
+// segments resolved anywhere in the path (pulls/./187 and pulls/x/../187 are pulls/187), no trailing
+// slash. The merge and close guards both judge this form.
+function apiPath(x) {
+  const raw = String(x || '').split(/[?#]/)[0].replace(/\/{2,}/g, '/');
+  const lead = raw.startsWith('/') ? '/' : '';
+  const out = [];
+  for (const part of raw.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') { out.pop(); continue; }
+    out.push(part);
+  }
+  return lead + out.join('/');
+}
+
 function closeAttempt(command) {
   const text = String(command == null ? '' : command);
   return splitCommand(text).some((seg) => {
@@ -1589,8 +1604,10 @@ function closeAttempt(command) {
       const args = g.slice(1);
       const del = args.some((a) => a === '--delete' || a === '-d' || /^-[a-z]*d[a-z]*$/.test(a) && !a.startsWith('--'));
       const refs = args.filter((a) => !a.startsWith('-'));
-      const team = (r) => /^(?:refs\/heads\/)?team\//.test(r);
-      return refs.some((r) => (del && team(r.replace(/^\+/, ''))) || (r.startsWith(':') && team(r.slice(1))));
+      // git resolves a short ref through refs/%s, refs/heads/%s and the like, so heads/team/x and
+      // refs/team/x name the branch too; a leading + (force) still deletes with an empty source
+      const team = (r) => /^(?:refs\/)?(?:heads\/)?team\//.test(r);
+      return refs.some((r) => { const x = r.replace(/^\+/, ''); return (del && team(x)) || (x.startsWith(':') && team(x.slice(1))); });
     }
     if (path.basename(words[0] || '') !== 'gh') return false;
     let i = 1;
@@ -1612,7 +1629,7 @@ function closeAttempt(command) {
       const c = ghApiCall(['gh', ...rest]);
       // as the server reads the path: no query or fragment, repeated slashes collapsed, no trailing slash
       // or dot segment (pulls/187/. is pulls/187)
-      const eps = ((c && c.positionals) || []).map((x) => { let e = x.split(/[?#]/)[0].replace(/\/{2,}/g, '/'); for (let n = 0; n < 8 && /(?:\/\.|\/)$/.test(e); n++) e = e.replace(/\/\.$/, '').replace(/\/+$/, ''); return e; });
+      const eps = ((c && c.positionals) || []).map(apiPath);
       const fields = (c && c.fields) || {};
       // a call the parser could not read whole may carry the state in what it missed
       if (c && c.bad && eps.some((ep) => /\/(?:pulls|issues)(?:\/|$)|(?:^|\/)graphql$/i.test(ep))) return true;
@@ -1627,8 +1644,12 @@ function closeAttempt(command) {
         if (rest.some((a) => /^--input/.test(a)) || Object.values(fields).some((v) => String(v).startsWith('@'))) return true;
         const q = Object.values(fields).join(' ');
         if (/\b(?:close|reopen)(?:PullRequest|Issue)\b/i.test(q)) return true;
-        // an update that sets a pull request's or an issue's state closes or reopens it too
-        if (/\bupdate(?:PullRequest|Issue)\b/i.test(q) && /\bstate\s*:/i.test(q)) return true;
+        // an update that sets a pull request's or an issue's state closes or reopens it too, and one whose
+        // input (or its state) is a variable may: the variables are fields the lane reads as text
+        if (/\bupdate(?:PullRequest|Issue)\b/i.test(q) && (/\bstate\s*:/i.test(q) || /\binput\s*:\s*\$/i.test(q) || Object.keys(fields).some((k) => /state/i.test(k)))) return true;
+        // deleting or rewriting a ref by its id closes the pull request of a team branch, and the id says
+        // nothing the lane can check
+        if (/\b(?:deleteRef|updateRefs?)\b/i.test(q)) return true;
       }
     }
     return false;
@@ -1666,7 +1687,7 @@ function mergeAttempt(command, cwd) {
         // is then the second word, not the first
         // as the server reads the path: no query or fragment, repeated slashes collapsed, no trailing
         // slash or dot segment
-        const eps = ((c && c.positionals) || []).map((x) => x.split(/[?#]/)[0].replace(/\/{2,}/g, '/').replace(/(?:\/\.)+$/, '').replace(/\/+$/, ''));
+        const eps = ((c && c.positionals) || []).map(apiPath);
         if (eps.some((ep) => /\/merges?(?:$|\/)/i.test(ep) || /\/pulls\/[^/]+\/(?:ccr\/)?auto[_-]?merge$/i.test(ep))) return true;
         if (eps.some((ep) => /(?:^|\/)graphql$/i.test(ep))) {
           const q = Object.values(c.fields).join(' ');
