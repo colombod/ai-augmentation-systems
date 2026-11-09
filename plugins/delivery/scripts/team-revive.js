@@ -9,14 +9,16 @@
 //                                                      cannot be read is a line that says so.
 //   team-revive.js start [--dry-run] [--project <root>] starts each missing instance, detached, in its role
 //                                                      directory: `claude remote-control --name <instance>@<team>
-//                                                      --spawn session --permission-mode <team mode>`, or with
-//                                                      `--session-id <id>` in place of `--spawn session` when a
-//                                                      Remote Control session was recorded for it, each in its
+//                                                      --spawn same-dir --capacity 1 --permission-mode <team mode>`
+//                                                      (a server that stays up after its session completes), or
+//                                                      with `--session-id <id>` in place of the spawn flags when a
+//                                                      Remote Control session was recorded for it and its last
+//                                                      start was not a reattach that ran and ended, each in its
 //                                                      own `systemd-run --user --scope` where systemd runs. A start
 //                                                      whose process exits within a minute is a failed row,
 //                                                      retried at the next pass. Only with
 //                                                      work in flight and no owner pause; one start per
-//                                                      instance an hour, six a day; each start is a row in
+//                                                      instance an hour (none for one whose last session ran), six a day; each start is a row in
 //                                                      the watchdog's revive.ndjson, its output in its logs.
 // The host job runs start each pass (watchdog.js run). In a role session only the Chief of Staff may run
 // start: no other role starts sessions (R-42). Exit codes: 0 ok (a missing session is not an error); 1
