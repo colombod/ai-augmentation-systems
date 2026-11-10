@@ -250,7 +250,16 @@ function launchTeam({ projectRoot, prepared, host, permissionMode, prefix, env, 
   if (!here.length) { say(`    nothing to start: no role of this team runs on host "${host}" (pass --host with this machine's name in hosts.json)`); return { code: 1 }; }
   const roster = require('./lib/roster.js').readRoster(projectRoot).instances || {};
   const at = new Date().toISOString().replace(/[:.]/g, '-');
+  // one live session per role (lib/one-session.js): the open sessions are listed first, and a role
+  // already running, or one whose sessions cannot be listed, is not started again (hjx.1.6.17)
+  const OS = require('./lib/one-session.js');
+  const listed = run(bin, ['agents', '--json'], { env, timeout: 15000 });
+  let live = null;
+  try { const j = listed.ok ? JSON.parse(listed.out) : null; live = Array.isArray(j) ? j : null; } catch (err) { live = null; }
   for (const { instance, roleDir } of here) {
+    const lives = OS.liveOf(instance, { roleDir, live, prefix });
+    if (lives === null) { say(`    ${instance}: not started: the open sessions could not be listed (\`${bin} agents --json\`), so a start could put a second session beside a live one`); continue; }
+    if (lives.length) { say(`    ${instance}: already running as ${OS.described(lives)}; not started again`); continue; }
     const known = roster[instance] && roster[instance].session_id;
     if (known) { say(`    ${instance}: already started (session ${known}); the watchdog resumes it when work is due`); continue; }
     const args = ['-p', JOIN_PROMPT, ...(permissionMode && permissionMode !== 'default' ? ['--permission-mode', permissionMode] : []), '--name', sessionName(instance, prefix)];

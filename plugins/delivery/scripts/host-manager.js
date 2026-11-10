@@ -50,6 +50,12 @@ const RESTART_STEPS = 5;
 const RESTART_MAX_DELAY = '30min';
 const START_LIMIT_INTERVAL = '15min';
 const START_LIMIT_BURST = 5;
+// run-session's exit when a host-manager session is already live: a success the unit does not restart
+// (SuccessExitStatus and RestartPreventExitStatus). With Restart=always any other exit, 0 included, is
+// restarted, so a live host manager made the unit exit five times in its start limit, fail, and be reset
+// and started again by the watchdog's next pass, every pass (rv-198). Inactive, the unit is started once a
+// pass and stops again until the live session ends.
+const ALREADY_RUNNING = 3;
 // its own unit, so not inside a watchdog job's cgroup: a Remote Control session and the tools it runs
 // need far more tasks than a capped host job allows. KillMode=process on both services: the role
 // sessions a restart starts are children of the unit that ran it, and a restart of the host manager (or
@@ -367,7 +373,7 @@ function unitFiles(root, team, instance, { env, home, host, roleDir }) {
     stateDir: HM.stateDir(env, home),
     modeSkip: m.skip || null,
     files: [
-      { file: path.join(dir, HM.UNIT), body: `[Unit]\nDescription=delivery host manager: the Remote Control session ${sdName(instance, host)} for every product team on this machine\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=${START_LIMIT_INTERVAL}\nStartLimitBurst=${START_LIMIT_BURST}\n\n[Service]\nType=simple\nWorkingDirectory=${W.sdPct(roleDir)}\n${env1}ExecStart=/usr/bin/env ${['node', launcher, 'host-manager.js', 'run-session', '--project', root, '--instance', instance].map(W.sdq).join(' ')}\nKillMode=process\nRestart=always\nRestartSec=${RESTART_SEC}\nRestartSteps=${RESTART_STEPS}\nRestartMaxDelaySec=${RESTART_MAX_DELAY}\nTasksMax=${TASKS_MAX}\n\n[Install]\nWantedBy=default.target\n` },
+      { file: path.join(dir, HM.UNIT), body: `[Unit]\nDescription=delivery host manager: the Remote Control session ${sdName(instance, host)} for every product team on this machine\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=${START_LIMIT_INTERVAL}\nStartLimitBurst=${START_LIMIT_BURST}\n\n[Service]\nType=simple\nWorkingDirectory=${W.sdPct(roleDir)}\n${env1}ExecStart=/usr/bin/env ${['node', launcher, 'host-manager.js', 'run-session', '--project', root, '--instance', instance].map(W.sdq).join(' ')}\nKillMode=process\nRestart=always\nSuccessExitStatus=${ALREADY_RUNNING}\nRestartPreventExitStatus=${ALREADY_RUNNING}\nRestartSec=${RESTART_SEC}\nRestartSteps=${RESTART_STEPS}\nRestartMaxDelaySec=${RESTART_MAX_DELAY}\nTasksMax=${TASKS_MAX}\n\n[Install]\nWantedBy=default.target\n` },
       { file: path.join(dir, HM.TICK_SERVICE), body: `[Unit]\nDescription=delivery host manager: the unattended pass over every product team on this machine\n\n[Service]\nType=oneshot\nKillMode=process\nTasksMax=${TASKS_MAX}\nWorkingDirectory=${W.sdPct(root)}\n${vars.filter((v) => !v.startsWith('DELIVERY_ROLE=')).map((v) => `Environment=${W.sdq(v)}\n`).join('')}ExecStart=/usr/bin/env ${['node', launcher, 'host-manager.js', 'tick'].map(W.sdq).join(' ')}\nStandardOutput=append:${W.sdPct(log)}\nStandardError=append:${W.sdPct(log)}\n` },
       { file: path.join(dir, HM.TICK_TIMER), body: `[Unit]\nDescription=delivery host manager: its pass every 5 min\n\n[Timer]\nOnBootSec=2min\nOnUnitActiveSec=5min\n\n[Install]\nWantedBy=timers.target\n` },
     ],
@@ -434,12 +440,39 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
 // process is claude and Restart= sees it exit. A node without execve starts nothing: claude as a child
 // would outlive a stop of the unit (KillMode=process stops only the main process), and the next start
 // would be a second host manager beside it. deps: execve, resolveBin, now (in a test).
+// A live host-manager session: one in its role directory or under its name <instance>@<host>
+// (lib/one-session.js), the match run-session makes before it starts one and the watchdog makes before it
+// starts the unit (rv-198). { sessions } (possibly none), or { unreadable } when the open sessions could
+// not be listed. With no host manager in this project's team.json, the unit's own WorkingDirectory is
+// its role directory.
+function hostManagerMatch(roleDirs, names) {
+  const OS = require('./lib/one-session.js');
+  return (s) => Boolean(s) && (roleDirs.some((d) => d && OS.inside(s.cwd, d)) || (Boolean(s.name) && names.includes(s.name)));
+}
+function liveHostManager(root, { env = process.env, home = os.homedir(), hostname, live } = {}) {
+  const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
+  let team = null;
+  try { team = M.loadManifest(root).team; } catch (err) { team = null; }
+  const hm = team ? hostManagerOf(root, team, host) : null;
+  const roleDirs = [];
+  const names = [];
+  if (hm) { roleDirs.push(roleDirOf(root, team, hm.instance).roleDir); names.push(`${hm.instance}@${host}`); }
+  try {
+    const wd = /^WorkingDirectory=(.+)$/m.exec(fs.readFileSync(path.join(HM.unitDir(home), HM.UNIT), 'utf8'));
+    if (wd) roleDirs.push(wd[1].trim().replace(/%%/g, '%'));
+  } catch (err) { /* no unit: the team's role directory alone */ }
+  if (!roleDirs.length && !names.length) return { sessions: [] };
+  const listed = sessionsNow({ env, live });
+  if (!Array.isArray(listed)) return { unreadable: true };
+  return { sessions: listed.filter(hostManagerMatch(roleDirs, names)) };
+}
+
 function resolveOnPath(bin, env) {
   if (bin.includes('/')) return bin;
   for (const d of String(env.PATH || '').split(path.delimiter)) { if (!d) continue; const f = path.join(d, bin); try { fs.accessSync(f, fs.constants.X_OK); return f; } catch (err) { /* not here */ } }
   return null;
 }
-function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now } = {}) {
+function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now, live } = {}) {
   let team;
   try { team = M.loadManifest(root).team; } catch (err) { return { code: 1, out: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); no session started.` }; }
   const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
@@ -447,6 +480,15 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
   if (!hm) return { code: 1, out: `host-manager.js: team.json of ${root} has no host manager${o.instance ? ` instance ${o.instance}` : ` on host "${host}"`}; no session started.` };
   const a = sessionArgs(root, team, hm.instance, { env, home, host });
   if (a.modeSkip) return { code: 1, out: `host-manager.js: ${a.modeSkip}; no session started.` };
+  // One live session per role (lib/one-session.js, hjx.1.6.17): a host-manager session already live in its
+  // role directory or under its own name <instance>@<host> is never given a second one beside it, and
+  // none is started while the open sessions cannot be read. A live one is a success the unit does not
+  // restart (ALREADY_RUNNING); a list that cannot be read is a failure Restart= tries again.
+  const OS = require('./lib/one-session.js');
+  const listed = sessionsNow({ env, live });
+  if (!Array.isArray(listed)) return { code: 1, out: 'host-manager.js: the open sessions could not be listed (claude agents --json), so a start could put a second host manager beside a live one; no session started.' };
+  const running = listed.filter(hostManagerMatch([a.roleDir], [`${hm.instance}@${host}`]));
+  if (running.length) return { code: ALREADY_RUNNING, out: `host-manager.js: ${hm.instance} already runs as ${OS.described(running)}; no second session started.` };
   const ex = execve !== undefined ? execve : (typeof process.execve === 'function' ? process.execve.bind(process) : null);
   if (!ex) return { code: 1, out: `host-manager.js: run-session needs node 22.15 or later (process.execve), so that claude is the unit's own process; this is node ${process.version}. No session started.` };
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
@@ -502,7 +544,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
   return tick(d);
 }
 
-module.exports = { main, read, status, restart, tick, install, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
+module.exports = { liveHostManager, main, read, status, restart, tick, install, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
 
 if (require.main === module) {
   let r;

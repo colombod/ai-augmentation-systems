@@ -1354,10 +1354,19 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `--permission-mode <mode>` first (team.json
   `permission_mode`, which start.js records; for a team recorded before it, the mode the session
   started in; auto when neither says; nothing for `default`; an unreadable team.json or an invalid mode
-  is no wake, alarm only): `claude --resume <id> -p "<prompt>"` when the session is not
-  open; with `--fork-session` when it is open and idle; `claude -c -p` when the roster has no session id;
-  nothing when it is busy, when open sessions cannot be listed (`claude agents --json` failed: alarm
-  only, never a fork), or when its role directory is not on this host. A session not open whose last turn carried more
+  is no wake, alarm only): `claude --resume <id> -p "<prompt>"` when the role has no live session;
+  `claude -c -p` when the roster has no session id; nothing when open sessions cannot be listed
+  (`claude agents --json` failed: alarm only), or when its role directory is not on this host. One
+  live session per role (`lib/one-session.js`): a session is the role's when it runs in its role
+  directory or inside it (a builder's worktree) or under its own name `<instance>@<team>`, whatever
+  id the roster has. A role with a live session is never given a second one. A busy one is left to
+  work; an idle one is handed the wake as a message on its own socket
+  (`<runtime dir>/cc-socks/<pid>.sock`, `lib/session-message.js`), sent under the host job's name,
+  `Watchdog (a host job, not the owner)`. The hand-over is logged as a wake (mode `message`), so the
+  caps and the doubling hold; when the socket does not take it, the line says so and nothing is
+  started. The frame format is Claude Code's own and undocumented (read on 2.1.318), and a session in
+  another permission mode may hold a peer message for its user's approval, so a hand-over is not proof
+  the turn ran: the stall checks still read whether the bead moves. A session not open whose last turn carried more
   than `wake_fresh_above_tokens` (team.json, 120000 by default, 0 for never; read from the usage its
   transcript records) is woken in a fresh session in its role directory instead (`claude -p`, no
   resume), told that its earlier conversation is not loaded and to start from its in-progress beads:
@@ -1371,8 +1380,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   resumed under (`plugin_version`, written by the SessionStart hook; for a session started before
   that, the last plugin path its own commands named). A session not open whose last version is older
   than the one the watchdog runs (the installed one) is woken fresh instead of resumed, told which
-  version it ran and which is installed. A running wake is never stopped, and an open session is
-  forked as before. A conversation resumed any other way is told at its start that the plugin moved
+  version it ran and which is installed. A running wake is never stopped, and an open idle session is
+  handed the wake as a message, as above, never forked or started fresh beside it. A conversation resumed any other way is told at its start that the plugin moved
   and where its scripts are now; and when the lane refuses a path to another installed version of
   this plugin, its reason says so and gives the same command at the current plugin root (or says
   that the lane would refuse it there too) (delivery-plugin-planning-8wz).
@@ -1501,7 +1510,11 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   in the Claude app through Remote Control dropped, and a wake brings work back only as a headless run.
   `team-revive.js check [--json]` lists, for each role instance of the team on this host (team.json
   `host` against `DELIVERY_HOST`, else the machine's short hostname), whether a session runs in its role
-  directory (`claude agents --json`), the work in flight (a bead in progress, an open pull request from a
+  directory or inside it, or under its own name `<instance>@<team>` (`claude agents --json`; a
+  role found running twice is named `Running twice:`, nothing more is started for it, nor is a
+  stale one restarted while another of its sessions is live, and a start pass tells Staffing (the
+  Chief of Staff on a team without one) once per pair of sessions, both named; ending one of them is
+  not team-revive's), the work in flight (a bead in progress, an open pull request from a
   `team/<instance>` branch, a message or handoff waiting) and, per missing instance, the command a start
   runs. A source that cannot be read is a line that says so, never "all running"; a session list that
   cannot be read starts nothing. `team-revive.js start [--dry-run]` starts each missing instance while
@@ -1611,7 +1624,13 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   dropped id and why, so the once-only rule holds across the unit's restarts. run-session replaces itself
   with claude (`process.execve`), so the unit's main process is claude; on a node before 22.15, which has
   no `process.execve`, it starts nothing and says so, since claude as its child would outlive a stop of
-  the unit and the next start would add a second host manager. Its restarts are bounded:
+  the unit and the next start would add a second host manager. Before it starts, run-session lists the
+  open sessions: one live in the host manager's role directory or under its name `<instance>@<host>`
+  means no second session (one live session per role), and so does a list that cannot be read. A live
+  host manager is exit 3, a success the unit does not restart (`SuccessExitStatus=3`,
+  `RestartPreventExitStatus=3`): the unit rests inactive, so it never runs into its start limit and the
+  watchdog's reset; the watchdog's next pass starts it once again. A list that cannot be read is a
+  failure, and `Restart=` tries again later. Its restarts are bounded:
   `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,
   `RestartSteps=5`, `RestartMaxDelaySec=30min`, systemd 254 and later; an older systemd warns of the
   two keys and keeps 30 seconds), and at most 5 starts in 15 minutes (`StartLimitIntervalSec=15min`,
@@ -1630,8 +1649,11 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   file is missing. Each watchdog `run` checks `delivery-host-manager.service` and starts it when it is
   installed and not active; a unit that hit its start limit is failed, and the pass runs
   `systemctl --user reset-failed delivery-host-manager.service` (that unit only) before the start, so it
-  is tried again every 15 minutes. One `host-manager-start` row in `revive.ndjson` per start: the host jobs
-  restart the host manager and the host manager restarts the host jobs.
+  is tried again every 15 minutes. While a host-manager session is already live (in its role directory or
+  the unit's `WorkingDirectory`, or under `<instance>@<host>`, the match run-session makes), the pass
+  neither resets nor starts the unit, writes no row and says so; nor when the open sessions cannot be
+  listed. One `host-manager-start` row in `revive.ndjson` per start: the host jobs restart the host
+  manager and the host manager restarts the host jobs.
 - **The host manager's lane.** Its brief writes nothing and runs `read`, `bd-read`, `bd-notes`,
   `operator-read`, `judge` and the `host-manager` group: `host-manager.js status|restart|tick`,
   `team-revive.js check|start`, `systemctl --user` (`status`, `is-active`, `show`, `start`, `restart`,
