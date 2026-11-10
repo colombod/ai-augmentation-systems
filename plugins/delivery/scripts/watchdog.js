@@ -521,9 +521,14 @@ function ensureHostManager(root, { home, exec, now }) {
   }
   if (state === 'active' || state === 'activating' || state === 'reloading') return null;
   let error = null;
+  // a unit that hit its start limit (host-manager.js install bounds its restarts) stays failed until its
+  // failed state is reset: this pass, every 15 minutes, is how often it is tried again
+  const reset = state === 'failed';
+  if (reset) { try { run('systemctl', ['--user', 'reset-failed', HM.UNIT]); } catch (err) { /* the start below says whether it took */ } }
   try { run('systemctl', ['--user', 'start', HM.UNIT]); } catch (err) { error = String((err && (err.stderr || err.message)) || err).trim().split('\n')[0].slice(0, 200); }
-  require('./lib/team-revive.js').record(root, { type: 'host-manager-start', at: now || new Date().toISOString(), unit: HM.UNIT, was: state, ...(error ? { error } : {}) });
-  return error ? `host manager: ${HM.UNIT} was ${state} and did not start (${error})` : `host manager: ${HM.UNIT} was ${state}; started it`;
+  require('./lib/team-revive.js').record(root, { type: 'host-manager-start', at: now || new Date().toISOString(), unit: HM.UNIT, was: state, ...(reset ? { reset: true } : {}), ...(error ? { error } : {}) });
+  const how = reset ? 'reset its failed state and started it' : 'started it';
+  return error ? `host manager: ${HM.UNIT} was ${state} and did not start (${error})` : `host manager: ${HM.UNIT} was ${state}; ${how}`;
 }
 
 // Removes the job this project installed on this host, in every form it may have taken; running it

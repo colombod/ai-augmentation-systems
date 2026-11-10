@@ -490,7 +490,13 @@ test('install writes the host manager\'s session unit and its tick timer, enable
   assert.equal(r.code, 0, r.out);
   const svc = fs.readFileSync(unit(HM.UNIT), 'utf8');
   for (const re of [/^Restart=always$/m, /^RestartSec=30$/m, /^TasksMax=4096$/m, /^KillMode=process$/m, /^WantedBy=default\.target$/m, new RegExp(`^WorkingDirectory=${m.alpha.dir('host-manager').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'),
-    /^ExecStart=\/usr\/bin\/env "claude" "remote-control" "--name" "host-manager@pc" "--spawn" "session" "--permission-mode" "auto"$/m, /^Environment="DELIVERY_ROLE=host-manager"$/m]) assert.match(svc, re, svc);
+    /^ExecStart=\/usr\/bin\/env "node" ".*\/alpha\/\.delivery\/bin\/delivery\.js" "host-manager\.js" "run-session" "--project" ".*\/alpha" "--instance" "host-manager"$/m, /^Environment="DELIVERY_ROLE=host-manager"$/m]) assert.match(svc, re, svc);
+  // the session it reattaches to is read when the unit starts, never frozen into the unit
+  assert.doesNotMatch(svc, /remote-control|--spawn|--session-id/);
+  // restarts are bounded: a growing delay up to 30 minutes, and at most 5 starts in 15 minutes, in [Unit]
+  for (const re of [/^RestartSteps=5$/m, /^RestartMaxDelaySec=30min$/m]) assert.match(svc.split('[Service]')[1], re, svc);
+  for (const re of [/^StartLimitIntervalSec=15min$/m, /^StartLimitBurst=5$/m]) assert.match(svc.split('[Service]')[0], re, svc);
+  assert.doesNotMatch(svc, /^StartLimitIntervalSec=0$/m);
   const timer = fs.readFileSync(unit(HM.TICK_TIMER), 'utf8');
   for (const re of [/^OnBootSec=2min$/m, /^OnUnitActiveSec=5min$/m, /^WantedBy=timers\.target$/m]) assert.match(timer, re);
   assert.match(fs.readFileSync(unit(HM.TICK_SERVICE), 'utf8'), /^ExecStart=\/usr\/bin\/env "node" ".*\/alpha\/\.delivery\/bin\/delivery\.js" "host-manager\.js" "tick"$/m);
@@ -503,7 +509,7 @@ test('install writes the host manager\'s session unit and its tick timer, enable
   fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(path.join(d, 'bridge-pointer.json'), JSON.stringify({ sessionId: 'session_hm1', pid: 1 }));
   m.run(['install', '--project', m.alpha.root], { env: { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', CLAUDE_CONFIG_DIR: m.config } });
-  assert.match(fs.readFileSync(unit(HM.UNIT), 'utf8'), /"--session-id" "session_hm1"/);
+  assert.doesNotMatch(fs.readFileSync(unit(HM.UNIT), 'utf8'), /session_hm1|--session-id/, 'a recorded session is not frozen into the unit either');
   assert.deepEqual(HM.readHostTeams(HM.hostFile({}, m.home)).teams, [m.alpha.root], 'the host file lists the team once');
 });
 
@@ -529,6 +535,45 @@ test('install creates the tick\'s state directory before it enables the units, a
     assert.ok(unit(n).includes(`Environment="XDG_CONFIG_HOME=${conf}"\n`), unit(n));
   }
   assert.match(unit(HM.TICK_SERVICE), new RegExp(`^StandardOutput=append:${path.join(state, 'delivery', 'host-manager', 'tick.log').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
+});
+
+test('run-session, which the unit runs: it reads the recorded Remote Control session when it starts, reattaches to it, and starts a new one only when none is recorded; it execs claude so the unit\'s main process is claude', () => {
+  const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  const env = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', CLAUDE_CONFIG_DIR: m.config, DELIVERY_ROLE: 'host-manager' };
+  const calls = [];
+  const execve = (file, argv, e) => { calls.push({ how: 'exec', file, argv, env: e }); };
+  const resolve = (bin) => `/opt/bin/${bin}`;
+  const run = (more = {}) => m.run(['run-session', '--project', m.alpha.root, '--instance', 'host-manager'], { env, who: { roleId: 'host-manager' }, execve, resolveBin: resolve, ...more });
+  // nothing recorded: a new session
+  const fresh = run();
+  assert.equal(fresh.code, 0, fresh.out);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].file, '/opt/bin/claude');
+  assert.deepEqual(calls[0].argv, ['claude', 'remote-control', '--name', 'host-manager@pc', '--spawn', 'session', '--permission-mode', 'auto']);
+  assert.equal(calls[0].env.DELIVERY_ROLE, 'host-manager');
+  // a session recorded since (claude's pointer for the role directory): the next start reattaches to it
+  const d = path.join(m.config, 'projects', R.projectKey(m.alpha.dir('host-manager')));
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, 'bridge-pointer.json'), JSON.stringify({ sessionId: 'session_hm1', pid: 1 }));
+  run();
+  assert.deepEqual(calls[1].argv, ['claude', 'remote-control', '--name', 'host-manager@pc', '--session-id', 'session_hm1', '--permission-mode', 'auto']);
+  // no pointer, but the roster records one: that one
+  fs.rmSync(path.join(d, 'bridge-pointer.json'));
+  require('./lib/roster.js').registerInstance(m.alpha.root, { instance: 'host-manager', session_id: 's1', host: 'pc', role_dir: m.alpha.dir('host-manager'), now: T0, remote_session_id: 'session_hm2' });
+  run();
+  assert.deepEqual(calls[2].argv.slice(4, 6), ['--session-id', 'session_hm2']);
+  // a node without process.execve: claude runs as its child and this waits for it, exiting with its code
+  const waited = [];
+  const r = run({ execve: null, spawnSync: (file, argv, o) => { waited.push({ file, argv, cwd: o.cwd }); return { status: 3 }; } });
+  assert.equal(r.code, 3);
+  assert.equal(waited[0].file, '/opt/bin/claude');
+  assert.deepEqual(waited[0].argv.slice(0, 1), ['remote-control']);
+  assert.equal(waited[0].cwd, m.alpha.dir('host-manager'));
+  // only the host manager's own unit runs it
+  const no = m.run(['run-session', '--project', m.alpha.root, '--instance', 'host-manager'], { env: { DELIVERY_ROLE: 'builder', DELIVERY_ROLE_ID: 'builder' }, who: { roleId: 'builder' }, execve, resolveBin: resolve });
+  assert.equal(no.code, 1);
+  assert.match(no.out, /run-session is the host manager's/);
+  assert.equal(calls.length, 3);
 });
 
 test('install installs nothing without systemctl, without a host manager in the team, or without its role directory', () => {
@@ -640,6 +685,17 @@ test('the watchdog pass starts the host manager\'s unit when it is installed and
   const failingStart = (cmd, args) => { if (args[1] === 'start') throw new Error('Job failed'); return m.sd.exec(cmd, args); };
   assert.match(watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: failingStart, now: T0 }), /was inactive and did not start \(Job failed\)/);
   assert.equal(rows()[1].error, 'Job failed');
+  // a unit that hit its start limit is failed: its failed state is reset, then it is started, that unit only
+  m.sd.units[HM.UNIT] = { LoadState: 'loaded', ActiveState: 'failed' };
+  const before = m.sd.calls.length;
+  assert.match(watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0 }), /was failed; reset its failed state and started it/);
+  assert.deepEqual(m.sd.calls.slice(before), [`systemctl --user is-active ${HM.UNIT}`, `systemctl --user reset-failed ${HM.UNIT}`, `systemctl --user start ${HM.UNIT}`]);
+  assert.equal(rows()[2].reset, true);
+  // an inactive unit is started with no reset
+  m.sd.units[HM.UNIT] = loaded(false);
+  const b2 = m.sd.calls.length;
+  watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0 });
+  assert.ok(!m.sd.calls.slice(b2).some((c) => c.includes('reset-failed')));
 });
 
 test('watchdog install --apply adds the project to the host file and installs the host manager when its units are missing', () => {
