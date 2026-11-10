@@ -22,7 +22,9 @@
 //                                                   Each run then starts the team's missing role sessions while work is in flight (team-revive.js)
 //                                                   Each run also installs the plugin main carries when it is newer and every
 //                                                   change to it passed the team's gate, never under a running wake (lib/self-update.js)
-//                                                   Each run starts the host manager's unit when it is installed and down
+//                                                   Each run installs the host manager's units when they are missing and this
+//                                                   team has a prepared host-manager instance on this host (host-manager.js
+//                                                   install, one row in revive.ndjson), and starts its unit when it is down
 //   watchdog.js install [--every 15m] [--apply] [--project <root>]
 //                                                   the host job (launchd on macOS, a systemd user timer
 //                                                   or cron on Linux) that runs `run`; prints what it would
@@ -509,9 +511,32 @@ function hostManagerSetup(root, { platform, home, env, exec, has }) {
 // Each pass looks at the host manager's own unit and starts it when it is installed and down: the host
 // manager restarts the host jobs, and the host jobs restart the host manager. One row in revive.ndjson
 // per start. null when there is nothing to do.
-function ensureHostManager(root, { home, exec, now }) {
+// Before that, a unit that is missing is installed when this team's manifest has a host-manager instance
+// on this host whose role directory is prepared: Staffing prepares it from a role session, which may not
+// install units, and this run is the host job's, outside any role session. The install is host-manager.js
+// install itself (its files, its reload, enable and start, its refusal in a role session), with one row
+// in revive.ndjson; an installed unit is never rewritten.
+function ensureHostManager(root, { home, exec, now, env = process.env, has, hostname }) {
   const HM = require('./lib/host-manager.js');
-  if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return null;
+  const lines = [];
+  if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) {
+    const HMS = require('./host-manager.js');
+    const target = HMS.installTarget(root, {}, { env, hostname });
+    if (target.why || !whichOf(has)('systemctl')) return null;
+    const r = HMS.install(root, {}, { env, home, exec, has, hostname, cwd: root });
+    const last = r.out.split('\n').pop().replace(/^host-manager\.js: /, '');
+    // nothing written (refused in a role session, the launcher not written): said, no row; the next run tries again
+    if (!r.wrote.length) return `host manager: its units were not installed (${last})`;
+    require('./lib/team-revive.js').record(root, { type: 'host-manager-install', at: now || new Date().toISOString(), instance: target.hm.instance, wrote: r.wrote, ...(r.code ? { error: last } : {}) });
+    lines.push(r.code ? `host manager: its units were written (${r.wrote.join(', ')}) but the install did not finish (${last})` : `host manager: installed its units (${r.wrote.join(', ')})`);
+    if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return lines.join('\n');
+  }
+  const started = startHostManager(root, { home, exec, now });
+  if (started) lines.push(started);
+  return lines.length ? lines.join('\n') : null;
+}
+function startHostManager(root, { exec, now }) {
+  const HM = require('./lib/host-manager.js');
   const run = runner(exec);
   let state = '';
   try { state = String(run('systemctl', ['--user', 'is-active', HM.UNIT])).trim(); } catch (err) {
@@ -638,7 +663,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       if (ug) swept.push(ug);
       // a run inside the sealed test runner never touches the host's own units unless a test hands it fakes
       const sealed = env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN;
-      const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, ...(hostUnit || {}) });
+      const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, has, ...(hostUnit || {}) });
       if (hm) swept.push(hm);
       try {
         const S = require('./testing/sweep.js');

@@ -760,3 +760,103 @@ test('restart, tick and install refuse a caller in another role session even whe
   assert.doesNotThrow(() => HMS.restart({ ...m.deps(), env: { DELIVERY_HOST: 'pc', DELIVERY_ROLE: 'host-manager', DELIVERY_ROLE_ID: 'host-manager' } }));
   assert.doesNotThrow(() => HMS.restart(m.deps()));
 });
+
+// Staffing prepares a host-manager instance (team.json names it, its role directory exists) and no role
+// session may install units: each watchdog run, which runs outside any role session, installs them when
+// they are missing, through host-manager.js install itself, and records one row. An installed unit is
+// never rewritten; a team with no host manager, or an unprepared role directory, is left alone.
+const runEnv = () => {
+  const env = { ...process.env, DELIVERY_ROLE: '', DELIVERY_ROLE_ID: '', DELIVERY_ROLE_DIR: '', DELIVERY_HOST: 'pc', USER: 'dev' };
+  for (const k of ['XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'CLAUDE_CONFIG_DIR']) delete env[k];
+  return env;
+};
+const hmRoles = (host = 'pc') => [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host }];
+
+test('each watchdog run installs the host manager\'s units when they are missing and its role directory is prepared: once, one row, then the start check', () => {
+  const m = machine({ alphaRoles: hmRoles() });
+  const svc = path.join(HM.unitDir(m.home), HM.UNIT);
+  const env = runEnv();
+  // enable --now leaves the fake unit inactive, so the start check after the install starts it
+  m.sd.units[HM.UNIT] = loaded(false);
+  const deps = { cwd: m.alpha.root, env, now: T0, live: [], bd: store([]), spawn: () => 1, sweep: () => ({ removed: [], failed: [] }), userGuard: () => null, update: { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'no-install-')) }, revive: () => [], home: m.home, hostUnit: { exec: m.sd.exec, home: m.home, has: () => true } };
+  const r = watchdog.main(['run', '--project', m.alpha.root], deps);
+  assert.match(r.out, /host manager: installed its units \(.*delivery-host-manager\.service/, r.out);
+  assert.ok(fs.existsSync(svc), r.out);
+  for (const f of [HM.TICK_SERVICE, HM.TICK_TIMER]) assert.ok(fs.existsSync(path.join(HM.unitDir(m.home), f)), f);
+  // the same commands host-manager.js install runs, then the start check
+  const sys = m.sd.calls.filter((c) => c.startsWith('systemctl'));
+  assert.deepEqual(sys, ['systemctl --user daemon-reload', `systemctl --user enable --now ${HM.UNIT}`, `systemctl --user enable --now ${HM.TICK_TIMER}`, `systemctl --user is-active ${HM.UNIT}`, `systemctl --user start ${HM.UNIT}`]);
+  const rows = (type) => R.ledger(m.alpha.root).filter((x) => x.type === type);
+  assert.equal(rows('host-manager-install').length, 1);
+  const row = rows('host-manager-install')[0];
+  assert.equal(row.instance, 'host-manager');
+  assert.equal(row.at, T0);
+  assert.deepEqual(row.wrote.map((f) => path.basename(f)).sort(), [HM.UNIT, HM.TICK_SERVICE, HM.TICK_TIMER].sort());
+  assert.equal(rows('host-manager-start').length, 1, 'then started');
+  // the units are those host-manager.js install writes, byte for byte
+  const u = HMS.unitFiles(m.alpha.root, m.alpha.team, 'host-manager', { env, home: m.home, host: 'pc', roleDir: m.alpha.dir('host-manager') });
+  for (const f of u.files) assert.equal(fs.readFileSync(f.file, 'utf8'), f.body, f.file);
+  // a second run: installed already, so no second install and no second row; the unit is never rewritten
+  const body = fs.readFileSync(svc, 'utf8');
+  fs.writeFileSync(svc, `${body}# kept\n`);
+  const before = m.sd.calls.length;
+  watchdog.main(['run', '--project', m.alpha.root], { ...deps, now: iso(Date.parse(T0) + 15 * MIN) });
+  assert.equal(rows('host-manager-install').length, 1);
+  assert.ok(!m.sd.calls.slice(before).some((c) => /daemon-reload|enable/.test(c)), m.sd.calls.slice(before).join('\n'));
+  assert.equal(fs.readFileSync(svc, 'utf8'), `${body}# kept\n`, 'an installed unit is never rewritten');
+});
+
+test('the watchdog run leaves the host manager alone with no instance, an unprepared role directory, an installed unit or no systemctl', () => {
+  const env = runEnv();
+  const quiet = (m, more = {}) => {
+    const o = { home: m.home, exec: m.sd.exec, now: T0, env, has: () => true, ...more };
+    assert.equal(watchdog.ensureHostManager(m.alpha.root, o), null);
+    assert.ok(!fs.existsSync(path.join(HM.unitDir(m.home), HM.UNIT)));
+    assert.deepEqual(m.sd.calls, []);
+    assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'host-manager-install'), []);
+  };
+  // no host-manager instance in the team
+  quiet(machine());
+  // an instance on another host
+  quiet(machine({ alphaRoles: hmRoles('mac') }));
+  // its role directory not prepared
+  const bare = machine({ alphaRoles: hmRoles() });
+  fs.rmSync(bare.alpha.dir('host-manager'), { recursive: true });
+  quiet(bare);
+  // a host without systemctl
+  quiet(machine({ alphaRoles: hmRoles() }), { has: () => false });
+  // installed already: nothing written, no install row; only the start check reads its state
+  const there = machine({ alphaRoles: hmRoles() });
+  const svc = path.join(HM.unitDir(there.home), HM.UNIT);
+  fs.writeFileSync(svc, '[Service]\n');
+  there.sd.units[HM.UNIT] = loaded(true);
+  assert.equal(watchdog.ensureHostManager(there.alpha.root, { home: there.home, exec: there.sd.exec, now: T0, env, has: () => true }), null);
+  assert.equal(fs.readFileSync(svc, 'utf8'), '[Service]\n');
+  assert.deepEqual(there.sd.calls, [`systemctl --user is-active ${HM.UNIT}`]);
+  assert.deepEqual(R.ledger(there.alpha.root).filter((x) => x.type === 'host-manager-install'), []);
+});
+
+test('the per-run install is still refused from a role session: nothing written, no row', () => {
+  const m = machine({ alphaRoles: hmRoles() });
+  const env = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', DELIVERY_ROLE: 'builder', DELIVERY_ROLE_ID: 'builder' };
+  const out = watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0, env, has: () => true });
+  assert.match(String(out), /install writes this machine's user units and runs from a shell outside any role session/);
+  assert.ok(!fs.existsSync(path.join(HM.unitDir(m.home), HM.UNIT)));
+  assert.equal(m.sd.calls.filter((c) => c.startsWith('systemctl')).length, 0);
+  assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'host-manager-install'), []);
+  // a role directory as this process's directory is refused the same way
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-caller-'));
+  fs.writeFileSync(path.join(roleDir, '.delivery-role.json'), '{}');
+  const here = process.cwd();
+  process.chdir(roleDir);
+  try {
+    const env2 = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev' };
+    assert.match(String(watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0, env: env2, has: () => true })), /install writes this machine's user units/);
+  } finally { process.chdir(here); }
+  assert.ok(!fs.existsSync(path.join(HM.unitDir(m.home), HM.UNIT)));
+  assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'host-manager-install'), []);
+  // and the watchdog's run itself is the host job's, refused in a role session
+  const r = watchdog.main(['run', '--project', m.alpha.root], { cwd: m.alpha.root, env, home: m.home, hostUnit: { exec: m.sd.exec, home: m.home, has: () => true } });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /run is the host job's/);
+});
