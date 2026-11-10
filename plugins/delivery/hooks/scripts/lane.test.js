@@ -2195,3 +2195,171 @@ test('team-runtime-10 c4: every lane_writes pattern of every brief is allowed by
   assert.equal(d.allow, false);
   assert.doesNotMatch(fs.readFileSync(path.join(PLUGIN_ROOT, 'roles', 'progress-observer.md'), 'utf8'), /go to `?\.delivery\/reviews/);
 });
+
+// The host manager: one session per machine that reads and restarts the host jobs and role sessions of
+// every team; its lane writes nothing and claims nothing, and runs systemctl --user only on the plugin's
+// own units. Every other lane, the open builder lane included, is refused systemctl --user, the host
+// manager's restart and tick, and team-revive.js start (the Chief of Staff keeps start).
+test('host manager lane: its commands run, systemctl only on the plugin\'s units, no writes, no claims', () => {
+  const hm = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/host-manager' });
+  assert.equal(hm.roleId, 'host-manager');
+  assert.deepEqual(hm.writes, []);
+  for (const g of ['bd-claim', 'git-write-project', 'git-write-product', 'gh-write', 'any']) assert.ok(!hm.bash.includes(g), g);
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-proj-'));
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-role-'));
+  const lane = (toolName, toolInput) => decideLane({ toolName, toolInput, policy: hm, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd, projectRoot });
+  const sh = (command) => lane('Bash', { command }).allow;
+  const script = (s) => path.join(PLUGIN_ROOT, 'scripts', s);
+  for (const c of [
+    `node ${script('host-manager.js')} status`, `node ${script('host-manager.js')} status --json`, `node ${script('host-manager.js')} restart`, `node ${script('host-manager.js')} tick`,
+    `node ${script('team-revive.js')} check --project /srv/alpha`, `node ${script('team-revive.js')} start --project /srv/alpha`,
+    'systemctl --user status delivery-watchdog-0a1b2c3d.timer', 'systemctl --user start delivery-watchdog-0a1b2c3d.timer delivery-watchdog-0a1b2c3d.path',
+    'systemctl --user restart delivery-host-manager.service', 'systemctl --user stop delivery-host-manager-tick.timer',
+    'systemctl --user show delivery-watchdog-0a1b2c3d.timer -p ActiveState -p InactiveEnterTimestamp --no-pager', 'systemctl --user is-active delivery-host-manager.service',
+    'systemctl --user list-units', 'systemctl --user list-timers --all', 'systemctl --user daemon-reload',
+    'amplifier run "the dolt server refuses logins; prove it with bd list"', 'ps -o command= -p 123', 'df -h', 'free -m', 'uptime',
+    'ps aux | sort -k3 | uniq -c', 'bd list --status in_progress', 'bd update ex-1 --append-notes "host job restarted"',
+  ]) assert.equal(sh(c), true, c);
+  for (const c of [
+    'systemctl --user stop ssh.service', 'systemctl --user start delivery-watchdog-0a1b2c3d.timer ssh.service', 'systemctl --user start',
+    'systemctl --user restart delivery-watchdog-0a1b2c3d', 'systemctl --user show -p ActiveState dbus.service', 'systemctl stop delivery-host-manager.service',
+    'systemctl --user --machine x@ start delivery-host-manager.service', 'systemctl --user start delivery-host-manager.service --system',
+    'systemctl --user enable delivery-host-manager.service', 'systemctl --user edit delivery-host-manager.service', 'systemctl --user set-environment A=1',
+    'systemctl --user list-units ssh.service', 'systemctl --user start $UNIT',
+    'bd update ex-1 --claim', 'bd close ex-1', 'git -C product commit -m x', 'gh pr create --title x --body y', 'amplifier install x',
+    'sort -o out.txt in.txt', 'sort --output=out.txt in.txt', 'uniq in.txt out.txt', 'rm -rf x', `node ${script('host-manager.js')} install --project /srv/alpha`,
+  ]) assert.equal(sh(c), false, c);
+  // no Write or Edit anywhere: product repository, project repository, its own directory
+  for (const p of [path.join(rd, 'product', 'src', 'a.js'), path.join(rd, 'project', '.delivery', 'notes.md'), path.join(projectRoot, 'README.md'), path.join(rd, 'notes.md')]) {
+    for (const tool of ['Write', 'Edit']) assert.equal(lane(tool, { file_path: p, content: 'x', old_string: 'a', new_string: 'b' }).allow, false, `${tool} ${p}`);
+  }
+  assert.match(lane('Bash', { command: 'bd update ex-1 --claim' }).reason, /^Role host-manager may not run/);
+});
+
+test('every lane but the host manager\'s refuses systemctl --user and the host manager\'s restart; team-revive.js start only the Chief of Staff and the host manager run', () => {
+  const ids = fs.readdirSync(path.join(PLUGIN_ROOT, 'roles')).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3));
+  assert.ok(ids.includes('host-manager') && ids.includes('builder'));
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'units-lane-'));
+  const revive = `node ${path.join(PLUGIN_ROOT, 'scripts', 'team-revive.js')}`;
+  const hmjs = `node ${path.join(PLUGIN_ROOT, 'scripts', 'host-manager.js')}`;
+  for (const id of ids) {
+    const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${id}` });
+    const d = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+    for (const c of ['systemctl --user restart delivery-watchdog-0a1b2c3d.timer', 'systemctl --user status ssh.service', 'cd /tmp && systemctl --no-pager --user stop x.service', 'bash -c "systemctl --user stop x"', `${hmjs} restart`, `${hmjs} tick`]) {
+      const r = d(c);
+      if (id === 'host-manager') { if (!/ssh|x\.service|bash -c|stop x/.test(c)) assert.equal(r.allow, true, `${id}: ${c}`); continue; }
+      assert.equal(r.allow, false, `${id}: ${c}`);
+      if (policy.bash.includes('any')) assert.match(r.reason, /host manager/, `${id}: ${c}`);
+    }
+    const start = d(`${revive} start`);
+    if (['host-manager', 'chief-of-staff'].includes(id)) assert.equal(start.allow, true, id);
+    else {
+      assert.equal(start.allow, false, id);
+      if (policy.bash.includes('any')) assert.match(start.reason, /starting role sessions is the Chief of Staff's and the host manager's/, id);
+    }
+  }
+  // the open builder lane keeps everything else: a check, the read, other systemctl words
+  const builder = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/builder' });
+  const b = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: builder, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd }).allow;
+  for (const c of [`${revive} check`, `${hmjs} status`, 'systemctl --version', 'ls ~/.config/systemd/user', 'npm test']) assert.equal(b(c), true, c);
+});
+
+// The refusals read each segment's own words, as the shell will run them: quotes and backslashes taken
+// out, the command word found behind env, command, xargs, assignments and sh -c; a word the shell
+// builds at run time ($, backticks) on a service manager's command line is refused, since what it
+// becomes cannot be known. Text that only mentions these commands (a test run, a diff, a commit
+// message, a bead note) is not a run of them.
+test('the open builder lane: every spelling of a user-service command or a session start is refused; a mention is not', () => {
+  const builder = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/builder' });
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'spell-lane-'));
+  const PR = PLUGIN_ROOT;
+  const rel = ['plugins', 'delivery', 'scripts'].join('/');
+  const d = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: builder, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+  const refused = [
+    'systemctl --user stop delivery-watchdog-0a1b2c3d.timer', 'systemctl --use stop delivery-watchdog-0a1b2c3d.timer', 'systemctl --us stop delivery-watchdog-0a1b2c3d.timer',
+    "systemctl --us''er stop delivery-watchdog-0a1b2c3d.timer", 'systemctl --us\\er stop delivery-watchdog-0a1b2c3d.timer', "s''ystemctl --user stop delivery-watchdog-0a1b2c3d.timer",
+    '\\systemctl --user stop delivery-watchdog-0a1b2c3d.timer', '/usr/bin/systemctl --user stop x.timer', 'command systemctl --user stop x.timer', 'env systemctl --user stop x.timer',
+    'A=1 systemctl --user stop x.timer', 'xargs -I{} systemctl --user stop {} <<< x.timer', "sh -c 'systemctl --user stop x'", 'systemctl --user=yes stop x', 'systemctl --u stop x',
+    'systemctl -M dev@ stop x', 'systemctl --machine=dev@.host stop x', 'systemctl -Mdev@ stop x',
+    'busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager StopUnit ss delivery-watchdog-0a1b2c3d.timer replace',
+    'systemd-run --user true', 'U=--user; systemctl $U stop x.timer', 'systemctl "$(echo --user)" stop x.timer', 'systemctl `echo --user` stop x',
+    `node ${PR}/scripts/team-revive.js start`, `node ${PR}/scripts/team-revive.js st''art`, `node ${PR}/scripts/team-revive.js "sta"rt`, `node ${PR}/scripts/team-revive.js --project /p start`,
+    `node -e "require('${PR}/scripts/team-revive.js').revive(process.cwd(),null,{['sta'+'rt']:true})"`,
+    `node ${PR}/scripts/host-manager.js restart`, `node ${PR}/scripts/host-manager.js re''start`, `node ${PR}/scripts/host-manager.js tick`, `node ${PR}/scripts/host-manager.js install --project /p`,
+    `node -e "require('${PR}/scripts/host-manager.js')['re'+'start']()"`, `node -r ${PR}/scripts/host-manager.js x.js`, `node --import=${PR}/scripts/team-revive.js x.js`,
+    `node -p "require('${PR}/scripts/host-manager.js')"`, `node --input-type=module <<< "import '${PR}/scripts/host-manager.js'"`,
+    `bash -c "node ${PR}/scripts/team-revive.js start"`, `cd /tmp && node ${PR}/scripts/host-manager.js restart`,
+  ];
+  for (const c of refused) assert.equal(d(c).allow, false, c);
+  assert.match(d('systemctl --us stop x').reason, /systemctl --user\) are the host manager's/);
+  assert.match(d(`node ${PR}/scripts/team-revive.js st''art`).reason, /starting role sessions is the Chief of Staff's and the host manager's/);
+  const allowed = [
+    `DELIVERY_TEST_FILES=${PR}/scripts/team-revive.test.js:${PR}/scripts/start.test.js node ${PR}/scripts/testing/run-tests.js`,
+    `git diff origin/main -- ${rel}/team-revive.js ${rel}/start.js`,
+    `cat ${rel}/team-revive.js ${rel}/start.js`,
+    'git commit -m "host-manager.js restart replies from the read after"',
+    'grep -rn "systemctl --user" plugins/delivery',
+    'bd update x-1 --append-notes "the watchdog runs systemctl --user is-active"',
+    `node ${PR}/scripts/team-revive.js check`, `node ${PR}/scripts/host-manager.js status`, 'systemctl --version', 'systemctl status cron.service',
+  ];
+  for (const c of allowed) assert.equal(d(c).allow, true, c);
+  // the Chief of Staff keeps team-revive.js start, in every spelling, and is refused the rest
+  const cos = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/chief-of-staff' });
+  const c = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: cos, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd }).allow;
+  assert.equal(c(`node ${PR}/scripts/team-revive.js start`), true);
+  assert.equal(c(`node ${PR}/scripts/host-manager.js restart`), false);
+});
+
+// A Remote Control server started by hand is a role session started by hand: only the Chief of Staff
+// and the host manager start role sessions. run-session is the host manager's unit's own command. taskset
+// is a wrapper like nice: the command after its mask or cpu list is what runs.
+test('claude remote-control is refused to every lane but the Chief of Staff\'s and the host manager\'s; host-manager.js run-session is refused; taskset is looked through', () => {
+  const { hostRefusal } = require('./lane.js');
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-lane-'));
+  const PR = PLUGIN_ROOT;
+  const launcher = path.join('/p', ['.', 'delivery'].join(''), 'bin', 'delivery.js');
+  const policyOf = (role) => loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${role}` });
+  const builder = policyOf('builder');
+  const d = (command, policy = builder) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+  const starts = [
+    'claude remote-control --name builder-9@x --spawn session', 'claude remote-control --session-id session_abc --name b@x', 'claude remote-control --spawn=session',
+    "claude remote-control --na''me b@x", '/usr/local/bin/claude remote-control --name b@x', 'command claude remote-control --name b@x', 'env A=1 claude remote-control --spawn session',
+    "bash -c 'claude remote-control --name b@x'", 'nohup claude remote-control --name b@x --spawn session &',
+  ];
+  for (const c of starts) {
+    const r = d(c);
+    assert.equal(r.allow, false, c);
+    assert.match(r.reason, /starting role sessions is the Chief of Staff's and the host manager's/, c);
+  }
+  for (const c of [`node ${PR}/scripts/host-manager.js run-session --project /p --instance host-manager`, `node ${launcher} host-manager.js run-session --project /p --instance hm`]) {
+    const r = d(c);
+    assert.equal(r.allow, false, c);
+    assert.match(r.reason, /the host manager's restart, tick and install/, c);
+  }
+  for (const c of ['taskset -c 0 systemctl --user stop x.timer', 'taskset 0x3 systemctl --user stop x.timer', 'taskset --cpu-list 0-1 systemctl --user stop x.timer',
+    `taskset -c 0,2 node ${PR}/scripts/host-manager.js restart`, 'taskset -a 0x1 claude remote-control --name b@x']) assert.equal(d(c).allow, false, c);
+  for (const c of ['claude --version', 'claude agents --json', 'claude mcp list', 'claude remote-control --help', 'taskset -c 0 npm test', 'taskset -p 1234', 'taskset -pc 0 1234',
+    'grep -rn "claude remote-control" plugins/delivery', 'git commit -m "claude remote-control --name is the host manager\'s"']) assert.equal(d(c).allow, true, `${c}: ${d(c).reason}`);
+  // the two roles that start role sessions are not refused it here
+  for (const role of ['chief-of-staff', 'host-manager']) assert.equal(hostRefusal('claude remote-control --name x@y --spawn session', role), null, role);
+  assert.equal(hostRefusal('claude remote-control --name x@y --spawn session', 'builder'), 'start');
+  // their own lanes start sessions through team-revive.js: a refusal there is their command groups', never this one
+  for (const role of ['chief-of-staff', 'host-manager']) assert.doesNotMatch(String(d('claude remote-control --name x@y --spawn session', policyOf(role)).reason), /starting role sessions is/, role);
+});
+
+test('host manager lane: operands after -- must match, value flags are not operands, job modes and --force are refused', () => {
+  const hm = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/host-manager' });
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-ops-'));
+  const sh = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: hm, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd }).allow;
+  for (const c of [
+    'systemctl --user stop -- delivery-watchdog-0a1b2c3d.timer', 'systemctl --user start --job-mode=replace delivery-watchdog-0a1b2c3d.service', 'systemctl --user start --job-mode fail delivery-watchdog-0a1b2c3d.service',
+    'systemctl --user list-units -t timer --state=failed', 'systemctl --user list-units --type timer', 'systemctl --user status delivery-host-manager.service -n 50 -o cat',
+    'systemctl --user show --property ActiveState delivery-host-manager.service', 'systemctl --user stop "delivery-watchdog-*.timer"',
+  ]) assert.equal(sh(c), true, c);
+  for (const c of [
+    'systemctl --user stop -- delivery-host-manager.service -.slice', 'systemctl --user stop -- -.slice', 'systemctl --user start --job-mode=isolate delivery-watchdog-0a1b2c3d.service',
+    'systemctl --user start --job-mode isolate delivery-watchdog-0a1b2c3d.service', 'systemctl --user start --job-mode=ignore-dependencies delivery-watchdog-0a1b2c3d.service', 'systemctl --user start --job=isolate delivery-watchdog-0a1b2c3d.service',
+    'systemctl --user stop --force delivery-host-manager.service', 'systemctl --user restart -f delivery-host-manager.service', 'systemctl --user stop --for delivery-host-manager.service',
+    'systemctl --user list-units -t timer ssh.service',
+  ]) assert.equal(sh(c), false, c);
+});

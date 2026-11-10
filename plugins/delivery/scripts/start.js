@@ -40,6 +40,9 @@ const ROLE_ENTRIES = {
   builder: { id: 'builder', brief: 'delivery/builder', model: 'sonnet', steward: true },
   'reality-checker': { id: 'reality-checker', brief: 'delivery/reality-checker', model: 'sonnet' },
   'tech-writer': { id: 'tech-writer', brief: 'delivery/tech-writer', model: 'sonnet' },
+  // one per machine, not in a preset: added by Staffing (team-role.js add host-manager) on the team whose
+  // manifest holds it, then installed as a user unit (host-manager.js install)
+  'host-manager': { id: 'host-manager', brief: 'delivery/host-manager', model: 'opus' },
 };
 // --models: one model per role for the whole team. balanced is the role defaults (opus for the Chief
 // of Staff and the Product Manager); quality also puts the Delivery Manager on opus; economy moves
