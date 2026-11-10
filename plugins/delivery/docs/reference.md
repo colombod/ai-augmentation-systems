@@ -1346,10 +1346,19 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `--permission-mode <mode>` first (team.json
   `permission_mode`, which start.js records; for a team recorded before it, the mode the session
   started in; auto when neither says; nothing for `default`; an unreadable team.json or an invalid mode
-  is no wake, alarm only): `claude --resume <id> -p "<prompt>"` when the session is not
-  open; with `--fork-session` when it is open and idle; `claude -c -p` when the roster has no session id;
-  nothing when it is busy, when open sessions cannot be listed (`claude agents --json` failed: alarm
-  only, never a fork), or when its role directory is not on this host. A session not open whose last turn carried more
+  is no wake, alarm only): `claude --resume <id> -p "<prompt>"` when the role has no live session;
+  `claude -c -p` when the roster has no session id; nothing when open sessions cannot be listed
+  (`claude agents --json` failed: alarm only), or when its role directory is not on this host. One
+  live session per role (`lib/one-session.js`): a session is the role's when it runs in its role
+  directory or inside it (a builder's worktree) or under its own name `<instance>@<team>`, whatever
+  id the roster has. A role with a live session is never given a second one. A busy one is left to
+  work; an idle one is handed the wake as a message on its own socket
+  (`<runtime dir>/cc-socks/<pid>.sock`, `lib/session-message.js`), sent under the host job's name,
+  `Watchdog (a host job, not the owner)`. The hand-over is logged as a wake (mode `message`), so the
+  caps and the doubling hold; when the socket does not take it, the line says so and nothing is
+  started. The frame format is Claude Code's own and undocumented (read on 2.1.318), and a session in
+  another permission mode may hold a peer message for its user's approval, so a hand-over is not proof
+  the turn ran: the stall checks still read whether the bead moves. A session not open whose last turn carried more
   than `wake_fresh_above_tokens` (team.json, 120000 by default, 0 for never; read from the usage its
   transcript records) is woken in a fresh session in its role directory instead (`claude -p`, no
   resume), told that its earlier conversation is not loaded and to start from its in-progress beads:
@@ -1363,8 +1372,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   resumed under (`plugin_version`, written by the SessionStart hook; for a session started before
   that, the last plugin path its own commands named). A session not open whose last version is older
   than the one the watchdog runs (the installed one) is woken fresh instead of resumed, told which
-  version it ran and which is installed. A running wake is never stopped, and an open session is
-  forked as before. A conversation resumed any other way is told at its start that the plugin moved
+  version it ran and which is installed. A running wake is never stopped, and an open idle session is
+  handed the wake as a message, as above, never forked or started fresh beside it. A conversation resumed any other way is told at its start that the plugin moved
   and where its scripts are now; and when the lane refuses a path to another installed version of
   this plugin, its reason says so and gives the same command at the current plugin root (or says
   that the lane would refuse it there too) (delivery-plugin-planning-8wz).
@@ -1493,7 +1502,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   in the Claude app through Remote Control dropped, and a wake brings work back only as a headless run.
   `team-revive.js check [--json]` lists, for each role instance of the team on this host (team.json
   `host` against `DELIVERY_HOST`, else the machine's short hostname), whether a session runs in its role
-  directory (`claude agents --json`), the work in flight (a bead in progress, an open pull request from a
+  directory or inside it, or under its own name `<instance>@<team>` (`claude agents --json`; a
+  role found running twice is named `Running twice:`, and nothing more is started for it, nor is a
+  stale one restarted while another of its sessions is live), the work in flight (a bead in progress, an open pull request from a
   `team/<instance>` branch, a message or handoff waiting) and, per missing instance, the command a start
   runs. A source that cannot be read is a line that says so, never "all running"; a session list that
   cannot be read starts nothing. `team-revive.js start [--dry-run]` starts each missing instance while

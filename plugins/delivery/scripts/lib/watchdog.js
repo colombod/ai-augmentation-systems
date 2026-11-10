@@ -937,7 +937,7 @@ const FRESH_ABOVE = 120000;
 // prefix: the team's bead prefix; the fresh session is named <instance>@<team> (lib/session-name.js)
 function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null, prefix = null } = {}) {
   const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
-  const r = wakeArgs(s, prompt, live);
+  const r = wakeArgs(s, prompt, live, { prefix });
   const older = Boolean(installed) && require('./plugin-version.js').compare(s && s.pluginVersion, installed) === -1;
   if (r.mode === 'resume' && (older || (freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove))) {
     // named like every role session (start.js --name), so peers reach it by name (team rule 13)
@@ -964,15 +964,25 @@ function freshPreamble(s, installed = null) {
     + ` Your brief and the team's records are your memory: start with your own in-progress beads (bd list --assignee "$BEADS_ACTOR" --status in_progress) and their notes, and the files they name.${operator}`;
 }
 
-function wakeArgs(s, prompt, live) {
+// One live session per role (lib/one-session.js, hjx.1.6.17): a role with a live session, under the
+// roster's id or any other in its role directory, is never given a second one. A working one is left to
+// work; an idle one is handed the wake as a message on its own socket (mode 'message', lib/session-message.js).
+// Before, an open idle session was forked (--fork-session), and one under another id was not seen at
+// all, so the wake ran a second session of the role beside it.
+function wakeArgs(s, prompt, live, { prefix = null } = {}) {
   if (!s || !s.roleDir) return { skip: 'no session of this role on this host\'s roster' };
   if (!fs.existsSync(s.roleDir)) return { skip: `its role directory ${s.roleDir} is not on this host` };
   if (live === null || live === undefined) return { skip: 'open sessions could not be listed (claude agents --json), so a wake could collide with one; alarm only' };
+  const OS = require('./one-session.js');
+  const lives = OS.liveOf(s.instance, { roleDir: s.roleDir, live, prefix }) || [];
+  const own = s.session ? live.find((r) => r && r.sessionId === s.session) || null : null;
+  if (own && !lives.includes(own)) lives.unshift(own);
+  if (lives.length) {
+    const busy = lives.find((r) => r.status !== 'idle' && r.status !== 'waiting');
+    if (busy) return { skip: `it is working (${busy.status || 'busy'}) as ${OS.described([busy])}` };
+    return { mode: 'message', session: own || lives[0], twice: lives.length > 1 ? OS.described(lives) : null };
+  }
   if (!s.session) return { mode: 'continue', args: ['-c', '-p', prompt] };
-  const row = live.find((r) => r && r.sessionId === s.session);
-  if (row && row.status !== 'idle' && row.status !== 'waiting') return { skip: `it is working (${row.status || 'busy'})` };
-  // open and idle: a copy never collides with the open session
-  if (row) return { mode: 'fork', args: ['--resume', s.session, '--fork-session', '-p', prompt] };
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 

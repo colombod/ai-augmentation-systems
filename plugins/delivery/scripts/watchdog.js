@@ -130,6 +130,7 @@ function wakeLimitMs(env) {
   const asked = Number(env.DELIVERY_WAKE_TIMEOUT_MIN) * 60e3;
   return Number.isFinite(asked) && asked > 0 ? Math.min(asked, WD.WAKE_TIMEOUT_H * 3600e3) : WD.WAKE_TIMEOUT_H * 3600e3;
 }
+const defaultDeliver = (socket, text) => require('./lib/session-message.js').deliver(socket, text);
 function spawnWake(bin, args, { cwd, env, logPath }) {
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
   const fd = fs.openSync(logPath, 'a');
@@ -198,7 +199,7 @@ const HEADLESS_WAIT = { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
 // hold what it was kicked to hand over until the timer pass. A pid named in a kick has ended.
 const endedPids = (kicks) => new Set(kicks.map((k) => Number((/a wake ended \(pid (\d+)\)/.exec(k) || [])[1])).filter((n) => n > 0));
 
-function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set() }) {
+function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
   const p = WD.plan(res, { root, now: at, alive: (pid) => !ended.has(pid) && WD.pidAlive(pid) });
@@ -220,6 +221,28 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
       // one skip row an hour per session keeps the log short while a session is busy
       const lastSkip = rows.filter((r) => r.type === 'skip' && r.instance === w.target).pop();
       if (!dryRun && (!lastSkip || Date.parse(at) - Date.parse(lastSkip.at) >= WD.WAKE_EVERY_MS)) WD.log(root, { type: 'skip', at, keys: w.keys, instance: w.target, reason: c.skip });
+      continue;
+    }
+    if (c.mode === 'message') {
+      // the role's session is live and idle: the wake goes to it as a message, and no session is started
+      const target = require('./lib/one-session.js').described([c.session]);
+      const twice = c.twice ? ` (it runs twice: ${c.twice})` : '';
+      if (dryRun) { lines.push(`Would message ${w.target}'s live session ${target}${twice}: ${w.lines[0]}`); continue; }
+      const SM = require('./lib/session-message.js');
+      const d = deliver(SM.socketOf(Number(c.session.pid), env), w.prompt);
+      if (!d.ok) {
+        const why = `its session ${target} is live, and the wake could not be handed to it (${d.why}); no second session is started`;
+        lines.push(`Not woken: ${w.target}: ${why}${twice}. ${w.lines[0]}`);
+        const lastSkip = rows.filter((r) => r.type === 'skip' && r.instance === w.target).pop();
+        if (!lastSkip || Date.parse(at) - Date.parse(lastSkip.at) >= WD.WAKE_EVERY_MS) WD.log(root, { type: 'skip', at, keys: w.keys, instance: w.target, reason: why });
+        continue;
+      }
+      // logged as a wake, so the hourly and daily caps and the doubling hold; no pid: nothing runs for it
+      WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: c.session.sessionId || null, mode: 'message', msg_id: d.msgId, prompt: w.prompt, pid: null });
+      for (const dl of w.delivers || []) require('./lib/inbox.js').markDelivered(root, dl.to, dl.upTo);
+      let keptM = '';
+      if (w.handoffs && w.handoffs.length) { try { require('./lib/handoff.js').markDelivered(root, w.handoffs, at); } catch (err) { keptM = ` (its handoff stays open until the next pass: ${String(err.message).split('\n')[0]})`; } }
+      lines.push(`Woke ${w.target} (message to its live session ${target})${twice}: ${w.lines.join(' ')}${keptM}`);
       continue;
     }
     const shown = `${bin} ${c.args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`;
@@ -533,7 +556,7 @@ function defaultRevive(root, { team, env, now, dryRun, bd, live }) {
   return require('./team-revive.js').revive(root, team, { start: true, dryRun, env, now, bd, relist, ...(live !== undefined ? { live } : {}) }).lines;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -569,7 +592,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     state.held = !!updated.held;
     // a held install starts no wake: one started now is another run the install must wait for, and with
     // wakes back to back it never went (delivery-plugin-planning-0ba.6)
-    const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked) }))];
+    const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked), ...(deliver ? { deliver } : {}) }))];
     // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
     // after the wakes, so a role a wake now runs is seen running; never under an install (the next run's)

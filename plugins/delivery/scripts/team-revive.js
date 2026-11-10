@@ -27,6 +27,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const R = require('./lib/team-revive.js');
+const OS = require('./lib/one-session.js');
 const WD = require('./lib/watchdog.js');
 const { whoAmI } = require('./lib/gate-context.js');
 
@@ -238,6 +239,10 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
     const row = now.find((s) => s && s.sessionId === st.session);
     if (!row) { out[i.instance] = { why: 'its session is no longer open; the next pass starts it if it is missing' }; continue; }
     if (row.status !== 'idle') { out[i.instance] = { why: `it became ${row.status || 'busy'} just before the stop` }; continue; }
+    // one live session per role (lib/one-session.js): a restart replaces the one it stops, so any other
+    // live session of the instance means the new one would be a second
+    const others = (OS.liveOf(i.instance, { roleDir: i.roleDir, live: now, prefix: f.team && f.team.prefix }) || []).filter((x) => x.sessionId !== st.session);
+    if (others.length) { out[i.instance] = { why: `another session of it is live (${OS.described(others)}); a restart would leave two` }; continue; }
     const at = f.now;
     if (!stop(st.server, st.pid)) {
       R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, from: st.version, to: st.installed });
@@ -273,6 +278,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
     const RO = require('./lib/roster.js');
     for (const i of a.instances) if (i.remoteId && f.roster[i.instance] && f.roster[i.instance].remote_session_id !== i.remoteId) { try { RO.setRemoteSession(root, { instance: i.instance, remote_session_id: i.remoteId }); } catch (err) { /* the next pass records it */ } }
   }
+  const again = relist || (() => (deps.live !== undefined ? deps.live : require('./watchdog.js').liveSessions(bin, env)));
   if (start && !dryRun && a.go) {
     for (const i of a.missing.filter((x) => !x.skip && !x.held)) {
       const at = f.now;
@@ -298,6 +304,10 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
     // pass waits for in turn, so a host where systemd-run fails still starts its team
     for (const n of failStarts(Object.keys(started)).filter((x) => started[x].unit && systemdRunRefused(path.join(root, started[x].log)))) {
       const was = started[n];
+      // the plain start is a second start: the sessions are listed again first, and one that is live
+      // now (it came up another way meanwhile) is left alone, as a start would leave it
+      const nowLive = OS.liveOf(n, { roleDir: was.roleDir, live: again(), prefix: f.team && f.team.prefix });
+      if (nowLive === null || nowLive.length) { started[n].fallbackHeld = nowLive === null ? 'the open sessions could not be listed again' : `it is live now (${OS.described(nowLive)})`; continue; }
       const at = new Date().toISOString();
       const logPath = path.join(root, WD.REL, 'logs', `revive-${n}-${at.replace(/[:.]/g, '-')}.log`);
       const pid = spawn(bin, was.args, { cwd: was.roleDir, env: startEnv(env, n), logPath });
@@ -308,7 +318,6 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   }
   let restarted = {};
   if (start && !dryRun && a.restart && a.stale.length) {
-    const again = relist || (() => (deps.live !== undefined ? deps.live : require('./watchdog.js').liveSessions(bin, env)));
     restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun });
   }
   return { a, started, restarted, lines: R.lines(a, { bin, started, restarted, dryRun: start && dryRun }) };

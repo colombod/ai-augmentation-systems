@@ -815,3 +815,56 @@ test('when systemd-run itself refuses the scope, the role is started again at on
   assert.deepEqual(R.ledger(q.root).map((x) => x.type), ['start', 'failed']);
   assert.equal(TR.systemdRunRefused(path.join(q.root, 'nope.log')), false);
 });
+
+// hjx.1.6.17: one live session per role instance (lib/one-session.js), on every path that starts one
+test('hjx.1.6.17: a role whose session runs inside its role directory (its worktree) is running, not missing, and is not started again', () => {
+  const p = project();
+  const live = [{ cwd: p.dir('chief-of-staff'), sessionId: 's-cos', name: 'chief-of-staff@ex', status: 'idle' }, { cwd: path.join(p.dir('builder'), 'product'), sessionId: 'unit-b', name: 'builder (unit)', status: 'busy' }];
+  const r = run(p, ['start'], { live });
+  assert.equal(r.calls.length, 0, r.out);
+  assert.match(r.out, /All 2 role sessions of ex on pc are running\./);
+  // a session found only by its name, elsewhere, counts too
+  const q = project();
+  const byName = run(q, ['start'], { live: [{ cwd: q.dir('chief-of-staff'), sessionId: 's', status: 'idle' }, { cwd: '/somewhere/else', sessionId: 'n', name: 'builder@ex', status: 'idle' }] });
+  assert.equal(byName.calls.length, 0, byName.out);
+});
+
+test('hjx.1.6.17: check names a role running twice, and start adds no third session', () => {
+  const p = project();
+  const live = [
+    { cwd: p.dir('chief-of-staff'), sessionId: 's-cos', name: 'chief-of-staff@ex', status: 'idle' },
+    { cwd: p.dir('builder'), sessionId: 'b-1', name: 'builder@ex', status: 'idle' },
+    { cwd: path.join(p.dir('builder'), 'product'), sessionId: 'b-2', name: 'builder-x', status: 'busy' },
+  ];
+  const c = run(p, ['check'], { live });
+  assert.match(c.out, /^Running twice: builder: builder@ex \(idle\) in .*builder, builder-x \(busy\) in .*product\. One session per role: the other ends after committing its work; nothing more is started for it\.$/m);
+  assert.equal(run(p, ['start'], { live }).calls.length, 0);
+});
+
+test('hjx.1.6.17: a stale restart is refused when another session of the role is live, read before the stop and again just before it', () => {
+  // two sessions already in the first read: no stop at all
+  const { p, live } = staleTeam();
+  const twice = [...live, { cwd: path.join(COS_DIR(p), 'product'), sessionId: 'cos-2', pid: 5300, name: 'cos-2', status: 'idle' }];
+  const r = restartRun(p, ['start'], { live: twice });
+  assert.deepEqual(r.stops, [], 'nothing is stopped');
+  assert.equal(r.calls.length, 0, r.out);
+  assert.match(r.out, /runs twice/);
+  // a second session that came up between the reads: still no stop, and the reason names it
+  const s = staleTeam();
+  const late = restartRun(s.p, ['start'], { live: s.live, relist: () => [...s.live, { cwd: COS_DIR(s.p), sessionId: 'cos-late', pid: 5400, name: 'cos-late', status: 'idle' }] });
+  assert.deepEqual(late.stops, []);
+  assert.equal(late.calls.length, 0, late.out);
+  assert.match(late.out, /another session of it is live \(cos-late \(idle\)/);
+});
+
+test('hjx.1.6.17: after systemd-run refuses a scope, no plain start follows when the role is live by then, or when the sessions cannot be listed again', () => {
+  for (const [relisted, why] of [[(p) => [{ cwd: p.dir('builder'), sessionId: 'came-up', name: 'builder@ex', status: 'idle' }], /no plain start followed: it is live now \(builder@ex \(idle\)/], [() => null, /no plain start followed: the open sessions could not be listed again/]]) {
+    const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
+    const dir = path.join(p.root, '..', 'bin');
+    const sd = fakeBin(dir, 'systemd-run', 'echo "Failed to start transient scope unit: refused" >&2; exit 1');
+    const bin = fakeBin(dir, 'claude', 'exit 4');
+    const r = TR.revive(p.root, p.team, { ...realDeps(p, { DELIVERY_CLAUDE_BIN: bin }), systemdRun: sd, relist: () => relisted(p) });
+    assert.deepEqual(R.ledger(p.root).map((x) => x.type), ['start', 'failed'], 'one start, its failure, and no plain start');
+    assert.match(r.lines.join('\n'), why);
+  }
+});
