@@ -2310,6 +2310,43 @@ test('the open builder lane: every spelling of a user-service command or a sessi
   assert.equal(c(`node ${PR}/scripts/host-manager.js restart`), false);
 });
 
+// A Remote Control server started by hand is a role session started by hand: only the Chief of Staff
+// and the host manager start role sessions. run-session is the host manager's unit's own command. taskset
+// is a wrapper like nice: the command after its mask or cpu list is what runs.
+test('claude remote-control is refused to every lane but the Chief of Staff\'s and the host manager\'s; host-manager.js run-session is refused; taskset is looked through', () => {
+  const { hostRefusal } = require('./lane.js');
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-lane-'));
+  const PR = PLUGIN_ROOT;
+  const launcher = path.join('/p', ['.', 'delivery'].join(''), 'bin', 'delivery.js');
+  const policyOf = (role) => loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${role}` });
+  const builder = policyOf('builder');
+  const d = (command, policy = builder) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+  const starts = [
+    'claude remote-control --name builder-9@x --spawn session', 'claude remote-control --session-id session_abc --name b@x', 'claude remote-control --spawn=session',
+    "claude remote-control --na''me b@x", '/usr/local/bin/claude remote-control --name b@x', 'command claude remote-control --name b@x', 'env A=1 claude remote-control --spawn session',
+    "bash -c 'claude remote-control --name b@x'", 'nohup claude remote-control --name b@x --spawn session &',
+  ];
+  for (const c of starts) {
+    const r = d(c);
+    assert.equal(r.allow, false, c);
+    assert.match(r.reason, /starting role sessions is the Chief of Staff's and the host manager's/, c);
+  }
+  for (const c of [`node ${PR}/scripts/host-manager.js run-session --project /p --instance host-manager`, `node ${launcher} host-manager.js run-session --project /p --instance hm`]) {
+    const r = d(c);
+    assert.equal(r.allow, false, c);
+    assert.match(r.reason, /the host manager's restart, tick and install/, c);
+  }
+  for (const c of ['taskset -c 0 systemctl --user stop x.timer', 'taskset 0x3 systemctl --user stop x.timer', 'taskset --cpu-list 0-1 systemctl --user stop x.timer',
+    `taskset -c 0,2 node ${PR}/scripts/host-manager.js restart`, 'taskset -a 0x1 claude remote-control --name b@x']) assert.equal(d(c).allow, false, c);
+  for (const c of ['claude --version', 'claude agents --json', 'claude mcp list', 'claude remote-control --help', 'taskset -c 0 npm test', 'taskset -p 1234', 'taskset -pc 0 1234',
+    'grep -rn "claude remote-control" plugins/delivery', 'git commit -m "claude remote-control --name is the host manager\'s"']) assert.equal(d(c).allow, true, `${c}: ${d(c).reason}`);
+  // the two roles that start role sessions are not refused it here
+  for (const role of ['chief-of-staff', 'host-manager']) assert.equal(hostRefusal('claude remote-control --name x@y --spawn session', role), null, role);
+  assert.equal(hostRefusal('claude remote-control --name x@y --spawn session', 'builder'), 'start');
+  // their own lanes start sessions through team-revive.js: a refusal there is their command groups', never this one
+  for (const role of ['chief-of-staff', 'host-manager']) assert.doesNotMatch(String(d('claude remote-control --name x@y --spawn session', policyOf(role)).reason), /starting role sessions is/, role);
+});
+
 test('host manager lane: operands after -- must match, value flags are not operands, job modes and --force are refused', () => {
   const hm = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/host-manager' });
   const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-ops-'));

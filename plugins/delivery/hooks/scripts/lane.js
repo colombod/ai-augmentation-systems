@@ -1125,6 +1125,16 @@ function commandWords(t) {
       if (r) { i += r[1] ? 1 : 2; continue; }
       break;
     }
+    // taskset [options] <mask|cpu-list> <command>: the mask or list is its first operand; with -p it
+    // changes a running process and runs no command
+    if (i < t.length && baseOf(t[i]) === 'taskset') {
+      i++;
+      let pid = false;
+      while (i < t.length && t[i].startsWith('-')) { if (/^-[a-z]*p/.test(t[i]) || t[i] === '--pid') pid = true; i++; }
+      if (pid) return [];
+      i++;
+      continue;
+    }
     if (i < t.length && WRAPPERS.has(baseOf(t[i]))) {
       i++;
       while (i < t.length && (t[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]) || /^\d+(?:\.\d+)?[smhd]?$/.test(t[i]))) { i += WRAPPER_VALUE_FLAGS.has(t[i]) ? 2 : 1; }
@@ -1553,6 +1563,9 @@ function hostRefusal(text, roleId, depth = 0) {
       if (args.some((a) => USER_OPT.test(a) || /[$`]/.test(a)) || machineUser(args)) return 'units';
       continue;
     }
+    // a Remote Control server named or attached to a session is a role session started by hand: the
+    // Chief of Staff's and the host manager's alone, as team-revive.js start is (its --help is no start)
+    if (name === 'claude' && args.includes('remote-control') && args.some((a) => /^--(?:name|spawn|session-id)(?:=|$)/.test(a)) && roleId !== 'chief-of-staff') return 'start';
     if (!INTERPRETERS.has(name)) continue;
     let script = null;
     for (let i = 0; i < args.length; i++) {
@@ -1577,7 +1590,7 @@ function hostRefusal(text, roleId, depth = 0) {
     if (isLauncher(file)) { file = rest[0]; rest = rest.slice(1); }
     const base = baseOf(file);
     if (base === 'team-revive.js' && rest.includes('start') && roleId !== 'chief-of-staff') return 'start';
-    if (base === 'host-manager.js' && rest.some((x) => ['restart', 'tick', 'install'].includes(x))) return 'manager';
+    if (base === 'host-manager.js' && rest.some((x) => ['restart', 'tick', 'install', 'run-session'].includes(x))) return 'manager';
   }
   return null;
 }
