@@ -190,6 +190,14 @@ test('A1: stage 3 is owned: the Delivery Manager runs acceptance, the Product Ma
   assert.match(b, /This team has no Spike Researcher, so spikes are yours/);
 });
 
+test('hjx.1.6.12.1: the Product Manager checks the current wave for gaps on every turn it is started or woken, and names each on the initiative bead', () => {
+  const pm = roleText('product-manager');
+  assert.match(pm, /Every time you are started or woken, check the current wave for gaps/);
+  assert.match(pm, /a roadmap row with no story file, or a story file with no bead/);
+  assert.match(pm, /note on the initiative's bead/);
+  assert.match(pm, /tell the Delivery Manager/);
+});
+
 test('A5: builders pick the subagent model from size-L or a bead model; the Delivery Manager sizes stories honestly', () => {
   assert.match(roleText('builder'), /`size-L`, or one whose metadata carries `model`, gets that model for the implementer and reviewer subagents/);
   assert.match(roleText('builder'), /reviewer is at least as capable as the implementer/);
