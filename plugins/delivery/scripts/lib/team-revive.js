@@ -253,7 +253,11 @@ function assess(f) {
     // its own session name; the roster's own session first when it is one of them
     const lives = OS.liveOf(instance, { roleDir, live: f.live, prefix: team.prefix }) || [];
     const open = lives.find((s) => e.session_id && s.sessionId === e.session_id) || lives[0] || null;
-    if (lives.length > 1) it.twice = OS.described(lives);
+    if (lives.length > 1) {
+      it.twice = OS.described(lives);
+      // who the sessions are, apart from their status and their order in the list: what a pair is known by
+      it.twiceIds = lives.map((s) => String(s.sessionId || s.pid || s.name || '?')).sort();
+    }
     // a restart onto the installed plugin is a start too: the same caps hold both
     // and so is a restart whose server stopped but whose new one did not start (the session went down)
     const starts = rows.filter((r) => (r.type === 'start' || r.type === 'restart' || (r.type === 'restart-failed' && r.stopped)) && r.instance === instance);

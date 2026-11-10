@@ -275,7 +275,9 @@ function tellTwice(root, team, a, { now, queue = (r, m) => require('./lib/inbox.
   const to = ids.includes('staffing') ? 'staffing' : 'chief-of-staff';
   const told = [];
   for (const i of a.instances.filter((x) => x.twice)) {
-    const key = `${i.instance}:${i.twice}`;
+    // the pair is known by its sessions' ids, never by their status or order, which change between
+    // passes: a pair whose sessions turn busy or swap places in the list is not told again (rv-198)
+    const key = `${i.instance}:${(i.twiceIds || [i.twice]).join(',')}`;
     if (rows.some((r) => r.type === 'twice' && r.key === key)) continue;
     queue(root, { to, from: 'team-revive (host job)', summary: `${i.instance} runs twice`, message: `${i.instance} has two live sessions: ${i.twice}. One session per role: name the one that stays, and the other ends after committing its work (hjx.1.6.17).`, at: now });
     R.record(root, { type: 'twice', at: now, instance: i.instance, key, to });

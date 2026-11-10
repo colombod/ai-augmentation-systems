@@ -886,6 +886,11 @@ test('hjx.1.6.17 (rv-198): a role running twice is told to Staffing once per occ
   assert.match(told[0].entries[0].message, /^builder has two live sessions: builder@ex \(idle\) in .*builder, builder-x \(busy\) in .*product\. One session per role/);
   run(p, ['start'], { live: twice, now: iso(Date.parse(T0) + 15 * 60e3) });
   assert.equal(IB.pending(p.root)[0].entries.length, 1, 'the same pair is told once');
+  // the same pair with its statuses flipped and its order swapped is still the same pair (rv-198)
+  const flipped = [twice[0], twice[1], { ...twice[3], status: 'idle' }, { ...twice[2], status: 'busy' }];
+  run(p, ['start'], { live: flipped, now: iso(Date.parse(T0) + 20 * 60e3) });
+  run(p, ['start'], { live: twice, now: iso(Date.parse(T0) + 25 * 60e3) });
+  assert.equal(IB.pending(p.root)[0].entries.length, 1, 'a status flip or a reorder is not a new pair');
   const again = twice.map((x) => (x.sessionId === 'b-2' ? { ...x, sessionId: 'b-3', name: 'builder-y' } : x));
   run(p, ['start'], { live: again, now: iso(Date.parse(T0) + 30 * 60e3) });
   assert.equal(IB.pending(p.root)[0].entries.length, 2, 'a new pair is told');
