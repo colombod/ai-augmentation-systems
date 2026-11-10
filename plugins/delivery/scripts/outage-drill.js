@@ -98,8 +98,8 @@ function plan(who, o, { env = process.env, now, verifyRecord, ps }) {
 }
 
 // Order: the record verifies, no drill spent it, the restore is scheduled, the restart is scheduled, the
-// row is written, the cut runs. A step that fails stops there and undoes the timers made before it, so a
-// failed schedule never cuts and a failed cut never restarts the host.
+// row is written, the cut runs. A schedule or row that fails stops there and stops the timers, so nothing
+// is cut; a cut that fails never restarts the host and still brings the network back.
 function run(who, o, { env, now, verifyRecord, exec }) {
   const refuse = (why) => ({ code: 1, out: `outage-drill.js: ${why}` });
   const v = consent(who.root, o.record, verifyRecord, hostOf(env));
@@ -120,12 +120,17 @@ function run(who, o, { env, now, verifyRecord, exec }) {
   const after = L.RESTART_AFTER;
   const t = L.times(now, cut, after);
   const made = [];
-  const undo = () => { for (const kind of made) { try { exec(L.stopArgs(kind, o.record, env)); } catch (err) { /* the timer may be gone */ } } unclaim(); };
+  // A schedule reported as failed (non-zero, timed out, thrown) may still have made its unit, so the undo
+  // also stops the kind that failed. Newest first: the restart is always stopped before the restore.
+  const undo = (failed) => {
+    for (const kind of [...made, ...(failed ? [failed] : [])].reverse()) { try { exec(L.stopArgs(kind, o.record, env)); } catch (err) { /* the timer may be gone */ } }
+    unclaim();
+  };
   const steps = [['restore', cut * 60, L.COMMANDS.restore], ['restart', (cut + after) * 60, L.COMMANDS.reboot]];
   for (const [kind, seconds, cmd] of steps) {
     let r;
     try { r = exec(L.timerArgs(kind, o.record, seconds, cmd, env)); } catch (err) { r = { status: null, error: err.message }; }
-    if (!r || r.status !== 0) { undo(); return refuse(`could not schedule the ${kind} (${failText(r)}); nothing cut. The timers need the system manager: \`sudo -n\` must run systemd-run, or set DELIVERY_DRILL_PRIVILEGE`); }
+    if (!r || r.status !== 0) { undo(kind); return refuse(`could not schedule the ${kind} (${failText(r)}); nothing cut. The timers need the system manager: \`sudo -n\` must run systemd-run, or set DELIVERY_DRILL_PRIVILEGE`); }
     made.push(kind);
   }
   const row = { type: 'drill', record: o.record, ...t, cut_minutes: cut, restart_after_minutes: after, units: made.map((k) => `${L.unitName(k, o.record)}.timer`), by: who.actor || null };

@@ -151,17 +151,29 @@ test('run refuses a cut outside 1..30 minutes, a run without --restart, and any 
   assert.deepEqual(t.events, []);
 });
 
-test('a schedule that fails never cuts and undoes the timer made before it', () => {
+// A schedule reported as failed (a non-zero exit, a timeout, a throw) may still have made its unit: the
+// undo stops the unit of the kind that failed as well as the ones made before it, the restart first, so no
+// restart stays scheduled after an abort.
+test('a schedule that fails never cuts, and undoes the timer made before it and the one that failed', () => {
   for (const failOn of ['restore', 'restart']) {
-    const t = setup();
-    const calls = [];
-    const exec = (args) => { calls.push(args.join(' ')); return { status: args.join(' ').includes(`drill-${failOn}-`) && args.includes('systemd-run') ? 1 : 0, stderr: 'Interactive authentication required.' }; };
-    const r = t.run(RUN, { exec });
-    assert.equal(r.code, 1);
-    assert.match(r.out, new RegExp(`could not schedule the ${failOn} \\(Interactive authentication required.\\); nothing cut`));
-    assert.ok(!calls.some((c) => / networking off$/.test(c)), 'never cut');
-    assert.equal(calls.some((c) => c.endsWith(`systemctl stop delivery-drill-restore-${REC}.timer`)), failOn === 'restart');
-    assert.equal(L.drillOf(t.root, REC), null, 'the consent is not spent');
+    for (const how of ['exit', 'throw']) {
+      const t = setup();
+      const calls = [];
+      const exec = (args) => {
+        calls.push(args.join(' '));
+        const failing = args.join(' ').includes(`drill-${failOn}-`) && args.includes('systemd-run');
+        if (failing && how === 'throw') throw new Error('Interactive authentication required.');
+        return { status: failing ? 1 : 0, stderr: 'Interactive authentication required.' };
+      };
+      const r = t.run(RUN, { exec });
+      assert.equal(r.code, 1);
+      assert.match(r.out, new RegExp(`could not schedule the ${failOn} \\(.*Interactive authentication required.\\); nothing cut`));
+      assert.ok(!calls.some((c) => / networking off$/.test(c)), 'never cut');
+      const stops = calls.filter((c) => / systemctl stop /.test(c));
+      const unit = (k) => ['sudo', '-n', 'systemctl', 'stop', `delivery-drill-${k}-${REC}.timer`].join(' ');
+      assert.deepEqual(stops, failOn === 'restart' ? [unit('restart'), unit('restore')] : [unit('restore')], `${failOn} ${how}: the failed kind's unit is stopped too, the restart first`);
+      assert.equal(L.drillOf(t.root, REC), null, 'the consent is not spent');
+    }
   }
 });
 
