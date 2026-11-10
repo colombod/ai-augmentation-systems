@@ -13,6 +13,15 @@ const R = require('./lib/team-revive.js');
 const RO = require('./lib/roster.js');
 const watchdog = require('./watchdog.js');
 
+// revive() reads the process this runs in as well as what a caller passes: the tests run from a directory
+// that is no role directory, with no role in the environment, and put both back after.
+const ROLE_VARS = ['DELIVERY_ROLE', 'DELIVERY_ROLE_ID', 'DELIVERY_ROLE_DIR'];
+const savedCwd = process.cwd();
+const savedRole = Object.fromEntries(ROLE_VARS.map((k) => [k, process.env[k]]));
+process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), 'revive-test-cwd-')));
+for (const k of ROLE_VARS) delete process.env[k];
+test.after(() => { process.chdir(savedCwd); for (const k of ROLE_VARS) { if (savedRole[k] === undefined) delete process.env[k]; else process.env[k] = savedRole[k]; } });
+
 const T0 = '2026-11-04T09:00:00Z';
 const H = 3600e3;
 const iso = (t) => new Date(t).toISOString();
@@ -58,7 +67,8 @@ test('a missing role session with work in flight is started on a new Remote Cont
   assert.equal(r.calls.length, 1, 'only the missing builder on this host: the chief runs, tech-writer is on another host');
   const c = r.calls[0];
   assert.equal(c.bin, 'claude');
-  assert.deepEqual(c.args, ['remote-control', '--name', 'builder@ex', '--spawn', 'session', '--permission-mode', 'acceptEdits']);
+  // a server that stays up (same-dir, one session at a time), never --spawn session, which exits when its one session completes
+  assert.deepEqual(c.args, ['remote-control', '--name', 'builder@ex', '--spawn', 'same-dir', '--capacity', '1', '--permission-mode', 'acceptEdits']);
   assert.equal(c.cwd, p.dir('builder'));
   // the new session answers as its own role, never as the session that started it
   assert.equal(c.env.DELIVERY_ROLE, 'builder');
@@ -81,16 +91,17 @@ test('a role session with a recorded Remote Control session is reattached to it 
   const a = run(p, ['start'], { live: [{ cwd: p.dir('chief-of-staff') }] });
   assert.deepEqual(a.calls[0].args, ['remote-control', '--name', 'builder@ex', '--session-id', 'session_roster', '--permission-mode', 'auto']);
   assert.match(a.out, /reattaching Remote Control session session_roster/);
-  // an hour later (past the cap) claude's pointer for the directory names a newer link
-  pointer(p, p.dir('builder'), 'session_pointer');
-  RO.touchInstance(p.root, { instance: 'builder', now: iso(Date.parse(T0) + 30 * 60e3) });
-  const b = run(p, ['start'], { live: [{ cwd: p.dir('chief-of-staff') }], now: iso(Date.parse(T0) + H) });
+  // claude's pointer for the directory names a newer link than the roster's
+  const q = project();
+  register(q, 'builder', { remote_session_id: 'session_roster' });
+  pointer(q, q.dir('builder'), 'session_pointer');
+  const b = run(q, ['start'], { live: [{ cwd: q.dir('chief-of-staff') }] });
   assert.deepEqual(b.calls[0].args.slice(3, 5), ['--session-id', 'session_pointer']);
-  assert.equal(RO.readRoster(p.root).instances.builder.remote_session_id, 'session_pointer');
+  assert.equal(RO.readRoster(q.root).instances.builder.remote_session_id, 'session_pointer');
   // a check reads it and writes nothing
-  pointer(p, p.dir('builder'), 'session_newer');
-  run(p, ['check'], { live: [{ cwd: p.dir('chief-of-staff') }] });
-  assert.equal(RO.readRoster(p.root).instances.builder.remote_session_id, 'session_pointer');
+  pointer(q, q.dir('builder'), 'session_newer');
+  run(q, ['check'], { live: [{ cwd: q.dir('chief-of-staff') }] });
+  assert.equal(RO.readRoster(q.root).instances.builder.remote_session_id, 'session_pointer');
 });
 
 test('a reattach whose session never joined is not tried again: the next start makes a new link', () => {
@@ -99,15 +110,66 @@ test('a reattach whose session never joined is not tried again: the next start m
   run(p, ['start'], { live: [{ cwd: p.dir('chief-of-staff') }] });
   const later = iso(Date.parse(T0) + H);
   const b = run(p, ['start'], { live: [{ cwd: p.dir('chief-of-staff') }], now: later });
-  assert.deepEqual(b.calls[0].args.slice(3, 5), ['--spawn', 'session']);
+  assert.deepEqual(b.calls[0].args.slice(3, 7), ['--spawn', 'same-dir', '--capacity', '1']);
   assert.match(b.out, /its reattach to session_gone never joined/);
-  // the other direction: a reattach that joined (its SessionStart moved last_seen past it) is tried again
+});
+
+// hjx.1.6.12: a reattach (--session-id) is claude's single-session mode, "exits when complete", so a role
+// started that way ended after one task and waited an hour for the next start with its work left
+test('a role whose server ended after its session ran is started again at once, on a server that stays up', () => {
+  const live = (p) => [{ cwd: p.dir('chief-of-staff') }];
+  const at = (min) => iso(Date.parse(T0) + min * 60e3);
+  const p = project();
+  register(p, 'builder', { remote_session_id: 'session_ok' });
+  assert.deepEqual(run(p, ['start'], { live: live(p) }).calls[0].args.slice(3, 5), ['--session-id', 'session_ok']);
+  // its session joined, did its task, and the single-session server exited: ten minutes on, not an hour
+  RO.touchInstance(p.root, { instance: 'builder', now: at(1) });
+  const again = run(p, ['start'], { live: live(p), now: at(10) });
+  assert.equal(again.calls.length, 1, again.out);
+  assert.deepEqual(again.calls[0].args.slice(3, 7), ['--spawn', 'same-dir', '--capacity', '1'], 'never a second reattach, which would end the same way');
+  assert.match(again.out, /its reattach to session_ok ran and ended/);
+  // a server that stays up but was stopped after its session ran is started again too, still not a reattach
+  RO.touchInstance(p.root, { instance: 'builder', now: at(12) });
+  const third = run(p, ['start'], { live: live(p), now: at(20) });
+  assert.equal(third.calls.length, 1, third.out);
+  assert.deepEqual(third.calls[0].args.slice(3, 7), ['--spawn', 'same-dir', '--capacity', '1']);
+  // the other direction: a start whose session never joined is held for the hour
   const q = project();
-  register(q, 'builder', { remote_session_id: 'session_ok' });
-  run(q, ['start'], { live: [{ cwd: q.dir('chief-of-staff') }] });
-  RO.touchInstance(q.root, { instance: 'builder', now: iso(Date.parse(T0) + 60e3) });
-  const c = run(q, ['start'], { live: [{ cwd: q.dir('chief-of-staff') }], now: later });
-  assert.deepEqual(c.calls[0].args.slice(3, 5), ['--session-id', 'session_ok']);
+  run(q, ['start'], { live: live(q) });
+  const held = run(q, ['start'], { live: live(q), now: at(10) });
+  assert.equal(held.calls.length, 0);
+  assert.match(held.out, /Missing: builder .*held: started 2026-11-04 09:00 UTC/);
+  // and the daily cap still bounds a server that runs and ends over and over
+  const c = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  register(c, 'builder');
+  let n = 0;
+  for (let i = 0; i < 8; i++) {
+    n += run(c, ['start'], { now: at(i * 10) }).calls.length;
+    RO.touchInstance(c.root, { instance: 'builder', now: at(i * 10 + 1) });
+  }
+  assert.equal(n, 6, 'six starts a day');
+});
+
+// rv-190 with PR 186: a restart onto the installed plugin reattaches with --session-id, so the owner keeps
+// the link and the conversation; that is claude's single-session mode, which ends after the task. The
+// restart row is a reattach of that link, so the next start is a server that stays up, at once.
+test('a session restarted onto the installed plugin that ran and ended is started again at once, on a server that stays up', () => {
+  const at = (min) => iso(Date.parse(T0) + min * 60e3);
+  const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  register(p, 'builder', { remote_session_id: 'session_x' });
+  R.record(p.root, { type: 'restart', at: at(0), instance: 'builder', pid: 901, args: ['remote-control', '--name', 'builder@ex', '--session-id', 'session_x'], session_id: 'session_x', from: '0.1.0', to: '0.2.0', stopped: 900 });
+  RO.touchInstance(p.root, { instance: 'builder', now: at(2) });
+  const r = run(p, ['start'], { now: at(15) });
+  assert.equal(r.calls.length, 1, r.out);
+  assert.deepEqual(r.calls[0].args.slice(3, 7), ['--spawn', 'same-dir', '--capacity', '1']);
+  assert.match(r.out, /its reattach to session_x ran and ended/);
+  // the other direction: a restart whose session never came up is held for the hour, as a start is
+  const q = project({ roles: [{ id: 'builder', host: 'pc' }] });
+  register(q, 'builder', { remote_session_id: 'session_x' });
+  R.record(q.root, { type: 'restart', at: at(0), instance: 'builder', pid: 901, session_id: 'session_x', from: '0.1.0', to: '0.2.0', stopped: 900 });
+  const held = run(q, ['start'], { now: at(15) });
+  assert.equal(held.calls.length, 0);
+  assert.match(held.out, /held: started 2026-11-04 09:00 UTC/);
 });
 
 test('a role session already open, or whose started server still runs, is not started', () => {
@@ -206,7 +268,7 @@ test('start is refused in a builder\'s role session and allowed in the Chief of 
   const builder = { DELIVERY_ROLE: 'builder', DELIVERY_ROLE_ID: 'builder', DELIVERY_ROLE_DIR: p.dir('builder') };
   const refused = run(p, ['start'], { env: builder, who: { root: p.root, team: p.team, roleId: 'builder' } });
   assert.equal(refused.code, 1);
-  assert.match(refused.out, /start is the Chief of Staff's and the host job's .*role builder/);
+  assert.match(refused.out, /start is the Chief of Staff's, the host manager's and the host job's .*role builder/);
   assert.equal(refused.calls.length, 0);
   assert.equal(run(p, ['check'], { env: builder, who: { root: p.root, team: p.team, roleId: 'builder' } }).code, 0);
   // the marker says builder: a chief-of-staff variable does not make it the chief
@@ -223,7 +285,7 @@ test('--dry-run says what it would start and starts nothing; --json gives the fa
   const p = project();
   const d = run(p, ['start', '--dry-run']);
   assert.equal(d.calls.length, 0);
-  assert.match(d.out, /Missing: builder .*would start: claude remote-control --name builder@ex --spawn session --permission-mode auto/);
+  assert.match(d.out, /Missing: builder .*would start: claude remote-control --name builder@ex --spawn same-dir --capacity 1 --permission-mode auto/);
   assert.equal(R.ledger(p.root).length, 0);
   const j = JSON.parse(run(p, ['check', '--json']).out);
   assert.equal(j.go, true);
@@ -275,17 +337,17 @@ test('the role-context hook passes a Remote Control session\'s link to the roste
   } finally { if (prev === undefined) delete process.env.DELIVERY_ROLE; else process.env.DELIVERY_ROLE = prev; }
 });
 
-test('the lane lets the Chief of Staff run check and start and refuses them to a role without the group; a builder\'s open lane meets the script\'s own refusal', () => {
+test('the lane lets the Chief of Staff run check and start and refuses them to a role without the group; a builder\'s open lane refuses start too', () => {
   const { harness } = require('./testing/role-harness.js');
   const h = harness();
   const cmd = (sub) => `node ${path.join(__dirname, 'team-revive.js')} ${sub}`;
   assert.equal(h.bash('chief-of-staff', cmd('check'), { run: false }).deny, null);
   assert.equal(h.bash('chief-of-staff', cmd('start'), { run: false }).deny, null);
   assert.ok(h.bash('product-manager', cmd('start'), { run: false }).deny, 'the product manager may not start sessions');
-  // the builder's lane runs any command: the script refuses it in the builder's role directory, before any read
+  // the builder's lane runs any command but this one, refused with the way out; check still runs there
   const b = h.bash('builder-1', cmd('start'));
-  assert.equal(b.code, 1, b.out);
-  assert.match(b.out, /start is the Chief of Staff's and the host job's/);
+  assert.match(String(b.deny), /starting role sessions is the Chief of Staff's and the host manager's/);
+  assert.equal(h.bash('builder-1', cmd('check'), { run: false }).deny, null);
 });
 
 test('the watchdog\'s host-job run starts the missing role sessions after its wakes; check does not', () => {
@@ -306,7 +368,7 @@ test('the watchdog\'s host-job run starts the missing role sessions after its wa
 });
 
 // the facts a start reads, injected, for revive() called directly (as the watchdog's host job does)
-const reviveDeps = (p, spawn) => ({ start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn });
+const reviveDeps = (p, spawn) => ({ start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn });
 const lockFile = (p) => path.join(p.root, '.delivery', 'watchdog', 'revive.lock');
 
 test('two start passes at once (the Chief of Staff\'s and the host job\'s) open one link per instance: the second finds the start lock held', () => {
@@ -380,6 +442,8 @@ const RC_HELP_2_1_318 = `
   --spawn <mode>                   Spawn mode: same-dir, worktree, session
                                    (default: same-dir)
   --name <name>                    Name for the session (shown in claude.ai/code)
+  --capacity <N>                   Max concurrent sessions in worktree or
+                                   same-dir mode (default: 32)
 `;
 // what the same claude's parser said to `--permission-mode bogus` (it says "manual" where the help says "default")
 const RC_PARSER_MODES = 'Error: Invalid permission mode \'bogus\'. Valid modes: acceptEdits, auto, bypassPermissions, manual, dontAsk, plan';
@@ -438,6 +502,28 @@ test('the argv matches the live `claude remote-control --help` on this host (DEL
   if (r.error && r.error.code === 'ENOENT') { t.skip('claude is not on PATH'); return; }
   assert.equal(r.status, 0, String(r.stderr || r.error || ''));
   assertArgsMatchHelp(`${r.stdout}\n${r.stderr}`);
+});
+
+test('the host manager runs start like the Chief of Staff; --project names any team; a host-manager instance is never started here', () => {
+  const p = project({ roles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'builder', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  const hm = run(p, ['start'], { env: { DELIVERY_ROLE: 'host-manager', DELIVERY_ROLE_ID: 'host-manager' }, who: { root: p.root, team: p.team, roleId: 'host-manager' } });
+  assert.equal(hm.code, 0, hm.out);
+  assert.deepEqual(hm.calls.map((c) => c.cwd).sort(), [p.dir('builder'), p.dir('chief-of-staff')].sort(), 'its own unit keeps the host manager: no second server in its directory');
+  assert.doesNotMatch(hm.out, /host-manager/);
+  // --project: from another team's directory, the named team is the one read
+  const q = project();
+  fs.writeFileSync(path.join(q.root, '.delivery', 'team', 'hosts.json'), JSON.stringify({ hosts: { pc: {} } }));
+  const r = TR.main(['check', '--json', '--project', q.root], { cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: q.config });
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(JSON.parse(r.out).missing.map((i) => i.roleDir), [q.dir('chief-of-staff'), q.dir('builder')]);
+});
+
+test('only: a start pass brings back the named instances and leaves the rest down', () => {
+  const p = project();
+  const s = spawner();
+  const r = TR.revive(p.root, p.team, { start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn: s.fn, only: ['builder'] });
+  assert.deepEqual(s.calls.map((c) => c.cwd), [p.dir('builder')]);
+  assert.deepEqual(Object.keys(r.started), ['builder']);
 });
 
 // ---- a role session still open on an older plugin than the installed one (delivery-plugin-planning-hjx.1.6.7) ----
@@ -618,9 +704,29 @@ test('stopServer sends SIGTERM to the server and reports whether the server and 
   assert.equal(TR.stopServer(5000, 5100, { kill: () => {}, waitMs: 30, stepMs: 10 }), false);
 });
 
+test('revive() itself refuses a start from a role session that may not start sessions, so code that loads it cannot skip the guard', () => {
+  const p = project();
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'revive-role-'));
+  fs.writeFileSync(path.join(roleDir, '.delivery-role.json'), '{}');
+  const s = spawner();
+  const deps = (over) => ({ ...reviveDeps(p, s.fn), ...over });
+  assert.throws(() => TR.revive(p.root, p.team, deps({ cwd: roleDir, env: { DELIVERY_HOST: 'pc' } })), /start is the Chief of Staff's, the host manager's and the host job's/);
+  assert.throws(() => TR.revive(p.root, p.team, deps({ cwd: p.root, env: { DELIVERY_HOST: 'pc', DELIVERY_ROLE: 'builder', DELIVERY_ROLE_ID: 'builder' } })), /role builder/);
+  assert.equal(s.calls.length, 0, 'nothing started');
+  // a read (check, --dry-run) is no start: it runs anywhere
+  assert.equal(TR.revive(p.root, p.team, deps({ cwd: roleDir, env: { DELIVERY_HOST: 'pc' }, start: false })).started.builder, undefined);
+  // the host manager and the Chief of Staff start; the host job (no role session) starts
+  for (const env of [{ DELIVERY_ROLE: 'host-manager', DELIVERY_ROLE_ID: 'host-manager' }, { DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_ID: 'chief-of-staff' }, {}]) {
+    const q = project();
+    const t = spawner();
+    TR.revive(q.root, q.team, { ...reviveDeps(q, t.fn), cwd: q.root, env: { DELIVERY_HOST: 'pc', ...env } });
+    assert.equal(t.calls.length, 2, JSON.stringify(env));
+  }
+});
+
 // hjx.1.6.10.1: a role session started by the host job's service ran in that service's cgroup and shared
 // its TasksMax with every role (eight starts aborted at once), and kept the oneshot from ending.
-const startDeps = (p, extra) => ({ start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, systemdRun: null, ...extra });
+const startDeps = (p, extra) => ({ start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, systemdRun: null, ...extra });
 
 test('each start runs in its own systemd user scope with its own limits where systemd runs, and as a plain child where it does not', () => {
   const c = R.scopedCommand('claude', ['remote-control', '--name', 'builder@ex'], { instance: 'builder-2', at: T0, systemdRun: '/usr/bin/systemd-run' });
@@ -711,7 +817,7 @@ function fakeBin(dir, name, body) {
   fs.chmodSync(f, 0o755);
   return f;
 }
-const realDeps = (p, env) => ({ start: true, env: { DELIVERY_HOST: 'pc', PATH: process.env.PATH, ...env }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config });
+const realDeps = (p, env) => ({ start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc', PATH: process.env.PATH, ...env }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config });
 
 test('with the real spawn and no settle given, a start whose process exits at once is recorded failed', () => {
   const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
