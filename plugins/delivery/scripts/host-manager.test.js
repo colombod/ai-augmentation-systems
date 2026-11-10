@@ -496,6 +496,9 @@ test('install writes the host manager\'s session unit and its tick timer, enable
   // restarts are bounded: a growing delay up to 30 minutes, and at most 5 starts in 15 minutes, in [Unit]
   for (const re of [/^RestartSteps=5$/m, /^RestartMaxDelaySec=30min$/m]) assert.match(svc.split('[Service]')[1], re, svc);
   for (const re of [/^StartLimitIntervalSec=15min$/m, /^StartLimitBurst=5$/m]) assert.match(svc.split('[Service]')[0], re, svc);
+  // run-session's exit 3 (a host manager already live) is a success the unit does not restart, so a live
+  // one never runs the unit into its start limit and the watchdog's reset-and-start (rv-198)
+  for (const re of [/^SuccessExitStatus=3$/m, /^RestartPreventExitStatus=3$/m]) assert.match(svc.split('[Service]')[1], re, svc);
   assert.doesNotMatch(svc, /^StartLimitIntervalSec=0$/m);
   const timer = fs.readFileSync(unit(HM.TICK_TIMER), 'utf8');
   for (const re of [/^OnBootSec=2min$/m, /^OnUnitActiveSec=5min$/m, /^WantedBy=timers\.target$/m]) assert.match(timer, re);
@@ -602,10 +605,10 @@ test('run-session starts no host-manager session beside a live one, by its role 
   const execve = (file, argv) => { calls.push({ file, argv }); };
   const run = (live) => m.run(['run-session', '--project', m.alpha.root, '--instance', 'host-manager'], { env, who: { roleId: 'host-manager' }, execve, resolveBin: (b) => `/opt/bin/${b}`, now: T0, live });
   const inDir = run([{ sessionId: 'hm-live', cwd: m.alpha.dir('host-manager'), name: 'host-manager@pc', status: 'idle' }]);
-  assert.equal(inDir.code, 1, inDir.out);
+  assert.equal(inDir.code, 3, `a live host manager is a success the unit does not restart: ${inDir.out}`);
   assert.match(inDir.out, /host-manager already runs as host-manager@pc \(idle\) in .*host-manager; no second session started/);
   const byName = run([{ sessionId: 'hm-x', cwd: '/elsewhere', name: 'host-manager@pc', status: 'busy' }]);
-  assert.equal(byName.code, 1, byName.out);
+  assert.equal(byName.code, 3, byName.out);
   const unknown = run(null);
   assert.equal(unknown.code, 1);
   assert.match(unknown.out, /open sessions could not be listed/);

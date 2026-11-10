@@ -1626,8 +1626,11 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   no `process.execve`, it starts nothing and says so, since claude as its child would outlive a stop of
   the unit and the next start would add a second host manager. Before it starts, run-session lists the
   open sessions: one live in the host manager's role directory or under its name `<instance>@<host>`
-  means no second session (one live session per role), and so does a list that cannot be read; it exits,
-  and `Restart=` tries again later. Its restarts are bounded:
+  means no second session (one live session per role), and so does a list that cannot be read. A live
+  host manager is exit 3, a success the unit does not restart (`SuccessExitStatus=3`,
+  `RestartPreventExitStatus=3`): the unit rests inactive, so it never runs into its start limit and the
+  watchdog's reset; the watchdog's next pass starts it once again. A list that cannot be read is a
+  failure, and `Restart=` tries again later. Its restarts are bounded:
   `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,
   `RestartSteps=5`, `RestartMaxDelaySec=30min`, systemd 254 and later; an older systemd warns of the
   two keys and keeps 30 seconds), and at most 5 starts in 15 minutes (`StartLimitIntervalSec=15min`,
