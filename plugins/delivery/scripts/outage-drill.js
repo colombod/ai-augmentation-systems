@@ -4,14 +4,18 @@
 // lib/outage-drill.js holds the rules.
 //   outage-drill.js plan [--cut-minutes <n>] [--record <id>]
 //       read-only: the cut length, when the network comes back, when the host restarts, the consent
-//       record and whether a drill already spent it, and whether a leftover headless claude child
-//       (--print with --sdk-url) is running. Starts, schedules and writes nothing.
+//       record and whether a drill already spent it, any claim a run left on a record (its age, its
+//       maker, how to clear it), and whether a leftover headless claude child (--print with --sdk-url)
+//       is running. Starts, schedules and writes nothing.
 //   outage-drill.js run --record <id> --cut-minutes <n> --restart
-//       the Reality Checker's only. The cut drops the session that runs it, so before the cut it makes
-//       two transient system timers (systemd-run, owned by PID 1, outliving the session): the network
-//       restore at n minutes and the restart m minutes later (default 1), then writes the drill's row
-//       to the watchdog directory's drills.ndjson, and only then cuts. One drill per consent record.
-// Exit codes: 0 ok; 1 refused or failed (nothing cut); 2 usage.
+//       the Reality Checker's only (the lane refuses it to every other role, and the script checks both
+//       the role it is given and its own process's role session). It claims the record by an exclusive
+//       create, and, since the cut drops the session that runs it, makes two transient system timers
+//       before the cut (systemd-run, owned by PID 1, outliving the session): the network restore at n
+//       minutes and the restart a fixed minute after it. Then it writes the drill's row to the watchdog
+//       directory's drills.ndjson, and only then cuts. A cut that fails or times out stops the restart
+//       timer, runs the restore at once and keeps the restore timer. One drill per consent record.
+// Exit codes: 0 ok; 1 refused or failed (the restart never runs after a failure); 2 usage.
 const L = require('./lib/outage-drill.js');
 const { whoAmI, ownerRecord } = require('./lib/gate-context.js');
 // the host this drill would cut: the one the consent must name
