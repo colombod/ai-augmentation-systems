@@ -219,6 +219,23 @@ function staleOf(f, { e, open, starts, last, t, team, name, same }) {
   return st;
 }
 
+// Which recorded Remote Control session a start reattaches: remoteId (from claude's pointer, else the
+// roster), the instance's earlier starts (rows with session_id) and its roster entry e. A link is
+// reattached once:
+//   - a reattach whose session never joined (the roster's last_seen did not move past it) is not tried
+//     again: the id is gone or refused, and the owner gets a new link rather than none (staleId);
+//   - a reattach is claude's single-session mode ("exits when complete": --session-id takes no --spawn),
+//     so one that joined has ended after its task; reattaching that link again would end the same way,
+//     so the role then gets a server that stays up (STAY_UP), on a new link (endedId).
+// -> { remoteId } to reattach, or { remoteId: null, staleId | endedId } for a new server that stays up
+function linkFor(remoteId, starts, e = {}) {
+  if (!remoteId) return { remoteId: null };
+  const last = starts[starts.length - 1] || null;
+  if (last && last.session_id === remoteId && ms(e.last_seen) < ms(last.at)) return { remoteId: null, staleId: remoteId };
+  if (starts.some((r) => r.session_id === remoteId)) return { remoteId: null, endedId: remoteId };
+  return { remoteId };
+}
+
 // What there is to bring back, and what holds it.
 // facts: { now, host, team, roster (instances), live: [{cwd,sessionId,name}] | null, bridges, pointer(dir),
 //   defaultDir(instance), exists(dir), inProgress: [bead] | { unreadable }, prs: [{number, headRefName}] |
@@ -278,13 +295,7 @@ function assess(f) {
       // it ran and ended, so it is started again at once, not after the hour that holds a start that died
       const ran = Boolean(last) && ms(e.last_seen) > ms(last.at);
       if (!f.exists(roleDir)) it.skip = `its role directory ${roleDir} is not on this host (prepare-role.js prepares it)`;
-      // a reattach whose session never joined (the roster's last_seen did not move past it) is not tried
-      // again: the id is gone or refused, and the owner gets a new link rather than none
-      else if (it.remoteId && last && last.session_id === it.remoteId && ms(e.last_seen) < ms(last.at)) { it.staleId = it.remoteId; it.remoteId = null; }
-      // a reattach is claude's single-session mode ("exits when complete": --session-id takes no --spawn), so
-      // one that joined has ended after its task; reattaching that link again would end the same way, so a
-      // link is reattached once and the role then gets a server that stays up (hjx.1.6.12), on a new link
-      else if (it.remoteId && starts.some((r) => r.session_id === it.remoteId)) { it.endedId = it.remoteId; it.remoteId = null; }
+      else { const l = linkFor(it.remoteId, starts, e); it.remoteId = l.remoteId; if (l.staleId) it.staleId = l.staleId; if (l.endedId) it.endedId = l.endedId; }
       const m = modeOf(team);
       if (!it.skip && m.skip) it.skip = m.skip;
       it.mode = m.mode || null;
@@ -355,4 +366,4 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
   return out;
 }
 
-module.exports = { STAY_UP, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
+module.exports = { STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };

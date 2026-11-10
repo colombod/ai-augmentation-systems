@@ -537,43 +537,69 @@ test('install creates the tick\'s state directory before it enables the units, a
   assert.match(unit(HM.TICK_SERVICE), new RegExp(`^StandardOutput=append:${path.join(state, 'delivery', 'host-manager', 'tick.log').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
 });
 
-test('run-session, which the unit runs: it reads the recorded Remote Control session when it starts, reattaches to it, and starts a new one only when none is recorded; it execs claude so the unit\'s main process is claude', () => {
+test('run-session, which the unit runs, starts by team-revive\'s rules: a server that stays up when nothing is recorded, a recorded session reattached once, and a server that stays up again once that session never joined or already ran', () => {
   const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
   const env = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', CLAUDE_CONFIG_DIR: m.config, DELIVERY_ROLE: 'host-manager' };
   const calls = [];
-  const execve = (file, argv, e) => { calls.push({ how: 'exec', file, argv, env: e }); };
+  const execve = (file, argv, e) => { calls.push({ file, argv, env: e }); };
   const resolve = (bin) => `/opt/bin/${bin}`;
-  const run = (more = {}) => m.run(['run-session', '--project', m.alpha.root, '--instance', 'host-manager'], { env, who: { roleId: 'host-manager' }, execve, resolveBin: resolve, ...more });
-  // nothing recorded: a new session
+  let now = T0;
+  const run = (more = {}) => m.run(['run-session', '--project', m.alpha.root, '--instance', 'host-manager'], { env, who: { roleId: 'host-manager' }, execve, resolveBin: resolve, now, ...more });
+  const STAY_UP = ['claude', 'remote-control', '--name', 'host-manager@pc', '--spawn', 'same-dir', '--capacity', '1', '--permission-mode', 'auto'];
+  const reattach = (id) => ['claude', 'remote-control', '--name', 'host-manager@pc', '--session-id', id, '--permission-mode', 'auto'];
+  const rows = () => R.ledger(m.alpha.root).filter((x) => x.type === 'host-manager-session');
+  const joined = (at) => require('./lib/roster.js').registerInstance(m.alpha.root, { instance: 'host-manager', session_id: `s-${at}`, host: 'pc', role_dir: m.alpha.dir('host-manager'), now: at });
+  // no session recorded: a server that stays up after a task, not single-session mode
   const fresh = run();
   assert.equal(fresh.code, 0, fresh.out);
-  assert.equal(calls.length, 1);
   assert.equal(calls[0].file, '/opt/bin/claude');
-  assert.deepEqual(calls[0].argv, ['claude', 'remote-control', '--name', 'host-manager@pc', '--spawn', 'session', '--permission-mode', 'auto']);
+  assert.deepEqual(calls[0].argv, STAY_UP);
   assert.equal(calls[0].env.DELIVERY_ROLE, 'host-manager');
-  // a session recorded since (claude's pointer for the role directory): the next start reattaches to it
+  assert.equal(rows().length, 1, 'each start is a row of the revive ledger, which outlives the unit\'s restarts');
+  // a session recorded since and not yet tried: reattached
   const d = path.join(m.config, 'projects', R.projectKey(m.alpha.dir('host-manager')));
   fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(path.join(d, 'bridge-pointer.json'), JSON.stringify({ sessionId: 'session_hm1', pid: 1 }));
+  now = iso(Date.parse(T0) + MIN);
   run();
-  assert.deepEqual(calls[1].argv, ['claude', 'remote-control', '--name', 'host-manager@pc', '--session-id', 'session_hm1', '--permission-mode', 'auto']);
-  // no pointer, but the roster records one: that one
+  assert.deepEqual(calls[1].argv, reattach('session_hm1'));
+  assert.equal(rows()[1].session_id, 'session_hm1');
+  // the same id again, and its session never joined (the roster saw nothing since that start): dropped, a server that stays up
+  now = iso(Date.parse(T0) + 2 * MIN);
+  const again = run();
+  assert.deepEqual(calls[2].argv, STAY_UP);
+  assert.equal(rows()[2].dropped, 'session_hm1');
+  assert.match(again.out, /session_hm1 never joined/);
+  // a new id that was reattached, joined and ran its task: not reattached again
+  fs.writeFileSync(path.join(d, 'bridge-pointer.json'), JSON.stringify({ sessionId: 'session_hm2', pid: 1 }));
+  now = iso(Date.parse(T0) + 3 * MIN);
+  run();
+  assert.deepEqual(calls[3].argv, reattach('session_hm2'));
+  joined(iso(Date.parse(T0) + 4 * MIN));
+  now = iso(Date.parse(T0) + 5 * MIN);
+  const ran = run();
+  assert.deepEqual(calls[4].argv, STAY_UP);
+  assert.equal(rows()[4].dropped, 'session_hm2');
+  assert.match(ran.out, /session_hm2 already ran/);
+  // no pointer, but the roster records an id not yet tried: that one
   fs.rmSync(path.join(d, 'bridge-pointer.json'));
-  require('./lib/roster.js').registerInstance(m.alpha.root, { instance: 'host-manager', session_id: 's1', host: 'pc', role_dir: m.alpha.dir('host-manager'), now: T0, remote_session_id: 'session_hm2' });
+  require('./lib/roster.js').setRemoteSession(m.alpha.root, { instance: 'host-manager', remote_session_id: 'session_hm3' });
   run();
-  assert.deepEqual(calls[2].argv.slice(4, 6), ['--session-id', 'session_hm2']);
-  // a node without process.execve: claude runs as its child and this waits for it, exiting with its code
-  const waited = [];
-  const r = run({ execve: null, spawnSync: (file, argv, o) => { waited.push({ file, argv, cwd: o.cwd }); return { status: 3 }; } });
-  assert.equal(r.code, 3);
-  assert.equal(waited[0].file, '/opt/bin/claude');
-  assert.deepEqual(waited[0].argv.slice(0, 1), ['remote-control']);
-  assert.equal(waited[0].cwd, m.alpha.dir('host-manager'));
+  assert.deepEqual(calls[5].argv, reattach('session_hm3'));
   // only the host manager's own unit runs it
   const no = m.run(['run-session', '--project', m.alpha.root, '--instance', 'host-manager'], { env: { DELIVERY_ROLE: 'builder', DELIVERY_ROLE_ID: 'builder' }, who: { roleId: 'builder' }, execve, resolveBin: resolve });
   assert.equal(no.code, 1);
   assert.match(no.out, /run-session is the host manager's/);
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 6);
+});
+
+test('run-session on a node without process.execve starts nothing and says it needs node 22.15 or later', () => {
+  const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  const env = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', CLAUDE_CONFIG_DIR: m.config, DELIVERY_ROLE: 'host-manager' };
+  const r = m.run(['run-session', '--project', m.alpha.root, '--instance', 'host-manager'], { env, who: { roleId: 'host-manager' }, execve: null, resolveBin: (b) => `/opt/bin/${b}` });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /needs node 22\.15 or later/);
+  assert.deepEqual(R.ledger(m.alpha.root).filter((x) => x.type === 'host-manager-session'), [], 'no start recorded');
 });
 
 test('install installs nothing without systemctl, without a host manager in the team, or without its role directory', () => {

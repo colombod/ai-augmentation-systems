@@ -327,17 +327,26 @@ function roleDirOf(root, team, instance) {
   return { roleDir: e.role_dir || path.join(root, '..', `${team.project}-team`, instance), remote: e.remote_session_id || null };
 }
 
-// The Remote Control command the host manager's session runs, read when it starts (run-session): the
-// session last recorded for its role directory (claude's own pointer, else the roster's), reattached with
-// --session-id, so a restart of the unit brings back the same session in the owner's app; a new session
-// (--spawn session) only when none is recorded. -> { args, roleDir, modeSkip }
+// The Remote Control command the host manager's session runs, read when it starts (run-session), by
+// team-revive's own rules (lib/team-revive.js linkFor, STAY_UP): the session last recorded for its role
+// directory (claude's own pointer, else the roster's) is reattached once, so a restart of the unit brings
+// back the same session in the owner's app; when none is recorded, or the recorded one never joined or
+// already ran (a reattach is single-session and ends after its task), a server that stays up after each
+// task. Its starts are rows of the team's revive ledger (SESSION_ROW), so the once-only rule holds across
+// the unit's restarts. -> { args, roleDir, sessionId, dropped, why, modeSkip }
+const SESSION_ROW = 'host-manager-session';
 function sessionArgs(root, team, instance, { env, home, host }) {
   const { roleDir, remote } = roleDirOf(root, team, instance);
   const pointer = R.pointerOf(R.configDirOf(env, home), roleDir);
-  const sessionId = (pointer && pointer.sessionId) || (/^[A-Za-z0-9_-]{1,128}$/.test(String(remote || '')) ? remote : null);
+  const recorded = (pointer && pointer.sessionId) || (/^[A-Za-z0-9_-]{1,128}$/.test(String(remote || '')) ? remote : null);
+  let entry = {};
+  try { entry = require('./lib/roster.js').readRoster(root).instances[instance] || {}; } catch (err) { entry = {}; }
+  const starts = R.ledger(root).filter((r) => r.type === SESSION_ROW && r.instance === instance);
+  const l = R.linkFor(recorded, starts, entry);
   const m = R.modeOf(team);
-  const args = ['remote-control', '--name', `${instance}@${host}`, ...(sessionId ? ['--session-id', sessionId] : ['--spawn', 'session']), ...(m.mode ? ['--permission-mode', m.mode] : [])];
-  return { args, roleDir, sessionId, modeSkip: m.skip || null };
+  const args = ['remote-control', '--name', `${instance}@${host}`, ...(l.remoteId ? ['--session-id', l.remoteId] : R.STAY_UP), ...(m.mode ? ['--permission-mode', m.mode] : [])];
+  const dropped = l.staleId || l.endedId || null;
+  return { args, roleDir, sessionId: l.remoteId, dropped, why: l.staleId ? 'never joined' : l.endedId ? 'already ran' : null, modeSkip: m.skip || null };
 }
 
 function unitFiles(root, team, instance, { env, home, host, roleDir }) {
@@ -422,14 +431,15 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
 
 // run-session: what the host manager's unit runs. The session it reattaches to is read now, not at
 // install, and claude replaces this process (process.execve, node 22.15 and later), so the unit's main
-// process is claude and Restart= sees it exit. A node without execve runs claude as its child and waits,
-// exiting with its code. deps: execve, spawnSync, resolveBin (in a test).
+// process is claude and Restart= sees it exit. A node without execve starts nothing: claude as a child
+// would outlive a stop of the unit (KillMode=process stops only the main process), and the next start
+// would be a second host manager beside it. deps: execve, resolveBin, now (in a test).
 function resolveOnPath(bin, env) {
   if (bin.includes('/')) return bin;
   for (const d of String(env.PATH || '').split(path.delimiter)) { if (!d) continue; const f = path.join(d, bin); try { fs.accessSync(f, fs.constants.X_OK); return f; } catch (err) { /* not here */ } }
   return null;
 }
-function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, spawnSync, resolveBin } = {}) {
+function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now } = {}) {
   let team;
   try { team = M.loadManifest(root).team; } catch (err) { return { code: 1, out: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); no session started.` }; }
   const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
@@ -437,17 +447,18 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
   if (!hm) return { code: 1, out: `host-manager.js: team.json of ${root} has no host manager${o.instance ? ` instance ${o.instance}` : ` on host "${host}"`}; no session started.` };
   const a = sessionArgs(root, team, hm.instance, { env, home, host });
   if (a.modeSkip) return { code: 1, out: `host-manager.js: ${a.modeSkip}; no session started.` };
+  const ex = execve !== undefined ? execve : (typeof process.execve === 'function' ? process.execve.bind(process) : null);
+  if (!ex) return { code: 1, out: `host-manager.js: run-session needs node 22.15 or later (process.execve), so that claude is the unit's own process; this is node ${process.version}. No session started.` };
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const file = (resolveBin || ((b) => resolveOnPath(b, env)))(bin);
   if (!file) return { code: 1, out: `host-manager.js: ${bin} is not on PATH (${env.PATH || 'unset'}); no session started.` };
-  const ex = execve !== undefined ? execve : (typeof process.execve === 'function' ? process.execve.bind(process) : null);
+  const note = a.dropped ? `host-manager.js: the recorded session ${a.dropped} ${a.why}, so it is not reattached again: a new server that stays up.` : '';
+  // recorded before the exec, which does not return: the pid is claude's from here on
+  R.record(root, { type: SESSION_ROW, at: now || new Date().toISOString(), instance: hm.instance, pid: process.pid, session_id: a.sessionId, args: a.args, ...(a.dropped ? { dropped: a.dropped, why: a.why } : {}) });
+  if (note) process.stderr.write(`${note}\n`);
   // the unit's WorkingDirectory is the role directory, which execve keeps
-  if (ex) {
-    ex(file, [path.basename(bin), ...a.args], env);
-    return { code: 0, out: '' };
-  }
-  const r = (spawnSync || require('child_process').spawnSync)(file, a.args, { cwd: a.roleDir, env, stdio: 'inherit' });
-  return { code: r && Number.isInteger(r.status) ? r.status : 1, out: r && r.error ? `host-manager.js: ${bin} did not start (${firstLine(r.error)})` : '' };
+  ex(file, [path.basename(bin), ...a.args], env);
+  return { code: 0, out: note };
 }
 
 // restart and tick start sessions and host jobs: in a role session they are the host manager's alone.
