@@ -16,6 +16,7 @@ const SANCTIONED = {
   builder: 'Product code in your worktree is yours; for plans, message the Delivery Manager.',
   'spike-researcher': 'Answers go in the bead: `bd update <id> --append-notes "<answer>"`; product code is never yours.',
   'tech-writer': 'Documentation in your worktree is yours; a product change goes to a builder bead through the Delivery Manager.',
+  'host-manager': 'You read and restart this machine\'s host jobs and role sessions; anything else goes to the Chief of Staff of the team it belongs to.',
   'reality-checker': 'Captures go under `.delivery/evidence/artifacts/<bead>/` and rows through `reality-check.js run-record`; anything else, message the Delivery Manager.',
 };
 // Browser, desktop and computer-use tools reach the owner's apps and the customer surface (R-05, R-33):
@@ -446,6 +447,38 @@ function ruleMatches(rule, t, ctx) {
     if (!c || c.bad || !MERGE_ENDPOINT.test(c.endpoint || '') || c.method !== 'PUT') return false;
   }
   if (rule.pr_open_endpoint && !prOpenCall(ghApiCall(t))) return false;
+  // positional_match: every operand after the subcommand (a word that is not a flag, nor the value of one
+  // of value_flags) must match one of the globs, `*` standing for any run of characters but `/`; with
+  // positional_required, at least one operand must be there (a start or a stop names what it acts on)
+  if (rule.positional_match) {
+    const valueFlags = rule.value_flags || [];
+    const res = rule.positional_match.map((g) => globToRegExp(String(g)));
+    const args = argv.slice(subLen);
+    let seen = 0;
+    let operands = false;
+    for (let k = 0; k < args.length; k++) {
+      // after `--` every word is an operand, one that starts with - included (-.slice is a unit)
+      if (!operands && args[k] === '--') { operands = true; continue; }
+      if (!operands && args[k].startsWith('-')) { if (valueFlags.includes(args[k])) k++; continue; }
+      if (UNSAFE_DIR.test(args[k]) || !res.some((re) => re.test(args[k]))) return false;
+      seen++;
+    }
+    if (rule.positional_required && !seen) return false;
+  }
+  // flag_values: { flag: [values] }: the flag, any abbreviation of it, as --flag value or --flag=value,
+  // takes only one of the listed values (systemctl --job-mode replace, never isolate)
+  if (rule.flag_values) {
+    const args = argv.slice(subLen);
+    for (const [flag, values] of Object.entries(rule.flag_values)) {
+      for (let k = 0; k < args.length; k++) {
+        if (args[k] === '--') break;
+        const opt = args[k].split('=')[0];
+        if (!opt.startsWith('--') || opt.length < 3 || !flag.startsWith(opt)) continue;
+        const v = args[k].includes('=') ? args[k].slice(args[k].indexOf('=') + 1) : args[k + 1];
+        if (!values.includes(v)) return false;
+      }
+    }
+  }
   if (rule.flags_only) {
     const allowed = rule.flags_only;
     if (argv.slice(subLen).some((x) => x.startsWith('-') && !allowed.includes(x.split('=')[0]))) return false;
@@ -1092,6 +1125,16 @@ function commandWords(t) {
       if (r) { i += r[1] ? 1 : 2; continue; }
       break;
     }
+    // taskset [options] <mask|cpu-list> <command>: the mask or list is its first operand; with -p it
+    // changes a running process and runs no command
+    if (i < t.length && baseOf(t[i]) === 'taskset') {
+      i++;
+      let pid = false;
+      while (i < t.length && t[i].startsWith('-')) { if (/^-[a-z]*p/.test(t[i]) || t[i] === '--pid') pid = true; i++; }
+      if (pid) return [];
+      i++;
+      continue;
+    }
     if (i < t.length && WRAPPERS.has(baseOf(t[i]))) {
       i++;
       while (i < t.length && (t[i].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]) || /^\d+(?:\.\d+)?[smhd]?$/.test(t[i]))) { i += WRAPPER_VALUE_FLAGS.has(t[i]) ? 2 : 1; }
@@ -1473,6 +1516,85 @@ const MERGER = 'delivery-lead';
 // any command) only reads the pass, so two writers never act on the same stall
 const PASS_RECORD_REASON = 'the pass record (watchdog.js pass --record) is the Delivery Manager\'s: it notes, assigns and messages as the manager.\nRun watchdog.js pass to read it, and message the Delivery Manager';
 const passRecordAttempt = (command) => /watchdog\.js\b[^;&|\n]*\bpass\b[^;&|\n]*--record\b/.test(String(command || ''));
+// The machine's user services and the starting of role sessions are the host manager's (and a start of
+// one team's sessions the Chief of Staff's too): refused to every other role, the `any` lanes included.
+// Read per segment, from the words the shell will pass (quotes and backslashes taken out, the command
+// word found behind assignments, env, command, xargs and the other wrappers, and inside sh -c, eval and
+// command substitutions), so a spelling cannot slip past and a mere mention (a test run, a diff, a
+// commit message, a bead note) is no run.
+const HOST_MANAGER = 'host-manager';
+const HOST_UNITS_REASON = 'this machine\'s user services (systemctl --user) are the host manager\'s: it reads and restarts the host jobs and its own unit.\nMessage the host manager (host-manager@<host>) with what is down';
+const START_REASON = 'starting role sessions is the Chief of Staff\'s and the host manager\'s (team-revive.js start).\nRun team-revive.js check, and message the Chief of Staff with what is missing';
+const HOST_MANAGER_REASON = 'the host manager\'s restart, tick and install bring back the host jobs and role sessions of every team on this machine: they are the host manager\'s.\nMessage the host manager (host-manager@<host>) with what is down';
+const HOST_CODE_REASON = 'code run with node -e, -p, -r or --import that loads team-revive.js or host-manager.js would start sessions past their own guard: it is the host manager\'s.\nRun the script itself, or message the host manager';
+const SERVICE_TOOLS = new Set(['systemctl', 'busctl', 'systemd-run']);
+// --user and each abbreviation getopt accepts for it (--u, --us, --use), with or without =value
+const USER_OPT = /^--u(?:s(?:e(?:r)?)?)?(?:=.*)?$/;
+const MACHINE_OPT = /^--m(?:a(?:c(?:h(?:i(?:n(?:e)?)?)?)?)?)?$/;
+// -M/--machine naming a user's manager (user@ or user@host)
+function machineUser(args) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if ((a === '-M' || MACHINE_OPT.test(a)) && /@/.test(String(args[i + 1] || ''))) return true;
+    if (/^--m[a-z]*=/.test(a) && MACHINE_OPT.test(a.split('=')[0]) && /@/.test(a)) return true;
+    if (/^-M./.test(a) && /@/.test(a)) return true;
+  }
+  return false;
+}
+const HOST_SCRIPT = /(?:team-revive|host-manager)/;
+// 'units' | 'start' | 'manager' | 'code' | null for one command line, depth-limited
+function hostRefusal(text, roleId, depth = 0) {
+  if (depth > 4 || roleId === HOST_MANAGER) return null;
+  for (const sub of substitutions(text)) { const r = hostRefusal(sub, roleId, depth + 1); if (r) return r; }
+  for (const seg of splitWithOps(text)) {
+    const t = commandWords(stripGrammar(argWords(seg.text)));
+    if (!t.length) continue;
+    const name = baseOf(t[0]);
+    const args = t.slice(1);
+    if (SHELLS.has(name) || name === 'eval') {
+      const k = args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a));
+      const inner = name === 'eval' ? args.join(' ') : k >= 0 ? args[k + 1] || '' : '';
+      const r = inner ? hostRefusal(inner, roleId, depth + 1) : null;
+      if (r) return r;
+      continue;
+    }
+    if (SERVICE_TOOLS.has(name)) {
+      // a word the shell builds at run time could become --user: its options cannot be known
+      if (args.some((a) => USER_OPT.test(a) || /[$`]/.test(a)) || machineUser(args)) return 'units';
+      continue;
+    }
+    // a Remote Control server named or attached to a session is a role session started by hand: the
+    // Chief of Staff's and the host manager's alone, as team-revive.js start is (its --help is no start)
+    if (name === 'claude' && args.includes('remote-control') && args.some((a) => /^--(?:name|spawn|session-id)(?:=|$)/.test(a)) && roleId !== 'chief-of-staff') return 'start';
+    if (!INTERPRETERS.has(name)) continue;
+    let script = null;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (CODE_FLAGS.has(a) || /^--(?:eval|print|require|import|loader)=/.test(a)) {
+        const code = a.includes('=') ? a.slice(a.indexOf('=') + 1) : args[++i] || '';
+        if (HOST_SCRIPT.test(code)) return 'code';
+        continue;
+      }
+      // code read from standard input (a here-string or a pipe): judged by the whole line's text
+      if (a === '--input-type' || a.startsWith('--input-type=')) { if (HOST_SCRIPT.test(text)) return 'code'; if (a === '--input-type') i++; continue; }
+      if (a === '--') { script = i + 1 < args.length ? i + 1 : null; break; }
+      if (NODE_VALUE_FLAGS.has(a)) { i++; continue; }
+      if (a.startsWith('-')) continue;
+      script = i;
+      break;
+    }
+    if (script === null) continue;
+    let file = args[script];
+    let rest = args.slice(script + 1);
+    // the project's launcher runs its first argument as the plugin script
+    if (isLauncher(file)) { file = rest[0]; rest = rest.slice(1); }
+    const base = baseOf(file);
+    if (base === 'team-revive.js' && rest.includes('start') && roleId !== 'chief-of-staff') return 'start';
+    if (base === 'host-manager.js' && rest.some((x) => ['restart', 'tick', 'install', 'run-session'].includes(x))) return 'manager';
+  }
+  return null;
+}
+const HOST_REASONS = { units: HOST_UNITS_REASON, start: START_REASON, manager: HOST_MANAGER_REASON, code: HOST_CODE_REASON };
 const MERGE_REASON = 'merging is the Delivery Manager\'s.\nOpen the pull request and message the Delivery Manager; resolve conflicts when it asks';
 const DEFAULT_BRANCHES = ['main', 'master'];
 
@@ -1504,7 +1626,10 @@ function ghApiCall(t) {
     // the gate prints is often run as `... 2>&1 | tail`, and reading 2>&1 as a second endpoint refused it
     if (/^\d*>&(?:\d+|-)$/.test(x) || /^\d*>>?\/dev\/null$/.test(x)) continue;
     if (/^\d*>>?$/.test(x) && words[i + 1] === '/dev/null') { i++; continue; }
-    const [f, inline] = x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
+    // gh takes a short value flag with its value attached (-fstate=closed, -XPATCH): read as -f state=closed,
+    // or the field is lost and the call passes as one with no fields (rv-194)
+    const att = /^-([fFXHRqt])(.+)$/s.exec(x);
+    const [f, inline] = att ? [`-${att[1]}`, att[2]] : x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
     if (GH_API_VALUE.includes(f)) {
       const val = inline !== undefined ? inline : words[++i];
       if (val === undefined) { out.bad = `${f} has no value`; continue; }
@@ -1552,6 +1677,108 @@ function decodeEscapes(x) {
   return s;
 }
 
+// A gh api endpoint as the server reads it: no query or fragment, repeated slashes collapsed, dot
+// segments resolved anywhere in the path (pulls/./187 and pulls/x/../187 are pulls/187), no trailing
+// slash. The merge and close guards both judge this form.
+function apiPath(x) {
+  const raw = String(x || '').split(/[?#]/)[0].replace(/\/{2,}/g, '/');
+  const lead = raw.startsWith('/') ? '/' : '';
+  const out = [];
+  for (const part of raw.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') { out.pop(); continue; }
+    out.push(part);
+  }
+  return lead + out.join('/');
+}
+
+// The allowed groups for a refusal's first line, cut to fit it (a reason's line is at most MAX_LINE,
+// R-46): the groups that fit, then how many more. lead: the line's text before the list.
+function groupsShown(bash, lead, close = ').') {
+  const all = bash.length ? bash : ['none'];
+  const max = require('../../scripts/lib/short-reason.js').MAX_LINE;
+  const full = all.join(', ');
+  if (lead.length + full.length + close.length <= max) return full;
+  const shown = [];
+  for (const g of all) {
+    const more = `, and ${all.length - shown.length - 1} more`;
+    if (lead.length + [...shown, g].join(', ').length + more.length + close.length > max) break;
+    shown.push(g);
+  }
+  return `${shown.join(', ')}, and ${all.length - shown.length} more`;
+}
+
+// A pull request closed or reopened in whatever form: `gh pr close`/`reopen`; `gh issue close`/`reopen`
+// and a REST call that sets the state of pulls/<n> or issues/<n> (a pull request is an issue too, and
+// its issue closes it); the GraphQL close and reopen mutations, and a GraphQL query read from a file or
+// stdin, which cannot be read and so cannot be cleared. Closing is the Delivery Manager's alone
+// (dec-chief-of-staff-000314), like merging: a role with an open lane ("any") would otherwise close a
+// pull request its own lane says nothing about.
+function closeAttempt(command) {
+  const text = String(command == null ? '' : command);
+  return splitCommand(text).some((seg) => {
+    const t = tokens(seg);
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    if (path.basename(words[0] || '') === 'git') {
+      // a push that deletes a remote team/<instance> branch closes that branch's open pull request
+      const { rest: g } = splitGlobals(['git', ...words.slice(1)]);
+      if (g[0] !== 'push') return false;
+      const args = g.slice(1);
+      const del = args.some((a) => a === '--delete' || a === '-d' || /^-[a-z]*d[a-z]*$/.test(a) && !a.startsWith('--'));
+      const refs = args.filter((a) => !a.startsWith('-'));
+      // git resolves a short ref through refs/%s, refs/heads/%s and the like, so heads/team/x and
+      // refs/team/x name the branch too; a leading + (force) still deletes with an empty source
+      const team = (r) => /^(?:refs\/)?(?:heads\/)?team\//.test(r);
+      return refs.some((r) => { const x = r.replace(/^\+/, ''); return (del && team(x)) || (x.startsWith(':') && team(x.slice(1))); });
+    }
+    if (path.basename(words[0] || '') !== 'gh') return false;
+    let i = 1;
+    for (; i < words.length && words[i].startsWith('-'); i++) {
+      if (words[i] === '-R' || words[i] === '--repo') i++;
+    }
+    const rest = words.slice(i);
+    if (rest[0] === 'pr') {
+      let k = 1;
+      while (k < rest.length && (rest[k] === '-R' || rest[k] === '--repo' || /^--repo=/.test(rest[k]))) k += rest[k].startsWith('--repo=') ? 1 : 2;
+      return rest[k] === 'close' || rest[k] === 'reopen';
+    }
+    if (rest[0] === 'issue') {
+      let k = 1;
+      while (k < rest.length && (rest[k] === '-R' || rest[k] === '--repo' || /^--repo=/.test(rest[k]))) k += rest[k].startsWith('--repo=') ? 1 : 2;
+      return rest[k] === 'close' || rest[k] === 'reopen';
+    }
+    if (rest[0] === 'api') {
+      const c = ghApiCall(['gh', ...rest]);
+      // as the server reads the path: no query or fragment, repeated slashes collapsed, no trailing slash
+      // or dot segment (pulls/187/. is pulls/187)
+      const eps = ((c && c.positionals) || []).map(apiPath);
+      const fields = (c && c.fields) || {};
+      // a call the parser could not read whole may carry the state in what it missed
+      if (c && c.bad && eps.some((ep) => /\/(?:pulls|issues)(?:\/|$)|(?:^|\/)graphql$/i.test(ep))) return true;
+      // deleting a team branch closes its open pull request on GitHub
+      if (c && c.method === 'DELETE' && eps.some((ep) => /\/git\/refs\/heads\/team\//i.test(ep))) return true;
+      if (eps.some((ep) => /\/(?:pulls|issues)\/[^/]+$/i.test(ep))) {
+        if (Object.keys(fields).some((k) => k === 'state')) return true;
+        // a body read from a file or stdin, or a field from a file, cannot be read: it may set the state
+        if (rest.some((a) => /^--input/.test(a)) || Object.values(fields).some((v) => String(v).startsWith('@'))) return true;
+      }
+      if (eps.some((ep) => /(?:^|\/)graphql$/i.test(ep))) {
+        if (rest.some((a) => /^--input/.test(a)) || Object.values(fields).some((v) => String(v).startsWith('@'))) return true;
+        const q = Object.values(fields).join(' ');
+        if (/\b(?:close|reopen)(?:PullRequest|Issue)\b/i.test(q)) return true;
+        // an update that sets a pull request's or an issue's state closes or reopens it too, and one whose
+        // input (or its state) is a variable may: the variables are fields the lane reads as text
+        if (/\bupdate(?:PullRequest|Issue)\b/i.test(q) && (/\bstate\s*:/i.test(q) || /\binput\s*:\s*\$/i.test(q) || Object.keys(fields).some((k) => /state/i.test(k)))) return true;
+        // deleting or rewriting a ref by its id closes the pull request of a team branch, and the id says
+        // nothing the lane can check
+        if (/\b(?:deleteRef|updateRefs?)\b/i.test(q)) return true;
+      }
+    }
+    return false;
+  });
+}
+const CLOSE_REASON = 'closing or reopening a pull request is the Delivery Manager\'s (dec-chief-of-staff-000314).\nMessage the Delivery Manager with the pull request and why it should close';
+
 function mergeAttempt(command, cwd) {
   const text = String(command == null ? '' : command);
   return splitCommand(text).some((seg) => {
@@ -1582,7 +1809,7 @@ function mergeAttempt(command, cwd) {
         // is then the second word, not the first
         // as the server reads the path: no query or fragment, repeated slashes collapsed, no trailing
         // slash or dot segment
-        const eps = ((c && c.positionals) || []).map((x) => x.split(/[?#]/)[0].replace(/\/{2,}/g, '/').replace(/(?:\/\.)+$/, '').replace(/\/+$/, ''));
+        const eps = ((c && c.positionals) || []).map(apiPath);
         if (eps.some((ep) => /\/merges?(?:$|\/)/i.test(ep) || /\/pulls\/[^/]+\/(?:ccr\/)?auto[_-]?merge$/i.test(ep))) return true;
         if (eps.some((ep) => /(?:^|\/)graphql$/i.test(ep))) {
           const q = Object.values(c.fields).join(' ');
@@ -1708,6 +1935,12 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     return { allow: true };
   }
   if (name.startsWith('mcp__') && pol.roleId !== MERGER && /merge_pull_request|merge_pr\b|pull_request_merge/i.test(name)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
+  // the MCP close and reopen tools, and an MCP update that sets a pull request's or an issue's state,
+  // close like gh pr close: the Delivery Manager's alone (dec-chief-of-staff-000314)
+  if (name.startsWith('mcp__') && pol.roleId !== MERGER && (/(?:close|reopen)_(?:pull_request|pr|issue)\b|(?:pull_request|issue)_(?:close|reopen)\b/i.test(name)
+    || (/(?:update|edit)_(?:pull_request|pr|issue)\b|(?:pull_request|issue)_(?:update|edit|write)\b|issue_write\b/i.test(name) && toolInput && typeof toolInput === 'object' && Object.prototype.hasOwnProperty.call(toolInput, 'state')))) {
+    return { allow: false, reason: `Role ${pol.roleId}: ${CLOSE_REASON}.` };
+  }
   if (name.startsWith('mcp__') && (pol.mcp || []).some((p) => mcpPatternMatches(p, name))) return { allow: true };
   if (name.startsWith('mcp__') && !bash.includes('any')) {
     const verb = name.split('__').pop();
@@ -1729,7 +1962,10 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (usageShellWrite(command, { cwd, dirs: planDirs({ projectRoot, roleDir }), mention: PLANS_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
+    if (pol.roleId !== MERGER && closeAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${CLOSE_REASON}.` };
     if (pol.roleId !== MERGER && passRecordAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${PASS_RECORD_REASON}.` };
+    const host = hostRefusal(command, pol.roleId);
+    if (host) return { allow: false, reason: `Role ${pol.roleId}: ${HOST_REASONS[host]}.` };
     const run = refusedRun(command);
     if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? testsReason(command, pluginRootOf({ pluginRoot })) : RESUME_REASON}.` };
     if (bash.includes('any')) {
@@ -1737,7 +1973,8 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       return tmpHit ? { allow: false, reason: `Role ${pol.roleId}: ${tmpReason(tmpHit, roleDir)}.` } : { allow: true };
     }
     if (name === 'PowerShell') {
-      return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
+      const psLead = `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: `;
+      return { allow: false, reason: `${psLead}${groupsShown(bash, psLead)}).${tail}` };
     }
     const segs = splitWithOps(command);
     let live = [cwd ? path.resolve(cwd) : path.resolve(process.cwd())];
@@ -1759,8 +1996,9 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
         }
         const construct = expansionConstruct(text);
         // a refused construct is the whole story; otherwise the allowed groups say what the lane runs
-        const why = construct ? `. Refused construct: ${construct}; put literal text in single quotes.` : ` (allowed groups: ${bash.join(', ') || 'none'}).`;
-        return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`${why}${tail}` };
+        const lead = `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\``;
+        const why = construct ? `. Refused construct: ${construct}; put literal text in single quotes.` : ` (allowed groups: ${groupsShown(bash, `${lead} (allowed groups: `)}).`;
+        return { allow: false, reason: `${lead}${why}${tail}` };
       }
       const t = tokens(text);
       if (t[0] !== 'cd') continue;
@@ -1877,4 +2115,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { hostRefusal, tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish, closeAttempt };

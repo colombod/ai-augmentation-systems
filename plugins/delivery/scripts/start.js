@@ -40,6 +40,9 @@ const ROLE_ENTRIES = {
   builder: { id: 'builder', brief: 'delivery/builder', model: 'sonnet', steward: true },
   'reality-checker': { id: 'reality-checker', brief: 'delivery/reality-checker', model: 'sonnet' },
   'tech-writer': { id: 'tech-writer', brief: 'delivery/tech-writer', model: 'sonnet' },
+  // one per machine, not in a preset: added by Staffing (team-role.js add host-manager) on the team whose
+  // manifest holds it, then installed as a user unit (host-manager.js install)
+  'host-manager': { id: 'host-manager', brief: 'delivery/host-manager', model: 'opus' },
 };
 // --models: one model per role for the whole team. balanced is the role defaults (opus for the Chief
 // of Staff and the Product Manager); quality also puts the Delivery Manager on opus; economy moves
@@ -99,7 +102,9 @@ function readJsonFile(file) {
 // ---- prerequisites ----
 
 // Each row: { name, status: 'pass' | 'fail' | 'warn' | 'unknown', detail, fix, hard }.
-function checkPrerequisites({ env = process.env, project, platform = process.platform, nodeVersion = process.versions.node } = {}) {
+// services: the user services' task limits as lib/service-limits.js readServices gives them, in place of
+// reading systemctl (a test)
+function checkPrerequisites({ env = process.env, project, platform = process.platform, nodeVersion = process.versions.node, services } = {}) {
   const rows = [];
   const runEnv = { ...env };
   const nodeMajor = Number(String(nodeVersion).split('.')[0]);
@@ -188,6 +193,7 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
     if (bd.ok && fs.existsSync(path.join(root, '.beads'))) rows.push(beadsSyncRow(run('bd', ['dolt', 'remote', 'list', '--json'], { cwd: root, env: runEnv })));
   }
   rows.push(sealRow({ env: runEnv }));
+  if (platform === 'linux') rows.push(...serviceLimitRows({ project, env: runEnv, services }));
   // Amplifier is not a prerequisite; where it is installed it owns the machine's setup (skills/amplifier)
   const A = require('./lib/amplifier.js');
   rows.push(...A.checkRows(A.detect({ env: runEnv, platform, run: (c, a) => run(c, a, { env: runEnv, timeout: 60000 }) })));
@@ -195,6 +201,21 @@ function checkPrerequisites({ env = process.env, project, platform = process.pla
 }
 
 const SETUP_DOC = 'docs/quickstart.md, "Setting up beads"';
+
+// Each delivery service's systemd task limit against the team's role sessions on this host
+// (lib/service-limits.js): a service under it stops role starts. The team is read from the project's
+// team.json when there is one; this host is DELIVERY_HOST or the short hostname, as team.json names it.
+// No systemctl (a container, a system without systemd): no rows.
+function serviceLimitRows({ project, env = process.env, team, services, host } = {}) {
+  const SL = require('./lib/service-limits.js');
+  if (services === undefined) {
+    if (!run('systemctl', ['--version'], { env }).ok) return [];
+    services = SL.readServices((c, a) => run(c, a, { env, timeout: 20000 }));
+  }
+  if (team === undefined && project) team = readJsonFile(path.join(path.resolve(project), TEAM_REL)) || null;
+  const here = host || require('./lib/team-revive.js').hostOf(env);
+  return SL.serviceRows(services, SL.sessionsOn(team, here));
+}
 
 // Test runs are sealed (run-tests.js): without bubblewrap they are refused, and each one may fill a
 // RAM-backed tmpfs up to its cap (DELIVERY_TEST_TMP_MB, 2048 by default). The per-host limit is how many
@@ -795,6 +816,6 @@ function main(argv, { env = process.env, write = (s) => process.stdout.write(s) 
   }
 }
 
-module.exports = { sealRow, doltUrlOf, githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };
+module.exports = { sealRow, serviceLimitRows, doltUrlOf, githubOf, presetRoles, unscriptableSurfaces, MODEL_PRESETS, main, checkPrerequisites, formatCheck, scaffold, buildManifest, PRESETS, MIN_CLAUDE, MIN_NODE_MAJOR };
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));

@@ -71,6 +71,9 @@
     { "first": "gh", "sub": ["pr create", "pr edit", "pr comment", "pr ready", "pr review", "issue comment", "release create", "workflow run"] },
     { "first": "gh", "sub": ["api"], "pr_open_endpoint": true, "native_allow": false }
   ],
+  "gh-close": [
+    { "first": "gh", "sub": ["pr close", "pr reopen"] }
+  ],
   "gh-merge": [
     { "first": "gh", "sub": ["pr merge"] },
     { "first": "gh", "sub": ["api"], "merge_endpoint": true, "native_allow": false }
@@ -168,6 +171,19 @@
   ],
   "outage-drill": [
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/outage-drill.js", "sub": ["plan", "run"] }
+  ],
+  "host-manager": [
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/host-manager.js", "sub": ["status", "restart", "tick"] },
+    { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-revive.js", "sub": ["check", "start"] },
+    { "first": "systemctl", "sub": ["--user status", "--user is-active", "--user show", "--user start", "--user restart", "--user stop"], "positional_match": ["delivery-watchdog-*.service", "delivery-watchdog-*.timer", "delivery-watchdog-*.path", "delivery-host-manager.service", "delivery-host-manager-tick.service", "delivery-host-manager-tick.timer"], "positional_required": true, "flag_values": { "--job-mode": ["replace", "fail"] }, "value_flags": ["-p", "--property", "-t", "--type", "--state", "-n", "--lines", "-o", "--output", "--job-mode"], "flags_none": ["-H", "--host", "-M", "--machine", "--root", "--system", "--global", "--image", "--force", "-f"] },
+    { "first": "systemctl", "sub": ["--user list-units", "--user list-timers", "--user daemon-reload"], "positional_match": ["delivery-watchdog-*.service", "delivery-watchdog-*.timer", "delivery-watchdog-*.path", "delivery-host-manager.service", "delivery-host-manager-tick.service", "delivery-host-manager-tick.timer"], "value_flags": ["-p", "--property", "-t", "--type", "--state", "-n", "--lines", "-o", "--output", "--job-mode"], "flags_none": ["-H", "--host", "-M", "--machine", "--root", "--system", "--global", "--image"] },
+    { "first": "amplifier", "sub": ["run"] },
+    { "first": "ps" },
+    { "first": "df" },
+    { "first": "free" },
+    { "first": "uptime" },
+    { "first": "sort", "flags_none": ["-o", "--output", "--compress-program", "-T", "--temporary-directory"] },
+    { "first": "uniq", "no_positional": true, "value_flags": ["-f", "-s", "-w", "--skip-fields", "--skip-chars", "--check-chars"], "flags_only": ["-c", "--count", "-d", "--repeated", "-D", "--all-repeated", "-f", "--skip-fields", "-i", "--ignore-case", "-s", "--skip-chars", "-u", "--unique", "-z", "--zero-terminated", "-w", "--check-chars", "--group"] }
   ],
   "any": [
     { "first": "*" }

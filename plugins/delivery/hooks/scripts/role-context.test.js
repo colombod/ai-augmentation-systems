@@ -82,7 +82,7 @@ test('promptSubmitText is one line with role and claim', () => {
   assert.equal(text, 'You are builder-2 (builder). Current claim: ex-12: Add login.');
   assert.ok(fs.existsSync(path.join(roleDir, '.delivery-turn')), 'prompt-submit marks the turn start');
   const idle = withRole('builder-2', () => promptSubmitText({ cwd: roleDir }, { claim: () => null }));
-  assert.equal(idle, 'You are builder-2 (builder). Current claim: none (idle; say so and what you could take).');
+  assert.equal(idle, 'You are builder-2 (builder). Current claim: none (idle: take the next ready item now, or note Blocked: with the reason).');
 });
 
 test('compaction restates the role through SessionStart', () => {
@@ -237,7 +237,7 @@ test('promptSubmitText and sessionStartText append the capture note; a throwing 
   const boom = () => { throw new Error('boom'); };
   fs.rmSync(path.join(roleDir, '.delivery-last-claim'), { force: true }); // as if the claim just changed
   assert.equal(withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, capture: boom })),
-    'You are delivery-lead (delivery-lead). Current claim: none (idle; say so and what you could take).');
+    'You are delivery-lead (delivery-lead). Current claim: none (idle: take the next ready item now, or note Blocked: with the reason).');
   // the role line repeats only when the claim changes (A2): the same idle claim says nothing new
   const quiet = () => ({ added: 0, status: 'ok', pending: [] });
   assert.equal(withRole('delivery-lead', () => promptSubmitText({ cwd: roleDir }, { claim: () => null, capture: quiet })), '');
@@ -264,6 +264,8 @@ test('hardening e: startup and resume inject no role block when CLAUDE.local.md 
     const text = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source }, PLUGIN_ROOT, { claim: () => null }));
     assert.ok(!text.includes('# Role: delivery-lead'), `${source}: ${text}`);
     assert.match(text, /^You hold no claim\./);
+    // hjx.1.6.12: with nothing held the start tells the role to take work, not only to look
+    assert.ok(text.includes(require('../../scripts/lib/first-turn.js').FIRST_TURN), text);
   }
   // the manifest changed since the file was written: the loaded copy is stale, so restate and say re-read
   fs.writeFileSync(brief, fs.readFileSync(brief, 'utf8') + '\nstale line\n');
@@ -275,6 +277,15 @@ test('hardening e: startup and resume inject no role block when CLAUDE.local.md 
     const text = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source }, PLUGIN_ROOT, { claim: () => null }));
     assert.ok(text.includes('# Role: delivery-lead'), source);
   }
+});
+
+// hjx.1.6.12 criterion 1: a start with work held continues it, and still reads bd ready and the messages
+test('sessionStartText with a claim says continue it, then read bd ready and the messages waiting', () => {
+  const { roleDir } = preparedRole('delivery-lead');
+  const text = withRole('delivery-lead', () => sessionStartText({ cwd: roleDir, session_id: 's', source: 'startup' }, PLUGIN_ROOT, { claim: () => 'ex-7: x' }));
+  assert.match(text, /You currently hold: ex-7: x\. Continue it; append a note before anything else\./);
+  assert.match(text, /Then read bd ready and the messages waiting for you/);
+  assert.ok(!text.includes(require('../../scripts/lib/first-turn.js').FIRST_TURN), 'the take-work text is for a role holding nothing');
 });
 
 // delivery-plugin-planning-8wz: the roster keeps the plugin version each session ran, and a conversation
