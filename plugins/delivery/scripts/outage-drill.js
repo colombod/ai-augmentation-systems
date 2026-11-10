@@ -69,6 +69,34 @@ function consent(root, id, verifyRecord, host) {
   return v;
 }
 
+// Every claim beside the ledger. A run killed between its claim and its row (the session dropped, the host
+// lost power) leaves its claim, and each later run on that record is refused: plan shows the claim, how old
+// it is and which run made it, and how to clear it. Reads only.
+function claimLines(root, now) {
+  const fs = require('fs');
+  const path = require('path');
+  const dir = path.dirname(L.ledgerFile(root));
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => L.CLAIM_RE.test(n)).sort(); } catch (err) { names = []; }
+  if (!names.length) return ['  claims: none'];
+  const out = [];
+  for (const name of names) {
+    const file = path.join(dir, name);
+    let made = null;
+    try { made = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (err) { made = null; }
+    if (!made || typeof made !== 'object') made = {};
+    let at = Number.isFinite(Date.parse(made.at)) ? new Date(Date.parse(made.at)).toISOString() : null;
+    if (!at) { try { at = fs.statSync(file).mtime.toISOString(); } catch (err) { at = null; } }
+    const record = typeof made.record === 'string' ? made.record : name.slice('drill-'.length, -'.claim'.length);
+    const age = at ? `${Math.max(0, Math.round((Date.parse(now) - Date.parse(at)) / 60000))} minutes ago (${at})` : 'at an unknown time';
+    const by = made.by || made.pid ? `by ${made.by || 'an unknown actor'}${made.pid ? `, pid ${made.pid}` : ''}` : 'by an unknown run';
+    const spent = L.drillOf(root, record);
+    out.push(`  claim: ${record} claimed ${age} ${by}; ${spent ? 'its drill row spends the record, so clearing the claim does not free it' : 'a run on it is refused while the claim is there'}`);
+    if (!spent) out.push(`    to clear it when no run on it is under way: rm ${file}`);
+  }
+  return out;
+}
+
 function plan(who, o, { env = process.env, now, verifyRecord, ps }) {
   const cut = o.cut === undefined ? String(L.MAX_CUT_MINUTES) : o.cut;
   const after = L.RESTART_AFTER;
@@ -87,6 +115,7 @@ function plan(who, o, { env = process.env, now, verifyRecord, ps }) {
     const used = L.drillOf(who.root, o.record);
     lines.push(used ? `  used: yes, a drill on it started ${used.started_at}; run is refused` : '  used: no drill on it yet');
   }
+  lines.push(...claimLines(who.root, now));
   let text = null;
   try { text = String(ps()); } catch (err) { text = null; }
   const left = text === null ? null : L.leftoverChildren(text);
@@ -107,8 +136,9 @@ function run(who, o, { env, now, verifyRecord, exec, fs = require('fs') }) {
   const used = L.drillOf(who.root, o.record);
   if (used) return refuse(`refused: ${o.record} was already used for a drill started ${used.started_at}; one drill per consent, nothing scheduled or cut`);
   // Two runs at once would both find no row and both schedule a restart: the record is claimed first, by
-  // an exclusive create beside the ledger. A claim never goes stale: once a run gets past its schedule
-  // the record is spent anyway (one drill per consent); a run that fails before its row gives it back.
+  // an exclusive create beside the ledger. A run that fails before its row gives it back; once its row is
+  // written the record is spent anyway (one drill per consent). A run killed between the two leaves the
+  // claim, which plan shows with its age, its maker and how to clear it: it is never cleared on its own.
   // The claim says when and by which run it was made, so plan can show a claim left behind.
   const path = require('path');
   const claim = L.claimFile(who.root, o.record);

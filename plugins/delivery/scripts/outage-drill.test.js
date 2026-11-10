@@ -254,6 +254,34 @@ test('a cut that fails or times out stops the restart timer, runs the restore at
   }
 });
 
+// A run killed between its claim and its row (the session dropped, the host lost power) leaves the claim,
+// and every later run on the record is refused. plan shows each claim, its age and the run that made it,
+// and how to clear it, and says when a drill row spends the record anyway.
+test('plan shows a claim left on a record: its age, the run that made it, and how to clear it', () => {
+  const t = setup();
+  assert.match(t.run(['plan']).out, /claims: none/);
+  const file = L.claimFile(t.root, REC);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify({ record: REC, at: '2026-11-07T08:00:00.000Z', by: 'dev@pc/reality-checker', pid: 4242 })}\n`);
+  const other = L.claimFile(t.root, 'dec-x-2');
+  fs.writeFileSync(other, 'not json\n');
+  const before = fs.readdirSync(path.dirname(file)).sort();
+  for (const argv of [['plan'], ['plan', '--record', REC]]) {
+    const out = t.run(argv).out;
+    assert.match(out, new RegExp(`claim: ${REC} claimed 120 minutes ago \\(2026-11-07T08:00:00.000Z\\) by dev@pc/reality-checker, pid 4242; a run on it is refused while the claim is there`), out);
+    assert.ok(out.includes(`to clear it when no run on it is under way: rm ${file}`), out);
+    assert.match(out, /claim: dec-x-2 claimed .* by an unknown run/, out);
+    assert.ok(out.includes(`rm ${other}`), out);
+  }
+  assert.deepEqual(fs.readdirSync(path.dirname(file)).sort(), before, 'plan removes nothing');
+  // a run is refused while the claim is there; plan says a drill row spends the record whatever the claim
+  assert.match(t.run(RUN).out, /another run on .* is under way or done/);
+  fs.unlinkSync(file);
+  assert.equal(t.run(RUN).code, 0, 'cleared, the record runs');
+  const out = t.run(['plan']).out;
+  assert.match(out, new RegExp(`claim: ${REC} claimed 0 minutes ago .*; its drill row spends the record, so clearing the claim does not free it`), out);
+});
+
 test('plan prints the times, the consent and its use, and the leftover-child pre-flight, and starts and writes nothing', () => {
   const t = setup();
   const before = fs.readdirSync(t.root);
