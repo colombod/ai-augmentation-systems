@@ -13,6 +13,15 @@ const R = require('./lib/team-revive.js');
 const RO = require('./lib/roster.js');
 const watchdog = require('./watchdog.js');
 
+// revive() reads the process this runs in as well as what a caller passes: the tests run from a directory
+// that is no role directory, with no role in the environment, and put both back after.
+const ROLE_VARS = ['DELIVERY_ROLE', 'DELIVERY_ROLE_ID', 'DELIVERY_ROLE_DIR'];
+const savedCwd = process.cwd();
+const savedRole = Object.fromEntries(ROLE_VARS.map((k) => [k, process.env[k]]));
+process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), 'revive-test-cwd-')));
+for (const k of ROLE_VARS) delete process.env[k];
+test.after(() => { process.chdir(savedCwd); for (const k of ROLE_VARS) { if (savedRole[k] === undefined) delete process.env[k]; else process.env[k] = savedRole[k]; } });
+
 const T0 = '2026-11-04T09:00:00Z';
 const H = 3600e3;
 const iso = (t) => new Date(t).toISOString();
@@ -259,7 +268,7 @@ test('start is refused in a builder\'s role session and allowed in the Chief of 
   const builder = { DELIVERY_ROLE: 'builder', DELIVERY_ROLE_ID: 'builder', DELIVERY_ROLE_DIR: p.dir('builder') };
   const refused = run(p, ['start'], { env: builder, who: { root: p.root, team: p.team, roleId: 'builder' } });
   assert.equal(refused.code, 1);
-  assert.match(refused.out, /start is the Chief of Staff's and the host job's .*role builder/);
+  assert.match(refused.out, /start is the Chief of Staff's, the host manager's and the host job's .*role builder/);
   assert.equal(refused.calls.length, 0);
   assert.equal(run(p, ['check'], { env: builder, who: { root: p.root, team: p.team, roleId: 'builder' } }).code, 0);
   // the marker says builder: a chief-of-staff variable does not make it the chief
@@ -328,17 +337,17 @@ test('the role-context hook passes a Remote Control session\'s link to the roste
   } finally { if (prev === undefined) delete process.env.DELIVERY_ROLE; else process.env.DELIVERY_ROLE = prev; }
 });
 
-test('the lane lets the Chief of Staff run check and start and refuses them to a role without the group; a builder\'s open lane meets the script\'s own refusal', () => {
+test('the lane lets the Chief of Staff run check and start and refuses them to a role without the group; a builder\'s open lane refuses start too', () => {
   const { harness } = require('./testing/role-harness.js');
   const h = harness();
   const cmd = (sub) => `node ${path.join(__dirname, 'team-revive.js')} ${sub}`;
   assert.equal(h.bash('chief-of-staff', cmd('check'), { run: false }).deny, null);
   assert.equal(h.bash('chief-of-staff', cmd('start'), { run: false }).deny, null);
   assert.ok(h.bash('product-manager', cmd('start'), { run: false }).deny, 'the product manager may not start sessions');
-  // the builder's lane runs any command: the script refuses it in the builder's role directory, before any read
+  // the builder's lane runs any command but this one, refused with the way out; check still runs there
   const b = h.bash('builder-1', cmd('start'));
-  assert.equal(b.code, 1, b.out);
-  assert.match(b.out, /start is the Chief of Staff's and the host job's/);
+  assert.match(String(b.deny), /starting role sessions is the Chief of Staff's and the host manager's/);
+  assert.equal(h.bash('builder-1', cmd('check'), { run: false }).deny, null);
 });
 
 test('the watchdog\'s host-job run starts the missing role sessions after its wakes; check does not', () => {
@@ -359,7 +368,7 @@ test('the watchdog\'s host-job run starts the missing role sessions after its wa
 });
 
 // the facts a start reads, injected, for revive() called directly (as the watchdog's host job does)
-const reviveDeps = (p, spawn) => ({ start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn });
+const reviveDeps = (p, spawn) => ({ start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn });
 const lockFile = (p) => path.join(p.root, '.delivery', 'watchdog', 'revive.lock');
 
 test('two start passes at once (the Chief of Staff\'s and the host job\'s) open one link per instance: the second finds the start lock held', () => {
@@ -493,6 +502,28 @@ test('the argv matches the live `claude remote-control --help` on this host (DEL
   if (r.error && r.error.code === 'ENOENT') { t.skip('claude is not on PATH'); return; }
   assert.equal(r.status, 0, String(r.stderr || r.error || ''));
   assertArgsMatchHelp(`${r.stdout}\n${r.stderr}`);
+});
+
+test('the host manager runs start like the Chief of Staff; --project names any team; a host-manager instance is never started here', () => {
+  const p = project({ roles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'builder', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  const hm = run(p, ['start'], { env: { DELIVERY_ROLE: 'host-manager', DELIVERY_ROLE_ID: 'host-manager' }, who: { root: p.root, team: p.team, roleId: 'host-manager' } });
+  assert.equal(hm.code, 0, hm.out);
+  assert.deepEqual(hm.calls.map((c) => c.cwd).sort(), [p.dir('builder'), p.dir('chief-of-staff')].sort(), 'its own unit keeps the host manager: no second server in its directory');
+  assert.doesNotMatch(hm.out, /host-manager/);
+  // --project: from another team's directory, the named team is the one read
+  const q = project();
+  fs.writeFileSync(path.join(q.root, '.delivery', 'team', 'hosts.json'), JSON.stringify({ hosts: { pc: {} } }));
+  const r = TR.main(['check', '--json', '--project', q.root], { cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: q.config });
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(JSON.parse(r.out).missing.map((i) => i.roleDir), [q.dir('chief-of-staff'), q.dir('builder')]);
+});
+
+test('only: a start pass brings back the named instances and leaves the rest down', () => {
+  const p = project();
+  const s = spawner();
+  const r = TR.revive(p.root, p.team, { start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, spawn: s.fn, only: ['builder'] });
+  assert.deepEqual(s.calls.map((c) => c.cwd), [p.dir('builder')]);
+  assert.deepEqual(Object.keys(r.started), ['builder']);
 });
 
 // ---- a role session still open on an older plugin than the installed one (delivery-plugin-planning-hjx.1.6.7) ----
@@ -673,9 +704,29 @@ test('stopServer sends SIGTERM to the server and reports whether the server and 
   assert.equal(TR.stopServer(5000, 5100, { kill: () => {}, waitMs: 30, stepMs: 10 }), false);
 });
 
+test('revive() itself refuses a start from a role session that may not start sessions, so code that loads it cannot skip the guard', () => {
+  const p = project();
+  const roleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'revive-role-'));
+  fs.writeFileSync(path.join(roleDir, '.delivery-role.json'), '{}');
+  const s = spawner();
+  const deps = (over) => ({ ...reviveDeps(p, s.fn), ...over });
+  assert.throws(() => TR.revive(p.root, p.team, deps({ cwd: roleDir, env: { DELIVERY_HOST: 'pc' } })), /start is the Chief of Staff's, the host manager's and the host job's/);
+  assert.throws(() => TR.revive(p.root, p.team, deps({ cwd: p.root, env: { DELIVERY_HOST: 'pc', DELIVERY_ROLE: 'builder', DELIVERY_ROLE_ID: 'builder' } })), /role builder/);
+  assert.equal(s.calls.length, 0, 'nothing started');
+  // a read (check, --dry-run) is no start: it runs anywhere
+  assert.equal(TR.revive(p.root, p.team, deps({ cwd: roleDir, env: { DELIVERY_HOST: 'pc' }, start: false })).started.builder, undefined);
+  // the host manager and the Chief of Staff start; the host job (no role session) starts
+  for (const env of [{ DELIVERY_ROLE: 'host-manager', DELIVERY_ROLE_ID: 'host-manager' }, { DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_ID: 'chief-of-staff' }, {}]) {
+    const q = project();
+    const t = spawner();
+    TR.revive(q.root, q.team, { ...reviveDeps(q, t.fn), cwd: q.root, env: { DELIVERY_HOST: 'pc', ...env } });
+    assert.equal(t.calls.length, 2, JSON.stringify(env));
+  }
+});
+
 // hjx.1.6.10.1: a role session started by the host job's service ran in that service's cgroup and shared
 // its TasksMax with every role (eight starts aborted at once), and kept the oneshot from ending.
-const startDeps = (p, extra) => ({ start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, systemdRun: null, ...extra });
+const startDeps = (p, extra) => ({ start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config, systemdRun: null, ...extra });
 
 test('each start runs in its own systemd user scope with its own limits where systemd runs, and as a plain child where it does not', () => {
   const c = R.scopedCommand('claude', ['remote-control', '--name', 'builder@ex'], { instance: 'builder-2', at: T0, systemdRun: '/usr/bin/systemd-run' });
@@ -766,7 +817,7 @@ function fakeBin(dir, name, body) {
   fs.chmodSync(f, 0o755);
   return f;
 }
-const realDeps = (p, env) => ({ start: true, env: { DELIVERY_HOST: 'pc', PATH: process.env.PATH, ...env }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config });
+const realDeps = (p, env) => ({ start: true, cwd: p.root, env: { DELIVERY_HOST: 'pc', PATH: process.env.PATH, ...env }, now: T0, bd: store(BUSY), live: [], prs: [], alive: () => false, configDir: p.config });
 
 test('with the real spawn and no settle given, a start whose process exits at once is recorded failed', () => {
   const p = project({ roles: [{ id: 'builder', host: 'pc' }] });
