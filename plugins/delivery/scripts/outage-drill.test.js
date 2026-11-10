@@ -89,6 +89,47 @@ test('a run started while another run on the record is still scheduling is refus
   assert.equal(u.run(RUN).code, 0, 'the retry runs');
 });
 
+// The claim must be one exclusive create, not a check and then a write: two runs that both check before
+// either writes would both find the record free. A forced interleave through an injected fs runs the
+// second run in the gap, right after the first run's first look at the claim file (any read, stat or
+// existence check returns first, then the other run goes), or right before its write. Exactly one run may
+// schedule and cut.
+test('two runs racing on one record: the exclusive claim lets exactly one schedule and cut', () => {
+  const t = setup();
+  const claimPath = L.claimFile(t.root, REC);
+  const cuts = [];
+  const execOf = (who) => (args) => { if (args.includes('off')) cuts.push(who); return { status: 0, stdout: '', stderr: '' }; };
+  let raced = null;
+  const race = () => { if (!raced) { raced = { pending: true }; raced = t.run(RUN, { exec: execOf('second'), fs }); } };
+  const READS = ['existsSync', 'statSync', 'lstatSync', 'accessSync', 'readFileSync', 'readdirSync'];
+  const racing = new Proxy(fs, {
+    get(target, prop) {
+      const real = target[prop];
+      if (typeof real !== 'function') return real;
+      return (...args) => {
+        const onClaim = args.some((a) => typeof a === 'string' && path.resolve(a) === claimPath);
+        if (!onClaim) return real.apply(target, args);
+        if (READS.includes(prop)) {
+          let out; let err = null;
+          try { out = real.apply(target, args); } catch (e) { err = e; }
+          race();
+          if (err) throw err;
+          return out;
+        }
+        race();
+        return real.apply(target, args);
+      };
+    },
+  });
+  const first = t.run(RUN, { exec: execOf('first'), fs: racing });
+  assert.ok(raced && !raced.pending, 'the second run ran in the gap');
+  const codes = [first.code, raced.code].sort();
+  assert.deepEqual(codes, [0, 1], `${first.out}\n${raced.out}`);
+  assert.equal(cuts.length, 1, 'one cut');
+  assert.match([first.out, raced.out].join('\n'), /another run on .* is under way or done; one drill per consent, nothing scheduled or cut/);
+  assert.equal(L.drills(t.root).filter((x) => x.type === 'drill').length, 1, 'one drill row');
+});
+
 test('a record that does not verify, or is not the owner\'s word, is refused and nothing runs', () => {
   for (const vr of [() => ({ ok: false, error: 'not found' }), () => ({ ok: true, chain: [{ kind: 'decision' }, { kind: 'input', source: 'agent' }] }), () => { throw new Error('store unreadable'); }]) {
     const t = setup();

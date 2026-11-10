@@ -63,6 +63,9 @@ function drills(root) {
   }
   return rows;
 }
+// A run's claim on its record, beside the ledger: made by one exclusive create before anything is scheduled.
+const CLAIM_RE = /^drill-.*\.claim$/;
+const claimFile = (root, record) => path.join(path.dirname(ledgerFile(root)), `drill-${String(record).replace(/[^A-Za-z0-9._-]/g, '_')}.claim`);
 const drillOf = (root, record) => drills(root).find((r) => r.type === 'drill' && r.record === record) || null;
 function append(root, row) {
   WD.ensureDir(root);
@@ -84,4 +87,4 @@ function leftoverChildren(psText) {
   return found;
 }
 
-module.exports = { MAX_CUT_MINUTES, RESTART_AFTER, COMMANDS, privilegeOf, unitName, timerArgs, stopArgs, cutArgs, restoreArgs, checkMinutes, times, ledgerFile, drills, drillOf, append, leftoverChildren };
+module.exports = { MAX_CUT_MINUTES, RESTART_AFTER, COMMANDS, privilegeOf, unitName, timerArgs, stopArgs, cutArgs, restoreArgs, checkMinutes, times, ledgerFile, claimFile, CLAIM_RE, drills, drillOf, append, leftoverChildren };

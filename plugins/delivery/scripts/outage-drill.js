@@ -100,7 +100,7 @@ function plan(who, o, { env = process.env, now, verifyRecord, ps }) {
 // Order: the record verifies, no drill spent it, the restore is scheduled, the restart is scheduled, the
 // row is written, the cut runs. A schedule or row that fails stops there and stops the timers, so nothing
 // is cut; a cut that fails never restarts the host and still brings the network back.
-function run(who, o, { env, now, verifyRecord, exec }) {
+function run(who, o, { env, now, verifyRecord, exec, fs = require('fs') }) {
   const refuse = (why) => ({ code: 1, out: `outage-drill.js: ${why}` });
   const v = consent(who.root, o.record, verifyRecord, hostOf(env));
   if (!v.ok) return refuse(`refused: ${v.why}; nothing scheduled or cut`);
@@ -109,10 +109,11 @@ function run(who, o, { env, now, verifyRecord, exec }) {
   // Two runs at once would both find no row and both schedule a restart: the record is claimed first, by
   // an exclusive create beside the ledger. A claim never goes stale: once a run gets past its schedule
   // the record is spent anyway (one drill per consent); a run that fails before its row gives it back.
-  const fs = require('fs');
+  // The claim says when and by which run it was made, so plan can show a claim left behind.
   const path = require('path');
-  const claim = path.join(path.dirname(L.ledgerFile(who.root)), `drill-${String(o.record).replace(/[^A-Za-z0-9._-]/g, '_')}.claim`);
-  try { fs.mkdirSync(path.dirname(claim), { recursive: true }); fs.writeFileSync(claim, `${now}\n`, { flag: 'wx' }); } catch (err) {
+  const claim = L.claimFile(who.root, o.record);
+  const made_by = { record: o.record, at: now, by: who.actor || null, pid: process.pid };
+  try { fs.mkdirSync(path.dirname(claim), { recursive: true }); fs.writeFileSync(claim, `${JSON.stringify(made_by)}\n`, { flag: 'wx' }); } catch (err) {
     return refuse(err.code === 'EEXIST' ? `refused: another run on ${o.record} is under way or done; one drill per consent, nothing scheduled or cut` : `refused: the record could not be claimed (${err.message}); nothing scheduled or cut`);
   }
   const unclaim = () => { try { fs.unlinkSync(claim); } catch (err) { /* already gone */ } };
@@ -153,7 +154,7 @@ function run(who, o, { env, now, verifyRecord, exec }) {
   return { code: 0, out: `Network cut at ${t.started_at} for ${cut} minutes: it comes back at ${t.restore_at} (${row.units[0]}) and the host restarts at ${t.restart_at} (${row.units[1]}). The drill's row is in ${require('path').relative(who.root, L.ledgerFile(who.root))}.` };
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord, who: given, exec = spawnExec, ps = psList } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord, who: given, exec = spawnExec, ps = psList, fs } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `outage-drill.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -169,7 +170,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord,
     if (who.roleId !== ROLE) return { code: 1, out: `outage-drill.js: run is the Reality Checker's (${who.roleId ? `role ${who.roleId}` : 'no role session here'}); outage-drill.js plan shows what it would do` };
   }
   if (!who.root) return { code: 2, out: 'outage-drill.js: no project found; pass --project <root>' };
-  return cmd === 'plan' ? plan(who, o, { env, now: at, verifyRecord, ps }) : run(who, o, { env, now: at, verifyRecord, exec });
+  return cmd === 'plan' ? plan(who, o, { env, now: at, verifyRecord, ps }) : run(who, o, { env, now: at, verifyRecord, exec, fs });
 }
 
 // Exports come first so a module that requires this file sees them even while main runs.
