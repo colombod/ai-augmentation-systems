@@ -311,7 +311,7 @@ test('plan prints the times, the consent and its use, and the leftover-child pre
   assert.match(t.run(['plan', '--record', 'dec-x-1']).out, /consent: dec-x-1 refused: dec-x-1 does not verify/);
 });
 
-test('the lane gives outage-drill.js run to the Reality Checker only; a role whose lane runs anything meets the script\'s refusal', () => {
+test('the lane gives outage-drill.js run to the Reality Checker only, the open lanes included; plan stays open', () => {
   const { loadPolicy, decideLane } = require('../hooks/scripts/lane.js');
   const PLUGIN_ROOT = path.join(__dirname, '..');
   const groups = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'lane-groups.json'), 'utf8'));
@@ -323,23 +323,62 @@ test('the lane gives outage-drill.js run to the Reality Checker only; a role who
   for (const role of roles) {
     const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${role}` });
     const d = decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: laneDir, groups, pluginRoot: PLUGIN_ROOT, hostHeadless: false });
-    if (role === 'reality-checker') assert.equal(d.allow, true, d.reason);
-    else if (/^lane_bash: any$/m.test(brief(role))) { open.push(role); assert.equal(d.allow, true, role); }
-    else assert.equal(d.allow, false, `${role} may not run the drill`);
+    if (role === 'reality-checker') { assert.equal(d.allow, true, d.reason); continue; }
+    assert.equal(d.allow, false, `${role} may not run the drill`);
+    assert.match(d.reason, /the outage drill's run cuts this host's network and restarts it: it is the Reality Checker's/, role);
+    if (/^lane_bash: any$/m.test(brief(role))) {
+      open.push(role);
+      const p = decideLane({ toolName: 'Bash', toolInput: { command: `node ${PLUGIN_ROOT}/scripts/outage-drill.js plan --record ${REC}` }, policy, roleDir: laneDir, groups, pluginRoot: PLUGIN_ROOT, hostHeadless: false });
+      assert.equal(p.allow, true, `${role}: plan`);
+    }
   }
   assert.deepEqual(open.sort(), ['builder', 'spike-researcher']);
   // only the Reality Checker's brief holds the group
   for (const role of roles) assert.equal(/^lane_bash:.*\boutage-drill\b/m.test(brief(role)), role === 'reality-checker', role);
-  // the open lanes run it in their role session, and the script refuses before any read, schedule or cut
+  // in role sessions, through the real hooks: the open lanes are refused run and keep plan
   const { harness } = require('./testing/role-harness.js');
   const h = harness();
-  const cmd = `node ${path.join(__dirname, 'outage-drill.js')} run --record ${REC} --cut-minutes 30 --restart`;
-  for (const inst of ['builder-1', 'spike-researcher']) {
-    const b = h.bash(inst, cmd);
-    assert.equal(b.code, 1, b.out);
-    assert.match(b.out, /run is the Reality Checker's \(role (builder|spike-researcher)\)/);
-  }
-  assert.ok(h.bash('product-manager', cmd, { run: false }).deny);
+  const script = path.join(__dirname, 'outage-drill.js');
+  const cmd = `node ${script} run --record ${REC} --cut-minutes 30 --restart`;
+  for (const inst of ['builder-1', 'spike-researcher', 'product-manager']) assert.match(String(h.bash(inst, cmd, { run: false }).deny), /outage drill's run/, inst);
+  const plan = h.bash('builder-1', `node ${script} plan`);
+  assert.equal(plan.deny, null);
+  assert.equal(plan.code, 0, plan.out);
+  assert.match(plan.out, /Outage drill plan \(nothing is started, scheduled or written\)/);
   assert.equal(h.bash('reality-checker', cmd, { run: false }).deny, null);
-  assert.equal(h.bash('reality-checker', `node ${path.join(__dirname, 'outage-drill.js')} plan`, { run: false }).deny, null);
+  assert.equal(h.bash('reality-checker', `node ${script} plan`, { run: false }).deny, null);
+});
+
+// main takes an injected who for its tests, so code run past the lane (a file of its own, node -e) could
+// name itself the Reality Checker. The script also reads the process's own role session: in a builder's
+// session the run is refused whatever who says; in the Reality Checker's it runs. Every command is a stub.
+test('the script refuses run in any role session but the Reality Checker\'s, whatever role the caller passes', () => {
+  const { harness } = require('./testing/role-harness.js');
+  const h = harness();
+  const dir = scratchDir('drill-own-');
+  const child = path.join(dir, 'call-main.js');
+  fs.writeFileSync(child, [
+    `const D = require(${JSON.stringify(path.join(__dirname, 'outage-drill.js'))});`,
+    `const root = ${JSON.stringify(dir)};`,
+    'const cmds = [];',
+    `const verifyRecord = (r, id) => ({ ok: true, chain: [{ kind: 'decision', scope: { beads: [], labels: ['outage-drill:pc'] }, quote: ${JSON.stringify(QUOTE)} }, { kind: 'input', source: 'human', text: ${JSON.stringify(QUOTE)} }], notes: [] });`,
+    `const r = D.main(['run', '--record', ${JSON.stringify(REC)}, '--cut-minutes', '30', '--restart'], { env: { DELIVERY_HOST: 'pc' }, now: ${JSON.stringify(NOW)}, verifyRecord, exec: (a) => { cmds.push(a.join(' ')); return { status: 0 }; }, ps: () => '', who: { root, roleId: 'reality-checker', actor: 'x' } });`,
+    'process.stdout.write(JSON.stringify({ code: r.code, out: r.out, cmds }));',
+  ].join('\n'));
+  const { spawnSync } = require('child_process');
+  const asRole = (inst) => {
+    const env = { ...process.env, DELIVERY_ROLE: inst, DELIVERY_ROLE_DIR: h.roleDir(inst) };
+    const r = spawnSync(process.execPath, [child], { cwd: h.roleDir(inst), env, encoding: 'utf8', timeout: 30000 });
+    return JSON.parse(r.stdout || '{}');
+  };
+  for (const inst of ['builder-1', 'spike-researcher']) {
+    const r = asRole(inst);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /run is the Reality Checker's \(this process runs in a role (builder|spike-researcher) session\)/, inst);
+    assert.deepEqual(r.cmds, [], `${inst}: nothing scheduled or cut`);
+  }
+  fs.rmSync(path.join(dir, '.delivery'), { recursive: true, force: true });
+  const rc = asRole('reality-checker');
+  assert.equal(rc.code, 0, rc.out);
+  assert.equal(rc.cmds.length, 3, 'the stubs saw the two schedules and the cut');
 });

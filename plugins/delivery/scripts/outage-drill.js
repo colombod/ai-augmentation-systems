@@ -188,6 +188,19 @@ function run(who, o, { env, now, verifyRecord, exec, fs = require('fs') }) {
   return { code: 0, out: `Network cut at ${t.started_at} for ${cut} minutes: it comes back at ${t.restore_at} (${row.units[0]}) and the host restarts at ${t.restart_at} (${row.units[1]}). The drill's row is in ${require('path').relative(who.root, L.ledgerFile(who.root))}.` };
 }
 
+// The role of the session this process runs in, read from the process's own environment and role marker,
+// never from what a caller passes: main takes an injected who for its tests, so `node -e` or a script of
+// its own could otherwise name itself the Reality Checker. null outside a role session (no DELIVERY_ROLE);
+// a role session whose marker cannot be read is no Reality Checker.
+function ownRole() {
+  if (!process.env.DELIVERY_ROLE) return null;
+  try {
+    const { findRoleMarker, validMarker } = require('../hooks/scripts/role-context.js');
+    const valid = validMarker(findRoleMarker(process.cwd()));
+    return (valid && valid.role && valid.role.id) || 'unknown';
+  } catch (err) { return 'unknown'; }
+}
+
 function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord, who: given, exec = spawnExec, ps = psList, fs } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `outage-drill.js: ${err.message}\n${USAGE}` }; }
@@ -200,7 +213,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, verifyRecord,
     const bad = L.checkMinutes(o.cut);
     if (bad) return { code: 2, out: `outage-drill.js: ${bad}` };
     if (!o.restart) return { code: 2, out: 'outage-drill.js: run needs --restart: the consent is a cut and one restart, never a cut alone' };
-    // the lane gives run to the Reality Checker only; a role whose lane runs anything meets this
+    // the lane gives run to the Reality Checker only and refuses it per command to every other role; a
+    // run that gets past the lane some other way meets this, on both the given role and the process's own
+    const own = ownRole();
+    if (own !== null && own !== ROLE) return { code: 1, out: `outage-drill.js: run is the Reality Checker's (this process runs in a role ${own} session); outage-drill.js plan shows what it would do` };
     if (who.roleId !== ROLE) return { code: 1, out: `outage-drill.js: run is the Reality Checker's (${who.roleId ? `role ${who.roleId}` : 'no role session here'}); outage-drill.js plan shows what it would do` };
   }
   if (!who.root) return { code: 2, out: 'outage-drill.js: no project found; pass --project <root>' };

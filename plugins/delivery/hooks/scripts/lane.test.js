@@ -2347,6 +2347,51 @@ test('claude remote-control is refused to every lane but the Chief of Staff\'s a
   for (const role of ['chief-of-staff', 'host-manager']) assert.doesNotMatch(String(d('claude remote-control --name x@y --spawn session', policyOf(role)).reason), /starting role sessions is/, role);
 });
 
+// The outage drill's run cuts this host's network and restarts it: the Reality Checker's alone. The open
+// lanes (lane_bash: any) would otherwise run it, so it is refused per command, as team-revive.js start is,
+// in every spelling; plan, which only reads, stays open to every lane that runs node, and a mention of the
+// run (a test run, a grep, a cat, a commit message, a bead note) is no run.
+test('outage-drill.js run is refused to every lane but the Reality Checker\'s, in every spelling; plan and a mention are not', () => {
+  const { hostRefusal } = require('./lane.js');
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'drill-lane-'));
+  const PR = PLUGIN_ROOT;
+  const drill = `node ${PR}/scripts/outage-drill.js`;
+  const launcher = path.join('/p', ['.', 'delivery'].join(''), 'bin', 'delivery.js');
+  const policyOf = (role) => loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${role}` });
+  const d = (command, role) => decideLane({ toolName: 'Bash', toolInput: { command }, policy: policyOf(role), roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+  const RUN = 'run --record dec-x-1 --cut-minutes 30 --restart';
+  const spellings = [
+    `${drill} ${RUN}`, `${drill} r''un --record dec-x-1 --cut-minutes 30 --restart`, `${drill} "ru"n --record dec-x-1`, `${drill} --project /p ${RUN}`,
+    `cd /tmp && ${drill} ${RUN}`, `bash -c "${drill} ${RUN}"`, `env A=1 ${drill} ${RUN}`, `node ${launcher} outage-drill.js ${RUN}`,
+    `${drill} $CMD --record dec-x-1`, `node -e "require('${PR}/scripts/outage-drill.js').main(['run','--record','dec-x-1','--cut-minutes','30','--restart'])"`,
+    `echo $(${drill} ${RUN})`,
+  ];
+  for (const role of ['builder', 'spike-researcher', 'delivery-lead', 'chief-of-staff', 'host-manager']) {
+    for (const c of spellings) {
+      const r = d(c, role);
+      assert.equal(r.allow, false, `${role}: ${c}`);
+      assert.match(r.reason, /the outage drill's run cuts this host's network and restarts it: it is the Reality Checker's/, `${role}: ${c}`);
+    }
+  }
+  // the Reality Checker runs it; the refusal is never the Reality Checker's
+  assert.equal(d(`${drill} ${RUN}`, 'reality-checker').allow, true, d(`${drill} ${RUN}`, 'reality-checker').reason);
+  assert.equal(hostRefusal(`${drill} ${RUN}`, 'reality-checker'), null);
+  for (const role of ['builder', 'delivery-lead', 'host-manager']) assert.equal(hostRefusal(`${drill} ${RUN}`, role), 'drill', role);
+  // plan stays open to the builder and the Reality Checker, and is not this refusal for any lane
+  for (const role of ['builder', 'spike-researcher', 'reality-checker']) {
+    for (const c of [`${drill} plan`, `${drill} plan --record dec-x-1 --cut-minutes 20`]) assert.equal(d(c, role).allow, true, `${role}: ${c}: ${d(c, role).reason}`);
+  }
+  for (const role of ['builder', 'spike-researcher']) assert.equal(d(`node ${launcher} outage-drill.js plan --record dec-x-1`, role).allow, true, role);
+  for (const role of ['delivery-lead', 'host-manager']) assert.equal(hostRefusal(`${drill} plan --record dec-x-1`, role), null, role);
+  // a mention is no run
+  const rel = ['plugins', 'delivery', 'scripts'].join('/');
+  for (const c of [
+    `DELIVERY_TEST_FILES=${PR}/scripts/outage-drill.test.js node ${PR}/scripts/testing/run-tests.js`,
+    'grep -rn "outage-drill.js run" plugins/delivery', `cat ${rel}/outage-drill.js`, `git diff origin/main -- ${rel}/outage-drill.js`,
+    'git commit -m "outage-drill.js run is the Reality Checker\'s"', 'bd update x-1 --append-notes "next: node outage-drill.js run --record dec-x-1"',
+  ]) assert.equal(d(c, 'builder').allow, true, `${c}: ${d(c, 'builder').reason}`);
+});
+
 test('host manager lane: operands after -- must match, value flags are not operands, job modes and --force are refused', () => {
   const hm = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/host-manager' });
   const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-ops-'));

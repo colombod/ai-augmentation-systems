@@ -1542,9 +1542,17 @@ function machineUser(args) {
   return false;
 }
 const HOST_SCRIPT = /(?:team-revive|host-manager)/;
-// 'units' | 'start' | 'manager' | 'code' | null for one command line, depth-limited
+// The outage drill's run cuts this host's network and restarts it, on the owner's consent: the Reality
+// Checker's alone, the host manager included. Its plan only reads and stays open. A word the shell builds
+// at run time could become run, so it is refused too.
+const DRILL_ROLE = 'reality-checker';
+const DRILL_SCRIPT = /outage-drill/;
+const DRILL_REASON = 'the outage drill\'s run cuts this host\'s network and restarts it: it is the Reality Checker\'s, on a bead that names the owner\'s consent.\nRun outage-drill.js plan to see what it would do, and message the Delivery Manager';
+// 'units' | 'start' | 'manager' | 'code' | 'drill' | null for one command line, depth-limited. The host
+// manager is spared every refusal here but the drill's.
 function hostRefusal(text, roleId, depth = 0) {
-  if (depth > 4 || roleId === HOST_MANAGER) return null;
+  if (depth > 4) return null;
+  const hm = roleId === HOST_MANAGER;
   for (const sub of substitutions(text)) { const r = hostRefusal(sub, roleId, depth + 1); if (r) return r; }
   for (const seg of splitWithOps(text)) {
     const t = commandWords(stripGrammar(argWords(seg.text)));
@@ -1560,23 +1568,24 @@ function hostRefusal(text, roleId, depth = 0) {
     }
     if (SERVICE_TOOLS.has(name)) {
       // a word the shell builds at run time could become --user: its options cannot be known
-      if (args.some((a) => USER_OPT.test(a) || /[$`]/.test(a)) || machineUser(args)) return 'units';
+      if (!hm && (args.some((a) => USER_OPT.test(a) || /[$`]/.test(a)) || machineUser(args))) return 'units';
       continue;
     }
     // a Remote Control server named or attached to a session is a role session started by hand: the
     // Chief of Staff's and the host manager's alone, as team-revive.js start is (its --help is no start)
-    if (name === 'claude' && args.includes('remote-control') && args.some((a) => /^--(?:name|spawn|session-id)(?:=|$)/.test(a)) && roleId !== 'chief-of-staff') return 'start';
+    if (name === 'claude' && args.includes('remote-control') && args.some((a) => /^--(?:name|spawn|session-id)(?:=|$)/.test(a)) && roleId !== 'chief-of-staff' && !hm) return 'start';
     if (!INTERPRETERS.has(name)) continue;
     let script = null;
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
       if (CODE_FLAGS.has(a) || /^--(?:eval|print|require|import|loader)=/.test(a)) {
         const code = a.includes('=') ? a.slice(a.indexOf('=') + 1) : args[++i] || '';
-        if (HOST_SCRIPT.test(code)) return 'code';
+        if (roleId !== DRILL_ROLE && DRILL_SCRIPT.test(code)) return 'drill';
+        if (!hm && HOST_SCRIPT.test(code)) return 'code';
         continue;
       }
       // code read from standard input (a here-string or a pipe): judged by the whole line's text
-      if (a === '--input-type' || a.startsWith('--input-type=')) { if (HOST_SCRIPT.test(text)) return 'code'; if (a === '--input-type') i++; continue; }
+      if (a === '--input-type' || a.startsWith('--input-type=')) { if (roleId !== DRILL_ROLE && DRILL_SCRIPT.test(text)) return 'drill'; if (!hm && HOST_SCRIPT.test(text)) return 'code'; if (a === '--input-type') i++; continue; }
       if (a === '--') { script = i + 1 < args.length ? i + 1 : null; break; }
       if (NODE_VALUE_FLAGS.has(a)) { i++; continue; }
       if (a.startsWith('-')) continue;
@@ -1589,12 +1598,14 @@ function hostRefusal(text, roleId, depth = 0) {
     // the project's launcher runs its first argument as the plugin script
     if (isLauncher(file)) { file = rest[0]; rest = rest.slice(1); }
     const base = baseOf(file);
+    if (base === 'outage-drill.js' && roleId !== DRILL_ROLE && rest.some((x) => x === 'run' || /[$`]/.test(x))) return 'drill';
+    if (hm) continue;
     if (base === 'team-revive.js' && rest.includes('start') && roleId !== 'chief-of-staff') return 'start';
     if (base === 'host-manager.js' && rest.some((x) => ['restart', 'tick', 'install', 'run-session'].includes(x))) return 'manager';
   }
   return null;
 }
-const HOST_REASONS = { units: HOST_UNITS_REASON, start: START_REASON, manager: HOST_MANAGER_REASON, code: HOST_CODE_REASON };
+const HOST_REASONS = { units: HOST_UNITS_REASON, start: START_REASON, manager: HOST_MANAGER_REASON, code: HOST_CODE_REASON, drill: DRILL_REASON };
 const MERGE_REASON = 'merging is the Delivery Manager\'s.\nOpen the pull request and message the Delivery Manager; resolve conflicts when it asks';
 const DEFAULT_BRANCHES = ['main', 'master'];
 
