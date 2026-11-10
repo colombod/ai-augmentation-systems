@@ -1649,8 +1649,11 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   file is missing. Each watchdog `run` checks `delivery-host-manager.service` and starts it when it is
   installed and not active; a unit that hit its start limit is failed, and the pass runs
   `systemctl --user reset-failed delivery-host-manager.service` (that unit only) before the start, so it
-  is tried again every 15 minutes. One `host-manager-start` row in `revive.ndjson` per start: the host jobs
-  restart the host manager and the host manager restarts the host jobs.
+  is tried again every 15 minutes. While a host-manager session is already live (in its role directory or
+  the unit's `WorkingDirectory`, or under `<instance>@<host>`, the match run-session makes), the pass
+  neither resets nor starts the unit, writes no row and says so; nor when the open sessions cannot be
+  listed. One `host-manager-start` row in `revive.ndjson` per start: the host jobs restart the host
+  manager and the host manager restarts the host jobs.
 - **The host manager's lane.** Its brief writes nothing and runs `read`, `bd-read`, `bd-notes`,
   `operator-read`, `judge` and the `host-manager` group: `host-manager.js status|restart|tick`,
   `team-revive.js check|start`, `systemctl --user` (`status`, `is-active`, `show`, `start`, `restart`,

@@ -717,7 +717,7 @@ test('the watchdog pass starts the host manager\'s unit when it is installed and
   const m = machine();
   const svc = path.join(HM.unitDir(m.home), HM.UNIT);
   // not installed: nothing asked, nothing written
-  assert.equal(watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0 }), null);
+  assert.equal(watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0, live: [] }), null);
   assert.equal(m.sd.calls.length, 0);
   fs.writeFileSync(svc, '[Service]\n');
   m.sd.units[HM.UNIT] = loaded(false);
@@ -736,19 +736,53 @@ test('the watchdog pass starts the host manager\'s unit when it is installed and
   // a start that fails is a row with the error
   m.sd.units[HM.UNIT] = loaded(false);
   const failingStart = (cmd, args) => { if (args[1] === 'start') throw new Error('Job failed'); return m.sd.exec(cmd, args); };
-  assert.match(watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: failingStart, now: T0 }), /was inactive and did not start \(Job failed\)/);
+  assert.match(watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: failingStart, now: T0, live: [] }), /was inactive and did not start \(Job failed\)/);
   assert.equal(rows()[1].error, 'Job failed');
   // a unit that hit its start limit is failed: its failed state is reset, then it is started, that unit only
   m.sd.units[HM.UNIT] = { LoadState: 'loaded', ActiveState: 'failed' };
   const before = m.sd.calls.length;
-  assert.match(watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0 }), /was failed; reset its failed state and started it/);
+  assert.match(watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0, live: [] }), /was failed; reset its failed state and started it/);
   assert.deepEqual(m.sd.calls.slice(before), [`systemctl --user is-active ${HM.UNIT}`, `systemctl --user reset-failed ${HM.UNIT}`, `systemctl --user start ${HM.UNIT}`]);
   assert.equal(rows()[2].reset, true);
   // an inactive unit is started with no reset
   m.sd.units[HM.UNIT] = loaded(false);
   const b2 = m.sd.calls.length;
-  watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0 });
+  watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0, live: [] });
   assert.ok(!m.sd.calls.slice(b2).some((c) => c.includes('reset-failed')));
+});
+
+// rv-198 at 65a1abd: beside a hand-started host manager, every separate watchdog run started the unit
+// again (7 starts in 13 min, then reset-failed and start again), each a host-manager-start row
+test('the watchdog pass neither resets nor starts the host manager\'s unit while a host-manager session is live, and writes no row; an unreadable list starts nothing', () => {
+  const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
+  const svc = path.join(HM.unitDir(m.home), HM.UNIT);
+  const roleDir = m.alpha.dir('host-manager');
+  fs.writeFileSync(svc, `[Service]\nWorkingDirectory=${roleDir}\n`);
+  const env = { ...process.env, DELIVERY_HOST: 'pc' };
+  const rows = () => R.ledger(m.alpha.root).filter((x) => x.type === 'host-manager-start');
+  const startsAndResets = () => m.sd.calls.filter((c) => / (?:start|reset-failed) /.test(`${c} `) && c.includes(HM.UNIT));
+  for (const [state, unit] of [['inactive', loaded(false)], ['failed', { LoadState: 'loaded', ActiveState: 'failed' }]]) {
+    for (const live of [
+      [{ sessionId: 'hand', cwd: roleDir, name: 'Host manager', status: 'idle' }],
+      [{ sessionId: 'named', cwd: '/elsewhere', name: 'host-manager@pc', status: 'busy' }],
+    ]) {
+      m.sd.units[HM.UNIT] = unit;
+      const before = startsAndResets().length;
+      const line = watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0, env, live });
+      assert.match(line, new RegExp(`is ${state}, and the host manager already runs as .*; not started beside it`), line);
+      assert.equal(startsAndResets().length, before, `${state}: no reset and no start beside a live host manager`);
+    }
+  }
+  // a list that cannot be read starts nothing
+  m.sd.units[HM.UNIT] = loaded(false);
+  const b = startsAndResets().length;
+  assert.match(watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0, env, live: null }), /could not be listed, so it is not started now/);
+  assert.equal(startsAndResets().length, b);
+  assert.equal(rows().length, 0, 'no row while a host manager is live or unknown');
+  // with none live, the unit is started as before; another role's session is no reason to hold it
+  const line = watchdog.ensureHostManager(m.alpha.root, { home: m.home, exec: m.sd.exec, now: T0, env, live: [{ sessionId: 'cos', cwd: m.alpha.dir('chief-of-staff'), name: 'chief-of-staff@alpha' }] });
+  assert.match(line, /was inactive; started it/);
+  assert.equal(rows().length, 1);
 });
 
 test('watchdog install --apply adds the project to the host file and installs the host manager when its units are missing', () => {

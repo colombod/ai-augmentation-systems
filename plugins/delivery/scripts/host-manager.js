@@ -440,6 +440,33 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
 // process is claude and Restart= sees it exit. A node without execve starts nothing: claude as a child
 // would outlive a stop of the unit (KillMode=process stops only the main process), and the next start
 // would be a second host manager beside it. deps: execve, resolveBin, now (in a test).
+// A live host-manager session: one in its role directory or under its name <instance>@<host>
+// (lib/one-session.js), the match run-session makes before it starts one and the watchdog makes before it
+// starts the unit (rv-198). { sessions } (possibly none), or { unreadable } when the open sessions could
+// not be listed. With no host manager in this project's team.json, the unit's own WorkingDirectory is
+// its role directory.
+function hostManagerMatch(roleDirs, names) {
+  const OS = require('./lib/one-session.js');
+  return (s) => Boolean(s) && (roleDirs.some((d) => d && OS.inside(s.cwd, d)) || (Boolean(s.name) && names.includes(s.name)));
+}
+function liveHostManager(root, { env = process.env, home = os.homedir(), hostname, live } = {}) {
+  const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
+  let team = null;
+  try { team = M.loadManifest(root).team; } catch (err) { team = null; }
+  const hm = team ? hostManagerOf(root, team, host) : null;
+  const roleDirs = [];
+  const names = [];
+  if (hm) { roleDirs.push(roleDirOf(root, team, hm.instance).roleDir); names.push(`${hm.instance}@${host}`); }
+  try {
+    const wd = /^WorkingDirectory=(.+)$/m.exec(fs.readFileSync(path.join(HM.unitDir(home), HM.UNIT), 'utf8'));
+    if (wd) roleDirs.push(wd[1].trim().replace(/%%/g, '%'));
+  } catch (err) { /* no unit: the team's role directory alone */ }
+  if (!roleDirs.length && !names.length) return { sessions: [] };
+  const listed = sessionsNow({ env, live });
+  if (!Array.isArray(listed)) return { unreadable: true };
+  return { sessions: listed.filter(hostManagerMatch(roleDirs, names)) };
+}
+
 function resolveOnPath(bin, env) {
   if (bin.includes('/')) return bin;
   for (const d of String(env.PATH || '').split(path.delimiter)) { if (!d) continue; const f = path.join(d, bin); try { fs.accessSync(f, fs.constants.X_OK); return f; } catch (err) { /* not here */ } }
@@ -460,7 +487,7 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
   const OS = require('./lib/one-session.js');
   const listed = sessionsNow({ env, live });
   if (!Array.isArray(listed)) return { code: 1, out: 'host-manager.js: the open sessions could not be listed (claude agents --json), so a start could put a second host manager beside a live one; no session started.' };
-  const running = listed.filter((s) => s && (OS.inside(s.cwd, a.roleDir) || s.name === `${hm.instance}@${host}`));
+  const running = listed.filter(hostManagerMatch([a.roleDir], [`${hm.instance}@${host}`]));
   if (running.length) return { code: ALREADY_RUNNING, out: `host-manager.js: ${hm.instance} already runs as ${OS.described(running)}; no second session started.` };
   const ex = execve !== undefined ? execve : (typeof process.execve === 'function' ? process.execve.bind(process) : null);
   if (!ex) return { code: 1, out: `host-manager.js: run-session needs node 22.15 or later (process.execve), so that claude is the unit's own process; this is node ${process.version}. No session started.` };
@@ -517,7 +544,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, who, ...deps } = {
   return tick(d);
 }
 
-module.exports = { main, read, status, restart, tick, install, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
+module.exports = { liveHostManager, main, read, status, restart, tick, install, runSession, sessionArgs, unitFiles, refusal, deliverAlert, lastPassOf, factsOf, sessionsNow, POLL_EVERY_MS, POLL_MAX_MS };
 
 if (require.main === module) {
   let r;

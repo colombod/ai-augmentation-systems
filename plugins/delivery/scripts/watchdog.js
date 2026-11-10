@@ -532,7 +532,7 @@ function hostManagerSetup(root, { platform, home, env, exec, has }) {
 // Each pass looks at the host manager's own unit and starts it when it is installed and down: the host
 // manager restarts the host jobs, and the host jobs restart the host manager. One row in revive.ndjson
 // per start. null when there is nothing to do.
-function ensureHostManager(root, { home, exec, now }) {
+function ensureHostManager(root, { home, exec, now, env = process.env, live }) {
   const HM = require('./lib/host-manager.js');
   if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return null;
   const run = runner(exec);
@@ -543,6 +543,13 @@ function ensureHostManager(root, { home, exec, now }) {
     state = String((err && err.stdout) || '').trim() || 'unknown';
   }
   if (state === 'active' || state === 'activating' || state === 'reloading') return null;
+  // A host-manager session already live (hand-started, or one its unit lost track of) is never given a
+  // second: the unit is neither reset nor started, and no row is written. Started beside it, the unit
+  // would exit at once (run-session, exit 3), and every separate run would start it again (rv-198).
+  // A session list that cannot be read starts nothing either.
+  const lv = require('./host-manager.js').liveHostManager(root, { env, home, live });
+  if (lv.unreadable) return `host manager: ${HM.UNIT} is ${state}; the open sessions could not be listed, so it is not started now (a second host manager could start beside a live one)`;
+  if (lv.sessions.length) return `host manager: ${HM.UNIT} is ${state}, and the host manager already runs as ${require('./lib/one-session.js').described(lv.sessions)}; not started beside it`;
   let error = null;
   // a unit that hit its start limit (host-manager.js install bounds its restarts) stays failed until its
   // failed state is reset: this pass, every 15 minutes, is how often it is tried again
@@ -661,7 +668,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       if (ug) swept.push(ug);
       // a run inside the sealed test runner never touches the host's own units unless a test hands it fakes
       const sealed = env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN;
-      const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, ...(hostUnit || {}) });
+      const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, ...(live !== undefined ? { live } : {}), ...(hostUnit || {}) });
       if (hm) swept.push(hm);
       try {
         const S = require('./testing/sweep.js');
