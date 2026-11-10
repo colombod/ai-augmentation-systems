@@ -40,6 +40,8 @@ const sessionsAt = (seen) => [
 ];
 const facts = (over = {}) => ({ dm: DM, builders: ['builder-1', 'builder-2'], beads: nightBeads(), ready: [], sessions: sessionsAt(EVENING), wakes: [], prs: nightPrs(), handoffs: [], messages: [], stallHours: 2, ...over });
 const of = (res, i) => res.instances.find((x) => x.instance === i);
+// a builder that holds nothing gets work only when it is live: its session is on this host's roster
+const withB3 = (sessions, seen) => [...sessions, { instance: 'builder-3', role: 'builder', lastActive: T(seen), waitUntil: -Infinity, limit: null }];
 
 test('TR-1: the pass acts on the builder woken for work it cannot move long before its 48th wake', () => {
   // 21:15: three wakes so far (20:33, 20:49, 21:05), none moved a bead
@@ -202,7 +204,7 @@ test('TR-6: --record asks Staffing for the builder, then assigns the bead to it 
   assert.equal(inbox('staffing').length, 1);
   // Staffing added builder-3: the pass after it assigns the bead and tells the new builder
   const after = '2026-11-03T02:30:00Z';
-  const third = RW.record(h.root, RW.pass(facts({ now: after, ready, builders: ['builder-1', 'builder-2', 'builder-3'], wakes: nightWakes(after) })), { bd, actor: 'dev@pc/delivery-lead' });
+  const third = RW.record(h.root, RW.pass(facts({ now: after, ready, builders: ['builder-1', 'builder-2', 'builder-3'], sessions: withB3(sessionsAt(EVENING), after), wakes: nightWakes(after) })), { bd, actor: 'dev@pc/delivery-lead' });
   assert.equal(third.team, 'assign');
   assert.equal(bd.show('ex-p0').assignee, 'dev@pc/builder-3');
   assert.match(String(bd.show('ex-p0').notes), /delivery-lead pass: assigned to builder-3/);
@@ -222,7 +224,7 @@ test('TR-6: every builder stuck and a top-priority bead ready: the pass adds a b
   assert.match(res.team.command, /team-role\.js add builder --count 3; then assign ex-p0 to the new builder/);
   assert.match(RW.lines(res).join('\n'), /^3\. Team: add-builder: every builder \(builder-1, builder-2\) holds stuck work and top-priority ex-p0 is ready/m);
   // a third builder holding nothing is assigned the bead, and no builder is added
-  const free = RW.pass(facts({ now, ready, builders: ['builder-1', 'builder-2', 'builder-3'], wakes: nightWakes(now) }));
+  const free = RW.pass(facts({ now, ready, builders: ['builder-1', 'builder-2', 'builder-3'], sessions: withB3(sessionsAt(EVENING), now), wakes: nightWakes(now) }));
   assert.deepEqual([free.team.kind, free.team.to, free.team.bead], ['assign', 'builder-3', 'ex-p0']);
   // one builder still moving: no builder is added
   const moving = RW.pass(facts({ now, ready, beads: nightBeads().map((b) => (b.id === 'ex-4-5' ? { ...b, updated_at: '2026-11-03T01:50:00Z' } : b)), wakes: nightWakes(now) }));
@@ -240,7 +242,7 @@ test('a session stopped on the usage limit is reported with its resume time, not
   assert.equal(b1.action.kind, 'report');
   assert.match(b1.action.why, /not restarted, the watchdog resumes it at 2026-11-03 05:00 UTC/);
   assert.ok(!b1.fails.some((f) => /nothing moved/.test(f)));
-  const free = RW.pass(facts({ now, sessions, builders: ['builder-1', 'builder-2', 'builder-3'] }));
+  const free = RW.pass(facts({ now, sessions: withB3(sessions, now), builders: ['builder-1', 'builder-2', 'builder-3'] }));
   assert.deepEqual([of(free, 'builder-1').action.kind, of(free, 'builder-1').action.to], ['reassign', 'builder-3']);
 });
 
@@ -254,7 +256,7 @@ test('a holder that is not running and has not moved its own work is restarted; 
   assert.equal(running.running, true);
   assert.equal(running.action.kind, 'raise');
   // a free builder takes it instead
-  const handed = of(RW.pass(facts({ now, beads, prs: [], sessions, builders: ['builder-1', 'builder-3'] })), 'builder-1');
+  const handed = of(RW.pass(facts({ now, beads, prs: [], sessions: withB3(sessions, now), builders: ['builder-1', 'builder-3'] })), 'builder-1');
   assert.deepEqual([handed.action.kind, handed.action.to], ['reassign', 'builder-3']);
 });
 
@@ -357,4 +359,56 @@ test('watchdog.js pass --record is the manager\'s: another role session is refus
   assert.ok(!fs.existsSync(RW.file(h.root)));
   assert.equal(String(bd.show('ex-a').notes || ''), '');
   assert.equal(watchdog.main(['pass'], { cwd: h.root, env, now: '2026-11-03T02:00:00Z', bd }).code, 0, 'reading the pass stays open');
+});
+
+// hjx.1.6.12.1: the pass assigned only the first top-priority bead to the first free builder, one a pass,
+// so other free builders sat idle beside ready work. Every free live builder is now paired with a ready
+// item of its own, in priority order, P0 or not.
+const liveAt = (instance, seen) => ({ instance, role: 'builder', lastActive: T(seen), waitUntil: -Infinity, limit: null });
+const item = (id, priority, extra = {}) => ({ id, status: 'open', priority, created_at: '2026-11-02T22:00:00Z', ...extra });
+const four = ['builder-1', 'builder-2', 'builder-3', 'builder-4'];
+const fourLive = (seen) => [...sessionsAt(seen), liveAt('builder-3', seen), liveAt('builder-4', seen)];
+
+test('hjx.1.6.12.1: every free live builder is paired with its own ready item, in priority order, not only P0', () => {
+  const now = '2026-11-03T02:00:00Z';
+  const ready = [item('ex-c', 2), item('ex-b', 1), item('ex-a', 0), item('ex-epic', 0, { issue_type: 'epic' }), item('ex-taken', 0, { assignee: 'dev@pc/builder-1' }), item('ex-spike', 0, { labels: ['spike'] }), item('ex-done', 0, { labels: ['state-merged'] })];
+  const res = RW.pass(facts({ now, ready, builders: four, sessions: fourLive(now), wakes: nightWakes(now) }));
+  assert.equal(res.team.kind, 'assign');
+  assert.deepEqual(res.team.pairs.map((p) => [p.bead, p.to]), [['ex-a', 'builder-3'], ['ex-b', 'builder-4']], 'one item each, highest priority first');
+  assert.deepEqual([res.team.bead, res.team.to], ['ex-a', 'builder-3']);
+  assert.match(RW.lines(res).join('\n'), /^3\. Team: assign: .*ex-a to builder-3.*ex-b to builder-4/m);
+  // a ready item below P0 is assigned too
+  const p1 = RW.pass(facts({ now, ready: [item('ex-b', 1)], builders: four, sessions: fourLive(now), wakes: nightWakes(now) }));
+  assert.deepEqual(p1.team.pairs.map((p) => [p.bead, p.to]), [['ex-b', 'builder-3']]);
+  // more free builders than items: each item once
+  const one = RW.pass(facts({ now, ready: [item('ex-a', 0)], builders: four, sessions: fourLive(now), wakes: nightWakes(now) }));
+  assert.deepEqual(one.team.pairs.map((p) => [p.bead, p.to]), [['ex-a', 'builder-3']]);
+});
+
+test('hjx.1.6.12.1: a builder with no live session is not assigned; nothing ready assigns nothing', () => {
+  const now = '2026-11-03T02:00:00Z';
+  const ready = [item('ex-a', 0), item('ex-b', 1)];
+  // builder-4 is on the team but has no session on this host: only builder-3 gets work
+  const res = RW.pass(facts({ now, ready, builders: four, sessions: [...sessionsAt(now), liveAt('builder-3', now)], wakes: nightWakes(now) }));
+  assert.deepEqual(res.team.pairs.map((p) => [p.bead, p.to]), [['ex-a', 'builder-3']]);
+  assert.equal(RW.pass(facts({ now, ready: [], builders: four, sessions: fourLive(now), wakes: nightWakes(now) })).team, null);
+});
+
+test('hjx.1.6.12.1: --record assigns every pair and tells each builder, once', () => {
+  const ready = [item('ex-a', 0), item('ex-b', 2)];
+  const h = harness({ beads: Object.fromEntries([...nightBeads(), ...ready].map((b) => [b.id, b])) });
+  const bd = require('./lib/bd.js').makeBd({ cwd: h.root, env: { ...process.env, BD_FAKE_STORE: h.store, PATH: `${path.join(__dirname, 'testing')}${path.delimiter}${process.env.PATH}` } });
+  const inbox = (to) => { try { return fs.readFileSync(path.join(h.root, '.delivery', 'watchdog', 'inbox', `${to}.ndjson`), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch (err) { return []; } };
+  const now = '2026-11-03T02:00:00Z';
+  const run = (at) => RW.record(h.root, RW.pass(facts({ now: at, ready, builders: four, sessions: fourLive(at), wakes: nightWakes(at) })), { bd, actor: 'dev@pc/delivery-lead' });
+  assert.equal(run(now).team, 'assign');
+  assert.equal(bd.show('ex-a').assignee, 'dev@pc/builder-3');
+  assert.equal(bd.show('ex-b').assignee, 'dev@pc/builder-4');
+  assert.match(String(bd.show('ex-b').notes), /delivery-lead pass: assigned to builder-4/);
+  assert.match(inbox('builder-3')[0].message, /top-priority ex-a is assigned to you/);
+  assert.match(inbox('builder-4')[0].message, /ready ex-b \(P2\) is assigned to you/);
+  // the same pairs on the next pass are not assigned or messaged again
+  assert.equal(run('2026-11-03T02:16:00Z').team, null);
+  assert.equal(inbox('builder-3').length, 1);
+  assert.equal(inbox('builder-4').length, 1);
 });
