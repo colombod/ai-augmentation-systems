@@ -1536,27 +1536,38 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
 - **The outage drill.** Recovery after an outage is seen working once, on a host whose owner consented
   to it. `outage-drill.js plan [--cut-minutes <n>] [--record <id>]` starts,
   schedules and writes nothing: it prints the cut length, when the network comes back and when the host
-  restarts, whether the consent record verifies and whether a drill already spent it, and a pre-flight
+  restarts, whether the consent record verifies and whether a drill already spent it, each claim a run
+  left on a record (how long ago and by which run it was made, and the `rm` that clears it, or that the
+  record's drill row spends it anyway), and a pre-flight
   line naming any leftover `claude` child with both `--print` and `--sdk-url` (a process-group kill can
   leave one, and it must be gone before a reattach). `outage-drill.js run --record <id> --cut-minutes <n>
-  --restart` is the Reality Checker's only (lane group `outage-drill`, and
-  the script refuses any other role whatever its lane). It refuses a record that is not the owner's
+  --restart` is the Reality Checker's only: its lane group `outage-drill` runs it, and every other lane,
+  the open ones and the host manager's included, refuses it per command in any spelling (through the
+  launcher, `sh -c`, a word the shell builds at run time, or `node -e` code that loads the script), while
+  `plan` and a mere mention of the run stay open. The script itself refuses the run in any role session
+  but the Reality Checker's, read from its own process, whatever role a caller passes it. It refuses a record that is not the owner's
   verified word, a cut outside 1 to 30 minutes, a run without `--restart`, and a second drill on the same
   record. The record must be consent to this drill: its scope carries the label `outage-drill:<host>`
   for the host the drill would cut, and the owner's own words name the network cut and the restart
   with no negation. Those words are the verified quote, or, for an answer to a confirmation, the
-  question the owner was shown and the answer they picked, captured with their input; the scope and the
+  question the owner was shown and the answer they picked, captured with their input; a question that
+  negates the cut or the restart ("but do not restart", "without cutting") is refused as negated owner
+  words are; the scope and the
   statement the recording agent wrote never count as the owner's words. Any other verified owner
   record is refused. Before it schedules anything a run claims the record with an exclusive
   `drill-<id>.claim` file beside `drills.ndjson`, so a second run started at the same time is refused; a
-  run that fails before its row is written gives the claim back. The cut drops the session that runs it, so in this order it schedules the restore
+  run that fails before its row is written gives the claim back, and one killed between the two leaves
+  it, for `plan` to show. The cut drops the session that runs it, so in this order it schedules the restore
   (`systemd-run --on-active=<n*60>s --unit=delivery-drill-restore-<id> nmcli networking on`), schedules
   the restart (`--on-active=<(n+1)*60>s --unit=delivery-drill-restart-<id> systemctl reboot`, a minute
   after the network is back), writes the drill's row to the watchdog directory's `drills.ndjson`, and only then runs
   `nmcli networking off`. The timers are transient system units owned by PID 1, so they outlive the
   session; they and the cut need root, through `sudo -n` by default (`DELIVERY_DRILL_PRIVILEGE` replaces
   it, for example with `pkexec`, or empty under root). A schedule that fails cuts nothing and stops the
-  timer made before it; a cut that fails stops both timers, and the record stays spent. The
+  timer made before it and the one that reported failing, which may still have been made, the restart
+  first. A cut that exits non-zero or times out may still have taken the network down: it stops only the
+  restart timer, runs the restore at once through the same privilege, and keeps the restore timer, so
+  the network is back by the end of the cut whatever the cut did; the record stays spent. The
   consent is one cut of up to 30 minutes and one restart, so an offline gap longer than the cut is
   not covered and no option stretches it.
 - **A running role session moves onto a newly installed plugin.** Claude Code loads a plugin's hooks when
