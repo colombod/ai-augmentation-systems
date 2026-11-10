@@ -1504,7 +1504,10 @@ function ghApiCall(t) {
     // the gate prints is often run as `... 2>&1 | tail`, and reading 2>&1 as a second endpoint refused it
     if (/^\d*>&(?:\d+|-)$/.test(x) || /^\d*>>?\/dev\/null$/.test(x)) continue;
     if (/^\d*>>?$/.test(x) && words[i + 1] === '/dev/null') { i++; continue; }
-    const [f, inline] = x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
+    // gh takes a short value flag with its value attached (-fstate=closed, -XPATCH): read as -f state=closed,
+    // or the field is lost and the call passes as one with no fields (rv-194)
+    const att = /^-([fFXHRqt])(.+)$/s.exec(x);
+    const [f, inline] = att ? [`-${att[1]}`, att[2]] : x.startsWith('-') ? x.split(/=(.*)/s) : [x, undefined];
     if (GH_API_VALUE.includes(f)) {
       const val = inline !== undefined ? inline : words[++i];
       if (val === undefined) { out.bad = `${f} has no value`; continue; }
@@ -1552,6 +1555,108 @@ function decodeEscapes(x) {
   return s;
 }
 
+// A gh api endpoint as the server reads it: no query or fragment, repeated slashes collapsed, dot
+// segments resolved anywhere in the path (pulls/./187 and pulls/x/../187 are pulls/187), no trailing
+// slash. The merge and close guards both judge this form.
+function apiPath(x) {
+  const raw = String(x || '').split(/[?#]/)[0].replace(/\/{2,}/g, '/');
+  const lead = raw.startsWith('/') ? '/' : '';
+  const out = [];
+  for (const part of raw.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') { out.pop(); continue; }
+    out.push(part);
+  }
+  return lead + out.join('/');
+}
+
+// The allowed groups for a refusal's first line, cut to fit it (a reason's line is at most MAX_LINE,
+// R-46): the groups that fit, then how many more. lead: the line's text before the list.
+function groupsShown(bash, lead, close = ').') {
+  const all = bash.length ? bash : ['none'];
+  const max = require('../../scripts/lib/short-reason.js').MAX_LINE;
+  const full = all.join(', ');
+  if (lead.length + full.length + close.length <= max) return full;
+  const shown = [];
+  for (const g of all) {
+    const more = `, and ${all.length - shown.length - 1} more`;
+    if (lead.length + [...shown, g].join(', ').length + more.length + close.length > max) break;
+    shown.push(g);
+  }
+  return `${shown.join(', ')}, and ${all.length - shown.length} more`;
+}
+
+// A pull request closed or reopened in whatever form: `gh pr close`/`reopen`; `gh issue close`/`reopen`
+// and a REST call that sets the state of pulls/<n> or issues/<n> (a pull request is an issue too, and
+// its issue closes it); the GraphQL close and reopen mutations, and a GraphQL query read from a file or
+// stdin, which cannot be read and so cannot be cleared. Closing is the Delivery Manager's alone
+// (dec-chief-of-staff-000314), like merging: a role with an open lane ("any") would otherwise close a
+// pull request its own lane says nothing about.
+function closeAttempt(command) {
+  const text = String(command == null ? '' : command);
+  return splitCommand(text).some((seg) => {
+    const t = tokens(seg);
+    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+    if (path.basename(words[0] || '') === 'git') {
+      // a push that deletes a remote team/<instance> branch closes that branch's open pull request
+      const { rest: g } = splitGlobals(['git', ...words.slice(1)]);
+      if (g[0] !== 'push') return false;
+      const args = g.slice(1);
+      const del = args.some((a) => a === '--delete' || a === '-d' || /^-[a-z]*d[a-z]*$/.test(a) && !a.startsWith('--'));
+      const refs = args.filter((a) => !a.startsWith('-'));
+      // git resolves a short ref through refs/%s, refs/heads/%s and the like, so heads/team/x and
+      // refs/team/x name the branch too; a leading + (force) still deletes with an empty source
+      const team = (r) => /^(?:refs\/)?(?:heads\/)?team\//.test(r);
+      return refs.some((r) => { const x = r.replace(/^\+/, ''); return (del && team(x)) || (x.startsWith(':') && team(x.slice(1))); });
+    }
+    if (path.basename(words[0] || '') !== 'gh') return false;
+    let i = 1;
+    for (; i < words.length && words[i].startsWith('-'); i++) {
+      if (words[i] === '-R' || words[i] === '--repo') i++;
+    }
+    const rest = words.slice(i);
+    if (rest[0] === 'pr') {
+      let k = 1;
+      while (k < rest.length && (rest[k] === '-R' || rest[k] === '--repo' || /^--repo=/.test(rest[k]))) k += rest[k].startsWith('--repo=') ? 1 : 2;
+      return rest[k] === 'close' || rest[k] === 'reopen';
+    }
+    if (rest[0] === 'issue') {
+      let k = 1;
+      while (k < rest.length && (rest[k] === '-R' || rest[k] === '--repo' || /^--repo=/.test(rest[k]))) k += rest[k].startsWith('--repo=') ? 1 : 2;
+      return rest[k] === 'close' || rest[k] === 'reopen';
+    }
+    if (rest[0] === 'api') {
+      const c = ghApiCall(['gh', ...rest]);
+      // as the server reads the path: no query or fragment, repeated slashes collapsed, no trailing slash
+      // or dot segment (pulls/187/. is pulls/187)
+      const eps = ((c && c.positionals) || []).map(apiPath);
+      const fields = (c && c.fields) || {};
+      // a call the parser could not read whole may carry the state in what it missed
+      if (c && c.bad && eps.some((ep) => /\/(?:pulls|issues)(?:\/|$)|(?:^|\/)graphql$/i.test(ep))) return true;
+      // deleting a team branch closes its open pull request on GitHub
+      if (c && c.method === 'DELETE' && eps.some((ep) => /\/git\/refs\/heads\/team\//i.test(ep))) return true;
+      if (eps.some((ep) => /\/(?:pulls|issues)\/[^/]+$/i.test(ep))) {
+        if (Object.keys(fields).some((k) => k === 'state')) return true;
+        // a body read from a file or stdin, or a field from a file, cannot be read: it may set the state
+        if (rest.some((a) => /^--input/.test(a)) || Object.values(fields).some((v) => String(v).startsWith('@'))) return true;
+      }
+      if (eps.some((ep) => /(?:^|\/)graphql$/i.test(ep))) {
+        if (rest.some((a) => /^--input/.test(a)) || Object.values(fields).some((v) => String(v).startsWith('@'))) return true;
+        const q = Object.values(fields).join(' ');
+        if (/\b(?:close|reopen)(?:PullRequest|Issue)\b/i.test(q)) return true;
+        // an update that sets a pull request's or an issue's state closes or reopens it too, and one whose
+        // input (or its state) is a variable may: the variables are fields the lane reads as text
+        if (/\bupdate(?:PullRequest|Issue)\b/i.test(q) && (/\bstate\s*:/i.test(q) || /\binput\s*:\s*\$/i.test(q) || Object.keys(fields).some((k) => /state/i.test(k)))) return true;
+        // deleting or rewriting a ref by its id closes the pull request of a team branch, and the id says
+        // nothing the lane can check
+        if (/\b(?:deleteRef|updateRefs?)\b/i.test(q)) return true;
+      }
+    }
+    return false;
+  });
+}
+const CLOSE_REASON = 'closing or reopening a pull request is the Delivery Manager\'s (dec-chief-of-staff-000314).\nMessage the Delivery Manager with the pull request and why it should close';
+
 function mergeAttempt(command, cwd) {
   const text = String(command == null ? '' : command);
   return splitCommand(text).some((seg) => {
@@ -1582,7 +1687,7 @@ function mergeAttempt(command, cwd) {
         // is then the second word, not the first
         // as the server reads the path: no query or fragment, repeated slashes collapsed, no trailing
         // slash or dot segment
-        const eps = ((c && c.positionals) || []).map((x) => x.split(/[?#]/)[0].replace(/\/{2,}/g, '/').replace(/(?:\/\.)+$/, '').replace(/\/+$/, ''));
+        const eps = ((c && c.positionals) || []).map(apiPath);
         if (eps.some((ep) => /\/merges?(?:$|\/)/i.test(ep) || /\/pulls\/[^/]+\/(?:ccr\/)?auto[_-]?merge$/i.test(ep))) return true;
         if (eps.some((ep) => /(?:^|\/)graphql$/i.test(ep))) {
           const q = Object.values(c.fields).join(' ');
@@ -1708,6 +1813,12 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     return { allow: true };
   }
   if (name.startsWith('mcp__') && pol.roleId !== MERGER && /merge_pull_request|merge_pr\b|pull_request_merge/i.test(name)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
+  // the MCP close and reopen tools, and an MCP update that sets a pull request's or an issue's state,
+  // close like gh pr close: the Delivery Manager's alone (dec-chief-of-staff-000314)
+  if (name.startsWith('mcp__') && pol.roleId !== MERGER && (/(?:close|reopen)_(?:pull_request|pr|issue)\b|(?:pull_request|issue)_(?:close|reopen)\b/i.test(name)
+    || (/(?:update|edit)_(?:pull_request|pr|issue)\b|(?:pull_request|issue)_(?:update|edit|write)\b|issue_write\b/i.test(name) && toolInput && typeof toolInput === 'object' && Object.prototype.hasOwnProperty.call(toolInput, 'state')))) {
+    return { allow: false, reason: `Role ${pol.roleId}: ${CLOSE_REASON}.` };
+  }
   if (name.startsWith('mcp__') && (pol.mcp || []).some((p) => mcpPatternMatches(p, name))) return { allow: true };
   if (name.startsWith('mcp__') && !bash.includes('any')) {
     const verb = name.split('__').pop();
@@ -1729,6 +1840,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (usageShellWrite(command, { cwd, dirs: planDirs({ projectRoot, roleDir }), mention: PLANS_MENTION, deep: true })) return { allow: false, reason: `Role ${pol.roleId}: ${PLANS_REASON}.` };
     if (!REVIEW_WRITERS.includes(pol.roleId) && usageShellWrite(command, { cwd, dirs: reviewDirs({ projectRoot, roleDir }), mention: REVIEWS_MENTION })) return { allow: false, reason: `Role ${pol.roleId}: ${REVIEWS_REASON}.` };
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
+    if (pol.roleId !== MERGER && closeAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${CLOSE_REASON}.` };
     if (pol.roleId !== MERGER && passRecordAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${PASS_RECORD_REASON}.` };
     const run = refusedRun(command);
     if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? testsReason(command, pluginRootOf({ pluginRoot })) : RESUME_REASON}.` };
@@ -1737,7 +1849,8 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
       return tmpHit ? { allow: false, reason: `Role ${pol.roleId}: ${tmpReason(tmpHit, roleDir)}.` } : { allow: true };
     }
     if (name === 'PowerShell') {
-      return { allow: false, reason: `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: ${bash.join(', ') || 'none'}).${tail}` };
+      const psLead = `Role ${pol.roleId} may not run PowerShell commands: the lane cannot check them (allowed groups: `;
+      return { allow: false, reason: `${psLead}${groupsShown(bash, psLead)}).${tail}` };
     }
     const segs = splitWithOps(command);
     let live = [cwd ? path.resolve(cwd) : path.resolve(process.cwd())];
@@ -1759,8 +1872,9 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
         }
         const construct = expansionConstruct(text);
         // a refused construct is the whole story; otherwise the allowed groups say what the lane runs
-        const why = construct ? `. Refused construct: ${construct}; put literal text in single quotes.` : ` (allowed groups: ${bash.join(', ') || 'none'}).`;
-        return { allow: false, reason: `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\`${why}${tail}` };
+        const lead = `Role ${pol.roleId} may not run \`${text.slice(0, 80)}\``;
+        const why = construct ? `. Refused construct: ${construct}; put literal text in single quotes.` : ` (allowed groups: ${groupsShown(bash, `${lead} (allowed groups: `)}).`;
+        return { allow: false, reason: `${lead}${why}${tail}` };
       }
       const t = tokens(text);
       if (t[0] !== 'cd') continue;
@@ -1877,4 +1991,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { closeAttempt, tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
