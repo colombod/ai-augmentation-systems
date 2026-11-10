@@ -1593,10 +1593,17 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   only record.
 - **The host manager's units.** `host-manager.js install [--dry-run] --project <root> [--instance <id>]`
   takes the role directory of that team's `host-manager` instance (the roster's, else the team layout's)
-  and writes three systemd user units: `delivery-host-manager.service` runs `claude remote-control
-  --name <instance>@<host>` there (`--session-id <id>` when one is recorded for the directory, else
-  `--spawn session`; the team's permission mode as a start uses it), `Restart=always`, a 30 second
-  `RestartSec`, `KillMode=process` (the sessions a restart starts outlive a restart of the unit),
+  and writes three systemd user units: `delivery-host-manager.service` runs `host-manager.js
+  run-session` there through the project's launcher. At each start, run-session reads the Remote Control
+  session last recorded for the role directory (claude's pointer, else the roster) and replaces itself
+  with `claude remote-control --name <instance>@<host> --session-id <id>`, or `--spawn session` when none
+  is recorded, in the team's permission mode: a restart of the unit reattaches the same session in the
+  owner's app instead of adding one, and the unit's main process is claude (a node without
+  `process.execve` runs claude as its child and waits for it). Its restarts are bounded:
+  `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,
+  `RestartSteps=5`, `RestartMaxDelaySec=30min`, systemd 254 and later; an older systemd warns of the
+  two keys and keeps 30 seconds), and at most 5 starts in 15 minutes (`StartLimitIntervalSec=15min`,
+  `StartLimitBurst=5` in `[Unit]`); `KillMode=process` (the sessions a restart starts outlive a restart of the unit),
   `TasksMax=4096` (its own unit, outside every host job's cgroup) and `WantedBy=default.target`;
   `delivery-host-manager-tick.service` and `.timer` (two minutes after boot, then every five) run
   `tick` through the project's launcher, so a plugin update is picked up, its output appended to
@@ -1609,7 +1616,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   instance (Staffing adds one: `team-role.js add host-manager`) or a role directory not yet prepared
   installs nothing and says why. `watchdog.js install --apply` runs the same install when the service
   file is missing. Each watchdog `run` checks `delivery-host-manager.service` and starts it when it is
-  installed and not active, one `host-manager-start` row in `revive.ndjson` per start: the host jobs
+  installed and not active; a unit that hit its start limit is failed, and the pass runs
+  `systemctl --user reset-failed delivery-host-manager.service` (that unit only) before the start, so it
+  is tried again every 15 minutes. One `host-manager-start` row in `revive.ndjson` per start: the host jobs
   restart the host manager and the host manager restarts the host jobs.
 - **The host manager's lane.** Its brief writes nothing and runs `read`, `bd-read`, `bd-notes`,
   `operator-read`, `judge` and the `host-manager` group: `host-manager.js status|restart|tick`,
@@ -1619,9 +1628,11 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `amplifier run`, `ps`, `df`, `free`, `uptime`, and `sort` and `uniq` with no option or operand that
   writes a file. A lane rule's `positional_match` lists those unit globs (with `positional_required`
   for the commands that act on a unit). Every other lane, the `any` lanes included, is refused
-  `systemctl --user` and `host-manager.js restart|tick|install`, with the way out (message the host
-  manager); `team-revive.js start` is refused to every lane but the Chief of Staff's and the host
-  manager's.
+  `systemctl --user` and `host-manager.js restart|tick|install|run-session`, with the way out (message
+  the host manager); `team-revive.js start`, and `claude remote-control` with `--name`, `--spawn` or
+  `--session-id` (a role session started by hand), are refused to every lane but the Chief of Staff's
+  and the host manager's (`claude remote-control --help` and other claude commands are not). The command
+  after `taskset` and its mask or cpu list is the one judged, as after `nice` or `ionice`.
 - **Watching GitHub within a budget (R-25).** `watch.js until <text> --every <5m> --max <2h> -- gh <read>`
   repeats a gh read until its output shows `<text>` (a pattern, any case), exit 0, or the time limit
   passes, exit 1. Outside a project its cache is a private folder in the temporary directory (0700,
