@@ -243,6 +243,12 @@ commits send the pull request back to its owner and to review again. Its own `gh
 the `gh-merge` group and passes only through the merge gate (below). Closing and reopening a pull
 request (`gh pr close`, `gh pr reopen`) is the Delivery Manager's alone too: the `gh-close` group, in no
 other role's lane, so a pull request replaced by another is closed by the role that merges.
+Both guards read every command a line runs, not only its first word: a merge or a close inside
+`$(...)`, backticks, a subshell, `bash -c` or `eval`, or after a wrapper (`command`, `time`, `timeout`,
+`nohup`, `exec`, `sudo`, `env`, `xargs`), is refused to every other role as a plain one is. So are a
+gh alias or extension, a command word the lane cannot read (`$GH pr merge`), a push that deletes or
+overwrites branches (`--prune`, `--mirror`, `--all`, a glob destination), a GitHub API write from a
+client other than gh (`curl`, `wget`, `httpie`, `xh`), and the MCP branch delete tools.
 
 Where `gh pr create` (GraphQL) is refused, a role opens its pull request through REST:
 `gh api -X POST repos/<owner>/<repo>/pulls -f title='<the change>' -f head=team/<instance> -f base=main -f body='Refs <bead id> ...'`.

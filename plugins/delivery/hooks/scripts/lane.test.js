@@ -1181,6 +1181,54 @@ test('hjx.1.6.18.1: a merge or a close inside a substitution, a subshell, a shel
   for (const c of ["bash -c 'gh pr merge 187'", 'timeout 9 gh pr close 187', '$(gh pr merge 187)']) assert.equal(run(POLICIES[DL], c).allow, false, `delivery-lead: ${c} (not its sanctioned form)`);
 });
 
+test('hjx.1.6.18.1: pushes that delete or overwrite branches, GitHub API writes from other clients and the MCP branch delete are refused to builder and spike-researcher', () => {
+  const run = (policy, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx() });
+  const spike = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/spike-researcher' });
+  for (const policy of [POLICIES[BUILDER], spike]) {
+    // --mirror and --all push every local branch, main included; a glob destination can match main
+    for (const c of ['git push --mirror origin', 'git push origin --all', 'git push origin "refs/heads/*:refs/heads/*"', "bash -c 'git push --mirror origin'"]) {
+      const r = run(policy, c);
+      assert.equal(r.allow, false, `${policy.roleId}: ${c}`);
+      assert.match(r.reason, /merging is the Delivery Manager's/, `${policy.roleId}: ${c}`);
+    }
+    // --prune deletes the remote branches that have no local copy, team branches with open pull requests too
+    // (a glob over every branch also overwrites the default one, so the merge guard may refuse it first)
+    for (const c of ['git push --prune origin "refs/heads/*:refs/heads/*"', 'git push origin --prune refs/heads/team/*:refs/heads/team/*']) {
+      const r = run(policy, c);
+      assert.equal(r.allow, false, `${policy.roleId}: ${c}`);
+      assert.match(r.reason, /(?:closing or reopening a pull request|merging) is the Delivery Manager's/, `${policy.roleId}: ${c}`);
+    }
+    const { closeAttempt: ca, githubClientWrite } = require('./lane.js');
+    for (const c of ['git push --prune origin "refs/heads/*:refs/heads/*"', 'git push --mirror origin']) assert.equal(ca(c), true, c);
+    assert.equal(githubClientWrite('curl -X PATCH https://api.github.com/repos/o/r/pulls/1 -d x'), true);
+    assert.equal(githubClientWrite('curl https://api.github.com/repos/o/r/pulls/1'), false);
+    // a GitHub API write from a client other than gh
+    for (const c of [
+      'curl -X PATCH https://api.github.com/repos/o/r/pulls/187 -d \'{"state":"closed"}\'',
+      'curl -XPUT https://api.github.com/repos/o/r/pulls/187/merge',
+      'curl --request DELETE https://api.github.com/repos/o/r/git/refs/heads/team/builder-1',
+      'curl -H "Authorization: token $T" --data @q.json https://api.github.com/graphql',
+      'curl --json \'{"query":"mutation{x}"}\' https://api.github.com/graphql',
+      'wget --method=PATCH --body-data=\'{"state":"closed"}\' https://api.github.com/repos/o/r/pulls/187',
+      'http PATCH https://api.github.com/repos/o/r/pulls/187 state=closed',
+      'xh DELETE api.github.com/repos/o/r/git/refs/heads/team/b',
+      "bash -c 'curl -X PUT https://api.github.com/repos/o/r/pulls/1/merge'",
+    ]) assert.equal(run(policy, c).allow, false, `${policy.roleId}: ${c}`);
+    // reads stay open, and so does any write to another host
+    for (const c of ['curl -s https://api.github.com/repos/o/r/pulls/187', 'curl -sSf https://example.com/x -d a=b', 'wget -q https://api.github.com/repos/o/r', 'git push origin team/builder-1', 'git push -u origin HEAD']) {
+      assert.equal(run(policy, c).allow, true, `${policy.roleId}: ${c}`);
+    }
+    // MCP: the branch and ref delete tools close a team branch's pull request
+    for (const name of ['mcp__github__delete_branch', 'mcp__github__delete_ref', 'mcp__gh__branch_delete']) {
+      assert.equal(decideLane({ toolName: name, toolInput: { branch: 'team/builder-1' }, policy, ...ctx() }).allow, false, `${policy.roleId}: ${name}`);
+    }
+  }
+  // a push onto another builder's team branch is seen wrapped as it is plain (the hook's own guard)
+  const { foreignTeamPush } = require('./lane.js');
+  for (const c of ['git push origin HEAD:team/builder-9', "bash -c 'git push origin HEAD:team/builder-9'", 'timeout 9 git push origin HEAD:team/builder-9', 'echo $(git push origin HEAD:team/builder-9)']) assert.ok(foreignTeamPush(c, 'builder-2'), c);
+  assert.ok(!foreignTeamPush("bash -c 'git push origin HEAD:team/builder-2'", 'builder-2'), 'its own team branch');
+});
+
 // Copilot review of PR 49
 test('Copilot: the fail-closed path still sees the role marker when lane.js itself fails to load', () => {
   const { roleDir } = preparedRole('builder-1');

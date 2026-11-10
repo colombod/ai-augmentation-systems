@@ -1641,6 +1641,33 @@ const OPAQUE_GH_REASON = 'a gh alias, an extension or a command word the lane ca
 // stdin, which cannot be read and so cannot be cleared. Closing is the Delivery Manager's alone
 // (dec-chief-of-staff-000314), like merging: a role with an open lane ("any") would otherwise close a
 // pull request its own lane says nothing about.
+// A write to the GitHub API from a client other than gh (curl, wget, httpie, xh): the lane reads gh's own
+// commands only, so a close, a merge or a ref deletion sent this way passed (hjx.1.6.18.1). A request to
+// api.github.com that names a method other than GET or HEAD, or sends a body, is refused to every role
+// but the Delivery Manager; a read, and any request to another host, stays open.
+const HTTP_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs']);
+function githubClientWrite(command) {
+  return commandsIn(command).some((words) => {
+    const name = path.basename(words[0] || '');
+    if (!HTTP_CLIENTS.has(name)) return false;
+    const args = words.slice(1);
+    if (!args.some((a) => /(?:^|\/\/|@)api\.github\.com(?:[/:]|$)/i.test(a))) return false;
+    if (name === 'curl') {
+      for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        const m = /^(?:-X|--request)(?:=?(.+))?$/.exec(a);
+        if (m) { const v = (m[1] || args[i + 1] || '').toUpperCase(); if (!['GET', 'HEAD'].includes(v)) return true; continue; }
+        if (/^(?:-d|--data|--data-raw|--data-binary|--data-urlencode|--data-ascii|--json|-F|--form|--form-string|-T|--upload-file)(?:=|$)/.test(a) || /^-d./.test(a) || /^-F./.test(a)) return true;
+      }
+      return false;
+    }
+    if (name === 'wget') return args.some((a) => /^--(?:method|post-data|post-file|body-data|body-file)(?:=|$)/.test(a) && !/^--method=(?:GET|HEAD)$/i.test(a));
+    // httpie and xh: a method word, or a request item (key=value, key:=json, @file) sends a write
+    return args.some((a) => /^(?:POST|PUT|PATCH|DELETE)$/i.test(a) || (/^[\w.[\]-]+(?::=|=|@)/.test(a) && !/^https?:/i.test(a)));
+  });
+}
+const GITHUB_CLIENT_REASON = 'a GitHub API write from a client other than gh may merge or close a pull request, which is the Delivery Manager\'s (dec-chief-of-staff-000314).\nUse gh with its own commands (gh pr create, gh pr view), or message the Delivery Manager';
+
 function closeAttempt(command) {
   return commandsIn(command).some((words) => {
     if (path.basename(words[0] || '') === 'git') {
@@ -1648,6 +1675,7 @@ function closeAttempt(command) {
       const { rest: g } = splitGlobals(['git', ...words.slice(1)]);
       if (g[0] !== 'push') return false;
       const args = g.slice(1);
+      if (args.some((a) => a === '--prune' || a === '--mirror')) return true;
       const del = args.some((a) => a === '--delete' || a === '-d' || /^-[a-z]*d[a-z]*$/.test(a) && !a.startsWith('--'));
       const refs = args.filter((a) => !a.startsWith('-'));
       // git resolves a short ref through refs/%s, refs/heads/%s and the like, so heads/team/x and
@@ -1750,12 +1778,16 @@ function mergeAttempt(command, cwd) {
     const branches = defaultBranches(dir);
     const current = gitIn(dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
     if (sub === 'merge') return !rest.includes('--abort') && !!current && branches.has(current);
+    // --mirror and --all push every local branch, the default one with them (--mirror force-pushes it)
+    if (rest.slice(1).some((a) => a === '--mirror' || a === '--all' || a === '--branches')) return true;
     const args = rest.slice(1).filter((a) => !a.startsWith('-'));
     const refspecs = args.slice(1);
     if (!refspecs.length) return !!current && branches.has(current); // pushes the current branch
     return refspecs.some((r) => {
       const dst = r.includes(':') ? r.slice(r.lastIndexOf(':') + 1) : r;
       const name = dst.replace(/^\+/, '').replace(/^refs\/heads\//, '');
+      // a glob destination (refs/heads/*) takes the default branch along with every other
+      if (/[*?[]/.test(name)) return true;
       return branches.has(name) || (dst === 'HEAD' && !!current && branches.has(current));
     });
   });
@@ -1765,9 +1797,7 @@ function mergeAttempt(command, cwd) {
 // pull request's author by that branch, so only its own session pushes there (PR 56 re-check).
 function foreignTeamPush(command, instance) {
   const me = String(instance || '').toLowerCase();
-  for (const seg of splitCommand(String(command == null ? '' : command))) {
-    const t = tokens(seg);
-    const words = hasEnvPrefix(t) ? t.filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== 'env') : t;
+  for (const words of commandsIn(command)) {
     if (path.basename(words[0] || '') !== 'git') continue;
     const { rest } = splitGlobals(['git', ...words.slice(1)]);
     if (rest[0] !== 'push') continue;
@@ -1858,7 +1888,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
   if (name.startsWith('mcp__') && pol.roleId !== MERGER && /merge_pull_request|merge_pr\b|pull_request_merge/i.test(name)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
   // the MCP close and reopen tools, and an MCP update that sets a pull request's or an issue's state,
   // close like gh pr close: the Delivery Manager's alone (dec-chief-of-staff-000314)
-  if (name.startsWith('mcp__') && pol.roleId !== MERGER && (/(?:close|reopen)_(?:pull_request|pr|issue)\b|(?:pull_request|issue)_(?:close|reopen)\b/i.test(name)
+  if (name.startsWith('mcp__') && pol.roleId !== MERGER && (/(?:close|reopen)_(?:pull_request|pr|issue)\b|(?:pull_request|issue)_(?:close|reopen)\b|delete_(?:branch|ref)\b|(?:branch|ref)_delete\b/i.test(name)
     || (/(?:update|edit)_(?:pull_request|pr|issue)\b|(?:pull_request|issue)_(?:update|edit|write)\b|issue_write\b/i.test(name) && toolInput && typeof toolInput === 'object' && Object.prototype.hasOwnProperty.call(toolInput, 'state')))) {
     return { allow: false, reason: `Role ${pol.roleId}: ${CLOSE_REASON}.` };
   }
@@ -1885,6 +1915,7 @@ function decideLane({ toolName, toolInput, roleDir, policy, groups, pluginRoot, 
     if (pol.roleId !== MERGER && mergeAttempt(command, cwd)) return { allow: false, reason: `Role ${pol.roleId}: ${MERGE_REASON}.` };
     if (pol.roleId !== MERGER && closeAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${CLOSE_REASON}.` };
     if (pol.roleId !== MERGER && opaqueGh(command)) return { allow: false, reason: `Role ${pol.roleId}: ${OPAQUE_GH_REASON}.` };
+    if (pol.roleId !== MERGER && githubClientWrite(command)) return { allow: false, reason: `Role ${pol.roleId}: ${GITHUB_CLIENT_REASON}.` };
     if (pol.roleId !== MERGER && passRecordAttempt(command)) return { allow: false, reason: `Role ${pol.roleId}: ${PASS_RECORD_REASON}.` };
     const run = refusedRun(command);
     if (run) return { allow: false, reason: `Role ${pol.roleId}: ${run === 'watchdog' ? WATCHDOG_REASON : run === 'tests' ? testsReason(command, pluginRootOf({ pluginRoot })) : RESUME_REASON}.` };
@@ -2035,4 +2066,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { closeAttempt, commandsIn, opaqueGh, tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
+module.exports = { closeAttempt, commandsIn, opaqueGh, githubClientWrite, tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish };
