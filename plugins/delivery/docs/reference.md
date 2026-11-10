@@ -1626,8 +1626,15 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   and starts the service and the timer, and says, without running it, when `loginctl enable-linger` is
   needed for the units to start at boot. A host without systemctl, a team with no `host-manager`
   instance (Staffing adds one: `team-role.js add host-manager`) or a role directory not yet prepared
-  installs nothing and says why. `watchdog.js install --apply` runs the same install when the service
-  file is missing. Each watchdog `run` checks `delivery-host-manager.service` and starts it when it is
+  installs nothing and says why. Install is refused in every role session. `watchdog.js install --apply`
+  runs the same install when the service file is missing, and so does each watchdog `run` (the host
+  job, outside any role session): when `delivery-host-manager.service` is missing, the team's manifest
+  has a `host-manager` instance on this host and its role directory is prepared, the run calls the same
+  install (the same three units, the same reload, enable and start) and writes one `host-manager-install`
+  row to `revive.ndjson` with the files it wrote. So a host manager that Staffing prepares after the
+  watchdog was installed gets its units at the next run, with no step from the owner. A team with no
+  host manager on this host, a role directory not yet prepared, a host without systemctl, or units
+  already installed are left as they are: an installed unit is never rewritten. Each watchdog `run` then checks `delivery-host-manager.service` and starts it when it is
   installed and not active; a unit that hit its start limit is failed, and the pass runs
   `systemctl --user reset-failed delivery-host-manager.service` (that unit only) before the start, so it
   is tried again every 15 minutes. One `host-manager-start` row in `revive.ndjson` per start: the host jobs
@@ -1639,8 +1646,18 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   named matches `delivery-watchdog-*.service|.timer|.path` or one of the host manager's three units,
   `amplifier run`, `ps`, `df`, `free`, `uptime`, and `sort` and `uniq` with no option or operand that
   writes a file. A lane rule's `positional_match` lists those unit globs (with `positional_required`
-  for the commands that act on a unit). Every other lane, the `any` lanes included, is refused
-  `systemctl --user` and `host-manager.js restart|tick|install|run-session`, with the way out (message
+  for the commands that act on a unit). Every lane may read the plugin's own user units:
+  `systemctl --user show`, `status`, `is-active` or `list-units` where every unit named matches
+  `delivery-watchdog-*` or `delivery-host-manager*` (a `.service`, `.timer` or `.path`), and
+  `list-units` with no unit (for example `systemctl --user show delivery-host-manager.service -p
+  ActiveState -p TasksMax`). The read is judged strictly: `--user` spelled out, only the options
+  `-p`/`--property`, `-P`, `-t`/`--type`, `--state`, `-n`/`--lines`, `-o`/`--output`, `--no-pager`,
+  `--plain`, `--no-legend`, `-a`/`--all`, `-l`/`--full`, `--value` and `-q`/`--quiet`, and no word the
+  shell builds; the lanes without the `any` group run it through the `read` group. Every other
+  `systemctl --user` command (`start`, `stop`, `restart`, `reload`, `enable`, `disable`, `kill`,
+  `set-property`, `reset-failed`, `daemon-reload`, `mask`, `edit`, `revert` and the rest), and a read of
+  any other unit, stays the host manager's: every other lane, the `any` lanes included, is refused them,
+  `busctl --user`, `systemd-run --user` and `host-manager.js restart|tick|install|run-session`, with the way out (message
   the host manager); `team-revive.js start`, and `claude remote-control` with `--name`, `--spawn` or
   `--session-id` (a role session started by hand), are refused to every lane but the Chief of Staff's
   and the host manager's (`claude remote-control --help` and other claude commands are not). The command
