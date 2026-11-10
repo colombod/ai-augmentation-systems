@@ -1595,11 +1595,16 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   takes the role directory of that team's `host-manager` instance (the roster's, else the team layout's)
   and writes three systemd user units: `delivery-host-manager.service` runs `host-manager.js
   run-session` there through the project's launcher. At each start, run-session reads the Remote Control
-  session last recorded for the role directory (claude's pointer, else the roster) and replaces itself
-  with `claude remote-control --name <instance>@<host> --session-id <id>`, or `--spawn session` when none
-  is recorded, in the team's permission mode: a restart of the unit reattaches the same session in the
-  owner's app instead of adding one, and the unit's main process is claude (a node without
-  `process.execve` runs claude as its child and waits for it). Its restarts are bounded:
+  session last recorded for the role directory (claude's pointer, else the roster) and starts by the
+  same rules as `team-revive.js start`: a recorded session not tried yet is reattached once
+  (`claude remote-control --name <instance>@<host> --session-id <id>`); with none recorded, or when the
+  recorded one never joined or already ran (a reattach is single-session and ends after its task), a
+  server that stays up after each task (`--spawn same-dir --capacity 1`); always in the team's
+  permission mode. Each start is a `host-manager-session` row of the team's `revive.ndjson`, with the
+  dropped id and why, so the once-only rule holds across the unit's restarts. run-session replaces itself
+  with claude (`process.execve`), so the unit's main process is claude; on a node before 22.15, which has
+  no `process.execve`, it starts nothing and says so, since claude as its child would outlive a stop of
+  the unit and the next start would add a second host manager. Its restarts are bounded:
   `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,
   `RestartSteps=5`, `RestartMaxDelaySec=30min`, systemd 254 and later; an older systemd warns of the
   two keys and keeps 30 seconds), and at most 5 starts in 15 minutes (`StartLimitIntervalSec=15min`,
