@@ -1033,6 +1033,109 @@ test('merging is the Delivery Manager\'s: builder and spike researcher lanes are
   assert.equal(run(POLICIES[COS], 'gh pr merge 12').allow, false);
 });
 
+// hjx.1.6.18: pull requests are closed and merged only by the Delivery Manager (dec-chief-of-staff-000314).
+// Its lane refused gh pr close, so a replaced pull request could not be closed by anyone and held its
+// builder's team branch.
+test('hjx.1.6.18: the Delivery Manager closes and reopens pull requests; no other role does', () => {
+  const run = (policy, command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, ...ctx() });
+  // the forms the Delivery Manager runs (gh's -R before the subcommand matches no gh group, merge included)
+  const close = ['gh pr close 187', 'gh pr close 187 -R colombod/ai-augmentation-systems', "gh pr close 187 --comment 'replaced by 190'", 'gh pr reopen 187'];
+  for (const c of close) assert.equal(run(POLICIES[DL], c).allow, true, `delivery-lead: ${c}`);
+  for (const id of [BUILDER, COS, PM, PO]) {
+    for (const c of [...close, 'gh -R org/repo pr close 12']) assert.equal(run(POLICIES[id], c).allow, false, `${id}: ${c}`);
+  }
+  for (const id of ['builder', 'reality-checker', 'spike-researcher', 'tech-writer', 'staffing']) {
+    const p = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/' + id });
+    assert.equal(run(p, 'gh pr close 187').allow, false, `${id} never closes a pull request`);
+  }
+  // a builder's lane is open ("any"): the close is refused by its own rule, which names who closes,
+  // in every form, the REST call that sets the state included; reading a pull request stays open
+  const b = run(POLICIES[BUILDER], 'gh pr close 187 --comment x');
+  assert.match(b.reason, /closing or reopening a pull request is the Delivery Manager's \(dec-chief-of-staff-000314\)/);
+  for (const c of ['cd /tmp && gh pr close 1', 'GH_REPO=o/r gh pr reopen 2', 'gh api -X PATCH repos/o/r/pulls/187 -f state=closed', 'gh api repos/o/r/pulls/187 -X PATCH -f state=open']) {
+    assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
+  }
+  for (const c of ['gh pr view 187', 'gh pr list --state closed', 'gh api repos/o/r/pulls/187']) assert.equal(run(POLICIES[BUILDER], c).allow, true, `builder: ${c}`);
+  // the other ways to the same close: a pull request is an issue too (its issue endpoint and gh issue
+  // close/reopen close it), and the GraphQL mutations
+  for (const c of [
+    'gh api -X PATCH repos/o/r/issues/187 -f state=closed',
+    'gh issue close 187', 'gh issue reopen 187', 'gh -R o/r issue close 187 --comment x',
+    "gh api graphql -f query='mutation { closePullRequest(input: {pullRequestId: \"X\"}) { clientMutationId } }'",
+    "gh api graphql -f query='mutation { reopenPullRequest(input: {pullRequestId: \"X\"}) { clientMutationId } }'",
+    "gh api graphql -f query='mutation { closeIssue(input: {issueId: \"X\"}) { clientMutationId } }'",
+    'gh api graphql -f query=@close.graphql', 'gh api graphql --input q.json',
+  ]) assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
+  for (const c of ["gh api graphql -f query='{ repository(owner: \"o\", name: \"r\") { pullRequest(number: 1) { state } } }'", 'gh api repos/o/r/issues/187']) assert.equal(run(POLICIES[BUILDER], c).allow, true, `builder reads: ${c}`);
+  // rv-194: a body the lane cannot read (a file, stdin, an @file field) on a pull request or its issue
+  // may set the state, so it is refused like an unreadable GraphQL query
+  for (const c of ['gh api -X PATCH repos/o/r/pulls/187 --input body.json', "echo '{\"state\":\"closed\"}' | gh api -X PATCH repos/o/r/pulls/187 --input -", 'gh api -X PATCH repos/o/r/issues/187 --input=body.json', 'gh api -X PATCH repos/o/r/pulls/187 -F state=@s.txt']) {
+    assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
+  }
+  // rv-194: the MCP close and reopen tools, and an MCP update that sets the state, are the Delivery
+  // Manager's too; an MCP update of a title stays a builder's
+  const mcp = (policy, name, input = {}) => decideLane({ toolName: name, toolInput: input, policy, ...ctx() }).allow;
+  for (const id of [BUILDER, COS, PM, PO]) {
+    for (const name of ['mcp__github__close_pull_request', 'mcp__github__reopen_pull_request', 'mcp__github__close_issue', 'mcp__gh__pull_request_close']) assert.equal(mcp(POLICIES[id], name, { pullNumber: 187 }), false, `${id}: ${name}`);
+    for (const [name, input] of [['mcp__github__update_pull_request', { pullNumber: 187, state: 'closed' }], ['mcp__github__update_issue', { issue_number: 187, state: 'closed' }], ['mcp__github__update_pull_request', { pullNumber: 187, state: 'open' }]]) assert.equal(mcp(POLICIES[id], name, input), false, `${id}: ${name} ${JSON.stringify(input)}`);
+  }
+  for (const id of ['spike-researcher']) assert.equal(mcp(loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/' + id }), 'mcp__github__close_pull_request', {}), false, id);
+  assert.equal(mcp(POLICIES[BUILDER], 'mcp__github__update_pull_request', { pullNumber: 187, title: 'the change' }), true, 'a builder still edits its own pull request');
+  // rv-194 on 97dc684: more routes to the same close, each refused to a builder and a spike researcher
+  const spike = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: 'delivery/spike-researcher' });
+  for (const c of [
+    'gh api -X PATCH repos/o/r/pulls/187 -fstate=closed', 'gh api -X PATCH repos/o/r/issues/187 -Fstate=closed',
+    "gh api graphql -fquery='mutation { mergePullRequest(input: {pullRequestId: \"X\"}) { clientMutationId } }'",
+    "gh api graphql -f query='mutation { updatePullRequest(input: {pullRequestId: \"X\", state: CLOSED}) { clientMutationId } }'",
+    "gh api graphql -f query='mutation { updateIssue(input: {id: \"X\", state: CLOSED}) { clientMutationId } }'",
+    'gh api -X PATCH repos/o/r/pulls/187/. -f state=closed', 'gh api -X PATCH repos/o/r/pulls/187/./ -f state=closed', 'gh api -X PATCH repos/o/r//pulls//187 -f state=closed',
+    'git push origin --delete team/builder-1', 'git push origin -d team/builder-1', 'git push --delete origin team/builder-1', 'git push origin :team/builder-1', 'git push origin :refs/heads/team/builder-1', 'git -C /x push origin --delete team/builder-1',
+    'gh api -X DELETE repos/o/r/git/refs/heads/team/builder-1',
+  ]) {
+    assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
+    assert.equal(run(spike, c).allow, false, `spike-researcher: ${c}`);
+  }
+  // rv-194 on ae4bb8f: five more routes to a close
+  for (const c of [
+    'git push origin +:team/builder-1', 'git push origin +:refs/heads/team/builder-1',
+    'git push origin :heads/team/builder-1', 'git push origin --delete heads/team/builder-1', 'git push origin --delete refs/team/builder-1',
+    "gh api graphql -f query='mutation { deleteRef(input: {refId: \"R\"}) { clientMutationId } }'",
+    "gh api graphql -f query='mutation { updateRefs(input: {repositoryId: \"X\", refUpdates: [{name: \"refs/heads/team/b\", afterOid: \"0000000000000000000000000000000000000000\"}]}) { clientMutationId } }'",
+    "gh api graphql -f query='mutation($in: UpdatePullRequestInput!) { updatePullRequest(input: $in) { clientMutationId } }' -f in[state]=CLOSED",
+    "gh api graphql -f query='mutation($in: UpdateIssueInput!) { updateIssue(input: $in) { clientMutationId } }' -F in=@in.json",
+    "gh api graphql -f query='mutation($s: PullRequestUpdateState) { updatePullRequest(input: {pullRequestId: \"X\", state: $s}) { x } }' -f s=CLOSED",
+    'gh api -X PATCH repos/o/r/pulls/./187 -f state=closed', 'gh api -X PATCH repos/o/r/pulls/x/../187 -f state=closed', 'gh api -X PATCH repos/o/r/issues/1/../187/ -f state=closed',
+  ]) {
+    assert.equal(run(POLICIES[BUILDER], c).allow, false, `builder: ${c}`);
+    assert.equal(run(spike, c).allow, false, `spike-researcher: ${c}`);
+  }
+  // and a merge through a path with dot segments inside it
+  for (const c of ['gh api -X PUT repos/o/r/pulls/./187/merge', 'gh api -X PUT repos/o/r/pulls/x/../187/merge']) {
+    assert.match(run(POLICIES[BUILDER], c).reason, /merging is the Delivery Manager's/, c);
+  }
+  // the guard itself, apart from the merge guard that refuses some of these first
+  const { closeAttempt } = require('./lane.js');
+  assert.equal(closeAttempt('git push origin +:team/builder-1'), true);
+  assert.equal(closeAttempt('git push origin +team/builder-1'), false, 'a force push of the branch is no deletion');
+  for (const c of ['gh api -X PATCH repos/o/r/pulls/187 --flag-the-parser-does-not-know', 'gh api graphql -f query=@close.graphql', 'gh api graphql --input q.json', 'gh api -X PATCH repos/o/r/pulls/187 -fstate=closed', "gh api graphql -f query='mutation { updatePullRequest(input: {state: CLOSED}) { x } }'", 'git push origin --delete team/builder-1']) assert.equal(closeAttempt(c), true, c);
+  for (const c of ['gh api repos/o/r/pulls/187', 'gh api -X PATCH repos/o/r/pulls/187 -f title=x', "gh api graphql -f query='mutation { updatePullRequest(input: {title: \"x\"}) { x } }'", 'git push origin team/builder-1', 'git push origin --delete b2/scratch', 'git push -u origin HEAD']) assert.equal(closeAttempt(c), false, c);
+  // an attached value is a field like any other: the merge guard, which also gates the Delivery Manager's
+  // own merges, sees a GraphQL merge sent as -fquery=... (rv-194), and the parser reads -fstate=closed
+  const { mergeAttempt, ghApiCall } = require('./lane.js');
+  assert.equal(mergeAttempt("gh api graphql -fquery='mutation { mergePullRequest(input: {pullRequestId: \"X\"}) { x } }'", '/tmp'), true);
+  assert.deepEqual(ghApiCall(['gh', 'api', '-XPATCH', 'repos/o/r/pulls/187', '-fstate=closed']).fields, { state: 'closed' });
+  // the Delivery Manager's lane pushes nothing to the product repository, so its refusal of a branch
+  // deletion is its lane's, never the close guard's (it closes the pull request with gh pr close)
+  const dlDel = run(POLICIES[DL], 'git push origin --delete team/builder-1');
+  assert.doesNotMatch(String(dlDel.reason || ''), /closing or reopening a pull request is the Delivery Manager's/);
+  // the Delivery Manager's lane takes MCP tools for reads only (its merge too), so it closes with gh pr
+  // close; the refusal it gets is that rule, not the close guard
+  const dlMcp = decideLane({ toolName: 'mcp__github__close_pull_request', toolInput: { pullNumber: 187 }, policy: POLICIES[DL], ...ctx() });
+  assert.equal(dlMcp.allow, false);
+  assert.match(dlMcp.reason, /uses MCP tools only to read/);
+  assert.doesNotMatch(dlMcp.reason, /closing or reopening a pull request is the Delivery Manager's/);
+});
+
 // Copilot review of PR 49
 test('Copilot: the fail-closed path still sees the role marker when lane.js itself fails to load', () => {
   const { roleDir } = preparedRole('builder-1');

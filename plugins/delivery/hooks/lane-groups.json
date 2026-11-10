@@ -71,6 +71,9 @@
     { "first": "gh", "sub": ["pr create", "pr edit", "pr comment", "pr ready", "pr review", "issue comment", "release create", "workflow run"] },
     { "first": "gh", "sub": ["api"], "pr_open_endpoint": true, "native_allow": false }
   ],
+  "gh-close": [
+    { "first": "gh", "sub": ["pr close", "pr reopen"] }
+  ],
   "gh-merge": [
     { "first": "gh", "sub": ["pr merge"] },
     { "first": "gh", "sub": ["api"], "merge_endpoint": true, "native_allow": false }
