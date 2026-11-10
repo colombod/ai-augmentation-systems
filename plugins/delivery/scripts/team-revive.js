@@ -20,8 +20,9 @@
 //                                                      work in flight and no owner pause; one start per
 //                                                      instance an hour (none for one whose last session ran), six a day; each start is a row in
 //                                                      the watchdog's revive.ndjson, its output in its logs.
-// The host job runs start each pass (watchdog.js run). In a role session only the Chief of Staff may run
-// start: no other role starts sessions (R-42). Exit codes: 0 ok (a missing session is not an error); 1
+// The host job runs start each pass (watchdog.js run). In a role session only the Chief of Staff and the
+// host manager may run start: no other role starts sessions (R-42). --project names any team's root, so
+// the host manager checks and starts every team on its machine from its own role directory. Exit codes: 0 ok (a missing session is not an error); 1
 // refused; 2 usage.
 const fs = require('fs');
 const os = require('os');
@@ -33,6 +34,8 @@ const { whoAmI } = require('./lib/gate-context.js');
 
 const USAGE = 'usage: team-revive.js check [--json] | team-revive.js start [--dry-run]   (each takes --project <root>)';
 const CHIEF = 'chief-of-staff';
+// the host manager restarts every team on its machine (scripts/host-manager.js), so it starts sessions too
+const STARTERS = [CHIEF, 'host-manager'];
 
 function parse(argv) {
   const o = { _: [], json: false, dryRun: false };
@@ -219,6 +222,12 @@ function settleStarts(pids, { waitMs = R.SETTLE_MS, stepMs = 2000, isExited = ex
 // starts or starts nothing. check and --dry-run read only and take no lock.
 function revive(root, team, opts = {}) {
   if (!opts.start || opts.dryRun) return revivePass(root, team, opts);
+  // the guard holds for every caller, a script loading this module included: a start from a role
+  // session that may not start sessions is refused here as main() refuses it
+  // read twice, the process this runs in and what the caller passes, and refused when either is a role
+  // session that may not start sessions: a caller's cwd or env can only make it stricter
+  const no = callerRefusal(process.cwd(), process.env) || callerRefusal(opts.cwd || process.cwd(), opts.env || process.env);
+  if (no) throw new Error(no);
   const lock = R.startLock(root);
   if (lock.held) {
     const { start, dryRun, env = process.env, spawn, ...deps } = opts;
@@ -286,10 +295,12 @@ function tellTwice(root, team, a, { now, queue = (r, m) => require('./lib/inbox.
   return told;
 }
 
+// only: the instances a start may bring back (the host manager's restart starts the ones that hold
+// work and leaves an idle one down); unset, every missing instance
 // A start pass spawns every missing instance, then waits SETTLE_MS (settle) for any that exit at once: those
 // get a 'failed' row, are named Failed, and the next pass retries them (lib/team-revive.js assess). settle is
 // the real wait only with the real spawn; a test that injects spawn injects settle too, or gets none.
-function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, ...deps } = {}) {
+function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, only = null, ...deps } = {}) {
   const f = gather(root, team, { env, ...deps });
   const a = R.assess(f);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
@@ -301,7 +312,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   }
   const again = relist || (() => (deps.live !== undefined ? deps.live : require('./watchdog.js').liveSessions(bin, env)));
   if (start && !dryRun && a.go) {
-    for (const i of a.missing.filter((x) => !x.skip && !x.held)) {
+    for (const i of a.missing.filter((x) => !x.skip && !x.held && (!only || only.includes(x.instance)))) {
       const at = f.now;
       const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
       const cmd = R.scopedCommand(bin, i.args, { instance: i.instance, at, systemdRun: sdRun });
@@ -346,15 +357,27 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   return { a, started, restarted, lines: R.lines(a, { bin, started, restarted, dryRun: start && dryRun }) };
 }
 
-// A role session other than the Chief of Staff's never starts sessions; outside any role session (the
+// A role session other than the Chief of Staff's or the host manager's never starts sessions; outside any role session (the
 // host job, the owner's shell) start runs. The role is read from the marker in or above the directory,
 // else from the session's environment, as the watchdog reads it.
 function refusal(cwd, env, who) {
   const role = require('./watchdog.js').roleContext(cwd, env);
   if (!role) return null;
   const id = who.roleId || env.DELIVERY_ROLE_ID || require('./lib/manifest.js').canonicalRoleId(env.DELIVERY_ROLE) || null;
-  if (id === CHIEF) return null;
-  return `team-revive.js: start is the Chief of Staff's and the host job's (${role}${id ? `, role ${id}` : ''}); run team-revive.js check and tell the Chief of Staff what is missing.`;
+  if (STARTERS.includes(id)) return null;
+  return `team-revive.js: start is the Chief of Staff's, the host manager's and the host job's (${role}${id ? `, role ${id}` : ''}); run team-revive.js check and tell the Chief of Staff what is missing.`;
+}
+
+// The role of the session calling, from its role marker (the instance it names in team.json) or its
+// environment, as refusal() reads it, for a caller that gives no who.
+function callerRefusal(cwd, env) {
+  let who = { roleId: null };
+  try {
+    const { findRoleMarker, validMarker } = require('../hooks/scripts/role-context.js');
+    const v = validMarker(findRoleMarker(cwd));
+    if (v) who = { roleId: v.role.id };
+  } catch (err) { who = { roleId: null }; }
+  return refusal(cwd, env, who);
 }
 
 function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
@@ -363,15 +386,23 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   const [cmd] = o._;
   if (!['check', 'start'].includes(cmd) || o._.length > 1) return { code: 2, out: USAGE };
   const { who: given, ...rest } = deps;
-  const who = given || whoAmI({ cwd, env, project: o.project });
+  let who = given || whoAmI({ cwd, env, project: o.project });
+  // --project names the team, wherever this runs: in a role directory the marker names the session's own
+  // team, and the host manager reads and starts every team on its machine from its own one
+  if (!given && o.project && path.resolve(o.project) !== who.root) {
+    const root = path.resolve(o.project);
+    let team = null;
+    try { team = require('./lib/manifest.js').loadManifest(root).team; } catch (err) { team = null; }
+    who = { ...who, root, team };
+  }
   if (cmd === 'start') { const no = refusal(cwd, env, who); if (no) return { code: 1, out: no }; }
   if (!who.root) return { code: 2, out: 'team-revive.js: no project found; pass --project <root>' };
-  const r = revive(who.root, who.team, { start: cmd === 'start', dryRun: o.dryRun, env, ...rest });
+  const r = revive(who.root, who.team, { start: cmd === 'start', dryRun: o.dryRun, env, cwd, ...rest });
   if (o.json) return { code: 0, out: JSON.stringify({ ...r.a, started: r.started, restarted: r.restarted || {} }, null, 2) };
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { tellTwice, main, revive, gather, startEnv, refusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
+module.exports = { tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
 
 if (require.main === module) {
   let r;
