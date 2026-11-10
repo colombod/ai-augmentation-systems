@@ -25,7 +25,9 @@ const inside = (dir, root) => {
 // live: [{ sessionId, cwd, name, status, pid }]; prefix: the team's bead prefix (its session names).
 function liveOf(instance, { roleDir, live, prefix = null } = {}) {
   if (live === null || live === undefined) return null;
-  const name = SN.sessionName(instance, prefix);
+  // the name counts only when it is the team's own <instance>@<team>: without a prefix the bare
+  // instance name is shared by every team on the host
+  const name = prefix ? SN.sessionName(instance, prefix) : null;
   return live.filter((s) => s && (inside(s.cwd, roleDir) || (name && s.name === name)));
 }
 

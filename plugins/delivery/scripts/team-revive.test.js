@@ -837,7 +837,7 @@ test('hjx.1.6.17: check names a role running twice, and start adds no third sess
     { cwd: path.join(p.dir('builder'), 'product'), sessionId: 'b-2', name: 'builder-x', status: 'busy' },
   ];
   const c = run(p, ['check'], { live });
-  assert.match(c.out, /^Running twice: builder: builder@ex \(idle\) in .*builder, builder-x \(busy\) in .*product\. One session per role: the other ends after committing its work; nothing more is started for it\.$/m);
+  assert.match(c.out, /^Running twice: builder: builder@ex \(idle\) in .*builder, builder-x \(busy\) in .*product\. One session per role: Staffing is told \(on a start pass\) and names the one that stays; nothing more is started for it\.$/m);
   assert.equal(run(p, ['start'], { live }).calls.length, 0);
 });
 
@@ -867,4 +867,30 @@ test('hjx.1.6.17: after systemd-run refuses a scope, no plain start follows when
     assert.deepEqual(R.ledger(p.root).map((x) => x.type), ['start', 'failed'], 'one start, its failure, and no plain start');
     assert.match(r.lines.join('\n'), why);
   }
+});
+
+test('hjx.1.6.17 (rv-198): a role running twice is told to Staffing once per occurrence, with both sessions named, on a start pass only', () => {
+  const IB = require('./lib/inbox.js');
+  const p = project({ roles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'staffing', host: 'pc' }, { id: 'builder', host: 'pc' }] });
+  const twice = [
+    { cwd: p.dir('chief-of-staff'), sessionId: 's-cos', name: 'chief-of-staff@ex', status: 'idle' },
+    { cwd: p.dir('staffing'), sessionId: 's-st', name: 'staffing@ex', status: 'idle' },
+    { cwd: p.dir('builder'), sessionId: 'b-1', name: 'builder@ex', status: 'idle' },
+    { cwd: path.join(p.dir('builder'), 'product'), sessionId: 'b-2', name: 'builder-x', status: 'busy' },
+  ];
+  run(p, ['check'], { live: twice });
+  assert.deepEqual(IB.pending(p.root), [], 'a check tells nobody');
+  run(p, ['start'], { live: twice });
+  const told = IB.pending(p.root);
+  assert.deepEqual(told.map((x) => x.to), ['staffing']);
+  assert.match(told[0].entries[0].message, /^builder has two live sessions: builder@ex \(idle\) in .*builder, builder-x \(busy\) in .*product\. One session per role/);
+  run(p, ['start'], { live: twice, now: iso(Date.parse(T0) + 15 * 60e3) });
+  assert.equal(IB.pending(p.root)[0].entries.length, 1, 'the same pair is told once');
+  const again = twice.map((x) => (x.sessionId === 'b-2' ? { ...x, sessionId: 'b-3', name: 'builder-y' } : x));
+  run(p, ['start'], { live: again, now: iso(Date.parse(T0) + 30 * 60e3) });
+  assert.equal(IB.pending(p.root)[0].entries.length, 2, 'a new pair is told');
+  // a team with no Staffing tells its Chief of Staff
+  const q = project({ roles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'builder', host: 'pc' }] });
+  run(q, ['start'], { live: [twice[0], twice[2], twice[3]].map((x) => ({ ...x, cwd: x.cwd.replace(p.dir(''), q.dir('')) })) });
+  assert.deepEqual(IB.pending(q.root).map((x) => x.to), ['chief-of-staff']);
 });

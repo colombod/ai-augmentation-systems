@@ -1503,8 +1503,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `team-revive.js check [--json]` lists, for each role instance of the team on this host (team.json
   `host` against `DELIVERY_HOST`, else the machine's short hostname), whether a session runs in its role
   directory or inside it, or under its own name `<instance>@<team>` (`claude agents --json`; a
-  role found running twice is named `Running twice:`, and nothing more is started for it, nor is a
-  stale one restarted while another of its sessions is live), the work in flight (a bead in progress, an open pull request from a
+  role found running twice is named `Running twice:`, nothing more is started for it, nor is a
+  stale one restarted while another of its sessions is live, and a start pass tells Staffing (the
+  Chief of Staff on a team without one) once per pair of sessions, both named; ending one of them is
+  not team-revive's), the work in flight (a bead in progress, an open pull request from a
   `team/<instance>` branch, a message or handoff waiting) and, per missing instance, the command a start
   runs. A source that cannot be read is a line that says so, never "all running"; a session list that
   cannot be read starts nothing. `team-revive.js start [--dry-run]` starts each missing instance while

@@ -265,6 +265,25 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
   return out;
 }
 
+// A role running twice is told to Staffing (the role that settles which session of an instance stays),
+// once per occurrence: the same pair of sessions is not told again at every pass, a new pair is. With no
+// Staffing on the team, the Chief of Staff is told. The ending of one session is not this pass's
+// (hjx.1.6.17.2). Returns the instances told.
+function tellTwice(root, team, a, { now, queue = (r, m) => require('./lib/inbox.js').queue(r, m) } = {}) {
+  const rows = R.ledger(root);
+  const ids = (team && Array.isArray(team.roles) ? require('./lib/manifest.js').expandInstances(team) : []).map((i) => i.instance);
+  const to = ids.includes('staffing') ? 'staffing' : 'chief-of-staff';
+  const told = [];
+  for (const i of a.instances.filter((x) => x.twice)) {
+    const key = `${i.instance}:${i.twice}`;
+    if (rows.some((r) => r.type === 'twice' && r.key === key)) continue;
+    queue(root, { to, from: 'team-revive (host job)', summary: `${i.instance} runs twice`, message: `${i.instance} has two live sessions: ${i.twice}. One session per role: name the one that stays, and the other ends after committing its work (hjx.1.6.17).`, at: now });
+    R.record(root, { type: 'twice', at: now, instance: i.instance, key, to });
+    told.push(i.instance);
+  }
+  return told;
+}
+
 // A start pass spawns every missing instance, then waits SETTLE_MS (settle) for any that exit at once: those
 // get a 'failed' row, are named Failed, and the next pass retries them (lib/team-revive.js assess). settle is
 // the real wait only with the real spawn; a test that injects spawn injects settle too, or gets none.
@@ -316,6 +335,8 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
       failStarts([n]);
     }
   }
+  // a role found running twice is told to Staffing on a start pass, never on a check or a dry run
+  if (start && !dryRun) { try { tellTwice(root, team, a, { now: f.now }); } catch (err) { /* the next pass tells it */ } }
   let restarted = {};
   if (start && !dryRun && a.restart && a.stale.length) {
     restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun });
@@ -348,7 +369,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { main, revive, gather, startEnv, refusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
+module.exports = { tellTwice, main, revive, gather, startEnv, refusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
 
 if (require.main === module) {
   let r;

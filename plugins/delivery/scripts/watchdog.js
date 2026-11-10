@@ -16,8 +16,8 @@
 //   watchdog.js wake [--dry-run] [--project <root>] wakes the session each due stall names, within the
 //                                                   caps (one wake per session an hour, six a day, a doubling
 //                                                   wait per stall); a usage-limit wake waits for the reset.
-//                                                   `claude --resume <id> -p` in the role directory, or a fork
-//                                                   when the session is open; logged in .delivery/watchdog/
+//                                                   `claude --resume <id> -p` in the role directory, or a message
+//                                                   to the role's live session; logged in .delivery/watchdog/
 //   watchdog.js run [--project <root>]              sweep test leftovers, check, then wake, under one lock: what the host job runs
 //                                                   Each run then starts the team's missing role sessions while work is in flight (team-revive.js)
 //                                                   Each run also installs the plugin main carries when it is newer and every
@@ -248,9 +248,9 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     const shown = `${bin} ${c.args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`;
     if (dryRun) { lines.push(`Would wake ${w.target} (${c.mode}) in ${s.roleDir}: ${shown}`); continue; }
     const logPath = path.join(root, WD.REL, 'logs', `${w.target}-${at.replace(/[:.]/g, '-')}.log`);
-    // DELIVERY_WAKE tells the session's hooks this is the watchdog's: a fork is recorded beside the
-    // owner's open session, never in its place
-    // each wake has its own id: a fork records its session under it (lib/roster.js sessionLocator)
+    // DELIVERY_WAKE tells the session's hooks this is the watchdog's wake (resume, continue or fresh);
+    // a live session is never started beside, it is handed a message above
+    // each wake has its own id: the session it starts records itself under it (lib/roster.js sessionLocator)
     const wakeId = crypto.randomBytes(6).toString('hex');
     // DELIVERY_WAKE_KICK: the supervisor kicks the next run when this wake ends (lib/kick.js)
     const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, DELIVERY_WAKE_KICK: KICK.dirOf(root), ...HEADLESS_WAIT }), logPath });

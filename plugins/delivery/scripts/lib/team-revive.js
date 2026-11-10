@@ -353,7 +353,7 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
     else if (a.restart) out.push(`Stale: ${what}; ${dryRun ? 'would restart' : 'restart runs'}: ${how}.`);
     else out.push(`Stale: ${what}; not restarted now (${a.paused ? 'paused' : 'the open sessions could not be read'}); restart would ${how}.`);
   }
-  for (const i of a.instances.filter((x) => x.twice)) out.push(`Running twice: ${i.instance}: ${i.twice}. One session per role: the other ends after committing its work; nothing more is started for it.`);
+  for (const i of a.instances.filter((x) => x.twice)) out.push(`Running twice: ${i.instance}: ${i.twice}. One session per role: Staffing is told (on a start pass) and names the one that stays; nothing more is started for it.`);
   const unknown = a.instances.filter((i) => i.running === 'not known');
   const known = a.instances.filter((i) => i.running && i.running !== 'not known');
   if (unknown.length) out.push(`Not known whether running: ${unknown.map((i) => i.instance).join(', ')}.`);

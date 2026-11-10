@@ -20,7 +20,8 @@
 // The probe (phase 7) found one documented way for a host job to wake a stopped role session:
 // `claude --resume <session-id> -p "<prompt>"` run in the role directory (its settings and hooks load;
 // the conversation and model are restored; the permission mode is not, so the wake passes the team's). A session still open in another process
-// cannot be resumed in place; `--fork-session` continues a copy of it. Hooks, /loop and CronCreate live
+// cannot be resumed in place; `--fork-session` would continue a copy of it, a second session of the
+// role, so a live session is handed the wake as a message instead (hjx.1.6.17). Hooks, /loop and CronCreate live
 // and die with their session, and cloud routines cannot reach a local session. The usage-limit row in a
 // transcript (error "rate_limit", quotaLimits.resetsAt) is undocumented, so the reader fails open.
 //
@@ -920,8 +921,9 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
   return { wakes, waiting, held };
 }
 
-// How to wake one session: resume it in place when it is not open, fork it when it is open and idle,
-// leave it when it is busy or when open sessions cannot be listed, continue the role directory's latest
+// How to wake one session: resume it in place when the role has no live session, hand an idle live
+// session the wake as a message (mode 'message', never a fork: one live session per role), leave a busy
+// one, and do nothing when open sessions cannot be listed; continue the role directory's latest
 // conversation when no id is known. live: claude agents --json rows (null when unknown). { mode, args } or { skip }
 // mode: the team's permission_mode (team.json); a resumed session does not keep the mode it was
 // started in, so every wake names it (default needs no flag)

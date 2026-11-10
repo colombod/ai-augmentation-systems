@@ -23,6 +23,8 @@ test('a live session is the instance\'s when it runs in its role directory or in
   assert.deepEqual(OS.liveOf('builder-2', { roleDir, live, prefix: 'ex' }).map((s) => s.sessionId), ['a', 'b', 'c']);
   assert.equal(OS.liveOf('builder-2', { roleDir, live: null, prefix: 'ex' }), null, 'a list that could not be read is unknown, never none');
   assert.deepEqual(OS.liveOf('builder-2', { roleDir, live: [], prefix: 'ex' }), []);
+  // without the team's prefix a bare name is any team's: only the directory counts (rv-198)
+  assert.deepEqual(OS.liveOf('builder-2', { roleDir, live: [...live, { sessionId: 'g', cwd: '/other-team', name: 'builder-2' }], prefix: null }).map((s) => s.sessionId), ['a', 'b']);
   assert.match(OS.described(live.slice(0, 2)), /^x \(idle\) in \/w\/ex-team\/builder-2, b \(busy\) in \/w\/ex-team\/builder-2\/product$/);
 });
 
