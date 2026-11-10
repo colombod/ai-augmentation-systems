@@ -99,12 +99,25 @@ function pass({ now, dm = 'delivery-lead', staffing = 'staffing', chief = 'chief
   // ---- 3. one action for each failing instance, and the team's ----
   const top = (ids) => ids.map((id) => byId.get(id)).filter(Boolean).some((b) => Number(b.priority) === 0);
   const busy = new Set(instances.map((x) => x.instance));
-  const free = builders.filter((i) => !busy.has(i) && !(sessions.find((s) => s.instance === i) || {}).limit);
+  // a free builder is a live one (its session is on this host's roster) holding nothing and not stopped on
+  // the usage limit: work assigned to a builder with no session would only wait for it
+  const free = builders.filter((i) => !busy.has(i) && sessions.some((s) => s.instance === i) && !(sessions.find((s) => s.instance === i) || {}).limit);
   for (const x of instances.filter((y) => y.fails.length)) x.action = actionOf(x, { free, top, dm });
   const p0 = ready.filter((b) => b && Number(b.priority) === 0 && !b.assignee && typeOf(b) !== 'epic' && !shipped(b));
   const holdingBuilders = instances.filter((x) => builders.includes(x.instance));
+  // hjx.1.6.12.1: every free builder is paired with a ready item of its own, highest priority first (bd
+  // ready's order within a priority), P0 or not; an epic, a spike (the Spike Researcher's), an assigned or
+  // a shipped item is never offered. One pass assigns them all, so no free builder waits a pass per item.
+  const prio = (b) => (Number.isFinite(Number(b.priority)) && b.priority !== null && b.priority !== '' ? Number(b.priority) : 4);
+  const offer = ready.filter((b) => b && !b.assignee && typeOf(b) !== 'epic' && !shipped(b) && !(b.labels || []).includes('spike'))
+    .map((b, i) => ({ b, i })).sort((x, y) => prio(x.b) - prio(y.b) || x.i - y.i).map((x) => x.b);
   let team = null;
-  if (p0.length && free.length) team = { kind: 'assign', bead: p0[0].id, to: free[0], why: `top-priority ${p0[0].id} is ready and ${free[0]} holds no work`, command: `bd update ${p0[0].id} --assignee <actor>/${free[0]}, then message ${free[0]} (--record does both)` };
+  if (offer.length && free.length) {
+    const pairs = free.slice(0, offer.length).map((to, k) => ({ bead: offer[k].id, to, priority: prio(offer[k]) }));
+    team = { kind: 'assign', bead: pairs[0].bead, to: pairs[0].to, pairs,
+      why: `${pairs.map((x) => `${x.bead} to ${x.to}`).join(', ')}: ready, and ${pairs.length === 1 ? 'that builder holds' : 'those builders hold'} no work`,
+      command: `${pairs.map((x) => `bd update ${x.bead} --assignee <actor>/${x.to}`).join('; ')}, then message each (--record does both)` };
+  }
   // a builder whose only failure is work waiting on the manager is not stuck: that wait is the manager's,
   // and another builder would only queue behind the same review
   else if (p0.length && builders.length && holdingBuilders.length === builders.length && holdingBuilders.every((x) => x.fails.length && !x.quietOnly)) {
@@ -195,7 +208,7 @@ function previous(root) {
 // the same action on the same beads for the same reasons is noted once; a count in a reason may grow
 const actionKey = (x) => (x.action ? `${x.action.kind}:${x.action.to || ''}:${(x.action.beads || []).join(',')}:${x.fails.map((f) => f.replace(/\d+(\.\d+)?/g, 'n')).join('|')}` : null);
 // the team's action, once per change: the same kind on the same bead to the same instance
-const teamKey = (t) => (t ? `${t.kind}:${t.bead}:${t.to || ''}:${t.count || ''}` : null);
+const teamKey = (t) => (t ? `${t.kind}:${(t.pairs || [{ bead: t.bead, to: t.to || '' }]).map((x) => `${x.bead}>${x.to}`).join(',')}:${t.count || ''}` : null);
 // the bead's assignee for an instance, in the recording actor's form (<user>@<host>/<instance>)
 const assigneeFor = (actor, to) => (actor ? `${String(actor).replace(/\/[^/]*$/, '')}/${to}` : to);
 function record(root, res, { bd, actor } = {}) {
@@ -224,8 +237,11 @@ function record(root, res, { bd, actor } = {}) {
     const I = require('./inbox.js');
     try {
       if (T.kind === 'assign') {
-        bd.update(T.bead, { assignee: assigneeFor(actor, T.to), appendNotes: `${res.at.slice(0, 10)} ${dm} pass: assigned to ${T.to}: ${T.why}` });
-        I.queue(root, { to: T.to, from: dm, summary: `${T.bead} assigned to you`, message: `${dm} here: top-priority ${T.bead} is assigned to you (${T.why}). Claim it and build it.`, at: res.at });
+        for (const x of T.pairs || [{ bead: T.bead, to: T.to, priority: 0 }]) {
+          const what = x.priority === 0 ? `top-priority ${x.bead}` : `ready ${x.bead} (P${x.priority})`;
+          bd.update(x.bead, { assignee: assigneeFor(actor, x.to), appendNotes: `${res.at.slice(0, 10)} ${dm} pass: assigned to ${x.to}: ${what} is ready and ${x.to} holds no work` });
+          I.queue(root, { to: x.to, from: dm, summary: `${x.bead} assigned to you`, message: `${dm} here: ${what} is assigned to you (${x.to} holds no work). Claim it and build it.`, at: res.at });
+        }
       } else if (T.kind === 'raise-cap') {
         bd.update(T.bead, { appendNotes: `${res.at.slice(0, 10)} ${dm} pass: ${T.why}; asked ${T.to} once for the owner to raise builders_cap to ${T.count}` });
         I.queue(root, { to: T.to, from: dm, summary: `builders_cap for ${T.bead}`, message: `${dm} here: ${T.why}. One more builder needs the owner to raise builders_cap to ${T.count} (team-role.js set-cap builders ${T.count} --record <dec-id>); please put it in the owner queue once. Staffing adds the builder after it.`, at: res.at });

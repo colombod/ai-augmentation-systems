@@ -1317,8 +1317,10 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
      that hands it the sent-back review), `note-block` (wasted wakes on, or quiet work in, what waits on
      the manager),
      `restart` (not running and not moving), `reassign` to a builder holding nothing, else `raise`.
-     For the team: a ready, unassigned top-priority bead goes to a builder holding nothing (`assign`);
-     with none free and every builder failing, `add-builder` names `team-role.js add builder --count
+     For the team: every free builder (its session on this host's roster, holding nothing, not stopped on
+     the usage limit) is paired with a ready, unassigned item of its own, highest priority first, P0 or
+     not, never an epic, a spike or a shipped item (`assign`, all pairs in one pass); with none free,
+     every builder failing and top-priority work ready, `add-builder` names `team-role.js add builder --count
      <n+1>` for Staffing to run. A builder whose only failure is work waiting on the manager is not
      stuck (that wait is the manager's), so it never adds a builder. At `budget.builders_cap`, where the
      roster command refuses, `raise-cap` asks the Chief of Staff instead, for the owner to raise the cap.
@@ -1326,8 +1328,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `--record` appends the pass to `passes.ndjson` in the watchdog's directory and writes the action and
   its reason as a note on every bead the failing instance holds, once per change of action (a count in
   a reason may grow without a new note). It also carries out the team's action, once per change:
-  `assign` sets the bead's assignee to the free builder (in the recording `BEADS_ACTOR`'s form) and
-  queues it a message; `add-builder` queues Staffing the roster command (only Staffing's lane runs
+  `assign` sets each paired bead's assignee to its builder (in the recording `BEADS_ACTOR`'s form) and
+  queues each builder a message; `add-builder` queues Staffing the roster command (only Staffing's lane runs
   `team-role.js`) and notes the bead, and the pass after the new builder is on the team assigns it;
   `raise-cap` queues the Chief of Staff one message and notes the bead. "Once per change" is against the
   last pass that carried a team action, so a pass with none in between does not queue it again.
