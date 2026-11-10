@@ -874,7 +874,14 @@ owner and is reviewed again; gates block only on authority or serious divergence
   the base branch with no valid version, refuses too, and a product with no plugin directory is never
   asked. When gh cannot read the pull request or its list of changed files, the gate already stands
   on the record for the head and CI, and the version step is skipped with it. A new commit changes the head, so the old
-  review no longer counts. The lane runs the same check before it allows the Delivery Manager's
+  review no longer counts. A change users can see also needs a doc-impact line in its description,
+  at the start of a line: `Doc-impact: <the docs it updates>`, with at least one doc file (Markdown,
+  a `docs/` tree, a README) changed in the same pull request, or `Doc-impact: none (<why users see
+  no change>)`. Tests, generated files, lockfiles and the team's own record directories need no
+  line (a tool users run, such as `scripts/testing/run-tests.js`, still does, and a `.txt` file counts
+  as a doc only inside `docs/`), and a pull request that changes only docs is its own doc impact. Editing the description is
+  not a new commit, so the review still counts. Where gh cannot read the pull request, the check is
+  a warning. The lane runs the same check before it allows the Delivery Manager's
   `gh pr merge`, which must name the pull request by number with `-R <product>` (or by its URL in
   that repository) and the full 40-character head with `--match-head-commit`, so GitHub merges
   exactly what was reviewed; `--admin`, `--auto` and `-a`, in any form, are refused, and so is the

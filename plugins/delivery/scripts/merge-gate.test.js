@@ -18,7 +18,7 @@ const H1 = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 const H2 = 'b2c3d4e5f60718293a4b5c6d7e8f901234567890';
 const GREEN = [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }];
 const pr478 = (over = {}) => ({ headRefOid: H1, headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'src/import.js', additions: 120, deletions: 30 }],
-  body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, title: 'Import a dropped CSV', ...over });
+  body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}\nDoc-impact: none (a test fixture)`, title: 'Import a dropped CSV', ...over });
 
 function setup(prs = { 478: pr478() }, { restOnly = false } = {}) {
   const bead = storyBead({ metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } });
@@ -98,6 +98,22 @@ test('R-32: "changes" blocks until a newer pass on the head; CI red blocks; a Co
   assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6: review rv-478-\S+ by agent-7f3a, CI green/);
 });
 
+test('a reviewed, green change users can see is refused at the gate and the merge until its description carries a doc-impact line', () => {
+  const h = setup({ 478: pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}` }) });
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  const g = h.gate('delivery-lead', 'check 478');
+  assert.equal(g.code, 1);
+  assert.match(g.out, /refused: PR 478: it changes what users see \(src\/import\.js\) and its description has no doc-impact line\.\nAdd one line to the pull request's description: `Doc-impact: <the docs this pull request updates>`/);
+  assert.match(h.merge('delivery-lead', `478 --match-head-commit ${H1}`).deny, /no doc-impact line/);
+  // the line names docs the pull request does not touch: still refused
+  h.setPr(478, (p) => { p.body += '\nDoc-impact: README import section'; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /names docs \("README import section"\) but changes no doc file/);
+  // the docs are updated in it: the same reviewed head passes (a description edit is not a new commit)
+  h.setPr(478, (p) => { p.files = [...p.files, { path: 'README.md', additions: 4, deletions: 1 }]; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/);
+});
+
 test('R-32: a conflict goes back to its owner (bead note and message); after the fix only a new review counts', () => {
   const h = setup();
   h.review('delivery-lead', 'request 478 --reviewer builder-2');
@@ -118,7 +134,7 @@ test('R-32: a conflict goes back to its owner (bead note and message); after the
 
 test('R-24 #272: a 1,000-line pull request across two stories warns at request and at the gate, and never blocks', () => {
   const two = storyBead({ id: 'ex-vault-0n9-4', metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } });
-  const h = setup({ 272: pr478({ files: [{ path: 'src/a.js', additions: 700, deletions: 300 }, { path: 'package-lock.json', additions: 2790, deletions: 0 }], body: `Refs ${BEAD}\nRefs ex-vault-0n9-4` }) });
+  const h = setup({ 272: pr478({ files: [{ path: 'src/a.js', additions: 700, deletions: 300 }, { path: 'package-lock.json', additions: 2790, deletions: 0 }], body: `Refs ${BEAD}\nRefs ex-vault-0n9-4\nDoc-impact: none (a test fixture)` }) });
   h.setBead(BEAD, () => {});
   const s = h.db(); s.issues[two.id] = { ...s.issues[BEAD], ...two, notes: '' }; fs.writeFileSync(h.store, JSON.stringify(s));
   const req = h.review('delivery-lead', 'request 272 --reviewer builder-2');
@@ -404,4 +420,26 @@ test('r7w: the version step is skipped, without a read, when the pull request or
   assert.equal(g.ok, false);
   assert.match(g.why, /could not be read \(the reader was asked\)/);
   assert.ok(reads > 0);
+});
+
+// When gh cannot read the pull request, its description and files are unknown: the doc-impact check
+// cannot run, and the gate says so as a warning rather than passing it as checked.
+test('the doc-impact check is a warning, never a silent pass, when GitHub cannot read the pull request', () => {
+  const root = makeProject();
+  const bd = memBd([storyBead({ metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } })]);
+  const team = { ...loadManifest(root).team, product_github: 'example/example' };
+  const who = (instance) => ({ root, team, instance, roleId: instance.replace(/-\d+$/, ''), actor: `dev@pc/${instance}` });
+  const down = () => ({ unavailable: 'gh is not installed' });
+  const call = (inst, argv) => review.main(argv, { bd, gh: down, who: who(inst) });
+  assert.equal(call('delivery-lead', ['request', '478', '--reviewer', 'agent-1', '--head', H1, '--branch', 'team/builder-1', '--bead', BEAD, '--lines', '120']).code, 0);
+  assert.equal(call('delivery-lead', ['record', '478', '--head', H1, '--result', 'pass', '--by', 'agent-1', '--summary', 'ok']).code, 0);
+  assert.equal(call('delivery-lead', ['ci', '478', '--head', H1, '--result', 'pass', '--run', 'https://ci.example/run/9']).code, 0);
+  const opts = (gh) => ({ head: H1, gh, team, repo: 'example/example', planDrift: () => [], readFile: () => ({ unavailable: 'unused' }) });
+  const g = mergeGate.gate(root, '478', opts(down));
+  assert.equal(g.ok, true, g.why);
+  assert.deepEqual(g.warnings.filter((w) => w.kind === 'doc-impact'), [{ kind: 'doc-impact', detail: 'doc impact not checked: gh cannot read the pull request' }]);
+  // the same record with the pull request readable and no line is refused: the warning stands in only for an unreadable PR
+  const r = mergeGate.gate(root, '478', opts(() => pr478({ body: `Refs ${BEAD}` })));
+  assert.equal(r.ok, false);
+  assert.match(r.why, /no doc-impact line/);
 });
