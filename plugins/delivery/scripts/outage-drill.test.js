@@ -151,7 +151,7 @@ test('run refuses a cut outside 1..30 minutes, a run without --restart, and any 
   assert.deepEqual(t.events, []);
 });
 
-test('a schedule that fails never cuts and undoes the timer made before it; a failed cut stops both timers', () => {
+test('a schedule that fails never cuts and undoes the timer made before it', () => {
   for (const failOn of ['restore', 'restart']) {
     const t = setup();
     const calls = [];
@@ -163,13 +163,42 @@ test('a schedule that fails never cuts and undoes the timer made before it; a fa
     assert.equal(calls.some((c) => c.endsWith(`systemctl stop delivery-drill-restore-${REC}.timer`)), failOn === 'restart');
     assert.equal(L.drillOf(t.root, REC), null, 'the consent is not spent');
   }
-  const t = setup();
-  const calls = [];
-  const r = t.run(RUN, { exec: (args) => { calls.push(args.join(' ')); return { status: args.includes('off') ? 1 : 0, stderr: 'no' }; } });
-  assert.equal(r.code, 1);
-  assert.match(r.out, /the cut failed .* the host does not restart/);
-  assert.ok(calls.some((c) => c.endsWith(`stop delivery-drill-restart-${REC}.timer`)));
-  assert.ok(calls.some((c) => c.endsWith(`stop delivery-drill-restore-${REC}.timer`)));
+});
+
+// A cut that exits non-zero, or is killed at the 30-second limit, may still have taken the network down.
+// The restart is stopped (the consent is a restart after a drill, not after a failed one), but the restore
+// is not: it runs at once, through the same privilege, and its timer stays as the backstop in case the
+// network went down after the restore ran or the restore itself failed.
+test('a cut that fails or times out stops the restart timer, runs the restore at once and keeps the restore timer', () => {
+  const timedOut = () => ({ status: null, signal: 'SIGTERM', error: Object.assign(new Error('spawnSync sudo ETIMEDOUT'), { code: 'ETIMEDOUT' }) });
+  const cases = [['exits non-zero', () => ({ status: 1, stderr: 'Error: NetworkManager is not running.' })], ['times out', timedOut], ['throws', () => { throw new Error('spawn failed'); }]];
+  for (const [label, cutResult] of cases) {
+    for (const restoreOk of [true, false]) {
+      const t = setup();
+      const calls = [];
+      const exec = (args) => {
+        const c = args.join(' ');
+        calls.push(c);
+        if (/ networking off$/.test(c)) return cutResult();
+        if (/^sudo -n nmcli networking on$/.test(c)) return restoreOk ? { status: 0 } : { status: 1, stderr: 'restore refused' };
+        return { status: 0, stderr: '' };
+      };
+      const r = t.run(RUN, { exec });
+      assert.equal(r.code, 1, label);
+      const cutAt = calls.findIndex((c) => / networking off$/.test(c));
+      const after = calls.slice(cutAt + 1);
+      assert.ok(after.includes(`sudo -n systemctl stop delivery-drill-restart-${REC}.timer`), `${label}: the restart timer is stopped`);
+      assert.ok(!after.some((c) => c.includes(`stop delivery-drill-restore-${REC}`)), `${label}: the restore timer is kept`);
+      assert.ok(after.includes('sudo -n nmcli networking on'), `${label}: the restore runs at once`);
+      assert.ok(after.indexOf(`sudo -n systemctl stop delivery-drill-restart-${REC}.timer`) < after.indexOf('sudo -n nmcli networking on'), `${label}: the restart is stopped first`);
+      assert.match(r.out, /the cut failed .* the restart timer is stopped and the host does not restart/, label);
+      assert.match(r.out, restoreOk ? /The network restore ran at once/ : /The network restore at once failed \(restore refused\)/, label);
+      assert.match(r.out, new RegExp(`the restore timer stays: the network comes back by 2026-11-07T10:30:00.000Z \\(delivery-drill-restore-${REC}.timer\\)`), label);
+      const rows = L.drills(t.root);
+      assert.deepEqual(rows.map((x) => x.type), ['drill', 'cut_failed'], label);
+      assert.equal(rows[1].restore_now, restoreOk ? 'ok' : 'failed', label);
+    }
+  }
 });
 
 test('plan prints the times, the consent and its use, and the leftover-child pre-flight, and starts and writes nothing', () => {

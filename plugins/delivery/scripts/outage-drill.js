@@ -133,9 +133,17 @@ function run(who, o, { env, now, verifyRecord, exec }) {
   let r;
   try { r = exec(L.cutArgs(env)); } catch (err) { r = { status: null, error: err.message }; }
   if (!r || r.status !== 0) {
-    undo();
-    try { L.append(who.root, { type: 'cut_failed', record: o.record, at: now, why: failText(r) }); } catch (err) { /* the drill row stands */ }
-    return { code: 1, out: `outage-drill.js: the cut failed (${failText(r)}); both timers stopped, the host does not restart. The record is spent (one drill per consent).` };
+    // A cut that exits non-zero or is killed at the exec's limit may still have taken the network down:
+    // stopping the restore timer too would leave the host offline with nothing to bring it back. Only the
+    // restart is stopped (first, so the host never restarts on a failed drill); the restore runs at once,
+    // through the same privilege, so a half-done cut does not wait out the whole cut length; and the
+    // restore timer stays as the backstop, for a restore that fails now or a cut that lands after it.
+    try { exec(L.stopArgs('restart', o.record, env)); } catch (err) { /* the timer may be gone */ }
+    let back;
+    try { back = exec(L.restoreArgs(env)); } catch (err) { back = { status: null, error: err.message }; }
+    const restored = !!back && back.status === 0;
+    try { L.append(who.root, { type: 'cut_failed', record: o.record, at: now, why: failText(r), restore_now: restored ? 'ok' : 'failed' }); } catch (err) { /* the drill row stands */ }
+    return { code: 1, out: `outage-drill.js: the cut failed (${failText(r)}); the restart timer is stopped and the host does not restart. ${restored ? 'The network restore ran at once' : `The network restore at once failed (${failText(back)})`}, and the restore timer stays: the network comes back by ${t.restore_at} (${row.units[0]}) whatever the cut did. The record is spent (one drill per consent).` };
   }
   return { code: 0, out: `Network cut at ${t.started_at} for ${cut} minutes: it comes back at ${t.restore_at} (${row.units[0]}) and the host restarts at ${t.restart_at} (${row.units[1]}). The drill's row is in ${require('path').relative(who.root, L.ledgerFile(who.root))}.` };
 }

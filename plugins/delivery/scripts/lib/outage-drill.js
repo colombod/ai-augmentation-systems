@@ -33,6 +33,8 @@ function timerArgs(kind, record, seconds, cmd, env) {
 }
 const stopArgs = (kind, record, env) => [...privilegeOf(env), 'systemctl', 'stop', `${unitName(kind, record)}.timer`];
 const cutArgs = (env) => [...privilegeOf(env), ...COMMANDS.cut];
+// the restore run at once, as the restore timer's service would run it, when a cut fails part way
+const restoreArgs = (env) => [...privilegeOf(env), ...COMMANDS.restore];
 
 // n in 1..30 minutes of cut; the restart follows the restore after a fixed minute. The consent is one
 // cut of up to 30 minutes and one restart: a longer offline gap is not covered.
@@ -82,4 +84,4 @@ function leftoverChildren(psText) {
   return found;
 }
 
-module.exports = { MAX_CUT_MINUTES, RESTART_AFTER, COMMANDS, privilegeOf, unitName, timerArgs, stopArgs, cutArgs, checkMinutes, times, ledgerFile, drills, drillOf, append, leftoverChildren };
+module.exports = { MAX_CUT_MINUTES, RESTART_AFTER, COMMANDS, privilegeOf, unitName, timerArgs, stopArgs, cutArgs, restoreArgs, checkMinutes, times, ledgerFile, drills, drillOf, append, leftoverChildren };
