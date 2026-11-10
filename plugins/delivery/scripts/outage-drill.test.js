@@ -169,6 +169,11 @@ test('only a record scoped to a drill on this host, whose owner words name the c
   assert.equal(ok.run(RUN, { verifyRecord: drillRecord({ quote: 'Yes, once (Recommended)', asked: asked('Yes, once (Recommended)') }) }).code, 0, 'a yes to a confirmation that names both is consent');
   refused(drillRecord({ quote: 'No', asked: asked('No') }), /carry a negation/);
   refused(drillRecord({ quote: 'Yes, once (Recommended)', asked: asked('Yes, once (Recommended)', 'May the team restart the machine once?') }), /do not name the network cut/);
+  // a yes to a question that negates the cut or the restart is no consent to the drill, as negated owner words are not
+  for (const q of ['May the team cut the network on pc for 30 minutes, but do not restart the machine?', 'May the team restart the machine once, without cutting the network?',
+    'May the team cut the network for 30 minutes and restart the machine? Never on a weekday.']) {
+    refused(drillRecord({ quote: 'Yes, once (Recommended)', asked: asked('Yes, once (Recommended)', q) }), /the question the owner answered in .* carries a negation/);
+  }
   // the captured answer must be the input itself: a confirmation whose answer is not what the owner sent does not count
   refused(drillRecord({ quote: 'Yes, once (Recommended)', text: 'Yes, once (Recommended)', asked: asked('No') }), /do not name the network cut/);
   // the record still verifies as before, and plan says why a record is refused

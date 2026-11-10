@@ -44,8 +44,9 @@ const failText = (r) => String((r && (r.stderr || r.error)) || `exit ${r ? r.sta
 //     scope, so the label alone is not enough:
 //   - the owner's own words name the network cut and the restart, with no negation. Those words are the
 //     verified quote, or, when the owner answered a confirmation, the question they were shown and the
-//     answer they picked, captured with their input (the answer must be the input itself). The scope
-//     and the statement the agent wrote never count as the owner's words.
+//     answer they picked, captured with their input (the answer must be the input itself); neither the
+//     answer nor the question may carry a negation. The scope and the statement the agent wrote never
+//     count as the owner's words.
 const DRILL_LABEL = (host) => `outage-drill:${host}`;
 const CUT = /\bnetwork\b[^.?!]*\b(?:cut|off|down|disconnect\w*)\b|\b(?:cut|disconnect\w*)\b[^.?!]*\bnetwork\b/i;
 const RESTART = /\b(?:restart\w*|reboot\w*)\b/i;
@@ -63,6 +64,9 @@ function consent(root, id, verifyRecord, host) {
     && h.asked.multi_select !== true && String(h.asked.answer || '').trim() === String(h.text || '').trim());
   const answers = [v.quote, ...asked.map((h) => h.asked.answer)];
   if (answers.some(negated)) return { ok: false, why: `the owner's words in ${id} carry a negation, so they do not consent to the drill` };
+  // the question counts as the owner's words for naming the cut and the restart, so it is held to the same
+  // rule: a yes to "cut the network, but do not restart" is no consent to a cut and a restart
+  if (asked.some((h) => negated(h.asked.question))) return { ok: false, why: `the question the owner answered in ${id} carries a negation, so a yes to it does not consent to the drill` };
   const said = [v.quote, ...asked.map((h) => h.asked.question)].join(' ');
   if (!CUT.test(said)) return { ok: false, why: `the owner's words in ${id} do not name the network cut` };
   if (!RESTART.test(said)) return { ok: false, why: `the owner's words in ${id} do not name the restart` };
