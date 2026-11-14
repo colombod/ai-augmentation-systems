@@ -639,7 +639,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     // starts in a new process under the new plugin, whose wakes start the old-version sessions fresh.
     // a pass taken for a kick looks again while an install is held: the kick is often the held-for wake
     // ending, and installing then beats waiting for the next cycle
-    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: (pid) => !endedPids(kicked).has(pid) && WD.pidAlive(pid), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
+    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: (pid, since) => !endedPids(kicked).has(pid) && WD.pidAlive(pid, { since, now }), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
     if (updated.installed) { KICK.kick(who.root, `plugin ${updated.version} installed`); state.installed = true; }
     state.held = !!updated.held;
     // a held install starts no wake: one started now is another run the install must wait for, and with

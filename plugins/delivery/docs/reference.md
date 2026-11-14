@@ -1434,7 +1434,7 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   other role (its handovers likewise go up to 96 a day, against 48 for other roles); each stall waits
   1, 2, 4, 8 ... hours after each wake that carried it; never while that session's last wake still runs, however long ago it started (each wake runs in its own process group
   under `lib/wake-run.js`, which stops the whole group after 2 hours, SIGTERM then SIGKILL, and lives
-  until the group is gone; the guard checks that the logged pid is alive and is still that supervisor); never before the session's own usage limit resets (then once,
+  until the group is gone; the guard checks that the logged pid is alive and is still that supervisor, reading its command and start time from /proc where there is one: a pid that runs another program, or started after its wake row, is not that wake, and a pid whose command and start cannot be read counts only within the 2-hour wake timeout of its row; the plugin's self-update asks the same about each wake pid before it holds an install); never before the session's own usage limit resets (then once,
   for everything due). Past a limit the stall stays an alarm: "Alarm only: <session>: <reason>". A usage
   limit with no known reset keeps one key and one warning however often a wake is rejected again. A
   usage-limit wake starts within the 5-minute grace plus one job interval of the reset (at most 20 minutes at

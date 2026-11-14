@@ -167,6 +167,22 @@ test('a wake still running holds the install; it goes once the wake has ended', 
   assert.equal(run(f, exec, { alive: () => false }).installed, true);
 });
 
+// hjx.1.6.20: the running check is asked about each wake row's pid with that row's time, so a pid the
+// system gave to another program after its wake ended does not hold every install
+test('the install asks about each wake pid with its own row time, and installs once no pid is that wake', () => {
+  const f = fixture();
+  merged(f, 140, true);
+  const old = '2026-11-01T22:53:39.312Z';
+  WD.log(f.project, { type: 'wake', at: old, instance: 'reality-checker', pid: 2162035 });
+  const exec = claude(f);
+  const asked = [];
+  const held = run(f, exec, { alive: (pid, since) => { asked.push([pid, since]); return true; } });
+  assert.deepEqual(asked, [[2162035, old]], 'the row time goes with the pid');
+  assert.match(held.lines[0], /held: a run is in progress \(wake pid 2162035\)/);
+  // the same pid read as no longer that wake: the install goes
+  assert.equal(run(f, exec, { alive: (pid, since) => !(pid === 2162035 && since === old) }).installed, true);
+});
+
 test('a failed update is logged, not retried within the hour, retried after it', () => {
   const f = fixture();
   merged(f, 140, true);
