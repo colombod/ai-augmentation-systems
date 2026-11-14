@@ -501,3 +501,16 @@ test('through REST only, the doc-impact line counts from the author\'s comment o
   h.setPr(478, (p) => { p.commits = [{ messageHeadline: 'Import a CSV', messageBody: 'Doc-impact:', committedDate: '2099-01-03T00:00:00Z' }]; });
   assert.match(h.gate('delivery-lead', 'check 478').out, /its doc-impact line is empty/);
 });
+
+// rv-201: a contributor from outside the team comments on their own pull request; GitHub marks them only
+// CONTRIBUTOR, so their comment counts by matching the pull request's author, which gh pr view must be asked for
+test('a contributor\'s own comment on their pull request counts through gh pr view, by its author', () => {
+  const h = setup({ 478: pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, createdAt: '2099-01-01T00:00:00Z', author: { login: 'outside-dev' },
+    comments: [{ body: 'Doc-impact: none (a parser change only)', author: { login: 'outside-dev' }, authorAssociation: 'CONTRIBUTOR', createdAt: '2099-01-02T00:00:00Z' }] }) });
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/);
+  // the same words from another contributor do not count
+  h.setPr(478, (p) => { p.comments[0].author = { login: 'someone-else' }; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /refused: PR 478: it changes what users see/);
+});
