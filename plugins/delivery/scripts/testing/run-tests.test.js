@@ -20,37 +20,106 @@ test('run-tests: finds the suite CI ran (scripts/**, hooks/scripts), itself incl
 
 // A nested run with no time limit hung once and held the whole suite open for 32 hours, with no
 // test named and the capture cut off mid-run. A nested run is bounded: one that does not finish is
-// killed and fails as its own test, with the end of what it printed.
+// stopped and fails as its own test, with the end of what it printed.
+// It is stopped with SIGTERM, never SIGKILL first (rv-195): a nested runner starts its suite detached,
+// in a process group of its own, and stops that group only from its SIGTERM handler (it escalates to
+// SIGKILL five seconds on and lives until the group is gone). A SIGKILL to the runner skips that, and
+// the nested suite and its children live on as orphans. Only a runner that has not exited
+// NESTED_GRACE_MS after the SIGTERM gets a SIGKILL.
 const NESTED_MS = 60000;
+const NESTED_GRACE_MS = 15000;
 function nested(args, opts = {}, timeout = NESTED_MS) {
-  const { spawnSync } = require('child_process');
-  const r = spawnSync(process.execPath, args, { encoding: 'utf8', ...opts, timeout, killSignal: 'SIGKILL' });
-  r.hung = r.error && r.error.code === 'ETIMEDOUT'
-    ? `the nested run did not finish within ${timeout / 1000} s and was killed; its output ends: ${String(r.stdout || '').slice(-400)}${String(r.stderr || '').slice(-400)}`
-    : null;
-  return r;
+  const { spawn } = require('child_process');
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    let hung = false;
+    let grace = null;
+    const limit = setTimeout(() => {
+      hung = true;
+      child.kill('SIGTERM');
+      grace = setTimeout(() => child.kill('SIGKILL'), NESTED_GRACE_MS);
+    }, timeout);
+    // settled on the runner's exit, not on its pipes closing: an orphan that outlives the runner holds
+    // the pipes open, and waiting for them would turn a survivor into a hung case instead of a failed one
+    let done = false;
+    const settle = (status, signal) => {
+      if (done) return;
+      done = true;
+      clearTimeout(limit);
+      clearTimeout(grace);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolve({ status, signal, stdout, stderr, hung: hung ? `the nested run did not finish within ${timeout / 1000} s and was stopped; its output ends: ${stdout.slice(-400)}${stderr.slice(-400)}` : null });
+    };
+    child.on('close', settle);
+    child.on('exit', (status, signal) => { setTimeout(() => settle(status, signal), 2000); });
+  });
 }
 
-test('run-tests: a nested run that does not finish is killed and named, never a hung suite', () => {
+// a pid that runs: signal 0 answers for a zombie too (a pid 1 that does not reap), so a zombie counts as gone
+function runs(pid) {
+  try { process.kill(pid, 0); } catch (e) { return e.code === 'EPERM'; }
+  try { return !/^State:\s+Z/m.test(require('fs').readFileSync(`/proc/${pid}/status`, 'utf8')); } catch (e) { return false; }
+}
+
+test('run-tests: a nested run that does not finish is stopped and named, never a hung suite', async () => {
   const t0 = Date.now();
-  const r = nested(['-e', 'console.log("started"); setTimeout(() => {}, 60000)'], {}, 500);
-  assert.ok(Date.now() - t0 < 20000, 'killed at its limit, not left to run');
-  assert.match(String(r.hung), /did not finish within 0.5 s and was killed; its output ends: started/);
+  const r = await nested(['-e', 'console.log("started"); setTimeout(() => {}, 60000)'], {}, 500);
+  assert.ok(Date.now() - t0 < 20000, 'stopped at its limit, not left to run');
+  assert.match(String(r.hung), /did not finish within 0.5 s and was stopped; its output ends: started/);
   // the other direction: a run that finishes is not called hung
-  const ok = nested(['-e', 'console.log("done")'], {}, 20000);
+  const ok = await nested(['-e', 'console.log("done")'], {}, 20000);
   assert.equal(ok.hung, null);
   assert.equal(ok.status, 0);
 });
 
+test('run-tests: a nested suite stopped at its limit leaves no test process or child of one running', { timeout: 120000 }, async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-hung-'));
+  const pids = path.join(dir, 'pids');
+  const fixture = path.join(dir, 'hung.test.js');
+  // a test that starts a child and never ends, as the hung nested suite did
+  fs.writeFileSync(fixture, [
+    "const test = require('node:test');",
+    "const { spawn } = require('child_process');",
+    "test('hangs', async () => {",
+    "  const c = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+    `  require('fs').writeFileSync(${JSON.stringify(pids)}, process.pid + ' ' + c.pid);`,
+    '  await new Promise(() => {});',
+    '});',
+  ].join('\n'));
+  try {
+    // NODE_TEST_CONTEXT, which this test process carries, would make the nested node --test skip its files
+    const { NODE_TEST_CONTEXT, ...env } = process.env;
+    const r = await nested([path.join(__dirname, 'run-tests.js')], { env: { ...env, TMPDIR: dir, DELIVERY_TEST_FILES: fixture } }, 8000);
+    assert.ok(r.hung, `the fixture never ends, so the run is stopped (status ${r.status}): ${r.stdout.slice(-300)} ${r.stderr.slice(-300)}`);
+    assert.ok(fs.existsSync(pids), `the hung test started before the limit: ${r.stdout.slice(-300)}${r.stderr.slice(-300)}`);
+    const [testPid, childPid] = fs.readFileSync(pids, 'utf8').trim().split(' ').map(Number);
+    // the runner exits only once its suite's group is gone; allow the kernel a moment to reap
+    const until = Date.now() + 5000;
+    while ((runs(testPid) || runs(childPid)) && Date.now() < until) await new Promise((res) => setTimeout(res, 100));
+    assert.equal(runs(testPid), false, `the hung test process ${testPid} still runs after the stop`);
+    assert.equal(runs(childPid), false, `the hung test's child ${childPid} still runs after the stop`);
+  } finally {
+    try { const [a, b] = fs.readFileSync(pids, 'utf8').trim().split(' ').map(Number); for (const p of [a, b]) { try { process.kill(p, 'SIGKILL'); } catch (e) { /* gone */ } } } catch (e) { /* no pids */ }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // A day of suite runs left 245,000 fixture directories in /tmp and filled the disk: the runner gives
 // the suite a temporary directory of its own and removes it, whatever the run's result.
-test('run-tests: the suite runs in a temporary directory of its own, removed afterwards', () => {
+test('run-tests: the suite runs in a temporary directory of its own, removed afterwards', async () => {
   const fs = require('fs');
   const os = require('os');
   const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-outer-'));
   try {
     // a pattern no test has: every file loads, no test body runs (so this test does not run itself)
-    const r = nested([path.join(__dirname, 'run-tests.js'), '--test-name-pattern=^no test has this name$'], { env: { ...process.env, TMPDIR: outer } });
+    const r = await nested([path.join(__dirname, 'run-tests.js'), '--test-name-pattern=^no test has this name$'], { env: { ...process.env, TMPDIR: outer } });
     assert.equal(r.hung, null, r.hung);
     assert.equal(r.status, 0, r.stderr.slice(-500));
     assert.deepEqual(fs.readdirSync(outer).filter((f) => f.startsWith('delivery-tests-')), [], 'its directory is gone');
