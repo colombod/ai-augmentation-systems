@@ -265,13 +265,19 @@ function launchTeam({ projectRoot, prepared, host, permissionMode, prefix, env, 
     const args = ['-p', JOIN_PROMPT, ...(permissionMode && permissionMode !== 'default' ? ['--permission-mode', permissionMode] : []), '--name', sessionName(instance, prefix)];
     if (dryRun) { say(`    ${instance}: would start in ${roleDir}: ${bin} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`); continue; }
     const logPath = path.join(projectRoot, '.delivery', 'watchdog', 'logs', `launch-${instance}-${at}.log`);
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    const fd = fs.openSync(logPath, 'a');
-    const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(2 * 3600e3), bin, ...args],
-      { cwd: roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: instance, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' }), detached: true, stdio: ['ignore', fd, fd] });
-    child.unref();
-    fs.closeSync(fd);
-    say(`    ${instance}: started (pid ${child.pid}), joining the team; log ${path.relative(projectRoot, logPath)}`);
+    // in a scope of its own, never in the cgroup of the shell or service running start.js; a refused scope
+    // is started plain once, while the role still has no live session (lib/role-scope.js startRole)
+    const stillMissing = () => {
+      const again = run(bin, ['agents', '--json'], { env, timeout: 15000 });
+      let rows = null;
+      try { const j = again.ok ? JSON.parse(again.out) : null; rows = Array.isArray(j) ? j : null; } catch (err) { rows = null; }
+      const l = OS.liveOf(instance, { roleDir, live: rows, prefix });
+      return l === null ? null : l.length === 0;
+    };
+    const r = require('./lib/role-scope.js').startRole(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(2 * 3600e3), bin, ...args],
+      { instance, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: instance, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' }), cwd: roleDir, logPath, stillMissing });
+    if (!r.pid) { say(`    ${instance}: not started: ${r.refused ? `systemd-run refused its scope, and no plain start followed (${r.why})` : 'its start ran nothing'}; log ${path.relative(projectRoot, logPath)}`); continue; }
+    say(`    ${instance}: started (pid ${r.pid}${r.fallbackFrom ? ', a plain start: systemd-run refused its scope' : ''}), joining the team; log ${path.relative(projectRoot, logPath)}`);
   }
   if (elsewhere.length) say(`    not on this machine: ${elsewhere.join(', ')}; run start.js --launch on each of those hosts`);
   if (permissionMode === 'default') say('    warning: --permission-mode default: a headless session cannot ask you, so steps your default would ask about are refused');

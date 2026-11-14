@@ -135,14 +135,15 @@ function wakeLimitMs(env) {
   return Number.isFinite(asked) && asked > 0 ? Math.min(asked, WD.WAKE_TIMEOUT_H * 3600e3) : WD.WAKE_TIMEOUT_H * 3600e3;
 }
 const defaultDeliver = (socket, text) => require('./lib/session-message.js').deliver(socket, text);
-function spawnWake(bin, args, { cwd, env, logPath }) {
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  const fd = fs.openSync(logPath, 'a');
-  const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(wakeLimitMs(env)), bin, ...args], { cwd, env, detached: true, stdio: ['ignore', fd, fd] });
-  child.on('error', (err) => { try { fs.appendFileSync(logPath, `watchdog: could not start ${bin}: ${err.message}\n`); } catch (e) { /* the log is best effort */ } });
-  child.unref();
-  fs.closeSync(fd);
-  return child.pid || null;
+// The wake's supervisor and its session run in a scope of their own (lib/role-scope.js), never in the
+// host job's service: a woken session there shared the service's TasksMax (hjx.1.6.10.1.2). systemd-run
+// --scope execs its command, so the pid is still the supervisor's.
+// Returns the supervisor's pid, or null when nothing started (systemd-run refused the scope and the role
+// had a live session by then, or the sessions could not be listed again): no wake to log.
+function spawnWake(bin, args, { cwd, env, logPath, systemdRun, spawn, settle, stillMissing }) {
+  const r = require('./lib/role-scope.js').startRole(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(wakeLimitMs(env)), bin, ...args], { instance: env.DELIVERY_ROLE, env, cwd, logPath, systemdRun, spawn, settle, stillMissing });
+  if (!r.pid && r.refused) { try { fs.appendFileSync(logPath, `watchdog: systemd-run refused scope ${r.refused}, and no plain start followed: ${r.why}\n`); } catch (e) { /* the log is best effort */ } }
+  return r.pid;
 }
 
 // the newest KEEP_WAKE_LOGS wake logs stay; the rest go
@@ -257,7 +258,14 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     // each wake has its own id: the session it starts records itself under it (lib/roster.js sessionLocator)
     const wakeId = crypto.randomBytes(6).toString('hex');
     // DELIVERY_WAKE_KICK: the supervisor kicks the next run when this wake ends (lib/kick.js)
-    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, DELIVERY_WAKE_KICK: KICK.dirOf(root), ...HEADLESS_WAIT }), logPath });
+    // a plain retry after a refused scope is taken only while the role still has no live session
+    const stillMissing = () => { const l = require('./lib/one-session.js').liveOf(w.target, { roleDir: s.roleDir, live: liveSessions(bin, env), prefix: manifest && manifest.team ? manifest.team.prefix : null }); return l === null ? null : l.length === 0; };
+    const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, DELIVERY_WAKE_KICK: KICK.dirOf(root), ...HEADLESS_WAIT }), logPath, stillMissing });
+    if (pid === null) {
+      // nothing runs: no wake row, and its messages and handoffs stay waiting for the next pass
+      lines.push(`Not woken: ${w.target}: its start ran nothing (systemd-run refused the scope; log ${path.relative(root, logPath)}); its messages stay waiting. ${w.lines[0]}`);
+      continue;
+    }
     WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
     // the messages and handoffs it carries are handed over: the next run does not wake for them again
     for (const d of w.delivers || []) require('./lib/inbox.js').markDelivered(root, d.to, d.upTo);
@@ -693,7 +701,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
-module.exports = { main, liveSessions, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
+module.exports = { spawnWake, main, liveSessions, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
 
 if (require.main === module) {
   let r;
