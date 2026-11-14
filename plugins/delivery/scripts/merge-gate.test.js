@@ -497,10 +497,29 @@ test('through REST only, the doc-impact line counts from the author\'s comment o
   const c = h.gate('delivery-lead', 'check 478').out;
   assert.match(c, /passes at a1b2c3d4e5f6/, c);
   assert.doesNotMatch(c, /doc-impact/);
-  // a newer commit with an empty line overrides that older comment: the commit time comes through REST
-  h.setPr(478, (p) => { p.commits = [{ messageHeadline: 'Import a CSV', messageBody: 'Doc-impact:', committedDate: '2099-01-03T00:00:00Z' }]; });
-  assert.match(h.gate('delivery-lead', 'check 478').out, /its doc-impact line is empty/);
+  // a commit, however late it says it was made, does not override the author's comment
+  h.setPr(478, (p) => { p.commits = [{ messageHeadline: 'Import a CSV', messageBody: 'Doc-impact:', committedDate: '2199-01-03T00:00:00Z' }]; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/);
 });
+
+// rv-201: GitHub lists comments and commits oldest first, 100 to a page, and gh pr view stops at 100 of
+// each; the newest line sits past that, so every page is read, through REST when gh pr view is capped
+const many = (n, last) => Array.from({ length: n }, (_, i) => ({ body: i === n - 1 ? last : `note ${i}`, author: { login: 'owner-account' }, authorAssociation: 'OWNER',
+  createdAt: new Date(Date.parse('2099-01-01T00:00:00Z') + i * 60e3).toISOString() }));
+const manyCommits = (n, last) => Array.from({ length: n }, (_, i) => ({ messageHeadline: `step ${i}`, messageBody: i === n - 1 ? last : '', committedDate: '2099-01-01T00:00:00Z' }));
+for (const restOnly of [true, false]) {
+  test(`past 100 comments or commits the newest line is read (${restOnly ? 'REST only' : 'gh pr view, capped at 100'})`, () => {
+    const h = setup({ 478: pr478({ body: `Refs ${BEAD}`, createdAt: '2099-01-01T00:00:00Z', author: { login: 'owner-account' }, comments: many(150, 'Doc-impact: none (a parser change only)') }) }, { restOnly });
+    h.review('delivery-lead', 'request 478 --reviewer builder-2');
+    h.pass('builder-2');
+    assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/, 'the 150th comment counts');
+    h.setPr(478, (p) => { p.comments = []; p.commits = manyCommits(150, 'Doc-impact: none (a parser change only)'); });
+    assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/, 'the 150th commit counts');
+    // and the newest line still decides past the cap: a 150th comment that empties it is refused
+    h.setPr(478, (p) => { p.commits = []; p.comments = [...many(149, 'Doc-impact: none (x y z)').map((c) => ({ ...c, body: 'Doc-impact: none (an older reason)' })), ...many(150, 'Doc-impact:').slice(149)]; });
+    assert.match(h.gate('delivery-lead', 'check 478').out, /its doc-impact line is empty/);
+  });
+}
 
 // rv-201: a contributor from outside the team comments on their own pull request; GitHub marks them only
 // CONTRIBUTOR, so their comment counts by matching the pull request's author, which gh pr view must be asked for

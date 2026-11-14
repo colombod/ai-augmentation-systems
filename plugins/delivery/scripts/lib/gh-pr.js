@@ -39,7 +39,21 @@ function viewPr(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
   try { r = spawnSync('gh', ['pr', 'view', String(pr), '--json', FIELDS, '-R', repo], { cwd, encoding: 'utf8', timeout: timeoutMs }); } catch (err) { return { unavailable: err.message }; }
   if (r.error) return { unavailable: r.error.code === 'ENOENT' ? 'gh is not installed' : r.error.message };
   if (r.status === 0) {
-    try { return JSON.parse(r.stdout); } catch (err) { return { unavailable: 'gh pr view returned no JSON' }; }
+    let view;
+    try { view = JSON.parse(r.stdout); } catch (err) { return { unavailable: 'gh pr view returned no JSON' }; }
+    // gh pr view gives at most 100 comments and 100 commits, the oldest, so on a large pull request the
+    // newest doc-impact line fell off (rv-201): at the cap the list is read again, every page, through REST.
+    // A list REST cannot read stays as gh gave it, and the gate decides on that.
+    const base = `repos/${repo}`;
+    if (Array.isArray(view.comments) && view.comments.length >= 100) {
+      const all = restExtras(base, pr, { cwd, timeoutMs }, { commits: false });
+      if (all.comments) view.comments = all.comments;
+    }
+    if (Array.isArray(view.commits) && view.commits.length >= 100) {
+      const all = restExtras(base, pr, { cwd, timeoutMs }, { comments: false });
+      if (all.commits) view.commits = all.commits;
+    }
+    return view;
   }
   // `gh pr view` is GraphQL. Some hosts reach GitHub only through REST (Claude Code's cloud sessions
   // get "HTTP 403: GitHub GraphQL is not available"), so the same facts are read through `gh api`.
@@ -72,12 +86,12 @@ function allPages(endpoint, o) {
   }
   return out;
 }
-function restExtras(base, pr, o) {
+function restExtras(base, pr, o, { comments: wantComments = true, commits: wantCommits = true } = {}) {
   const out = {};
   // who wrote each comment, so a stranger's comment on a public repository counts for nothing (rv-201)
-  const comments = allPages(`${base}/issues/${pr}/comments`, o);
+  const comments = wantComments ? allPages(`${base}/issues/${pr}/comments`, o) : null;
   if (comments) out.comments = comments.map((c) => ({ body: (c && c.body) || '', author: { login: (c && c.user && c.user.login) || null }, authorAssociation: (c && c.author_association) || null, createdAt: (c && c.created_at) || null }));
-  const commits = allPages(`${base}/pulls/${pr}/commits`, o);
+  const commits = wantCommits ? allPages(`${base}/pulls/${pr}/commits`, o) : null;
   if (commits) {
     out.commits = commits.map((c) => {
       const msg = String((c && c.commit && c.commit.message) || '');

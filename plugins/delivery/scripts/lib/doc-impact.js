@@ -29,16 +29,20 @@ function trustedComment(view, c) {
   const owner = view && view.author && view.author.login;
   return Boolean(by && owner && String(by).toLowerCase() === String(owner).toLowerCase());
 }
-// every place the line can be said: the description first, then the commits and the trusted comments in
-// the order they were made (committedDate, createdAt), so a newer commit or comment overrides an older
-// one and the description. One with no readable time sorts before every dated one, in list order.
+// every place the line can be said, from the weakest to the one that decides: the description, then the
+// commit messages in the pull request's own commit order, then the trusted comments in the order GitHub
+// received them (createdAt, the time a comment was posted, not edited). A commit's date is written by
+// whoever makes the commit, so it can say 2099 (rv-201): commits are never ranked by it, and no commit
+// outranks a comment. A comment with no readable time counts before every dated comment.
 function sources(view) {
   const at = (x) => { const t = Date.parse(x); return Number.isFinite(t) ? t : -1; };
-  const later = [];
-  (view && Array.isArray(view.commits) ? view.commits : []).forEach((c, i) => later.push({ t: at(c && (c.committedDate || c.authoredDate)), i, text: `${(c && c.messageHeadline) || ''}\n${(c && c.messageBody) || ''}` }));
-  (view && Array.isArray(view.comments) ? view.comments : []).forEach((c, i) => { if (trustedComment(view, c)) later.push({ t: at(c.createdAt), i: 1e6 + i, text: String(c.body || '') }); });
-  later.sort((a, b) => a.t - b.t || a.i - b.i);
-  return [String((view && view.body) || ''), ...later.map((x) => x.text)];
+  const commits = (view && Array.isArray(view.commits) ? view.commits : []).map((c) => `${(c && c.messageHeadline) || ''}\n${(c && c.messageBody) || ''}`);
+  const comments = (view && Array.isArray(view.comments) ? view.comments : [])
+    .map((c, i) => ({ c, i, t: at(c && c.createdAt) }))
+    .filter((x) => trustedComment(view, x.c))
+    .sort((a, b) => a.t - b.t || a.i - b.i)
+    .map((x) => String(x.c.body || ''));
+  return [String((view && view.body) || ''), ...commits, ...comments];
 }
 // the doc-impact line said last, or null
 function latestLine(view) {

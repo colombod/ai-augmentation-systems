@@ -51,12 +51,14 @@ if (group === 'api') {
     process.exit(0);
   }
   // a pull request's comments (the issues endpoint), as GitHub serves them: [{ body }]
-  const ic = /^\/?repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments(?:\?.*)?$/.exec(endpoint || '');
+  const ic = /^\/?repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments(?:\?(.*))?$/.exec(endpoint || '');
+  // GitHub pages a list (per_page, default 30) and returns only the page asked for
+  const pageOf = (list, query) => { const q = new URLSearchParams(query || ''); const per = Number(q.get('per_page') || 30); const page = Number(q.get('page') || 1); return list.slice((page - 1) * per, page * per); };
   if (ic) {
     if (ic[1].toLowerCase() !== String(s.repo).toLowerCase()) fail('gh: Not Found (HTTP 404)');
     const p = s.prs && s.prs[ic[2]];
     if (!p) fail('gh: Not Found (HTTP 404)');
-    fs.writeSync(1, `${JSON.stringify((p.comments || []).map((c) => ({ body: c.body, user: { login: (c.author && c.author.login) || null }, author_association: c.authorAssociation || null, created_at: c.createdAt || null })))}\n`);
+    fs.writeSync(1, `${JSON.stringify(pageOf(p.comments || [], ic[3]).map((c) => ({ body: c.body, user: { login: (c.author && c.author.login) || null }, author_association: c.authorAssociation || null, created_at: c.createdAt || null })))}\n`);
     process.exit(0);
   }
   const m = /^\/?repos\/([^/]+\/[^/]+)\/(pulls\/(\d+)(\/files|\/merge|\/commits)?|commits\/([0-9a-f]+)\/(check-runs|status))(?:\?(.*))?$/.exec(endpoint || '');
@@ -84,7 +86,7 @@ if (group === 'api') {
     const page = Number((/(?:^|&)page=(\d+)/.exec(m[7] || '') || [])[1] || 1);
     out(page === 1 ? (pr.files || []).map((f) => ({ filename: f.path, additions: f.additions, deletions: f.deletions })) : []);
   }
-  if (m[4] === '/commits') out((pr.commits || []).map((c) => ({ commit: { message: c.messageBody ? `${c.messageHeadline}\n\n${c.messageBody}` : String(c.messageHeadline || ''), committer: { date: c.committedDate || null } } })));
+  if (m[4] === '/commits') out(pageOf(pr.commits || [], m[7]).map((c) => ({ commit: { message: c.messageBody ? `${c.messageHeadline}\n\n${c.messageBody}` : String(c.messageHeadline || ''), committer: { date: c.committedDate || null } } })));
   if (m[4] === '/merge') {
     if (method !== 'PUT') out({ message: 'Not Found' });
     if (fields.sha && fields.sha !== pr.headRefOid) fail('gh: Head branch was modified. Review and try the merge again. (HTTP 409)');
@@ -127,6 +129,8 @@ if (cmd === 'view') {
   // here as it is on GitHub (a test of a new field fails if the request does not name it)
   const full = { number: Number(n), state: 'OPEN', ...pr };
   const j = args.indexOf('--json');
+  // gh pr view gives at most the first 100 comments and 100 commits
+  for (const k of ['comments', 'commits']) if (Array.isArray(full[k])) full[k] = full[k].slice(0, 100);
   const shown = j >= 0 ? Object.fromEntries(String(args[j + 1] || '').split(',').filter((k) => k in full).map((k) => [k, full[k]])) : full;
   fs.writeSync(1, `${JSON.stringify(shown)}\n`);
   process.exit(0);

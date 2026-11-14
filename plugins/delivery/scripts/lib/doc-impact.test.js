@@ -81,7 +81,8 @@ test('an empty doc-impact line is refused, and the next line is not read as its 
 // pull request, which gh pr comment posts and which adds no commit, or from a commit message in it.
 // rv-201: the repository is public, so a comment counts only from the pull request's author or someone
 // GitHub lists as owner, member or collaborator. Where the line appears more than once, the description
-// is the base and the commits and comments override it in the order they were made.
+// is the base, the commit messages override it in commit order, and the comments override both in the
+// order they were posted (a commit's date is written by whoever commits, so it is never ranked).
 const AUTHOR = { login: 'owner-account' };
 const mine = (body, createdAt = '2026-11-14T10:00:00Z') => ({ body, author: AUTHOR, authorAssociation: 'OWNER', createdAt });
 const stranger = (body, createdAt = '2026-11-14T11:00:00Z') => ({ body, author: { login: 'passer-by' }, authorAssociation: 'NONE', createdAt });
@@ -111,16 +112,21 @@ test('a stranger\'s comment counts for nothing: it neither clears a refusal nor 
   }
 });
 
-test('the line said last, by time, says it: a newer commit beats an older comment, and the other way round', () => {
-  const olderComment = mine('Doc-impact:', '2026-11-14T09:00:00Z');
-  const newerCommit = { messageHeadline: 'Fix', messageBody: 'Doc-impact: none (a fixture only)', committedDate: '2026-11-14T10:00:00Z' };
-  assert.deepEqual(D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [olderComment], commits: [newerCommit] })), { ok: true });
-  const olderCommit = { messageHeadline: 'Fix', messageBody: 'Doc-impact: none (a fixture only)', committedDate: '2026-11-14T08:00:00Z' };
-  const newerComment = mine('Doc-impact:', '2026-11-14T09:30:00Z');
-  assert.match(D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [newerComment], commits: [olderCommit] })).why, /its doc-impact line is empty/);
-  // a comment or a commit overrides the description, whatever the description says
+test('a comment outranks every commit message, whatever date the commit claims; comments rank by when they were posted', () => {
+  // rv-201: a commit's date is written by whoever commits, so a commit dated 2099 must not pin the line
+  const future = { messageHeadline: 'Fix', messageBody: 'Doc-impact: none (pinned by a forged date)', committedDate: '2099-01-01T00:00:00Z' };
+  assert.match(D.check(withPr(['src/import.js'], 'Refs ex-1', { commits: [future], comments: [mine('Doc-impact:', '2026-11-14T09:00:00Z')] })).why, /its doc-impact line is empty/, 'the newer comment decides');
+  // with no comment, the last commit in the pull request's order decides, not the newest date
+  const first = { messageHeadline: 'a', messageBody: 'Doc-impact:', committedDate: '2099-01-01T00:00:00Z' };
+  const last = { messageHeadline: 'b', messageBody: 'Doc-impact: none (a fixture only)', committedDate: '2020-01-01T00:00:00Z' };
+  assert.deepEqual(D.check(withPr(['src/import.js'], 'Refs ex-1', { commits: [first, last] })), { ok: true });
+  // a commit or a comment overrides the description
   assert.deepEqual(D.check(withPr(['src/import.js'], 'Doc-impact: README import section', { comments: [mine('Doc-impact: none (the README does not describe the parser)')] })), { ok: true });
-  // one with no readable time sorts before every dated one
+  // between comments, the one posted later decides, whatever their order in the list
+  const later = mine('Doc-impact:', '2026-11-14T11:00:00Z');
+  const earlier = mine('Doc-impact: none (internal)', '2026-11-14T10:00:00Z');
+  assert.match(D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [later, earlier] })).why, /its doc-impact line is empty/);
+  // a comment with no readable time counts before every dated comment
   const undated = mine('Doc-impact: none (undated)', null);
   const dated = mine('Doc-impact:', '2026-11-14T09:00:00Z');
   assert.match(D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [dated, undated] })).why, /its doc-impact line is empty/);

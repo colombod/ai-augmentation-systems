@@ -883,9 +883,12 @@ owner and is reviewed again; gates block only on authority or serious divergence
   description, from a commit message in the pull request, or from a comment on it by the pull
   request's author or by someone GitHub lists as the repository's owner, a member or a collaborator
   (the repository is public: a stranger's comment neither clears a refusal nor blocks a pull
-  request). The description is the base; the commits and those comments override it in the order
-  they were made (commit time, comment time), and one with no readable time counts before every
-  dated one. Every page of comments and commits is read. A builder posts the line as a comment,
+  request). The description is the base; the commit messages override it in the pull request's
+  commit order (never by commit date, which whoever commits can set to any time); and those comments
+  override both, in the order they were posted (the time GitHub received each, not when it was last
+  edited), one with no readable time counting before every dated one. Every comment and commit is
+  read, past 100 too: `gh pr view` gives at most 100 of each, so at that cap they are read again,
+  page by page, through REST. A builder posts the line as a comment,
   `gh pr comment <pr> --body 'Doc-impact: ...'`, since it cannot edit the description on every
   host; a comment or a description edit is not a new commit, so the review still counts, and the
   refusal names that command. A pull request created before the gate shipped (a fixed time in
