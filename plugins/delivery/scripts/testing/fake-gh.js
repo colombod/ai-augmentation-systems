@@ -56,7 +56,7 @@ if (group === 'api') {
     if (ic[1].toLowerCase() !== String(s.repo).toLowerCase()) fail('gh: Not Found (HTTP 404)');
     const p = s.prs && s.prs[ic[2]];
     if (!p) fail('gh: Not Found (HTTP 404)');
-    fs.writeSync(1, `${JSON.stringify((p.comments || []).map((c) => ({ body: c.body })))}\n`);
+    fs.writeSync(1, `${JSON.stringify((p.comments || []).map((c) => ({ body: c.body, user: { login: (c.author && c.author.login) || null }, author_association: c.authorAssociation || null, created_at: c.createdAt || null })))}\n`);
     process.exit(0);
   }
   const m = /^\/?repos\/([^/]+\/[^/]+)\/(pulls\/(\d+)(\/files|\/merge|\/commits)?|commits\/([0-9a-f]+)\/(check-runs|status))(?:\?(.*))?$/.exec(endpoint || '');
@@ -84,7 +84,7 @@ if (group === 'api') {
     const page = Number((/(?:^|&)page=(\d+)/.exec(m[7] || '') || [])[1] || 1);
     out(page === 1 ? (pr.files || []).map((f) => ({ filename: f.path, additions: f.additions, deletions: f.deletions })) : []);
   }
-  if (m[4] === '/commits') out((pr.commits || []).map((c) => ({ commit: { message: c.messageBody ? `${c.messageHeadline}\n\n${c.messageBody}` : String(c.messageHeadline || '') } })));
+  if (m[4] === '/commits') out((pr.commits || []).map((c) => ({ commit: { message: c.messageBody ? `${c.messageHeadline}\n\n${c.messageBody}` : String(c.messageHeadline || ''), committer: { date: c.committedDate || null } } })));
   if (m[4] === '/merge') {
     if (method !== 'PUT') out({ message: 'Not Found' });
     if (fields.sha && fields.sha !== pr.headRefOid) fail('gh: Head branch was modified. Review and try the merge again. (HTTP 409)');
@@ -94,7 +94,7 @@ if (group === 'api') {
   }
   const conflicting = String(pr.mergeable || '').toUpperCase() === 'CONFLICTING';
   out({ number: Number(m[3]), state: pr.state === 'MERGED' ? 'closed' : 'open', merged: pr.state === 'MERGED', merged_at: pr.mergedAt || null, merge_commit_sha: (pr.mergeCommit && pr.mergeCommit.oid) || null, head: { sha: pr.headRefOid, ref: pr.headRefName },
-    mergeable: String(pr.mergeable || '').toUpperCase() === 'MERGEABLE' ? true : conflicting ? false : null, additions: pr.additions, deletions: pr.deletions, body: pr.body, title: pr.title, created_at: pr.createdAt || null });
+    mergeable: String(pr.mergeable || '').toUpperCase() === 'MERGEABLE' ? true : conflicting ? false : null, additions: pr.additions, deletions: pr.deletions, body: pr.body, title: pr.title, created_at: pr.createdAt || null, user: { login: (pr.author && pr.author.login) || null } });
 }
 if (group === 'run' && cmd === 'list') {
   // `run list -R <repo> --branch <b> --json ...`: the store's runs on that branch, newest first

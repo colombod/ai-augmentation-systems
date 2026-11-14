@@ -6,8 +6,6 @@
 // what a README or quick start says; the gate makes the author say so, where the reviewer reads it.
 // What users cannot see needs no line: tests, generated files and lockfiles, and the team's own records.
 // A tool users run (scripts/testing/run-tests.js) is not a test, and a .txt is data unless it sits in docs/.
-const fs = require('fs');
-const path = require('path');
 const { GENERATED } = require('./reviews.js');
 
 const INTERNAL = /(?:^|\/)(?:\.(?:delivery|superpowers|github|beads)|tests?|__tests__|spec|fixtures)\/|\.(?:test|spec)\.[a-z0-9]+$|(?:^|\/)test_[^/]*\.py$/i;
@@ -19,15 +17,30 @@ const NONE = /^none\b[\s:,.;()–—-]*(.*)$/i;
 // it was, so the fix names the comment first; the description or a commit message counts too.
 const fixFor = (pr) => `Add one line saying the doc impact as a comment on the pull request: gh pr comment ${pr || '<pr>'} --body 'Doc-impact: <the docs this pull request updates>' (and update them in it), or gh pr comment ${pr || '<pr>'} --body 'Doc-impact: none (<why users see no change>)'; a comment adds no commit, so a passing review still counts. The description or a commit message counts too`;
 
-// every place the line can be said, in the order a later one overrides an earlier: the description,
-// the commits in order, the comments in order
-function sources(view) {
-  const out = [String((view && view.body) || '')];
-  for (const c of (view && Array.isArray(view.commits) ? view.commits : [])) out.push(`${(c && c.messageHeadline) || ''}\n${(c && c.messageBody) || ''}`);
-  for (const c of (view && Array.isArray(view.comments) ? view.comments : [])) out.push(String((c && c.body) || ''));
-  return out;
+// rv-201: the product repository is public, so anyone can comment on a pull request. A comment counts
+// only from the pull request's author (every role session posts as the owner's account) or from someone
+// GitHub lists as the repository's owner, a member or a collaborator; a stranger's comment can neither
+// clear a refusal nor block a good pull request. The description and the commits are the author's own.
+const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+function trustedComment(view, c) {
+  if (!c) return false;
+  if (TRUSTED.has(String(c.authorAssociation || '').toUpperCase())) return true;
+  const by = c.author && c.author.login;
+  const owner = view && view.author && view.author.login;
+  return Boolean(by && owner && String(by).toLowerCase() === String(owner).toLowerCase());
 }
-// the latest doc-impact line said anywhere, or null
+// every place the line can be said: the description first, then the commits and the trusted comments in
+// the order they were made (committedDate, createdAt), so a newer commit or comment overrides an older
+// one and the description. One with no readable time sorts before every dated one, in list order.
+function sources(view) {
+  const at = (x) => { const t = Date.parse(x); return Number.isFinite(t) ? t : -1; };
+  const later = [];
+  (view && Array.isArray(view.commits) ? view.commits : []).forEach((c, i) => later.push({ t: at(c && (c.committedDate || c.authoredDate)), i, text: `${(c && c.messageHeadline) || ''}\n${(c && c.messageBody) || ''}` }));
+  (view && Array.isArray(view.comments) ? view.comments : []).forEach((c, i) => { if (trustedComment(view, c)) later.push({ t: at(c.createdAt), i: 1e6 + i, text: String(c.body || '') }); });
+  later.sort((a, b) => a.t - b.t || a.i - b.i);
+  return [String((view && view.body) || ''), ...later.map((x) => x.text)];
+}
+// the doc-impact line said last, or null
 function latestLine(view) {
   let found = null;
   for (const text of sources(view)) {
@@ -62,28 +75,17 @@ function check(view, { pr } = {}) {
   return { ok: true };
 }
 
-// 8l1.4.1: when the gate first ran in this project. The gate applies the moment it installs, so a pull
-// request already open then is warned, not refused (merge-gate.js). The first run writes the time, once
-// (wx: a second writer keeps the first); a record that cannot be read or written gives no grace: null.
-// kept with the watchdog's host-local state, not the review records: a new file among the plan paths is
-// a plan not on origin, which the gate's own plan check refuses (lib/plan-sync.js PLAN_PATHS). It is per
-// host, which is where merges are gated (the Delivery Manager's).
-const SINCE = path.join('.delivery', 'watchdog', 'doc-impact-since.json');
-function since(root, now = new Date().toISOString()) {
-  const file = path.join(root, SINCE);
-  const read = () => { try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); return j && Number.isFinite(Date.parse(j.since)) ? j.since : null; } catch (err) { return null; } };
-  if (fs.existsSync(file)) return read();
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `${JSON.stringify({ since: now })}\n`, { flag: 'wx' });
-  } catch (err) { /* another writer was first, or the directory is not writable: read what is there */ }
-  return read();
-}
-// true when the pull request was created before the gate first ran here
-function openedBefore(view, at) {
+// 8l1.4.1, rv-201: a pull request opened before the gate shipped is warned, not refused (merge-gate.js).
+// The bound is the release that added the gate (its pull request merged at this time), kept here in code:
+// a record on disk could be deleted (and rewritten at the next run, granting the grace to everything
+// open) or forged with a far-future date. Only pull requests created before it qualify, a set that can
+// only shrink, so the grace ends by itself.
+const GATE_SHIPPED = '2026-11-10T16:21:51Z';
+// true when the pull request was created before the gate shipped; no creation time, no grace
+function openedBefore(view, at = GATE_SHIPPED) {
   const c = Date.parse(view && view.createdAt);
   const s = Date.parse(at);
   return Number.isFinite(c) && Number.isFinite(s) && c < s;
 }
 
-module.exports = { check, userVisible, isDoc, since, openedBefore, SINCE };
+module.exports = { check, userVisible, isDoc, openedBefore, trustedComment, GATE_SHIPPED };

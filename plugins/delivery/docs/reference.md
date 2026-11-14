@@ -880,15 +880,18 @@ owner and is reviewed again; gates block only on authority or serious divergence
   no change>)`. Tests, generated files, lockfiles and the team's own record directories need no
   line (a tool users run, such as `scripts/testing/run-tests.js`, still does, and a `.txt` file counts
   as a doc only inside `docs/`), and a pull request that changes only docs is its own doc impact. The line counts from the
-  description, from a commit message in the pull request, or from a comment on it, and the latest one
-  says it (the description, then the commits, then the comments, in order). A builder posts it as a
-  comment, `gh pr comment <pr> --body 'Doc-impact: ...'`, since it cannot edit the description on every
+  description, from a commit message in the pull request, or from a comment on it by the pull
+  request's author or by someone GitHub lists as the repository's owner, a member or a collaborator
+  (the repository is public: a stranger's comment neither clears a refusal nor blocks a pull
+  request). The description is the base; the commits and those comments override it in the order
+  they were made (commit time, comment time), and one with no readable time counts before every
+  dated one. Every page of comments and commits is read. A builder posts the line as a comment,
+  `gh pr comment <pr> --body 'Doc-impact: ...'`, since it cannot edit the description on every
   host; a comment or a description edit is not a new commit, so the review still counts, and the
-  refusal names that command. The gate records its first readable run on the host
-  (`.delivery/watchdog/doc-impact-since.json`, host-local like the watchdog's own state, so it is
-  never a plan file to publish); a pull request created before then, open when the gate
-  installed, is warned at every check and never refused, and one with no creation time, or with no
-  readable record, gets no such grace. Where gh cannot read the pull request, the check is a warning. The lane runs the same check before it allows the Delivery Manager's
+  refusal names that command. A pull request created before the gate shipped (a fixed time in
+  `lib/doc-impact.js`, the merge of the release that added it, so nothing on disk can reset or
+  extend it) is warned at every check and never refused; one created after, or with no creation
+  time, is refused. Where gh cannot read the pull request, the check is a warning. The lane runs the same check before it allows the Delivery Manager's
   `gh pr merge`, which must name the pull request by number with `-R <product>` (or by its URL in
   that repository) and the full 40-character head with `--match-head-commit`, so GitHub merges
   exactly what was reviewed; `--admin`, `--auto` and `-a`, in any form, are refused, and so is the
