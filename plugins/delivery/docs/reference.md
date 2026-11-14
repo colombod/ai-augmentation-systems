@@ -188,7 +188,12 @@ session its role and keep it:
   spikes into beads: one epic per phase chained by a phase-review bead, one task per story, one task
   per spike blocking what it derisks. Deterministic ids (`<prefix>-<initiative>-ph<N>`,
   `<prefix>-<story id>`, `<prefix>-<initiative>-spike-<key>`), idempotent, never touches closed
-  beads; `--check` reports drift. It also writes `.delivery/team/denylist.txt`.
+  beads; `--check` reports drift. It also writes `.delivery/team/denylist.txt`. A story already
+  tracked by a bead of its own (one whose metadata `roadmap_ref` is `<initiative>/<story id>`, or
+  whose `story_file` is the story's file) is mapped to that bead instead of getting a second: the
+  bead is updated if open and skipped if closed, the plan's dependencies point at it, and each
+  mapping is printed (`map <planned> -> <bead>` in a dry run). Two beads naming one story is a
+  warning, and the open one is used.
 - **Runners.** A builder's manifest entry names its runner: `superpowers`, `attractor` or `plain`.
   Delivery plans, dispatches and reviews; the runner builds.
 - **Spikes are standing work**: the Spike Researcher claims `spike` beads and records answers in the bead and the ADR or roadmap they gate; in a team without one, builders take spike beads first (`bd ready --label spike`).
