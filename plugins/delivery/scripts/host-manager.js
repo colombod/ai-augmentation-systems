@@ -444,10 +444,19 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
   const file = HM.hostFile(env, home);
   const lines = [];
   const head = `The host manager ${hm.instance}@${host} runs as ${HM.UNIT} in ${roleDir} (Restart=always, started at boot), and ${HM.TICK_TIMER} runs host-manager.js tick every 5 minutes. Teams it serves: ${file}, and every installed watchdog host job.`;
+  // the service is started at once only when no host manager is live and the open sessions could be
+  // read: started beside a live one it is a second host manager (rv-198). Otherwise it is enabled for the
+  // next boot and left to the watchdog's start check (startHostManager), which makes the same match. The
+  // dry run prints the same choice.
+  const lv = liveHostManager(root, { env, home, hostname, live });
+  const startNow = !lv.unreadable && !lv.sessions.length;
+  const commands = startNow ? u.commands : u.commands.map(([c, a]) => (a.join(' ') === `--user enable --now ${HM.UNIT}` ? [c, ['--user', 'enable', HM.UNIT]] : [c, a]));
+  const notNow = startNow ? null : lv.unreadable ? `the open sessions could not be listed, so ${HM.UNIT} is enabled and left to the watchdog's start check.` : `the host manager already runs, so ${HM.UNIT} is enabled for the next boot.`;
   if (o.dryRun) {
     lines.push(`Dry run. ${head}`, `Would add ${root} to ${file}.`);
     for (const f of u.files) lines.push(`Would write ${f.file}:`, f.body.trimEnd());
-    for (const [cmd, args] of u.commands) lines.push(`Would run: ${cmd} ${args.join(' ')}`);
+    for (const [cmd, args] of commands) lines.push(`Would run: ${cmd} ${args.join(' ')}`);
+    if (notNow) lines.push(`Would not start it now: ${notNow}`);
     const l = lingerLine(run, env);
     if (l) lines.push(l);
     lines.push('Nothing was written.');
@@ -466,14 +475,8 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
     // before the units are enabled: systemd opens the tick's StandardOutput=append: file itself and
     // fails the service (status 209/STDOUT) when its directory is missing
     fs.mkdirSync(u.stateDir, { recursive: true });
-    // the service is started at once only when no host manager is live and the open sessions could be
-    // read: started beside a live one it is a second host manager (rv-198). Otherwise it is enabled for
-    // the next boot and left to the watchdog's start check (startHostManager), which makes the same match.
-    const lv = liveHostManager(root, { env, home, hostname, live });
-    const startNow = !lv.unreadable && !lv.sessions.length;
-    const commands = startNow ? u.commands : u.commands.map(([c, a]) => (a.join(' ') === `--user enable --now ${HM.UNIT}` ? [c, ['--user', 'enable', HM.UNIT]] : [c, a]));
     for (const [cmd, args] of commands) { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); }
-    if (!startNow) lines.push(lv.unreadable ? `Not started now: the open sessions could not be listed, so ${HM.UNIT} is enabled and left to the watchdog's start check.` : `Not started now: the host manager already runs, so ${HM.UNIT} is enabled for the next boot.`);
+    if (notNow) lines.push(`Not started now: ${notNow}`);
   } catch (err) { return { code: 1, out: `${lines.join('\n')}\nhost-manager.js: not installed (${firstLine(err)})`.trim(), wrote, kept, attempted: true }; }
   lines.push(`Installed. ${head}`);
   const l = lingerLine(run, env);

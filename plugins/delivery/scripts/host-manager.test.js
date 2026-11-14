@@ -790,10 +790,10 @@ test('the watchdog pass neither resets nor starts the host manager\'s unit while
 test('watchdog install --apply adds the project to the host file and installs the host manager when its units are missing', () => {
   const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
   fs.rmSync(HM.hostFile({}, m.home));
-  const env = { ...process.env, DELIVERY_ROLE: '', DELIVERY_ROLE_ID: '', DELIVERY_ROLE_DIR: '', DELIVERY_HOST: 'pc', USER: 'dev', XDG_CONFIG_HOME: '' };
+  const env = { ...process.env, DELIVERY_ROLE: '', DELIVERY_ROLE_ID: '', DELIVERY_ROLE_DIR: '', DELIVERY_HOST: 'pc', USER: 'dev', XDG_CONFIG_HOME: '', DELIVERY_CLAUDE_BIN: NO_CLAUDE };
   delete env.XDG_CONFIG_HOME;
   delete env.CLAUDE_CONFIG_DIR;
-  const r = watchdog.main(['install', '--apply'], { cwd: m.alpha.root, env, home: m.home, exec: m.sd.exec, platform: 'linux', has: () => true });
+  const r = watchdog.main(['install', '--apply'], { cwd: m.alpha.root, env, home: m.home, exec: m.sd.exec, platform: 'linux', has: () => true, live: [] });
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(HM.readHostTeams(HM.hostFile({}, m.home)).teams, [m.alpha.root]);
   assert.ok(fs.existsSync(path.join(HM.unitDir(m.home), HM.UNIT)), r.out);
@@ -801,10 +801,10 @@ test('watchdog install --apply adds the project to the host file and installs th
   assert.ok(m.sd.calls.includes(`systemctl --user enable --now ${HM.UNIT}`));
   // installed already: a second install leaves the host manager's units as they are
   const before = m.sd.calls.filter((c) => c.includes(HM.UNIT)).length;
-  watchdog.main(['install', '--apply'], { cwd: m.alpha.root, env, home: m.home, exec: m.sd.exec, platform: 'linux', has: () => true });
+  watchdog.main(['install', '--apply'], { cwd: m.alpha.root, env, home: m.home, exec: m.sd.exec, platform: 'linux', has: () => true, live: [] });
   assert.equal(m.sd.calls.filter((c) => c.includes(HM.UNIT)).length, before);
   // a team with no host manager: the watchdog installs, and says why the host manager did not
-  const b = watchdog.main(['install', '--apply'], { cwd: m.beta.root, env, home: fs.mkdtempSync(path.join(os.tmpdir(), 'home2-')), exec: m.sd.exec, platform: 'linux', has: () => true });
+  const b = watchdog.main(['install', '--apply'], { cwd: m.beta.root, env, home: fs.mkdtempSync(path.join(os.tmpdir(), 'home2-')), exec: m.sd.exec, platform: 'linux', has: () => true, live: [] });
   assert.equal(b.code, 0, b.out);
   assert.match(b.out, /^Host manager: team\.json of .* has no host manager/m);
 });
@@ -828,8 +828,11 @@ test('restart, tick and install refuse a caller in another role session even whe
 // session may install units: each watchdog run, which runs outside any role session, installs them when
 // they are missing, through host-manager.js install itself, and records one row. An installed unit is
 // never rewritten; a team with no host manager, or an unprepared role directory, is left alone.
+const NO_CLAUDE = '/nonexistent/delivery-test/claude';
 const runEnv = () => {
-  const env = { ...process.env, DELIVERY_ROLE: '', DELIVERY_ROLE_ID: '', DELIVERY_ROLE_DIR: '', DELIVERY_HOST: 'pc', USER: 'dev' };
+  // no test reads this host's sessions: a claude that does not exist makes a missing live an unreadable
+  // list here as on a CI runner, where there is no claude at all
+  const env = { ...process.env, DELIVERY_ROLE: '', DELIVERY_ROLE_ID: '', DELIVERY_ROLE_DIR: '', DELIVERY_HOST: 'pc', USER: 'dev', DELIVERY_CLAUDE_BIN: NO_CLAUDE };
   for (const k of ['XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'CLAUDE_CONFIG_DIR']) delete env[k];
   return env;
 };
@@ -947,7 +950,7 @@ test('the per-run install writes only the unit files that are missing: a tick se
   // watchdog install --apply runs the same install and keeps them too
   const m2 = machine({ alphaRoles: hmRoles() });
   for (const [n, body] of Object.entries(own)) fs.writeFileSync(hmUnit(m2, n), body);
-  const r = watchdog.main(['install', '--apply'], { cwd: m2.alpha.root, env: runEnv(), home: m2.home, exec: m2.sd.exec, platform: 'linux', has: () => true });
+  const r = watchdog.main(['install', '--apply'], { cwd: m2.alpha.root, env: runEnv(), home: m2.home, exec: m2.sd.exec, platform: 'linux', has: () => true, live: [] });
   assert.equal(r.code, 0, r.out);
   assert.ok(fs.existsSync(hmUnit(m2, HM.UNIT)), r.out);
   for (const [n, body] of Object.entries(own)) assert.equal(fs.readFileSync(hmUnit(m2, n), 'utf8'), body, `install --apply: ${n} is never rewritten`);
@@ -1009,7 +1012,7 @@ test('a missing or malformed team.json: the install does not throw, installs not
     assert.doesNotThrow(() => { out = watchdog.ensureHostManager(m.alpha.root, runOpts(m)); }, what);
     assert.match(String(out), /host manager: its units were not installed \(the team at .* could not be read \(.+\); nothing was installed\.\)/, `${what}: ${out}`);
     let r;
-    assert.doesNotThrow(() => { r = HMS.install(m.alpha.root, {}, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root }); }, what);
+    assert.doesNotThrow(() => { r = HMS.install(m.alpha.root, {}, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root, live: [] }); }, what);
     assert.equal(r.code, 1, what);
     assert.match(r.out, /could not be read .*nothing was installed/, what);
     assert.ok(!fs.existsSync(hmUnit(m, HM.UNIT)), what);
@@ -1022,7 +1025,7 @@ test('a role directory without its role marker is not prepared: nothing installe
   const m = machine({ alphaRoles: hmRoles() });
   fs.rmSync(path.join(m.alpha.dir('host-manager'), '.delivery-role.json'));
   assert.equal(watchdog.ensureHostManager(m.alpha.root, runOpts(m)), null);
-  const r = HMS.install(m.alpha.root, {}, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root });
+  const r = HMS.install(m.alpha.root, {}, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root, live: [] });
   assert.equal(r.code, 1);
   assert.match(r.out, /role directory .* is not prepared on this host \(it holds no \.delivery-role\.json/);
   // a role_dir a role session wrote into the roster: a directory that exists but holds no marker
@@ -1082,7 +1085,7 @@ test('a role marker that names another role or another instance is not a prepare
     fs.writeFileSync(path.join(m.alpha.dir('host-manager'), '.delivery-role.json'), JSON.stringify(marker));
     assert.equal(watchdog.ensureHostManager(m.alpha.root, runOpts(m)), null, JSON.stringify(marker));
     assert.ok(!fs.existsSync(hmUnit(m, HM.UNIT)), JSON.stringify(marker));
-    const r = HMS.install(m.alpha.root, {}, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root });
+    const r = HMS.install(m.alpha.root, {}, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root, live: [] });
     assert.equal(r.code, 1);
     assert.match(r.out, /role marker .* is not the host manager's/, r.out);
   }
@@ -1159,5 +1162,22 @@ test('a repeated install that is skipped says why: the instance on another host,
     spoil(m);
     const out = String(watchdog.ensureHostManager(m.alpha.root, runOpts(m, { now: iso(Date.parse(T0) + 15 * MIN), ...more })));
     assert.match(out, said, `${what}: ${out}`);
+  }
+});
+
+test('the dry run prints what the install would run: --now for the service only when no host manager is live and the sessions could be read', () => {
+  const dry = (live) => {
+    const m = machine({ alphaRoles: hmRoles() });
+    const at = typeof live === 'function' ? live(m) : live;
+    return HMS.install(m.alpha.root, { dryRun: true }, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root, live: at }).out;
+  };
+  const nowLine = `Would run: systemctl --user enable --now ${HM.UNIT}`;
+  const plainLine = `Would run: systemctl --user enable ${HM.UNIT}`;
+  assert.ok(dry([]).split('\n').includes(nowLine), dry([]));
+  for (const [what, live] of [['unreadable', null], ['one live', (m) => [{ sessionId: 'x', cwd: m.alpha.dir('host-manager'), name: 'host-manager@pc', status: 'idle' }]]]) {
+    const out = dry(live).split('\n');
+    assert.ok(!out.includes(nowLine), `${what}: ${out.join(' | ')}`);
+    assert.ok(out.includes(plainLine), what);
+    assert.ok(out.some((l) => /^Would not start it now:/.test(l)), `${what}: the dry run says why`);
   }
 });
