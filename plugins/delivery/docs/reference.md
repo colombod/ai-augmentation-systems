@@ -1542,9 +1542,11 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   gone is broken. Each start is a row in the watchdog directory's `revive.ndjson` (instance, pid,
   time, arguments, the id it reattached), its output in `logs/revive-<instance>-<time>.log` beside it.
   `claude remote-control` takes no prompt, so a session it starts comes up with no turn. The watchdog
-  reads these rows: the newest start of an instance, from two minutes to six hours old, whose session
-  has not been active since, wakes that session once (keyed on the start) with the first turn, not held
-  by the hourly stall gate (hjx.1.6.12).
+  reads these rows: the newest start (or restart onto the installed plugin) of an instance, from two
+  minutes to six hours old, whose session has taken no turn since (no reply in its transcript after the
+  start; its own SessionStart hook moving `last_seen` or touching the transcript does not count), wakes
+  that session once (keyed on the start) with the first turn, not held by the hourly stall gate
+  (hjx.1.6.12, hjx.1.6.12.2).
   The host job runs `start` at each `run`, after the wakes and never while a plugin install is held or
   under way; the sealed test runner starts none. In a role session only the Chief of Staff may run
   `start` (lane group `team-revive`), and its brief runs `check` each turn; the host manager may too

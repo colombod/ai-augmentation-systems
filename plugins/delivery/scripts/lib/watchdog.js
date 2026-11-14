@@ -143,6 +143,14 @@ function contextOf(rows) {
 }
 
 // { at, resetsAt, window, text } when the transcript's last word is a usage limit; null otherwise.
+// the newest reply a transcript tail holds (ms), -Infinity for none: a turn the session took. An API
+// error row is no turn; a hook's record, an attachment or the owner's input is not one either.
+function lastTurnOf(rows) {
+  let at = -Infinity;
+  for (const r of Array.isArray(rows) ? rows : []) if (r && r.type === 'assistant' && !r.isApiErrorMessage) at = Math.max(at, ms(r.timestamp));
+  return at;
+}
+
 function limitOf(rows) {
   if (!Array.isArray(rows)) return null;
   let i = rows.length - 1;
@@ -215,6 +223,7 @@ function sessions(root, { team, rows = tailRows } = {}) {
       const t = e && typeof e.transcript_path === 'string' ? e.transcript_path : null;
       const forks = (Array.isArray(e && e.forks) ? e.forks : []).map((f) => f && f.transcript_path).filter((p) => typeof p === 'string' && p);
       let lastActive = ms(e && e.last_seen);
+      let lastTurn = -Infinity;
       let limit = null;
       let waitUntil = -Infinity;
       const polls = [];
@@ -225,6 +234,7 @@ function sessions(root, { team, rows = tailRows } = {}) {
       for (const f of [t, ...forks].filter(Boolean)) {
         try { lastActive = Math.max(lastActive, fs.statSync(f).mtimeMs); } catch (err) { /* not on disk */ }
         const tail = rows(f);
+        lastTurn = Math.max(lastTurn, lastTurnOf(tail));
         const l = limitOf(tail);
         if (l && (!limit || ms(l.at) > ms(limit.at))) limit = l;
         waitUntil = Math.max(waitUntil, waitingUntil(tail));
@@ -233,8 +243,8 @@ function sessions(root, { team, rows = tailRows } = {}) {
           if (!pluginVersion) pluginVersion = require('./plugin-version.js').versionInText(toolUses(tail).map((u) => u.command).join('\n'));
         }
       }
-      return { ...base, lastActive, transcript: t, forks, limit, waitUntil, polls, context, pluginVersion };
-    } catch (err) { return { ...base, lastActive: ms(e && e.last_seen), transcript: null, limit: null, waitUntil: -Infinity, polls: [], pluginVersion: (e && e.plugin_version) || null }; }
+      return { ...base, lastActive, lastTurn, transcript: t, forks, limit, waitUntil, polls, context, pluginVersion };
+    } catch (err) { return { ...base, lastActive: ms(e && e.last_seen), lastTurn: -Infinity, transcript: null, limit: null, waitUntil: -Infinity, polls: [], pluginVersion: (e && e.plugin_version) || null }; }
   }).filter((s) => !s.retired);
 }
 
@@ -412,13 +422,17 @@ function stalls({ beads = [], ready = [], now, idleMinutes = 30, stallHours = 2,
     if (!(age >= START_SETTLE_MIN && age <= START_FRESH_H * 60)) continue;
     const h = list.find((s) => s && s.instance === r.instance);
     if (!h || limited.has(h.instance)) continue;
-    if (Number.isFinite(h.lastActive) && h.lastActive >= at) continue;
+    // judged by a turn taken since the start, never by last_seen or the transcript's mtime: the start's
+    // own SessionStart hook moves both past it before any turn (hjx.1.6.12.2). A session listed without
+    // a turn reading (lastTurn undefined) falls back to its last activity, as before.
+    const turned = h.lastTurn !== undefined ? h.lastTurn : h.lastActive;
+    if (Number.isFinite(turned) && turned >= at) continue;
     const key = `started:${r.instance}:${r.at}`;
     if (carriedKeys.has(key)) continue;
     out.push({ kind: 'started', key, target: r.instance, due: true,
       line: `Started with no turn: ${r.instance} was started by the team revive at ${clock(at)} and has done nothing since.`,
       plain: 'A team member restarted after an outage is given its first turn, so it picks its work up.',
-      detail: `revive start at ${r.at}; session last active ${Number.isFinite(h.lastActive) ? new Date(h.lastActive).toISOString() : 'unknown'}`,
+      detail: `revive start at ${r.at}; no turn since (last turn ${Number.isFinite(turned) ? new Date(turned).toISOString() : 'none read'})`,
       prompt: `Your session was started by the team revive at ${clock(at)} and has had no turn yet.` });
   }
   // hjx.1.6.12 criterion 4: idle with ready work is a stall within one pass. The idle rule above
