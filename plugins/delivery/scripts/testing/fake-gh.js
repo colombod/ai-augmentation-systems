@@ -50,7 +50,16 @@ if (group === 'api') {
     fs.writeSync(1, `${JSON.stringify({ type: 'file', path: file, encoding: 'base64', content: Buffer.from(text, 'utf8').toString('base64') })}\n`);
     process.exit(0);
   }
-  const m = /^\/?repos\/([^/]+\/[^/]+)\/(pulls\/(\d+)(\/files|\/merge)?|commits\/([0-9a-f]+)\/(check-runs|status))(?:\?(.*))?$/.exec(endpoint || '');
+  // a pull request's comments (the issues endpoint), as GitHub serves them: [{ body }]
+  const ic = /^\/?repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments(?:\?.*)?$/.exec(endpoint || '');
+  if (ic) {
+    if (ic[1].toLowerCase() !== String(s.repo).toLowerCase()) fail('gh: Not Found (HTTP 404)');
+    const p = s.prs && s.prs[ic[2]];
+    if (!p) fail('gh: Not Found (HTTP 404)');
+    fs.writeSync(1, `${JSON.stringify((p.comments || []).map((c) => ({ body: c.body, user: { login: (c.author && c.author.login) || null }, author_association: c.authorAssociation || null, created_at: c.createdAt || null })))}\n`);
+    process.exit(0);
+  }
+  const m = /^\/?repos\/([^/]+\/[^/]+)\/(pulls\/(\d+)(\/files|\/merge|\/commits)?|commits\/([0-9a-f]+)\/(check-runs|status))(?:\?(.*))?$/.exec(endpoint || '');
   if (!m) fail(`fake gh: unsupported api ${endpoint}`);
   if (m[1].toLowerCase() !== String(s.repo).toLowerCase()) fail('gh: Not Found (HTTP 404)');
   const out = (j) => { fs.writeSync(1, `${JSON.stringify(j)}\n`); process.exit(0); };
@@ -75,6 +84,7 @@ if (group === 'api') {
     const page = Number((/(?:^|&)page=(\d+)/.exec(m[7] || '') || [])[1] || 1);
     out(page === 1 ? (pr.files || []).map((f) => ({ filename: f.path, additions: f.additions, deletions: f.deletions })) : []);
   }
+  if (m[4] === '/commits') out((pr.commits || []).map((c) => ({ commit: { message: c.messageBody ? `${c.messageHeadline}\n\n${c.messageBody}` : String(c.messageHeadline || ''), committer: { date: c.committedDate || null } } })));
   if (m[4] === '/merge') {
     if (method !== 'PUT') out({ message: 'Not Found' });
     if (fields.sha && fields.sha !== pr.headRefOid) fail('gh: Head branch was modified. Review and try the merge again. (HTTP 409)');
@@ -84,7 +94,7 @@ if (group === 'api') {
   }
   const conflicting = String(pr.mergeable || '').toUpperCase() === 'CONFLICTING';
   out({ number: Number(m[3]), state: pr.state === 'MERGED' ? 'closed' : 'open', merged: pr.state === 'MERGED', merged_at: pr.mergedAt || null, merge_commit_sha: (pr.mergeCommit && pr.mergeCommit.oid) || null, head: { sha: pr.headRefOid, ref: pr.headRefName },
-    mergeable: String(pr.mergeable || '').toUpperCase() === 'MERGEABLE' ? true : conflicting ? false : null, additions: pr.additions, deletions: pr.deletions, body: pr.body, title: pr.title });
+    mergeable: String(pr.mergeable || '').toUpperCase() === 'MERGEABLE' ? true : conflicting ? false : null, additions: pr.additions, deletions: pr.deletions, body: pr.body, title: pr.title, created_at: pr.createdAt || null, user: { login: (pr.author && pr.author.login) || null } });
 }
 if (group === 'run' && cmd === 'list') {
   // `run list -R <repo> --branch <b> --json ...`: the store's runs on that branch, newest first
@@ -112,7 +122,15 @@ const n = url ? url[2] : target;
 const pr = s.prs && s.prs[n];
 if (!pr) fail(`GraphQL: Could not resolve to a PullRequest with the number of ${n}.`);
 // written synchronously: process.exit would cut an asynchronous write to a pipe short
-if (cmd === 'view') { fs.writeSync(1, `${JSON.stringify({ number: Number(n), state: 'OPEN', ...pr })}\n`); process.exit(0); }
+if (cmd === 'view') {
+  // like gh: only the fields --json names come back, so a field the caller never asked for is missing
+  // here as it is on GitHub (a test of a new field fails if the request does not name it)
+  const full = { number: Number(n), state: 'OPEN', ...pr };
+  const j = args.indexOf('--json');
+  const shown = j >= 0 ? Object.fromEntries(String(args[j + 1] || '').split(',').filter((k) => k in full).map((k) => [k, full[k]])) : full;
+  fs.writeSync(1, `${JSON.stringify(shown)}\n`);
+  process.exit(0);
+}
 const at = args.indexOf('--match-head-commit');
 if (at >= 0 && args[at + 1] !== pr.headRefOid) fail('Head branch was modified. Review and try the merge again.');
 // the squash commit GitHub made on the base: the merge-gate records it, self-update binds to it

@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const FIELDS = 'number,state,mergedAt,mergeCommit,headRefOid,headRefName,baseRefName,mergeable,statusCheckRollup,additions,deletions,files,body,title';
+const FIELDS = 'number,state,mergedAt,mergeCommit,headRefOid,headRefName,baseRefName,mergeable,statusCheckRollup,additions,deletions,files,body,title,createdAt,comments,commits,author';
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 // owner/name from a GitHub remote URL (git@github.com:o/r.git, https://github.com/o/r, a PR URL)
@@ -60,6 +60,35 @@ const MERGEABLE = (m) => (m === true ? 'MERGEABLE' : m === false ? 'CONFLICTING'
 const UP = (x) => String(x || '').toUpperCase();
 
 // The fields viewPr's callers read, in `gh pr view --json` shape, from the REST endpoints.
+// every page of a list endpoint (rv-201: GitHub returns the oldest first, so one page of 100 dropped the
+// newest lines); null when any page cannot be read, so the caller leaves the list out and the gate refuses
+function allPages(endpoint, o) {
+  const out = [];
+  for (let page = 1; page <= 30; page++) {
+    const r = ghApi(`${endpoint}?per_page=100&page=${page}`, o);
+    if (r.unavailable || !Array.isArray(r.json)) return null;
+    out.push(...r.json);
+    if (r.json.length < 100) return out;
+  }
+  return out;
+}
+function restExtras(base, pr, o) {
+  const out = {};
+  // who wrote each comment, so a stranger's comment on a public repository counts for nothing (rv-201)
+  const comments = allPages(`${base}/issues/${pr}/comments`, o);
+  if (comments) out.comments = comments.map((c) => ({ body: (c && c.body) || '', author: { login: (c && c.user && c.user.login) || null }, authorAssociation: (c && c.author_association) || null, createdAt: (c && c.created_at) || null }));
+  const commits = allPages(`${base}/pulls/${pr}/commits`, o);
+  if (commits) {
+    out.commits = commits.map((c) => {
+      const msg = String((c && c.commit && c.commit.message) || '');
+      const nl = msg.indexOf('\n');
+      const committedDate = (c && c.commit && c.commit.committer && c.commit.committer.date) || null;
+      return nl < 0 ? { messageHeadline: msg, messageBody: '', committedDate } : { messageHeadline: msg.slice(0, nl), messageBody: msg.slice(nl + 1).replace(/^\n/, ''), committedDate };
+    });
+  }
+  return out;
+}
+
 function viewPrRest(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
   const o = { cwd, timeoutMs };
   const base = `repos/${repo}`;
@@ -115,6 +144,11 @@ function viewPrRest(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
     files,
     body: pull.body || '',
     title: pull.title || '',
+    createdAt: pull.created_at || null,
+    author: { login: (pull.user && pull.user.login) || null },
+    // the doc-impact line can be said in a comment or a commit message (lib/doc-impact.js); one page of
+    // each, and a page that cannot be read leaves only the description, so the gate refuses, never passes
+    ...restExtras(base, pr, o),
     via: 'rest',
   };
 }

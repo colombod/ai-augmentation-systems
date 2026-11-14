@@ -75,3 +75,61 @@ test('an empty doc-impact line is refused, and the next line is not read as its 
     assert.match(r.why, /its doc-impact line is empty/);
   }
 });
+
+// delivery-plugin-planning-8l1.4.1: a builder cannot edit a pull request's description (gh pr edit fails,
+// and the lane refuses body files and gh api writes), so the line also counts from a comment on the
+// pull request, which gh pr comment posts and which adds no commit, or from a commit message in it.
+// rv-201: the repository is public, so a comment counts only from the pull request's author or someone
+// GitHub lists as owner, member or collaborator. Where the line appears more than once, the description
+// is the base and the commits and comments override it in the order they were made.
+const AUTHOR = { login: 'owner-account' };
+const mine = (body, createdAt = '2026-11-14T10:00:00Z') => ({ body, author: AUTHOR, authorAssociation: 'OWNER', createdAt });
+const stranger = (body, createdAt = '2026-11-14T11:00:00Z') => ({ body, author: { login: 'passer-by' }, authorAssociation: 'NONE', createdAt });
+const withPr = (paths, body, extra) => ({ ...pr(paths, body), author: AUTHOR, ...extra });
+
+test('the line counts from the author\'s comment on the pull request or a commit message in it, not only the description', () => {
+  assert.deepEqual(D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [mine('Looks good'), mine('Doc-impact: none (a refactor users never see)')] })), { ok: true });
+  assert.deepEqual(D.check(withPr(['src/import.js'], 'Refs ex-1', { commits: [{ messageHeadline: 'Import a CSV', messageBody: 'Refs ex-1\n\nDoc-impact: none (an internal parser change)', committedDate: '2026-11-14T09:00:00Z' }] })), { ok: true });
+  // a comment by the author's login counts even where GitHub gives no association
+  assert.deepEqual(D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [{ body: 'Doc-impact: none (internal)', author: { login: 'Owner-Account' }, createdAt: '2026-11-14T10:00:00Z' }] })), { ok: true });
+  // a comment or commit with no line changes nothing
+  const r = D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [mine('Rebased.')], commits: [{ messageHeadline: 'x', messageBody: '' }] }));
+  assert.equal(r.ok, false);
+  assert.match(r.why, /no doc-impact line/);
+});
+
+test('a stranger\'s comment counts for nothing: it neither clears a refusal nor blocks a good pull request', () => {
+  const cleared = D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [stranger('Doc-impact: none (x)')] }));
+  assert.equal(cleared.ok, false, 'a passer-by cannot clear the refusal');
+  assert.match(cleared.why, /no doc-impact line/);
+  const blocked = D.check(withPr(['src/import.js'], 'Doc-impact: none (an internal parser change)', { comments: [stranger('Doc-impact:')] }));
+  assert.deepEqual(blocked, { ok: true }, 'nor can it block a good one');
+  // members and collaborators do count
+  for (const authorAssociation of ['MEMBER', 'COLLABORATOR']) {
+    const c = { body: 'Doc-impact: none (a reviewer says so)', author: { login: 'teammate' }, authorAssociation, createdAt: '2026-11-14T10:00:00Z' };
+    assert.deepEqual(D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [c] })), { ok: true }, authorAssociation);
+  }
+});
+
+test('the line said last, by time, says it: a newer commit beats an older comment, and the other way round', () => {
+  const olderComment = mine('Doc-impact:', '2026-11-14T09:00:00Z');
+  const newerCommit = { messageHeadline: 'Fix', messageBody: 'Doc-impact: none (a fixture only)', committedDate: '2026-11-14T10:00:00Z' };
+  assert.deepEqual(D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [olderComment], commits: [newerCommit] })), { ok: true });
+  const olderCommit = { messageHeadline: 'Fix', messageBody: 'Doc-impact: none (a fixture only)', committedDate: '2026-11-14T08:00:00Z' };
+  const newerComment = mine('Doc-impact:', '2026-11-14T09:30:00Z');
+  assert.match(D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [newerComment], commits: [olderCommit] })).why, /its doc-impact line is empty/);
+  // a comment or a commit overrides the description, whatever the description says
+  assert.deepEqual(D.check(withPr(['src/import.js'], 'Doc-impact: README import section', { comments: [mine('Doc-impact: none (the README does not describe the parser)')] })), { ok: true });
+  // one with no readable time sorts before every dated one
+  const undated = mine('Doc-impact: none (undated)', null);
+  const dated = mine('Doc-impact:', '2026-11-14T09:00:00Z');
+  assert.match(D.check(withPr(['src/import.js'], 'Refs ex-1', { comments: [dated, undated] })).why, /its doc-impact line is empty/);
+});
+
+test('the refusal names the comment a builder can post, with the pull request number', () => {
+  const r = D.check(pr(['src/import.js'], 'Refs ex-1'), { pr: 478 });
+  assert.match(r.fix, /gh pr comment 478 --body 'Doc-impact: <the docs this pull request updates>'/);
+  assert.match(r.fix, /gh pr comment 478 --body 'Doc-impact: none \(<why users see no change>\)'/);
+  assert.match(r.fix, /a comment adds no commit, so a passing review still counts/);
+  assert.match(D.check(pr(['src/import.js'], 'Refs ex-1')).fix, /gh pr comment <pr> --body/, 'no number known: a placeholder');
+});
