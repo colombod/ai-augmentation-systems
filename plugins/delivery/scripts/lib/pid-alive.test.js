@@ -1,4 +1,6 @@
 // scripts/lib/pid-alive.test.js — a wake pid counts as a running wake only while it is that wake.
+// clock-sensitive: it compares a real process's kernel start with row times, so the clock guard re-runs it
+// under shifted clocks (scripts/testing/clock-guard.test.js)
 // hjx.1.6.20: a reality-checker wake recorded pid 2162035 on 2026-11-01 and ended; on 2026-11-10 the
 // system gave that pid to an unrelated program (a session's PDF tool server). `ps -p` printed nothing
 // for it on this host and the check took empty output as alive, so every install was held for 91 hours

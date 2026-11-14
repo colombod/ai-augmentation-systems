@@ -22,7 +22,9 @@
 //                                                   Each run then starts the team's missing role sessions while work is in flight (team-revive.js)
 //                                                   Each run also installs the plugin main carries when it is newer and every
 //                                                   change to it passed the team's gate, never under a running wake (lib/self-update.js)
-//                                                   Each run starts the host manager's unit when it is installed and down
+//                                                   Each run installs the host manager's units when they are missing and this
+//                                                   team has a prepared host-manager instance on this host (host-manager.js
+//                                                   install, one row in revive.ndjson), and starts its unit when it is down
 //   watchdog.js install [--every 15m] [--apply] [--project <root>]
 //                                                   the host job (launchd on macOS, a systemd user timer
 //                                                   or cron on Linux) that runs `run`; prints what it would
@@ -479,7 +481,7 @@ const whichOf = (has) => has || ((cmd) => { try { require('child_process').execF
 // cannot run the job: said plainly, with the way out, instead of a crontab error (dlv-4oj)
 const NO_SCHEDULER = 'this host has no scheduler (no systemctl, no crontab), so the watchdog cannot run on its own here: a stopped role is woken only while someone keeps a loop alive. Run the team on an always-on host (one with systemd, launchd or cron), or run `watchdog.js run --project <root>` yourself when work is due.';
 
-function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has } = {}) {
+function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has, live } = {}) {
   const which = whichOf(has);
   const cron = platform !== 'darwin' && !which('systemctl');
   if (cron && !which('crontab')) return { code: 1, out: `watchdog.js: ${NO_SCHEDULER}` };
@@ -520,7 +522,7 @@ function install(root, o, { platform = process.platform, home = os.homedir(), en
   } catch (err) { return { code: 1, out: `${lines.join('\n')}\nwatchdog.js: the job was not installed (${String(err.message).split('\n')[0]})\n${removal}`.trim() }; }
   lines.push(`Installed. ${head}`);
   if (j.kind === 'systemd') lines.push('A user timer runs only while you are logged in, unless lingering is on: loginctl enable-linger $USER.');
-  lines.push(...hostManagerSetup(root, { platform, home, env, exec, has: which }));
+  lines.push(...hostManagerSetup(root, { platform, home, env, exec, has: which, live }));
   lines.push(removal);
   return { code: 0, out: lines.join('\n') };
 }
@@ -529,13 +531,13 @@ function install(root, o, { platform = process.platform, home = os.homedir(), en
 // it with nothing more to do: this project joins the machine's team list, and the host manager's units
 // are installed when they are missing (host-manager.js install). A failure is said and never fails the
 // watchdog's own install.
-function hostManagerSetup(root, { platform, home, env, exec, has }) {
+function hostManagerSetup(root, { platform, home, env, exec, has, live }) {
   const HM = require('./lib/host-manager.js');
   const out = [];
   try { if (HM.addHostTeam(HM.hostFile(env, home), root)) out.push(`Added ${root} to ${HM.hostFile(env, home)}, the teams the host manager serves.`); } catch (err) { out.push(`Host manager: ${root} was not added to its team list (${String(err.message).split('\n')[0]}).`); }
   if (platform === 'darwin' || !has('systemctl')) { out.push('Host manager: not installed here: its units need systemd.'); return out; }
   if (fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return out;
-  const r = require('./host-manager.js').install(root, {}, { env, home, exec, has, cwd: root });
+  const r = require('./host-manager.js').install(root, { onlyMissing: true }, { env, home, exec, has, cwd: root, ...(live !== undefined ? { live } : {}) });
   out.push(...r.out.split('\n').map((l) => `Host manager: ${l.replace(/^host-manager\.js: /, '')}`));
   return out;
 }
@@ -543,9 +545,54 @@ function hostManagerSetup(root, { platform, home, env, exec, has }) {
 // Each pass looks at the host manager's own unit and starts it when it is installed and down: the host
 // manager restarts the host jobs, and the host jobs restart the host manager. One row in revive.ndjson
 // per start. null when there is nothing to do.
-function ensureHostManager(root, { home, exec, now, env = process.env, live }) {
+// Before that, a unit that is missing is installed when this team's manifest has a host-manager instance
+// on this host whose role directory is prepared: Staffing prepares it from a role session, which may not
+// install units, and this run is the host job's, outside any role session. The install is host-manager.js
+// install itself (its files, its reload, enable and start, its refusal in a role session), with one row
+// in revive.ndjson. Only the unit files that are missing are written (onlyMissing): an installed unit,
+// the tick's service and timer included, is never rewritten. When the last install row carries an
+// error (an enable that failed after the files were written), the next run repeats the install, which
+// then writes nothing that exists and runs the reload and enables again, until a run records no error.
+function ensureHostManager(root, { home, exec, now, env = process.env, has, hostname, live, writeFile }) {
   const HM = require('./lib/host-manager.js');
-  if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return null;
+  const R = require('./lib/team-revive.js');
+  const lines = [];
+  const missing = !fs.existsSync(path.join(HM.unitDir(home), HM.UNIT));
+  const lastRow = () => R.ledger(root).filter((x) => x.type === 'host-manager-install').pop() || null;
+  const prior = missing ? null : lastRow();
+  if (missing || (prior && prior.error)) {
+    const HMS = require('./host-manager.js');
+    const target = HMS.installTarget(root, {}, { env, hostname });
+    const retry = !missing;
+    // a team.json that cannot be read is said; no host manager here, or one not prepared, is left alone.
+    // On a retry the unit file is already there, so a blocked install does not end the run: a stopped
+    // host manager is still started below (otherwise it would stay down until the target came back).
+    const reason = target.unreadable ? null : target.why ? target.why.replace(/^host-manager\.js: /, '') : !whichOf(has)('systemctl') ? 'this host has no systemctl' : null;
+    const blocked = target.unreadable ? `host manager: its units were not installed (${target.why.replace(/^host-manager\.js: /, '')})`
+      : reason !== null ? (retry ? `host manager: install not repeated (${reason})` : '') : null;
+    if (blocked !== null && !retry) return blocked || null;
+    if (blocked) lines.push(blocked);
+    if (blocked === null) {
+      const r = HMS.install(root, { onlyMissing: true }, { env, home, exec, has, hostname, cwd: root, ...(writeFile ? { writeFile } : {}), ...(live !== undefined ? { live } : {}) });
+      const last = r.out.split('\n').pop().replace(/^host-manager\.js: /, '');
+      // refused before it began (a role session): said, no row; the next run tries again
+      if (!r.attempted) return `host manager: its units were not installed (${last})`;
+      // from the first write on an attempt is a row, a failed write included. A retry that fails the
+      // way the last row did adds none: an enable that keeps failing is tried each run (a watchdog pass,
+      // every 15 minutes) but is one row until its error changes or it succeeds.
+      const sameAsLast = retry && r.code && prior.error === last;
+      if (!sameAsLast) R.record(root, { type: 'host-manager-install', at: now || new Date().toISOString(), instance: target.hm.instance, wrote: r.wrote, ...(retry ? { retry: true } : {}), ...(r.code ? { error: last } : {}) });
+      if (r.code) lines.push(r.wrote.length ? `host manager: its units were written (${r.wrote.join(', ')}) but the install did not finish (${last})` : `host manager: its units were not installed (${last})`);
+      else lines.push(retry && !r.wrote.length ? 'host manager: enabled its units again (the last install did not finish)' : `host manager: installed its units (${r.wrote.join(', ')})`);
+      if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return lines.join('\n');
+    }
+  }
+  const started = startHostManager(root, { home, exec, now, env, live });
+  if (started) lines.push(started);
+  return lines.length ? lines.join('\n') : null;
+}
+function startHostManager(root, { home, exec, now, env = process.env, live }) {
+  const HM = require('./lib/host-manager.js');
   const run = runner(exec);
   let state = '';
   try { state = String(run('systemctl', ['--user', 'is-active', HM.UNIT])).trim(); } catch (err) {
@@ -631,7 +678,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   const who = whoAmI({ cwd, env, project: o.project });
   if (!who.root) return { code: 2, out: 'watchdog.js: no project found; pass --project <root>' };
   if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows, env });
-  if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has });
+  if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has, ...(live !== undefined ? { live } : {}) });
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
   const state = { installed: false };
   const go = ({ first = true } = {}) => {
@@ -679,7 +726,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       if (ug) swept.push(ug);
       // a run inside the sealed test runner never touches the host's own units unless a test hands it fakes
       const sealed = env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN;
-      const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, ...(live !== undefined ? { live } : {}), ...(hostUnit || {}) });
+      const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, has, ...(live !== undefined ? { live } : {}), ...(hostUnit || {}) });
       if (hm) swept.push(hm);
       try {
         const S = require('./testing/sweep.js');
