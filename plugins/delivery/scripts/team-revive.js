@@ -174,19 +174,8 @@ function spawnRemote(bin, args, { cwd, env, logPath }) {
   return child.pid || null;
 }
 
-// systemd-run where it can reach this user's systemd manager (Linux with a user manager: the host job's
-// service runs under it, and so does a desktop login), else null, and a start is a plain detached child.
-// The manager is reached through XDG_RUNTIME_DIR, so without it systemd-run --user would fail every start.
-function systemdRunOf(env = process.env, { platform = process.platform, exists = fs.existsSync } = {}) {
-  if (platform !== 'linux' || !env.XDG_RUNTIME_DIR) return null;
-  const rt = env.XDG_RUNTIME_DIR;
-  if (!exists(path.join(rt, 'systemd', 'private')) && !exists(path.join(rt, 'bus'))) return null;
-  for (const d of String(env.PATH || '/usr/bin:/bin').split(path.delimiter)) {
-    const f = path.join(d || '.', 'systemd-run');
-    if (d && exists(f)) return f;
-  }
-  return null;
-}
+// systemd-run, where this user's systemd manager can be reached (lib/role-scope.js)
+const systemdRunOf = (...a) => require('./lib/role-scope.js').systemdRunOf(...a);
 
 // systemd-run's own refusal in a start's log, before claude ran: "Failed to start transient scope unit",
 // "Failed to connect to bus", "Failed to create bus connection", an unknown property

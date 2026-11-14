@@ -135,10 +135,14 @@ function wakeLimitMs(env) {
   return Number.isFinite(asked) && asked > 0 ? Math.min(asked, WD.WAKE_TIMEOUT_H * 3600e3) : WD.WAKE_TIMEOUT_H * 3600e3;
 }
 const defaultDeliver = (socket, text) => require('./lib/session-message.js').deliver(socket, text);
-function spawnWake(bin, args, { cwd, env, logPath }) {
+// The wake's supervisor and its session run in a scope of their own (lib/role-scope.js), never in the
+// host job's service: a woken session there shared the service's TasksMax (hjx.1.6.10.1.2). systemd-run
+// --scope execs its command, so the pid is still the supervisor's.
+function spawnWake(bin, args, { cwd, env, logPath, systemdRun, spawn = require('child_process').spawn }) {
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
   const fd = fs.openSync(logPath, 'a');
-  const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(wakeLimitMs(env)), bin, ...args], { cwd, env, detached: true, stdio: ['ignore', fd, fd] });
+  const cmd = require('./lib/role-scope.js').roleCommand(process.execPath, [path.join(__dirname, 'lib', 'wake-run.js'), String(wakeLimitMs(env)), bin, ...args], { instance: env.DELIVERY_ROLE || 'role', env, systemdRun });
+  const child = spawn(cmd.bin, cmd.args, { cwd, env, detached: true, stdio: ['ignore', fd, fd] });
   child.on('error', (err) => { try { fs.appendFileSync(logPath, `watchdog: could not start ${bin}: ${err.message}\n`); } catch (e) { /* the log is best effort */ } });
   child.unref();
   fs.closeSync(fd);
@@ -693,7 +697,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
-module.exports = { main, liveSessions, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
+module.exports = { spawnWake, main, liveSessions, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
 
 if (require.main === module) {
   let r;
