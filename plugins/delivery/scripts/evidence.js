@@ -92,8 +92,9 @@ function main(argv, { cwd = process.cwd(), env = process.env, bd, now, verifyRec
   const wp = reading ? null : writerProblem(who, cmd === 'add' ? EVIDENCE_WRITERS : ['delivery-lead']);
   if (wp) return refuse(wp);
   const store = bd || require('./lib/bd.js').makeBd({ cwd: who.root });
-  const bead = store.show(id);
-  if (!bead) return refuse(`no bead ${id}`);
+  const found = require('./lib/bd.js').lookupBead(store, id);
+  if (!found.bead) return refuse(require('./lib/bd.js').lookupProblem(id, found));
+  const bead = found.bead;
   const inp = { ...gateInputs(who.root, bead, { bd: store, team: who.team }), recordOk: recordChecker(who.root, verifyRecord) };
   const at = now || new Date().toISOString();
   const m = bead.metadata || {};

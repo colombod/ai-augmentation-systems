@@ -118,3 +118,39 @@ test('depAdd that would create a cycle throws the real bd message', () => {
   assert.throws(() => bd.depAdd('ex-a', 'ex-c'), /adding dependency would create a cycle/);
   assert.throws(() => bd.depAdd('ex-a', 'ex-a'), /cycle/);
 });
+
+// A bd on PATH that runs this shell body for every call (8l1.4.1.2.1)
+function bdThat(body) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bd-look-'));
+  fs.writeFileSync(path.join(dir, 'bd'), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  return { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}`, BD_LOOK_DIR: dir };
+}
+const BEAD_JSON = 'echo \'[{"id":"ex-1","title":"t"}]\'';
+const COUNT = 'n=$(cat "$BD_LOOK_DIR/n" 2>/dev/null || echo 0); echo $((n+1)) > "$BD_LOOK_DIR/n";';
+
+test('lookup tells a bead, a missing bead, a bd error and a timeout apart', () => {
+  const { lookupProblem } = require('./bd.js');
+  assert.equal(makeBd({ env: bdThat(BEAD_JSON) }).lookup('ex-1').bead.title, 't');
+  assert.deepEqual(makeBd({ env: bdThat('echo \'Error fetching ex-1: no issue found matching "ex-1"\' >&2; exit 1') }).lookup('ex-1'), { missing: true });
+  const locked = makeBd({ env: bdThat('echo "warning: beads.role not configured" >&2; echo "Error: database is locked" >&2; exit 1') }).lookup('ex-1');
+  assert.deepEqual(locked, { error: 'Error: database is locked' });
+  // an untagged notice ahead of the error line is skipped too: the error line is the one named
+  const noticed = makeBd({ env: bdThat('echo "beads.role not configured for this clone" >&2; echo "Error: database is locked" >&2; exit 1') }).lookup('ex-1');
+  assert.deepEqual(noticed, { error: 'Error: database is locked' });
+  assert.equal(lookupProblem('ex-1', locked), 'bead ex-1 could not be read: Error: database is locked; try again in a moment');
+  assert.equal(lookupProblem('ex-1', { missing: true }), 'no bead ex-1');
+  const slow = makeBd({ env: bdThat('sleep 5'), timeoutMs: 300 }).lookup('ex-1');
+  assert.deepEqual(slow, { error: 'bd did not answer within 300 ms (timed out)' });
+  // show keeps its contract: null for a failed read, the bead when there is one
+  assert.equal(makeBd({ env: bdThat('exit 1') }).show('ex-1'), null);
+  assert.equal(makeBd({ env: bdThat(BEAD_JSON) }).show('ex-1').title, 't');
+});
+
+test('lookup reads once more after a failed read, and not after a missing bead', () => {
+  const env = bdThat(`${COUNT} [ "$n" = 0 ] && { echo "Error: database is locked" >&2; exit 1; }; ${BEAD_JSON}`);
+  assert.equal(makeBd({ env }).lookup('ex-1').bead.title, 't', 'the second read answers');
+  assert.equal(fs.readFileSync(path.join(env.BD_LOOK_DIR, 'n'), 'utf8').trim(), '2');
+  const gone = bdThat(`${COUNT} echo 'no issue found matching "ex-1"' >&2; exit 1`);
+  assert.deepEqual(makeBd({ env: gone }).lookup('ex-1'), { missing: true });
+  assert.equal(fs.readFileSync(path.join(gone.BD_LOOK_DIR, 'n'), 'utf8').trim(), '1', 'a missing bead is not read twice');
+});
