@@ -156,7 +156,9 @@ test('R-04 (wxy.12 unclaimed 15.5 h overnight): a stall line within the hour and
   assert.ok(first > 0 && first < today.findIndex((l) => /^1\. Owner steps due/.test(l)), today.join('\n'));
   assert.match(today[first + 1], /^ {3}- Delivery Manager \(delivery-lead\): Unclaimed: top-priority ex-wxy-12 .*\[ex-wxy-12\]$/);
   assert.match(h.bash(COS, `${h.script('plan.js')} brief`).out.split('\n')[1], /^A top-priority item has waited 15\.5 h for someone to take it; the Delivery Manager assigns it first\.$/);
-  // the host job: the Delivery Manager's session is open and idle, so it is forked, never resumed in place
+  // the host job: the Delivery Manager's session is open and idle. It is never forked or resumed beside
+  // (one live session per role, hjx.1.6.17): the wake goes to it as a message, and with no socket to
+  // take it, nothing is started and the line says why
   const log = scratchLog();
   // 8wz.1: each run puts the project's script launcher back (briefs and reality-check steps name it)
   const launcher = require('./lib/launcher.js').launcherPath(h.root);
@@ -164,10 +166,15 @@ test('R-04 (wxy.12 unclaimed 15.5 h overnight): a stall line within the hour and
   const run = hostJob(h, ['run'], claudeEnv(log, JSON.stringify([{ sessionId: `sess-${DM}`, kind: 'interactive', status: 'idle' }])));
   assert.equal(run.status, 0, run.stderr);
   assert.ok(fs.existsSync(launcher));
-  assert.match(run.stdout, /^Woke delivery-lead \(fork of sess-delivery-lead\)/m);
+  assert.match(run.stdout, /^Not woken: delivery-lead: its session sess-delivery-lead \(idle\) is live, and the wake could not be handed to it \(no socket for the session.*\); no second session is started\./m);
+  assert.doesNotMatch(run.stdout, /^Woke /m);
+  assert.equal(calls(log, 0).filter((x) => x.argv && x.argv.includes('-p')).length, 0, 'no claude session was started');
+  // with the session gone, the wake resumes it, in its role directory
+  const back = hostJob(h, ['run'], claudeEnv(log));
+  assert.match(back.stdout, /^Woke delivery-lead/m);
   const [c] = calls(log);
-  assert.deepEqual(c.argv.slice(0, 6), ['--permission-mode', 'auto', '--resume', `sess-${DM}`, '--fork-session', '-p']);
-  assert.match(c.argv[6], /^Watchdog \(a host job, not the owner\): Top-priority ex-wxy-12 has waited 15\.5 h unclaimed\. Assign it to a builder now/);
+  assert.deepEqual(c.argv.slice(0, 5), ['--permission-mode', 'auto', '--resume', `sess-${DM}`, '-p']);
+  assert.match(c.argv[5], /^Watchdog \(a host job, not the owner\): Top-priority ex-wxy-12 has waited 15\.5 h unclaimed\. Assign it to a builder now/);
   assert.equal(fs.realpathSync(c.cwd), fs.realpathSync(h.roleDir(DM)));
   assert.equal(c.role, DM);
   // the next run within the hour wakes nobody again
@@ -183,15 +190,18 @@ test('R-43 and R-42: idle with ready work wakes the Delivery Manager; a busy ses
   assert.match(r.stalls[0].line, /^Idle: 1 ready item and nothing in progress for 31 min, with no owner pause\.$/);
   // "IDLE NOW" sent by the Chief of Staff is no pause: only a verified owner pause holds
   assert.deepEqual(WD.stalls({ beads, ready: beads, now: iso(now), sessions, pause: { paused: true, by: 'dec-chief-of-staff-31' } }), { paused: 'dec-chief-of-staff-31', stalls: [] });
-  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'busy' }]), { skip: 'it is working (busy)' });
+  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'busy' }]), { skip: 'it is working (busy) as s-dm (busy)' });
   assert.deepEqual(WD.wakeCommand(sessions[0], 'go', []).args, ['--permission-mode', 'auto', '--resume', 's-dm', '-p', 'go']);
   // a resumed session does not keep its mode (it came back in default and stopped at approval prompts
   // no one could answer, on a real team), so every wake names the team's
   assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [], 'acceptEdits').args, ['--permission-mode', 'acceptEdits', '--resume', 's-dm', '-p', 'go']);
   assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [], 'default').args, ['--resume', 's-dm', '-p', 'go']);
-  assert.deepEqual(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'idle' }], 'auto').args, ['--permission-mode', 'auto', '--resume', 's-dm', '--fork-session', '-p', 'go']);
-  assert.match(WD.wakeCommand(sessions[0], 'go', null).skip, /could not be listed.*alarm only/, 'open sessions unknown: never a fork, never a resume');
-  assert.equal(WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'idle' }]).mode, 'fork');
+  // open and idle: handed the wake as a message, never forked (hjx.1.6.17)
+  const idle = WD.wakeCommand(sessions[0], 'go', [{ sessionId: 's-dm', status: 'idle', pid: 77 }], 'auto');
+  assert.equal(idle.mode, 'message');
+  assert.equal(idle.session.sessionId, 's-dm');
+  assert.equal(idle.args, undefined, 'no command: nothing is started');
+  assert.match(WD.wakeCommand(sessions[0], 'go', null).skip, /could not be listed.*alarm only/, 'open sessions unknown: never a message, never a resume');
   assert.deepEqual(WD.wakeCommand({ ...sessions[0], session: null }, 'go', []).args, ['--permission-mode', 'auto', '-c', '-p', 'go']);
   assert.match(WD.wakeCommand({ ...sessions[0], roleDir: '/nowhere/role' }, 'go', []).skip, /not on this host/);
   // a fresh wake is named <instance>@<team>; the same instance of another team gets another name
@@ -827,12 +837,14 @@ test('Copilot 583: a watchdog fork records and reads its own session, never the 
   fs.unlinkSync(path.join(dir, '.delivery-transcript'));
   const theirs = h.bash('builder-1', `DELIVERY_WAKE=fork DELIVERY_WAKE_ID=w2 ${op} sync --transcript ${ptx}`);
   assert.match(theirs.out, /is not this session's own transcript \(none is registered yet\)/);
-  // the wake hands each fork its own id
+  // the wake hands each session it starts its own id; an open idle session gets none started (hjx.1.6.17)
   const spawn = spawner();
   const hw = harness({ beads: { 'ex-p': { id: 'ex-p', status: 'open', priority: 0, created_at: iso(Date.now() - 3 * H) }, 'ex-b': { id: 'ex-b', status: 'in_progress', assignee: 'dev@pc/builder-1', updated_at: iso(Date.now()) } } });
   session(hw, DM, { seen: iso(Date.now() - 2 * H) });
   const ids = [];
-  at(hw, iso(Date.now()), ['wake'], { spawn: (bin, args, o) => { ids.push(o.env.DELIVERY_WAKE_ID); return 1; }, live: [{ sessionId: `sess-${DM}`, status: 'idle' }] });
+  at(hw, iso(Date.now()), ['wake'], { spawn: (bin, args, o) => { ids.push(o.env.DELIVERY_WAKE_ID); return 1; }, live: [{ sessionId: `sess-${DM}`, status: 'idle' }], deliver: () => ({ ok: false, why: 'test' }) });
+  assert.deepEqual(ids, [], 'no session started beside the open one');
+  at(hw, iso(Date.now() + 2 * H), ['wake'], { spawn: (bin, args, o) => { ids.push(o.env.DELIVERY_WAKE_ID); return 1; }, live: [] });
   assert.match(ids[0] || '', /^[a-z0-9-]{8,}$/);
 });
 
@@ -1096,8 +1108,9 @@ test('a wake starts a fresh session when the last turn carried more than the lim
     assert.match(String(out.out || out), /Warning: team\.json wake_fresh_above_tokens "0" is not a whole number of tokens; using 120000/);
     assert.equal(spawn.list[0].wake, 'fresh');
   }
-  // an open, idle session is forked as before: a fresh session would replace it on the roster
-  assert.equal(run({ tokens: 236000, agents: [{ sessionId: `sess-${COS}`, status: 'idle' }] }).wake, 'fork');
+  // an open, idle session gets no session started at all, fresh or forked: one live session per role
+  // (hjx.1.6.17); the wake goes to it as a message instead
+  assert.equal(run({ tokens: 236000, agents: [{ sessionId: `sess-${COS}`, status: 'idle' }] }), undefined);
 });
 
 // delivery-plugin-planning-8wz: after an install, the run wakes a session that last ran an older plugin
@@ -2212,4 +2225,67 @@ test('hjx.1.1.1: a blocker reaches the Delivery Manager while its holder is on a
   // the other direction: work that is not blocked stays held while its holder waits or is limited
   const free = { ...b, notes: `${iso(now - 3 * H)} builder-2: building.` };
   assert.deepEqual(WD.stalls({ now: iso(now), beads: [free], sessions: [{ ...sess6(B2, now - 3 * H), waitUntil: now + H }, sess6(DM, now - 5 * 60e3)], stallHours: 2 }).stalls.filter((s) => s.bead === 'ex-lw' && s.kind === 'quiet'), []);
+});
+
+// hjx.1.6.17: after the 0.43.94 install the first pass woke seven roles by forking or resuming beside
+// sessions already running (hand-started units, under ids the roster did not have), so each ran twice.
+// One live session per role: a live idle one is handed the wake as a message, and none is started.
+test('hjx.1.6.17: a wake for a role already running in another unit, under an id the roster does not know, starts nothing and hands the wake to that session', () => {
+  const t0 = '2026-11-09T14:20:00Z';
+  const h = harness({});
+  const IB = require('./lib/inbox.js');
+  session(h, 'builder-1', { seen: iso(Date.parse(t0) - 2 * H) });
+  IB.queue(h.root, { to: 'builder-1', from: DM, message: 'merge main into your branch', at: t0 });
+  // the role runs in a unit of its own, in its worktree under the role directory, with another id
+  const other = { sessionId: 'unit-session', cwd: path.join(h.roleDir('builder-1'), 'product'), name: 'builder-1@ex', status: 'idle', pid: 4242 };
+  const spawn = spawner();
+  const sent = [];
+  const deliver = (socket, text) => { sent.push({ socket, text }); return { ok: true, msgId: 'm-1' }; };
+  const r = at(h, t0, ['run'], { spawn, bd: memStore(h), live: [other], deliver, env: { ...fakeEnv(h), XDG_RUNTIME_DIR: '/run/user/9' } });
+  assert.deepEqual(spawn.list, [], 'no second session');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].socket, '/run/user/9/cc-socks/4242.sock', 'the live session\'s own socket');
+  assert.match(sent[0].text, /^Watchdog \(a host job, not the owner\): .*merge main into your branch/);
+  assert.match(r.out, /^Woke builder-1 \(message to its live session builder-1@ex \(idle\) in .*product\)/m);
+  const row = WD.logRows(h.root).filter((x) => x.type === 'wake').pop();
+  assert.equal(row.mode, 'message');
+  assert.equal(row.pid, null, 'nothing runs for it, so no later wake waits on it');
+  assert.equal(row.session, 'unit-session');
+  assert.deepEqual(IB.pending(h.root), [], 'the message it carried is handed over');
+  // the next pass within the hour does not message it again
+  at(h, iso(Date.parse(t0) + 10 * 60e3), ['run'], { spawn, bd: memStore(h), live: [other], deliver });
+  assert.equal(sent.length, 1);
+});
+
+test('hjx.1.6.17: a live session that does not take the wake is reported and left alone; a working one is not disturbed; two live sessions are named', () => {
+  const t0 = '2026-11-09T14:20:00Z';
+  const IB = require('./lib/inbox.js');
+  const setup = () => {
+    const h = harness({});
+    session(h, 'builder-1', { seen: iso(Date.parse(t0) - 2 * H) });
+    IB.queue(h.root, { to: 'builder-1', from: DM, message: 'open the PR', at: t0 });
+    return h;
+  };
+  const h = setup();
+  const spawn = spawner();
+  const live = [{ sessionId: 'sess-builder-1', cwd: h.roleDir('builder-1'), status: 'idle', pid: 99 }];
+  const r = at(h, t0, ['run'], { spawn, bd: memStore(h), live, deliver: () => ({ ok: false, why: 'ECONNREFUSED: connect refused' }) });
+  assert.deepEqual(spawn.list, []);
+  assert.match(r.out, /^Not woken: builder-1: its session sess-builder-1 \(idle\) in .* is live, and the wake could not be handed to it \(ECONNREFUSED: connect refused\); no second session is started\./m);
+  assert.equal(IB.pending(h.root).length, 1, 'the message stays waiting');
+  assert.equal(WD.logRows(h.root).filter((x) => x.type === 'wake').length, 0);
+  // busy: left to work, nothing sent
+  const b = setup();
+  const sent = [];
+  const rb = at(b, t0, ['run'], { spawn, bd: memStore(b), live: [{ ...live[0], cwd: b.roleDir('builder-1'), status: 'busy' }], deliver: (s, t) => { sent.push(t); return { ok: true }; } });
+  assert.deepEqual(sent, []);
+  assert.match(rb.out, /^Not woken: builder-1: it is working \(busy\)/m);
+  // two live sessions of one role: the wake goes to the roster's own, and the line says it runs twice
+  const d = setup();
+  const two = [{ sessionId: 'x', cwd: path.join(d.roleDir('builder-1'), 'product'), status: 'idle', pid: 2 }, { sessionId: 'sess-builder-1', cwd: d.roleDir('builder-1'), status: 'idle', pid: 1 }];
+  const to = [];
+  const rd = at(d, t0, ['run'], { spawn, bd: memStore(d), live: two, deliver: (s) => { to.push(s); return { ok: true, msgId: 'm' }; }, env: { ...fakeEnv(d), XDG_RUNTIME_DIR: '/r' } });
+  assert.match(rd.out, /^Woke builder-1 \(message to its live session sess-builder-1 .*\) \(it runs twice: /m);
+  assert.deepEqual(to, ['/r/cc-socks/1.sock']);
+  assert.deepEqual(spawn.list, []);
 });
