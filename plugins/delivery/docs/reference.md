@@ -33,6 +33,7 @@ the commands) and they stay up.
 | Spike Researcher (optional, `full`) | `spike-researcher` | sonnet | answers `spike` beads from the architecture |
 | Reality Checker (optional, `full`) | `reality-checker` | sonnet | runs reality-check scripts on the real customer surface with browser control or computer use; writes evidence rows and captures only. On by default when a declared surface is not scriptable |
 | Technical Writer (optional, `full`) | `tech-writer` | sonnet | the product's documentation: README, quick start and reference kept true to the shipped version, and runnable quick-start steps, both for someone typing commands and for an agent following a brief, which the Reality Checker can execute; documentation only, in its own worktree (its git group, `git-write-docs`, takes path operands its lane writes and refuses checkout, reset, merge, pull, rebase, cherry-pick, stash and `restore --source`), and opens the pull request |
+| Host manager | `host-manager` | opus | optional, one per machine rather than per team, in no preset: opened from the Claude app, it reports what has stopped across every product team on the machine (host jobs and role sessions alike) and starts it again (`scripts/host-manager.js`); no product work, no bead claims, no repository writes |
 
 The role id `delivery-lead` is kept for compatibility (manifests, lanes, record ids); the role
 is shown everywhere as the Delivery Manager.
@@ -873,7 +874,14 @@ owner and is reviewed again; gates block only on authority or serious divergence
   the base branch with no valid version, refuses too, and a product with no plugin directory is never
   asked. When gh cannot read the pull request or its list of changed files, the gate already stands
   on the record for the head and CI, and the version step is skipped with it. A new commit changes the head, so the old
-  review no longer counts. The lane runs the same check before it allows the Delivery Manager's
+  review no longer counts. A change users can see also needs a doc-impact line in its description,
+  at the start of a line: `Doc-impact: <the docs it updates>`, with at least one doc file (Markdown,
+  a `docs/` tree, a README) changed in the same pull request, or `Doc-impact: none (<why users see
+  no change>)`. Tests, generated files, lockfiles and the team's own record directories need no
+  line (a tool users run, such as `scripts/testing/run-tests.js`, still does, and a `.txt` file counts
+  as a doc only inside `docs/`), and a pull request that changes only docs is its own doc impact. Editing the description is
+  not a new commit, so the review still counts. Where gh cannot read the pull request, the check is
+  a warning. The lane runs the same check before it allows the Delivery Manager's
   `gh pr merge`, which must name the pull request by number with `-R <product>` (or by its URL in
   that repository) and the full 40-character head with `--match-head-commit`, so GitHub merges
   exactly what was reviewed; `--admin`, `--auto` and `-a`, in any form, are refused, and so is the
@@ -1346,10 +1354,19 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   `--permission-mode <mode>` first (team.json
   `permission_mode`, which start.js records; for a team recorded before it, the mode the session
   started in; auto when neither says; nothing for `default`; an unreadable team.json or an invalid mode
-  is no wake, alarm only): `claude --resume <id> -p "<prompt>"` when the session is not
-  open; with `--fork-session` when it is open and idle; `claude -c -p` when the roster has no session id;
-  nothing when it is busy, when open sessions cannot be listed (`claude agents --json` failed: alarm
-  only, never a fork), or when its role directory is not on this host. A session not open whose last turn carried more
+  is no wake, alarm only): `claude --resume <id> -p "<prompt>"` when the role has no live session;
+  `claude -c -p` when the roster has no session id; nothing when open sessions cannot be listed
+  (`claude agents --json` failed: alarm only), or when its role directory is not on this host. One
+  live session per role (`lib/one-session.js`): a session is the role's when it runs in its role
+  directory or inside it (a builder's worktree) or under its own name `<instance>@<team>`, whatever
+  id the roster has. A role with a live session is never given a second one. A busy one is left to
+  work; an idle one is handed the wake as a message on its own socket
+  (`<runtime dir>/cc-socks/<pid>.sock`, `lib/session-message.js`), sent under the host job's name,
+  `Watchdog (a host job, not the owner)`. The hand-over is logged as a wake (mode `message`), so the
+  caps and the doubling hold; when the socket does not take it, the line says so and nothing is
+  started. The frame format is Claude Code's own and undocumented (read on 2.1.318), and a session in
+  another permission mode may hold a peer message for its user's approval, so a hand-over is not proof
+  the turn ran: the stall checks still read whether the bead moves. A session not open whose last turn carried more
   than `wake_fresh_above_tokens` (team.json, 120000 by default, 0 for never; read from the usage its
   transcript records) is woken in a fresh session in its role directory instead (`claude -p`, no
   resume), told that its earlier conversation is not loaded and to start from its in-progress beads:
@@ -1363,8 +1380,8 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   resumed under (`plugin_version`, written by the SessionStart hook; for a session started before
   that, the last plugin path its own commands named). A session not open whose last version is older
   than the one the watchdog runs (the installed one) is woken fresh instead of resumed, told which
-  version it ran and which is installed. A running wake is never stopped, and an open session is
-  forked as before. A conversation resumed any other way is told at its start that the plugin moved
+  version it ran and which is installed. A running wake is never stopped, and an open idle session is
+  handed the wake as a message, as above, never forked or started fresh beside it. A conversation resumed any other way is told at its start that the plugin moved
   and where its scripts are now; and when the lane refuses a path to another installed version of
   this plugin, its reason says so and gives the same command at the current plugin root (or says
   that the lane would refuse it there too) (delivery-plugin-planning-8wz).
@@ -1493,7 +1510,11 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   in the Claude app through Remote Control dropped, and a wake brings work back only as a headless run.
   `team-revive.js check [--json]` lists, for each role instance of the team on this host (team.json
   `host` against `DELIVERY_HOST`, else the machine's short hostname), whether a session runs in its role
-  directory (`claude agents --json`), the work in flight (a bead in progress, an open pull request from a
+  directory or inside it, or under its own name `<instance>@<team>` (`claude agents --json`; a
+  role found running twice is named `Running twice:`, nothing more is started for it, nor is a
+  stale one restarted while another of its sessions is live, and a start pass tells Staffing (the
+  Chief of Staff on a team without one) once per pair of sessions, both named; ending one of them is
+  not team-revive's), the work in flight (a bead in progress, an open pull request from a
   `team/<instance>` branch, a message or handoff waiting) and, per missing instance, the command a start
   runs. A source that cannot be read is a line that says so, never "all running"; a session list that
   cannot be read starts nothing. `team-revive.js start [--dry-run]` starts each missing instance while
@@ -1526,8 +1547,12 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   by the hourly stall gate (hjx.1.6.12).
   The host job runs `start` at each `run`, after the wakes and never while a plugin install is held or
   under way; the sealed test runner starts none. In a role session only the Chief of Staff may run
-  `start` (lane group `team-revive`), and its brief runs `check` each turn; any other role session is
-  refused, whatever its lane. Each host's job covers the roles on that host.
+  `start` (lane group `team-revive`), and its brief runs `check` each turn; the host manager may too
+  (below). Any other role session is refused, by the script and by the lane, whatever its lane: a
+  builder's open lane refuses `team-revive.js start` with the way out. Each host's job covers the roles
+  on that host. `--project <root>` names the team to check or start from anywhere, a role directory of
+  another team included. An instance of the `host-manager` role is never started here: its session is
+  its own user unit's.
 - **A running role session moves onto a newly installed plugin.** Claude Code loads a plugin's hooks when
   a session starts, so a role session still open when a new version is installed keeps the old
   version's lane for as long as it runs. `team-revive.js check` names such a session (`Stale:`): open in
@@ -1545,6 +1570,103 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   versions, the server stopped) and counts against the same one-an-hour, six-a-day caps; a restart onto
   a version whose session still records the older one afterwards is not tried again. The owner's pause
   holds restarts; work in flight is not needed.
+- **The host manager: one session per machine.** `host-manager.js` serves every product team on the
+  machine. Its team list is the union of `${XDG_CONFIG_HOME:-~/.config}/delivery/host-teams.json`
+  (`{"teams": [<project root>, ...]}`, to which `watchdog.js install --apply` and `host-manager.js
+  install` add their project, once, sorted) and the `WorkingDirectory=` of every installed
+  `delivery-watchdog-*.service`; the file keeps a team listed after its host job unit is gone.
+  `status [--json]` prints, per team, `<team>: <n> of <m> sessions running; down: <instances>; holding
+  work: <instances>` (from `team-revive.js`'s own reading of sessions and work: an in-progress bead
+  assigned to the instance, a message or handoff waiting for it, a pull request from its `team/`
+  branch), and per host job unit `<unit>: running` or `stopped since <time>` (`systemctl --user show`);
+  each source it cannot read is a `SOURCE UNAVAILABLE: <what>` line and is never counted as running.
+  `restart [--json]` starts each stopped host job (its timer and path units, and one run of its
+  service), runs once (`systemctl --user start --no-block`) the service of a host job whose timer is
+  active but which has written no pass for 30 minutes, then starts the instances that are down and
+  hold work, through `team-revive.js`'s start pass with its caps (a start a cap holds is named with
+  when it may run). Asked by the owner, it runs every team's start pass, so a session on an older
+  plugin goes through `team-revive.js`'s stale-session restart, whose read of the sessions just before
+  a stop is a fresh one; the reply names each such restart (`Restarted:`) and each one not made, with
+  why (`Not restarted:`). After the starts it reads again every 10 seconds until each session it started
+  is listed and each host job whose service it ran has written a new pass, inside one 5 minute window
+  counted from the restart's start, every team's start pass included (the call can take that long, and
+  a start that exits at once is named as failed rather than waited for). An instance is
+  `Back:` only when that read lists a session in its role directory and the roster records, for that
+  session, the installed plugin version; otherwise it is `Not back: started (pid N) but not listed
+  after <duration>`, `Not back: running an older plugin (<version>, installed <version>)`, or the
+  reason it was not started. A host job run once is `Back:` when a later read finds a new pass, else
+  named as still silent. An instance that is down and holds nothing is listed and left down.
+  `tick`, run every five minutes by `delivery-host-manager-tick.timer`, finds three silences of 30
+  minutes: an instance holding an in-progress bead with no bead note and no watchdog wake, either down
+  (it runs the restart) or still listed as running, and a team's host job that has written no pass to
+  its `job.log`. An instance still listed is never stopped or started by the tick, since its session
+  may be in the middle of a turn: the alert says what is silent, since when, and that the owner can ask
+  the host manager to restart the team. The outage ledger,
+  `${XDG_STATE_HOME:-~/.local/state}/delivery/host-manager/outages.ndjson`, keeps one outage per
+  silence, keyed by team and instance or by team and host job: an `open` row when that silence is
+  first seen, an `alert` row on the pass that opened any (one alert, naming those), and a `close` row
+  on the first pass that no longer finds it. A second tick during an open outage restarts again but
+  alerts only for a silence not already open, and each outage closes on its own. An alert names what
+  came back and what did not; when nothing was started it says why. The alert goes into the inbox of each `host-manager` instance of the teams on this host,
+  which that team's watchdog hands to the session as a wake, a resume of it or a copy when it is open,
+  not as a line in the open Remote Control conversation; with no such instance the ledger row is the
+  only record.
+- **The host manager's units.** `host-manager.js install [--dry-run] --project <root> [--instance <id>]`
+  takes the role directory of that team's `host-manager` instance (the roster's, else the team layout's)
+  and writes three systemd user units: `delivery-host-manager.service` runs `host-manager.js
+  run-session` there through the project's launcher. At each start, run-session reads the Remote Control
+  session last recorded for the role directory (claude's pointer, else the roster) and starts by the
+  same rules as `team-revive.js start`: a recorded session not tried yet is reattached once
+  (`claude remote-control --name <instance>@<host> --session-id <id>`); with none recorded, or when the
+  recorded one never joined or already ran (a reattach is single-session and ends after its task), a
+  server that stays up after each task (`--spawn same-dir --capacity 1`); always in the team's
+  permission mode. Each start is a `host-manager-session` row of the team's `revive.ndjson`, with the
+  dropped id and why, so the once-only rule holds across the unit's restarts. run-session replaces itself
+  with claude (`process.execve`), so the unit's main process is claude; on a node before 22.15, which has
+  no `process.execve`, it starts nothing and says so, since claude as its child would outlive a stop of
+  the unit and the next start would add a second host manager. Before it starts, run-session lists the
+  open sessions: one live in the host manager's role directory or under its name `<instance>@<host>`
+  means no second session (one live session per role), and so does a list that cannot be read. A live
+  host manager is exit 3, a success the unit does not restart (`SuccessExitStatus=3`,
+  `RestartPreventExitStatus=3`): the unit rests inactive, so it never runs into its start limit and the
+  watchdog's reset; the watchdog's next pass starts it once again. A list that cannot be read is a
+  failure, and `Restart=` tries again later. Its restarts are bounded:
+  `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,
+  `RestartSteps=5`, `RestartMaxDelaySec=30min`, systemd 254 and later; an older systemd warns of the
+  two keys and keeps 30 seconds), and at most 5 starts in 15 minutes (`StartLimitIntervalSec=15min`,
+  `StartLimitBurst=5` in `[Unit]`); `KillMode=process` (the sessions a restart starts outlive a restart of the unit),
+  `TasksMax=4096` (its own unit, outside every host job's cgroup) and `WantedBy=default.target`;
+  `delivery-host-manager-tick.service` and `.timer` (two minutes after boot, then every five) run
+  `tick` through the project's launcher, so a plugin update is picked up, its output appended to
+  `tick.log` in the ledger's directory, which install creates before it enables the units (systemd
+  fails the service when that directory is missing). An `XDG_STATE_HOME` or `XDG_CONFIG_HOME` set at
+  install is written into both services' `Environment=`, so the units read the same host file and
+  ledger as the shell that installed them. It reloads systemd, enables
+  and starts the service and the timer, and says, without running it, when `loginctl enable-linger` is
+  needed for the units to start at boot. A host without systemctl, a team with no `host-manager`
+  instance (Staffing adds one: `team-role.js add host-manager`) or a role directory not yet prepared
+  installs nothing and says why. `watchdog.js install --apply` runs the same install when the service
+  file is missing. Each watchdog `run` checks `delivery-host-manager.service` and starts it when it is
+  installed and not active; a unit that hit its start limit is failed, and the pass runs
+  `systemctl --user reset-failed delivery-host-manager.service` (that unit only) before the start, so it
+  is tried again every 15 minutes. While a host-manager session is already live (in its role directory or
+  the unit's `WorkingDirectory`, or under `<instance>@<host>`, the match run-session makes), the pass
+  neither resets nor starts the unit, writes no row and says so; nor when the open sessions cannot be
+  listed. One `host-manager-start` row in `revive.ndjson` per start: the host jobs restart the host
+  manager and the host manager restarts the host jobs.
+- **The host manager's lane.** Its brief writes nothing and runs `read`, `bd-read`, `bd-notes`,
+  `operator-read`, `judge` and the `host-manager` group: `host-manager.js status|restart|tick`,
+  `team-revive.js check|start`, `systemctl --user` (`status`, `is-active`, `show`, `start`, `restart`,
+  `stop`, which must name a unit, and `list-units`, `list-timers`, `daemon-reload`) where every unit
+  named matches `delivery-watchdog-*.service|.timer|.path` or one of the host manager's three units,
+  `amplifier run`, `ps`, `df`, `free`, `uptime`, and `sort` and `uniq` with no option or operand that
+  writes a file. A lane rule's `positional_match` lists those unit globs (with `positional_required`
+  for the commands that act on a unit). Every other lane, the `any` lanes included, is refused
+  `systemctl --user` and `host-manager.js restart|tick|install|run-session`, with the way out (message
+  the host manager); `team-revive.js start`, and `claude remote-control` with `--name`, `--spawn` or
+  `--session-id` (a role session started by hand), are refused to every lane but the Chief of Staff's
+  and the host manager's (`claude remote-control --help` and other claude commands are not). The command
+  after `taskset` and its mask or cpu list is the one judged, as after `nice` or `ionice`.
 - **Watching GitHub within a budget (R-25).** `watch.js until <text> --every <5m> --max <2h> -- gh <read>`
   repeats a gh read until its output shows `<text>` (a pattern, any case), exit 0, or the time limit
   passes, exit 1. Outside a project its cache is a private folder in the temporary directory (0700,

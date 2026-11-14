@@ -25,6 +25,7 @@ const path = require('path');
 const WD = require('./watchdog.js');
 const SN = require('./session-name.js');
 const M = require('./manifest.js');
+const OS = require('./one-session.js');
 const PV = require('./plugin-version.js');
 
 const LEDGER = 'revive.ndjson';
@@ -219,6 +220,23 @@ function staleOf(f, { e, open, starts, last, t, team, name, same }) {
   return st;
 }
 
+// Which recorded Remote Control session a start reattaches: remoteId (from claude's pointer, else the
+// roster), the instance's earlier starts (rows with session_id) and its roster entry e. A link is
+// reattached once:
+//   - a reattach whose session never joined (the roster's last_seen did not move past it) is not tried
+//     again: the id is gone or refused, and the owner gets a new link rather than none (staleId);
+//   - a reattach is claude's single-session mode ("exits when complete": --session-id takes no --spawn),
+//     so one that joined has ended after its task; reattaching that link again would end the same way,
+//     so the role then gets a server that stays up (STAY_UP), on a new link (endedId).
+// -> { remoteId } to reattach, or { remoteId: null, staleId | endedId } for a new server that stays up
+function linkFor(remoteId, starts, e = {}) {
+  if (!remoteId) return { remoteId: null };
+  const last = starts[starts.length - 1] || null;
+  if (last && last.session_id === remoteId && ms(e.last_seen) < ms(last.at)) return { remoteId: null, staleId: remoteId };
+  if (starts.some((r) => r.session_id === remoteId)) return { remoteId: null, endedId: remoteId };
+  return { remoteId };
+}
+
 // What there is to bring back, and what holds it.
 // facts: { now, host, team, roster (instances), live: [{cwd,sessionId,name}] | null, bridges, pointer(dir),
 //   defaultDir(instance), exists(dir), inProgress: [bead] | { unreadable }, prs: [{number, headRefName}] |
@@ -230,7 +248,9 @@ function assess(f) {
   const out = { host: f.host, team: (team && SN.teamTag(team.prefix)) || null, instances: [], work: [], unreadable: [], paused: false, missing: [], inFlight: false, go: false };
   if (!team || !Array.isArray(team.roles)) { out.unreadable.push('team.json (no team manifest found)'); return out; }
   const roster = f.roster || {};
-  const mine = M.expandInstances(team).filter((i) => !(i.role && i.role.retired) && i.role.host === f.host);
+  // the host manager's session is its own systemd unit's (host-manager.js install, Restart=always): a
+  // second server started here beside it would be a second link in one directory
+  const mine = M.expandInstances(team).filter((i) => !(i.role && i.role.retired) && i.role.host === f.host && M.canonicalRoleId(i.role.id) !== 'host-manager');
   // the work in flight, product-wide: any one of them means the team must be up
   if (f.inProgress && f.inProgress.unreadable) out.unreadable.push(`beads in progress (${f.inProgress.unreadable})`);
   else if ((f.inProgress || []).length) out.work.push(`${f.inProgress.length} bead${f.inProgress.length === 1 ? '' : 's'} in progress (${f.inProgress.slice(0, 3).map((b) => b.id).join(', ')}${f.inProgress.length > 3 ? ', ...' : ''})`);
@@ -248,7 +268,15 @@ function assess(f) {
     const roleDir = e.role_dir || f.defaultDir(instance);
     const same = (d) => Boolean(d) && path.resolve(d) === path.resolve(roleDir);
     const it = { instance, roleDir, name: SN.sessionName(instance, team.prefix), running: null, remoteId: null, skip: null, held: null };
-    const open = (f.live || []).find((s) => same(s.cwd));
+    // every live session of this instance (lib/one-session.js): in or under its role directory, or under
+    // its own session name; the roster's own session first when it is one of them
+    const lives = OS.liveOf(instance, { roleDir, live: f.live, prefix: team.prefix }) || [];
+    const open = lives.find((s) => e.session_id && s.sessionId === e.session_id) || lives[0] || null;
+    if (lives.length > 1) {
+      it.twice = OS.described(lives);
+      // who the sessions are, apart from their status and their order in the list: what a pair is known by
+      it.twiceIds = lives.map((s) => String(s.sessionId || s.pid || s.name || '?')).sort();
+    }
     // a restart onto the installed plugin is a start too: the same caps hold both
     // and so is a restart whose server stopped but whose new one did not start (the session went down)
     const starts = rows.filter((r) => (r.type === 'start' || r.type === 'restart' || (r.type === 'restart-failed' && r.stopped)) && r.instance === instance);
@@ -262,6 +290,8 @@ function assess(f) {
     if (open) {
       it.running = `session ${open.name || open.sessionId || 'open'} in ${roleDir}`;
       it.stale = staleOf(f, { e, open, roleDir, starts, last, t, team, name: it.name, same });
+      // a restart stops one session and starts another: with two running it would still leave two
+      if (it.stale && it.twice && !it.stale.skip) it.stale.skip = `it runs twice (${it.twice}); one must end first`;
     }
     // the server this started last still runs: its session may not be listed yet, and a second server
     // in one directory would be a second link
@@ -276,13 +306,7 @@ function assess(f) {
       // it ran and ended, so it is started again at once, not after the hour that holds a start that died
       const ran = Boolean(last) && ms(e.last_seen) > ms(last.at);
       if (!f.exists(roleDir)) it.skip = `its role directory ${roleDir} is not on this host (prepare-role.js prepares it)`;
-      // a reattach whose session never joined (the roster's last_seen did not move past it) is not tried
-      // again: the id is gone or refused, and the owner gets a new link rather than none
-      else if (it.remoteId && last && last.session_id === it.remoteId && ms(e.last_seen) < ms(last.at)) { it.staleId = it.remoteId; it.remoteId = null; }
-      // a reattach is claude's single-session mode ("exits when complete": --session-id takes no --spawn), so
-      // one that joined has ended after its task; reattaching that link again would end the same way, so a
-      // link is reattached once and the role then gets a server that stays up (hjx.1.6.12), on a new link
-      else if (it.remoteId && starts.some((r) => r.session_id === it.remoteId)) { it.endedId = it.remoteId; it.remoteId = null; }
+      else { const l = linkFor(it.remoteId, starts, e); it.remoteId = l.remoteId; if (l.staleId) it.staleId = l.staleId; if (l.endedId) it.endedId = l.endedId; }
       const m = modeOf(team);
       if (!it.skip && m.skip) it.skip = m.skip;
       it.mode = m.mode || null;
@@ -328,7 +352,8 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
     const how = `${i.failed ? `retry after a failed start (${i.failed}): ` : ''}${shown(bin, i.args)} in ${i.roleDir}${i.remoteId ? `, reattaching Remote Control session ${i.remoteId}` : ', a new Remote Control session'}${i.staleId ? ` (its reattach to ${i.staleId} never joined)` : ''}${i.endedId ? ` (its reattach to ${i.endedId} ran and ended, as a single-session server does after its task)` : ''}`;
     const s = started && started[i.instance];
     const where = s ? (s.unit ? `, scope ${s.unit}` : s.fallbackFrom ? `, a plain start: systemd-run refused scope ${s.fallbackFrom}` : '') : '';
-    if (s && s.failed) out.push(`Failed: ${i.instance} (pid ${s.pid}${where}): its process exited within ${Math.round(SETTLE_MS / 1000)}s of the start, so it is not counted as started and is retried at the next pass; ${how}; log ${s.log}.`);
+    if (s && s.fallbackHeld) out.push(`Failed: ${i.instance} (pid ${s.pid}${where}): systemd-run refused the scope, and no plain start followed: ${s.fallbackHeld}; log ${s.log}.`);
+    else if (s && s.failed) out.push(`Failed: ${i.instance} (pid ${s.pid}${where}): its process exited within ${Math.round(SETTLE_MS / 1000)}s of the start, so it is not counted as started and is retried at the next pass; ${how}; log ${s.log}.`);
     else if (s) out.push(`Started: ${i.instance} (pid ${s.pid}${where}): ${how}; log ${s.log}.`);
     else if (a.go) out.push(`Missing: ${i.instance} (${why}); ${dryRun ? 'would start' : 'start runs'}: ${how}.`);
     else out.push(`Missing: ${i.instance} (${why}); not started now (${a.paused ? 'paused' : !a.inFlight ? 'no work in flight' : 'the open sessions could not be read'}); start would run: ${how}.`);
@@ -345,6 +370,7 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
     else if (a.restart) out.push(`Stale: ${what}; ${dryRun ? 'would restart' : 'restart runs'}: ${how}.`);
     else out.push(`Stale: ${what}; not restarted now (${a.paused ? 'paused' : 'the open sessions could not be read'}); restart would ${how}.`);
   }
+  for (const i of a.instances.filter((x) => x.twice)) out.push(`Running twice: ${i.instance}: ${i.twice}. One session per role: Staffing is told (on a start pass) and names the one that stays; nothing more is started for it.`);
   const unknown = a.instances.filter((i) => i.running === 'not known');
   const known = a.instances.filter((i) => i.running && i.running !== 'not known');
   if (unknown.length) out.push(`Not known whether running: ${unknown.map((i) => i.instance).join(', ')}.`);
@@ -353,4 +379,4 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
   return out;
 }
 
-module.exports = { STAY_UP, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
+module.exports = { STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };

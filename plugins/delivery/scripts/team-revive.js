@@ -20,18 +20,22 @@
 //                                                      work in flight and no owner pause; one start per
 //                                                      instance an hour (none for one whose last session ran), six a day; each start is a row in
 //                                                      the watchdog's revive.ndjson, its output in its logs.
-// The host job runs start each pass (watchdog.js run). In a role session only the Chief of Staff may run
-// start: no other role starts sessions (R-42). Exit codes: 0 ok (a missing session is not an error); 1
+// The host job runs start each pass (watchdog.js run). In a role session only the Chief of Staff and the
+// host manager may run start: no other role starts sessions (R-42). --project names any team's root, so
+// the host manager checks and starts every team on its machine from its own role directory. Exit codes: 0 ok (a missing session is not an error); 1
 // refused; 2 usage.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const R = require('./lib/team-revive.js');
+const OS = require('./lib/one-session.js');
 const WD = require('./lib/watchdog.js');
 const { whoAmI } = require('./lib/gate-context.js');
 
 const USAGE = 'usage: team-revive.js check [--json] | team-revive.js start [--dry-run]   (each takes --project <root>)';
 const CHIEF = 'chief-of-staff';
+// the host manager restarts every team on its machine (scripts/host-manager.js), so it starts sessions too
+const STARTERS = [CHIEF, 'host-manager'];
 
 function parse(argv) {
   const o = { _: [], json: false, dryRun: false };
@@ -218,6 +222,12 @@ function settleStarts(pids, { waitMs = R.SETTLE_MS, stepMs = 2000, isExited = ex
 // starts or starts nothing. check and --dry-run read only and take no lock.
 function revive(root, team, opts = {}) {
   if (!opts.start || opts.dryRun) return revivePass(root, team, opts);
+  // the guard holds for every caller, a script loading this module included: a start from a role
+  // session that may not start sessions is refused here as main() refuses it
+  // read twice, the process this runs in and what the caller passes, and refused when either is a role
+  // session that may not start sessions: a caller's cwd or env can only make it stricter
+  const no = callerRefusal(process.cwd(), process.env) || callerRefusal(opts.cwd || process.cwd(), opts.env || process.env);
+  if (no) throw new Error(no);
   const lock = R.startLock(root);
   if (lock.held) {
     const { start, dryRun, env = process.env, spawn, ...deps } = opts;
@@ -238,6 +248,10 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
     const row = now.find((s) => s && s.sessionId === st.session);
     if (!row) { out[i.instance] = { why: 'its session is no longer open; the next pass starts it if it is missing' }; continue; }
     if (row.status !== 'idle') { out[i.instance] = { why: `it became ${row.status || 'busy'} just before the stop` }; continue; }
+    // one live session per role (lib/one-session.js): a restart replaces the one it stops, so any other
+    // live session of the instance means the new one would be a second
+    const others = (OS.liveOf(i.instance, { roleDir: i.roleDir, live: now, prefix: f.team && f.team.prefix }) || []).filter((x) => x.sessionId !== st.session);
+    if (others.length) { out[i.instance] = { why: `another session of it is live (${OS.described(others)}); a restart would leave two` }; continue; }
     const at = f.now;
     if (!stop(st.server, st.pid)) {
       R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, from: st.version, to: st.installed });
@@ -260,10 +274,33 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
   return out;
 }
 
+// A role running twice is told to Staffing (the role that settles which session of an instance stays),
+// once per occurrence: the same pair of sessions is not told again at every pass, a new pair is. With no
+// Staffing on the team, the Chief of Staff is told. The ending of one session is not this pass's
+// (hjx.1.6.17.2). Returns the instances told.
+function tellTwice(root, team, a, { now, queue = (r, m) => require('./lib/inbox.js').queue(r, m) } = {}) {
+  const rows = R.ledger(root);
+  const ids = (team && Array.isArray(team.roles) ? require('./lib/manifest.js').expandInstances(team) : []).map((i) => i.instance);
+  const to = ids.includes('staffing') ? 'staffing' : 'chief-of-staff';
+  const told = [];
+  for (const i of a.instances.filter((x) => x.twice)) {
+    // the pair is known by its sessions' ids, never by their status or order, which change between
+    // passes: a pair whose sessions turn busy or swap places in the list is not told again (rv-198)
+    const key = `${i.instance}:${(i.twiceIds || [i.twice]).join(',')}`;
+    if (rows.some((r) => r.type === 'twice' && r.key === key)) continue;
+    queue(root, { to, from: 'team-revive (host job)', summary: `${i.instance} runs twice`, message: `${i.instance} has two live sessions: ${i.twice}. One session per role: name the one that stays, and the other ends after committing its work (hjx.1.6.17).`, at: now });
+    R.record(root, { type: 'twice', at: now, instance: i.instance, key, to });
+    told.push(i.instance);
+  }
+  return told;
+}
+
+// only: the instances a start may bring back (the host manager's restart starts the ones that hold
+// work and leaves an idle one down); unset, every missing instance
 // A start pass spawns every missing instance, then waits SETTLE_MS (settle) for any that exit at once: those
 // get a 'failed' row, are named Failed, and the next pass retries them (lib/team-revive.js assess). settle is
 // the real wait only with the real spawn; a test that injects spawn injects settle too, or gets none.
-function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, ...deps } = {}) {
+function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, only = null, ...deps } = {}) {
   const f = gather(root, team, { env, ...deps });
   const a = R.assess(f);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
@@ -273,8 +310,9 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
     const RO = require('./lib/roster.js');
     for (const i of a.instances) if (i.remoteId && f.roster[i.instance] && f.roster[i.instance].remote_session_id !== i.remoteId) { try { RO.setRemoteSession(root, { instance: i.instance, remote_session_id: i.remoteId }); } catch (err) { /* the next pass records it */ } }
   }
+  const again = relist || (() => (deps.live !== undefined ? deps.live : require('./watchdog.js').liveSessions(bin, env)));
   if (start && !dryRun && a.go) {
-    for (const i of a.missing.filter((x) => !x.skip && !x.held)) {
+    for (const i of a.missing.filter((x) => !x.skip && !x.held && (!only || only.includes(x.instance)))) {
       const at = f.now;
       const logPath = path.join(root, WD.REL, 'logs', `revive-${i.instance}-${at.replace(/[:.]/g, '-')}.log`);
       const cmd = R.scopedCommand(bin, i.args, { instance: i.instance, at, systemdRun: sdRun });
@@ -298,6 +336,10 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
     // pass waits for in turn, so a host where systemd-run fails still starts its team
     for (const n of failStarts(Object.keys(started)).filter((x) => started[x].unit && systemdRunRefused(path.join(root, started[x].log)))) {
       const was = started[n];
+      // the plain start is a second start: the sessions are listed again first, and one that is live
+      // now (it came up another way meanwhile) is left alone, as a start would leave it
+      const nowLive = OS.liveOf(n, { roleDir: was.roleDir, live: again(), prefix: f.team && f.team.prefix });
+      if (nowLive === null || nowLive.length) { started[n].fallbackHeld = nowLive === null ? 'the open sessions could not be listed again' : `it is live now (${OS.described(nowLive)})`; continue; }
       const at = new Date().toISOString();
       const logPath = path.join(root, WD.REL, 'logs', `revive-${n}-${at.replace(/[:.]/g, '-')}.log`);
       const pid = spawn(bin, was.args, { cwd: was.roleDir, env: startEnv(env, n), logPath });
@@ -306,23 +348,36 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
       failStarts([n]);
     }
   }
+  // a role found running twice is told to Staffing on a start pass, never on a check or a dry run
+  if (start && !dryRun) { try { tellTwice(root, team, a, { now: f.now }); } catch (err) { /* the next pass tells it */ } }
   let restarted = {};
   if (start && !dryRun && a.restart && a.stale.length) {
-    const again = relist || (() => (deps.live !== undefined ? deps.live : require('./watchdog.js').liveSessions(bin, env)));
     restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun });
   }
   return { a, started, restarted, lines: R.lines(a, { bin, started, restarted, dryRun: start && dryRun }) };
 }
 
-// A role session other than the Chief of Staff's never starts sessions; outside any role session (the
+// A role session other than the Chief of Staff's or the host manager's never starts sessions; outside any role session (the
 // host job, the owner's shell) start runs. The role is read from the marker in or above the directory,
 // else from the session's environment, as the watchdog reads it.
 function refusal(cwd, env, who) {
   const role = require('./watchdog.js').roleContext(cwd, env);
   if (!role) return null;
   const id = who.roleId || env.DELIVERY_ROLE_ID || require('./lib/manifest.js').canonicalRoleId(env.DELIVERY_ROLE) || null;
-  if (id === CHIEF) return null;
-  return `team-revive.js: start is the Chief of Staff's and the host job's (${role}${id ? `, role ${id}` : ''}); run team-revive.js check and tell the Chief of Staff what is missing.`;
+  if (STARTERS.includes(id)) return null;
+  return `team-revive.js: start is the Chief of Staff's, the host manager's and the host job's (${role}${id ? `, role ${id}` : ''}); run team-revive.js check and tell the Chief of Staff what is missing.`;
+}
+
+// The role of the session calling, from its role marker (the instance it names in team.json) or its
+// environment, as refusal() reads it, for a caller that gives no who.
+function callerRefusal(cwd, env) {
+  let who = { roleId: null };
+  try {
+    const { findRoleMarker, validMarker } = require('../hooks/scripts/role-context.js');
+    const v = validMarker(findRoleMarker(cwd));
+    if (v) who = { roleId: v.role.id };
+  } catch (err) { who = { roleId: null }; }
+  return refusal(cwd, env, who);
 }
 
 function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
@@ -331,15 +386,23 @@ function main(argv, { cwd = process.cwd(), env = process.env, ...deps } = {}) {
   const [cmd] = o._;
   if (!['check', 'start'].includes(cmd) || o._.length > 1) return { code: 2, out: USAGE };
   const { who: given, ...rest } = deps;
-  const who = given || whoAmI({ cwd, env, project: o.project });
+  let who = given || whoAmI({ cwd, env, project: o.project });
+  // --project names the team, wherever this runs: in a role directory the marker names the session's own
+  // team, and the host manager reads and starts every team on its machine from its own one
+  if (!given && o.project && path.resolve(o.project) !== who.root) {
+    const root = path.resolve(o.project);
+    let team = null;
+    try { team = require('./lib/manifest.js').loadManifest(root).team; } catch (err) { team = null; }
+    who = { ...who, root, team };
+  }
   if (cmd === 'start') { const no = refusal(cwd, env, who); if (no) return { code: 1, out: no }; }
   if (!who.root) return { code: 2, out: 'team-revive.js: no project found; pass --project <root>' };
-  const r = revive(who.root, who.team, { start: cmd === 'start', dryRun: o.dryRun, env, ...rest });
+  const r = revive(who.root, who.team, { start: cmd === 'start', dryRun: o.dryRun, env, cwd, ...rest });
   if (o.json) return { code: 0, out: JSON.stringify({ ...r.a, started: r.started, restarted: r.restarted || {} }, null, 2) };
   return { code: 0, out: r.lines.join('\n') };
 }
 
-module.exports = { main, revive, gather, startEnv, refusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
+module.exports = { tellTwice, main, revive, gather, startEnv, refusal, callerRefusal, serverAlive, serverOf, stopServer, systemdRunOf, settleStarts, exited, systemdRunRefused };
 
 if (require.main === module) {
   let r;
