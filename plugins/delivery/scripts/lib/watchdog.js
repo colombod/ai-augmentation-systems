@@ -795,6 +795,9 @@ function log(root, row) {
 // null when it cannot be read. /proc first (Linux); ps for the command elsewhere. hjx.1.6.20: on one host
 // `ps -p` printed nothing for a pid that /proc showed, so ps alone is not trusted to say "unknown".
 const START_SLACK_MS = 60e3;
+// wake-run.js stops its group at the timeout, then waits the kill grace before SIGKILL, and lives until
+// the group is gone: an unreadable supervisor may be alive that long after its row
+const KILL_GRACE_MS = Number(process.env.DELIVERY_WAKE_KILL_GRACE_MS) || 30e3;
 const procReads = {
   exists(pid) { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } },
   cmdline(pid) {
@@ -829,7 +832,7 @@ function pidAlive(pid, { since = null, now = Date.now(), proc = procReads } = {}
     return !(Number.isFinite(at) && Number.isFinite(started) && started > at + START_SLACK_MS);
   }
   if (!Number.isFinite(at)) return true;
-  return (typeof now === 'number' ? now : ms(now)) - at <= WAKE_TIMEOUT_H * 3600e3;
+  return (typeof now === 'number' ? now : ms(now)) - at <= WAKE_TIMEOUT_H * 3600e3 + KILL_GRACE_MS;
 }
 
 // a message and a handoff (lib/handoff.js) are the team's handovers, not stalls: woken by the message rules
@@ -847,7 +850,7 @@ const handoffsOf = (stalls) => stalls.filter((s) => s.kind === 'handoff').map((s
 
 // The wakes due now, one per target session, carrying the stall lines it may still be woken for.
 // { wakes: [{ target, keys, lines, prompt }], waiting: [stall], held: [{ target, lines, reason }] }
-function plan(res, { root, now, alive = pidAlive } = {}) {
+function plan(res, { root, now, alive = (pid, since) => pidAlive(pid, { since, now }) } = {}) {
   const t = ms(now || new Date().toISOString());
   const rows = logRows(root).filter((r) => r.type === 'wake');
   // a session on its own usage limit is woken for nothing before its reset (Copilot 416)
@@ -882,7 +885,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     // row (a merge's deploy, a deploy's check) is never held by a daily cap: merges and deploys bound it.
     const day = (f) => mine.filter((r) => f(r) && t - ms(r.at) < 24 * 3600e3);
     const handover = (items) => {
-      if (last && alive(last.pid)) return { go: [], holds: [{ items, why: 'its last wake is still running; it is woken again when that wake ends' }] };
+      if (last && alive(last.pid, last.at)) return { go: [], holds: [{ items, why: 'its last wake is still running; it is woken again when that wake ends' }] };
       if (items.every(standing) && last && t - ms(last.at) < MESSAGE_EVERY_MS) return { go: [], holds: [{ items, why: `woken at ${clock(ms(last.at))}; assigned work waits ${MESSAGE_EVERY_MS / 60000} min between wakes` }] };
       const holds = [];
       // the message day counts every wake but those for assigned work alone (6z5)
@@ -917,7 +920,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     // so they spend none of the stall budget either (rv-190)
     const stallRows = mine.filter((r) => (r.keys || []).some((k) => !/^(message|handoff|assigned|review|started|unclaimed):/.test(String(k))));
     const lastStall = stallRows[stallRows.length - 1];
-    if (last && alive(last.pid)) reason = 'its last wake is still running';
+    if (last && alive(last.pid, last.at)) reason = 'its last wake is still running';
     else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
     else if (stallRows.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= cap.daily) reason = `woken ${cap.daily} times in a day; alarm only until the count falls`;
     // each stall waits 1, 2, 4 ... hours after each wake that carried it. A handover (message, handoff,
@@ -1019,4 +1022,4 @@ function wakeArgs(s, prompt, live, { prefix = null } = {}) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { KILL_GRACE_MS, START_SLACK_MS, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

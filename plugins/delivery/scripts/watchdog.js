@@ -203,10 +203,17 @@ const HEADLESS_WAIT = { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
 // hold what it was kicked to hand over until the timer pass. A pid named in a kick has ended.
 const endedPids = (kicks) => new Set(kicks.map((k) => Number((/a wake ended \(pid (\d+)\)/.exec(k) || [])[1])).filter((n) => n > 0));
 
+// A wake pid still running, as the host job asks it: not one whose wake ended in this run (its kick
+// said so), and that wake by its row's time (lib/watchdog.js pidAlive). One check for the wake plan and
+// the plugin's self-update, so both read a reused or unreadable pid the same way (hjx.1.6.20).
+function wakeAlive(ended, now) {
+  return (pid, since) => !ended.has(pid) && WD.pidAlive(pid, { since, now });
+}
+
 function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
-  const p = WD.plan(res, { root, now: at, alive: (pid) => !ended.has(pid) && WD.pidAlive(pid) });
+  const p = WD.plan(res, { root, now: at, alive: wakeAlive(ended, at) });
   const lines = [];
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const open = p.wakes.length ? (live !== undefined ? live : liveSessions(bin, env)) : null;
@@ -639,7 +646,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     // starts in a new process under the new plugin, whose wakes start the old-version sessions fresh.
     // a pass taken for a kick looks again while an install is held: the kick is often the held-for wake
     // ending, and installing then beats waiting for the next cycle
-    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: (pid, since) => !endedPids(kicked).has(pid) && WD.pidAlive(pid, { since, now }), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
+    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: wakeAlive(endedPids(kicked), now), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
     if (updated.installed) { KICK.kick(who.root, `plugin ${updated.version} installed`); state.installed = true; }
     state.held = !!updated.held;
     // a held install starts no wake: one started now is another run the install must wait for, and with
@@ -693,7 +700,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
-module.exports = { main, liveSessions, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
+module.exports = { main, liveSessions, wakeAlive, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
 
 if (require.main === module) {
   let r;
