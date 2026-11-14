@@ -458,3 +458,66 @@ test('Copilot: --check reports what materialise would remove: a stale size label
   const d2 = reconcile({ plan: planOf(inputs()), bd, roadmap: inputs().roadmap, initiative: 'demo' });
   assert.deepEqual(d2.otherDrift, [{ id: 'ex-demo-01', fields: ['labels'] }]);
 });
+
+// delivery-plugin-planning-dha: a story already tracked by a bead made before the roadmap existed (its id is
+// not <prefix>-<story>, its metadata roadmap_ref or story_file names the story) is that story's bead.
+// materialise maps the story to it and updates it, and never creates a second bead for shipped work.
+const tracked = (bd, id, metadata, extra = {}) => bd.create({ id, title: '(BUG) the first thing, as filed', type: 'task', labels: ['plugin'], metadata, priority: 1, ...extra });
+
+test('dha: a story already tracked by a bead whose roadmap_ref names it is mapped to that bead and updated, not created again', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  tracked(bd, 'ex-fwa', { roadmap_ref: 'demo/demo-01' });
+  const r = applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.ok(!r.created.includes('ex-demo-01'), JSON.stringify(r.created));
+  assert.deepEqual(r.mapped, [{ story: 'demo-01', planned: 'ex-demo-01', bead: 'ex-fwa', status: 'open' }]);
+  assert.ok(r.updated.includes('ex-fwa'));
+  assert.ok(!bd.list({ all: true }).some((b) => b.id === 'ex-demo-01'), 'no second bead for the story');
+  const fwa = bd.show('ex-fwa');
+  assert.equal(fwa.parent, 'ex-demo-ph1');
+  assert.ok(fwa.labels.includes('story') && fwa.labels.includes('plugin'), 'its own labels stay');
+  assert.equal(fwa.metadata.story, 'demo-01');
+  // the dependencies the plan gives the story point at the bead that tracks it
+  assert.ok(bd.depsOf('ex-demo-02').includes('ex-fwa'));
+  assert.ok(!bd.depsOf('ex-demo-02').includes('ex-demo-01'));
+  // a second run finds the same bead and changes nothing
+  const again = applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.deepEqual([again.created, again.updated, again.depsAdded], [[], [], []]);
+  assert.deepEqual(again.mapped.map((m) => m.bead), ['ex-fwa']);
+});
+
+test('dha: a story whose tracking bead is closed is skipped, never re-created', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  tracked(bd, 'ex-fwa', { roadmap_ref: 'demo/demo-01' });
+  bd.exec(['close', 'ex-fwa', '--reason', 'EVIDENCE: shipped']);
+  const r = applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.ok(!r.created.includes('ex-demo-01'));
+  assert.ok(r.skippedClosed.includes('ex-fwa'));
+  assert.equal(bd.show('ex-fwa').title, '(BUG) the first thing, as filed', 'a closed bead is not touched');
+  assert.deepEqual(r.mapped, [{ story: 'demo-01', planned: 'ex-demo-01', bead: 'ex-fwa', status: 'closed' }]);
+});
+
+test('dha: a bead naming the story by its story file maps too; one naming another initiative\'s story does not', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  tracked(bd, 'ex-old2', { story_file: 'demo-02-second.md' });
+  tracked(bd, 'ex-other', { roadmap_ref: 'other/demo-01' });
+  const r = applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.deepEqual(r.mapped.map((m) => [m.story, m.bead]), [['demo-02', 'ex-old2']]);
+  assert.ok(r.created.includes('ex-demo-01'), 'another initiative\'s ref names no story here');
+  assert.ok(!r.created.includes('ex-demo-02'));
+});
+
+test('dha: --check and the dry run see the mapped bead: no story without a bead, and the mapping is listed', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  tracked(bd, 'ex-fwa', { roadmap_ref: 'demo/demo-01' });
+  const dry = applyPlan({ plan: planOf(inputs), bd, initiative: 'demo', dryRun: true });
+  assert.ok(dry.commands.includes('map ex-demo-01 -> ex-fwa'), dry.commands.join('\n'));
+  assert.ok(!dry.commands.some((c) => c.startsWith('create ex-demo-01 ')));
+  assert.ok(!bd.list({ all: true }).some((b) => b.id !== 'ex-fwa'), 'a dry run writes nothing');
+  applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  const d = reconcile({ plan: planOf(inputs), bd, roadmap: inputs.roadmap, initiative: 'demo' });
+  assert.ok(!d.storiesWithoutBead.includes('ex-demo-01'), JSON.stringify(d.storiesWithoutBead));
+});

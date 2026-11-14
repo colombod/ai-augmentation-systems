@@ -95,6 +95,42 @@ function isMaterialised(b, initiative) {
   return m.materialised_by === 'delivery' && String(m.roadmap_ref || '').startsWith(`${initiative}/`);
 }
 
+// dha: a story's bead is <prefix>-<story id>, but work tracked before the roadmap existed has a bead of its
+// own, whose metadata names the story: roadmap_ref "<initiative>/<story id>" (optionally "@<sha> ..."), or
+// the story's file in story_file. Created again under the planned id, shipped work doubled. Such a bead is
+// the story's bead: the plan takes its id, in the beads and in every dependency. One that is closed stays
+// closed (applyPlan skips it); more than one naming a story is a warning, and an open one wins.
+function namesStory(b, initiative, planned) {
+  const m = (b && b.metadata) || {};
+  const ref = String(m.roadmap_ref || '');
+  const story = planned.metadata && planned.metadata.story;
+  if (story && (ref === `${initiative}/${story}` || ref.startsWith(`${initiative}/${story}@`) || ref.startsWith(`${initiative}/${story} `))) return true;
+  const file = planned.metadata && planned.metadata.story_file;
+  return Boolean(file && m.story_file && path.basename(String(m.story_file)) === file);
+}
+function mapToExisting(plan, beads, initiative) {
+  const byId = new Map(beads.map((b) => [b.id, b]));
+  const alias = new Map();
+  const mapped = [];
+  const warnings = [];
+  for (const p of plan.beads) {
+    if (!p.labels.includes('story') || byId.has(p.id)) continue;
+    const named = beads.filter((b) => b.id !== p.id && namesStory(b, initiative, p));
+    if (!named.length) continue;
+    const pick = named.find((b) => b.status !== 'closed') || named[0];
+    if (named.length > 1) warnings.push(`story ${p.metadata.story}: ${named.length} beads name it (${named.map((b) => b.id).join(', ')}); mapped to ${pick.id}`);
+    alias.set(p.id, pick.id);
+    mapped.push({ story: p.metadata.story, planned: p.id, bead: pick.id, status: pick.status === 'closed' ? 'closed' : 'open' });
+  }
+  if (!alias.size) return { plan, mapped, warnings };
+  const to = (id) => alias.get(id) || id;
+  return {
+    plan: { ...plan, beads: plan.beads.map((b) => (alias.has(b.id) ? { ...b, id: to(b.id) } : b)), deps: plan.deps.map((d) => ({ ...d, id: to(d.id), blockedBy: to(d.blockedBy) })) },
+    mapped,
+    warnings,
+  };
+}
+
 function plannedBlockers(plan) {
   const out = new Map();
   for (const d of plan.deps) (out.get(d.id) || out.set(d.id, []).get(d.id)).push(d.blockedBy);
@@ -103,7 +139,7 @@ function plannedBlockers(plan) {
 
 function applyPlan({ plan, bd, dryRun, initiative }) {
   if (!initiative) throw new Error('applyPlan: initiative is required');
-  const result = { created: [], updated: [], depsAdded: [], depsRemoved: [], skippedClosed: [], skippedDeps: [], commands: [] };
+  const result = { created: [], updated: [], depsAdded: [], depsRemoved: [], skippedClosed: [], skippedDeps: [], mapped: [], mapWarnings: [], commands: [] };
   try {
     applyPlanSteps({ plan, bd, dryRun, initiative, result });
   } catch (err) {
@@ -113,8 +149,14 @@ function applyPlan({ plan, bd, dryRun, initiative }) {
   return result;
 }
 
-function applyPlanSteps({ plan, bd, dryRun, initiative, result }) {
-  const known = new Map(bd.list({ all: true }).map((b) => [b.id, b]));
+function applyPlanSteps({ plan: planned0, bd, dryRun, initiative, result }) {
+  const all = bd.list({ all: true });
+  const known = new Map(all.map((b) => [b.id, b]));
+  // a story already tracked by a bead of its own is mapped to it (dha), in the beads and every dependency
+  const { plan, mapped, warnings } = mapToExisting(planned0, all, initiative);
+  for (const m of mapped) result.commands.push(`map ${m.planned} -> ${m.bead}`);
+  result.mapped.push(...mapped);
+  result.mapWarnings.push(...warnings);
   for (const b of plan.beads) {
     const existing = known.get(b.id);
     if (!existing) {
@@ -191,9 +233,12 @@ function beadDiff(existing, planned) {
 function reconcile({ plan, bd, roadmap, initiative }) {
   if (!initiative) throw new Error('reconcile: initiative is required');
   const out = { storiesWithoutBead: [], spikesWithoutBead: [], staleRef: [], titleDrift: [], parentDrift: [], otherDrift: [], closedNotRealigned: [], unknownRoadmapBeads: [], depDrift: [] };
+  const all = bd.list({ all: true });
+  // the same mapping as applyPlan (dha), so a story tracked by a bead of its own is not reported missing
+  plan = mapToExisting(plan, all, initiative).plan;
   const planned = new Map(plan.beads.map((b) => [b.id, b]));
   const doneByPhase = new Map(roadmap.phases.map((p) => [p.number, p.done]));
-  const known = new Map(bd.list({ all: true }).map((x) => [x.id, x]));
+  const known = new Map(all.map((x) => [x.id, x]));
   for (const b of plan.beads) {
     const existing = known.get(b.id);
     if (!existing) {
@@ -321,8 +366,9 @@ if (require.main === module) {
     const denyText = dryRun ? `denylist would have ${entries.length} entries at ${denylistPath}` : `denylist ${denylistPath} (${entries.length} entries)`;
     console.log(`${dryRun ? 'dry run: ' : ''}created ${r.created.length}, updated ${r.updated.length}, deps ${r.depsAdded.length}, deps removed ${r.depsRemoved.length}, skipped closed ${r.skippedClosed.length}, skipped deps ${r.skippedDeps.length}; roadmap ${args.initiative}/roadmap.md@${inputs.sha}; ${denyText}`);
     if (checks.length) console.log(`reality-check scripts planned: ${checks.map((id) => require('./reality-check.js').scriptRel(id)).join(' ')}`);
+    for (const m of r.mapped) console.log(`mapped story ${m.story} to ${m.bead} (${m.status}${m.status === 'closed' ? ', skipped' : ''}), not ${m.planned}`);
     if (args.flags.has('dry-run')) for (const c of r.commands) console.log(`  ${c}`);
-    const warnings = [...inputs.warnings, ...plan.warnings];
+    const warnings = [...inputs.warnings, ...plan.warnings, ...r.mapWarnings];
     if (warnings.length) { console.log('warnings:'); for (const w of warnings) console.log(`  ${w}`); }
   } catch (err) {
     const p = err.partial;
