@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const FIELDS = 'number,state,mergedAt,mergeCommit,headRefOid,headRefName,baseRefName,mergeable,statusCheckRollup,additions,deletions,files,body,title';
+const FIELDS = 'number,state,mergedAt,mergeCommit,headRefOid,headRefName,baseRefName,mergeable,statusCheckRollup,additions,deletions,files,body,title,createdAt,comments,commits,author';
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 // owner/name from a GitHub remote URL (git@github.com:o/r.git, https://github.com/o/r, a PR URL)
@@ -39,7 +39,21 @@ function viewPr(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
   try { r = spawnSync('gh', ['pr', 'view', String(pr), '--json', FIELDS, '-R', repo], { cwd, encoding: 'utf8', timeout: timeoutMs }); } catch (err) { return { unavailable: err.message }; }
   if (r.error) return { unavailable: r.error.code === 'ENOENT' ? 'gh is not installed' : r.error.message };
   if (r.status === 0) {
-    try { return JSON.parse(r.stdout); } catch (err) { return { unavailable: 'gh pr view returned no JSON' }; }
+    let view;
+    try { view = JSON.parse(r.stdout); } catch (err) { return { unavailable: 'gh pr view returned no JSON' }; }
+    // gh pr view gives at most 100 comments and 100 commits, the oldest, so on a large pull request the
+    // newest doc-impact line fell off (rv-201): at the cap the list is read again, every page, through REST.
+    // A list REST cannot read stays as gh gave it, and the gate decides on that.
+    const base = `repos/${repo}`;
+    if (Array.isArray(view.comments) && view.comments.length >= 100) {
+      const all = restExtras(base, pr, { cwd, timeoutMs }, { commits: false });
+      if (all.comments) view.comments = all.comments;
+    }
+    if (Array.isArray(view.commits) && view.commits.length >= 100) {
+      const all = restExtras(base, pr, { cwd, timeoutMs }, { comments: false });
+      if (all.commits) view.commits = all.commits;
+    }
+    return view;
   }
   // `gh pr view` is GraphQL. Some hosts reach GitHub only through REST (Claude Code's cloud sessions
   // get "HTTP 403: GitHub GraphQL is not available"), so the same facts are read through `gh api`.
@@ -60,6 +74,35 @@ const MERGEABLE = (m) => (m === true ? 'MERGEABLE' : m === false ? 'CONFLICTING'
 const UP = (x) => String(x || '').toUpperCase();
 
 // The fields viewPr's callers read, in `gh pr view --json` shape, from the REST endpoints.
+// every page of a list endpoint (rv-201: GitHub returns the oldest first, so one page of 100 dropped the
+// newest lines); null when any page cannot be read, so the caller leaves the list out and the gate refuses
+function allPages(endpoint, o) {
+  const out = [];
+  for (let page = 1; page <= 30; page++) {
+    const r = ghApi(`${endpoint}?per_page=100&page=${page}`, o);
+    if (r.unavailable || !Array.isArray(r.json)) return null;
+    out.push(...r.json);
+    if (r.json.length < 100) return out;
+  }
+  return out;
+}
+function restExtras(base, pr, o, { comments: wantComments = true, commits: wantCommits = true } = {}) {
+  const out = {};
+  // who wrote each comment, so a stranger's comment on a public repository counts for nothing (rv-201)
+  const comments = wantComments ? allPages(`${base}/issues/${pr}/comments`, o) : null;
+  if (comments) out.comments = comments.map((c) => ({ body: (c && c.body) || '', author: { login: (c && c.user && c.user.login) || null }, authorAssociation: (c && c.author_association) || null, createdAt: (c && c.created_at) || null }));
+  const commits = wantCommits ? allPages(`${base}/pulls/${pr}/commits`, o) : null;
+  if (commits) {
+    out.commits = commits.map((c) => {
+      const msg = String((c && c.commit && c.commit.message) || '');
+      const nl = msg.indexOf('\n');
+      const committedDate = (c && c.commit && c.commit.committer && c.commit.committer.date) || null;
+      return nl < 0 ? { messageHeadline: msg, messageBody: '', committedDate } : { messageHeadline: msg.slice(0, nl), messageBody: msg.slice(nl + 1).replace(/^\n/, ''), committedDate };
+    });
+  }
+  return out;
+}
+
 function viewPrRest(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
   const o = { cwd, timeoutMs };
   const base = `repos/${repo}`;
@@ -115,6 +158,11 @@ function viewPrRest(pr, { repo, cwd, timeoutMs = 6000 } = {}) {
     files,
     body: pull.body || '',
     title: pull.title || '',
+    createdAt: pull.created_at || null,
+    author: { login: (pull.user && pull.user.login) || null },
+    // the doc-impact line can be said in a comment or a commit message (lib/doc-impact.js); one page of
+    // each, and a page that cannot be read leaves only the description, so the gate refuses, never passes
+    ...restExtras(base, pr, o),
     via: 'rest',
   };
 }

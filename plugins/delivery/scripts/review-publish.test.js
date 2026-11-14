@@ -16,7 +16,7 @@ const mergeGate = require('./merge-gate.js');
 const BEAD = 'ex-vault-0n9-3';
 const H1 = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 const GREEN = [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }];
-const VIEW = { headRefOid: H1, headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'src/import.js', additions: 50, deletions: 5 }], body: `Refs ${BEAD}`, title: 'Import', state: 'MERGED' };
+const VIEW = { headRefOid: H1, headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'src/import.js', additions: 50, deletions: 5 }], body: `Refs ${BEAD}\nDoc-impact: none (a test fixture)`, title: 'Import', state: 'MERGED' };
 const ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.test', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.test' };
 const CHAIN = (pr, writer) => `.delivery/reviews/prs/${pr}/${writer}.ndjson`;
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
