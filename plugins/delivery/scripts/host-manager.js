@@ -412,7 +412,13 @@ function installTarget(root, o = {}, { env = process.env, hostname } = {}) {
   if (!hm) return { why: `host-manager.js: team.json of ${root} has no host manager${o.instance ? ` instance ${o.instance}` : ` on host "${host}"`} (Staffing adds it: team-role.js add host-manager), so its session has no role directory; nothing was installed.` };
   const { roleDir } = roleDirOf(root, team, hm.instance);
   if (!fs.existsSync(roleDir)) return { why: `host-manager.js: the host manager's role directory ${roleDir} is not prepared on this host (prepare-role.js --instance ${hm.instance} prepares it); nothing was installed.` };
-  if (!fs.existsSync(path.join(roleDir, '.delivery-role.json'))) return { why: `host-manager.js: the host manager's role directory ${roleDir} is not prepared on this host (it holds no .delivery-role.json; prepare-role.js --instance ${hm.instance} prepares it); nothing was installed.` };
+  const markerFile = path.join(roleDir, '.delivery-role.json');
+  if (!fs.existsSync(markerFile)) return { why: `host-manager.js: the host manager's role directory ${roleDir} is not prepared on this host (it holds no .delivery-role.json; prepare-role.js --instance ${hm.instance} prepares it); nothing was installed.` };
+  // the marker must be this instance's: a directory another role was prepared in (or a marker someone
+  // wrote by hand with other fields) is not a prepared host manager, so its session is never put there
+  let marker = null;
+  try { marker = JSON.parse(fs.readFileSync(markerFile, 'utf8')); } catch (err) { marker = null; }
+  if (!marker || marker.role !== 'host-manager' || marker.instance !== hm.instance) return { why: `host-manager.js: the role marker in ${roleDir} is not the host manager's (it names role ${(marker && marker.role) || 'none'}, instance ${(marker && marker.instance) || 'none'}; prepare-role.js --instance ${hm.instance} prepares it); nothing was installed.` };
   return { team, host, hm, roleDir };
 }
 

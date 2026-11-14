@@ -552,19 +552,28 @@ function ensureHostManager(root, { home, exec, now, env = process.env, has, host
   if (missing || (prior && prior.error)) {
     const HMS = require('./host-manager.js');
     const target = HMS.installTarget(root, {}, { env, hostname });
-    // a team.json that cannot be read is said; no host manager here, or one not prepared, is left alone
-    if (target.unreadable) return `host manager: its units were not installed (${target.why.replace(/^host-manager\.js: /, '')})`;
-    if (target.why || !whichOf(has)('systemctl')) return null;
     const retry = !missing;
-    const r = HMS.install(root, { onlyMissing: true }, { env, home, exec, has, hostname, cwd: root, ...(writeFile ? { writeFile } : {}) });
-    const last = r.out.split('\n').pop().replace(/^host-manager\.js: /, '');
-    // refused before it began (a role session): said, no row; the next run tries again
-    if (!r.attempted) return `host manager: its units were not installed (${last})`;
-    // from the first write on, every attempt is one row, a failed write included
-    R.record(root, { type: 'host-manager-install', at: now || new Date().toISOString(), instance: target.hm.instance, wrote: r.wrote, ...(retry ? { retry: true } : {}), ...(r.code ? { error: last } : {}) });
-    if (r.code) lines.push(r.wrote.length ? `host manager: its units were written (${r.wrote.join(', ')}) but the install did not finish (${last})` : `host manager: its units were not installed (${last})`);
-    else lines.push(retry && !r.wrote.length ? 'host manager: enabled its units again (the last install did not finish)' : `host manager: installed its units (${r.wrote.join(', ')})`);
-    if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return lines.join('\n');
+    // a team.json that cannot be read is said; no host manager here, or one not prepared, is left alone.
+    // On a retry the unit file is already there, so a blocked install does not end the run: a stopped
+    // host manager is still started below (otherwise it would stay down until the target came back).
+    const blocked = target.unreadable ? `host manager: its units were not installed (${target.why.replace(/^host-manager\.js: /, '')})`
+      : (target.why || !whichOf(has)('systemctl')) ? '' : null;
+    if (blocked !== null && !retry) return blocked || null;
+    if (blocked) lines.push(blocked);
+    if (blocked === null) {
+      const r = HMS.install(root, { onlyMissing: true }, { env, home, exec, has, hostname, cwd: root, ...(writeFile ? { writeFile } : {}) });
+      const last = r.out.split('\n').pop().replace(/^host-manager\.js: /, '');
+      // refused before it began (a role session): said, no row; the next run tries again
+      if (!r.attempted) return `host manager: its units were not installed (${last})`;
+      // from the first write on an attempt is a row, a failed write included. A retry that fails the
+      // way the last row did adds none: an enable that keeps failing is tried each run (a watchdog pass,
+      // every 15 minutes) but is one row until its error changes or it succeeds.
+      const sameAsLast = retry && r.code && prior.error === last;
+      if (!sameAsLast) R.record(root, { type: 'host-manager-install', at: now || new Date().toISOString(), instance: target.hm.instance, wrote: r.wrote, ...(retry ? { retry: true } : {}), ...(r.code ? { error: last } : {}) });
+      if (r.code) lines.push(r.wrote.length ? `host manager: its units were written (${r.wrote.join(', ')}) but the install did not finish (${last})` : `host manager: its units were not installed (${last})`);
+      else lines.push(retry && !r.wrote.length ? 'host manager: enabled its units again (the last install did not finish)' : `host manager: installed its units (${r.wrote.join(', ')})`);
+      if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return lines.join('\n');
+    }
   }
   const started = startHostManager(root, { home, exec, now, env, live });
   if (started) lines.push(started);

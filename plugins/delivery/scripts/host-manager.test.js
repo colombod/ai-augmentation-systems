@@ -1036,8 +1036,54 @@ test('a role directory without its role marker is not prepared: nothing installe
     assert.deepEqual(installRows(x), []);
   }
   // with the marker there, the roster's directory is the one installed
-  fs.writeFileSync(path.join(elsewhere, '.delivery-role.json'), '{}');
+  fs.writeFileSync(path.join(elsewhere, '.delivery-role.json'), JSON.stringify({ role: 'host-manager', instance: 'host-manager' }));
   m2.sd.units[HM.UNIT] = loaded(true);
   assert.match(String(watchdog.ensureHostManager(m2.alpha.root, runOpts(m2))), /installed its units/);
   assert.match(fs.readFileSync(hmUnit(m2, HM.UNIT), 'utf8'), new RegExp(`^WorkingDirectory=${elsewhere.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
+});
+
+test('a run that repeats a failed install still starts a stopped host manager when its role directory is no longer prepared', () => {
+  const m = machine({ alphaRoles: hmRoles() });
+  m.sd.units[HM.UNIT] = loaded(true);
+  const failTimer = (cmd, args) => { if (args.join(' ') === `--user enable --now ${HM.TICK_TIMER}`) throw new Error('Failed to enable unit: Access denied'); return m.sd.exec(cmd, args); };
+  watchdog.ensureHostManager(m.alpha.root, runOpts(m, { exec: failTimer }));
+  assert.match(String(installRows(m).pop().error), /Access denied/);
+  // the marker goes and the unit stops: the install is not repeated, but the unit is still started
+  fs.rmSync(path.join(m.alpha.dir('host-manager'), '.delivery-role.json'));
+  m.sd.units[HM.UNIT] = loaded(false);
+  const b = m.sd.calls.length;
+  const out = watchdog.ensureHostManager(m.alpha.root, runOpts(m, { now: iso(Date.parse(T0) + 15 * MIN) }));
+  assert.ok(m.sd.calls.slice(b).includes(`systemctl --user start ${HM.UNIT}`), m.sd.calls.slice(b).join('\n'));
+  assert.equal(R.ledger(m.alpha.root).filter((x) => x.type === 'host-manager-start').length, 1, String(out));
+  assert.ok(!m.sd.calls.slice(b).some((c) => /daemon-reload|enable/.test(c)), 'the install is not repeated');
+});
+
+test('an enable that keeps failing the same way is repeated each run but recorded once; a different error or a success is a new row', () => {
+  const m = machine({ alphaRoles: hmRoles() });
+  m.sd.units[HM.UNIT] = loaded(true);
+  let msg = 'Failed to enable unit: Access denied';
+  const failTimer = (cmd, args) => { if (msg && args.join(' ') === `--user enable --now ${HM.TICK_TIMER}`) throw new Error(msg); return m.sd.exec(cmd, args); };
+  for (let i = 0; i < 4; i++) watchdog.ensureHostManager(m.alpha.root, runOpts(m, { exec: failTimer, now: iso(Date.parse(T0) + i * 15 * MIN) }));
+  assert.equal(installRows(m).length, 1, JSON.stringify(installRows(m)));
+  assert.equal(m.sd.calls.filter((c) => c === 'systemctl --user daemon-reload').length, 4, 'the enable steps are repeated each run');
+  msg = 'Failed to enable unit: Unit file is masked';
+  watchdog.ensureHostManager(m.alpha.root, runOpts(m, { exec: failTimer, now: iso(Date.parse(T0) + 60 * MIN) }));
+  assert.equal(installRows(m).length, 2);
+  assert.match(installRows(m)[1].error, /masked/);
+  msg = null;
+  watchdog.ensureHostManager(m.alpha.root, runOpts(m, { exec: failTimer, now: iso(Date.parse(T0) + 75 * MIN) }));
+  assert.equal(installRows(m).length, 3);
+  assert.equal(installRows(m)[2].error, undefined);
+});
+
+test('a role marker that names another role or another instance is not a prepared host manager', () => {
+  for (const marker of [{ role: 'builder', instance: 'host-manager' }, { role: 'host-manager', instance: 'host-manager-2' }, {}]) {
+    const m = machine({ alphaRoles: hmRoles() });
+    fs.writeFileSync(path.join(m.alpha.dir('host-manager'), '.delivery-role.json'), JSON.stringify(marker));
+    assert.equal(watchdog.ensureHostManager(m.alpha.root, runOpts(m)), null, JSON.stringify(marker));
+    assert.ok(!fs.existsSync(hmUnit(m, HM.UNIT)), JSON.stringify(marker));
+    const r = HMS.install(m.alpha.root, {}, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root });
+    assert.equal(r.code, 1);
+    assert.match(r.out, /role marker .* is not the host manager's/, r.out);
+  }
 });

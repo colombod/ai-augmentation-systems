@@ -1645,8 +1645,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   and starts the service and the timer, and says, without running it, when `loginctl enable-linger` is
   needed for the units to start at boot. A host without systemctl, a team with no `host-manager`
   instance (Staffing adds one: `team-role.js add host-manager`), a role directory not yet prepared (it
-  must exist and hold its role marker `.delivery-role.json`, as `prepare-role.js` writes it; the
-  directory is the roster's `role_dir` when one is recorded) or a `team.json` that cannot be read
+  must exist and hold its role marker `.delivery-role.json`, as `prepare-role.js` writes it, naming the
+  role `host-manager` and that very instance; the directory is the roster's `role_dir` when one is
+  recorded) or a `team.json` that cannot be read
   (missing, not JSON, no roles list) installs nothing and says why. Install is refused in every role
   session. `watchdog.js install --apply` runs the same install when the service file is missing, and so
   does each watchdog `run` (the host job, outside any role session): when
@@ -1657,8 +1658,12 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   owner's edit included) is kept as it is. Every attempt that gets past the checks is one row, a write
   that fails included (the row carries the `error`, and the next run tries again). When the last
   `host-manager-install` row carries an error (an enable that failed after the files were written), the
-  next run repeats the reload and the enables, writing nothing that exists, and writes one more row,
-  until a run records none. So a host manager that Staffing prepares after the watchdog was installed
+  next run repeats the reload and the enables, writing nothing that exists. It writes a row only when
+  the result differs from the last row, so an enable that keeps failing the same way is tried at every
+  run but stays one row, and a new error or the success is the next. On such a retry the unit file is
+  already there: when the install can no longer go ahead (no host manager on this host, its directory no
+  longer prepared, a `team.json` that cannot be read, no systemctl), the run skips it, says why where it
+  has a reason, and still starts the unit when it is stopped. So a host manager that Staffing prepares after the watchdog was installed
   gets its units at the next run, with no step from the owner. A team with no host manager on this host,
   a role directory not yet prepared or a host without systemctl are left as they are and write no row;
   a `team.json` that cannot be read is said in the run's output, with no row. An installed unit is never
