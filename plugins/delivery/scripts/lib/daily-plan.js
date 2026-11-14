@@ -75,6 +75,30 @@ function ownerQuestions(root, pending) {
   return p.open_questions || [];
 }
 
+// Admission as the claim check decides it (bd-guard): the stop-the-line findings (a stopped area takes
+// only its linked fixes, a red main only its fixes), the assumption gate, and the area pause on a refuted
+// external assumption, each story read against its own initiative (Copilot 778). The plan and the
+// Delivery Manager's pass (lib/role-watch.js) offer only what this admits, so neither offers a claim the
+// hook refuses, nor hides recovery work the hook allows (Copilot 459). Returns (bead) => boolean.
+function claimAdmission(root, { bd, team, now, stories, beadOf, ctx, ci, verifyRecord } = {}) {
+  const W = require('./waves.js');
+  const A = require('./assumptions.js');
+  const AN = require('./andon.js');
+  const all = stories || bd.list({ label: 'story', all: true }) || [];
+  const known = new Map(all.map((b) => [b.id, b]));
+  const show = beadOf || ((id) => known.get(id) || safe(() => bd.show(id), null));
+  const c = ctx || W.contextFor(root, { bd, team, beads: all, now, verifyRecord });
+  const ciState = ci || AN.ciState(root, { team });
+  const regs = A.registers(root, { bd, verifyRecord });
+  return (b) => {
+    if (!b) return false;
+    const blocks = [...AN.claimFindings(b, { root, parent: b.parent ? show(b.parent) : null, fix: c.fixOf(b), stories: all, beadOf: show, team, now, ci: ciState }),
+      ...(G.isStoryBead(b) ? A.forStory(root, b, { bd, team, verifyRecord, atClaim: true, regs }).findings : []),
+      ...(G.isStoryBead(b) ? [A.areaAndon(b, all, (s) => regs.rowsFor(G.initiativeOf(s)))].filter(Boolean) : [])].filter((x) => x.level === 'block');
+    return !blocks.length;
+  };
+}
+
 // Everything the sheet, the plan and the brief read. deps: bd (lib/bd.js store), team, now, gh (for
 // pull requests), ci (the main build state), budget, verifyRecord. Throws a ReadError when bd, the owner
 // queue, the operator records or the review records cannot be read, so no view stands on a guess.
@@ -120,15 +144,10 @@ function facts(root, { bd, team, now, gh, ci, budget, budgetOpts, verifyRecord, 
   // admission as the claim check decides it (bd-guard): the stop-the-line findings and the assumption
   // gate on top of select's own, so the plan never offers a claim the hook refuses, nor hides recovery
   // work the hook allows (Copilot 459)
-  const regsAt = A.registers(root, { bd, verifyRecord });
+  const admits = claimAdmission(root, { bd, team, now, stories, beadOf, ctx, ci: ciState, verifyRecord });
   const admitted = (r) => {
     const b = byId.get(r.id) || known.get(r.id);
-    if (!b) return false;
-    const blocks = [...AN.claimFindings(b, { root, parent: b.parent ? beadOf(b.parent) : null, fix: ctx.fixOf(b), stories, beadOf, team, now, ci: ciState }),
-      ...(G.isStoryBead(b) ? A.forStory(root, b, { bd, team, verifyRecord, atClaim: true, regs: regsAt }).findings : []),
-      // the area pause on a refuted external assumption, each story read against its own initiative (Copilot 778)
-      ...(G.isStoryBead(b) ? [A.areaAndon(b, stories, (s) => regsAt.rowsFor(G.initiativeOf(s)))].filter(Boolean) : [])].filter((x) => x.level === 'block');
-    return !blocks.length;
+    return Boolean(b) && admits(b);
   };
   const next = ranked.filter((r) => !r.refused && admitted(r)).slice(0, 3);
   const prs = must(() => require('../team-status.js').reviewStatus(root, { team, gh }), 'the review records');
@@ -481,4 +500,4 @@ function sheet(f, { verifyRecord } = {}) {
   return out;
 }
 
-module.exports = { ownerQuestions, installHoldOf, restartLine, isRecovery, resumesAt, stallItems, ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };
+module.exports = { claimAdmission, ownerQuestions, installHoldOf, restartLine, isRecovery, resumesAt, stallItems, ReadError, REL, SECTIONS, ROUTES, ACCEPTANCE, IMPLEMENTATION, ROLE_WORD, routeOf, facts, items, record, latest, previous, rowsOf, recipient, carries, noteSent, unrouted, brief, sheet, today };
