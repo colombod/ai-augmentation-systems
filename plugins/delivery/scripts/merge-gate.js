@@ -52,9 +52,13 @@ function gate(root, pr, { head: named, gh, team, repo, planDrift, readFile } = {
   // Docs ship with the change that makes them stale: a change users can see carries a doc-impact line
   // (lib/doc-impact.js). Where gh cannot read the pull request, it is a warning, never a silent pass.
   if (v.ok) {
-    const di = view.unavailable ? { ok: true, warning: 'doc impact not checked: gh cannot read the pull request' } : DI.check(view);
+    const di = view.unavailable ? { ok: true, warning: 'doc impact not checked: gh cannot read the pull request' } : DI.check(view, { pr });
     if (di.warning) warnings.push({ kind: 'doc-impact', detail: di.warning });
-    if (!di.ok) return { ...v, ok: false, why: `PR ${pr}: ${di.why}`, fix: `${di.fix}, then check again: ${R.cmd('merge-gate.js', `check ${pr}`)}`, head, warnings, view, rows };
+    // 8l1.4.1: a pull request opened before the gate shipped (a fixed time in lib/doc-impact.js, never a
+    // record on disk) is warned, not refused, and told how to add the line; one opened after, or with no
+    // creation time, is refused
+    if (!di.ok && DI.openedBefore(view)) warnings.push({ kind: 'doc-impact', detail: `PR ${pr} was opened before the doc-impact gate shipped (${DI.GATE_SHIPPED}), so it is not refused: ${di.why}; ${di.fix}` });
+    else if (!di.ok) return { ...v, ok: false, why: `PR ${pr}: ${di.why}`, fix: `${di.fix}, then check again: ${R.cmd('merge-gate.js', `check ${pr}`)}`, head, warnings, view, rows };
   }
   // The plan must be true to what already shipped before anything more ships (the owner, 2026-10-31:
   // a planning repo and feature map that diverge from the product defeat the product).
