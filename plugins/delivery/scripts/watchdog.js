@@ -526,7 +526,7 @@ function hostManagerSetup(root, { platform, home, env, exec, has }) {
   try { if (HM.addHostTeam(HM.hostFile(env, home), root)) out.push(`Added ${root} to ${HM.hostFile(env, home)}, the teams the host manager serves.`); } catch (err) { out.push(`Host manager: ${root} was not added to its team list (${String(err.message).split('\n')[0]}).`); }
   if (platform === 'darwin' || !has('systemctl')) { out.push('Host manager: not installed here: its units need systemd.'); return out; }
   if (fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return out;
-  const r = require('./host-manager.js').install(root, {}, { env, home, exec, has, cwd: root });
+  const r = require('./host-manager.js').install(root, { onlyMissing: true }, { env, home, exec, has, cwd: root });
   out.push(...r.out.split('\n').map((l) => `Host manager: ${l.replace(/^host-manager\.js: /, '')}`));
   return out;
 }
@@ -538,20 +538,32 @@ function hostManagerSetup(root, { platform, home, env, exec, has }) {
 // on this host whose role directory is prepared: Staffing prepares it from a role session, which may not
 // install units, and this run is the host job's, outside any role session. The install is host-manager.js
 // install itself (its files, its reload, enable and start, its refusal in a role session), with one row
-// in revive.ndjson; an installed unit is never rewritten.
-function ensureHostManager(root, { home, exec, now, env = process.env, has, hostname, live }) {
+// in revive.ndjson. Only the unit files that are missing are written (onlyMissing): an installed unit,
+// the tick's service and timer included, is never rewritten. When the last install row carries an
+// error (an enable that failed after the files were written), the next run repeats the install, which
+// then writes nothing that exists and runs the reload and enables again, until a run records no error.
+function ensureHostManager(root, { home, exec, now, env = process.env, has, hostname, live, writeFile }) {
   const HM = require('./lib/host-manager.js');
+  const R = require('./lib/team-revive.js');
   const lines = [];
-  if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) {
+  const missing = !fs.existsSync(path.join(HM.unitDir(home), HM.UNIT));
+  const lastRow = () => R.ledger(root).filter((x) => x.type === 'host-manager-install').pop() || null;
+  const prior = missing ? null : lastRow();
+  if (missing || (prior && prior.error)) {
     const HMS = require('./host-manager.js');
     const target = HMS.installTarget(root, {}, { env, hostname });
+    // a team.json that cannot be read is said; no host manager here, or one not prepared, is left alone
+    if (target.unreadable) return `host manager: its units were not installed (${target.why.replace(/^host-manager\.js: /, '')})`;
     if (target.why || !whichOf(has)('systemctl')) return null;
-    const r = HMS.install(root, {}, { env, home, exec, has, hostname, cwd: root });
+    const retry = !missing;
+    const r = HMS.install(root, { onlyMissing: true }, { env, home, exec, has, hostname, cwd: root, ...(writeFile ? { writeFile } : {}) });
     const last = r.out.split('\n').pop().replace(/^host-manager\.js: /, '');
-    // nothing written (refused in a role session, the launcher not written): said, no row; the next run tries again
-    if (!r.wrote.length) return `host manager: its units were not installed (${last})`;
-    require('./lib/team-revive.js').record(root, { type: 'host-manager-install', at: now || new Date().toISOString(), instance: target.hm.instance, wrote: r.wrote, ...(r.code ? { error: last } : {}) });
-    lines.push(r.code ? `host manager: its units were written (${r.wrote.join(', ')}) but the install did not finish (${last})` : `host manager: installed its units (${r.wrote.join(', ')})`);
+    // refused before it began (a role session): said, no row; the next run tries again
+    if (!r.attempted) return `host manager: its units were not installed (${last})`;
+    // from the first write on, every attempt is one row, a failed write included
+    R.record(root, { type: 'host-manager-install', at: now || new Date().toISOString(), instance: target.hm.instance, wrote: r.wrote, ...(retry ? { retry: true } : {}), ...(r.code ? { error: last } : {}) });
+    if (r.code) lines.push(r.wrote.length ? `host manager: its units were written (${r.wrote.join(', ')}) but the install did not finish (${last})` : `host manager: its units were not installed (${last})`);
+    else lines.push(retry && !r.wrote.length ? 'host manager: enabled its units again (the last install did not finish)' : `host manager: installed its units (${r.wrote.join(', ')})`);
     if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return lines.join('\n');
   }
   const started = startHostManager(root, { home, exec, now, env, live });

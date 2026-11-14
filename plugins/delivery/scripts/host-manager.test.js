@@ -36,6 +36,8 @@ function product(base, name, roles) {
   fs.writeFileSync(path.join(root, '.delivery', 'team', 'team.json'), JSON.stringify(team));
   fs.writeFileSync(path.join(root, '.delivery', 'team', 'hosts.json'), JSON.stringify({ hosts: { pc: { kind: 'pc' } } }));
   for (const r of roles) fs.mkdirSync(path.join(base, `${name}-team`, r.id), { recursive: true });
+  // a prepared host manager's directory holds its role marker, as prepare-role.js writes it
+  for (const r of roles.filter((x) => x.id === 'host-manager')) fs.writeFileSync(path.join(base, `${name}-team`, r.id, '.delivery-role.json'), JSON.stringify({ role: 'host-manager', instance: 'host-manager' }));
   return { root, team, dir: (i) => path.join(base, `${name}-team`, i) };
 }
 const store = (beads) => ({ list: ({ status } = {}) => beads.filter((b) => !status || b.status === status) });
@@ -920,4 +922,122 @@ test('the per-run install is still refused from a role session: nothing written,
   const r = watchdog.main(['run', '--project', m.alpha.root], { cwd: m.alpha.root, env, home: m.home, hostUnit: { exec: m.sd.exec, home: m.home, has: () => true } });
   assert.equal(r.code, 1);
   assert.match(r.out, /run is the host job's/);
+});
+
+// rv-200: the per-run install found missing by the service file alone; the review's five findings
+const hmUnit = (m, n) => path.join(HM.unitDir(m.home), n);
+const installRows = (m) => R.ledger(m.alpha.root).filter((x) => x.type === 'host-manager-install');
+const runOpts = (m, more = {}) => ({ home: m.home, exec: m.sd.exec, now: T0, env: runEnv(), has: () => true, live: [], ...more });
+const ENABLES = ['systemctl --user daemon-reload', `systemctl --user enable --now ${HM.UNIT}`, `systemctl --user enable --now ${HM.TICK_TIMER}`];
+
+test('the per-run install writes only the unit files that are missing: a tick service and tick timer already there are kept byte for byte', () => {
+  const m = machine({ alphaRoles: hmRoles() });
+  m.sd.units[HM.UNIT] = loaded(true);
+  const own = { [HM.TICK_SERVICE]: '[Service]\n# the owner\'s own tick service\n', [HM.TICK_TIMER]: '[Timer]\n# the owner\'s own timer\nOnUnitActiveSec=1h\n' };
+  for (const [n, body] of Object.entries(own)) fs.writeFileSync(hmUnit(m, n), body);
+  const out = watchdog.ensureHostManager(m.alpha.root, runOpts(m));
+  assert.match(String(out), /host manager: installed its units/, out);
+  assert.ok(fs.existsSync(hmUnit(m, HM.UNIT)), 'the missing service is written');
+  for (const [n, body] of Object.entries(own)) assert.equal(fs.readFileSync(hmUnit(m, n), 'utf8'), body, `${n} is never rewritten`);
+  const rows = installRows(m);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].wrote, [hmUnit(m, HM.UNIT)]);
+  assert.equal(rows[0].error, undefined);
+  for (const c of ENABLES) assert.ok(m.sd.calls.includes(c), c);
+  // watchdog install --apply runs the same install and keeps them too
+  const m2 = machine({ alphaRoles: hmRoles() });
+  for (const [n, body] of Object.entries(own)) fs.writeFileSync(hmUnit(m2, n), body);
+  const r = watchdog.main(['install', '--apply'], { cwd: m2.alpha.root, env: runEnv(), home: m2.home, exec: m2.sd.exec, platform: 'linux', has: () => true });
+  assert.equal(r.code, 0, r.out);
+  assert.ok(fs.existsSync(hmUnit(m2, HM.UNIT)), r.out);
+  for (const [n, body] of Object.entries(own)) assert.equal(fs.readFileSync(hmUnit(m2, n), 'utf8'), body, `install --apply: ${n} is never rewritten`);
+});
+
+test('a per-run install whose enable failed is enabled again at the next run, without writing the units again, until a run succeeds', () => {
+  const m = machine({ alphaRoles: hmRoles() });
+  m.sd.units[HM.UNIT] = loaded(true);
+  const failTimer = (cmd, args) => { if (args.join(' ') === `--user enable --now ${HM.TICK_TIMER}`) { m.sd.calls.push(`${cmd} ${args.join(' ')} (failed)`); throw new Error('Failed to enable unit: Access denied'); } return m.sd.exec(cmd, args); };
+  const first = watchdog.ensureHostManager(m.alpha.root, runOpts(m, { exec: failTimer }));
+  assert.match(String(first), /did not finish \(not installed \(Failed to enable unit: Access denied\)\)/, first);
+  assert.equal(installRows(m).length, 1);
+  assert.match(installRows(m)[0].error, /Access denied/);
+  // the service is edited in the meantime: the retry repeats the enable steps, not the writes
+  fs.appendFileSync(hmUnit(m, HM.UNIT), '# edited\n');
+  const bodies = () => [HM.UNIT, HM.TICK_SERVICE, HM.TICK_TIMER].map((n) => fs.readFileSync(hmUnit(m, n), 'utf8'));
+  const before = bodies();
+  const b = m.sd.calls.length;
+  const second = watchdog.ensureHostManager(m.alpha.root, runOpts(m, { now: iso(Date.parse(T0) + 15 * MIN) }));
+  assert.match(String(second), /host manager: enabled its units again/, second);
+  assert.deepEqual(bodies(), before, 'no unit is written again');
+  assert.deepEqual(m.sd.calls.slice(b).filter((c) => /daemon-reload|enable/.test(c)), ENABLES);
+  assert.equal(installRows(m).length, 2);
+  assert.deepEqual(installRows(m)[1].wrote, []);
+  assert.equal(installRows(m)[1].error, undefined);
+  // enabled now: the run after neither enables nor records
+  const c = m.sd.calls.length;
+  watchdog.ensureHostManager(m.alpha.root, runOpts(m, { now: iso(Date.parse(T0) + 30 * MIN) }));
+  assert.ok(!m.sd.calls.slice(c).some((x) => /daemon-reload|enable/.test(x)), m.sd.calls.slice(c).join('\n'));
+  assert.equal(installRows(m).length, 2);
+});
+
+test('a per-run install whose first unit-file write fails writes one row with the error, and the next run tries again', () => {
+  const m = machine({ alphaRoles: hmRoles() });
+  const writeFile = () => { const e = new Error('EACCES: permission denied, open delivery-host-manager.service'); e.code = 'EACCES'; throw e; };
+  const out = watchdog.ensureHostManager(m.alpha.root, runOpts(m, { writeFile }));
+  assert.match(String(out), /host manager: its units were not installed \(not installed \(EACCES: permission denied/, out);
+  assert.ok(!fs.existsSync(hmUnit(m, HM.UNIT)));
+  const rows = installRows(m);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].instance, 'host-manager');
+  assert.deepEqual(rows[0].wrote, []);
+  assert.match(rows[0].error, /EACCES/);
+  assert.ok(!m.sd.calls.some((c) => /daemon-reload|enable/.test(c)), 'nothing enabled after a failed write');
+  // the next run writes them
+  m.sd.units[HM.UNIT] = loaded(true);
+  watchdog.ensureHostManager(m.alpha.root, runOpts(m));
+  assert.ok(fs.existsSync(hmUnit(m, HM.UNIT)));
+  assert.equal(installRows(m).length, 2);
+  assert.equal(installRows(m)[1].error, undefined);
+});
+
+test('a missing or malformed team.json: the install does not throw, installs nothing and says the team could not be read', () => {
+  const team = (m) => path.join(m.alpha.root, '.delivery', 'team', 'team.json');
+  for (const [what, spoil] of [['missing', (f) => fs.rmSync(f)], ['not JSON', (f) => fs.writeFileSync(f, '{ nope')], ['no roles', (f) => fs.writeFileSync(f, JSON.stringify({ project: 'alpha' }))], ['null', (f) => fs.writeFileSync(f, 'null')]]) {
+    const m = machine({ alphaRoles: hmRoles() });
+    spoil(team(m));
+    let out;
+    assert.doesNotThrow(() => { out = watchdog.ensureHostManager(m.alpha.root, runOpts(m)); }, what);
+    assert.match(String(out), /host manager: its units were not installed \(the team at .* could not be read \(.+\); nothing was installed\.\)/, `${what}: ${out}`);
+    let r;
+    assert.doesNotThrow(() => { r = HMS.install(m.alpha.root, {}, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root }); }, what);
+    assert.equal(r.code, 1, what);
+    assert.match(r.out, /could not be read .*nothing was installed/, what);
+    assert.ok(!fs.existsSync(hmUnit(m, HM.UNIT)), what);
+    assert.deepEqual(m.sd.calls, [], what);
+    assert.deepEqual(installRows(m), [], what);
+  }
+});
+
+test('a role directory without its role marker is not prepared: nothing installed, by the run or by install, the roster\'s role_dir included', () => {
+  const m = machine({ alphaRoles: hmRoles() });
+  fs.rmSync(path.join(m.alpha.dir('host-manager'), '.delivery-role.json'));
+  assert.equal(watchdog.ensureHostManager(m.alpha.root, runOpts(m)), null);
+  const r = HMS.install(m.alpha.root, {}, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /role directory .* is not prepared on this host \(it holds no \.delivery-role\.json/);
+  // a role_dir a role session wrote into the roster: a directory that exists but holds no marker
+  const m2 = machine({ alphaRoles: hmRoles() });
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'not-a-role-'));
+  require('./lib/roster.js').registerInstance(m2.alpha.root, { instance: 'host-manager', session_id: 's1', host: 'pc', role_dir: elsewhere, now: T0 });
+  assert.equal(watchdog.ensureHostManager(m2.alpha.root, runOpts(m2)), null);
+  for (const x of [m, m2]) {
+    assert.ok(!fs.existsSync(hmUnit(x, HM.UNIT)));
+    assert.deepEqual(x.sd.calls, []);
+    assert.deepEqual(installRows(x), []);
+  }
+  // with the marker there, the roster's directory is the one installed
+  fs.writeFileSync(path.join(elsewhere, '.delivery-role.json'), '{}');
+  m2.sd.units[HM.UNIT] = loaded(true);
+  assert.match(String(watchdog.ensureHostManager(m2.alpha.root, runOpts(m2))), /installed its units/);
+  assert.match(fs.readFileSync(hmUnit(m2, HM.UNIT), 'utf8'), new RegExp(`^WorkingDirectory=${elsewhere.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
 });
