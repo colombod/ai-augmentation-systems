@@ -25,7 +25,7 @@ test('a wake supervisor that started with its wake row is a running wake', () =>
 
 test('a pid the system gave to another program after the wake ended is not a running wake', () => {
   // the reported case: the pid now runs a PDF tool server, started nine days after the wake row
-  const pdf = proc({ cmd: 'node /home/u/.npm/_npx/x/node_modules/.bin/mcp-pdf-server --stdio', started: T0 + 9 * 24 * 3600e3 });
+  const pdf = proc({ cmd: 'node mcp-pdf-server --stdio', started: T0 + 9 * 24 * 3600e3 });
   assert.equal(WD.pidAlive(2162035, { since: iso(T0), now: T0 + 12 * 24 * 3600e3, proc: pdf }), false);
   // another program, whenever it started
   assert.equal(WD.pidAlive(2162035, { since: iso(T0), now: T0 + 60e3, proc: proc({ cmd: 'node server.js', started: T0 - 2000 }) }), false);
