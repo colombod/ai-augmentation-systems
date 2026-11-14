@@ -1111,3 +1111,53 @@ test('a repeated install that can no longer go ahead still starts the stopped un
     if (said) assert.match(out, said, what);
   }
 });
+
+// rv-200: the install's own enable must not start the unit beside a live host manager (the rv-198 symptom)
+test('while a host manager is live, the per-run install never starts its unit: tick enable failing, unit inactive, three passes, no start', () => {
+  const m = machine({ alphaRoles: hmRoles() });
+  m.sd.units[HM.UNIT] = loaded(false);
+  const live = [{ sessionId: 'hm-live', cwd: m.alpha.dir('host-manager'), name: 'host-manager@pc', status: 'idle' }];
+  const failTimer = (cmd, args) => { if (args.join(' ') === `--user enable --now ${HM.TICK_TIMER}`) throw new Error('Failed to enable unit: Access denied'); return m.sd.exec(cmd, args); };
+  for (let i = 0; i < 3; i++) watchdog.ensureHostManager(m.alpha.root, runOpts(m, { exec: failTimer, live, now: iso(Date.parse(T0) + i * 15 * MIN) }));
+  const starts = m.sd.calls.filter((c) => c === `systemctl --user start ${HM.UNIT}` || c === `systemctl --user enable --now ${HM.UNIT}`);
+  assert.deepEqual(starts, [], m.sd.calls.join('\n'));
+  assert.ok(m.sd.calls.includes(`systemctl --user enable ${HM.UNIT}`), 'the service is still enabled, for the next boot');
+  assert.equal(R.ledger(m.alpha.root).filter((x) => x.type === 'host-manager-start').length, 0);
+});
+
+test('the install enables the service with --now only when no host manager is live and the open sessions could be read', () => {
+  const run = (live) => {
+    const m = machine({ alphaRoles: hmRoles() });
+    m.sd.units[HM.UNIT] = loaded(false);
+    const r = HMS.install(m.alpha.root, {}, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root, live });
+    assert.equal(r.code, 0, r.out);
+    return m.sd.calls;
+  };
+  assert.ok(run([]).includes(`systemctl --user enable --now ${HM.UNIT}`), 'none live: started at once');
+  for (const [what, live] of [['sessions unreadable', null], ['one live', (m) => m]]) {
+    const calls = what === 'one live'
+      ? (() => { const m = machine({ alphaRoles: hmRoles() }); m.sd.units[HM.UNIT] = loaded(false); HMS.install(m.alpha.root, {}, { env: runEnv(), home: m.home, exec: m.sd.exec, has: () => true, cwd: m.alpha.root, live: [{ sessionId: 'x', cwd: m.alpha.dir('host-manager'), name: 'host-manager@pc', status: 'busy' }] }); return m.sd.calls; })()
+      : run(live);
+    assert.ok(!calls.includes(`systemctl --user enable --now ${HM.UNIT}`), `${what}: ${calls.join(' | ')}`);
+    assert.ok(calls.includes(`systemctl --user enable ${HM.UNIT}`), what);
+    assert.ok(calls.includes(`systemctl --user enable --now ${HM.TICK_TIMER}`), `${what}: the tick timer still starts`);
+  }
+});
+
+test('a repeated install that is skipped says why: the instance on another host, its directory not prepared, or no systemctl', () => {
+  const teamFile = (m) => path.join(m.alpha.root, '.delivery', 'team', 'team.json');
+  const cases = [
+    ['another host', (m) => { const t = JSON.parse(fs.readFileSync(teamFile(m), 'utf8')); t.roles = t.roles.map((r) => (r.id === 'host-manager' ? { ...r, host: 'elsewhere' } : r)); fs.writeFileSync(teamFile(m), JSON.stringify(t)); }, {}, /install not repeated \(.*has no host manager on host "pc"/],
+    ['not prepared', (m) => fs.rmSync(path.join(m.alpha.dir('host-manager'), '.delivery-role.json')), {}, /install not repeated \(.*not prepared on this host/],
+    ['no systemctl', () => {}, { has: (b) => b !== 'systemctl' }, /install not repeated \(this host has no systemctl\)/],
+  ];
+  for (const [what, spoil, more, said] of cases) {
+    const m = machine({ alphaRoles: hmRoles() });
+    m.sd.units[HM.UNIT] = loaded(true);
+    const failTimer = (cmd, args) => { if (args.join(' ') === `--user enable --now ${HM.TICK_TIMER}`) throw new Error('Failed to enable unit: Access denied'); return m.sd.exec(cmd, args); };
+    watchdog.ensureHostManager(m.alpha.root, runOpts(m, { exec: failTimer }));
+    spoil(m);
+    const out = String(watchdog.ensureHostManager(m.alpha.root, runOpts(m, { now: iso(Date.parse(T0) + 15 * MIN), ...more })));
+    assert.match(out, said, `${what}: ${out}`);
+  }
+});

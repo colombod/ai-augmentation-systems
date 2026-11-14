@@ -1655,7 +1655,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   fails the service when that directory is missing). An `XDG_STATE_HOME` or `XDG_CONFIG_HOME` set at
   install is written into both services' `Environment=`, so the units read the same host file and
   ledger as the shell that installed them. It reloads systemd, enables
-  and starts the service and the timer, and says, without running it, when `loginctl enable-linger` is
+  and starts the service and the timer (the service is started at once only when no host-manager
+  session is live and the open sessions could be read; otherwise it is only enabled, and the
+  watchdog's start check, which makes the same match, starts it), and says, without running it, when `loginctl enable-linger` is
   needed for the units to start at boot. A host without systemctl, a team with no `host-manager`
   instance (Staffing adds one: `team-role.js add host-manager`), a role directory not yet prepared (it
   must exist and hold its role marker `.delivery-role.json`, as `prepare-role.js` writes it, naming the
@@ -1675,8 +1677,9 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   the result differs from the last row, so an enable that keeps failing the same way is tried at every
   run but stays one row, and a new error or the success is the next. On such a retry the unit file is
   already there: when the install can no longer go ahead (no host manager on this host, its directory no
-  longer prepared, a `team.json` that cannot be read, no systemctl), the run skips it, says why where it
-  has a reason, and still starts the unit when it is stopped. So a host manager that Staffing prepares after the watchdog was installed
+  longer prepared, a `team.json` that cannot be read, no systemctl), the run skips it, says why
+  (`install not repeated (<reason>)`, or the `team.json` that could not be read), and still starts the
+  unit when it is stopped. So a host manager that Staffing prepares after the watchdog was installed
   gets its units at the next run, with no step from the owner. A team with no host manager on this host,
   a role directory not yet prepared or a host without systemctl are left as they are and write no row;
   a `team.json` that cannot be read is said in the run's output, with no row. An installed unit is never

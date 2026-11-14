@@ -431,7 +431,7 @@ function installTarget(root, o = {}, { env = process.env, hostname } = {}) {
 // rewritten, so an owner's edit of the tick service or timer survives; the reload, enable and start
 // still run, which is how a run repeats an enable that failed without writing anything again.
 // deps.writeFile: the write of a unit file (a test's failing write).
-function install(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, writeFile = fs.writeFileSync } = {}) {
+function install(root, o = {}, { env = process.env, home = os.homedir(), exec, has, hostname, cwd, who, writeFile = fs.writeFileSync, live } = {}) {
   const no = guard('install', { cwd, env, who });
   if (no) return { code: 1, out: no, wrote: [] };
   if (!whichOf(has)('systemctl')) return { code: 1, out: 'host-manager.js: this host has no systemctl, so the host manager\'s units cannot be installed here; nothing was installed.', wrote: [] };
@@ -466,7 +466,14 @@ function install(root, o = {}, { env = process.env, home = os.homedir(), exec, h
     // before the units are enabled: systemd opens the tick's StandardOutput=append: file itself and
     // fails the service (status 209/STDOUT) when its directory is missing
     fs.mkdirSync(u.stateDir, { recursive: true });
-    for (const [cmd, args] of u.commands) { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); }
+    // the service is started at once only when no host manager is live and the open sessions could be
+    // read: started beside a live one it is a second host manager (rv-198). Otherwise it is enabled for
+    // the next boot and left to the watchdog's start check (startHostManager), which makes the same match.
+    const lv = liveHostManager(root, { env, home, hostname, live });
+    const startNow = !lv.unreadable && !lv.sessions.length;
+    const commands = startNow ? u.commands : u.commands.map(([c, a]) => (a.join(' ') === `--user enable --now ${HM.UNIT}` ? [c, ['--user', 'enable', HM.UNIT]] : [c, a]));
+    for (const [cmd, args] of commands) { run(cmd, args); lines.push(`Ran: ${cmd} ${args.join(' ')}`); }
+    if (!startNow) lines.push(lv.unreadable ? `Not started now: the open sessions could not be listed, so ${HM.UNIT} is enabled and left to the watchdog's start check.` : `Not started now: the host manager already runs, so ${HM.UNIT} is enabled for the next boot.`);
   } catch (err) { return { code: 1, out: `${lines.join('\n')}\nhost-manager.js: not installed (${firstLine(err)})`.trim(), wrote, kept, attempted: true }; }
   lines.push(`Installed. ${head}`);
   const l = lingerLine(run, env);
