@@ -791,14 +791,45 @@ function log(root, row) {
   return row;
 }
 
-// alive, and still a wake supervisor: a pid the system gave to another program since is not ours
-function pidAlive(pid) {
+// What the system says about a pid: whether it exists, its command line, and when it started (ms), each
+// null when it cannot be read. /proc first (Linux); ps for the command elsewhere. hjx.1.6.20: on one host
+// `ps -p` printed nothing for a pid that /proc showed, so ps alone is not trusted to say "unknown".
+const START_SLACK_MS = 60e3;
+const procReads = {
+  exists(pid) { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } },
+  cmdline(pid) {
+    try { const c = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim(); if (c) return c; } catch (err) { /* no /proc */ }
+    try { const c = require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim(); return c || null; } catch (err) { return null; }
+  },
+  startedMs(pid) {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const ticks = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
+      const btime = Number((/^btime (\d+)$/m.exec(fs.readFileSync('/proc/stat', 'utf8')) || [])[1]);
+      // clock ticks are 100 a second on every Linux this runs on (USER_HZ)
+      return Number.isFinite(ticks) && btime ? btime * 1000 + ticks * 10 : null;
+    } catch (err) { return null; }
+  },
+};
+
+// A wake pid is a running wake only while it is that wake: alive, a wake supervisor (lib/wake-run.js),
+// and, given the wake row's time (since), started no later than the row (a supervisor is spawned, then
+// its row written). A pid the system gave to another program after the wake ended is not ours, nor is
+// a later wake on the same pid. When neither the command nor the start can be read, the pid is kept
+// only within the wake timeout of its row, so an unreadable pid never holds installs and wakes with no
+// end (hjx.1.6.20: a reused pid held every install for 91 hours). With no row time, as before.
+function pidAlive(pid, { since = null, now = Date.now(), proc = procReads } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); } catch (err) { if (err.code !== 'EPERM') return false; }
-  try {
-    const cmd = require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
-    return !cmd.trim() || /wake-run\.js/.test(cmd);
-  } catch (err) { return true; }
+  if (!proc.exists(pid)) return false;
+  const at = since ? ms(since) : NaN;
+  const cmd = proc.cmdline(pid);
+  if (cmd) {
+    if (!/wake-run\.js/.test(cmd)) return false;
+    const started = proc.startedMs(pid);
+    return !(Number.isFinite(at) && Number.isFinite(started) && started > at + START_SLACK_MS);
+  }
+  if (!Number.isFinite(at)) return true;
+  return (typeof now === 'number' ? now : ms(now)) - at <= WAKE_TIMEOUT_H * 3600e3;
 }
 
 // a message and a handoff (lib/handoff.js) are the team's handovers, not stalls: woken by the message rules
