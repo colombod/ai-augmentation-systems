@@ -521,3 +521,15 @@ test('dha: --check and the dry run see the mapped bead: no story without a bead,
   const d = reconcile({ plan: planOf(inputs), bd, roadmap: inputs.roadmap, initiative: 'demo' });
   assert.ok(!d.storiesWithoutBead.includes('ex-demo-01'), JSON.stringify(d.storiesWithoutBead));
 });
+
+test('dha: two beads naming one story: the open one is the story\'s bead, and the doubling is a warning', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  tracked(bd, 'ex-old', { roadmap_ref: 'demo/demo-01' });
+  bd.exec(['close', 'ex-old', '--reason', 'EVIDENCE: superseded']);
+  tracked(bd, 'ex-new', { roadmap_ref: 'demo/demo-01' });
+  const r = applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.deepEqual(r.mapped.map((m) => [m.story, m.bead, m.status]), [['demo-01', 'ex-new', 'open']]);
+  assert.equal(r.mapWarnings.length, 1);
+  assert.match(r.mapWarnings[0], /story demo-01: 2 beads name it \(ex-old, ex-new\); mapped to ex-new/);
+});
