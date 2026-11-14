@@ -473,10 +473,16 @@ test('dha: a story already tracked by a bead whose roadmap_ref names it is mappe
   assert.deepEqual(r.mapped, [{ story: 'demo-01', planned: 'ex-demo-01', bead: 'ex-fwa', status: 'open' }]);
   assert.ok(r.updated.includes('ex-fwa'));
   assert.ok(!bd.list({ all: true }).some((b) => b.id === 'ex-demo-01'), 'no second bead for the story');
+  // rv-205: the bead is someone else's record (here a bug): it gets the roadmap metadata only, and keeps
+  // its own title, parent, type and labels, so it is never moved under a phase epic or renamed
   const fwa = bd.show('ex-fwa');
-  assert.equal(fwa.parent, 'ex-demo-ph1');
-  assert.ok(fwa.labels.includes('story') && fwa.labels.includes('plugin'), 'its own labels stay');
+  assert.equal(fwa.title, '(BUG) the first thing, as filed');
+  assert.ok(!fwa.parent, `no phase epic: ${fwa.parent}`);
+  assert.deepEqual(fwa.labels, ['plugin'], 'its own labels only');
   assert.equal(fwa.metadata.story, 'demo-01');
+  assert.equal(fwa.metadata.story_file, 'demo-01-first.md');
+  assert.match(fwa.metadata.roadmap_ref, /^demo\/roadmap\.md@/);
+  assert.equal(fwa.metadata.materialised_by, undefined, 'not marked as materialise\'s own bead');
   // the dependencies the plan gives the story point at the bead that tracks it
   assert.ok(bd.depsOf('ex-demo-02').includes('ex-fwa'));
   assert.ok(!bd.depsOf('ex-demo-02').includes('ex-demo-01'));
@@ -532,4 +538,49 @@ test('dha: two beads naming one story: the open one is the story\'s bead, and th
   assert.deepEqual(r.mapped.map((m) => [m.story, m.bead, m.status]), [['demo-01', 'ex-new', 'open']]);
   assert.equal(r.mapWarnings.length, 1);
   assert.match(r.mapWarnings[0], /story demo-01: 2 beads name it \(ex-old, ex-new\); mapped to ex-new/);
+});
+
+// rv-205: after the first mapping the bead's roadmap_ref is materialise's own form (<initiative>/roadmap.md@<sha>
+// phase <n>), so the ref no longer names the story; renaming the story file must not create a second bead
+test('dha: a story whose file is renamed after its first mapping still maps to the same bead, by the story id it now carries', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  tracked(bd, 'ex-fwa', { roadmap_ref: 'demo/demo-01' });
+  applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.match(bd.show('ex-fwa').metadata.roadmap_ref, /^demo\/roadmap\.md@/, 'the ref is materialise\'s form now');
+  const renamed = inputs.stories.map((s) => (s.id === 'demo-01' ? { ...s, file: s.file.replace('demo-01-first.md', 'demo-01-renamed.md') } : s));
+  const r = applyPlan({ plan: planOf(inputs, null, renamed), bd, initiative: 'demo' });
+  assert.deepEqual(r.mapped.map((m) => m.bead), ['ex-fwa']);
+  assert.ok(!r.created.includes('ex-demo-01'), JSON.stringify(r.created));
+  assert.equal(bd.show('ex-fwa').metadata.story_file, 'demo-01-renamed.md', 'the new file name is written to it');
+  // a bead of another initiative carrying the same story id is not taken
+  const other = makeBd({ env: fakeEnv() });
+  tracked(other, 'ex-else', { story: 'demo-01', roadmap_ref: 'other/roadmap.md@abc phase 1' });
+  assert.ok(applyPlan({ plan: planOf(inputs), bd: other, initiative: 'demo' }).created.includes('ex-demo-01'));
+});
+
+test('dha: when the planned bead exists, another bead naming the story is a warning, and the planned one stays the story\'s', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  tracked(bd, 'ex-fwa', { roadmap_ref: 'demo/demo-01' });
+  const r = applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.deepEqual(r.mapped, []);
+  assert.deepEqual(r.mapWarnings, ['story demo-01: ex-demo-01 is its bead, but ex-fwa names it too']);
+});
+
+test('dha: a story mapped to its existing bead still gets its reality-check script, on that bead', () => {
+  const { SURFACES, STORY } = require('./testing/gate-fixture.js');
+  const root = scratchProject();
+  fs.writeFileSync(path.join(root, '.delivery', 'initiatives', 'demo', 'surface.json'), JSON.stringify(SURFACES));
+  const body = STORY.replace(/^---[\s\S]*?---\n/, '');
+  fs.writeFileSync(path.join(root, '.delivery', 'stories', 'demo-01-first.md'), `---\nid: demo-01\ntitle: First story\nstatus: ready\nepic: demo\nphase: Phase 1\nsurface: S1\ndepends_on: []\nsize: S\n---\n${body}`);
+  execFileSync('git', ['add', '-A'], { cwd: root });
+  execFileSync('git', ['commit', '-q', '-m', 'surface'], { cwd: root });
+  const env = fakeEnv();
+  tracked(makeBd({ env }), 'ex-fwa', { roadmap_ref: 'demo/demo-01' });
+  const out = execFileSync(process.execPath, [path.join(PLUGIN, 'scripts', 'materialise.js'), '--project', root, '--initiative', 'demo'], { env }).toString();
+  assert.match(out, /^mapped story demo-01 to ex-fwa \(open\), not ex-demo-01$/m);
+  assert.match(out, /^reality-check scripts planned: \.delivery\/reality-checks\/ex-fwa\.json$/m);
+  assert.equal(fs.existsSync(path.join(root, '.delivery', 'reality-checks', 'ex-demo-01.json')), false, 'none for the id it was not given');
 });

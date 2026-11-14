@@ -96,17 +96,30 @@ function isMaterialised(b, initiative) {
 }
 
 // dha: a story's bead is <prefix>-<story id>, but work tracked before the roadmap existed has a bead of its
-// own, whose metadata names the story: roadmap_ref "<initiative>/<story id>" (optionally "@<sha> ..."), or
-// the story's file in story_file. Created again under the planned id, shipped work doubled. Such a bead is
-// the story's bead: the plan takes its id, in the beads and in every dependency. One that is closed stays
-// closed (applyPlan skips it); more than one naming a story is a warning, and an open one wins.
+// own, whose metadata names the story. Created again under the planned id, shipped work doubled. A bead
+// names the story when its metadata has roadmap_ref "<initiative>/<story id>" (the form such beads were
+// filed with), story equal to the story id with a roadmap_ref in this initiative (what materialise writes,
+// roadmap_ref then being "<initiative>/roadmap.md@<sha> phase <n>", so a renamed story file still maps),
+// or the story's file in story_file. Such a bead is the story's bead: the plan takes its id, in the beads
+// and in every dependency. One that is closed stays closed (applyPlan skips it); more than one naming a
+// story is a warning, and an open one wins.
 function namesStory(b, initiative, planned) {
   const m = (b && b.metadata) || {};
   const ref = String(m.roadmap_ref || '');
   const story = planned.metadata && planned.metadata.story;
-  if (story && (ref === `${initiative}/${story}` || ref.startsWith(`${initiative}/${story}@`) || ref.startsWith(`${initiative}/${story} `))) return true;
+  if (story && ref === `${initiative}/${story}`) return true;
+  if (story && m.story === story && ref.startsWith(`${initiative}/`)) return true;
   const file = planned.metadata && planned.metadata.story_file;
   return Boolean(file && m.story_file && path.basename(String(m.story_file)) === file);
+}
+// rv-205: a mapped bead is someone else's record (a bug, a builder's bead): it gets the roadmap metadata
+// only. Its title, parent, type and labels stay its own, so a bug is never moved under a phase epic or
+// renamed after a story. It is not marked materialised_by either, so materialise never strips a
+// dependency someone else gave it.
+function asMapped(planned, existing) {
+  const { materialised_by: _m, ...metadata } = planned.metadata || {};
+  return { ...planned, id: existing.id, title: existing.title, parent: existing.parent || null, type: existing.type || existing.issue_type || planned.type,
+    labels: [...(existing.labels || [])], metadata, mappedFrom: planned.id };
 }
 function mapToExisting(plan, beads, initiative) {
   const byId = new Map(beads.map((b) => [b.id, b]));
@@ -114,18 +127,23 @@ function mapToExisting(plan, beads, initiative) {
   const mapped = [];
   const warnings = [];
   for (const p of plan.beads) {
-    if (!p.labels.includes('story') || byId.has(p.id)) continue;
+    if (!p.labels.includes('story')) continue;
     const named = beads.filter((b) => b.id !== p.id && namesStory(b, initiative, p));
+    // the planned bead exists already: it is the story's bead, and another naming the story is a warning
+    if (byId.has(p.id)) {
+      if (named.length) warnings.push(`story ${p.metadata.story}: ${p.id} is its bead, but ${named.map((b) => b.id).join(', ')} name${named.length > 1 ? '' : 's'} it too`);
+      continue;
+    }
     if (!named.length) continue;
     const pick = named.find((b) => b.status !== 'closed') || named[0];
     if (named.length > 1) warnings.push(`story ${p.metadata.story}: ${named.length} beads name it (${named.map((b) => b.id).join(', ')}); mapped to ${pick.id}`);
-    alias.set(p.id, pick.id);
+    alias.set(p.id, pick);
     mapped.push({ story: p.metadata.story, planned: p.id, bead: pick.id, status: pick.status === 'closed' ? 'closed' : 'open' });
   }
   if (!alias.size) return { plan, mapped, warnings };
-  const to = (id) => alias.get(id) || id;
+  const to = (id) => (alias.has(id) ? alias.get(id).id : id);
   return {
-    plan: { ...plan, beads: plan.beads.map((b) => (alias.has(b.id) ? { ...b, id: to(b.id) } : b)), deps: plan.deps.map((d) => ({ ...d, id: to(d.id), blockedBy: to(d.blockedBy) })) },
+    plan: { ...plan, beads: plan.beads.map((b) => (alias.has(b.id) ? asMapped(b, alias.get(b.id)) : b)), deps: plan.deps.map((d) => ({ ...d, id: to(d.id), blockedBy: to(d.blockedBy) })) },
     mapped,
     warnings,
   };
@@ -157,6 +175,8 @@ function applyPlanSteps({ plan: planned0, bd, dryRun, initiative, result }) {
   for (const m of mapped) result.commands.push(`map ${m.planned} -> ${m.bead}`);
   result.mapped.push(...mapped);
   result.mapWarnings.push(...warnings);
+  // the plan as applied, so the reality-check scripts are planned on the beads that hold each story (rv-205)
+  result.plan = plan;
   for (const b of plan.beads) {
     const existing = known.get(b.id);
     if (!existing) {
@@ -287,7 +307,8 @@ function planChecks({ projectRoot, plan, bd, by, at }) {
   const rc = require('./reality-check.js');
   const written = [];
   for (const b of plan.beads) {
-    if (!b.labels.includes('story')) continue;
+    // a mapped bead keeps its own labels (a bug's), but it holds the story all the same
+    if (!b.labels.includes('story') && !b.mappedFrom) continue;
     const bead = bd.show(b.id);
     if (!bead || bead.status === 'closed') continue;
     const inp = gateInputs(projectRoot, bead, { bd });
@@ -362,7 +383,7 @@ if (require.main === module) {
     const entries = denylistFrom({ initiative: args.initiative, roadmap: inputs.roadmap, stories: inputs.stories, spikes: inputs.spikes, briefText: inputs.briefText, prdText: inputs.prdText, personaNames: inputs.personaNames });
     const denylistPath = path.join(root, '.delivery', 'team', 'denylist.txt');
     if (!dryRun) writeDenylist(root, entries);
-    const checks = dryRun ? [] : planChecks({ projectRoot: root, plan, bd, by: 'materialise', at: new Date().toISOString() });
+    const checks = dryRun ? [] : planChecks({ projectRoot: root, plan: r.plan || plan, bd, by: 'materialise', at: new Date().toISOString() });
     const denyText = dryRun ? `denylist would have ${entries.length} entries at ${denylistPath}` : `denylist ${denylistPath} (${entries.length} entries)`;
     console.log(`${dryRun ? 'dry run: ' : ''}created ${r.created.length}, updated ${r.updated.length}, deps ${r.depsAdded.length}, deps removed ${r.depsRemoved.length}, skipped closed ${r.skippedClosed.length}, skipped deps ${r.skippedDeps.length}; roadmap ${args.initiative}/roadmap.md@${inputs.sha}; ${denyText}`);
     if (checks.length) console.log(`reality-check scripts planned: ${checks.map((id) => require('./reality-check.js').scriptRel(id)).join(' ')}`);
