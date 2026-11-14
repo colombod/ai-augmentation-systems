@@ -2264,6 +2264,54 @@ test('every lane but the host manager\'s refuses systemctl --user and the host m
   for (const c of [`${revive} check`, `${hmjs} status`, 'systemctl --version', 'ls ~/.config/systemd/user', 'npm test']) assert.equal(b(c), true, c);
 });
 
+// Every lane may read the plugin's own user units (show, status, is-active, list-units on
+// delivery-watchdog-* and delivery-host-manager*): a builder or the Delivery Manager checks whether the
+// host manager runs without asking it. Writing to them, and reading any other unit, stays the host
+// manager's.
+const UNIT_READS = [
+  'systemctl --user show delivery-host-manager.service -p ActiveState -p TasksMax',
+  'systemctl --user show delivery-host-manager.service --property=ActiveState --no-pager',
+  'systemctl --user status delivery-host-manager.service', 'systemctl --user status delivery-host-manager-tick.timer -n 20 --no-pager',
+  'systemctl --user is-active delivery-host-manager.service', 'systemctl --user is-active delivery-watchdog-0a1b2c3d.timer delivery-watchdog-0a1b2c3d.path',
+  'systemctl --user show delivery-watchdog-0a1b2c3d.service', 'systemctl --user status delivery-host-manager-tick.service',
+  'systemctl --user list-units', 'systemctl --user list-units --all --no-pager', "systemctl --user list-units 'delivery-watchdog-*.timer'", 'systemctl --user list-units "delivery-host-manager*.service"',
+];
+const UNIT_REFUSED = [
+  'systemctl --user start delivery-host-manager.service', 'systemctl --user stop delivery-host-manager.service', 'systemctl --user restart delivery-watchdog-0a1b2c3d.timer',
+  'systemctl --user set-property delivery-host-manager.service TasksMax=500', 'systemctl --user reset-failed delivery-host-manager.service',
+  'systemctl --user enable delivery-host-manager.service', 'systemctl --user disable delivery-host-manager-tick.timer', 'systemctl --user kill delivery-host-manager.service',
+  'systemctl --user reload delivery-host-manager.service', 'systemctl --user daemon-reload', 'systemctl --user mask delivery-host-manager.service', 'systemctl --user edit delivery-host-manager.service',
+  'systemctl --user revert delivery-host-manager.service',
+  'systemctl --user show ssh.service', 'systemctl --user status ssh.service', 'systemctl --user is-active dbus.service', 'systemctl --user list-units ssh.service',
+  'systemctl --user show delivery-host-manager.service ssh.service', 'systemctl --user show', 'systemctl --user status',
+  // the read verbs keep every bypass protection: an abbreviated --user, a word the shell builds, another manager
+  'systemctl --us show ssh.service', 'systemctl --us start delivery-host-manager.service', 'systemctl --user show $UNIT', 'systemctl --user show delivery-host-manager$X.service', 'systemctl --user "$(echo show)" delivery-host-manager.service',
+  'systemctl --user -M dev@ show delivery-host-manager.service', 'systemctl --user -H box show delivery-host-manager.service',
+  'systemctl --user --machine=dev@ show delivery-host-manager.service', 'systemctl --user -Mdev@ show delivery-host-manager.service', 'systemctl --user --host=box show delivery-host-manager.service', 'systemctl --user --system show delivery-host-manager.service',
+  'systemctl --user -P show start delivery-host-manager.service', 'systemctl --user --prop show start delivery-host-manager.service',
+  'systemctl --user -- start delivery-host-manager.service', "sh -c 'systemctl --user start delivery-host-manager.service'",
+  'systemctl --user show delivery-host-manager.service; systemctl --user stop delivery-host-manager.service',
+  'busctl --user introspect org.freedesktop.systemd1 /org/freedesktop/systemd1', 'systemd-run --user systemctl --user show delivery-host-manager.service',
+];
+test('every lane reads the plugin\'s own user units with systemctl --user show, status, is-active and list-units; writes and other units stay refused', () => {
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'unit-reads-'));
+  for (const id of ['builder', 'delivery-lead']) {
+    const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${id}` });
+    const d = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+    for (const c of UNIT_READS) assert.equal(d(c).allow, true, `${id}: ${c}: ${d(c).reason}`);
+    for (const c of UNIT_REFUSED) assert.equal(d(c).allow, false, `${id}: ${c}`);
+    if (id === 'builder') assert.match(d('systemctl --user start delivery-host-manager.service').reason, /systemctl --user\) are the host manager's/);
+  }
+  // every other lane reads them too
+  for (const id of fs.readdirSync(path.join(PLUGIN_ROOT, 'roles')).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3))) {
+    const policy = loadPolicy({ pluginRoot: PLUGIN_ROOT, projectRoot: '/nonexistent', briefRef: `delivery/${id}` });
+    const d = (command) => decideLane({ toolName: 'Bash', toolInput: { command }, policy, roleDir: rd, groups: GROUPS, pluginRoot: PLUGIN_ROOT, cwd: rd });
+    assert.equal(d('systemctl --user show delivery-host-manager.service -p ActiveState -p TasksMax').allow, true, id);
+    assert.equal(d('systemctl --user is-active delivery-watchdog-0a1b2c3d.timer').allow, true, id);
+    if (id !== 'host-manager') assert.equal(d('systemctl --user restart delivery-host-manager.service').allow, false, id);
+  }
+});
+
 // The refusals read each segment's own words, as the shell will run them: quotes and backslashes taken
 // out, the command word found behind env, command, xargs, assignments and sh -c; a word the shell
 // builds at run time ($, backticks) on a service manager's command line is refused, since what it
