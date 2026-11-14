@@ -819,8 +819,9 @@ const procReads = {
 // and, given the wake row's time (since), started no later than the row (a supervisor is spawned, then
 // its row written). A pid the system gave to another program after the wake ended is not ours, nor is
 // a later wake on the same pid. When neither the command nor the start can be read, the pid is kept
-// only within the wake timeout of its row, so an unreadable pid never holds installs and wakes with no
-// end (hjx.1.6.20: a reused pid held every install for 91 hours). With no row time, as before.
+// only within the wake timeout plus the kill grace of its row (wake-run.js may live that long), so an
+// unreadable pid never holds installs and wakes with no end (hjx.1.6.20: a reused pid held every install
+// for 91 hours). With no row time, as before.
 function pidAlive(pid, { since = null, now = Date.now(), proc = procReads } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   if (!proc.exists(pid)) return false;
@@ -1022,4 +1023,4 @@ function wakeArgs(s, prompt, live, { prefix = null } = {}) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { KILL_GRACE_MS, START_SLACK_MS, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

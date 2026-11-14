@@ -213,6 +213,10 @@ function wakeAlive(ended, now) {
 function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
+  // a wake row is stamped at its spawn, not at the pass start: the check reads the supervisor's start
+  // against the row (lib/watchdog.js pidAlive), and the reads and spawns before it take real time. A run
+  // given its clock (a test, a replay) keeps that clock exactly, so its gates read as it set them.
+  const spawnStamp = () => (now ? at : new Date().toISOString());
   const p = WD.plan(res, { root, now: at, alive: wakeAlive(ended, at) });
   const lines = [];
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
@@ -265,7 +269,7 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
     const wakeId = crypto.randomBytes(6).toString('hex');
     // DELIVERY_WAKE_KICK: the supervisor kicks the next run when this wake ends (lib/kick.js)
     const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, DELIVERY_WAKE_KICK: KICK.dirOf(root), ...HEADLESS_WAIT }), logPath });
-    WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
+    WD.log(root, { type: 'wake', at: spawnStamp(), keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
     // the messages and handoffs it carries are handed over: the next run does not wake for them again
     for (const d of w.delivers || []) require('./lib/inbox.js').markDelivered(root, d.to, d.upTo);
     // a handoffs file another writer holds: the wake stands, the row is handed over at the next pass

@@ -71,17 +71,21 @@ const path = require('path');
 function realSupervisor(t) {
   if (!fs.existsSync('/proc/self/stat')) { t.skip('no /proc on this host'); return null; }
   const sup = require('child_process').spawn(process.execPath, [path.join(__dirname, 'wake-run.js'), '60000', process.execPath, '-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore', detached: true });
-  const spawnedAt = Date.now();
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);
-  return { sup, spawnedAt, stop: () => { try { process.kill(-sup.pid, 'SIGKILL'); } catch (e) { /* gone */ } } };
+  // every time in these cases is built from the supervisor's own start, as the kernel reports it: the
+  // suite may run with its clock a month ahead (CI), and a real process starts on the real clock
+  const spawnedAt = WD.procReads.startedMs(sup.pid);
+  const stop = () => { try { process.kill(-sup.pid, 'SIGKILL'); } catch (e) { /* gone */ } };
+  if (!Number.isFinite(spawnedAt)) { stop(); t.skip('the start time of a process cannot be read here'); return null; }
+  return { sup, spawnedAt, now: spawnedAt + 5000, stop };
 }
 
 test('a real wake supervisor is that wake for a row written just after it started, and not for a row from long before', (t) => {
   const r = realSupervisor(t);
   if (!r) return;
   try {
-    assert.equal(WD.pidAlive(r.sup.pid, { since: iso(r.spawnedAt + 1000) }), true, 'its own row, written just after the spawn');
-    assert.equal(WD.pidAlive(r.sup.pid, { since: iso(r.spawnedAt - 10 * 60e3) }), false, 'a row from ten minutes before it existed is another wake');
+    assert.equal(WD.pidAlive(r.sup.pid, { since: iso(r.spawnedAt + 1000), now: r.now }), true, 'its own row, written just after the spawn');
+    assert.equal(WD.pidAlive(r.sup.pid, { since: iso(r.spawnedAt - 10 * 60e3), now: r.now }), false, 'a row from ten minutes before it existed is another wake');
   } finally { r.stop(); }
 });
 
@@ -90,7 +94,7 @@ test('the host job asks with the row time and its clock: a wake ended in this ru
   if (!r) return;
   try {
     const job = require('../watchdog.js');
-    const now = Date.now();
+    const now = r.now;
     assert.equal(job.wakeAlive(new Set(), now)(r.sup.pid, iso(r.spawnedAt + 1000)), true);
     assert.equal(job.wakeAlive(new Set(), now)(r.sup.pid, iso(r.spawnedAt - 10 * 60e3)), false, 'the row time reaches the check');
     assert.equal(job.wakeAlive(new Set([r.sup.pid]), now)(r.sup.pid, iso(r.spawnedAt + 1000)), false, 'its kick said it ended');
@@ -129,10 +133,10 @@ test('the wake plan\'s own check reads a real supervisor by its row time: a row 
     const stall = { kind: 'quiet', key: 'quiet:ex-9', bead: 'ex-9', target: 'builder', due: true, line: 'ex-9 has not moved', prompt: 'Move ex-9.' };
     // a row from three hours before this supervisor existed: the pid is not that wake, so nothing holds
     WD.log(root, { type: 'wake', at: iso(r.spawnedAt - 3 * 3600e3), keys: ['quiet:ex-8'], instance: 'builder', pid: r.sup.pid });
-    assert.equal(WD.plan({ stalls: [stall] }, { root, now: iso(Date.now()) }).wakes.length, 1);
+    assert.equal(WD.plan({ stalls: [stall] }, { root, now: iso(r.now) }).wakes.length, 1);
     // its own row, just after it started: it holds
     WD.log(root, { type: 'wake', at: iso(r.spawnedAt + 1000), keys: ['quiet:ex-7'], instance: 'builder', pid: r.sup.pid });
-    const held = WD.plan({ stalls: [stall] }, { root, now: iso(Date.now()) });
+    const held = WD.plan({ stalls: [stall] }, { root, now: iso(r.now) });
     assert.equal(held.wakes.length, 0);
     assert.match(held.held[0].reason, /still running/);
   } finally { r.stop(); fs.rmSync(root, { recursive: true, force: true }); }

@@ -189,7 +189,7 @@ const brief = (err) => String((err && (err.stderr || err.message)) || err).trim(
 // One pass: returns { lines, installed } and never throws. `roleDirs` are the team's role directories:
 // a local or project install there is what that role's session loads, so it is updated too, or the role
 // would stay on the old version after its fresh wake (criterion c).
-function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = defaultExec, now, dryRun = false, alive = WD.pidAlive, roleDirs = [] } = {}) {
+function selfUpdate(root, { pluginRoot, configDir, env = process.env, exec = defaultExec, now, dryRun = false, alive = (pid, since) => WD.pidAlive(pid, { since, now }), roleDirs = [] } = {}) {
   const at = now || new Date().toISOString();
   try {
     const own = findInstall(pluginRoot, root, configDir || env.CLAUDE_CONFIG_DIR);
