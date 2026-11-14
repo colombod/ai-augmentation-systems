@@ -1434,7 +1434,14 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   other role (its handovers likewise go up to 96 a day, against 48 for other roles); each stall waits
   1, 2, 4, 8 ... hours after each wake that carried it; never while that session's last wake still runs, however long ago it started (each wake runs in its own process group
   under `lib/wake-run.js`, which stops the whole group after 2 hours, SIGTERM then SIGKILL, and lives
-  until the group is gone; the guard checks that the logged pid is alive and is still that supervisor); never before the session's own usage limit resets (then once,
+  until the group is gone; the guard checks that the logged pid is alive and is still that supervisor. The supervisor and
+  its session run in a systemd user scope of their own, `delivery-role-<instance>-<ms>.scope` with
+  `TasksMax=1000` and `MemoryMax=3G`, wherever the user's systemd manager can be reached
+  (`lib/role-scope.js`), as `team-revive.js` starts and `start.js --launch` do: started straight from the
+  host job, a woken session ran in the watchdog service's cgroup and shared its task limit. Elsewhere it
+  is a plain detached child. The host manager's own unit is its own cgroup already; a unit written by
+  hand outside the plugin, such as a Chief of Staff's Remote Control service, is the one start path the
+  plugin cannot reach); never before the session's own usage limit resets (then once,
   for everything due). Past a limit the stall stays an alarm: "Alarm only: <session>: <reason>". A usage
   limit with no known reset keeps one key and one warning however often a wake is rejected again. A
   usage-limit wake starts within the 5-minute grace plus one job interval of the reset (at most 20 minutes at
