@@ -1087,3 +1087,27 @@ test('a role marker that names another role or another instance is not a prepare
     assert.match(r.out, /role marker .* is not the host manager's/, r.out);
   }
 });
+
+test('a repeated install that can no longer go ahead still starts the stopped unit: the instance moved to another host, or team.json unreadable', () => {
+  const teamFile = (m) => path.join(m.alpha.root, '.delivery', 'team', 'team.json');
+  const cases = [
+    ['instance on another host', (m) => { const t = JSON.parse(fs.readFileSync(teamFile(m), 'utf8')); t.roles = t.roles.map((r) => (r.id === 'host-manager' ? { ...r, host: 'elsewhere' } : r)); fs.writeFileSync(teamFile(m), JSON.stringify(t)); }, null],
+    ['team.json unreadable', (m) => fs.writeFileSync(teamFile(m), '{ nope'), /its units were not installed \(the team at .* could not be read/],
+  ];
+  for (const [what, spoil, said] of cases) {
+    const m = machine({ alphaRoles: hmRoles() });
+    m.sd.units[HM.UNIT] = loaded(true);
+    const failTimer = (cmd, args) => { if (args.join(' ') === `--user enable --now ${HM.TICK_TIMER}`) throw new Error('Failed to enable unit: Access denied'); return m.sd.exec(cmd, args); };
+    watchdog.ensureHostManager(m.alpha.root, runOpts(m, { exec: failTimer }));
+    assert.match(String(installRows(m).pop().error), /Access denied/, what);
+    spoil(m);
+    m.sd.units[HM.UNIT] = loaded(false);
+    const b = m.sd.calls.length;
+    const out = String(watchdog.ensureHostManager(m.alpha.root, runOpts(m, { now: iso(Date.parse(T0) + 15 * MIN) })));
+    assert.ok(m.sd.calls.slice(b).includes(`systemctl --user start ${HM.UNIT}`), `${what}: ${m.sd.calls.slice(b).join('\n')}`);
+    assert.equal(R.ledger(m.alpha.root).filter((x) => x.type === 'host-manager-start').length, 1, `${what}: ${out}`);
+    assert.ok(!m.sd.calls.slice(b).some((c) => /daemon-reload|enable/.test(c)), `${what}: the install is not repeated`);
+    assert.equal(installRows(m).length, 1, `${what}: no install row for a skipped retry`);
+    if (said) assert.match(out, said, what);
+  }
+});
