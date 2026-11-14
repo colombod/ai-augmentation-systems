@@ -1644,16 +1644,25 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   ledger as the shell that installed them. It reloads systemd, enables
   and starts the service and the timer, and says, without running it, when `loginctl enable-linger` is
   needed for the units to start at boot. A host without systemctl, a team with no `host-manager`
-  instance (Staffing adds one: `team-role.js add host-manager`) or a role directory not yet prepared
-  installs nothing and says why. Install is refused in every role session. `watchdog.js install --apply`
-  runs the same install when the service file is missing, and so does each watchdog `run` (the host
-  job, outside any role session): when `delivery-host-manager.service` is missing, the team's manifest
-  has a `host-manager` instance on this host and its role directory is prepared, the run calls the same
-  install (the same three units, the same reload, enable and start) and writes one `host-manager-install`
-  row to `revive.ndjson` with the files it wrote. So a host manager that Staffing prepares after the
-  watchdog was installed gets its units at the next run, with no step from the owner. A team with no
-  host manager on this host, a role directory not yet prepared, a host without systemctl, or units
-  already installed are left as they are: an installed unit is never rewritten. Each watchdog `run` then checks `delivery-host-manager.service` and starts it when it is
+  instance (Staffing adds one: `team-role.js add host-manager`), a role directory not yet prepared (it
+  must exist and hold its role marker `.delivery-role.json`, as `prepare-role.js` writes it; the
+  directory is the roster's `role_dir` when one is recorded) or a `team.json` that cannot be read
+  (missing, not JSON, no roles list) installs nothing and says why. Install is refused in every role
+  session. `watchdog.js install --apply` runs the same install when the service file is missing, and so
+  does each watchdog `run` (the host job, outside any role session): when
+  `delivery-host-manager.service` is missing, the team's manifest has a `host-manager` instance on this
+  host and its role directory is prepared, the run calls the same install (the same reload, enable and
+  start) and writes one `host-manager-install` row to `revive.ndjson` with the files it wrote. These two
+  installs write only the unit files that are missing: a tick service or tick timer already there (an
+  owner's edit included) is kept as it is. Every attempt that gets past the checks is one row, a write
+  that fails included (the row carries the `error`, and the next run tries again). When the last
+  `host-manager-install` row carries an error (an enable that failed after the files were written), the
+  next run repeats the reload and the enables, writing nothing that exists, and writes one more row,
+  until a run records none. So a host manager that Staffing prepares after the watchdog was installed
+  gets its units at the next run, with no step from the owner. A team with no host manager on this host,
+  a role directory not yet prepared or a host without systemctl are left as they are and write no row;
+  a `team.json` that cannot be read is said in the run's output, with no row. An installed unit is never
+  rewritten by the watchdog; `host-manager.js install`, run by hand, writes all three. Each watchdog `run` then checks `delivery-host-manager.service` and starts it when it is
   installed and not active; a unit that hit its start limit is failed, and the pass runs
   `systemctl --user reset-failed delivery-host-manager.service` (that unit only) before the start, so it
   is tried again every 15 minutes. While a host-manager session is already live (in its role directory or
