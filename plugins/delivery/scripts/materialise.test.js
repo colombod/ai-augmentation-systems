@@ -478,7 +478,9 @@ test('dha: a story already tracked by a bead whose roadmap_ref names it is mappe
   const fwa = bd.show('ex-fwa');
   assert.equal(fwa.title, '(BUG) the first thing, as filed');
   assert.ok(!fwa.parent, `no phase epic: ${fwa.parent}`);
-  assert.deepEqual(fwa.labels, ['plugin'], 'its own labels only');
+  assert.deepEqual(fwa.labels.slice().sort(), ['plugin', 'size-S'], 'its own labels, and only the managed size label of the story');
+  // the deps materialise gave it are recorded on it, so a later run removes only those
+  assert.deepEqual(fwa.metadata.materialise_deps, bd.depsOf('ex-fwa').slice().sort());
   assert.equal(fwa.metadata.story, 'demo-01');
   assert.equal(fwa.metadata.story_file, 'demo-01-first.md');
   assert.match(fwa.metadata.roadmap_ref, /^demo\/roadmap\.md@/);
@@ -583,4 +585,77 @@ test('dha: a story mapped to its existing bead still gets its reality-check scri
   assert.match(out, /^mapped story demo-01 to ex-fwa \(open\), not ex-demo-01$/m);
   assert.match(out, /^reality-check scripts planned: \.delivery\/reality-checks\/ex-fwa\.json$/m);
   assert.equal(fs.existsSync(path.join(root, '.delivery', 'reality-checks', 'ex-demo-01.json')), false, 'none for the id it was not given');
+});
+
+// rv-205: materialise removes only the dependencies it added. On a mapped bead that is the list it records
+// on the bead; a dependency someone else gave the bead stays, and one the plan put toward it can go.
+const withDeps = (stories, id, dependsOn) => stories.map((s) => (s.id === id ? { ...s, dependsOn } : s));
+
+test('dha: a dependency someone else gave a mapped bead survives every run, and --check does not count it', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  tracked(bd, 'ex-fwa', { roadmap_ref: 'demo/demo-01' });
+  applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  // a person blocks the bug on one of materialise's own beads (its phase epic, which nothing ties to it)
+  bd.depAdd('ex-fwa', 'ex-demo-ph1');
+  const r = applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.ok(!r.depsRemoved.some((d) => d.id === 'ex-fwa'), JSON.stringify(r.depsRemoved));
+  assert.ok(bd.depsOf('ex-fwa').includes('ex-demo-ph1'), 'never silently unblocked');
+  const d = reconcile({ plan: planOf(inputs), bd, roadmap: inputs.roadmap, initiative: 'demo' });
+  assert.ok(!d.depDrift.some((x) => x.id === 'ex-fwa' && x.extra.includes('ex-demo-ph1')), JSON.stringify(d.depDrift));
+});
+
+test('dha: a dependency the plan gave a mapped bead goes when the plan drops it, and --check shows it first', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  tracked(bd, 'ex-fwa', { roadmap_ref: 'demo/demo-02' });
+  applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.ok(bd.depsOf('ex-fwa').includes('ex-demo-01'), 'demo-02 depends on demo-01');
+  assert.ok(bd.show('ex-fwa').metadata.materialise_deps.includes('ex-demo-01'));
+  const dropped = planOf(inputs, null, withDeps(inputs.stories, 'demo-02', []));
+  const d = reconcile({ plan: dropped, bd, roadmap: inputs.roadmap, initiative: 'demo' });
+  assert.ok(d.depDrift.some((x) => x.id === 'ex-fwa' && x.extra.includes('ex-demo-01')), JSON.stringify(d.depDrift));
+  const r = applyPlan({ plan: dropped, bd, initiative: 'demo' });
+  assert.ok(r.depsRemoved.some((x) => x.id === 'ex-fwa' && x.blockedBy === 'ex-demo-01'));
+  assert.ok(!bd.depsOf('ex-fwa').includes('ex-demo-01'));
+  assert.ok(!bd.show('ex-fwa').metadata.materialise_deps.includes('ex-demo-01'), 'the record drops it too');
+});
+
+test('dha: a dependency the plan put toward a mapped bead goes when dropped, and reversing it applies without a cycle', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  tracked(bd, 'ex-fwa', { roadmap_ref: 'demo/demo-01' });
+  applyPlan({ plan: planOf(inputs), bd, initiative: 'demo' });
+  assert.ok(bd.depsOf('ex-demo-02').includes('ex-fwa'));
+  // demo-02 no longer depends on demo-01: the dep toward the mapped bead goes
+  const dropped = planOf(inputs, null, withDeps(inputs.stories, 'demo-02', []));
+  const d = reconcile({ plan: dropped, bd, roadmap: inputs.roadmap, initiative: 'demo' });
+  assert.ok(d.depDrift.some((x) => x.id === 'ex-demo-02' && x.extra.includes('ex-fwa')), JSON.stringify(d.depDrift));
+  applyPlan({ plan: dropped, bd, initiative: 'demo' });
+  assert.ok(!bd.depsOf('ex-demo-02').includes('ex-fwa'));
+  // and the other way round on a fresh graph: demo-01 now depends on demo-02, in the same phase
+  const bd2 = makeBd({ env: fakeEnv() });
+  tracked(bd2, 'ex-fwa', { roadmap_ref: 'demo/demo-01' });
+  const samePhase = inputs.stories.map((s) => (s.id === 'demo-02' ? { ...s, phase: '1', dependsOn: ['demo-01'] } : s));
+  applyPlan({ plan: planOf(inputs, null, samePhase), bd: bd2, initiative: 'demo' });
+  const reversed = samePhase.map((s) => (s.id === 'demo-02' ? { ...s, dependsOn: [] } : s.id === 'demo-01' ? { ...s, dependsOn: ['demo-02'] } : s));
+  applyPlan({ plan: planOf(inputs, null, reversed), bd: bd2, initiative: 'demo' });
+  assert.ok(bd2.depsOf('ex-fwa').includes('ex-demo-02'));
+  assert.ok(!bd2.depsOf('ex-demo-02').includes('ex-fwa'));
+});
+
+test('dha: a mapped bead gets the managed size and wave labels, a resize swaps them, and a dropped model override goes', () => {
+  const bd = makeBd({ env: fakeEnv() });
+  const inputs = loadInputs({ projectRoot: scratchProject(), initiative: 'demo' });
+  tracked(bd, 'ex-fwa', { roadmap_ref: 'demo/demo-01' });
+  const large = inputs.stories.map((s) => (s.id === 'demo-01' ? { ...s, size: 'L', wave: '2', model: 'opus' } : s));
+  applyPlan({ plan: planOf(inputs, null, large), bd, initiative: 'demo' });
+  let fwa = bd.show('ex-fwa');
+  assert.deepEqual(fwa.labels.slice().sort(), ['plugin', 'size-L', 'wave-2']);
+  assert.equal(fwa.metadata.model, 'opus');
+  const medium = inputs.stories.map((s) => (s.id === 'demo-01' ? { ...s, size: 'M' } : s));
+  applyPlan({ plan: planOf(inputs, null, medium), bd, initiative: 'demo' });
+  fwa = bd.show('ex-fwa');
+  assert.deepEqual(fwa.labels.slice().sort(), ['plugin', 'size-M'], 'size and wave swapped, its own label kept');
+  assert.equal(fwa.metadata.model, undefined, 'the model override went with the story\'s');
 });

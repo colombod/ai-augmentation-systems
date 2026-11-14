@@ -118,8 +118,12 @@ function namesStory(b, initiative, planned) {
 // dependency someone else gave it.
 function asMapped(planned, existing) {
   const { materialised_by: _m, ...metadata } = planned.metadata || {};
+  // its own labels, with the managed size and wave labels the story gives (rv-205: a size-L story is costed
+  // as L and gets the stronger model); a stale size or wave label of its own goes, as on any story bead
+  const MANAGED = /^(size-[SML]|wave-\d+)$/;
+  const labels = [...(existing.labels || []).filter((l) => !MANAGED.test(l)), ...planned.labels.filter((l) => MANAGED.test(l))];
   return { ...planned, id: existing.id, title: existing.title, parent: existing.parent || null, type: existing.type || existing.issue_type || planned.type,
-    labels: [...(existing.labels || [])], metadata, mappedFrom: planned.id };
+    labels, metadata, mappedFrom: planned.id };
 }
 function mapToExisting(plan, beads, initiative) {
   const byId = new Map(beads.map((b) => [b.id, b]));
@@ -198,7 +202,7 @@ function applyPlanSteps({ plan: planned0, bd, dryRun, initiative, result }) {
       ...existing.labels.filter((l) => /^(size-[SML]|wave-\d+)$/.test(l) && !b.labels.includes(l)),
     ];
     // a story that no longer names a model: the bead's model override goes too
-    const unsetMetadata = ['model', 'wave'].filter((k) => b.labels.includes('story') && (existing.metadata || {})[k] !== undefined && b.metadata[k] === undefined);
+    const unsetMetadata = ['model', 'wave'].filter((k) => (b.labels.includes('story') || b.mappedFrom) && (existing.metadata || {})[k] !== undefined && b.metadata[k] === undefined);
     if (!missingLabels.length && !staleLabels.length && !metaDrift && !titleChanged && !parentChanged && !unsetMetadata.length) continue;
     result.commands.push(`update ${b.id}`);
     if (!dryRun) bd.update(b.id, { title: titleChanged ? b.title : undefined, parent: parentChanged ? b.parent : undefined, addLabels: missingLabels, removeLabels: staleLabels, metadata: metaDrift ? b.metadata : undefined, unsetMetadata });
@@ -211,15 +215,20 @@ function applyPlanSteps({ plan: planned0, bd, dryRun, initiative, result }) {
   // Re-thread: drop deps between this initiative's materialised beads that the plan no longer has,
   // before adding new ones, so a moved story never leaves a cycle for bd to reject.
   const planned = plannedBlockers(plan);
+  // rv-205: on a mapped bead (someone else's record) only the deps materialise itself added to it may go,
+  // and it keeps the list of those in its metadata; any other dep on it was given by someone else and stays.
+  const own = new Map(plan.beads.filter((b) => b.mappedFrom).map((b) => [b.id, new Set(ownDeps(known.get(b.id)))]));
+  const ownChanged = new Set();
   for (const b of plan.beads) {
     if (created.has(b.id) || closed.has(b.id)) continue;
     const want = planned.get(b.id) || [];
     for (const blocker of [...blockers(b.id)]) {
-      if (want.includes(blocker) || !isMaterialised(known.get(blocker), initiative)) continue;
+      if (want.includes(blocker) || !removableDep(b, blocker, { known, own, initiative })) continue;
       result.commands.push(`dep-remove ${b.id} blocked-by ${blocker}`);
       if (!dryRun) bd.depRemove(b.id, blocker);
       cache.set(b.id, blockers(b.id).filter((x) => x !== blocker));
       result.depsRemoved.push({ id: b.id, blockedBy: blocker });
+      if (own.has(b.id) && own.get(b.id).delete(blocker)) ownChanged.add(b.id);
     }
   }
   for (const d of plan.deps) {
@@ -229,8 +238,28 @@ function applyPlanSteps({ plan: planned0, bd, dryRun, initiative, result }) {
     if (!dryRun) bd.depAdd(d.id, d.blockedBy);
     blockers(d.id).push(d.blockedBy);
     result.depsAdded.push(d);
+    if (own.has(d.id)) { own.get(d.id).add(d.blockedBy); ownChanged.add(d.id); }
+  }
+  // the record of which deps on a mapped bead are materialise's own, so the next run removes only those
+  for (const id of ownChanged) {
+    result.commands.push(`record ${id} materialise_deps`);
+    if (!dryRun) bd.update(id, { metadata: { materialise_deps: [...own.get(id)].sort() } });
   }
   return result;
+}
+
+// rv-205: the deps materialise added to a mapped bead, as its metadata records them
+function ownDeps(b) {
+  const list = b && b.metadata && b.metadata.materialise_deps;
+  return Array.isArray(list) ? list.map(String) : [];
+}
+// May materialise remove the dep "b blocked by blocker" once the plan no longer has it? On a mapped bead,
+// only one it recorded adding. On one of its own beads, one whose blocker is its own too, or a mapped bead
+// it threaded into the plan (a dependency the plan once put toward a mapped bead); never one toward
+// someone else's bead.
+function removableDep(b, blocker, { known, own, initiative }) {
+  if (b.mappedFrom) return own.has(b.id) && own.get(b.id).has(blocker);
+  return isMaterialised(known.get(blocker), initiative) || [...own.keys()].includes(blocker);
 }
 
 function refSha(ref) { const m = /@(\S+) phase /.exec(ref || ''); return m ? m[1] : 'none'; }
@@ -246,7 +275,7 @@ function beadDiff(existing, planned) {
   const meta = existing.metadata || {};
   for (const k of Object.keys(planned.metadata)) if (JSON.stringify(meta[k]) !== JSON.stringify(planned.metadata[k])) fields.push(k);
   // a story's model override materialise would unset
-  if (planned.labels.includes('story') && meta.model !== undefined && planned.metadata.model === undefined && !fields.includes('model')) fields.push('model');
+  if ((planned.labels.includes('story') || planned.mappedFrom) && meta.model !== undefined && planned.metadata.model === undefined && !fields.includes('model')) fields.push('model');
   return fields;
 }
 
@@ -283,13 +312,15 @@ function reconcile({ plan, bd, roadmap, initiative }) {
     if (rest.length) out.otherDrift.push({ id: b.id, fields: rest });
   }
   const want = plannedBlockers(plan);
+  // the same rule as applyPlan's re-thread (rv-205): extra is only a dep materialise would remove
+  const own = new Map(plan.beads.filter((b) => b.mappedFrom).map((b) => [b.id, new Set(ownDeps(known.get(b.id)))]));
   for (const b of plan.beads) {
     const existing = known.get(b.id);
     if (!existing || existing.status === 'closed') continue;
     const have = bd.depsOf(b.id);
     const wanted = want.get(b.id) || [];
     const missing = wanted.filter((x) => !have.includes(x));
-    const extra = have.filter((x) => !wanted.includes(x) && isMaterialised(known.get(x), initiative));
+    const extra = have.filter((x) => !wanted.includes(x) && removableDep(b, x, { known, own, initiative }));
     if (missing.length || extra.length) out.depDrift.push({ id: b.id, missing, extra });
   }
   for (const b of known.values()) {
