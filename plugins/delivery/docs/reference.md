@@ -439,6 +439,23 @@ Gates keep work flowing. Each check has one of three levels:
   refusal for starting the next wave arrives with waves (phase 2). `bug` and `security` beads are
   exempt.
 
+**Story files change through `stories.js`.** The gates read a story as a recipe, so each change to one
+is checked when it is made, with the gates' own parser, and a bad value is refused naming its field,
+with the file left byte for byte as it was (exit 1). `node ${CLAUDE_PLUGIN_ROOT}/scripts/stories.js new --from <draft> [--file <name>.md]`
+creates a story from a whole draft written to a temporary file first, and writes nothing unless every
+field passes: a frontmatter value outside the template's (a size other than S, M or L, a status other
+than draft, ready, in-progress, done or superseded), a criterion holding text in angle brackets outside
+a code span, or a criterion whose probe is missing or names no `where:` or no `by: test|reality-check`.
+After that, `set <story> <field> <value>` changes one frontmatter field, `criterion <story> <n> --text '...' --probe '...'`
+replaces criterion n or adds the next one and leaves every other criterion line as it was (so their
+hashes and evidence rows stand), and `section <story> --heading '<heading>' (--body '...' | --body-file <f>)`
+writes a prose section under a heading of `templates/story.md`, matched on the text before any `:` or
+`(`. `<story>` is a file name or a story id. The command rewrites the story index
+(`.delivery/stories/README.md`) on `new` and on a status, title, phase or id change, and `index`
+rewrites it on demand; `plan-sync.js apply` moves a status through the same writer after a merge.
+Only the Delivery Manager runs it in a role session. Every lane, `any` included, refuses a Write, Edit,
+redirect, `sed -i`, `cp` or `mv` onto a story file or the index, naming the command.
+
 **The warnings ledger.** `.delivery/warnings/<instance>.ndjson` in the project repo, one file per
 instance (a session with no role writes `local-<host hash>.ndjson`), so sessions on different hosts
 never write the same file. Append-only: `{type: "warning", id: "w-<instance>-<time><random>", kind,

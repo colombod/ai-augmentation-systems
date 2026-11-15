@@ -2208,7 +2208,7 @@ test('team-runtime-11 c4: Write, Edit and shell writes of a story or its index a
       const abs = path.join(proj, '.delivery', 'stories', name);
       const rel = ['.delivery', 'stories', name].join('/');
       for (const [tool, input] of [['Write', { file_path: abs, content: 'x' }], ['Edit', { file_path: abs, old_string: 'a', new_string: 'b' }],
-        ['Bash', { command: `printf x > ${rel}` }], ['Bash', { command: `sed -i 's/ready/done/' ${rel}` }], ['Bash', { command: `cp /tmp/x ${abs}` }]]) {
+        ['Bash', { command: `printf x > ${rel}` }], ['Bash', { command: `sed -i 's/ready/done/' ${rel}` }], ['Bash', { command: `cp /tmp/x ${abs}` }], ['Bash', { command: `mv /tmp/x ${abs}` }]]) {
         const d = decide(role, tool, input);
         assert.ok(d && !d.allow && /change only through `stories\.js`/.test(d.reason), `${role} ${tool} ${JSON.stringify(input)}: ${d && d.reason}`);
         assert.deepEqual(reasonProblems(d.reason), []);
