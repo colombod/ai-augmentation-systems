@@ -118,7 +118,7 @@ function openPrs(team, env) {
 }
 
 // The facts the rules read, each from its own source; deps replace any of them in a test.
-function gather(root, team, { env = process.env, now, bd, live, prs, alive, hostname, home, configDir, pause, installed, server } = {}) {
+function gather(root, team, { env = process.env, now, bd, live, prs, alive, hostname, home, configDir, pause, installed, server, unitOf } = {}) {
   const config = configDir || R.configDirOf(env, home);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const store = bd || require('./lib/bd.js').makeBd({ cwd: root, env, timeoutMs: 15000 });
@@ -148,6 +148,8 @@ function gather(root, team, { env = process.env, now, bd, live, prs, alive, host
     // the installed plugin: the host job runs it (watchdog.js self-update installs before a pass wakes anyone)
     installed: installed !== undefined ? installed : require('./lib/plugin-version.js').runningVersion(),
     serverOf: server || serverOf,
+    // the user unit that serves a role directory (lib/team-revive.js remoteControlUnitFor), under home
+    unitOf: unitOf || ((dir) => R.remoteControlUnitFor(dir, { home })),
   };
 }
 
@@ -230,7 +232,7 @@ function revive(root, team, opts = {}) {
   if (no) throw new Error(no);
   const lock = R.startLock(root);
   if (lock.held) {
-    const { start, dryRun, env = process.env, spawn, ...deps } = opts;
+    const { start, dryRun, env = process.env, spawn, force, restartUnit, ...deps } = opts;
     const a = { ...R.assess(gather(root, team, { env, ...deps })), go: false, locked: lock.held };
     return { a, started: {}, lines: [`Not started now: another start pass holds the start lock (pid ${lock.held.pid || 'unknown'}, ${path.relative(root, R.lockFile(root))}); it starts what is missing.`] };
   }
@@ -239,7 +241,9 @@ function revive(root, team, opts = {}) {
 
 // A stale session is restarted only after a second read of the open sessions finds it still idle (the
 // first read may be seconds old), and only once its server stopped; each restart is a ledger row.
-function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null }) {
+// A role a user unit serves (st.unit) is restarted through restartUnit(unit) (systemctl --user restart, the
+// caller's), after the same second read: never stopped here, never started in a scope.
+function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = null, restartUnit = null }) {
   const out = {};
   for (const i of a.stale.filter((x) => !x.stale.skip && !x.stale.held)) {
     const st = i.stale;
@@ -253,8 +257,21 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
     const others = (OS.liveOf(i.instance, { roleDir: i.roleDir, live: now, prefix: f.team && f.team.prefix }) || []).filter((x) => x.sessionId !== st.session);
     if (others.length) { out[i.instance] = { why: `another session of it is live (${OS.described(others)}); a restart would leave two` }; continue; }
     const at = f.now;
+    const forced = st.forced ? { forced: true } : {};
+    if (st.unit) {
+      if (!restartUnit) { out[i.instance] = { why: `it is served by the user unit ${st.unit}, and this pass has no way to restart a unit` }; continue; }
+      try { restartUnit(st.unit); } catch (err) {
+        const why = String(err.message || err).trim().split('\n')[0].slice(0, 200);
+        R.record(root, { type: 'restart-failed', at, instance: i.instance, unit: st.unit, from: st.version, to: st.installed, error: why, ...forced });
+        out[i.instance] = { why: `systemctl --user restart ${st.unit} failed: ${why}` };
+        continue;
+      }
+      R.record(root, { type: 'restart', at, instance: i.instance, unit: st.unit, via: 'unit', session_id: st.remoteId, from: st.version, to: st.installed, ...forced });
+      out[i.instance] = { unit: st.unit };
+      continue;
+    }
     if (!stop(st.server, st.pid)) {
-      R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, from: st.version, to: st.installed });
+      R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, from: st.version, to: st.installed, ...forced });
       out[i.instance] = { why: `its Remote Control server (pid ${st.server}) did not stop` };
       continue;
     }
@@ -264,11 +281,11 @@ function restartStale(root, f, a, { env, bin, spawn, stop, relist, systemdRun = 
     const cmd = R.scopedCommand(bin, st.args, { instance: i.instance, at, systemdRun });
     try { pid = spawn(cmd.bin, cmd.args, { cwd: i.roleDir, env: startEnv(env, i.instance), logPath }); } catch (err) {
       // its server is already stopped: the row says so, the caps count it, and the next pass starts the missing session
-      R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, stopped: st.server, from: st.version, to: st.installed, error: err.message });
+      R.record(root, { type: 'restart-failed', at, instance: i.instance, server: st.server, stopped: st.server, from: st.version, to: st.installed, error: err.message, ...forced });
       out[i.instance] = { why: `its Remote Control server stopped, and the new one did not start: ${err.message}` };
       continue;
     }
-    R.record(root, { type: 'restart', at, instance: i.instance, pid, args: st.args, ...(cmd.unit ? { unit: cmd.unit } : {}), session_id: st.remoteId, mode: st.mode, from: st.version, to: st.installed, stopped: st.server, log: path.relative(root, logPath) });
+    R.record(root, { type: 'restart', at, instance: i.instance, pid, args: st.args, ...(cmd.unit ? { unit: cmd.unit } : {}), session_id: st.remoteId, mode: st.mode, from: st.version, to: st.installed, stopped: st.server, log: path.relative(root, logPath), ...forced });
     out[i.instance] = { pid, log: path.relative(root, logPath) };
   }
   return out;
@@ -297,11 +314,15 @@ function tellTwice(root, team, a, { now, queue = (r, m) => require('./lib/inbox.
 
 // only: the instances a start may bring back (the host manager's restart starts the ones that hold
 // work and leaves an idle one down); unset, every missing instance
+// force: the running instances the owner's restart restarts onto the installed plugin even when they run
+// it already (lib/team-revive.js assess), through restartStale and its safeties; unset, only stale ones.
+// restartUnit(unit): how a role a user unit serves is restarted (the host manager's systemctl)
 // A start pass spawns every missing instance, then waits SETTLE_MS (settle) for any that exit at once: those
 // get a 'failed' row, are named Failed, and the next pass retries them (lib/team-revive.js assess). settle is
 // the real wait only with the real spawn; a test that injects spawn injects settle too, or gets none.
-function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, only = null, ...deps } = {}) {
+function revivePass(root, team, { start = false, dryRun = false, env = process.env, spawn = spawnRemote, stop = stopServer, relist, settle, systemdRun, only = null, force = null, restartUnit = null, ...deps } = {}) {
   const f = gather(root, team, { env, ...deps });
+  if (force) f.force = force;
   const a = R.assess(f);
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const started = {};
@@ -352,7 +373,7 @@ function revivePass(root, team, { start = false, dryRun = false, env = process.e
   if (start && !dryRun) { try { tellTwice(root, team, a, { now: f.now }); } catch (err) { /* the next pass tells it */ } }
   let restarted = {};
   if (start && !dryRun && a.restart && a.stale.length) {
-    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun });
+    restarted = restartStale(root, f, a, { env, bin, spawn, stop, relist: again, systemdRun: sdRun, restartUnit });
   }
   return { a, started, restarted, lines: R.lines(a, { bin, started, restarted, dryRun: start && dryRun }) };
 }
