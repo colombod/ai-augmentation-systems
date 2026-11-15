@@ -261,12 +261,14 @@ function restartLines(before, after, plan, o = {}) {
       const c = (confirmed[root] || {})[i] || { state: 'unread' };
       const s = (started[root] || {})[i];
       const why = (refused[root] || {})[i];
+      // a start through the role's own unit has no pid of its own: the unit is named
+      const how = s && s.unitStart ? `started through its user unit ${s.unit}` : s ? `started (pid ${s.pid})` : '';
       if (c.state === 'back') out.push(`Back: ${name} ${i} is running, listed, on the installed plugin ${c.version}.`);
-      else if (s && c.state === 'unlisted') out.push(`Not back: ${name} ${i}: started (pid ${s.pid}) but not listed after ${duration(waited)}.`);
+      else if (s && c.state === 'unlisted') out.push(`Not back: ${name} ${i}: ${how} but not listed after ${duration(waited)}.`);
       else if (s && c.state === 'older') out.push(`Not back: ${name} ${i}: running an older plugin (${c.version}, installed ${c.installed}).`);
-      else if (s && c.state === 'unrecorded') out.push(`Not back: ${name} ${i}: started (pid ${s.pid}) and listed, but its session recorded no plugin version after ${duration(waited)}, so it is not known to run the installed ${c.installed || 'plugin'}.`);
-      else if (s && c.state === 'noinstalled') out.push(`Not back: ${name} ${i}: started (pid ${s.pid}) and listed on ${c.version}, but the installed plugin version could not be read.`);
-      else if (s) out.push(`Not back: ${name} ${i}: started (pid ${s.pid}), but the session list could not be read after the restart.`);
+      else if (s && c.state === 'unrecorded') out.push(`Not back: ${name} ${i}: ${how} and listed, but its session recorded no plugin version after ${duration(waited)}, so it is not known to run the installed ${c.installed || 'plugin'}.`);
+      else if (s && c.state === 'noinstalled') out.push(`Not back: ${name} ${i}: ${how} and listed on ${c.version}, but the installed plugin version could not be read.`);
+      else if (s) out.push(`Not back: ${name} ${i}: ${how}, but the session list could not be read after the restart.`);
       else out.push(`Not back: ${name} ${i}${why ? ` (${why})` : t && t.unknown.includes(i) ? ' (whether it runs could not be read)' : ''}.`);
     }
   }
