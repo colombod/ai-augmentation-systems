@@ -100,9 +100,10 @@ function aliases(src) {
   const LHS = `(?:\\b(?:const|let|var)\\s+|(?<![\\w$.]))(${ID})\\s*=(?![=>])\\s*(?:await\\s+)?`;
   const objRe = new RegExp(`${LHS}(?:${req})(?!\\s*\\.)`, 'g');
   while ((m = objRe.exec(src))) objects.add(m[1]);
-  const memRe = new RegExp(`${LHS}(?:${req})\\s*\\.\\s*(${ID})`, 'g');
+  // a member taken from child_process, or from a bracketed (await import('child_process'))
+  const memRe = new RegExp(`${LHS}(?:${req}|\\(\\s*(?:await\\s+)?(?:${req})\\s*\\))\\s*\\.\\s*(${ID})`, 'g');
   while ((m = memRe.exec(src))) if (FAMILY.includes(m[2])) fns.set(m[1], m[2]);
-  const destRe = new RegExp(`\\b(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*(?:${req})`, 'g');
+  const destRe = new RegExp(`\\b(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*(?:await\\s+)?(?:${req})`, 'g');
   while ((m = destRe.exec(src))) {
     for (const part of m[1].split(',')) {
       const [from, to] = part.split(':').map((s) => s.trim().replace(/\s*=.*$/, ''));

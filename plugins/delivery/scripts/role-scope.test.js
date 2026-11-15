@@ -183,6 +183,9 @@ test('the guard finds each bypassing form, each fixture holding only its own for
     'an object by plain assignment': "let kids;\nkids = require('child_process');\nkids.execSync('claude -p go');",
     'require with a space': "const { spawn: go } = require ('child_process');\ngo('claude', ['-p', 'go']);",
     'import() of child_process': "const kids = await import('node:child_process');\nkids.execSync('claude -p go');",
+    'a destructured await import()': "const { spawn: go } = await import('child_process');\ngo('claude', ['-p', 'go']);",
+    'a member of a bracketed await import(), declared': "const go = (await import('child_process')).spawn;\ngo('claude', ['-p', 'go']);",
+    'a member of a bracketed await import(), assigned': "let go;\ngo = (await import('node:child_process')).execSync;\ngo('claude -p go');",
   };
   for (const [what, src] of Object.entries(bypasses)) assert.equal(flagged(src).length, 1, `${what} is not found once:\n${src}`);
   const clean = {
