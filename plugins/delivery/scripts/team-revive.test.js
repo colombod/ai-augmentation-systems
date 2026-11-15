@@ -950,3 +950,63 @@ test('hjx.1.6.17 (rv-198): a role running twice is told to Staffing once per occ
   run(q, ['start'], { live: [twice[0], twice[2], twice[3]].map((x) => ({ ...x, cwd: x.cwd.replace(p.dir(''), q.dir('')) })) });
   assert.deepEqual(IB.pending(q.root).map((x) => x.to), ['chief-of-staff']);
 });
+
+// ---- a role a user unit serves (hjx.1.6.11.5) ----
+
+const unitHome = (units) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'revive-home-'));
+  const dir = R.unitDirOf(home);
+  fs.mkdirSync(dir, { recursive: true });
+  for (const [name, body] of Object.entries(units)) fs.writeFileSync(path.join(dir, name), body);
+  return home;
+};
+const unitBody = (wd, exec) => `[Unit]\nDescription=a role\n\n[Service]\nWorkingDirectory=${wd}\nExecStart=${exec}\n`;
+
+test('remoteControlUnitFor names the user service whose WorkingDirectory is the role directory and whose ExecStart runs claude remote-control, and no other', () => {
+  const p = project();
+  const b = p.dir('builder');
+  const home = unitHome({
+    'a-node.service': unitBody(b, '/usr/bin/node server.js remote-control'),
+    'b-other-dir.service': unitBody(p.dir('chief-of-staff') + '-x', '/usr/bin/claude remote-control'),
+    'c-builder.service': unitBody(b, '/usr/bin/env "/opt/tools/bin/claude" remote-control --name builder@ex'),
+    'd-builder.timer': unitBody(b, '/usr/bin/claude remote-control'),
+  });
+  assert.equal(R.remoteControlUnitFor(b, { home }), 'c-builder.service');
+  assert.equal(R.remoteControlUnitFor(p.dir('chief-of-staff'), { home }), null);
+  // systemd's %% is one %, and a - prefix on WorkingDirectory is allowed
+  const pct = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'revive-pct-')), 'a%b');
+  const h2 = unitHome({ 'x.service': unitBody(`-${pct.replace(/%/g, '%%')}`, '-/usr/bin/claude remote-control') });
+  assert.equal(R.remoteControlUnitFor(pct, { home: h2 }), 'x.service');
+  // a claude that runs something else is no Remote Control server
+  const h3 = unitHome({ 'y.service': unitBody(b, '/usr/bin/claude --print hello') });
+  assert.equal(R.remoteControlUnitFor(b, { home: h3 }), null);
+  assert.equal(R.remoteControlUnitFor(b, { home: path.join(home, 'none') }), null, 'no unit directory: none');
+});
+
+test('the unattended start pass never starts or restarts a unit-served role in a scope: a missing one names its unit, a stale one is not stopped', () => {
+  const { p, live } = staleTeam();
+  const home = unitHome({ 'cos.service': unitBody(COS_DIR(p), '/usr/bin/claude remote-control'), 'tw.service': unitBody(p.dir('builder'), '/usr/bin/claude remote-control') });
+  // the builder is down and holds work through the team's bead in progress; the chief is stale and idle
+  const r = TR.main(['start'], { cwd: p.root, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live: live.filter((s) => s.cwd !== p.dir('builder')), prs: [], alive: () => false, configDir: p.config, spawn: spawner().fn, installed: '0.43.74', server: RC_OF_CHIEF, stop: () => { throw new Error('stopped'); }, home, who: { root: p.root, team: p.team, roleId: null } });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /^Missing: builder \(no session in .*\); not started: it is served by the user unit tw\.service, which is its start path, so no scope is started beside it; the plugin does not start a unit it did not write: start that unit, or replace it with the plugin's own\.$/m, r.out);
+  assert.match(r.out, /^Stale: chief-of-staff runs the delivery plugin 0\.43\.55 and 0\.43\.74 is installed; not restarted: it is served by the user unit cos\.service, so it is not restarted in a scope here; the owner's restart restarts it through that unit\.$/m, r.out);
+  assert.deepEqual(R.ledger(p.root).filter((x) => /start|restart/.test(x.type)), []);
+});
+
+test('force: a running role on the installed plugin is restarted through the stale-session path; without force it is not', () => {
+  const { p, live } = staleTeam({ version: '0.43.74' });
+  bridgeFile(p, { pid: 5200, sessionId: 'sess-builder', cwd: p.dir('builder'), bridgeSessionId: 'session_b' });
+  const server = (pid) => (pid === 5200 ? { pid: 5300, self: false } : RC_OF_CHIEF(pid));
+  const none = restartRun(p, ['start'], { live, server });
+  assert.deepEqual(none.stops, []);
+  const spawn = spawner();
+  const stops = [];
+  const r = TR.revive(p.root, p.team, { start: true, env: { DELIVERY_HOST: 'pc' }, now: T0, bd: store(BUSY), live, prs: [], alive: () => false, configDir: p.config, spawn: spawn.fn, installed: '0.43.74', server, stop: (s, c) => { stops.push([s, c]); return true; }, force: ['builder'] });
+  assert.deepEqual(stops, [[5300, 5200]]);
+  assert.deepEqual(spawn.calls.map((c) => c.args), [['remote-control', '--name', 'builder@ex', '--session-id', 'session_b', '--permission-mode', 'auto']]);
+  assert.match(r.lines.join('\n'), /^Restarted: builder on 0\.43\.74 \(pid 4001\): stop its Remote Control server \(pid 5300\)/m);
+  const row = R.ledger(p.root).find((x) => x.type === 'restart');
+  assert.equal(row.forced, true);
+  assert.equal(row.session_id, 'session_b');
+});
