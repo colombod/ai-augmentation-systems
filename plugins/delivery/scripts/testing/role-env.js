@@ -14,6 +14,11 @@ const SEAL_VARS = ['DELIVERY_SEAL_ACTIVE', 'DELIVERY_SEALED_RUN', 'DELIVERY_TMP_
 function clearRoleEnv(env = process.env) {
   const keep = new Set(Object.keys(cleanEnv(env)));
   for (const k of Object.keys(env)) if (!keep.has(k) && !SEAL_VARS.includes(k)) delete env[k];
+  // No test reaches the host's own systemd user manager (hjx.1.6.10.1.2): a wake or a start would put
+  // its process in a real scope, and under the sealed runner's own process namespace systemd cannot see
+  // the process, so the scope fails and the test's fake session never runs. A test that means a manager
+  // gives one of its own (a runtime directory and a fake systemd-run).
+  delete env.XDG_RUNTIME_DIR;
   return env;
 }
 
