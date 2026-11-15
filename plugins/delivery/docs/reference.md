@@ -1593,28 +1593,40 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   assigned to the instance, a message or handoff waiting for it, a pull request from its `team/`
   branch), and per host job unit `<unit>: running` or `stopped since <time>` (`systemctl --user show`);
   each source it cannot read is a `SOURCE UNAVAILABLE: <what>` line and is never counted as running.
-  `restart [--json]` starts each stopped host job (its timer and path units, and one run of its
-  service), runs once (`systemctl --user start --no-block`) the service of a host job whose timer is
-  active but which has written no pass for 30 minutes, then starts the instances that are down and
-  hold work, through `team-revive.js`'s start pass with its caps (a start a cap holds is named with
-  when it may run). Asked by the owner, it runs every team's start pass, so a session on an older
-  plugin goes through `team-revive.js`'s stale-session restart, whose read of the sessions just before
-  a stop is a fresh one; the reply names each such restart (`Restarted:`) and each one not made, with
-  why (`Not restarted:`). After the starts it reads again every 10 seconds until each session it started
-  is listed and each host job whose service it ran has written a new pass, inside one 5 minute window
-  counted from the restart's start, every team's start pass included (the call can take that long, and
-  a start that exits at once is named as failed rather than waited for). An instance is
-  `Back:` only when that read lists a session in its role directory and the roster records, for that
-  session, the installed plugin version; otherwise it is `Not back: started (pid N) but not listed
-  after <duration>`, `Not back: running an older plugin (<version>, installed <version>)`, or the
-  reason it was not started. A host job run once is `Back:` when a later read finds a new pass, else
-  named as still silent. An instance that is down and holds nothing is listed and left down.
+  `restart [--json]` is the owner's restart of the team. It restarts every installed host job,
+  running or not: `systemctl --user restart` of its timer and of its path unit, then one run of its
+  service (`systemctl --user start --no-block`); a job whose timer does not restart gets no run, and
+  the reply says why. It then runs every team's start pass (`team-revive.js`, its caps applying): the
+  instances that are down and hold work are started (a start a cap holds is named with when it may
+  run), and every instance that is running and holds work is restarted onto the installed plugin,
+  even when it runs that version already, through `team-revive.js`'s stale-session restart and all
+  of its rules: only a session idle between turns, read once and again just before the stop; its
+  Remote Control server stopped, then a new one started that reattaches its recorded Remote Control
+  session (`--session-id`); one role at a time; a `restart` row in `revive.ndjson` (marked `forced`)
+  that the hourly and daily caps count. A busy session is never stopped: the reply names it
+  `Busy, not restarted now:` with the reason. A session with no Remote Control server, no recorded
+  Remote Control session id, or running twice is `Not restarted:` with the reason, and one a cap
+  holds is `Not restarted now:` with when it may run. An instance that runs and holds no work is
+  `Not restarted (no work held):`. After the starts and restarts it reads again every 10 seconds until
+  each session it started or restarted is listed and each host job whose service it ran for a
+  silence has written a new pass, inside one 5 minute window counted from the restart's start, every
+  team's start pass included (the call can take that long, and a start that exits at once is named
+  as failed rather than waited for). The reply's first line is the installed plugin version
+  (`Installed delivery plugin: <version>.`). An instance is `Back:` only when that read lists a
+  session in its role directory and the roster records, for that session, the installed plugin
+  version (a restarted one `Back: <team> <instance> is back on <version>`, never confirmed by the
+  session it replaced); otherwise it is `Not back: started (pid N) but not listed after
+  <duration>`, `Not back: running an older plugin (<version>, installed <version>)`, or the reason it
+  was not started. Each host job is `Restarted:` when its timer runs in the read after, else named
+  with what that read shows. Only when no host job is installed and no role holds work does the reply
+  say `Nothing to restart:`. An instance that is down and holds nothing is listed and left down.
   `tick`, run every five minutes by `delivery-host-manager-tick.timer`, finds three silences of 30
   minutes: an instance holding an in-progress bead with no bead note and no watchdog wake, either down
   (it runs the restart) or still listed as running, and a team's host job that has written no pass to
   its `job.log`. An instance still listed is never stopped or started by the tick, since its session
   may be in the middle of a turn: the alert says what is silent, since when, and that the owner can ask
-  the host manager to restart the team. The outage ledger,
+  the host manager to restart the team. The tick restarts only what is down or silent: never a
+  running session on the installed plugin, and never a host job that is running. The outage ledger,
   `${XDG_STATE_HOME:-~/.local/state}/delivery/host-manager/outages.ndjson`, keeps one outage per
   silence, keyed by team and instance or by team and host job: an `open` row when that silence is
   first seen, an `alert` row on the pass that opened any (one alert, naming those), and a `close` row
@@ -1624,6 +1636,14 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   which that team's watchdog hands to the session as a wake, a resume of it or a copy when it is open,
   not as a line in the open Remote Control conversation; with no such instance the ledger row is the
   only record.
+- **A role a user unit serves.** A role whose role directory is the `WorkingDirectory=` of a service
+  in `~/.config/systemd/user` whose `ExecStart=` runs `claude remote-control` is served by that unit
+  (`lib/team-revive.js` `remoteControlUnitFor`). No start pass starts it, and none restarts it in a
+  scope of its own, which would put a second session beside the unit's: a missing one is named with
+  its unit (`not started: it is served by the user unit <unit>`), and one on an older plugin is left
+  to the owner's restart. The owner's restart restarts it with `systemctl --user restart <unit>`,
+  only when its session is idle on the read just before, a `restart` row with the unit; busy, it is
+  named busy and not restarted.
 - **The host manager's units.** `host-manager.js install [--dry-run] --project <root> [--instance <id>]`
   takes the role directory of that team's `host-manager` instance (the roster's, else the team layout's)
   and writes three systemd user units: `delivery-host-manager.service` runs `host-manager.js

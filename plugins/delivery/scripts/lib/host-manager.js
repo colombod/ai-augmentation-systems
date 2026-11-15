@@ -301,7 +301,7 @@ function restartLines(before, after, plan, o = {}) {
   }
   for (const [root, byInstance] of Object.entries(unforced)) for (const [i, why] of Object.entries(byInstance)) out.push(`Not restarted: ${nameOf(root)} ${i}: ${why}.`);
   for (const s of silent) {
-    if (s.kind === 'running') out.push(`Silent while running: ${s.what}. Not stopped: a session that may be in the middle of a turn is not stopped here; it is restarted only when it runs an older plugin and is idle between turns.`);
+    if (s.kind === 'running') out.push(`Silent while running: ${s.what}. Not stopped: a session that may be in the middle of a turn is not stopped here; the owner's restart restarts it when it holds work and is idle between turns, and the unattended pass only when it runs an older plugin and is idle.`);
   }
   for (const t of before.teams) {
     const idle = (t.down || []).filter((i) => !(t.holding || []).includes(i));
