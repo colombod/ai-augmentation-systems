@@ -1069,9 +1069,13 @@ function plan(res, { root, now, alive = (pid, since) => pidAlive(pid, { since, n
 // (delivery-plugin-planning-8wz). A wake still running is never stopped; the next one starts fresh.
 const FRESH_ABOVE = 120000;
 // prefix: the team's bead prefix; the fresh session is named <instance>@<team> (lib/session-name.js)
-function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null, prefix = null } = {}) {
+// unit: the user unit that serves the role directory (lib/team-revive.js remoteControlUnitFor), or none.
+// Such a role is started only by its unit: a wake that would start a session (resume, continue, fresh) is
+// a second start path beside it, so it is skipped; a live session still gets the wake as a message.
+function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null, prefix = null, unit = null } = {}) {
   const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
   const r = wakeArgs(s, prompt, live, { prefix });
+  if (unit && r.args) return { skip: `it is served by the user unit ${unit}, which starts it; no wake session is started beside it, and the wake goes to its session as a message once it is live` };
   const older = Boolean(installed) && require('./plugin-version.js').compare(s && s.pluginVersion, installed) === -1;
   if (r.mode === 'resume' && (older || (freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove))) {
     // named like every role session (start.js --name), so peers reach it by name (team rule 13)
