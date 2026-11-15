@@ -212,7 +212,7 @@ function wakeAlive(ended, now) {
   return (pid, since) => !ended.has(pid) && WD.pidAlive(pid, { since, now });
 }
 
-function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver }) {
+function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver, home = os.homedir() }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
   // a wake row is stamped at its spawn, not at the pass start: the check reads the supervisor's start
@@ -232,7 +232,7 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
   for (const w of p.wakes) {
     const s = res.sessions.find((x) => x.instance === w.target) || null;
     const wm = wakeMode(manifest, s);
-    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode, { freshAbove: freshAboveOf(manifest), installed, prefix: manifest && manifest.team ? manifest.team.prefix : null });
+    const c = wm.skip ? { skip: wm.skip } : WD.wakeCommand(s, w.prompt, open, wm.mode, { freshAbove: freshAboveOf(manifest), installed, prefix: manifest && manifest.team ? manifest.team.prefix : null, unit: s && s.roleDir ? require('./lib/team-revive.js').remoteControlUnitFor(s.roleDir, { home }) : null });
     if (c.skip) {
       lines.push(`Not woken: ${w.target}: ${c.skip}. ${w.lines[0]}`);
       // one skip row an hour per session keeps the log short while a session is busy
@@ -702,7 +702,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     state.held = !!updated.held;
     // a held install starts no wake: one started now is another run the install must wait for, and with
     // wakes back to back it never went (delivery-plugin-planning-0ba.6)
-    const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked), ...(deliver ? { deliver } : {}) }))];
+    const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, home, ended: endedPids(kicked), ...(deliver ? { deliver } : {}) }))];
     // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
     // after the wakes, so a role a wake now runs is seen running; never under an install (the next run's)
