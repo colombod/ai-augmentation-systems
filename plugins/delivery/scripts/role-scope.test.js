@@ -46,9 +46,60 @@ test('roleCommand finds systemd-run from the environment, as a start does', () =
   assert.deepEqual(RS.roleCommand('node', ['x'], { instance: 'a', env: {} }), { bin: 'node', args: ['x'], unit: null });
 });
 
-// The guard (testing/role-spawns.js): every call in scripts/ and hooks/ that starts a role session goes
-// through lib/role-scope.js, or is allowed here by name with its reason.
+// The guard (testing/role-spawns.js), from the files outward (rv-202-delivery-lead-8): every file in
+// scripts/ and hooks/ whose code requires child_process is listed here with the reason it runs processes;
+// those whose code names a session are listed again; and in those, every session start goes through
+// lib/role-scope.js or is allowed by name with its reason.
 const RSP = require('./testing/role-spawns.js');
+const PROCESS_FILES = {
+  'hooks/scripts/lane.js': 'git, to read a worktree\'s branch for the lane; it names claude only to judge commands',
+  'hooks/scripts/leak.js': 'git, to list the staged files it checks',
+  'hooks/scripts/role-context.js': 'bd, to read the session\'s claim for its context line',
+  'scripts/amplifier.js': 'the amplifier command line it hands a machine problem to',
+  'scripts/goal.js': 'operator.js ask, through node',
+  'scripts/host-manager.js': 'systemctl and which; it reads the sessions through the watchdog',
+  'scripts/lib/andon.js': 'gh, to read CI runs',
+  'scripts/lib/bd.js': 'bd, for every bead read and write',
+  'scripts/lib/codemap.js': 'git, for the feature map',
+  'scripts/lib/gate-context.js': 'git, to find the project root',
+  'scripts/lib/gh-pr.js': 'gh, to read pull requests',
+  'scripts/lib/launcher.js': 'the installed plugin script it launches, through node',
+  'scripts/lib/operator-store.js': 'git, for the operator records',
+  'scripts/lib/plan-sync.js': 'git, to sync the plan',
+  'scripts/lib/product-view.js': 'git and gh, to read the product repository',
+  'scripts/lib/publish-records.js': 'git, to publish records',
+  'scripts/lib/role-scope.js': 'the role-session start itself: systemd-run, or the plain start',
+  'scripts/lib/self-update.js': 'git, gh and `claude plugin`, which start no role session',
+  'scripts/lib/session-message.js': 'the socket client that delivers a message to a running session',
+  'scripts/lib/user-guard.js': 'a hook script, through node',
+  'scripts/lib/wake-run.js': 'the supervisor: runs the command startRole gives it, in its own process group',
+  'scripts/lib/watch.js': 'git, to name a worktree\'s branch',
+  'scripts/lib/watchdog.js': 'git and bd reads for the watchdog\'s plan',
+  'scripts/map.js': 'git, for the files a change touches',
+  'scripts/materialise.js': 'git and bd, to write the bead graph',
+  'scripts/prepare-role.js': 'git, to prepare role worktrees',
+  'scripts/ready.js': 'git, to tell a repository',
+  'scripts/review-run.js': 'git, for the reviewer\'s scratch clone',
+  'scripts/start.js': 'the prerequisite checks (claude --version, git, bd); --launch starts through startRole',
+  'scripts/team-revive.js': 'ps, and the revive\'s Remote Control starts through roleCommand',
+  'scripts/team-role.js': 'git, for a role\'s worktree',
+  'scripts/team-status.js': 'bd and git, for the roster',
+  'scripts/testing/fake-bd.js': 'git, as the stand-in bd reads its origin',
+  'scripts/testing/role-harness.js': 'the hook scripts under test, through node',
+  'scripts/testing/run-tests.js': 'bwrap and node --test, the sealed runner',
+  'scripts/testing/seal-check.js': 'run-tests.js, to check the seal',
+  'scripts/verify-run.js': 'git and the story\'s check script',
+  'scripts/watch.js': 'gh and the command it waits on',
+  'scripts/watchdog.js': 'claude agents (a read), and the wake through startRole',
+};
+const SESSION_FILES = {
+  'hooks/scripts/lane.js': 'names claude and remote-control to judge a command; it runs only git',
+  'scripts/host-manager.js': 'reads the sessions (claude agents) through the watchdog; runs systemctl',
+  'scripts/lib/self-update.js': 'runs `claude plugin` to update the install; no session',
+  'scripts/start.js': '--launch starts each role through startRole',
+  'scripts/team-revive.js': 'starts Remote Control sessions through roleCommand',
+  'scripts/watchdog.js': 'reads claude agents and wakes a session through startRole',
+};
 const ALLOWED = {
   'scripts/host-manager.js#execFileSync(cmd, args': 'the host manager\'s systemctl runner: its cmd is a parameter, only systemctl and which; the file names claude elsewhere',
   'scripts/lib/self-update.js#execFileSync(bin, args': 'self-update\'s exec of gh and `claude plugin`, which start no role session',
@@ -59,37 +110,77 @@ const ALLOWED = {
 const keyOf = (c) => `${c.rel}#${c.fn}(${c.text}`;
 const allowedKey = (c) => Object.keys(ALLOWED).find((k) => keyOf(c).startsWith(k)) || null;
 
-test('every call in the scripts and hooks of this plugin that starts a role session goes through role-scope, or is allowed by name with its reason', () => {
+// what the guard refuses in a scan, as lines naming the file (and the call)
+function guardProblems(found, { processFiles = PROCESS_FILES, sessionFiles = SESSION_FILES } = {}) {
+  const out = [];
+  for (const f of found.processFiles) if (!processFiles[f]) out.push(`${f} requires child_process and is not listed with its reason`);
+  for (const f of Object.keys(processFiles)) if (!found.processFiles.includes(f)) out.push(`${f} is listed but no longer requires child_process`);
+  for (const f of found.sessionFiles) if (!sessionFiles[f]) out.push(`${f} requires child_process and names a session, and is not listed as a session file`);
+  for (const f of Object.keys(sessionFiles)) if (!found.sessionFiles.includes(f)) out.push(`${f} is listed as a session file but names no session`);
+  for (const c of found.calls) if (!c.sanctioned && !allowedKey(c)) out.push(`${c.rel}:${c.line} ${c.fn}(${c.text.slice(0, 60)} starts a role session outside role-scope`);
+  return out;
+}
+
+test('every file in scripts/ and hooks/ that requires child_process is listed with its reason, and every session start in them goes through role-scope', () => {
   const found = RSP.scan(path.resolve(__dirname, '..'));
-  const bad = found.filter((c) => !c.sanctioned && !allowedKey(c));
-  assert.deepEqual(bad.map((c) => `${c.rel}:${c.line} ${c.fn}(${c.text.slice(0, 60)}`), [], 'each of these starts a role session outside role-scope');
+  assert.deepEqual(guardProblems(found), []);
+  for (const [k, why] of Object.entries({ ...PROCESS_FILES, ...SESSION_FILES, ...ALLOWED })) assert.ok(why.length > 10, `${k} has a reason`);
   // the sanctioned starts: the helper itself, and team-revive's roleCommand results
-  assert.ok(found.some((c) => c.rel === 'scripts/lib/role-scope.js' && c.sanctioned), 'startRole is found');
-  assert.ok(found.filter((c) => c.rel === 'scripts/team-revive.js' && c.why === 'cmd is a roleCommand result').length >= 2);
+  assert.ok(found.calls.some((c) => c.rel === 'scripts/lib/role-scope.js' && c.sanctioned) || !found.sessionFiles.includes('scripts/lib/role-scope.js'));
+  assert.ok(found.calls.filter((c) => c.rel === 'scripts/team-revive.js' && c.why === 'cmd is a roleCommand result').length >= 2);
   // every allowed entry still matches a call: an entry left after its call went would hide a new one
-  for (const k of Object.keys(ALLOWED)) assert.ok(found.some((c) => keyOf(c).startsWith(k)), `allowed entry ${k} matches no call`);
+  for (const k of Object.keys(ALLOWED)) assert.ok(found.calls.some((c) => keyOf(c).startsWith(k)), `allowed entry ${k} matches no call`);
 });
 
-test('the guard finds each bypassing form and passes the sanctioned and the read-only ones (rv-202)', () => {
-  const calls = (src) => RSP.sessionCalls(src, 'scripts/planted.js');
-  const flagged = (src) => calls(src).filter((c) => !c.sanctioned);
-  // the four forms review planted, each found
+test('a new file that requires child_process, in any form, is named until it is listed; one that names a session is named until it is a session file', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-'));
+  fs.mkdirSync(path.join(root, 'scripts', 'lib'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'hooks', 'scripts'), { recursive: true });
+  const plant = (rel, src) => fs.writeFileSync(path.join(root, rel), src);
+  plant('scripts/a.js', "const cp = require('child_process');\ncp.spawnSync('git', ['status']);\n");
+  plant('scripts/lib/b.js', "const { spawn: go } = require('node:child_process');\n");
+  plant('hooks/scripts/c.js', "import { execFile } from 'child_process';\n");
+  plant('scripts/d.js', "// require('child_process') in a comment is no require\nconst x = 1;\n");
+  plant('scripts/e.js', "const run = require('child_process').spawn;\nrun('/opt/bin/claude', ['-p', 'go']);\n");
+  const found = RSP.scan(root);
+  assert.deepEqual(found.processFiles, ['hooks/scripts/c.js', 'scripts/a.js', 'scripts/e.js', 'scripts/lib/b.js']);
+  assert.deepEqual(found.sessionFiles, ['scripts/e.js']);
+  const lists = { processFiles: { 'scripts/a.js': 'git status', 'hooks/scripts/c.js': 'x', 'scripts/lib/b.js': 'x', 'scripts/e.js': 'x' }, sessionFiles: {} };
+  const p = guardProblems(found, lists);
+  assert.ok(p.includes('scripts/e.js requires child_process and names a session, and is not listed as a session file'), p.join('\n'));
+  assert.ok(p.some((l) => /^scripts\/e\.js:2 spawn\(/.test(l)), p.join('\n'));
+  assert.deepEqual(guardProblems(found, { processFiles: {}, sessionFiles: {} }).filter((l) => /is not listed with its reason/.test(l)).length, 4);
+  // the other direction: every file listed and the start sanctioned, nothing is named
+  plant('scripts/e.js', "const RS = require('./lib/role-scope.js');\nconst run = require('child_process').spawn;\nconst cmd = RS.roleCommand('/opt/bin/claude', ['-p', 'go'], { instance });\nrun(cmd.bin, cmd.args);\n");
+  assert.deepEqual(guardProblems(RSP.scan(root), { ...lists, sessionFiles: { 'scripts/e.js': 'x' } }), []);
+});
+
+test('the guard finds each bypassing form, each fixture holding only its own form, and passes the sanctioned and the read-only ones (rv-202)', () => {
+  const flagged = (src) => RSP.sessionCalls(src, 'scripts/planted.js').filter((c) => !c.sanctioned);
   const bypasses = {
     'a literal claude': "const cp = require('child_process');\ncp.spawn('claude', ['-p', 'go'], { detached: true });",
+    'an absolute path to claude': "const { spawn } = require('child_process');\nspawn('/usr/local/bin/claude', ['-p', 'go']);",
+    'a relative path to claude': "const { spawn } = require('child_process');\nspawn('./node_modules/.bin/claude', ['--resume', 's']);",
     'execFile of a claude bin': "const bin = env.DELIVERY_CLAUDE_BIN || 'claude';\nrequire('child_process').execFile(bin, ['--resume', 's', '-p', 'go']);",
     'exec of a claude shell string': "const { exec } = require('child_process');\nexec('claude --resume s -p go');",
-    'wake-run.js through a variable': "const sup = path.join(__dirname, 'lib', 'wake-run.js');\nconst runIt = require('child_process').spawn;\nrunIt(process.execPath, [sup, '7200000', 'x']);\nspawn(process.execPath, [sup, '7200000', 'x']);",
+    'an alias of require(child_process).spawn': "const sup = path.join(__dirname, 'lib', 'wake-run.js');\nconst runIt = require('child_process').spawn;\nrunIt(process.execPath, [sup, '7200000', 'x']);",
+    'a destructured rename': "const { spawn: go } = require('child_process');\ngo('claude', ['-p', 'go']);",
+    'an alias of an alias': "const cp = require('child_process');\nconst proc = cp;\nconst start = proc.spawn;\nstart('claude', ['-p', 'go']);",
+    'spawn on another variable name': "proc.spawn('claude', ['-p', 'go']);",
+    'execSync on a child_process alias': "const kids = require('child_process');\nkids.execSync('claude -p go');",
     'a command object that is no roleCommand result': "const cmd = makeCommand(bin);\nspawn(cmd.bin, cmd.args);",
     'fork of the supervisor': "fork(path.join(__dirname, 'lib', 'wake-run.js'), ['1', 'claude']);",
     'execSync of claude': "require('child_process').execSync(`claude -p ${prompt}`);",
   };
-  for (const [what, src] of Object.entries(bypasses)) assert.ok(flagged(src).length >= 1, `${what} is not found:\n${src}`);
-  // the other direction: what is no role session, or is one through roleCommand, is not flagged
+  for (const [what, src] of Object.entries(bypasses)) assert.equal(flagged(src).length, 1, `${what} is not found once:\n${src}`);
   const clean = {
     'a read of the sessions': "const bin = env.DELIVERY_CLAUDE_BIN || 'claude';\nexecFileSync(bin, ['agents', '--json']);",
     'a claude version check': "spawnSync('claude', ['--version']);",
     'git': "spawnSync('git', ['status']);",
     'a regexp exec': "const m = /claude/.exec(text);",
+    'a regexp exec on a variable': "const re = /x/;\nre.exec('claude -p go');",
+    'claude named in a comment': "// spawn('claude', ['-p', 'go'])\nspawnSync('git', ['log']);",
+    'a word that only ends in claude': "spawn('myclaude', ['-p', 'go']);",
     'a roleCommand result': "const cmd = RS.roleCommand(bin, args, { instance });\nconst child = spawn(cmd.bin, cmd.args, { detached: true });",
   };
   for (const [what, src] of Object.entries(clean)) assert.deepEqual(flagged(src), [], `${what} is flagged:\n${src}`);

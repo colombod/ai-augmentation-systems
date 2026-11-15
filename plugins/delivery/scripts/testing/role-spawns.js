@@ -1,19 +1,73 @@
-// scripts/testing/role-spawns.js — finds the calls in the plugin's code that start a role session, for
-// scripts/role-scope.test.js (hjx.1.6.10.1.2). Every one must go through lib/role-scope.js.
+// scripts/testing/role-spawns.js — finds where the plugin's code could start a role session, for
+// scripts/role-scope.test.js (hjx.1.6.10.1.2). Every role session must start through lib/role-scope.js.
 //
-// A call is any spawn, spawnSync, execFile, execFileSync, exec, execSync or fork. It starts a role session
-// when it names the session supervisor (lib/wake-run.js) or Remote Control, a literal claude, or a
-// variable the file assigns, directly or through other variables, from one of those or from
-// DELIVERY_CLAUDE_BIN; a call that only reads (claude agents, --version, plugin, mcp) does not.
-// It is sanctioned only inside lib/role-scope.js, or when its command is X.bin and X is assigned from
-// roleCommand(...) in the lines just above it: a name alone (cmd.bin) is not trusted.
+// Chasing call forms one by one missed four (rv-202-delivery-lead-8: an alias of
+// require('child_process').spawn, a destructured rename, a spawn method on another variable, an absolute
+// path to claude), so the guard works from the files outward, in three layers:
+//   1. every file under scripts/ and hooks/ whose code requires child_process, in any form, is listed by
+//      the test with the reason it runs processes; a file that is not listed fails, named;
+//   2. of those, a file whose code names a session (a claude command, including any path ending in
+//      /claude, the session supervisor lib/wake-run.js, Remote Control, DELIVERY_CLAUDE_BIN) is listed
+//      again, as a session file, with its reason; one that is not fails, named;
+//   3. in the session files, every call that starts a session is found, through every alias of
+//      child_process the file makes, and must be role-scope's own or allowed by name in the test.
 const fs = require('fs');
 const path = require('path');
 
-const CALL = /\b(spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\s*\(/g;
-const SESSION_TEXT = /wake-run\.js|remote-control|\bDELIVERY_CLAUDE_BIN\b|(['"`])claude(?=[\s'"`/])/;
+const FAMILY = ['spawn', 'spawnSync', 'execFile', 'execFileSync', 'exec', 'execSync', 'fork'];
+// methods no other common object has: on any object they count; exec and execSync (RegExp#exec) count only
+// on an object known to be child_process
+const PROCESS_ONLY = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync', 'fork']);
+// no capture groups: it is embedded in the alias patterns, whose groups it must not shift
+const REQUIRE_CP = /require\(\s*['"`](?:node:)?child_process['"`]\s*\)|from\s+['"](?:node:)?child_process['"]/;
+const CLAUDE_CMD = /(['"`])(?:[^'"`\s]*\/)?claude(?=[\s'"`])/;
+const SESSION_TEXT = new RegExp(`wake-run\\.js|remote-control|\\bDELIVERY_CLAUDE_BIN\\b|${CLAUDE_CMD.source}`);
 const SESSION_FLAGS = /(['"`])(?:-p|-c|--resume|--continue|--fork-session|remote-control)\1|wake-run\.js/;
 const READ_ONLY = /(['"`])(?:agents|--version|-v|plugin|mcp|update|doctor|auth|config|--help)\1/;
+const ID = '[A-Za-z_$][\\w$]*';
+const esc = (s) => s.replace(/\$/g, '\\$');
+
+// the source with its comments blanked (strings, templates and regexp literals kept), so a comment that
+// names a command is not code that runs it; line numbers stay where they were
+function code(src) {
+  let out = '';
+  let q = null;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (q) {
+      out += c;
+      if (c === '\\') { out += src[i + 1] || ''; i++; } else if (c === q || (q !== '`' && c === '\n')) q = null;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '/') { while (i < src.length && src[i] !== '\n') i++; out += '\n'; continue; }
+    if (c === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const body = src.slice(i, end < 0 ? src.length : end + 2);
+      out += body.replace(/[^\n]/g, ' ');
+      i += body.length - 1;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') q = c;
+    else if (c === '/') {
+      // a regexp literal where an expression starts: copied through its closing slash
+      const before = out.trimEnd();
+      if (!before || /[(,=:[!&|?{};+\-*%<>~^]$/.test(before) || /\b(?:return|typeof|case)$/.test(before)) {
+        let j = i + 1;
+        let cls = false;
+        for (; j < src.length && src[j] !== '\n'; j++) {
+          if (src[j] === '\\') { j++; continue; }
+          if (src[j] === '[') cls = true; else if (src[j] === ']') cls = false; else if (src[j] === '/' && !cls) break;
+        }
+        if (src[j] === '/') { out += src.slice(i, j + 1); i = j; continue; }
+      }
+    }
+    out += c;
+  }
+  return out;
+}
+
+const requiresChildProcess = (src) => REQUIRE_CP.test(code(src));
+const namesSession = (src) => SESSION_TEXT.test(code(src));
 
 // the call's argument text, from its open paren to the matching close, skipping strings
 function callText(src, open) {
@@ -27,6 +81,39 @@ function callText(src, open) {
     else if (c === ')') { depth--; if (depth === 0) return src.slice(open + 1, i); }
   }
   return src.slice(open + 1);
+}
+
+// the names a file gives child_process: objects (const cp = require('child_process')) and functions (a
+// destructured name or rename, const run = require('child_process').spawn, const go = cp.spawn),
+// followed through plain re-assignments (const proc = cp)
+function aliases(src) {
+  const req = REQUIRE_CP.source;
+  const objects = new Set();
+  const fns = new Map(); // local name -> child_process method
+  let m;
+  const objRe = new RegExp(`\\b(?:const|let|var)\\s+(${ID})\\s*=\\s*(?:${req})(?!\\s*\\.)`, 'g');
+  while ((m = objRe.exec(src))) objects.add(m[1]);
+  const memRe = new RegExp(`\\b(?:const|let|var)\\s+(${ID})\\s*=\\s*(?:${req})\\s*\\.\\s*(${ID})`, 'g');
+  while ((m = memRe.exec(src))) if (FAMILY.includes(m[2])) fns.set(m[1], m[2]);
+  const destRe = new RegExp(`\\b(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*(?:${req})`, 'g');
+  while ((m = destRe.exec(src))) {
+    for (const part of m[1].split(',')) {
+      const [from, to] = part.split(':').map((s) => s.trim().replace(/\s*=.*$/, ''));
+      if (FAMILY.includes(from)) fns.set(to || from, from);
+    }
+  }
+  const re = new RegExp(`\\b(?:const|let|var)\\s+(${ID})\\s*=\\s*(${ID})\\s*(?:\\.\\s*(${ID}))?\\s*(?=[;\\n,)]|$)`, 'g');
+  for (let changed = true; changed;) {
+    changed = false;
+    re.lastIndex = 0;
+    while ((m = re.exec(src))) {
+      const [, to, from, member] = m;
+      if (member === undefined && objects.has(from) && !objects.has(to)) { objects.add(to); changed = true; }
+      if (member !== undefined && objects.has(from) && FAMILY.includes(member) && !fns.has(to)) { fns.set(to, member); changed = true; }
+      if (member === undefined && fns.has(from) && !fns.has(to)) { fns.set(to, fns.get(from)); changed = true; }
+    }
+  }
+  return { objects, fns };
 }
 
 // identifiers whose value comes from a session marker, followed through assignments
@@ -51,21 +138,29 @@ function markers(src) {
 }
 
 // the session-starting calls in src: [{ rel, line, fn, first, text, sanctioned, why }]
-function sessionCalls(src, rel) {
+function sessionCalls(raw, rel) {
+  const src = code(raw);
   const marks = markers(src);
+  const { objects, fns } = aliases(src);
+  const names = [...new Set([...FAMILY, ...fns.keys()])].map(esc);
+  const CALL = new RegExp(`(?<![\\w$])(${names.join('|')})\\s*\\(`, 'g');
+  const onObject = new RegExp(`(?:${REQUIRE_CP.source}|(?<![\\w$.])(?:${[...objects].map(esc).join('|') || '(?!)'}))\\s*\\.\\s*$`);
   const found = [];
   let m;
-  CALL.lastIndex = 0;
   while ((m = CALL.exec(src))) {
-    const before = src.slice(Math.max(0, m.index - 1), m.index);
-    if (/[\w$]/.test(before)) continue;
-    // a method call counts only on child_process itself (cp.spawn, require('child_process').exec): a
-    // RegExp's exec or another object's method is not a process
-    const lead = src.slice(Math.max(0, m.index - 40), m.index);
-    if (/\.\s*$/.test(lead) && !/(?:\bcp|\bCP|childProcess|child_process['"]\s*\))\s*\.\s*$/.test(lead)) continue;
+    const name = m[1];
+    const lead = src.slice(Math.max(0, m.index - 60), m.index);
+    let fn = name;
+    if (/\.\s*$/.test(lead)) {
+      // a method: on child_process or one of its aliases, or (spawn, execFile, fork and their Sync forms,
+      // which no other common object has) on any object at all
+      if (!FAMILY.includes(name)) continue;
+      if (!onObject.test(lead) && !PROCESS_ONLY.has(name)) continue;
+    } else if (fns.has(name)) fn = fns.get(name);
+    else if (!FAMILY.includes(name)) continue;
     const text = callText(src, m.index + m[0].length - 1);
     const first = text.split(',')[0].trim();
-    const usesMark = [...marks].some((n) => new RegExp(`(?:^|[^\\w$.])${n.replace(/\$/g, '\\$')}\\b`).test(text));
+    const usesMark = [...marks].some((n) => new RegExp(`(?:^|[^\\w$.])${esc(n)}\\b`).test(text));
     // a command object (X.bin) is a session start until it is shown to be a roleCommand result
     const session = SESSION_TEXT.test(text) || usesMark || /^[A-Za-z_$][\w$]*\.bin$/.test(first);
     // every call inside the helper is the sanctioned start itself, whatever its arguments
@@ -75,37 +170,46 @@ function sessionCalls(src, rel) {
     const line = src.slice(0, m.index).split('\n').length;
     let sanctioned = false;
     let why = null;
-    if (rel === 'scripts/lib/role-scope.js') { sanctioned = true; why = 'the helper itself (startRole)'; }
+    if (inHelper) { sanctioned = true; why = 'the helper itself (startRole)'; }
     const bin = /^([A-Za-z_$][\w$]*)\.bin$/.exec(first);
     if (!sanctioned && bin) {
       const above = src.slice(0, m.index).split('\n').slice(-15).join('\n');
-      if (new RegExp(`\\b(?:const|let|var)\\s+${bin[1]}\\s*=\\s*[^;\\n]*\\broleCommand\\(`).test(above)) { sanctioned = true; why = `${bin[1]} is a roleCommand result`; }
+      if (new RegExp(`\\b(?:const|let|var)\\s+${esc(bin[1])}\\s*=\\s*[^;\\n]*\\broleCommand\\(`).test(above)) { sanctioned = true; why = `${bin[1]} is a roleCommand result`; }
     }
-    found.push({ rel, line, fn: m[1], first, text: text.replace(/\s+/g, ' ').slice(0, 120), sanctioned, why });
+    found.push({ rel, line, fn, first, text: text.replace(/\s+/g, ' ').slice(0, 120), sanctioned, why });
   }
   return found;
 }
 
-// every .js file under dirs, tests and the testing directory left out
+// every .js file under dirs, tests left out (the testing helpers are code that runs processes too)
 function files(dirs) {
   const out = [];
   const walk = (dir) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!['testing', 'node_modules'].includes(e.name) && !e.name.startsWith('.')) walk(p); continue; }
+      if (e.isDirectory()) { if (e.name !== 'node_modules' && !e.name.startsWith('.')) walk(p); continue; }
       if (e.name.endsWith('.js') && !e.name.endsWith('.test.js')) out.push(p);
     }
   };
   for (const d of dirs) if (fs.existsSync(d)) walk(d);
-  return out;
+  return out.sort();
 }
 
+// { processFiles: [rel], sessionFiles: [rel], calls: [the session calls in the session files] }
 function scan(pluginRoot) {
-  const out = [];
+  const processFiles = [];
+  const sessionFiles = [];
+  const calls = [];
   for (const f of files([path.join(pluginRoot, 'scripts'), path.join(pluginRoot, 'hooks')])) {
-    out.push(...sessionCalls(fs.readFileSync(f, 'utf8'), path.relative(pluginRoot, f).split(path.sep).join('/')));
+    const rel = path.relative(pluginRoot, f).split(path.sep).join('/');
+    const src = fs.readFileSync(f, 'utf8');
+    if (!requiresChildProcess(src)) continue;
+    processFiles.push(rel);
+    if (!namesSession(src)) continue;
+    sessionFiles.push(rel);
+    calls.push(...sessionCalls(src, rel));
   }
-  return out;
+  return { processFiles, sessionFiles, calls };
 }
 
-module.exports = { sessionCalls, scan, markers, callText };
+module.exports = { sessionCalls, scan, markers, aliases, callText, code, requiresChildProcess, namesSession };
