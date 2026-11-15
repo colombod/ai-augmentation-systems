@@ -31,7 +31,7 @@ test('R-23: 13 parallel builders on the collections epic and eight beads to one 
 });
 
 test('R-23: a third open pull request from one builder warns at review request', () => {
-  const pr = (n) => ({ headRefOid: H(n), headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: `a${n}.js`, additions: 5, deletions: 0 }], body: `Refs ex-col-${n}`, title: `t${n}` });
+  const pr = (n) => ({ headRefOid: H(n), headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: `a${n}.js`, additions: 5, deletions: 0 }], body: `Refs ex-col-${n}\nDoc-impact: none (a test fixture)`, title: `t${n}` });
   const beads = Object.fromEntries([1, 2, 3].map((n) => [`ex-col-${n}`, story(`ex-col-${n}`, { assignee: 'dev@pc/builder-1', status: 'in_progress' })]));
   const h = harness({ beads, prs: { 1: pr(1), 2: pr(2), 3: pr(3) } });
   const req = (n) => h.bash('delivery-lead', `${h.script('review.js')} request ${n} --reviewer builder-2`);
@@ -53,7 +53,7 @@ test('Copilot 864 884: a reassigned in-progress story and each story of a bulk c
 });
 
 test('Copilot 925: a pull request closed on GitHub without merging no longer counts as open', () => {
-  const pr = (n, state) => ({ headRefOid: H(n), headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: `a${n}.js`, additions: 5, deletions: 0 }], body: `Refs ex-col-${n}`, title: `t${n}`, ...(state ? { state } : {}) });
+  const pr = (n, state) => ({ headRefOid: H(n), headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: `a${n}.js`, additions: 5, deletions: 0 }], body: `Refs ex-col-${n}\nDoc-impact: none (a test fixture)`, title: `t${n}`, ...(state ? { state } : {}) });
   const beads = Object.fromEntries([1, 2, 3].map((n) => [`ex-col-${n}`, story(`ex-col-${n}`, { assignee: 'dev@pc/builder-1', status: 'in_progress' })]));
   const h = harness({ beads, prs: { 1: pr(1), 2: pr(2), 3: pr(3) } });
   const req = (n) => h.bash('delivery-lead', `${h.script('review.js')} request ${n} --reviewer builder-2`);

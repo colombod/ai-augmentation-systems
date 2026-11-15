@@ -14,8 +14,14 @@ const mk = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
 const GIT = cp.execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
 
 // A PATH directory with exactly the tools asked for.
-function bin({ bd = true, claude = '2.1.300 (Claude Code)', git = true } = {}) {
+// systemctl is always a fake: --check reads the user services' task limits (lib/service-limits.js), and
+// the host's own systemctl would make a case depend on the services of the machine it runs on. units:
+// { name: 'TasksMax=..\nTasksCurrent=..' }, none by default.
+function bin({ bd = true, claude = '2.1.300 (Claude Code)', git = true, units = {} } = {}) {
   const dir = mk('start-bin-');
+  // printf takes the properties as its format, so each \n in them is a line break
+  const show = Object.entries(units).map(([u, props]) => `  *${u}) printf ${JSON.stringify(`${props}\\n`)} ;;`).join('\n');
+  fs.writeFileSync(path.join(dir, 'systemctl'), `#!/bin/sh\ncase "$*" in\n  *list-units*) printf "${Object.keys(units).map((u) => `${u} loaded active running x\\n`).join('')}" ;;\n${show}\n  *) : ;;\nesac\nexit 0\n`, { mode: 0o755 });
   fs.symlinkSync(process.execPath, path.join(dir, 'node'));
   if (git) fs.symlinkSync(GIT, path.join(dir, 'git'));
   if (bd) fs.writeFileSync(path.join(dir, 'bd'), `#!/bin/sh\nexec "${process.execPath}" "${FAKE_BD}" "$@"\n`, { mode: 0o755 });
@@ -555,7 +561,8 @@ test('start: a publish refused with HTTP 403 names the network policy and where 
 function recordingClaude() {
   const dir = mk('start-launch-rec-');
   const bin = path.join(dir, 'claude-rec');
-  fs.writeFileSync(bin, `#!/bin/sh\nf="${dir}/$DELIVERY_ROLE.json"\n"${process.execPath}" -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), role: process.env.DELIVERY_ROLE, parent: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_CODE_REMOTE_SESSION_ID || process.env.CLAUDECODE || null, bgWait: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS || null, args: process.argv.slice(2) }))' "$f" "$@"\n`, { mode: 0o755 });
+  // `claude agents --json` lists FAKE_AGENTS (none by default), or fails when FAKE_AGENTS_FAIL is set
+  fs.writeFileSync(bin, `#!/bin/sh\nif [ "$1" = agents ]; then [ -n "$FAKE_AGENTS_FAIL" ] && exit 1; printf '%s' "\${FAKE_AGENTS:-[]}"; exit 0; fi\nf="${dir}/$DELIVERY_ROLE.json"\n"${process.execPath}" -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), role: process.env.DELIVERY_ROLE, parent: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_CODE_REMOTE_SESSION_ID || process.env.CLAUDECODE || null, bgWait: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS || null, args: process.argv.slice(2) }))' "$f" "$@"\n`, { mode: 0o755 });
   return { bin, dir };
 }
 function waitFor(files, ms = 10000) {
@@ -600,6 +607,31 @@ test('--launch skips a role already on the roster, starts nothing for other host
   const other = start(['--project', project, '--host', 'elsewhere', '--launch'], { env: { DELIVERY_CLAUDE_BIN: rec.bin } });
   assert.equal(other.status, 1, other.out);
   assert.match(other.out, /nothing to start: no role of this team runs on host "elsewhere"/);
+});
+
+// hjx.1.6.17 (rv-198): --launch skipped a role only when the roster had a session id, so it could start a
+// second session beside one running under another id
+test('--launch starts no role that already has a live session, by its role directory or its name, and none when the sessions cannot be listed', () => {
+  const project = path.join(mk('start-launch3-'), 'acme');
+  const rec = recordingClaude();
+  const team = path.join(path.dirname(project), 'acme-team');
+  const agents = JSON.stringify([
+    { sessionId: 'unit-cos', cwd: path.join(team, 'chief-of-staff'), name: 'Chief of Staff', status: 'idle' },
+    { sessionId: 'unit-b', cwd: '/elsewhere', name: 'builder@acme', status: 'busy' },
+  ]);
+  const r = start(['--project', project, '--host', 'laptop', '--launch'], { env: { DELIVERY_CLAUDE_BIN: rec.bin, FAKE_AGENTS: agents } });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /chief-of-staff: already running as Chief of Staff \(idle\) in \S+chief-of-staff; not started again/);
+  assert.match(r.out, /builder: already running as builder@acme \(busy\) in \/elsewhere; not started again/);
+  assert.ok(waitFor(['product-manager', 'delivery-lead'].map((i) => path.join(rec.dir, `${i}.json`))), r.out);
+  for (const i of ['chief-of-staff', 'builder']) assert.ok(!fs.existsSync(path.join(rec.dir, `${i}.json`)), `${i} was started beside its live session`);
+  // a list that cannot be read starts nobody
+  const q = path.join(mk('start-launch4-'), 'acme');
+  const rec2 = recordingClaude();
+  const u = start(['--project', q, '--host', 'laptop', '--launch'], { env: { DELIVERY_CLAUDE_BIN: rec2.bin, FAKE_AGENTS_FAIL: '1' } });
+  assert.match(u.out, /chief-of-staff: not started: the open sessions could not be listed/);
+  cp.spawnSync('sleep', ['1']);
+  assert.deepEqual(fs.readdirSync(rec2.dir).filter((f) => f.endsWith('.json')), [], 'nothing started');
 });
 
 test('a project repo start.js creates starts on main, whatever the machine\'s git default', () => {
@@ -849,5 +881,21 @@ test('check: sealed test runs fail without bwrap, and say how many capped runs f
   // a lower cap fits more runs
   assert.equal(sealRow({ env: { DELIVERY_TEST_TMP_MB: '512' }, bwrap: '/usr/bin/bwrap', freeBytes: 3 * GB }).status, 'pass');
   // checkPrerequisites carries the row
-  assert.ok(checkPrerequisites({ env: { PATH: '/bin' } }).some((r) => r.name === 'sealed test runs'));
+  assert.ok(checkPrerequisites({ env: { PATH: '/bin' }, services: [] }).some((r) => r.name === 'sealed test runs'));
+});
+
+// hjx.1.6.14: --check rates each delivery and Remote Control service's task limit against the team on
+// this host, through the systemctl on PATH; a low one warns and never fails the check
+test('start.js --check warns for a service whose TasksMax is under what the team needs, with the command that raises it, and passes one that fits', () => {
+  const root = mk('start-proj-');
+  fs.mkdirSync(path.join(root, '.delivery', 'team'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.delivery', 'team', 'team.json'), JSON.stringify({ project: 'ex', prefix: 'ex', roles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'builder', host: 'pc', count: 2 }] }));
+  const dir = bin({ units: { 'claude-rc-chief-of-staff.service': 'TasksMax=300\nTasksCurrent=182\nActiveState=active', 'delivery-watchdog-x.service': 'TasksMax=4096\nTasksCurrent=40\nActiveState=inactive' } });
+  const r = start(['--check', '--project', root], { path: dir, env: { DELIVERY_HOST: 'pc' } });
+  if (process.platform !== 'linux') { assert.doesNotMatch(r.out, /service claude-rc/); return; }
+  assert.match(r.out, /\[warn\] service claude-rc-chief-of-staff\.service: TasksMax 300, 182 in use; the team has 3 role sessions on this host, which need 4096\. Fix: systemctl --user set-property claude-rc-chief-of-staff\.service TasksMax=4096/);
+  assert.match(r.out, /\[pass\] service delivery-watchdog-x\.service: TasksMax 4096/);
+  assert.doesNotMatch(r.out, /\[fail\] service /, 'a low limit warns; it is never a missing prerequisite');
+  assert.doesNotMatch(r.out, /missing: .*service /);
+  assert.doesNotMatch(start(['--check', '--project', root], { path: bin(), env: { DELIVERY_HOST: 'pc' } }).out, /\] service /, 'no services: no rows');
 });

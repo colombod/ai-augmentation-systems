@@ -59,8 +59,10 @@ function describeHost(name, host) {
   return text;
 }
 
-// The Session column is the name to message (lib/session-name.js): <instance>@<team>. Session names
-// are machine-wide, so a bare role name can reach another team's session on the same host.
+// The Session column names each role's session (lib/session-name.js): <instance>@<team>. It says which
+// session is which role; it is not the name to message, since SendMessage refuses any name with "@" and
+// sessions run under the names ListAgents shows (hjx.1.6.13). Session names are machine-wide, so a
+// guessed role name can reach another team's session on the same host.
 function routingTable(team) {
   const { sessionName } = require('./session-name.js');
   const lines = ['| Role | Host | Model | Brief | Session |', '|---|---|---|---|---|'];
@@ -75,7 +77,7 @@ function routingTable(team) {
 // who this session is, and how it addresses the others
 function sessionLine(team, instance, actor) {
   const { sessionName } = require('./session-name.js');
-  return `You are the session "${sessionName(instance, team.prefix)}" (instance ${instance}). Your beads actor is \`${actor}\` (the real user name is set in your environment as BEADS_ACTOR). Bead prefix: \`${team.prefix}-\`. The bd host is \`${team.bd_host}\`. Message another role by its name in the Session column below, never by a bare role name: session names are shared by every team on this machine.`;
+  return `You are the session "${sessionName(instance, team.prefix)}" (instance ${instance}). Your beads actor is \`${actor}\` (the real user name is set in your environment as BEADS_ACTOR). Bead prefix: \`${team.prefix}-\`. The bd host is \`${team.bd_host}\`. Message another role by the name ListAgents shows for its session, or by the uds: address a message from it came with when that name holds "@"; never by a role name you guessed, since session names are shared by every team on this machine. The Session column below says which session is which role: SendMessage refuses its instance@team form, and a refused send lists this team's live sessions by the name to send to.`;
 }
 
 function headerLines(team, instance, role) {

@@ -18,7 +18,7 @@ const H1 = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 const H2 = 'b2c3d4e5f60718293a4b5c6d7e8f901234567890';
 const GREEN = [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }];
 const pr478 = (over = {}) => ({ headRefOid: H1, headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'src/import.js', additions: 120, deletions: 30 }],
-  body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, title: 'Import a dropped CSV', ...over });
+  body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}\nDoc-impact: none (a test fixture)`, title: 'Import a dropped CSV', ...over });
 
 function setup(prs = { 478: pr478() }, { restOnly = false } = {}) {
   const bead = storyBead({ metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } });
@@ -98,6 +98,56 @@ test('R-32: "changes" blocks until a newer pass on the head; CI red blocks; a Co
   assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6: review rv-478-\S+ by agent-7f3a, CI green/);
 });
 
+test('a reviewed, green change users can see is refused at the gate and the merge until its description carries a doc-impact line', () => {
+  const h = setup({ 478: pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}` }) });
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  const g = h.gate('delivery-lead', 'check 478');
+  assert.equal(g.code, 1);
+  assert.match(g.out, /refused: PR 478: it changes what users see \(src\/import\.js\) and its description has no doc-impact line\.\nAdd one line saying the doc impact as a comment on the pull request: gh pr comment 478 --body 'Doc-impact: <the docs this pull request updates>'/);
+  assert.match(h.merge('delivery-lead', `478 --match-head-commit ${H1}`).deny, /no doc-impact line/);
+  // the line names docs the pull request does not touch: still refused
+  h.setPr(478, (p) => { p.body += '\nDoc-impact: README import section'; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /names docs \("README import section"\) but changes no doc file/);
+  // the docs are updated in it: the same reviewed head passes (a description edit is not a new commit)
+  h.setPr(478, (p) => { p.files = [...p.files, { path: 'README.md', additions: 4, deletions: 1 }]; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/);
+});
+
+// delivery-plugin-planning-8l1.4.1, rv-201: a pull request opened before the gate shipped (a fixed time in
+// lib/doc-impact.js, never a record on disk that could be deleted or forged) is warned at every check,
+// never refused; one opened after, or with no creation time, is refused.
+test('a pull request opened before the doc-impact gate shipped is warned at every check, never refused; one opened after is refused', () => {
+  const DI = require('./lib/doc-impact.js');
+  const before = new Date(Date.parse(DI.GATE_SHIPPED) - 3600e3).toISOString();
+  const after = new Date(Date.parse(DI.GATE_SHIPPED) + 3600e3).toISOString();
+  const h = setup({ 478: pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, createdAt: before }) });
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  for (let i = 0; i < 2; i++) {
+    const g = h.gate('delivery-lead', 'check 478');
+    assert.equal(g.code, 0, g.out);
+    assert.match(g.out, new RegExp(`warning: PR 478 was opened before the doc-impact gate shipped \\(${DI.GATE_SHIPPED.replace(/[.]/g, '\\.')}\\), so it is not refused: it changes what users see \\(src\\/import\\.js\\) and its description has no doc-impact line; Add one line saying the doc impact as a comment on the pull request: gh pr comment 478 --body 'Doc-impact:`));
+  }
+  assert.equal(h.merge('delivery-lead', `478 --match-head-commit ${H1}`).deny, null, 'the lane merge check gives the same grace');
+  // nothing on disk decides it: no record of a first run is written
+  assert.equal(fs.existsSync(path.join(h.root, '.delivery', 'watchdog', 'doc-impact-since.json')), false);
+  // opened after the gate shipped: refused
+  h.setPr(478, (p) => { p.createdAt = after; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /refused: PR 478: it changes what users see/);
+  // no creation time known: refused, never a silent grace
+  h.setPr(478, (p) => { delete p.createdAt; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /refused: PR 478: it changes what users see/);
+  // the author's comment clears it outright, with nothing to warn
+  h.setPr(478, (p) => { p.createdAt = after; p.author = { login: 'owner-account' }; p.comments = [{ body: 'Doc-impact: none (a test fixture)', author: { login: 'owner-account' }, authorAssociation: 'OWNER', createdAt: after }]; });
+  const ok = h.gate('delivery-lead', 'check 478').out;
+  assert.match(ok, /passes at a1b2c3d4e5f6/, ok);
+  assert.doesNotMatch(ok, /doc-impact gate shipped/);
+  // a stranger's comment does not
+  h.setPr(478, (p) => { p.comments = [{ body: 'Doc-impact: none (x)', author: { login: 'passer-by' }, authorAssociation: 'NONE', createdAt: after }]; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /refused: PR 478: it changes what users see/);
+});
+
 test('R-32: a conflict goes back to its owner (bead note and message); after the fix only a new review counts', () => {
   const h = setup();
   h.review('delivery-lead', 'request 478 --reviewer builder-2');
@@ -118,7 +168,7 @@ test('R-32: a conflict goes back to its owner (bead note and message); after the
 
 test('R-24 #272: a 1,000-line pull request across two stories warns at request and at the gate, and never blocks', () => {
   const two = storyBead({ id: 'ex-vault-0n9-4', metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } });
-  const h = setup({ 272: pr478({ files: [{ path: 'src/a.js', additions: 700, deletions: 300 }, { path: 'package-lock.json', additions: 2790, deletions: 0 }], body: `Refs ${BEAD}\nRefs ex-vault-0n9-4` }) });
+  const h = setup({ 272: pr478({ files: [{ path: 'src/a.js', additions: 700, deletions: 300 }, { path: 'package-lock.json', additions: 2790, deletions: 0 }], body: `Refs ${BEAD}\nRefs ex-vault-0n9-4\nDoc-impact: none (a test fixture)` }) });
   h.setBead(BEAD, () => {});
   const s = h.db(); s.issues[two.id] = { ...s.issues[BEAD], ...two, notes: '' }; fs.writeFileSync(h.store, JSON.stringify(s));
   const req = h.review('delivery-lead', 'request 272 --reviewer builder-2');
@@ -404,4 +454,82 @@ test('r7w: the version step is skipped, without a read, when the pull request or
   assert.equal(g.ok, false);
   assert.match(g.why, /could not be read \(the reader was asked\)/);
   assert.ok(reads > 0);
+});
+
+// When gh cannot read the pull request, its description and files are unknown: the doc-impact check
+// cannot run, and the gate says so as a warning rather than passing it as checked.
+test('the doc-impact check is a warning, never a silent pass, when GitHub cannot read the pull request', () => {
+  const root = makeProject();
+  const bd = memBd([storyBead({ metadata: { authors: [{ actor: 'dev@pc/builder-1', role: 'builder' }] } })]);
+  const team = { ...loadManifest(root).team, product_github: 'example/example' };
+  const who = (instance) => ({ root, team, instance, roleId: instance.replace(/-\d+$/, ''), actor: `dev@pc/${instance}` });
+  const down = () => ({ unavailable: 'gh is not installed' });
+  const call = (inst, argv) => review.main(argv, { bd, gh: down, who: who(inst) });
+  assert.equal(call('delivery-lead', ['request', '478', '--reviewer', 'agent-1', '--head', H1, '--branch', 'team/builder-1', '--bead', BEAD, '--lines', '120']).code, 0);
+  assert.equal(call('delivery-lead', ['record', '478', '--head', H1, '--result', 'pass', '--by', 'agent-1', '--summary', 'ok']).code, 0);
+  assert.equal(call('delivery-lead', ['ci', '478', '--head', H1, '--result', 'pass', '--run', 'https://ci.example/run/9']).code, 0);
+  const opts = (gh) => ({ head: H1, gh, team, repo: 'example/example', planDrift: () => [], readFile: () => ({ unavailable: 'unused' }) });
+  const g = mergeGate.gate(root, '478', opts(down));
+  assert.equal(g.ok, true, g.why);
+  assert.deepEqual(g.warnings.filter((w) => w.kind === 'doc-impact'), [{ kind: 'doc-impact', detail: 'doc impact not checked: gh cannot read the pull request' }]);
+  // the same record with the pull request readable and no line is refused: the warning stands in only for an unreadable PR
+  const r = mergeGate.gate(root, '478', opts(() => pr478({ body: `Refs ${BEAD}` })));
+  assert.equal(r.ok, false);
+  assert.match(r.why, /no doc-impact line/);
+});
+
+// 8l1.4.1 through REST only (Claude Code's cloud sessions): the comments, the commits and the creation
+// time come from their own endpoints, so a line said there counts and the grace reads the same time
+test('through REST only, the doc-impact line counts from the author\'s comment or a commit, by time, and the creation time sets the grace', () => {
+  const h = setup({ 478: pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, createdAt: '2026-11-01T10:00:00Z', author: { login: 'owner-account' } }) }, { restOnly: true });
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  // no line anywhere, opened before the gate shipped: warned
+  assert.match(h.gate('delivery-lead', 'check 478').out, /warning: PR 478 was opened before the doc-impact gate shipped/);
+  // opened after it: refused through REST as through gh pr view
+  h.setPr(478, (p) => { p.createdAt = '2099-01-01T00:00:00Z'; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /refused: PR 478: it changes what users see/);
+  // a stranger's comment: still refused, since REST gives each comment's author too
+  h.setPr(478, (p) => { p.comments = [{ body: 'Doc-impact: none (x)', author: { login: 'passer-by' }, authorAssociation: 'NONE', createdAt: '2099-01-02T00:00:00Z' }]; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /refused: PR 478: it changes what users see/);
+  // the author's comment: passes, nothing to warn
+  h.setPr(478, (p) => { p.comments = [{ body: 'Doc-impact: none (a test fixture)', author: { login: 'owner-account' }, authorAssociation: 'OWNER', createdAt: '2099-01-02T00:00:00Z' }]; });
+  const c = h.gate('delivery-lead', 'check 478').out;
+  assert.match(c, /passes at a1b2c3d4e5f6/, c);
+  assert.doesNotMatch(c, /doc-impact/);
+  // a commit, however late it says it was made, does not override the author's comment
+  h.setPr(478, (p) => { p.commits = [{ messageHeadline: 'Import a CSV', messageBody: 'Doc-impact:', committedDate: '2199-01-03T00:00:00Z' }]; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/);
+});
+
+// rv-201: GitHub lists comments and commits oldest first, 100 to a page, and gh pr view stops at 100 of
+// each; the newest line sits past that, so every page is read, through REST when gh pr view is capped
+const many = (n, last) => Array.from({ length: n }, (_, i) => ({ body: i === n - 1 ? last : `note ${i}`, author: { login: 'owner-account' }, authorAssociation: 'OWNER',
+  createdAt: new Date(Date.parse('2099-01-01T00:00:00Z') + i * 60e3).toISOString() }));
+const manyCommits = (n, last) => Array.from({ length: n }, (_, i) => ({ messageHeadline: `step ${i}`, messageBody: i === n - 1 ? last : '', committedDate: '2099-01-01T00:00:00Z' }));
+for (const restOnly of [true, false]) {
+  test(`past 100 comments or commits the newest line is read (${restOnly ? 'REST only' : 'gh pr view, capped at 100'})`, () => {
+    const h = setup({ 478: pr478({ body: `Refs ${BEAD}`, createdAt: '2099-01-01T00:00:00Z', author: { login: 'owner-account' }, comments: many(150, 'Doc-impact: none (a parser change only)') }) }, { restOnly });
+    h.review('delivery-lead', 'request 478 --reviewer builder-2');
+    h.pass('builder-2');
+    assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/, 'the 150th comment counts');
+    h.setPr(478, (p) => { p.comments = []; p.commits = manyCommits(150, 'Doc-impact: none (a parser change only)'); });
+    assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/, 'the 150th commit counts');
+    // and the newest line still decides past the cap: a 150th comment that empties it is refused
+    h.setPr(478, (p) => { p.commits = []; p.comments = [...many(149, 'Doc-impact: none (x y z)').map((c) => ({ ...c, body: 'Doc-impact: none (an older reason)' })), ...many(150, 'Doc-impact:').slice(149)]; });
+    assert.match(h.gate('delivery-lead', 'check 478').out, /its doc-impact line is empty/);
+  });
+}
+
+// rv-201: a contributor from outside the team comments on their own pull request; GitHub marks them only
+// CONTRIBUTOR, so their comment counts by matching the pull request's author, which gh pr view must be asked for
+test('a contributor\'s own comment on their pull request counts through gh pr view, by its author', () => {
+  const h = setup({ 478: pr478({ body: `Imports a dropped CSV in plain chat.\n\nRefs ${BEAD}`, createdAt: '2099-01-01T00:00:00Z', author: { login: 'outside-dev' },
+    comments: [{ body: 'Doc-impact: none (a parser change only)', author: { login: 'outside-dev' }, authorAssociation: 'CONTRIBUTOR', createdAt: '2099-01-02T00:00:00Z' }] }) });
+  h.review('delivery-lead', 'request 478 --reviewer builder-2');
+  h.pass('builder-2');
+  assert.match(h.gate('delivery-lead', 'check 478').out, /passes at a1b2c3d4e5f6/);
+  // the same words from another contributor do not count
+  h.setPr(478, (p) => { p.comments[0].author = { login: 'someone-else' }; });
+  assert.match(h.gate('delivery-lead', 'check 478').out, /refused: PR 478: it changes what users see/);
 });

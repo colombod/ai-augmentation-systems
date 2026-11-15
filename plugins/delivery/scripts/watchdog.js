@@ -16,16 +16,22 @@
 //   watchdog.js wake [--dry-run] [--project <root>] wakes the session each due stall names, within the
 //                                                   caps (one wake per session an hour, six a day, a doubling
 //                                                   wait per stall); a usage-limit wake waits for the reset.
-//                                                   `claude --resume <id> -p` in the role directory, or a fork
-//                                                   when the session is open; logged in .delivery/watchdog/
+//                                                   `claude --resume <id> -p` in the role directory, or a message
+//                                                   to the role's live session; logged in .delivery/watchdog/
 //   watchdog.js run [--project <root>]              sweep test leftovers, check, then wake, under one lock: what the host job runs
 //                                                   Each run then starts the team's missing role sessions while work is in flight (team-revive.js)
 //                                                   Each run also installs the plugin main carries when it is newer and every
 //                                                   change to it passed the team's gate, never under a running wake (lib/self-update.js)
+//                                                   Each run installs the host manager's units when they are missing and this
+//                                                   team has a prepared host-manager instance on this host (host-manager.js
+//                                                   install, one row in revive.ndjson), and starts its unit when it is down
 //   watchdog.js install [--every 15m] [--apply] [--project <root>]
 //                                                   the host job (launchd on macOS, a systemd user timer
 //                                                   or cron on Linux) that runs `run`; prints what it would
 //                                                   write unless --apply. Never installed automatically.
+//                                                   --apply also adds the project to the machine's team list
+//                                                   and installs the host manager when it is missing
+//                                                   (host-manager.js install)
 //   watchdog.js uninstall [--project <root>]        removes that job; nothing to remove is not an error
 // wake, run, install and uninstall are refused inside a role directory or a role session's environment.
 // Exit codes: 0 ok (a stall is not an error); 1 refused; 2 usage.
@@ -130,6 +136,7 @@ function wakeLimitMs(env) {
   const asked = Number(env.DELIVERY_WAKE_TIMEOUT_MIN) * 60e3;
   return Number.isFinite(asked) && asked > 0 ? Math.min(asked, WD.WAKE_TIMEOUT_H * 3600e3) : WD.WAKE_TIMEOUT_H * 3600e3;
 }
+const defaultDeliver = (socket, text) => require('./lib/session-message.js').deliver(socket, text);
 function spawnWake(bin, args, { cwd, env, logPath }) {
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
   const fd = fs.openSync(logPath, 'a');
@@ -198,10 +205,21 @@ const HEADLESS_WAIT = { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
 // hold what it was kicked to hand over until the timer pass. A pid named in a kick has ended.
 const endedPids = (kicks) => new Set(kicks.map((k) => Number((/a wake ended \(pid (\d+)\)/.exec(k) || [])[1])).filter((n) => n > 0));
 
-function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set() }) {
+// A wake pid still running, as the host job asks it: not one whose wake ended in this run (its kick
+// said so), and that wake by its row's time (lib/watchdog.js pidAlive). One check for the wake plan and
+// the plugin's self-update, so both read a reused or unreadable pid the same way (hjx.1.6.20).
+function wakeAlive(ended, now) {
+  return (pid, since) => !ended.has(pid) && WD.pidAlive(pid, { since, now });
+}
+
+function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWake, ended = new Set(), deliver = defaultDeliver }) {
   const at = now || new Date().toISOString();
   if (res.unreadable || res.paused) return [];
-  const p = WD.plan(res, { root, now: at, alive: (pid) => !ended.has(pid) && WD.pidAlive(pid) });
+  // a wake row is stamped at its spawn, not at the pass start: the check reads the supervisor's start
+  // against the row (lib/watchdog.js pidAlive), and the reads and spawns before it take real time. A run
+  // given its clock (a test, a replay) keeps that clock exactly, so its gates read as it set them.
+  const spawnStamp = () => (now ? at : new Date().toISOString());
+  const p = WD.plan(res, { root, now: at, alive: wakeAlive(ended, at) });
   const lines = [];
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
   const open = p.wakes.length ? (live !== undefined ? live : liveSessions(bin, env)) : null;
@@ -222,16 +240,38 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
       if (!dryRun && (!lastSkip || Date.parse(at) - Date.parse(lastSkip.at) >= WD.WAKE_EVERY_MS)) WD.log(root, { type: 'skip', at, keys: w.keys, instance: w.target, reason: c.skip });
       continue;
     }
+    if (c.mode === 'message') {
+      // the role's session is live and idle: the wake goes to it as a message, and no session is started
+      const target = require('./lib/one-session.js').described([c.session]);
+      const twice = c.twice ? ` (it runs twice: ${c.twice})` : '';
+      if (dryRun) { lines.push(`Would message ${w.target}'s live session ${target}${twice}: ${w.lines[0]}`); continue; }
+      const SM = require('./lib/session-message.js');
+      const d = deliver(SM.socketOf(Number(c.session.pid), env), w.prompt);
+      if (!d.ok) {
+        const why = `its session ${target} is live, and the wake could not be handed to it (${d.why}); no second session is started`;
+        lines.push(`Not woken: ${w.target}: ${why}${twice}. ${w.lines[0]}`);
+        const lastSkip = rows.filter((r) => r.type === 'skip' && r.instance === w.target).pop();
+        if (!lastSkip || Date.parse(at) - Date.parse(lastSkip.at) >= WD.WAKE_EVERY_MS) WD.log(root, { type: 'skip', at, keys: w.keys, instance: w.target, reason: why });
+        continue;
+      }
+      // logged as a wake, so the hourly and daily caps and the doubling hold; no pid: nothing runs for it
+      WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: c.session.sessionId || null, mode: 'message', msg_id: d.msgId, prompt: w.prompt, pid: null });
+      for (const dl of w.delivers || []) require('./lib/inbox.js').markDelivered(root, dl.to, dl.upTo);
+      let keptM = '';
+      if (w.handoffs && w.handoffs.length) { try { require('./lib/handoff.js').markDelivered(root, w.handoffs, at); } catch (err) { keptM = ` (its handoff stays open until the next pass: ${String(err.message).split('\n')[0]})`; } }
+      lines.push(`Woke ${w.target} (message to its live session ${target})${twice}: ${w.lines.join(' ')}${keptM}`);
+      continue;
+    }
     const shown = `${bin} ${c.args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`;
     if (dryRun) { lines.push(`Would wake ${w.target} (${c.mode}) in ${s.roleDir}: ${shown}`); continue; }
     const logPath = path.join(root, WD.REL, 'logs', `${w.target}-${at.replace(/[:.]/g, '-')}.log`);
-    // DELIVERY_WAKE tells the session's hooks this is the watchdog's: a fork is recorded beside the
-    // owner's open session, never in its place
-    // each wake has its own id: a fork records its session under it (lib/roster.js sessionLocator)
+    // DELIVERY_WAKE tells the session's hooks this is the watchdog's wake (resume, continue or fresh);
+    // a live session is never started beside, it is handed a message above
+    // each wake has its own id: the session it starts records itself under it (lib/roster.js sessionLocator)
     const wakeId = crypto.randomBytes(6).toString('hex');
     // DELIVERY_WAKE_KICK: the supervisor kicks the next run when this wake ends (lib/kick.js)
     const pid = spawn(bin, c.args, { cwd: s.roleDir, env: require('./lib/fresh-session-env.js').freshSessionEnv(env, { DELIVERY_ROLE: w.target, DELIVERY_WAKE: c.mode, DELIVERY_WAKE_ID: wakeId, DELIVERY_WAKE_KICK: KICK.dirOf(root), ...HEADLESS_WAIT }), logPath });
-    WD.log(root, { type: 'wake', at, keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
+    WD.log(root, { type: 'wake', at: spawnStamp(), keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
     // the messages and handoffs it carries are handed over: the next run does not wake for them again
     for (const d of w.delivers || []) require('./lib/inbox.js').markDelivered(root, d.to, d.upTo);
     // a handoffs file another writer holds: the wake stands, the row is handed over at the next pass
@@ -352,6 +392,13 @@ function ensureKickWatch(root, { home, exec } = {}) {
   } catch (err) { return `kick watch: not installed (${String(err.message).split('\n')[0]}); handoffs wait for the next pass`; }
 }
 
+// the role sessions of the project's team on this host, 0 when team.json cannot be read
+function teamSessionsHere(root, env) {
+  let team = null;
+  try { team = JSON.parse(fs.readFileSync(path.join(root, '.delivery', 'team', 'team.json'), 'utf8')); } catch (err) { team = null; }
+  return require('./lib/service-limits.js').sessionsOn(team, require('./lib/team-revive.js').hostOf(env));
+}
+
 function jobFiles(root, { platform, home, sec, env, has }) {
   const tag = tagOf(root);
   const logPath = path.join(root, WD.REL, 'job.log');
@@ -395,13 +442,15 @@ function jobFiles(root, { platform, home, sec, env, has }) {
     const service = path.join(dir, `${name}.service`);
     const timer = path.join(dir, `${name}.timer`);
     const watch = kickWatchUnit(root, home);
-    // KillMode=process: the wake started by the run outlives the oneshot service (Copilot 440)
+    // KillMode=process: the wake started by the run outlives the oneshot service (Copilot 440). The wakes
+    // stay in the service's cgroup, so its TasksMax fits the team on this host (lib/service-limits.js)
+    const tasks = require('./lib/service-limits.js').tasksMaxFor(teamSessionsHere(root, env));
     return {
       ...base,
       kind: 'systemd',
       file: timer,
       files: [
-        { file: service, body: `[Unit]\nDescription=delivery watchdog for ${sdPct(root)}\n\n[Service]\nType=oneshot\nKillMode=process\nWorkingDirectory=${sdPct(root)}\nEnvironment=${sdq(`PATH=${PATH}`)}\n${config ? `Environment=${sdq(`CLAUDE_CONFIG_DIR=${config}`)}\n` : ''}ExecStart=${argv[0]} ${argv.slice(1).map(sdq).join(' ')}\nStandardOutput=append:${sdPct(logPath)}\nStandardError=append:${sdPct(logPath)}\n` },
+        { file: service, body: `[Unit]\nDescription=delivery watchdog for ${sdPct(root)}\n\n[Service]\nType=oneshot\nKillMode=process\nTasksMax=${tasks}\nWorkingDirectory=${sdPct(root)}\nEnvironment=${sdq(`PATH=${PATH}`)}\n${config ? `Environment=${sdq(`CLAUDE_CONFIG_DIR=${config}`)}\n` : ''}ExecStart=${argv[0]} ${argv.slice(1).map(sdq).join(' ')}\nStandardOutput=append:${sdPct(logPath)}\nStandardError=append:${sdPct(logPath)}\n` },
         { file: timer, body: `[Unit]\nDescription=delivery watchdog every ${sec / 60} min for ${root}\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=${sec}s\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n` },
         { file: watch.file, body: watch.body },
       ],
@@ -432,7 +481,7 @@ const whichOf = (has) => has || ((cmd) => { try { require('child_process').execF
 // cannot run the job: said plainly, with the way out, instead of a crontab error (dlv-4oj)
 const NO_SCHEDULER = 'this host has no scheduler (no systemctl, no crontab), so the watchdog cannot run on its own here: a stopped role is woken only while someone keeps a loop alive. Run the team on an always-on host (one with systemd, launchd or cron), or run `watchdog.js run --project <root>` yourself when work is due.';
 
-function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has } = {}) {
+function install(root, o, { platform = process.platform, home = os.homedir(), env = process.env, exec, has, live } = {}) {
   const which = whichOf(has);
   const cron = platform !== 'darwin' && !which('systemctl');
   if (cron && !which('crontab')) return { code: 1, out: `watchdog.js: ${NO_SCHEDULER}` };
@@ -473,8 +522,101 @@ function install(root, o, { platform = process.platform, home = os.homedir(), en
   } catch (err) { return { code: 1, out: `${lines.join('\n')}\nwatchdog.js: the job was not installed (${String(err.message).split('\n')[0]})\n${removal}`.trim() }; }
   lines.push(`Installed. ${head}`);
   if (j.kind === 'systemd') lines.push('A user timer runs only while you are logged in, unless lingering is on: loginctl enable-linger $USER.');
+  lines.push(...hostManagerSetup(root, { platform, home, env, exec, has: which, live }));
   lines.push(removal);
   return { code: 0, out: lines.join('\n') };
+}
+
+// The host manager arrives with the watchdog's own install, so whoever installs the plugin's host job has
+// it with nothing more to do: this project joins the machine's team list, and the host manager's units
+// are installed when they are missing (host-manager.js install). A failure is said and never fails the
+// watchdog's own install.
+function hostManagerSetup(root, { platform, home, env, exec, has, live }) {
+  const HM = require('./lib/host-manager.js');
+  const out = [];
+  try { if (HM.addHostTeam(HM.hostFile(env, home), root)) out.push(`Added ${root} to ${HM.hostFile(env, home)}, the teams the host manager serves.`); } catch (err) { out.push(`Host manager: ${root} was not added to its team list (${String(err.message).split('\n')[0]}).`); }
+  if (platform === 'darwin' || !has('systemctl')) { out.push('Host manager: not installed here: its units need systemd.'); return out; }
+  if (fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return out;
+  const r = require('./host-manager.js').install(root, { onlyMissing: true }, { env, home, exec, has, cwd: root, ...(live !== undefined ? { live } : {}) });
+  out.push(...r.out.split('\n').map((l) => `Host manager: ${l.replace(/^host-manager\.js: /, '')}`));
+  return out;
+}
+
+// Each pass looks at the host manager's own unit and starts it when it is installed and down: the host
+// manager restarts the host jobs, and the host jobs restart the host manager. One row in revive.ndjson
+// per start. null when there is nothing to do.
+// Before that, a unit that is missing is installed when this team's manifest has a host-manager instance
+// on this host whose role directory is prepared: Staffing prepares it from a role session, which may not
+// install units, and this run is the host job's, outside any role session. The install is host-manager.js
+// install itself (its files, its reload, enable and start, its refusal in a role session), with one row
+// in revive.ndjson. Only the unit files that are missing are written (onlyMissing): an installed unit,
+// the tick's service and timer included, is never rewritten. When the last install row carries an
+// error (an enable that failed after the files were written), the next run repeats the install, which
+// then writes nothing that exists and runs the reload and enables again, until a run records no error.
+function ensureHostManager(root, { home, exec, now, env = process.env, has, hostname, live, writeFile }) {
+  const HM = require('./lib/host-manager.js');
+  const R = require('./lib/team-revive.js');
+  const lines = [];
+  const missing = !fs.existsSync(path.join(HM.unitDir(home), HM.UNIT));
+  const lastRow = () => R.ledger(root).filter((x) => x.type === 'host-manager-install').pop() || null;
+  const prior = missing ? null : lastRow();
+  if (missing || (prior && prior.error)) {
+    const HMS = require('./host-manager.js');
+    const target = HMS.installTarget(root, {}, { env, hostname });
+    const retry = !missing;
+    // a team.json that cannot be read is said; no host manager here, or one not prepared, is left alone.
+    // On a retry the unit file is already there, so a blocked install does not end the run: a stopped
+    // host manager is still started below (otherwise it would stay down until the target came back).
+    const reason = target.unreadable ? null : target.why ? target.why.replace(/^host-manager\.js: /, '') : !whichOf(has)('systemctl') ? 'this host has no systemctl' : null;
+    const blocked = target.unreadable ? `host manager: its units were not installed (${target.why.replace(/^host-manager\.js: /, '')})`
+      : reason !== null ? (retry ? `host manager: install not repeated (${reason})` : '') : null;
+    if (blocked !== null && !retry) return blocked || null;
+    if (blocked) lines.push(blocked);
+    if (blocked === null) {
+      const r = HMS.install(root, { onlyMissing: true }, { env, home, exec, has, hostname, cwd: root, ...(writeFile ? { writeFile } : {}), ...(live !== undefined ? { live } : {}) });
+      const last = r.out.split('\n').pop().replace(/^host-manager\.js: /, '');
+      // refused before it began (a role session): said, no row; the next run tries again
+      if (!r.attempted) return `host manager: its units were not installed (${last})`;
+      // from the first write on an attempt is a row, a failed write included. A retry that fails the
+      // way the last row did adds none: an enable that keeps failing is tried each run (a watchdog pass,
+      // every 15 minutes) but is one row until its error changes or it succeeds.
+      const sameAsLast = retry && r.code && prior.error === last;
+      if (!sameAsLast) R.record(root, { type: 'host-manager-install', at: now || new Date().toISOString(), instance: target.hm.instance, wrote: r.wrote, ...(retry ? { retry: true } : {}), ...(r.code ? { error: last } : {}) });
+      if (r.code) lines.push(r.wrote.length ? `host manager: its units were written (${r.wrote.join(', ')}) but the install did not finish (${last})` : `host manager: its units were not installed (${last})`);
+      else lines.push(retry && !r.wrote.length ? 'host manager: enabled its units again (the last install did not finish)' : `host manager: installed its units (${r.wrote.join(', ')})`);
+      if (!fs.existsSync(path.join(HM.unitDir(home), HM.UNIT))) return lines.join('\n');
+    }
+  }
+  const started = startHostManager(root, { home, exec, now, env, live });
+  if (started) lines.push(started);
+  return lines.length ? lines.join('\n') : null;
+}
+function startHostManager(root, { home, exec, now, env = process.env, live }) {
+  const HM = require('./lib/host-manager.js');
+  const run = runner(exec);
+  let state = '';
+  try { state = String(run('systemctl', ['--user', 'is-active', HM.UNIT])).trim(); } catch (err) {
+    // is-active exits non-zero for every state but active, with the state on stdout
+    if (err && err.code === 'ENOENT') return 'host manager: its state could not be read (no systemctl)';
+    state = String((err && err.stdout) || '').trim() || 'unknown';
+  }
+  if (state === 'active' || state === 'activating' || state === 'reloading') return null;
+  // A host-manager session already live (hand-started, or one its unit lost track of) is never given a
+  // second: the unit is neither reset nor started, and no row is written. Started beside it, the unit
+  // would exit at once (run-session, exit 3), and every separate run would start it again (rv-198).
+  // A session list that cannot be read starts nothing either.
+  const lv = require('./host-manager.js').liveHostManager(root, { env, home, live });
+  if (lv.unreadable) return `host manager: ${HM.UNIT} is ${state}; the open sessions could not be listed, so it is not started now (a second host manager could start beside a live one)`;
+  if (lv.sessions.length) return `host manager: ${HM.UNIT} is ${state}, and the host manager already runs as ${require('./lib/one-session.js').described(lv.sessions)}; not started beside it`;
+  let error = null;
+  // a unit that hit its start limit (host-manager.js install bounds its restarts) stays failed until its
+  // failed state is reset: this pass, every 15 minutes, is how often it is tried again
+  const reset = state === 'failed';
+  if (reset) { try { run('systemctl', ['--user', 'reset-failed', HM.UNIT]); } catch (err) { /* the start below says whether it took */ } }
+  try { run('systemctl', ['--user', 'start', HM.UNIT]); } catch (err) { error = String((err && (err.stderr || err.message)) || err).trim().split('\n')[0].slice(0, 200); }
+  require('./lib/team-revive.js').record(root, { type: 'host-manager-start', at: now || new Date().toISOString(), unit: HM.UNIT, was: state, ...(reset ? { reset: true } : {}), ...(error ? { error } : {}) });
+  const how = reset ? 'reset its failed state and started it' : 'started it';
+  return error ? `host manager: ${HM.UNIT} was ${state} and did not start (${error})` : `host manager: ${HM.UNIT} was ${state}; ${how}`;
 }
 
 // Removes the job this project installed on this host, in every form it may have taken; running it
@@ -518,10 +660,13 @@ function defaultUserGuard(env, home) {
 // runner starts none: a test must never start a real session on the machine it runs on.
 function defaultRevive(root, { team, env, now, dryRun, bd, live }) {
   if (env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN) return [];
-  return require('./team-revive.js').revive(root, team, { start: true, dryRun, env, now, bd, ...(live !== undefined ? { live } : {}) }).lines;
+  // a stale session is stopped only after a read of the open sessions made just then finds it idle,
+  // never on the pass's first read, which may be minutes old by then (lib/team-revive.js staleOf)
+  const relist = () => liveSessions(env.DELIVERY_CLAUDE_BIN || 'claude', env);
+  return require('./team-revive.js').revive(root, team, { start: true, cwd: root, dryRun, env, now, bd, relist, ...(live !== undefined ? { live } : {}) }).lines;
 }
 
-function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive } = {}) {
+function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, live, spawn, deliver, platform = process.platform, home = os.homedir(), exec, has, sweep, lockWaitMs, update = {}, userGuard, revive, hostUnit } = {}) {
   let o;
   try { o = parse(argv); } catch (err) { return { code: 2, out: `watchdog.js: ${err.message}\n${USAGE}` }; }
   const [cmd] = o._;
@@ -533,7 +678,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   const who = whoAmI({ cwd, env, project: o.project });
   if (!who.root) return { code: 2, out: 'watchdog.js: no project found; pass --project <root>' };
   if (cmd === 'pass') return rolePass(who.root, o, { bd, now, team: who.team, rows, env });
-  if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has });
+  if (cmd === 'install') return install(who.root, o, { platform, home, env, exec, has, ...(live !== undefined ? { live } : {}) });
   if (cmd === 'uninstall') return uninstall(who.root, { platform, home, env, exec, has });
   const state = { installed: false };
   const go = ({ first = true } = {}) => {
@@ -552,12 +697,12 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
     // starts in a new process under the new plugin, whose wakes start the old-version sessions fresh.
     // a pass taken for a kick looks again while an install is held: the kick is often the held-for wake
     // ending, and installing then beats waiting for the next cycle
-    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: (pid) => !endedPids(kicked).has(pid) && WD.pidAlive(pid), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
+    const updated = cmd === 'run' && (first || state.held) ? require('./lib/self-update.js').selfUpdate(who.root, { pluginRoot: PLUGIN_ROOT, env, now, dryRun: !!o.dryRun, alive: wakeAlive(endedPids(kicked), now), roleDirs: (res.sessions || []).map((s) => s.roleDir).filter(Boolean), ...update }) : { lines: [], installed: false };
     if (updated.installed) { KICK.kick(who.root, `plugin ${updated.version} installed`); state.installed = true; }
     state.held = !!updated.held;
     // a held install starts no wake: one started now is another run the install must wait for, and with
     // wakes back to back it never went (delivery-plugin-planning-0ba.6)
-    const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked) }))];
+    const woke = [...updated.lines, ...(updated.installed ? ['Wakes wait for the next run, which starts under the plugin just installed.'] : updated.held ? [`No new wake starts until ${updated.held} is installed: the running wakes end first.`] : wake(who.root, res, { now, dryRun: o.dryRun, env, live, spawn, ended: endedPids(kicked), ...(deliver ? { deliver } : {}) }))];
     // every cycle, the test runs' leftovers in the host's temp directory go (dec-chief-of-staff-000211):
     // a server is never left for a restart or a person to clean; a failing sweep never stops the wakes
     // after the wakes, so a role a wake now runs is seen running; never under an install (the next run's)
@@ -579,6 +724,10 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       // plugin enabled or not; a failure is reported and never stops the wakes
       const ug = o.dryRun ? null : (userGuard || defaultUserGuard)(env, home);
       if (ug) swept.push(ug);
+      // a run inside the sealed test runner never touches the host's own units unless a test hands it fakes
+      const sealed = env.DELIVERY_SEAL_ACTIVE || env.DELIVERY_SEALED_RUN;
+      const hm = o.dryRun || hostUnit === false || (!hostUnit && sealed) ? null : ensureHostManager(who.root, { home, exec, now, env, has, ...(live !== undefined ? { live } : {}), ...(hostUnit || {}) });
+      if (hm) swept.push(hm);
       try {
         const S = require('./testing/sweep.js');
         // a dry run says what the sweep would remove and removes nothing
@@ -602,7 +751,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
   return r || { code: 0, out: 'Another watchdog run holds the lock; this one does nothing.' };
 }
 
-module.exports = { main, liveSessions, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit };
+module.exports = { main, liveSessions, wakeAlive, defaultUserGuard, checkLines, jobFiles, shimBody, everySeconds, roleContext, kickWatchUnit, tagOf, sdq, sdPct, jobPath, ensureHostManager, hostManagerSetup, teamSessionsHere };
 
 if (require.main === module) {
   let r;
