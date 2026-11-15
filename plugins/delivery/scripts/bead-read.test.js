@@ -1,3 +1,4 @@
+require('./testing/role-env.js').clearRoleEnv();
 // scripts/bead-read.test.js -- a bd read that timed out or failed is reported as that, never as "no bead"
 // (8l1.4.1.2.1): verify-run.js and review.js said "no bead <id>" for a bead bd show then found, because a
 // read that only timed out under load was taken for a missing bead.
