@@ -573,7 +573,32 @@ function resolveOnPath(bin, env) {
   for (const d of String(env.PATH || '').split(path.delimiter)) { if (!d) continue; const f = path.join(d, bin); try { fs.accessSync(f, fs.constants.X_OK); return f; } catch (err) { /* not here */ } }
   return null;
 }
-function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now, live } = {}) {
+// A process's cgroup paths, from /proc/<pid>/cgroup (pid 'self': this process), or null when unreadable.
+function readCgroup(pid) {
+  try { return fs.readFileSync(`/proc/${pid}/cgroup`, 'utf8'); } catch (err) { return null; }
+}
+// Whether a /proc cgroup text places the process in the host manager's unit (v2 "0::/.../<unit>", or a
+// v1 hierarchy line ending in the unit); null when it cannot be read.
+function inUnit(text) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  return text.split('\n').some((l) => { const p = l.split(':').slice(2).join(':').trim(); return p.split('/').includes(HM.UNIT); });
+}
+// The one live host-manager session that runs outside this unit, read while this run is the unit's own:
+// { session, server } when its `claude remote-control` server is known and its cgroup is not the unit's;
+// null for anything else (two sessions, no server, a list or cgroup that cannot be read, this run not in
+// the unit, a server inside it), which leaves the live host manager as it is.
+function outsideUnit(running, { server, cgroupOf } = {}) {
+  if (running.length !== 1 || !running[0].sessionId) return null;
+  const s = running[0];
+  const srv = (server || require('./team-revive.js').serverOf)(s.pid);
+  if (!srv || srv.unreadable || !srv.pid || srv.self) return null;
+  const read = cgroupOf || readCgroup;
+  if (inUnit(read('self')) !== true) return null;
+  if (inUnit(read(srv.pid)) !== false) return null;
+  return { session: s, server: srv.pid };
+}
+// deps (tests): server (team-revive's serverOf), cgroupOf(pid), stop (team-revive's stopServer).
+function runSession(root, o, { env = process.env, home = os.homedir(), hostname, execve, resolveBin, now, live, server, cgroupOf, stop } = {}) {
   let team;
   try { team = M.loadManifest(root).team; } catch (err) { return { code: 1, out: `host-manager.js: the team at ${root} could not be read (${firstLine(err)}); no session started.` }; }
   const host = R.hostOf(env, hostname !== undefined ? hostname : os.hostname());
@@ -588,14 +613,33 @@ function runSession(root, o, { env = process.env, home = os.homedir(), hostname,
   const OS = require('./lib/one-session.js');
   const listed = sessionsNow({ env, live });
   if (!Array.isArray(listed)) return { code: 1, out: 'host-manager.js: the open sessions could not be listed (claude agents --json), so a start could put a second host manager beside a live one; no session started.' };
-  const running = listed.filter(hostManagerMatch([a.roleDir], [`${hm.instance}@${host}`]));
-  if (running.length) return { code: ALREADY_RUNNING, out: `host-manager.js: ${hm.instance} already runs as ${OS.described(running)}; no second session started.` };
+  const match = hostManagerMatch([a.roleDir], [`${hm.instance}@${host}`]);
+  const running = listed.filter(match);
+  const already = { code: ALREADY_RUNNING, out: `host-manager.js: ${hm.instance} already runs as ${OS.described(running)}; no second session started.` };
   const ex = execve !== undefined ? execve : (typeof process.execve === 'function' ? process.execve.bind(process) : null);
-  if (!ex) return { code: 1, out: `host-manager.js: run-session needs node 22.15 or later (process.execve), so that claude is the unit's own process; this is node ${process.version}. No session started.` };
+  const noExec = { code: 1, out: `host-manager.js: run-session needs node 22.15 or later (process.execve), so that claude is the unit's own process; this is node ${process.version}. No session started.` };
   const bin = env.DELIVERY_CLAUDE_BIN || 'claude';
-  const file = (resolveBin || ((b) => resolveOnPath(b, env)))(bin);
-  if (!file) return { code: 1, out: `host-manager.js: ${bin} is not on PATH (${env.PATH || 'unset'}); no session started.` };
-  const note = a.dropped ? `host-manager.js: the recorded session ${a.dropped} ${a.why}, so it is not reattached again: a new server that stays up.` : '';
+  const fileOf = () => (resolveBin || ((b) => resolveOnPath(b, env)))(bin);
+  const noBin = { code: 1, out: `host-manager.js: ${bin} is not on PATH (${env.PATH || 'unset'}); no session started.` };
+  let replaced = '';
+  if (running.length) {
+    // the one live session runs outside this unit: replaced only when idle on a fresh read, and only
+    // once this run can start claude in its place; anything else is the live host manager left alone
+    const out = outsideUnit(running, { server, cgroupOf });
+    if (!out || !ex || !fileOf()) return already;
+    const again = sessionsNow({ env, live });
+    if (!Array.isArray(again)) return already;
+    const row = again.find((s) => s && s.sessionId === out.session.sessionId);
+    const others = again.filter((s) => match(s) && s.sessionId !== out.session.sessionId);
+    if (!row || row.status !== 'idle' || others.length) return already;
+    if (!(stop || require('./team-revive.js').stopServer)(out.server, out.session.pid)) return { code: 1, out: `host-manager.js: the host-manager session ${out.session.sessionId} runs outside ${HM.UNIT}, and its Remote Control server (pid ${out.server}) did not stop; no session started.` };
+    R.record(root, { type: 'host-manager-replaced', at: now || new Date().toISOString(), instance: hm.instance, server: out.server, pid: out.session.pid || null, session: out.session.sessionId });
+    replaced = `host-manager.js: replaced the host-manager session ${out.session.sessionId}, whose Remote Control server (pid ${out.server}) ran outside ${HM.UNIT}: stopped while idle, and the unit's own session starts.`;
+  }
+  if (!ex) return noExec;
+  const file = fileOf();
+  if (!file) return noBin;
+  const note = [replaced, a.dropped ? `host-manager.js: the recorded session ${a.dropped} ${a.why}, so it is not reattached again: a new server that stays up.` : ''].filter(Boolean).join('\n');
   // recorded before the exec, which does not return: the pid is claude's from here on
   R.record(root, { type: SESSION_ROW, at: now || new Date().toISOString(), instance: hm.instance, pid: process.pid, session_id: a.sessionId, args: a.args, ...(a.dropped ? { dropped: a.dropped, why: a.why } : {}) });
   if (note) process.stderr.write(`${note}\n`);

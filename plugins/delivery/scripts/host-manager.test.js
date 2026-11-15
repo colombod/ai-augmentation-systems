@@ -908,6 +908,63 @@ test('run-session starts no host-manager session beside a live one, by its role 
   assert.equal(calls.length, 1);
 });
 
+// A host-manager session whose `claude remote-control` server runs outside the unit's cgroup (started by
+// hand, or left behind by a unit whose main process was not claude) is replaced when the unit starts: its
+// server stopped through team-revive's stopServer once a fresh read finds it idle, then the unit's own
+// session. Busy, unreadable, or inside the unit: exit 3, nothing changed.
+test('run-session replaces an idle host-manager session running outside its unit; busy, unreadable or inside the unit, it exits 3 and changes nothing', () => {
+  const env = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', DELIVERY_ROLE: 'host-manager' };
+  const UNIT_CG = `0::/user.slice/user-1000.slice/user@1000.service/app.slice/${HM.UNIT}\n`;
+  const OTHER_CG = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-term-1.scope\n';
+  const setup = ({ status = 'idle', again, serverCg = OTHER_CG, selfCg = UNIT_CG, server = { pid: 3531014, self: false }, stopOk = true } = {}) => {
+    const m = machine({ alphaRoles: HM_ROLES });
+    m.env = { ...env, CLAUDE_CONFIG_DIR: m.config };
+    const old = { sessionId: 'hm-old', pid: 3531100, cwd: m.alpha.dir('host-manager'), name: 'host-manager@pc', status };
+    const reads = [[old], again === undefined ? [old] : again];
+    let k = 0;
+    const calls = { execve: [], stop: [], reads: 0, cgroup: [] };
+    const r = m.run(['run-session', '--project', m.alpha.root, '--instance', 'host-manager'], {
+      env: m.env, who: { roleId: 'host-manager' }, resolveBin: (b) => `/opt/bin/${b}`, now: T0,
+      live: () => { calls.reads++; return reads[Math.min(k++, reads.length - 1)]; },
+      execve: (file, argv) => calls.execve.push({ file, argv }),
+      server: (pid) => (pid === old.pid ? server : null),
+      cgroupOf: (pid) => { calls.cgroup.push(pid); return pid === 'self' ? selfCg : pid === (server && server.pid) ? serverCg : null; },
+      stop: (srv, pid) => { calls.stop.push([srv, pid]); return stopOk; },
+    });
+    return { m, r, calls, old };
+  };
+  // outside and idle on the fresh read: its server stopped through stopServer, then the unit's session
+  const a = setup();
+  assert.equal(a.r.code, 0, a.r.out);
+  assert.deepEqual(a.calls.stop, [[3531014, 3531100]]);
+  assert.equal(a.calls.reads, 2, 'a fresh second read before the stop');
+  assert.equal(a.calls.execve.length, 1);
+  assert.equal(a.calls.execve[0].file, '/opt/bin/claude');
+  assert.deepEqual(a.calls.execve[0].argv.slice(0, 4), ['claude', 'remote-control', '--name', 'host-manager@pc']);
+  assert.deepEqual(R.ledger(a.m.alpha.root).filter((x) => x.type === 'host-manager-replaced').map((x) => [x.server, x.pid, x.session]), [[3531014, 3531100, 'hm-old']]);
+  assert.equal(R.ledger(a.m.alpha.root).filter((x) => x.type === 'host-manager-session').length, 1);
+  assert.match(a.r.out, /replaced the host-manager session hm-old, whose Remote Control server \(pid 3531014\) ran outside delivery-host-manager\.service/);
+  // outside but busy, on the first read or the fresh one; or the fresh read unreadable: exit 3, nothing changed
+  for (const [label, o] of [['busy', { status: 'busy' }], ['busy on the fresh read', { again: [{ sessionId: 'hm-old', pid: 3531100, status: 'busy' }] }], ['fresh read unreadable', { again: null }]]) {
+    const b = setup(o);
+    assert.equal(b.r.code, 3, `${label}: ${b.r.out}`);
+    assert.deepEqual([b.calls.stop, b.calls.execve], [[], []], label);
+    assert.deepEqual(R.ledger(b.m.alpha.root).filter((x) => /^host-manager-/.test(x.type)), [], label);
+  }
+  // its server inside the unit, its cgroup unreadable, no Remote Control server, or run-session itself not in the unit: exit 3
+  for (const [label, o] of [['inside the unit', { serverCg: UNIT_CG }], ['server cgroup unreadable', { serverCg: null }], ['no server', { server: null }], ['ps unreadable', { server: { unreadable: 'ps failed' } }], ['not run by the unit', { selfCg: OTHER_CG }]]) {
+    const c = setup(o);
+    assert.equal(c.r.code, 3, `${label}: ${c.r.out}`);
+    assert.match(c.r.out, /already runs as host-manager@pc/, label);
+    assert.deepEqual([c.calls.stop, c.calls.execve], [[], []], label);
+  }
+  // a server that does not stop: no session is started beside it
+  const d = setup({ stopOk: false });
+  assert.equal(d.r.code, 1, d.r.out);
+  assert.deepEqual(d.calls.execve, []);
+  assert.match(d.r.out, /did not stop; no session started/);
+});
+
 test('run-session on a node without process.execve starts nothing and says it needs node 22.15 or later', () => {
   const m = machine({ alphaRoles: [{ id: 'chief-of-staff', host: 'pc' }, { id: 'host-manager', host: 'pc' }] });
   const env = { DELIVERY_HOST: 'pc', PATH: '/usr/bin', USER: 'dev', CLAUDE_CONFIG_DIR: m.config, DELIVERY_ROLE: 'host-manager' };

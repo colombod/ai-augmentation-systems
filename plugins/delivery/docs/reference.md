@@ -1710,7 +1710,15 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   means no second session (one live session per role), and so does a list that cannot be read. A live
   host manager is exit 3, a success the unit does not restart (`SuccessExitStatus=3`,
   `RestartPreventExitStatus=3`): the unit rests inactive, so it never runs into its start limit and the
-  watchdog's reset; the watchdog's next pass starts it once again. A list that cannot be read is a
+  watchdog's reset; the watchdog's next pass starts it once again. One exception replaces the live
+  session: when run-session runs in the unit and the one live host-manager session's `claude
+  remote-control` server is outside the unit's cgroup (read from `/proc/<pid>/cgroup`; a session
+  started by hand, or one an older unit left behind), and a fresh second read of the sessions finds it
+  idle, run-session stops that server (the same stop, and wait for the server and its session to end,
+  that team-revive's restart uses), writes a `host-manager-replaced` row, and execs the unit's own
+  session as above, reattaching the recorded session once. Busy on either read, a cgroup or process list
+  that cannot be read, a server inside the unit, or two live sessions: exit 3, nothing changed; a server
+  that does not stop: exit 1, and no session is started beside it. A list that cannot be read is a
   failure, and `Restart=` tries again later. Its restarts are bounded:
   `Restart=always` with a delay growing from 30 seconds to 30 minutes over 5 restarts (`RestartSec=30`,
   `RestartSteps=5`, `RestartMaxDelaySec=30min`, systemd 254 and later; an older systemd warns of the
