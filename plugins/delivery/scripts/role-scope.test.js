@@ -125,8 +125,13 @@ test('every file in scripts/ and hooks/ that requires child_process is listed wi
   const found = RSP.scan(path.resolve(__dirname, '..'));
   assert.deepEqual(guardProblems(found), []);
   for (const [k, why] of Object.entries({ ...PROCESS_FILES, ...SESSION_FILES, ...ALLOWED })) assert.ok(why.length > 10, `${k} has a reason`);
-  // the sanctioned starts: the helper itself, and team-revive's roleCommand results
-  assert.ok(found.calls.some((c) => c.rel === 'scripts/lib/role-scope.js' && c.sanctioned) || !found.sessionFiles.includes('scripts/lib/role-scope.js'));
+  // the sanctioned starts: the helper's own calls, each found and each sanctioned as the helper (it names no
+  // session itself, so it is a process file only and its calls are read here directly), and team-revive's
+  // roleCommand results
+  const helper = RSP.sessionCalls(fs.readFileSync(path.join(__dirname, 'lib', 'role-scope.js'), 'utf8'), 'scripts/lib/role-scope.js');
+  assert.ok(helper.length >= 1, 'the spawn startRole runs both its scoped and its plain start through is found');
+  assert.deepEqual(helper.filter((c) => c.why !== 'the helper itself (startRole)'), []);
+  assert.ok(found.processFiles.includes('scripts/lib/role-scope.js') && !found.sessionFiles.includes('scripts/lib/role-scope.js'));
   assert.ok(found.calls.filter((c) => c.rel === 'scripts/team-revive.js' && c.why === 'cmd is a roleCommand result').length >= 2);
   // every allowed entry still matches a call: an entry left after its call went would hide a new one
   for (const k of Object.keys(ALLOWED)) assert.ok(found.calls.some((c) => keyOf(c).startsWith(k)), `allowed entry ${k} matches no call`);
@@ -141,15 +146,17 @@ test('a new file that requires child_process, in any form, is named until it is 
   plant('scripts/lib/b.js', "const { spawn: go } = require('node:child_process');\n");
   plant('hooks/scripts/c.js', "import { execFile } from 'child_process';\n");
   plant('scripts/d.js', "// require('child_process') in a comment is no require\nconst x = 1;\n");
+  plant('scripts/f.js', "const kids = require ('child_process');\n");
+  plant('scripts/g.js', "async function f() { return import('child_process'); }\n");
   plant('scripts/e.js', "const run = require('child_process').spawn;\nrun('/opt/bin/claude', ['-p', 'go']);\n");
   const found = RSP.scan(root);
-  assert.deepEqual(found.processFiles, ['hooks/scripts/c.js', 'scripts/a.js', 'scripts/e.js', 'scripts/lib/b.js']);
+  assert.deepEqual(found.processFiles, ['hooks/scripts/c.js', 'scripts/a.js', 'scripts/e.js', 'scripts/f.js', 'scripts/g.js', 'scripts/lib/b.js']);
   assert.deepEqual(found.sessionFiles, ['scripts/e.js']);
-  const lists = { processFiles: { 'scripts/a.js': 'git status', 'hooks/scripts/c.js': 'x', 'scripts/lib/b.js': 'x', 'scripts/e.js': 'x' }, sessionFiles: {} };
+  const lists = { processFiles: { 'scripts/a.js': 'git status', 'hooks/scripts/c.js': 'x', 'scripts/lib/b.js': 'x', 'scripts/e.js': 'x', 'scripts/f.js': 'x', 'scripts/g.js': 'x' }, sessionFiles: {} };
   const p = guardProblems(found, lists);
   assert.ok(p.includes('scripts/e.js requires child_process and names a session, and is not listed as a session file'), p.join('\n'));
   assert.ok(p.some((l) => /^scripts\/e\.js:2 spawn\(/.test(l)), p.join('\n'));
-  assert.deepEqual(guardProblems(found, { processFiles: {}, sessionFiles: {} }).filter((l) => /is not listed with its reason/.test(l)).length, 4);
+  assert.deepEqual(guardProblems(found, { processFiles: {}, sessionFiles: {} }).filter((l) => /is not listed with its reason/.test(l)).length, 6);
   // the other direction: every file listed and the start sanctioned, nothing is named
   plant('scripts/e.js', "const RS = require('./lib/role-scope.js');\nconst run = require('child_process').spawn;\nconst cmd = RS.roleCommand('/opt/bin/claude', ['-p', 'go'], { instance });\nrun(cmd.bin, cmd.args);\n");
   assert.deepEqual(guardProblems(RSP.scan(root), { ...lists, sessionFiles: { 'scripts/e.js': 'x' } }), []);
@@ -171,6 +178,11 @@ test('the guard finds each bypassing form, each fixture holding only its own for
     'a command object that is no roleCommand result': "const cmd = makeCommand(bin);\nspawn(cmd.bin, cmd.args);",
     'fork of the supervisor': "fork(path.join(__dirname, 'lib', 'wake-run.js'), ['1', 'claude']);",
     'execSync of claude': "require('child_process').execSync(`claude -p ${prompt}`);",
+    'an alias in a default parameter': "function go({ run = require('child_process').spawn } = {}) {\n  run('claude', ['-p', 'go']);\n}",
+    'an alias by plain assignment': "let run;\nrun = require('child_process').spawnSync;\nrun('claude', ['-p', 'go']);",
+    'an object by plain assignment': "let kids;\nkids = require('child_process');\nkids.execSync('claude -p go');",
+    'require with a space': "const { spawn: go } = require ('child_process');\ngo('claude', ['-p', 'go']);",
+    'import() of child_process': "const kids = await import('node:child_process');\nkids.execSync('claude -p go');",
   };
   for (const [what, src] of Object.entries(bypasses)) assert.equal(flagged(src).length, 1, `${what} is not found once:\n${src}`);
   const clean = {

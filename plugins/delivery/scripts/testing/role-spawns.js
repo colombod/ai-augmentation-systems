@@ -11,6 +11,9 @@
 //      again, as a session file, with its reason; one that is not fails, named;
 //   3. in the session files, every call that starts a session is found, through every alias of
 //      child_process the file makes, and must be role-scope's own or allowed by name in the test.
+// Its limit: it reads the code as text. A require whose name is computed (require('child_' + x)),
+// process.binding, or any other way to reach a process that names neither child_process nor its methods
+// is deliberate evasion, and static scanning does not cover it; review does.
 const fs = require('fs');
 const path = require('path');
 
@@ -18,8 +21,9 @@ const FAMILY = ['spawn', 'spawnSync', 'execFile', 'execFileSync', 'exec', 'execS
 // methods no other common object has: on any object they count; exec and execSync (RegExp#exec) count only
 // on an object known to be child_process
 const PROCESS_ONLY = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync', 'fork']);
-// no capture groups: it is embedded in the alias patterns, whose groups it must not shift
-const REQUIRE_CP = /require\(\s*['"`](?:node:)?child_process['"`]\s*\)|from\s+['"](?:node:)?child_process['"]/;
+// no capture groups: it is embedded in the alias patterns, whose groups it must not shift. require and
+// import() with any spacing, and the import ... from form
+const REQUIRE_CP = /\b(?:require|import)\s*\(\s*['"`](?:node:)?child_process['"`]\s*\)|\bfrom\s+['"](?:node:)?child_process['"]/;
 const CLAUDE_CMD = /(['"`])(?:[^'"`\s]*\/)?claude(?=[\s'"`])/;
 const SESSION_TEXT = new RegExp(`wake-run\\.js|remote-control|\\bDELIVERY_CLAUDE_BIN\\b|${CLAUDE_CMD.source}`);
 const SESSION_FLAGS = /(['"`])(?:-p|-c|--resume|--continue|--fork-session|remote-control)\1|wake-run\.js/;
@@ -91,9 +95,12 @@ function aliases(src) {
   const objects = new Set();
   const fns = new Map(); // local name -> child_process method
   let m;
-  const objRe = new RegExp(`\\b(?:const|let|var)\\s+(${ID})\\s*=\\s*(?:${req})(?!\\s*\\.)`, 'g');
+  // the left side: a declared name, a plainly assigned one, or a parameter's default (not a member: a
+  // property set from child_process is reached through its object)
+  const LHS = `(?:\\b(?:const|let|var)\\s+|(?<![\\w$.]))(${ID})\\s*=(?![=>])\\s*(?:await\\s+)?`;
+  const objRe = new RegExp(`${LHS}(?:${req})(?!\\s*\\.)`, 'g');
   while ((m = objRe.exec(src))) objects.add(m[1]);
-  const memRe = new RegExp(`\\b(?:const|let|var)\\s+(${ID})\\s*=\\s*(?:${req})\\s*\\.\\s*(${ID})`, 'g');
+  const memRe = new RegExp(`${LHS}(?:${req})\\s*\\.\\s*(${ID})`, 'g');
   while ((m = memRe.exec(src))) if (FAMILY.includes(m[2])) fns.set(m[1], m[2]);
   const destRe = new RegExp(`\\b(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*(?:${req})`, 'g');
   while ((m = destRe.exec(src))) {
@@ -102,7 +109,7 @@ function aliases(src) {
       if (FAMILY.includes(from)) fns.set(to || from, from);
     }
   }
-  const re = new RegExp(`\\b(?:const|let|var)\\s+(${ID})\\s*=\\s*(${ID})\\s*(?:\\.\\s*(${ID}))?\\s*(?=[;\\n,)]|$)`, 'g');
+  const re = new RegExp(`${LHS}(${ID})\\s*(?:\\.\\s*(${ID}))?\\s*(?=[;\\n,)}]|$)`, 'g');
   for (let changed = true; changed;) {
     changed = false;
     re.lastIndex = 0;
