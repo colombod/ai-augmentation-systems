@@ -53,6 +53,12 @@ function systemd(units) {
     const [, sub, ...rest] = args;
     const operands = rest.filter((a, k) => !a.startsWith('-') && rest[k - 1] !== '-p');
     if (sub === 'show') { const u = units[operands[0]] || { LoadState: 'not-found', ActiveState: 'inactive' }; return Object.entries(u).map(([k, v]) => `${k}=${v}`).join('\n'); }
+    // is-enabled: a unit given Enabled is enabled, one listed without it disabled, an unknown one unknown
+    if (sub === 'is-enabled') {
+      const u = units[operands[0]];
+      if (u && u.Enabled) return 'enabled\n';
+      const e = new Error('Command failed: systemctl'); e.stdout = u ? 'disabled\n' : ''; throw e;
+    }
     if (sub === 'is-active') {
       const u = units[operands[0]];
       if (u && u.ActiveState === 'active') return 'active\n';
@@ -1456,7 +1462,7 @@ test('install-role installs nothing while a unit the plugin did not write serves
   assert.match(r.out, /stop and disable claude-rc-chief-of-staff\.service .*then run install-role again/);
   assert.equal(fs.readFileSync(hand, 'utf8'), body, 'the owner\'s unit is left byte for byte');
   assert.ok(!fs.existsSync(path.join(HM.unitDir(m.home), cosUnit(m))), 'the plugin\'s own unit is not written beside it');
-  assert.deepEqual(m.sd.calls.filter((c) => c.startsWith('systemctl')), [], 'no systemctl call at all');
+  assert.deepEqual(m.sd.calls.filter((c) => c.startsWith('systemctl') && !/^systemctl --user is-(enabled|active) claude-rc-chief-of-staff\.service$/.test(c)), [], 'only reads of its state, nothing that changes it');
   // never from a role session, and not without a prepared Chief of Staff directory
   const inRole = m.run(['install-role', '--project', m.alpha.root], { env: { DELIVERY_ROLE: 'chief-of-staff', DELIVERY_ROLE_ID: 'chief-of-staff' }, who: { roleId: 'chief-of-staff' } });
   assert.equal(inRole.code, 1);
@@ -1536,5 +1542,30 @@ test('guard: a role a user unit serves is never spawned in a scope, stopped, or 
     // the watchdog's wake: no session is started for it
     const c = WDL.wakeCommand({ instance: 'chief-of-staff', role: 'chief-of-staff', session: 's', roleDir: down.alpha.dir('chief-of-staff') }, 'go', [], 'auto', { unit: R.remoteControlUnitFor(down.alpha.dir('chief-of-staff'), { home: down.home }) });
     assert.equal(c.args, undefined, `${kind}: the wake starts a session beside the unit`);
+  }
+});
+
+test('after the fix --check prints (the hand-written unit stopped and disabled, its file left on disk), install-role goes ahead; while it runs or is enabled, it does not', () => {
+  const hand = 'claude-rc-chief-of-staff.service';
+  const setup = (state) => {
+    const m = machine();
+    cosMarker(m);
+    fs.writeFileSync(path.join(HM.unitDir(m.home), hand), `[Unit]\nDescription=mine\n\n[Service]\nWorkingDirectory=%h/../alpha-team/chief-of-staff\nExecStart=%h/.local/bin/claude remote-control --name "Chief of Staff" --permission-mode auto\n`);
+    if (state) m.sd.units[hand] = state;
+    return m;
+  };
+  // the fixture's role directory, written as the real host's unit writes it: relative to %h
+  const done = setup(loaded(false));
+  const r = done.run(['install-role', '--project', done.alpha.root]);
+  assert.equal(r.code, 0, r.out);
+  assert.ok(fs.existsSync(path.join(HM.unitDir(done.home), cosUnit(done))));
+  assert.ok(fs.existsSync(path.join(HM.unitDir(done.home), hand)), 'the owner\'s file is left where it is');
+  assert.ok(!done.sd.calls.some((c) => c.includes(hand) && !/ is-(enabled|active) /.test(c)), done.sd.calls.join(' | '));
+  for (const [what, state] of [['running', loaded(true)], ['enabled', { ...loaded(false), Enabled: true }], ['state unknown', null]]) {
+    const m = setup(state);
+    const no = m.run(['install-role', '--project', m.alpha.root]);
+    assert.equal(no.code, 1, `${what}: ${no.out}`);
+    assert.match(no.out, /claude-rc-chief-of-staff\.service serves .* stop and disable claude-rc-chief-of-staff\.service/, what);
+    assert.ok(!fs.existsSync(path.join(HM.unitDir(m.home), cosUnit(m))), what);
   }
 });

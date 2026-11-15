@@ -614,7 +614,7 @@ function installRole(root, o = {}, { env = process.env, home = os.homedir(), exe
   if (t.why) return { code: 1, out: t.why, wrote: [] };
   const u = roleUnitFiles(root, t.team, t.x.instance, { env, home, host: t.host, roleDir: t.roleDir });
   if (u.modeSkip) return { code: 1, out: `host-manager.js: ${u.modeSkip}; nothing was installed.`, wrote: [] };
-  const hand = R.servingUnits(t.roleDir, { home }).filter((s) => !s.written && s.unit !== u.unit);
+  const hand = R.servingUnits(t.roleDir, { home, exec: runner(exec) }).filter((s) => !s.written && s.unit !== u.unit);
   if (hand.length) return { code: 1, out: hand.map((s) => `host-manager.js: ${s.unit} serves ${t.roleDir} with claude remote-control, and the delivery plugin did not write it, so ${u.unit} is not installed beside it (two start paths would serve one role directory). The plugin never changes that unit: stop and disable ${s.unit} (systemctl --user disable --now ${s.unit}), then run install-role again.`).join('\n'), wrote: [] };
   const run = runner(exec);
   const name = unitSessionName(t.team, t.x, t.host);

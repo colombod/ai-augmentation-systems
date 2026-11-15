@@ -1016,6 +1016,49 @@ test('force: a running role on the installed plugin is restarted through the sta
 // the ExecStart the plugin writes for a role's unit: its launcher runs host-manager.js run-session
 const pluginExec = (root, instance) => `/usr/bin/env node ${path.join(root, '.delivery', 'bin', 'delivery.js')} host-manager.js run-session --project ${root} --instance ${instance}`;
 
+test('servingUnits reads systemd\'s %h, ~ and %% in WorkingDirectory and ExecStart, and quoted words: the shape of a real hand-written Chief of Staff unit', () => {
+  const home = unitHome({});
+  const cos = path.join(home, 'workspaces', 'acme-team', 'chief-of-staff');
+  const dir = R.unitDirOf(home);
+  fs.writeFileSync(path.join(dir, 'claude-rc-chief-of-staff.service'), '[Unit]\nDescription=cos\n\n[Service]\nWorkingDirectory=%h/workspaces/acme-team/chief-of-staff\nExecStart=%h/.local/bin/claude remote-control --name "Chief of Staff" --permission-mode auto\nRestart=always\n');
+  assert.deepEqual(R.servingUnits(cos, { home }), [{ unit: 'claude-rc-chief-of-staff.service', written: false }]);
+  const h2 = unitHome({ 'tilde.service': '[Service]\nWorkingDirectory=~/workspaces/acme-team/chief-of-staff\nExecStart=/usr/bin/env "%h/bin/claude" "remote-control"\n' });
+  assert.deepEqual(R.servingUnits(path.join(h2, 'workspaces', 'acme-team', 'chief-of-staff'), { home: h2 }), [{ unit: 'tilde.service', written: false }]);
+  // %% is one %, so %%h is a directory named %h, not the home
+  const h3 = unitHome({ 'pct.service': '[Service]\nWorkingDirectory=/srv/%%h/cos\nExecStart=/usr/bin/claude remote-control\n' });
+  assert.deepEqual(R.servingUnits('/srv/%h/cos', { home: h3 }), [{ unit: 'pct.service', written: false }]);
+  assert.deepEqual(R.servingUnits(path.join(h3, 'cos'), { home: h3 }), []);
+  // a quoted name holding the word remote-control is no Remote Control server
+  const h4 = unitHome({ 'q.service': `[Service]\nWorkingDirectory=${cos}\nExecStart=/usr/bin/claude --print "remote-control"\n` });
+  assert.deepEqual(R.servingUnits(cos, { home: h4 }), [], 'a print of the words is not a server');
+});
+
+test('a unit the plugin did not write that is neither enabled nor active no longer serves its directory; enabled, active or unknown, it does, and the reads are systemctl is-enabled and is-active only', () => {
+  const p = project();
+  const cos = COS_DIR(p);
+  const home = unitHome({ 'claude-rc-cos.service': unitBody(cos, '/usr/bin/claude remote-control'), 'delivery-role-chief-of-staff-1234abcd.service': unitBody(cos, pluginExec(p.root, 'chief-of-staff')) });
+  const sd = (enabled, active) => {
+    const calls = [];
+    const exec = (cmd, args) => {
+      calls.push([cmd, ...args].join(' '));
+      const out = args[1] === 'is-enabled' ? enabled : active;
+      if (out === 'enabled' || out === 'active') return `${out}\n`;
+      const e = new Error('Command failed'); e.stdout = out === null ? '' : `${out}\n`; throw e;
+    };
+    return { exec, calls };
+  };
+  const hand = (s) => R.servingUnits(cos, { home, exec: s.exec }).filter((u) => !u.written).map((u) => u.unit);
+  const after = sd('disabled', 'inactive');
+  assert.deepEqual(hand(after), [], 'stopped and disabled: no longer a start path');
+  assert.ok(after.calls.every((c) => /^systemctl --user is-(enabled|active) claude-rc-cos\.service$/.test(c)), after.calls.join(' | '));
+  assert.deepEqual(hand(sd('disabled', 'failed')), []);
+  assert.deepEqual(hand(sd('enabled', 'inactive')), ['claude-rc-cos.service'], 'enabled: it starts at the next boot');
+  assert.deepEqual(hand(sd('disabled', 'active')), ['claude-rc-cos.service'], 'running');
+  assert.deepEqual(hand(sd(null, null)), ['claude-rc-cos.service'], 'unknown state: still taken as serving');
+  // the plugin's own unit rests inactive between its runs by design: it stays the start path
+  assert.deepEqual(R.servingUnits(cos, { home, exec: sd('disabled', 'inactive').exec }).filter((u) => u.written).map((u) => u.unit), ['delivery-role-chief-of-staff-1234abcd.service']);
+});
+
 test('servingUnits names every user service that serves a role directory: one running claude remote-control is not the plugin\'s, one running run-session is', () => {
   const p = project();
   const cos = COS_DIR(p);

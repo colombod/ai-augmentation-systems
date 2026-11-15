@@ -96,40 +96,84 @@ function pointerOf(configDir, dir) {
 // readFile: a test's reads.
 const unitDirOf = (home = os.homedir()) => path.join(home, '.config', 'systemd', 'user');
 const unquote = (x) => x.replace(/^["']|["']$/g, '');
-function runsRemoteControl(execStart) {
-  // ExecStart may carry systemd's prefixes (-, @, +, !, :) and an /usr/bin/env in front of claude
-  const words = String(execStart || '').trim().replace(/^[-@+!:]+/, '').split(/\s+/).map(unquote);
-  const k = words.findIndex((w) => path.basename(w) === 'claude');
-  return k >= 0 && words.slice(k + 1).includes('remote-control');
+// systemd's specifiers in a unit line: %h is the user's home, %% one %, any other is left as written
+const specifiers = (x, home) => String(x).replace(/%(.)/g, (m, c) => (c === '%' ? '%' : c === 'h' ? home : m));
+// An ExecStart line as systemd splits it: its prefixes (-, @, +, !, :) dropped, then words, a quoted one
+// whole ("Chief of Staff" is one word), each with its specifiers read
+function execWords(execStart, home) {
+  const line = String(execStart || '').trim().replace(/^[-@+!:]+/, '');
+  const out = [];
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(line))) out.push({ word: specifiers(m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3], home), quoted: m[3] === undefined });
+  return out;
+}
+function runsRemoteControl(execStart, home = os.homedir()) {
+  // an /usr/bin/env in front of claude is allowed; remote-control is the subcommand, not a quoted value
+  const words = execWords(execStart, home);
+  const k = words.findIndex((w) => path.basename(w.word) === 'claude');
+  return k >= 0 && words.slice(k + 1).some((w) => w.word === 'remote-control' && (!w.quoted || k + 1 === words.indexOf(w)));
 }
 // The plugin's own role unit (host-manager.js unitFiles and roleUnitFiles) runs `host-manager.js
 // run-session`, which starts claude remote-control by the plugin's rules: that command is what makes a
 // unit the plugin's, so a host manager unit installed before this check existed is the plugin's too.
-function runsRoleSession(execStart) {
-  const words = String(execStart || '').trim().replace(/^[-@+!:]+/, '').split(/\s+/).map(unquote);
+function runsRoleSession(execStart, home = os.homedir()) {
+  const words = execWords(execStart, home).map((w) => w.word);
   const k = words.findIndex((w) => path.basename(w) === 'host-manager.js');
   return k >= 0 && words[k + 1] === 'run-session';
 }
+// A WorkingDirectory as systemd reads it: a leading - (missing is no error) dropped, ~ the home, and the
+// specifiers read (%h/workspaces/... on a real host's hand-written unit)
+function workingDir(value, home) {
+  let d = unquote(String(value).trim().replace(/^-/, ''));
+  if (d === '~' || d.startsWith('~/')) d = home + d.slice(1);
+  return specifiers(d, home);
+}
+// Whether a unit is enabled and whether it is active, from `systemctl --user is-enabled` and `is-active`
+// (reads only): true, false, or null when the answer is not one systemd gives for a known unit.
+const ENABLED = /^(enabled|enabled-runtime|static|linked|linked-runtime|alias|indirect|generated|transient)$/;
+const ACTIVE = /^(active|activating|reloading|deactivating|refreshing)$/;
+function unitActivity(unit, exec) {
+  const read = (sub) => {
+    try { return String(exec('systemctl', ['--user', sub, unit]) || '').trim().split('\n')[0]; } catch (err) { return String((err && err.stdout) || '').trim().split('\n')[0]; }
+  };
+  const en = read('is-enabled');
+  const ac = read('is-active');
+  return { enabled: ENABLED.test(en) ? true : /^(disabled|masked|masked-runtime)$/.test(en) ? false : null, active: ACTIVE.test(ac) ? true : /^(inactive|failed)$/.test(ac) ? false : null };
+}
+const realExec = (c, a) => require('child_process').execFileSync(c, a, { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] });
 // Every user service that serves a role directory: [{ unit, written }], written true for the plugin's own
 // (runsRoleSession), false for one someone else wrote (its ExecStart runs claude remote-control itself).
-// A role directory two of them serve has two start paths; the plugin never edits, stops or disables the
-// one it did not write: it names it (start.js --check) and starts nothing for that role.
-function servingUnits(roleDir, { home, dir = unitDirOf(home), readdir = fs.readdirSync, readFile = (f) => fs.readFileSync(f, 'utf8') } = {}) {
+// A role directory two of them serve has two start paths; the plugin never edits, starts, stops, restarts
+// or disables the one it did not write: it names it (start.js --check) and starts nothing for that role.
+// A unit the plugin did not write that systemd says is neither enabled nor active (the owner stopped and
+// disabled it, as --check's fix says) no longer serves the directory, though its file stays on disk; an
+// answer that is not known counts as serving. The plugin's own unit rests inactive between its runs by
+// design, so it stays the start path. exec: the systemctl the state is read with (a test's); without it,
+// the state is read only for the user's own unit directory, the one systemctl --user loads, never for a
+// directory systemd does not know (a test's).
+function servingUnits(roleDir, { home, dir = unitDirOf(home), readdir = fs.readdirSync, readFile = (f) => fs.readFileSync(f, 'utf8'), exec } = {}) {
   if (!roleDir) return [];
+  const h = home || os.homedir();
   let names = [];
   try { names = readdir(dir).filter((f) => /\.service$/.test(f)).sort(); } catch (err) { return []; }
   const want = path.resolve(roleDir);
+  const sd = exec || (path.resolve(dir) === path.resolve(unitDirOf()) ? realExec : null);
   const out = [];
   for (const f of names) {
     let body = '';
     try { body = readFile(path.join(dir, f)); } catch (err) { continue; }
     const wd = /^WorkingDirectory=(.+)$/m.exec(body);
     if (!wd) continue;
-    const d = unquote(wd[1].trim().replace(/^-/, '')).replace(/%%/g, '%');
+    const d = workingDir(wd[1], h);
     if (!path.isAbsolute(d) || path.resolve(d) !== want) continue;
     const execs = [...body.matchAll(/^ExecStart=(.*)$/gm)].map((x) => x[1]);
-    if (execs.some(runsRoleSession)) out.push({ unit: f, written: true });
-    else if (execs.some(runsRemoteControl)) out.push({ unit: f, written: false });
+    if (execs.some((x) => runsRoleSession(x, h))) out.push({ unit: f, written: true });
+    else if (execs.some((x) => runsRemoteControl(x, h))) {
+      const st = sd ? unitActivity(f, sd) : { enabled: null, active: null };
+      if (st.enabled === false && st.active === false) continue;
+      out.push({ unit: f, written: false });
+    }
   }
   return out;
 }
@@ -478,4 +522,4 @@ function lines(a, { bin = 'claude', started = null, restarted = null, dryRun = f
   return out;
 }
 
-module.exports = { servingUnits, unitServing, runsRoleSession, remoteControlUnitFor, unitDirOf, STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
+module.exports = { unitActivity, servingUnits, unitServing, runsRoleSession, remoteControlUnitFor, unitDirOf, STAY_UP, linkFor, LEDGER, ledgerFile, SETTLE_MS, SCOPE_LIMITS, scopedCommand, LOCK, lockFile, LOCK_STALE_MS, startLock, START_EVERY_MS, DAILY_CAP, RC_MODES, hostOf, configDirOf, projectKey, pointerOf, bridgeSessions, remoteSessionOf, ledger, record, modeOf, staleOf, assess, lines, shown };
