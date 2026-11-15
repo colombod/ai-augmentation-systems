@@ -283,7 +283,8 @@ function wake(root, res, { now, dryRun, env = process.env, live, spawn = spawnWa
       continue;
     }
     // a wake with no row is a run nothing tracks: no hold waits for it, no cap counts it, and a hang has
-    // no end. A row that cannot be written stops the wake it would have recorded (hjx.1.6.20.1).
+    // no end. A row that cannot be written stops the wake it would have recorded (hjx.1.6.20.1). That stop
+    // is SIGTERM only: with no row, no later pass finishes it with SIGKILL (lib/watchdog.js finishStops).
     try {
       WD.log(root, { type: 'wake', at: spawnStamp(), keys: w.keys, instance: w.target, session: s.session, mode: c.mode, ...(c.why ? { fresh: c.why } : {}), wake_id: wakeId, prompt: w.prompt, pid, log: path.relative(root, logPath) });
     } catch (err) {
@@ -725,7 +726,7 @@ function main(argv, { cwd = process.cwd(), env = process.env, now, bd, rows, liv
       const stopAt = now || new Date().toISOString();
       // a stop from an earlier pass whose group outlived the kill grace is finished with SIGKILL
       for (const k of WD.finishStops(WD.logRows(who.root), { now: Date.parse(stopAt), ...(killFn ? { kill: killFn } : {}) })) {
-        WD.log(who.root, { type: 'wake-killed', at: stopAt, pid: k.pid, instance: k.instance, killed: k.killed });
+        WD.log(who.root, { type: 'wake-killed', at: stopAt, pid: k.pid, wake_at: k.wake_at, instance: k.instance, killed: k.killed });
         if (k.killed.length) stoppedLines.push(`Killed: ${k.instance || 'a role'}'s stopped wake (pid ${k.pid}) outlived the kill grace (${k.killed.join(', ')}).`);
       }
       for (const w of WD.overdueWakes(WD.logRows(who.root), { now: Date.parse(stopAt), alive: wakeAlive(ended, stopAt) })) {

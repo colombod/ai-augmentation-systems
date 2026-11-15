@@ -590,20 +590,39 @@ test('a wake the run ends counts as ended in that pass, however long its group t
   } finally { r.stop(); }
 });
 
-test('a stop that outlived the kill grace is finished with SIGKILL, once; inside the grace or gone, nothing', () => {
-  const at = Date.parse(T0);
-  const rows = [{ type: 'wake-stopped', at: T0, pid: 500, instance: 'builder-2', signalled: [-601, 500] }];
-  const live = new Set([-601, 500]);
-  const sent = [];
-  const kill = (p, sig) => { if (!live.has(p)) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' }); if (sig) sent.push([p, sig]); };
-  assert.deepEqual(WD.finishStops(rows, { now: at + WD.KILL_GRACE_MS - 1000, kill }), [], 'inside the grace: not yet');
-  assert.deepEqual(WD.finishStops(rows, { now: at + WD.KILL_GRACE_MS + 1000, kill }).map((x) => x.killed), [[-601, 500]]);
-  assert.deepEqual(sent.filter(([, sig]) => sig === 'SIGKILL'), [[-601, 'SIGKILL'], [500, 'SIGKILL']]);
-  // once: a wake-killed row ends it
-  assert.deepEqual(WD.finishStops([...rows, { type: 'wake-killed', at: T0, pid: 500 }], { now: at + 3600e3, kill }), []);
-  // a target already gone is not signalled
-  live.clear();
-  assert.deepEqual(WD.finishStops(rows, { now: at + WD.KILL_GRACE_MS + 1000, kill }).map((x) => x.killed), [[]]);
+test('a stop that outlived the kill grace is finished with SIGKILL, once, only on targets still that wake\'s', () => {
+  const stopAt = Date.parse(T0);
+  const wakeAt = stopAt - 3 * 3600e3;
+  const rows = [{ type: 'wake-stopped', at: T0, pid: 500, wake_at: new Date(wakeAt).toISOString(), instance: 'builder-2', signalled: [-601, 500] }];
+  // what the system says of each pid: 500 the wake's supervisor, 601 its session's group leader, both
+  // started before the stop
+  const procOf = (over = {}) => ({
+    exists: (pid) => pid === 500 || pid === 601,
+    cmdline: (pid) => (pid === 500 ? 'node wake-run.js 7200000 claude' : 'claude -p'),
+    startedMs: (pid) => (pid === 500 ? wakeAt - 1000 : wakeAt + 1000),
+    ...over,
+  });
+  const run = (proc, now = stopAt + WD.KILL_GRACE_MS + 1000, r = rows) => {
+    const sent = [];
+    const kill = (p, sig) => { if (!(p === 500 || p === -601)) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' }); if (sig) sent.push(p); };
+    const out = WD.finishStops(r, { now, kill, proc });
+    return { out, sent };
+  };
+  assert.deepEqual(run(procOf(), stopAt + WD.KILL_GRACE_MS - 1000).out, [], 'inside the grace: not yet');
+  assert.deepEqual(run(procOf()).sent, [-601, 500], 'the wake\'s own group and supervisor');
+  // rv-208: a live target that started after the stop row is another program's: never killed
+  const reusedGroup = run(procOf({ startedMs: (pid) => (pid === 500 ? wakeAt - 1000 : stopAt + 60e3) }));
+  assert.deepEqual(reusedGroup.sent, [500], 'a group whose leader started after the stop is not that wake\'s');
+  const reusedSup = run(procOf({ cmdline: (pid) => (pid === 500 ? 'node mcp-pdf-server --stdio' : 'claude -p'), startedMs: (pid) => (pid === 500 ? stopAt + 60e3 : wakeAt + 1000) }));
+  assert.deepEqual(reusedSup.sent, [-601], 'a supervisor pid now another program is not killed');
+  // a later wake's supervisor on the same pid is that later wake's, not this one's: judged by the row time
+  const laterWake = run(procOf({ startedMs: (pid) => (pid === 500 ? stopAt + 60e3 : wakeAt + 1000) }));
+  assert.deepEqual(laterWake.sent, [-601], 'a supervisor that started after this wake\'s row is another wake');
+  // an old row (a host restart since): skipped whole, whatever answers
+  assert.deepEqual(run(procOf(), stopAt + WD.KILL_GRACE_MS + WD.FINISH_WINDOW_MS + 60e3).out, [], 'past the window: never');
+  // once: a wake-killed row for this wake ends it; one for an earlier wake on the same pid does not
+  assert.deepEqual(run(procOf(), undefined, [...rows, { type: 'wake-killed', at: T0, pid: 500, wake_at: rows[0].wake_at }]).out, []);
+  assert.deepEqual(run(procOf(), undefined, [...rows, { type: 'wake-killed', at: T0, pid: 500, wake_at: '2026-10-01T00:00:00.000Z' }]).sent, [-601, 500]);
 });
 
 test('through the run: a stopped wake\'s session that ignores SIGTERM is killed once the grace has passed', (t) => {

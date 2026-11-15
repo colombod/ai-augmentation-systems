@@ -875,20 +875,36 @@ function waitedRoles(rows, now) {
 function chiefOf(team) {
   try { const i = require('./manifest.js').expandInstances(team).find((x) => x.role.id === 'chief-of-staff' && !x.role.retired); return i ? i.instance : 'chief-of-staff'; } catch (err) { return 'chief-of-staff'; }
 }
-// The stops not yet finished: each wake-stopped row past the kill grace whose signalled pids or groups
-// still answer gets SIGKILL, once (a wake-killed row). [{ pid, killed: [targets] }]
-function finishStops(rows, { now = Date.now(), kill = process.kill.bind(process) } = {}) {
+// The stops not yet finished: each wake-stopped row past the kill grace, and no older than the grace plus
+// FINISH_WINDOW_MS, gets SIGKILL for each signalled target that is still that wake's (once: a wake-killed
+// row, keyed by the wake's own time so a later wake on the same pid is its own). A pid is reused once its
+// process is gone, and after a host restart every number in an old row may belong to another program
+// (the class hjx.1.6.20 fixed), so nothing is killed on a pid's say alone: the supervisor only while
+// pidAlive reads it as that wake by its wake row's time, a group only while its leader started no later
+// than the stop row (a leader no longer readable, its group still answering, only inside the window).
+// A wake stopped because its row could not be written (watchdog.js) has no wake-stopped row, so it gets
+// SIGTERM only. [{ pid, wake_at, instance, killed: [targets] }]
+const FINISH_WINDOW_MS = 3600e3;
+function finishStops(rows, { now = Date.now(), kill = process.kill.bind(process), proc = procReads } = {}) {
   const t = typeof now === 'number' ? now : ms(now);
   const all = rows || [];
-  const done = new Set(all.filter((r) => r && r.type === 'wake-killed').map((r) => r.pid));
+  const keyOf = (r) => `${r.pid}@${r.wake_at || ''}`;
+  const done = new Set(all.filter((r) => r && r.type === 'wake-killed').map(keyOf));
+  const answers = (target) => { try { kill(target, 0); return true; } catch (err) { return err.code === 'EPERM'; } };
+  const ours = (target, r) => {
+    if (target > 0) return pidAlive(target, { since: r.wake_at || null, now: t, proc });
+    if (!answers(target)) return false;
+    const started = proc.startedMs(-target);
+    return Number.isFinite(started) ? started <= ms(r.at) : true;
+  };
   const out = [];
-  for (const r of all.filter((x) => x && x.type === 'wake-stopped' && !done.has(x.pid) && t - ms(x.at) >= KILL_GRACE_MS)) {
+  for (const r of all.filter((x) => x && x.type === 'wake-stopped' && !done.has(keyOf(x)) && t - ms(x.at) >= KILL_GRACE_MS && t - ms(x.at) <= KILL_GRACE_MS + FINISH_WINDOW_MS)) {
     const killed = [];
     for (const target of r.signalled || [r.pid]) {
-      try { kill(target, 0); } catch (err) { if (err.code !== 'EPERM') continue; }
+      if (!ours(target, r)) continue;
       try { kill(target, 'SIGKILL'); killed.push(target); } catch (err) { /* gone */ }
     }
-    out.push({ pid: r.pid, instance: r.instance || null, killed });
+    out.push({ pid: r.pid, wake_at: r.wake_at || null, instance: r.instance || null, killed });
   }
   return out;
 }
@@ -1104,4 +1120,4 @@ function wakeArgs(s, prompt, live, { prefix = null } = {}) {
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { overdueWakes, stopWake, finishStops, waitingRoles, noteWaiting, waitedRoles, chiefOf, KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { FINISH_WINDOW_MS, overdueWakes, stopWake, finishStops, waitingRoles, noteWaiting, waitedRoles, chiefOf, KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
