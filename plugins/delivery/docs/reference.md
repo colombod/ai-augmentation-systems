@@ -1665,11 +1665,35 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   fails the service when that directory is missing). An `XDG_STATE_HOME` or `XDG_CONFIG_HOME` set at
   install is written into both services' `Environment=`, so the units read the same host file and
   ledger as the shell that installed them. It reloads systemd, enables
-  and starts the service and the timer, and says, without running it, when `loginctl enable-linger` is
+  and starts the service and the timer (the service is started at once only when no host-manager
+  session is live and the open sessions could be read; otherwise it is only enabled, and the
+  watchdog's start check, which makes the same match, starts it), and says, without running it, when `loginctl enable-linger` is
   needed for the units to start at boot. A host without systemctl, a team with no `host-manager`
-  instance (Staffing adds one: `team-role.js add host-manager`) or a role directory not yet prepared
-  installs nothing and says why. `watchdog.js install --apply` runs the same install when the service
-  file is missing. Each watchdog `run` checks `delivery-host-manager.service` and starts it when it is
+  instance (Staffing adds one: `team-role.js add host-manager`), a role directory not yet prepared (it
+  must exist and hold its role marker `.delivery-role.json`, as `prepare-role.js` writes it, naming the
+  role `host-manager` and that very instance; the directory is the roster's `role_dir` when one is
+  recorded) or a `team.json` that cannot be read
+  (missing, not JSON, no roles list) installs nothing and says why. Install is refused in every role
+  session. `watchdog.js install --apply` runs the same install when the service file is missing, and so
+  does each watchdog `run` (the host job, outside any role session): when
+  `delivery-host-manager.service` is missing, the team's manifest has a `host-manager` instance on this
+  host and its role directory is prepared, the run calls the same install (the same reload, enable and
+  start) and writes one `host-manager-install` row to `revive.ndjson` with the files it wrote. These two
+  installs write only the unit files that are missing: a tick service or tick timer already there (an
+  owner's edit included) is kept as it is. Every attempt that gets past the checks is one row, a write
+  that fails included (the row carries the `error`, and the next run tries again). When the last
+  `host-manager-install` row carries an error (an enable that failed after the files were written), the
+  next run repeats the reload and the enables, writing nothing that exists. It writes a row only when
+  the result differs from the last row, so an enable that keeps failing the same way is tried at every
+  run but stays one row, and a new error or the success is the next. On such a retry the unit file is
+  already there: when the install can no longer go ahead (no host manager on this host, its directory no
+  longer prepared, a `team.json` that cannot be read, no systemctl), the run skips it, says why
+  (`install not repeated (<reason>)`, or the `team.json` that could not be read), and still starts the
+  unit when it is stopped. So a host manager that Staffing prepares after the watchdog was installed
+  gets its units at the next run, with no step from the owner. A team with no host manager on this host,
+  a role directory not yet prepared or a host without systemctl are left as they are and write no row;
+  a `team.json` that cannot be read is said in the run's output, with no row. An installed unit is never
+  rewritten by the watchdog; `host-manager.js install`, run by hand, writes all three. Each watchdog `run` then checks `delivery-host-manager.service` and starts it when it is
   installed and not active; a unit that hit its start limit is failed, and the pass runs
   `systemctl --user reset-failed delivery-host-manager.service` (that unit only) before the start, so it
   is tried again every 15 minutes. While a host-manager session is already live (in its role directory or
@@ -1684,8 +1708,18 @@ requests every 90 seconds until GitHub's rate limit failed a deploy.
   named matches `delivery-watchdog-*.service|.timer|.path` or one of the host manager's three units,
   `amplifier run`, `ps`, `df`, `free`, `uptime`, and `sort` and `uniq` with no option or operand that
   writes a file. A lane rule's `positional_match` lists those unit globs (with `positional_required`
-  for the commands that act on a unit). Every other lane, the `any` lanes included, is refused
-  `systemctl --user` and `host-manager.js restart|tick|install|run-session`, with the way out (message
+  for the commands that act on a unit). Every lane may read the plugin's own user units:
+  `systemctl --user show`, `status`, `is-active` or `list-units` where every unit named matches
+  `delivery-watchdog-*` or `delivery-host-manager*` (a `.service`, `.timer` or `.path`), and
+  `list-units` with no unit (for example `systemctl --user show delivery-host-manager.service -p
+  ActiveState -p TasksMax`). The read is judged strictly: `--user` spelled out, only the options
+  `-p`/`--property`, `-P`, `-t`/`--type`, `--state`, `-n`/`--lines`, `-o`/`--output`, `--no-pager`,
+  `--plain`, `--no-legend`, `-a`/`--all`, `-l`/`--full`, `--value` and `-q`/`--quiet`, and no word the
+  shell builds; the lanes without the `any` group run it through the `read` group. Every other
+  `systemctl --user` command (`start`, `stop`, `restart`, `reload`, `enable`, `disable`, `kill`,
+  `set-property`, `reset-failed`, `daemon-reload`, `mask`, `edit`, `revert` and the rest), and a read of
+  any other unit, stays the host manager's: every other lane, the `any` lanes included, is refused them,
+  `busctl --user`, `systemd-run --user` and `host-manager.js restart|tick|install|run-session`, with the way out (message
   the host manager); `team-revive.js start`, and `claude remote-control` with `--name`, `--spawn` or
   `--session-id` (a role session started by hand), are refused to every lane but the Chief of Staff's
   and the host manager's (`claude remote-control --help` and other claude commands are not). The command

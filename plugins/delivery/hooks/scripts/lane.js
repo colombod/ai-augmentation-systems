@@ -1523,7 +1523,7 @@ const passRecordAttempt = (command) => /watchdog\.js\b[^;&|\n]*\bpass\b[^;&|\n]*
 // command substitutions), so a spelling cannot slip past and a mere mention (a test run, a diff, a
 // commit message, a bead note) is no run.
 const HOST_MANAGER = 'host-manager';
-const HOST_UNITS_REASON = 'this machine\'s user services (systemctl --user) are the host manager\'s: it reads and restarts the host jobs and its own unit.\nMessage the host manager (host-manager@<host>) with what is down';
+const HOST_UNITS_REASON = 'this machine\'s user services (systemctl --user) are the host manager\'s: it reads and restarts the host jobs and its own unit. Any role may read the plugin\'s own units: systemctl --user show, status, is-active or list-units on delivery-watchdog-* and delivery-host-manager* (.service, .timer, .path).\nMessage the host manager (host-manager@<host>) with what is down';
 const START_REASON = 'starting role sessions is the Chief of Staff\'s and the host manager\'s (team-revive.js start).\nRun team-revive.js check, and message the Chief of Staff with what is missing';
 const HOST_MANAGER_REASON = 'the host manager\'s restart, tick and install bring back the host jobs and role sessions of every team on this machine: they are the host manager\'s.\nMessage the host manager (host-manager@<host>) with what is down';
 const HOST_CODE_REASON = 'code run with node -e, -p, -r or --import that loads team-revive.js or host-manager.js would start sessions past their own guard: it is the host manager\'s.\nRun the script itself, or message the host manager';
@@ -1540,6 +1540,39 @@ function machineUser(args) {
     if (/^-M./.test(a) && /@/.test(a)) return true;
   }
   return false;
+}
+// The reads every lane may run: systemctl --user show, status, is-active or list-units, on the plugin's
+// own units only (delivery-watchdog-* and delivery-host-manager*, a .service, .timer or .path, or a
+// pattern of those names for list-units), so any role can see whether the host manager and the host jobs
+// run without messaging it. Strict on purpose: --user spelled out, only the options listed (a value option
+// takes the next word, as systemctl does), and every operand one of those names; anything else (another
+// verb, another unit, an abbreviation, a word the shell builds, another manager) is refused as before.
+const UNIT_READ_VERBS = new Set(['show', 'status', 'is-active', 'list-units']);
+const UNIT_READ_NAME = /^(?:delivery-watchdog-[^/\s]*|delivery-host-manager[^/\s]*)\.(?:service|timer|path)$/;
+const UNIT_READ_VALUE_OPTS = new Set(['-p', '--property', '-P', '-t', '--type', '--state', '-n', '--lines', '-o', '--output']);
+const UNIT_READ_FLAG_OPTS = new Set(['--user', '--no-pager', '--plain', '--no-legend', '-a', '--all', '-l', '--full', '--value', '-q', '--quiet']);
+function unitRead(args) {
+  if (args.some((a) => /[$`]/.test(a))) return false;
+  let verb = null;
+  const operands = [];
+  let user = false;
+  let ends = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (!ends && a === '--') { ends = true; continue; }
+    if (!ends && a.startsWith('-')) {
+      const opt = a.includes('=') && a.startsWith('--') ? a.slice(0, a.indexOf('=')) : a;
+      if (a === '--user') { user = true; continue; }
+      if (UNIT_READ_VALUE_OPTS.has(opt)) { if (opt === a) i++; continue; }
+      if (UNIT_READ_FLAG_OPTS.has(a)) continue;
+      return false;
+    }
+    if (verb === null) verb = a;
+    else operands.push(a);
+  }
+  if (!user || !UNIT_READ_VERBS.has(verb)) return false;
+  if (verb !== 'list-units' && !operands.length) return false;
+  return operands.every((u) => UNIT_READ_NAME.test(u));
 }
 const HOST_SCRIPT = /(?:team-revive|host-manager)/;
 // 'units' | 'start' | 'manager' | 'code' | null for one command line, depth-limited
@@ -1559,6 +1592,7 @@ function hostRefusal(text, roleId, depth = 0) {
       continue;
     }
     if (SERVICE_TOOLS.has(name)) {
+      if (name === 'systemctl' && unitRead(args)) continue;
       // a word the shell builds at run time could become --user: its options cannot be known
       if (args.some((a) => USER_OPT.test(a) || /[$`]/.test(a)) || machineUser(args)) return 'units';
       continue;
@@ -2115,4 +2149,4 @@ function laneDecisionForHook(input, pluginRoot) {
   return { reason: d.reason };
 }
 
-module.exports = { hostRefusal, tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish, closeAttempt };
+module.exports = { hostRefusal, unitRead, tmpShellWrite, nativeApproval, prOpenCall, ghApiCall, MERGE_ENDPOINT, REVIEWER_AGENT, reviewerPolicy, refusedRun, watchdogAction, foreignTeamPush, REACH_PREFIXES, OWNER_SERVERS, goalShellWrite, usageShellWrite, mergeAttempt, laneAllowRules, expansionConstruct, operatorShellWrite, laneDecisionForHook, shellCommandOf, splitBdGlobals, loadPolicy, splitCommand, splitWithOps, classifySegment, pathAllowed, decideLane, sanctioned, tokens, realish, closeAttempt };

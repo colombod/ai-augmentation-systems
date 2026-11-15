@@ -23,6 +23,8 @@
     { "first": "dirname" },
     { "first": "realpath" },
     { "first": "stat" },
+    { "first": "systemctl", "sub": ["--user show", "--user status", "--user is-active"], "positional_match": ["delivery-watchdog-*.service", "delivery-watchdog-*.timer", "delivery-watchdog-*.path", "delivery-host-manager*.service", "delivery-host-manager*.timer", "delivery-host-manager*.path"], "positional_required": true, "value_flags": ["-p", "--property", "-P", "-t", "--type", "--state", "-n", "--lines", "-o", "--output"], "flags_only": ["-p", "--property", "-P", "-t", "--type", "--state", "-n", "--lines", "-o", "--output", "--no-pager", "--plain", "--no-legend", "-a", "--all", "-l", "--full", "--value", "-q", "--quiet"] },
+    { "first": "systemctl", "sub": ["--user list-units"], "positional_match": ["delivery-watchdog-*.service", "delivery-watchdog-*.timer", "delivery-watchdog-*.path", "delivery-host-manager*.service", "delivery-host-manager*.timer", "delivery-host-manager*.path"], "value_flags": ["-p", "--property", "-P", "-t", "--type", "--state", "-n", "--lines", "-o", "--output"], "flags_only": ["-p", "--property", "-P", "-t", "--type", "--state", "-n", "--lines", "-o", "--output", "--no-pager", "--plain", "--no-legend", "-a", "--all", "-l", "--full", "--value", "-q", "--quiet"] },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/team-status.js" },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/products.js" },
     { "first": "node", "arg_prefix": "${CLAUDE_PLUGIN_ROOT}/scripts/warnings.js", "sub": ["list"] },
