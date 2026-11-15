@@ -20,7 +20,8 @@
 // The probe (phase 7) found one documented way for a host job to wake a stopped role session:
 // `claude --resume <session-id> -p "<prompt>"` run in the role directory (its settings and hooks load;
 // the conversation and model are restored; the permission mode is not, so the wake passes the team's). A session still open in another process
-// cannot be resumed in place; `--fork-session` continues a copy of it. Hooks, /loop and CronCreate live
+// cannot be resumed in place; `--fork-session` would continue a copy of it, a second session of the
+// role, so a live session is handed the wake as a message instead (hjx.1.6.17). Hooks, /loop and CronCreate live
 // and die with their session, and cloud routines cannot reach a local session. The usage-limit row in a
 // transcript (error "rate_limit", quotaLimits.resetsAt) is undocumented, so the reader fails open.
 //
@@ -790,14 +791,49 @@ function log(root, row) {
   return row;
 }
 
-// alive, and still a wake supervisor: a pid the system gave to another program since is not ours
-function pidAlive(pid) {
+// What the system says about a pid: whether it exists, its command line, and when it started (ms), each
+// null when it cannot be read. /proc first (Linux); ps for the command elsewhere. hjx.1.6.20: on one host
+// `ps -p` printed nothing for a pid that /proc showed, so ps alone is not trusted to say "unknown".
+const START_SLACK_MS = 60e3;
+// wake-run.js stops its group at the timeout, then waits the kill grace before SIGKILL, and lives until
+// the group is gone: an unreadable supervisor may be alive that long after its row
+const KILL_GRACE_MS = Number(process.env.DELIVERY_WAKE_KILL_GRACE_MS) || 30e3;
+const procReads = {
+  exists(pid) { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } },
+  cmdline(pid) {
+    try { const c = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim(); if (c) return c; } catch (err) { /* no /proc */ }
+    try { const c = require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim(); return c || null; } catch (err) { return null; }
+  },
+  startedMs(pid) {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const ticks = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
+      const btime = Number((/^btime (\d+)$/m.exec(fs.readFileSync('/proc/stat', 'utf8')) || [])[1]);
+      // clock ticks are 100 a second on every Linux this runs on (USER_HZ)
+      return Number.isFinite(ticks) && btime ? btime * 1000 + ticks * 10 : null;
+    } catch (err) { return null; }
+  },
+};
+
+// A wake pid is a running wake only while it is that wake: alive, a wake supervisor (lib/wake-run.js),
+// and, given the wake row's time (since), started no later than the row (a supervisor is spawned, then
+// its row written). A pid the system gave to another program after the wake ended is not ours, nor is
+// a later wake on the same pid. When neither the command nor the start can be read, the pid is kept
+// only within the wake timeout plus the kill grace of its row (wake-run.js may live that long), so an
+// unreadable pid never holds installs and wakes with no end (hjx.1.6.20: a reused pid held every install
+// for 91 hours). With no row time, as before.
+function pidAlive(pid, { since = null, now = Date.now(), proc = procReads } = {}) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); } catch (err) { if (err.code !== 'EPERM') return false; }
-  try {
-    const cmd = require('child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
-    return !cmd.trim() || /wake-run\.js/.test(cmd);
-  } catch (err) { return true; }
+  if (!proc.exists(pid)) return false;
+  const at = since ? ms(since) : NaN;
+  const cmd = proc.cmdline(pid);
+  if (cmd) {
+    if (!/wake-run\.js/.test(cmd)) return false;
+    const started = proc.startedMs(pid);
+    return !(Number.isFinite(at) && Number.isFinite(started) && started > at + START_SLACK_MS);
+  }
+  if (!Number.isFinite(at)) return true;
+  return (typeof now === 'number' ? now : ms(now)) - at <= WAKE_TIMEOUT_H * 3600e3 + KILL_GRACE_MS;
 }
 
 // a message and a handoff (lib/handoff.js) are the team's handovers, not stalls: woken by the message rules
@@ -815,7 +851,7 @@ const handoffsOf = (stalls) => stalls.filter((s) => s.kind === 'handoff').map((s
 
 // The wakes due now, one per target session, carrying the stall lines it may still be woken for.
 // { wakes: [{ target, keys, lines, prompt }], waiting: [stall], held: [{ target, lines, reason }] }
-function plan(res, { root, now, alive = pidAlive } = {}) {
+function plan(res, { root, now, alive = (pid, since) => pidAlive(pid, { since, now }) } = {}) {
   const t = ms(now || new Date().toISOString());
   const rows = logRows(root).filter((r) => r.type === 'wake');
   // a session on its own usage limit is woken for nothing before its reset (Copilot 416)
@@ -850,7 +886,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     // row (a merge's deploy, a deploy's check) is never held by a daily cap: merges and deploys bound it.
     const day = (f) => mine.filter((r) => f(r) && t - ms(r.at) < 24 * 3600e3);
     const handover = (items) => {
-      if (last && alive(last.pid)) return { go: [], holds: [{ items, why: 'its last wake is still running; it is woken again when that wake ends' }] };
+      if (last && alive(last.pid, last.at)) return { go: [], holds: [{ items, why: 'its last wake is still running; it is woken again when that wake ends' }] };
       if (items.every(standing) && last && t - ms(last.at) < MESSAGE_EVERY_MS) return { go: [], holds: [{ items, why: `woken at ${clock(ms(last.at))}; assigned work waits ${MESSAGE_EVERY_MS / 60000} min between wakes` }] };
       const holds = [];
       // the message day counts every wake but those for assigned work alone (6z5)
@@ -885,7 +921,7 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
     // so they spend none of the stall budget either (rv-190)
     const stallRows = mine.filter((r) => (r.keys || []).some((k) => !/^(message|handoff|assigned|review|started|unclaimed):/.test(String(k))));
     const lastStall = stallRows[stallRows.length - 1];
-    if (last && alive(last.pid)) reason = 'its last wake is still running';
+    if (last && alive(last.pid, last.at)) reason = 'its last wake is still running';
     else if (lastStall && t - ms(lastStall.at) < WAKE_EVERY_MS) reason = `woken at ${clock(ms(lastStall.at))}; one wake an hour`;
     else if (stallRows.filter((r) => t - ms(r.at) < 24 * 3600e3).length >= cap.daily) reason = `woken ${cap.daily} times in a day; alarm only until the count falls`;
     // each stall waits 1, 2, 4 ... hours after each wake that carried it. A handover (message, handoff,
@@ -920,8 +956,9 @@ function plan(res, { root, now, alive = pidAlive } = {}) {
   return { wakes, waiting, held };
 }
 
-// How to wake one session: resume it in place when it is not open, fork it when it is open and idle,
-// leave it when it is busy or when open sessions cannot be listed, continue the role directory's latest
+// How to wake one session: resume it in place when the role has no live session, hand an idle live
+// session the wake as a message (mode 'message', never a fork: one live session per role), leave a busy
+// one, and do nothing when open sessions cannot be listed; continue the role directory's latest
 // conversation when no id is known. live: claude agents --json rows (null when unknown). { mode, args } or { skip }
 // mode: the team's permission_mode (team.json); a resumed session does not keep the mode it was
 // started in, so every wake names it (default needs no flag)
@@ -937,7 +974,7 @@ const FRESH_ABOVE = 120000;
 // prefix: the team's bead prefix; the fresh session is named <instance>@<team> (lib/session-name.js)
 function wakeCommand(s, prompt, live, mode = 'auto', { freshAbove = FRESH_ABOVE, installed = null, prefix = null } = {}) {
   const m = mode && mode !== 'default' ? ['--permission-mode', mode] : [];
-  const r = wakeArgs(s, prompt, live);
+  const r = wakeArgs(s, prompt, live, { prefix });
   const older = Boolean(installed) && require('./plugin-version.js').compare(s && s.pluginVersion, installed) === -1;
   if (r.mode === 'resume' && (older || (freshAbove > 0 && Number.isFinite(s.context) && s.context > freshAbove))) {
     // named like every role session (start.js --name), so peers reach it by name (team rule 13)
@@ -964,16 +1001,26 @@ function freshPreamble(s, installed = null) {
     + ` Your brief and the team's records are your memory: start with your own in-progress beads (bd list --assignee "$BEADS_ACTOR" --status in_progress) and their notes, and the files they name.${operator}`;
 }
 
-function wakeArgs(s, prompt, live) {
+// One live session per role (lib/one-session.js, hjx.1.6.17): a role with a live session, under the
+// roster's id or any other in its role directory, is never given a second one. A working one is left to
+// work; an idle one is handed the wake as a message on its own socket (mode 'message', lib/session-message.js).
+// Before, an open idle session was forked (--fork-session), and one under another id was not seen at
+// all, so the wake ran a second session of the role beside it.
+function wakeArgs(s, prompt, live, { prefix = null } = {}) {
   if (!s || !s.roleDir) return { skip: 'no session of this role on this host\'s roster' };
   if (!fs.existsSync(s.roleDir)) return { skip: `its role directory ${s.roleDir} is not on this host` };
   if (live === null || live === undefined) return { skip: 'open sessions could not be listed (claude agents --json), so a wake could collide with one; alarm only' };
+  const OS = require('./one-session.js');
+  const lives = OS.liveOf(s.instance, { roleDir: s.roleDir, live, prefix }) || [];
+  const own = s.session ? live.find((r) => r && r.sessionId === s.session) || null : null;
+  if (own && !lives.includes(own)) lives.unshift(own);
+  if (lives.length) {
+    const busy = lives.find((r) => r.status !== 'idle' && r.status !== 'waiting');
+    if (busy) return { skip: `it is working (${busy.status || 'busy'}) as ${OS.described([busy])}` };
+    return { mode: 'message', session: own || lives[0], twice: lives.length > 1 ? OS.described(lives) : null };
+  }
   if (!s.session) return { mode: 'continue', args: ['-c', '-p', prompt] };
-  const row = live.find((r) => r && r.sessionId === s.session);
-  if (row && row.status !== 'idle' && row.status !== 'waiting') return { skip: `it is working (${row.status || 'busy'})` };
-  // open and idle: a copy never collides with the open session
-  if (row) return { mode: 'fork', args: ['--resume', s.session, '--fork-session', '-p', prompt] };
   return { mode: 'resume', args: ['--resume', s.session, '-p', prompt] };
 }
 
-module.exports = { reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };
+module.exports = { KILL_GRACE_MS, START_SLACK_MS, procReads, reviveStarts, START_SETTLE_MIN, START_FRESH_H, MANAGER_STEP, managerPrs, refusedInstalls, MANAGER_DAILY_CAP, MANAGER_MESSAGE_DAILY_CAP, ASSIGNED_DAILY_CAP, MANAGER_ASSIGNED_DAILY_CAP, reviewFacts, capsOf, ASSIGNED_IDLE_MIN, WAKE_OPENING, wakePrompt, withA3s, FRESH_ABOVE, contextOf, MESSAGE_EVERY_MS, MESSAGE_DAILY_CAP, WAKE_TIMEOUT_H, REL, P0_HOURS, WAKE_EVERY_MS, DAILY_CAP, RESET_GRACE_MIN, MIN_POLL_S, LOG_MAX_BYTES, tailRows, limitOf, waitingUntil, tightPolls, pollEvery, sessions, stalls, pollWarnings, recordAll, read, plan, wakeCommand, log, logRows, rotate, ensureDir, installedJob, installedFile, pidAlive, clock, span };

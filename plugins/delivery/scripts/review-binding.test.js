@@ -20,7 +20,7 @@ const OTHER = 'ex-vault-0n9-9';
 const H1 = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 const H2 = 'b2c3d4e5f60718293a4b5c6d7e8f901234567890';
 const GREEN = [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }];
-const view = (over = {}) => ({ headRefOid: H1, headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'src/import.js', additions: 50, deletions: 5 }], body: `Refs ${BEAD}`, title: 'Import', ...over });
+const view = (over = {}) => ({ headRefOid: H1, headRefName: 'team/builder-1', mergeable: 'MERGEABLE', statusCheckRollup: GREEN, files: [{ path: 'src/import.js', additions: 50, deletions: 5 }], body: `Refs ${BEAD}\nDoc-impact: none (a test fixture)`, title: 'Import', ...over });
 const authored = (id, inst) => storyBead({ id, assignee: `dev@pc/${inst}`, metadata: { authors: [{ actor: `dev@pc/${inst}`, role: 'builder' }] } });
 
 function setup(prs = { 478: view() }, beads = { [BEAD]: authored(BEAD, 'builder-1'), [OTHER]: authored(OTHER, 'builder-2'), 'ex-vault-0n9-7': storyBead({ id: 'ex-vault-0n9-7', assignee: '' }) }) {

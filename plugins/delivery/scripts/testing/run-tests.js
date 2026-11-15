@@ -213,6 +213,28 @@ module.exports.sealProblem = sealProblem;
 module.exports.ownerOptOut = ownerOptOut;
 module.exports.SEAL_FILE = SEAL_FILE;
 
+// the top-level tests a TAP stream says failed, with the file:line node:test gives each; a subtest's
+// failure fails its parent, which is the one named. A TODO test's failure fails nothing.
+function failingTests(tap) {
+  const out = [];
+  let cur = null;
+  for (const line of String(tap).split('\n')) {
+    const m = /^not ok (\d+) - (.*)$/.exec(line);
+    if (m) {
+      cur = null;
+      if (/ # TODO\b/.test(m[2])) continue;
+      cur = { n: Number(m[1]), name: m[2], location: null };
+      out.push(cur);
+      continue;
+    }
+    if (/^\S/.test(line)) { cur = null; continue; }
+    const loc = /^  location: '(.*)'$/.exec(line);
+    if (cur && loc && !cur.location) cur.location = loc[1];
+  }
+  return out;
+}
+module.exports.failingTests = failingTests;
+
 if (require.main === module) {
   const root = path.join(__dirname, '..', '..');
   // the tests make their fixtures with mkdtemp and leave them: thousands of directories with git
@@ -289,9 +311,14 @@ if (require.main === module) {
   const { spawn } = require('child_process');
   // the runs nested in a seal record into a registry inside it, gone with it, never the user's own
   const env = { ...cleanEnv(process.env), ...clockEnv(clock, process.env), TMPDIR: tmp, TMP: tmp, TEMP: tmp, ...(sealed || inSeal ? { DELIVERY_TMP_REGISTRY: registry } : {}), ...(token ? { DELIVERY_SEAL_ACTIVE: token } : {}) };
+  // 3k4.1.2.2.1: a capture cut short named no failing test. The suite also reports as TAP into a file
+  // of the run's own (the terminal keeps the reporter it would get), and the runner closes with every
+  // failing test read from it. A caller that picks its own reporters keeps them as they are.
+  const tapFile = !command && !rest.some((a) => /^--test-reporter/.test(a)) ? path.join(tmp, '.run-tests-tap') : null;
+  const reporters = tapFile ? [`--test-reporter=${process.stdout.isTTY ? 'spec' : 'tap'}`, '--test-reporter-destination=stdout', '--test-reporter=tap', `--test-reporter-destination=${tapFile}`] : [];
   const child = command
     ? spawn(shellLine(command), { env, stdio: 'inherit', detached: true, shell: true })
-    : spawn(process.execPath, ['--test', ...rest, ...files], { env, stdio: 'inherit', detached: true });
+    : spawn(process.execPath, ['--test', ...reporters, ...rest, ...files], { env, stdio: 'inherit', detached: true });
   let over = null;
   const guard = setInterval(() => {
     const used = guardCount(tmp, sealed, cap.inodes);
@@ -330,6 +357,11 @@ if (require.main === module) {
   child.on('exit', (code, signal) => {
     clearInterval(guard);
     const finish = () => {
+      if (tapFile) {
+        let failed = [];
+        try { failed = failingTests(fs.readFileSync(tapFile, 'utf8')); } catch (e) { /* the suite never started reporting */ }
+        if (failed.length) process.stdout.write(`\n# failing tests (${failed.length}):\n${failed.map((f) => `# not ok - ${f.name}${f.location ? ` (${f.location})` : ''}`).join('\n')}\n`);
+      }
       removeTmp();
       if (over) process.stderr.write(`${over}\n`);
       process.exit(over ? 1 : code !== null ? code : 1);

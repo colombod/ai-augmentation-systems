@@ -561,7 +561,8 @@ test('start: a publish refused with HTTP 403 names the network policy and where 
 function recordingClaude() {
   const dir = mk('start-launch-rec-');
   const bin = path.join(dir, 'claude-rec');
-  fs.writeFileSync(bin, `#!/bin/sh\nf="${dir}/$DELIVERY_ROLE.json"\n"${process.execPath}" -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), role: process.env.DELIVERY_ROLE, parent: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_CODE_REMOTE_SESSION_ID || process.env.CLAUDECODE || null, bgWait: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS || null, args: process.argv.slice(2) }))' "$f" "$@"\n`, { mode: 0o755 });
+  // `claude agents --json` lists FAKE_AGENTS (none by default), or fails when FAKE_AGENTS_FAIL is set
+  fs.writeFileSync(bin, `#!/bin/sh\nif [ "$1" = agents ]; then [ -n "$FAKE_AGENTS_FAIL" ] && exit 1; printf '%s' "\${FAKE_AGENTS:-[]}"; exit 0; fi\nf="${dir}/$DELIVERY_ROLE.json"\n"${process.execPath}" -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), role: process.env.DELIVERY_ROLE, parent: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_CODE_REMOTE_SESSION_ID || process.env.CLAUDECODE || null, bgWait: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS || null, args: process.argv.slice(2) }))' "$f" "$@"\n`, { mode: 0o755 });
   return { bin, dir };
 }
 function waitFor(files, ms = 10000) {
@@ -606,6 +607,31 @@ test('--launch skips a role already on the roster, starts nothing for other host
   const other = start(['--project', project, '--host', 'elsewhere', '--launch'], { env: { DELIVERY_CLAUDE_BIN: rec.bin } });
   assert.equal(other.status, 1, other.out);
   assert.match(other.out, /nothing to start: no role of this team runs on host "elsewhere"/);
+});
+
+// hjx.1.6.17 (rv-198): --launch skipped a role only when the roster had a session id, so it could start a
+// second session beside one running under another id
+test('--launch starts no role that already has a live session, by its role directory or its name, and none when the sessions cannot be listed', () => {
+  const project = path.join(mk('start-launch3-'), 'acme');
+  const rec = recordingClaude();
+  const team = path.join(path.dirname(project), 'acme-team');
+  const agents = JSON.stringify([
+    { sessionId: 'unit-cos', cwd: path.join(team, 'chief-of-staff'), name: 'Chief of Staff', status: 'idle' },
+    { sessionId: 'unit-b', cwd: '/elsewhere', name: 'builder@acme', status: 'busy' },
+  ]);
+  const r = start(['--project', project, '--host', 'laptop', '--launch'], { env: { DELIVERY_CLAUDE_BIN: rec.bin, FAKE_AGENTS: agents } });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /chief-of-staff: already running as Chief of Staff \(idle\) in \S+chief-of-staff; not started again/);
+  assert.match(r.out, /builder: already running as builder@acme \(busy\) in \/elsewhere; not started again/);
+  assert.ok(waitFor(['product-manager', 'delivery-lead'].map((i) => path.join(rec.dir, `${i}.json`))), r.out);
+  for (const i of ['chief-of-staff', 'builder']) assert.ok(!fs.existsSync(path.join(rec.dir, `${i}.json`)), `${i} was started beside its live session`);
+  // a list that cannot be read starts nobody
+  const q = path.join(mk('start-launch4-'), 'acme');
+  const rec2 = recordingClaude();
+  const u = start(['--project', q, '--host', 'laptop', '--launch'], { env: { DELIVERY_CLAUDE_BIN: rec2.bin, FAKE_AGENTS_FAIL: '1' } });
+  assert.match(u.out, /chief-of-staff: not started: the open sessions could not be listed/);
+  cp.spawnSync('sleep', ['1']);
+  assert.deepEqual(fs.readdirSync(rec2.dir).filter((f) => f.endsWith('.json')), [], 'nothing started');
 });
 
 test('a project repo start.js creates starts on main, whatever the machine\'s git default', () => {
